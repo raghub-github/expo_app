@@ -1,21 +1,11 @@
+import { useCallback, useMemo, useRef, useState } from "react";
 import { useRouter } from "expo-router";
-import { useMemo, useRef, useState } from "react";
-import {
-  View,
-  Text,
-  StyleSheet,
-  ScrollView,
-  Pressable,
-  ActivityIndicator,
-  Modal,
-  Platform,
-  ToastAndroid,
-  Alert,
-  Animated,
-  PanResponder,
-} from "react-native";
+import { AppText as Text } from "@/components/AppText";
+import { View, StyleSheet, ScrollView, Pressable, ActivityIndicator, Modal, Platform, ToastAndroid, Alert, Animated, PanResponder, RefreshControl } from "react-native";
+import { LinearGradient } from "expo-linear-gradient";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
+import Svg, { Circle, Ellipse, Path, Rect } from "react-native-svg";
 import { GatiMitraMerchant, H_PADDING } from "@/constants/theme";
 import { useNotifications, type MerchantNotification, type NotificationType } from "@/context/NotificationContext";
 import { RadarLiveIndicator } from "@/components/RadarLiveIndicator";
@@ -30,6 +20,9 @@ import { useIncomingOrderSheet } from "@/context/IncomingOrderSheetContext";
 import { useAuth } from "@/context/AuthContext";
 import { useSelectedStore } from "@/context/SelectedStoreContext";
 import { fetchFoodOrder } from "@/services/ordersApi";
+
+const LORA = "Lora_400Regular";
+const LORA_BOLD = "Lora_700Bold";
 
 const ICON_MAP: Record<NotificationType, keyof typeof Ionicons.glyphMap> = {
   order: "receipt-outline",
@@ -54,6 +47,53 @@ const ICON_COLOR: Record<NotificationType, string> = {
 
 const SWIPE_ACTION_WIDTH = 64;
 const SWIPE_OPEN_THRESHOLD = 40;
+
+/** Soft brand wash — mint → soft blush (3rd image style, GatiMitra palette). */
+const BG_GRADIENT = ["#E8F8F2", "#F5FBFF", "#FFF5F7"] as const;
+
+function isWaitingForOrdersNotification(item: MerchantNotification): boolean {
+  const title = item.title.trim();
+  const body = String(item.body ?? "").toLowerCase();
+  if (title === WAITING_FOR_ORDER_TITLE) return true;
+  if (title.startsWith("🟢") && body.includes("waiting for order")) return true;
+  if (body.includes("waiting for orders")) return true;
+  return false;
+}
+
+/** Mailbox + nest empty-state art (reference image 3). */
+function EmptyMailboxArt({ size = 160 }: { size?: number }) {
+  const s = size;
+  return (
+    <Svg width={s} height={s} viewBox="0 0 160 160" fill="none">
+      {/* Ground grass */}
+      <Ellipse cx={80} cy={142} rx={36} ry={8} fill="#86EFAC" opacity={0.85} />
+      <Path d="M55 138 C60 130 68 132 72 138" stroke="#22C55E" strokeWidth={2} fill="none" />
+      <Path d="M88 138 C94 128 102 132 108 140" stroke="#22C55E" strokeWidth={2} fill="none" />
+      {/* Post */}
+      <Rect x={74} y={88} width={12} height={50} rx={2} fill="#92400E" />
+      <Rect x={70} y={134} width={20} height={6} rx={2} fill="#78350F" />
+      {/* Mailbox body */}
+      <Rect x={48} y={58} width={64} height={36} rx={8} fill="#DC2626" />
+      <Rect x={52} y={62} width={56} height={28} rx={6} fill="#EF4444" />
+      <Path d="M48 72 H112" stroke="#B91C1C" strokeWidth={2} />
+      <Circle cx={100} cy={76} r={3} fill="#FCD34D" />
+      {/* Flag */}
+      <Path d="M108 64 L124 58 L108 70 Z" fill="#FBBF24" />
+      {/* Nest */}
+      <Ellipse cx={78} cy={52} rx={18} ry={8} fill="#A16207" />
+      <Ellipse cx={78} cy={50} rx={14} ry={5} fill="#CA8A04" />
+      {/* Eggs */}
+      <Ellipse cx={70} cy={48} rx={4} ry={5} fill="#7DD3FC" />
+      <Ellipse cx={78} cy={46} rx={4} ry={5} fill="#BAE6FD" />
+      <Ellipse cx={86} cy={48} rx={4} ry={5} fill="#7DD3FC" />
+      {/* Bird */}
+      <Ellipse cx={98} cy={44} rx={8} ry={6} fill="#FACC15" />
+      <Circle cx={103} cy={42} r={2} fill="#0F172A" />
+      <Path d="M106 44 L112 44" stroke="#F59E0B" strokeWidth={2} strokeLinecap="round" />
+      <Path d="M92 46 C88 40 90 36 94 38" fill="#EAB308" />
+    </Svg>
+  );
+}
 
 function NotificationItem({
   item,
@@ -100,12 +140,10 @@ function NotificationItem({
   const panResponder = useRef(
     PanResponder.create({
       onMoveShouldSetPanResponder: (_, g) => {
-        // Capture only horizontal swipes (so vertical scrolling stays smooth).
         return Math.abs(g.dx) > 8 && Math.abs(g.dx) > Math.abs(g.dy);
       },
       onPanResponderMove: (_, g) => {
         movedRef.current = movedRef.current || Math.abs(g.dx) > 6 || Math.abs(g.dy) > 6;
-        // Only allow left swipe (reveal right action)
         const clamped = Math.max(-SWIPE_ACTION_WIDTH, Math.min(0, g.dx));
         translateX.setValue(clamped);
       },
@@ -116,7 +154,6 @@ function NotificationItem({
           close();
           return;
         }
-        // Open only on left swipe beyond threshold
         const shouldOpenRight = g.dx < -SWIPE_OPEN_THRESHOLD;
         if (!shouldOpenRight) {
           close();
@@ -150,14 +187,10 @@ function NotificationItem({
 
       <Animated.View
         {...panResponder.panHandlers}
-        style={[
-          styles.swipeFront,
-          { transform: [{ translateX }] },
-        ]}
+        style={[styles.swipeFront, { transform: [{ translateX }] }]}
       >
         <Pressable
           onPress={() => {
-            // If user was swiping/dragging, do not open modal.
             if (movedRef.current) return;
             if (isOpen) {
               close();
@@ -176,7 +209,7 @@ function NotificationItem({
           </View>
           <View style={styles.content}>
             <View style={styles.titleRow}>
-              {item.title.trim() === WAITING_FOR_ORDER_TITLE ? (
+              {isWaitingForOrdersNotification(item) ? (
                 <View style={styles.waitingRadar} accessibilityLabel="Live waiting indicator">
                   <RadarLiveIndicator compact />
                 </View>
@@ -191,9 +224,7 @@ function NotificationItem({
             <Text style={styles.time}>{item.dateTime || item.timeAgo || ""}</Text>
           </View>
 
-          <View style={styles.itemRight}>
-            {!item.read && <View style={styles.unreadDot} />}
-          </View>
+          <View style={styles.itemRight}>{!item.read && <View style={styles.unreadDot} />}</View>
         </Pressable>
       </Animated.View>
     </View>
@@ -206,13 +237,15 @@ export default function NotificationsScreen() {
   const { token } = useAuth();
   const { selectedStore } = useSelectedStore();
   const storeId = selectedStore?.id ?? null;
-  const { notifications, markAllAsRead, markAsRead, removeNotification, loading } = useNotifications();
+  const { notifications, markAllAsRead, markAsRead, removeNotification, loading, refresh } =
+    useNotifications();
   const { orders, upsertOrder } = useOrders();
   const { openIncomingOrderSheet } = useIncomingOrderSheet();
   const [selected, setSelected] = useState<MerchantNotification | null>(null);
   const modalVisible = selected != null;
   const [pendingDelete, setPendingDelete] = useState<MerchantNotification | null>(null);
   const confirmVisible = pendingDelete != null;
+  const [refreshing, setRefreshing] = useState(false);
 
   const canOpenSelected = useMemo(() => {
     if (!selected) return false;
@@ -224,8 +257,23 @@ export default function NotificationsScreen() {
     [selected, orders]
   );
 
+  const onRefresh = useCallback(async () => {
+    setRefreshing(true);
+    try {
+      await refresh();
+    } finally {
+      setRefreshing(false);
+    }
+  }, [refresh]);
+
   const handleItemPress = async (item: MerchantNotification) => {
     markAsRead(item.id);
+
+    // Waiting-for-orders → Orders tab (not detail modal).
+    if (isWaitingForOrdersNotification(item)) {
+      router.replace("/(tabs)/orders" as never);
+      return;
+    }
 
     if (isNewOrderAcceptNotification(item)) {
       try {
@@ -270,7 +318,7 @@ export default function NotificationsScreen() {
     const { actionUrl, orderId } = selected;
     setSelected(null);
     if (actionUrl) {
-      router.push(actionUrl as any);
+      router.push(actionUrl as never);
       return;
     }
     if (orderId) {
@@ -293,15 +341,18 @@ export default function NotificationsScreen() {
   const confirmDelete = async () => {
     if (!pendingDelete) return;
     const id = pendingDelete.id;
-    // Close details modal if it's the same item
     if (selected?.id === id) setSelected(null);
     setPendingDelete(null);
     await removeNotification(id);
     showToast("Notification deleted");
   };
 
+  const hasUnread = notifications.some((n) => !n.read);
+
   return (
-    <View style={[styles.container, { paddingTop: insets.top }]}>
+    <View style={styles.root}>
+      <LinearGradient colors={[...BG_GRADIENT]} style={StyleSheet.absoluteFill} />
+
       <Modal visible={confirmVisible} transparent animationType="fade" onRequestClose={() => setPendingDelete(null)}>
         <Pressable style={styles.modalBackdrop} onPress={() => setPendingDelete(null)}>
           <Pressable style={styles.confirmCard} onPress={() => null}>
@@ -354,7 +405,7 @@ export default function NotificationsScreen() {
         </Pressable>
       </Modal>
 
-      <View style={styles.header}>
+      <View style={[styles.header, { paddingTop: insets.top + 4 }]}>
         <Pressable
           onPress={() => router.back()}
           style={({ pressed }) => [styles.backBtn, pressed && styles.pressed]}
@@ -363,33 +414,47 @@ export default function NotificationsScreen() {
           <Ionicons name="arrow-back" size={24} color={GatiMitraMerchant.textPrimary} />
         </Pressable>
         <Text style={styles.headerTitle}>Notifications</Text>
-        {notifications.some((n) => !n.read) && (
+        {hasUnread ? (
           <Pressable
             onPress={() => void markAllAsRead()}
             style={({ pressed }) => [styles.markReadBtn, pressed && styles.pressed]}
           >
             <Text style={styles.markReadText}>Mark all read</Text>
           </Pressable>
+        ) : (
+          <View style={styles.headerSpacer} />
         )}
       </View>
 
       <ScrollView
         style={styles.scroll}
-        contentContainerStyle={[styles.scrollContent, { paddingBottom: insets.bottom + 24 }]}
+        contentContainerStyle={[
+          styles.scrollContent,
+          notifications.length === 0 && !loading ? styles.scrollContentEmpty : null,
+          { paddingBottom: insets.bottom + 24 },
+        ]}
         showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={() => void onRefresh()}
+            tintColor={GatiMitraMerchant.primary}
+            colors={[GatiMitraMerchant.primary]}
+            title="Pull down to refresh"
+            titleColor={GatiMitraMerchant.navy}
+          />
+        }
       >
-        {loading ? (
+        {loading && notifications.length === 0 && !refreshing ? (
           <View style={styles.loadingWrap}>
             <ActivityIndicator size="large" color={GatiMitraMerchant.primary} />
             <Text style={styles.loadingText}>Loading notifications…</Text>
           </View>
         ) : notifications.length === 0 ? (
           <View style={styles.empty}>
-            <View style={styles.emptyIconWrap}>
-              <Ionicons name="notifications-off-outline" size={48} color={GatiMitraMerchant.textTertiary} />
-            </View>
-            <Text style={styles.emptyTitle}>No notifications</Text>
-            <Text style={styles.emptySub}>You're all caught up.</Text>
+            <EmptyMailboxArt size={168} />
+            <Text style={styles.emptyTitle}>No Notification</Text>
+            <Text style={styles.emptySub}>Nothing to show!</Text>
           </View>
         ) : (
           notifications.map((item) => (
@@ -397,7 +462,7 @@ export default function NotificationsScreen() {
               key={item.id}
               item={item}
               displayBody={merchantNotificationDisplayBody(item, orders)}
-              onPress={() => handleItemPress(item)}
+              onPress={() => void handleItemPress(item)}
               onDeletePress={() => requestDelete(item)}
             />
           ))
@@ -408,18 +473,16 @@ export default function NotificationsScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: {
+  root: {
     flex: 1,
-    backgroundColor: GatiMitraMerchant.background,
+    backgroundColor: BG_GRADIENT[0],
   },
   header: {
     flexDirection: "row",
     alignItems: "center",
     paddingHorizontal: H_PADDING,
-    paddingVertical: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: GatiMitraMerchant.border,
-    backgroundColor: GatiMitraMerchant.cardBg,
+    paddingBottom: 12,
+    backgroundColor: "transparent",
   },
   backBtn: {
     width: 44,
@@ -430,36 +493,43 @@ const styles = StyleSheet.create({
   },
   headerTitle: {
     flex: 1,
-    fontSize: 18,
-    fontWeight: "600",
+    fontSize: 20,
+    fontFamily: LORA_BOLD,
     color: GatiMitraMerchant.textPrimary,
-    marginLeft: 8,
+    textAlign: "center",
+    marginRight: 8,
   },
+  headerSpacer: { width: 88 },
   markReadBtn: {
     paddingVertical: 8,
-    paddingHorizontal: 12,
+    paddingHorizontal: 8,
+    minWidth: 88,
+    alignItems: "flex-end",
   },
   markReadText: {
-    fontSize: 14,
-    fontWeight: "600",
+    fontSize: 13,
+    fontFamily: LORA_BOLD,
     color: GatiMitraMerchant.primary,
   },
-  scroll: {
-    flex: 1,
-  },
+  scroll: { flex: 1 },
   scrollContent: {
     paddingHorizontal: H_PADDING,
-    paddingTop: 12,
-    gap: 0,
+    paddingTop: 8,
+  },
+  scrollContentEmpty: {
+    flexGrow: 1,
+    justifyContent: "center",
   },
   item: {
     flexDirection: "row",
     alignItems: "flex-start",
     paddingVertical: 14,
-    paddingHorizontal: 4,
-    borderBottomWidth: 1,
-    borderBottomColor: GatiMitraMerchant.border,
-    backgroundColor: GatiMitraMerchant.cardBg,
+    paddingHorizontal: 12,
+    borderRadius: 14,
+    marginBottom: 8,
+    backgroundColor: "rgba(255,255,255,0.88)",
+    borderWidth: 1,
+    borderColor: "rgba(226,232,240,0.9)",
   },
   itemRight: {
     alignItems: "flex-end",
@@ -470,6 +540,8 @@ const styles = StyleSheet.create({
   swipeWrap: {
     position: "relative",
     overflow: "hidden",
+    borderRadius: 14,
+    marginBottom: 2,
   },
   swipeActions: {
     ...StyleSheet.absoluteFillObject,
@@ -483,14 +555,14 @@ const styles = StyleSheet.create({
     backgroundColor: GatiMitraMerchant.error,
     alignItems: "center",
     justifyContent: "center",
-    borderBottomWidth: 1,
-    borderBottomColor: GatiMitraMerchant.border,
+    borderRadius: 14,
   },
   swipeFront: {
     backgroundColor: "transparent",
   },
   itemUnread: {
-    backgroundColor: GatiMitraMerchant.surfaceSubtle,
+    backgroundColor: "rgba(232,248,242,0.95)",
+    borderColor: "#A7F3D0",
   },
   iconWrap: {
     width: 44,
@@ -516,17 +588,19 @@ const styles = StyleSheet.create({
   title: {
     flex: 1,
     fontSize: 15,
-    fontWeight: "600",
+    fontFamily: LORA_BOLD,
     color: GatiMitraMerchant.textPrimary,
   },
   body: {
     fontSize: 13,
+    fontFamily: LORA,
     color: GatiMitraMerchant.textSecondary,
     marginTop: 4,
     lineHeight: 18,
   },
   time: {
     fontSize: 12,
+    fontFamily: LORA,
     color: GatiMitraMerchant.textTertiary,
     marginTop: 6,
   },
@@ -537,9 +611,7 @@ const styles = StyleSheet.create({
     backgroundColor: GatiMitraMerchant.primary,
     marginTop: 6,
   },
-  pressed: {
-    opacity: 0.75,
-  },
+  pressed: { opacity: 0.75 },
   modalBackdrop: {
     flex: 1,
     backgroundColor: "rgba(15, 23, 42, 0.45)",
@@ -563,13 +635,14 @@ const styles = StyleSheet.create({
   },
   confirmTitle: {
     fontSize: 16,
-    fontWeight: "700",
+    fontFamily: LORA_BOLD,
     color: GatiMitraMerchant.textPrimary,
   },
   confirmBody: {
     marginTop: 8,
     fontSize: 14,
     lineHeight: 20,
+    fontFamily: LORA,
     color: GatiMitraMerchant.textSecondary,
   },
   confirmActions: {
@@ -591,18 +664,20 @@ const styles = StyleSheet.create({
   modalTitle: {
     flex: 1,
     fontSize: 16,
-    fontWeight: "700",
+    fontFamily: LORA_BOLD,
     color: GatiMitraMerchant.textPrimary,
   },
   modalTime: {
     marginTop: 6,
     fontSize: 12,
+    fontFamily: LORA,
     color: GatiMitraMerchant.textTertiary,
   },
   modalBody: {
     marginTop: 10,
     fontSize: 14,
     lineHeight: 20,
+    fontFamily: LORA,
     color: GatiMitraMerchant.textSecondary,
   },
   modalActions: {
@@ -621,7 +696,7 @@ const styles = StyleSheet.create({
   },
   modalBtnText: {
     fontSize: 14,
-    fontWeight: "600",
+    fontFamily: LORA_BOLD,
     color: GatiMitraMerchant.textPrimary,
   },
   modalBtnPrimary: {
@@ -633,20 +708,20 @@ const styles = StyleSheet.create({
   },
   empty: {
     alignItems: "center",
-    paddingVertical: 48,
-  },
-  emptyIconWrap: {
-    marginBottom: 16,
+    paddingVertical: 24,
+    paddingHorizontal: 24,
   },
   emptyTitle: {
-    fontSize: 17,
-    fontWeight: "600",
+    marginTop: 18,
+    fontSize: 22,
+    fontFamily: LORA_BOLD,
     color: GatiMitraMerchant.textPrimary,
   },
   emptySub: {
-    fontSize: 14,
+    fontSize: 15,
+    fontFamily: LORA,
     color: GatiMitraMerchant.textSecondary,
-    marginTop: 4,
+    marginTop: 6,
   },
   loadingWrap: {
     alignItems: "center",
@@ -655,6 +730,7 @@ const styles = StyleSheet.create({
   loadingText: {
     marginTop: 12,
     fontSize: 14,
+    fontFamily: LORA,
     color: GatiMitraMerchant.textSecondary,
   },
 });

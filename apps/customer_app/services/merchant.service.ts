@@ -51,6 +51,10 @@ export type MerchantSummary = {
   nextOpenAt?: string | number | null;
   /** Backend live_status: OPEN only when is_active, is_available, is_accepting_orders, operational_status=OPEN. */
   liveStatus?: "OPEN" | "CLOSED";
+  /** Kitchen rush window active — orders may take longer. */
+  rushActive?: boolean;
+  rushEndsAt?: string | null;
+  rushRemainingMinutes?: number | null;
   /**
    * Backend-formatted status label from the shared @gatimitra/store-status engine
    * (e.g. "Closed · opens Thu at 11:00"). Render VERBATIM — never recompute client-side.
@@ -422,6 +426,19 @@ function normalizeMerchantDetail(data: MerchantDetail): MerchantDetail {
       })(),
     nextOpenAt: pickOpenAtValue(data.nextOpenAt, r.nextOpenAt, r.next_open_at),
     nextCloseAt: pickOpenAtValue(data.nextCloseAt, r.nextCloseAt, r.next_close_at),
+    rushActive:
+      data.rushActive === true ||
+      r.rushActive === true ||
+      r.rush_active === true,
+    rushEndsAt: (() => {
+      const raw = data.rushEndsAt ?? r.rushEndsAt ?? r.rush_ends_at;
+      return raw != null && String(raw).trim() ? String(raw) : null;
+    })(),
+    rushRemainingMinutes: (() => {
+      const raw = data.rushRemainingMinutes ?? r.rushRemainingMinutes ?? r.rush_remaining_minutes;
+      const n = raw != null ? Number(raw) : NaN;
+      return Number.isFinite(n) ? n : null;
+    })(),
     menuVersion:
       data.menuVersion != null && Number.isFinite(Number(data.menuVersion))
         ? Number(data.menuVersion)
@@ -442,12 +459,16 @@ export async function checkStoreBookmark(storeId: string): Promise<boolean> {
 
 /** All bookmarked store public ids for the logged-in customer. */
 export async function getStoreBookmarks(): Promise<string[]> {
-  try {
-    const { data } = await api.get<{ storeIds: string[] }>("/v1/bookmarks");
-    return Array.isArray(data?.storeIds) ? data.storeIds : [];
-  } catch {
-    return [];
+  // NOTE: do NOT swallow errors here. A silent `catch { return [] }` made an API
+  // failure indistinguishable from "no bookmarks", so the Collections screen showed
+  // a false empty state and React Query never retried. Let the error propagate.
+  const { data } = await api.get<{ storeIds: string[] }>("/v1/bookmarks");
+  const storeIds = Array.isArray(data?.storeIds) ? data.storeIds : [];
+  if (__DEV__) {
+    // eslint-disable-next-line no-console
+    console.log("[collections] getStoreBookmarks ok", { count: storeIds.length });
   }
+  return storeIds;
 }
 
 /** Toggle store bookmark. Requires auth. */
@@ -469,14 +490,17 @@ export type BookmarkedMenuItem = {
 
 /** All bookmarked menu items for the logged-in customer. */
 export async function getMenuItemBookmarks(storeId?: string): Promise<BookmarkedMenuItem[]> {
-  try {
-    const { data } = await api.get<{ items: BookmarkedMenuItem[] }>("/v1/bookmarks/menu-items", {
-      params: storeId ? { storeId } : undefined,
-    });
-    return Array.isArray(data?.items) ? data.items : [];
-  } catch {
-    return [];
+  // Do NOT swallow errors (see getStoreBookmarks) — a failed request must not read
+  // as "no saved dishes". Let it propagate so React Query surfaces/retries it.
+  const { data } = await api.get<{ items: BookmarkedMenuItem[] }>("/v1/bookmarks/menu-items", {
+    params: storeId ? { storeId } : undefined,
+  });
+  const items = Array.isArray(data?.items) ? data.items : [];
+  if (__DEV__) {
+    // eslint-disable-next-line no-console
+    console.log("[collections] getMenuItemBookmarks ok", { storeId: storeId ?? null, count: items.length });
   }
+  return items;
 }
 
 /** Toggle menu item bookmark. Requires auth. */
@@ -651,23 +675,35 @@ export const merchantService = {
     }
   },
 
-  /** Single source of truth for store OPEN/CLOSED + schedule hints. */
+  /** Single source of truth for store OPEN/CLOSED + schedule hints + rush. */
   async getStoreLiveStatusSnapshot(storeId: string): Promise<{
     liveStatus: "OPEN" | "CLOSED";
     nextOpenAt: string | null;
     nextCloseAt: string | null;
+    rushActive: boolean;
+    rushEndsAt: string | null;
+    rushRemainingMinutes: number | null;
   } | null> {
     try {
       const { data } = await api.get<{
         liveStatus: "OPEN" | "CLOSED";
         nextOpenAt?: string | null;
         nextCloseAt?: string | null;
+        rushActive?: boolean;
+        rushEndsAt?: string | null;
+        rushRemainingMinutes?: number | null;
       }>(`${MERCHANTS_PREFIX}/${storeId}/live-status`);
       if (!data?.liveStatus) return null;
       return {
         liveStatus: data.liveStatus,
         nextOpenAt: data.nextOpenAt ?? null,
         nextCloseAt: data.nextCloseAt ?? null,
+        rushActive: data.rushActive === true,
+        rushEndsAt: data.rushEndsAt ?? null,
+        rushRemainingMinutes:
+          data.rushRemainingMinutes != null && Number.isFinite(Number(data.rushRemainingMinutes))
+            ? Number(data.rushRemainingMinutes)
+            : null,
       };
     } catch {
       return null;

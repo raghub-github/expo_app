@@ -6,6 +6,7 @@ import { PartnerIncomingOrderModal } from "@/components/PartnerIncomingOrderModa
 import { PartnerAcceptanceTimeoutSync } from "@/components/PartnerAcceptanceTimeoutSync";
 import { PartnerShellWarmup } from "@/components/PartnerShellWarmup";
 import { GlobalToaster } from "@/components/GlobalToaster";
+import { PartnerStoreAccessGate } from "@/components/PartnerStoreAccessGate";
 
 /**
  * Global shell for /partners/* — accept-order live modal + floating pending count on every page.
@@ -19,7 +20,7 @@ export default function PartnersLayout({ children }: { children: React.ReactNode
           paddingBottom: "max(5.5rem, calc(env(safe-area-inset-bottom, 0px) + 5.5rem))",
         }}
       >
-        {children}
+        <PartnerStoreAccessGate>{children}</PartnerStoreAccessGate>
       </div>
       <GlobalToaster />
       <PartnerShellWarmup />
@@ -31,4 +32,3 @@ export default function PartnersLayout({ children }: { children: React.ReactNode
     </>
   );
 }
-

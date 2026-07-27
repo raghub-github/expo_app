@@ -24,6 +24,10 @@ import { eq } from "drizzle-orm";
 import { auth } from "../../plugins/auth.js";
 import { persistRiderDeviceSession } from "../../lib/rider-app-session.js";
 import { resolveRiderLoginGeoForSession, type RiderLoginGeo } from "../../lib/login-geo.js";
+import {
+  phonesMatch,
+  verifySupabaseAccessToken,
+} from "./verify-supabase-access-token.js";
 
 const RiderLoginGeoSchema = z
   .object({
@@ -1219,16 +1223,23 @@ export async function authRoutes(app: FastifyInstance) {
         loginGeo?: RiderLoginGeo;
       };
 
-      const { getSupabase } = await import("../../lib/supabase.js");
-      const supabase = getSupabase();
-      const { data: userData, error: userError } = await supabase.auth.getUser(accessToken);
-      if (userError || !userData?.user) {
+      const verified = await verifySupabaseAccessToken(accessToken);
+      if (!verified.ok) {
+        if (verified.kind === "unreachable") {
+          return reply.code(503).send({
+            error: "supabase_unreachable",
+            message: verified.message,
+          });
+        }
+        req.log?.warn?.(
+          { errMsg: verified.message },
+          "exchange-rider: supabase token rejected"
+        );
         return reply.code(401).send({ error: "Invalid or expired Supabase token" });
       }
 
-      const sbPhone = userData.user.phone ?? "";
-      const normalizePhone = (p: string) => p.replace(/[\s+\-]/g, "");
-      if (normalizePhone(sbPhone) !== normalizePhone(phoneE164)) {
+      const sbPhone = verified.user.phone ?? "";
+      if (!phonesMatch(sbPhone, phoneE164)) {
         return reply.code(400).send({ error: "Phone mismatch between Supabase user and request" });
       }
 
@@ -1490,6 +1501,7 @@ export async function authRoutes(app: FastifyInstance) {
           200: SessionSchema,
           400: z.object({ error: z.string() }),
           401: z.object({ error: z.string() }),
+          503: z.object({ error: z.string() }),
         },
       },
     },
@@ -1500,17 +1512,22 @@ export async function authRoutes(app: FastifyInstance) {
         deviceId: string;
       };
 
-      // Validate the Supabase token using the service role client
-      const { getSupabase } = await import("../../lib/supabase.js");
-      const supabase = getSupabase();
-      const { data: userData, error: userError } = await supabase.auth.getUser(accessToken);
-      if (userError || !userData?.user) {
+      // Validate Supabase Auth JWT locally (fallback to getUser if needed).
+      // Avoids false "invalid token" when Auth API connect-times-out.
+      const verified = await verifySupabaseAccessToken(accessToken);
+      if (!verified.ok) {
+        if (verified.kind === "unreachable") {
+          return reply.code(503).send({ error: verified.message });
+        }
+        req.log?.warn?.(
+          { errMsg: verified.message },
+          "exchange-customer: supabase token rejected"
+        );
         return reply.code(401).send({ error: "Invalid or expired Supabase token" });
       }
 
-      const sbPhone = userData.user.phone ?? "";
-      const normalizePhone = (p: string) => p.replace(/[\s+\-]/g, "");
-      if (normalizePhone(sbPhone) !== normalizePhone(phoneE164)) {
+      const sbPhone = verified.user.phone ?? "";
+      if (!phonesMatch(sbPhone, phoneE164)) {
         return reply.code(400).send({ error: "Phone mismatch between Supabase user and request" });
       }
 
@@ -1630,12 +1647,21 @@ export async function authRoutes(app: FastifyInstance) {
         deviceId: string;
       };
 
-      // Validate the Supabase token using the service role client
-      const { getSupabase } = await import("../../lib/supabase.js");
-      const supabase = getSupabase();
-      const { data: userData, error: userError } = await supabase.auth.getUser(accessToken);
-      if (userError || !userData?.user) {
-        return reply.code(401).send({ error: "invalid_supabase_token", message: "Invalid or expired Supabase token" });
+      // Validate Supabase Auth JWT locally (fallback to getUser if needed).
+      const verified = await verifySupabaseAccessToken(accessToken);
+      if (!verified.ok) {
+        if (verified.kind === "unreachable") {
+          return reply
+            .code(503)
+            .send({ error: "supabase_unreachable", message: verified.message });
+        }
+        req.log?.warn?.(
+          { errMsg: verified.message },
+          "exchange-merchant: supabase token rejected"
+        );
+        return reply
+          .code(401)
+          .send({ error: "invalid_supabase_token", message: "Invalid or expired Supabase token" });
       }
 
       const db = getDb();
@@ -1654,9 +1680,8 @@ export async function authRoutes(app: FastifyInstance) {
 
         let parentRows: any[];
         if (phoneE164 && phoneE164.length >= 10) {
-          const sbPhone = userData.user.phone ?? "";
-          const normalizePhone = (p: string) => p.replace(/[\s+\-]/g, "");
-          if (normalizePhone(sbPhone) !== normalizePhone(phoneE164)) {
+          const sbPhone = verified.user.phone ?? "";
+          if (!phonesMatch(sbPhone, phoneE164)) {
             return reply.code(400).send({ error: "phone_mismatch", message: "Phone mismatch between Supabase user and request" });
           }
           const normalizedPhone = phoneE164.replace(/\D/g, "");
@@ -1669,7 +1694,7 @@ export async function authRoutes(app: FastifyInstance) {
             LIMIT 1
           `;
         } else {
-          const email = (userData.user.email ?? "").trim().toLowerCase();
+          const email = (verified.user.email ?? "").trim().toLowerCase();
           if (!email) {
             return reply.code(400).send({ error: "no_email", message: "Google sign-in did not return an email. Use Phone Login or try another account." });
           }
@@ -1808,13 +1833,13 @@ export async function authRoutes(app: FastifyInstance) {
           registered_phone: parentRow.registered_phone,
         };
 
-        req.log?.info?.({ parentMerchantId, phoneE164, email: userData.user.email }, "Merchant partner signed in via Supabase exchange");
+        req.log?.info?.({ parentMerchantId, phoneE164, email: verified.user.email }, "Merchant partner signed in via Supabase exchange");
         return reply.send({
           accessToken: jwtToken,
           expiresAt,
           role: "merchant",
           userId: parentMerchantId,
-          supabaseUserId: userData.user.id,
+          supabaseUserId: verified.user.id,
           partner: { parent, childStores },
         });
       } catch (err: any) {
@@ -2047,6 +2072,7 @@ export async function authRoutes(app: FastifyInstance) {
                 .enum(["not_started", "in_progress", "pending_approval", "approved", "rejected"])
                 .optional(),
               approvalStatus: z.string().optional(),
+              paymentCompleted: z.boolean().optional(),
             }),
           },
         },
@@ -2077,11 +2103,206 @@ export async function authRoutes(app: FastifyInstance) {
           userId,
           onboardingStatus: resolved.onboardingStatus,
           approvalStatus: resolved.approvalStatus,
+          paymentCompleted: resolved.paymentCompleted,
         };
       },
     );
-
   });
+
+  /**
+   * Merchant app → partnersite SSO handoff.
+   * Requires an active merchant JWT. Returns a short-lived token the app opens at
+   * `{partnerSite}/auth/app-handoff?t=...` so register-store does not ask for login again.
+   */
+  app.post(
+    "/merchant/partner-handoff",
+    {
+      schema: {
+        body: z.object({
+          redirectPath: z
+            .string()
+            .min(1)
+            .max(500)
+            .refine((p) => p.startsWith("/auth/") || p.startsWith("/partners/"), {
+              message: "redirectPath must be an auth or partners path",
+            }),
+          // App may send stale/non-UUID values from older sessions — coerce to omitted.
+          supabaseUserId: z.preprocess((v) => {
+            if (v == null || v === "") return undefined;
+            if (typeof v !== "string") return undefined;
+            const s = v.trim();
+            return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+              s
+            )
+              ? s
+              : undefined;
+          }, z.string().uuid().optional()),
+        }),
+        response: {
+          200: z.object({
+            handoffToken: z.string(),
+            accessToken: z.string(),
+            refreshToken: z.string(),
+            redirectPath: z.string(),
+            expiresInSec: z.number(),
+          }),
+          400: z.object({ error: z.string(), message: z.string().optional() }),
+          401: z.object({ error: z.string(), message: z.string().optional() }),
+          404: z.object({ error: z.string(), message: z.string().optional() }),
+          503: z.object({ error: z.string(), message: z.string().optional() }),
+        },
+      },
+    },
+    async (req, reply) => {
+      const header = req.headers.authorization;
+      const m = header ? /^Bearer\s+(.+)$/.exec(header) : null;
+      const token = m?.[1]?.trim();
+      if (!token) {
+        return reply.code(401).send({ error: "missing_authorization" });
+      }
+
+      let claims: Awaited<ReturnType<typeof verifyMerchantJwtForRefresh>>;
+      try {
+        claims = await verifyMerchantJwtForRefresh(token);
+      } catch {
+        return reply.code(401).send({ error: "invalid_token", message: "Please log in again." });
+      }
+
+      const sql = getSql();
+      const sessions = await sql`
+        SELECT id
+        FROM user_device_sessions
+        WHERE user_id = ${claims.sub}
+          AND device_id = ${claims.deviceId}
+          AND is_active = TRUE
+        LIMIT 1
+      `;
+      if (!sessions[0]) {
+        return reply.code(401).send({
+          error: "session_revoked",
+          message: "Please log in again.",
+        });
+      }
+
+      const { redirectPath, supabaseUserId } = req.body as {
+        redirectPath: string;
+        supabaseUserId?: string | null;
+      };
+
+      const parentRows = await sql`
+        SELECT id, parent_merchant_id, owner_email, registered_phone, supabase_user_id
+        FROM merchant_parents
+        WHERE parent_merchant_id = ${claims.sub}
+        LIMIT 1
+      `;
+      const parentRow = parentRows[0] as
+        | {
+            id: number;
+            parent_merchant_id: string;
+            owner_email: string | null;
+            registered_phone: string | null;
+            supabase_user_id: string | null;
+          }
+        | undefined;
+      if (!parentRow) {
+        return reply.code(404).send({
+          error: "partner_not_found",
+          message: "No partner account found for this login.",
+        });
+      }
+
+      try {
+        const {
+          mintPartnerSiteSessionTokens,
+          signPartnerHandoffToken,
+        } = await import("./partner-site-handoff.js");
+        const minted = await mintPartnerSiteSessionTokens({
+          parent: {
+            id: Number(parentRow.id),
+            parent_merchant_id: String(parentRow.parent_merchant_id),
+            owner_email: parentRow.owner_email,
+            registered_phone: parentRow.registered_phone,
+            supabase_user_id: parentRow.supabase_user_id
+              ? String(parentRow.supabase_user_id)
+              : null,
+          },
+          preferredSupabaseUserId: supabaseUserId ?? null,
+        });
+        const handoffToken = await signPartnerHandoffToken({
+          accessToken: minted.accessToken,
+          refreshToken: minted.refreshToken,
+          next: redirectPath,
+          parentMerchantId: String(parentRow.parent_merchant_id),
+        });
+        return reply.send({
+          handoffToken,
+          accessToken: minted.accessToken,
+          refreshToken: minted.refreshToken,
+          redirectPath,
+          expiresInSec: 120,
+        });
+      } catch (err: any) {
+        const statusRaw = Number(err?.statusCode) || 503;
+        const status = ([400, 401, 404, 503] as const).includes(statusRaw as 400 | 401 | 404 | 503)
+          ? (statusRaw as 400 | 401 | 404 | 503)
+          : 503;
+        const code = typeof err?.code === "string" ? err.code : "handoff_failed";
+        req.log?.error?.({ err }, "Merchant partner-handoff failed");
+        return reply.code(status).send({
+          error: code,
+          message: err?.message || "Could not open partner portal. Please try again.",
+        });
+      }
+    },
+  );
+
+  /**
+   * Partnersite redeems a one-time handoff JWT issued by /merchant/partner-handoff.
+   * Auth: X-Internal-Secret == BACKEND_SCHEDULE_TICK_SECRET
+   */
+  app.post(
+    "/internal/merchant/partner-handoff/redeem",
+    {
+      schema: {
+        body: z.object({
+          handoffToken: z.string().min(20),
+        }),
+        response: {
+          200: z.object({
+            access_token: z.string(),
+            refresh_token: z.string(),
+            next: z.string(),
+            parent_merchant_id: z.string(),
+          }),
+          400: z.object({ error: z.string(), message: z.string().optional() }),
+          401: z.object({ error: z.string(), message: z.string().optional() }),
+        },
+      },
+    },
+    async (req, reply) => {
+      const secret = env.BACKEND_SCHEDULE_TICK_SECRET;
+      const provided = String(req.headers["x-internal-secret"] ?? "").trim();
+      if (!secret || !provided || provided !== secret) {
+        return reply.code(401).send({ error: "unauthorized" });
+      }
+      const { handoffToken } = req.body as { handoffToken: string };
+      try {
+        const { redeemPartnerHandoffToken } = await import("./partner-site-handoff.js");
+        const claims = await redeemPartnerHandoffToken(handoffToken);
+        return reply.send({
+          access_token: claims.at,
+          refresh_token: claims.rt,
+          next: claims.next,
+          parent_merchant_id: claims.pid,
+        });
+      } catch (err: any) {
+        return reply.code(400).send({
+          error: typeof err?.message === "string" ? err.message : "invalid_handoff_token",
+          message: "Handoff link expired or already used. Please try again from the app.",
+        });
+      }
+    },
+  );
 }
 
 

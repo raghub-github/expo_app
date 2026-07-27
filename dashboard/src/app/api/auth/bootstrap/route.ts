@@ -12,7 +12,7 @@ import {
 } from "@/lib/permissions/engine";
 import { resolveSystemUserForSupabaseAuth } from "@/lib/auth/user-mapping";
 import { toPermissionKeys } from "@/lib/permissions/constants";
-import { isInvalidRefreshToken, isNetworkOrTransientError } from "@/lib/auth/session-errors";
+import { isInvalidRefreshToken, isNetworkOrTransientError, isTimeoutOrAbortError, isRefreshTokenAlreadyUsed, signOutIfSessionDead } from "@/lib/auth/session-errors";
 import { getRedisClient } from "@/lib/redis";
 import { getDb } from "@/lib/db/client";
 import { dashboardAccessPoints } from "@/lib/db/schema";
@@ -84,12 +84,20 @@ export async function GET(request: NextRequest) {
     let userError: unknown = null;
 
     for (let attempt = 1; attempt <= maxGetUserAttempts; attempt++) {
-      const result = await supabase.auth.getUser();
-      user = result.data?.user ? { ...result.data.user, id: result.data.user.id, email: result.data.user.email } : null;
-      userError = result.error ?? null;
+      try {
+        const result = await supabase.auth.getUser();
+        user = result.data?.user
+          ? { ...result.data.user, id: result.data.user.id, email: result.data.user.email }
+          : null;
+        userError = result.error ?? null;
+      } catch (err) {
+        user = null;
+        userError = err;
+      }
 
       if (!userError && user) break;
       if (userError && isInvalidRefreshToken(userError)) break;
+      if (userError && isTimeoutOrAbortError(userError)) break;
       if (userError && isNetworkOrTransientError(userError) && attempt < maxGetUserAttempts) {
         await new Promise((r) => setTimeout(r, retryDelaysMs[attempt - 1] ?? 1000));
         continue;
@@ -99,7 +107,13 @@ export async function GET(request: NextRequest) {
 
     if (userError || !user) {
       if (userError && isInvalidRefreshToken(userError)) {
-        await supabase.auth.signOut();
+        await signOutIfSessionDead(supabase, userError);
+        if (isRefreshTokenAlreadyUsed(userError)) {
+          return NextResponse.json(
+            { success: false, error: "Service temporarily unavailable", code: "SERVICE_UNAVAILABLE" },
+            { status: 503 }
+          );
+        }
         return NextResponse.json(
           { success: false, error: "Session invalid", code: "SESSION_INVALID" },
           { status: 401 }
@@ -252,9 +266,15 @@ export async function GET(request: NextRequest) {
     if (isInvalidRefreshToken(error)) {
       try {
         const supabase = await createServerSupabaseClient();
-        await supabase.auth.signOut();
+        await signOutIfSessionDead(supabase, error);
       } catch {
         // ignore
+      }
+      if (isRefreshTokenAlreadyUsed(error)) {
+        return NextResponse.json(
+          { success: false, error: "Service temporarily unavailable", code: "SERVICE_UNAVAILABLE" },
+          { status: 503 }
+        );
       }
       return NextResponse.json(
         { success: false, error: "Session invalid", code: "SESSION_INVALID" },

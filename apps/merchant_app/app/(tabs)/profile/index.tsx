@@ -7,7 +7,6 @@
 import { useState, useEffect, useCallback } from "react";
 import {
   View,
-  Text,
   ScrollView,
   StyleSheet,
   Pressable,
@@ -15,7 +14,10 @@ import {
   RefreshControl,
   Platform,
   Linking,
+  Alert,
+  ActivityIndicator,
 } from "react-native";
+import { AppText as Text } from "@/components/AppText";
 import { LogoutConfirmModal } from "@/components/LogoutConfirmModal";
 import { useRouter, useFocusEffect } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
@@ -33,6 +35,8 @@ import { useProfileNav } from "@/context/ProfileNavContext";
 import { getRushStatus } from "@/services/rushApi";
 import { prefetchOperatingHours, prefetchOutlet } from "@/services/outletApi";
 import { getPartnerLegalUrls } from "@/lib/partnerLegalUrls";
+import { openPartnerRegisterStoreHandoff } from "@/lib/partnerRegisterStoreHandoff";
+import { isMerchantAuthError } from "@/services/auth.service";
 
 const CONTENT_TOP = 12;
 const TILE_GAP = 12;
@@ -109,7 +113,7 @@ export default function ProfileScreen() {
   const { width } = useWindowDimensions();
   const scrollBottomPadding = TAB_BAR_SCROLL_CONTENT_PADDING;
   const { selectedStore } = useSelectedStore();
-  const { signOut, token } = useAuth();
+  const { signOut, token, partner, isAuthenticated, supabaseUserId } = useAuth();
   const { lastProfileSlug, setLastProfileSlug } = useProfileNav();
 
   const isTablet = width >= TABLET_WIDTH;
@@ -125,7 +129,9 @@ export default function ProfileScreen() {
   const [rushBadge, setRushBadge] = useState<"OFF" | "ON">("OFF");
   const [refreshing, setRefreshing] = useState(false);
   const [logoutModalVisible, setLogoutModalVisible] = useState(false);
+  const [addingChild, setAddingChild] = useState(false);
   const legalUrls = getPartnerLegalUrls();
+  const showAddAnotherChild = (partner?.childStores?.length ?? 0) === 1;
 
   // Do not prefetch nested profile routes here: router.prefetch() can dispatch PRELOAD
   // actions that are not always handled by the profile stack navigator.
@@ -171,6 +177,37 @@ export default function ProfileScreen() {
   const navigate = (slug: string) => () => router.push(`/(tabs)/profile/${slug}` as any);
 
   const isActive = (slug: string): boolean => lastProfileSlug === slug;
+
+  const handleAddAnotherChild = async () => {
+    if (!isAuthenticated || !token || !partner?.parent?.id) {
+      Alert.alert("Login required", "Please log in to add another store.");
+      return;
+    }
+    if (addingChild) return;
+    setAddingChild(true);
+    try {
+      await openPartnerRegisterStoreHandoff({
+        accessToken: token,
+        parentId: partner.parent.id,
+        supabaseUserId,
+      });
+    } catch (e) {
+      const message = isMerchantAuthError(e)
+        ? e.message
+        : e instanceof Error
+          ? e.message
+          : "Could not open partner portal.";
+      if (isMerchantAuthError(e) && (e.code === "session_revoked" || e.code === "invalid_token")) {
+        Alert.alert("Login required", message, [
+          { text: "OK", onPress: () => router.replace("/(auth)/welcome") },
+        ]);
+      } else {
+        Alert.alert("Could not open", message);
+      }
+    } finally {
+      setAddingChild(false);
+    }
+  };
 
   const storeName = selectedStore?.store_name ?? "Select a store from Partner Home";
   const storeSubtitle = selectedStore?.full_address
@@ -369,6 +406,30 @@ export default function ProfileScreen() {
         </View>
       </View>
 
+      {showAddAnotherChild ? (
+        <Pressable
+          onPress={handleAddAnotherChild}
+          disabled={addingChild}
+          style={({ pressed }) => [
+            styles.addChildBtn,
+            pressed && styles.pressed,
+            addingChild && styles.addChildBtnDisabled,
+            GatiMitraMerchant.cursorPointer,
+          ]}
+          accessibilityRole="button"
+          accessibilityLabel="Add Another child"
+        >
+          {addingChild ? (
+            <ActivityIndicator size="small" color={GatiMitraMerchant.primary} />
+          ) : (
+            <Ionicons name="add-circle-outline" size={22} color={GatiMitraMerchant.primary} />
+          )}
+          <Text style={styles.addChildBtnText}>
+            {addingChild ? "Opening…" : "Add Another child"}
+          </Text>
+        </Pressable>
+      ) : null}
+
       <Pressable
         onPress={() => setLogoutModalVisible(true)}
         style={({ pressed }) => [styles.logoutBtn, pressed && styles.pressed, GatiMitraMerchant.cursorPointer]}
@@ -482,7 +543,7 @@ const styles = StyleSheet.create({
   },
   tileLabel: {
     fontSize: 11,
-    fontWeight: "500",
+    fontWeight: "700",
     textAlign: "center",
     color: GatiMitraMerchant.textPrimary,
     lineHeight: 14,
@@ -491,7 +552,7 @@ const styles = StyleSheet.create({
   },
   tileLabelActive: {
     color: GatiMitraMerchant.primary,
-    fontWeight: "600",
+    fontWeight: "700",
   },
   tileBadge: {
     position: "absolute",
@@ -565,6 +626,28 @@ const styles = StyleSheet.create({
   menuRowLast: { borderBottomWidth: 0 },
   menuRowPressed: { backgroundColor: GatiMitraMerchant.surfaceSubtle },
   menuLabel: { flex: 1, fontSize: 14, fontWeight: "500", color: GatiMitraMerchant.textPrimary },
+
+  addChildBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    marginTop: 4,
+    marginBottom: 4,
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+    borderRadius: CARD_RADIUS,
+    backgroundColor: GatiMitraMerchant.cardBg,
+    borderWidth: 1,
+    borderColor: GatiMitraMerchant.primary,
+    ...GatiMitraMerchant.shadowSm,
+  },
+  addChildBtnDisabled: { opacity: 0.7 },
+  addChildBtnText: {
+    fontSize: 15,
+    fontWeight: "700",
+    color: GatiMitraMerchant.primary,
+  },
 
   logoutBtn: {
     flexDirection: "row",

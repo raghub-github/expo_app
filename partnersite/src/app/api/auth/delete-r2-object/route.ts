@@ -39,15 +39,37 @@ export async function POST(req: NextRequest) {
     }
 
     const normalized = normalizeR2ObjectKey(key);
-    const allowedPrefix = `${getParentRoot(validation.merchantParentId)}/`;
-    if (!normalized.startsWith(allowedPrefix)) {
+    const parentRoot = getParentRoot(validation.merchantParentId);
+    // Accept both `docs/merchants/{id}/...` and legacy `merchants/{id}/...` (proxy historically stripped docs/).
+    const allowedPrefixes = [
+      `${parentRoot}/`,
+      parentRoot.startsWith("docs/")
+        ? `${parentRoot.replace(/^docs\//, "")}/`
+        : `docs/${parentRoot}/`,
+    ].filter((p, i, arr) => p && arr.indexOf(p) === i);
+
+    if (!allowedPrefixes.some((prefix) => normalized.startsWith(prefix))) {
       return NextResponse.json(
         { error: "You can only delete files under your merchant storage folder" },
         { status: 403 }
       );
     }
 
-    await deleteFromR2(normalized);
+    // Prefer the key shape that matches how objects were uploaded (docs/ prefix when present on disk).
+    const deleteKey = normalized.startsWith("docs/")
+      ? normalized
+      : normalized.startsWith("merchants/")
+        ? `docs/${normalized}`
+        : normalized;
+    try {
+      await deleteFromR2(deleteKey);
+    } catch (primaryErr) {
+      if (deleteKey !== normalized) {
+        await deleteFromR2(normalized);
+      } else {
+        throw primaryErr;
+      }
+    }
     return NextResponse.json({ success: true });
   } catch (err) {
     console.warn("[delete-r2-object]", err);

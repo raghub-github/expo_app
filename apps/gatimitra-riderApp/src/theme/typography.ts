@@ -1,26 +1,16 @@
 /**
- * Typography system for GatiMitra Rider App
+ * Typography system for GatiMitra Rider App — Lora (copy) + Poppins (numbers).
  */
 
-import { Platform } from "react-native";
+import { RiderFonts } from "./fonts";
 
 export const typography = {
   fontFamily: {
-    regular: Platform.select({
-      ios: "System",
-      android: "Roboto",
-      default: "System",
-    }),
-    medium: Platform.select({
-      ios: "System",
-      android: "Roboto-Medium",
-      default: "System",
-    }),
-    bold: Platform.select({
-      ios: "System",
-      android: "Roboto-Bold",
-      default: "System",
-    }),
+    regular: RiderFonts.loraRegular,
+    medium: RiderFonts.loraRegular,
+    bold: RiderFonts.loraBold,
+    numeric: RiderFonts.poppinsSemiBold,
+    numericBold: RiderFonts.poppinsBold,
   },
   fontSize: {
     xs: 12,
@@ -45,6 +35,3 @@ export const typography = {
     bold: "700" as const,
   },
 } as const;
-
-
-

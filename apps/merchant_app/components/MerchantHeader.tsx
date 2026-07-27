@@ -5,7 +5,8 @@
  */
 
 import { useEffect, useState, useMemo } from "react";
-import { View, Image, Pressable, Text, StyleSheet, Platform, LayoutAnimation, Modal, ScrollView, Share, Alert, TextInput } from "react-native";
+import { View, Image, Pressable, StyleSheet, Platform, LayoutAnimation, Modal, ScrollView, Share, Alert, TextInput } from "react-native";
+import { AppText as Text } from "@/components/AppText";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useSegments, usePathname, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
@@ -287,9 +288,15 @@ function MainHeader({
         </View>
         <View style={styles.rightSection}>
           {isOnline && (
-            <View style={styles.radarWrap}>
+            <Pressable
+              onPress={() => router.push("/restaurant-status" as never)}
+              style={({ pressed }) => [styles.radarWrap, pressed && styles.pressed]}
+              hitSlop={8}
+              accessibilityRole="button"
+              accessibilityLabel="Open store status"
+            >
               <RadarLiveIndicator />
-            </View>
+            </Pressable>
           )}
           {isProfileSection && !profileSubPageTitle ? (
             <Pressable
@@ -422,6 +429,8 @@ function normalizeIso(v: string | null | undefined): string | null {
 
 function StoreStatusCard({
   onToggleRequest,
+  onPressCard,
+  onPressTodayHours,
   offlineSubtitle,
   autoReopenLabel,
   scheduleLabel,
@@ -436,6 +445,9 @@ function StoreStatusCard({
   activeRushLine,
 }: {
   onToggleRequest: () => void;
+  onPressCard?: () => void;
+  /** Opens operating hours for the active store (does not open store-status list). */
+  onPressTodayHours?: () => void;
   offlineSubtitle?: string;
   autoReopenLabel?: string | null;
   scheduleLabel?: string | null;
@@ -485,7 +497,17 @@ function StoreStatusCard({
   }, [reopenAtIso]);
 
   return (
-    <View style={[styles.statusCard, isOnline ? styles.statusCardOnline : styles.statusCardOffline]}>
+    <Pressable
+      onPress={onPressCard}
+      disabled={!onPressCard}
+      style={({ pressed }) => [
+        styles.statusCard,
+        isOnline ? styles.statusCardOnline : styles.statusCardOffline,
+        onPressCard && pressed ? styles.statusCardPressed : null,
+      ]}
+      accessibilityRole={onPressCard ? "button" : undefined}
+      accessibilityLabel="Open store status"
+    >
       {scheduledTimeOffLines && scheduledTimeOffLines.length > 0 ? (
         <View style={styles.scheduleOffBanner}>
           <Text style={styles.scheduleOffBannerTitle}>Scheduled time-off</Text>
@@ -549,12 +571,32 @@ function StoreStatusCard({
             </Text>
           )}
           {todayHoursLabel && (
-            <Text style={styles.statusCardMeta} numberOfLines={1}>
-              {todayHoursLabel}
-            </Text>
+            <Pressable
+              onPress={(e) => {
+                e.stopPropagation?.();
+                onPressTodayHours?.();
+              }}
+              disabled={!onPressTodayHours}
+              hitSlop={6}
+              accessibilityRole={onPressTodayHours ? "button" : undefined}
+              accessibilityLabel="Open operating hours"
+            >
+              <Text
+                style={[
+                  styles.statusCardMeta,
+                  onPressTodayHours ? styles.statusCardHoursLink : null,
+                ]}
+                numberOfLines={1}
+              >
+                {todayHoursLabel}
+              </Text>
+            </Pressable>
           )}
         </View>
-        <View style={styles.statusCardRight}>
+        <View
+          style={styles.statusCardRight}
+          onStartShouldSetResponder={() => true}
+        >
           {!isOnline && (
             <Text style={styles.statusCardCountdownAboveToggle} numberOfLines={1}>
               {countdownPrefix}{" "}
@@ -566,7 +608,7 @@ function StoreStatusCard({
           <OnlineOfflineToggle isOnline={isOnline} onToggle={onToggleRequest} />
         </View>
       </View>
-    </View>
+    </Pressable>
   );
 }
 
@@ -1070,6 +1112,11 @@ export function MerchantCustomHeader() {
         {isHomeScreen && (
           <StoreStatusCard
             onToggleRequest={showStoreStatusWarning}
+            onPressCard={() => router.push("/restaurant-status" as never)}
+            onPressTodayHours={() => {
+              if (!selectedStore) return;
+              router.push("/(tabs)/profile/hours" as never);
+            }}
             offlineSubtitle={!isOnline ? closedReasonLine : undefined}
             autoReopenLabel={autoReopenLabel}
             scheduleLabel={scheduleLabel}
@@ -1877,6 +1924,9 @@ const styles = StyleSheet.create({
     borderLeftWidth: 4,
     borderLeftColor: GatiMitraMerchant.storeOffline,
   },
+  statusCardPressed: {
+    opacity: 0.94,
+  },
   scheduleOffBanner: {
     marginBottom: 10,
     padding: 10,
@@ -1978,6 +2028,10 @@ const styles = StyleSheet.create({
     fontSize: 11,
     color: GatiMitraMerchant.textTertiary,
     marginTop: 2,
+  },
+  statusCardHoursLink: {
+    color: "#2563EB",
+    fontWeight: "600",
   },
   statusCardCountdown: {
     fontSize: 12,

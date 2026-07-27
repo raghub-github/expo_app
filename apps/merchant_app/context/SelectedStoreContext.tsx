@@ -11,14 +11,17 @@ import type { ChildStore, PartnerData } from "@/context/AuthContext";
 import { useAuth } from "@/context/AuthContext";
 import {
   clearLastSelectedStore,
+  clearManagedStores,
   readLastSelectedStore,
+  readManagedStores,
   writeLastSelectedStore,
+  writeManagedStores,
 } from "@/lib/selectedStoreStorage";
 
 type SelectedStoreContextValue = {
   selectedStore: ChildStore | null;
   setSelectedStore: (store: ChildStore | null) => void;
-  /** Stores included in "manage orders from" (multi-select). */
+  /** Stores included in "manage orders from" (multi-select). Orders from all of these land on one board. */
   managedStores: ChildStore[];
   setManagedStores: (stores: ChildStore[]) => void;
   /** False until we've tried restoring the last store from SecureStore. */
@@ -34,12 +37,32 @@ function isApprovedStore(store: ChildStore): boolean {
 function findStoreInPartner(
   partner: PartnerData | null,
   storeDbId: number,
-  storePublicId: string,
+  storePublicId?: string,
 ): ChildStore | null {
   if (!partner) return null;
   const byId = partner.childStores.find((s) => s.id === storeDbId);
   if (byId) return byId;
-  return partner.childStores.find((s) => s.store_id === storePublicId) ?? null;
+  if (storePublicId) {
+    return partner.childStores.find((s) => s.store_id === storePublicId) ?? null;
+  }
+  return null;
+}
+
+function persistSelection(
+  partner: PartnerData,
+  primary: ChildStore,
+  managed: ChildStore[],
+) {
+  void writeLastSelectedStore({
+    parentId: partner.parent.id,
+    storeDbId: primary.id,
+    storePublicId: primary.store_id,
+  });
+  void writeManagedStores({
+    parentId: partner.parent.id,
+    primaryStoreDbId: primary.id,
+    storeDbIds: managed.map((s) => s.id),
+  });
 }
 
 export function SelectedStoreProvider({ children }: { children: ReactNode }) {
@@ -56,17 +79,40 @@ export function SelectedStoreProvider({ children }: { children: ReactNode }) {
       try {
         if (!partner) {
           setSelectedStoreState(null);
+          setManagedStoresState([]);
           return;
         }
 
-        const persisted = await readLastSelectedStore();
+        const [persistedPrimary, persistedManaged] = await Promise.all([
+          readLastSelectedStore(),
+          readManagedStores(),
+        ]);
         if (cancelled) return;
 
-        if (persisted && persisted.parentId === partner.parent.id) {
+        if (persistedManaged && persistedManaged.parentId === partner.parent.id) {
+          const managed = persistedManaged.storeDbIds
+            .map((id) => findStoreInPartner(partner, id))
+            .filter((s): s is ChildStore => s != null && isApprovedStore(s));
+          if (managed.length > 0) {
+            const primary =
+              findStoreInPartner(partner, persistedManaged.primaryStoreDbId) ??
+              managed[0]!;
+            const primaryApproved = isApprovedStore(primary) ? primary : managed[0]!;
+            setSelectedStoreState(primaryApproved);
+            setManagedStoresState(
+              managed.some((s) => s.id === primaryApproved.id)
+                ? managed
+                : [primaryApproved, ...managed]
+            );
+            return;
+          }
+        }
+
+        if (persistedPrimary && persistedPrimary.parentId === partner.parent.id) {
           const match = findStoreInPartner(
             partner,
-            persisted.storeDbId,
-            persisted.storePublicId,
+            persistedPrimary.storeDbId,
+            persistedPrimary.storePublicId,
           );
           if (match && isApprovedStore(match)) {
             setSelectedStoreState(match);
@@ -100,13 +146,10 @@ export function SelectedStoreProvider({ children }: { children: ReactNode }) {
         setManagedStoresState([]);
       }
       if (store && partner) {
-        void writeLastSelectedStore({
-          parentId: partner.parent.id,
-          storeDbId: store.id,
-          storePublicId: store.store_id,
-        });
+        persistSelection(partner, store, [store]);
       } else {
         void clearLastSelectedStore();
+        void clearManagedStores();
       }
     },
     [partner],
@@ -115,18 +158,21 @@ export function SelectedStoreProvider({ children }: { children: ReactNode }) {
   const setManagedStores = useCallback(
     (stores: ChildStore[]) => {
       const approved = stores.filter(isApprovedStore);
-      setManagedStoresState(approved);
-      if (approved.length === 1) {
-        const only = approved[0];
-        setSelectedStoreState(only);
-        if (partner) {
-          void writeLastSelectedStore({
-            parentId: partner.parent.id,
-            storeDbId: only.id,
-            storePublicId: only.store_id,
-          });
-        }
+      if (approved.length === 0) {
+        setManagedStoresState([]);
+        setSelectedStoreState(null);
+        void clearLastSelectedStore();
+        void clearManagedStores();
+        return;
       }
+
+      setManagedStoresState(approved);
+      setSelectedStoreState((prev) => {
+        const keep =
+          prev && approved.some((s) => s.id === prev.id) ? prev : approved[0]!;
+        if (partner) persistSelection(partner, keep, approved);
+        return keep;
+      });
     },
     [partner],
   );

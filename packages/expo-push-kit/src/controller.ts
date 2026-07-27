@@ -175,11 +175,17 @@ export function createPushPermissionController(
       }
 
       if (isExpoGoRuntime()) {
+        // Expo Go cannot register remote FCM/Expo push tokens — soft-skip, never error.
+        if (__DEV__) {
+          console.info(
+            "[push] Expo Go detected — skipping remote FCM/Expo token registration",
+          );
+        }
         emit({
           expoGoUnsupported: true,
-          syncStatus: "error",
-          error: "expo_go_unsupported",
-          lastBackendSyncOk: false,
+          syncStatus: "idle",
+          error: null,
+          lastBackendSyncOk: true,
         });
         return snapshot;
       }

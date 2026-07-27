@@ -28,6 +28,7 @@ export function HeaderActionIconGroup({
         style={({ pressed }) => [styles.iconTap, pressed && styles.iconTapPressed]}
         accessibilityLabel={t("topbar.selectLanguage", "Select language")}
         accessibilityRole="button"
+        hitSlop={6}
       >
         <HeaderLanguageIcon size={ACTION_ICON_SIZE} color={colors.gray[800]} />
       </Pressable>
@@ -37,6 +38,7 @@ export function HeaderActionIconGroup({
         style={({ pressed }) => [styles.iconTap, pressed && styles.iconTapPressed]}
         accessibilityLabel={t("topbar.notifications", "Notifications")}
         accessibilityRole="button"
+        hitSlop={6}
       >
         <HeaderNotificationIcon
           size={ACTION_ICON_SIZE}
@@ -60,12 +62,13 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: 14,
     height: GROUP_HEIGHT,
+    minWidth: 84,
     borderRadius: 8,
     borderWidth: 1,
     borderColor: BORDER,
     backgroundColor: "#FFFFFF",
     paddingHorizontal: 12,
-    overflow: "hidden",
+    overflow: "visible",
   },
   iconTap: {
     width: 28,

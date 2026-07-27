@@ -16,6 +16,9 @@ export function mapboxFoodDeliveryScript(bikeUri: string): string {
       var dropZoneReady = false;
       var pulsePhase = 0;
       var animFrame = null;
+      var riderAnimFrame = null;
+      var followRider = true;
+      var geofenceCameraActive = false;
       var ROUTE_BLUE = '#1A56C6';
       var ROUTE_CONNECTOR = '#64748B';
       var ROUTE_CASING = '#FFFFFF';
@@ -89,22 +92,101 @@ export function mapboxFoodDeliveryScript(bikeUri: string): string {
 
       function setRiderMarker(lat, lng, heading) {
         if (lat == null || lng == null) {
+          if (riderAnimFrame) { cancelAnimationFrame(riderAnimFrame); riderAnimFrame = null; }
           if (markers.rider) { try { markers.rider.remove(); } catch (e) {} markers.rider = null; }
           return;
         }
+
+        function applyHeading(h) {
+          if (!markers.rider) return;
+          var img = markers.rider.getElement().querySelector('.gm-rider-img');
+          if (!img || h == null || isNaN(h)) return;
+          if (!window.__gmHeadingAnim) window.__gmHeadingAnim = { frame: null, current: null };
+          var st = window.__gmHeadingAnim;
+          if (st.frame) { cancelAnimationFrame(st.frame); st.frame = null; }
+          var from = st.current == null ? h : st.current;
+          var to = ((h % 360) + 360) % 360;
+          var delta = ((to - from + 540) % 360) - 180;
+          if (Math.abs(delta) < 1) {
+            st.current = to;
+            img.style.transform = 'rotate(' + to + 'deg)';
+            return;
+          }
+          var t0 = performance.now();
+          var dur = Math.min(500, Math.max(180, Math.abs(delta) * 4));
+          function hStep(now) {
+            var t = Math.min(1, (now - t0) / dur);
+            var eased = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+            var ang = from + delta * eased;
+            st.current = ((ang % 360) + 360) % 360;
+            img.style.transform = 'rotate(' + st.current + 'deg)';
+            if (t < 1) st.frame = requestAnimationFrame(hStep);
+            else st.frame = null;
+          }
+          st.frame = requestAnimationFrame(hStep);
+        }
+
         if (!markers.rider) {
           var el = document.createElement('div');
           el.style.cssText = 'width:44px;height:44px;display:flex;align-items:center;justify-content:center;pointer-events:none;';
           el.innerHTML = '<img class="gm-rider-img" src="' + riderMarkerUri + '" style="width:40px;height:40px;object-fit:contain;transform-origin:center center;" alt="" />';
           markers.rider = new mapboxgl.Marker({ element: el, anchor: 'center' }).setLngLat([lng, lat]).addTo(map);
-        } else {
+          applyHeading(heading);
+          return;
+        }
+
+        var start = markers.rider.getLngLat();
+        var fromLng = start.lng;
+        var fromLat = start.lat;
+        var jumpM = haversineM(fromLat, fromLng, lat, lng);
+        // Snap on first paint / large teleport; otherwise ease toward new GPS.
+        if (jumpM > 180) {
+          if (riderAnimFrame) { cancelAnimationFrame(riderAnimFrame); riderAnimFrame = null; }
           markers.rider.setLngLat([lng, lat]);
+          applyHeading(heading);
+          if (followRider && !state.refitCamera && !(typeof window.isGeofenceCameraActive === 'function' && window.isGeofenceCameraActive())) {
+            try { map.easeTo({ center: [lng, lat], duration: 450, essential: true }); } catch (e) {}
+          }
+          return;
         }
-        var img = markers.rider.getElement().querySelector('.gm-rider-img');
-        if (img && heading != null && !isNaN(heading)) {
-          img.style.transform = 'rotate(' + heading + 'deg)';
+
+        if (riderAnimFrame) { cancelAnimationFrame(riderAnimFrame); riderAnimFrame = null; }
+        var t0 = performance.now();
+        var dur = Math.min(1100, Math.max(350, jumpM * 18));
+        function step(now) {
+          var t = Math.min(1, (now - t0) / dur);
+          var eased = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+          var latN = fromLat + (lat - fromLat) * eased;
+          var lngN = fromLng + (lng - fromLng) * eased;
+          if (markers.rider) markers.rider.setLngLat([lngN, latN]);
+          if (t < 1) {
+            riderAnimFrame = requestAnimationFrame(step);
+          } else {
+            riderAnimFrame = null;
+            applyHeading(heading);
+            if (followRider && !state.refitCamera && !(typeof window.isGeofenceCameraActive === 'function' && window.isGeofenceCameraActive())) {
+              try { map.easeTo({ center: [lng, lat], duration: 280, essential: true }); } catch (e) {}
+            }
+          }
         }
+        applyHeading(heading);
+        riderAnimFrame = requestAnimationFrame(step);
       }
+
+      map.on('dragstart', function() { followRider = false; });
+      map.on('zoomstart', function(e) {
+        if (e && e.originalEvent) followRider = false;
+      });
+      window.recenterOnRider = function() {
+        followRider = true;
+        if (typeof window.isGeofenceCameraActive === 'function' && window.isGeofenceCameraActive()) {
+          return;
+        }
+        if (markers.rider) {
+          var ll = markers.rider.getLngLat();
+          try { map.easeTo({ center: [ll.lng, ll.lat], duration: 450, essential: true }); } catch (e) {}
+        }
+      };
 
       function ensureLineLayer(sourceId, layerId, paint, layout) {
         if (!map.getSource(sourceId)) {
@@ -258,22 +340,28 @@ export function mapboxFoodDeliveryScript(bikeUri: string): string {
         if (lat == null || lng == null) return;
         var r = Math.max(radiusM || 200, 120);
         var latRad = lat * Math.PI / 180;
-        var latOffset = (r * 1.65 / 6378137) * (180 / Math.PI);
+        var meters = r * 1.28;
+        var latOffset = (meters / 6378137) * (180 / Math.PI);
         var lngOffset = latOffset / Math.max(0.35, Math.cos(latRad));
         var bounds = new mapboxgl.LngLatBounds(
           [lng - lngOffset, lat - latOffset],
           [lng + lngOffset, lat + latOffset]
         );
-        var pad = state.mapPadding || { top: 48, bottom: 48, left: 40, right: 40 };
+        var pad = state.mapPadding || { top: 56, bottom: 56, left: 40, right: 40 };
+        geofenceCameraActive = true;
         map.fitBounds(bounds, {
           padding: pad,
           duration: state.refitCamera ? 650 : 900,
           maxZoom: 16.2,
-          linear: false
+          linear: false,
+          essential: true
         });
         state.initialFitDone = true;
         state.refitCamera = false;
       }
+
+      window.isGeofenceCameraActive = function() { return !!geofenceCameraActive; };
+      window.clearGeofenceCamera = function() { geofenceCameraActive = false; };
 
       function fitMapToContent(data) {
         var pts = [];
@@ -372,8 +460,11 @@ export function mapboxFoodDeliveryScript(bikeUri: string): string {
           } else if (showPickup) {
             fitMapToZoneCenter(state.pickupLat, state.pickupLng, state.geofenceRadiusM);
           } else {
+            geofenceCameraActive = false;
             fitMapToContent(data);
           }
+        } else if (!showPickup && !showDrop) {
+          geofenceCameraActive = false;
         }
       };
   `;

@@ -28,6 +28,25 @@ import {
   sqlFoodOrderDashboardStageFilter,
 } from "./food-orders-dashboard-stages";
 import { filterOrderProgressTimelineEntries } from "@/lib/orders/order-timeline-rider-filter";
+
+/** Prefer denormalized Routed To; fall back to latest remark actor for older rows. */
+const sqlRoutedToEmail = sql<string | null>`(
+  COALESCE(
+    ${ordersCore.routedToEmail},
+    (
+      SELECT
+        COALESCE(
+          (orx.remark_metadata ->> 'actorEmail'),
+          su.email
+        )
+      FROM order_remarks orx
+      LEFT JOIN system_users su ON su.id = orx.actor_id
+      WHERE orx.order_id = ${ordersCore.id}
+      ORDER BY orx.created_at DESC
+      LIMIT 1
+    )
+  )
+)`;
 import {
   canApplyManualStatusUpdate,
   resolveDispatchManualStage,
@@ -404,18 +423,7 @@ export async function listOrdersCore(
         tipAmount: ordersCore.tipAmount,
         createdAt: ordersCore.createdAt,
         updatedAt: ordersCore.updatedAt,
-        routedToEmail: sql<string | null>`(
-          SELECT
-            COALESCE(
-              (orx.remark_metadata ->> 'actorEmail'),
-              su.email
-            )
-          FROM order_remarks orx
-          LEFT JOIN system_users su ON su.id = orx.actor_id
-          WHERE orx.order_id = ${ordersCore.id}
-          ORDER BY orx.created_at DESC
-          LIMIT 1
-        )`,
+        routedToEmail: sqlRoutedToEmail,
         latestRemark: sql<string | null>`(
           SELECT orx.remark
           FROM order_remarks orx
@@ -523,18 +531,7 @@ export async function listOrdersCore(
         tipAmount: ordersCore.tipAmount,
         createdAt: ordersCore.createdAt,
         updatedAt: ordersCore.updatedAt,
-        routedToEmail: sql<string | null>`(
-          SELECT
-            COALESCE(
-              (orx.remark_metadata ->> 'actorEmail'),
-              su.email
-            )
-          FROM order_remarks orx
-          LEFT JOIN system_users su ON su.id = orx.actor_id
-          WHERE orx.order_id = ${ordersCore.id}
-          ORDER BY orx.created_at DESC
-          LIMIT 1
-        )`,
+        routedToEmail: sqlRoutedToEmail,
         latestRemark: sql<string | null>`(
           SELECT orx.remark
           FROM order_remarks orx
@@ -640,18 +637,7 @@ export async function listOrdersCore(
       tipAmount: ordersCore.tipAmount,
       createdAt: ordersCore.createdAt,
       updatedAt: ordersCore.updatedAt,
-      routedToEmail: sql<string | null>`(
-        SELECT
-          COALESCE(
-            (orx.remark_metadata ->> 'actorEmail'),
-            su.email
-          )
-        FROM order_remarks orx
-        LEFT JOIN system_users su ON su.id = orx.actor_id
-        WHERE orx.order_id = ${ordersCore.id}
-        ORDER BY orx.created_at DESC
-        LIMIT 1
-      )`,
+      routedToEmail: sqlRoutedToEmail,
       latestRemark: sql<string | null>`(
         SELECT orx.remark
         FROM order_remarks orx

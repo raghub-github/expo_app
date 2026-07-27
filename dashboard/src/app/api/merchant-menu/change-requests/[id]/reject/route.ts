@@ -1,11 +1,10 @@
 /**
  * POST /api/merchant-menu/change-requests/[id]/reject
- * Reject a change request (agent/superadmin). Body: { reviewed_reason?: string }
  */
 import { NextRequest, NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { isSuperAdmin, hasDashboardAccessByAuth } from "@/lib/permissions/engine";
-import { getSql } from "@/lib/db/client";
+import { rejectMenuReviewRequest } from "@/lib/merchant-menu-review";
 
 export const runtime = "nodejs";
 
@@ -41,20 +40,15 @@ export async function POST(
         reviewedReason = body.reviewed_reason.slice(0, 1000);
       }
     } catch {
-      // no body or invalid JSON
+      // no body
     }
 
-    const sql = getSql();
-    const result = await sql`
-      UPDATE merchant_menu_item_change_requests
-      SET status = 'REJECTED'::merchant_menu_item_change_request_status,
-          reviewed_by = ${user.email}, reviewed_by_role = 'agent',
-          reviewed_reason = ${reviewedReason}, updated_at = NOW()
-      WHERE id = ${reqId} AND status = 'PENDING'::merchant_menu_item_change_request_status
-    `;
-    if ((result.count ?? 0) === 0) {
-      return NextResponse.json({ success: false, error: "Request not found or not pending" }, { status: 404 });
+    const result = await rejectMenuReviewRequest(reqId, user.email, reviewedReason);
+    if (!result.ok) {
+      const status = result.error === "request_not_found" ? 404 : 400;
+      return NextResponse.json({ success: false, error: result.error ?? "reject_failed" }, { status });
     }
+
     return NextResponse.json({ success: true, ok: true });
   } catch (e) {
     console.error("[POST /api/merchant-menu/change-requests/[id]/reject]", e);

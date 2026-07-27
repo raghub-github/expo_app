@@ -1,5 +1,10 @@
 import type { ApiFoodOrderItem } from "@/services/ordersApi";
-import { merchantBillPartsFromFoodItems } from "@/lib/merchant-line-total";
+import { merchantBillPartsFromItems } from "@gatimitra/bill-print";
+import {
+  apiFoodItemToBillLine,
+  merchantBillPartsFromFoodItems,
+  merchantLineTotalForFoodItem,
+} from "@/lib/merchant-line-total";
 import { merchantFundedDiscountFromBilling } from "@/lib/merchant-billing-discount";
 
 /** Partner Site / payout-engine money rounding (2dp). */
@@ -36,6 +41,7 @@ export type MerchantBillLineItem = {
   offer_label?: string | null;
   is_item_promo?: boolean;
   applied_offer_type?: string | null;
+  ctm_from_snapshot?: boolean;
 };
 
 export type MerchantOrderTotalInput = {
@@ -67,14 +73,18 @@ function lineItemsAsApiItems(lineItems: MerchantBillLineItem[]): ApiFoodOrderIte
     captured_base_amount: it.captured_base_amount,
     captured_addon_amount: it.captured_addon_amount,
     has_customizations: it.has_customizations,
-    // Critical: forward CTM nets so BOOST (and other item offers) reduce the bill.
     catalog_line_total: it.catalog_line_total,
     net_line_total: it.net_line_total,
     offer_discount: it.offer_discount,
     offer_label: it.offer_label ?? null,
     is_item_promo: it.is_item_promo === true,
     applied_offer_type: it.applied_offer_type ?? null,
+    ctm_from_snapshot: it.ctm_from_snapshot === true,
   }));
+}
+
+function resolveItems(order: MerchantOrderTotalInput): ApiFoodOrderItem[] {
+  return order.items ?? (order.lineItems?.length ? lineItemsAsApiItems(order.lineItems) : []);
 }
 
 function resolvePackaging(order: MerchantOrderTotalInput): number {
@@ -87,10 +97,8 @@ function resolvePackaging(order: MerchantOrderTotalInput): number {
 }
 
 /**
- * Merchant bill cart discount = the FROZEN precision value from
- * orders_core.merchant_precision_discount only (SSOT). BOOST lives in line nets —
- * never fold it into this cart discount or it will double-subtract. Falls back to
- * legacy billing-derived merchant-funded total only when the frozen column is absent.
+ * Merchant bill cart discount = frozen orders_core.merchant_precision_discount (SSOT).
+ * BOOST lives in line nets — never fold it into this cart discount.
  */
 function resolveMerchantDiscount(order: MerchantOrderTotalInput): number {
   const frozen = Number(order.merchantPrecisionDiscount);
@@ -101,27 +109,22 @@ function resolveMerchantDiscount(order: MerchantOrderTotalInput): number {
   return Number(order.pricing?.discount) || 0;
 }
 
-function billFromItems(order: MerchantOrderTotalInput) {
-  const items =
-    order.items ??
-    (order.lineItems?.length ? lineItemsAsApiItems(order.lineItems) : []);
+function billFromItems(order: MerchantOrderTotalInput, opts?: { forceRecomputeTotal?: boolean }) {
+  const items = resolveItems(order);
   if (items.length === 0) return null;
   return merchantBillPartsFromFoodItems(items, {
     packaging: resolvePackaging(order),
     discount: resolveMerchantDiscount(order),
+    total: opts?.forceRecomputeTotal ? 0 : undefined,
   });
 }
 
 /**
- * Merchant-visible order payout / CTM — same priority as Partner Site
- * `resolveMerchantCtm` (partnersite/src/lib/merchant-order-item-display.ts):
- * 1) pricing.total (API / payout engine SSOT)
+ * Merchant-visible order payout / CTM — same priority as Partner Site resolveMerchantCtm:
+ * 1) pricing.total (API SSOT)
  * 2) total_ctm (orders_core frozen)
- * 3) line recompute
+ * 3) line recompute (items + packaging − precision)
  * 4) food_items_total_value
- *
- * Do not prefer local line recompute over API totals — that caused Merchant App
- * vs Partner Site mismatches for the same order.
  */
 export function resolveMerchantOrderTotal(order: MerchantOrderTotalInput): number {
   const fromPricing = Number(order.pricing?.total);
@@ -130,7 +133,7 @@ export function resolveMerchantOrderTotal(order: MerchantOrderTotalInput): numbe
   const fromFrozen = Number(order.total_ctm);
   if (Number.isFinite(fromFrozen) && fromFrozen > 0) return round2(fromFrozen);
 
-  const fromItems = billFromItems(order);
+  const fromItems = billFromItems(order, { forceRecomputeTotal: true });
   if (fromItems && fromItems.total > 0.005) return round2(fromItems.total);
 
   const fromFood = Number(order.food_items_total_value);
@@ -158,21 +161,52 @@ export type MerchantBillParts = {
 };
 
 /**
- * Bill summary parts aligned with partnersite MerchantOrderBillSummary /
- * resolveMerchantCtm — prefer API pricing SSOT for the headline total.
+ * Incoming-order bill — PartnerIncomingOrderModal parity.
+ * Always recomputes from items (total: 0) with frozen merchant_precision_discount.
+ */
+export function merchantIncomingBillPartsFromOrder(
+  order: MerchantOrderTotalInput
+): MerchantBillParts {
+  const items = resolveItems(order);
+  const packaging = resolvePackaging(order);
+  const precision = Math.max(0, Number(order.merchantPrecisionDiscount) || 0);
+
+  if (items.length === 0) {
+    return { itemsSubtotal: 0, packaging, discount: precision, taxes: 0, total: 0 };
+  }
+
+  const billItems = items.map(apiFoodItemToBillLine);
+  const lineSum = items.reduce((acc, it) => acc + merchantLineTotalForFoodItem(it), 0);
+  const bill = merchantBillPartsFromItems(billItems, {
+    subtotal: lineSum,
+    packaging,
+    discount: precision,
+    total: 0,
+  });
+
+  return {
+    itemsSubtotal: bill.itemsSubtotal,
+    packaging: bill.packaging,
+    discount: bill.discount,
+    taxes: 0,
+    total: bill.total,
+  };
+}
+
+/**
+ * Bill summary parts — API pricing.total is SSOT for headline total; breakdown from items.
  */
 export function merchantBillPartsFromOrder(order: MerchantOrderTotalInput): MerchantBillParts {
   const total = resolveMerchantOrderTotal(order);
-  const fromItems = billFromItems(order);
+  const fromItems = billFromItems(order, { forceRecomputeTotal: true });
 
-  // When API pricing.total is the SSOT, keep API subtotal/packaging/discount for breakdown.
   const fromPricing = Number(order.pricing?.total);
   if (Number.isFinite(fromPricing) && fromPricing > 0) {
     return {
-      itemsSubtotal: Number(order.pricing?.subtotal) || fromItems?.itemsSubtotal || 0,
+      itemsSubtotal: fromItems?.itemsSubtotal ?? (Number(order.pricing?.subtotal) || 0),
       packaging: resolvePackaging(order),
       discount: resolveMerchantDiscount(order),
-      taxes: Number(order.pricing?.taxes) || 0,
+      taxes: 0,
       total,
     };
   }
@@ -191,7 +225,7 @@ export function merchantBillPartsFromOrder(order: MerchantOrderTotalInput): Merc
     itemsSubtotal: Number(order.pricing?.subtotal) || 0,
     packaging: resolvePackaging(order),
     discount: resolveMerchantDiscount(order),
-    taxes: Number(order.pricing?.taxes) || 0,
+    taxes: 0,
     total,
   };
 }

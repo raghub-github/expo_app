@@ -29,12 +29,15 @@ const GRADIENT_BOTTOM = "#0d9488";
 const DOOR_COLOR = "#0f766e";
 /** Match gradient top so status bar blends with splash (never white). */
 export const SPLASH_STATUS_BAR = GRADIENT_TOP;
+/** Extra space above the system gesture / nav inset so the spinner never clips. */
+const SPINNER_BOTTOM_GAP = 28;
 
 function applySplashStatusBarChrome() {
   NativeStatusBar.setHidden(false, "none");
   if (Platform.OS === "android") {
     NativeStatusBar.setTranslucent(true);
-    NativeStatusBar.setBackgroundColor(SPLASH_STATUS_BAR, true);
+    // Transparent lets the mint gradient show through under edge-to-edge chrome.
+    NativeStatusBar.setBackgroundColor("transparent", true);
     NativeStatusBar.setBarStyle("light-content", true);
   }
   void SystemUI.setBackgroundColorAsync(SPLASH_STATUS_BAR).catch(() => {});
@@ -54,6 +57,8 @@ export type GatiMitraBootstrapScreenProps = {
   appReady?: boolean;
   onExitComplete?: () => void;
   statusMessage?: string | null;
+  /** Fired once the splash has laid out — used to hide the native splash early. */
+  onSplashReady?: () => void;
 };
 
 export function GatiMitraBootstrapScreen({
@@ -61,6 +66,7 @@ export function GatiMitraBootstrapScreen({
   appReady = false,
   onExitComplete,
   statusMessage = null,
+  onSplashReady,
 }: GatiMitraBootstrapScreenProps) {
   const insets = useSafeAreaInsets();
   const { width, height } = useWindowDimensions();
@@ -68,13 +74,22 @@ export function GatiMitraBootstrapScreen({
   const rightX = useSharedValue(0);
   const exitStartedRef = useRef(false);
   const completedRef = useRef(false);
+  const splashReadyFiredRef = useRef(false);
   const onExitRef = useRef(onExitComplete);
   onExitRef.current = onExitComplete;
+  const onSplashReadyRef = useRef(onSplashReady);
+  onSplashReadyRef.current = onSplashReady;
 
   const finishExit = useCallback(() => {
     if (completedRef.current) return;
     completedRef.current = true;
     onExitRef.current?.();
+  }, []);
+
+  const handleSplashLayout = useCallback(() => {
+    if (splashReadyFiredRef.current) return;
+    splashReadyFiredRef.current = true;
+    onSplashReadyRef.current?.();
   }, []);
 
   useEffect(() => {
@@ -115,8 +130,14 @@ export function GatiMitraBootstrapScreen({
     transform: [{ translateX: rightX.value }],
   }));
 
-  const bleedHeight = height + insets.top + insets.bottom;
-  const bleedTop = -insets.top;
+  // Full-bleed under status / nav bars — never depend on a zero first-frame inset.
+  const statusFallback =
+    Platform.OS === "android" ? NativeStatusBar.currentHeight ?? 24 : 44;
+  const topBleed = Math.max(insets.top, statusFallback);
+  const bottomBleed = Math.max(insets.bottom, 16);
+  const bleedHeight = height + topBleed + bottomBleed;
+  const bleedTop = -topBleed;
+  const spinnerBottom = bottomBleed + SPINNER_BOTTOM_GAP;
 
   const showDoors = variant === "root";
 
@@ -126,11 +147,15 @@ export function GatiMitraBootstrapScreen({
       : [styles.inlineRoot, { minHeight: height }];
 
   return (
-    <View style={rootStyle} accessibilityLabel="GatiMitra loading">
+    <View
+      style={rootStyle}
+      accessibilityLabel="GatiMitra loading"
+      onLayout={handleSplashLayout}
+    >
       <StatusBar
         hidden={false}
         style="light"
-        backgroundColor={SPLASH_STATUS_BAR}
+        backgroundColor="transparent"
         translucent
       />
       <LinearGradient
@@ -139,6 +164,11 @@ export function GatiMitraBootstrapScreen({
         start={{ x: 0.2, y: 0 }}
         end={{ x: 0.8, y: 1 }}
         style={[styles.gradient, { top: bleedTop, height: bleedHeight }]}
+      />
+      {/* Explicit mint strip under the status bar in case the OS paints an opaque bar. */}
+      <View
+        pointerEvents="none"
+        style={[styles.statusFill, { height: topBleed, backgroundColor: GRADIENT_TOP }]}
       />
       {showDoors ? (
         <>
@@ -163,15 +193,15 @@ export function GatiMitraBootstrapScreen({
         </>
       ) : null}
       <View style={styles.logoLayer} pointerEvents="none">
-        <AppText style={styles.title}>GatiMitra</AppText>
+        <AppText style={styles.title} bold>
+          GatiMitra
+        </AppText>
         <View style={styles.divider} />
-        <AppText style={styles.subtitle}>CRAFTED FOR CONVENIENCE</AppText>
+        <AppText style={styles.subtitle} bold>
+          CRAFTED FOR CONVENIENCE
+        </AppText>
         <ActivityIndicator
-          style={{
-            position: "absolute",
-            alignSelf: "center",
-            bottom: Math.max(28, insets.bottom + 18),
-          }}
+          style={[styles.spinner, { bottom: spinnerBottom }]}
           size="small"
           color="rgba(255,255,255,0.9)"
         />
@@ -179,10 +209,12 @@ export function GatiMitraBootstrapScreen({
       {statusMessage ? (
         <View
           pointerEvents="none"
-          style={[styles.statusDock, { bottom: Math.max(insets.bottom, 12) + 18 }]}
+          style={[styles.statusDock, { bottom: spinnerBottom + 36 }]}
         >
           <View style={styles.statusRow}>
-            <AppText style={styles.statusTitle}>{statusMessage}</AppText>
+            <AppText style={styles.statusTitle} bold>
+              {statusMessage}
+            </AppText>
             <AppText style={styles.statusSubtitle}>Please wait...</AppText>
           </View>
         </View>
@@ -195,15 +227,24 @@ const styles = StyleSheet.create({
   overlayRoot: {
     zIndex: 10000,
     elevation: 10000,
+    backgroundColor: GRADIENT_TOP,
   },
   inlineRoot: {
     flex: 1,
     width: "100%",
+    backgroundColor: GRADIENT_TOP,
   },
   gradient: {
     position: "absolute",
     left: 0,
     right: 0,
+  },
+  statusFill: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    zIndex: 1,
   },
   door: {
     position: "absolute",
@@ -220,6 +261,11 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     alignItems: "center",
     paddingHorizontal: 28,
+    zIndex: 2,
+  },
+  spinner: {
+    position: "absolute",
+    alignSelf: "center",
   },
   statusDock: {
     position: "absolute",
@@ -238,6 +284,7 @@ const styles = StyleSheet.create({
   statusTitle: {
     color: "#FFFFFF",
     fontSize: 13,
+    fontFamily: "Lora_700Bold",
     fontWeight: "700",
     textAlign: "center",
     letterSpacing: 0.2,
@@ -245,15 +292,18 @@ const styles = StyleSheet.create({
   statusSubtitle: {
     color: "rgba(255,255,255,0.86)",
     fontSize: 12,
-    fontWeight: "500",
+    fontFamily: "Lora_400Regular",
+    fontWeight: "400",
     textAlign: "center",
     marginTop: 4,
   },
   title: {
     fontSize: 40,
-    fontWeight: "800",
+    fontFamily: "Lora_700Bold",
+    fontWeight: "700",
     color: "#fff",
     letterSpacing: 0.3,
+    textAlign: "center",
   },
   divider: {
     width: "72%",
@@ -265,9 +315,10 @@ const styles = StyleSheet.create({
   },
   subtitle: {
     fontSize: 11,
+    fontFamily: "Lora_700Bold",
     fontWeight: "700",
     color: "rgba(255,255,255,0.94)",
-    letterSpacing: 2.4,
+    letterSpacing: 3.2,
     textAlign: "center",
   },
 });

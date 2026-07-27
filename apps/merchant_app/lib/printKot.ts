@@ -1,25 +1,35 @@
 /**
  * Kitchen Order Ticket (KOT) for the Merchant App.
  * HTML template is owned by @gatimitra/kot-print (single source of truth).
+ * Matches Partner Site: always prints KOT NUMBER + pickup QR when backend provides them.
  */
 
 import {
   buildKotHtml as buildSharedKotHtml,
   deriveCrnFromOrderId,
   formatKotRestaurantAddress,
+  getUtensilsCustomerLabel,
   normalizeThermalPrinterWidthMm,
   type KotLineItem,
   type KotPrintPayload,
   type ThermalPrinterWidthMm,
 } from "@gatimitra/kot-print";
 import type { ApiFoodOrder, ApiFoodOrderItem } from "@/services/ordersApi";
+import { fetchFoodOrder } from "@/services/ordersApi";
 import type { OrderRecord } from "@/lib/orderRecord";
+import { mapApiOrder } from "@/lib/orderRecord";
+import { parseMerchantInstructionsList } from "@/lib/merchant-order-instructions";
 import { printHtml } from "@/lib/printHtml";
+import { getConfig } from "@/config/env";
+import { authFetch } from "@/services/authFetch";
 
 export type KotPrintContext = {
   storeName?: string | null;
   restaurantAddress?: string | null;
   printerWidthMm?: ThermalPrinterWidthMm | number | null;
+  /** Used to refresh pickup_token / kot_number before print when missing. */
+  storeId?: number | null;
+  authToken?: string | null;
 };
 
 function kotOrderId(order: ApiFoodOrder): string {
@@ -41,24 +51,6 @@ function mapApiItems(items: ApiFoodOrderItem[]): KotLineItem[] {
   }));
 }
 
-function packagingLabel(order: {
-  requires_utensils?: boolean | null;
-  requiresUtensils?: boolean | null;
-}): string | null {
-  const flag = order.requires_utensils ?? order.requiresUtensils;
-  if (flag === true) return "Send cutlery & utensils";
-  if (flag === false) return "Don't send cutlery";
-  return null;
-}
-
-function instructionsFromList(raw: unknown): string[] {
-  if (!Array.isArray(raw)) return [];
-  return raw
-    .filter((x): x is string => typeof x === "string")
-    .map((s) => s.trim())
-    .filter(Boolean);
-}
-
 function withPrintContext(
   payload: KotPrintPayload,
   ctx?: KotPrintContext | null
@@ -78,6 +70,9 @@ export function apiOrderToKotPayload(
   ctx?: KotPrintContext | null
 ): KotPrintPayload {
   const orderId = kotOrderId(order);
+  const packaging = getUtensilsCustomerLabel(order)?.trim() || null;
+  const specialInstructions = parseMerchantInstructionsList(order.merchant_instructions_list);
+
   return withPrintContext(
     {
       kotNumber: order.kot_number?.trim() || null,
@@ -95,8 +90,8 @@ export function apiOrderToKotPayload(
       pickupToken: order.pickup_token?.trim() || null,
       pickupOtp: order.pickup_otp?.trim() || null,
       items: mapApiItems(order.items ?? []),
-      specialInstructions: instructionsFromList(order.merchant_instructions_list),
-      packagingInstructions: packagingLabel(order),
+      specialInstructions,
+      packagingInstructions: packaging,
     },
     ctx
   );
@@ -125,6 +120,9 @@ export function orderRecordToKotPayload(
     /^#/,
     ""
   );
+  const packaging = getUtensilsCustomerLabel(order)?.trim() || null;
+  const specialInstructions = parseMerchantInstructionsList(order.merchantInstructionsList);
+
   return withPrintContext(
     {
       kotNumber: order.kotNumber?.trim() || null,
@@ -142,8 +140,8 @@ export function orderRecordToKotPayload(
       pickupToken: order.pickupToken?.trim() || null,
       pickupOtp: order.pickupOtp?.trim() || null,
       items: mapRecordItems(order),
-      specialInstructions: instructionsFromList(order.merchantInstructionsList),
-      packagingInstructions: packagingLabel({ requiresUtensils: order.requiresUtensils }),
+      specialInstructions,
+      packagingInstructions: packaging,
     },
     ctx
   );
@@ -158,13 +156,86 @@ export function buildKotHtml(
 
 export { formatKotRestaurantAddress };
 
+function auditKotPrint(args: {
+  storeId?: number | null;
+  authToken?: string | null;
+  orderCoreId: number;
+  kotNumber?: string | null;
+}): void {
+  const storeId = Number(args.storeId);
+  const token = args.authToken?.trim();
+  const orderCoreId = Number(args.orderCoreId);
+  if (!token || !Number.isFinite(storeId) || storeId < 1 || !Number.isFinite(orderCoreId) || orderCoreId < 1) {
+    return;
+  }
+  const base = getConfig().apiBaseUrl.replace(/\/+$/, "");
+  void authFetch(`${base}/v1/merchant-partner/stores/${storeId}/food-orders/kot-print`, token, {
+    method: "POST",
+    body: JSON.stringify({
+      order_id: orderCoreId,
+      kot_number: args.kotNumber ?? null,
+      printed_by: "merchant_app",
+      print_channel: "expo_print",
+    }),
+  }).catch(() => {
+    /* best-effort audit */
+  });
+}
+
+/** Refresh order from API when KOT number or pickup QR token is missing. */
+export async function ensureOrderKotPrintFields(
+  order: OrderRecord,
+  ctx?: KotPrintContext | null
+): Promise<OrderRecord> {
+  if (order.kotNumber?.trim() && order.pickupToken?.trim()) return order;
+  const storeId = Number(ctx?.storeId);
+  const token = ctx?.authToken?.trim();
+  const foodId = Number.parseInt(String(order.id), 10);
+  if (!token || !Number.isFinite(storeId) || storeId < 1 || !Number.isFinite(foodId) || foodId < 1) {
+    return order;
+  }
+  if (String(order.id).startsWith("core-")) return order;
+  try {
+    const fresh = await fetchFoodOrder(storeId, foodId, token);
+    return mapApiOrder(fresh);
+  } catch {
+    return order;
+  }
+}
+
+export async function ensureApiOrderKotPrintFields(
+  order: ApiFoodOrder,
+  ctx?: KotPrintContext | null
+): Promise<ApiFoodOrder> {
+  if (order.kot_number?.trim() && order.pickup_token?.trim()) return order;
+  const storeId = Number(ctx?.storeId);
+  const token = ctx?.authToken?.trim();
+  const foodId = Number(order.orders_food_id);
+  if (!token || !Number.isFinite(storeId) || storeId < 1 || !Number.isFinite(foodId) || foodId < 1) {
+    return order;
+  }
+  try {
+    return await fetchFoodOrder(storeId, foodId, token);
+  } catch {
+    return order;
+  }
+}
+
 /** Open the system print dialog with the production KOT. */
 export async function printKot(
   order: ApiFoodOrder,
   ctx?: KotPrintContext | null
 ): Promise<void> {
   if (!order) return;
-  await printHtml(buildKotHtml(order, ctx));
+  const ready = await ensureApiOrderKotPrintFields(order, ctx);
+  const payload = apiOrderToKotPayload(ready, ctx);
+  auditKotPrint({
+    storeId: ctx?.storeId,
+    authToken: ctx?.authToken,
+    orderCoreId: ready.orders_core_id,
+    kotNumber: payload.kotNumber,
+  });
+  await printHtml(buildSharedKotHtml(payload));
 }
 
 export async function printKotFromRecord(
@@ -172,5 +243,13 @@ export async function printKotFromRecord(
   ctx?: KotPrintContext | null
 ): Promise<void> {
   if (!order) return;
-  await printHtml(buildSharedKotHtml(orderRecordToKotPayload(order, ctx)));
+  const ready = await ensureOrderKotPrintFields(order, ctx);
+  const payload = orderRecordToKotPayload(ready, ctx);
+  auditKotPrint({
+    storeId: ctx?.storeId,
+    authToken: ctx?.authToken,
+    orderCoreId: ready.ordersCoreId,
+    kotNumber: payload.kotNumber,
+  });
+  await printHtml(buildSharedKotHtml(payload));
 }

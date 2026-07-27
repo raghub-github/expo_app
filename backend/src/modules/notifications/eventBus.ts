@@ -60,6 +60,24 @@ export type DomainEventMap = {
     etaMinutes?: number;
   };
 
+  /** Food rider arrived at merchant store. */
+  "order.rider_at_store": {
+    orderId: string;
+    orderShortId?: string;
+    customerId?: string | null;
+    riderName?: string | null;
+    merchantName?: string | null;
+  };
+
+  /** Food rider near / at customer drop. */
+  "order.rider_arriving": {
+    orderId: string;
+    orderShortId?: string;
+    customerId?: string | null;
+    riderName?: string | null;
+    etaMinutes?: number;
+  };
+
   // Payment webhook flip.
   "payment.settled": {
     orderId: string;
@@ -181,13 +199,54 @@ export function emitEvent<K extends EventName>(event: K, payload: DomainEventMap
 // ---------------------------------------------------------------------------
 
 const STATUS_TO_TEMPLATE: Record<string, { customer?: string; merchant?: string; rider?: string }> = {
-  CREATED:     { customer: "ORDER_CREATED",     merchant: "MERCHANT_NEW_ORDER" },
-  ACCEPTED:    { customer: "ORDER_ACCEPTED" },
-  PREPARING:   { customer: "ORDER_PREPARING" },
-  READY:       { customer: "ORDER_FOOD_READY" },
-  DELIVERED:   { customer: "ORDER_DELIVERED" },
-  CANCELLED:   { customer: "ORDER_CANCELLED", merchant: "MERCHANT_ORDER_CANCELLED", rider: "RIDER_ORDER_CANCELLED" },
+  CREATED:           { customer: "ORDER_CREATED", merchant: "MERCHANT_NEW_ORDER" },
+  ACCEPTED:          { customer: "ORDER_ACCEPTED" },
+  PREPARING:         { customer: "ORDER_PREPARING" },
+  READY:             { customer: "ORDER_FOOD_READY" },
+  READY_FOR_PICKUP:  { customer: "ORDER_FOOD_READY" },
+  OUT_FOR_DELIVERY:  { customer: "ORDER_OUT_FOR_DELIVERY" },
+  REACHED_CUSTOMER:  { customer: "ORDER_RIDER_ARRIVING" },
+  DELIVERED:         { customer: "ORDER_DELIVERED" },
+  CANCELLED:         { customer: "ORDER_CANCELLED", merchant: "MERCHANT_ORDER_CANCELLED", rider: "RIDER_ORDER_CANCELLED" },
 };
+
+/** Live-progress metadata for food shade updates (customer app). */
+const FOOD_LIVE_BY_TEMPLATE: Record<
+  string,
+  { step: number; title: string; body: string }
+> = {
+  ORDER_ACCEPTED: { step: 1, title: "Order Accepted", body: "Store accepted your order" },
+  ORDER_PREPARING: { step: 1, title: "Preparing Your Order", body: "Preparing" },
+  ORDER_FOOD_READY: { step: 2, title: "Ready for Pickup", body: "Rider arriving at store" },
+  ORDER_RIDER_AT_STORE: { step: 2, title: "Ready for Pickup", body: "Rider at the store" },
+  ORDER_OUT_FOR_DELIVERY: { step: 3, title: "On The Way", body: "Arriving" },
+  ORDER_RIDER_ARRIVING: { step: 4, title: "Nearby", body: "Rider is almost there" },
+  ORDER_DELIVERED: { step: 5, title: "Delivered", body: "Enjoy your meal!" },
+};
+
+function foodLiveMetadata(
+  templateCode: string,
+  orderId: string,
+  extras?: { riderName?: string | null; merchantName?: string | null; etaMinutes?: number }
+): Record<string, unknown> {
+  const live = FOOD_LIVE_BY_TEMPLATE[templateCode];
+  const base: Record<string, unknown> = {
+    orderId,
+    gmType: templateCode,
+  };
+  if (!live) return base;
+  return {
+    ...base,
+    gmLiveProgress: true,
+    liveService: "food",
+    liveStep: live.step,
+    liveSteps: 5,
+    liveTitle: live.title,
+    liveBody: live.body,
+    ...(extras?.merchantName ? { storeName: extras.merchantName } : {}),
+    ...(extras?.etaMinutes != null ? { etaMinutes: extras.etaMinutes } : {}),
+  };
+}
 
 let wired = false;
 
@@ -221,6 +280,8 @@ export function registerDomainEventHandlers(): void {
       orderShortId: e.orderShortId ?? e.orderId,
       merchantName: e.merchantName ?? "Store",
       reason: e.reason ?? "",
+      riderName: e.riderName ?? "Your rider",
+      etaMinutes: 25,
     };
     if (map.customer && e.customerId) {
       await sendNotification({
@@ -228,7 +289,10 @@ export function registerDomainEventHandlers(): void {
         variables: vars,
         target: { user_id: e.customerId },
         idempotencyKey: `${map.customer}:${e.orderId}:${e.toStatus}`,
-        metadata: { orderId: e.orderId, gmType: map.customer },
+        metadata: foodLiveMetadata(map.customer, e.orderId, {
+          merchantName: e.merchantName,
+          riderName: e.riderName,
+        }),
       });
     }
     if (map.merchant && e.merchantUserId) {
@@ -253,16 +317,67 @@ export function registerDomainEventHandlers(): void {
 
   on("order.rider_assigned", async (e) => {
     if (!e.customerId) return;
+    // Prefer "on the way" when rider accepts after ready; otherwise keep assign copy.
     await sendNotification({
       templateCode: "ORDER_RIDER_ASSIGNED",
       variables: {
         orderId: e.orderId,
+        orderShortId: e.orderShortId ?? e.orderId,
         riderName: e.riderName ?? "Your rider",
         merchantName: e.merchantName ?? "the restaurant",
+        etaMinutes: e.etaMinutes ?? 25,
       },
       target: { user_id: e.customerId },
       idempotencyKey: `ORDER_RIDER_ASSIGNED:${e.orderId}:${e.riderUserId}`,
-      metadata: { orderId: e.orderId, riderId: e.riderUserId },
+      metadata: {
+        orderId: e.orderId,
+        riderId: e.riderUserId,
+        gmType: "ORDER_RIDER_ASSIGNED",
+        gmLiveProgress: true,
+        liveService: "food",
+        liveStep: 2,
+        liveSteps: 5,
+        liveTitle: "Ready for Pickup",
+        liveBody: "Rider heading to store",
+      },
+    });
+  });
+
+  on("order.rider_at_store", async (e) => {
+    if (!e.customerId) return;
+    await sendNotification({
+      templateCode: "ORDER_RIDER_AT_STORE",
+      variables: {
+        orderId: e.orderId,
+        orderShortId: e.orderShortId ?? e.orderId,
+        riderName: e.riderName ?? "Your rider",
+        merchantName: e.merchantName ?? "Store",
+      },
+      target: { user_id: e.customerId },
+      idempotencyKey: `ORDER_RIDER_AT_STORE:${e.orderId}`,
+      metadata: foodLiveMetadata("ORDER_RIDER_AT_STORE", e.orderId, {
+        riderName: e.riderName,
+        merchantName: e.merchantName,
+      }),
+    });
+  });
+
+  on("order.rider_arriving", async (e) => {
+    if (!e.customerId) return;
+    await sendNotification({
+      templateCode: "ORDER_RIDER_ARRIVING",
+      variables: {
+        orderId: e.orderId,
+        orderShortId: e.orderShortId ?? e.orderId,
+        riderName: e.riderName ?? "Your rider",
+        etaMinutes: e.etaMinutes ?? 5,
+      },
+      target: { user_id: e.customerId },
+      idempotencyKey: `ORDER_RIDER_ARRIVING:${e.orderId}`,
+      metadata: foodLiveMetadata("ORDER_RIDER_ARRIVING", e.orderId, {
+        riderName: e.riderName,
+        etaMinutes: e.etaMinutes,
+      }),
     });
   });
 

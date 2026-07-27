@@ -10,8 +10,8 @@
 import { enqueue, QUEUE_NAMES, type PushSendJob } from "@gatimitra/queue";
 import { incrCounter } from "@gatimitra/logger";
 import { sendExpoPushWithRetry, countTicketOutcomes } from "./expoPushSend.js";
-import { getSql } from "../../db/client.js";
 import { getEnv } from "../../config/env.js";
+import { purgeInvalidPushTokens } from "./purgeInvalidPushTokens.js";
 
 function mergeDeepLinkData(payload: PushSendJob): Record<string, unknown> {
   const data: Record<string, unknown> = { ...(payload.data ?? {}) };
@@ -25,17 +25,6 @@ function mergeDeepLinkData(payload: PushSendJob): Record<string, unknown> {
     data.deepLink = screen;
   }
   return data;
-}
-
-async function purgeDeadTokens(tokens: string[]): Promise<void> {
-  if (tokens.length === 0) return;
-  try {
-    const sql = getSql();
-    await sql`DELETE FROM public.expo_push_tokens WHERE expo_push_token = ANY(${tokens}::text[])`;
-    await sql`DELETE FROM public.merchant_store_push_tokens WHERE token = ANY(${tokens}::text[])`;
-  } catch (e) {
-    console.warn("[push] dead token purge failed:", (e as Error).message);
-  }
 }
 
 async function sendInline(
@@ -62,7 +51,7 @@ async function sendInline(
       title: payload.title,
       body: payload.body,
       data,
-      sound: (payload.sound as "default" | null | undefined) ?? "default",
+      sound: (payload.sound as string | null | undefined) ?? "default",
       priority: "high",
       channelId: payload.channelId,
       ...(payload.imageUrl
@@ -96,7 +85,7 @@ async function sendInline(
       if (tok) dead.push(tok);
     }
   });
-  if (dead.length > 0) void purgeDeadTokens(dead);
+  if (dead.length > 0) void purgeInvalidPushTokens(dead);
 
   incrCounter("push_inline_accepted_total", "Inline Expo push accepted", outcomes.ok);
   if (outcomes.err > 0) {

@@ -10,6 +10,7 @@ import { recordLicenceRenewalUpload } from '@/lib/merchantLicenceHistory';
 import { syncMerchantLicenseCompliance } from '@/lib/syncMerchantLicenseCompliance';
 import { toStoredDocumentUrl, uploadWithKey } from '@/lib/r2';
 import { triggerMerchantAutoVerify } from '@/lib/verification-hook';
+import { maskAadhaarNumber } from '@/lib/mask-aadhaar';
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder.supabase.co";
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "placeholder-service-role-key";
@@ -193,7 +194,7 @@ export async function POST(req: NextRequest) {
         updated_at: nowIso,
       };
       if (expiryDate) patch.aadhaar_expiry_date = expiryDate;
-      if (docNumber) patch.aadhaar_document_number = docNumber;
+      if (docNumber) patch.aadhaar_document_number = maskAadhaarNumber(String(docNumber));
 
       const { error: upsertErr } = await db.from('merchant_store_documents').upsert(patch, {
         onConflict: 'store_id',

@@ -1,16 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
-import {
-  View,
-  Text,
-  Modal,
-  Pressable,
-  StyleSheet,
-  ScrollView,
-  TextInput,
-  Alert,
-  ActivityIndicator,
-  Platform,
-} from "react-native";
+import { AppText as Text } from "@/components/AppText";
+import { View, Modal, Pressable, StyleSheet, ScrollView, TextInput, Alert, ActivityIndicator, Platform } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { GatiMitraMerchant, H_PADDING, CARD_RADIUS } from "@/constants/theme";

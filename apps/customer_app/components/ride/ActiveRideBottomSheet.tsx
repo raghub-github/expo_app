@@ -6,7 +6,7 @@
 import { View, TouchableOpacity, StyleSheet, Image, Platform, ScrollView, useWindowDimensions } from "react-native";
 import { AppText } from "@/components/AppText";
 
-import { useRouter, usePathname } from "expo-router";
+import { useRouter } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
 import { Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
@@ -24,7 +24,6 @@ import { GatiMitraColors } from "@/constants/gatimitra";
 import type { OrderSummary } from "@/services/order.service";
 import {
   getActiveRideTrackLabel,
-  isBookARideHomeScreen,
   resolvePersonRideTrackingNavigation,
 } from "@/lib/person-ride-orders";
 import { normalizeCustomerOrderStatus } from "@/lib/customer-order-status-display";
@@ -139,15 +138,11 @@ export function ActiveRideBottomSheet({
   rides,
   bottomInset = 16,
 }: ActiveRideBottomSheetProps) {
-  const pathname = usePathname();
   const { width: windowWidth } = useWindowDimensions();
 
-  const onRideSearchingScreen =
-    typeof pathname === "string" && pathname.includes("ride-searching");
-  const visible =
-    rides.length > 0 && !onRideSearchingScreen && isBookARideHomeScreen(pathname);
-
-  if (!visible) return null;
+  // Parent (RideBookingScreen) only mounts on Book a Ride home — do not gate on
+  // pathname (force-close restore can briefly report a mismatched path).
+  if (rides.length === 0) return null;
 
   const multi = rides.length > 1;
   const cardWidth = multi

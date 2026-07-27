@@ -1,4 +1,5 @@
-import { View, Text, StyleSheet, Pressable, Linking } from "react-native";
+import { AppText as Text } from "@/components/AppText";
+import { View, StyleSheet, Pressable, Linking } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useState } from "react";
 import type { FoodOrderRiderLogEntry } from "@/services/ordersApi";

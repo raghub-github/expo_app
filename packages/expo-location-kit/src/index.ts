@@ -27,3 +27,10 @@ export {
   type LocationTracker,
   type LocationTrackerState,
 } from "./tracker";
+
+export {
+  getSharedLocationEngine,
+  createSharedForegroundLocationTracker,
+  LOCATION_ENGINE_PROFILES,
+  type LocationEngineProfile,
+} from "./sharedEngine";

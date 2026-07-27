@@ -1070,9 +1070,18 @@ export default function RidersPage() {
               <div className="flex flex-wrap items-baseline gap-x-6 gap-y-1.5 text-sm">
                   <InfoInline label="City" value={rider.city || "—"} />
                   <InfoInline label="Status" value={(riderSummary?.rider?.status ?? rider.status) === "BLOCKED" ? <span className="font-medium text-red-600">BLOCKED</span> : (riderSummary?.rider?.status ?? rider.status)} />
-                  <InfoInline label="Onboarding" value={ONBOARDING_STAGE_LABELS[rider.onboarding_stage] ?? rider.onboarding_stage} />
-                  {needsVerification && riderSummary?.onboardingFees && Number(riderSummary.onboardingFees.totalPaid) > 0 && (
-                    <InfoInline label="Onboarding fee paid" value={<span className="font-medium text-emerald-700 tabular-nums">₹{Number(riderSummary.onboardingFees.totalPaid).toFixed(2)}</span>} />
+                  <InfoInline
+                    label="Onboarding"
+                    value={
+                      riderSummary?.approvalQueueEligible
+                        ? "Pending approval (paid)"
+                        : ONBOARDING_STAGE_LABELS[rider.onboarding_stage] ?? rider.onboarding_stage
+                    }
+                  />
+                  {needsVerification &&
+                    (riderSummary?.paymentCompleted ||
+                      (riderSummary?.onboardingFees && Number(riderSummary.onboardingFees.totalPaid) > 0)) && (
+                    <InfoInline label="Onboarding fee paid" value={<span className="font-medium text-emerald-700 tabular-nums">₹{Number(riderSummary?.onboardingFees?.totalPaid || 0).toFixed(2)}</span>} />
                   )}
                   <InfoInline
                     label="Online"

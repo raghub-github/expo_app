@@ -26,7 +26,7 @@ export const merchantKeys = {
     [...merchantKeys.all, 'wallet-analytics', storeId, period] as const,
   payoutRequests: (storeId: string, limit: number) =>
     [...merchantKeys.all, 'payout-requests', storeId, limit] as const,
-  payoutSettlement: (storeId: string, from: string, to: string) =>
-    [...merchantKeys.all, 'payout-settlement', storeId, from, to] as const,
+  payoutSettlement: (storeId: string, from: string, to: string, cycleId?: number | null) =>
+    [...merchantKeys.all, 'payout-settlement', storeId, from, to, cycleId ?? null] as const,
   menuItems: (storeId: string) => [...merchantKeys.all, 'menu-items', storeId] as const,
 };

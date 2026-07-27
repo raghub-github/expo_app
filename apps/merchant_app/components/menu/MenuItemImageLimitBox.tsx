@@ -1,4 +1,5 @@
-import { View, Text, Image, StyleSheet, TouchableOpacity } from "react-native";
+import { AppText as Text } from "@/components/AppText";
+import { View, Image, StyleSheet, TouchableOpacity } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { GatiMitraMerchant, CARD_RADIUS, H_PADDING } from "@/constants/theme";
 import { AuthProxyImage } from "@/components/AuthProxyImage";

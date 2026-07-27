@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
-import { ActivityIndicator, ScrollView, StyleSheet, Switch, Text, View } from "react-native";
+import { AppText as Text } from "@/components/AppText";
+import { ActivityIndicator, ScrollView, StyleSheet, Switch, View } from "react-native";
 import { useAuth } from "@/context/AuthContext";
 import { useSelectedStore } from "@/context/SelectedStoreContext";
 import { GatiMitraMerchant, H_PADDING } from "@/constants/theme";

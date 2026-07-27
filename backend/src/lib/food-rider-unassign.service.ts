@@ -2,7 +2,7 @@
  * Food rider unassign orchestration — clears assignment, preserves merchant status.
  */
 
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import { getDb } from "../db/client.js";
 
@@ -74,7 +74,13 @@ async function clearFoodRiderAssignment(
       throw new Error("Cannot cancel rider on a delivered or cancelled order");
     }
 
-    const nextCoreStatus = coreStatusAfterFoodUnassign(foodSt);
+    const foodUpper = foodSt.trim().toUpperCase();
+    const reopenAfterPickup =
+      foodUpper === "OUT_FOR_DELIVERY" || foodUpper === "DISPATCHED" || foodUpper === "PICKED_UP";
+    const nextFoodStatus = reopenAfterPickup ? "READY_FOR_PICKUP" : undefined;
+    const nextCoreStatus = reopenAfterPickup
+      ? "READY_FOR_PICKUP"
+      : coreStatusAfterFoodUnassign(foodSt);
 
     await tx
       .update(ordersCore)
@@ -95,9 +101,39 @@ async function clearFoodRiderAssignment(
         pickupDurationSeconds: null,
         pickupTimerStartedAt: null,
         pickupWaitSeconds: null,
+        // Clear pickup stamps so a reassigned rider can complete pickup again.
+        riderPickedUpAt: null,
+        handedOverToRiderAt: null,
+        dispatchedAt: null,
+        ...(nextFoodStatus ? { orderStatus: nextFoodStatus } : {}),
         updatedAt: now,
       })
       .where(eq(ordersFood.orderId, input.orderCorePk));
+
+    // Keep the printed KOT QR permanent: reactivate token, never rotate the string.
+    try {
+      await tx.execute(sql`SELECT gm_reactivate_order_pickup_token(${input.orderCorePk})`);
+    } catch {
+      try {
+        await tx.execute(sql`
+          UPDATE order_pickup_tokens
+          SET status = 'ACTIVE',
+              used_at = NULL,
+              scanned_at = NULL,
+              scanned_by_rider_id = NULL,
+              scanned_device = NULL,
+              assigned_rider_id = NULL,
+              expires_at = NULL,
+              updated_at = now()
+          WHERE order_id = ${input.orderCorePk}
+        `);
+      } catch (reactivateErr) {
+        console.warn(
+          "[clearFoodRiderAssignment] pickup token reactivate failed:",
+          reactivateErr
+        );
+      }
+    }
 
     await recordFn(tx, foodSt, now);
 

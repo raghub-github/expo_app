@@ -13,6 +13,7 @@ import {
   Pressable,
   Dimensions,
   KeyboardAvoidingView,
+  Alert,
   type KeyboardEvent,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
@@ -183,13 +184,23 @@ export function AddBankAccountBottomSheet({ visible, onDismiss, onSuccess }: Pro
     }
 
     try {
-      await createBank.mutateAsync({
+      const res = await createBank.mutateAsync({
         accountHolderName: form.accountHolderName.trim(),
         bankName: form.bankName.trim(),
         ifsc: form.ifsc.trim().toUpperCase(),
         branch: form.branch.trim() || undefined,
         accountNumber,
       });
+      const pm = res.paymentMethod;
+      if (pm?.crossCheckStatus === "mismatch") {
+        Alert.alert(
+          "Name mismatch with Aadhaar",
+          (pm.crossCheckMessages && pm.crossCheckMessages.length
+            ? pm.crossCheckMessages.join(". ")
+            : "Account holder name does not match your verified Aadhaar name.") +
+            " Account saved for manual review — payouts stay pending until approved.",
+        );
+      }
       onSuccess();
       onDismiss();
     } catch (error) {

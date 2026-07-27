@@ -50,6 +50,19 @@ export async function GET() {
     for (const row of data ?? []) {
       modes[String(row.document_kind)] = String(row.mode);
     }
+    // Alias so UI keys (`aadhaar` / `aadhaar_digilocker`) share one Policy Center mode.
+    if (modes.aadhaar_digilocker && !modes.aadhaar) {
+      modes.aadhaar = modes.aadhaar_digilocker;
+    }
+    if (modes.aadhaar && !modes.aadhaar_digilocker) {
+      modes.aadhaar_digilocker = modes.aadhaar;
+    }
+    if (modes.upi_penny_drop && !modes.upi) {
+      modes.upi = modes.upi_penny_drop;
+    }
+    if (modes.bank_account && !modes.bank) {
+      modes.bank = modes.bank_account;
+    }
     return NextResponse.json({ success: true, modes });
   } catch (e) {
     console.warn("[verification-modes] error:", e);

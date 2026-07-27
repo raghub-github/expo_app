@@ -16,6 +16,7 @@ import {
   hydrateCartLine,
 } from "@/lib/cart-line-identity";
 import { normalizeOrderItemSpecialInstructions } from "@/lib/order-item-special-instructions";
+import { cartQtyDebug } from "@/lib/cartQtyDebug";
 
 export type { CartDeliveryAnchor } from "@/lib/cartDeliveryAnchor";
 
@@ -278,7 +279,16 @@ export const useCartStore = create<CartState>((set, get) => ({
     } = get();
     const now = Date.now();
     const keepDeliveryAnchor = get().deliveryAnchor;
-    const line = normalizeCartLineInput(item, quantity);
+    const qty = Math.max(1, quantity);
+    const line = normalizeCartLineInput(item, qty);
+    cartQtyDebug("store_addItem", {
+      merchantId,
+      menuItemId: line.menuItemId,
+      lineId: line.lineId,
+      addQty: qty,
+      beforeLines: items.length,
+      beforeTotalQty: items.reduce((n, i) => n + i.quantity, 0),
+    });
 
     if (currentMerchant && currentMerchant !== merchantId) {
       const stash: Record<string, StashedMerchantCart> = { ...stashedCarts };
@@ -351,10 +361,29 @@ export const useCartStore = create<CartState>((set, get) => ({
     const { items } = get();
     const now = Date.now();
     const idx = findLineIndex(items, lineId);
-    if (idx < 0) return;
+    if (idx < 0) {
+      cartQtyDebug("store_updateQuantity", {
+        lineId,
+        delta,
+        result: "noop_missing_line",
+      });
+      return;
+    }
+    const prevQty = items[idx]?.quantity ?? 0;
     const next = items
       .map((i, iIdx) => (iIdx === idx ? { ...i, quantity: i.quantity + delta } : i))
       .filter((i) => i.quantity > 0);
+    const removed = next.length < items.length || (prevQty + delta) <= 0;
+    cartQtyDebug("store_updateQuantity", {
+      lineId,
+      delta,
+      prevQty,
+      nextQty: removed ? 0 : prevQty + delta,
+      removed,
+    });
+    if (removed) {
+      cartQtyDebug("store_removeItem", { lineId, prevQty, delta });
+    }
     const merchantId = next.length ? get().merchantId : null;
     const merchantName = next.length ? get().merchantName : null;
     const merchantBannerUrl = next.length ? get().merchantBannerUrl : null;

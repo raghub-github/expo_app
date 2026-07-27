@@ -128,9 +128,13 @@ function getOfferAnalytics(offer: Offer) {
   if ((effPct == null || Number.isNaN(effPct)) && gross > 0 && discount > 0) {
     effPct = Math.round((discount / gross) * 1000) / 10;
   }
-  if (effPct == null || Number.isNaN(effPct)) {
-    const p = offer.discount_percentage != null ? Number(offer.discount_percentage) : null;
-    effPct = p != null && !Number.isNaN(p) ? p : 0;
+  if (effPct == null || Number.isNaN(effPct) || effPct <= 0) {
+    if (gross <= 0 && discount <= 0) {
+      const p = offer.discount_percentage != null ? Number(offer.discount_percentage) : null;
+      effPct = p != null && !Number.isNaN(p) ? p : 0;
+    } else {
+      effPct = 0;
+    }
   }
   return { gross, orders, discount, effPct };
 }

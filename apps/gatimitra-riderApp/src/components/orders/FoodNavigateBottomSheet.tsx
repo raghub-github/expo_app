@@ -33,8 +33,10 @@ import {
   isFoodPrepDelayed,
   prepOverdueSeconds,
 } from "@/src/lib/food-prep-delay";
+import { NavSheetWaveShell, NAV_SHEET_WAVE_LOW_Y } from "@/src/components/orders/NavSheetWaveHeader";
+import { LORA_BOLD, POPPINS_BOLD } from "@/src/theme/headerFonts";
 
-export const FOOD_NAV_SHEET_HEIGHT = 368;
+export const FOOD_NAV_SHEET_HEIGHT = 460;
 export const FOOD_NAV_SHEET_COLLAPSED_HEIGHT = 132;
 
 type Props = {
@@ -45,6 +47,10 @@ type Props = {
   restaurantName: string;
   pickupAddress: string;
   pickupLandmark?: string;
+  /** Full restaurant / pickup address (shown with drop on the sheet). */
+  pickupFullAddress?: string;
+  /** Full customer / drop address (shown with pickup on the sheet). */
+  dropFullAddress?: string;
   routeMeta: NavigatePickupRouteMeta;
   pickupConfirmed: boolean;
   rideStarted: boolean;
@@ -140,6 +146,8 @@ export function FoodNavigateBottomSheet({
   restaurantName,
   pickupAddress,
   pickupLandmark,
+  pickupFullAddress,
+  dropFullAddress,
   pickupConfirmed,
   rideStarted,
   atCustomer = false,
@@ -157,6 +165,7 @@ export function FoodNavigateBottomSheet({
   hidePrepBanner = false,
   showPickOrderReopen = false,
   onOpenPickOrderSheet,
+  onReportIssue,
   onCallRestaurant,
   onCallCustomer,
   onChatCustomer,
@@ -213,6 +222,13 @@ export function FoodNavigateBottomSheet({
   );
 
   const fullAddress = [pickupAddress, pickupLandmark].filter(Boolean).join(", ");
+  const pickupFull =
+    (pickupFullAddress?.trim() || (phase === "pickup" ? fullAddress : "")) || "";
+  const dropFull =
+    (dropFullAddress?.trim() || (phase === "drop" ? fullAddress : "")) || "";
+  /** Pre-pickup: restaurant only. Post-pickup / drop leg: customer only. */
+  const activeAddress = phase === "drop" ? dropFull : pickupFull;
+  const activeIsDrop = phase === "drop";
 
   const atStore = pickupConfirmed || reachSliderDone;
   const showPrepBanner =
@@ -303,70 +319,93 @@ export function FoodNavigateBottomSheet({
   );
 
   return (
-    <View style={[styles.sheet, { paddingBottom: Math.max(bottomInset, 12) }]}>
-      <View style={styles.sheetHandleDock}>
-        {onToggleSheetExpanded ? (
-          <NavBottomSheetChevron expanded={sheetExpanded} onPress={onToggleSheetExpanded} />
-        ) : (
-          <View style={styles.chevronDock}>
-            <View style={styles.handle} />
-          </View>
-        )}
-      </View>
+    <View style={styles.sheetStack}>
+      {showCancel ? (
+        <View style={styles.cancelFloat} pointerEvents="box-none">
+          <Pressable
+            onPress={onCancel}
+            disabled={cancelLoading}
+            style={({ pressed }) => [
+              styles.cancelFloatBtn,
+              pressed && styles.cancelFloatBtnPressed,
+            ]}
+            hitSlop={8}
+            accessibilityRole="button"
+            accessibilityLabel={t("orders.activeRide.cancelRide", "Cancel ride")}
+          >
+            {cancelLoading ? (
+              <ActivityIndicator size="small" color={colors.error[600]} />
+            ) : (
+              <Text style={styles.cancelFloatBtnText}>
+                {t("orders.activeRide.cancelShort", "Cancel")}
+              </Text>
+            )}
+          </Pressable>
+        </View>
+      ) : null}
 
-      {sheetExpanded ? (
-        <View style={styles.sheetBody}>
-        <View style={styles.detailsBody}>
-          {phase === "drop" ? (
-            <>
-              <View style={styles.dropHeaderRow}>
-                <View style={styles.dropBadge}>
-                  <Text style={styles.dropBadgeText}>
-                    {t("orders.activeFood.dropBadge", "DROP")}
+      <NavSheetWaveShell
+        style={[styles.sheetOuter, sheetShadow]}
+        bodyStyle={{ paddingBottom: Math.max(bottomInset, 12) }}
+      >
+        <View style={styles.sheetHandleDock}>
+          {onToggleSheetExpanded ? (
+            <NavBottomSheetChevron expanded={sheetExpanded} onPress={onToggleSheetExpanded} />
+          ) : (
+            <View style={styles.chevronDock}>
+              <View style={styles.handle} />
+            </View>
+          )}
+        </View>
+
+        {sheetExpanded ? (
+          <View style={styles.sheetBody}>
+            <View style={styles.detailsBody}>
+              <View style={styles.customerHeaderRow}>
+                <View style={styles.customerInfoCol}>
+                  <Text style={styles.locationName} numberOfLines={2}>
+                    {restaurantName}
                   </Text>
-                </View>
-                {showCancel ? (
-                  <Pressable
-                    onPress={onCancel}
-                    disabled={cancelLoading}
-                    style={({ pressed }) => [
-                      styles.cancelTopBtn,
-                      pressed && styles.cancelTopBtnPressed,
-                    ]}
-                    hitSlop={6}
-                  >
-                    {cancelLoading ? (
-                      <ActivityIndicator size="small" color={colors.error[600]} />
-                    ) : (
-                      <Text style={styles.cancelTopBtnText}>
-                        {t("orders.activeRide.cancelShort", "Cancel")}
+                  {phase === "drop" ? (
+                    <Text style={styles.orderIdLine}>
+                      <Text style={styles.orderIdPrefix}>
+                        {t("orders.activeFood.orderPrefix", "Order")}:{" "}
                       </Text>
-                    )}
-                  </Pressable>
-                ) : null}
+                      <Text style={styles.orderIdValue}>{orderIdLabel}</Text>
+                    </Text>
+                  ) : null}
+                </View>
               </View>
 
-              <Text style={styles.locationName} numberOfLines={2}>
-                {restaurantName}
-              </Text>
-              <Text
-                style={[styles.locationAddress, styles.locationAddressLast]}
-                numberOfLines={3}
-              >
-                {fullAddress}
-              </Text>
-              <Text style={styles.orderIdLine}>
-                <Text style={styles.orderIdPrefix}>
-                  {t("orders.activeFood.orderPrefix", "Order")}:{" "}
-                </Text>
-                <Text style={styles.orderIdValue}>{orderIdLabel}</Text>
-              </Text>
+              {activeAddress ? (
+                <View style={styles.routeCard}>
+                  <View style={styles.routeRow}>
+                    <View style={styles.routeDotCol}>
+                      <View
+                        style={[
+                          styles.routeDot,
+                          activeIsDrop ? styles.dropDot : styles.pickupDot,
+                        ]}
+                      />
+                    </View>
+                    <View style={styles.routeTextWrap}>
+                      <Text style={styles.routeLabel}>
+                        {activeIsDrop
+                          ? t("orders.activeRide.dropLocationLabel", "DROP")
+                          : t("orders.activeRide.pickupLocationLabel", "PICKUP")}
+                      </Text>
+                      <Text style={styles.routeAddress}>{activeAddress}</Text>
+                    </View>
+                    <Text style={styles.distanceLabel}>{distanceLabel}</Text>
+                  </View>
+                </View>
+              ) : null}
 
               <View style={styles.tripleActionRow}>
                 <ActionIconButton
                   icon="call"
                   label={t("orders.activeFood.call", "Call")}
-                  onPress={onCallCustomer ?? onCallRestaurant}
+                  onPress={phase === "drop" ? onCallCustomer ?? onCallRestaurant : onCallRestaurant}
                   disabled={callDisabled}
                 />
                 <ActionIconButton
@@ -378,212 +417,156 @@ export function FoodNavigateBottomSheet({
                 />
                 <ActionIconButton
                   icon="navigate"
-                  label={t("orders.activeFood.map", "Map")}
+                  label={t("orders.activeFood.goToMap", "Go to Map")}
                   onPress={onOpenMaps}
                   variant="filled"
                 />
               </View>
 
-              <View style={styles.dropSliderDock}>{dropSliders}</View>
-            </>
-          ) : (
-            <>
-              <View style={styles.customerHeaderRow}>
-                <View style={styles.customerInfoCol}>
-                  <Text style={styles.locationName} numberOfLines={2}>
-                    {restaurantName}
-                  </Text>
-                  <Text style={styles.locationAddress} numberOfLines={2}>
-                    {fullAddress}
-                  </Text>
+              {phase === "pickup" && prepDelayed ? (
+                <View style={styles.delayBanner}>
+                  <Ionicons name="hourglass-outline" size={14} color="#ffffff" />
+                  <Text style={styles.delayBannerText}>{formatPrepDelayedLabel(overdueSec)}</Text>
                 </View>
-                <View style={styles.metaTopCol}>
-                  {showCancel ? (
-                    <Pressable
-                      onPress={onCancel}
-                      disabled={cancelLoading}
-                      style={({ pressed }) => [
-                        styles.cancelTopBtn,
-                        pressed && styles.cancelTopBtnPressed,
-                      ]}
-                      hitSlop={6}
-                    >
-                      {cancelLoading ? (
-                        <ActivityIndicator size="small" color={colors.error[600]} />
-                      ) : (
-                        <Text style={styles.cancelTopBtnText}>
-                          {t("orders.activeRide.cancelShort", "Cancel")}
-                        </Text>
-                      )}
-                    </Pressable>
-                  ) : null}
-                  <Text style={styles.distanceLabel}>{distanceLabel}</Text>
-                </View>
-              </View>
+              ) : null}
 
-              <View style={styles.callMapRow}>
+              {phase === "pickup" && showPickOrderReopen && onOpenPickOrderSheet ? (
                 <TouchableOpacity
-                  activeOpacity={0.75}
-                  onPress={onCallRestaurant}
-                  disabled={callDisabled}
-                  style={[styles.callBtn, callDisabled && styles.callBtnDisabled]}
+                  activeOpacity={0.85}
+                  onPress={onOpenPickOrderSheet}
+                  style={[
+                    styles.pickOrderReopen,
+                    merchantReady ? styles.pickOrderReopenReady : styles.pickOrderReopenPreparing,
+                  ]}
                 >
                   <Ionicons
-                    name="call"
+                    name={merchantReady ? "checkmark-circle-outline" : "restaurant-outline"}
                     size={20}
-                    color={callDisabled ? "#9AA0A6" : NAV_SHEET_CALL_BLUE}
+                    color={merchantReady ? colors.success[700] : colors.warning[700]}
+                  />
+                  <View style={styles.pickOrderReopenTextCol}>
+                    <Text style={styles.pickOrderReopenTitle}>
+                      {t("orders.activeFood.pickOrderTitle", "Pick order now!")}
+                    </Text>
+                    <Text style={styles.pickOrderReopenSub} numberOfLines={1}>
+                      {prepDelayed
+                        ? formatPrepDelayedLabel(overdueSec)
+                        : merchantReady
+                          ? t(
+                              "orders.activeFood.tapToPickOrder",
+                              "Tap to verify and pick up the order"
+                            )
+                          : t(
+                              "orders.activeFood.underPreparation",
+                              "Order is under preparation"
+                            )}
+                    </Text>
+                  </View>
+                  <Ionicons name="chevron-forward" size={18} color="#5F6368" />
+                </TouchableOpacity>
+              ) : null}
+
+              {phase === "pickup" && showPrepBanner ? (
+                <View
+                  style={[
+                    styles.prepBanner,
+                    prepDelayed
+                      ? styles.prepBannerDelayed
+                      : merchantReady
+                        ? styles.prepBannerReady
+                        : styles.prepBannerPreparing,
+                  ]}
+                >
+                  <Ionicons
+                    name={
+                      prepDelayed
+                        ? "hourglass-outline"
+                        : merchantReady
+                          ? "checkmark-circle"
+                          : "restaurant-outline"
+                    }
+                    size={16}
+                    color={
+                      prepDelayed
+                        ? "#ffffff"
+                        : merchantReady
+                          ? colors.success[700]
+                          : colors.warning[700]
+                    }
                   />
                   <Text
-                    style={[styles.callBtnText, callDisabled && styles.callBtnTextDisabled]}
+                    style={[
+                      styles.prepBannerText,
+                      prepDelayed
+                        ? styles.prepBannerTextDelayed
+                        : merchantReady
+                          ? styles.prepBannerTextReady
+                          : styles.prepBannerTextPreparing,
+                    ]}
                   >
-                    {t("orders.activeFood.call", "Call")}
+                    {prepDelayed
+                      ? formatPrepDelayedLabel(overdueSec)
+                      : merchantReady
+                        ? t("orders.activeFood.orderIsReady", "Order is ready")
+                        : t(
+                            "orders.activeFood.underPreparation",
+                            "Order is under preparation"
+                          )}
                   </Text>
-                </TouchableOpacity>
+                </View>
+              ) : null}
 
-                <TouchableOpacity
-                  activeOpacity={0.75}
-                  onPress={onOpenMaps}
-                  style={styles.mapBtn}
-                >
-                  <Ionicons name="navigate" size={18} color="#ffffff" />
-                  <Text style={styles.mapBtnText} numberOfLines={1} adjustsFontSizeToFit>
-                    {t("orders.activeFood.goToMap", "Go to Map")}
+              {phase === "drop" && deliveryInfoOpen ? (
+                <View style={styles.deliveryInfoCard}>
+                  <Ionicons name="alert-circle" size={18} color={colors.warning[700]} />
+                  <Text style={styles.deliveryInfoText}>
+                    {t(
+                      "orders.activeFood.deliveryPenaltyBody",
+                      "If you miss or cancel this delivery without valid approval, you may be fined up to the full order value. Deliver only to the customer address shown on the map."
+                    )}
                   </Text>
-                </TouchableOpacity>
-              </View>
-            </>
-          )}
+                </View>
+              ) : null}
 
-          {phase === "pickup" && prepDelayed ? (
-            <View style={styles.delayBanner}>
-              <Ionicons name="hourglass-outline" size={14} color="#ffffff" />
-              <Text style={styles.delayBannerText}>{formatPrepDelayedLabel(overdueSec)}</Text>
+              {phase === "drop" ? (
+                <View style={styles.dropSliderDock}>{dropSliders}</View>
+              ) : null}
             </View>
-          ) : null}
-
-          {phase === "pickup" && showPickOrderReopen && onOpenPickOrderSheet ? (
-            <TouchableOpacity
-              activeOpacity={0.85}
-              onPress={onOpenPickOrderSheet}
-              style={[
-                styles.pickOrderReopen,
-                merchantReady ? styles.pickOrderReopenReady : styles.pickOrderReopenPreparing,
-              ]}
-            >
-              <Ionicons
-                name={merchantReady ? "checkmark-circle-outline" : "restaurant-outline"}
-                size={20}
-                color={merchantReady ? colors.success[700] : colors.warning[700]}
-              />
-              <View style={styles.pickOrderReopenTextCol}>
-                <Text style={styles.pickOrderReopenTitle}>
-                  {t("orders.activeFood.pickOrderTitle", "Pick order now!")}
-                </Text>
-                <Text style={styles.pickOrderReopenSub} numberOfLines={1}>
-                  {prepDelayed
-                    ? formatPrepDelayedLabel(overdueSec)
-                    : merchantReady
-                      ? t("orders.activeFood.tapToPickOrder", "Tap to verify and pick up the order")
-                      : t("orders.activeFood.underPreparation", "Order is under preparation")}
-                </Text>
-              </View>
-              <Ionicons name="chevron-forward" size={18} color="#5F6368" />
-            </TouchableOpacity>
-          ) : null}
-
-          {phase === "pickup" && showPrepBanner ? (
-            <View
-              style={[
-                styles.prepBanner,
-                prepDelayed
-                  ? styles.prepBannerDelayed
-                  : merchantReady
-                    ? styles.prepBannerReady
-                    : styles.prepBannerPreparing,
-              ]}
-            >
-              <Ionicons
-                name={
-                  prepDelayed
-                    ? "hourglass-outline"
-                    : merchantReady
-                      ? "checkmark-circle"
-                      : "restaurant-outline"
-                }
-                size={16}
-                color={
-                  prepDelayed ? "#ffffff" : merchantReady ? colors.success[700] : colors.warning[700]
-                }
-              />
-              <Text
-                style={[
-                  styles.prepBannerText,
-                  prepDelayed
-                    ? styles.prepBannerTextDelayed
-                    : merchantReady
-                      ? styles.prepBannerTextReady
-                      : styles.prepBannerTextPreparing,
-                ]}
-              >
-                {prepDelayed
-                  ? formatPrepDelayedLabel(overdueSec)
-                  : merchantReady
-                    ? t("orders.activeFood.orderIsReady", "Order is ready")
-                    : t(
-                        "orders.activeFood.underPreparation",
-                        "Order is under preparation"
-                      )}
-              </Text>
-            </View>
-          ) : null}
-
-          {phase === "drop" && deliveryInfoOpen ? (
-            <View style={styles.deliveryInfoCard}>
-              <Ionicons name="alert-circle" size={18} color={colors.warning[700]} />
-              <Text style={styles.deliveryInfoText}>
-                {t(
-                  "orders.activeFood.deliveryPenaltyBody",
-                  "If you miss or cancel this delivery without valid approval, you may be fined up to the full order value. Deliver only to the customer address shown on the map."
-                )}
-              </Text>
-            </View>
-          ) : null}
-
-        </View>
-        </View>
-      ) : (
-        <View style={styles.sheetBody}>
-        <View style={styles.collapsedHeader}>
-          <Text style={styles.collapsedTitle} numberOfLines={1}>
-            {restaurantName}
-          </Text>
-          <Text style={styles.collapsedDistance}>{distanceLabel}</Text>
-        </View>
-        </View>
-      )}
-
-      {phase === "drop" && !sheetExpanded ? (
-        <View style={styles.sheetBody}>
-          <View style={styles.actionsDock}>{dropSliders}</View>
-        </View>
-      ) : null}
-
-      {phase === "pickup" ? (
-        <View style={styles.sheetBody}>
-          <View style={styles.actionsDock}>{pickupActionButtons}</View>
-        </View>
-      ) : null}
-
-      {phase === "drop" && orderDelivered ? (
-        <View style={styles.sheetBody}>
-          <View style={styles.deliveredBanner}>
-            <Ionicons name="checkmark-circle" size={22} color={colors.success[700]} />
-            <Text style={styles.deliveredBannerText}>
-              {t("orders.activeFood.orderDelivered", "Order delivered successfully")}
-            </Text>
           </View>
-        </View>
-      ) : null}
+        ) : (
+          <View style={styles.sheetBody}>
+            <View style={styles.collapsedHeader}>
+              <Text style={styles.collapsedTitle} numberOfLines={1}>
+                {restaurantName}
+              </Text>
+              <Text style={styles.collapsedDistance}>{distanceLabel}</Text>
+            </View>
+          </View>
+        )}
+
+        {phase === "drop" && !sheetExpanded ? (
+          <View style={styles.sheetBody}>
+            <View style={styles.actionsDock}>{dropSliders}</View>
+          </View>
+        ) : null}
+
+        {phase === "pickup" ? (
+          <View style={styles.sheetBody}>
+            <View style={styles.actionsDock}>{pickupActionButtons}</View>
+          </View>
+        ) : null}
+
+        {phase === "drop" && orderDelivered ? (
+          <View style={styles.sheetBody}>
+            <View style={styles.deliveredBanner}>
+              <Ionicons name="checkmark-circle" size={22} color={colors.success[700]} />
+              <Text style={styles.deliveredBannerText}>
+                {t("orders.activeFood.orderDelivered", "Order delivered successfully")}
+              </Text>
+            </View>
+          </View>
+        ) : null}
+      </NavSheetWaveShell>
     </View>
   );
 }
@@ -600,6 +583,58 @@ const sheetShadow = Platform.select({
 });
 
 const styles = StyleSheet.create({
+  sheetStack: {
+    width: "100%",
+    alignSelf: "stretch",
+    position: "relative",
+    overflow: "visible",
+  },
+  cancelFloat: {
+    position: "absolute",
+    top: -32,
+    right: 14,
+    zIndex: 60,
+    ...Platform.select({
+      android: { elevation: 40 },
+      default: {},
+    }),
+  },
+  cancelFloatBtn: {
+    paddingVertical: 8,
+    paddingHorizontal: 14,
+    borderRadius: 999,
+    backgroundColor: "#FFFFFF",
+    borderWidth: 1,
+    borderColor: "#FECACA",
+    minHeight: 34,
+    alignItems: "center",
+    justifyContent: "center",
+    ...Platform.select({
+      ios: {
+        shadowColor: "#000",
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.12,
+        shadowRadius: 6,
+      },
+      android: { elevation: 4 },
+      default: {},
+    }),
+  },
+  cancelFloatBtnPressed: { opacity: 0.85 },
+  cancelFloatBtnText: {
+    fontSize: 13,
+    fontFamily: LORA_BOLD,
+    fontWeight: "800",
+    color: colors.error[600],
+    includeFontPadding: false,
+  },
+  sheetOuter: {
+    width: "100%",
+    alignSelf: "stretch",
+    alignItems: "stretch",
+    zIndex: 50,
+    elevation: 32,
+  },
   sheet: {
     width: "100%",
     alignSelf: "stretch",
@@ -618,18 +653,21 @@ const styles = StyleSheet.create({
     width: "100%",
     alignSelf: "stretch",
     alignItems: "center",
+    marginTop: -(NAV_SHEET_WAVE_LOW_Y - 10),
+    paddingBottom: 2,
   },
   sheetBody: {
     width: "100%",
     paddingHorizontal: 12,
-    marginTop: -6,
+    marginTop: 0,
   },
   customerHeaderRow: {
     flexDirection: "row",
     alignItems: "flex-start",
     justifyContent: "space-between",
     gap: 10,
-    marginBottom: 10,
+    marginBottom: 6,
+    paddingTop: 10,
   },
   customerInfoCol: {
     flex: 1,
@@ -638,8 +676,10 @@ const styles = StyleSheet.create({
   },
   metaTopCol: {
     alignItems: "flex-end",
+    justifyContent: "center",
     gap: 2,
     flexShrink: 0,
+    paddingTop: 2,
   },
   cancelTopBtn: {
     paddingVertical: 2,
@@ -648,6 +688,7 @@ const styles = StyleSheet.create({
   cancelTopBtnPressed: { opacity: 0.75 },
   cancelTopBtnText: {
     fontSize: 13,
+    fontFamily: LORA_BOLD,
     fontWeight: "800",
     color: colors.error[600],
   },
@@ -659,9 +700,67 @@ const styles = StyleSheet.create({
   },
   distanceLabel: {
     fontSize: 15,
+    fontFamily: POPPINS_BOLD,
     fontWeight: "700",
     color: "#202124",
     letterSpacing: -0.2,
+    flexShrink: 0,
+    marginTop: 14,
+    paddingLeft: 8,
+  },
+  routeCard: {
+    marginBottom: 10,
+  },
+  routeRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 10,
+  },
+  routeDotCol: {
+    width: 14,
+    alignItems: "center",
+    paddingTop: 4,
+  },
+  routeDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    flexShrink: 0,
+  },
+  pickupDot: {
+    backgroundColor: colors.success[600],
+  },
+  dropDot: {
+    backgroundColor: colors.error[500],
+  },
+  routeConnector: {
+    width: 2,
+    flex: 1,
+    minHeight: 14,
+    marginTop: 3,
+    marginBottom: 3,
+    backgroundColor: "#D1D5DB",
+    borderRadius: 1,
+  },
+  routeTextWrap: {
+    flex: 1,
+    minWidth: 0,
+    paddingBottom: 2,
+  },
+  routeLabel: {
+    fontSize: 10,
+    fontFamily: POPPINS_BOLD,
+    fontWeight: "700",
+    color: colors.gray[500],
+    letterSpacing: 0.6,
+    marginBottom: 2,
+  },
+  routeAddress: {
+    fontSize: 13,
+    fontFamily: LORA_BOLD,
+    fontWeight: "400",
+    color: "#5F6368",
+    lineHeight: 18,
   },
   callMapRow: {
     width: "100%",
@@ -729,12 +828,13 @@ const styles = StyleSheet.create({
     paddingBottom: 2,
   },
   locationName: {
-    fontSize: 19,
+    fontSize: 18,
+    fontFamily: LORA_BOLD,
     fontWeight: "700",
     color: "#202124",
-    marginBottom: 3,
-    letterSpacing: -0.2,
-    lineHeight: 25,
+    marginBottom: 2,
+    letterSpacing: -0.3,
+    lineHeight: 22,
   },
   locationAddress: {
     fontSize: 14,
@@ -822,7 +922,7 @@ const styles = StyleSheet.create({
     borderColor: NAV_SHEET_CALL_BLUE,
   },
   actionIconBtnFilled: {
-    backgroundColor: NAV_SHEET_DROP_MAP_BTN_BG,
+    backgroundColor: NAV_SHEET_MAP_BTN_BG,
     borderWidth: 0,
   },
   actionIconBtnDisabled: {

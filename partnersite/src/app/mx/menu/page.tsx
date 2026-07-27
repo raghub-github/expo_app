@@ -211,7 +211,6 @@ import { linkItemCuisineSelectionsToStoreProfile } from '@/lib/linkItemCuisinesT
 import { normalizeMenuItemImageFile, validateMenuItemImageFile } from '@/lib/menuItemImageValidationClient'
 import { persistPartnerSelectedStoreId, readPartnerSelectedStoreId } from '@/lib/partner-selected-store'
 import { useQueryClient } from '@tanstack/react-query'
-import { getQueryClient } from '@/lib/query-client'
 import { merchantKeys } from '@/lib/query-keys'
 
 // --- Menu Category interface ---
@@ -366,12 +365,6 @@ interface ItemFormProps {
 }
 
 export const dynamic = 'force-dynamic'
-
-// Hide scrollbar globally but keep functionality
-const globalStyles = `
-  ::-webkit-scrollbar { display: none; }
-  html { scrollbar-width: none; -ms-overflow-style: none; }
-`;
 
 // Food type options — same values as merchant app and dashboard (DB stores VEG, NON_VEG, EGG, Vegan)
 const FOOD_TYPES = [
@@ -1680,10 +1673,8 @@ function ItemForm(props: ItemFormProps) {
 
 function MenuContent() {
   // --- Dynamic Menu Categories State ---
-  const [storeId, setStoreId] = useState<string | null>(() => {
-    if (typeof window === 'undefined') return null;
-    return readPartnerSelectedStoreId() || null;
-  });
+  // Keep SSR + first client paint identical (no window/localStorage in initializers).
+  const [storeId, setStoreId] = useState<string | null>(null);
   const [categories, setCategories] = useState<MenuCategory[]>([]);
   const [selectedCategoryId, setSelectedCategoryId] = useState<number | null>(null);
   const [categoryPillMode, setCategoryPillMode] = useState<'category' | 'sub-category'>('category');
@@ -1735,21 +1726,10 @@ function MenuContent() {
     }),
     [store]
   );
-  const [menuItems, setMenuItems] = useState<MenuItem[]>(() => {
-    if (typeof window === 'undefined') return [];
-    const id = readPartnerSelectedStoreId();
-    if (!id) return [];
-    return getQueryClient().getQueryData<MenuItem[]>(merchantKeys.menuItems(id)) ?? [];
-  });
+  const [menuItems, setMenuItems] = useState<MenuItem[]>([]);
   const [combos, setCombos] = useState<MenuCombo[]>([]);
   const [comboDetailsById, setComboDetailsById] = useState<Record<number, { components: Array<{ menu_item_id: number }> }>>({});
-  const [isLoading, setIsLoading] = useState(() => {
-    if (typeof window === 'undefined') return true;
-    const id = readPartnerSelectedStoreId();
-    if (!id) return true;
-    const cached = getQueryClient().getQueryData<MenuItem[]>(merchantKeys.menuItems(id));
-    return !cached?.length;
-  });
+  const [isLoading, setIsLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
   const [cuisineOptions, setCuisineOptions] = useState<string[]>(CUISINE_TYPES);
 
@@ -1919,10 +1899,7 @@ function MenuContent() {
   const [imageUploadStatus, setImageUploadStatus] = useState<any>(null);
   const [storeImageCount, setStoreImageCount] = useState<{ totalUsed: number } | null>(null);
   const [storeError, setStoreError] = useState<string | null>(null);
-  const [storeIdResolved, setStoreIdResolved] = useState(() => {
-    if (typeof window === 'undefined') return false;
-    return Boolean(readPartnerSelectedStoreId());
-  });
+  const [storeIdResolved, setStoreIdResolved] = useState(false);
   const [planLimits, setPlanLimits] = useState<{
     maxMenuItems: number | null;
     maxMenuCategories: number | null;
@@ -3301,6 +3278,7 @@ function MenuContent() {
         const errJson = await res.json().catch(() => ({}));
         throw new Error(errJson?.error || 'Failed to save options');
       }
+      const saveJson = await res.json().catch(() => ({}));
       const listRes = await fetch(`/api/merchant/menu-items?storeId=${encodeURIComponent(storeId)}`);
       const listJson = await listRes.json().catch(() => []);
       const itemsList = listRes.ok && Array.isArray(listJson) ? listJson : [];
@@ -3310,10 +3288,20 @@ function MenuContent() {
       }
       setShowEditModal(false);
       await refetchImageCount();
-      toast.success('Item updated successfully!');
+      if (saveJson?.pending_review) {
+        toast.success(
+          saveJson?.unchanged
+            ? 'Already under review. Live menu stays unchanged until approved.'
+            : 'Changes submitted for review. Live menu stays unchanged until approved.'
+        );
+      } else if (saveJson?.no_changes) {
+        toast.success('No new changes to submit.');
+      } else {
+        toast.success('Item updated successfully!');
+      }
     } catch (e) {
       console.error('Error saving options:', e);
-      setEditError('Error saving options.');
+      setEditError(e instanceof Error ? e.message : 'Error saving options.');
     }
     setIsSavingEdit(false);
   }
@@ -3398,7 +3386,11 @@ function MenuContent() {
         throw new Error(errJson?.error || 'Failed to update menu item');
       }
       const result = await res.json();
-      if (result?.item_id) {
+      if (result?.pending_review) {
+        setShowEditModal(false);
+        await refetchImageCount();
+        toast.success('Changes submitted for review. Live menu stays unchanged until approved.');
+      } else if (result?.item_id) {
         const listRes = await fetch(`/api/merchant/menu-items?storeId=${encodeURIComponent(storeId!)}`);
         const listJson = await listRes.json().catch(() => []);
         const itemsList = listRes.ok && Array.isArray(listJson) ? listJson : [];
@@ -4038,7 +4030,6 @@ function MenuContent() {
   return (
     <MXLayoutWhite restaurantName={store?.store_name || "Loading..."} restaurantId={storeId ?? undefined}>
       <PartnerPageHeader title="Menu Management" subtitle={menuPageSubtitle} />
-      <style>{globalStyles}</style>
 
       <div className="flex h-full min-h-0 flex-col overflow-hidden bg-white">
       <div id="mx-menu-toolbar" className="shrink-0 z-20 bg-white shadow-sm">

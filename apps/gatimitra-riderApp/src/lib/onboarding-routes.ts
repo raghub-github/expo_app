@@ -13,6 +13,7 @@ export type ServerOnboardingStep =
   | "pan_selfie"
   | "dl_rc"
   | "rental_ev"
+  | "bank_account"
   | "payment";
 
 const DOC_STEP_ORDER: (OnboardingStep | ServerOnboardingStep)[] = [
@@ -32,7 +33,7 @@ export function isVehicleOnboardingComplete(
   completedSteps?: string[] | null,
   vehicleOnboardingFlow?: "dl_rc" | "rental_ev" | "payment"
 ): boolean {
-  if (serverStep === "payment") return true;
+  if (serverStep === "payment" || serverStep === "bank_account") return true;
   if (!completedSteps?.length) return false;
 
   if (vehicleOnboardingFlow === "rental_ev") {
@@ -64,7 +65,8 @@ export function isOnboardingVehicleDocsComplete(
   }
   if (vehicleOnboardingFlow === "payment") {
     return (
-      completedSteps.includes("dl_rc") && completedSteps.includes("rental_ev")
+      completedSteps.includes("dl_rc") &&
+      completedSteps.includes("rental_ev")
     );
   }
   return completedSteps.includes("dl_rc");
@@ -82,6 +84,12 @@ export function resolveOnboardingMacroStepIndex(
   return 2;
 }
 
+export function isBankAccountOnboardingComplete(options?: {
+  bankAccountOnboardingDone?: boolean | null;
+}): boolean {
+  return options?.bankAccountOnboardingDone === true;
+}
+
 /** First doc step that is not yet complete — used to resume after app restart. */
 export function resolveFirstIncompleteOnboardingStep(
   completedSteps?: string[] | null,
@@ -89,16 +97,26 @@ export function resolveFirstIncompleteOnboardingStep(
   options?: {
     vehicleChoice?: string;
     vehicleOnboardingSubmittedFor?: string;
+    bankAccountOnboardingDone?: boolean | null;
   }
 ): ServerOnboardingStep {
   const completed = completedSteps ?? [];
   if (!completed.includes("aadhaar_name")) return "aadhaar_name";
   if (!completed.includes("pan_selfie")) return "pan_selfie";
-  if (!isOnboardingVehicleDocsComplete(completed, vehicleOnboardingFlow)) {
+  const vehicleSubmitted =
+    Boolean(options?.vehicleChoice?.trim()) &&
+    options?.vehicleOnboardingSubmittedFor === options?.vehicleChoice;
+  if (
+    !vehicleSubmitted &&
+    !isOnboardingVehicleDocsComplete(completed, vehicleOnboardingFlow)
+  ) {
     return "dl_rc";
   }
-  if (options?.vehicleOnboardingSubmittedFor !== options?.vehicleChoice) {
+  if (!vehicleSubmitted && options?.vehicleOnboardingSubmittedFor !== options?.vehicleChoice) {
     return "dl_rc";
+  }
+  if (!isBankAccountOnboardingComplete(options)) {
+    return "bank_account";
   }
   return "payment";
 }
@@ -108,14 +126,47 @@ export function canAccessOnboardingPaymentScreen(options?: {
   vehicleOnboardingSubmittedFor?: string;
   completedOnboardingSteps?: string[] | null;
   vehicleOnboardingFlow?: "dl_rc" | "rental_ev" | "payment";
+  bankAccountOnboardingDone?: boolean | null;
+  /** When true, skip bank gate (legacy callers / vehicle-only checks). */
+  skipBankAccountCheck?: boolean;
 }): boolean {
   if (!options?.vehicleChoice?.trim()) return false;
   if (options.vehicleOnboardingSubmittedFor !== options.vehicleChoice) return false;
-  const completed = options.completedOnboardingSteps ?? [];
-  const kycDone =
-    completed.includes("aadhaar_name") && completed.includes("pan_selfie");
-  if (!kycDone) return false;
-  return isOnboardingVehicleDocsComplete(completed, options.vehicleOnboardingFlow);
+  if (
+    !options.skipBankAccountCheck &&
+    !isBankAccountOnboardingComplete(options)
+  ) {
+    return false;
+  }
+  // Prefer local vehicle-submit flag; fall back to server completed steps when present.
+  const completed = options.completedOnboardingSteps;
+  if (completed?.length) {
+    const kycDone =
+      completed.includes("aadhaar_name") && completed.includes("pan_selfie");
+    if (!kycDone) return false;
+    if (
+      !isOnboardingVehicleDocsComplete(completed, options.vehicleOnboardingFlow) &&
+      options.vehicleOnboardingFlow !== "payment"
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/** Vehicle docs submitted — bank screen is allowed (payment still needs bank flag). */
+export function canAccessOnboardingBankAccountScreen(options?: {
+  vehicleChoice?: string;
+  vehicleOnboardingSubmittedFor?: string;
+  completedOnboardingSteps?: string[] | null;
+  vehicleOnboardingFlow?: "dl_rc" | "rental_ev" | "payment";
+}): boolean {
+  if (!options?.vehicleChoice?.trim()) return false;
+  if (options.vehicleOnboardingSubmittedFor === options.vehicleChoice) return true;
+  return canAccessOnboardingPaymentScreen({
+    ...options,
+    skipBankAccountCheck: true,
+  });
 }
 
 function stepProgressIndex(step: ServerOnboardingStep): number {
@@ -125,6 +176,7 @@ function stepProgressIndex(step: ServerOnboardingStep): number {
     "pan_selfie",
     "dl_rc",
     "rental_ev",
+    "bank_account",
     "payment",
   ];
   return order.indexOf(step);
@@ -137,10 +189,11 @@ export function resolveOnboardingRouteFromServer(
     vehicleOnboardingFlow?: "dl_rc" | "rental_ev" | "payment";
     vehicleChoice?: string;
     vehicleOnboardingSubmittedFor?: string;
+    bankAccountOnboardingDone?: boolean | null;
   }
 ): `/(onboarding)/${string}` | null {
   if (!serverStep || serverStep === "method_selection") return null;
-  if (serverStep === "payment") {
+  if (serverStep === "payment" || serverStep === "bank_account") {
     const completed = options?.completedOnboardingSteps ?? [];
     const kycDone =
       completed.includes("aadhaar_name") && completed.includes("pan_selfie");
@@ -150,7 +203,7 @@ export function resolveOnboardingRouteFromServer(
         : "/(onboarding)/aadhaar";
     }
     if (
-      !canAccessOnboardingPaymentScreen({
+      !canAccessOnboardingBankAccountScreen({
         vehicleChoice: options?.vehicleChoice,
         vehicleOnboardingSubmittedFor: options?.vehicleOnboardingSubmittedFor,
         completedOnboardingSteps: completed,
@@ -158,6 +211,9 @@ export function resolveOnboardingRouteFromServer(
       })
     ) {
       return "/(onboarding)/dl-rc";
+    }
+    if (!isBankAccountOnboardingComplete(options)) {
+      return "/(onboarding)/bank-account";
     }
     return "/(onboarding)/payment";
   }
@@ -168,13 +224,16 @@ export function resolveOnboardingRouteFromServer(
       options?.completedOnboardingSteps,
       options?.vehicleOnboardingFlow
     ) &&
-    canAccessOnboardingPaymentScreen({
+    canAccessOnboardingBankAccountScreen({
       vehicleChoice: options?.vehicleChoice,
       vehicleOnboardingSubmittedFor: options?.vehicleOnboardingSubmittedFor,
       completedOnboardingSteps: options?.completedOnboardingSteps,
       vehicleOnboardingFlow: options?.vehicleOnboardingFlow,
     })
   ) {
+    if (!isBankAccountOnboardingComplete(options)) {
+      return "/(onboarding)/bank-account";
+    }
     return "/(onboarding)/payment";
   }
   return onboardingStepToRoute(serverStep);
@@ -185,7 +244,7 @@ export function pickResumeOnboardingStep(
   localStep?: OnboardingStep,
   serverStep?: ServerOnboardingStep | null
 ): OnboardingStep | ServerOnboardingStep {
-  if (serverStep === "payment") return "payment";
+  if (serverStep === "payment" || serverStep === "bank_account") return serverStep;
   if (!serverStep || serverStep === "method_selection") {
     return localStep ?? "aadhaar_name";
   }
@@ -206,17 +265,30 @@ export function canAccessHome(status?: string | null, accountStatus?: string | n
 export function resolveEstablishedRiderHref(
   onboardingStatus?: string | null,
   accountStatus?: string | null,
-  approvalStatus?: string | null,
+  _approvalStatus?: string | null,
+  options?: {
+    paymentCompleted?: boolean | null;
+    nextOnboardingStep?: ServerOnboardingStep | null;
+  },
 ): `/(tabs)/orders` | `/(onboarding)/${string}` | null {
   if (canAccessHome(onboardingStatus, accountStatus)) {
     return "/(tabs)/orders";
   }
-  if (onboardingStatus === "pending_approval" || onboardingStatus === "rejected") {
+  // Pending Approval only when payment is confirmed completed.
+  if (onboardingStatus === "pending_approval") {
+    if (options?.paymentCompleted === true) {
+      return "/(onboarding)/pending";
+    }
+    // Unpaid / unknown payment — resume funnel (never trap on pending).
+    const next = options?.nextOnboardingStep;
+    if (next) return onboardingStepToRoute(next);
+    if (options?.paymentCompleted === false) return "/(onboarding)/payment";
+    return null;
+  }
+  if (onboardingStatus === "rejected") {
     return "/(onboarding)/pending";
   }
-  if (approvalStatus === "APPROVED" && onboardingStatus === "in_progress") {
-    return "/(onboarding)/payment";
-  }
+  // Do NOT map kyc/approval APPROVED + in_progress → payment.
   return null;
 }
 
@@ -232,11 +304,43 @@ export function onboardingStepToRoute(
       return "/(onboarding)/dl-rc";
     case "rental_ev":
       return "/(onboarding)/rental-ev";
+    case "bank_account":
+      return "/(onboarding)/bank-account";
     case "payment":
       return "/(onboarding)/payment";
+    case "method_selection":
+      // Method-selection UI removed — policy drives Cashfree vs manual on Aadhaar step.
+      return "/(onboarding)/aadhaar";
     default:
-      return "/(onboarding)/method-selection";
+      return "/(onboarding)/aadhaar";
   }
+}
+
+/**
+ * True when server says the rider should be on a later step than `currentScreenStep`.
+ * Used so completed screens (e.g. Aadhaar) forward to the next incomplete step.
+ */
+export function shouldForwardFromOnboardingScreen(
+  currentScreenStep: ServerOnboardingStep,
+  nextServerStep?: ServerOnboardingStep | null,
+): nextServerStep is ServerOnboardingStep {
+  if (!nextServerStep) return false;
+  if (nextServerStep === currentScreenStep) return false;
+  if (nextServerStep === "method_selection") return false;
+
+  const order: ServerOnboardingStep[] = [
+    "method_selection",
+    "aadhaar_name",
+    "pan_selfie",
+    "dl_rc",
+    "rental_ev",
+    "bank_account",
+    "payment",
+  ];
+  const cur = order.indexOf(currentScreenStep);
+  const next = order.indexOf(nextServerStep);
+  if (cur < 0 || next < 0) return nextServerStep !== currentScreenStep;
+  return next > cur;
 }
 
 export function resolveOnboardingHref(
@@ -247,19 +351,29 @@ export function resolveOnboardingHref(
     vehicleChoice?: string;
     vehicleOnboardingFlow?: "dl_rc" | "rental_ev" | "payment";
     vehicleOnboardingSubmittedFor?: string;
+    bankAccountOnboardingDone?: boolean | null;
     accountStatus?: string | null;
     completedOnboardingSteps?: string[] | null;
     approvalStatus?: string | null;
+    paymentCompleted?: boolean | null;
   }
 ): `/(tabs)/orders` | `/(onboarding)/${string}` {
   const establishedHref = resolveEstablishedRiderHref(
     status,
     options?.accountStatus,
     options?.approvalStatus,
+    {
+      paymentCompleted: options?.paymentCompleted,
+      nextOnboardingStep: serverStep,
+    },
   );
   if (establishedHref) return establishedHref;
 
-  if (status === "pending_approval" || status === "rejected") {
+  // Only stay on pending when payment is confirmed.
+  if (status === "pending_approval" && options?.paymentCompleted === true) {
+    return "/(onboarding)/pending";
+  }
+  if (status === "rejected") {
     return "/(onboarding)/pending";
   }
 
@@ -268,6 +382,7 @@ export function resolveOnboardingHref(
     vehicleOnboardingFlow: options?.vehicleOnboardingFlow,
     vehicleChoice: options?.vehicleChoice,
     vehicleOnboardingSubmittedFor: options?.vehicleOnboardingSubmittedFor,
+    bankAccountOnboardingDone: options?.bankAccountOnboardingDone,
   });
 
   const completed = options?.completedOnboardingSteps ?? [];
@@ -278,6 +393,7 @@ export function resolveOnboardingHref(
       {
         vehicleChoice: options?.vehicleChoice,
         vehicleOnboardingSubmittedFor: options?.vehicleOnboardingSubmittedFor,
+        bankAccountOnboardingDone: options?.bankAccountOnboardingDone,
       }
     );
     const resumeRoute = onboardingStepToRoute(resumeStep);

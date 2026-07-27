@@ -13,19 +13,19 @@ function resolveStartIndex(
   if (startIndex != null && startIndex >= 0) {
     return startIndex % MESSAGE_COUNT;
   }
-  // Always advance so every store entry gets a fresh sentence.
+  // Always pick a fresh random sentence for this store entry.
   return useMerchantLoadingMessageStore.getState().pickStartIndex(merchantId) % MESSAGE_COUNT;
 }
 
 /**
  * Loading sentence for the merchant skeleton.
- * - Starts from the visit's picked index (or advances the global cursor once).
- * - Rotates while mounted so users see variety on slow loads.
+ * One sentence per visit — different each time the user enters a store.
+ * Does not rotate mid-load (avoids the same first line flashing every entry).
  */
 export function useMerchantLoadingMessage(
   merchantId: string | undefined,
   startIndex?: number,
-  intervalMs = 2800
+  _intervalMs = 2800
 ): string {
   const visitKey = `${merchantId ?? ""}:${startIndex ?? "auto"}`;
   const [index, setIndex] = useState(() => resolveStartIndex(merchantId, startIndex));
@@ -37,14 +37,6 @@ export function useMerchantLoadingMessage(
     appliedVisitKeyRef.current = visitKey;
     setIndex(resolveStartIndex(merchantId, startIndex));
   }, [visitKey, merchantId, startIndex]);
-
-  useEffect(() => {
-    if (MESSAGE_COUNT <= 1) return;
-    const id = setInterval(() => {
-      setIndex((prev) => (prev + 1) % MESSAGE_COUNT);
-    }, Math.max(1400, intervalMs));
-    return () => clearInterval(id);
-  }, [intervalMs, visitKey]);
 
   return (
     MERCHANT_MENU_LOADING_MESSAGES[index] ??

@@ -12,7 +12,7 @@
     "splash": {
       "image": "./assets/images/splash-logo.png",
       "resizeMode": "contain",
-      "backgroundColor": "#14b8a6"
+      "backgroundColor": "#5eead4"
     },
     "assetBundlePatterns": [
       "**/*"
@@ -37,7 +37,7 @@
       "icon": "./assets/icon.png",
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
-        "backgroundColor": "#14b8a6"
+        "backgroundColor": "#000000"
       },
       "package": "com.gatimitra.customer",
       "softwareKeyboardLayoutMode": "resize",

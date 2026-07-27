@@ -6,21 +6,28 @@
 import {
   buildBillHtml,
   type BillLineItem,
+  type BillPricingBreakdown,
   type BillPrintPayload,
   type BillStoreInfo,
 } from "@gatimitra/bill-print";
 import type { OrderRecord, LineItem } from "@/lib/orderRecord";
-import { merchantBillPartsFromOrder } from "@/lib/resolveMerchantOrderTotal";
-import { formatOrderIdDisplay } from "@/components/order/orderFormatters";
+import { resolveMerchantOrderTotal } from "@/lib/resolveMerchantOrderTotal";
 import { printHtml } from "@/lib/printHtml";
 import type { KotPrintContext } from "@/lib/printKot";
 import { buildBillStoreInfo, type MerchantPrintStoreContext } from "@/lib/printContext";
 
 function mapLineItem(item: LineItem): BillLineItem {
+  const qty = item.qty || 1;
+  const total =
+    item.net_line_total != null && Number.isFinite(Number(item.net_line_total))
+      ? Number(item.net_line_total)
+      : Number(item.price) * qty;
+
   return {
     name: item.name,
-    quantity: item.qty || 1,
+    quantity: qty,
     price: item.price,
+    total,
     variantName: item.variant_tag ?? null,
     variantTag: item.variant_tag ?? null,
     specialInstructions: item.specialInstructions ?? item.special_instructions ?? null,
@@ -42,7 +49,45 @@ function mapLineItem(item: LineItem): BillLineItem {
     offerLabel: item.offer_label ?? null,
     isItemPromo: item.is_item_promo ?? null,
     appliedOfferType: item.applied_offer_type ?? null,
-    ctmFromSnapshot: true,
+    ctmFromSnapshot: item.ctm_from_snapshot ?? null,
+  };
+}
+
+/** Partner Site parity: prefer API pricing SSOT, else line-sum + resolveMerchantOrderTotal. */
+export function resolveOrderBillPricing(order: OrderRecord): BillPricingBreakdown {
+  const lineSum = (order.lineItems ?? []).reduce(
+    (acc, it) =>
+      acc +
+      Number(
+        it.net_line_total ??
+          (Number(it.price) || 0) * (it.qty || 1)
+      ),
+    0
+  );
+
+  if (order.pricing) {
+    return {
+      subtotal: Number(order.pricing.subtotal) || 0,
+      packaging: Number(order.pricing.packaging) || 0,
+      discount: Number(order.pricing.discount) || 0,
+      total: Number(order.pricing.total) || 0,
+    };
+  }
+
+  const total = resolveMerchantOrderTotal({
+    pricing: order.pricing,
+    total: order.total,
+    total_ctm: order.totalCtm,
+    lineItems: order.lineItems,
+    billingSnapshot: order.billingSnapshot,
+    merchantPrecisionDiscount: order.merchantPrecisionDiscount,
+  });
+
+  return {
+    subtotal: lineSum,
+    packaging: 0,
+    discount: 0,
+    total: Number.isFinite(total) ? total : lineSum,
   };
 }
 
@@ -50,24 +95,18 @@ export function orderRecordToBillPayload(
   order: OrderRecord,
   store: BillStoreInfo
 ): BillPrintPayload {
-  const bill = merchantBillPartsFromOrder(order);
   const formattedOrderId =
-    formatOrderIdDisplay(order.formattedOrderId, order.ordersCoreId) ||
-    String(order.ordersCoreId);
+    order.formattedOrderId?.trim() || String(order.ordersCoreId);
 
   return {
     formattedOrderId,
     orderCreatedAt: order.createdAt,
+    taxInvoiceNumber: order.taxInvoiceNumber ?? null,
     customerName: order.customerName?.trim() || null,
     dropAddress: order.dropAddress?.trim() || null,
     pickupOtp: order.pickupOtp?.trim() || null,
     items: (order.lineItems ?? []).map(mapLineItem),
-    pricing: {
-      subtotal: bill.itemsSubtotal,
-      packaging: bill.packaging,
-      discount: bill.discount,
-      total: bill.total,
-    },
+    pricing: resolveOrderBillPricing(order),
     store,
     printTimestamp: new Date().toISOString(),
   };

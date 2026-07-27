@@ -15,6 +15,7 @@ import {
 } from "@/lib/onboarding/store-onboarding-status";
 import type { PartnerVerificationStepRejection } from "@/lib/onboarding/partner-verification-rejections";
 import { normalizeMerchantStoreMediaUrl } from "@/lib/r2";
+import { clearPartnerStoreSelection, persistPartnerSelectedStoreId } from "@/lib/partner-selected-store";
 
 type StoreItem = {
   store_id: string;
@@ -88,6 +89,28 @@ export function PartnersAllStoresPage() {
 
       setData(result);
       setStatus("home");
+
+      const stores = result.stores ?? [];
+      const parentId = result.parentId ?? result.onboardingProgress?.parent_id;
+      // New parent with no child store — do not land on dashboard via stale selection
+      if (stores.length === 0) {
+        clearPartnerStoreSelection();
+        const q =
+          parentId != null
+            ? `?parent_id=${encodeURIComponent(String(parentId))}&new=1`
+            : "?new=1";
+        window.location.href = `/auth/register-store${q}`;
+        return;
+      }
+      const owned = new Set(stores.map((s) => String(s.store_id || "").trim()).filter(Boolean));
+      try {
+        const selected = (localStorage.getItem("selectedStoreId") || "").trim();
+        if (selected && !owned.has(selected)) {
+          clearPartnerStoreSelection();
+        }
+      } catch {
+        /* ignore */
+      }
     } catch {
       setStatus("retry");
     }
@@ -110,9 +133,21 @@ export function PartnersAllStoresPage() {
     window.history.replaceState({}, "", `${u.pathname}${qs ? `?${qs}` : ""}`);
   }, []);
 
+  // Highlight store from ?highlight_store= (e.g. post-onboarding) without requiring verification banner.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const u = new URL(window.location.href);
+    const hi = u.searchParams.get("highlight_store")?.trim();
+    if (!hi) return;
+    setHighlightStorePublicId(hi);
+  }, []);
+
   const goToDashboard = (storeId: string) => {
-    if (typeof localStorage !== "undefined") {
-      localStorage.setItem("selectedStoreId", storeId);
+    persistPartnerSelectedStoreId(storeId);
+    try {
+      localStorage.setItem("partnerManagedStoreIds", JSON.stringify([storeId]));
+    } catch {
+      /* ignore */
     }
     window.location.href = "/partners/dashboard";
   };
@@ -158,6 +193,28 @@ export function PartnersAllStoresPage() {
     return list;
   }, [data?.stores, highlightStorePublicId]);
 
+  /** Single approved child → open dashboard. Do NOT auto-open the register-store form
+   * for a single submitted/pending store — stay on the All Stores picker so "View Store"
+   * after onboarding does not dump the merchant back into the form. */
+  useEffect(() => {
+    if (status !== "home" || !data) return;
+    if (typeof window === "undefined") return;
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("picker") === "1") return;
+    if (params.get("verification_updates_submitted") === "1") return;
+    if (highlightStorePublicId) return;
+    if (verificationSubmittedBanner) return;
+    const stores = data.stores ?? [];
+    if (stores.length !== 1) return;
+    const only = stores[0]!;
+    const approved = String(only.approval_status || "").toUpperCase() === "APPROVED";
+    if (approved) {
+      goToDashboard(only.store_id);
+    }
+    // Non-approved: show the store list (user can tap Complete Onboarding or Add Store).
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- run once when session home is ready
+  }, [status, data, highlightStorePublicId, verificationSubmittedBanner]);
+
   if (status === "loading") {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-slate-50 via-blue-50 to-purple-50 px-4">
@@ -200,9 +257,33 @@ export function PartnersAllStoresPage() {
 
   const { parentName, ownerName, ownerEmail, parentMerchantId, stores = [] } = data;
 
+  // Brief hold while single approved store auto-enters dashboard (unless picker forced).
+  const forcePicker =
+    typeof window !== "undefined" &&
+    new URLSearchParams(window.location.search).get("picker") === "1";
+  const onlyStore = stores.length === 1 ? stores[0] : null;
+  const onlyApproved =
+    !!onlyStore && String(onlyStore.approval_status || "").toUpperCase() === "APPROVED";
+  if (
+    !forcePicker &&
+    !highlightStorePublicId &&
+    !verificationSubmittedBanner &&
+    onlyApproved
+  ) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-slate-50 via-blue-50 to-purple-50 px-4">
+        <div className="text-center space-y-4">
+          <Loader2 className="mx-auto h-8 w-8 animate-spin text-blue-600" />
+          <p className="text-sm font-medium text-slate-700">Opening your store…</p>
+        </div>
+      </div>
+    );
+  }
+
   const handleSignOut = async () => {
     setIsLoggingOut(true);
     try {
+      clearPartnerStoreSelection();
       await fetch("/api/auth/logout", { method: "POST" });
       window.location.href = "/auth/login";
     } catch (error) {

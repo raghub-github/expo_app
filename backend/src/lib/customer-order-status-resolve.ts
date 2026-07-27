@@ -125,6 +125,59 @@ function isCustomerOnTheWay(status: string): boolean {
 }
 
 /**
+ * Person-ride list/detail status for the customer app.
+ * Food pipeline mapping must NOT be used for rides — it can hide active trips
+ * (e.g. accepted captain) behind READY_FOR_PICKUP / ORDER_PLACED heuristics.
+ */
+export function resolvePersonRideCustomerStatus(args: {
+  coreStatus: string | null | undefined;
+  currentStatus: string | null | undefined;
+  riderId: number | null | undefined;
+}): string {
+  const dbStatus = String(args.coreStatus ?? "assigned").trim().toLowerCase();
+  const cur = String(args.currentStatus ?? "")
+    .trim()
+    .toUpperCase()
+    .replace(/[\s-]+/g, "_");
+  const hasRider = args.riderId != null && Number(args.riderId) > 0;
+
+  if (dbStatus === "cancelled" || cur === "CANCELLED") return "CANCELLED";
+  if (dbStatus === "delivered" || cur === "DELIVERED") return "DELIVERED";
+  if (dbStatus === "failed" || cur === "FAILED" || cur === "PAYMENT_FAILED") {
+    return cur === "PAYMENT_FAILED" ? "PAYMENT_FAILED" : "FAILED";
+  }
+
+  if (dbStatus === "picked_up" || dbStatus === "in_transit" || cur === "RIDE_IN_PROGRESS") {
+    return "RIDE_IN_PROGRESS";
+  }
+
+  if (
+    dbStatus === "reached_user" ||
+    cur === "RIDER_AT_PICKUP" ||
+    cur === "REACHED_USER"
+  ) {
+    return "RIDER_AT_PICKUP";
+  }
+
+  if (
+    hasRider ||
+    dbStatus === "accepted" ||
+    dbStatus === "reached_store" ||
+    cur === "RIDER_ASSIGNED" ||
+    cur === "ACCEPTED" ||
+    cur === "ASSIGNED"
+  ) {
+    return "RIDER_ASSIGNED";
+  }
+
+  if (cur === "SEARCHING_RIDER" || cur === "PLACED" || cur === "ORDER_PLACED" || dbStatus === "assigned") {
+    return "SEARCHING_RIDER";
+  }
+
+  return cur || "SEARCHING_RIDER";
+}
+
+/**
  * Merge orders_food.order_status, orders_core.current_status, and rider lifecycle
  * into a single customer-app status string.
  */
@@ -135,7 +188,16 @@ export function resolveCustomerAppOrderStatus(args: {
   riderId: number | null | undefined;
   riderReachedPickupAt?: string | Date | null;
   riderPickedUpAt?: string | Date | null;
+  /** When set, use ride-specific mapping (never food pickup caps). */
+  orderType?: string | null;
 }): string {
+  if (String(args.orderType ?? "").trim().toLowerCase() === "person_ride") {
+    return resolvePersonRideCustomerStatus({
+      coreStatus: args.coreStatus,
+      currentStatus: args.currentStatus,
+      riderId: args.riderId,
+    });
+  }
   const riderPickedUpIso =
     args.riderPickedUpAt instanceof Date
       ? args.riderPickedUpAt.toISOString()

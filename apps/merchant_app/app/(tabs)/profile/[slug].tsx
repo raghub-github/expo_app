@@ -4,8 +4,9 @@
  */
 
 import { useEffect } from "react";
-import { View, Text, StyleSheet } from "react-native";
-import { useLocalSearchParams } from "expo-router";
+import { AppText as Text } from "@/components/AppText";
+import { View, StyleSheet } from "react-native";
+import { Redirect, useLocalSearchParams } from "expo-router";
 import { GatiMitraMerchant, H_PADDING } from "@/constants/theme";
 import OutletInfoScreen from "./OutletInfoScreen";
 import BankAccountScreen from "./BankAccountScreen";
@@ -88,6 +89,11 @@ export default function ProfileSlugScreen() {
 
   if (slug === "status") {
     return <StoreStatusScreen reopenPromptFromNotification={reopen_prompt === "1"} />;
+  }
+
+  // Legacy profile slug → independent full-screen route (no tabs / MerchantHeader).
+  if (slug === "restaurant-status") {
+    return <Redirect href="/restaurant-status" />;
   }
 
   if (slug === "notifications") {

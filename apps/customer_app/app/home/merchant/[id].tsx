@@ -153,6 +153,13 @@ import { useScreenChromeStore } from "@/store/screenChromeStore";
 const MENU_SEARCH_DEBOUNCE_MS = 200;
 
 /**
+ * Only latch the "late insert" suppression once the user has scrolled beyond this
+ * offset (px) — i.e. past where "Your Orders" / combos render. Below it, inserting
+ * the section causes no meaningful jump, so a valid section must always be shown.
+ */
+const LATE_SECTION_SUPPRESS_SCROLL_Y = 320;
+
+/**
  * Stable empty-object reference — `orderedTogetherRecs?.byAnchorItemId ?? {}` would
  * otherwise allocate a NEW object every render while the query hasn't resolved, which
  * invalidated pairingCompanionItems (and, downstream, the whole flashListData memo) on
@@ -302,10 +309,25 @@ export default function MerchantDetailScreen() {
     userInterruptedRestoreRef.current = true;
     scrollRestoreTaskRef.current?.cancel();
     scrollRestoreTaskRef.current = null;
-    // If these sections have not mounted yet, never insert them after the user
-    // has scrolled — inserting above the viewport jumps them back to "Your Orders".
-    if (pastOrderCountRef.current === 0) suppressLatePastOrdersRef.current = true;
-    if (comboCountRef.current === 0) suppressLateComboRef.current = true;
+    // Only suppress a late "Your Orders" / combo insert when the user has already
+    // scrolled PAST where it would appear (deep enough that inserting above would
+    // jump the viewport). A shallow top-of-list drag must NEVER permanently hide a
+    // valid section — that was the root cause of "Your Orders" not appearing:
+    // real users start dragging before the orders fetch resolves, which latched
+    // the section off for the whole visit with no way to recover but leaving.
+    const y = useMerchantScrollStore.getState().scrollY;
+    if (y > LATE_SECTION_SUPPRESS_SCROLL_Y) {
+      if (pastOrderCountRef.current === 0) suppressLatePastOrdersRef.current = true;
+      if (comboCountRef.current === 0) suppressLateComboRef.current = true;
+      if (__DEV__ && (pastOrderCountRef.current === 0 || comboCountRef.current === 0)) {
+        // eslint-disable-next-line no-console
+        console.log("[your-orders] late-insert suppressed (scrolled past insert point)", {
+          scrollY: Math.round(y),
+          pastOrdersLoaded: pastOrderCountRef.current,
+          combosLoaded: comboCountRef.current,
+        });
+      }
+    }
     cancelScheduledMenuScroll();
   }, [cancelScheduledMenuScroll]);
 
@@ -872,6 +894,29 @@ export default function MerchantDetailScreen() {
     return pastOrderItems;
   }, [pastOrderItems]);
 
+  // Diagnostic: state the EXACT reason "Your Orders and Collections" is shown/hidden.
+  useEffect(() => {
+    if (!__DEV__) return;
+    const reason = !merchant?.menu?.length
+      ? "menu_not_loaded"
+      : myOrders.length === 0
+        ? "no_order_history"
+        : pastOrderItems.length === 0
+          ? "no_orders_matched_this_store_or_menu_names"
+          : suppressLatePastOrdersRef.current
+            ? "suppressed_late_insert_after_deep_scroll"
+            : "visible";
+    // eslint-disable-next-line no-console
+    console.log("[your-orders] visibility decision", {
+      merchantId,
+      shown: reason === "visible" && pastOrdersForList.length > 0,
+      reason,
+      ordersFetched: myOrders.length,
+      matchedPastOrderItems: pastOrderItems.length,
+      menuItems: merchant?.menu?.length ?? 0,
+    });
+  }, [merchantId, myOrders.length, pastOrderItems.length, pastOrdersForList.length, merchant?.menu?.length]);
+
   const ratingInsight = useMemo(() => {
     const ratingSource = displayMerchant ?? merchant;
     const storeName = (merchant?.name ?? "").toLowerCase().trim();
@@ -1230,14 +1275,28 @@ export default function MerchantDetailScreen() {
       // Add Item tap (which routes through onAdd → handleAddItem, not onIncrement).
       // A "+" is only reachable while the stepper is shown, i.e. the line exists; the
       // add write for a brand-new item lands within a frame, so this never drops a tap.
-      if (lineId) updateQuantity(lineId, 1);
+      if (!lineId) {
+        if (__DEV__) {
+          // eslint-disable-next-line no-console
+          console.log("[cart-qty] increment_skipped_no_line", { itemId, menuItemId });
+        }
+        return;
+      }
+      updateQuantity(lineId, 1);
     },
     [getCartLineIdForItem, updateQuantity]
   );
   const handleDecrement = useCallback(
     (itemId: string, menuItemId?: number) => {
       const lineId = getCartLineIdForItem(itemId, menuItemId);
-      if (lineId) updateQuantity(lineId, -1);
+      if (!lineId) {
+        if (__DEV__) {
+          // eslint-disable-next-line no-console
+          console.log("[cart-qty] decrement_skipped_no_line", { itemId, menuItemId });
+        }
+        return;
+      }
+      updateQuantity(lineId, -1);
     },
     [getCartLineIdForItem, updateQuantity]
   );
@@ -1395,6 +1454,15 @@ export default function MerchantDetailScreen() {
    * invalidated the whole list's memo — and re-rendered every row — every second.
    */
   const showClosedBanner = merchant != null && isStoreClosedForStatus;
+  const rushActiveFromLive = liveStatusSnapshot?.rushActive === true;
+  const rushActiveFromMerchant = merchant?.rushActive === true;
+  const rushActive = rushActiveFromLive || rushActiveFromMerchant;
+  const rushEndsAt =
+    liveStatusSnapshot?.rushEndsAt ?? merchant?.rushEndsAt ?? null;
+  const rushRemainingMinutes =
+    liveStatusSnapshot?.rushRemainingMinutes ?? merchant?.rushRemainingMinutes ?? null;
+  const showRushBanner =
+    merchant != null && !isStoreClosedForStatus && rushActive;
 
   const { data: flashListData, indexMap: flashIndexMap } = useMemo(
     () =>
@@ -1405,6 +1473,7 @@ export default function MerchantDetailScreen() {
         sectionStartingPrice,
         visibleOffersCount: storeOffersBadgeCount,
         showClosedBanner,
+        showRushBanner,
         menuPending,
         pairingAnchorKey,
         pairingCompanionItems,
@@ -1416,6 +1485,7 @@ export default function MerchantDetailScreen() {
       sectionStartingPrice,
       storeOffersBadgeCount,
       showClosedBanner,
+      showRushBanner,
       menuPending,
       pairingAnchorKey,
       pairingCompanionItems,
@@ -1885,6 +1955,9 @@ export default function MerchantDetailScreen() {
         isStoreClosedForStatus={isStoreClosedForStatus}
         merchantNextOpenAt={merchantNextOpenAt}
         merchantNextCloseAt={merchantNextCloseAt}
+        showRushBanner={showRushBanner}
+        rushEndsAt={rushEndsAt}
+        rushRemainingMinutes={rushRemainingMinutes}
         offerTickerTexts={offerTickerTexts}
         visibleOffersCount={storeOffersBadgeCount}
         reserveOfferRow={reserveOfferRow}

@@ -1,15 +1,6 @@
 import { useEffect, useState } from "react";
-import {
-  ActivityIndicator,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  Text,
-  View,
-  Modal,
-  Alert,
-  Switch,
-} from "react-native";
+import { AppText as Text } from "@/components/AppText";
+import { ActivityIndicator, Pressable, ScrollView, StyleSheet, View, Modal, Alert, Switch } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import { GatiMitraMerchant, H_PADDING, TAB_BAR_SCROLL_CONTENT_PADDING } from "@/constants/theme";
@@ -171,21 +162,31 @@ export default function PreparationTimeScreen() {
               Inform us when your kitchen is in rush and you need more time to
               manage orders.
             </Text>
-            <View style={styles.heroStatusRow}>
-              <Text style={styles.heroSubtitle}>{activeLabel}</Text>
-              <View style={styles.heroStatusControls}>
-                <Switch
-                  value={rushActive}
-                  onValueChange={handleToggleRush}
-                  trackColor={{
-                    false: "#D1D5DB",
-                    true: GatiMitraMerchant.primary,
-                  }}
-                  thumbColor={rushActive ? "#FFFFFF" : "#F9FAFB"}
-                />
-              </View>
-            </View>
+            <Text style={styles.heroSubtitle}>{activeLabel}</Text>
           </View>
+        </View>
+
+        <View style={styles.rushToggleCard}>
+          <View style={styles.rushToggleTextWrap}>
+            <Text style={styles.rushToggleTitle}>Rush mode</Text>
+            <Text style={styles.rushToggleHint}>
+              {rushActive
+                ? "ON — tap to turn off anytime"
+                : "OFF — pick a duration below, then turn on"}
+            </Text>
+          </View>
+          <Switch
+            value={rushActive}
+            onValueChange={handleToggleRush}
+            disabled={loading || saving || !storeId || !token}
+            trackColor={{
+              false: "#D1D5DB",
+              true: GatiMitraMerchant.primary,
+            }}
+            thumbColor="#FFFFFF"
+            ios_backgroundColor="#D1D5DB"
+            style={styles.rushSwitch}
+          />
         </View>
 
         <View style={styles.section}>
@@ -377,12 +378,6 @@ const styles = StyleSheet.create({
     flex: 1,
     gap: 6,
   },
-  heroStatusRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: 8,
-  },
   heroTitle: {
     fontSize: 14,
     fontWeight: "600",
@@ -391,6 +386,39 @@ const styles = StyleSheet.create({
   heroSubtitle: {
     fontSize: 12,
     color: GatiMitraMerchant.textSecondary,
+    lineHeight: 17,
+  },
+  rushToggleCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+    borderRadius: 16,
+    backgroundColor: GatiMitraMerchant.cardBg,
+    borderWidth: 1,
+    borderColor: GatiMitraMerchant.border,
+    ...GatiMitraMerchant.shadowSm,
+  },
+  rushToggleTextWrap: {
+    flex: 1,
+    minWidth: 0,
+    gap: 2,
+  },
+  rushToggleTitle: {
+    fontSize: 16,
+    fontWeight: "700",
+    color: GatiMitraMerchant.textPrimary,
+  },
+  rushToggleHint: {
+    fontSize: 12,
+    color: GatiMitraMerchant.textSecondary,
+    lineHeight: 16,
+  },
+  rushSwitch: {
+    flexShrink: 0,
+    transform: [{ scaleX: 1.05 }, { scaleY: 1.05 }],
   },
   heroStatusPill: {
     paddingHorizontal: 10,
@@ -402,10 +430,6 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: "700",
     color: "#FFFFFF",
-  },
-  heroStatusControls: {
-    flexDirection: "row",
-    alignItems: "center",
   },
   section: {
     padding: 12,

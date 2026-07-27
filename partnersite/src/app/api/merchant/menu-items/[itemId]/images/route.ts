@@ -1,13 +1,16 @@
 /**
  * POST /api/merchant/menu-items/[itemId]/images?storeId=XXX
  * Item-scoped image upload (matches merchant app /v1/merchant-menu/items/:id/images).
+ *
+ * Platform staff (Admin / SuperAdmin / Support / Manager) uploads apply live.
+ * Merchant uploads stay PENDING and trigger item re-review.
  */
 import { NextRequest, NextResponse } from "next/server";
 import { randomUUID } from "crypto";
 import { createClient } from "@supabase/supabase-js";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { validateMerchantFromSession } from "@/lib/auth/validate-merchant";
-import { assertStoreAccess } from "@/lib/auth/assert-store-access";
+import { assertStoreAccess, isPlatformStaffEmail } from "@/lib/auth/assert-store-access";
 import { buildMenuItemImageKey } from "@/lib/merchant-menu-r2-paths";
 import { addItemImageRow, setItemPendingForReReview } from "@/lib/merchant-menu-item-images";
 import { uploadToR2, deleteFromR2 } from "@/lib/r2";
@@ -34,13 +37,16 @@ export async function POST(
       return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
     }
 
-    const validation = await validateMerchantFromSession({
-      id: user.id,
-      email: user.email ?? null,
-      phone: user.phone ?? null,
-    });
-    if (!validation.isValid) {
-      return NextResponse.json({ error: validation.error ?? "Merchant not found" }, { status: 403 });
+    const isStaff = await isPlatformStaffEmail(user.email ?? null);
+    if (!isStaff) {
+      const validation = await validateMerchantFromSession({
+        id: user.id,
+        email: user.email ?? null,
+        phone: user.phone ?? null,
+      });
+      if (!validation.isValid) {
+        return NextResponse.json({ error: validation.error ?? "Merchant not found" }, { status: 403 });
+      }
     }
 
     const storeId = req.nextUrl.searchParams.get("storeId");
@@ -87,17 +93,23 @@ export async function POST(
     try {
       await uploadToR2(file, r2Key);
       const imageUrl = `/api/attachments/proxy?key=${encodeURIComponent(r2Key)}`;
+      const staffActor = isStaff || access.isPlatformStaff === true;
       const created = await addItemImageRow(menuItemId, access.storeIdNum, {
         image_url: imageUrl,
         r2_key: r2Key,
         is_primary: true,
         format: ext,
+        autoApprove: staffActor,
+        moderated_by: staffActor ? (user.email ?? user.id) : null,
       });
 
-      await setItemPendingForReReview(menuItemId, access.storeIdNum, {
-        changed_by: user.id,
-        changed_by_role: "merchant",
-      });
+      // Merchants only: force item back into review. Staff changes apply live.
+      if (!staffActor) {
+        await setItemPendingForReReview(menuItemId, access.storeIdNum, {
+          changed_by: user.id,
+          changed_by_role: "merchant",
+        });
+      }
 
       try {
         await logStoreActivity({
@@ -105,8 +117,10 @@ export async function POST(
           section: "menu_item",
           action: "create",
           entityId: menuItemId,
-          summary: `Partner uploaded image for item #${menuItemId}`,
-          actorType: "merchant",
+          summary: staffActor
+            ? `Staff uploaded image for item #${menuItemId} (auto-approved)`
+            : `Partner uploaded image for item #${menuItemId}`,
+          actorType: staffActor ? "system" : "merchant",
         });
       } catch {
         /* non-fatal */

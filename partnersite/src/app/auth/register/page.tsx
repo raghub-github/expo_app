@@ -3,14 +3,16 @@
 import { useState, useEffect } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { Mail, Phone, User, Loader2, ArrowRight, CheckCircle, MapPin, Image } from "lucide-react";
+import { Mail, Phone, User, Loader2, ArrowRight, MapPin, Image } from "lucide-react";
 import { requestEmailOTP, verifyEmailOTP, requestPhoneOTP, verifyPhoneOTP } from "@/lib/auth/supabase-client";
 import { ENABLE_PHONE_OTP_REGISTER } from "@/lib/auth/phone-otp-config";
 import { supabase } from "@/lib/supabase";
 import { LoginPageShell } from "@/app/auth/login/components/LoginPageShell";
 import { LoginInputField } from "@/app/auth/login/components/LoginInputField";
 import { PrimaryButton } from "@/app/auth/login/components/PrimaryButton";
-import { RegisterFormHeader, RegisterSecurityTrust } from "@/app/auth/register/components/RegisterFormHeader";
+import { RegisterFormHeader } from "@/app/auth/register/components/RegisterFormHeader";
+import { toast } from "sonner";
+import { clearPartnerStoreSelection } from "@/lib/partner-selected-store";
 
 type Step = 1 | 2 | 3;
 
@@ -18,6 +20,12 @@ const RESEND_OTP_COOLDOWN_SEC = 60;
 
 const FIELD_CLASS =
   "w-full px-4 py-3 rounded-xl border border-slate-200 bg-slate-50/50 text-slate-900 placeholder:text-slate-400 text-sm transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-orange-500/40 focus:ring-offset-2 focus:border-orange-400 focus:bg-white hover:border-slate-300";
+
+/** Compact fields for step-3 profile — polished inputs that fill the white area. */
+const FIELD_CLASS_COMPACT =
+  "auth-field w-full px-3.5 py-2.5 rounded-xl border border-slate-200/90 bg-white text-slate-900 placeholder:text-slate-400 text-sm shadow-[0_1px_2px_rgba(15,23,42,0.05)] transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-orange-500/25 focus:border-orange-400 hover:border-orange-200 hover:shadow-[0_4px_14px_rgba(249,115,22,0.08)]";
+
+const LABEL_COMPACT = "block text-xs font-medium text-slate-600 mb-1 tracking-wide";
 
 const SECONDARY_BTN =
   "py-2.5 px-4 rounded-xl border border-slate-200 text-slate-600 text-sm font-medium hover:bg-slate-50 hover:border-slate-300 transition-colors disabled:opacity-50 disabled:cursor-not-allowed";
@@ -30,11 +38,16 @@ function normalizePhone(input: string): string {
   return digits.length > 10 ? digits.slice(-10) : digits;
 }
 
+/** Errors go to top-right toast — never inline in the form. */
+function setError(msg: string) {
+  if (!msg) return;
+  toast.error(msg);
+}
+
 export default function RegisterPage() {
   const router = useRouter();
   const [step, setStep] = useState<Step>(1);
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
   const [successMessage, setSuccessMessage] = useState("");
   const [resendCooldown, setResendCooldown] = useState(0); // Cooldown in seconds (email)
   const [mobileResendCooldown, setMobileResendCooldown] = useState(0); // Cooldown for Resend SMS
@@ -65,6 +78,14 @@ export default function RegisterPage() {
     }
   }, [mobileResendCooldown]);
 
+  // Step-3 verified notice as top-right toast (not in form)
+  useEffect(() => {
+    if (step !== 3) return;
+    toast.success(
+      ENABLE_PHONE_OTP_REGISTER ? "Email & mobile verified" : "Email verified, mobile added",
+      { duration: 2000 }
+    );
+  }, [step]);
   // Step 1: email OTP
   const [email, setEmail] = useState("");
   const [emailOtp, setEmailOtp] = useState("");
@@ -128,6 +149,7 @@ export default function RegisterPage() {
       setSuccessMessage("");
       setError("");
       setResendCooldown(RESEND_OTP_COOLDOWN_SEC);
+      toast.success(`Code sent to ${em}`);
     } catch {
       setError("Something went wrong. Please try again.");
     } finally {
@@ -163,6 +185,7 @@ export default function RegisterPage() {
       }
       setEmailUserId(uid);
       setVerifiedEmail(em);
+      toast.success(`Email verified: ${em}`, { duration: 2000 });
       setStep(2);
     } catch {
       setError("Something went wrong. Please try again.");
@@ -204,6 +227,7 @@ export default function RegisterPage() {
       }
       setMobileOtpSent(true);
       setMobileResendCooldown(RESEND_OTP_COOLDOWN_SEC);
+      toast.success(`Code sent to +91 ${ten}`);
     } catch {
       setError("Something went wrong. Please try again.");
     } finally {
@@ -224,6 +248,7 @@ export default function RegisterPage() {
         return;
       }
       setMobileResendCooldown(RESEND_OTP_COOLDOWN_SEC);
+      toast.success(`Code sent to +91 ${ten}`);
     } catch {
       setError("Failed to resend OTP. Please try again.");
     } finally {
@@ -344,6 +369,22 @@ export default function RegisterPage() {
         setLoading(false);
         return;
       }
+      // Never carry another account's selected store into this session
+      clearPartnerStoreSelection();
+      const parentId =
+        data?.data?.parent_id ??
+        data?.parent_id ??
+        data?.data?.parent_merchant_id ??
+        data?.parent_merchant_id;
+      toast.success("Congratulations - Your Parent Account created Successfully", {
+        duration: 4000,
+      });
+      if (parentId != null && String(parentId).trim()) {
+        // Brief pause so toast is visible before hard navigation
+        await new Promise((r) => setTimeout(r, 600));
+        window.location.href = `/auth/register-store?parent_id=${encodeURIComponent(String(parentId))}&new=1`;
+        return;
+      }
       router.push("/auth/login?registered=1");
     } catch {
       setError("Something went wrong. Please try again.");
@@ -383,26 +424,16 @@ export default function RegisterPage() {
 
   return (
     <LoginPageShell
-      contentMaxWidthClass={step === 3 ? "max-w-xl" : "max-w-md"}
+      contentMaxWidthClass={step === 3 ? "max-w-none" : "max-w-md"}
       headerPrompt="Have an account?"
       headerLinkLabel="Log In"
       headerLinkHref="/auth/login"
       sidebarVariant="signup"
     >
-      <RegisterFormHeader step={step} subtitle={stepSubtitle} />
+      <div className={step === 3 ? "flex min-h-0 flex-1 flex-col" : ""}>
+        <RegisterFormHeader step={step} subtitle={stepSubtitle} compact={step === 3} />
 
-      <div className={`mt-8 ${step === 3 ? "" : "max-w-sm mx-auto"}`}>
-        {error && (
-          <div className="mb-4 p-3.5 rounded-xl bg-red-50 border border-red-200/80 text-red-800 text-sm">
-            {typeof error === "string" ? error : "Something went wrong. Please try again."}
-          </div>
-        )}
-        {successMessage && (
-          <div className="mb-4 p-3.5 rounded-xl bg-emerald-50 border border-emerald-200/80 text-emerald-800 text-sm font-medium">
-            {successMessage}
-          </div>
-        )}
-
+        <div className={step === 3 ? "mt-4 flex min-h-0 flex-1 flex-col" : "mt-8 max-w-sm mx-auto"}>
         {/* Step 1: Email → OTP */}
         {step === 1 && (
           <div className="space-y-5">
@@ -427,9 +458,6 @@ export default function RegisterPage() {
               </form>
             ) : (
               <form onSubmit={handleVerifyEmailOtp} className="space-y-5">
-                <div className="rounded-xl border border-orange-100 bg-orange-50/60 px-4 py-3.5 text-sm text-slate-700">
-                  Code sent to <strong className="text-slate-900">{email.trim().toLowerCase()}</strong>. Enter the 8-digit code from your email.
-                </div>
                 <div>
                   <label className="block text-sm font-medium text-slate-700 mb-2">Verification code</label>
                   <input
@@ -440,7 +468,7 @@ export default function RegisterPage() {
                     onChange={(e) => setEmailOtp(e.target.value.replace(/\D/g, "").slice(0, 8))}
                     placeholder="00000000"
                     maxLength={8}
-                    className={`${FIELD_CLASS} text-center text-xl tracking-[0.35em] font-medium`}
+                    className={`${FIELD_CLASS} auth-num-bold text-center text-xl tracking-[0.35em]`}
                   />
                 </div>
                 <div className="flex flex-wrap gap-2">
@@ -481,9 +509,9 @@ export default function RegisterPage() {
                           }
                           return;
                         }
-                        setSuccessMessage("New verification code sent! Please check your email.");
                         setError("");
                         setResendCooldown(RESEND_OTP_COOLDOWN_SEC);
+                        toast.success(`Code sent to ${em}`);
                       } catch {
                         setError("Something went wrong. Please try again.");
                         setSuccessMessage("");
@@ -527,10 +555,6 @@ export default function RegisterPage() {
         {/* Step 2: Mobile (collect only when OTP disabled; otherwise OTP verify) */}
         {step === 2 && (
           <div className="space-y-5">
-            <div className="flex items-center gap-2 text-sm text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-xl px-4 py-3">
-              <CheckCircle className="w-4 h-4 flex-shrink-0" />
-              <span>Email verified: {verifiedEmail}</span>
-            </div>
             {!ENABLE_PHONE_OTP_REGISTER ? (
               <form onSubmit={handleMobileContinueWithoutOtp} className="space-y-5">
                 <LoginInputField
@@ -578,9 +602,6 @@ export default function RegisterPage() {
               </form>
             ) : (
               <form onSubmit={handleVerifyMobileOtp} className="space-y-5">
-                <div className="rounded-xl border border-orange-100 bg-orange-50/60 px-4 py-3.5 text-sm text-slate-700">
-                  OTP sent to <strong>+91 {mobile.replace(/\D/g, "").slice(-10)}</strong>. Enter the 6-digit code.
-                </div>
                 <div>
                   <label className="block text-sm font-medium text-slate-700 mb-2">Mobile OTP</label>
                   <input
@@ -591,7 +612,7 @@ export default function RegisterPage() {
                     onChange={(e) => setMobileOtp(e.target.value.replace(/\D/g, "").slice(0, 6))}
                     placeholder="000000"
                     maxLength={6}
-                    className={`${FIELD_CLASS} text-center text-lg tracking-[0.4em] font-medium`}
+                    className={`${FIELD_CLASS} auth-num-bold text-center text-lg tracking-[0.4em]`}
                   />
                 </div>
                 <div className="flex flex-wrap gap-2">
@@ -638,47 +659,41 @@ export default function RegisterPage() {
           </div>
         )}
 
-        {/* Step 3: Full parent details — responsive */}
+        {/* Step 3: Full parent details — wide compact grid (2–3 fields / row) */}
         {step === 3 && (
-          <form onSubmit={handleSubmitDetails} className="space-y-5">
-            <div className="flex items-center gap-2 text-sm text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-xl px-4 py-3">
-              <CheckCircle className="w-4 h-4 flex-shrink-0" />
-              <span>{ENABLE_PHONE_OTP_REGISTER ? "Email & mobile verified" : "Email verified, mobile added"}</span>
-            </div>
-
-            {/* Basic info — grid on md+ */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div className="md:col-span-2">
-                <label className="block text-sm font-medium text-slate-700 mb-1">Owner / Contact Name *</label>
+          <form onSubmit={handleSubmitDetails} className="flex min-h-0 flex-1 flex-col justify-between gap-5">
+            <div className="grid grid-cols-1 gap-x-4 gap-y-3.5 sm:grid-cols-2 lg:grid-cols-3">
+              <div>
+                <label className={LABEL_COMPACT}>Owner / Contact Name *</label>
                 <div className="relative">
-                  <User className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400" />
+                  <User className="absolute left-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 pointer-events-none" />
                   <input
                     type="text"
                     value={owner_name}
                     onChange={(e) => setOwnerName(e.target.value)}
                     placeholder="Your name"
                     required
-                    className={`${FIELD_CLASS} pl-10`}
+                    className={`${FIELD_CLASS_COMPACT} pl-9`}
                   />
                 </div>
               </div>
               <div>
-                <label className="block text-sm font-medium text-slate-700 mb-1">Business / Parent Name *</label>
+                <label className={LABEL_COMPACT}>Business / Parent Name *</label>
                 <input
                   type="text"
                   value={parent_name}
                   onChange={(e) => setParentName(e.target.value)}
                   placeholder="My Restaurant / Brand"
                   required
-                  className={FIELD_CLASS}
+                  className={FIELD_CLASS_COMPACT}
                 />
               </div>
               <div>
-                <label className="block text-sm font-medium text-slate-700 mb-1">Merchant Type *</label>
+                <label className={LABEL_COMPACT}>Merchant Type *</label>
                 <select
                   value={merchant_type}
                   onChange={(e) => setMerchantType(e.target.value as "LOCAL" | "BRAND" | "CHAIN" | "FRANCHISE")}
-                  className={FIELD_CLASS}
+                  className={FIELD_CLASS_COMPACT}
                 >
                   <option value="LOCAL">Local</option>
                   <option value="BRAND">Brand</option>
@@ -686,24 +701,25 @@ export default function RegisterPage() {
                   <option value="FRANCHISE">Franchise</option>
                 </select>
               </div>
+
               {(merchant_type === "BRAND" || merchant_type === "CHAIN" || merchant_type === "FRANCHISE") && (
-                <div className="md:col-span-2">
-                  <label className="block text-sm font-medium text-slate-700 mb-1">Brand Name</label>
+                <div>
+                  <label className={LABEL_COMPACT}>Brand Name</label>
                   <input
                     type="text"
                     value={brand_name}
                     onChange={(e) => setBrandName(e.target.value)}
                     placeholder="Brand / chain name"
-                    className={FIELD_CLASS}
+                    className={FIELD_CLASS_COMPACT}
                   />
                 </div>
               )}
-              <div className="md:col-span-2">
-                <label className="block text-sm font-medium text-slate-700 mb-1">Business Category</label>
+              <div>
+                <label className={LABEL_COMPACT}>Business Category</label>
                 <select
                   value={business_category}
                   onChange={(e) => setBusinessCategory(e.target.value)}
-                  className={FIELD_CLASS}
+                  className={FIELD_CLASS_COMPACT}
                 >
                   <option value="">Select</option>
                   <option value="RESTAURANT">Restaurant</option>
@@ -713,112 +729,104 @@ export default function RegisterPage() {
                   <option value="OTHER">Other</option>
                 </select>
               </div>
-            </div>
-
-            {/* Contact */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div>
-                <label className="block text-sm font-medium text-slate-700 mb-1">Alternate Phone</label>
+                <label className={LABEL_COMPACT}>Alternate Phone</label>
                 <input
                   type="tel"
                   value={alternate_phone}
                   onChange={(e) => setAlternatePhone(e.target.value.replace(/\D/g, "").slice(0, 15))}
                   placeholder="+91 or 10–15 digits"
-                  className={FIELD_CLASS}
+                  inputMode="numeric"
+                  className={`${FIELD_CLASS_COMPACT} auth-num`}
                 />
               </div>
-            </div>
 
-            {/* Address */}
-            <div className="space-y-2">
-              <div className="flex items-center gap-1.5 text-slate-700 font-medium text-sm">
-                <MapPin className="w-4 h-4" /> Address
+              <div className="sm:col-span-2 lg:col-span-3 flex items-center gap-1.5 text-slate-700 font-semibold text-sm pt-1 border-t border-slate-100">
+                <MapPin className="w-4 h-4 text-orange-500" /> Address
               </div>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div className="md:col-span-2">
-                  <label className="block text-sm font-medium text-slate-700 mb-1">Address line</label>
-                  <input
-                    type="text"
-                    value={address_line1}
-                    onChange={(e) => setAddressLine1(e.target.value)}
-                    placeholder="Street, building, landmark"
-                    className={FIELD_CLASS}
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-slate-700 mb-1">City</label>
-                  <input
-                    type="text"
-                    value={city}
-                    onChange={(e) => setCity(e.target.value)}
-                    placeholder="City"
-                    className={FIELD_CLASS}
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-slate-700 mb-1">State</label>
-                  <input
-                    type="text"
-                    value={state}
-                    onChange={(e) => setState(e.target.value)}
-                    placeholder="State"
-                    className={FIELD_CLASS}
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-slate-700 mb-1">Pincode</label>
-                  <input
-                    type="text"
-                    value={pincode}
-                    onChange={(e) => setPincode(e.target.value.replace(/\D/g, "").slice(0, 10))}
-                    placeholder="Pincode"
-                    className={FIELD_CLASS}
-                  />
-                </div>
+              <div className="sm:col-span-2 lg:col-span-3">
+                <label className={LABEL_COMPACT}>Address line</label>
+                <input
+                  type="text"
+                  value={address_line1}
+                  onChange={(e) => setAddressLine1(e.target.value)}
+                  placeholder="Street, building, landmark"
+                  className={FIELD_CLASS_COMPACT}
+                />
               </div>
-            </div>
+              <div>
+                <label className={LABEL_COMPACT}>City</label>
+                <input
+                  type="text"
+                  value={city}
+                  onChange={(e) => setCity(e.target.value)}
+                  placeholder="City"
+                  className={FIELD_CLASS_COMPACT}
+                />
+              </div>
+              <div>
+                <label className={LABEL_COMPACT}>State</label>
+                <input
+                  type="text"
+                  value={state}
+                  onChange={(e) => setState(e.target.value)}
+                  placeholder="State"
+                  className={FIELD_CLASS_COMPACT}
+                />
+              </div>
+              <div>
+                <label className={LABEL_COMPACT}>Pincode</label>
+                <input
+                  type="text"
+                  value={pincode}
+                  onChange={(e) => setPincode(e.target.value.replace(/\D/g, "").slice(0, 10))}
+                  placeholder="Pincode"
+                  inputMode="numeric"
+                  className={`${FIELD_CLASS_COMPACT} auth-num`}
+                />
+              </div>
 
-            {/* Store / Parent logo */}
-            <div className="space-y-2">
-              <div className="flex items-center gap-1.5 text-slate-700 font-medium text-sm">
-                <Image className="w-4 h-4" /> Parent / Store logo
-              </div>
-              <div className="flex flex-col sm:flex-row gap-4 items-start">
-                <label className="cursor-pointer flex-shrink-0 rounded-xl border-2 border-dashed border-slate-300 hover:border-orange-400 bg-slate-50/50 p-4 text-center w-full sm:w-auto min-w-[140px]">
-                  <input
-                    type="file"
-                    accept="image/jpeg,image/png,image/webp"
-                    className="sr-only"
-                    onChange={handleLogoChange}
-                  />
-                  {store_logo_preview ? (
-                    <img src={store_logo_preview} alt="Logo preview" className="w-24 h-24 object-contain mx-auto rounded-lg" />
-                  ) : (
-                    <span className="text-slate-500 text-sm">Choose image</span>
+              <div className="sm:col-span-2 lg:col-span-3">
+                <div className="flex flex-wrap items-center gap-3 rounded-xl border border-dashed border-orange-200/80 bg-orange-50/30 px-4 py-3">
+                  <div className="flex items-center gap-1.5 text-slate-700 font-medium text-sm shrink-0">
+                    <Image className="w-4 h-4 text-orange-500" /> Parent / Store logo
+                  </div>
+                  <label className="cursor-pointer inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs text-slate-600 shadow-sm hover:border-orange-400 hover:text-orange-700 transition-colors">
+                    <input
+                      type="file"
+                      accept="image/jpeg,image/png,image/webp"
+                      className="sr-only"
+                      onChange={handleLogoChange}
+                    />
+                    {store_logo_preview ? (
+                      <img src={store_logo_preview} alt="Logo preview" className="w-9 h-9 object-contain rounded" />
+                    ) : (
+                      <span>Choose image</span>
+                    )}
+                  </label>
+                  {store_logo_file && (
+                    <button
+                      type="button"
+                      onClick={() => { setStoreLogoFile(null); setStoreLogoPreview(null); }}
+                      className="text-xs text-red-600 hover:underline"
+                    >
+                      Remove
+                    </button>
                   )}
-                </label>
-                {store_logo_file && (
-                  <button
-                    type="button"
-                    onClick={() => { setStoreLogoFile(null); setStoreLogoPreview(null); }}
-                    className="text-sm text-red-600 hover:underline"
-                  >
-                    Remove logo
-                  </button>
-                )}
+                  <span className="text-xs text-slate-500">JPEG, PNG or WebP · Max 5 MB · Optional</span>
+                </div>
               </div>
-              <p className="text-xs text-slate-500">JPEG, PNG or WebP. Max 5 MB. Optional.</p>
             </div>
 
-            <div className="flex flex-col-reverse sm:flex-row gap-2 sm:gap-4 pt-2">
+            <div className="flex flex-col-reverse sm:flex-row gap-2.5 pt-2">
               <button
                 type="button"
                 onClick={() => setStep(2)}
-                className={`${SECONDARY_BTN} sm:py-3`}
+                className="py-2.5 px-5 rounded-xl border border-slate-200 text-slate-600 text-sm font-medium hover:bg-slate-50 hover:border-slate-300 transition-colors"
               >
                 ← Back to mobile
               </button>
-              <PrimaryButton type="submit" loading={loading} className="flex-1">
+              <PrimaryButton type="submit" loading={loading} className="flex-1 py-2.5 text-base">
                 Complete registration
                 <ArrowRight className="w-4 h-4" />
               </PrimaryButton>
@@ -826,9 +834,7 @@ export default function RegisterPage() {
           </form>
         )}
 
-        <RegisterSecurityTrust />
-
-        <p className="mt-6 text-center text-sm text-slate-600 lg:hidden">
+        <p className={`text-center text-sm text-slate-600 lg:hidden ${step === 3 ? "mt-3" : "mt-6"}`}>
           Have an account?{" "}
           <Link
             href="/auth/login"
@@ -837,6 +843,7 @@ export default function RegisterPage() {
             Log In
           </Link>
         </p>
+        </div>
       </div>
     </LoginPageShell>
   );

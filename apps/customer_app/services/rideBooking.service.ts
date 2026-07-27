@@ -53,6 +53,16 @@ export type PlaceRideOrderResponse = {
   pickupOtp: string;
 };
 
+export type RideOrderCaptainProfile = {
+  name: string;
+  phone?: string;
+  photoUrl?: string | null;
+  rating?: number | null;
+  deliveredOrdersCount?: number | null;
+  vehicleRegistration?: string | null;
+  vehicleModel?: string | null;
+};
+
 export type RideOrderStatusResponse = {
   orderId: string;
   coreOrderId: number;
@@ -60,6 +70,8 @@ export type RideOrderStatusResponse = {
   appStatus: string;
   riderId: number | null;
   riderAssigned: boolean;
+  /** Full captain profile when assigned — hydrate Captain Card without waiting on GET /orders. */
+  rider: RideOrderCaptainProfile | null;
   totalAmount: number;
   searchExpiresAt: string | null;
   cancelled: boolean;

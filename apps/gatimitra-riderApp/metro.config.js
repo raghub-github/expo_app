@@ -1,24 +1,21 @@
 // Learn more https://docs.expo.io/guides/customizing-metro
 
 // EMFILE guard (Windows + OneDrive): OneDrive continuously opens files to sync,
-// competing with Metro's workers and expo-router's typed-routes writeFileSync for
-// OS file handles. graceful-fs monkeypatches the global fs so open/read/write
-// queue-and-retry on EMFILE/ENFILE instead of throwing. Must run before anything
-// else touches fs. Pairs with the maxWorkers cap below (fewer concurrent opens).
-require('graceful-fs').gracefulify(require('fs'));
+// competing with Metro's workers. graceful-fs queues open/read/write on EMFILE.
+require("graceful-fs").gracefulify(require("fs"));
 
-const { getDefaultConfig } = require('expo/metro-config');
-const path = require('path');
-const os = require('os');
-const fs = require('fs');
+const { getDefaultConfig } = require("expo/metro-config");
+const path = require("path");
+const os = require("os");
+const fs = require("fs");
 
 const projectRoot = __dirname;
-const workspaceRoot = path.resolve(projectRoot, '../..');
+const workspaceRoot = path.resolve(projectRoot, "../..");
 
 // Keep Metro cache outside OneDrive/Desktop — sync can break bundle file reads on Windows.
-const metroCacheRoot = path.join(os.tmpdir(), 'gatimitra-rider-metro-cache');
-const metroCacheDir = path.join(metroCacheRoot, 'cache');
-const metroFileMapDir = path.join(metroCacheRoot, 'file-map');
+const metroCacheRoot = path.join(os.tmpdir(), "gatimitra-rider-metro-cache");
+const metroCacheDir = path.join(metroCacheRoot, "cache");
+const metroFileMapDir = path.join(metroCacheRoot, "file-map");
 
 for (const dir of [metroCacheDir, metroFileMapDir]) {
   fs.mkdirSync(dir, { recursive: true });
@@ -28,8 +25,6 @@ for (const dir of [metroCacheDir, metroFileMapDir]) {
 const defaultConfig = getDefaultConfig(projectRoot);
 const config = defaultConfig;
 
-// Keep Metro file cache outside OneDrive (invalid option fileMapCacheDirectory removed for expo-doctor).
-// Wrap clear() — Metro's default clear can throw ENOTEMPTY on Windows when another bundler holds files.
 config.cacheStores = ({ FileStore }) => {
   const store = new FileStore({ root: metroCacheDir });
   store.clear = () => {
@@ -55,10 +50,10 @@ config.cacheStores = ({ FileStore }) => {
         tryRm(staleDir);
       });
     } catch (err) {
-      const code = err && typeof err === 'object' ? err.code : null;
-      if (code === 'ENOTEMPTY' || code === 'EBUSY' || code === 'EPERM') {
+      const code = err && typeof err === "object" ? err.code : null;
+      if (code === "ENOTEMPTY" || code === "EBUSY" || code === "EPERM") {
         console.warn(
-          '[metro] Cache clear skipped — stop the other Metro/Expo process (often port 8081) or use npm start without -c.',
+          "[metro] Cache clear skipped — stop the other Metro/Expo process or use npm start without -c.",
         );
         return;
       }
@@ -68,29 +63,61 @@ config.cacheStores = ({ FileStore }) => {
   return [store];
 };
 
-const packagesFolder = path.resolve(workspaceRoot, 'packages');
-const gatimitraWorkspacePackages = ['contracts', 'sdk', 'expo-push-kit', 'expo-location-kit'];
+try {
+  config.fileMapCacheDirectory = metroFileMapDir;
+} catch {
+  // older metro may ignore unknown option
+}
+
+// CRITICAL: do NOT inherit Expo's default watchFolders — in this monorepo that
+// includes dashboard, backend, customer_app, merchant_app, all workers, etc.
+// Watching the whole tree on OneDrive/Windows exhausts file handles → EMFILE →
+// Metro process dies (looks like the port was "auto killed").
+const packagesFolder = path.resolve(workspaceRoot, "packages");
+const gatimitraWorkspacePackages = [
+  "contracts",
+  "sdk",
+  "expo-push-kit",
+  "expo-location-kit",
+  "map-tracking-engine",
+  "otp-verify-ui",
+];
 
 config.watchFolders = [
-  ...new Set([...(defaultConfig.watchFolders ?? []), packagesFolder]),
-];
+  projectRoot,
+  packagesFolder,
+  path.resolve(workspaceRoot, "node_modules"),
+].filter((p, i, arr) => arr.indexOf(p) === i);
+
 config.resolver.nodeModulesPaths = [
-  path.resolve(projectRoot, 'node_modules'),
-  path.resolve(workspaceRoot, 'node_modules'),
+  path.resolve(projectRoot, "node_modules"),
+  path.resolve(workspaceRoot, "node_modules"),
 ];
 config.resolver.disableHierarchicalLookup = false;
 
-// Keep Metro's file map out of VCS state and native build artifacts. These trees are
-// not part of the JS bundle, but after `expo run:android`/`prebuild` they explode to
-// thousands of files (android/build, .gradle, .cxx, ios/Pods) that Metro would
-// otherwise crawl and hold handles on — a real EMFILE contributor on Windows/OneDrive.
-// Merged with any default blockList so we never widen resolution, only narrow crawling.
 {
+  // Block only workspace-root folders — do NOT use bare `/services/` (that also
+  // matches `apps/gatimitra-riderApp/src/services` and breaks Metro resolution).
+  const blockAbsDir = (absDir) => {
+    const escaped = path
+      .resolve(absDir)
+      .replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+      .replace(/\\\\/g, "[/\\\\]")
+      .replace(/\//g, "[/\\\\]");
+    return new RegExp(`^${escaped}([/\\\\]|$)`);
+  };
   const extraBlock = [
     /[/\\]\.git[/\\].*/,
     /[/\\]\.expo[/\\].*/,
     /[/\\]android[/\\](build|\.gradle|\.cxx|app[/\\]build)[/\\].*/,
     /[/\\]ios[/\\](build|Pods)[/\\].*/,
+    /[/\\]apps[/\\]customer_app[/\\].*/,
+    /[/\\]apps[/\\]merchant_app[/\\].*/,
+    blockAbsDir(path.resolve(workspaceRoot, "dashboard")),
+    blockAbsDir(path.resolve(workspaceRoot, "backend")),
+    blockAbsDir(path.resolve(workspaceRoot, "partnersite")),
+    blockAbsDir(path.resolve(workspaceRoot, "services")),
+    blockAbsDir(path.resolve(workspaceRoot, "cxsite")),
   ];
   const existing = config.resolver.blockList;
   config.resolver.blockList = Array.isArray(existing)
@@ -110,17 +137,14 @@ config.resolver.extraNodeModules = {
   ),
 };
 
-// Configure resolver to handle mapbox-gl imports on web
 const defaultResolver = config.resolver.resolveRequest;
 
 config.resolver.resolveRequest = (context, moduleName, platform) => {
-  // Always resolve workspace packages from packages/ (avoids stale/incomplete
-  // node_modules copies from prepare-workspace on OneDrive/Windows).
-  if (typeof moduleName === 'string' && moduleName.startsWith('@gatimitra/')) {
-    const withoutScope = moduleName.slice('@gatimitra/'.length);
-    const slash = withoutScope.indexOf('/');
+  if (typeof moduleName === "string" && moduleName.startsWith("@gatimitra/")) {
+    const withoutScope = moduleName.slice("@gatimitra/".length);
+    const slash = withoutScope.indexOf("/");
     const pkgName = slash === -1 ? withoutScope : withoutScope.slice(0, slash);
-    const subpath = slash === -1 ? '' : withoutScope.slice(slash + 1);
+    const subpath = slash === -1 ? "" : withoutScope.slice(slash + 1);
     if (gatimitraWorkspacePackages.includes(pkgName)) {
       const pkgRoot = path.resolve(packagesFolder, pkgName);
       const candidates = subpath
@@ -128,65 +152,62 @@ config.resolver.resolveRequest = (context, moduleName, platform) => {
             path.join(pkgRoot, subpath),
             path.join(pkgRoot, `${subpath}.ts`),
             path.join(pkgRoot, `${subpath}.tsx`),
-            path.join(pkgRoot, subpath, 'index.ts'),
-            path.join(pkgRoot, subpath, 'index.tsx'),
+            path.join(pkgRoot, subpath, "index.ts"),
+            path.join(pkgRoot, subpath, "index.tsx"),
           ]
         : [
-            path.join(pkgRoot, 'src', 'index.ts'),
-            path.join(pkgRoot, 'src', 'index.tsx'),
-            path.join(pkgRoot, 'index.ts'),
+            path.join(pkgRoot, "src", "index.ts"),
+            path.join(pkgRoot, "src", "index.tsx"),
+            path.join(pkgRoot, "index.ts"),
           ];
       for (const candidate of candidates) {
         if (fs.existsSync(candidate) && fs.statSync(candidate).isFile()) {
-          return { filePath: candidate, type: 'sourceFile' };
+          return { filePath: candidate, type: "sourceFile" };
         }
       }
     }
   }
 
-  // Supabase realtime-js imports Node `ws` → use RN global WebSocket instead.
-  if (platform !== 'web' && moduleName === 'ws') {
+  if (platform !== "web" && moduleName === "ws") {
     return {
-      filePath: path.resolve(projectRoot, 'metro-ws-shim.js'),
-      type: 'sourceFile',
+      filePath: path.resolve(projectRoot, "metro-ws-shim.js"),
+      type: "sourceFile",
     };
   }
 
-  // Ignore mapbox-gl imports on web (they're not needed for React Native web)
-  if (platform === 'web') {
-    if (moduleName && (
-      moduleName.includes('mapbox-gl') ||
-      moduleName.includes('@rnmapbox/maps/lib/module/web')
-    )) {
-      return {
-        type: 'empty',
-      };
+  if (platform === "web") {
+    if (
+      moduleName === "sp-react-native-in-app-updates" ||
+      (typeof moduleName === "string" &&
+        moduleName.includes("sp-react-native-in-app-updates"))
+    ) {
+      return { type: "empty" };
+    }
+    if (
+      moduleName &&
+      (moduleName.includes("mapbox-gl") ||
+        moduleName.includes("@rnmapbox/maps/lib/module/web"))
+    ) {
+      return { type: "empty" };
     }
   }
-  
-  // Ignore mapbox-gl CSS imports (they're not needed for React Native)
-  if (moduleName && moduleName.includes('mapbox-gl/dist/mapbox-gl.css')) {
-    return {
-      type: 'empty',
-    };
+
+  if (moduleName && moduleName.includes("mapbox-gl/dist/mapbox-gl.css")) {
+    return { type: "empty" };
   }
-  
-  // Use default resolver for everything else
+
   if (defaultResolver) {
     return defaultResolver(context, moduleName, platform);
   }
-  
+
   return context.resolveRequest(context, moduleName, platform);
 };
 
 const { withExpoPlatformFallback } = require("./metro.expo-platform-fallback");
 withExpoPlatformFallback(config);
 
-// Cap parallel transform workers. Metro defaults to (CPU count - 1) — on a 12-core
-// machine that is ~11 workers all opening cache files concurrently, which exhausts
-// file handles under OneDrive and triggers EMFILE. Metro's FileStore reads via
-// fs/promises (NOT patched by graceful-fs), so capping concurrency is the real fix.
-// Override with METRO_MAX_WORKERS if you need to tune for your machine.
-config.maxWorkers = Number(process.env.METRO_MAX_WORKERS) || 4;
+// Cap workers hard — Metro FileStore uses fs/promises (not graceful-fs).
+// Override with METRO_MAX_WORKERS if needed.
+config.maxWorkers = Number(process.env.METRO_MAX_WORKERS) || 1;
 
 module.exports = config;

@@ -48,6 +48,10 @@ import {
 import { subscribeToTopic, unsubscribeFromTopic } from "./fcmProvider.js";
 import { createCampaign, finalizeCampaignSend, markCampaignStarted, getCampaignById } from "./db.js";
 import { resolveTarget } from "./targetResolver.js";
+import {
+  expectedRoleFromTarget,
+  templateRoleMatchesTarget,
+} from "./campaignTarget.js";
 import type { NotificationRole, TargetFilter, TemplateVariables } from "./types.js";
 
 function isAdminLikeRole(role: string): boolean {
@@ -267,10 +271,21 @@ export const notificationRoutes: FastifyPluginAsync = async (app) => {
         return reply.code(400).send({ error: "missing_required_fields" });
       }
 
+      const tmplCheck = await loadTemplate(b.templateCode, "en");
+      if (!tmplCheck) return reply.code(404).send({ error: "template_not_found" });
+      const expectedRole = expectedRoleFromTarget(b.target as Record<string, unknown>);
+      if (!templateRoleMatchesTarget(String(tmplCheck.role), expectedRole)) {
+        return reply.code(400).send({
+          error: "role_mismatch",
+          message: `Template ${b.templateCode} is for role "${tmplCheck.role}" but target is "${expectedRole}". Pick ${expectedRole === "customer" ? "CUSTOMER_ANNOUNCEMENT" : expectedRole === "merchant" ? "MERCHANT_ANNOUNCEMENT" : expectedRole === "rider" ? "RIDER_ANNOUNCEMENT" : "a matching"} template.`,
+          templateRole: tmplCheck.role,
+          targetRole: expectedRole,
+        });
+      }
+
       // Immediate send path — create as running, send synchronously, then finalize status.
       if (b.status === "running") {
-        const tmpl = await loadTemplate(b.templateCode, "en");
-        if (!tmpl) return reply.code(404).send({ error: "template_not_found" });
+        const tmpl = tmplCheck;
         const campaign = await createCampaign({
           name: b.name,
           description: b.description ?? null,
@@ -286,6 +301,12 @@ export const notificationRoutes: FastifyPluginAsync = async (app) => {
         });
         await markCampaignStarted(campaign.id);
         try {
+          const roleDefaultDeepLink =
+            String(tmpl.role).toLowerCase() === "merchant"
+              ? "/notifications"
+              : String(tmpl.role).toLowerCase() === "rider"
+                ? "/notifications"
+                : "/notifications";
           const result = await send({
             templateCode: b.templateCode,
             variables: b.variables,
@@ -295,9 +316,44 @@ export const notificationRoutes: FastifyPluginAsync = async (app) => {
               title: b.overrideTitle ?? null,
               body: b.overrideBody ?? null,
               imageUrl: b.overrideImage ?? null,
-              deepLink: b.overrideDeepLink ?? null,
+              deepLink: b.overrideDeepLink?.trim() || roleDefaultDeepLink,
+            },
+            metadata: {
+              gmType: b.templateCode,
+              campaign: true,
             },
           });
+          // Missing push tokens / quiet hours are soft outcomes — never 400.
+          // Campaign stays completed; dashboard shows a warning, not an error.
+          if (result.skipReason === "no_recipients" || result.skipReason === "quiet_hours") {
+            await finalizeCampaignSend(campaign.id, "completed");
+            req.log.warn(
+              {
+                campaignId: campaign.id,
+                skipReason: result.skipReason,
+                templateCode: b.templateCode,
+              },
+              "Push token unavailable or quiet hours — campaign completed with 0 push deliveries",
+            );
+            return reply.send({
+              campaignId: campaign.id,
+              status: "completed",
+              warning:
+                result.skipReason === "quiet_hours"
+                  ? "Quiet hours active — push skipped. Campaign recorded."
+                  : "Push token unavailable. Skipping notification — no registered devices for this target (common in Expo Go). Campaign recorded.",
+              ...result,
+            });
+          }
+          if (result.skipReason) {
+            await finalizeCampaignSend(campaign.id, "failed");
+            return reply.code(400).send({
+              error: result.skipReason,
+              campaignId: campaign.id,
+              message: result.skipReason,
+              ...result,
+            });
+          }
           await finalizeCampaignSend(campaign.id, "completed");
           return reply.send({ campaignId: campaign.id, status: "completed", ...result });
         } catch (e) {
@@ -690,7 +746,8 @@ export const notificationRoutes: FastifyPluginAsync = async (app) => {
   await app.register(async (user) => {
     await user.register(auth, { required: true });
 
-    // Paged inbox
+    // Paged inbox — prefer in_app rows; include push-only rows that have no in_app twin
+    // (avoids showing duplicate cards when channel=all wrote both push + in_app).
     user.get<{ Querystring: { limit?: string; offset?: string } }>("/inbox", async (req) => {
       const q = req.query ?? {};
       const limit = Math.min(200, Math.max(1, Number(q.limit ?? 50)));
@@ -699,18 +756,46 @@ export const notificationRoutes: FastifyPluginAsync = async (app) => {
       const rows = await sql`
         SELECT notification_id, template_code, title, body, image_url, deep_link,
                priority, status, queued_at, delivered_at, clicked_at, metadata
-        FROM public.notification_dispatch_logs
+        FROM public.notification_dispatch_logs d
         WHERE recipient_user_id = ${req.auth!.sub}
-          AND channel IN ('push','in_app')
+          AND (
+            channel = 'in_app'
+            OR (
+              channel = 'push'
+              AND NOT EXISTS (
+                SELECT 1
+                FROM public.notification_dispatch_logs i
+                WHERE i.recipient_user_id = d.recipient_user_id
+                  AND i.channel = 'in_app'
+                  AND i.title IS NOT DISTINCT FROM d.title
+                  AND i.body IS NOT DISTINCT FROM d.body
+                  AND abs(extract(epoch from (i.queued_at - d.queued_at))) < 30
+              )
+            )
+          )
         ORDER BY queued_at DESC
         LIMIT ${limit} OFFSET ${offset}
       `;
       const unread = await sql`
         SELECT COUNT(*) AS n
-        FROM public.notification_dispatch_logs
+        FROM public.notification_dispatch_logs d
         WHERE recipient_user_id = ${req.auth!.sub}
           AND clicked_at IS NULL
-          AND channel IN ('push','in_app')
+          AND (
+            channel = 'in_app'
+            OR (
+              channel = 'push'
+              AND NOT EXISTS (
+                SELECT 1
+                FROM public.notification_dispatch_logs i
+                WHERE i.recipient_user_id = d.recipient_user_id
+                  AND i.channel = 'in_app'
+                  AND i.title IS NOT DISTINCT FROM d.title
+                  AND i.body IS NOT DISTINCT FROM d.body
+                  AND abs(extract(epoch from (i.queued_at - d.queued_at))) < 30
+              )
+            )
+          )
       `;
       return { items: rows, unread: Number((unread[0] as { n: string }).n ?? 0) };
     });

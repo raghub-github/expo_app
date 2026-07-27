@@ -52,6 +52,22 @@ export type WalletTransaction = {
 
 export type WalletTxFilter = "all" | "additions" | "deductions" | "refunds" | "expired";
 
+export type WalletTopupIntent = {
+  intent_id: string;
+  amount: number;
+  razorpay_order_id: string;
+  key_id: string;
+  amount_paise: number;
+  currency: "INR";
+};
+
+export type WalletTopupConfirmResult = {
+  ok: true;
+  amount: number;
+  balance_after: number;
+  transaction_id: string;
+};
+
 export const walletService = {
   async getBalance(): Promise<WalletBalance> {
     const { data } = await api.get<WalletBalance>(`${ME_PREFIX}/wallet`);
@@ -110,6 +126,28 @@ export const walletService = {
       balance_after: number;
       transaction_id: string;
     }>(`${ME_PREFIX}/wallet/claim-missed-offer-compensation`, input);
+    return data;
+  },
+
+  async createTopupIntent(amount: number): Promise<WalletTopupIntent> {
+    const { data } = await api.post<WalletTopupIntent>(`${ME_PREFIX}/wallet/topup/intent`, {
+      amount,
+    });
+    return data;
+  },
+
+  async confirmTopup(input: {
+    intentId: string;
+    razorpayOrderId: string;
+    razorpayPaymentId: string;
+    razorpaySignature: string;
+  }): Promise<WalletTopupConfirmResult> {
+    const { data } = await api.post<WalletTopupConfirmResult>(`${ME_PREFIX}/wallet/topup/confirm`, {
+      intent_id: input.intentId,
+      razorpay_order_id: input.razorpayOrderId,
+      razorpay_payment_id: input.razorpayPaymentId,
+      razorpay_signature: input.razorpaySignature,
+    });
     return data;
   },
 };

@@ -174,8 +174,10 @@ export async function POST(request: NextRequest) {
     }
 
     const code = String(planCode).trim().toUpperCase().replace(/\s+/g, "_");
-    const validBilling = ["MONTHLY", "QUARTERLY", "YEARLY"].includes(String(billingCycle).toUpperCase())
-      ? String(billingCycle).toUpperCase()
+    const allowedCycles = ["MONTHLY", "QUARTERLY", "SEMI_YEARLY", "YEARLY"] as const;
+    const cycleRaw = String(billingCycle).toUpperCase().replace(/-/g, "_");
+    const validBilling = (allowedCycles as readonly string[]).includes(cycleRaw)
+      ? cycleRaw
       : "MONTHLY";
 
     const benefitsPayload = Array.isArray(benefitsJson)
@@ -202,7 +204,7 @@ export async function POST(request: NextRequest) {
         ${description ? String(description).trim() : null},
         ${Number(price) || 0},
         ${gp},
-        ${validBilling},
+        ${validBilling}::public.billing_cycle_type,
         ${maxMenuItems != null ? Number(maxMenuItems) : null},
         ${maxCuisines != null ? Number(maxCuisines) : null},
         ${maxMenuCategories != null ? Number(maxMenuCategories) : null},

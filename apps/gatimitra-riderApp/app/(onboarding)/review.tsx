@@ -83,8 +83,8 @@ export default function ReviewScreen() {
       // Clear onboarding data
       await clear();
 
-      // Navigate to payment screen (after document submission, before approval)
-      router.replace("/(onboarding)/payment");
+      // Bank account verification, then onboarding fee payment
+      router.replace("/(onboarding)/bank-account");
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to submit. Please try again.");
     } finally {

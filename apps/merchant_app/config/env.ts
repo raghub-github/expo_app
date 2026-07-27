@@ -78,6 +78,9 @@ export function getConfig(): {
    * Use when SMS does not arrive via Supabase (hook / MSG91 on API server).
    */
   phoneOtpUseBackendOnly: boolean;
+  /** WebSocket gateway for live rider location (same as customer). */
+  wsBaseUrl: string;
+  wsEnabled: boolean;
 } {
   // Production safety net: if EAS didn't bake EXPO_PUBLIC_API_BASE_URL into
   // the bundle, fall back to the public domain. localhost is unreachable from
@@ -152,5 +155,31 @@ export function getConfig(): {
     supabaseUrl,
     supabaseAnonKey,
     phoneOtpUseBackendOnly,
+    wsBaseUrl: resolveWsBaseUrl(resolveApiBaseUrl(raw)),
+    wsEnabled: isMerchantWsEnabled(),
   };
+}
+
+export function isMerchantWsEnabled(): boolean {
+  const flag = process.env.EXPO_PUBLIC_WS_ENABLED?.trim().toLowerCase();
+  if (flag === "false" || flag === "0" || flag === "no") return false;
+  return true;
+}
+
+/** REST (:3000) and ws-gateway (:4100) are separate services in local dev. */
+export function resolveWsBaseUrl(apiBaseUrl: string): string {
+  const fromEnv = process.env.EXPO_PUBLIC_WS_BASE_URL?.trim();
+  if (fromEnv) return fromEnv.replace(/\/+$/, "");
+
+  try {
+    const parsed = new URL(apiBaseUrl);
+    const wsPort = process.env.EXPO_PUBLIC_WS_PORT?.trim() || "4100";
+    if (parsed.port === "3000" || parsed.port === "4000" || parsed.port === "") {
+      parsed.port = wsPort;
+    }
+    parsed.protocol = parsed.protocol === "https:" ? "wss:" : "ws:";
+    return parsed.origin;
+  } catch {
+    return __DEV__ ? "ws://localhost:4100" : "wss://ws.gatimitra.com";
+  }
 }

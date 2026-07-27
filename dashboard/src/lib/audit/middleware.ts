@@ -37,13 +37,13 @@ export async function withAuditLog<T>(
   context: ActionContext = {}
 ): Promise<T> {
   const { createServerSupabaseClient } = await import("../supabase/server");
-  const { isInvalidRefreshToken } = await import("../auth/session-errors");
+  const { isInvalidRefreshToken, signOutIfSessionDead } = await import("../auth/session-errors");
   const supabase = await createServerSupabaseClient();
   const { data: { user }, error: userError } = await supabase.auth.getUser();
 
   if (userError) {
     if (isInvalidRefreshToken(userError)) {
-      await supabase.auth.signOut();
+      await signOutIfSessionDead(supabase, userError);
     }
     throw new Error("Not authenticated");
   }

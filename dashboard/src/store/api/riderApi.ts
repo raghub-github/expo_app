@@ -108,6 +108,12 @@ export interface RiderDocument {
   verifiedAt?: string | null;
   verifierName?: string | null;
   rejectedReason?: string | null;
+  extractedName?: string | null;
+  extractedDob?: string | null;
+  extractedDataSummary?: Record<string, unknown> | null;
+  lastVerificationId?: string | null;
+  lastProviderReference?: string | null;
+  metadata?: Record<string, unknown> | null;
   createdAt: string;
   files?: RiderDocumentFile[];
 }

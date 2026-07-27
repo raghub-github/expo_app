@@ -97,11 +97,26 @@ export async function POST(request: NextRequest, ctx: RouteCtx) {
     await uploadWithKey(file, r2Key);
     const url = `/api/attachments/proxy?key=${encodeURIComponent(r2Key)}`;
 
+    let aspectRatio: number | null = null;
+    if (kind === "image") {
+      try {
+        const { default: imageSize } = await import("image-size");
+        const buf = Buffer.from(await file.arrayBuffer());
+        const dim = imageSize(buf);
+        if (dim.width && dim.height && dim.height > 0) {
+          aspectRatio = Number((dim.width / dim.height).toFixed(4));
+        }
+      } catch {
+        aspectRatio = null;
+      }
+    }
+
     const item: GridFirstHeroMediaItem = {
       id: randomUUID(),
       kind,
       url,
       sortOrder: existing.length,
+      aspectRatio,
     };
 
     const items = await saveStateGridFirstHeroMedia(stateId, [...existing, item]);

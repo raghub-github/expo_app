@@ -49,6 +49,7 @@ if [[ "$svc" == "nginx" ]]; then
   if ! docker run --rm \
       -v "$(dirname "$compose_file")/../nginx/nginx.conf:/etc/nginx/nginx.conf:ro" \
       -v "$(dirname "$compose_file")/../nginx/proxy_common.conf:/etc/nginx/proxy_common.conf:ro" \
+      -v "$(dirname "$compose_file")/../nginx/static/rider-digilocker-return.html:/etc/nginx/html/rider-digilocker-return.html:ro" \
       nginx:1.27-alpine nginx -t -q 2>&1; then
     echo "✖ deploy: $svc — nginx config validation failed; refusing to deploy" >&2
     exit 1

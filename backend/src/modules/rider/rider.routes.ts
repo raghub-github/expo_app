@@ -73,6 +73,11 @@ import {
 import { getRiderOnboardingProgress } from "../../lib/rider-onboarding-progress.js";
 import { isDlAlreadyRegistered, normalizeDlNumber } from "../../lib/rider-dl-registration-check.js";
 import { isRcAlreadyRegistered, normalizeRcNumber } from "../../lib/rider-rc-registration-check.js";
+import {
+  isAadhaarAlreadyRegistered,
+  normalizeAadhaarDigits,
+} from "../../lib/rider-aadhaar-registration-check.js";
+import { isPanAlreadyRegistered, normalizePan } from "../../lib/rider-pan-registration-check.js";
 import { getEnv } from "../../config/env.js";
 import { finalizeMerchantOrderDelivered } from "../../lib/merchant-order-delivered-wallet.js";
 import { unassignFoodRiderAndRestartDispatch } from "../../lib/food-rider-unassign.service.js";
@@ -218,14 +223,26 @@ export async function riderRoutes(app: FastifyInstance) {
       });
 
       try {
-        await deactivateRiderDeviceSessions(sql, {
-          userId,
-          deviceId,
-          revokedBy: "rider_self",
-          revokeReason: body.reasonCode,
-        });
+        if (body.logoutAllDevices) {
+          const { revokeAllRiderDeviceSessions } = await import("../../lib/rider-device-sessions.js");
+          await revokeAllRiderDeviceSessions(sql, {
+            userId,
+            revokedBy: "rider_logout_all",
+            revokeReason: `logout_all:${body.reasonCode}`,
+          });
+        } else {
+          await deactivateRiderDeviceSessions(sql, {
+            userId,
+            deviceId,
+            revokedBy: "rider_self",
+            revokeReason: body.reasonCode,
+          });
+        }
       } catch (sessErr) {
-        req.log?.error?.({ err: sessErr, riderId }, "Rider logout: device session deactivate failed");
+        req.log?.error?.(
+          { err: sessErr, riderId, logoutAllDevices: Boolean(body.logoutAllDevices) },
+          "Rider logout: device session deactivate failed"
+        );
       }
 
       return { success: true as const };
@@ -1681,6 +1698,24 @@ export async function riderRoutes(app: FastifyInstance) {
             nextOnboardingStep: z.string(),
             completedOnboardingSteps: z.array(z.string()),
             rating: z.number().nullable(),
+            panNumber: z.string().nullable(),
+            panVerified: z.boolean(),
+            dob: z.string().nullable(),
+            dlNumber: z.string().nullable(),
+            dlFrontUrl: z.string().nullable(),
+            dlBackUrl: z.string().nullable(),
+            dlVerified: z.boolean(),
+            dlVerifiedData: z.record(z.string(), z.unknown()).nullable(),
+            rcNumber: z.string().nullable(),
+            rcFrontUrl: z.string().nullable(),
+            rcVerified: z.boolean(),
+            rcVerifiedData: z.record(z.string(), z.unknown()).nullable(),
+            onboardingProgress: z.record(z.string(), z.string()),
+            lastCompletedStep: z.string().nullable(),
+            nextRequiredStep: z.string().nullable(),
+            onboardingProgressPct: z.number(),
+            macroStepIndex: z.number(),
+            paymentCompleted: z.boolean(),
           }),
           404: z.object({
             error: z.string(),
@@ -1706,6 +1741,10 @@ export async function riderRoutes(app: FastifyInstance) {
       void tryActivateRiderIfEligible(parsedId).catch((err) => {
         req.log.warn({ err, riderId: parsedId }, "background rider activation check failed");
       });
+
+      // Progress heals illegal APPROVAL-without-payment before status mapping.
+      const progress = await getRiderOnboardingProgress(parsedId);
+
       const resolved = await resolveRiderOnboardingStatusForApp(parsedId, {
         syncActivation: false,
       });
@@ -1713,9 +1752,7 @@ export async function riderRoutes(app: FastifyInstance) {
         return reply.code(404).send({ error: "Rider not found" });
       }
 
-      const { rider, onboardingStatus, approvalStatus } = resolved;
-
-      const progress = await getRiderOnboardingProgress(rider.id);
+      const { rider, onboardingStatus, approvalStatus, paymentCompleted } = resolved;
 
       const { getRiderAverageRating } = await import("../../lib/rider-average-rating.js");
       const rating = await getRiderAverageRating(rider.id);
@@ -1725,6 +1762,13 @@ export async function riderRoutes(app: FastifyInstance) {
       const tokenPhone =
         typeof req.auth?.phone === "string" ? req.auth.phone.trim() : "";
 
+      // Defense in depth — never expose pending_approval without completed payment.
+      const paid = progress.paymentCompleted || paymentCompleted;
+      const appOnboardingStatus =
+        onboardingStatus === "pending_approval" && !paid
+          ? "in_progress"
+          : onboardingStatus;
+
       return {
         riderId: rider.id.toString(),
         name: rider.name ?? null,
@@ -1732,7 +1776,7 @@ export async function riderRoutes(app: FastifyInstance) {
         referralCode: rider.referralCode?.trim() || null,
         preferredLanguage: rider.defaultLanguage ?? "en",
         selfieUrl: toAbsoluteClientMediaUrl(rider.selfieUrl),
-        onboardingStatus,
+        onboardingStatus: appOnboardingStatus,
         approvalStatus,
         accountStatus: rider.status,
         hasHomeLocation: rider.lat != null && rider.lon != null,
@@ -1750,6 +1794,24 @@ export async function riderRoutes(app: FastifyInstance) {
         nextOnboardingStep: progress.nextStep,
         completedOnboardingSteps: progress.completedSteps,
         rating,
+        panNumber: progress.panNumber,
+        panVerified: progress.panVerified,
+        dob: progress.dob,
+        dlNumber: progress.dlNumber,
+        dlFrontUrl: toAbsoluteClientMediaUrl(progress.dlFrontUrl),
+        dlBackUrl: toAbsoluteClientMediaUrl(progress.dlBackUrl),
+        dlVerified: progress.dlVerified,
+        dlVerifiedData: progress.dlVerifiedData,
+        rcNumber: progress.rcNumber,
+        rcFrontUrl: toAbsoluteClientMediaUrl(progress.rcFrontUrl),
+        rcVerified: progress.rcVerified,
+        rcVerifiedData: progress.rcVerifiedData,
+        onboardingProgress: progress.onboardingProgress,
+        lastCompletedStep: progress.lastCompletedStep,
+        nextRequiredStep: progress.nextRequiredStep,
+        onboardingProgressPct: progress.onboardingProgressPct,
+        macroStepIndex: progress.macroStepIndex,
+        paymentCompleted: paid,
       };
     },
   );
@@ -1825,6 +1887,26 @@ export async function riderRoutes(app: FastifyInstance) {
           throw new Error("Rider not found");
         }
 
+        if (docType === "aadhaar") {
+          const rawAadhaarPre = metadata?.aadhaarNumber;
+          if (typeof rawAadhaarPre === "string") {
+            const digits = normalizeAadhaarDigits(rawAadhaarPre);
+            if (digits && (await isAadhaarAlreadyRegistered(digits, riderId))) {
+              throw new Error("Aadhar Already Registered , Please try with Diff one .");
+            }
+          }
+        }
+
+        if (docType === "pan") {
+          const rawPan = metadata?.panNumber ?? metadata?.pan;
+          if (typeof rawPan === "string") {
+            const pan = normalizePan(rawPan);
+            if (pan && (await isPanAlreadyRegistered(pan, riderId))) {
+              throw new Error("PAN Already Registered , Please try with Diff one .");
+            }
+          }
+        }
+
         if (docType === "dl") {
           const rawDl = metadata?.dlNumber;
           if (typeof rawDl === "string") {
@@ -1885,15 +1967,50 @@ export async function riderRoutes(app: FastifyInstance) {
             }
           }
 
+          const digilockerVerified =
+            metadata?.digilockerVerified === true ||
+            metadata?.aadhaarMaskingVerified === true ||
+            metadata?.verificationMethod === "cashfree_digilocker" ||
+            metadata?.verificationMethod === "cashfree_aadhaar_masking" ||
+            String(fileUrl || "").includes("digilocker_verified") ||
+            String(fileUrl || "").includes("aadhaar_masking_verified");
+
+          const sideVerification = digilockerVerified
+            ? {
+                front: {
+                  verified: true,
+                  verificationStatus: "approved" as const,
+                  verifiedAt: new Date().toISOString(),
+                },
+                back: {
+                  verified: true,
+                  verificationStatus: "approved" as const,
+                  verifiedAt: new Date().toISOString(),
+                },
+              }
+            : undefined;
+
+          const nextMetadata = {
+            ...(metadata || {}),
+            ...(sideVerification ? { sideVerification } : {}),
+          };
+
           const docUpdate: Record<string, unknown> = {
             fileUrl: storedFileUrl,
             r2Key: primaryKey || null,
             extractedName: extractedName || null,
             extractedDob: extractedDob || null,
-            metadata: metadata || null,
-            verificationMethod: "MANUAL_UPLOAD",
+            metadata: nextMetadata,
+            verificationMethod: digilockerVerified ? "APP_VERIFIED" : "MANUAL_UPLOAD",
             updatedAt: new Date(),
           };
+          if (digilockerVerified) {
+            docUpdate.verified = true;
+            docUpdate.verificationStatus = "auto_verified";
+            docUpdate.verifiedAt = new Date();
+            docUpdate.rejectedReason = null;
+            docUpdate.requiresManualReview = false;
+          }
           if (aadhaarDigits) {
             docUpdate.docNumber = aadhaarDigits;
           }
@@ -1915,8 +2032,12 @@ export async function riderRoutes(app: FastifyInstance) {
                 extractedName: extractedName || null,
                 extractedDob: extractedDob || null,
                 docNumber: aadhaarDigits || null,
-                metadata: metadata || null,
-                verificationMethod: "MANUAL_UPLOAD",
+                metadata: nextMetadata,
+                verificationMethod: digilockerVerified ? "APP_VERIFIED" : "MANUAL_UPLOAD",
+                verified: digilockerVerified,
+                verificationStatus: digilockerVerified ? "auto_verified" : "pending",
+                verifiedAt: digilockerVerified ? new Date() : null,
+                requiresManualReview: digilockerVerified ? false : undefined,
               })
               .returning({ id: riderDocuments.id });
             documentId = newDoc!.id;
@@ -1949,6 +2070,20 @@ export async function riderRoutes(app: FastifyInstance) {
               .where(eq(riders.id, riderId));
           }
 
+          if (digilockerVerified) {
+            try {
+              const { maybeAutoVerifyRiderSelfie } = await import(
+                "../../lib/rider-selfie-auto-verify.js"
+              );
+              await maybeAutoVerifyRiderSelfie(riderId);
+            } catch (selfieErr) {
+              console.warn(
+                "[save-document aadhaar] selfie auto-verify failed:",
+                (selfieErr as Error).message,
+              );
+            }
+          }
+
           await deleteReplacedR2Keys(previousR2Keys, nextR2Keys());
 
           return {
@@ -1958,6 +2093,36 @@ export async function riderRoutes(app: FastifyInstance) {
         }
 
         if (existing.length > 0) {
+          const docNumber =
+            docType === "dl" && typeof metadata?.dlNumber === "string"
+              ? normalizeDlNumber(metadata.dlNumber)
+              : docType === "rc" && typeof metadata?.rcNumber === "string"
+                ? normalizeRcNumber(metadata.rcNumber)
+                : docType === "pan" && typeof metadata?.panNumber === "string"
+                  ? normalizePan(metadata.panNumber)
+                  : null;
+          const prevMeta =
+            existing[0]!.metadata && typeof existing[0]!.metadata === "object"
+              ? (existing[0]!.metadata as Record<string, unknown>)
+              : {};
+          const prevMethod = String(existing[0]!.verificationMethod || "").toUpperCase();
+          const keepElectronic =
+            existing[0]!.verified === true &&
+            (prevMethod === "APP_VERIFIED" ||
+              prevMethod.startsWith("CASHFREE_") ||
+              prevMethod === "RAZORPAY_BANK" ||
+              String(existing[0]!.verificationStatus || "").toLowerCase() === "auto_verified");
+          const mergedMeta = {
+            ...prevMeta,
+            ...(metadata && typeof metadata === "object" ? metadata : {}),
+            // Keep prior auto mismatch evidence for admin when rider uploads photos.
+            ...(prevMeta.autoVerification && !keepElectronic
+              ? { autoVerification: prevMeta.autoVerification, crossCheckFailed: true }
+              : {}),
+            ...(keepElectronic
+              ? { photoAttachedAt: new Date().toISOString() }
+              : { manualSubmissionAt: new Date().toISOString() }),
+          };
           await db
             .update(riderDocuments)
             .set({
@@ -1965,13 +2130,29 @@ export async function riderRoutes(app: FastifyInstance) {
               r2Key: primaryKey || null,
               extractedName: extractedName || null,
               extractedDob: extractedDob || null,
-              metadata: metadata || null,
-              verificationMethod: "MANUAL_UPLOAD",
+              ...(docNumber ? { docNumber } : {}),
+              metadata: mergedMeta,
+              ...(keepElectronic
+                ? {}
+                : {
+                    verificationMethod: "MANUAL_UPLOAD" as const,
+                    requiresManualReview: true,
+                    verified: false,
+                    verificationStatus: "pending" as const,
+                  }),
               updatedAt: new Date(),
             })
             .where(eq(riderDocuments.id, existing[0]!.id));
           documentId = existing[0]!.id;
         } else {
+          const docNumber =
+            docType === "dl" && typeof metadata?.dlNumber === "string"
+              ? normalizeDlNumber(metadata.dlNumber)
+              : docType === "rc" && typeof metadata?.rcNumber === "string"
+                ? normalizeRcNumber(metadata.rcNumber)
+                : docType === "pan" && typeof metadata?.panNumber === "string"
+                  ? normalizePan(metadata.panNumber)
+                  : null;
           const [newDoc] = await db
             .insert(riderDocuments)
             .values({
@@ -1981,8 +2162,15 @@ export async function riderRoutes(app: FastifyInstance) {
               r2Key: primaryKey || null,
               extractedName: extractedName || null,
               extractedDob: extractedDob || null,
-              metadata: metadata || null,
+              docNumber: docNumber || null,
+              metadata: {
+                ...(metadata && typeof metadata === "object" ? metadata : {}),
+                manualSubmissionAt: new Date().toISOString(),
+              },
               verificationMethod: "MANUAL_UPLOAD",
+              requiresManualReview: true,
+              verified: false,
+              verificationStatus: "pending",
             })
             .returning({ id: riderDocuments.id });
           documentId = newDoc!.id;
@@ -2024,6 +2212,19 @@ export async function riderRoutes(app: FastifyInstance) {
               updatedAt: new Date(),
             })
             .where(eq(riders.id, riderId));
+
+          // If Aadhaar (+ PAN when present) already electronic, auto-verify selfie.
+          try {
+            const { maybeAutoVerifyRiderSelfie } = await import(
+              "../../lib/rider-selfie-auto-verify.js"
+            );
+            await maybeAutoVerifyRiderSelfie(riderId);
+          } catch (selfieErr) {
+            console.warn(
+              "[save-document] selfie auto-verify failed:",
+              (selfieErr as Error).message,
+            );
+          }
         }
 
         await deleteReplacedR2Keys(previousR2Keys, nextR2Keys());
@@ -2046,7 +2247,7 @@ export async function riderRoutes(app: FastifyInstance) {
     },
   );
 
-  // Update rider onboarding stage
+  // Update rider onboarding stage (safe client transitions only)
   app.post(
     "/onboarding/update-stage",
     {
@@ -2059,20 +2260,44 @@ export async function riderRoutes(app: FastifyInstance) {
           200: z.object({
             success: z.boolean(),
           }),
+          400: z.object({
+            error: z.string(),
+          }),
         },
       },
     },
-    async (req) => {
-      const { riderId, stage } = req.body as { riderId: number; stage: "MOBILE_VERIFIED" | "KYC" | "PAYMENT" | "APPROVAL" | "ACTIVE" };
+    async (req, reply) => {
+      const { riderId, stage } = req.body as {
+        riderId: number;
+        stage: "MOBILE_VERIFIED" | "KYC" | "PAYMENT" | "APPROVAL" | "ACTIVE";
+      };
       const db = getDb();
 
-      // Verify rider exists
       const riderRows = await db.select().from(riders).where(eq(riders.id, riderId)).limit(1);
       if (riderRows.length === 0) {
         throw new Error("Rider not found");
       }
+      const rider = riderRows[0]!;
 
-      // Update onboarding stage
+      const { isAllowedClientStageTransition } = await import(
+        "../../lib/rider-onboarding-stage-machine.js"
+      );
+      const { isOnboardingDocumentsCompleteForPayment } = await import(
+        "../../lib/rider-onboarding-progress.js"
+      );
+      const docsReady =
+        stage === "PAYMENT" ? await isOnboardingDocumentsCompleteForPayment(riderId) : false;
+
+      if (
+        !isAllowedClientStageTransition(rider.onboardingStage, stage, {
+          docsReadyForPayment: docsReady,
+        })
+      ) {
+        return (reply as any).code(400).send({
+          error: `Illegal onboarding stage transition ${rider.onboardingStage} → ${stage}`,
+        });
+      }
+
       await db
         .update(riders)
         .set({
@@ -3350,7 +3575,9 @@ export async function riderRoutes(app: FastifyInstance) {
       const rows = await listRiderAppCancellationReasons({
         serviceType: qs.serviceType,
       });
-      const reasons = rows.filter((r) => r.attribute === attribute);
+      const reasons = rows.filter(
+        (r) => String(r.attribute ?? "").trim().toUpperCase() === attribute
+      );
       return { ok: true as const, reasons };
     }
   );

@@ -17,6 +17,13 @@ import { ONBOARDING_STAGE_LABELS } from "@/types/rider-dashboard";
 import { computeIdentityVerificationProgress } from "@/lib/rider-identity-doc-requirements";
 import { documentActionKey } from "@/lib/rider-document-side-verification";
 import { ElectronicVerifyPanel } from "@/components/verification/ElectronicVerifyPanel";
+import { DocAutoVerificationDetailsView } from "@/components/verification/DocAutoVerificationDetails";
+import { getRiderDocAutoVerificationDisplay } from "@/lib/rider-doc-auto-verification";
+import { ConfirmModal } from "@/components/ui/ConfirmModal";
+import {
+  ElectronicVerifyReviewModal,
+  type ElectronicVerifyPending,
+} from "@/components/verification/ElectronicVerifyReviewModal";
 
 interface Rider {
   id: number;
@@ -26,6 +33,7 @@ interface Rider {
   aadhaarNumber: string | null;
   panNumber: string | null;
   dob: string | null;
+  selfieUrl?: string | null;
   onboardingStage: string;
   kycStatus: string;
   status: string;
@@ -53,14 +61,57 @@ interface Document {
   fileUrl: string;
   r2Key: string | null;
   docNumber: string | null;
-  verificationMethod: "APP_VERIFIED" | "MANUAL_UPLOAD";
+  verificationMethod: string;
   verified: boolean;
   verifierUserId: number | null;
   verifierName: string | null;
   rejectedReason: string | null;
   extractedName: string | null;
   extractedDob: string | null;
+  extractedDataSummary?: Record<string, unknown> | null;
+  lastVerificationId?: string | null;
+  lastProviderReference?: string | null;
+  metadata?: Record<string, unknown> | null;
+  verifiedAt?: string | null;
   createdAt: string;
+}
+
+function isManualUploadMethod(method: string | null | undefined): boolean {
+  return String(method || "MANUAL_UPLOAD").toUpperCase() === "MANUAL_UPLOAD";
+}
+
+function isAppVerifiedMethod(method: string | null | undefined): boolean {
+  return String(method || "").toUpperCase() === "APP_VERIFIED";
+}
+
+function isDashboardElectronicMethod(method: string | null | undefined): boolean {
+  const m = String(method || "").toUpperCase();
+  return m.startsWith("CASHFREE_") || m === "RAZORPAY_BANK";
+}
+
+function isElectronicallyVerifiedMethod(method: string | null | undefined): boolean {
+  return isAppVerifiedMethod(method) || isDashboardElectronicMethod(method);
+}
+
+function verificationMethodBadge(method: string | null | undefined): {
+  label: string;
+  className: string;
+} {
+  if (isAppVerifiedMethod(method)) {
+    return { label: "App Verified", className: "bg-blue-100 text-blue-800" };
+  }
+  if (isDashboardElectronicMethod(method)) {
+    return { label: "Dashboard electronic", className: "bg-violet-100 text-violet-800" };
+  }
+  return { label: "Manual Upload", className: "bg-gray-100 text-gray-800" };
+}
+
+function verificationMethodFooter(method: string | null | undefined): string {
+  if (isAppVerifiedMethod(method)) return "Already verified through app";
+  if (isDashboardElectronicMethod(method)) {
+    return "Verified electronically from rider dashboard";
+  }
+  return "";
 }
 
 interface OnboardingPayment {
@@ -74,11 +125,27 @@ interface OnboardingPayment {
   createdAt: string;
 }
 
+interface PaymentMethod {
+  id: number;
+  methodType: string;
+  accountHolderName: string;
+  bankName?: string | null;
+  ifsc?: string | null;
+  branch?: string | null;
+  accountNumberMasked?: string | null;
+  upiId?: string | null;
+  verificationStatus: string;
+  verificationProofType?: string | null;
+  verifiedAt?: string | null;
+  createdAt: string;
+}
+
 interface RiderData {
   rider: Rider;
   documents: Document[];
   vehicle?: VehicleInfo | null;
   onboardingPayments?: OnboardingPayment[];
+  paymentMethods?: PaymentMethod[];
 }
 
 const DOCUMENT_LABELS: Record<string, string> = {
@@ -98,9 +165,59 @@ const DOCUMENT_LABELS: Record<string, string> = {
   other: "Other Document",
 };
 
-function hasDocumentPreview(document: Document | null): boolean {
-  if (!document || document.verificationMethod !== "MANUAL_UPLOAD") return false;
-  return Boolean(document.r2Key?.trim() || document.fileUrl?.trim());
+const NON_IMAGE_FILE_URLS = new Set([
+  "pending",
+  "digilocker_verified",
+  "aadhaar_masking_verified",
+  "electronic_verified",
+]);
+
+function isNonImageFileRef(raw: string | null | undefined): boolean {
+  const value = String(raw || "").trim().toLowerCase();
+  if (!value) return true;
+  if (NON_IMAGE_FILE_URLS.has(value)) return true;
+  for (const placeholder of NON_IMAGE_FILE_URLS) {
+    if (
+      value.includes(`key=${placeholder}`) ||
+      value.includes(`key=${encodeURIComponent(placeholder)}`) ||
+      value.endsWith(`/${placeholder}`)
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/** True when the doc has a real image/file the browser can show (any verify method). */
+function hasDocumentPreview(document: Document | null, fallbackUrl?: string | null): boolean {
+  if (!document && !fallbackUrl?.trim()) return false;
+  const candidates = [document?.r2Key, document?.fileUrl, fallbackUrl];
+  for (const raw of candidates) {
+    const value = String(raw || "").trim();
+    if (!value || isNonImageFileRef(value)) continue;
+    if (
+      value.startsWith("http://") ||
+      value.startsWith("https://") ||
+      value.startsWith("/api/attachments/proxy") ||
+      value.startsWith("/v1/attachments/proxy") ||
+      value.includes("/") ||
+      value.includes(".")
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function resolveDocumentPreviewUrl(
+  document: Document | null,
+  fallbackUrl?: string | null,
+): string {
+  const primary = String(document?.fileUrl || "").trim();
+  if (primary && !isNonImageFileRef(primary)) return primary;
+  const fallback = String(fallbackUrl || "").trim();
+  if (fallback && !isNonImageFileRef(fallback)) return fallback;
+  return "";
 }
 
 const DOCUMENT_SECTIONS = {
@@ -139,6 +256,13 @@ export default function RiderOnboardingClient() {
   const [rejectModalOpen, setRejectModalOpen] = useState(false);
   const [rejectingDoc, setRejectingDoc] = useState<Document | null>(null);
   const [rejectReason, setRejectReason] = useState("");
+  const [approveDoc, setApproveDoc] = useState<Document | null>(null);
+  const [approveBusy, setApproveBusy] = useState(false);
+  const [pendingEvByDocId, setPendingEvByDocId] = useState<
+    Record<number, ElectronicVerifyPending>
+  >({});
+  const [evReviewDocId, setEvReviewDocId] = useState<number | null>(null);
+  const [evReviewBusy, setEvReviewBusy] = useState(false);
   // Force image reload on card when document is updated (fixes stale image after edit)
   const [imageRefreshKeys, setImageRefreshKeys] = useState<Record<number, number>>({});
 
@@ -333,7 +457,7 @@ export default function RiderOnboardingClient() {
 
   const handleEditDocument = (doc: Document) => {
     // Only allow editing MANUAL_UPLOAD documents
-    if (doc.verificationMethod === "MANUAL_UPLOAD") {
+    if (isManualUploadMethod(doc.verificationMethod)) {
       setEditingDoc(doc);
       setEditModalOpen(true);
     }
@@ -432,19 +556,55 @@ export default function RiderOnboardingClient() {
     }
   };
 
-  const handleApproveDocument = async (doc: Document) => {
-    if (doc.verificationMethod !== "MANUAL_UPLOAD") return;
-    if (!confirm(`Are you sure you want to approve this ${DOCUMENT_LABELS[doc.docType] || doc.docType}?`)) return;
+  const handleApproveDocument = (doc: Document) => {
+    if (!isManualUploadMethod(doc.verificationMethod)) return;
+    setApproveDoc(doc);
+  };
+
+  const handleConfirmApprove = async () => {
+    const doc = approveDoc;
+    if (!doc) return;
 
     try {
+      setApproveBusy(true);
       setActionLoading(documentActionKey(doc));
 
+      const pendingEv = pendingEvByDocId[doc.id];
       const response = await fetch(
         `/api/riders/${riderId}/documents/${doc.id}/approve`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ displayDocType: doc.docType }),
+          body: JSON.stringify({
+            displayDocType: doc.docType,
+            ...(pendingEv
+              ? {
+                  electronicVerify: {
+                    verifiedData: {
+                      ...pendingEv.data,
+                      ...(pendingEv.ifscUsed
+                        ? { ifsc: pendingEv.ifscUsed }
+                        : {}),
+                      ...(doc.docType === "bank_proof" && pendingEv.numberUsed
+                        ? {
+                            account_number_masked: `•••• ${String(pendingEv.numberUsed).replace(/\D/g, "").slice(-4)}`,
+                          }
+                        : {}),
+                    },
+                    docNumber: pendingEv.numberUsed,
+                    bankAccount:
+                      doc.docType === "bank_proof"
+                        ? String(pendingEv.numberUsed).replace(/\D/g, "")
+                        : undefined,
+                    ifsc: pendingEv.ifscUsed ?? undefined,
+                    verificationId: pendingEv.verificationId,
+                    providerReference: pendingEv.providerReference,
+                    confidence: pendingEv.confidence,
+                    provider: "cashfree",
+                  },
+                }
+              : {}),
+          }),
         }
       );
 
@@ -453,7 +613,6 @@ export default function RiderOnboardingClient() {
         throw new Error(result.error || "Failed to approve document");
       }
 
-      // Apply API result immediately so UI updates in one paint (no refetch needed; backend returns final state)
       const { data } = result;
       if (data && riderData) {
         setRiderData((prev) => {
@@ -471,6 +630,15 @@ export default function RiderOnboardingClient() {
                 ? {
                     ...d,
                     verified: true,
+                    verificationMethod: pendingEv ? "CASHFREE_AUTO" : d.verificationMethod,
+                    docNumber: pendingEv?.numberUsed || d.docNumber,
+                    extractedDataSummary: pendingEv
+                      ? {
+                          verifiedData: pendingEv.data,
+                          provider: "cashfree",
+                          confidence: pendingEv.confidence ?? null,
+                        }
+                      : d.extractedDataSummary,
                     verifierUserId: data.document.verifierUserId ?? d.verifierUserId,
                     rejectedReason: null,
                   }
@@ -486,18 +654,130 @@ export default function RiderOnboardingClient() {
         });
         invalidateRiderSummary(queryClient, riderId);
       }
-      // No refetch after approve: response already has final kycStatus, onboardingStage, status
+      if (pendingEv) {
+        setPendingEvByDocId((prev) => {
+          const next = { ...prev };
+          delete next[doc.id];
+          return next;
+        });
+        setEvReviewDocId(null);
+      }
+      setApproveDoc(null);
+      // Bank EV also upserts payment methods — refresh so the card shows details.
+      if (doc.docType === "bank_proof") {
+        void refetchRiderDataInBackground();
+      }
     } catch (err) {
       console.error("Error approving document:", err);
       alert(err instanceof Error ? err.message : "Failed to approve document");
+    } finally {
+      setApproveBusy(false);
+      setActionLoading(null);
+    }
+  };
+
+  /** Provider fetch only — show review modal; do not mark verified / write projection. */
+  const handleElectronicVerified = (
+    doc: Document,
+    data: Record<string, unknown>,
+    meta?: {
+      numberUsed: string;
+      ifscUsed?: string | null;
+      verificationId?: string | null;
+      providerReference?: string | null;
+      confidence?: number | null;
+    },
+  ) => {
+    const pending: ElectronicVerifyPending = {
+      docId: doc.id,
+      docType: doc.docType,
+      docLabel: DOCUMENT_LABELS[doc.docType] || doc.docType,
+      numberUsed:
+        meta?.numberUsed ||
+        String(
+          data.pan ||
+            data.dl_number ||
+            data.reg_no ||
+            data.account_number_masked ||
+            "",
+        ).trim(),
+      ifscUsed: meta?.ifscUsed ?? null,
+      data,
+      verificationId: meta?.verificationId ?? null,
+      providerReference: meta?.providerReference ?? null,
+      confidence: meta?.confidence ?? null,
+    };
+    setPendingEvByDocId((prev) => ({ ...prev, [doc.id]: pending }));
+    setEvReviewDocId(doc.id);
+  };
+
+  /** Empty bank_proof card: create stub doc, then same review → approve flow. */
+  const handleElectronicBankWithoutDoc = async (
+    data: Record<string, unknown>,
+    meta?: {
+      numberUsed: string;
+      ifscUsed?: string | null;
+      verificationId?: string | null;
+      providerReference?: string | null;
+      confidence?: number | null;
+    },
+  ) => {
+    try {
+      setActionLoading("bank_proof:ensure");
+      const res = await fetch(
+        `/api/riders/${riderId}/documents/ensure-bank-proof`,
+        { method: "POST" },
+      );
+      const result = await res.json();
+      if (!result.success || !result.data) {
+        throw new Error(result.error || "Could not prepare bank proof");
+      }
+      const stub = result.data as Document;
+      setRiderData((prev) => {
+        if (!prev) return prev;
+        const exists = prev.documents.some((d) => d.id === stub.id);
+        return {
+          ...prev,
+          documents: exists
+            ? prev.documents.map((d) => (d.id === stub.id ? { ...d, ...stub } : d))
+            : [...prev.documents, stub],
+        };
+      });
+      handleElectronicVerified(stub, data, meta);
+    } catch (err) {
+      alert(err instanceof Error ? err.message : "Bank electronic verify failed");
     } finally {
       setActionLoading(null);
     }
   };
 
+  const handleApproveFromEvReview = () => {
+    if (evReviewDocId == null) return;
+    const pending = pendingEvByDocId[evReviewDocId];
+    const doc = riderData?.documents.find((d) => d.id === evReviewDocId);
+    if (!doc || !isManualUploadMethod(doc.verificationMethod)) return;
+    // Keep pending details; close review and ask for final confirm.
+    setEvReviewDocId(null);
+    setApproveDoc({
+      ...doc,
+      docNumber: pending?.numberUsed || doc.docNumber,
+    });
+  };
+
+  const handleDiscardEvReview = () => {
+    if (evReviewDocId == null) return;
+    const id = evReviewDocId;
+    setPendingEvByDocId((prev) => {
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
+    setEvReviewDocId(null);
+  };
+
   const handleRejectDocument = (doc: Document) => {
     // Only allow rejecting MANUAL_UPLOAD documents
-    if (doc.verificationMethod !== "MANUAL_UPLOAD") {
+    if (!isManualUploadMethod(doc.verificationMethod)) {
       return;
     }
     
@@ -569,9 +849,52 @@ export default function RiderOnboardingClient() {
 
   const getLatestDocument = (docType: string): Document | null => {
     const docs = getDocumentsByType(docType);
-    if (docs.length === 0) return null;
-    // Return the most recent one (already sorted by createdAt desc from API)
-    return docs[0];
+    if (docs.length > 0) return docs[0];
+    // App Cashfree bank verify used to write only rider_payment_methods —
+    // surface that as a bank_proof card so agents aren't stuck on "No document".
+    if (docType === "bank_proof") {
+      const pm = riderData?.paymentMethods?.find((p) => p.methodType === "bank");
+      if (!pm) return null;
+      const verified = String(pm.verificationStatus).toLowerCase() === "verified";
+      // Pending/rejected bank without a real bank_proof row → empty card + EV.
+      if (!verified) return null;
+      return {
+        id: -Math.abs(pm.id),
+        docType: "bank_proof",
+        fileUrl: "electronic_verified",
+        r2Key: null,
+        docNumber: pm.accountNumberMasked ?? null,
+        verificationMethod: "APP_VERIFIED",
+        verified: true,
+        verifierUserId: null,
+        verifierName: null,
+        rejectedReason: null,
+        extractedName: pm.accountHolderName,
+        extractedDob: null,
+        extractedDataSummary: {
+          verifiedData: {
+            name_at_bank: pm.accountHolderName,
+            bank_name: pm.bankName,
+            branch_name: pm.branch,
+            ifsc: pm.ifsc,
+            account_number_masked: pm.accountNumberMasked,
+            account_status: "VALID",
+          },
+          provider: "cashfree",
+          method: "APP_VERIFIED",
+          source: "rider_payment_methods",
+        },
+        metadata: {
+          ifsc: pm.ifsc,
+          bankAccountMasked: pm.accountNumberMasked,
+          bankHolderName: pm.accountHolderName,
+          bankVerificationOnly: true,
+        },
+        verifiedAt: pm.verifiedAt ?? null,
+        createdAt: pm.createdAt,
+      };
+    }
+    return null;
   };
 
   if (loading) {
@@ -908,6 +1231,18 @@ export default function RiderOnboardingClient() {
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {DOCUMENT_SECTIONS.identity.map((docType) => {
             const doc = getLatestDocument(docType);
+            // DigiLocker / app auto-verify: single Aadhaar card is enough — hide Back.
+            if (docType === "aadhaar_back") {
+              const aadhaarMethod =
+                getLatestDocument("aadhaar_front")?.verificationMethod ||
+                doc?.verificationMethod;
+              if (isElectronicallyVerifiedMethod(aadhaarMethod)) return null;
+            }
+            const aadhaarFrontLabel =
+              docType === "aadhaar_front" &&
+              isElectronicallyVerifiedMethod(doc?.verificationMethod)
+                ? "Aadhaar Card"
+                : undefined;
             return (
               <DocumentCard
                 riderId={riderId}
@@ -915,11 +1250,37 @@ export default function RiderOnboardingClient() {
                 docType={docType}
                 document={doc}
                 isOptional={docType === "pan"}
+                titleOverride={aadhaarFrontLabel}
+                fallbackPreviewUrl={
+                  docType === "selfie" ? riderData?.rider?.selfieUrl ?? null : null
+                }
                 imageRefreshKey={doc ? imageRefreshKeys[doc.id] : undefined}
-                onView={() => doc && hasDocumentPreview(doc) && handleViewDocument(doc)}
-                onEdit={() => doc && doc.verificationMethod === "MANUAL_UPLOAD" && !isBlocked && handleEditDocument(doc)}
-                onApprove={() => doc && doc.verificationMethod === "MANUAL_UPLOAD" && !doc.verified && !isBlocked && handleApproveDocument(doc)}
-                onReject={() => doc && doc.verificationMethod === "MANUAL_UPLOAD" && !doc.verified && !isBlocked && handleRejectDocument(doc)}
+                onView={() =>
+                  doc &&
+                  hasDocumentPreview(doc, docType === "selfie" ? riderData?.rider?.selfieUrl : null) &&
+                  handleViewDocument({
+                    ...doc,
+                    fileUrl:
+                      resolveDocumentPreviewUrl(
+                        doc,
+                        docType === "selfie" ? riderData?.rider?.selfieUrl : null,
+                      ) || doc.fileUrl,
+                  })
+                }
+                onEdit={() => doc && isManualUploadMethod(doc.verificationMethod) && !isBlocked && handleEditDocument(doc)}
+                onApprove={() => doc && isManualUploadMethod(doc.verificationMethod) && !doc.verified && !isBlocked && handleApproveDocument(doc)}
+                onReject={() => doc && isManualUploadMethod(doc.verificationMethod) && !doc.verified && !isBlocked && handleRejectDocument(doc)}
+                onElectronicVerified={
+                  doc
+                    ? (data, meta) => handleElectronicVerified(doc, data, meta)
+                    : undefined
+                }
+                pendingElectronicReview={
+                  doc ? pendingEvByDocId[doc.id] ?? null : null
+                }
+                onOpenPendingElectronicReview={
+                  doc ? () => setEvReviewDocId(doc.id) : undefined
+                }
                 isLoading={doc ? actionLoading === documentActionKey(doc) : false}
                 isDisabled={isBlocked}
                 allVersions={getDocumentsByType(docType)}
@@ -942,10 +1303,22 @@ export default function RiderOnboardingClient() {
                 docType={docType}
                 document={doc}
                 imageRefreshKey={doc ? imageRefreshKeys[doc.id] : undefined}
+                riderDob={riderData?.rider?.dob ?? null}
                 onView={() => doc && hasDocumentPreview(doc) && handleViewDocument(doc)}
-                onEdit={() => doc && doc.verificationMethod === "MANUAL_UPLOAD" && !isBlocked && handleEditDocument(doc)}
-                onApprove={() => doc && doc.verificationMethod === "MANUAL_UPLOAD" && !doc.verified && !isBlocked && handleApproveDocument(doc)}
-                onReject={() => doc && doc.verificationMethod === "MANUAL_UPLOAD" && !doc.verified && !isBlocked && handleRejectDocument(doc)}
+                onEdit={() => doc && isManualUploadMethod(doc.verificationMethod) && !isBlocked && handleEditDocument(doc)}
+                onApprove={() => doc && isManualUploadMethod(doc.verificationMethod) && !doc.verified && !isBlocked && handleApproveDocument(doc)}
+                onReject={() => doc && isManualUploadMethod(doc.verificationMethod) && !doc.verified && !isBlocked && handleRejectDocument(doc)}
+                onElectronicVerified={
+                  doc
+                    ? (data, meta) => handleElectronicVerified(doc, data, meta)
+                    : undefined
+                }
+                pendingElectronicReview={
+                  doc ? pendingEvByDocId[doc.id] ?? null : null
+                }
+                onOpenPendingElectronicReview={
+                  doc ? () => setEvReviewDocId(doc.id) : undefined
+                }
                 isLoading={doc ? actionLoading === documentActionKey(doc) : false}
                 isDisabled={isBlocked}
                 allVersions={getDocumentsByType(docType)}
@@ -961,20 +1334,73 @@ export default function RiderOnboardingClient() {
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 items-stretch">
           {DOCUMENT_SECTIONS.additional.map((docType) => {
             const doc = getLatestDocument(docType);
+            const isSyntheticBank = docType === "bank_proof" && doc != null && doc.id < 0;
+            const realBankDoc =
+              docType === "bank_proof"
+                ? getDocumentsByType("bank_proof")[0] ?? null
+                : doc;
             return (
               <DocumentCard
                 riderId={riderId}
                 key={docType}
                 docType={docType}
                 document={doc}
-                imageRefreshKey={doc ? imageRefreshKeys[doc.id] : undefined}
-                onView={() => doc && hasDocumentPreview(doc) && handleViewDocument(doc)}
-                onEdit={() => doc && doc.verificationMethod === "MANUAL_UPLOAD" && !isBlocked && handleEditDocument(doc)}
-                onApprove={() => doc && doc.verificationMethod === "MANUAL_UPLOAD" && !doc.verified && !isBlocked && handleApproveDocument(doc)}
-                onReject={() => doc && doc.verificationMethod === "MANUAL_UPLOAD" && !doc.verified && !isBlocked && handleRejectDocument(doc)}
-                isLoading={doc ? actionLoading === documentActionKey(doc) : false}
+                isOptional={docType === "bank_proof"}
+                imageRefreshKey={
+                  realBankDoc ? imageRefreshKeys[realBankDoc.id] : undefined
+                }
+                onView={() =>
+                  doc &&
+                  !isSyntheticBank &&
+                  hasDocumentPreview(doc) &&
+                  handleViewDocument(doc)
+                }
+                onEdit={() =>
+                  realBankDoc &&
+                  isManualUploadMethod(realBankDoc.verificationMethod) &&
+                  !isBlocked &&
+                  handleEditDocument(realBankDoc)
+                }
+                onApprove={() =>
+                  realBankDoc &&
+                  isManualUploadMethod(realBankDoc.verificationMethod) &&
+                  !realBankDoc.verified &&
+                  !isBlocked &&
+                  handleApproveDocument(realBankDoc)
+                }
+                onReject={() =>
+                  realBankDoc &&
+                  isManualUploadMethod(realBankDoc.verificationMethod) &&
+                  !realBankDoc.verified &&
+                  !isBlocked &&
+                  handleRejectDocument(realBankDoc)
+                }
+                onElectronicVerified={
+                  realBankDoc
+                    ? (data, meta) =>
+                        handleElectronicVerified(realBankDoc, data, meta)
+                    : docType === "bank_proof"
+                      ? (data, meta) => handleElectronicBankWithoutDoc(data, meta)
+                      : undefined
+                }
+                pendingElectronicReview={
+                  realBankDoc
+                    ? pendingEvByDocId[realBankDoc.id] ?? null
+                    : null
+                }
+                onOpenPendingElectronicReview={
+                  realBankDoc
+                    ? () => setEvReviewDocId(realBankDoc.id)
+                    : undefined
+                }
+                isLoading={
+                  realBankDoc
+                    ? actionLoading === documentActionKey(realBankDoc)
+                    : actionLoading === "bank_proof:ensure"
+                }
                 isDisabled={isBlocked}
                 allVersions={getDocumentsByType(docType)}
+                allowEmptyElectronicVerify={docType === "bank_proof"}
               />
             );
           })}
@@ -1029,6 +1455,46 @@ export default function RiderOnboardingClient() {
           isLoading={actionLoading === documentActionKey(rejectingDoc)}
         />
       )}
+
+      <ConfirmModal
+        open={approveDoc != null}
+        title="Approve document?"
+        closeOnBackdrop={false}
+        description={
+          approveDoc ? (
+            <span>
+              Review the provider / document details first. Confirm only if you want to
+              approve{" "}
+              <span className="font-semibold text-gray-900">
+                {DOCUMENT_LABELS[approveDoc.docType] || approveDoc.docType}
+              </span>
+              {approveDoc.docNumber ? (
+                <>
+                  {" "}
+                  (<span className="font-mono">{approveDoc.docNumber}</span>)
+                </>
+              ) : null}
+              .
+            </span>
+          ) : null
+        }
+        confirmLabel="Approve"
+        cancelLabel="Cancel"
+        confirmBusy={approveBusy}
+        onClose={() => {
+          if (!approveBusy) setApproveDoc(null);
+        }}
+        onConfirm={handleConfirmApprove}
+      />
+
+      <ElectronicVerifyReviewModal
+        open={evReviewDocId != null && !!pendingEvByDocId[evReviewDocId]}
+        pending={evReviewDocId != null ? pendingEvByDocId[evReviewDocId] ?? null : null}
+        busy={evReviewBusy || approveBusy}
+        onClose={() => setEvReviewDocId(null)}
+        onApprove={handleApproveFromEvReview}
+        onDiscard={handleDiscardEvReview}
+      />
     </div>
   );
 }
@@ -1043,13 +1509,19 @@ const DOC_TYPES_WITH_NUMBER = new Set([
   "dl_front",
   "dl_back",
   "rc",
+  "bank_proof",
 ]);
 
 /** rider docType → verification-engine kind for agent electronic verify. */
-const EV_KIND_BY_DOC_TYPE: Record<string, "pan" | "driving_licence" | "vehicle_rc"> = {
+const EV_KIND_BY_DOC_TYPE: Record<
+  string,
+  "pan" | "driving_licence" | "vehicle_rc" | "bank_account"
+> = {
   pan: "pan",
+  dl: "driving_licence",
   dl_front: "driving_licence",
   rc: "vehicle_rc",
+  bank_proof: "bank_account",
 };
 
 // Document Card Component ? equal height, aligned, doc number always shown, image cache-bust
@@ -1058,14 +1530,32 @@ interface DocumentCardProps {
   docType: string;
   document: Document | null;
   isOptional?: boolean;
+  titleOverride?: string;
+  riderDob?: string | null;
+  /** Extra image URL (e.g. riders.selfie_url) when doc.fileUrl is missing/placeholder. */
+  fallbackPreviewUrl?: string | null;
   imageRefreshKey?: number;
   onView: () => void;
   onEdit: () => void;
   onApprove: () => void;
   onReject: () => void;
+  onElectronicVerified?: (
+    data: Record<string, unknown>,
+    meta?: {
+      numberUsed: string;
+      ifscUsed?: string | null;
+      verificationId?: string | null;
+      providerReference?: string | null;
+      confidence?: number | null;
+    },
+  ) => void;
+  pendingElectronicReview?: ElectronicVerifyPending | null;
+  onOpenPendingElectronicReview?: () => void;
   isLoading: boolean;
   isDisabled?: boolean;
   allVersions: Document[];
+  /** Show Cashfree EV even when no upload exists (bank electronic-only path). */
+  allowEmptyElectronicVerify?: boolean;
 }
 
 function DocumentCard({
@@ -1073,32 +1563,55 @@ function DocumentCard({
   docType,
   document,
   isOptional = false,
+  titleOverride,
+  riderDob,
+  fallbackPreviewUrl,
   imageRefreshKey,
   onView,
   onEdit,
   onApprove,
   onReject,
+  onElectronicVerified,
+  pendingElectronicReview,
+  onOpenPendingElectronicReview,
   isLoading,
   isDisabled = false,
   allVersions,
+  allowEmptyElectronicVerify = false,
 }: DocumentCardProps) {
   const hasMultipleVersions = allVersions.length > 1;
   const showDocNumber = DOC_TYPES_WITH_NUMBER.has(docType);
+  const autoVerifyDisplay =
+    document && docType !== "aadhaar_back"
+      ? getRiderDocAutoVerificationDisplay(document)
+      : null;
+  const numberFromAuto =
+    autoVerifyDisplay?.rows.find((r) =>
+      [
+        "PAN",
+        "Masked Aadhaar",
+        "DL number",
+        "Registration number",
+        "Aadhaar",
+        "Account number",
+      ].includes(r.label),
+    )?.value ?? null;
   const docNumberDisplay = document
     ? showDocNumber
-      ? (document.docNumber?.trim() || "?")
+      ? (document.docNumber?.trim() || numberFromAuto || "?")
       : "N/A"
     : "?";
   // Use fileUrl as-is: presigned URLs break if we append query params (signature is over exact URL)
-  const imageUrl = document?.fileUrl ? document.fileUrl : "";
+  const imageUrl = resolveDocumentPreviewUrl(document, fallbackPreviewUrl);
   const imageKey = imageUrl ? `${imageUrl}-${imageRefreshKey ?? document?.id ?? ""}` : "no-image";
+  const showPreview = hasDocumentPreview(document, fallbackPreviewUrl);
 
   return (
     <div className="border border-gray-200/90 rounded-xl p-5 bg-white shadow-sm hover:shadow-lg transition-all duration-200 h-full flex flex-col min-h-[340px]">
       <div className="flex items-start justify-between gap-2 mb-3 min-h-[52px]">
         <div className="flex-1 min-w-0">
           <h3 className="text-sm font-semibold text-gray-900">
-            {DOCUMENT_LABELS[docType] || docType}
+            {titleOverride || DOCUMENT_LABELS[docType] || docType}
             {isOptional ? (
               <span className="ml-1.5 text-xs font-medium text-gray-500">(Optional)</span>
             ) : null}
@@ -1125,16 +1638,17 @@ function DocumentCard({
         <>
           {/* Verification Method Badge */}
           <div className="mb-2">
-            {document.verificationMethod === "APP_VERIFIED" ? (
-              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-blue-100 text-blue-800 text-xs font-medium">
-                <CheckCircle className="h-3 w-3" />
-                App Verified
-              </span>
-            ) : (
-              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-gray-100 text-gray-800 text-xs font-medium">
-                Manual Upload
-              </span>
-            )}
+            {(() => {
+              const badge = verificationMethodBadge(document.verificationMethod);
+              return (
+                <span
+                  className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium ${badge.className}`}
+                >
+                  <CheckCircle className="h-3 w-3" />
+                  {badge.label}
+                </span>
+              );
+            })()}
           </div>
 
           {/* Document Number - always show for Aadhaar, PAN, DL, RC (show "?" when empty) */}
@@ -1145,8 +1659,8 @@ function DocumentCard({
             </div>
           )}
 
-          {/* Document Preview - Only show for MANUAL_UPLOAD; fixed height for alignment */}
-          {document.verificationMethod === "MANUAL_UPLOAD" && hasDocumentPreview(document) && (
+          {/* Document Preview — show whenever a real image exists (app / dashboard / manual). */}
+          {showPreview && (
             <div className="mb-3 relative flex-shrink-0">
               <button
                 type="button"
@@ -1176,20 +1690,27 @@ function DocumentCard({
             </div>
           )}
 
-          {/* For APP_VERIFIED: Show info message (same height as image area for alignment) */}
-          {document.verificationMethod === "APP_VERIFIED" && (
-            <div className="mb-3 h-36 flex-shrink-0 flex items-center justify-center p-3 bg-gradient-to-br from-blue-50 to-indigo-50 border border-blue-200/80 rounded-xl">
+          {/* Auto-verify / DigiLocker captured provider details */}
+          {autoVerifyDisplay ? (
+            <div className="mb-3 flex-shrink-0">
+              <DocAutoVerificationDetailsView display={autoVerifyDisplay} />
+            </div>
+          ) : isElectronicallyVerifiedMethod(document.verificationMethod) && !showPreview ? (
+            <div className="mb-3 min-h-[5rem] flex-shrink-0 flex items-center justify-center p-3 bg-gradient-to-br from-blue-50 to-indigo-50 border border-blue-200/80 rounded-xl">
               <p className="text-xs text-blue-800 text-center">
-                Verified through the app. No image stored.
+                {isDashboardElectronicMethod(document.verificationMethod)
+                  ? "Verified electronically from dashboard. No structured provider fields were stored."
+                  : "Verified through the app. No structured provider fields were stored."}
               </p>
             </div>
-          )}
+          ) : null}
 
-          {/* Actions - Different for APP_VERIFIED vs MANUAL_UPLOAD */}
-          {document.verificationMethod === "APP_VERIFIED" ? (
-            // APP_VERIFIED: Already verified, no actions needed
+          {/* Actions - Different for electronic vs MANUAL_UPLOAD */}
+          {isElectronicallyVerifiedMethod(document.verificationMethod) ? (
             <div className="text-center py-2">
-              <p className="text-xs text-gray-500">Already verified through app</p>
+              <p className="text-xs text-gray-500">
+                {verificationMethodFooter(document.verificationMethod)}
+              </p>
             </div>
           ) : (
             // MANUAL_UPLOAD: Show edit/approve/reject actions
@@ -1239,7 +1760,7 @@ function DocumentCard({
 
           {/* Agent electronic verification — only for unverified manual uploads
               of doc kinds the engine supports. Verified docs never show this. */}
-          {document.verificationMethod === "MANUAL_UPLOAD" &&
+          {isManualUploadMethod(document.verificationMethod) &&
             !document.verified &&
             !isDisabled &&
             EV_KIND_BY_DOC_TYPE[docType] ? (
@@ -1248,20 +1769,48 @@ function DocumentCard({
               subjectId={riderId}
               docKind={EV_KIND_BY_DOC_TYPE[docType]}
               verified={document.verified}
+              hasPendingReview={!!pendingElectronicReview}
+              onOpenPendingReview={onOpenPendingElectronicReview}
               prefill={{
-                number: document.docNumber,
-                name: document.extractedName,
-                dob: document.extractedDob,
+                number:
+                  document.docNumber?.trim() &&
+                  document.docNumber.trim() !== "?"
+                    ? document.docNumber
+                    : null,
+                name: null,
+                dob: document.extractedDob || riderDob || null,
               }}
-              onVerified={() => onApprove()}
+              onVerified={(data, meta) => onElectronicVerified?.(data, meta)}
             />
           ) : null}
         </>
       ) : (
-        <div className="text-center py-8 text-gray-400">
-          <p className="text-sm">
-            {isOptional ? "Optional — not submitted" : "No document uploaded"}
-          </p>
+        <div className="flex-1 flex flex-col">
+          <div className="text-center py-6 text-gray-400">
+            <p className="text-sm">
+              {isOptional ? "Optional — not submitted" : "No document uploaded"}
+            </p>
+            {allowEmptyElectronicVerify ? (
+              <p className="text-xs text-gray-500 mt-1">
+                Or verify the bank account electronically below.
+              </p>
+            ) : null}
+          </div>
+          {allowEmptyElectronicVerify &&
+          !isDisabled &&
+          EV_KIND_BY_DOC_TYPE[docType] &&
+          onElectronicVerified ? (
+            <ElectronicVerifyPanel
+              subjectType="rider"
+              subjectId={riderId}
+              docKind={EV_KIND_BY_DOC_TYPE[docType]}
+              verified={false}
+              hasPendingReview={!!pendingElectronicReview}
+              onOpenPendingReview={onOpenPendingElectronicReview}
+              prefill={{ number: null, name: null, dob: null, ifsc: null }}
+              onVerified={(data, meta) => onElectronicVerified?.(data, meta)}
+            />
+          ) : null}
         </div>
       )}
     </div>

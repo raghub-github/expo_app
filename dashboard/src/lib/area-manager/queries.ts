@@ -423,3 +423,182 @@ export async function updateRiderScoped(
     .returning();
   return row ?? null;
 }
+
+export const GEO_AVAILABILITY_RADIUS_KM = [1, 2, 3, 5, 10] as const;
+export type GeoAvailabilityRadiusKm = (typeof GEO_AVAILABILITY_RADIUS_KM)[number];
+
+export interface GeoRiderNearPoint {
+  id: number;
+  mobile: string;
+  name: string | null;
+  lat: number;
+  lng: number;
+  distanceKm: number;
+  status: string;
+  localityCode: string | null;
+  lastUpdatedAt: string | null;
+}
+
+export interface GeoRiderSearchResult {
+  center: { lat: number; lng: number };
+  radiusKm: number;
+  kpis: {
+    total: number;
+    available: number;
+    busy: number;
+    offline: number;
+    coveragePct: number;
+  };
+  riders: GeoRiderNearPoint[];
+  insights: {
+    nearest: GeoRiderNearPoint | null;
+    farthest: GeoRiderNearPoint | null;
+    avgDistanceKm: number | null;
+    recommendedRadiusKm: number;
+  };
+}
+
+function isAllowedRadiusKm(n: number): n is GeoAvailabilityRadiusKm {
+  return (GEO_AVAILABILITY_RADIUS_KM as readonly number[]).includes(n);
+}
+
+/**
+ * Search riders within radiusKm of (lat, lng) using live GPS (rider_current_locations)
+ * with fallback to riders.lat/lon. Scoped by area_manager_id when provided.
+ */
+export async function searchRidersNearPoint(params: {
+  lat: number;
+  lng: number;
+  radiusKm: number;
+  areaManagerId: number | null;
+}): Promise<GeoRiderSearchResult> {
+  const { getSql } = await import("@/lib/db/client");
+  const sql = getSql();
+  const lat = params.lat;
+  const lng = params.lng;
+  const radiusKm = isAllowedRadiusKm(params.radiusKm) ? params.radiusKm : 3;
+  const areaManagerId = params.areaManagerId;
+  const maxRadius = GEO_AVAILABILITY_RADIUS_KM[GEO_AVAILABILITY_RADIUS_KM.length - 1]!;
+
+  const rows = await sql`
+    WITH positioned AS (
+      SELECT
+        r.id,
+        r.mobile,
+        r.name,
+        r.availability_status AS status,
+        r.locality_code,
+        COALESCE(rcl.lat, r.lat) AS lat,
+        COALESCE(rcl.lng, r.lon) AS lng,
+        COALESCE(rcl.updated_at, r.updated_at) AS last_updated_at
+      FROM public.riders r
+      LEFT JOIN public.rider_current_locations rcl ON rcl.rider_id = r.id
+      WHERE r.deleted_at IS NULL
+        AND (${areaManagerId}::int IS NULL OR r.area_manager_id = ${areaManagerId})
+        AND COALESCE(rcl.lat, r.lat) IS NOT NULL
+        AND COALESCE(rcl.lng, r.lon) IS NOT NULL
+    ),
+    with_distance AS (
+      SELECT
+        p.*,
+        (
+          6371 * acos(
+            LEAST(1.0, GREATEST(-1.0,
+              cos(radians(${lat})) * cos(radians(p.lat))
+              * cos(radians(p.lng) - radians(${lng}))
+              + sin(radians(${lat})) * sin(radians(p.lat))
+            ))
+          )
+        ) AS distance_km
+      FROM positioned p
+    )
+    SELECT
+      id,
+      mobile,
+      name,
+      lat,
+      lng,
+      distance_km,
+      status,
+      locality_code,
+      last_updated_at
+    FROM with_distance
+    WHERE distance_km <= ${maxRadius}
+    ORDER BY distance_km ASC
+    LIMIT 1000
+  `;
+
+  const allWithinMax: GeoRiderNearPoint[] = (rows as Record<string, unknown>[]).map((row) => {
+    const last = row.last_updated_at;
+    let lastUpdatedAt: string | null = null;
+    if (last instanceof Date) lastUpdatedAt = last.toISOString();
+    else if (last != null) {
+      const d = new Date(String(last));
+      lastUpdatedAt = Number.isFinite(d.getTime()) ? d.toISOString() : null;
+    }
+    return {
+      id: Number(row.id),
+      mobile: String(row.mobile ?? ""),
+      name: row.name != null ? String(row.name) : null,
+      lat: Number(row.lat),
+      lng: Number(row.lng),
+      distanceKm: Math.round(Number(row.distance_km) * 1000) / 1000,
+      status: String(row.status ?? "OFFLINE").toUpperCase(),
+      localityCode: row.locality_code != null ? String(row.locality_code) : null,
+      lastUpdatedAt,
+    };
+  });
+
+  const riders = allWithinMax.filter((r) => r.distanceKm <= radiusKm);
+
+  let available = 0;
+  let busy = 0;
+  let offline = 0;
+  for (const r of riders) {
+    if (r.status === "ONLINE") available += 1;
+    else if (r.status === "BUSY") busy += 1;
+    else offline += 1;
+  }
+  const total = riders.length;
+  const coveragePct = total > 0 ? Math.round((available / total) * 1000) / 10 : 0;
+
+  const nearest = riders[0] ?? null;
+  const farthest = riders.length > 0 ? riders[riders.length - 1]! : null;
+  const avgDistanceKm =
+    total > 0
+      ? Math.round((riders.reduce((s, r) => s + r.distanceKm, 0) / total) * 1000) / 1000
+      : null;
+
+  let recommendedRadiusKm = radiusKm;
+  let foundRecommend = false;
+  for (const rk of GEO_AVAILABILITY_RADIUS_KM) {
+    const onlineN = allWithinMax.filter((r) => r.distanceKm <= rk && r.status === "ONLINE").length;
+    if (onlineN >= 3) {
+      recommendedRadiusKm = rk;
+      foundRecommend = true;
+      break;
+    }
+  }
+  if (!foundRecommend) {
+    const idx = GEO_AVAILABILITY_RADIUS_KM.indexOf(radiusKm as GeoAvailabilityRadiusKm);
+    recommendedRadiusKm =
+      idx >= 0 && idx < GEO_AVAILABILITY_RADIUS_KM.length - 1
+        ? GEO_AVAILABILITY_RADIUS_KM[idx + 1]!
+        : radiusKm;
+  }
+
+  return {
+    center: { lat, lng },
+    radiusKm,
+    kpis: { total, available, busy, offline, coveragePct },
+    riders,
+    insights: {
+      nearest,
+      farthest,
+      avgDistanceKm,
+      recommendedRadiusKm,
+    },
+  };
+}
+
+

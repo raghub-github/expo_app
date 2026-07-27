@@ -1,12 +1,6 @@
 import { useEffect, useRef, useCallback } from "react";
-import {
-  View,
-  Text,
-  StyleSheet,
-  Animated,
-  PanResponder,
-  Vibration,
-} from "react-native";
+import { AppText as Text } from "@/components/AppText";
+import { View, StyleSheet, Animated, PanResponder, Vibration } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 
 const SLIDER_STAGE_COLORS: Record<

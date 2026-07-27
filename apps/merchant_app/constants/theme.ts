@@ -50,6 +50,13 @@ export const FONT_CARD_NUMBER_LARGE = 26; // KPI emphasis
 export const FONT_LABEL = 14; // Medium
 export const FONT_SECONDARY = 13; // 12–13px Regular
 
+/** Lora = alphabetic UI copy; Poppins = digits / ₹ / % (via AppText + global Text patch). */
+export { MerchantFonts } from "@/constants/typography";
+export const FONT_LORA = "Lora_400Regular";
+export const FONT_LORA_BOLD = "Lora_700Bold";
+export const FONT_POPPINS = "Poppins_600SemiBold";
+export const FONT_POPPINS_BOLD = "Poppins_700Bold";
+
 export const GatiMitraMerchant = {
   // Brand — Primary Mint Green, Dark Navy/Blue
   primary: "#3EB489", // Mint green

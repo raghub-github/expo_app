@@ -6,7 +6,7 @@
  */
 import { NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
-import { isInvalidRefreshToken } from "@/lib/auth/session-errors";
+import { isInvalidRefreshToken, signOutIfSessionDead } from "@/lib/auth/session-errors";
 
 export const runtime = "nodejs";
 
@@ -17,7 +17,7 @@ export async function GET() {
     const { data: userData, error: userError } = await supabase.auth.getUser();
     if (userError || !userData.user) {
       if (userError && isInvalidRefreshToken(userError)) {
-        await supabase.auth.signOut();
+        await signOutIfSessionDead(supabase, userError);
       }
       return NextResponse.json({ success: false, code: "NO_SESSION" }, { status: 401 });
     }
@@ -28,7 +28,7 @@ export async function GET() {
     } = await supabase.auth.getSession();
 
     if (sessionError && isInvalidRefreshToken(sessionError)) {
-      await supabase.auth.signOut();
+      await signOutIfSessionDead(supabase, sessionError);
       return NextResponse.json({ success: false, code: "NO_SESSION" }, { status: 401 });
     }
 

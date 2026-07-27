@@ -7,24 +7,17 @@ const DEBOUNCE_MS = 250;
 
 /**
  * Supabase postgres_changes on orders_core + orders_food — same pattern as partnersite food-orders page.
- *
- * Two-tier reaction, matching the Partner Site:
- *   - `onFoodRowChange(foodId)` fires *immediately* (no debounce) for every
- *     orders_food INSERT/UPDATE so the incoming-order modal can open/close from
- *     the realtime event via a single targeted fetch — no full list refetch in
- *     the critical path.
- *   - `onOrdersStale()` is debounced and drives the full-list refetch used only
- *     for silent background reconciliation (rider/status enrichment).
+ * Supports one or many store IDs (multi-store "manage orders from").
  */
 export function useMerchantOrdersRealtime(options: {
-  storeId: number | null;
+  storeIds: number[];
   enabled: boolean;
   /** Merchant session token — used to mint the Supabase realtime auth token (RLS). */
   authToken: string | null;
   onOrdersStale: () => void;
-  onFoodRowChange?: (foodId: number) => void;
+  onFoodRowChange?: (foodId: number, merchantStoreId: number | null) => void;
 }) {
-  const { storeId, enabled, authToken, onOrdersStale, onFoodRowChange } = options;
+  const { storeIds, enabled, authToken, onOrdersStale, onFoodRowChange } = options;
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const onStaleRef = useRef(onOrdersStale);
   onStaleRef.current = onOrdersStale;
@@ -40,26 +33,49 @@ export function useMerchantOrdersRealtime(options: {
   }, []);
 
   const handleFoodRow = useCallback(
-    (payload: { new?: { id?: number | string } | null }) => {
+    (payload: {
+      new?: { id?: number | string; merchant_store_id?: number | string | null } | null;
+    }) => {
       const rawId = payload?.new?.id;
       const foodId = typeof rawId === "string" ? parseInt(rawId, 10) : Number(rawId);
+      const rawStore = payload?.new?.merchant_store_id;
+      const merchantStoreId =
+        rawStore == null || rawStore === ""
+          ? null
+          : typeof rawStore === "string"
+            ? parseInt(rawStore, 10)
+            : Number(rawStore);
       if (Number.isFinite(foodId) && foodId > 0) {
-        onFoodRowChangeRef.current?.(foodId);
+        onFoodRowChangeRef.current?.(
+          foodId,
+          Number.isFinite(merchantStoreId as number) ? (merchantStoreId as number) : null
+        );
       }
-      // Always keep the background reconcile scheduled too.
       scheduleRefetch();
     },
     [scheduleRefetch]
   );
 
+  const idsKey = storeIds
+    .filter((id) => Number.isFinite(id) && id > 0)
+    .sort((a, b) => a - b)
+    .join(",");
+
   useEffect(() => {
-    if (!enabled || storeId == null || !Number.isFinite(storeId)) return undefined;
+    const ids = idsKey
+      .split(",")
+      .map((s) => Number(s))
+      .filter((n) => Number.isFinite(n) && n > 0);
+    if (!enabled || ids.length === 0) return undefined;
 
     const supabase = getSupabaseAuth();
     if (!supabase) return undefined;
 
-    const topic = `merchant_store_orders:${storeId}`;
-    const filter = `merchant_store_id=eq.${storeId}`;
+    const filter =
+      ids.length === 1
+        ? `merchant_store_id=eq.${ids[0]}`
+        : `merchant_store_id=in.(${ids.join(",")})`;
+    const topic = `merchant_store_orders:${ids.join("_")}`;
 
     let cancelled = false;
     let channel: RealtimeChannel | null = null;
@@ -83,9 +99,6 @@ export function useMerchantOrdersRealtime(options: {
     };
 
     void (async () => {
-      // Authorize the Supabase client for realtime under RLS (orders_* have RLS
-      // policies scoped to the merchant's store_ids). Without this the anon client
-      // receives NO postgres_changes; polling is only a fallback, not the primary path.
       if (authToken) {
         try {
           const rt = await fetchRealtimeAuthToken(authToken);
@@ -98,25 +111,25 @@ export function useMerchantOrdersRealtime(options: {
                 const next = await fetchRealtimeAuthToken(authToken);
                 if (!cancelled) supabase.realtime.setAuth(next.token);
               } catch {
-                /* keep last token; refreshed next tick */
+                /* keep last token */
               }
             })();
           }, refreshMs);
         } catch {
-          // Realtime auth failed — still subscribe (RLS may block, but polling covers it).
+          /* subscribe anyway; RLS may still deliver for some policies */
         }
       }
-      subscribe();
+      if (!cancelled) subscribe();
     })();
 
     return () => {
       cancelled = true;
+      if (debounceRef.current) clearTimeout(debounceRef.current);
       if (refreshTimer) clearInterval(refreshTimer);
-      if (debounceRef.current) {
-        clearTimeout(debounceRef.current);
-        debounceRef.current = null;
+      if (channel) {
+        void supabase.removeChannel(channel);
+        channel = null;
       }
-      if (channel) void supabase.removeChannel(channel);
     };
-  }, [enabled, scheduleRefetch, handleFoodRow, storeId, authToken]);
+  }, [enabled, idsKey, authToken, scheduleRefetch, handleFoodRow]);
 }

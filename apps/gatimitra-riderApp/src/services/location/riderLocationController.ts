@@ -46,6 +46,11 @@ async function geocodeOrFallback(coords: ValidatedCoords): Promise<AddressData> 
 export async function acquireAndCommitRiderLocation(options?: {
   /** Skip the readiness gate when caller already verified permission + GPS. */
   assumeReady?: boolean;
+  /**
+   * Force a fresh device GPS reading. Rejects stale OS last-known fallbacks
+   * and waits longer for acceptable accuracy (app open / foreground).
+   */
+  requireFresh?: boolean;
 }): Promise<RiderLocationAcquisitionResult> {
   const store = useRiderLocationStore.getState();
   const seq = store.beginAcquisition();
@@ -72,7 +77,16 @@ export async function acquireAndCommitRiderLocation(options?: {
       }
     }
 
-    const coords = await getBestEffortPosition();
+    const coords = await getBestEffortPosition(
+      options?.requireFresh
+        ? {
+            lastKnownMaxAgeMs: 0,
+            acceptableAccuracyM: 35,
+            stableWaitMs: 12_000,
+            maxAttempts: 5,
+          }
+        : undefined
+    );
     const address = await geocodeOrFallback(coords);
     const committed = store.commitAcquisition(seq, { coords, address });
     if (!committed) {

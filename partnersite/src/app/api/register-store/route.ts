@@ -10,6 +10,7 @@ import {
 import { upsertStoreCuisines } from '@/lib/cuisines';
 import { parseMenuReferenceImageUrls, stableEntryIdForUrl } from '@/lib/menu-reference-image-bundle';
 import { markMerchantResubmittedForRejectedSteps } from '@/lib/onboarding/verification-resubmission';
+import { maskAadhaarNumber } from '@/lib/mask-aadhaar';
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder.supabase.co";
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "placeholder-service-role-key";
@@ -908,7 +909,10 @@ export async function POST(req: NextRequest) {
           docRow.gst_document_name = doc.name || null;
         }
         if (docType === 'AADHAAR' && (doc.number || doc.aadhar_number || doc.aadhaar_number || doc.url)) {
-          docRow.aadhaar_document_number = doc.number || doc.aadhar_number || doc.aadhaar_number || null;
+          docRow.aadhaar_document_number = (() => {
+            const n = doc.number || doc.aadhar_number || doc.aadhaar_number || null;
+            return n ? maskAadhaarNumber(String(n)) : null;
+          })();
           docRow.aadhaar_document_url = storedUrl || null;
           docRow.aadhaar_document_name = doc.name || null;
         }

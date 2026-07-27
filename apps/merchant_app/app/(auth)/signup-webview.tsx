@@ -2,7 +2,8 @@
  * Sign up — opens partner.gatimitra.com in the same app (Zomato-style in-app browser).
  */
 
-import { View, StyleSheet, Pressable, Text } from "react-native";
+import { AppText as Text } from "@/components/AppText";
+import { View, StyleSheet, Pressable } from "react-native";
 import { useRouter } from "expo-router";
 import { WebView } from "react-native-webview";
 import { useState } from "react";

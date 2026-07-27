@@ -31,6 +31,11 @@ import {
 import { finalizeMerchantOrderDelivered } from "../../lib/merchant-order-delivered-wallet.js";
 import { notifyMerchantRiderReachedPickup } from "../../lib/merchant-push-notify.js";
 import {
+  notifyCustomerFoodLifecycle,
+  notifyCustomerParcelLifecycle,
+  notifyCustomerRideLifecycle,
+} from "../../lib/customer-lifecycle-notify.js";
+import {
   publishOrderEvent,
   publishStoreEvent,
 } from "../realtime/publish.js";
@@ -2128,6 +2133,92 @@ async function loadRideSummaryForRider(
   return mapRideRowWithStatus(row as RideRow & { status?: string | null }, row.status);
 }
 
+/** Idempotent accept fallback when the rider owns the food order but it is briefly missing from actives. */
+async function loadOwnedFoodSummaryForRider(
+  riderId: number,
+  orderCorePk: number
+): Promise<RiderOrderSummary | null> {
+  const db = getDb();
+  const [row] = await db
+    .select({
+      orderId: ordersCore.orderId,
+      formattedOrderId: ordersCore.formattedOrderId,
+      pickupAddressRaw: ordersCore.pickupAddressRaw,
+      pickupAddressNormalized: ordersCore.pickupAddressNormalized,
+      pickupLat: ordersCore.pickupLat,
+      pickupLon: ordersCore.pickupLon,
+      dropAddressRaw: ordersCore.dropAddressRaw,
+      dropLat: ordersCore.dropLat,
+      dropLon: ordersCore.dropLon,
+      distanceKm: ordersCore.distanceKm,
+      riderEarning: ordersCore.riderEarning,
+      fareAmount: ordersCore.fareAmount,
+      grandTotal: ordersCore.grandTotal,
+      tipAmount: ordersCore.tipAmount,
+      billingSnapshot: ordersCore.billingSnapshot,
+      createdAt: ordersCore.createdAt,
+      restaurantName: ordersFood.restaurantName,
+      foodItemsCount: ordersFood.foodItemsCount,
+      customerName: ordersFood.customerName,
+      customerPhone: ordersFood.customerPhone,
+      alternateContactName: ordersCore.alternateContactName,
+      alternateContactPhone: ordersCore.alternateContactPhone,
+      deliveryPrimaryContactName: ordersCore.deliveryPrimaryContactName,
+      deliveryPrimaryContactPhone: ordersCore.deliveryPrimaryContactPhone,
+      status: ordersCore.status,
+      currentStatus: ordersCore.currentStatus,
+    })
+    .from(ordersCore)
+    .innerJoin(ordersFood, eq(ordersFood.orderId, ordersCore.id))
+    .where(and(eq(ordersCore.id, orderCorePk), eq(ordersCore.riderId, riderId)))
+    .limit(1);
+
+  if (!row?.orderId) return null;
+  return mapFoodRowForActiveRider(db, row, riderId, orderCorePk);
+}
+
+async function loadOwnedParcelSummaryForRider(
+  riderId: number,
+  orderRef: string
+): Promise<RiderOrderSummary | null> {
+  const db = getDb();
+  const [row] = await db
+    .select({
+      coreId: ordersCore.id,
+      orderId: ordersCore.orderId,
+      formattedOrderId: ordersCore.formattedOrderId,
+      pickupAddressRaw: ordersCore.pickupAddressRaw,
+      pickupAddressNormalized: ordersCore.pickupAddressNormalized,
+      pickupLat: ordersCore.pickupLat,
+      pickupLon: ordersCore.pickupLon,
+      dropAddressRaw: ordersCore.dropAddressRaw,
+      dropLat: ordersCore.dropLat,
+      dropLon: ordersCore.dropLon,
+      distanceKm: ordersCore.distanceKm,
+      riderEarning: ordersCore.riderEarning,
+      fareAmount: ordersCore.fareAmount,
+      grandTotal: ordersCore.grandTotal,
+      tipAmount: ordersCore.tipAmount,
+      billingSnapshot: ordersCore.billingSnapshot,
+      createdAt: ordersCore.createdAt,
+      status: ordersCore.status,
+      currentStatus: ordersCore.currentStatus,
+    })
+    .from(ordersCore)
+    .innerJoin(ordersParcel, eq(ordersParcel.orderId, ordersCore.id))
+    .where(
+      and(
+        orderRefWhere(orderRef),
+        eq(ordersCore.orderType, "parcel"),
+        eq(ordersCore.riderId, riderId)
+      )
+    )
+    .limit(1);
+
+  if (!row?.orderId || row.coreId == null) return null;
+  return mapParcelRowWithStatus(row, null, null);
+}
+
 export async function acceptOrderForRider(
   riderId: number,
   orderRef: string
@@ -2172,6 +2263,33 @@ async function acceptFoodOrderForRider(
 ): Promise<RiderOrderSummary> {
   const db = getDb();
   const now = new Date();
+
+  // Idempotent re-accept (retry after timeout) — do not 409 the winner.
+  const [alreadyOwned] = await db
+    .select({ id: ordersCore.id, orderId: ordersCore.orderId })
+    .from(ordersCore)
+    .where(
+      and(
+        orderRefWhere(orderRef),
+        eq(ordersCore.orderType, "food"),
+        eq(ordersCore.riderId, riderId)
+      )
+    )
+    .limit(1);
+  if (alreadyOwned?.id) {
+    const actives = await getActiveOrdersForRider(riderId);
+    const hit = actives.find(
+      (o) =>
+        o.id === alreadyOwned.orderId?.trim() ||
+        o.id === orderRef.trim() ||
+        o.formattedOrderId?.trim() === orderRef.trim()
+    );
+    if (hit) return hit;
+    // Owned but temporarily absent from actives list (e.g. status race) — never 409 the owner.
+    const ownedSummary = await loadOwnedFoodSummaryForRider(riderId, alreadyOwned.id);
+    if (ownedSummary) return { ...ownedSummary, status: "assigned" };
+  }
+
   const dispatchableStatuses = [...(await fetchFoodDispatchableStatusesForFlow())];
 
   const [preCheck] = await db
@@ -2222,29 +2340,8 @@ async function acceptFoodOrderForRider(
     .limit(1);
 
   const accepted = await db.transaction(async (tx) => {
-    const [existing] = await tx
-      .select({
-        id: ordersCore.id,
-        orderId: ordersCore.orderId,
-        foodStatus: ordersFood.orderStatus,
-      })
-      .from(ordersCore)
-      .innerJoin(ordersFood, eq(ordersFood.orderId, ordersCore.id))
-      .where(
-        and(
-          eq(ordersCore.id, preCheck.id),
-          isNull(ordersCore.riderId),
-          inArray(ordersFood.orderStatus, dispatchableStatuses),
-          sql`${ordersFood.cancelledAt} IS NULL`
-        )
-      )
-      .limit(1);
-
-    if (!existing?.id || !existing.orderId) {
-      throw Object.assign(new Error("Order not available"), { statusCode: 409 });
-    }
-
-    const currentFoodStatus = String(existing.foodStatus ?? foodStatusAtAccept).trim().toUpperCase();
+    // Claim FIRST — conditional UPDATE is the atomic lock (no unlocked re-select race window).
+    const currentFoodStatus = String(foodStatusAtAccept).trim().toUpperCase();
     const readyNow = currentFoodStatus === "READY_FOR_PICKUP";
     const nextCoreStatus = readyNow ? "OUT_FOR_DELIVERY" : "RIDER_ASSIGNED";
     const nextFoodStatus = readyNow ? "OUT_FOR_DELIVERY" : currentFoodStatus;
@@ -2258,8 +2355,14 @@ async function acceptFoodOrderForRider(
         actualPickupTime: null,
         updatedAt: now,
       })
-      .where(and(eq(ordersCore.id, existing.id), isNull(ordersCore.riderId)))
-      .returning({ id: ordersCore.id });
+      .where(
+        and(
+          eq(ordersCore.id, preCheck.id),
+          isNull(ordersCore.riderId),
+          eq(ordersCore.orderType, "food")
+        )
+      )
+      .returning({ id: ordersCore.id, orderId: ordersCore.orderId });
 
     if (!updated?.id) {
       throw Object.assign(new Error("Order already taken"), { statusCode: 409 });
@@ -2292,7 +2395,7 @@ async function acceptFoodOrderForRider(
       occurredAt: now,
     });
 
-    const orderIdText = existing.orderId.trim();
+    const orderIdText = (updated.orderId ?? preCheck.orderId ?? "").trim();
     await recordRiderOrderAccepted(tx, {
       orderCorePk: updated.id,
       orderIdText,
@@ -2413,6 +2516,29 @@ async function acceptFoodOrderForRider(
   })();
 
   noteRiderOrderLocationMilestone(riderId, accepted.id, "accepted");
+
+  void (async () => {
+    const riderName = String(riderProfile?.name ?? "").trim() || "Your rider";
+    const merchantName = String(accepted.merchantName ?? "").trim() || null;
+    if (foodStatusAtAccept === "READY_FOR_PICKUP") {
+      await notifyCustomerFoodLifecycle({
+        orderIdText,
+        templateCode: "ORDER_OUT_FOR_DELIVERY",
+        riderId,
+        riderName,
+        merchantName,
+      });
+    } else {
+      await notifyCustomerFoodLifecycle({
+        orderIdText,
+        templateCode: "ORDER_RIDER_ASSIGNED",
+        riderId,
+        riderName,
+        merchantName,
+      });
+    }
+  })();
+
   return { ...accepted, status: "assigned" };
 }
 
@@ -2422,6 +2548,12 @@ async function acceptParcelOrderForRider(
 ): Promise<RiderOrderSummary> {
   const db = getDb();
   const now = new Date();
+
+  // Idempotent re-accept (retry after timeout / flaky network) — do not 409 the winner.
+  const alreadyOwned = await loadOwnedParcelSummaryForRider(riderId, orderRef);
+  if (alreadyOwned) {
+    return { ...alreadyOwned, status: "assigned" };
+  }
 
   const [preCheck] = await db
     .select({
@@ -2557,6 +2689,11 @@ async function acceptParcelOrderForRider(
 
   await completeOrderDispatch(preCheck.id, "accepted");
   noteRiderOrderLocationMilestone(riderId, accepted.id, "accepted");
+  void notifyCustomerParcelLifecycle({
+    orderIdText,
+    templateCode: "PARCEL_RIDER_ON_THE_WAY",
+    riderId,
+  });
   return { ...accepted, status: "assigned" };
 }
 
@@ -3281,6 +3418,23 @@ export async function verifyPickupOtpForRider(
       gps?.deviceTimestamp
     );
   }
+  if (meta?.orderType === "parcel") {
+    // Parcel pickup OTP uses core pickup_otp when present; otherwise mark picked up.
+    const db = getDb();
+    const [row] = await db
+      .select({ pickupOtp: ordersCore.pickupOtp })
+      .from(ordersCore)
+      .where(and(orderRefWhere(orderRef), eq(ordersCore.orderType, "parcel"), eq(ordersCore.riderId, riderId)))
+      .limit(1);
+    const expected = String(row?.pickupOtp ?? "").trim();
+    if (expected) {
+      const got = String(otpInput ?? "").trim().replace(/\D/g, "");
+      if (expected !== got) {
+        throw Object.assign(new Error("Incorrect pickup OTP"), { statusCode: 403 });
+      }
+    }
+    return markParcelPickedUpForRider(riderId, orderRef, gps);
+  }
 
   const now = new Date();
   const normalizedOtp = String(otpInput ?? "").trim().replace(/\D/g, "");
@@ -3428,6 +3582,12 @@ export async function verifyPickupOtpForRider(
   } catch (err) {
     console.warn("[verifyPickupOtpForRider] waiting billing update failed:", err);
   }
+
+  void notifyCustomerRideLifecycle({
+    orderIdText: orderRef.trim(),
+    templateCode: "RIDE_RIDER_ARRIVED",
+    riderId,
+  });
 
   return getRideOrderForRider(riderId, orderRef);
 }
@@ -3626,6 +3786,11 @@ export async function startRideForRider(
   });
 
   noteRiderOrderLocationMilestone(riderId, updated.id, "picked_up", gps);
+  void notifyCustomerRideLifecycle({
+    orderIdText: updated.id,
+    templateCode: "RIDE_TRIP_STARTED",
+    riderId,
+  });
   return updated;
 }
 
@@ -3643,6 +3808,9 @@ export async function markReachedPickupForRider(
 
   if (meta?.orderType === "food") {
     return markReachedFoodPickupForRider(riderId, orderRef, gps);
+  }
+  if (meta?.orderType === "parcel") {
+    return markReachedParcelPickupForRider(riderId, orderRef, gps);
   }
 
   const now = new Date();
@@ -3726,6 +3894,11 @@ export async function markReachedPickupForRider(
   });
 
   noteRiderOrderLocationMilestone(riderId, orderRef, "reached_store", gps);
+  void notifyCustomerRideLifecycle({
+    orderIdText: orderRef.trim(),
+    templateCode: "RIDE_RIDER_NEARBY",
+    riderId,
+  });
   return getRideOrderForRider(riderId, orderRef);
 }
 
@@ -3786,6 +3959,415 @@ async function selectFoodOrderRowForRider(
     .limit(1);
 
   return full?.orderId ? (full as FoodRowWithStatus) : null;
+}
+
+async function markReachedParcelPickupForRider(
+  riderId: number,
+  orderRef: string,
+  gps?: RiderGpsPayload
+): Promise<RiderOrderSummary> {
+  const db = getDb();
+  const now = new Date();
+  let newlyReached = false;
+  let orderIdText = "";
+
+  await db.transaction(async (tx) => {
+    const [existing] = await tx
+      .select({
+        id: ordersCore.id,
+        orderId: ordersCore.orderId,
+        status: ordersCore.status,
+        currentStatus: ordersCore.currentStatus,
+      })
+      .from(ordersCore)
+      .innerJoin(ordersParcel, eq(ordersParcel.orderId, ordersCore.id))
+      .where(
+        and(
+          orderRefWhere(orderRef),
+          eq(ordersCore.riderId, riderId),
+          eq(ordersCore.orderType, "parcel"),
+          notInArray(ordersCore.status, ["delivered", "cancelled", "failed"])
+        )
+      )
+      .limit(1);
+
+    if (!existing?.id || !existing.orderId) {
+      throw Object.assign(new Error("Parcel order not found"), { statusCode: 404 });
+    }
+    orderIdText = existing.orderId.trim();
+
+    const activeAssignment = await loadActiveRiderAssignmentMilestones(tx, existing.id, riderId);
+    if (activeAssignment?.pickedUpAt) {
+      throw Object.assign(new Error("Parcel already picked up"), { statusCode: 409 });
+    }
+    const curSt = String(existing.currentStatus ?? "").trim().toUpperCase();
+    const alreadyAtPickup =
+      activeAssignment?.reachedMerchantAt != null ||
+      existing.status === "reached_store" ||
+      curSt === "RIDER_AT_PICKUP";
+    if (alreadyAtPickup) return;
+
+    await assertRiderMilestoneGeoFence({
+      riderId,
+      orderCorePk: existing.id,
+      serviceType: "parcel",
+      milestoneKey: "reach_pickup",
+      gps,
+    });
+
+    const [row] = await tx
+      .update(ordersCore)
+      .set({
+        status: "reached_store",
+        currentStatus: "RIDER_AT_PICKUP",
+        updatedAt: now,
+      })
+      .where(and(eq(ordersCore.id, existing.id), eq(ordersCore.riderId, riderId)))
+      .returning({ id: ordersCore.id });
+    if (!row?.id) {
+      throw Object.assign(new Error("Could not update parcel order"), { statusCode: 409 });
+    }
+
+    const distance = await riderDistanceAtMilestone(riderId, row.id, gps);
+    await recordRiderAssignmentMilestone(tx, {
+      orderCorePk: row.id,
+      orderIdText,
+      riderId,
+      eventType: "reached_merchant",
+      occurredAt: now,
+      distance,
+      statusMessage: "Reached Parcel Pickup",
+    });
+    newlyReached = true;
+  });
+
+  if (newlyReached && orderIdText) {
+    void publishOrderEvent(orderIdText, {
+      type: "status_changed",
+      status: "RIDER_AT_PICKUP",
+      orderId: orderIdText,
+      riderId,
+    }).catch(() => {});
+    noteRiderOrderLocationMilestone(riderId, orderIdText, "reached_store", gps);
+  }
+
+  return getParcelOrderForRider(riderId, orderRef);
+}
+
+async function markParcelPickedUpForRider(
+  riderId: number,
+  orderRef: string,
+  gps?: RiderGpsPayload
+): Promise<RiderOrderSummary> {
+  const db = getDb();
+  const now = new Date();
+  let orderIdText = "";
+  let newlyPicked = false;
+
+  await db.transaction(async (tx) => {
+    const [existing] = await tx
+      .select({
+        id: ordersCore.id,
+        orderId: ordersCore.orderId,
+        status: ordersCore.status,
+        currentStatus: ordersCore.currentStatus,
+      })
+      .from(ordersCore)
+      .innerJoin(ordersParcel, eq(ordersParcel.orderId, ordersCore.id))
+      .where(
+        and(
+          orderRefWhere(orderRef),
+          eq(ordersCore.riderId, riderId),
+          eq(ordersCore.orderType, "parcel"),
+          notInArray(ordersCore.status, ["delivered", "cancelled", "failed"])
+        )
+      )
+      .limit(1);
+
+    if (!existing?.id || !existing.orderId) {
+      throw Object.assign(new Error("Parcel order not found"), { statusCode: 404 });
+    }
+    orderIdText = existing.orderId.trim();
+
+    const activeAssignment = await loadActiveRiderAssignmentMilestones(tx, existing.id, riderId);
+    if (activeAssignment?.pickedUpAt) {
+      return;
+    }
+
+    await assertRiderMilestoneGeoFence({
+      riderId,
+      orderCorePk: existing.id,
+      serviceType: "parcel",
+      milestoneKey: "pickup_confirmation",
+      gps,
+    });
+
+    const [row] = await tx
+      .update(ordersCore)
+      .set({
+        status: "picked_up",
+        currentStatus: "OUT_FOR_DELIVERY",
+        actualPickupTime: now,
+        updatedAt: now,
+      })
+      .where(and(eq(ordersCore.id, existing.id), eq(ordersCore.riderId, riderId)))
+      .returning({ id: ordersCore.id });
+    if (!row?.id) {
+      throw Object.assign(new Error("Could not mark parcel picked up"), { statusCode: 409 });
+    }
+
+    const distance = await riderDistanceAtMilestone(riderId, row.id, gps);
+    await recordRiderAssignmentMilestone(tx, {
+      orderCorePk: row.id,
+      orderIdText,
+      riderId,
+      eventType: "picked_up",
+      occurredAt: now,
+      distance,
+      statusMessage: "Parcel Picked Up",
+    });
+    newlyPicked = true;
+  });
+
+  if (newlyPicked && orderIdText) {
+    void notifyCustomerParcelLifecycle({
+      orderIdText,
+      templateCode: "PARCEL_PICKED_UP",
+      riderId,
+    });
+    void publishOrderEvent(orderIdText, {
+      type: "status_changed",
+      status: "OUT_FOR_DELIVERY",
+      orderId: orderIdText,
+      riderId,
+    }).catch(() => {});
+    noteRiderOrderLocationMilestone(riderId, orderIdText, "picked_up", gps);
+  }
+
+  return getParcelOrderForRider(riderId, orderRef);
+}
+
+async function markReachedParcelCustomerForRider(
+  riderId: number,
+  orderRef: string,
+  gps?: RiderGpsPayload
+): Promise<RiderOrderSummary> {
+  const db = getDb();
+  const now = new Date();
+  let orderIdText = "";
+  let newlyReached = false;
+
+  await db.transaction(async (tx) => {
+    const [existing] = await tx
+      .select({
+        id: ordersCore.id,
+        orderId: ordersCore.orderId,
+        status: ordersCore.status,
+        currentStatus: ordersCore.currentStatus,
+      })
+      .from(ordersCore)
+      .innerJoin(ordersParcel, eq(ordersParcel.orderId, ordersCore.id))
+      .where(
+        and(
+          orderRefWhere(orderRef),
+          eq(ordersCore.riderId, riderId),
+          eq(ordersCore.orderType, "parcel"),
+          notInArray(ordersCore.status, ["delivered", "cancelled", "failed"])
+        )
+      )
+      .limit(1);
+
+    if (!existing?.id || !existing.orderId) {
+      throw Object.assign(new Error("Parcel not ready for drop arrival"), { statusCode: 409 });
+    }
+    orderIdText = existing.orderId.trim();
+
+    const curSt = String(existing.currentStatus ?? "").trim().toUpperCase();
+    if (curSt === "REACHED_CUSTOMER") return;
+
+    const activeAssignment = await loadActiveRiderAssignmentMilestones(tx, existing.id, riderId);
+    if (
+      !activeAssignment?.pickedUpAt &&
+      existing.status !== "picked_up" &&
+      existing.status !== "in_transit"
+    ) {
+      throw Object.assign(new Error("Pick up the parcel before reaching the drop"), {
+        statusCode: 409,
+      });
+    }
+
+    await assertRiderMilestoneGeoFence({
+      riderId,
+      orderCorePk: existing.id,
+      serviceType: "parcel",
+      milestoneKey: "reach_drop",
+      gps,
+    });
+
+    const [row] = await tx
+      .update(ordersCore)
+      .set({
+        status: "in_transit",
+        currentStatus: "REACHED_CUSTOMER",
+        updatedAt: now,
+      })
+      .where(and(eq(ordersCore.id, existing.id), eq(ordersCore.riderId, riderId)))
+      .returning({ id: ordersCore.id });
+    if (!row?.id) {
+      throw Object.assign(new Error("Could not update parcel order"), { statusCode: 409 });
+    }
+
+    const distance = await riderDistanceAtMilestone(riderId, row.id, gps);
+    await recordRiderAssignmentMilestone(tx, {
+      orderCorePk: row.id,
+      orderIdText,
+      riderId,
+      eventType: "reached_customer",
+      occurredAt: now,
+      distance,
+      statusMessage: "Reached Parcel Drop",
+    });
+    newlyReached = true;
+  });
+
+  if (newlyReached && orderIdText) {
+    void notifyCustomerParcelLifecycle({
+      orderIdText,
+      templateCode: "PARCEL_RIDER_NEARBY",
+      riderId,
+    });
+    void publishOrderEvent(orderIdText, {
+      type: "status_changed",
+      status: "REACHED_CUSTOMER",
+      orderId: orderIdText,
+      riderId,
+    }).catch(() => {});
+  }
+
+  return getParcelOrderForRider(riderId, orderRef);
+}
+
+async function verifyParcelDeliveryOtpForRider(
+  riderId: number,
+  orderRef: string,
+  otpInput: string,
+  payload?: RiderDeliveryVerifyPayload
+): Promise<RiderOrderSummary> {
+  const db = getDb();
+  const now = new Date();
+  let orderIdText = "";
+  let orderCorePk = 0;
+  let newlyDelivered = false;
+
+  await db.transaction(async (tx) => {
+    const [existing] = await tx
+      .select({
+        id: ordersCore.id,
+        orderId: ordersCore.orderId,
+        status: ordersCore.status,
+        currentStatus: ordersCore.currentStatus,
+        deliveryOtp: ordersCore.deliveryOtp,
+        requiresOtp: ordersParcel.requiresOtpVerification,
+      })
+      .from(ordersCore)
+      .innerJoin(ordersParcel, eq(ordersParcel.orderId, ordersCore.id))
+      .where(
+        and(
+          orderRefWhere(orderRef),
+          eq(ordersCore.riderId, riderId),
+          eq(ordersCore.orderType, "parcel"),
+          notInArray(ordersCore.status, ["delivered", "cancelled", "failed"])
+        )
+      )
+      .limit(1);
+
+    if (!existing?.id || !existing.orderId) {
+      throw Object.assign(new Error("Parcel not ready for delivery"), { statusCode: 409 });
+    }
+    orderIdText = existing.orderId.trim();
+    orderCorePk = existing.id;
+
+    if (existing.requiresOtp) {
+      const expected = String(existing.deliveryOtp ?? "").trim();
+      const got = String(otpInput ?? "").trim().replace(/\D/g, "");
+      if (!expected || expected !== got) {
+        throw Object.assign(new Error("Incorrect delivery OTP"), { statusCode: 403 });
+      }
+    }
+
+    await assertRiderMilestoneGeoFence({
+      riderId,
+      orderCorePk: existing.id,
+      serviceType: "parcel",
+      milestoneKey: "delivery_confirmation",
+      gps: payload,
+    });
+
+    const [row] = await tx
+      .update(ordersCore)
+      .set({
+        status: "delivered",
+        currentStatus: "DELIVERED",
+        actualDeliveryTime: now,
+        updatedAt: now,
+      })
+      .where(and(eq(ordersCore.id, existing.id), eq(ordersCore.riderId, riderId)))
+      .returning({ id: ordersCore.id });
+    if (!row?.id) {
+      throw Object.assign(new Error("Could not confirm parcel delivery"), { statusCode: 409 });
+    }
+
+    const distance = await riderDistanceAtMilestone(riderId, row.id, payload);
+    await recordRiderAssignmentMilestone(tx, {
+      orderCorePk: row.id,
+      orderIdText,
+      riderId,
+      eventType: "delivered",
+      occurredAt: now,
+      distance,
+      statusMessage: "Parcel Delivered",
+    });
+
+    const proofUrl = String(payload?.deliveryImageUrl ?? "").trim();
+    const proofKey = String(payload?.deliveryImageR2Key ?? "").trim();
+    if (proofUrl && proofKey) {
+      await recordOrderDeliveryProofImageTx(tx, {
+        orderCorePk: row.id,
+        riderId,
+        imageUrl: proofUrl,
+        r2Key: proofKey,
+        takenAt: now,
+      });
+    }
+    newlyDelivered = true;
+  });
+
+  if (newlyDelivered && orderIdText) {
+    void notifyCustomerParcelLifecycle({
+      orderIdText,
+      templateCode: "PARCEL_DELIVERED",
+      riderId,
+    });
+    void publishOrderEvent(orderIdText, {
+      type: "status_changed",
+      status: "DELIVERED",
+      orderId: orderIdText,
+      riderId,
+    }).catch(() => {});
+    void import("../../lib/credit-rider-order-on-delivered.js")
+      .then(({ creditRiderOrderEarningOnDelivered }) =>
+        creditRiderOrderEarningOnDelivered({
+          ordersCoreId: orderCorePk,
+          riderId,
+          orderType: "parcel",
+          orderIdText,
+        })
+      )
+      .catch(() => {});
+    noteRiderOrderLocationMilestone(riderId, orderIdText, "delivered", payload);
+  }
+
+  return getParcelOrderForRider(riderId, orderRef);
 }
 
 async function markReachedFoodPickupForRider(
@@ -3969,6 +4551,12 @@ async function markReachedFoodPickupForRider(
           riderName,
           foodOrderId,
         });
+        void notifyCustomerFoodLifecycle({
+          orderIdText,
+          templateCode: "ORDER_RIDER_AT_STORE",
+          riderId,
+          riderName,
+        });
       } catch (err) {
         console.warn(
           "[markReachedFoodPickupForRider] merchant pickup notify failed",
@@ -3994,6 +4582,17 @@ async function markReachedFoodPickupForRider(
   }
 
   noteRiderOrderLocationMilestone(riderId, updated.id, "reached_store", gps);
+  if (didNewlyReachStore) {
+    const orderIdText = updated.id?.trim();
+    if (orderIdText) {
+      void publishOrderEvent(orderIdText, {
+        type: "status_changed",
+        status: "RIDER_AT_PICKUP",
+        orderId: orderIdText,
+        riderId,
+      }).catch(() => {});
+    }
+  }
   return { ...updated, merchantFeedbackSubmitted };
 }
 
@@ -4367,6 +4966,16 @@ export async function markFoodPickupWithoutVerificationForRider(
   gps?: RiderGpsPayload,
   deviceTimestamp?: string
 ): Promise<RiderOrderSummary> {
+  const dbMeta = getDb();
+  const [meta] = await dbMeta
+    .select({ orderType: ordersCore.orderType })
+    .from(ordersCore)
+    .where(orderRefWhere(orderRef))
+    .limit(1);
+  if (meta?.orderType === "parcel") {
+    return markParcelPickedUpForRider(riderId, orderRef, gps);
+  }
+
   const settings = await loadFoodPickupVerificationSettings();
   if (settings.verificationRequired) {
     throw Object.assign(new Error("Pickup verification is required for this order"), {
@@ -4398,6 +5007,20 @@ export async function markFoodPickupWithoutVerificationForRider(
     riderId,
     (updated.orderId ?? "").trim()
   );
+  void notifyCustomerFoodLifecycle({
+    orderIdText: (updated.orderId ?? "").trim(),
+    templateCode: "ORDER_OUT_FOR_DELIVERY",
+    riderId,
+  });
+  const orderIdText = (updated.orderId ?? "").trim();
+  if (orderIdText) {
+    void publishOrderEvent(orderIdText, {
+      type: "status_changed",
+      status: "OUT_FOR_DELIVERY",
+      orderId: orderIdText,
+      riderId,
+    }).catch(() => {});
+  }
   const summary = await mapFoodRowForActiveRider(db, updated, riderId, orderCorePk);
   return { ...summary, merchantFeedbackSubmitted };
 }
@@ -4444,20 +5067,22 @@ async function verifyFoodPickupOtpForRider(
       deviceTimestamp: deviceTimestamp ?? null,
     });
 
+    // Keep QR ACTIVE so a reassigned rider can scan the same printed KOT code.
     try {
       await tx.execute(sql`
         UPDATE order_pickup_tokens
-        SET status = 'USED',
-            used_at = COALESCE(used_at, now()),
+        SET status = 'ACTIVE',
             scanned_at = COALESCE(scanned_at, now()),
             scanned_by_rider_id = COALESCE(scanned_by_rider_id, ${riderId}),
+            assigned_rider_id = ${riderId},
+            used_at = NULL,
+            expires_at = NULL,
             updated_at = now()
         WHERE order_id = ${existing.id}
-          AND status = 'ACTIVE'
       `);
     } catch (consumeErr) {
       console.warn(
-        "[verifyFoodPickupOtpForRider] order_pickup_tokens consume failed:",
+        "[verifyFoodPickupOtpForRider] order_pickup_tokens scan mark failed:",
         consumeErr
       );
     }
@@ -4474,6 +5099,12 @@ async function verifyFoodPickupOtpForRider(
   void import("../../modules/eta/eta.live-engine.js")
     .then(({ runLiveEtaForOrder }) => runLiveEtaForOrder((updated.orderId ?? "").trim(), "RIDER_PICKED_UP"))
     .catch(() => undefined);
+
+  void notifyCustomerFoodLifecycle({
+    orderIdText: (updated.orderId ?? "").trim(),
+    templateCode: "ORDER_OUT_FOR_DELIVERY",
+    riderId,
+  });
 
   const summary = await mapFoodRowForActiveRider(db, updated, riderId, orderCorePk);
   return { ...summary, merchantFeedbackSubmitted };
@@ -4530,21 +5161,22 @@ export async function verifyFoodPickupBarcodeForRider(
       deviceTimestamp: deviceTimestamp ?? null,
     });
 
-    // Consume secure pickup token (one-time) so QR + OTP stay in sync.
+    // Keep QR ACTIVE so a reassigned rider can scan the same printed KOT code.
     try {
       await tx.execute(sql`
         UPDATE order_pickup_tokens
-        SET status = 'USED',
-            used_at = COALESCE(used_at, now()),
+        SET status = 'ACTIVE',
             scanned_at = COALESCE(scanned_at, now()),
             scanned_by_rider_id = COALESCE(scanned_by_rider_id, ${riderId}),
+            assigned_rider_id = ${riderId},
+            used_at = NULL,
+            expires_at = NULL,
             updated_at = now()
         WHERE order_id = ${existing.id}
-          AND status = 'ACTIVE'
       `);
     } catch (consumeErr) {
       console.warn(
-        "[verifyFoodPickupBarcodeForRider] order_pickup_tokens consume failed:",
+        "[verifyFoodPickupBarcodeForRider] order_pickup_tokens scan mark failed:",
         consumeErr
       );
     }
@@ -4557,6 +5189,11 @@ export async function verifyFoodPickupBarcodeForRider(
     riderId,
     (updated.orderId ?? "").trim()
   );
+  void notifyCustomerFoodLifecycle({
+    orderIdText: (updated.orderId ?? "").trim(),
+    templateCode: "ORDER_OUT_FOR_DELIVERY",
+    riderId,
+  });
   const summary = await mapFoodRowForActiveRider(db, updated, riderId, orderCorePk);
   return { ...summary, merchantFeedbackSubmitted };
 }
@@ -4676,6 +5313,11 @@ async function markReachedFoodCustomerForRider(
   });
 
   noteRiderOrderLocationMilestone(riderId, updated.id, "reached_user", gps);
+  void notifyCustomerFoodLifecycle({
+    orderIdText: updated.id,
+    templateCode: "ORDER_RIDER_ARRIVING",
+    riderId,
+  });
   return updated;
 }
 
@@ -4783,6 +5425,11 @@ async function markReachedPersonRideDropForRider(
   });
 
   noteRiderOrderLocationMilestone(riderId, updated.id, "reached_user", gps);
+  void notifyCustomerRideLifecycle({
+    orderIdText: updated.id,
+    templateCode: "RIDE_NEAR_DESTINATION",
+    riderId,
+  });
   return updated;
 }
 
@@ -4806,7 +5453,11 @@ export async function markReachedCustomerForRider(
     return markReachedPersonRideDropForRider(riderId, orderRef, gps);
   }
 
-  throw Object.assign(new Error("Reach customer is only supported for food and person rides"), {
+  if (meta?.orderType === "parcel") {
+    return markReachedParcelCustomerForRider(riderId, orderRef, gps);
+  }
+
+  throw Object.assign(new Error("Reach customer is only supported for food, parcel, and person rides"), {
     statusCode: 409,
   });
 }
@@ -4850,6 +5501,11 @@ function runFoodDeliveryPostCommitEffects(input: {
         type: "status_changed",
         status: "DELIVERED",
         orderId: orderIdText,
+        riderId,
+      }),
+      notifyCustomerFoodLifecycle({
+        orderIdText,
+        templateCode: "ORDER_DELIVERED",
         riderId,
       }),
       import("../../modules/eta/eta.live-engine.js").then(({ recordDeliveryEtaAccuracy }) =>
@@ -5140,6 +5796,10 @@ export async function verifyDeliveryOtpForRider(
     return verifyFoodDeliveryOtpForRider(riderId, orderRef, otpInput, payload);
   }
 
+  if (meta?.orderType === "parcel") {
+    return verifyParcelDeliveryOtpForRider(riderId, orderRef, otpInput, payload);
+  }
+
   if (meta?.orderType === "person_ride") {
     throw Object.assign(
       new Error("Person rides are completed without drop OTP — use complete ride"),
@@ -5147,7 +5807,7 @@ export async function verifyDeliveryOtpForRider(
     );
   }
 
-  throw Object.assign(new Error("Delivery OTP is only supported for food orders"), {
+  throw Object.assign(new Error("Delivery OTP is only supported for food and parcel orders"), {
     statusCode: 409,
   });
 }
@@ -5412,6 +6072,12 @@ async function verifyPersonRideDropOtpForRider(
       riderId,
     }).catch(() => {});
 
+    void notifyCustomerRideLifecycle({
+      orderIdText,
+      templateCode: "RIDE_COMPLETED",
+      riderId,
+    });
+
     const [full] = await tx
       .select({
         orderId: ordersCore.orderId,
@@ -5506,6 +6172,9 @@ const RIDER_UNASSIGNABLE_STATUSES = new Set([
   "accepted",
   "reached_store",
   PERSON_RIDE_AT_USER_STATUS,
+  // After pickup / trip started — rider may still self-cancel (penalty applies).
+  "picked_up",
+  "in_transit",
 ]);
 
 async function applySelfCancelPenaltyForRider(args: {
@@ -5563,11 +6232,16 @@ export async function cancelAssignedRideForRider(
       throw Object.assign(new Error("Ride order not found"), { statusCode: 404 });
     }
 
-    const st = String(existing.status ?? "");
+    const st = String(existing.status ?? "").trim().toLowerCase();
     if (!RIDER_UNASSIGNABLE_STATUSES.has(st)) {
-      throw Object.assign(new Error("Ride cannot be cancelled in current status"), {
-        statusCode: 409,
-      });
+      throw Object.assign(
+        new Error(
+          st === "delivered" || st === "cancelled"
+            ? "Ride is already closed and cannot be cancelled"
+            : "Ride cannot be cancelled in current status"
+        ),
+        { statusCode: 409 }
+      );
     }
 
     const orderIdText = existing.orderId.trim();
@@ -5576,12 +6250,21 @@ export async function cancelAssignedRideForRider(
     return { orderCoreId: existing.id, orderIdText, reasonText, status: st, currentStatus: existing.currentStatus };
   });
 
-  const penalty = await applySelfCancelPenaltyForRider({
-    riderId,
-    orderCoreId: cancelled.orderCoreId,
-    orderType: "person_ride",
-    reasonCode,
-  });
+  let penalty: { penaltyApplied: boolean; penaltyAmount: number } = {
+    penaltyApplied: false,
+    penaltyAmount: 0,
+  };
+  try {
+    penalty = await applySelfCancelPenaltyForRider({
+      riderId,
+      orderCoreId: cancelled.orderCoreId,
+      orderType: "person_ride",
+      reasonCode,
+    });
+  } catch (err) {
+    // Never block unassign/redispatch on wallet debit failure — ledger can be reconciled later.
+    console.warn("[cancelAssignedRideForRider] penalty apply failed:", err);
+  }
 
   await db.transaction(async (tx) => {
     await recordRideRiderUnassign(tx, {

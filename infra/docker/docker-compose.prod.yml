@@ -39,6 +39,7 @@ services:
       # is a snippet `include`'d from each server block, not loaded directly.
       - ../nginx/nginx.conf:/etc/nginx/nginx.conf:ro
       - ../nginx/proxy_common.conf:/etc/nginx/proxy_common.conf:ro
+      - ../nginx/static/rider-digilocker-return.html:/etc/nginx/html/rider-digilocker-return.html:ro
       - /etc/letsencrypt:/etc/letsencrypt:ro
       - nginx-logs:/var/log/nginx
     depends_on:

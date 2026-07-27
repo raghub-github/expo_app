@@ -14,6 +14,14 @@ export type CustomerMapRef = {
     coords: LatLng[],
     options: { edgePadding: MapEdgePadding; animated?: boolean; maxZoom?: number }
   ) => void;
+  /** Fit the full pickup/drop geofence circle into the visible map viewport. */
+  fitToGeofence?: (
+    center: LatLng,
+    radiusM: number,
+    options: { edgePadding: MapEdgePadding; animated?: boolean; maxZoom?: number; force?: boolean }
+  ) => void;
+  clearGeofenceCamera?: () => void;
+  recenterOnRider?: () => void;
   /** Pannable pickup / location maps. */
   animateToRegion?: (region: {
     latitude: number;

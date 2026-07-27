@@ -1,4 +1,5 @@
-import { ActivityIndicator, Pressable, StyleSheet, Text, View } from "react-native";
+import { AppText as Text } from "@/components/AppText";
+import { ActivityIndicator, Pressable, StyleSheet, View } from "react-native";
 import { PREP_DELAY_OPTIONS } from "@/lib/order-prep-time";
 import { MerchantBottomSheetShell } from "@/components/order/MerchantBottomSheetShell";
 import { GatiMitraMerchant, CARD_RADIUS } from "@/constants/theme";

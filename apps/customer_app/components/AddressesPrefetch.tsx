@@ -10,10 +10,10 @@ export function AddressesPrefetch() {
   const session = useAuthStore((s) => s.session);
 
   useEffect(() => {
-    if (!hydrated || !session) return;
+    if (!hydrated || !session?.accessToken) return;
     void prefetchAddresses(queryClient);
     void prefetchActiveLocation(queryClient);
-  }, [hydrated, session, queryClient]);
+  }, [hydrated, session?.accessToken, queryClient]);
 
   return null;
 }

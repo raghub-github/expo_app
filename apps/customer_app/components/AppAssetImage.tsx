@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { ImageSourcePropType, ImageStyle, StyleProp } from "react-native";
 import { Image } from "expo-image";
 import { getAppAssetUrl, getAppAssetProxyUrl, useAppAssetsStore } from "@/store/appAssetsStore";
@@ -13,7 +13,7 @@ type Props = {
   fallbackSource?: ImageSourcePropType | null;
 };
 
-/** Renders a CMS-managed image from backend (R2 proxy), with optional bundled fallback. */
+/** Renders a CMS-managed image from backend (R2 signed / proxy), with optional bundled fallback. */
 export function AppAssetImage({
   assetKey,
   style,
@@ -21,11 +21,38 @@ export function AppAssetImage({
   accessibilityLabel,
   fallbackSource = null,
 }: Props) {
-  const url = useAppAssetsStore((s) => s.assets[assetKey]?.url ?? null);
-  const source = url ? { uri: url } : fallbackSource;
+  const rawUrl = useAppAssetsStore((s) => s.assets[assetKey]?.url ?? null);
+  const proxyUrl = useAppAssetsStore((s) => s.assets[assetKey]?.proxyUrl ?? null);
+  const [primaryFailed, setPrimaryFailed] = useState(false);
+
+  const primaryUri = useMemo(() => {
+    if (!rawUrl?.trim()) return null;
+    return toAbsoluteImageUrl(rawUrl) ?? rawUrl.trim();
+  }, [rawUrl]);
+
+  const fallbackUri = useMemo(() => {
+    if (!proxyUrl?.trim()) return null;
+    return toAbsoluteImageUrl(proxyUrl);
+  }, [proxyUrl]);
+
+  useEffect(() => {
+    setPrimaryFailed(false);
+  }, [primaryUri]);
+
+  const uri =
+    primaryFailed && fallbackUri && fallbackUri !== primaryUri
+      ? fallbackUri
+      : primaryUri;
+
+  const source: ImageSourcePropType | null = uri
+    ? { uri }
+    : fallbackSource;
+
   if (!source) return null;
+
   return (
     <Image
+      key={`${assetKey}:${uri ?? "fallback"}`}
       source={source}
       style={style}
       contentFit={contentFit}
@@ -34,6 +61,14 @@ export function AppAssetImage({
       transition={0}
       recyclingKey={assetKey}
       accessibilityLabel={accessibilityLabel}
+      onError={() => {
+        if (!primaryFailed && fallbackUri && fallbackUri !== primaryUri) {
+          setPrimaryFailed(true);
+          return;
+        }
+        // eslint-disable-next-line no-console
+        console.warn(`[AppAssetImage] failed to load ${assetKey}`, uri ?? "(bundled fallback)");
+      }}
     />
   );
 }

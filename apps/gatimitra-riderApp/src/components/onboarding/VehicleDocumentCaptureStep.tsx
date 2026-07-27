@@ -30,6 +30,10 @@ type Props = {
   onBackPhotoPress?: () => void;
   onRemovePhoto: () => void;
   onRemoveBackPhoto?: () => void;
+  /** Called when the number field is focused — unlock editing after verified state. */
+  onTextFocus?: () => void;
+  /** Clear the document number field. */
+  onClearText?: () => void;
   changePhotoLabel: string;
   frontPhotoLabel?: string;
   backPhotoLabel?: string;
@@ -41,8 +45,16 @@ type Props = {
   skipped?: boolean;
   /** Electronic-verification modes hide the photo slots until the hybrid fallback. */
   hidePhotos?: boolean;
+  /** Hide the green checklist rows (number entered / photo added). */
+  hideChecklist?: boolean;
   /** Rendered between the number input and the photo slots (verify card). */
   afterTextSlot?: React.ReactNode;
+  /** When set (e.g. Cashfree DL/RC regex), overrides length-only text validation. */
+  textFormatValid?: boolean;
+  /** Faded placeholder inside the input (format example). */
+  textPlaceholder?: string | null;
+  /** Red inline error when entered value fails format validation. */
+  formatErrorMessage?: string | null;
 };
 
 export function VehicleDocumentCaptureStep({
@@ -58,6 +70,8 @@ export function VehicleDocumentCaptureStep({
   onBackPhotoPress,
   onRemovePhoto,
   onRemoveBackPhoto,
+  onTextFocus,
+  onClearText,
   changePhotoLabel,
   frontPhotoLabel = "Front",
   backPhotoLabel = "Back",
@@ -67,12 +81,20 @@ export function VehicleDocumentCaptureStep({
   optional = false,
   skipped = false,
   hidePhotos = false,
+  hideChecklist = false,
   afterTextSlot = null,
+  textFormatValid,
+  textPlaceholder = null,
+  formatErrorMessage = null,
 }: Props) {
   const iconName = (doc.icon ?? "document-outline") as keyof typeof Ionicons.glyphMap;
   const needsBack = docRequiresBackPhoto(doc);
   const textValid =
-    !doc.requiresTextField || textValue.trim().length >= Math.max(doc.minTextLength, 1);
+    textFormatValid !== undefined
+      ? textFormatValid
+      : !doc.requiresTextField || textValue.trim().length >= Math.max(doc.minTextLength, 1);
+  const showFormatError =
+    Boolean(formatErrorMessage) && textValue.trim().length > 0 && !textValid;
   const frontValid = Boolean(photoUri);
   const backValid = !needsBack || Boolean(backPhotoUri);
   const textVerified =
@@ -105,27 +127,30 @@ export function VehicleDocumentCaptureStep({
 
       <View style={form.divider} />
 
-      <View style={styles.checklist}>
-        {doc.requiresTextField ? (
-          <ChecklistItem done={textDone} label={textChecklistLabel} />
-        ) : null}
-        {needsBack ? (
-          <>
-            <ChecklistItem
-              done={frontValid}
-              label={dualPhotoChecklistLabel(frontPhotoLabel.toLowerCase(), frontValid)}
-            />
-            <ChecklistItem
-              done={backValid}
-              label={dualPhotoChecklistLabel(backPhotoLabel.toLowerCase(), backValid)}
-            />
-          </>
-        ) : (
-          <ChecklistItem done={photoDone} label={singlePhotoChecklistLabel} />
-        )}
-      </View>
-
-      <View style={form.divider} />
+      {hideChecklist ? null : (
+        <>
+          <View style={styles.checklist}>
+            {doc.requiresTextField ? (
+              <ChecklistItem done={textDone} label={textChecklistLabel} />
+            ) : null}
+            {needsBack ? (
+              <>
+                <ChecklistItem
+                  done={frontValid}
+                  label={dualPhotoChecklistLabel(frontPhotoLabel.toLowerCase(), frontValid)}
+                />
+                <ChecklistItem
+                  done={backValid}
+                  label={dualPhotoChecklistLabel(backPhotoLabel.toLowerCase(), backValid)}
+                />
+              </>
+            ) : (
+              <ChecklistItem done={photoDone} label={singlePhotoChecklistLabel} />
+            )}
+          </View>
+          <View style={form.divider} />
+        </>
+      )}
 
       {doc.requiresTextField ? (
         <View style={form.fieldGroup}>
@@ -136,20 +161,45 @@ export function VehicleDocumentCaptureStep({
           <View
             style={[
               form.inputWrap,
-              alreadyRegistered ? styles.inputErrorBorder : null,
+              alreadyRegistered || showFormatError ? styles.inputErrorBorder : null,
               textVerified ? styles.inputSuccessBorder : null,
             ]}
           >
             <TextInput
               value={textValue}
               onChangeText={onTextChange}
-              placeholder={doc.textFieldPlaceholder ?? "Enter document number"}
+              onFocus={onTextFocus}
+              editable={!uploading}
+              placeholder={
+                textPlaceholder ?? doc.textFieldPlaceholder ?? "Enter document number"
+              }
               placeholderTextColor={colors.gray[400]}
               autoCapitalize="characters"
+              autoCorrect={false}
+              autoComplete="off"
+              textContentType="none"
+              importantForAutofill="no"
+              selectTextOnFocus={false}
               style={form.textInput}
             />
+            {textValue.trim().length > 0 && onClearText && !uploading ? (
+              <Pressable
+                onPress={onClearText}
+                hitSlop={10}
+                accessibilityRole="button"
+                accessibilityLabel="Clear document number"
+                style={styles.clearBtn}
+              >
+                <Ionicons name="close-circle" size={20} color={colors.gray[400]} />
+              </Pressable>
+            ) : null}
             {textVerified ? (
-              <Ionicons name="checkmark-circle" size={20} color={ACCENT_DARK} />
+              <Ionicons
+                name="checkmark-circle"
+                size={20}
+                color={ACCENT_DARK}
+                pointerEvents="none"
+              />
             ) : null}
           </View>
           {checkingDuplicate ? (
@@ -161,6 +211,8 @@ export function VehicleDocumentCaptureStep({
             <Text style={styles.inlineWarningText}>
               {duplicateWarning ?? `${doc.label} Already Registered , Please try with Diff one .`}
             </Text>
+          ) : showFormatError ? (
+            <Text style={styles.inlineWarningText}>{formatErrorMessage}</Text>
           ) : null}
         </View>
       ) : null}
@@ -281,5 +333,9 @@ const styles = StyleSheet.create({
     fontWeight: "600",
     marginTop: 4,
     lineHeight: 17,
+  },
+  clearBtn: {
+    padding: 2,
+    marginLeft: 2,
   },
 });

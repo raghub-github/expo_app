@@ -488,6 +488,30 @@ body.mx-no-page-scroll .mx-main-scroll {
   transition: transform 0.35s ease-out;
 }
 
+/* Auth register — Lora body; Poppins + Lora Bold for numbers */
+.auth-register-page {
+  font-family: var(--font-auth-lora), Georgia, "Times New Roman", serif;
+  color: #0f172a;
+}
+.auth-register-page input[type="tel"],
+.auth-register-page input[type="number"],
+.auth-register-page input[inputmode="numeric"],
+.auth-register-page .auth-num {
+  font-family: var(--font-auth-poppins), ui-sans-serif, system-ui, sans-serif;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+.auth-register-page .auth-num-bold {
+  font-family: var(--font-auth-lora), Georgia, "Times New Roman", serif !important;
+  font-weight: 700 !important;
+  font-variant-numeric: tabular-nums;
+}
+.auth-register-page label,
+.auth-register-page h1,
+.auth-register-page button {
+  font-family: var(--font-auth-lora), Georgia, "Times New Roman", serif;
+}
+
 /* Incoming order accept modal — Lora (copy) + Poppins (digits) */
 .partner-incoming-modal {
   font-family: var(--font-incoming-lora), Georgia, "Times New Roman", serif;

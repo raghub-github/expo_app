@@ -11,3 +11,4 @@ export { buildKotHtml, deriveCrnFromOrderId } from "./buildKotHtml";
 export { pickupTokenToQrDataUri } from "./qr";
 export { formatKotRestaurantAddress, normalizeThermalPrinterWidthMm } from "./format";
 export type { KotAddressInput } from "./format";
+export { getUtensilsCustomerLabel } from "./orderUtensilsLabel";

@@ -1,4 +1,5 @@
-import { UnavailabilityError } from "expo-modules-core";
+import { UnavailabilityError, requireOptionalNativeModule } from "expo-modules-core";
+import Constants from "expo-constants";
 
 type FaceDetectorModule = typeof import("expo-face-detector");
 type DetectedFace = import("expo-face-detector").FaceFeature;
@@ -9,8 +10,23 @@ const EYE_CLOSED_THRESHOLD = 0.28;
 /** Lazy-loaded so Expo Go can open pan-selfie without crashing at import time. */
 let cachedFaceDetector: FaceDetectorModule | null | undefined;
 
+/** True when the native ExpoFaceDetector binary is linked (dev/prod build, not Expo Go). */
+function hasNativeFaceDetector(): boolean {
+  // Expo Go never ships ExpoFaceDetector — skip require entirely (avoids LogBox ERROR).
+  if (Constants.appOwnership === "expo") return false;
+  try {
+    return requireOptionalNativeModule("ExpoFaceDetector") != null;
+  } catch {
+    return false;
+  }
+}
+
 function getFaceDetector(): FaceDetectorModule | null {
   if (cachedFaceDetector !== undefined) return cachedFaceDetector;
+  if (!hasNativeFaceDetector()) {
+    cachedFaceDetector = null;
+    return null;
+  }
   try {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     cachedFaceDetector = require("expo-face-detector") as FaceDetectorModule;

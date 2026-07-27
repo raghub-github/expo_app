@@ -1,10 +1,6 @@
 import { useCallback, useState, type ReactNode } from "react";
-import {
-  View,
-  Text,
-  StyleSheet,
-  Pressable,
-} from "react-native";
+import { AppText as Text } from "@/components/AppText";
+import { View, StyleSheet, Pressable } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { GatiMitraMerchant, CARD_RADIUS } from "@/constants/theme";
 import type { OrderRecord, OrderStage, DeliveryType, LineItem } from "@/hooks/useOrders";

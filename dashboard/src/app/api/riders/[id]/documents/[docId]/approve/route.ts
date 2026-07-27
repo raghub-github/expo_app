@@ -90,15 +90,6 @@ export async function POST(
       );
     }
 
-    // Only allow approving MANUAL_UPLOAD documents
-    // APP_VERIFIED documents are already verified and don't need agent approval
-    if (currentDoc.verificationMethod === "APP_VERIFIED") {
-      return NextResponse.json(
-        { success: false, error: "APP_VERIFIED documents cannot be approved by agents. They are already verified." },
-        { status: 400 }
-      );
-    }
-
     // Get agent information
     const agent = await getSystemUserByEmail(user.email ?? "");
     if (!agent) {
@@ -108,14 +99,68 @@ export async function POST(
       );
     }
 
-    const body = (await request.json().catch(() => ({}))) as { displayDocType?: string };
+    const body = (await request.json().catch(() => ({}))) as {
+      displayDocType?: string;
+      electronicVerify?: {
+        verifiedData?: Record<string, unknown>;
+        docNumber?: string | null;
+        bankAccount?: string | null;
+        ifsc?: string | null;
+        verificationId?: string | null;
+        providerReference?: string | null;
+        confidence?: number | null;
+        provider?: string | null;
+      };
+    };
+
+    // APP_VERIFIED docs are already verified — but allow an electronicVerify
+    // repair payload to backfill doc_number / riders.pan_number when missing.
+    const hasElectronicRepair =
+      !!body.electronicVerify?.verifiedData ||
+      !!(body.electronicVerify?.docNumber && String(body.electronicVerify.docNumber).trim());
+
+    const methodUpper = String(currentDoc.verificationMethod || "").toUpperCase();
+    const alreadyElectronicallyVerified =
+      methodUpper === "APP_VERIFIED" ||
+      methodUpper.startsWith("CASHFREE_") ||
+      methodUpper === "RAZORPAY_BANK";
+
+    if (alreadyElectronicallyVerified && !hasElectronicRepair) {
+      return NextResponse.json(
+        { success: false, error: "Electronically verified documents cannot be approved again by agents. They are already verified." },
+        { status: 400 }
+      );
+    }
+
     const displayDocType =
       typeof body.displayDocType === "string" && body.displayDocType.trim()
         ? body.displayDocType.trim()
         : undefined;
 
+    const electronicVerify =
+      body.electronicVerify &&
+      body.electronicVerify.verifiedData &&
+      typeof body.electronicVerify.verifiedData === "object"
+        ? {
+            verifiedData: body.electronicVerify.verifiedData,
+            docNumber: body.electronicVerify.docNumber ?? null,
+            bankAccount: body.electronicVerify.bankAccount ?? null,
+            ifsc: body.electronicVerify.ifsc ?? null,
+            verificationId: body.electronicVerify.verificationId ?? null,
+            providerReference: body.electronicVerify.providerReference ?? null,
+            confidence:
+              typeof body.electronicVerify.confidence === "number"
+                ? body.electronicVerify.confidence
+                : null,
+            provider: body.electronicVerify.provider ?? "cashfree",
+          }
+        : undefined;
+
     // Approve document (handles KYC, onboarding stage, and rider status in one place)
-    const result = await approveRiderDocument(documentId, agent.id, { displayDocType });
+    const result = await approveRiderDocument(documentId, agent.id, {
+      displayDocType,
+      electronicVerify,
+    });
 
     if (!result) {
       return NextResponse.json(

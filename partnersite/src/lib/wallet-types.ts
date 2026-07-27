@@ -89,10 +89,17 @@ export const WALLET_CONSTANTS = {
 /** Normalize legacy withdrawal-complete ledger copy for merchant-facing UI. */
 export function formatLedgerDescription(description: string | null | undefined): string {
   if (!description?.trim()) return '';
-  if (/^Withdrawal completed #\d+$/i.test(description.trim())) {
+  const trimmed = description.trim();
+  if (/^Withdrawal completed #\d+$/i.test(trimmed)) {
     return WALLET_CONSTANTS.WITHDRAWAL_COMPLETED_DESCRIPTION;
   }
-  return description;
+  if (/withdrawal|funds returned|release hold|hold released|payout/i.test(trimmed)) {
+    return trimmed
+      .replace(/\s*#\d+\b/g, '')
+      .replace(/\s{2,}/g, ' ')
+      .trim();
+  }
+  return trimmed;
 }
 
 export function roundMoney(n: number): number {

@@ -1,22 +1,13 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import {
-  View,
-  Text,
-  StyleSheet,
-  ActivityIndicator,
-  Pressable,
-} from "react-native";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { AppText as Text } from "@/components/AppText";
+import { View, StyleSheet, ActivityIndicator, Pressable } from "react-native";
 import { WebView } from "react-native-webview";
 import { Ionicons } from "@expo/vector-icons";
 import type { OrderRecord } from "@/hooks/useOrders";
 import type { MerchantRiderLiveEnrichment } from "@/hooks/useMerchantRiderLiveEnrichment";
+import { useMerchantRiderLiveTracking } from "@/hooks/useMerchantRiderLiveTracking";
 import { MerchantBottomSheetShell } from "@/components/order/MerchantBottomSheetShell";
 import { getConfig } from "@/config/env";
-import {
-  fetchMerchantRiderTracking,
-  MERCHANT_RIDER_TRACKING_POLL_MS,
-  type MerchantRiderTrackingPayload,
-} from "@/services/riderTrackingApi";
 import {
   buildMapUpdateScript,
   buildMerchantRiderTrackingMapHtml,
@@ -56,39 +47,24 @@ export function MerchantRiderTrackingSheet({
   enrichment,
 }: Props) {
   const webRef = useRef<WebView>(null);
-  const [data, setData] = useState<MerchantRiderTrackingPayload | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const [selfieModalOpen, setSelfieModalOpen] = useState(false);
   const ordersFoodId = parseOrdersFoodId(order.id);
   const mapboxToken = getConfig().mapboxPublicToken;
 
-  const load = useCallback(
-    async (silent = false) => {
-      if (!ordersFoodId) return;
-      if (!silent) setLoading(true);
-      try {
-        const payload = await fetchMerchantRiderTracking(storeId, ordersFoodId, token);
-        setData(payload);
-        setError(null);
-        webRef.current?.injectJavaScript(buildMapUpdateScript(payload));
-      } catch (e) {
-        if (!silent) {
-          setError(e instanceof Error ? e.message : "Could not load rider location");
-        }
-      } finally {
-        if (!silent) setLoading(false);
-      }
-    },
-    [ordersFoodId, storeId, token]
-  );
+  const wsOrderIds = useMemo(() => {
+    const ids: string[] = [];
+    if (order.formattedOrderId?.trim()) ids.push(order.formattedOrderId.trim());
+    if (order.orderNumber?.trim()) ids.push(order.orderNumber.trim());
+    return ids;
+  }, [order.formattedOrderId, order.orderNumber]);
 
-  useEffect(() => {
-    if (!visible || !ordersFoodId) return;
-    void load(false);
-    const id = setInterval(() => void load(true), MERCHANT_RIDER_TRACKING_POLL_MS);
-    return () => clearInterval(id);
-  }, [visible, ordersFoodId, load]);
+  const { data, loading, error } = useMerchantRiderLiveTracking({
+    enabled: visible && ordersFoodId != null,
+    storeId,
+    ordersFoodId,
+    wsOrderIds,
+    token,
+  });
 
   const riderName =
     enrichment?.riderName ??
@@ -128,10 +104,21 @@ export function MerchantRiderTrackingSheet({
 
   const mapbikeUri = useMemo(() => mapbikeMarkerUri(), []);
 
-  const mapHtml = useMemo(() => {
-    if (!mapboxToken || !data) return null;
-    return buildMerchantRiderTrackingMapHtml(mapboxToken, data, mapbikeUri);
-  }, [mapboxToken, data, mapbikeUri]);
+  // Build HTML once — subsequent GPS updates use injectJavaScript (smooth marker lerp).
+  const [mapHtml, setMapHtml] = useState<string | null>(null);
+  useEffect(() => {
+    if (!visible) {
+      setMapHtml(null);
+      return;
+    }
+    if (!mapboxToken || !data || mapHtml) return;
+    setMapHtml(buildMerchantRiderTrackingMapHtml(mapboxToken, data, mapbikeUri));
+  }, [visible, mapboxToken, data, mapHtml, mapbikeUri]);
+
+  useEffect(() => {
+    if (!data || !mapHtml) return;
+    webRef.current?.injectJavaScript(buildMapUpdateScript(data));
+  }, [data, mapHtml]);
 
   const mapHint =
     !data?.location && data?.store

@@ -24,6 +24,7 @@ import {
   getOrderRiderAssignmentSnapshot,
   type OrderRiderAssignmentSnapshot,
 } from "@/lib/db/operations/order-rider-dispatch-ui";
+import { listOrderRoutedToHistory } from "@/lib/orders/stamp-order-routed-to";
 
 /** Row returned to the client: list shape + `storeId`, optional enrichments for single-order fetch */
 type OrderCoreApiListItem = Omit<OrdersCoreRow, "estimatedDeliveryTime"> & {
@@ -100,6 +101,7 @@ type SingleOrderEnrichment = {
   merchantSummary: Awaited<ReturnType<typeof getMerchantStoreSummaryByStoreId>> | null;
   timeline: ReturnType<typeof serializeTimelineEntries>;
   riderDispatchUi: OrderRiderAssignmentSnapshot | null;
+  routedToHistory: Awaited<ReturnType<typeof listOrderRoutedToHistory>>;
 };
 
 /** Detail-page enrichments for first paint (timeline + merchant + dispatch). */
@@ -119,6 +121,7 @@ async function enrichSingleOrderDetail(
   let merchantSummary: Awaited<ReturnType<typeof getMerchantStoreSummaryByStoreId>> = null;
   let timeline: ReturnType<typeof serializeTimelineEntries> = [];
   let riderDispatchUi: OrderRiderAssignmentSnapshot | null = null;
+  let routedToHistory: Awaited<ReturnType<typeof listOrderRoutedToHistory>> = [];
 
   if (orderId != null && Number.isFinite(orderId)) {
     const firstRow = first as {
@@ -142,6 +145,7 @@ async function enrichSingleOrderDetail(
       timelineEntries,
       foodOrderMetaResult,
       riderDispatchUiResult,
+      routedToHistoryResult,
     ] = await Promise.all([
       storeIdNum != null ? getMerchantStoreSummaryByStoreId(storeIdNum) : Promise.resolve(null),
       first?.orderType === "food"
@@ -165,11 +169,16 @@ async function enrichSingleOrderDetail(
         console.error("[GET /api/orders/core] rider dispatch ui fetch failed", err);
         return null;
       }),
+      listOrderRoutedToHistory(orderId).catch((err) => {
+        console.error("[GET /api/orders/core] routed-to history fetch failed", err);
+        return [] as Awaited<ReturnType<typeof listOrderRoutedToHistory>>;
+      }),
     ]);
 
     merchantSummary = summary;
     timeline = serializeTimelineEntries(timelineEntries);
     riderDispatchUi = riderDispatchUiResult;
+    routedToHistory = routedToHistoryResult;
 
     let enrichedData = data;
     if (deliveryInstructions !== undefined) {
@@ -257,6 +266,7 @@ async function enrichSingleOrderDetail(
     merchantSummary,
     timeline,
     riderDispatchUi,
+    routedToHistory,
   };
 }
 
@@ -268,6 +278,7 @@ function buildSingleOrderResponseExtras(
     ...(enrichment.merchantSummary != null && { merchantSummary: enrichment.merchantSummary }),
     timeline: enrichment.timeline,
     riderDispatchUi: enrichment.riderDispatchUi,
+    routedToHistory: enrichment.routedToHistory,
   };
 }
 

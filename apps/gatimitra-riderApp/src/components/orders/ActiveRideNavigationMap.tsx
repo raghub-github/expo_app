@@ -16,6 +16,8 @@ import {
   navigationEdgePadding,
 } from "@/src/lib/navigation-camera-fit";
 import { resolveMapboxPublicToken } from "@/src/lib/mapbox-env";
+import { MapboxUnavailablePanel } from "@/src/components/maps/MapboxUnavailablePanel";
+import Constants from "expo-constants";
 import {
   lineStringGeoJson,
   routeMidpoint,
@@ -542,11 +544,22 @@ export const ActiveRideNavigationMap = forwardRef<ActiveRideNavigationMapHandle,
       : "";
 
     if (!resolveMapboxPublicToken()) {
-      return <View style={[styles.container, styles.mapPlaceholder, style]} />;
+      return (
+        <View style={[styles.container, style]}>
+          <MapboxUnavailablePanel context="navigation" missingToken />
+        </View>
+      );
     }
 
     if (!Mapbox) {
-      return <View style={[styles.container, styles.mapPlaceholder, style]} />;
+      return (
+        <View style={[styles.container, style]}>
+          <MapboxUnavailablePanel
+            context="navigation"
+            needsDevBuild={Constants.appOwnership === "expo"}
+          />
+        </View>
+      );
     }
 
     const RiderMarker = Mapbox.MarkerView ?? null;

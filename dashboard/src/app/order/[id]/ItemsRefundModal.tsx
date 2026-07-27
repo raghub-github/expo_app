@@ -76,6 +76,11 @@ interface ItemsRefundModalProps {
   orderCancelledOnTimeline?: boolean;
   /** Sum of non-failed refunds already covers the grand total — blocks all refund types. */
   orderFullyRefunded?: boolean;
+  /**
+   * Same lock as the sidebar "Create refund" button (cancelled + fully refunded).
+   * When true, hide the Create refund UI entirely in this items modal.
+   */
+  refundActionsDisabled?: boolean;
   /** Remaining amount that can still be refunded (grand total − already refunded). */
   refundRemainingRefundable?: number;
 }
@@ -516,6 +521,7 @@ export default function ItemsRefundModal({
   onRefundCreated,
   orderCancelledOnTimeline = false,
   orderFullyRefunded = false,
+  refundActionsDisabled = false,
   refundRemainingRefundable,
 }: ItemsRefundModalProps) {
   const pathname = useAppPathname();
@@ -524,7 +530,9 @@ export default function ItemsRefundModal({
 
   const hasRefundPermission = isSuperAdmin || (resolvedDashboard && canPerformAction(resolvedDashboard, 'REFUND', { access_point_group: 'ORDER_REFUND' }));
   const hasCancellationPermission = isSuperAdmin || (resolvedDashboard && canPerformAction(resolvedDashboard, 'CANCEL', { access_point_group: 'ORDER_CANCEL' }));
-  const canCreateRefund = hasRefundPermission && hasCancellationPermission;
+  // Match sidebar: if Create refund CTA is blocked, don't show refund UI in items view either.
+  const canCreateRefund =
+    hasRefundPermission && hasCancellationPermission && !refundActionsDisabled;
   const blockRefundWithCancellation = orderCancelledOnTimeline;
   // Once the order is fully refunded, every refund-moving action is blocked.
   const blockAllRefunds = orderFullyRefunded;
@@ -1824,6 +1832,7 @@ export default function ItemsRefundModal({
           </div>
 
           <div className="p-4">
+            {canCreateRefund ? (
             <div className="mb-3 px-3 py-2 bg-emerald-50/80 border border-slate-200 rounded-md flex flex-wrap items-center justify-between gap-2">
               <label className="flex items-center gap-2 cursor-pointer group">
                 <input
@@ -1847,6 +1856,7 @@ export default function ItemsRefundModal({
                 <div className="h-full bg-emerald-500 rounded-full transition-all duration-300" style={{ width: `${refundItems.length > 0 ? (refundItems.filter(item => item.isSelected).length / refundItems.length) * 100 : 0}%` }} />
               </div>
             </div>
+            ) : null}
 
             {itemsError && refundItems.length === 0 ? (
               <div className="mb-3 px-3 py-2 bg-red-50 border border-red-200 rounded-md text-sm text-red-700">
@@ -1869,10 +1879,12 @@ export default function ItemsRefundModal({
 
             {refundItems.length > 0 ? (
             <div className="overflow-x-auto -mx-1 px-1">
-            <table className="w-full min-w-[960px] border-collapse text-xs mb-3">
+            <table className={`w-full border-collapse text-xs mb-3 ${canCreateRefund ? 'min-w-[960px]' : 'min-w-[880px]'}`}>
               <thead>
                 <tr>
-                  <th className="px-2 py-1.5 border border-slate-200 text-center bg-emerald-50 font-semibold text-slate-800">Select</th>
+                  {canCreateRefund ? (
+                    <th className="px-2 py-1.5 border border-slate-200 text-center bg-emerald-50 font-semibold text-slate-800">Select</th>
+                  ) : null}
                   <th className="px-2 py-1.5 border border-slate-200 text-center bg-emerald-50 font-semibold text-slate-800">Id</th>
                   <th className="px-2 py-1.5 border border-slate-200 text-center bg-emerald-50 font-semibold text-slate-800">Status</th>
                   <th className="px-2 py-1.5 border border-slate-200 text-center bg-emerald-50 font-semibold text-slate-800">Name</th>
@@ -1886,10 +1898,12 @@ export default function ItemsRefundModal({
               </thead>
               <tbody>
                 {refundItems.map((item) => (
-                  <tr key={item.id} className={item.isSelected ? 'bg-emerald-50/50' : ''}>
+                  <tr key={item.id} className={canCreateRefund && item.isSelected ? 'bg-emerald-50/50' : ''}>
+                    {canCreateRefund ? (
                     <td className="px-2 py-1.5 border border-slate-200 text-center">
                       <input type="checkbox" checked={item.isSelected} onChange={() => toggleItemSelection(item.id)} className="checkbox-circle text-emerald-600 focus:ring-emerald-500 focus:ring-offset-0" />
                     </td>
+                    ) : null}
                     <td className="px-2 py-1.5 border border-slate-200 text-center">
                       <div className="font-mono text-[11px] font-medium">
                         {item.hasImage && !isDeliveryFeeRow(item) && (

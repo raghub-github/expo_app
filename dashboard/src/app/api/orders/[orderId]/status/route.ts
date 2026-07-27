@@ -8,6 +8,7 @@ import {
 } from "@/lib/db/operations/orders-core";
 import { getSystemUserByEmail } from "@/lib/db/operations/users";
 import { creditMerchantWalletAfterDashboardDelivery } from "@/lib/credit-merchant-wallet-after-delivery";
+import { stampOrderRoutedTo } from "@/lib/orders/stamp-order-routed-to";
 
 export const runtime = "nodejs";
 
@@ -107,6 +108,17 @@ export async function PATCH(
         console.warn("[PATCH /api/orders/[orderId]/status] wallet credit:", walletErr);
       }
     }
+
+    await stampOrderRoutedTo({
+      orderId,
+      systemUserId: systemUser?.id ?? null,
+      actorEmail: userEmail,
+      actorName: systemUser?.fullName ?? null,
+      actorRole: updatedByRole,
+      action: "status_update",
+      actionLabel: `Updated status to ${status}`,
+      metadata: { status },
+    });
 
     return NextResponse.json({
       success: true,

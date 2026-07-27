@@ -1,5 +1,5 @@
 import { supabase } from "../supabase/client";
-import { isInvalidRefreshToken } from "./session-errors";
+import { isInvalidRefreshToken, signOutIfSessionDead } from "./session-errors";
 
 export interface LoginCredentials {
   email?: string;
@@ -170,7 +170,7 @@ export async function getSession() {
   } = await supabase.auth.getSession();
 
   if (error && isInvalidRefreshToken(error)) {
-    await supabase.auth.signOut();
+    await signOutIfSessionDead(supabase, error);
     return null;
   }
   if (error) {
@@ -191,7 +191,7 @@ export async function getCurrentUser() {
   } = await supabase.auth.getUser();
 
   if (error && isInvalidRefreshToken(error)) {
-    await supabase.auth.signOut();
+    await signOutIfSessionDead(supabase, error);
     return null;
   }
   if (error) {

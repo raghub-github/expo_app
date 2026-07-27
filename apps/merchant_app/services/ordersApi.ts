@@ -30,6 +30,7 @@ export type ApiFoodOrderItem = {
   offer_label?: string | null;
   is_item_promo?: boolean;
   applied_offer_type?: string | null;
+  ctm_from_snapshot?: boolean;
   special_instructions?: string | null;
   specialInstructions?: string | null;
 };
@@ -47,6 +48,8 @@ export type ApiFoodOrder = {
   orders_core_id: number;
   core_only?: boolean;
   formatted_order_id: string | null;
+  /** Tax invoice number from orders_core (GST compliance). */
+  tax_invoice_number?: string | null;
   order_status: string;
   customer_name: string | null;
   customer_phone: string | null;

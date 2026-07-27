@@ -11,6 +11,7 @@ import {
 } from "./rider-location-event-sampling.js";
 import { upsertRiderCurrentLocation, speedMpsToKmh } from "./rider-current-location.js";
 import { scoreLocationPing, type LocationPoint } from "../modules/rider/fraud.js";
+import { publishOrderEvent, publishRiderEvent } from "../modules/realtime/publish.js";
 
 export type RiderLocationPingInput = {
   userId: string;
@@ -44,6 +45,7 @@ export type RiderLocationPingResult = {
 };
 
 const ACTIVE_ORDER_STATUSES = [
+  "assigned",
   "accepted",
   "reached_store",
   "reached_user",
@@ -189,9 +191,14 @@ export async function handleRiderLocationPing(
   });
 
   let hasActiveOrder = false;
+  let activeOrdersForRider: Array<{ orderId: string | null; formattedOrderId: string | null }> =
+    [];
   if (riderId != null) {
-    const [activeOrder] = await db
-      .select({ orderId: ordersCore.orderId })
+    activeOrdersForRider = await db
+      .select({
+        orderId: ordersCore.orderId,
+        formattedOrderId: ordersCore.formattedOrderId,
+      })
       .from(ordersCore)
       .where(
         and(
@@ -200,8 +207,8 @@ export async function handleRiderLocationPing(
         )
       )
       .orderBy(desc(ordersCore.updatedAt))
-      .limit(1);
-    hasActiveOrder = Boolean(activeOrder?.orderId?.trim());
+      .limit(10);
+    hasActiveOrder = activeOrdersForRider.some((o) => Boolean(o.orderId?.trim()));
   }
 
   const trackingMode = resolveTrackingMode({
@@ -252,6 +259,24 @@ export async function handleRiderLocationPing(
     cached,
   });
 
+  // Never broadcast untrusted GPS to customer/merchant live maps.
+  const suppressLiveBroadcast =
+    fraudSignals.includes("TELEPORT") ||
+    fraudSignals.includes("UNREALISTIC_SPEED") ||
+    fraudSignals.includes("MOCK_LOCATION") ||
+    fraudSignals.includes("LOW_ACCURACY");
+  if (suppressLiveBroadcast) {
+    return {
+      accepted: true,
+      serverTsMs: Date.now(),
+      fraudSignals,
+      fraudScore,
+      eventPersisted: persistDecision.persist,
+      recommendedPingIntervalMs: PING_INTERVAL_MS[trackingMode],
+      trackingMode,
+    };
+  }
+
   if (riderId != null) {
     await upsertRiderCurrentLocation(db, {
       userId: input.userId,
@@ -264,34 +289,76 @@ export async function handleRiderLocationPing(
       accuracyM: input.accuracyM ?? null,
     });
 
-    if (hasActiveOrder) {
-      const [activeRide] = await db
-        .select({ orderId: ordersCore.orderId })
-        .from(ordersCore)
-        .where(
-          and(
-            eq(ordersCore.riderId, riderId),
-            inArray(ordersCore.status, [...ACTIVE_ORDER_STATUSES])
-          )
-        )
-        .orderBy(desc(ordersCore.updatedAt))
-        .limit(1);
-
-      const activeOrderId = activeRide?.orderId?.trim();
-      if (activeOrderId) {
-        const now = new Date();
-        await db.insert(orderRiderTracking).values({
-          orderId: activeOrderId,
-          orderSource: "orders_core",
-          riderId,
-          latitude: String(input.lat),
-          longitude: String(input.lng),
-          headingDegrees: input.headingDeg != null ? String(input.headingDeg) : null,
-          speedKmh: input.speedMps != null ? String(speedMpsToKmh(input.speedMps)) : null,
-          accuracyMeters: input.accuracyM != null ? String(input.accuracyM) : null,
-          createdAt: now,
-        });
+    const channelIds = new Set<string>();
+    for (const row of activeOrdersForRider) {
+      const oid = row.orderId?.trim();
+      const fid = row.formattedOrderId?.trim();
+      // Publish both raw and uppercase so ticket mint (A-Z normalized) always matches.
+      if (oid) {
+        channelIds.add(oid);
+        channelIds.add(oid.toUpperCase());
       }
+      if (fid) {
+        channelIds.add(fid);
+        channelIds.add(fid.toUpperCase());
+      }
+    }
+
+    if (hasActiveOrder && channelIds.size > 0) {
+      const now = new Date();
+      const trailOrderIds = Array.from(
+        new Set(
+          activeOrdersForRider
+            .map((r) => r.orderId?.trim())
+            .filter((id): id is string => Boolean(id))
+        )
+      );
+      if (trailOrderIds.length > 0) {
+        await db.insert(orderRiderTracking).values(
+          trailOrderIds.map((activeOrderId) => ({
+            orderId: activeOrderId,
+            orderSource: "orders_core" as const,
+            riderId,
+            latitude: String(input.lat),
+            longitude: String(input.lng),
+            headingDegrees: input.headingDeg != null ? String(input.headingDeg) : null,
+            speedKmh: input.speedMps != null ? String(speedMpsToKmh(input.speedMps)) : null,
+            accuracyMeters: input.accuracyM != null ? String(input.accuracyM) : null,
+            createdAt: now,
+          }))
+        );
+      }
+
+      const locationEvent = {
+        type: "rider.location.updated.v1",
+        riderId,
+        lat: input.lat,
+        lng: input.lng,
+        headingDegrees: input.headingDeg ?? null,
+        accuracyMeters: input.accuracyM ?? null,
+        speedMps: input.speedMps ?? null,
+        updatedAt: now.toISOString(),
+      };
+
+      void publishRiderEvent(riderId, locationEvent).catch(() => {});
+      for (const orderIdText of channelIds) {
+        void publishOrderEvent(orderIdText, {
+          ...locationEvent,
+          orderIdText,
+          orderId: orderIdText,
+        }).catch(() => {});
+      }
+    } else {
+      void publishRiderEvent(riderId, {
+        type: "rider.location.updated.v1",
+        riderId,
+        lat: input.lat,
+        lng: input.lng,
+        headingDegrees: input.headingDeg ?? null,
+        accuracyMeters: input.accuracyM ?? null,
+        speedMps: input.speedMps ?? null,
+        updatedAt: new Date().toISOString(),
+      }).catch(() => {});
     }
   }
 

@@ -133,6 +133,7 @@ export function PaymentManagementClient() {
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState<number>(10);
   const [editModal, setEditModal] = useState<{ row: MerchantPayoutRow; field: EditField } | null>(null);
+  const [rejectModal, setRejectModal] = useState<MerchantPayoutRow | null>(null);
 
   const loadConfig = useCallback(async () => {
     try {
@@ -511,6 +512,7 @@ export function PaymentManagementClient() {
             onPgChange={(id, v) => setPgInputs((prev) => ({ ...prev, [id]: v }))}
             onUtrChange={(id, v) => setUtrInputs((prev) => ({ ...prev, [id]: v }))}
             onAction={payoutAction}
+            onRejectClick={(row) => setRejectModal(row)}
             onEditField={(row, field) => setEditModal({ row, field })}
           />
 
@@ -585,6 +587,19 @@ export function PaymentManagementClient() {
               value,
             });
             if (ok) setEditModal(null);
+          }}
+        />
+      ) : null}
+
+      {rejectModal ? (
+        <RejectPayoutReasonModal
+          row={rejectModal}
+          party={party}
+          saving={savingId === `payout-${rejectModal.id}`}
+          onClose={() => setRejectModal(null)}
+          onConfirm={async (reason) => {
+            const ok = await payoutAction(Number(rejectModal.id), "reject", { reason });
+            if (ok) setRejectModal(null);
           }}
         />
       ) : null}
@@ -723,6 +738,7 @@ function PayoutsTable({
   onPgChange,
   onUtrChange,
   onAction,
+  onRejectClick,
   onEditField,
 }: {
   party: PaymentParty;
@@ -737,6 +753,7 @@ function PayoutsTable({
     action: "approve" | "reject" | "complete" | "updateRefs",
     extras?: { reason?: string; pgTransactionId?: string; utrReference?: string; field?: EditField; value?: string }
   ) => Promise<boolean>;
+  onRejectClick: (row: MerchantPayoutRow) => void;
   onEditField: (row: MerchantPayoutRow, field: EditField) => void;
 }) {
   return (
@@ -796,7 +813,16 @@ function PayoutsTable({
                     <td className="px-3 py-2 tabular-nums text-sm font-semibold text-gray-900 whitespace-nowrap">
                       {formatInr(Number(p.amount ?? 0))}
                     </td>
-                    <td className="px-3 py-2">{statusBadge(rawStatus)}</td>
+                    <td className="px-3 py-2">
+                      <div className="flex flex-col gap-0.5">
+                        {statusBadge(rawStatus)}
+                        {disp === "REJECTED" && p.rejection_reason ? (
+                          <span className="max-w-[180px] truncate text-[10px] text-red-600" title={String(p.rejection_reason)}>
+                            {String(p.rejection_reason)}
+                          </span>
+                        ) : null}
+                      </div>
+                    </td>
                     <td className="px-3 py-2">
                       {showPgInput ? (
                         <input
@@ -844,7 +870,7 @@ function PayoutsTable({
                             <button
                               type="button"
                               disabled={busy}
-                              onClick={() => void onAction(id, "reject", { reason: "Rejected by admin" })}
+                              onClick={() => onRejectClick(p)}
                               className="inline-flex items-center gap-1 rounded-md border border-red-300 bg-white px-2.5 py-1 text-xs font-semibold text-red-600 hover:bg-red-50 disabled:opacity-50"
                             >
                               <X className="h-3 w-3" />
@@ -1020,7 +1046,9 @@ function EditPayoutFieldModal({
         <div className="flex items-start justify-between gap-3">
           <div>
             <h3 className="text-base font-bold text-gray-900">{title}</h3>
-            <p className="text-sm text-gray-500">{row.store_name}</p>
+            <p className="text-sm text-gray-500">
+              {partyLabelName(row)}
+            </p>
           </div>
           <button type="button" onClick={onClose} className="rounded-lg p-1 text-gray-400 hover:bg-gray-100">
             <X className="h-5 w-5" />
@@ -1055,6 +1083,90 @@ function EditPayoutFieldModal({
             className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-50"
           >
             {saving ? "Saving…" : "Save"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function partyLabelName(row: MerchantPayoutRow): string {
+  return String(row.store_name ?? row.rider_name ?? "—");
+}
+
+function RejectPayoutReasonModal({
+  row,
+  party,
+  saving,
+  onClose,
+  onConfirm,
+}: {
+  row: MerchantPayoutRow;
+  party: PaymentParty;
+  saving: boolean;
+  onClose: () => void;
+  onConfirm: (reason: string) => Promise<void>;
+}) {
+  const [reason, setReason] = useState("");
+  const trimmed = reason.trim();
+  const canSubmit = trimmed.length >= 3 && !saving;
+  const subject =
+    party === "rider"
+      ? String(row.rider_name ?? `Rider #${row.rider_id ?? ""}`)
+      : String(row.store_name ?? row.store_code ?? "Store");
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={onClose}>
+      <div
+        className="w-full max-w-md rounded-xl border border-gray-200 bg-white p-5 shadow-xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <h3 className="text-base font-bold text-gray-900">Reject withdrawal</h3>
+            <p className="mt-0.5 text-sm text-gray-500">
+              {subject} · {formatInr(Number(row.amount ?? 0))}
+            </p>
+          </div>
+          <button type="button" onClick={onClose} className="rounded-lg p-1 text-gray-400 hover:bg-gray-100">
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+
+        <div className="mt-4">
+          <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-gray-500">
+            Reject reason <span className="text-red-500">*</span>
+          </label>
+          <textarea
+            value={reason}
+            onChange={(e) => setReason(e.target.value)}
+            rows={4}
+            autoFocus
+            maxLength={500}
+            placeholder="Explain why this withdrawal is being rejected…"
+            className="w-full resize-y rounded-lg border border-gray-200 px-3 py-2 text-sm outline-none focus:border-red-400 focus:ring-1 focus:ring-red-200"
+          />
+          <p className="mt-1 text-xs text-gray-500">
+            Required (min 3 characters). Saved on the payout and wallet ledger.
+          </p>
+        </div>
+
+        <div className="mt-5 flex justify-end gap-2">
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={saving}
+            className="rounded-lg border border-gray-200 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            disabled={!canSubmit}
+            onClick={() => void onConfirm(trimmed)}
+            className="rounded-lg bg-red-600 px-4 py-2 text-sm font-semibold text-white hover:bg-red-700 disabled:opacity-50"
+          >
+            {saving ? "Rejecting…" : "Confirm reject"}
           </button>
         </div>
       </div>

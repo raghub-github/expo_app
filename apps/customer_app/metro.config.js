@@ -23,7 +23,12 @@ config.fileMapCacheDirectory = metroFileMapDir;
 
 // App + shared packages only — avoid indexing sibling apps (e.g. rider assets/images/mapbike.png).
 const packagesFolder = path.resolve(workspaceRoot, "packages");
-const gatimitraWorkspacePackages = ["contracts", "expo-push-kit", "expo-location-kit"];
+const gatimitraWorkspacePackages = [
+  "contracts",
+  "expo-push-kit",
+  "expo-location-kit",
+  "map-tracking-engine",
+];
 
 config.watchFolders = [
   projectRoot,

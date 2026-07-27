@@ -9,6 +9,7 @@ import {
   resolveRoadRouteCoordinates,
   shouldHideNavigationRoute,
 } from "@/lib/navigation-route-visibility";
+import { resolveDisplayRiderPosition } from "@gatimitra/map-tracking-engine";
 import { useFoodDeliveryLiveRoute } from "@/hooks/useFoodDeliveryLiveRoute";
 
 export function useFoodDeliveryRouteProgress(args: {
@@ -36,6 +37,7 @@ export function useFoodDeliveryRouteProgress(args: {
     drop,
     orderId,
     enabled: hasRider,
+    riderHeading,
   });
 
   const progress = useMemo(() => {
@@ -81,6 +83,14 @@ export function useFoodDeliveryRouteProgress(args: {
     ? shouldHideNavigationRoute(riderArrived, progress.remainingDistanceM)
     : false;
 
+  const displayRider = useMemo(() => {
+    if (!hasRider || !rider || !fullRoute.length) return rider;
+    return resolveDisplayRiderPosition(fullRoute, {
+      ...rider,
+      headingDeg: riderHeading ?? null,
+    });
+  }, [hasRider, rider, fullRoute, riderHeading]);
+
   return {
     fullRoute,
     remainingRoute,
@@ -90,5 +100,6 @@ export function useFoodDeliveryRouteProgress(args: {
     remainingDistanceM: progress.remainingDistanceM,
     hideRouteLine,
     isRefreshing,
+    displayRider,
   };
 }

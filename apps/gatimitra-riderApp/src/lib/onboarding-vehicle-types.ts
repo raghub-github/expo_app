@@ -87,6 +87,14 @@ export function expandVehicleDisplayNames(
       .map((part) => part.trim())
       .filter(Boolean);
   }
+  // Admin sometimes stores "Model A, Model B, Model C"
+  if (label.includes(",")) {
+    const parts = label
+      .split(",")
+      .map((part) => part.trim().replace(/\.\.+$/, "").trim())
+      .filter(Boolean);
+    if (parts.length > 1) return parts;
+  }
   const single = formatVehicleRowTitle(type);
   if (single.includes("\n")) {
     return single
@@ -97,19 +105,68 @@ export function expandVehicleDisplayNames(
   return single ? [single] : [];
 }
 
-const CATEGORY_HINT_PREVIEW_COUNT = 3;
+/** Persist only one model name — never a slash/comma-joined catalog string. */
+export function normalizeSelectedVehicleModelLabel(raw?: string | null): string | undefined {
+  if (!raw) return undefined;
+  const trimmed = raw.trim();
+  if (!trimmed) return undefined;
+  if (trimmed.includes(" / ")) {
+    return trimmed.split(" / ")[0]!.trim() || undefined;
+  }
+  if (trimmed.includes(",")) {
+    const first = trimmed.split(",")[0]!.trim().replace(/\.\.+$/, "").trim();
+    return first || undefined;
+  }
+  return trimmed;
+}
 
-/** Short preview for category picker — inner vehicle step shows the full list. */
+/** Preview title for multi-model catalog rows: "Maruti Swift, Maruti Alto.." */
+export function formatVehicleGroupPreviewTitle(names: string[]): string {
+  const cleaned = names.map((n) => n.trim()).filter(Boolean);
+  if (cleaned.length === 0) return "Models";
+  if (cleaned.length === 1) return cleaned[0]!;
+  if (cleaned.length === 2) return `${cleaned[0]}, ${cleaned[1]}`;
+  return `${cleaned[0]}, ${cleaned[1]}..`;
+}
+
+/** Flat model labels for every active vehicle in a category (expands "A / B" rows). */
+export function categoryVehicleModelOptions(
+  types: OnboardingVehicleType[],
+  categoryCode?: string | null
+): string[] {
+  return vehiclesForCategory(types, categoryCode).flatMap(expandVehicleDisplayNames);
+}
+
+/**
+ * Map a picked display name back to its catalog vehicle type.
+ * For grouped labels, `modelLabel` is kept; for single-name types it is cleared.
+ */
+export function resolveVehicleSelectionFromModelLabel(
+  types: OnboardingVehicleType[],
+  categoryCode: string,
+  modelLabel: string
+): { type: OnboardingVehicleType; modelLabel: string | null } | null {
+  const needle = modelLabel.trim();
+  if (!needle) return null;
+  for (const type of vehiclesForCategory(types, categoryCode)) {
+    const names = expandVehicleDisplayNames(type);
+    if (names.some((n) => n === needle)) {
+      return {
+        type,
+        modelLabel: names.length > 1 ? needle : null,
+      };
+    }
+  }
+  return null;
+}
+
 export function buildCategoryHint(
   category: OnboardingVehicleCategory,
   types: OnboardingVehicleType[]
 ): string {
-  const names = vehiclesForCategory(types, category.code).flatMap(expandVehicleDisplayNames);
+  const names = categoryVehicleModelOptions(types, category.code);
   if (!names.length) return category.hint?.trim() ?? "";
-  if (names.length <= CATEGORY_HINT_PREVIEW_COUNT) {
-    return names.join(", ");
-  }
-  return `${names.slice(0, CATEGORY_HINT_PREVIEW_COUNT).join(", ")} & more`;
+  return formatVehicleGroupPreviewTitle(names);
 }
 
 /** Show full vehicle label — multi-model admin labels render on separate lines, never truncated. */

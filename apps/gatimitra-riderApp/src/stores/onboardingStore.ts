@@ -12,7 +12,7 @@ export type OnboardingStep =
 
 export type OnboardingData = {
   // Onboarding method
-  onboardingMethod?: "manual" | "karza" | "digilocker";
+  onboardingMethod?: "manual" | "policy";
   
   // Step 1: Aadhaar + Name + DOB + Photo
   aadhaarNumber?: string;
@@ -44,6 +44,8 @@ export type OnboardingData = {
   rcPhotoSignedUrl?: string; // after R2 upload
   hasOwnVehicle?: boolean; // false = rental/EV/cycle
   vehicleChoice?: string;
+  /** Specific model name when catalog row lists multiple models (label with " / "). */
+  vehicleModelLabel?: string;
   vehicleCategoryCode?: string;
   vehicleOnboardingFlow?: "dl_rc" | "rental_ev" | "payment";
   
@@ -67,7 +69,9 @@ export type OnboardingData = {
   skippedOnboardingDocs?: string[];
   /** Vehicle code for which the rider tapped Continue on the final doc step (allows payment). */
   vehicleOnboardingSubmittedFor?: string;
-  
+  /** Step 4 bank account saved / verified during onboarding (before fee payment). */
+  bankAccountOnboardingDone?: boolean;
+
   // Location data
   lat?: number;
   lon?: number;
@@ -79,6 +83,11 @@ export type OnboardingData = {
   // Metadata
   currentStep?: OnboardingStep;
   riderId?: string; // set after backend creates rider
+
+  /** Last known server access fields — avoid Aadhaar flash on cold start for approved riders. */
+  cachedOnboardingStatus?: string;
+  cachedAccountStatus?: string;
+  cachedApprovalStatus?: string;
 };
 
 type OnboardingState = {

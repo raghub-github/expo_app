@@ -172,7 +172,7 @@ export async function GET(req: NextRequest) {
 
       const ledgerRunningBalance = latestRunningBalanceFromLedgerRows(
         (balanceLedgerRows ?? []).map((row) => ({
-          id: row.id as number,
+          id: Number(row.id),
           balance_type: row.balance_type as string | null,
           balance_after: row.balance_after != null ? Number(row.balance_after) : null,
           amount: row.amount != null ? Number(row.amount) : null,

@@ -222,6 +222,178 @@ export async function GET(req: NextRequest) {
       // Non-fatal: if media query fails, keep existing progress payload.
     }
 
+    // Hydrate Step 5 from merchant_stores + operating_hours (same as Partner Site).
+    try {
+      const sql = getSql();
+      const storeRows = await sql`
+        SELECT banner_url, gallery_images, cuisine_types, delivery_radius_km,
+               avg_preparation_time_minutes, min_order_amount,
+               is_pure_veg, accepts_online_payment, accepts_cash
+        FROM merchant_stores
+        WHERE id = ${storeInternalId}
+        LIMIT 1
+      `;
+      const storeRow = (Array.isArray(storeRows) ? storeRows[0] : storeRows) as
+        | Record<string, unknown>
+        | undefined;
+      const hoursRows = await sql`
+        SELECT *
+        FROM merchant_store_operating_hours
+        WHERE store_id = ${storeInternalId}
+        LIMIT 1
+      `;
+      const hoursRow = (Array.isArray(hoursRows) ? hoursRows[0] : hoursRows) as
+        | Record<string, unknown>
+        | undefined;
+
+      const existingStep5 =
+        (formDataWithStepStore.step5 as Record<string, unknown> | undefined) ?? {};
+
+      const toProxy = (raw: unknown): string => {
+        if (typeof raw !== "string" || !raw.trim()) return "";
+        const t = raw.trim();
+        if (t.startsWith("/api/attachments/proxy") || t.startsWith("/v1/attachments/proxy")) {
+          return t.replace("/v1/attachments/proxy", "/api/attachments/proxy");
+        }
+        if (t.startsWith("http://") || t.startsWith("https://")) {
+          try {
+            const u = new URL(t);
+            if (u.pathname.includes("attachments/proxy")) {
+              const key = u.searchParams.get("key");
+              if (key) return `/api/attachments/proxy?key=${encodeURIComponent(key)}`;
+            }
+          } catch {
+            /* ignore */
+          }
+          return "";
+        }
+        return `/api/attachments/proxy?key=${encodeURIComponent(t.replace(/^\/+/, ""))}`;
+      };
+
+      const bannerUrl = storeRow?.banner_url ? toProxy(storeRow.banner_url) : "";
+      const galleryRaw = Array.isArray(storeRow?.gallery_images)
+        ? (storeRow!.gallery_images as unknown[])
+        : [];
+      const galleryUrls = galleryRaw
+        .map((u) => toProxy(u))
+        .filter((u) => !!u)
+        .slice(0, 5);
+      const cuisineFromDb = Array.isArray(storeRow?.cuisine_types)
+        ? (storeRow!.cuisine_types as unknown[]).filter(
+            (c): c is string => typeof c === "string" && c.trim().length > 0,
+          )
+        : [];
+      const cuisineFromPrev = Array.isArray(existingStep5.cuisine_types)
+        ? (existingStep5.cuisine_types as unknown[]).filter(
+            (c): c is string => typeof c === "string" && c.trim().length > 0,
+          )
+        : [];
+
+      let storeHours = existingStep5.store_hours;
+      if (hoursRow) {
+        const days = [
+          "monday",
+          "tuesday",
+          "wednesday",
+          "thursday",
+          "friday",
+          "saturday",
+          "sunday",
+        ] as const;
+        const nextHours: Record<string, unknown> = {};
+        for (const day of days) {
+          const open = !!(hoursRow as any)[`${day}_open`];
+          const toStr = (v: unknown) =>
+            typeof v === "string" ? v.slice(0, 5) : v != null ? String(v).slice(0, 5) : "";
+          nextHours[day] = {
+            closed: !open,
+            slot1_open: open ? toStr((hoursRow as any)[`${day}_slot1_start`]) : "",
+            slot1_close: open ? toStr((hoursRow as any)[`${day}_slot1_end`]) : "",
+            slot2_open: open ? toStr((hoursRow as any)[`${day}_slot2_start`]) : "",
+            slot2_close: open ? toStr((hoursRow as any)[`${day}_slot2_end`]) : "",
+          };
+        }
+        storeHours = nextHours;
+      } else if (storeHours && typeof storeHours === "object") {
+        // Progress may only have monday (partial patch) — fill remaining days like partnersite.
+        const days = [
+          "monday",
+          "tuesday",
+          "wednesday",
+          "thursday",
+          "friday",
+          "saturday",
+          "sunday",
+        ] as const;
+        const defaults: Record<string, { closed: boolean; slot1_open: string; slot1_close: string; slot2_open: string; slot2_close: string }> = {
+          monday: { closed: false, slot1_open: "09:00", slot1_close: "22:00", slot2_open: "", slot2_close: "" },
+          tuesday: { closed: false, slot1_open: "09:00", slot1_close: "22:00", slot2_open: "", slot2_close: "" },
+          wednesday: { closed: false, slot1_open: "09:00", slot1_close: "22:00", slot2_open: "", slot2_close: "" },
+          thursday: { closed: false, slot1_open: "09:00", slot1_close: "22:00", slot2_open: "", slot2_close: "" },
+          friday: { closed: false, slot1_open: "09:00", slot1_close: "22:00", slot2_open: "", slot2_close: "" },
+          saturday: { closed: false, slot1_open: "10:00", slot1_close: "23:00", slot2_open: "", slot2_close: "" },
+          sunday: { closed: false, slot1_open: "10:00", slot1_close: "22:00", slot2_open: "", slot2_close: "" },
+        };
+        const src = storeHours as Record<string, any>;
+        const nextHours: Record<string, unknown> = {};
+        for (const day of days) {
+          const d = src[day] && typeof src[day] === "object" ? src[day] : {};
+          const fb = defaults[day];
+          nextHours[day] = {
+            closed: typeof d.closed === "boolean" ? d.closed : fb.closed,
+            slot1_open: typeof d.slot1_open === "string" && d.slot1_open ? d.slot1_open : fb.slot1_open,
+            slot1_close: typeof d.slot1_close === "string" && d.slot1_close ? d.slot1_close : fb.slot1_close,
+            slot2_open: typeof d.slot2_open === "string" ? d.slot2_open : "",
+            slot2_close: typeof d.slot2_close === "string" ? d.slot2_close : "",
+          };
+        }
+        storeHours = nextHours;
+      }
+
+      if (storeRow || hoursRow) {
+        formDataWithStepStore = {
+          ...formDataWithStepStore,
+          step5: {
+            ...existingStep5,
+            cuisine_types: cuisineFromDb.length > 0 ? cuisineFromDb : cuisineFromPrev,
+            delivery_radius_km:
+              typeof storeRow?.delivery_radius_km === "number"
+                ? storeRow.delivery_radius_km
+                : existingStep5.delivery_radius_km,
+            avg_preparation_time_minutes:
+              typeof storeRow?.avg_preparation_time_minutes === "number"
+                ? storeRow.avg_preparation_time_minutes
+                : existingStep5.avg_preparation_time_minutes,
+            min_order_amount:
+              typeof storeRow?.min_order_amount === "number"
+                ? storeRow.min_order_amount
+                : existingStep5.min_order_amount,
+            is_pure_veg:
+              typeof storeRow?.is_pure_veg === "boolean"
+                ? storeRow.is_pure_veg
+                : existingStep5.is_pure_veg,
+            accepts_online_payment:
+              typeof storeRow?.accepts_online_payment === "boolean"
+                ? storeRow.accepts_online_payment
+                : existingStep5.accepts_online_payment,
+            accepts_cash:
+              typeof storeRow?.accepts_cash === "boolean"
+                ? storeRow.accepts_cash
+                : existingStep5.accepts_cash,
+            banner_url: bannerUrl || existingStep5.banner_url || "",
+            banner_preview: bannerUrl || existingStep5.banner_preview || "",
+            gallery_image_urls:
+              galleryUrls.length > 0 ? galleryUrls : existingStep5.gallery_image_urls || [],
+            gallery_previews:
+              galleryUrls.length > 0 ? galleryUrls : existingStep5.gallery_previews || [],
+            store_hours: storeHours,
+          },
+        };
+      }
+    } catch {
+      // Non-fatal
+    }
+
     let parent_name: string | null = null;
     let parent_merchant_id: string | null = null;
     if (effectiveParentId != null) {

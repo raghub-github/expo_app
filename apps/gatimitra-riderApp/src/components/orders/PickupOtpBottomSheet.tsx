@@ -66,16 +66,21 @@ export function PickupOtpBottomSheet({
   useEffect(() => {
     if (!visible) {
       setOtp("");
-      return;
     }
-    setOtp("");
-  }, [visible, resetKey]);
+  }, [visible]);
 
+  // Invalid OTP → clear digits so rider can re-enter immediately.
   useEffect(() => {
     if (error?.trim()) {
       setOtp("");
     }
-  }, [error, resetKey]);
+  }, [error]);
+
+  useEffect(() => {
+    if (resetKey > 0) {
+      setOtp("");
+    }
+  }, [resetKey]);
 
   return (
     <OtpVerifySheetModal

@@ -34,6 +34,8 @@ config.resolver.disableHierarchicalLookup = true;
 const gatimitraWorkspacePackages = [
   "contracts",
   "expo-push-kit",
+  "expo-location-kit",
+  "map-tracking-engine",
   "kot-print",
   "bill-print",
   "print-utils",

@@ -1,18 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
-import {
-  View,
-  Text,
-  StyleSheet,
-  FlatList,
-  Pressable,
-  TextInput,
-  Platform,
-  KeyboardAvoidingView,
-  RefreshControl,
-} from "react-native";
+import { AppText as Text } from "@/components/AppText";
+import { View, StyleSheet, FlatList, Pressable, TextInput, Platform, KeyboardAvoidingView, RefreshControl, Modal } from "react-native";
 import { StatusBar } from "expo-status-bar";
 import { LinearGradient } from "expo-linear-gradient";
 import { usePathname, useRouter } from "expo-router";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { useSelectedStore } from "@/context/SelectedStoreContext";
 import { useAuth } from "@/context/AuthContext";
@@ -75,6 +67,7 @@ function getRatingColors(value: number): { bg: string; fg: string } {
 }
 
 export default function ComplaintsScreen() {
+  const insets = useSafeAreaInsets();
   const { selectedStore } = useSelectedStore();
   const { token } = useAuth();
   const [loading, setLoading] = useState(true);
@@ -699,8 +692,22 @@ export default function ComplaintsScreen() {
         </View>
       )}
 
-      {activeReplyId != null && activeReplyComplaint && (
-        <View style={styles.sheetBackdrop}>
+      <Modal
+        visible={activeReplyId != null && activeReplyComplaint != null}
+        transparent
+        animationType="slide"
+        statusBarTranslucent
+        presentationStyle="overFullScreen"
+        onRequestClose={() => {
+          setActiveReplyId(null);
+          setActiveReplyComplaint(null);
+          setReplyText("");
+        }}
+      >
+        <KeyboardAvoidingView
+          style={styles.sheetModalRoot}
+          behavior={Platform.OS === "ios" ? "padding" : undefined}
+        >
           <Pressable
             style={styles.sheetBackdropTouch}
             onPress={() => {
@@ -709,11 +716,17 @@ export default function ComplaintsScreen() {
               setReplyText("");
             }}
           />
-          <View style={styles.sheetCard}>
+          <View
+            style={[
+              styles.sheetCard,
+              { paddingBottom: Math.max(insets.bottom, 16) },
+            ]}
+          >
             <View style={styles.sheetHandle} />
             <View style={styles.sheetHeaderRow}>
               <View style={styles.sheetHeaderLeft}>
                 <Text style={styles.sheetTitle}>Reply to Complaint</Text>
+                {activeReplyComplaint && (
                 <View style={styles.sheetReviewMetaRow}>
                   <View style={styles.sheetRatingChip}>
                     <Ionicons
@@ -733,6 +746,7 @@ export default function ComplaintsScreen() {
                     {formatDateOnly(activeReplyComplaint.createdAt)}
                   </Text>
                 </View>
+                )}
               </View>
               <Pressable
                 style={styles.sheetCloseButton}
@@ -788,8 +802,8 @@ export default function ComplaintsScreen() {
               </Pressable>
             </View>
           </View>
-        </View>
-      )}
+        </KeyboardAvoidingView>
+      </Modal>
 
       {confirmMode && confirmTarget && (
         <View style={styles.modalBackdrop}>
@@ -1320,6 +1334,11 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     columnGap: 10,
   },
+  sheetModalRoot: {
+    flex: 1,
+    justifyContent: "flex-end",
+    backgroundColor: "rgba(15,23,42,0.35)",
+  },
   sheetBackdrop: {
     position: "absolute",
     inset: 0,
@@ -1327,7 +1346,7 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(15,23,42,0.35)",
   },
   sheetBackdropTouch: {
-    flex: 1,
+    ...StyleSheet.absoluteFillObject,
   },
   sheetCard: {
     backgroundColor: GatiMitraMerchant.cardBg,
@@ -1336,6 +1355,9 @@ const styles = StyleSheet.create({
     paddingBottom: 18,
     borderTopLeftRadius: 18,
     borderTopRightRadius: 18,
+    borderBottomLeftRadius: 0,
+    borderBottomRightRadius: 0,
+    width: "100%",
     ...GatiMitraMerchant.shadow,
   },
   sheetHandle: {

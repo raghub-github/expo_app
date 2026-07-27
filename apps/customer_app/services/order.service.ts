@@ -149,6 +149,10 @@ export type OrderTrackingResponse = {
     longitude: number;
     headingDegrees: number | null;
     updatedAt: string;
+    /** Horizontal GPS accuracy in meters when available. */
+    accuracyMeters?: number | null;
+    /** Ground speed m/s when available. */
+    speedMps?: number | null;
   } | null;
 };
 
@@ -359,6 +363,14 @@ export const orderService = {
   /** Live rider location for tracking map; rider is null until rider starts delivery. */
   async getOrderTracking(orderId: string): Promise<OrderTrackingResponse> {
     const { data } = await api.get<OrderTrackingResponse>(`${ORDERS_PREFIX}/${orderId}/tracking`);
+    if (__DEV__ && data?.rider) {
+      console.log("[live-track] customer GET tracking", {
+        orderId,
+        lat: data.rider.latitude,
+        lng: data.rider.longitude,
+        updatedAt: data.rider.updatedAt,
+      });
+    }
     return data;
   },
 

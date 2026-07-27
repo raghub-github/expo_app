@@ -54,7 +54,7 @@ export default function ProfileScreen() {
                 onChangeText={setName}
                 placeholder={t("onboarding.profile.fullNamePlaceholder")}
                 placeholderTextColor={colors.gray[400]}
-                className="bg-gray-50 border border-gray-200 rounded-xl px-4 py-4 text-base text-gray-900"
+                className="bg-gray-50 border border-gray-200 rounded-xl px-4 py-4 text-base font-bold text-gray-900"
               />
             </View>
 
@@ -65,7 +65,7 @@ export default function ProfileScreen() {
                 onChangeText={setCity}
                 placeholder={t("onboarding.profile.cityPlaceholder")}
                 placeholderTextColor={colors.gray[400]}
-                className="bg-gray-50 border border-gray-200 rounded-xl px-4 py-4 text-base text-gray-900"
+                className="bg-gray-50 border border-gray-200 rounded-xl px-4 py-4 text-base font-bold text-gray-900"
               />
             </View>
 
@@ -92,7 +92,7 @@ export default function ProfileScreen() {
                 onChangeText={setReferralCode}
                 placeholder={t("onboarding.profile.referralPlaceholder")}
                 placeholderTextColor={colors.gray[400]}
-                className="bg-gray-50 border border-gray-200 rounded-xl px-4 py-4 text-base text-gray-900"
+                className="bg-gray-50 border border-gray-200 rounded-xl px-4 py-4 text-base font-bold text-gray-900"
               />
             </View>
           </View>

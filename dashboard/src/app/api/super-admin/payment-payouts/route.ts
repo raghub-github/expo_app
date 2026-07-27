@@ -70,12 +70,15 @@ export async function POST(req: NextRequest) {
       }
     }
     if (body.action === "reject") {
-      try {
-        const result = await rejectPayoutRpc(
-          payoutId,
-          systemUserId,
-          body.reason?.trim() || "Rejected by admin"
+      const reason = body.reason?.trim() || "";
+      if (reason.length < 3) {
+        return NextResponse.json(
+          { success: false, error: "Rejection reason is required (min 3 characters)" },
+          { status: 400 },
         );
+      }
+      try {
+        const result = await rejectPayoutRpc(payoutId, systemUserId, reason);
         return NextResponse.json({ success: true, result: result ?? { ok: true } });
       } catch (rpcErr) {
         const msg = rpcErr instanceof Error ? rpcErr.message : "Reject failed";

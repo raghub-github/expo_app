@@ -1,20 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import {
-  View,
-  Text,
-  Modal,
-  StyleSheet,
-  TouchableOpacity,
-  Pressable,
-  Animated,
-  ActivityIndicator,
-  Alert,
-  ScrollView,
-  useWindowDimensions,
-  NativeSyntheticEvent,
-  NativeScrollEvent,
-  InteractionManager,
-} from "react-native";
+import { AppText as Text } from "@/components/AppText";
+import { View, Modal, StyleSheet, TouchableOpacity, Pressable, Animated, ActivityIndicator, Alert, ScrollView, useWindowDimensions, NativeSyntheticEvent, NativeScrollEvent, InteractionManager } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { GatiMitraMerchant, BUTTON_RADIUS, CARD_RADIUS } from "@/constants/theme";

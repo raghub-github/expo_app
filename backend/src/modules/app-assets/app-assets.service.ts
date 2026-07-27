@@ -1,5 +1,6 @@
 import { getSql } from "../../db/client.js";
 import { toAbsoluteClientMediaUrl } from "../../utils/publicAttachmentUrl.js";
+import { getR2SignedUrl } from "../../services/r2/r2Service.js";
 import {
   APP_STATIC_ASSET_SEEDS,
   parseAppStaticAssetApp,
@@ -27,6 +28,9 @@ export type AppStaticAssetClientItem = {
   sortOrder: number;
 };
 
+/** Signed GET URLs for mobile — phone hits R2 directly (avoids LAN proxy bottleneck). */
+const CLIENT_SIGNED_URL_TTL_SEC = 60 * 60 * 24 * 6; // 6 days (under R2 7-day max)
+
 function mapRow(r: Record<string, unknown>): AppStaticAssetRow {
   return {
     id: String(r.id),
@@ -40,15 +44,27 @@ function mapRow(r: Record<string, unknown>): AppStaticAssetRow {
   };
 }
 
-function toClientItem(row: AppStaticAssetRow): AppStaticAssetClientItem {
+async function toClientItem(row: AppStaticAssetRow): Promise<AppStaticAssetClientItem> {
   const proxyUrl = row.proxyUrl?.trim() || null;
+  const r2Key = row.r2Key?.trim() || null;
+  let url: string | null = null;
+  if (r2Key) {
+    try {
+      url = await getR2SignedUrl(r2Key, CLIENT_SIGNED_URL_TTL_SEC);
+    } catch {
+      url = null;
+    }
+  }
+  if (!url) {
+    url = toAbsoluteClientMediaUrl(proxyUrl);
+  }
   return {
     id: row.id,
     section: row.section,
     label: row.label,
     description: row.description,
     proxyUrl,
-    url: toAbsoluteClientMediaUrl(proxyUrl),
+    url,
     sortOrder: row.sortOrder,
   };
 }
@@ -113,7 +129,7 @@ export async function listAppStaticAssetsForClient(
   app: AppStaticAssetApp
 ): Promise<AppStaticAssetClientItem[]> {
   const rows = await listAppStaticAssets(app);
-  return rows.map(toClientItem);
+  return Promise.all(rows.map((row) => toClientItem(row)));
 }
 
 export async function setAppStaticAssetImage(

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { getParentLogoKey } from "@/lib/r2-paths";
 import { uploadToR2, toStoredDocumentUrl } from "@/lib/r2";
+import { sendParentAccountCreatedEmail } from "@/lib/email/partner-smtp";
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder.supabase.co";
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "placeholder-service-role-key";
@@ -243,12 +244,31 @@ export async function POST(request: NextRequest) {
       }
     }
 
+    // Welcome / confirmation email — do not fail registration if SMTP fails
+    let email_sent = false;
+    try {
+      const mail = await sendParentAccountCreatedEmail({
+        ownerName: String(owner_name).trim(),
+        ownerEmail: normalizedEmail,
+        parentName: parent_name!.trim(),
+        parentMerchantId: insertData.parent_merchant_id,
+        parentId: insertData.id,
+      });
+      email_sent = mail.sent;
+    } catch (mailErr) {
+      console.error("[auth/register] parent welcome email error:", mailErr);
+    }
+
     return NextResponse.json({
       success: true,
       data: {
+        parent_id: insertData.id,
         parent_merchant_id: insertData.parent_merchant_id,
         email: insertData.owner_email,
-        message: "Registration successful. You can login with Email OTP or Mobile OTP.",
+        email_sent,
+        message: email_sent
+          ? "Parent account created. Confirmation email sent — add your first store to continue."
+          : "Parent account created successfully. Add your first store to continue.",
       },
     });
   } catch (e) {

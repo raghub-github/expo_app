@@ -117,8 +117,8 @@ export function GridFirstHeroMediaPanel({ stateId, enabled }: Props) {
         <div>
           <h3 className="text-sm font-semibold text-slate-900">Grid First hero carousel</h3>
           <p className="mt-0.5 text-xs text-slate-600">
-            Upload images or MP4 videos for the customer app hero. Offer banners are not shown when
-            slides are configured here (max {MAX_GRID_FIRST_HERO_MEDIA}).
+            Upload images (jpg/png/webp/gif) or MP4. The customer app hero auto-resizes to each
+            slide&apos;s aspect ratio (max {MAX_GRID_FIRST_HERO_MEDIA} slides).
           </p>
         </div>
         <button
@@ -163,7 +163,15 @@ export function GridFirstHeroMediaPanel({ stateId, enabled }: Props) {
                 key={item.id}
                 className="group relative overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm"
               >
-                <div className="relative aspect-[16/10] bg-slate-100">
+                <div
+                  className="relative bg-slate-100"
+                  style={{
+                    aspectRatio:
+                      item.aspectRatio && item.aspectRatio > 0
+                        ? String(item.aspectRatio)
+                        : "16 / 10",
+                  }}
+                >
                   {item.kind === "video" ? (
                     <video
                       src={src}

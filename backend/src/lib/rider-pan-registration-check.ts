@@ -1,6 +1,4 @@
-import { and, eq, isNull, ne } from "drizzle-orm";
-import { getDb } from "../db/client.js";
-import { riderDocuments, riders } from "../db/schema.js";
+import { getSql } from "../db/client.js";
 
 export function normalizePan(raw: string | null | undefined): string | null {
   if (!raw) return null;
@@ -16,36 +14,32 @@ export async function isPanAlreadyRegistered(
   const pan = normalizePan(panValue);
   if (!pan) return false;
 
-  const db = getDb();
+  const sql = getSql();
+  const exclude = excludeRiderId ?? null;
 
-  const riderWhere = and(
-    eq(riders.panNumber, pan),
-    isNull(riders.deletedAt),
-    excludeRiderId != null ? ne(riders.id, excludeRiderId) : undefined
-  );
-  const [fromRider] = await db.select({ id: riders.id }).from(riders).where(riderWhere).limit(1);
-  if (fromRider) return true;
+  const riderRows = await sql`
+    SELECT id
+    FROM riders
+    WHERE deleted_at IS NULL
+      AND upper(regexp_replace(coalesce(pan_number, ''), '[^A-Za-z0-9]', '', 'g')) = ${pan}
+      AND (${exclude}::int IS NULL OR id <> ${exclude})
+    LIMIT 1
+  `;
+  if (riderRows.length > 0) return true;
 
-  const docWhere = and(
-    eq(riderDocuments.docType, "pan"),
-    excludeRiderId != null ? ne(riderDocuments.riderId, excludeRiderId) : undefined
-  );
-  const panDocs = await db
-    .select({
-      id: riderDocuments.id,
-      docNumber: riderDocuments.docNumber,
-      metadata: riderDocuments.metadata,
-    })
-    .from(riderDocuments)
-    .where(docWhere);
+  const docRows = await sql`
+    SELECT rd.id
+    FROM rider_documents rd
+    INNER JOIN riders r ON r.id = rd.rider_id
+    WHERE r.deleted_at IS NULL
+      AND rd.doc_type = 'pan'
+      AND (
+        upper(regexp_replace(coalesce(rd.doc_number, ''), '[^A-Za-z0-9]', '', 'g')) = ${pan}
+        OR upper(regexp_replace(coalesce(rd.metadata->>'panNumber', ''), '[^A-Za-z0-9]', '', 'g')) = ${pan}
+      )
+      AND (${exclude}::int IS NULL OR rd.rider_id <> ${exclude})
+    LIMIT 1
+  `;
 
-  for (const doc of panDocs) {
-    if (doc.docNumber?.toUpperCase() === pan) return true;
-    const meta = doc.metadata as { panNumber?: string } | null;
-    if (typeof meta?.panNumber === "string" && meta.panNumber.toUpperCase() === pan) {
-      return true;
-    }
-  }
-
-  return false;
+  return docRows.length > 0;
 }

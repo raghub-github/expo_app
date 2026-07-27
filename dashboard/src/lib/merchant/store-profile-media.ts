@@ -32,15 +32,25 @@ export function profileMediaR2KeyFromUrl(url: string): string | null {
   if (!t) return null;
   if (!t.includes("://") && !t.startsWith("/") && !t.startsWith("data:")) {
     const k = t.replace(/^\/+/, "");
-    if (k.startsWith("docs/merchants/")) return k;
-    if (k.startsWith("merchants/")) return k;
+    if (k.startsWith("docs/merchants/") || k.startsWith("merchants/")) return k;
   }
   const tryPath = (pathname: string, search: string): string | null => {
     if (!pathname.includes("attachments/proxy")) return null;
     const params = new URLSearchParams(search.startsWith("?") ? search.slice(1) : search);
-    const k = params.get("key");
-    if (k) return decodeURIComponent(k);
-    return null;
+    let k = params.get("key");
+    if (!k) return null;
+    // Unwrap accidental double-encoding without breaking plain paths.
+    for (let i = 0; i < 2; i++) {
+      if (!/%2f/i.test(k)) break;
+      try {
+        const next = decodeURIComponent(k);
+        if (next === k) break;
+        k = next;
+      } catch {
+        break;
+      }
+    }
+    return k.trim() || null;
   };
   try {
     const u = new URL(t);

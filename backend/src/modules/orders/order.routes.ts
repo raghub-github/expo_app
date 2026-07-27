@@ -786,6 +786,7 @@ export async function orderRoutes(app: FastifyInstance) {
               coreStatus: row.status,
               foodOrderStatus: foodRow?.orderStatus ?? null,
               riderId: row.riderId,
+              orderType: row.orderType,
             }),
             merchantName: foodRow?.restaurantName ?? null,
             merchantPublicName: merchantPublicName ?? foodRow?.restaurantName ?? null,
@@ -1262,8 +1263,36 @@ export async function orderRoutes(app: FastifyInstance) {
           ? getStoreByIdForOrder(Number(coreRow.merchantStoreId))
           : Promise.resolve(null);
 
-      const riderPromise =
+      const rideMetaPromise =
+        coreRow.orderType === "person_ride"
+          ? db
+              .select({
+                rideType: ordersRide.rideType,
+                riderReachedPickupAt: ordersRide.riderReachedPickupAt,
+                pickupOtpVerifiedAt: ordersRide.pickupOtpVerifiedAt,
+                pickupWaitSeconds: ordersRide.pickupWaitSeconds,
+                assignedRiderId: ordersRide.assignedRiderId,
+              })
+              .from(ordersRide)
+              .where(eq(ordersRide.orderId, coreRow.id))
+              .limit(1)
+          : Promise.resolve([]);
+
+      const rideMetaEarly = await rideMetaPromise;
+
+      const assignedFromRide =
+        Array.isArray(rideMetaEarly) && rideMetaEarly[0]?.assignedRiderId != null
+          ? Number(rideMetaEarly[0].assignedRiderId)
+          : null;
+      const effectiveRiderId =
         coreRow.riderId != null
+          ? Number(coreRow.riderId)
+          : assignedFromRide != null && Number.isFinite(assignedFromRide)
+            ? assignedFromRide
+            : null;
+
+      const riderPromise =
+        effectiveRiderId != null
           ? db
               .select({
                 name: riders.name,
@@ -1271,25 +1300,25 @@ export async function orderRoutes(app: FastifyInstance) {
                 selfieUrl: riders.selfieUrl,
               })
               .from(riders)
-              .where(eq(riders.id, coreRow.riderId))
+              .where(eq(riders.id, effectiveRiderId))
               .limit(1)
           : Promise.resolve([]);
 
       const riderDeliveredCountPromise =
-        coreRow.riderId != null
+        effectiveRiderId != null
           ? db
               .select({ count: sql<number>`count(*)::int` })
               .from(ordersCore)
               .where(
                 and(
-                  eq(ordersCore.riderId, coreRow.riderId),
+                  eq(ordersCore.riderId, effectiveRiderId),
                   or(eq(ordersCore.status, "delivered"), eq(ordersCore.currentStatus, "DELIVERED"))
                 )
               )
           : Promise.resolve([{ count: 0 }]);
 
       const vehiclePromise =
-        coreRow.riderId != null
+        effectiveRiderId != null
           ? db
               .select({
                 registrationNumber: riderVehicles.registrationNumber,
@@ -1300,7 +1329,7 @@ export async function orderRoutes(app: FastifyInstance) {
               .from(riderVehicles)
               .where(
                 and(
-                  eq(riderVehicles.riderId, coreRow.riderId),
+                  eq(riderVehicles.riderId, effectiveRiderId),
                   eq(riderVehicles.isActive, true),
                   isNull(riderVehicles.deletedAt)
                 )
@@ -1309,23 +1338,9 @@ export async function orderRoutes(app: FastifyInstance) {
               .limit(1)
           : Promise.resolve([]);
 
-      const rideMetaPromise =
-        coreRow.orderType === "person_ride"
-          ? db
-              .select({
-                rideType: ordersRide.rideType,
-                riderReachedPickupAt: ordersRide.riderReachedPickupAt,
-                pickupOtpVerifiedAt: ordersRide.pickupOtpVerifiedAt,
-                pickupWaitSeconds: ordersRide.pickupWaitSeconds,
-              })
-              .from(ordersRide)
-              .where(eq(ordersRide.orderId, coreRow.id))
-              .limit(1)
-          : Promise.resolve([]);
-
       const riderRatingPromise =
-        coreRow.riderId != null
-          ? getRiderAverageRating(Number(coreRow.riderId))
+        effectiveRiderId != null
+          ? getRiderAverageRating(Number(effectiveRiderId))
           : Promise.resolve(null);
 
       const prepPromise =
@@ -1402,9 +1417,10 @@ export async function orderRoutes(app: FastifyInstance) {
         currentStatus: coreRow.currentStatus,
         coreStatus: coreRow.status,
         foodOrderStatus: foodRow?.orderStatus ?? null,
-        riderId: coreRow.riderId,
+        riderId: effectiveRiderId ?? coreRow.riderId,
         riderReachedPickupAt: riderReachedPickupAtResolved,
         riderPickedUpAt: riderPickedUpAtResolved,
+        orderType: coreRow.orderType,
       });
 
       const rideStartedForCustomer =
@@ -2292,6 +2308,8 @@ export async function orderRoutes(app: FastifyInstance) {
               longitude: z.number(),
               headingDegrees: z.number().nullable(),
               updatedAt: z.string(),
+              accuracyMeters: z.number().nullable().optional(),
+              speedMps: z.number().nullable().optional(),
             }).nullable(),
           }),
         },
@@ -2310,6 +2328,7 @@ export async function orderRoutes(app: FastifyInstance) {
         .select({
           id: ordersCore.id,
           orderId: ordersCore.orderId,
+          formattedOrderId: ordersCore.formattedOrderId,
           riderId: ordersCore.riderId,
           pickupLat: ordersCore.pickupLat,
           pickupLon: ordersCore.pickupLon,
@@ -2318,37 +2337,72 @@ export async function orderRoutes(app: FastifyInstance) {
         .where(customerOrderRefWhere(customerPk, orderIdParam))
         .limit(1);
       if (!orderRow) return reply.status(404).send({ error: "Order not found" });
-      const orderIdForTracking = orderRow.orderId ?? String(orderRow.id);
+      const trackingOrderIds = Array.from(
+        new Set(
+          [
+            orderRow.orderId,
+            orderRow.formattedOrderId,
+            String(orderRow.id),
+            orderIdParam,
+          ]
+            .map((v) => (v != null ? String(v).trim() : ""))
+            .filter((v) => v.length > 0)
+        )
+      );
       const pickupLatNum =
         orderRow.pickupLat != null ? Number(orderRow.pickupLat) : null;
       const pickupLngNum =
         orderRow.pickupLon != null ? Number(orderRow.pickupLon) : null;
 
-      const [latest] = await db
-        .select({
-          latitude: orderRiderTracking.latitude,
-          longitude: orderRiderTracking.longitude,
-          headingDegrees: orderRiderTracking.headingDegrees,
-          createdAt: orderRiderTracking.createdAt,
-        })
-        .from(orderRiderTracking)
-        .where(eq(orderRiderTracking.orderId, orderIdForTracking))
-        .orderBy(desc(orderRiderTracking.createdAt))
-        .limit(1);
+      type RiderLoc = {
+        latitude: number;
+        longitude: number;
+        headingDegrees: number | null;
+        updatedAt: string;
+        accuracyMeters: number | null;
+        speedMps: number | null;
+        source: "order_tracking" | "live_location";
+      };
 
-      if (latest) {
-        const riderLat = Number(latest.latitude);
-        const riderLng = Number(latest.longitude);
-        if (isRiderPlausibleForPickup(riderLat, riderLng, pickupLatNum, pickupLngNum)) {
-          return {
-            orderId: orderIdParam,
-            rider: {
+      let location: RiderLoc | null = null;
+
+      if (trackingOrderIds.length > 0) {
+        const [latest] = await db
+          .select({
+            latitude: orderRiderTracking.latitude,
+            longitude: orderRiderTracking.longitude,
+            headingDegrees: orderRiderTracking.headingDegrees,
+            accuracyMeters: orderRiderTracking.accuracyMeters,
+            speedKmh: orderRiderTracking.speedKmh,
+            createdAt: orderRiderTracking.createdAt,
+          })
+          .from(orderRiderTracking)
+          .where(inArray(orderRiderTracking.orderId, trackingOrderIds))
+          .orderBy(desc(orderRiderTracking.createdAt))
+          .limit(1);
+
+        if (latest) {
+          const riderLat = Number(latest.latitude);
+          const riderLng = Number(latest.longitude);
+          if (isRiderPlausibleForPickup(riderLat, riderLng, pickupLatNum, pickupLngNum)) {
+            const speedKmh =
+              latest.speedKmh != null && Number.isFinite(Number(latest.speedKmh))
+                ? Number(latest.speedKmh)
+                : null;
+            location = {
               latitude: riderLat,
               longitude: riderLng,
-              headingDegrees: latest.headingDegrees != null ? Number(latest.headingDegrees) : null,
+              headingDegrees:
+                latest.headingDegrees != null ? Number(latest.headingDegrees) : null,
               updatedAt: (latest.createdAt ?? new Date()).toISOString(),
-            },
-          };
+              accuracyMeters:
+                latest.accuracyMeters != null && Number.isFinite(Number(latest.accuracyMeters))
+                  ? Number(latest.accuracyMeters)
+                  : null,
+              speedMps: speedKmh != null ? speedKmh / 3.6 : null,
+              source: "order_tracking",
+            };
+          }
         }
       }
 
@@ -2358,6 +2412,8 @@ export async function orderRoutes(app: FastifyInstance) {
             latitude: riderLiveLocations.lat,
             longitude: riderLiveLocations.lng,
             heading: riderLiveLocations.headingDeg,
+            accuracyM: riderLiveLocations.accuracyM,
+            speedMps: riderLiveLocations.speedMps,
             updatedAt: riderLiveLocations.updatedAt,
           })
           .from(riderLiveLocations)
@@ -2368,20 +2424,47 @@ export async function orderRoutes(app: FastifyInstance) {
           const riderLat = Number(live.latitude);
           const riderLng = Number(live.longitude);
           if (isRiderPlausibleForPickup(riderLat, riderLng, pickupLatNum, pickupLngNum)) {
-            return {
-              orderId: orderIdParam,
-              rider: {
-                latitude: riderLat,
-                longitude: riderLng,
-                headingDegrees: live.heading != null ? Number(live.heading) : null,
-                updatedAt: (live.updatedAt ?? new Date()).toISOString(),
-              },
+            const liveLoc: RiderLoc = {
+              latitude: riderLat,
+              longitude: riderLng,
+              headingDegrees: live.heading != null ? Number(live.heading) : null,
+              updatedAt: (live.updatedAt ?? new Date()).toISOString(),
+              accuracyMeters:
+                live.accuracyM != null && Number.isFinite(Number(live.accuracyM))
+                  ? Number(live.accuracyM)
+                  : null,
+              speedMps:
+                live.speedMps != null && Number.isFinite(Number(live.speedMps))
+                  ? Number(live.speedMps)
+                  : null,
+              source: "live_location",
             };
+            if (location) {
+              const liveMs = new Date(liveLoc.updatedAt).getTime();
+              const trackMs = new Date(location.updatedAt).getTime();
+              // Prefer fresher GPS — live rider_current_locations often advances while
+              // order_rider_tracking trail lags (e.g. status not yet in trail-write set).
+              location = liveMs >= trackMs ? liveLoc : location;
+            } else {
+              location = liveLoc;
+            }
           }
         }
       }
 
-      return { orderId: orderIdParam, rider: null };
+      if (!location) return { orderId: orderIdParam, rider: null };
+
+      return {
+        orderId: orderIdParam,
+        rider: {
+          latitude: location.latitude,
+          longitude: location.longitude,
+          headingDegrees: location.headingDegrees,
+          updatedAt: location.updatedAt,
+          accuracyMeters: location.accuracyMeters,
+          speedMps: location.speedMps,
+        },
+      };
     }
   );
 
@@ -2598,19 +2681,8 @@ export async function orderRoutes(app: FastifyInstance) {
         return reply.status(409).send({ error: "already_rated" });
       }
 
-      const riderTipRaw =
-        body.riderTipAmount != null && Number.isFinite(body.riderTipAmount)
-          ? Math.round(body.riderTipAmount)
-          : 0;
-      const existingTip =
-        orderRow.tipAmount != null && Number(orderRow.tipAmount) > 0
-          ? Number(orderRow.tipAmount)
-          : 0;
-      const snap = (orderRow.billingSnapshot as Record<string, unknown> | null) ?? null;
-      const snapTip =
-        snap?.tip_amount != null && Number(snap.tip_amount) > 0 ? Number(snap.tip_amount) : 0;
-      const hadCheckoutTip = existingTip > 0 || snapTip > 0;
-      const riderTipAmount = !hadCheckoutTip && riderTipRaw > 0 ? riderTipRaw : 0;
+      // Tips after prepaid orders must go through Razorpay (POST /:id/rider-tip).
+      // Unpaid tip amounts on ratings are intentionally ignored.
 
       const primaryRating = storeRating ?? deliveryRating;
       if (primaryRating == null || primaryRating < 1) {
@@ -2651,38 +2723,6 @@ export async function orderRoutes(app: FastifyInstance) {
           customerPk,
           orderCorePk: orderRow.id,
         });
-      }
-
-      if (riderTipAmount > 0 && orderRow.riderId != null) {
-        const nextSnap = {
-          ...(snap ?? {}),
-          tip_amount: riderTipAmount,
-          post_delivery_tip: true,
-        };
-        await db
-          .update(ordersCore)
-          .set({
-            tipAmount: String(riderTipAmount),
-            billingSnapshot: nextSnap,
-          })
-          .where(eq(ordersCore.id, orderRow.id));
-
-        const sql = getSql();
-        try {
-          await sql`
-            INSERT INTO customer_tips_given (customer_id, order_id, rider_id, tip_amount, tip_paid, paid_at)
-            VALUES (
-              ${customerPk}::bigint,
-              ${orderRow.id}::bigint,
-              ${orderRow.riderId}::integer,
-              ${String(riderTipAmount)}::numeric,
-              TRUE,
-              NOW()
-            )
-          `;
-        } catch {
-          /* legacy FK may reference orders(id); orders_core tip is still updated */
-        }
       }
 
       return {

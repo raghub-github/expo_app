@@ -79,28 +79,23 @@ async function fetchSession(): Promise<SessionData> {
     if (response.status === 503) {
       throw new Error(SESSION_SERVICE_UNAVAILABLE);
     }
-    if (response.status === 401 || response.status === 403) {
-      const params = new URLSearchParams();
-      params.set("redirect", typeof window !== "undefined" ? window.location.pathname + window.location.search : "/dashboard");
-      params.set("reason", "session_required");
-      if (typeof window !== "undefined") {
-        fetch("/api/auth/logout", { method: "POST", credentials: "include" }).finally(() => {
-          window.location.href = `/login?${params.toString()}`;
-        });
-        return new Promise(() => {});
-      }
-    }
-    throw new Error("Session API returned invalid response");
+    // Do not hard-logout on opaque 401/403 (compile blips, HTML error pages).
+    // Only clear session when the API explicitly says the session is dead.
+    throw new Error(
+      response.status === 401 || response.status === 403
+        ? "Not authenticated"
+        : "Session API returned invalid response"
+    );
   }
 
   if (!result.success || !result.data) {
     if (response.status === 503 && result.code === "SERVICE_UNAVAILABLE") {
       throw new Error(SESSION_SERVICE_UNAVAILABLE);
     }
-    if (response.status === 401 && (result.code === "SESSION_INVALID" || result.code === "SESSION_REQUIRED")) {
+    if (response.status === 401 && result.code === "SESSION_INVALID") {
       const params = new URLSearchParams();
       params.set("redirect", typeof window !== "undefined" ? window.location.pathname + window.location.search : "/dashboard");
-      params.set("reason", result.code === "SESSION_INVALID" ? "session_invalid" : "session_required");
+      params.set("reason", "session_invalid");
       if (typeof window !== "undefined") {
         fetch("/api/auth/logout", { method: "POST", credentials: "include" }).finally(() => {
           window.location.href = `/login?${params.toString()}`;

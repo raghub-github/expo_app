@@ -238,9 +238,10 @@ export const fetchStoreById = async (storeId: string): Promise<MerchantStore | n
       return null;
     }
 
+    // Browser: only the ownership-checked API. Never fall back to raw Supabase
+    // (that can paint another merchant's store from a stale selectedStoreId).
     if (typeof window !== 'undefined') {
-      const viaApi = await fetchStoreByIdViaApi(trimmed);
-      if (viaApi) return viaApi;
+      return fetchStoreByIdViaApi(trimmed);
     }
 
     return fetchStoreByIdViaSupabase(trimmed);

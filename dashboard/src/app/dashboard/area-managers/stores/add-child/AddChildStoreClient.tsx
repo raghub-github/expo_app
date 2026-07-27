@@ -10,10 +10,30 @@ import Step3MenuUpload, { MenuUploadMode } from "@/components/onboarding/Step3Me
 import Step4Documents, { Step4Patch, Step4SectionKey } from "@/components/onboarding/Step4Documents";
 import Step5StoreSetup, {
   StoreSetupData as Step5StoreSetupData,
+  normalizeStoreHours,
 } from "@/components/onboarding/Step5StoreSetup";
 import PreviewPage from "@/components/onboarding/preview";
+import {
+  asRecord,
+  mergeGstFetchedIntoVerifiedDetails,
+  verifiedDetailsForUi,
+} from "@/lib/merchant-doc-auto-verification";
+import { clearOnboardingDocumentClientStorage } from "@/lib/onboarding/clear-document-client-storage";
+import { maskAadhaarNumber } from "@/lib/mask-aadhaar";
+import {
+  STORE_DESCRIPTION_MAX,
+  STORE_DESCRIPTION_MIN,
+  clampStoreDescriptionInput,
+  isStoreDescriptionValid,
+  normalizeStoreDescriptionForSave,
+  storeDescriptionLength,
+  storeDescriptionValidationMessage,
+} from "@/lib/store-description";
 
 const StoreLocationMapboxGL = dynamic(() => import("@/components/StoreLocationMapboxGL"), { ssr: false });
+const STEP1_FIELD_CLASS =
+  "w-full px-3.5 py-3 text-sm border border-slate-200/90 rounded-xl bg-white shadow-[0_1px_2px_rgba(15,23,42,0.05)] focus:outline-none focus:ring-2 focus:ring-indigo-500/25 focus:border-indigo-400 hover:border-indigo-200 transition-all";
+const STEP1_LABEL_CLASS = "block text-xs font-medium text-slate-600 mb-1.5 tracking-wide";
 const mapboxToken = typeof process !== "undefined" ? (process.env.NEXT_PUBLIC_MAPBOX_TOKEN ?? "") : "";
 const disableCurrentLocationButton = typeof process !== "undefined" && process.env.NEXT_PUBLIC_DISABLE_CURRENT_LOCATION === "true";
 const MAX_MENU_IMAGE_BYTES = 12 * 1024 * 1024;
@@ -87,6 +107,7 @@ export function AddChildStoreClient() {
   const [storeName, setStoreName] = useState("");
   const [ownerFullName, setOwnerFullName] = useState("");
   const [storeDisplayName, setStoreDisplayName] = useState("");
+  const [displayNameManuallyEdited, setDisplayNameManuallyEdited] = useState(false);
   const [storeType, setStoreType] = useState("RESTAURANT");
   const [customStoreType, setCustomStoreType] = useState("");
   const [storeEmail, setStoreEmail] = useState("");
@@ -187,6 +208,7 @@ export function AddChildStoreClient() {
   const [step4InitialForm, setStep4InitialForm] = useState<Step4Patch | null>(null);
   const [step4InitialDocUrls, setStep4InitialDocUrls] = useState<Record<string, string>>({});
   const [step4RequiredValid, setStep4RequiredValid] = useState(false);
+  const [aadhaarDigilockerInFlight, setAadhaarDigilockerInFlight] = useState(false);
 
   // Step 5: Operational details (store configuration / hours / cuisines)
   const [step5StoreSetup, setStep5StoreSetup] = useState<Step5StoreSetupData | null>(null);
@@ -237,9 +259,14 @@ export function AddChildStoreClient() {
         if (typeof json?.parent_merchant_id === "string" && json.parent_merchant_id) setParentDisplayPid(json.parent_merchant_id);
         const progress = json?.progress;
         if (progress && typeof progress.current_step === "number") {
-          // For AM dashboard we treat current_step as the **active** step (not "last completed").
-          // So if current_step = 3 and only steps 1 & 2 are done, we should land on step 3, not 4.
-          const activeStep = Math.min(Math.max(progress.current_step, 1), 10);
+          // Active step from DB; if that step is already marked complete, auto-push forward.
+          let activeStep = Math.min(Math.max(progress.current_step, 1), 10);
+          while (
+            activeStep < 10 &&
+            Boolean((progress as Record<string, unknown>)[`step_${activeStep}_completed`])
+          ) {
+            activeStep += 1;
+          }
           setStepState(activeStep);
         }
         if (progress?.form_data?.step_store?.storePublicId) {
@@ -249,7 +276,10 @@ export function AddChildStoreClient() {
           const s1 = progress.form_data.step1 as Record<string, unknown>;
           if (typeof s1.store_name === "string") setStoreName(s1.store_name);
           if (typeof s1.owner_full_name === "string") setOwnerFullName(s1.owner_full_name);
-          if (typeof s1.store_display_name === "string") setStoreDisplayName(s1.store_display_name);
+          if (typeof s1.store_display_name === "string") {
+            setStoreDisplayName(s1.store_display_name);
+            setDisplayNameManuallyEdited(true);
+          }
           if (typeof s1.store_type === "string") setStoreType(s1.store_type);
           if (typeof s1.custom_store_type === "string") setCustomStoreType(s1.custom_store_type);
           if (typeof s1.store_email === "string") setStoreEmail(s1.store_email);
@@ -310,17 +340,24 @@ export function AddChildStoreClient() {
           setStep5StoreSetup((prev) => {
           const rawGallery = Array.isArray(s5.gallery_image_urls)
             ? (s5.gallery_image_urls as unknown[])
-            : [];
+            : Array.isArray(s5.gallery_previews)
+              ? (s5.gallery_previews as unknown[])
+              : [];
           const gallery_previews = rawGallery
             .filter((u) => typeof u === "string" && u.trim())
             .slice(0, 5) as string[];
+          const bannerFromProgress =
+            (typeof s5.banner_url === "string" && s5.banner_url.trim()
+              ? (s5.banner_url as string)
+              : null) ||
+            (typeof s5.banner_preview === "string" && s5.banner_preview.trim()
+              ? (s5.banner_preview as string)
+              : null);
           return {
-            banner_preview:
-              typeof s5.banner_url === "string" && s5.banner_url.trim()
-                ? (s5.banner_url as string)
-                : prev?.banner_preview ?? "",
-            gallery_previews: gallery_previews.length > 0 ? gallery_previews : prev?.gallery_previews ?? [],
-              cuisine_types: Array.isArray(s5.cuisine_types)
+            banner_preview: bannerFromProgress || prev?.banner_preview || "",
+            gallery_previews:
+              gallery_previews.length > 0 ? gallery_previews : prev?.gallery_previews ?? [],
+              cuisine_types: Array.isArray(s5.cuisine_types) && (s5.cuisine_types as unknown[]).length > 0
                 ? (s5.cuisine_types as string[])
                 : prev?.cuisine_types ?? [],
               avg_preparation_time_minutes:
@@ -343,43 +380,11 @@ export function AddChildStoreClient() {
                   : prev?.accepts_online_payment ?? true,
               accepts_cash:
                 typeof s5.accepts_cash === "boolean" ? (s5.accepts_cash as boolean) : prev?.accepts_cash ?? false,
-              store_hours:
-                (s5.store_hours && typeof s5.store_hours === "object"
-                  ? (s5.store_hours as Step5StoreSetupData["store_hours"])
-                  : prev?.store_hours) ??
-                {
-                  monday: { closed: false, slot1_open: "09:00", slot1_close: "22:00", slot2_open: "", slot2_close: "" },
-                  tuesday: { closed: false, slot1_open: "09:00", slot1_close: "22:00", slot2_open: "", slot2_close: "" },
-                  wednesday: {
-                    closed: false,
-                    slot1_open: "09:00",
-                    slot1_close: "22:00",
-                    slot2_open: "",
-                    slot2_close: "",
-                  },
-                  thursday: {
-                    closed: false,
-                    slot1_open: "09:00",
-                    slot1_close: "22:00",
-                    slot2_open: "",
-                    slot2_close: "",
-                  },
-                  friday: { closed: false, slot1_open: "09:00", slot1_close: "22:00", slot2_open: "", slot2_close: "" },
-                  saturday: {
-                    closed: false,
-                    slot1_open: "10:00",
-                    slot1_close: "23:00",
-                    slot2_open: "",
-                    slot2_close: "",
-                  },
-                  sunday: {
-                    closed: false,
-                    slot1_open: "10:00",
-                    slot1_close: "22:00",
-                    slot2_open: "",
-                    slot2_close: "",
-                  },
-                },
+              store_hours: normalizeStoreHours(
+                s5.store_hours && typeof s5.store_hours === "object"
+                  ? s5.store_hours
+                  : prev?.store_hours,
+              ),
             };
           });
         }
@@ -387,6 +392,24 @@ export function AddChildStoreClient() {
         // Step 4 base values from registration_progress (numbers etc.)
         if (progress?.form_data?.step4 && typeof progress.form_data.step4 === "object") {
           const s4 = progress.form_data.step4 as Record<string, unknown>;
+          const savedSection = String(s4.step4_active_section || s4.active_section || "")
+            .trim()
+            .toUpperCase();
+          if (
+            savedSection === "PAN" ||
+            savedSection === "AADHAAR" ||
+            savedSection === "LICENCE" ||
+            savedSection === "BANK"
+          ) {
+            setStep4Section(savedSection as Step4SectionKey);
+          } else if (savedSection === "GST") {
+            // Legacy progress saved "GST" as the combined regulator-docs + GST
+            // section. Resume at LICENCE (regulator docs) first for safety; the
+            // new dedicated GST section is reached right after.
+            setStep4Section("LICENCE");
+          } else if (s4.pan_is_verified === true) {
+            setStep4Section("AADHAAR");
+          }
           setStep4InitialForm((prev) => ({
             ...(prev ?? {}),
             pan_number:
@@ -395,6 +418,10 @@ export function AddChildStoreClient() {
               typeof s4.pan_holder_name === "string"
                 ? (s4.pan_holder_name as string)
                 : prev?.pan_holder_name,
+            pan_is_verified:
+              typeof s4.pan_is_verified === "boolean"
+                ? (s4.pan_is_verified as boolean)
+                : prev?.pan_is_verified,
             aadhar_number:
               typeof s4.aadhar_number === "string"
                 ? (s4.aadhar_number as string)
@@ -403,6 +430,23 @@ export function AddChildStoreClient() {
               typeof s4.aadhar_holder_name === "string"
                 ? (s4.aadhar_holder_name as string)
                 : prev?.aadhar_holder_name,
+            aadhaar_is_verified:
+              typeof s4.aadhaar_is_verified === "boolean"
+                ? (s4.aadhaar_is_verified as boolean)
+                : prev?.aadhaar_is_verified,
+            aadhaar_verified_at:
+              s4.aadhaar_verified_at != null
+                ? String(s4.aadhaar_verified_at)
+                : prev?.aadhaar_verified_at ?? null,
+            aadhaar_verification_method:
+              typeof s4.aadhaar_verification_method === "string"
+                ? (s4.aadhaar_verification_method as string)
+                : prev?.aadhaar_verification_method ?? null,
+            aadhaar_verified_details:
+              s4.aadhaar_verified_details &&
+              typeof s4.aadhaar_verified_details === "object"
+                ? (s4.aadhaar_verified_details as Record<string, unknown>)
+                : prev?.aadhaar_verified_details ?? null,
             gst_number:
               typeof s4.gst_number === "string" ? (s4.gst_number as string) : prev?.gst_number,
             fssai_number:
@@ -496,14 +540,131 @@ export function AddChildStoreClient() {
                   typeof d.pan_document_number === "string"
                     ? (d.pan_document_number as string)
                     : prev?.pan_number,
+                pan_holder_name:
+                  typeof d.pan_holder_name === "string"
+                    ? (d.pan_holder_name as string)
+                    : prev?.pan_holder_name,
+                pan_is_verified: Boolean(d.pan_is_verified) || prev?.pan_is_verified,
+                pan_verified_at:
+                  d.pan_verified_at != null
+                    ? String(d.pan_verified_at)
+                    : prev?.pan_verified_at ?? null,
+                pan_verification_method:
+                  typeof d.pan_verification_method === "string"
+                    ? (d.pan_verification_method as string)
+                    : prev?.pan_verification_method ?? null,
+                pan_verified_details: verifiedDetailsForUi(
+                  Boolean(d.pan_is_verified),
+                  d.pan_document_metadata,
+                  typeof d.pan_holder_name === "string" ? d.pan_holder_name : null,
+                  asRecord(d.extracted_data_summary).pan,
+                ) ?? prev?.pan_verified_details ?? null,
                 aadhar_number:
                   typeof d.aadhaar_document_number === "string"
                     ? (d.aadhaar_document_number as string)
                     : prev?.aadhar_number,
+                aadhar_holder_name:
+                  typeof d.aadhaar_holder_name === "string"
+                    ? (d.aadhaar_holder_name as string)
+                    : prev?.aadhar_holder_name,
+                aadhaar_is_verified:
+                  Boolean(d.aadhaar_is_verified) || prev?.aadhaar_is_verified,
+                aadhaar_verified_at:
+                  d.aadhaar_verified_at != null
+                    ? String(d.aadhaar_verified_at)
+                    : prev?.aadhaar_verified_at ?? null,
+                aadhaar_verification_method:
+                  typeof d.aadhaar_verification_method === "string"
+                    ? (d.aadhaar_verification_method as string)
+                    : prev?.aadhaar_verification_method ?? null,
+                aadhaar_verified_details: (() => {
+                  const fromDocs = verifiedDetailsForUi(
+                    Boolean(d.aadhaar_is_verified),
+                    d.aadhaar_document_metadata,
+                    typeof d.aadhaar_holder_name === "string"
+                      ? d.aadhaar_holder_name
+                      : null,
+                    asRecord(d.extracted_data_summary).aadhaar,
+                  );
+                  if (fromDocs && Object.keys(fromDocs).length > 0) {
+                    // Prefer DigiLocker `name` key for UI rows (not PAN-style registered_name).
+                    if (
+                      fromDocs.registered_name &&
+                      !fromDocs.name &&
+                      typeof d.aadhaar_holder_name === "string" &&
+                      d.aadhaar_holder_name
+                    ) {
+                      return {
+                        ...fromDocs,
+                        name: d.aadhaar_holder_name,
+                      };
+                    }
+                    if (fromDocs.registered_name && !fromDocs.name) {
+                      return {
+                        ...fromDocs,
+                        name: String(fromDocs.registered_name),
+                      };
+                    }
+                    return fromDocs;
+                  }
+                  if (
+                    Boolean(d.aadhaar_is_verified) &&
+                    typeof d.aadhaar_holder_name === "string" &&
+                    d.aadhaar_holder_name
+                  ) {
+                    return { name: d.aadhaar_holder_name };
+                  }
+                  return prev?.aadhaar_verified_details ?? null;
+                })(),
                 gst_number:
                   typeof d.gst_document_number === "string"
                     ? (d.gst_document_number as string)
                     : prev?.gst_number,
+                gst_is_verified: Boolean(d.gst_is_verified) || prev?.gst_is_verified,
+                gst_verified_at:
+                  d.gst_verified_at != null
+                    ? String(d.gst_verified_at)
+                    : prev?.gst_verified_at ?? null,
+                gst_verification_method:
+                  typeof d.gst_verification_method === "string"
+                    ? (d.gst_verification_method as string)
+                    : prev?.gst_verification_method ?? null,
+                gst_verified_details: (() => {
+                  const base = verifiedDetailsForUi(
+                    Boolean(d.gst_is_verified),
+                    d.gst_document_metadata,
+                    null,
+                    asRecord(d.extracted_data_summary).gstin ??
+                      asRecord(d.extracted_data_summary).gst,
+                  );
+                  if (!base) return prev?.gst_verified_details ?? null;
+                  return mergeGstFetchedIntoVerifiedDetails(base, {
+                    legal_business_name:
+                      typeof d.gst_legal_business_name === "string"
+                        ? d.gst_legal_business_name
+                        : null,
+                    principal_place_of_business:
+                      typeof d.gst_principal_place_of_business === "string"
+                        ? d.gst_principal_place_of_business
+                        : null,
+                    effective_registration_date:
+                      typeof d.gst_effective_registration_date === "string"
+                        ? d.gst_effective_registration_date
+                        : null,
+                  });
+                })(),
+                gst_legal_business_name:
+                  typeof d.gst_legal_business_name === "string"
+                    ? (d.gst_legal_business_name as string)
+                    : prev?.gst_legal_business_name,
+                gst_principal_place_of_business:
+                  typeof d.gst_principal_place_of_business === "string"
+                    ? (d.gst_principal_place_of_business as string)
+                    : prev?.gst_principal_place_of_business,
+                gst_effective_registration_date:
+                  typeof d.gst_effective_registration_date === "string"
+                    ? (d.gst_effective_registration_date as string)
+                    : prev?.gst_effective_registration_date,
                 fssai_number:
                   typeof d.fssai_document_number === "string"
                     ? (d.fssai_document_number as string)
@@ -544,6 +705,11 @@ export function AddChildStoreClient() {
                 other_expiry_date:
                   toDateInput(d.other_expiry_date) ?? prev?.other_expiry_date,
               }));
+
+              // Reload: if PAN already auto-verified, don't leave the user stuck on PAN.
+              if (Boolean(d.pan_is_verified)) {
+                setStep4Section((prev) => (prev === "PAN" ? "AADHAAR" : prev));
+              }
 
               const urls: Record<string, string> = {};
               if (typeof d.pan_document_url === "string") {
@@ -637,6 +803,41 @@ export function AddChildStoreClient() {
                     typeof b.payout_method === "string"
                       ? (b.payout_method as string)
                       : prev?.payout_method,
+                  bank_is_verified:
+                    typeof b.is_verified === "boolean"
+                      ? (b.is_verified as boolean)
+                      : prev?.bank_is_verified,
+                  upi_verified:
+                    typeof b.upi_verified === "boolean"
+                      ? (b.upi_verified as boolean)
+                      : prev?.upi_verified,
+                  bank_verified_at:
+                    b.verified_at != null
+                      ? String(b.verified_at)
+                      : prev?.bank_verified_at,
+                  bank_verification_method:
+                    typeof b.verification_method === "string"
+                      ? (b.verification_method as string)
+                      : prev?.bank_verification_method,
+                  bank_verified_details: (() => {
+                    const meta =
+                      b.bank_metadata &&
+                      typeof b.bank_metadata === "object" &&
+                      !Array.isArray(b.bank_metadata)
+                        ? (b.bank_metadata as Record<string, unknown>)
+                        : null;
+                    const auto =
+                      meta?.auto_verification &&
+                      typeof meta.auto_verification === "object" &&
+                      !Array.isArray(meta.auto_verification)
+                        ? (meta.auto_verification as Record<string, unknown>)
+                        : null;
+                    const details = auto?.verified_data;
+                    if (details && typeof details === "object" && !Array.isArray(details)) {
+                      return details as Record<string, unknown>;
+                    }
+                    return prev?.bank_verified_details ?? null;
+                  })(),
                 }));
 
                 // If we have a bank_proof_file_url, show it in docPreviews.bank_proof (Bank tab)
@@ -1072,21 +1273,28 @@ export function AddChildStoreClient() {
       setErr('Please specify "Custom Store Type" when Store Type is Others.');
       return;
     }
+    if (!isStoreDescriptionValid(storeDescription)) {
+      setErr(storeDescriptionValidationMessage(storeDescription) || "Please enter a valid store description.");
+      return;
+    }
     setActionLoading(true);
     try {
       const storePhones = storePhonesInput.split(",").map((p) => p.trim()).filter(Boolean);
       const isUpdatingExisting = storeInternalId != null && Number.isFinite(storeInternalId);
+      const displayForStore = storeDisplayName.trim() || storeName.trim();
+      const normalizedDescription = normalizeStoreDescriptionForSave(storeDescription);
+      setStoreDescription(normalizedDescription);
       const body: Record<string, unknown> = {
         parentId,
         store_name: storeName.trim(),
         owner_full_name: ownerFullName.trim() || undefined,
-        store_display_name: storeDisplayName.trim() || undefined,
-        legal_business_name: legalBusinessName.trim() || undefined,
+        store_display_name: displayForStore || undefined,
+        legal_business_name: (legalBusinessName.trim() || displayForStore) || undefined,
         store_type: storeType,
         custom_store_type: storeType === "OTHERS" ? customStoreType.trim() : undefined,
         store_email: storeEmail.trim() || undefined,
         store_phones: storePhones.length ? storePhones : undefined,
-        store_description: storeDescription.trim() || undefined,
+        store_description: normalizedDescription || undefined,
       };
       if (isUpdatingExisting) {
         body.storeInternalId = storeInternalId;
@@ -1146,19 +1354,40 @@ export function AddChildStoreClient() {
     // Never persist local preview URLs in DB.
     if (trimmed.startsWith("data:") || trimmed.startsWith("blob:")) return null;
 
-    if (trimmed.startsWith("/api/attachments/proxy")) return trimmed;
-    if (trimmed.startsWith("/v1/attachments/proxy")) {
-      return trimmed.replace("/v1/attachments/proxy", "/api/attachments/proxy");
+    if (trimmed.includes("/api/attachments/proxy") || trimmed.includes("/v1/attachments/proxy")) {
+      try {
+        const u = new URL(
+          trimmed.startsWith("http://") || trimmed.startsWith("https://")
+            ? trimmed
+            : `https://local.invalid${trimmed.startsWith("/") ? "" : "/"}${trimmed}`,
+        );
+        const key = u.searchParams.get("key");
+        if (key?.trim()) {
+          return `/api/attachments/proxy?key=${encodeURIComponent(key.trim())}`;
+        }
+      } catch {
+        /* fall through */
+      }
+      if (trimmed.startsWith("/v1/attachments/proxy")) {
+        return trimmed.replace("/v1/attachments/proxy", "/api/attachments/proxy");
+      }
+      if (trimmed.startsWith("/api/attachments/proxy")) return trimmed;
     }
 
     if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
       try {
         const u = new URL(trimmed);
-        if (u.pathname.startsWith("/api/attachments/proxy") || u.pathname.startsWith("/v1/attachments/proxy")) {
-          const key = u.searchParams.get("key");
-          if (key && key.trim()) {
-            return `/api/attachments/proxy?key=${encodeURIComponent(key.trim())}`;
-          }
+        // Presigned R2 / CDN URL → stable proxy key (pathname after optional bucket).
+        const path = u.pathname.replace(/^\/+/, "");
+        const docsIdx = path.toLowerCase().indexOf("docs/merchants/");
+        if (docsIdx >= 0) {
+          return `/api/attachments/proxy?key=${encodeURIComponent(path.slice(docsIdx))}`;
+        }
+        const merIdx = path.toLowerCase().indexOf("merchants/");
+        if (merIdx >= 0) {
+          const rest = path.slice(merIdx);
+          const key = rest.toLowerCase().startsWith("docs/") ? rest : `docs/${rest}`;
+          return `/api/attachments/proxy?key=${encodeURIComponent(key)}`;
         }
       } catch {
         return null;
@@ -1483,6 +1712,7 @@ export function AddChildStoreClient() {
         .map((u) => toProxyAttachmentUrl(u))
         .filter((u): u is string => typeof u === "string" && u.length > 0)
         .slice(0, 5);
+      const normalizedHours = normalizeStoreHours(step5StoreSetup.store_hours);
 
       const step5Patch: Record<string, unknown> = {
         step5: {
@@ -1493,15 +1723,35 @@ export function AddChildStoreClient() {
           is_pure_veg: step5StoreSetup.is_pure_veg,
           accepts_online_payment: step5StoreSetup.accepts_online_payment,
           accepts_cash: step5StoreSetup.accepts_cash,
-          store_hours: step5StoreSetup.store_hours,
-          ...(bannerValue ? { banner_url: bannerValue } : {}),
-          ...(galleryUrls.length > 0 ? { gallery_image_urls: galleryUrls } : {}),
+          store_hours: normalizedHours,
+          // Only send media keys when we have proxy URLs — never wipe DB with [] after
+          // profile-media already saved gallery/banner.
+          ...(bannerValue
+            ? { banner_url: bannerValue, banner_preview: bannerValue }
+            : {}),
+          ...(galleryUrls.length > 0
+            ? {
+                gallery_image_urls: galleryUrls,
+                gallery_previews: galleryUrls,
+              }
+            : {}),
         },
       };
       setActionLoading(true);
       setErr(null);
       try {
-        await saveProgress(5, step5Patch);
+        await saveProgress(6, step5Patch);
+        // Keep in-memory Step 5 aligned with what Preview + DB will show.
+        setStep5StoreSetup((prev) =>
+          prev
+            ? {
+                ...prev,
+                store_hours: normalizedHours,
+                ...(bannerValue ? { banner_preview: bannerValue } : {}),
+                ...(galleryUrls.length > 0 ? { gallery_previews: galleryUrls } : {}),
+              }
+            : prev,
+        );
         setStep(6);
       } catch (e) {
         setErr(e instanceof Error ? e.message : "Failed to save store configuration");
@@ -1512,8 +1762,15 @@ export function AddChildStoreClient() {
     }
     if (step === 4) {
       // Step 4: documents + bank details
+      if (step4Section === "AADHAAR" && aadhaarDigilockerInFlight) {
+        setErr(
+          "DigiLocker verification is in progress. Complete consent in the DigiLocker tab — skip is locked until it finishes or fails.",
+        );
+        return;
+      }
       if (!storeInternalId || !parentId || !Number.isFinite(storeInternalId)) {
         // If somehow we reached here without a proper store, just move UI forward
+        clearOnboardingDocumentClientStorage(null);
         setStep(5);
         return;
       }
@@ -1526,10 +1783,13 @@ export function AddChildStoreClient() {
             /^[A-Z]{5}[0-9]{4}[A-Z]$/.test((v || "").replace(/\s/g, ""))
               ? ""
               : "Invalid PAN format.",
-          aadhar: (v: string) =>
-            /^\d{12}$/.test((v || "").replace(/\s/g, ""))
+          aadhar: (v: string) => {
+            const raw = (v || "").trim();
+            if (/^XXXX-XXXX-\d{4}$/i.test(raw) || /X{4,}/i.test(raw)) return "";
+            return /^\d{12}$/.test(raw.replace(/\s/g, ""))
               ? ""
-              : "Invalid Aadhaar format.",
+              : "Invalid Aadhaar format.";
+          },
           fssai: (v: string) =>
             /^\d{14}$/.test((v || "").replace(/\s/g, ""))
               ? ""
@@ -1563,10 +1823,7 @@ export function AddChildStoreClient() {
           if (step4Patch?.aadhar_number && step4Patch.aadhar_number.trim()) {
             fmtAadhaar = docFormatValidators.aadhar(step4Patch.aadhar_number);
           }
-        } else if (step4Section === "GST") {
-          if (step4Patch?.gst_number && step4Patch.gst_number.trim()) {
-            fmtGst = docFormatValidators.gst(step4Patch.gst_number);
-          }
+        } else if (step4Section === "LICENCE") {
           if (upperStoreType !== "PHARMA" &&
               step4Patch?.fssai_number &&
               step4Patch.fssai_number.trim()) {
@@ -1576,6 +1833,10 @@ export function AddChildStoreClient() {
               step4Patch?.drug_license_number &&
               step4Patch.drug_license_number.trim()) {
             fmtDrug = docFormatValidators.drug(step4Patch.drug_license_number);
+          }
+        } else if (step4Section === "GST") {
+          if (step4Patch?.gst_number && step4Patch.gst_number.trim()) {
+            fmtGst = docFormatValidators.gst(step4Patch.gst_number);
           }
         }
 
@@ -1607,7 +1868,30 @@ export function AddChildStoreClient() {
         if (step4Patch?.pan_holder_name) {
           docPayload.pan_holder_name = step4Patch.pan_holder_name.trim();
         }
-        const aadhaarNumber = normaliseDocNumber(step4Patch?.aadhar_number);
+        // Persist / clear auto-verify flags with Save & Continue (same as partnersite).
+        if (panNumber || step4Patch?.pan_is_verified != null) {
+          const panVerified = !!step4Patch?.pan_is_verified;
+          docPayload.pan_is_verified = panVerified;
+          if (panVerified) {
+            docPayload.pan_verified_at =
+              step4Patch?.pan_verified_at || new Date().toISOString();
+            if (step4Patch?.pan_verification_method) {
+              docPayload.pan_verification_method = step4Patch.pan_verification_method;
+            }
+            if (
+              step4Patch?.pan_verified_details &&
+              typeof step4Patch.pan_verified_details === "object"
+            ) {
+              docPayload.pan_verified_details = step4Patch.pan_verified_details;
+            }
+          } else {
+            docPayload.pan_verified_at = null;
+            docPayload.pan_verification_method = null;
+          }
+        }
+        const aadhaarNumber = step4Patch?.aadhar_number
+          ? maskAadhaarNumber(String(step4Patch.aadhar_number))
+          : "";
         if (aadhaarNumber) {
           docPayload.aadhaar_document_number = aadhaarNumber;
         }
@@ -1620,6 +1904,37 @@ export function AddChildStoreClient() {
           docPayload.gst_document_number = gstNumber;
           if (legalBusinessName) {
             docPayload.gst_document_name = legalBusinessName;
+          }
+        }
+        if (step4Patch?.gst_legal_business_name?.trim()) {
+          docPayload.gst_legal_business_name = step4Patch.gst_legal_business_name.trim();
+        }
+        if (step4Patch?.gst_principal_place_of_business?.trim()) {
+          docPayload.gst_principal_place_of_business =
+            step4Patch.gst_principal_place_of_business.trim();
+        }
+        if (step4Patch?.gst_effective_registration_date?.trim()) {
+          docPayload.gst_effective_registration_date =
+            step4Patch.gst_effective_registration_date.trim().slice(0, 10);
+        }
+        if (gstNumber || step4Patch?.gst_is_verified != null) {
+          const gstVerified = !!step4Patch?.gst_is_verified;
+          docPayload.gst_is_verified = gstVerified;
+          if (gstVerified) {
+            docPayload.gst_verified_at =
+              step4Patch?.gst_verified_at || new Date().toISOString();
+            if (step4Patch?.gst_verification_method) {
+              docPayload.gst_verification_method = step4Patch.gst_verification_method;
+            }
+            if (
+              step4Patch?.gst_verified_details &&
+              typeof step4Patch.gst_verified_details === "object"
+            ) {
+              docPayload.gst_verified_details = step4Patch.gst_verified_details;
+            }
+          } else {
+            docPayload.gst_verified_at = null;
+            docPayload.gst_verification_method = null;
           }
         }
         if (upperStoreType === "PHARMA") {
@@ -1693,13 +2008,18 @@ export function AddChildStoreClient() {
             : "bank";
 
         const hasBankCoreFields =
-          !!step4Patch?.bank_account_holder_name?.trim() &&
           !!step4Patch?.bank_account_number?.trim() &&
           !!step4Patch?.bank_ifsc_code?.trim() &&
-          !!step4Patch?.bank_name?.trim();
+          (!!step4Patch?.bank_is_verified ||
+            (!!step4Patch?.bank_account_holder_name?.trim() &&
+              !!step4Patch?.bank_name?.trim()));
 
-        // For UPI, only upi_id is strictly required (account_holder_name/number are optional)
-        const hasUpiCoreFields = !!step4Patch?.upi_id?.trim();
+        // For UPI, only upi_id is strictly required; QR not needed when auto-verified
+        const hasUpiCoreFields =
+          !!step4Patch?.upi_id?.trim() &&
+          (!!step4Patch?.upi_verified ||
+            !!step4Patch?.bank_is_verified ||
+            !!step4Patch?.upi_qr_screenshot_url?.trim());
 
         // For AM dashboard we write bank details directly via internal id helper API
         const bankStoreId =
@@ -1720,12 +2040,14 @@ export function AddChildStoreClient() {
             body: JSON.stringify({
               storeInternalId: bankStoreId,
               payout_method: payoutMethod,
-              account_holder_name: step4Patch.bank_account_holder_name!.trim(),
+              account_holder_name:
+                step4Patch.bank_account_holder_name?.trim() ||
+                (step4Patch.bank_is_verified || step4Patch.upi_verified
+                  ? "Verified Account"
+                  : ""),
               account_number:
                 payoutMethod === "upi"
-                  ? (step4Patch.bank_account_number?.trim() ||
-                      step4Patch.upi_id?.trim() ||
-                      "")
+                  ? null
                   : step4Patch.bank_account_number?.trim() || "",
               ifsc_code:
                 payoutMethod === "bank"
@@ -1733,7 +2055,8 @@ export function AddChildStoreClient() {
                   : undefined,
               bank_name:
                 payoutMethod === "bank"
-                  ? step4Patch.bank_name?.trim() || ""
+                  ? step4Patch.bank_name?.trim() ||
+                    (step4Patch.bank_is_verified ? "Bank" : "")
                   : undefined,
               branch_name: step4Patch.bank_branch_name?.trim() || null,
               account_type:
@@ -1753,6 +2076,20 @@ export function AddChildStoreClient() {
                 payoutMethod === "upi"
                   ? step4Patch.upi_qr_screenshot_url?.trim() || undefined
                   : undefined,
+              ...(typeof step4Patch.bank_is_verified === "boolean" ||
+              typeof step4Patch.upi_verified === "boolean"
+                ? {
+                    is_verified: Boolean(
+                      step4Patch.bank_is_verified || step4Patch.upi_verified,
+                    ),
+                    upi_verified: Boolean(step4Patch.upi_verified),
+                    verified_at: step4Patch.bank_verified_at || undefined,
+                    verification_method:
+                      step4Patch.bank_verification_method || undefined,
+                    bank_verified_details:
+                      step4Patch.bank_verified_details || undefined,
+                  }
+                : {}),
             }),
           });
         }
@@ -1792,21 +2129,36 @@ export function AddChildStoreClient() {
         };
 
         // Decide which step number to persist in child-store progress:
-        // - While the user is still moving between Step 4 subsections (PAN → AADHAAR → GST → BANK),
+        // - While the user is still moving between Step 4 subsections (PAN → AADHAAR → LICENCE → GST → BANK),
         //   keep progress.current_step = 4.
         // - When the user has completed BANK and the UI moves to Step 5,
         //   persist current_step = 5 so the AM dashboard resumes at Operational details.
-        const sectionOrder: Step4SectionKey[] = ["PAN", "AADHAAR", "GST", "BANK"];
+        const sectionOrder: Step4SectionKey[] = ["PAN", "AADHAAR", "LICENCE", "GST", "BANK"];
         const idx = sectionOrder.indexOf(step4Section);
         const isLeavingBank = idx === sectionOrder.length - 1 || idx === -1;
         const progressStepNumber = isLeavingBank ? 5 : 4;
+        const nextSection =
+          !isLeavingBank && idx >= 0 && idx < sectionOrder.length - 1
+            ? sectionOrder[idx + 1]
+            : step4Section;
 
-        await saveProgress(progressStepNumber, { step4: step4ForProgress });
+        await saveProgress(progressStepNumber, {
+          step4: {
+            ...step4ForProgress,
+            step4_active_section: nextSection,
+            pan_is_verified: !!step4Patch?.pan_is_verified,
+            gst_is_verified: !!step4Patch?.gst_is_verified,
+          },
+        });
 
         // Stay on Step 4 and move to next document section; only go to Step 5 when leaving Bank
         if (!isLeavingBank && idx >= 0 && idx < sectionOrder.length - 1) {
           setStep4Section(sectionOrder[idx + 1]);
         } else {
+          // Documents step fully done — drop any browser-stored doc drafts / PII.
+          clearOnboardingDocumentClientStorage(
+            storeInternalId ?? createdStoreId ?? parentId ?? null,
+          );
           setStep(5);
         }
       } catch (e) {
@@ -1891,6 +2243,7 @@ export function AddChildStoreClient() {
                 setStoreName("");
                 setOwnerFullName("");
                 setStoreDisplayName("");
+                setDisplayNameManuallyEdited(false);
                 setStoreType("RESTAURANT");
                 setCustomStoreType("");
                 setStoreEmail("");
@@ -2059,66 +2412,179 @@ export function AddChildStoreClient() {
 
               {step === 1 && (
                 <div className="w-full max-w-full lg:max-w-[1100px] my-2 sm:my-3 md:my-4 min-w-0 mx-auto lg:mx-0">
-                  <div className="w-full min-w-0 bg-white rounded-[14px] border border-slate-200/80 overflow-hidden" style={{ boxShadow: "0 8px 24px rgba(0,0,0,0.06)" }}>
-                    <div className="h-1 w-full bg-indigo-600" aria-hidden />
-                    <form onSubmit={handleStep1Submit} className="p-3 sm:p-4 md:p-5">
-                      <div className="flex items-center gap-2.5 sm:gap-3 mb-3 sm:mb-4 pb-3 border-b border-slate-200 min-w-0">
-                        <div className="p-2 rounded-lg bg-indigo-100 shrink-0">
-                          <svg className="w-5 h-5 text-indigo-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4" /></svg>
-                        </div>
-                        <div className="min-w-0">
-                          <h2 className="text-lg font-bold text-slate-800">Basic Store Information</h2>
-                          <p className="text-xs text-slate-500 mt-0.5">Enter primary store details</p>
-                        </div>
+                  <form
+                    onSubmit={handleStep1Submit}
+                    className="w-full min-h-0 flex flex-col justify-between gap-5 sm:gap-6 bg-white rounded-[14px] border border-slate-200/80 px-4 sm:px-6 md:px-8 py-5 sm:py-6"
+                    style={{ boxShadow: "0 8px 24px rgba(0,0,0,0.04)" }}
+                  >
+                    <div className="flex items-center gap-2.5 shrink-0">
+                      <div className="p-2 bg-indigo-50 rounded-lg shrink-0">
+                        <svg className="w-5 h-5 text-indigo-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h1m0 0h-1m1 0v4m-5-9h10l1 7H4l1-7z" />
+                        </svg>
                       </div>
-                      {err && <div className="mb-3 rounded-lg bg-red-50 border border-red-200 px-3 py-2 text-sm text-red-700">{err}</div>}
-                      <div className="space-y-3">
-                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-3">
-                          <div>
-                            <label className="block text-xs sm:text-sm font-medium text-slate-700 mb-0.5">Store Name <span className="text-red-500">*</span></label>
-                            <input type="text" value={storeName} onChange={(e) => setStoreName(e.target.value)} className="w-full min-w-0 px-2.5 py-1.5 text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 bg-white" placeholder="Enter store name" required />
-                          </div>
-                          <div>
-                            <label className="block text-xs sm:text-sm font-medium text-slate-700 mb-0.5">Owner Full Name <span className="text-red-500">*</span></label>
-                            <input type="text" value={ownerFullName} onChange={(e) => setOwnerFullName(e.target.value)} className="w-full min-w-0 px-2.5 py-1.5 text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 bg-white" placeholder="Owner legal full name" required />
-                          </div>
-                          <div>
-                            <label className="block text-xs sm:text-sm font-medium text-slate-700 mb-0.5">Display Name</label>
-                            <input type="text" value={storeDisplayName} onChange={(e) => setStoreDisplayName(e.target.value)} className="w-full min-w-0 px-2.5 py-1.5 text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 bg-white" placeholder="Customer facing name" />
-                          </div>
-                          <div>
-                            <label className="block text-xs sm:text-sm font-medium text-slate-700 mb-0.5">Legal Business Name</label>
-                            <input type="text" value={legalBusinessName} readOnly className="w-full min-w-0 px-2.5 py-1.5 text-sm border border-slate-300 rounded-lg bg-slate-50 text-slate-700 cursor-not-allowed" placeholder="Same as Display Name (auto-filled)" />
-                          </div>
-                          <div>
-                            <label className="block text-xs sm:text-sm font-medium text-slate-700 mb-0.5">Store Type <span className="text-red-500">*</span></label>
-                            <select value={storeType} onChange={(e) => { setStoreType(e.target.value); if (e.target.value !== "OTHERS") setCustomStoreType(""); }} className="w-full min-w-0 px-2.5 py-1.5 text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 bg-white" required>
-                              <option value="RESTAURANT">Restaurant</option><option value="CAFE">Cafe</option><option value="BAKERY">Bakery</option><option value="CLOUD_KITCHEN">Cloud Kitchen</option><option value="GROCERY">Grocery</option><option value="PHARMA">Pharma</option><option value="STATIONERY">Stationery</option><option value="ELECTRONICS_ECOMMERCE">Electronics and E-commerce</option><option value="OTHERS">Others</option>
-                            </select>
-                          </div>
-                          <div>
-                            <label className="block text-xs sm:text-sm font-medium text-slate-700 mb-0.5">Store Email <span className="text-red-500">*</span></label>
-                            <input type="email" value={storeEmail} onChange={(e) => setStoreEmail(e.target.value)} className="w-full min-w-0 px-2.5 py-1.5 text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 bg-white" placeholder="store@example.com" required />
-                          </div>
-                        </div>
-                        {storeType === "OTHERS" && (
-                          <div>
-                            <label className="block text-xs sm:text-sm font-medium text-slate-700 mb-0.5">Custom Store Type <span className="text-red-500">*</span></label>
-                            <input type="text" value={customStoreType} onChange={(e) => setCustomStoreType(e.target.value)} className="w-full px-2.5 py-1.5 text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 bg-white" placeholder="Specify type" />
-                          </div>
-                        )}
+                      <h2 className="text-lg sm:text-xl font-bold text-slate-800 leading-tight">Basic Store Information</h2>
+                    </div>
+                    {err && <div className="rounded-lg bg-red-50 border border-red-200 px-3 py-2 text-sm text-red-700">{err}</div>}
+                    <div className="flex-1 min-h-0 flex flex-col justify-evenly gap-4 sm:gap-5">
+                      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-x-5 gap-y-4 sm:gap-y-5">
                         <div>
-                          <label className="block text-xs sm:text-sm font-medium text-slate-700 mb-0.5">Phone Numbers (comma separated)</label>
-                          <input type="text" value={storePhonesInput} onChange={(e) => setStorePhonesInput(e.target.value)} className="w-full px-2.5 py-1.5 text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 bg-white" placeholder="+911234567890, +919876543210" />
-                          <p className="text-xs text-slate-500 mt-0.5">Include country code, e.g. +91 for India. Example: +911234567890, +919876543210</p>
+                          <label className={STEP1_LABEL_CLASS}>Owner Full Name *</label>
+                          <input
+                            type="text"
+                            value={ownerFullName}
+                            onChange={(e) => setOwnerFullName(e.target.value)}
+                            className={STEP1_FIELD_CLASS}
+                            placeholder="Owner legal full name"
+                            required
+                          />
                         </div>
                         <div>
-                          <label className="block text-xs sm:text-sm font-medium text-slate-700 mb-0.5">Store Description</label>
-                          <textarea value={storeDescription} onChange={(e) => setStoreDescription(e.target.value)} rows={2} className="w-full px-2.5 py-1.5 text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 bg-white resize-y min-h-[2.75rem]" placeholder="Describe your store, specialties, etc." />
+                          <label className={STEP1_LABEL_CLASS}>Store Name *</label>
+                          <input
+                            type="text"
+                            value={storeName}
+                            onChange={(e) => {
+                              const value = e.target.value;
+                              setStoreName(value);
+                              if (!displayNameManuallyEdited) setStoreDisplayName(value);
+                            }}
+                            className={STEP1_FIELD_CLASS}
+                            placeholder="Enter store name"
+                            required
+                          />
+                        </div>
+                        <div>
+                          <label className={STEP1_LABEL_CLASS}>Display Name</label>
+                          <input
+                            type="text"
+                            value={storeDisplayName}
+                            onChange={(e) => {
+                              setDisplayNameManuallyEdited(true);
+                              setStoreDisplayName(e.target.value);
+                            }}
+                            className={STEP1_FIELD_CLASS}
+                            placeholder="Auto-fills from Store Name (editable)"
+                          />
+                        </div>
+                        <div>
+                          <label className={STEP1_LABEL_CLASS}>Store Type *</label>
+                          <select
+                            value={storeType}
+                            onChange={(e) => {
+                              setStoreType(e.target.value);
+                              if (e.target.value !== "OTHERS") setCustomStoreType("");
+                            }}
+                            className={STEP1_FIELD_CLASS}
+                            required
+                          >
+                            <option value="RESTAURANT">Restaurant</option>
+                            <option value="CAFE">Cafe</option>
+                            <option value="BAKERY">Bakery</option>
+                            <option value="CLOUD_KITCHEN">Cloud Kitchen</option>
+                            <option value="GROCERY">Grocery</option>
+                            <option value="PHARMA">Pharma</option>
+                            <option value="STATIONERY">Stationery</option>
+                            <option value="ELECTRONICS_ECOMMERCE">Electronics and E-commerce</option>
+                            <option value="OTHERS">Others</option>
+                          </select>
+                        </div>
+                        <div>
+                          <label className={STEP1_LABEL_CLASS}>Store Email *</label>
+                          <input
+                            type="email"
+                            value={storeEmail}
+                            onChange={(e) => setStoreEmail(e.target.value)}
+                            className={STEP1_FIELD_CLASS}
+                            placeholder="store@example.com"
+                            required
+                          />
                         </div>
                       </div>
-                    </form>
-                  </div>
+
+                      {storeType === "OTHERS" && (
+                        <div>
+                          <label className={STEP1_LABEL_CLASS}>Custom Store Type *</label>
+                          <input
+                            type="text"
+                            value={customStoreType}
+                            onChange={(e) => setCustomStoreType(e.target.value)}
+                            className="w-full px-3.5 py-3 text-sm border-2 border-indigo-200 rounded-xl bg-white shadow-[0_1px_2px_rgba(15,23,42,0.05)] focus:outline-none focus:ring-2 focus:ring-indigo-500/25 focus:border-indigo-400 transition-all"
+                            placeholder="Please specify your store type (e.g., Clothing Store, Electronics, etc.)"
+                            required
+                          />
+                          <p className="text-xs text-slate-500 mt-1">
+                            Please specify what type of store you are registering
+                          </p>
+                        </div>
+                      )}
+
+                      <div className="grid grid-cols-1 lg:grid-cols-2 gap-x-5 gap-y-4 sm:gap-y-5">
+                        <div className="flex flex-col">
+                          <label className={STEP1_LABEL_CLASS}>Phone Numbers (comma separated)</label>
+                          <input
+                            type="text"
+                            value={storePhonesInput}
+                            onChange={(e) => setStorePhonesInput(e.target.value)}
+                            placeholder="+911234567890, +919876543210"
+                            inputMode="tel"
+                            className={STEP1_FIELD_CLASS}
+                          />
+                          <p className="text-xs text-slate-500 mt-1.5">
+                            Example: +911234567890, +919876543210
+                          </p>
+                        </div>
+                        <div className="flex flex-col min-h-0 flex-1">
+                          <div className="flex items-baseline justify-between gap-2 mb-1.5">
+                            <label className="block text-xs font-medium text-slate-600 tracking-wide">
+                              Store Description *
+                            </label>
+                            <span
+                              className={`text-[11px] tabular-nums shrink-0 ${
+                                storeDescriptionLength(storeDescription) < STORE_DESCRIPTION_MIN
+                                  ? "text-amber-600"
+                                  : storeDescriptionLength(storeDescription) >= STORE_DESCRIPTION_MAX
+                                    ? "text-rose-600"
+                                    : "text-slate-500"
+                              }`}
+                            >
+                              {storeDescriptionLength(storeDescription)} / {STORE_DESCRIPTION_MAX}
+                              <span className="text-slate-400">
+                                {" "}
+                                · {Math.max(0, STORE_DESCRIPTION_MAX - storeDescriptionLength(storeDescription))} left
+                              </span>
+                            </span>
+                          </div>
+                          <textarea
+                            value={storeDescription}
+                            onChange={(e) => setStoreDescription(clampStoreDescriptionInput(e.target.value))}
+                            onBlur={() => setStoreDescription((prev) => normalizeStoreDescriptionForSave(prev))}
+                            rows={5}
+                            maxLength={STORE_DESCRIPTION_MAX}
+                            className={`w-full flex-1 min-h-[7.5rem] px-3.5 py-3 text-sm border rounded-xl bg-white shadow-[0_1px_2px_rgba(15,23,42,0.05)] focus:outline-none focus:ring-2 focus:ring-indigo-500/25 focus:border-indigo-400 hover:border-indigo-200 transition-all resize-none ${
+                              storeDescription.length > 0 && !isStoreDescriptionValid(storeDescription)
+                                ? "border-amber-300"
+                                : "border-slate-200/90"
+                            }`}
+                            placeholder="Describe your restaurant, cuisines, specialties, hygiene standards, and what makes your store unique..."
+                            aria-describedby="am-store-description-hint"
+                            required
+                          />
+                          <p id="am-store-description-hint" className="text-xs text-slate-500 mt-1.5">
+                            {STORE_DESCRIPTION_MIN}–{STORE_DESCRIPTION_MAX} characters. New lines, emoji &amp; special characters allowed.
+                            {storeDescription.length > 0 &&
+                            storeDescriptionLength(normalizeStoreDescriptionForSave(storeDescription)) <
+                              STORE_DESCRIPTION_MIN ? (
+                              <span className="text-amber-600">
+                                {" "}
+                                Need at least {STORE_DESCRIPTION_MIN} characters.
+                              </span>
+                            ) : null}
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+                  </form>
                 </div>
               )}
 
@@ -2666,6 +3132,40 @@ export function AddChildStoreClient() {
                   initialForm={step4InitialForm}
                   initialDocUrls={step4InitialDocUrls}
                   onRequiredValidChange={setStep4RequiredValid}
+                  onDigilockerInFlightChange={setAadhaarDigilockerInFlight}
+                  onPrevious={() => {
+                    const sectionOrder: Step4SectionKey[] = ["PAN", "AADHAAR", "LICENCE", "GST", "BANK"];
+                    const idx = sectionOrder.indexOf(step4Section);
+                    if (idx > 0) {
+                      setStep4Section(sectionOrder[idx - 1]);
+                      return;
+                    }
+                    void prevStep();
+                  }}
+                  onContinue={() => {
+                    if (saveContinueClickLockRef.current || actionLoading) return;
+                    saveContinueClickLockRef.current = true;
+                    void nextStep().finally(() => {
+                      saveContinueClickLockRef.current = false;
+                    });
+                  }}
+                  actionLoading={actionLoading}
+                  continueDisabled={
+                    mediaUploading ||
+                    (step4Section === "AADHAAR" && aadhaarDigilockerInFlight) ||
+                    (step4Section !== "AADHAAR" && !step4RequiredValid)
+                  }
+                  continueLabel={
+                    step4Section === "AADHAAR" && aadhaarDigilockerInFlight
+                      ? "Waiting for DigiLocker…"
+                      : step4Section === "AADHAAR"
+                      ? "Skip / Save & Continue"
+                      : step4Section === "GST" &&
+                        (!step4Patch?.gst_number || !step4Patch.gst_number.trim()) &&
+                        !step4Patch?.gst_is_verified
+                      ? "Skip / Save & Continue"
+                      : "Save & Continue"
+                  }
                 />
               )}
 
@@ -2675,7 +3175,7 @@ export function AddChildStoreClient() {
                   initialStoreSetup={step5StoreSetup ?? undefined}
                   storeInternalId={storeInternalId}
                   onMediaUploadingChange={setMediaUploading}
-                  onChange={(next) => setStep5StoreSetup(next)}
+                  onChange={setStep5StoreSetup}
                   onDeleteBanner={async (currentBannerUrl) => {
                     if (!storeInternalId || !parentId || !Number.isFinite(storeInternalId)) return;
                     // Clear banner_url in progress + merchant_stores
@@ -2807,7 +3307,35 @@ export function AddChildStoreClient() {
                             }
                           : undefined,
                     }}
-                    storeSetup={step5StoreSetup ?? {}}
+                    storeSetup={{
+                      ...(step5StoreSetup ?? {}),
+                      // Always show full Mon–Sun + media keys (partnersite Preview parity).
+                      store_hours: normalizeStoreHours(step5StoreSetup?.store_hours),
+                      banner_preview:
+                        step5StoreSetup?.banner_preview ||
+                        (typeof (step5StoreSetup as any)?.banner_url === "string"
+                          ? (step5StoreSetup as any).banner_url
+                          : "") ||
+                        "",
+                      gallery_previews:
+                        (step5StoreSetup?.gallery_previews?.length
+                          ? step5StoreSetup.gallery_previews
+                          : Array.isArray((step5StoreSetup as any)?.gallery_image_urls)
+                            ? ((step5StoreSetup as any).gallery_image_urls as string[])
+                            : []) || [],
+                      banner_url:
+                        (typeof (step5StoreSetup as any)?.banner_url === "string"
+                          ? (step5StoreSetup as any).banner_url
+                          : "") ||
+                        step5StoreSetup?.banner_preview ||
+                        "",
+                      gallery_image_urls:
+                        (Array.isArray((step5StoreSetup as any)?.gallery_image_urls)
+                          ? ((step5StoreSetup as any).gallery_image_urls as string[])
+                          : null) ||
+                        step5StoreSetup?.gallery_previews ||
+                        [],
+                    }}
                     menuData={{
                       menuUploadMode,
                       menuImageFiles: [],
@@ -3371,7 +3899,7 @@ export function AddChildStoreClient() {
               )}
             </div>
 
-            {!success && (
+            {!success && step !== 4 && (
               <div className="flex-none border-t border-slate-200/80 min-w-0 overflow-x-hidden sticky bottom-0" style={{ paddingBottom: "max(env(safe-area-inset-bottom, 0px), 10px)", background: "linear-gradient(180deg, #f6f8fb 0%, #eef2f7 100%)" }}>
                 <div className="flex flex-wrap items-center justify-center sm:justify-end gap-2 sm:gap-3 px-3 sm:px-6 md:px-8 py-4 min-h-[56px] max-w-full min-w-0">
                   {step > 1 && (
@@ -3405,7 +3933,6 @@ export function AddChildStoreClient() {
                       disabled={
                         actionLoading ||
                         mediaUploading ||
-                        (step === 4 && !step4RequiredValid) ||
                         isStep5DeliveryRadiusInvalid
                       }
                       className="px-4 py-2 sm:px-5 sm:py-2.5 text-xs sm:text-sm bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 font-medium disabled:opacity-50 inline-flex items-center gap-1.5 sm:gap-2 shrink-0 cursor-pointer disabled:cursor-not-allowed"
@@ -3433,8 +3960,6 @@ export function AddChildStoreClient() {
                         ? "Continue to plans"
                         : step === 9
                         ? "Complete registration"
-                        : step === 4 && step4Section === "AADHAAR"
-                        ? "Skip / Save & Continue"
                         : "Save & Continue"}
                     </button>
                   ) : null}

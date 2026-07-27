@@ -1,28 +1,6 @@
 import { useEffect, useState, useCallback, useMemo, useRef } from "react";
-import {
-  View,
-  Text,
-  StyleSheet,
-  ScrollView,
-  TextInput,
-  Pressable,
-  ActivityIndicator,
-  Platform,
-  Keyboard,
-  KeyboardAvoidingView,
-  Alert,
-  RefreshControl,
-  Modal,
-  Animated,
-  Image,
-  Linking,
-  useWindowDimensions,
-  AppState,
-  type AppStateStatus,
-  type NativeScrollEvent,
-  type NativeSyntheticEvent,
-  type KeyboardEvent,
-} from "react-native";
+import { AppText as Text } from "@/components/AppText";
+import { View, StyleSheet, ScrollView, TextInput, Pressable, ActivityIndicator, Platform, Keyboard, KeyboardAvoidingView, Alert, RefreshControl, Modal, Animated, Image, Linking, useWindowDimensions, AppState, type AppStateStatus, type NativeScrollEvent, type NativeSyntheticEvent, type KeyboardEvent } from "react-native";
 import * as ImagePicker from "expo-image-picker";
 import * as FileSystem from "expo-file-system/legacy";
 import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";

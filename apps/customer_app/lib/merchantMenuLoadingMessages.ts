@@ -1,6 +1,6 @@
 import { create } from "zustand";
 
-/** Rotating copy shown on merchant menu loading skeleton. */
+/** Copy shown on merchant menu loading skeleton — one sentence per store entry. */
 export const MERCHANT_MENU_LOADING_MESSAGES = [
   "Cooking up something delicious... 🍽️",
   "Discovering delicious picks for you.",
@@ -19,16 +19,29 @@ export const MERCHANT_MENU_LOADING_MESSAGES = [
   "Good things take a few seconds.",
 ] as const;
 
+const MESSAGE_COUNT = MERCHANT_MENU_LOADING_MESSAGES.length;
+
 type MerchantLoadingMessageState = {
-  /** Last shown index — every store entry advances globally. */
+  /** Last shown index — next pick avoids repeating this. */
   lastIndex: number;
+  /** Pick a random sentence for this store entry (never the same as last time). */
   pickStartIndex: (merchantId?: string) => number;
 };
+
+function randomIndexExcluding(exclude: number): number {
+  if (MESSAGE_COUNT <= 1) return 0;
+  if (exclude < 0 || exclude >= MESSAGE_COUNT) {
+    return Math.floor(Math.random() * MESSAGE_COUNT);
+  }
+  // Pick uniformly among every index except `exclude`.
+  const offset = 1 + Math.floor(Math.random() * (MESSAGE_COUNT - 1));
+  return (exclude + offset) % MESSAGE_COUNT;
+}
 
 export const useMerchantLoadingMessageStore = create<MerchantLoadingMessageState>((set, get) => ({
   lastIndex: -1,
   pickStartIndex: (_merchantId?: string) => {
-    const next = (get().lastIndex + 1) % MERCHANT_MENU_LOADING_MESSAGES.length;
+    const next = randomIndexExcluding(get().lastIndex);
     set({ lastIndex: next });
     return next;
   },

@@ -82,16 +82,45 @@ type StoreRowWithParentCode = {
   parentPrimaryKeySegment: string;
 };
 
-/** Load store by numeric PK and verify parent */
-async function getStoreForMerchant(db: ReturnType<typeof getSupabaseAdmin>, storeId: number, merchantParentId: number) {
+/** Load store by numeric PK and verify parent ownership for this session user. */
+async function getStoreForMerchant(
+  db: ReturnType<typeof getSupabaseAdmin>,
+  storeId: number,
+  merchantParentId: number,
+  user: { id: string; email?: string | null }
+) {
   const { data, error } = await db
     .from("merchant_stores")
     .select("id, store_id, parent_id")
     .eq("id", storeId)
-    .single();
-  if (error || !data || (data as { parent_id: number }).parent_id !== merchantParentId) return null;
+    .maybeSingle();
+  if (error || !data) return null;
   const store = data as { id: number; store_id: string; parent_id: number };
+  if (!(await sessionOwnsStoreParent(db, store.parent_id, merchantParentId, user))) return null;
   return { ...store, parentPrimaryKeySegment: String(store.parent_id) };
+}
+
+async function sessionOwnsStoreParent(
+  db: ReturnType<typeof getSupabaseAdmin>,
+  storeParentId: number,
+  sessionMerchantParentId: number,
+  user: { id: string; email?: string | null }
+): Promise<boolean> {
+  if (storeParentId === sessionMerchantParentId) return true;
+  // Same login may own multiple merchant_parents (re-register). Allow if this parent matches session user.
+  const { data: parent } = await db
+    .from("merchant_parents")
+    .select("id, owner_email, supabase_user_id")
+    .eq("id", storeParentId)
+    .maybeSingle();
+  if (!parent) return false;
+  const uid = String(user.id || "").trim();
+  if (uid && parent.supabase_user_id && String(parent.supabase_user_id) === uid) return true;
+  const email = String(user.email || "").trim().toLowerCase();
+  if (email && parent.owner_email && String(parent.owner_email).trim().toLowerCase() === email) {
+    return true;
+  }
+  return false;
 }
 
 /**
@@ -102,11 +131,12 @@ async function resolveStoreForMenuUpload(
   db: ReturnType<typeof getSupabaseAdmin>,
   merchantParentId: number,
   storeIdParam: string | null | undefined,
-  storePublicIdParam: string | null | undefined
+  storePublicIdParam: string | null | undefined,
+  user: { id: string; email?: string | null }
 ): Promise<StoreRowWithParentCode | null> {
   const n = parseInt(String(storeIdParam ?? "").trim(), 10);
   if (Number.isFinite(n) && n > 0) {
-    const row = await getStoreForMerchant(db, n, merchantParentId);
+    const row = await getStoreForMerchant(db, n, merchantParentId, user);
     if (row) return row;
   }
   const pub = String(storePublicIdParam ?? "").trim();
@@ -116,8 +146,9 @@ async function resolveStoreForMenuUpload(
     .select("id, store_id, parent_id")
     .eq("store_id", pub)
     .maybeSingle();
-  if (error || !data || (data as { parent_id: number }).parent_id !== merchantParentId) return null;
+  if (error || !data) return null;
   const store = data as { id: number; store_id: string; parent_id: number };
+  if (!(await sessionOwnsStoreParent(db, store.parent_id, merchantParentId, user))) return null;
   return { ...store, parentPrimaryKeySegment: String(store.parent_id) };
 }
 
@@ -235,7 +266,8 @@ export async function GET(req: NextRequest) {
       db,
       validation.merchantParentId,
       storeIdParam,
-      storePublicParam
+      storePublicParam,
+      { id: user.id, email: user.email ?? null }
     );
     if (!store) {
       return NextResponse.json(
@@ -393,7 +425,8 @@ export async function POST(req: NextRequest) {
       db,
       validation.merchantParentId,
       storeIdParam,
-      storePublicForm
+      storePublicForm,
+      { id: user.id, email: user.email ?? null }
     );
     if (!store) {
       return NextResponse.json(
@@ -937,7 +970,10 @@ export async function DELETE(req: NextRequest) {
     if (!Number.isFinite(storeId) || storeId <= 0) {
       return NextResponse.json({ error: "Invalid store on record" }, { status: 400 });
     }
-    const store = await getStoreForMerchant(db, storeId, validation.merchantParentId);
+    const store = await getStoreForMerchant(db, storeId, validation.merchantParentId, {
+      id: user.id,
+      email: user.email ?? null,
+    });
     if (!store) return NextResponse.json({ error: "Store not found" }, { status: 404 });
 
     const srcEntity = (row as { source_entity?: string | null }).source_entity;

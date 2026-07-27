@@ -1,6 +1,6 @@
 import React from "react";
 import { View, Text, StyleSheet } from "react-native";
-import { Ionicons, MaterialIcons } from "@expo/vector-icons";
+import { Ionicons } from "@expo/vector-icons";
 import { colors } from "@/src/theme";
 
 type IconProps = {
@@ -8,9 +8,9 @@ type IconProps = {
   color?: string;
 };
 
-/** Standard translate / language icon (A + script glyph) */
+/** Standard translate / language icon */
 export function HeaderLanguageIcon({ size = 20, color = colors.gray[800] }: IconProps) {
-  return <MaterialIcons name="translate" size={size} color={color} />;
+  return <Ionicons name="language-outline" size={size} color={color} />;
 }
 
 /** Notification bell with optional red badge count */

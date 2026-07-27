@@ -1,4 +1,5 @@
-import { View, Text, StyleSheet } from "react-native";
+import { AppText as Text } from "@/components/AppText";
+import { View, StyleSheet } from "react-native";
 import Svg, { Path, Circle } from "react-native-svg";
 import { GatiMitraMerchant } from "@/constants/theme";
 

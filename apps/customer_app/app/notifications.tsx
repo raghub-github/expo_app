@@ -1,306 +1,541 @@
 /**
- * Notifications — grouped inbox with filters, read/unread, empty state.
+ * Customer notifications — merchant-matching UI, fed by
+ * GET /v1/notifications/inbox (campaign + lifecycle pushes).
  */
-
-import { useCallback, useMemo, useState } from "react";
-import { AppText } from "@/components/AppText";
-
-import { View, ScrollView, TouchableOpacity, StyleSheet } from "react-native";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "expo-router";
-import { StatusBar } from "expo-status-bar";
+import { AppText as Text } from "@/components/AppText";
+import {
+  View,
+  StyleSheet,
+  ScrollView,
+  Pressable,
+  ActivityIndicator,
+  Modal,
+  Platform,
+  ToastAndroid,
+  Alert,
+  Animated,
+  PanResponder,
+  RefreshControl,
+} from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { StatusBar } from "expo-status-bar";
 import { Ionicons } from "@expo/vector-icons";
-import { GatiMitraColors } from "@/constants/gatimitra";
+import {
+  loadInbox,
+  markAllReadRemote,
+  markClickedRemote,
+  markReadRemote,
+  type InboxItem,
+  type NotificationApiConfig,
+} from "@gatimitra/expo-push-kit";
+import { getConfig } from "@/config/env";
+import { STORAGE_KEYS } from "@/constants";
+import { getItem } from "@/utils/storage";
 import { AndroidBackHandler } from "@/components/AndroidBackHandler";
-import { BrandingFooter } from "@/components/BrandingFooter";
-import { HEADER_PADDING_TOP } from "@/constants/layout";
+import { NotificationsEmptyMailboxArt } from "@/components/NotificationsEmptyMailboxArt";
+import { GatiMitraColors } from "@/constants/gatimitra";
+import { StoreFonts } from "@/constants/storeTypography";
 
-const PAD = 16;
+const LORA = StoreFonts.loraRegular;
+const LORA_BOLD = StoreFonts.loraBold;
+const H_PADDING = 16;
 
-type NotificationType = "order" | "offer" | "ride" | "general";
-type FilterId = "all" | NotificationType;
-type TimeGroup = "today" | "yesterday" | "earlier";
+const BG_GRADIENT = ["#E8F8F2", "#F5FBFF", "#FFF5F7"] as const;
 
-type NotificationItem = {
-  id: string;
-  type: NotificationType;
-  title: string;
-  body: string;
-  time: string;
-  timeGroup: TimeGroup;
-  read: boolean;
+const COLORS = {
+  primary: GatiMitraColors.deepMintStart,
+  textPrimary: "#0F172A",
+  textSecondary: "#475569",
+  textTertiary: "#94A3B8",
+  cardBg: "#FFFFFF",
+  border: "#E2E8F0",
+  error: "#EF4444",
+  info: "#0EA5E9",
+  warning: "#F59E0B",
+  success: "#22C55E",
+} as const;
+
+type NotifVisualType = "order" | "store" | "system" | "earning";
+
+const ICON_MAP: Record<NotifVisualType, keyof typeof Ionicons.glyphMap> = {
+  order: "receipt-outline",
+  store: "storefront-outline",
+  system: "notifications-outline",
+  earning: "wallet-outline",
 };
 
-const FILTER_TABS: { id: FilterId; label: string }[] = [
-  { id: "all", label: "All" },
-  { id: "offer", label: "Offers" },
-  { id: "order", label: "Orders" },
-  { id: "ride", label: "Rides" },
-];
-
-const GROUP_LABELS: Record<TimeGroup, string> = {
-  today: "Today",
-  yesterday: "Yesterday",
-  earlier: "Earlier",
+const ICON_BG: Record<NotifVisualType, string> = {
+  order: "#E0F2FE",
+  store: "#FEF3C7",
+  system: "#F1F5F9",
+  earning: "#DCFCE7",
 };
 
-const TYPE_META: Record<
-  NotificationType,
-  { icon: keyof typeof Ionicons.glyphMap; bg: string; color: string }
-> = {
-  offer: { icon: "pricetag", bg: "#FEF3C7", color: "#D97706" },
-  order: { icon: "bag-handle", bg: "#DCFCE7", color: "#16A34A" },
-  ride: { icon: "car", bg: "#DBEAFE", color: "#2563EB" },
-  general: { icon: "sparkles", bg: "#F3E8FF", color: "#7C3AED" },
+const ICON_COLOR: Record<NotifVisualType, string> = {
+  order: COLORS.info,
+  store: COLORS.warning,
+  system: COLORS.textSecondary,
+  earning: COLORS.success,
 };
 
-const MOCK_NOTIFICATIONS: NotificationItem[] = [
-  {
-    id: "1",
-    type: "offer",
-    title: "20% off your next ride",
-    body: "Use code GATI20 at checkout. Valid till this weekend.",
-    time: "2h ago",
-    timeGroup: "today",
-    read: false,
-  },
-  {
-    id: "2",
-    type: "order",
-    title: "Order delivered",
-    body: "Your order #12345 has been delivered. Thank you for choosing GatiMitra!",
-    time: "Yesterday",
-    timeGroup: "yesterday",
-    read: false,
-  },
-  {
-    id: "3",
-    type: "ride",
-    title: "Ride completed",
-    body: "Your ride from MG Road to Airport has been completed. Rate your experience.",
-    time: "2 days ago",
-    timeGroup: "earlier",
-    read: true,
-  },
-  {
-    id: "4",
-    type: "general",
-    title: "Welcome to GatiMitra",
-    body: "Book rides, order food, send parcels and more. Explore the app.",
-    time: "1 week ago",
-    timeGroup: "earlier",
-    read: true,
-  },
-];
+const SWIPE_ACTION_WIDTH = 64;
+const SWIPE_OPEN_THRESHOLD = 40;
 
-const GROUP_ORDER: TimeGroup[] = ["today", "yesterday", "earlier"];
+function isUnread(item: InboxItem): boolean {
+  if (item.clicked_at) return false;
+  return item.status === "queued" || item.status === "sent";
+}
 
-function NotificationCard({
+function visualTypeFor(item: InboxItem): NotifVisualType {
+  const code = String(item.template_code ?? "").toUpperCase();
+  const metaType = String((item.metadata as { gmType?: string } | null)?.gmType ?? "").toUpperCase();
+  const key = code || metaType;
+  if (key.includes("ORDER") || key.includes("FOOD") || key.includes("RIDE") || key.includes("PARCEL")) {
+    return "order";
+  }
+  if (key.includes("WALLET") || key.includes("PAYMENT") || key.includes("CASH") || key.includes("SETTLEMENT")) {
+    return "earning";
+  }
+  if (key.includes("STORE") || key.includes("MERCHANT") || key.includes("OFFER")) {
+    return "store";
+  }
+  return "system";
+}
+
+function formatTime(iso: string): string {
+  const then = new Date(iso).getTime();
+  if (!Number.isFinite(then)) return "";
+  const diff = Date.now() - then;
+  const min = Math.floor(diff / 60_000);
+  if (min < 1) return "Just now";
+  if (min < 60) return `${min}m ago`;
+  const hr = Math.floor(min / 60);
+  if (hr < 24) return `${hr}h ago`;
+  const d = Math.floor(hr / 24);
+  if (d < 7) return `${d}d ago`;
+  try {
+    return new Date(iso).toLocaleString(undefined, {
+      day: "numeric",
+      month: "short",
+      hour: "numeric",
+      minute: "2-digit",
+    });
+  } catch {
+    return `${d}d ago`;
+  }
+}
+
+function NotificationItem({
   item,
   onPress,
+  onDeletePress,
 }: {
-  item: NotificationItem;
+  item: InboxItem;
   onPress: () => void;
+  onDeletePress: () => void;
 }) {
-  const meta = TYPE_META[item.type];
+  const type = visualTypeFor(item);
+  const iconName = ICON_MAP[type];
+  const iconBg = ICON_BG[type];
+  const iconColor = ICON_COLOR[type];
+  const unread = isUnread(item);
+  const translateX = useRef(new Animated.Value(0)).current;
+  const openedSide = useRef<"right" | null>(null);
+  const [isOpen, setIsOpen] = useState(false);
+  const movedRef = useRef(false);
+  const actionsOpacity = translateX.interpolate({
+    inputRange: [-SWIPE_ACTION_WIDTH, -4, 0],
+    outputRange: [1, 1, 0],
+    extrapolate: "clamp",
+  });
+
+  const close = () => {
+    openedSide.current = null;
+    setIsOpen(false);
+    Animated.spring(translateX, {
+      toValue: 0,
+      useNativeDriver: true,
+    }).start();
+  };
+
+  const openRight = () => {
+    openedSide.current = "right";
+    setIsOpen(true);
+    Animated.spring(translateX, {
+      toValue: -SWIPE_ACTION_WIDTH,
+      useNativeDriver: true,
+    }).start();
+  };
+
+  const panResponder = useRef(
+    PanResponder.create({
+      onMoveShouldSetPanResponder: (_, g) => {
+        return Math.abs(g.dx) > 8 && Math.abs(g.dx) > Math.abs(g.dy);
+      },
+      onPanResponderMove: (_, g) => {
+        movedRef.current = movedRef.current || Math.abs(g.dx) > 6 || Math.abs(g.dy) > 6;
+        const clamped = Math.max(-SWIPE_ACTION_WIDTH, Math.min(0, g.dx));
+        translateX.setValue(clamped);
+      },
+      onPanResponderRelease: (_, g) => {
+        const dragged = movedRef.current;
+        movedRef.current = false;
+        if (!dragged) {
+          close();
+          return;
+        }
+        const shouldOpenRight = g.dx < -SWIPE_OPEN_THRESHOLD;
+        if (!shouldOpenRight) {
+          close();
+          return;
+        }
+        openRight();
+      },
+      onPanResponderTerminate: close,
+      onPanResponderGrant: () => {
+        movedRef.current = false;
+      },
+    })
+  ).current;
 
   return (
-    <TouchableOpacity
-      style={[styles.card, !item.read && styles.cardUnread]}
-      onPress={onPress}
-      activeOpacity={0.85}
-    >
-      <View style={styles.cardRow}>
-        <View style={[styles.iconWrap, { backgroundColor: meta.bg }]}>
-          <Ionicons name={meta.icon} size={20} color={meta.color} />
-          {!item.read ? <View style={styles.unreadDot} /> : null}
-        </View>
+    <View style={styles.swipeWrap}>
+      <Animated.View
+        style={[styles.swipeActions, { opacity: actionsOpacity }]}
+        pointerEvents={isOpen ? "auto" : "none"}
+      >
+        <Pressable
+          onPress={() => {
+            close();
+            onDeletePress();
+          }}
+          style={({ pressed }) => [styles.swipeActionRight, pressed && styles.pressed]}
+        >
+          <Ionicons name="trash-outline" size={20} color="#FFFFFF" />
+        </Pressable>
+      </Animated.View>
 
-        <View style={styles.cardBody}>
-          <View style={styles.cardTopRow}>
-            <AppText
-              style={[styles.cardTitle, !item.read && styles.cardTitleUnread]}
-              numberOfLines={1}
-            >
-              {item.title}
-            </AppText>
-            <AppText style={styles.cardTime}>{item.time}</AppText>
+      <Animated.View
+        {...panResponder.panHandlers}
+        style={[styles.swipeFront, { transform: [{ translateX }] }]}
+      >
+        <Pressable
+          onPress={() => {
+            if (movedRef.current) return;
+            if (isOpen) {
+              close();
+              return;
+            }
+            onPress();
+          }}
+          style={({ pressed }) => [
+            styles.item,
+            unread && styles.itemUnread,
+            pressed && styles.pressed,
+          ]}
+        >
+          <View style={[styles.iconWrap, { backgroundColor: iconBg }]}>
+            <Ionicons name={iconName} size={22} color={iconColor} />
           </View>
-          <AppText style={styles.cardText} numberOfLines={2}>
-            {item.body}
-          </AppText>
-        </View>
-
-        <Ionicons name="chevron-forward" size={16} color="#C4C9D4" style={styles.chevron} />
-      </View>
-    </TouchableOpacity>
+          <View style={styles.content}>
+            <Text style={styles.title} numberOfLines={1}>
+              {item.title?.trim() || "Notification"}
+            </Text>
+            <Text style={styles.body} numberOfLines={2}>
+              {item.body?.trim() || ""}
+            </Text>
+            <Text style={styles.time}>{formatTime(item.queued_at)}</Text>
+          </View>
+          <View style={styles.itemRight}>{unread ? <View style={styles.unreadDot} /> : null}</View>
+        </Pressable>
+      </Animated.View>
+    </View>
   );
 }
 
 export default function NotificationsScreen() {
-  const router = useRouter();
   const insets = useSafeAreaInsets();
-  const [notifications, setNotifications] = useState<NotificationItem[]>(MOCK_NOTIFICATIONS);
-  const [activeFilter, setActiveFilter] = useState<FilterId>("all");
+  const router = useRouter();
+  const [items, setItems] = useState<InboxItem[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [selected, setSelected] = useState<InboxItem | null>(null);
+  const [pendingDelete, setPendingDelete] = useState<InboxItem | null>(null);
+  const dismissedIds = useRef<Set<string>>(new Set());
 
-  const unreadCount = useMemo(
-    () => notifications.filter((n) => !n.read).length,
-    [notifications]
+  const apiConfig = useMemo<NotificationApiConfig>(
+    () => ({
+      baseUrl: getConfig().apiBaseUrl,
+      getAuthHeader: async () => {
+        const token = await getItem(STORAGE_KEYS.AUTH_TOKEN);
+        return token ? `Bearer ${token}` : null;
+      },
+    }),
+    []
   );
 
-  const filteredNotifications = useMemo(() => {
-    if (activeFilter === "all") return notifications;
-    return notifications.filter((n) => n.type === activeFilter);
-  }, [notifications, activeFilter]);
+  const load = useCallback(async () => {
+    try {
+      const page = await loadInbox(apiConfig, { limit: 100 });
+      setItems(page.items.filter((n) => !dismissedIds.current.has(n.notification_id)));
+    } catch {
+      // Keep previous list on soft failure.
+    } finally {
+      setLoading(false);
+    }
+  }, [apiConfig]);
 
-  const groupedSections = useMemo(() => {
-    return GROUP_ORDER.map((group) => ({
-      group,
-      label: GROUP_LABELS[group],
-      items: filteredNotifications.filter((n) => n.timeGroup === group),
-    })).filter((section) => section.items.length > 0);
-  }, [filteredNotifications]);
+  useEffect(() => {
+    void load();
+  }, [load]);
 
-  const markRead = useCallback((id: string) => {
-    setNotifications((prev) =>
-      prev.map((n) => (n.id === id ? { ...n, read: true } : n))
+  const onRefresh = useCallback(async () => {
+    setRefreshing(true);
+    try {
+      await load();
+    } finally {
+      setRefreshing(false);
+    }
+  }, [load]);
+
+  const hasUnread = items.some(isUnread);
+  const modalVisible = selected != null;
+  const confirmVisible = pendingDelete != null;
+  const canOpenSelected = Boolean(selected?.deep_link);
+
+  const showToast = (message: string) => {
+    if (Platform.OS === "android") {
+      ToastAndroid.show(message, ToastAndroid.SHORT);
+    } else {
+      Alert.alert(message);
+    }
+  };
+
+  const markItemReadLocal = (id: string) => {
+    setItems((prev) =>
+      prev.map((p) =>
+        p.notification_id === id
+          ? { ...p, clicked_at: p.clicked_at ?? new Date().toISOString(), status: "clicked" }
+          : p
+      )
     );
-  }, []);
+  };
 
-  const markAllRead = useCallback(() => {
-    setNotifications((prev) => prev.map((n) => ({ ...n, read: true })));
-  }, []);
+  const handleItemPress = async (item: InboxItem) => {
+    markItemReadLocal(item.notification_id);
+    try {
+      await markClickedRemote(apiConfig, item.notification_id);
+    } catch {
+      try {
+        await markReadRemote(apiConfig, item.notification_id);
+      } catch {
+        /* tolerated */
+      }
+    }
 
-  const hasNotifications = notifications.length > 0;
-  const hasFilteredResults = groupedSections.length > 0;
+    const deepLink = item.deep_link?.trim();
+    if (deepLink) {
+      try {
+        if (!deepLink.startsWith("http")) {
+          router.push(deepLink as never);
+          return;
+        }
+      } catch {
+        /* fall through to detail modal */
+      }
+    }
+    setSelected(item);
+  };
+
+  const handleOpenSelected = () => {
+    if (!selected?.deep_link) return;
+    const deepLink = selected.deep_link.trim();
+    setSelected(null);
+    try {
+      if (!deepLink.startsWith("http")) {
+        router.push(deepLink as never);
+      }
+    } catch {
+      /* ignore */
+    }
+  };
+
+  const handleMarkAllRead = async () => {
+    setItems((prev) =>
+      prev.map((p) =>
+        isUnread(p)
+          ? { ...p, status: "delivered", delivered_at: p.delivered_at ?? new Date().toISOString() }
+          : p
+      )
+    );
+    try {
+      await markAllReadRemote(apiConfig);
+    } catch {
+      /* tolerated */
+    }
+  };
+
+  const requestDelete = (item: InboxItem) => {
+    setPendingDelete(item);
+  };
+
+  const confirmDelete = () => {
+    if (!pendingDelete) return;
+    const id = pendingDelete.notification_id;
+    dismissedIds.current.add(id);
+    if (selected?.notification_id === id) setSelected(null);
+    setPendingDelete(null);
+    setItems((prev) => prev.filter((n) => n.notification_id !== id));
+    showToast("Notification deleted");
+  };
 
   return (
     <>
       <AndroidBackHandler />
-      <View style={styles.container}>
+      <View style={styles.root}>
+        <LinearGradient colors={[...BG_GRADIENT]} style={StyleSheet.absoluteFill} />
         <StatusBar style="dark" />
 
-        <LinearGradient
-          colors={["#FFFFFF", "#F4FBF6", "#FFFFFF"]}
-          locations={[0, 0.55, 1]}
-          style={[styles.headerBlock, { paddingTop: HEADER_PADDING_TOP }]}
+        <Modal
+          visible={confirmVisible}
+          transparent
+          animationType="fade"
+          onRequestClose={() => setPendingDelete(null)}
         >
-          <View style={styles.headerRow}>
-            <TouchableOpacity
-              style={styles.backBtn}
-              onPress={() => router.back()}
-              activeOpacity={0.8}
-            >
-              <Ionicons name="arrow-back" size={20} color={GatiMitraColors.textPrimary} />
-            </TouchableOpacity>
+          <Pressable style={styles.modalBackdrop} onPress={() => setPendingDelete(null)}>
+            <Pressable style={styles.confirmCard} onPress={() => null}>
+              <Text style={styles.confirmTitle}>Delete notification?</Text>
+              <Text style={styles.confirmBody} numberOfLines={3}>
+                {pendingDelete?.title ?? ""}
+              </Text>
+              <View style={styles.confirmActions}>
+                <Pressable
+                  onPress={() => setPendingDelete(null)}
+                  style={({ pressed }) => [styles.modalBtn, pressed && styles.pressed]}
+                >
+                  <Text style={styles.modalBtnText}>Cancel</Text>
+                </Pressable>
+                <Pressable
+                  onPress={confirmDelete}
+                  style={({ pressed }) => [
+                    styles.modalBtn,
+                    styles.confirmDeleteBtn,
+                    pressed && styles.pressed,
+                  ]}
+                >
+                  <Text style={[styles.modalBtnText, styles.modalBtnPrimaryText]}>Delete</Text>
+                </Pressable>
+              </View>
+            </Pressable>
+          </Pressable>
+        </Modal>
 
-            <View style={styles.headerCenter}>
-              <AppText style={styles.headerTitle}>Notifications</AppText>
-              {unreadCount > 0 ? (
-                <AppText style={styles.headerSub}>
-                  {unreadCount} unread {unreadCount === 1 ? "update" : "updates"}
-                </AppText>
-              ) : (
-                <AppText style={styles.headerSub}>You're all caught up</AppText>
+        <Modal
+          visible={modalVisible}
+          transparent
+          animationType="fade"
+          onRequestClose={() => setSelected(null)}
+        >
+          <Pressable style={styles.modalBackdrop} onPress={() => setSelected(null)}>
+            <Pressable style={styles.modalCard} onPress={() => null}>
+              <View style={styles.modalHeader}>
+                <Text style={styles.modalTitle} numberOfLines={2}>
+                  {selected?.title ?? ""}
+                </Text>
+                <Pressable
+                  onPress={() => setSelected(null)}
+                  hitSlop={12}
+                  style={({ pressed }) => pressed && styles.pressed}
+                >
+                  <Ionicons name="close" size={22} color={COLORS.textSecondary} />
+                </Pressable>
+              </View>
+              {!!selected?.queued_at && (
+                <Text style={styles.modalTime}>{formatTime(selected.queued_at)}</Text>
               )}
-            </View>
-
-            {unreadCount > 0 ? (
-              <TouchableOpacity
-                style={styles.markAllBtn}
-                onPress={markAllRead}
-                activeOpacity={0.8}
-              >
-                <Ionicons name="checkmark-done-outline" size={16} color={GatiMitraColors.deepMintStart} />
-              </TouchableOpacity>
-            ) : (
-              <View style={styles.headerSpacer} />
-            )}
-          </View>
-
-          {hasNotifications ? (
-            <View style={styles.filterRow}>
-              {FILTER_TABS.map((tab) => {
-                const active = activeFilter === tab.id;
-                const count =
-                  tab.id === "all"
-                    ? notifications.length
-                    : notifications.filter((n) => n.type === tab.id).length;
-                if (tab.id !== "all" && count === 0) return null;
-                return (
-                  <TouchableOpacity
-                    key={tab.id}
-                    style={[styles.filterChip, active && styles.filterChipActive]}
-                    onPress={() => setActiveFilter(tab.id)}
-                    activeOpacity={0.85}
+              <Text style={styles.modalBody}>{selected?.body ?? ""}</Text>
+              <View style={styles.modalActions}>
+                {canOpenSelected ? (
+                  <Pressable
+                    onPress={handleOpenSelected}
+                    style={({ pressed }) => [
+                      styles.modalBtn,
+                      styles.modalBtnPrimary,
+                      pressed && styles.pressed,
+                    ]}
                   >
-                    <AppText style={[styles.filterChipText, active && styles.filterChipTextActive]}>
-                      {tab.label}
-                    </AppText>
-                    {count > 0 ? (
-                      <View style={[styles.filterCount, active && styles.filterCountActive]}>
-                        <AppText style={[styles.filterCountText, active && styles.filterCountTextActive]}>
-                          {count}
-                        </AppText>
-                      </View>
-                    ) : null}
-                  </TouchableOpacity>
-                );
-              })}
-            </View>
-          ) : null}
-        </LinearGradient>
+                    <Text style={[styles.modalBtnText, styles.modalBtnPrimaryText]}>Open</Text>
+                  </Pressable>
+                ) : null}
+              </View>
+            </Pressable>
+          </Pressable>
+        </Modal>
+
+        <View style={[styles.header, { paddingTop: insets.top + 4 }]}>
+          <Pressable
+            onPress={() => router.back()}
+            style={({ pressed }) => [styles.backBtn, pressed && styles.pressed]}
+            hitSlop={12}
+          >
+            <Ionicons name="arrow-back" size={24} color={COLORS.textPrimary} />
+          </Pressable>
+          <Text style={styles.headerTitle}>Notifications</Text>
+          {hasUnread ? (
+            <Pressable
+              onPress={() => void handleMarkAllRead()}
+              style={({ pressed }) => [styles.markReadBtn, pressed && styles.pressed]}
+            >
+              <Text style={styles.markReadText}>Mark all read</Text>
+            </Pressable>
+          ) : (
+            <View style={styles.headerSpacer} />
+          )}
+        </View>
 
         <ScrollView
           style={styles.scroll}
           contentContainerStyle={[
             styles.scrollContent,
-            { paddingBottom: insets.bottom + 20 },
-            !hasNotifications && styles.scrollContentEmpty,
+            items.length === 0 && !loading ? styles.scrollContentEmpty : null,
+            { paddingBottom: insets.bottom + 24 },
           ]}
           showsVerticalScrollIndicator={false}
+          refreshControl={
+            <RefreshControl
+              refreshing={refreshing}
+              onRefresh={() => void onRefresh()}
+              tintColor={COLORS.primary}
+              colors={[COLORS.primary]}
+              title="Pull down to refresh"
+              titleColor={COLORS.textPrimary}
+            />
+          }
         >
-          {!hasNotifications ? (
-            <View style={styles.emptyWrap}>
-              <LinearGradient
-                colors={["#ECFDF5", "#FFFFFF"]}
-                style={styles.emptyIconWrap}
-              >
-                <Ionicons name="notifications-off-outline" size={40} color={GatiMitraColors.deepMintStart} />
-              </LinearGradient>
-              <AppText style={styles.emptyTitle}>No notifications yet</AppText>
-              <AppText style={styles.emptySub}>
-                Orders, ride updates, offers and account alerts will appear here when you have
-                activity on GatiMitra.
-              </AppText>
+          {loading && items.length === 0 && !refreshing ? (
+            <View style={styles.loadingWrap}>
+              <ActivityIndicator size="large" color={COLORS.primary} />
+              <Text style={styles.loadingText}>Loading notifications…</Text>
             </View>
-          ) : !hasFilteredResults ? (
-            <View style={styles.emptyWrap}>
-              <View style={styles.emptyIconWrap}>
-                <Ionicons name="filter-outline" size={36} color={GatiMitraColors.textSecondary} />
-              </View>
-              <AppText style={styles.emptyTitle}>Nothing in this filter</AppText>
-              <AppText style={styles.emptySub}>Try another category or check back later.</AppText>
+          ) : items.length === 0 ? (
+            <View style={styles.empty}>
+              <NotificationsEmptyMailboxArt size={168} />
+              <Text style={styles.emptyTitle}>No Notification</Text>
+              <Text style={styles.emptySub}>Nothing to show!</Text>
             </View>
           ) : (
-            groupedSections.map((section) => (
-              <View key={section.group} style={styles.section}>
-                <AppText style={styles.sectionLabel}>{section.label}</AppText>
-                <View style={styles.sectionCards}>
-                  {section.items.map((item) => (
-                    <NotificationCard
-                      key={item.id}
-                      item={item}
-                      onPress={() => markRead(item.id)}
-                    />
-                  ))}
-                </View>
-              </View>
+            items.map((item) => (
+              <NotificationItem
+                key={item.notification_id}
+                item={item}
+                onPress={() => void handleItemPress(item)}
+                onDeletePress={() => requestDelete(item)}
+              />
             ))
           )}
-
-          {hasNotifications ? <BrandingFooter compact /> : null}
         </ScrollView>
       </View>
     </>
@@ -308,257 +543,255 @@ export default function NotificationsScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: {
+  root: {
     flex: 1,
-    minHeight: 0,
-    backgroundColor: GatiMitraColors.softBackground,
+    backgroundColor: BG_GRADIENT[0],
   },
-  headerBlock: {
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: "rgba(0, 0, 0, 0.04)",
-  },
-  headerRow: {
+  header: {
     flexDirection: "row",
     alignItems: "center",
-    paddingHorizontal: PAD,
-    paddingTop: 8,
+    paddingHorizontal: H_PADDING,
     paddingBottom: 12,
-    gap: 10,
+    backgroundColor: "transparent",
   },
   backBtn: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: "#ECFDF3",
-    alignItems: "center",
+    width: 44,
+    height: 44,
     justifyContent: "center",
-    borderWidth: 1,
-    borderColor: "rgba(16, 185, 129, 0.15)",
-  },
-  headerCenter: {
-    flex: 1,
-    minWidth: 0,
+    alignItems: "center",
+    marginLeft: -8,
   },
   headerTitle: {
-    fontSize: 20,
-    fontWeight: "800",
-    color: GatiMitraColors.textPrimary,
-    letterSpacing: -0.3,
-  },
-  headerSub: {
-    marginTop: 2,
-    fontSize: 12,
-    fontWeight: "500",
-    color: GatiMitraColors.textSecondary,
-  },
-  markAllBtn: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: "#FFFFFF",
-    alignItems: "center",
-    justifyContent: "center",
-    borderWidth: 1,
-    borderColor: "rgba(16, 185, 129, 0.2)",
-    shadowColor: "#0f172a",
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.05,
-    shadowRadius: 3,
-    elevation: 1,
-  },
-  headerSpacer: {
-    width: 36,
-  },
-  filterRow: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    paddingHorizontal: PAD,
-    paddingBottom: 12,
-    gap: 8,
-  },
-  filterChip: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-    borderRadius: 20,
-    backgroundColor: "#FFFFFF",
-    borderWidth: 1,
-    borderColor: "rgba(0, 0, 0, 0.06)",
-  },
-  filterChipActive: {
-    backgroundColor: GatiMitraColors.deepMintStart,
-    borderColor: GatiMitraColors.deepMintStart,
-  },
-  filterChipText: {
-    fontSize: 13,
-    fontWeight: "600",
-    color: GatiMitraColors.textSecondary,
-  },
-  filterChipTextActive: {
-    color: "#FFFFFF",
-  },
-  filterCount: {
-    minWidth: 18,
-    height: 18,
-    borderRadius: 9,
-    paddingHorizontal: 5,
-    backgroundColor: "#F3F4F6",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  filterCountActive: {
-    backgroundColor: "rgba(255, 255, 255, 0.22)",
-  },
-  filterCountText: {
-    fontSize: 10,
-    fontWeight: "800",
-    color: GatiMitraColors.textSecondary,
-  },
-  filterCountTextActive: {
-    color: "#FFFFFF",
-  },
-  scroll: {
     flex: 1,
-    minHeight: 0,
+    fontSize: 20,
+    fontFamily: LORA_BOLD,
+    color: COLORS.textPrimary,
+    textAlign: "center",
+    marginRight: 8,
   },
+  headerSpacer: { width: 88 },
+  markReadBtn: {
+    paddingVertical: 8,
+    paddingHorizontal: 8,
+    minWidth: 88,
+    alignItems: "flex-end",
+  },
+  markReadText: {
+    fontSize: 13,
+    fontFamily: LORA_BOLD,
+    color: COLORS.primary,
+  },
+  scroll: { flex: 1 },
   scrollContent: {
-    paddingHorizontal: PAD,
-    paddingTop: 16,
+    paddingHorizontal: H_PADDING,
+    paddingTop: 8,
   },
   scrollContentEmpty: {
     flexGrow: 1,
     justifyContent: "center",
   },
-  section: {
-    marginBottom: 20,
-  },
-  sectionLabel: {
-    fontSize: 12,
-    fontWeight: "700",
-    color: GatiMitraColors.textSecondary,
-    letterSpacing: 0.6,
-    textTransform: "uppercase",
-    marginBottom: 10,
-    marginLeft: 2,
-  },
-  sectionCards: {
-    width: "100%",
-  },
-  card: {
-    width: "100%",
-    backgroundColor: "#FFFFFF",
-    borderRadius: 16,
-    marginBottom: 10,
-    borderWidth: 1,
-    borderColor: "rgba(0, 0, 0, 0.05)",
-    shadowColor: "#0f172a",
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.04,
-    shadowRadius: 8,
-    elevation: 2,
-    overflow: "hidden",
-  },
-  cardUnread: {
-    borderColor: "rgba(22, 163, 74, 0.14)",
-    backgroundColor: "#FAFFFC",
-  },
-  cardRow: {
+  item: {
     flexDirection: "row",
-    alignItems: "center",
-    width: "100%",
+    alignItems: "flex-start",
     paddingVertical: 14,
-    paddingHorizontal: 14,
+    paddingHorizontal: 12,
+    borderRadius: 14,
+    marginBottom: 8,
+    backgroundColor: "rgba(255,255,255,0.88)",
+    borderWidth: 1,
+    borderColor: "rgba(226,232,240,0.9)",
   },
-  unreadDot: {
-    position: "absolute",
-    top: -1,
-    right: -1,
-    width: 9,
-    height: 9,
-    borderRadius: 5,
-    backgroundColor: GatiMitraColors.deepMintStart,
-    borderWidth: 2,
-    borderColor: "#FFFFFF",
+  itemRight: {
+    alignItems: "flex-end",
+    justifyContent: "space-between",
+    gap: 10,
+    marginLeft: 8,
+  },
+  swipeWrap: {
+    position: "relative",
+    overflow: "hidden",
+    borderRadius: 14,
+    marginBottom: 2,
+  },
+  swipeActions: {
+    ...StyleSheet.absoluteFillObject,
+    flexDirection: "row",
+    alignItems: "stretch",
+    justifyContent: "flex-end",
+    backgroundColor: "transparent",
+  },
+  swipeActionRight: {
+    width: SWIPE_ACTION_WIDTH,
+    backgroundColor: COLORS.error,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 14,
+  },
+  swipeFront: {
+    backgroundColor: "transparent",
+  },
+  itemUnread: {
+    backgroundColor: "rgba(232,248,242,0.95)",
+    borderColor: "#A7F3D0",
   },
   iconWrap: {
-    width: 42,
-    height: 42,
-    borderRadius: 13,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
     alignItems: "center",
     justifyContent: "center",
     marginRight: 12,
-    flexShrink: 0,
-    position: "relative",
   },
-  cardBody: {
-    flex: 1,
-    flexShrink: 1,
-    minWidth: 0,
-    marginRight: 8,
-  },
-  cardTopRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: 10,
-    marginBottom: 4,
-  },
-  cardTime: {
-    fontSize: 11,
-    fontWeight: "500",
-    color: "#9CA3AF",
-    flexShrink: 0,
-  },
-  cardTitle: {
+  content: {
     flex: 1,
     minWidth: 0,
+  },
+  title: {
+    flex: 1,
     fontSize: 15,
-    fontWeight: "600",
-    color: GatiMitraColors.textPrimary,
-    letterSpacing: -0.2,
+    fontFamily: LORA_BOLD,
+    color: COLORS.textPrimary,
   },
-  cardTitleUnread: {
-    fontWeight: "800",
-  },
-  cardText: {
+  body: {
     fontSize: 13,
-    color: GatiMitraColors.textSecondary,
-    lineHeight: 19,
+    fontFamily: LORA,
+    color: COLORS.textSecondary,
+    marginTop: 4,
+    lineHeight: 18,
   },
-  chevron: {
-    flexShrink: 0,
-    marginLeft: 2,
+  time: {
+    fontSize: 12,
+    fontFamily: LORA,
+    color: COLORS.textTertiary,
+    marginTop: 6,
   },
-  emptyWrap: {
-    alignItems: "center",
-    paddingVertical: 40,
-    paddingHorizontal: 28,
+  unreadDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: COLORS.primary,
+    marginTop: 6,
   },
-  emptyIconWrap: {
-    width: 88,
-    height: 88,
-    borderRadius: 44,
-    backgroundColor: GatiMitraColors.mintSoft,
-    alignItems: "center",
+  pressed: { opacity: 0.75 },
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: "rgba(15, 23, 42, 0.45)",
+    paddingHorizontal: 16,
     justifyContent: "center",
-    marginBottom: 20,
+  },
+  modalCard: {
+    backgroundColor: COLORS.cardBg,
+    borderRadius: 16,
+    padding: 16,
     borderWidth: 1,
-    borderColor: "rgba(16, 185, 129, 0.12)",
+    borderColor: COLORS.border,
+    maxHeight: "80%",
+  },
+  confirmCard: {
+    backgroundColor: COLORS.cardBg,
+    borderRadius: 16,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+  },
+  confirmTitle: {
+    fontSize: 16,
+    fontFamily: LORA_BOLD,
+    color: COLORS.textPrimary,
+  },
+  confirmBody: {
+    marginTop: 8,
+    fontSize: 14,
+    lineHeight: 20,
+    fontFamily: LORA,
+    color: COLORS.textSecondary,
+  },
+  confirmActions: {
+    flexDirection: "row",
+    justifyContent: "flex-end",
+    gap: 10,
+    marginTop: 16,
+  },
+  confirmDeleteBtn: {
+    backgroundColor: COLORS.error,
+    borderColor: COLORS.error,
+  },
+  modalHeader: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    justifyContent: "space-between",
+    gap: 12,
+  },
+  modalTitle: {
+    flex: 1,
+    fontSize: 16,
+    fontFamily: LORA_BOLD,
+    color: COLORS.textPrimary,
+  },
+  modalTime: {
+    marginTop: 6,
+    fontSize: 12,
+    fontFamily: LORA,
+    color: COLORS.textTertiary,
+  },
+  modalBody: {
+    marginTop: 10,
+    fontSize: 14,
+    lineHeight: 20,
+    fontFamily: LORA,
+    color: COLORS.textSecondary,
+  },
+  modalActions: {
+    flexDirection: "row",
+    justifyContent: "flex-end",
+    gap: 10,
+    marginTop: 16,
+  },
+  modalBtn: {
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    backgroundColor: COLORS.cardBg,
+  },
+  modalBtnText: {
+    fontSize: 14,
+    fontFamily: LORA_BOLD,
+    color: COLORS.textPrimary,
+  },
+  modalBtnPrimary: {
+    backgroundColor: COLORS.primary,
+    borderColor: COLORS.primary,
+  },
+  modalBtnPrimaryText: {
+    color: "#FFFFFF",
+  },
+  empty: {
+    alignItems: "center",
+    paddingVertical: 24,
+    paddingHorizontal: 24,
   },
   emptyTitle: {
-    fontSize: 18,
-    fontWeight: "800",
-    color: GatiMitraColors.textPrimary,
-    marginBottom: 8,
-    textAlign: "center",
-    letterSpacing: -0.2,
+    marginTop: 18,
+    fontSize: 22,
+    fontFamily: LORA_BOLD,
+    color: COLORS.textPrimary,
   },
   emptySub: {
+    fontSize: 15,
+    fontFamily: LORA,
+    color: COLORS.textSecondary,
+    marginTop: 6,
+  },
+  loadingWrap: {
+    alignItems: "center",
+    paddingVertical: 48,
+  },
+  loadingText: {
+    marginTop: 12,
     fontSize: 14,
-    color: GatiMitraColors.textSecondary,
-    textAlign: "center",
-    lineHeight: 21,
+    fontFamily: LORA,
+    color: COLORS.textSecondary,
   },
 });

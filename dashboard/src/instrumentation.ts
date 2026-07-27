@@ -5,10 +5,39 @@
 
 export async function register() {
   if (process.env.NEXT_RUNTIME === "nodejs") {
+    // Prefer IPv4 when resolving Supabase (Cloudflare). Dual-stack lookups on
+    // Windows often hit UND_ERR_CONNECT_TIMEOUT on one address family first.
+    try {
+      const dns = await import("node:dns");
+      dns.setDefaultResultOrder("ipv4first");
+    } catch {
+      // ignore older Node
+    }
+
     // Handle unhandled promise rejections on the server
     process.on("unhandledRejection", (reason: any) => {
       const errorMessage = reason?.message || String(reason || "");
       const errorStack = reason?.stack || "";
+      const causeCode =
+        reason?.cause?.code ||
+        reason?.code ||
+        "";
+
+      // Supabase Auth connect timeouts are handled via cookie-session fallback;
+      // a floating rejection from undici/Next still shows up here occasionally.
+      const isSupabaseConnectNoise =
+        errorMessage.includes("fetch failed") ||
+        causeCode === "UND_ERR_CONNECT_TIMEOUT" ||
+        causeCode === "UND_ERR_SOCKET_TIMEOUT" ||
+        String(causeCode).startsWith("UND_ERR_");
+
+      if (isSupabaseConnectNoise) {
+        console.warn(
+          "[instrumentation] Supabase Auth network blip (using session fallback when possible):",
+          causeCode || errorMessage
+        );
+        return;
+      }
       
       // Suppress JSON parsing errors (likely from agent log fetch calls that fail)
       const isJsonParseError = 

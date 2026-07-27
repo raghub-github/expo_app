@@ -18,6 +18,7 @@ import { StoreFooterSection } from "@/components/store/StoreFooterSection";
 import { StoreMenuItemRow } from "@/components/store/StoreMenuItemRow";
 import { StoreMenuPairingSection } from "@/components/store/StoreMenuPairingSection";
 import { MerchantClosedBanner } from "./MerchantClosedBanner";
+import { MerchantRushBanner } from "./MerchantRushBanner";
 import { MerchantMenuLoadingSkeleton } from "@/components/merchant/MerchantMenuLoadingSkeleton";
 import { StoreTheme } from "@/constants/storeTheme";
 import { GatiMitraColors } from "@/constants/gatimitra";
@@ -66,6 +67,9 @@ export type MerchantDetailFlashListProps = {
   isStoreClosedForStatus: boolean;
   merchantNextOpenAt?: string | number | null;
   merchantNextCloseAt?: string | number | null;
+  showRushBanner?: boolean;
+  rushEndsAt?: string | number | null;
+  rushRemainingMinutes?: number | null;
   offerTickerTexts: string[];
   visibleOffersCount: number;
   reserveOfferRow?: boolean;
@@ -122,6 +126,9 @@ const MerchantDetailFlashListInner = forwardRef<
     isStoreClosedForStatus,
     merchantNextOpenAt,
     merchantNextCloseAt,
+    showRushBanner = false,
+    rushEndsAt = null,
+    rushRemainingMinutes = null,
     offerTickerTexts,
     visibleOffersCount,
     reserveOfferRow = false,
@@ -285,6 +292,15 @@ const MerchantDetailFlashListInner = forwardRef<
             isStoreClosedForStatus={isStoreClosedForStatus}
             nextOpenAt={merchantNextOpenAt}
             nextCloseAt={merchantNextCloseAt}
+          />
+        );
+
+      case "rush_banner":
+        return (
+          <MerchantRushBanner
+            visible={showRushBanner}
+            rushEndsAt={rushEndsAt}
+            rushRemainingMinutes={rushRemainingMinutes}
           />
         );
 

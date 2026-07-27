@@ -92,10 +92,9 @@ export async function triggerRiderOnboardingVerifications(
     );
   }
 
-  // Aadhaar (via DigiLocker) — only kicks off if the aadhaarNumber field is
-  // set AND the policy is configured to route through DigiLocker. Deliberately
-  // left as a future enablement: DigiLocker is a redirect flow that needs
-  // the rider app to open a browser, which we haven't wired up yet.
+  // Aadhaar DigiLocker is interactive (browser consent) — started from the
+  // rider app Step 1 via POST /v1/onboarding/verify-document (docKind=aadhaar).
+  // Do not auto-trigger DigiLocker here on save-step.
 
   await Promise.allSettled(runs);
 }

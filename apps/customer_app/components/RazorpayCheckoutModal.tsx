@@ -193,21 +193,57 @@ async function openNativeSdk(args: {
   } catch (rzpErr) {
     // Native SDK rejected. Distinguish between "we can't run" (fallback) vs
     // "user cancelled or payment failed" (real result, propagate).
-    const errAny = rzpErr as { code?: number; description?: string };
-    const desc = String(errAny.description ?? "").toLowerCase();
+    const errAny = rzpErr as {
+      code?: number | string;
+      description?: string;
+      error?: { code?: number | string; description?: string };
+    };
+    const desc = String(errAny.description ?? errAny.error?.description ?? rzpErr ?? "").toLowerCase();
+    const codeRaw = errAny.code ?? errAny.error?.code;
+    const code = typeof codeRaw === "string" ? Number(codeRaw) : codeRaw;
+
+    // Real user dismiss must never be reclassified as a linker/fallback error.
+    if (code === 0 || isExplicitUserCancel(rzpErr)) {
+      throw rzpErr;
+    }
+
     const looksLikeLinkerError =
       desc.includes("unregistered") ||
-      desc.includes("undefined") ||
+      desc.includes("undefined method") ||
       desc.includes("null is not an object") ||
-      desc.includes("cannot read property");
+      desc.includes("cannot read property") ||
+      desc.includes("native module") ||
+      desc.includes("not linked") ||
+      desc.includes("activity") ||
+      code == null ||
+      Number.isNaN(code as number);
     if (looksLikeLinkerError) {
       const err = new Error("razorpay_module_runtime");
       (err as Error & { fallback?: boolean }).fallback = true;
       throw err;
     }
-    // Genuine cancel / failure — surface upward with the real code.
+    // Genuine gateway failure — surface upward with the real code.
     throw rzpErr;
   }
+}
+
+/** Razorpay code 0 = user dismissed the sheet. Anything else may be recoverable via WebView. */
+function isExplicitUserCancel(err: unknown): boolean {
+  const errAny = err as {
+    code?: number | string;
+    description?: string;
+    error?: { code?: number | string; description?: string };
+  };
+  const codeRaw = errAny?.code ?? errAny?.error?.code;
+  const code = typeof codeRaw === "string" ? Number(codeRaw) : codeRaw;
+  if (code === 0) return true;
+  const desc = String(errAny?.description ?? errAny?.error?.description ?? "").toLowerCase();
+  return (
+    desc.includes("user closed") ||
+    desc.includes("user cancelled") ||
+    desc.includes("payment cancelled by user") ||
+    desc.includes("backpressed")
+  );
 }
 
 /* -------------------------------------------------------------------- */
@@ -415,6 +451,7 @@ export function RazorpayCheckoutModal({
   // new orderId. We key on orderId so re-renders (theme change, prefill change)
   // don't relaunch the sheet mid-flight.
   const orderKey = orderParams?.orderId ?? null;
+  const launchGenRef = useRef(0);
   useEffect(() => {
     if (!visible) {
       inFlightRef.current = false;
@@ -428,36 +465,63 @@ export function RazorpayCheckoutModal({
     inFlightRef.current = true;
 
     // Attempt Tier 1 (native SDK). If it throws with the `fallback` flag,
-    // switch to Tier 2 (WebView). Any other error is a real cancel / failure.
+    // switch to Tier 2 (WebView). Explicit user cancel → onCancel.
+    // Ambiguous native failures (empty payload / Expo bridge quirks) → WebView,
+    // otherwise Pay taps look like an instant "Payment cancelled".
+    const launchGen = ++launchGenRef.current;
     let cancelled = false;
     (async () => {
+      // Survive React Strict Mode double-invoke: first effect cleans up before
+      // the native sheet is opened, so only the live generation proceeds.
+      await new Promise((r) => setTimeout(r, 60));
+      if (cancelled || launchGen !== launchGenRef.current) return;
+
       try {
         const result = await openNativeSdk({
           orderParams,
           prefill,
           themeColor: theme,
         });
-        if (cancelled || completedRef.current) return;
-        completedRef.current = true;
-        // Sanity guard — the SDK sometimes returns partial payloads if the
-        // response bridging is interrupted. Treat missing signature as failure.
+        if (cancelled || completedRef.current || launchGen !== launchGenRef.current) return;
+        // Sanity guard — partial payloads usually mean the native bridge
+        // aborted; fall back to WebView instead of faking a user cancel.
         if (!result.razorpayPaymentId || !result.razorpayOrderId || !result.razorpaySignature) {
-          onCancel();
-          return;
-        }
-        onSuccess(result);
-      } catch (e) {
-        const errObj = e as Error & { fallback?: boolean; code?: number };
-        if (cancelled) return;
-        if (errObj.fallback === true) {
-          // Native missing / broken — activate Tier 2.
+          inFlightRef.current = false;
           setTier("webview");
           return;
         }
-        // User cancelled (code 0) or gateway failure (code 2) — treat both as
-        // "not paid". Parent will decide whether to prompt retry.
         completedRef.current = true;
-        onCancel();
+        onSuccess(result);
+      } catch (e) {
+        const errObj = e as Error & {
+          fallback?: boolean;
+          code?: number | string;
+          error?: { code?: number | string };
+        };
+        if (cancelled || launchGen !== launchGenRef.current) return;
+        if (errObj.fallback === true) {
+          // Native missing / broken — activate Tier 2.
+          inFlightRef.current = false;
+          setTier("webview");
+          return;
+        }
+        if (isExplicitUserCancel(e)) {
+          completedRef.current = true;
+          onCancel();
+          return;
+        }
+        const codeRaw = errObj.code ?? errObj.error?.code;
+        const code = typeof codeRaw === "string" ? Number(codeRaw) : codeRaw;
+        // Gateway declined the attempt after the sheet was shown — don't reopen.
+        if (code === 2) {
+          completedRef.current = true;
+          onCancel();
+          return;
+        }
+        // Unexpected native rejection — try WebView so Pay doesn't look like
+        // an instant cancel.
+        inFlightRef.current = false;
+        setTier("webview");
       }
     })();
 

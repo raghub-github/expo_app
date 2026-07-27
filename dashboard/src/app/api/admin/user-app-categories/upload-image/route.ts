@@ -9,7 +9,7 @@ import { randomBytes } from "node:crypto";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { getSystemUserByEmail } from "@/lib/db/operations/users";
 import { isSuperAdmin } from "@/lib/permissions/engine";
-import { isInvalidRefreshToken } from "@/lib/auth/session-errors";
+import { isInvalidRefreshToken, signOutIfSessionDead } from "@/lib/auth/session-errors";
 import { uploadWithKey, deleteDocument } from "@/lib/services/r2";
 import { parseUserAppCategoryStoreType } from "@/lib/user-app-categories/shared";
 
@@ -23,7 +23,7 @@ async function requireSuperAdminResponse() {
   } = await supabase.auth.getUser();
   if (userError || !user) {
     if (userError && isInvalidRefreshToken(userError)) {
-      await supabase.auth.signOut();
+      await signOutIfSessionDead(supabase, userError);
       return NextResponse.json(
         { success: false, error: "Session invalid", code: "SESSION_INVALID" },
         { status: 401 }

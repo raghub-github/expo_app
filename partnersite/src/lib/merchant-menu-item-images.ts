@@ -48,6 +48,9 @@ export async function addItemImageRow(
     is_primary?: boolean;
     format?: string | null;
     display_order?: number;
+    /** When true (platform Admin/staff), image + item apply live without review. */
+    autoApprove?: boolean;
+    moderated_by?: string | null;
   },
 ): Promise<{ id: number }> {
   const [owned] = await pgClient`
@@ -58,6 +61,9 @@ export async function addItemImageRow(
   if (!owned) throw new Error("ITEM_NOT_FOUND");
 
   const makePrimary = data.is_primary !== false;
+  const autoApprove = data.autoApprove === true;
+  const moderationStatus = autoApprove ? "APPROVED" : "PENDING";
+  const moderatedBy = autoApprove ? (data.moderated_by ?? null) : null;
   const [orderRow] = await pgClient`
     SELECT COALESCE(MAX(display_order), -1) + 1 AS next_order
     FROM merchant_menu_item_images
@@ -73,17 +79,29 @@ export async function addItemImageRow(
     `;
   }
 
-  const [row] = await pgClient`
-    INSERT INTO merchant_menu_item_images (
-      menu_item_id, image_url, r2_key, is_primary, format, display_order,
-      moderation_status, rejection_reason, moderated_at, moderated_by
-    )
-    VALUES (
-      ${menuItemId}, ${data.image_url}, ${data.r2_key ?? null}, ${makePrimary},
-      ${data.format ?? null}, ${nextOrder}, 'PENDING', NULL, NULL, NULL
-    )
-    RETURNING id
-  `;
+  const [row] = autoApprove
+    ? await pgClient`
+        INSERT INTO merchant_menu_item_images (
+          menu_item_id, image_url, r2_key, is_primary, format, display_order,
+          moderation_status, rejection_reason, moderated_at, moderated_by
+        )
+        VALUES (
+          ${menuItemId}, ${data.image_url}, ${data.r2_key ?? null}, ${makePrimary},
+          ${data.format ?? null}, ${nextOrder}, ${moderationStatus}, NULL, NOW(), ${moderatedBy}
+        )
+        RETURNING id
+      `
+    : await pgClient`
+        INSERT INTO merchant_menu_item_images (
+          menu_item_id, image_url, r2_key, is_primary, format, display_order,
+          moderation_status, rejection_reason, moderated_at, moderated_by
+        )
+        VALUES (
+          ${menuItemId}, ${data.image_url}, ${data.r2_key ?? null}, ${makePrimary},
+          ${data.format ?? null}, ${nextOrder}, 'PENDING', NULL, NULL, NULL
+        )
+        RETURNING id
+      `;
   const imageId = Number((row as { id: number }).id);
 
   if (makePrimary) {
@@ -96,7 +114,18 @@ export async function addItemImageRow(
     const prevStatus = String((itemRow as { approval_status?: string })?.approval_status ?? "").toUpperCase();
     const wasApproved = prevStatus === "APPROVED";
 
-    if (wasApproved) {
+    if (autoApprove) {
+      await pgClient`
+        UPDATE merchant_menu_items
+        SET item_image_url = ${data.image_url},
+            approval_status = 'APPROVED'::merchant_menu_item_approval_status,
+            rejection_reason = NULL,
+            approved_at = COALESCE(approved_at, NOW()),
+            approved_by = COALESCE(approved_by, ${moderatedBy}),
+            updated_at = NOW()
+        WHERE id = ${menuItemId} AND store_id = ${storeIdNum}
+      `;
+    } else if (wasApproved) {
       await pgClient`
         UPDATE merchant_menu_items
         SET item_image_url = ${data.image_url},

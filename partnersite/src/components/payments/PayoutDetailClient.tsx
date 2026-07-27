@@ -27,6 +27,7 @@ import { partnerPayoutHistoryHref } from '@/lib/partner-payments-routes';
 import {
   PAYOUT_STORE_OFFER_DISCOUNT_LINES,
   PAYOUT_STORE_OFFERS_SECTION_LABEL,
+  PAYOUT_CANCELLATION_COMPENSATION_LABEL,
   PAYOUT_ORDER_TYPE_OPTIONS,
   buildSettlementDetailSections,
   buildOrderPayoutBreakdown,
@@ -74,6 +75,16 @@ const EMPTY_SETTLEMENT: PayoutSettlementSummary = {
   mechanismFee: 0,
   customerCompensation: 0,
   cancellationCompensation: 0,
+  otherCredits: 0,
+  withdrawalReversalCredits: 0,
+  manualCredits: 0,
+  adjustmentCredits: 0,
+  gstCredits: 0,
+  penaltyReversalCredits: 0,
+  penalties: 0,
+  refundAdjustments: 0,
+  manualDebitAdjustments: 0,
+  chargebacks: 0,
   estimatedPayout: 0,
   orderCount: 0,
   deliveredOrderCount: 0,
@@ -125,7 +136,7 @@ function SettlementRow({
             <ChevronDown size={14} className="text-gray-400 shrink-0" />
           )
         ) : (
-          <ChevronDown size={14} className="text-gray-400 shrink-0 opacity-0" />
+          <span className="inline-block w-[14px] h-[14px] shrink-0" aria-hidden />
         )}
         <span className={`text-sm text-gray-800 ${bold ? 'font-semibold' : ''}`}>{label}</span>
       </div>
@@ -144,12 +155,14 @@ function SettlementSubRow({
   label,
   amount,
   negative,
+  green,
   last,
   count,
 }: {
   label: string;
   amount: number;
   negative?: boolean;
+  green?: boolean;
   last?: boolean;
   count?: boolean;
 }) {
@@ -159,7 +172,15 @@ function SettlementSubRow({
         <span className="w-px h-4 bg-gray-200" />
         <span className="text-xs text-gray-600">{label}</span>
       </div>
-      <span className={`text-xs shrink-0 ml-2 ${negative && amount > 0 ? 'text-red-600' : 'text-gray-800'}`}>
+      <span
+        className={`text-xs shrink-0 ml-2 ${
+          negative && amount > 0
+            ? 'text-red-600'
+            : green && amount > 0
+              ? 'text-emerald-700'
+              : 'text-gray-800'
+        }`}
+      >
         {formatSettlementValue(amount, { negative, count })}
       </span>
     </div>
@@ -178,7 +199,7 @@ function ExpandableSettlementSection({
 }: {
   label: string;
   amount: number;
-  items: { label: string; amount: number; negative?: boolean; count?: boolean }[];
+  items: { label: string; amount: number; negative?: boolean; green?: boolean; count?: boolean }[];
   negative?: boolean;
   bold?: boolean;
   green?: boolean;
@@ -207,6 +228,7 @@ function ExpandableSettlementSection({
               label={item.label}
               amount={item.amount}
               negative={item.negative}
+              green={item.green ?? green}
               count={item.count}
               last={index === items.length - 1}
             />
@@ -314,6 +336,7 @@ export function PayoutDetailClient({
   status,
   isCurrentCycle,
   pgTransactionId,
+  cycleId,
   storeName,
   storePublicId,
   storeLocation,
@@ -328,6 +351,7 @@ export function PayoutDetailClient({
   status: PayoutStatus;
   isCurrentCycle: boolean;
   pgTransactionId: string;
+  cycleId?: number | null;
   storeName: string;
   storePublicId: string;
   storeLocation: string;
@@ -371,7 +395,8 @@ export function PayoutDetailClient({
     isLoading: settlementLoading,
     error: settlementQueryError,
   } = usePayoutSettlement(storeId, periodStart, periodEnd, {
-    enabled: !!storeId && !!periodStart && !!periodEnd,
+    enabled: !!storeId && ((!!periodStart && !!periodEnd) || (cycleId != null && cycleId > 0)),
+    cycleId: cycleId ?? null,
   });
   const { data: bankAccounts = [] } = useMerchantBankAccounts(storeId, {
     enabled: !!storeId && detailTab === 'summary',
@@ -617,14 +642,22 @@ export function PayoutDetailClient({
                           negative
                           items={settlementSections.deductionItems}
                         />
-                        {settlementSections.creditItems.map((item) => (
-                          <SettlementRow
-                            key={item.label}
-                            label={item.label}
-                            amount={item.amount}
-                            green={item.green}
+                        {settlement.cancellationCompensation > 0 ? (
+                          <ExpandableSettlementSection
+                            label={PAYOUT_CANCELLATION_COMPENSATION_LABEL}
+                            amount={settlement.cancellationCompensation}
+                            green
+                            items={settlementSections.cancellationCreditItems}
                           />
-                        ))}
+                        ) : null}
+                        {(settlement.otherCredits ?? 0) > 0 ? (
+                          <ExpandableSettlementSection
+                            label="Other merchant credits"
+                            amount={settlement.otherCredits}
+                            green
+                            items={settlementSections.otherCreditItems}
+                          />
+                        ) : null}
                         <SettlementRow
                           label={settlementSections.estPayoutLabel}
                           amount={settlement.estimatedPayout}

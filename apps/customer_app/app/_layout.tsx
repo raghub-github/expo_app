@@ -22,6 +22,7 @@ import {
   StatusBar as NativeStatusBar,
   type AppStateStatus,
 } from "react-native";
+import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { SafeAreaProvider, useSafeAreaInsets } from "react-native-safe-area-context";
 import { QueryClient, QueryClientProvider, focusManager, useQueryClient } from "@tanstack/react-query";
 import { useAuthStore } from "@/store/authStore";
@@ -47,6 +48,7 @@ import { GatiMitraBootstrapScreen } from "@/components/GatiMitraBootstrapScreen"
 import { setOnSessionRevoked } from "@/services/api";
 import { PushNotificationBootstrap } from "@/components/PushNotificationBootstrap";
 import { PlayInAppUpdateBootstrap } from "@/components/PlayInAppUpdateBootstrap";
+import { LiveOrderProgressNotification } from "@/components/LiveOrderProgressNotification";
 import { LegalConsentGate } from "@/components/LegalConsentGate";
 import { AddressesPrefetch } from "@/components/AddressesPrefetch";
 import { FeaturedOffersPrefetch } from "@/components/FeaturedOffersPrefetch";
@@ -73,7 +75,7 @@ import { useScreenChromeStore } from "@/store/screenChromeStore";
 import "@/lib/i18n";
 import { setAppLanguage } from "@/lib/i18n";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { setRuntimeApiBaseUrl } from "@/config/env";
+import { isStaleLanApiOverride, setRuntimeApiBaseUrl } from "@/config/env";
 import { ensureMapboxSearchReady } from "@/services/location.service";
 import { restoreAndPrefetchLocationWeather } from "@/hooks/useLocationWeather";
 import { prefetchHomeScreenData } from "@/lib/prefetchHomeScreenData";
@@ -102,6 +104,11 @@ function isLightBarColor(color: string): boolean {
 
 // App-wide invariant: the system status bar is never hidden, including startup.
 NativeStatusBar.setHidden(false, "none");
+if (Platform.OS === "android") {
+  NativeStatusBar.setTranslucent(true);
+  NativeStatusBar.setBackgroundColor("transparent", true);
+  NativeStatusBar.setBarStyle("light-content", true);
+}
 
 // Restore the API URL override BEFORE any module-level code makes a request.
 // This runs at JS load time, not in a useEffect, so the override is in place
@@ -111,6 +118,13 @@ void (async () => {
     ensureMapboxSearchReady();
     const stored = await AsyncStorage.getItem(API_URL_OVERRIDE_KEY);
     if (stored && stored.trim().length > 0) {
+      // Drop stale Wi‑Fi IPs left from a previous network (e.g. 10.25.x → 10.205.x).
+      if (isStaleLanApiOverride(stored)) {
+        await AsyncStorage.removeItem(API_URL_OVERRIDE_KEY);
+        // eslint-disable-next-line no-console
+        console.log("[env] cleared stale API base URL override:", stored);
+        return;
+      }
       setRuntimeApiBaseUrl(stored);
       // eslint-disable-next-line no-console
       console.log("[env] using stored API base URL override:", stored);
@@ -120,18 +134,15 @@ void (async () => {
   }
 })();
 
-// Warm the order-tracking map's rider marker icon cache at startup — on a cold
-// session this asset download + base64 encode is slow enough to lose the race
-// against navigating straight to the tracking screen after placing the first
-// order, which otherwise shows "Map unavailable" until the icon finally resolves.
-void resolveMapImageDataUri(resolveNearbyRiderMarkerImage("bike"));
-
 // Prime Android launch chrome as early as JS can run so slow startup / offline
 // sessions never fall back to the platform's default white nav background.
 void (async () => {
   if (Platform.OS !== "android") return;
   try {
     NativeStatusBar.setHidden(false, "none");
+    NativeStatusBar.setTranslucent(true);
+    NativeStatusBar.setBackgroundColor("transparent", true);
+    NativeStatusBar.setBarStyle("light-content", true);
     const [SystemUI, NavigationBar] = await Promise.all([
       import("expo-system-ui"),
       import("expo-navigation-bar"),
@@ -215,13 +226,19 @@ export default function RootLayout() {
   const hydrateLocation = useLocationStore((s) => s.hydrate);
 
   const criticalReady = hydrated && cartHydrated;
-  const ready = criticalReady;
-  // Fonts keep loading in background; don't hold the first app frame hostage.
+  // Auth + cart are local; exit splash as soon as both hydrate — no network gate.
   const appReady = criticalReady;
+
+  const handleSplashReady = useCallback(() => {
+    // Reveal the JS splash immediately; don't wait for hydration or door exit.
+    void SplashScreen.hideAsync().catch(() => {});
+  }, []);
 
   const handleSplashExitComplete = useCallback(() => {
     setSplashExited(true);
     void SplashScreen.hideAsync().catch(() => {});
+    // Non-critical: warm ride-map marker after the first frame is interactive.
+    void resolveMapImageDataUri(resolveNearbyRiderMarkerImage("bike"));
   }, []);
 
   useEffect(() => {
@@ -238,6 +255,7 @@ export default function RootLayout() {
     }
     let cancelled = false;
     setHomeDataPrefetched(false);
+    // Prefetch after splash is free to exit — never block startup on home data.
     void prefetchHomeScreenData(queryClient).finally(() => {
       if (!cancelled) setHomeDataPrefetched(true);
     });
@@ -311,60 +329,64 @@ export default function RootLayout() {
   }, [criticalReady, splashExited]);
 
   return (
-    <QueryClientProvider client={queryClient}>
-      <SafeAreaProvider>
-        <View
-          style={{
-            flex: 1,
-            backgroundColor: splashExited ? colors.background.light : SPLASH_CHROME_COLOR,
-          }}
-        >
-          <AppAssetsPrefetch />
-          <UserAppCategoriesPrefetch />
-          {criticalReady ? (
-            <>
-              <ReactQueryFocusSync />
-              <StoreStatusRealtimeSync />
-              <OrderRealtimeSync />
-              <SessionRevokedHandler />
-              <CustomerPermissionsRealtimeSync />
-              <LocationPermissionResumeCheck />
-              <LocationWatchSync />
-              <LanguageSync />
-              <CustomerSystemChrome />
-              <StatusBarRouteChromeGuard />
-              <RootStack onLayoutRootView={onLayoutRootView} splashActive={!splashExited} />
-              <CheckoutBottomSheetHost />
-              <CartCheckoutGateHost />
-              <GlobalFloatingCart />
-              <CustomerPermissionSheetsHost />
-              <PushNotificationBootstrap />
-              <PlayInAppUpdateBootstrap />
-              <LegalConsentGate />
-              <AddressesPrefetch />
-              <FeaturedOffersPrefetch />
-              <WeatherPrefetch />
-              <WeatherRealtimeSync />
-              <PendingAddressShareResume />
-              <FoodHomeLayoutPrefetch />
-              <ProfilePrefetch />
-              <WalletBalancePrefetch />
-              <SubscriptionPlansPrefetch />
-              {/* Absolute shutter over home — no Modal fade; drops when store page is ready */}
-              <MerchantNavTransitionShutter />
-            </>
-          ) : null}
-          {!splashExited ? (
-            <GatiMitraBootstrapScreen
-              variant="root"
-              appReady={appReady}
-              statusMessage={startupTimedOut ? "Initializing GatiMitra..." : null}
-              onExitComplete={handleSplashExitComplete}
-            />
-          ) : null}
-        </View>
-      </SafeAreaProvider>
-    </QueryClientProvider>
+    <GestureHandlerRootView style={{ flex: 1 }}>
+      <QueryClientProvider client={queryClient}>
+        <SafeAreaProvider>
+          <View
+            style={{
+              flex: 1,
+              backgroundColor: splashExited ? colors.background.light : SPLASH_CHROME_COLOR,
+            }}
+          >
+            <AppAssetsPrefetch />
+            <UserAppCategoriesPrefetch />
+            {criticalReady ? (
+              <>
+                <ReactQueryFocusSync />
+                <StoreStatusRealtimeSync />
+                <OrderRealtimeSync />
+                <SessionRevokedHandler />
+                <CustomerPermissionsRealtimeSync />
+                <LocationPermissionResumeCheck />
+                <LocationWatchSync />
+                <LanguageSync />
+                <CustomerSystemChrome />
+                <StatusBarRouteChromeGuard />
+                <RootStack onLayoutRootView={onLayoutRootView} splashActive={!splashExited} />
+                <CheckoutBottomSheetHost />
+                <CartCheckoutGateHost />
+                <GlobalFloatingCart />
+                <CustomerPermissionSheetsHost />
+                <PushNotificationBootstrap />
+                <LiveOrderProgressNotification />
+                <PlayInAppUpdateBootstrap />
+                <LegalConsentGate />
+                <AddressesPrefetch />
+                <FeaturedOffersPrefetch />
+                <WeatherPrefetch />
+                <WeatherRealtimeSync />
+                <PendingAddressShareResume />
+                <FoodHomeLayoutPrefetch />
+                <ProfilePrefetch />
+                <WalletBalancePrefetch />
+                <SubscriptionPlansPrefetch />
+                {/* Absolute shutter over home — no Modal fade; drops when store page is ready */}
+                <MerchantNavTransitionShutter />
+              </>
+            ) : null}
+            {!splashExited ? (
+              <GatiMitraBootstrapScreen
+                variant="root"
+                appReady={appReady}
+                statusMessage={startupTimedOut ? "Initializing GatiMitra..." : null}
+                onSplashReady={handleSplashReady}
+                onExitComplete={handleSplashExitComplete}
+              />
+            ) : null}
+          </View>
+        </SafeAreaProvider>
+      </QueryClientProvider>
+    </GestureHandlerRootView>
   );
 }
 
@@ -449,7 +471,7 @@ function CustomerPermissionsRealtimeSync() {
   } | null>(null);
 
   const syncDevicePermissions = useCallback(async () => {
-    if (!hydrated || !session) return;
+    if (!hydrated || !session?.accessToken) return;
     if (useSmsPermissionStore.getState().allowInFlight) return;
     try {
       const [{ status: locStatus }, smsGranted, contactsGranted] = await Promise.all([
@@ -650,7 +672,7 @@ function RootStack({
     NativeStatusBar.setHidden(false, "none");
     if (Platform.OS === "android") {
       NativeStatusBar.setTranslucent(true);
-      NativeStatusBar.setBackgroundColor(SPLASH_CHROME_COLOR, true);
+      NativeStatusBar.setBackgroundColor("transparent", true);
       NativeStatusBar.setBarStyle("light-content", true);
     }
   }, [splashChromeActive]);
@@ -661,7 +683,9 @@ function RootStack({
       <StatusBar
         hidden={false}
         style={resolvedStatusBarStyle}
-        backgroundColor={resolvedStatusBarBackground}
+        backgroundColor={
+          splashChromeActive ? "transparent" : resolvedStatusBarBackground
+        }
         translucent={immersiveStatusBar || resolvedStatusBarBackground === "transparent"}
       />
       <View
@@ -682,7 +706,7 @@ function RootStack({
             statusBarHidden: false,
             statusBarStyle: splashChromeActive ? "light" : "dark",
             statusBarBackgroundColor: splashChromeActive
-              ? SPLASH_CHROME_COLOR
+              ? "transparent"
               : "#FFFFFF",
             statusBarTranslucent: splashChromeActive,
             contentStyle: {

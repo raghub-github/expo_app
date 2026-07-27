@@ -1,14 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import {
-  Modal,
-  View,
-  Text,
-  Pressable,
-  StyleSheet,
-  Animated,
-  Easing,
-  LayoutChangeEvent,
-} from "react-native";
+import { AppText as Text } from "@/components/AppText";
+import { Modal, View, Pressable, StyleSheet, Animated, Easing, LayoutChangeEvent } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { GatiMitraMerchant } from "@/constants/theme";
 

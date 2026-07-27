@@ -37,6 +37,10 @@ export function buildRideTrackingMapHtml(
       var token = '${escToken(token)}';
       var riderMarkerUri = '${uri}';
       var riderMarker = null;
+      var riderAnimFrame = null;
+      var headingAnimFrame = null;
+      var currentHeading = null;
+      var followRider = true;
 
       window.setRiderMarkerIcon = function(nextUri) {
         if (!nextUri) return;
@@ -92,8 +96,45 @@ export function buildRideTrackingMapHtml(
 
       function applyRiderMarker(lat, lng, heading) {
         if (lat == null || lng == null) {
+          if (riderAnimFrame) { cancelAnimationFrame(riderAnimFrame); riderAnimFrame = null; }
           if (riderMarker) { try { riderMarker.remove(); } catch (e) {} riderMarker = null; }
           return;
+        }
+        function applyHeading(h) {
+          var img = document.getElementById('rider-img');
+          if (!img || h == null || isNaN(h)) return;
+          if (headingAnimFrame) { cancelAnimationFrame(headingAnimFrame); headingAnimFrame = null; }
+          var from = currentHeading == null ? h : currentHeading;
+          var to = ((h % 360) + 360) % 360;
+          var delta = ((to - from + 540) % 360) - 180;
+          if (Math.abs(delta) < 1) {
+            currentHeading = to;
+            img.style.transform = 'rotate(' + to + 'deg)';
+            return;
+          }
+          var t0 = performance.now();
+          var dur = Math.min(500, Math.max(180, Math.abs(delta) * 4));
+          function hStep(now) {
+            var t = Math.min(1, (now - t0) / dur);
+            var eased = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+            var ang = from + delta * eased;
+            currentHeading = ((ang % 360) + 360) % 360;
+            img.style.transform = 'rotate(' + currentHeading + 'deg)';
+            if (t < 1) headingAnimFrame = requestAnimationFrame(hStep);
+            else headingAnimFrame = null;
+          }
+          headingAnimFrame = requestAnimationFrame(hStep);
+        }
+        function haversineM(lat1, lng1, lat2, lng2) {
+          var R = 6378137;
+          var toRad = function(d) { return d * Math.PI / 180; };
+          var dLat = toRad(lat2 - lat1);
+          var dLng = toRad(lng2 - lng1);
+          var a =
+            Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+            Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) *
+            Math.sin(dLng / 2) * Math.sin(dLng / 2);
+          return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
         }
         if (!riderMarker) {
           var el = document.createElement('div');
@@ -101,14 +142,60 @@ export function buildRideTrackingMapHtml(
           el.style.cssText = 'width:44px;height:44px;display:flex;align-items:center;justify-content:center;pointer-events:none;z-index:8;position:relative;background:transparent;';
           el.innerHTML = '${buildTrackingRiderMarkerInnerHtml(uri)}';
           riderMarker = new mapboxgl.Marker({ element: el, anchor: 'center' }).setLngLat([lng, lat]).addTo(map);
-        } else {
+          applyHeading(heading);
+          return;
+        }
+        var start = riderMarker.getLngLat();
+        var fromLng = start.lng;
+        var fromLat = start.lat;
+        var jumpM = haversineM(fromLat, fromLng, lat, lng);
+        if (jumpM > 180) {
+          if (riderAnimFrame) { cancelAnimationFrame(riderAnimFrame); riderAnimFrame = null; }
           riderMarker.setLngLat([lng, lat]);
+          applyHeading(heading);
+          return;
         }
-        var img = document.getElementById('rider-img');
-        if (img && heading != null && !isNaN(heading)) {
-          img.style.transform = 'rotate(' + heading + 'deg)';
+        if (riderAnimFrame) { cancelAnimationFrame(riderAnimFrame); riderAnimFrame = null; }
+        var t0 = performance.now();
+        var dur = Math.min(1100, Math.max(350, jumpM * 18));
+        function step(now) {
+          var t = Math.min(1, (now - t0) / dur);
+          var eased = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+          var latN = fromLat + (lat - fromLat) * eased;
+          var lngN = fromLng + (lng - fromLng) * eased;
+          if (riderMarker) riderMarker.setLngLat([lngN, latN]);
+          if (t < 1) {
+            riderAnimFrame = requestAnimationFrame(step);
+          } else {
+            riderAnimFrame = null;
+            applyHeading(heading);
+            var geofenceLock = typeof window.isGeofenceCameraActive === 'function' && window.isGeofenceCameraActive();
+            if (followRider && !geofenceLock && !(window.__gmNavFollowActive)) {
+              try { map.easeTo({ center: [lng, lat], duration: 280, essential: true }); } catch (e) {}
+            }
+          }
         }
+        applyHeading(heading);
+        riderAnimFrame = requestAnimationFrame(step);
       }
+
+      map.on('dragstart', function() {
+        followRider = false;
+        if (typeof window.clearGeofenceCamera === 'function') window.clearGeofenceCamera();
+        if (window.ReactNativeWebView) {
+          window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'user_pan' }));
+        }
+      });
+      window.recenterOnRider = function() {
+        followRider = true;
+        if (typeof window.isGeofenceCameraActive === 'function' && window.isGeofenceCameraActive()) {
+          return;
+        }
+        if (riderMarker) {
+          var ll = riderMarker.getLngLat();
+          try { map.easeTo({ center: [ll.lng, ll.lat], duration: 450, essential: true }); } catch (e) {}
+        }
+      };
 
       window.fitToCoordinates = function(coords, padding, maxZoom) {
         if (!coords || coords.length < 1) return;

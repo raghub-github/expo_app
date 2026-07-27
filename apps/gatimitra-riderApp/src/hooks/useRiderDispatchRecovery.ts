@@ -4,7 +4,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import NetInfo from "@react-native-community/netinfo";
 import { useSessionStore } from "@/src/stores/sessionStore";
 import { useDutyStore } from "@/src/stores/dutyStore";
-import { RIDER_AVAILABLE_ORDERS_QUERY_KEY } from "@/src/hooks/useOrders";
+import { RIDER_AVAILABLE_ORDERS_QUERY_KEY, RIDER_ACTIVE_ORDERS_QUERY_KEY } from "@/src/hooks/useOrders";
 import { riderDispatchLog } from "@/src/lib/rider-dispatch-log";
 
 const DUTY_SYNC_INTERVAL_MS = 60_000;
@@ -77,8 +77,10 @@ export function useRiderDispatchRecovery(): void {
       if (wasOfflineRef.current) {
         wasOfflineRef.current = false;
         void refreshOffers("network_restored");
+        // Always restore assigned work after reconnect — even if OFF duty mid-delivery.
+        void queryClient.invalidateQueries({ queryKey: RIDER_ACTIVE_ORDERS_QUERY_KEY });
       }
     });
     return () => unsub();
-  }, [refreshOffers]);
+  }, [refreshOffers, queryClient]);
 }

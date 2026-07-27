@@ -4,7 +4,8 @@
  */
 
 import { useEffect, useRef } from "react";
-import { View, Text, Pressable, StyleSheet, Animated, Platform } from "react-native";
+import { AppText as Text } from "@/components/AppText";
+import { View, Pressable, StyleSheet, Animated, Platform } from "react-native";
 import { GatiMitraMerchant } from "@/constants/theme";
 
 const PILL_HEIGHT = 30;

@@ -2,13 +2,58 @@
 
 import React, { useEffect, useRef, useState } from "react";
 import { Loader2 } from "lucide-react";
+import {
+  DigilockerConsentSheet,
+  openDigilockerLoadingPopup,
+} from "@/components/onboarding/DigilockerConsentSheet";
+import {
+  isMaskedAadhaar,
+  maskAadhaarNumber,
+  normalizeAadhaarVerifiedDetails,
+} from "@/lib/mask-aadhaar";
+import {
+  pickBankFetchedInfo,
+  pickGstFetchedBusinessInfo,
+  pickUpiFetchedInfo,
+} from "@/lib/merchant-doc-auto-verification";
+
+/** Cashfree DigiLocker requires redirect_url to start with https://. */
+function digilockerRedirectUrl(): string {
+  if (typeof window === "undefined") {
+    return "https://control.gatimitra.com/dashboard/digilocker-return";
+  }
+  try {
+    const u = new URL("/dashboard/digilocker-return", window.location.origin);
+    u.protocol = "https:";
+    // Same-tab / mobile fallback: bounce back to this exact Step 4 page after consent.
+    u.searchParams.set("return", window.location.href);
+    return u.toString();
+  } catch {
+    return "https://control.gatimitra.com/dashboard/digilocker-return";
+  }
+}
 
 export type Step4Patch = {
   pan_number?: string;
   pan_holder_name?: string;
+  pan_is_verified?: boolean;
+  pan_verified_at?: string | null;
+  pan_verification_method?: string | null;
+  pan_verified_details?: Record<string, unknown> | null;
   aadhar_number?: string;
   aadhar_holder_name?: string;
+  aadhaar_is_verified?: boolean;
+  aadhaar_verified_at?: string | null;
+  aadhaar_verification_method?: string | null;
+  aadhaar_verified_details?: Record<string, unknown> | null;
   gst_number?: string;
+  gst_is_verified?: boolean;
+  gst_verified_at?: string | null;
+  gst_verification_method?: string | null;
+  gst_verified_details?: Record<string, unknown> | null;
+  gst_legal_business_name?: string;
+  gst_principal_place_of_business?: string;
+  gst_effective_registration_date?: string;
   fssai_number?: string;
   fssai_expiry_date?: string;
   drug_license_number?: string;
@@ -34,13 +79,19 @@ export type Step4Patch = {
   bank_branch_name?: string;
   bank_account_type?: string;
   bank_proof_type?: string;
+  bank_is_verified?: boolean;
+  bank_verified_at?: string | null;
+  bank_verification_method?: string | null;
+  bank_verified_details?: Record<string, unknown> | null;
   upi_id?: string;
+  upi_verified?: boolean;
+  upi_verified_details?: Record<string, unknown> | null;
   payout_method?: string;
   bank_proof_file_url?: string;
   upi_qr_screenshot_url?: string;
 };
 
-export type Step4SectionKey = "PAN" | "AADHAAR" | "GST" | "BANK";
+export type Step4SectionKey = "PAN" | "AADHAAR" | "LICENCE" | "GST" | "BANK";
 
 interface Step4DocumentsProps {
   onPatchChange?: (patch: Step4Patch) => void;
@@ -54,8 +105,17 @@ interface Step4DocumentsProps {
   initialForm?: Step4Patch | null;
   /** Initial document preview URLs keyed by local doc type (pan, aadhaar_front, gst, fssai, drug_license, bank_proof, other). */
   initialDocUrls?: Record<string, string> | null;
-  /** Notify parent when all mandatory Step 4 fields (current store type) are valid. */
+  /** Notify parent when current subsection requirements are valid (gates Save & Continue). */
   onRequiredValidChange?: (valid: boolean) => void;
+  /** Notify parent when DigiLocker Aadhaar verify is in-flight (blocks Skip). */
+  onDigilockerInFlightChange?: (inFlight: boolean) => void;
+  /** Partnersite-style footer: Previous within docs subsections / back to step 3. */
+  onPrevious?: () => void;
+  /** Partnersite-style footer: Save & Continue for current subsection. */
+  onContinue?: () => void;
+  actionLoading?: boolean;
+  continueDisabled?: boolean;
+  continueLabel?: string;
 }
 
 const Step4Documents: React.FC<Step4DocumentsProps> = ({
@@ -68,20 +128,48 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
   initialForm,
   initialDocUrls,
   onRequiredValidChange,
+  onDigilockerInFlightChange,
+  onPrevious,
+  onContinue,
+  actionLoading = false,
+  continueDisabled = false,
+  continueLabel = "Save & Continue",
 }) => {
   const [sectionInternal, setSectionInternal] = useState<Step4SectionKey>("PAN");
   const section = sectionProp ?? sectionInternal;
+  const step4SectionOrder: Step4SectionKey[] = [
+    "PAN",
+    "AADHAAR",
+    "LICENCE",
+    "GST",
+    "BANK",
+  ];
+  // Sidebar may only open sections already reached via Save & Continue (not skip ahead).
+  const [maxReachedSectionIdx, setMaxReachedSectionIdx] = useState(0);
+  useEffect(() => {
+    const idx = step4SectionOrder.indexOf(section);
+    if (idx >= 0) {
+      setMaxReachedSectionIdx((prev) => Math.max(prev, idx));
+    }
+  }, [section]);
   const setSection = (s: Step4SectionKey) => {
     if (onSectionChange) onSectionChange(s);
     else setSectionInternal(s);
+  };
+  const goToSectionFromSidebar = (s: Step4SectionKey) => {
+    const idx = step4SectionOrder.indexOf(s);
+    if (idx > maxReachedSectionIdx) return;
+    setSection(s);
   };
 
   const [form, setForm] = useState<Step4Patch>({
     pan_number: "",
     pan_holder_name: "",
+    pan_is_verified: false,
     aadhar_number: "",
     aadhar_holder_name: "",
     gst_number: "",
+    gst_is_verified: false,
     fssai_number: "",
   fssai_expiry_date: "",
     drug_license_number: "",
@@ -107,11 +195,72 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
     bank_branch_name: "",
     bank_account_type: "",
     bank_proof_type: "",
+    bank_is_verified: false,
     upi_id: "",
+    upi_verified: false,
+    upi_verified_details: null,
     payout_method: "bank",
     bank_proof_file_url: "",
     upi_qr_screenshot_url: "",
   });
+
+  type DocVerifyState = {
+    state: "idle" | "verifying" | "verified" | "failed" | "manual";
+    details?: Record<string, unknown>;
+    error?: string;
+  };
+  const [docModes, setDocModes] = useState<Record<string, string>>({});
+  const [panVerify, setPanVerify] = useState<DocVerifyState>({ state: "idle" });
+  const [gstVerify, setGstVerify] = useState<DocVerifyState>({ state: "idle" });
+  const [bankVerify, setBankVerify] = useState<DocVerifyState>({ state: "idle" });
+  const [upiVerify, setUpiVerify] = useState<DocVerifyState>({ state: "idle" });
+  const [aadhaarVerify, setAadhaarVerify] = useState<
+    DocVerifyState & { pending?: boolean; digilockerUrl?: string }
+  >({
+    state: "idle",
+  });
+  const panVerifiedNumberRef = useRef<string | null>(null);
+  const panVerifiedDetailsRef = useRef<Record<string, unknown> | null>(null);
+  const gstVerifiedNumberRef = useRef<string | null>(null);
+  const gstVerifiedDetailsRef = useRef<Record<string, unknown> | null>(null);
+  const bankVerifiedKeyRef = useRef<string | null>(null);
+  const bankVerifiedDetailsRef = useRef<Record<string, unknown> | null>(null);
+  const upiVerifiedKeyRef = useRef<string | null>(null);
+  const upiVerifiedDetailsRef = useRef<Record<string, unknown> | null>(null);
+  const aadhaarVerifiedNumberRef = useRef<string | null>(null);
+  const aadhaarVerifiedDetailsRef = useRef<Record<string, unknown> | null>(null);
+  const aadhaarPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const digilockerPopupRef = useRef<Window | null>(null);
+
+  const panMode = (docModes.pan as "manual" | "auto" | "hybrid" | "disabled") || "manual";
+  const gstMode = (docModes.gstin as "manual" | "auto" | "hybrid" | "disabled") || "manual";
+  const aadhaarMode =
+    (docModes.aadhaar_digilocker as "manual" | "auto" | "hybrid" | "disabled") ||
+    (docModes.aadhaar as "manual" | "auto" | "hybrid" | "disabled") ||
+    "manual";
+  const bankMode =
+    (docModes.bank_account as "manual" | "auto" | "hybrid" | "disabled") ||
+    (docModes.bank as "manual" | "auto" | "hybrid" | "disabled") ||
+    "manual";
+  const upiMode =
+    (docModes.upi_penny_drop as "manual" | "auto" | "hybrid" | "disabled") ||
+    (docModes.upi as "manual" | "auto" | "hybrid" | "disabled") ||
+    bankMode;
+  const isElectronic = (m: string) => m === "auto" || m === "hybrid";
+  const uploadAllowedFor = (mode: string, vs: DocVerifyState) => {
+    if (!isElectronic(mode)) return true;
+    if (vs.state === "manual" || vs.state === "failed") return true;
+    return false;
+  };
+
+  useEffect(() => {
+    fetch("/api/onboarding/verification-modes", { credentials: "include" })
+      .then((r) => r.json())
+      .then((d) => {
+        if (d?.modes) setDocModes(d.modes as Record<string, string>);
+      })
+      .catch(() => {});
+  }, []);
 
   // Hydrate form once when initialForm is provided (e.g. from Partner Site or saved AM progress)
   useEffect(() => {
@@ -120,6 +269,111 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
       if (initialForm.payout_method) {
         const method = initialForm.payout_method.toLowerCase();
         setPayoutMode(method === "upi" ? "UPI" : "BANK");
+      }
+      if (initialForm.pan_is_verified && initialForm.pan_number) {
+        const panNum = initialForm.pan_number.trim().toUpperCase();
+        panVerifiedNumberRef.current = panNum;
+        const details =
+            (initialForm.pan_verified_details as Record<string, unknown>) ||
+            { pan_status: "VALID" };
+        panVerifiedDetailsRef.current = details;
+        setPanVerify({
+          state: "verified",
+          details,
+        });
+      }
+      if (initialForm.gst_is_verified && initialForm.gst_number) {
+        const gstNum = initialForm.gst_number.trim().toUpperCase();
+        gstVerifiedNumberRef.current = gstNum;
+        const details = {
+          ...((initialForm.gst_verified_details as Record<string, unknown>) || {}),
+        };
+        const gstInfo = pickGstFetchedBusinessInfo({
+          ...details,
+          gst_legal_business_name: initialForm.gst_legal_business_name,
+          gst_principal_place_of_business: initialForm.gst_principal_place_of_business,
+          gst_effective_registration_date: initialForm.gst_effective_registration_date,
+        });
+        if (gstInfo.legal_business_name) details.legal_name_of_business = gstInfo.legal_business_name;
+        if (gstInfo.principal_place_of_business) {
+          details.principal_place_address = gstInfo.principal_place_of_business;
+        }
+        if (gstInfo.effective_registration_date) {
+          details.date_of_registration = gstInfo.effective_registration_date;
+        }
+        gstVerifiedDetailsRef.current = details;
+        setGstVerify({
+          state: "verified",
+          details,
+        });
+      }
+      if (initialForm.bank_is_verified || initialForm.upi_verified) {
+        if (initialForm.bank_is_verified) {
+          const acc = String(initialForm.bank_account_number || "").replace(/\D/g, "");
+          const ifsc = String(initialForm.bank_ifsc_code || "").trim().toUpperCase();
+          bankVerifiedKeyRef.current = acc && ifsc ? `${acc}|${ifsc}` : null;
+          const details = {
+            ...((initialForm.bank_verified_details as Record<string, unknown>) || {}),
+          };
+          const bankInfo = pickBankFetchedInfo(details);
+          if (bankInfo.name_at_bank) details.name_at_bank = bankInfo.name_at_bank;
+          if (bankInfo.bank_name) details.bank_name = bankInfo.bank_name;
+          if (bankInfo.branch_name) details.branch_name = bankInfo.branch_name;
+          if (bankInfo.account_type) details.account_type = bankInfo.account_type;
+          if (bankInfo.account_status) details.account_status = bankInfo.account_status;
+          bankVerifiedDetailsRef.current = details;
+          setBankVerify({
+            state: "verified",
+            details,
+          });
+        }
+        if (initialForm.upi_verified) {
+          const vpa = String(initialForm.upi_id || "").trim().toLowerCase();
+          upiVerifiedKeyRef.current = vpa || null;
+          const details = {
+            ...((initialForm.upi_verified_details as Record<string, unknown>) ||
+              (!(initialForm.bank_is_verified)
+                ? ((initialForm.bank_verified_details as Record<string, unknown>) || {})
+                : {})),
+          };
+          const upiInfo = pickUpiFetchedInfo(details);
+          if (upiInfo.name_at_bank) details.name_at_bank = upiInfo.name_at_bank;
+          if (upiInfo.account_status) details.account_status = upiInfo.account_status;
+          upiVerifiedDetailsRef.current = details;
+          setUpiVerify({ state: "verified", details });
+        }
+      }
+      if (initialForm.aadhaar_is_verified) {
+        const raw = String(initialForm.aadhar_number || "");
+        const aNum = raw.replace(/\D/g, "");
+        // Keep last-4 / masked ref so reload of XXXX-XXXX-8244 doesn't clear verified UI.
+        aadhaarVerifiedNumberRef.current =
+          aNum || maskAadhaarNumber(raw) || "verified";
+        const details: Record<string, unknown> = {
+          ...((initialForm.aadhaar_verified_details as Record<string, unknown> | null) ||
+            {}),
+        };
+        if (
+          !details.name &&
+          !details.full_name &&
+          !details.registered_name &&
+          initialForm.aadhar_holder_name
+        ) {
+          details.name = String(initialForm.aadhar_holder_name);
+        }
+        if (
+          !details.aadhaar_number &&
+          !details.masked_aadhaar &&
+          !details.uid &&
+          raw
+        ) {
+          details.masked_aadhaar = maskAadhaarNumber(raw);
+        }
+        setAadhaarVerify({
+          state: "verified",
+          details,
+        });
+        aadhaarVerifiedDetailsRef.current = details;
       }
     }
   }, [initialForm]);
@@ -141,12 +395,25 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
     | "other"
   >(null);
 
-  const [gstCertificateToggle, setGstCertificateToggle] = useState<"NO" | "YES">(
-    "NO"
-  );
-
   const [showOtherLicences, setShowOtherLicences] = useState(false);
   const [payoutMode, setPayoutMode] = useState<"BANK" | "UPI">("BANK");
+  /** Instant DB uniqueness for FSSAI / Drug Licence. */
+  const [licenceDup, setLicenceDup] = useState<{
+    fssai: string;
+    drug: string;
+    checkingFssai: boolean;
+    checkingDrug: boolean;
+    fssaiOk: boolean;
+    drugOk: boolean;
+  }>({
+    fssai: "",
+    drug: "",
+    checkingFssai: false,
+    checkingDrug: false,
+    fssaiOk: false,
+    drugOk: false,
+  });
+  const licenceDupReqRef = useRef(0);
 
   // Keep payout_method in sync with local payoutMode
   useEffect(() => {
@@ -162,10 +429,13 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
       /^[A-Z]{5}[0-9]{4}[A-Z]$/.test((v || "").replace(/\s/g, ""))
         ? ""
         : "Invalid PAN. Format: 5 letters, 4 digits, 1 letter (e.g. ABCDE1234F)",
-    aadhar: (v: string) =>
-      /^\d{12}$/.test((v || "").replace(/\s/g, ""))
+    aadhar: (v: string) => {
+      const raw = (v || "").trim();
+      if (isMaskedAadhaar(raw)) return "";
+      return /^\d{12}$/.test(raw.replace(/\s/g, ""))
         ? ""
-        : "Invalid Aadhaar. Must be exactly 12 digits",
+        : "Invalid Aadhaar. Must be exactly 12 digits";
+    },
     fssai: (v: string) =>
       /^\d{14}$/.test((v || "").replace(/\s/g, ""))
         ? ""
@@ -202,6 +472,14 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
       (v || "").trim().length >= 5
         ? ""
         : "Invalid document number. Minimum 5 characters.",
+    ifsc: (v: string) =>
+      /^[A-Z]{4}0[A-Z0-9]{6}$/.test((v || "").replace(/\s/g, "").toUpperCase())
+        ? ""
+        : "Invalid IFSC. Format: 4 letters, 0, 6 alphanumeric (e.g. SBIN0001234)",
+    accountNumber: (v: string) =>
+      /^\d{9,18}$/.test((v || "").replace(/\s/g, ""))
+        ? ""
+        : "Invalid account number. Must be 9–18 digits",
   };
 
   const [docFormatErrors, setDocFormatErrors] = useState<{
@@ -214,6 +492,8 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
     shop_establishment_number?: string;
     udyam_number?: string;
     other_document_number?: string;
+    bank_account_number?: string;
+    bank_ifsc_code?: string;
   }>({});
 
   const upperStoreType = (storeType || "RESTAURANT").toUpperCase();
@@ -223,6 +503,106 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
     upperStoreType === "BAKERY" ||
     upperStoreType === "CLOUD_KITCHEN" ||
     upperStoreType === "GROCERY";
+
+  // Instant FSSAI / Drug Licence duplicate check against DB
+  useEffect(() => {
+    const fssai = (form.fssai_number || "").replace(/\D/g, "");
+    const drug = (form.drug_license_number || "")
+      .trim()
+      .toUpperCase()
+      .replace(/\s+/g, "");
+    const reqId = ++licenceDupReqRef.current;
+    const timers: Array<ReturnType<typeof setTimeout>> = [];
+
+    const applyResult = (kind: "fssai" | "drug", msg: string, checked: boolean) => {
+      setLicenceDup((prev) => ({
+        ...prev,
+        [kind]: msg,
+        ...(kind === "fssai"
+          ? { checkingFssai: false, fssaiOk: checked && !msg }
+          : { checkingDrug: false, drugOk: checked && !msg }),
+      }));
+      setDocFormatErrors((prev) => {
+        const key = kind === "fssai" ? "fssai_number" : "drug_license_number";
+        const prevMsg = prev[key] || "";
+        const wasDup =
+          prevMsg.includes("already registered") ||
+          prevMsg.includes("Duplicates are not allowed");
+        if (msg) return { ...prev, [key]: msg };
+        if (wasDup) return { ...prev, [key]: "" };
+        return prev;
+      });
+    };
+
+    const runCheck = (kind: "fssai" | "drug", number: string, ready: boolean) => {
+      if (!ready) {
+        applyResult(kind, "", false);
+        return;
+      }
+      setLicenceDup((prev) => ({
+        ...prev,
+        ...(kind === "fssai"
+          ? { checkingFssai: true, fssaiOk: false }
+          : { checkingDrug: true, drugOk: false }),
+      }));
+      timers.push(
+        setTimeout(async () => {
+          try {
+            const params = new URLSearchParams({ kind, number });
+            if (storeInternalId != null && Number.isFinite(storeInternalId)) {
+              params.set("storeInternalId", String(storeInternalId));
+            } else if ((storePublicId || "").trim()) {
+              params.set("storePublicId", String(storePublicId).trim());
+            }
+            const res = await fetch(
+              `/api/onboarding/check-licence-duplicate?${params.toString()}`,
+              { credentials: "include" },
+            );
+            const data = await res.json().catch(() => ({}));
+            if (licenceDupReqRef.current !== reqId) return;
+            applyResult(
+              kind,
+              data?.duplicate === true
+                ? String(
+                    data.message ||
+                      (kind === "fssai"
+                        ? "This FSSAI number is already registered. Duplicates are not allowed."
+                        : "This Drug Licence number is already registered. Duplicates are not allowed."),
+                  )
+                : "",
+              data?.checked === true || data?.duplicate === false,
+            );
+          } catch {
+            if (licenceDupReqRef.current !== reqId) return;
+            setLicenceDup((prev) => ({
+              ...prev,
+              ...(kind === "fssai"
+                ? { checkingFssai: false, fssaiOk: false }
+                : { checkingDrug: false, drugOk: false }),
+            }));
+          }
+        }, 450),
+      );
+    };
+
+    runCheck(
+      "fssai",
+      fssai,
+      fssai.length === 14 && isFoodRelatedStoreType,
+    );
+    runCheck("drug", drug, drug.length >= 5 && upperStoreType === "PHARMA");
+
+    return () => {
+      timers.forEach(clearTimeout);
+    };
+  }, [
+    form.fssai_number,
+    form.drug_license_number,
+    storeInternalId,
+    storePublicId,
+    upperStoreType,
+    isFoodRelatedStoreType,
+  ]);
 
   // Local previews for uploaded files (object URLs or server URLs), keyed by doc type.
   const [docPreviews, setDocPreviews] = useState<Record<string, string>>(
@@ -247,13 +627,6 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
     }
   };
 
-  // If GST certificate already exists (from DB or upload), keep GST toggle on "YES"
-  useEffect(() => {
-    if (docPreviews.gst) {
-      setGstCertificateToggle("YES");
-    }
-  }, [docPreviews.gst]);
-
   const panInputRef = useRef<HTMLInputElement | null>(null);
   const aadhaarFrontInputRef = useRef<HTMLInputElement | null>(null);
   const aadhaarBackInputRef = useRef<HTMLInputElement | null>(null);
@@ -261,7 +634,7 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
   const [replaceTarget, setReplaceTarget] = useState<ReplaceTarget>(null);
 
   const handleChange = (
-    e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>
+    e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>
   ) => {
     const { name } = e.target;
     let { value } = e.target;
@@ -306,8 +679,14 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
       }
     } else if (name === "gst_number" || name === "pan_number") {
       value = value.toUpperCase();
+    } else if (name === "aadhar_number") {
+      value = isMaskedAadhaar(value)
+        ? value.trim().toUpperCase()
+        : value.replace(/\D/g, "").slice(0, 12);
     } else if (name === "bank_ifsc_code") {
-      value = value.toUpperCase();
+      value = value.toUpperCase().replace(/\s/g, "").slice(0, 11);
+    } else if (name === "bank_account_number") {
+      value = value.replace(/\D/g, "").slice(0, 18);
     }
 
     const trimmedValue = value.trim();
@@ -341,8 +720,8 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
     } else if (name === "aadhar_number") {
       setDocFormatErrors((prev) => ({
         ...prev,
-        aadhar_number: trimmedValue
-          ? documentFormatValidators.aadhar(value.replace(/\s/g, ""))
+        aadhar_number: valueToStore
+          ? documentFormatValidators.aadhar(valueToStore)
           : "",
       }));
     } else if (name === "gst_number") {
@@ -390,6 +769,20 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
           ? documentFormatValidators.otherDoc(value)
           : "",
       }));
+    } else if (name === "bank_account_number") {
+      setDocFormatErrors((prev) => ({
+        ...prev,
+        bank_account_number: trimmedValue
+          ? documentFormatValidators.accountNumber(trimmedValue)
+          : "",
+      }));
+    } else if (name === "bank_ifsc_code") {
+      setDocFormatErrors((prev) => ({
+        ...prev,
+        bank_ifsc_code: trimmedValue
+          ? documentFormatValidators.ifsc(trimmedValue)
+          : "",
+      }));
     }
   };
 
@@ -398,6 +791,565 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
   useEffect(() => {
     onPatchChange?.(form);
   }, [form, onPatchChange]);
+
+  useEffect(() => {
+    onDigilockerInFlightChange?.(aadhaarVerify.state === "verifying");
+  }, [aadhaarVerify.state, onDigilockerInFlightChange]);
+
+  useEffect(() => {
+    const num = (form.pan_number || "").trim().toUpperCase();
+    if (panVerifiedNumberRef.current && panVerifiedNumberRef.current === num) {
+      if (panVerify.state === "verified" && form.pan_is_verified) return;
+      const details = panVerifiedDetailsRef.current || { pan_status: "VALID" };
+      const registered = typeof details.registered_name === "string" ? details.registered_name : "";
+      setPanVerify({ state: "verified", details });
+      setForm((prev) => ({
+        ...prev,
+        ...(registered ? { pan_holder_name: registered } : {}),
+        pan_is_verified: true,
+        pan_verified_details: details,
+        pan_verification_method: prev.pan_verification_method || "CASHFREE_AUTO",
+        pan_verified_at: prev.pan_verified_at || new Date().toISOString(),
+      }));
+      return;
+    }
+    if (panVerify.state === "idle" && !form.pan_is_verified) return;
+    setPanVerify({ state: "idle" });
+    setForm((prev) => ({
+      ...prev,
+      pan_is_verified: false,
+      pan_verified_details: null,
+      pan_verification_method: null,
+      pan_verified_at: null,
+    }));
+  }, [form.pan_number]);
+
+  useEffect(() => {
+    const num = (form.gst_number || "").trim().toUpperCase();
+    if (gstVerifiedNumberRef.current && gstVerifiedNumberRef.current === num) {
+      if (gstVerify.state === "verified" && form.gst_is_verified) return;
+      const details = gstVerifiedDetailsRef.current || {};
+      const gstInfo = pickGstFetchedBusinessInfo(details);
+      setGstVerify({ state: "verified", details });
+      setForm((prev) => ({
+        ...prev,
+        gst_is_verified: true,
+        gst_verified_details: details,
+        gst_verification_method: prev.gst_verification_method || "CASHFREE_AUTO",
+        gst_verified_at: prev.gst_verified_at || new Date().toISOString(),
+        ...(gstInfo.legal_business_name
+          ? { gst_legal_business_name: gstInfo.legal_business_name }
+          : {}),
+        ...(gstInfo.principal_place_of_business
+          ? { gst_principal_place_of_business: gstInfo.principal_place_of_business }
+          : {}),
+        ...(gstInfo.effective_registration_date
+          ? { gst_effective_registration_date: gstInfo.effective_registration_date }
+          : {}),
+      }));
+      return;
+    }
+    if (gstVerify.state === "idle" && !form.gst_is_verified) return;
+    setGstVerify({ state: "idle" });
+    setForm((prev) => ({
+      ...prev,
+      gst_is_verified: false,
+      gst_verified_details: null,
+      gst_verification_method: null,
+      gst_verified_at: null,
+      gst_legal_business_name: "",
+      gst_principal_place_of_business: "",
+      gst_effective_registration_date: "",
+    }));
+  }, [form.gst_number]);
+
+  useEffect(() => {
+    const acc = String(form.bank_account_number || "").replace(/\D/g, "");
+    const ifsc = String(form.bank_ifsc_code || "").trim().toUpperCase();
+    const key = acc && ifsc ? `${acc}|${ifsc}` : "";
+    if (bankVerifiedKeyRef.current && bankVerifiedKeyRef.current === key) {
+      if (bankVerify.state === "verified" && form.bank_is_verified) return;
+      const details = bankVerifiedDetailsRef.current || {};
+      const bankInfo = pickBankFetchedInfo(details);
+      setBankVerify({ state: "verified", details });
+      setForm((prev) => ({
+        ...prev,
+        bank_is_verified: true,
+        bank_verified_details: details,
+        bank_verification_method: prev.bank_verification_method || "CASHFREE_AUTO",
+        bank_verified_at: prev.bank_verified_at || new Date().toISOString(),
+        ...(bankInfo.name_at_bank ? { bank_account_holder_name: bankInfo.name_at_bank } : {}),
+        ...(bankInfo.bank_name ? { bank_name: bankInfo.bank_name } : {}),
+        ...(bankInfo.branch_name ? { bank_branch_name: bankInfo.branch_name } : {}),
+        ...(bankInfo.account_type ? { bank_account_type: bankInfo.account_type } : {}),
+      }));
+      return;
+    }
+    if (bankVerify.state === "idle" && !form.bank_is_verified) return;
+    setBankVerify({ state: "idle" });
+    setForm((prev) => ({
+      ...prev,
+      bank_is_verified: false,
+      bank_verified_details: null,
+      bank_verification_method: null,
+      bank_verified_at: null,
+    }));
+  }, [form.bank_account_number, form.bank_ifsc_code]);
+
+  useEffect(() => {
+    const vpa = String(form.upi_id || "").trim().toLowerCase();
+    if (upiVerifiedKeyRef.current && upiVerifiedKeyRef.current === vpa) {
+      if (upiVerify.state === "verified" && form.upi_verified) return;
+      const details = upiVerifiedDetailsRef.current || {};
+      setUpiVerify({ state: "verified", details });
+      setForm((prev) => ({
+        ...prev,
+        upi_verified: true,
+        upi_verified_details: details,
+      }));
+      return;
+    }
+    if (upiVerify.state === "idle" && !form.upi_verified) return;
+    setUpiVerify({ state: "idle" });
+    setForm((prev) => ({
+      ...prev,
+      upi_verified: false,
+      upi_verified_details: null,
+    }));
+  }, [form.upi_id]);
+
+  useEffect(() => {
+    const num = (form.aadhar_number || "").replace(/\D/g, "");
+    const currentMasked = maskAadhaarNumber(form.aadhar_number);
+    const verifiedMasked = maskAadhaarNumber(aadhaarVerifiedNumberRef.current);
+    const matchesSnap =
+      !!aadhaarVerifiedNumberRef.current &&
+      (aadhaarVerifiedNumberRef.current === num ||
+        (!!currentMasked && !!verifiedMasked && currentMasked === verifiedMasked) ||
+        aadhaarVerifiedNumberRef.current === currentMasked ||
+        aadhaarVerifiedNumberRef.current === form.aadhar_number ||
+        aadhaarVerifiedNumberRef.current === "verified");
+    if (matchesSnap) {
+      if (aadhaarVerify.state === "verified" && form.aadhaar_is_verified) return;
+      if (!aadhaarVerifiedDetailsRef.current && !form.aadhaar_is_verified) return;
+      const details = aadhaarVerifiedDetailsRef.current || {};
+      setAadhaarVerify({ state: "verified", details });
+      setForm((prev) => ({
+        ...prev,
+        aadhaar_is_verified: true,
+        aadhaar_verified_details: details,
+        aadhaar_verification_method: prev.aadhaar_verification_method || "CASHFREE_AUTO",
+        aadhaar_verified_at: prev.aadhaar_verified_at || new Date().toISOString(),
+      }));
+      return;
+    }
+    if (aadhaarVerify.state === "idle" && !form.aadhaar_is_verified) return;
+    if (aadhaarPollRef.current) {
+      clearInterval(aadhaarPollRef.current);
+      aadhaarPollRef.current = null;
+    }
+    setAadhaarVerify({ state: "idle" });
+    setForm((prev) => ({
+      ...prev,
+      aadhaar_is_verified: false,
+      aadhaar_verified_details: null,
+      aadhaar_verification_method: null,
+      aadhaar_verified_at: null,
+    }));
+  }, [form.aadhar_number]);
+
+  const pollAadhaarStatusOnce = async () => {
+    const publicId = (storePublicId || "").trim();
+    if (!publicId) return;
+    try {
+      const res = await fetch(
+        `/api/onboarding/verify-document/status?storeId=${encodeURIComponent(publicId)}&docKind=aadhaar`,
+        { credentials: "include" },
+      );
+      const d = await res.json().catch(() => ({}));
+      if (d?.verified) {
+        if (aadhaarPollRef.current) {
+          clearInterval(aadhaarPollRef.current);
+          aadhaarPollRef.current = null;
+        }
+        if (digilockerPopupRef.current && !digilockerPopupRef.current.closed) {
+          try {
+            digilockerPopupRef.current.close();
+          } catch {
+            /* ignore */
+          }
+        }
+        digilockerPopupRef.current = null;
+        const details = (d.verifiedData as Record<string, unknown>) || {};
+        const normalized = normalizeAadhaarVerifiedDetails(details);
+        const entered = (form.aadhar_number || "").replace(/\D/g, "");
+        const masked =
+          normalized.maskedAadhaar ||
+          maskAadhaarNumber(entered) ||
+          maskAadhaarNumber(form.aadhar_number);
+        aadhaarVerifiedNumberRef.current = masked || entered || null;
+        aadhaarVerifiedDetailsRef.current = details;
+        setAadhaarVerify({
+          state: "verified",
+          details,
+        });
+        setDocFormatErrors((prev) => ({ ...prev, aadhar_number: "" }));
+        setForm((prev) => ({
+          ...prev,
+          aadhar_number: masked || prev.aadhar_number,
+          ...(normalized.name ? { aadhar_holder_name: normalized.name } : {}),
+          aadhaar_is_verified: true,
+          aadhaar_verified_details: details,
+          aadhaar_verification_method: "CASHFREE_DIGILOCKER",
+          aadhaar_verified_at: new Date().toISOString(),
+        }));
+      } else if (
+        d?.status === "rejected" ||
+        d?.status === "failed" ||
+        d?.status === "expired" ||
+        d?.status === "consent_denied"
+      ) {
+        if (aadhaarPollRef.current) {
+          clearInterval(aadhaarPollRef.current);
+          aadhaarPollRef.current = null;
+        }
+        setAadhaarVerify({
+          state: "failed",
+          error: String(
+            d?.statusReason ||
+              (d?.status === "expired"
+                ? "DigiLocker link expired. Please try again."
+                : d?.status === "consent_denied"
+                  ? "DigiLocker consent was denied. Please try again."
+                  : "DigiLocker verification failed."),
+          ),
+        });
+      }
+    } catch {
+      /* keep polling */
+    }
+  };
+
+  const startAadhaarPolling = () => {
+    if (aadhaarPollRef.current) clearInterval(aadhaarPollRef.current);
+    const startedAt = Date.now();
+    const publicId = (storePublicId || "").trim();
+    if (!publicId) return;
+    void pollAadhaarStatusOnce();
+    aadhaarPollRef.current = setInterval(async () => {
+      if (Date.now() - startedAt > 3 * 60_000) {
+        if (aadhaarPollRef.current) clearInterval(aadhaarPollRef.current);
+        setAadhaarVerify({
+          state: "failed",
+          error: "DigiLocker verification timed out. You can skip or upload images.",
+        });
+        return;
+      }
+      await pollAadhaarStatusOnce();
+    }, 2_500);
+  };
+
+  useEffect(
+    () => () => {
+      if (aadhaarPollRef.current) clearInterval(aadhaarPollRef.current);
+    },
+    [],
+  );
+
+  const verifyDocNow = async (kind: "pan" | "gstin" | "aadhaar" | "bank" | "upi") => {
+    if (!storeInternalId) {
+      setErr("Save store details first so a store id exists.");
+      return;
+    }
+    if (kind === "pan") {
+      const pan = (form.pan_number || "").trim().toUpperCase();
+      if (!pan || documentFormatValidators.pan(pan)) return;
+    } else if (kind === "gstin") {
+      const gstin = (form.gst_number || "").trim().toUpperCase();
+      if (!gstin || documentFormatValidators.gst(gstin)) return;
+    } else if (kind === "bank") {
+      const acc = String(form.bank_account_number || "").replace(/\D/g, "");
+      const ifsc = String(form.bank_ifsc_code || "").trim().toUpperCase();
+      if (!acc || documentFormatValidators.accountNumber(acc)) return;
+      if (!ifsc || documentFormatValidators.ifsc(ifsc)) return;
+    } else if (kind === "upi") {
+      const vpa = String(form.upi_id || "").trim().toLowerCase();
+      if (!vpa || !/^[a-z0-9.\-_]{2,256}@[a-z0-9]{2,64}$/i.test(vpa)) return;
+    } else {
+      const aadhaar = (form.aadhar_number || "").replace(/\D/g, "");
+      if (!aadhaar || documentFormatValidators.aadhar(aadhaar)) return;
+    }
+    if (kind === "aadhaar") {
+      setAadhaarVerify({ state: "verifying" });
+      setErr(null);
+      digilockerPopupRef.current = openDigilockerLoadingPopup();
+      try {
+        const postVerify = () =>
+          fetch("/api/onboarding/verify-document", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            credentials: "include",
+            body: JSON.stringify({
+              storeInternalId,
+              docKind: "aadhaar",
+              redirectUrl: digilockerRedirectUrl(),
+            }),
+          });
+        let res = await postVerify();
+        if (res.status === 401) {
+          res = await postVerify();
+        }
+        const data = await res.json().catch(() => ({}));
+        if (res.status === 401) {
+          if (digilockerPopupRef.current && !digilockerPopupRef.current.closed) {
+            digilockerPopupRef.current.close();
+            digilockerPopupRef.current = null;
+          }
+          const errMsg = String(data?.error || "Not authenticated — please log in again.");
+          setAadhaarVerify({ state: "failed", error: errMsg });
+          setErr(errMsg);
+          return;
+        }
+        if (data?.outcome === "digilocker" && data?.url) {
+          const digilockerUrl = String(data.url);
+          aadhaarVerifiedNumberRef.current =
+            (form.aadhar_number || "").replace(/\D/g, "") || null;
+          setAadhaarVerify({
+            state: "verifying",
+            pending: true,
+            digilockerUrl,
+          });
+          startAadhaarPolling();
+        } else if (data?.outcome === "verified") {
+          if (digilockerPopupRef.current && !digilockerPopupRef.current.closed) {
+            digilockerPopupRef.current.close();
+            digilockerPopupRef.current = null;
+          }
+          const aNum = (form.aadhar_number || "").replace(/\D/g, "");
+          aadhaarVerifiedNumberRef.current = aNum || null;
+          setAadhaarVerify({
+            state: "verified",
+            details: (data.verifiedData as Record<string, unknown>) || {},
+          });
+          setForm((prev) => ({ ...prev, aadhaar_is_verified: true }));
+        } else if (data?.outcome === "manual") {
+          if (digilockerPopupRef.current && !digilockerPopupRef.current.closed) {
+            digilockerPopupRef.current.close();
+            digilockerPopupRef.current = null;
+          }
+          setAadhaarVerify({ state: "manual" });
+        } else {
+          if (digilockerPopupRef.current && !digilockerPopupRef.current.closed) {
+            digilockerPopupRef.current.close();
+            digilockerPopupRef.current = null;
+          }
+          const errMsg = String(data?.error || "DigiLocker verification failed.");
+          setAadhaarVerify({ state: "failed", error: errMsg });
+          setErr(errMsg);
+        }
+      } catch {
+        if (digilockerPopupRef.current && !digilockerPopupRef.current.closed) {
+          digilockerPopupRef.current.close();
+          digilockerPopupRef.current = null;
+        }
+        const errMsg = "Could not reach the verification service.";
+        setAadhaarVerify({ state: "failed", error: errMsg });
+        setErr(errMsg);
+      }
+      return;
+    }
+
+    const setter =
+      kind === "pan"
+        ? setPanVerify
+        : kind === "gstin"
+          ? setGstVerify
+          : kind === "bank"
+            ? setBankVerify
+            : setUpiVerify;
+    setter({ state: "verifying" });
+    setErr(null);
+    try {
+      const body =
+        kind === "pan"
+          ? {
+              storeInternalId,
+              docKind: "pan",
+              pan: (form.pan_number || "").trim().toUpperCase(),
+              name: (form.pan_holder_name || "").trim() || undefined,
+            }
+          : kind === "gstin"
+            ? {
+                storeInternalId,
+                docKind: "gstin",
+                gstin: (form.gst_number || "").trim().toUpperCase(),
+              }
+            : kind === "bank"
+              ? {
+                  storeInternalId,
+                  docKind: "bank",
+                  bankAccount: String(form.bank_account_number || "").replace(/\D/g, ""),
+                  ifsc: String(form.bank_ifsc_code || "").trim().toUpperCase(),
+                  name: String(form.bank_account_holder_name || "").trim() || undefined,
+                }
+              : {
+                  storeInternalId,
+                  docKind: "upi",
+                  vpa: String(form.upi_id || "").trim().toLowerCase(),
+                  name: String(form.bank_account_holder_name || "").trim() || undefined,
+                };
+      const res = await fetch("/api/onboarding/verify-document", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify(body),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (data?.outcome === "verified") {
+        const details = (data.verifiedData as Record<string, unknown>) || {};
+        setter({ state: "verified", details });
+        if (kind === "pan") {
+          const registered = String(
+            (details as { registered_name?: string }).registered_name || "",
+          ).trim();
+          const panNum = (form.pan_number || "").trim().toUpperCase();
+          panVerifiedNumberRef.current = panNum || null;
+          panVerifiedDetailsRef.current = details;
+          setForm((prev) => ({
+            ...prev,
+            ...(registered ? { pan_holder_name: registered } : {}),
+            pan_is_verified: true,
+            pan_verified_at: new Date().toISOString(),
+            pan_verification_method: "CASHFREE_AUTO",
+            pan_verified_details: details,
+          }));
+        } else if (kind === "gstin") {
+          const gstNum = (form.gst_number || "").trim().toUpperCase();
+          gstVerifiedNumberRef.current = gstNum || null;
+          gstVerifiedDetailsRef.current = details;
+          const gstInfo = pickGstFetchedBusinessInfo(details);
+          setForm((prev) => ({
+            ...prev,
+            gst_is_verified: true,
+            gst_verified_at: new Date().toISOString(),
+            gst_verification_method: "CASHFREE_AUTO",
+            gst_verified_details: details,
+            ...(gstInfo.legal_business_name
+              ? { gst_legal_business_name: gstInfo.legal_business_name }
+              : {}),
+            ...(gstInfo.principal_place_of_business
+              ? { gst_principal_place_of_business: gstInfo.principal_place_of_business }
+              : {}),
+            ...(gstInfo.effective_registration_date
+              ? { gst_effective_registration_date: gstInfo.effective_registration_date }
+              : {}),
+          }));
+        } else if (kind === "bank") {
+          const acc = String(form.bank_account_number || "").replace(/\D/g, "");
+          const ifsc = String(form.bank_ifsc_code || "").trim().toUpperCase();
+          bankVerifiedKeyRef.current = acc && ifsc ? `${acc}|${ifsc}` : null;
+          bankVerifiedDetailsRef.current = details;
+          const bankInfo = pickBankFetchedInfo(details);
+          setForm((prev) => ({
+            ...prev,
+            bank_is_verified: true,
+            bank_verified_at: new Date().toISOString(),
+            bank_verification_method: "CASHFREE_AUTO",
+            bank_verified_details: details,
+            ...(bankInfo.name_at_bank
+              ? { bank_account_holder_name: bankInfo.name_at_bank }
+              : {}),
+            ...(bankInfo.bank_name ? { bank_name: bankInfo.bank_name } : {}),
+            ...(bankInfo.branch_name ? { bank_branch_name: bankInfo.branch_name } : {}),
+            ...(bankInfo.account_type ? { bank_account_type: bankInfo.account_type } : {}),
+          }));
+        } else if (kind === "upi") {
+          const vpa = String(form.upi_id || "").trim().toLowerCase();
+          upiVerifiedKeyRef.current = vpa || null;
+          upiVerifiedDetailsRef.current = details;
+          const upiInfo = pickUpiFetchedInfo(details);
+          setForm((prev) => ({
+            ...prev,
+            upi_id: vpa,
+            upi_verified: true,
+            upi_verified_details: details,
+            ...(upiInfo.name_at_bank && !prev.bank_account_holder_name
+              ? { bank_account_holder_name: upiInfo.name_at_bank }
+              : {}),
+          }));
+        }
+      } else if (data?.outcome === "manual") {
+        setter({ state: "manual" });
+      } else {
+        const errMsg = String(data?.error || "Verification failed.");
+        setter({ state: "failed", error: errMsg });
+        setErr(errMsg);
+      }
+    } catch {
+      const errMsg = "Could not reach the verification service.";
+      setter({ state: "failed", error: errMsg });
+      setErr(errMsg);
+    }
+  };
+
+  const verifiedDetailRows = (details?: Record<string, unknown>) => {
+    if (!details) return [] as [string, string][];
+    const rows: [string, string][] = [];
+    const label: Record<string, string> = {
+      legal_name_of_business: "Legal Name of Business",
+      principal_place_address: "Principal Place of Business",
+      date_of_registration: "Effective Date of Registration",
+      gst_in_status: "Status",
+      taxpayer_type: "Type",
+      trade_name_of_business: "Trade Name",
+      constitution_of_business: "Business Constitution",
+      pan_status: "Status",
+      name_at_bank: "Name at bank",
+      bank_name: "Bank",
+      branch_name: "Branch",
+      account_type: "Account type",
+      account_status: "Account status",
+      vpa: "UPI ID",
+      status: "Status",
+      type: "Type",
+    };
+    const preferredOrder = [
+      "legal_name_of_business",
+      "principal_place_address",
+      "date_of_registration",
+      "gst_in_status",
+      "taxpayer_type",
+      "trade_name_of_business",
+      "constitution_of_business",
+      "pan_status",
+      "name_at_bank",
+      "bank_name",
+      "branch_name",
+      "account_type",
+      "account_status",
+      "status",
+      "type",
+    ];
+    const seen = new Set<string>();
+    for (const k of preferredOrder) {
+      const v = details[k];
+      if (v == null || typeof v === "object") continue;
+      const l = label[k];
+      if (!l || seen.has(l)) continue;
+      rows.push([l, String(v)]);
+      seen.add(l);
+    }
+    // Fallback Status/Type if preferred keys missing
+    if (!seen.has("Status")) {
+      const status = details.pan_status ?? details.status ?? details.gst_in_status;
+      if (status != null && String(status).trim()) rows.push(["Status", String(status)]);
+    }
+    if (!seen.has("Type")) {
+      const type = details.type ?? details.taxpayer_type;
+      if (type != null && String(type).trim()) rows.push(["Type", String(type)]);
+    }
+    return rows;
+  };
 
   // Compute whether mandatory fields for the CURRENT section are satisfied
   useEffect(() => {
@@ -411,34 +1363,69 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
     let valid = true;
 
     if (section === "PAN") {
-      // Only PAN related things required on PAN section
-      valid = hasPanNumber && hasPanHolder && hasPanImage;
-    } else if (section === "GST") {
-      // Regulator document required on GST/Drug Lic section
-      let hasRegulatorDoc: boolean;
-      if (upperStoreType === "PHARMA") {
-        hasRegulatorDoc =
+      if (isElectronic(panMode)) {
+        const verified = panVerify.state === "verified" || !!form.pan_is_verified;
+        if (panMode === "auto") {
+          valid = hasPanNumber && verified;
+        } else {
+          // hybrid: verified OR (failed/manual + image) OR existing image on file
+          valid =
+            hasPanNumber &&
+            (verified ||
+              ((panVerify.state === "failed" || panVerify.state === "manual") && hasPanImage) ||
+              hasPanImage);
+        }
+      } else {
+        valid = hasPanNumber && hasPanHolder && hasPanImage;
+      }
+    } else if (section === "LICENCE") {
+      // FSSAI / Drug Lic — unlock rest only after unique check passes
+      if (licenceDup.fssai || licenceDup.drug || licenceDup.checkingFssai || licenceDup.checkingDrug) {
+        valid = false;
+      } else if (upperStoreType === "PHARMA") {
+        valid =
           !!form.drug_license_number &&
           form.drug_license_number.trim().length > 0 &&
-          !docFormatErrors.drug_license_number;
+          !docFormatErrors.drug_license_number &&
+          licenceDup.drugOk;
       } else if (isFoodRelatedStoreType) {
-        hasRegulatorDoc =
+        valid =
           !!form.fssai_number &&
           form.fssai_number.trim().length > 0 &&
-          !docFormatErrors.fssai_number;
+          !docFormatErrors.fssai_number &&
+          licenceDup.fssaiOk;
       } else {
-        // Non-food store types don't require FSSAI in onboarding.
-        hasRegulatorDoc = true;
+        valid = true;
       }
-      valid = hasRegulatorDoc;
+    } else if (section === "GST") {
+      // GST is optional; once a GSTIN is entered under electronic modes, gate accordingly.
+      valid = true;
+      const gstEntered = !!(form.gst_number || "").trim();
+      if (gstEntered && isElectronic(gstMode) && !docFormatErrors.gst_number) {
+        const gstVerified = gstVerify.state === "verified" || !!form.gst_is_verified;
+        const hasGstImage = !!docPreviews.gst;
+        if (gstMode === "auto" && !gstVerified) {
+          valid = false;
+        } else if (gstMode === "hybrid" && !gstVerified && !hasGstImage) {
+          valid = false;
+        }
+      } else if (gstEntered && !!docFormatErrors.gst_number) {
+        valid = false;
+      }
     } else if (section === "BANK") {
-      // Bank section: basic payout details
+      // Bank section: auto / hybrid / manual payout details
+      const hasHolder =
+        !!form.bank_account_holder_name &&
+        form.bank_account_holder_name.trim().length > 0;
       const hasBankName = !!form.bank_name && form.bank_name.trim().length > 0;
       const hasAccountNumber =
         !!form.bank_account_number &&
-        form.bank_account_number.trim().length > 0;
+        form.bank_account_number.trim().length > 0 &&
+        !docFormatErrors.bank_account_number;
       const hasIfsc =
-        !!form.bank_ifsc_code && form.bank_ifsc_code.trim().length > 0;
+        !!form.bank_ifsc_code &&
+        form.bank_ifsc_code.trim().length > 0 &&
+        !docFormatErrors.bank_ifsc_code;
 
       const hasUpiId = !!form.upi_id && form.upi_id.trim().length > 0;
       const upiPattern = /^[a-zA-Z0-9.\-_]{2,256}@[a-zA-Z0-9]{2,64}$/;
@@ -446,18 +1433,52 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
         hasUpiId && upiPattern.test(form.upi_id!.trim());
       const hasBankProof = !!docPreviews.bank_proof;
       const hasUpiQr = !!docPreviews.upi_qr;
+      const bankVerified =
+        bankVerify.state === "verified" || !!form.bank_is_verified;
+      const upiVerified =
+        upiVerify.state === "verified" || !!form.upi_verified;
 
-      // User can proceed with EITHER:
-      // - full bank details + bank proof, OR
-      // - UPI ID (valid format) + QR screenshot (for UPI mode)
       if (payoutMode === "UPI") {
-        valid = hasValidUpiId && hasUpiQr;
+        if (!hasValidUpiId) {
+          valid = false;
+        } else if (isElectronic(upiMode)) {
+          if (upiMode === "auto") {
+            valid = upiVerified;
+          } else if (upiVerified) {
+            valid = true;
+          } else {
+            valid = hasUpiQr;
+          }
+        } else {
+          valid = hasUpiQr;
+        }
+      } else if (isElectronic(bankMode)) {
+        const hasAccountType = ["SAVINGS", "CURRENT"].includes(
+          String(form.bank_account_type || "").trim().toUpperCase(),
+        );
+        if (!hasAccountNumber || !hasIfsc) {
+          valid = false;
+        } else if (bankMode === "auto") {
+          valid = bankVerified && hasAccountType;
+        } else if (bankVerified) {
+          valid = hasAccountType;
+        } else {
+          // hybrid fallback: manual details + proof
+          valid = hasHolder && hasBankName && hasBankProof;
+        }
       } else {
-        valid = hasBankName && hasAccountNumber && hasIfsc && hasBankProof;
+        valid = hasHolder && hasBankName && hasAccountNumber && hasIfsc && hasBankProof;
       }
     } else {
-      // Aadhaar section is fully optional
+      // Aadhaar is fully optional — hybrid/auto DigiLocker never blocks Skip.
       valid = true;
+      if (
+        (form.aadhar_number || "").trim() &&
+        docFormatErrors.aadhar_number
+      ) {
+        // Only block when they typed an invalid number (clear field to skip).
+        valid = false;
+      }
     }
 
     // Global rule: if any document number field has a format error while value is present,
@@ -472,7 +1493,30 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
     onRequiredValidChange(valid && !hasAnyFormatError);
     // Note: docFormatErrors is intentionally not in the dependency array to keep
     // the deps length stable across hot reloads and avoid the Next.js warning.
-  }, [form, docPreviews, upperStoreType, section, onRequiredValidChange]);
+  }, [
+    form,
+    docPreviews,
+    upperStoreType,
+    section,
+    onRequiredValidChange,
+    panMode,
+    panVerify.state,
+    gstMode,
+    gstVerify.state,
+    bankMode,
+    bankVerify.state,
+    upiMode,
+    upiVerify.state,
+    payoutMode,
+    licenceDup.fssai,
+    licenceDup.drug,
+    licenceDup.checkingFssai,
+    licenceDup.checkingDrug,
+    licenceDup.fssaiOk,
+    licenceDup.drugOk,
+    docFormatErrors.fssai_number,
+    docFormatErrors.drug_license_number,
+  ]);
 
   const handleFileUpload = async (
     e: React.ChangeEvent<HTMLInputElement>,
@@ -637,32 +1681,48 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
   }, [docPreviews]);
 
   const renderPanSection = () => (
-    <div className="space-y-4">
-      <div className="rounded-xl border border-indigo-100 bg-indigo-50/60 px-4 py-3">
-        <p className="text-xs sm:text-sm font-medium text-indigo-800">
-          PAN Card (Mandatory)
-        </p>
-        <p className="mt-1 text-[11px] sm:text-xs text-indigo-700">
-          PAN is required for store verification. Format: ABCDE1234F.
-        </p>
-      </div>
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-        <div>
-          <label className="block text-xs font-medium text-slate-700 mb-1">
-            Name as on PAN *
-          </label>
-          <input
-            type="text"
-            name="pan_holder_name"
-            value={form.pan_holder_name ?? ""}
-            onChange={handleChange}
-            className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
-            placeholder="Full name as on PAN card"
-          />
+    <div className="space-y-2">
+      <div className="rounded-lg bg-indigo-50/80 border border-indigo-100 p-3">
+        <div className="flex items-start gap-2">
+          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-indigo-100 text-indigo-600">
+            <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
+              <path
+                fillRule="evenodd"
+                d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z"
+                clipRule="evenodd"
+              />
+            </svg>
+          </div>
+          <div>
+            <p className="text-sm font-semibold text-indigo-900">PAN Card (Mandatory)</p>
+            <p className="text-xs text-indigo-700 mt-0.5">
+              {isElectronic(panMode)
+                ? "PAN number is verified automatically — no card image needed when it verifies. Format: ABCDE1234F"
+                : "PAN is required for store verification. Format: ABCDE1234F."}
+            </p>
+          </div>
         </div>
+      </div>
+      <div className={`grid grid-cols-1 ${isElectronic(panMode) && !(panVerify.state === "failed" && /name/i.test(panVerify.error || "")) ? "" : "sm:grid-cols-2"} gap-3`}>
+        {(!isElectronic(panMode) ||
+          (panVerify.state === "failed" && /name/i.test(panVerify.error || ""))) && (
+          <div>
+            <label className="block text-xs font-medium text-slate-700 mb-1">
+              Name as on PAN {isElectronic(panMode) ? "" : <span className="text-rose-500">*</span>}
+            </label>
+            <input
+              type="text"
+              name="pan_holder_name"
+              value={form.pan_holder_name ?? ""}
+              onChange={handleChange}
+              className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+              placeholder="Full name as on PAN card"
+            />
+          </div>
+        )}
         <div>
           <label className="block text-xs font-medium text-slate-700 mb-1">
-            PAN Number *
+            PAN Number <span className="text-rose-500">*</span>
           </label>
           <div className="relative">
             <input
@@ -670,35 +1730,93 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
               name="pan_number"
               value={form.pan_number ?? ""}
               onChange={handleChange}
-              className={`w-full rounded-lg border px-3 pr-8 py-2 text-sm uppercase tracking-[0.06em] ${
+              className={`w-full rounded-lg border px-3 pr-10 py-2 text-sm uppercase tracking-wider bg-white font-medium focus:outline-none focus:ring-2 ${
                 form.pan_number
                   ? docFormatErrors.pan_number
-                    ? "border-rose-400"
-                    : "border-emerald-400"
-                  : "border-slate-300"
+                    ? "border-rose-400 focus:ring-rose-200"
+                    : "border-emerald-500 focus:border-emerald-600 focus:ring-emerald-200"
+                  : "border-slate-300 focus:border-indigo-500 focus:ring-indigo-500"
               }`}
               placeholder="ABCDE1234F"
               maxLength={10}
             />
             {form.pan_number && !docFormatErrors.pan_number && (
               <span className="pointer-events-none absolute inset-y-0 right-2 flex items-center">
-                <span className="inline-flex h-3.5 w-3.5 items-center justify-center rounded-full bg-emerald-600 text-white text-[8px]">
+                <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-emerald-600 text-white text-[11px]">
                   ✓
                 </span>
               </span>
             )}
           </div>
           {docFormatErrors.pan_number && (
-            <p className="mt-0.5 text-[11px] text-rose-600">{docFormatErrors.pan_number}</p>
+            <p className="mt-1 text-xs text-rose-600">{docFormatErrors.pan_number}</p>
           )}
-          {!form.pan_number && !docFormatErrors.pan_number && (
-            <p className="mt-0.5 text-[11px] text-slate-500">
-              10 characters, auto uppercase (e.g. ABCDE1234F)
+          <p className="mt-1.5 text-xs text-slate-500">
+            10 characters, auto uppercase (e.g. ABCDE1234F)
+          </p>
+        </div>
+      </div>
+
+      {isElectronic(panMode) && (
+        <div className="space-y-2">
+          {panVerify.state === "verified" || form.pan_is_verified ? (
+            <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3">
+              <p className="text-sm font-semibold text-emerald-800 flex items-center gap-1.5">
+                <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-emerald-600 text-white text-[11px]">
+                  ✓
+                </span>
+                PAN verified automatically
+              </p>
+              {verifiedDetailRows(panVerify.details || form.pan_verified_details || undefined).length > 0 && (
+                <dl className="mt-2 grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1 text-xs">
+                  {verifiedDetailRows(panVerify.details || form.pan_verified_details || undefined).map(
+                    ([label, value]) => (
+                      <div key={label} className="flex gap-1.5">
+                        <dt className="text-emerald-700">{label}:</dt>
+                        <dd className="font-medium text-emerald-900">{value}</dd>
+                      </div>
+                    ),
+                  )}
+                </dl>
+              )}
+              <p className="mt-1.5 text-xs text-emerald-700">
+                No card image needed. You can continue.
+              </p>
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={() => verifyDocNow("pan")}
+              disabled={
+                panVerify.state === "verifying" ||
+                !(form.pan_number || "").trim() ||
+                !!documentFormatValidators.pan((form.pan_number || "").trim()) ||
+                !storeInternalId
+              }
+              className="inline-flex items-center rounded-lg bg-indigo-600 px-4 py-2 text-xs font-semibold text-white hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {panVerify.state === "verifying" ? (
+                <>
+                  <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+                  Verifying…
+                </>
+              ) : (
+                "Verify PAN"
+              )}
+            </button>
+          )}
+          {panVerify.state === "failed" && (
+            <p className="text-[11px] text-rose-600">
+              {panVerify.error || "Automatic verification failed."}
+              {panMode === "hybrid" ? " Upload a PAN card image to continue." : ""}
             </p>
           )}
         </div>
-      </div>
-      {/* Upload state box */}
+      )}
+
+      {/* Upload — always for manual; for auto/hybrid only after fail/manual */}
+      {uploadAllowedFor(panMode, panVerify) && (
+        <>
       {docPreviews.pan ? (
         <div className="mt-3 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 relative">
           <div className="flex items-center justify-between gap-3">
@@ -773,7 +1891,7 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
       ) : (
         <div className="rounded-lg border-2 border-dashed border-slate-300 bg-slate-50/80 px-4 py-6 text-center mt-3">
           <p className="text-xs sm:text-sm font-medium text-slate-700 mb-1">
-            PAN Card Image *
+            PAN Card Image {isElectronic(panMode) ? "(fallback)" : "*"}
           </p>
           <p className="text-[11px] text-slate-500">
             JPG, PNG or PDF · Max 5MB
@@ -798,43 +1916,75 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
           </div>
         </div>
       )}
-      <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] sm:text-xs text-amber-800">
-        PAN must be valid and belong to the business owner or authorised
-        signatory.
+        </>
+      )}
+      <div className="rounded-xl bg-amber-50/80 border border-amber-100 p-4">
+        <div className="flex items-start gap-3">
+          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-amber-100 text-amber-600">
+            <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
+              <path
+                fillRule="evenodd"
+                d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z"
+                clipRule="evenodd"
+              />
+            </svg>
+          </div>
+          <div>
+            <p className="text-sm font-semibold text-amber-900">Note</p>
+            <p className="text-xs text-amber-800 mt-0.5">
+              PAN must be valid and belong to the business owner or authorized signatory.
+            </p>
+          </div>
+        </div>
       </div>
     </div>
   );
 
   const renderAadhaarSection = () => (
-    <div className="space-y-4">
-      <div className="rounded-xl border border-indigo-100 bg-indigo-50/70 px-4 py-3">
-        <p className="text-xs sm:text-sm font-medium text-indigo-800 flex items-center gap-2">
-          <span className="inline-flex items-center rounded-full bg-indigo-600 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-white">
-            Aadhaar Card
-          </span>
-          <span className="text-[11px] sm:text-xs font-normal text-indigo-800">
-            Optional
-          </span>
-        </p>
-        <p className="mt-1 text-[11px] sm:text-xs text-indigo-700">
-          Identity verification. Images are optional—number and name are sufficient.
-        </p>
-      </div>
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-        <div>
-          <label className="block text-xs font-medium text-slate-700 mb-1">
-            Name as on Aadhaar{" "}
-            <span className="font-normal text-slate-500">(if providing)</span>
-          </label>
-          <input
-            type="text"
-            name="aadhar_holder_name"
-            value={form.aadhar_holder_name ?? ""}
-            onChange={handleChange}
-            className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-slate-50"
-            placeholder="Bhim Pratap Singh"
-          />
+    <div className="space-y-3">
+      <div className="rounded-lg bg-indigo-50/80 border border-indigo-100 p-3">
+        <div className="flex items-start gap-2">
+          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-indigo-100 text-indigo-600">
+            <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
+              <path
+                fillRule="evenodd"
+                d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z"
+                clipRule="evenodd"
+              />
+            </svg>
+          </div>
+          <div>
+            <p className="text-sm font-semibold text-indigo-900">
+              Aadhaar Card{" "}
+              <span className="text-slate-500 text-xs font-normal">(Optional)</span>
+            </p>
+            <p className="text-xs text-indigo-700 mt-0.5">
+              {isElectronic(aadhaarMode)
+                ? "Optional — DigiLocker verify, or skip and continue anytime."
+                : "Identity verification. Images are optional—number and name sufficient."}
+            </p>
+          </div>
         </div>
+      </div>
+      <div
+        className={`grid grid-cols-1 ${isElectronic(aadhaarMode) ? "" : "sm:grid-cols-2"} gap-3`}
+      >
+        {!isElectronic(aadhaarMode) && (
+          <div>
+            <label className="block text-xs font-medium text-slate-700 mb-1">
+              Name as on Aadhaar{" "}
+              <span className="font-normal text-slate-500">(if providing)</span>
+            </label>
+            <input
+              type="text"
+              name="aadhar_holder_name"
+              value={form.aadhar_holder_name ?? ""}
+              onChange={handleChange}
+              className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-slate-50"
+              placeholder="Bhim Pratap Singh"
+            />
+          </div>
+        )}
         <div>
           <label className="block text-xs font-medium text-slate-700 mb-1">
             Aadhaar Number{" "}
@@ -846,6 +1996,9 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
               name="aadhar_number"
               value={form.aadhar_number ?? ""}
               onChange={handleChange}
+              readOnly={
+                aadhaarVerify.state === "verified" || !!form.aadhaar_is_verified
+              }
               className={`w-full rounded-lg border px-3 pr-8 py-2 text-sm bg-slate-50 ${
                 form.aadhar_number
                   ? docFormatErrors.aadhar_number
@@ -854,7 +2007,7 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
                   : "border-slate-300"
               }`}
               placeholder="960334402444"
-              maxLength={12}
+              maxLength={isMaskedAadhaar(form.aadhar_number) ? 14 : 12}
             />
             {form.aadhar_number && !docFormatErrors.aadhar_number && (
               <span className="pointer-events-none absolute inset-y-0 right-2 flex items-center">
@@ -874,6 +2027,114 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
           )}
         </div>
       </div>
+
+      {isElectronic(aadhaarMode) && (
+        <div className="space-y-2">
+          {aadhaarVerify.state === "verified" || form.aadhaar_is_verified ? (
+            <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3">
+              <p className="text-sm font-semibold text-emerald-800 flex items-center gap-1.5">
+                <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-emerald-600 text-white text-[11px]">
+                  ✓
+                </span>
+                Aadhaar verified via DigiLocker
+              </p>
+              {(() => {
+                const rows = normalizeAadhaarVerifiedDetails(
+                  aadhaarVerify.details ||
+                    (form.aadhaar_verified_details as Record<string, unknown> | null) ||
+                    null,
+                ).rows;
+                if (!rows.length) {
+                  return (
+                    <p className="mt-1.5 text-xs text-emerald-700">
+                      No card images needed. You can continue.
+                    </p>
+                  );
+                }
+                return (
+                  <>
+                    <dl className="mt-2 grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1 text-xs">
+                      {rows.map(([label, value]) => (
+                        <div key={label} className="flex gap-1.5 text-left">
+                          <dt className="text-emerald-700 shrink-0">{label}:</dt>
+                          <dd className="font-medium text-emerald-900 break-words">{value}</dd>
+                        </div>
+                      ))}
+                    </dl>
+                    <p className="mt-1.5 text-xs text-emerald-700">
+                      No card images needed. You can continue.
+                    </p>
+                  </>
+                );
+              })()}
+            </div>
+          ) : aadhaarVerify.state === "verifying" && aadhaarVerify.pending ? (
+            <div className="rounded-xl border border-indigo-200 bg-indigo-50 px-4 py-3 text-xs text-indigo-800 space-y-2">
+              <p className="font-semibold inline-flex items-center gap-2">
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                Waiting for DigiLocker…
+              </p>
+              <p className="mt-1">Complete OTP in the DigiLocker window — this panel updates when verified.</p>
+              <button
+                type="button"
+                onClick={() => {
+                  if (aadhaarPollRef.current) {
+                    clearInterval(aadhaarPollRef.current);
+                    aadhaarPollRef.current = null;
+                  }
+                  setAadhaarVerify({ state: "idle" });
+                  setErr(null);
+                }}
+                className="inline-flex w-fit items-center rounded-lg border border-indigo-300 bg-white px-3 py-1.5 text-xs font-medium text-indigo-800 hover:bg-indigo-50"
+              >
+                Cancel
+              </button>
+            </div>
+          ) : (
+            <div className="space-y-1.5">
+              <button
+                type="button"
+                onClick={() => verifyDocNow("aadhaar")}
+                disabled={
+                  aadhaarVerify.state === "verifying" ||
+                  !storeInternalId ||
+                  !(form.aadhar_number || "").replace(/\D/g, "").trim() ||
+                  !!documentFormatValidators.aadhar(
+                    (form.aadhar_number || "").replace(/\D/g, ""),
+                  )
+                }
+                className="inline-flex items-center rounded-lg bg-indigo-600 px-4 py-2 text-xs font-semibold text-white hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {aadhaarVerify.state === "verifying" ? (
+                  <>
+                    <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+                    Starting DigiLocker…
+                  </>
+                ) : (
+                  "Verify with DigiLocker"
+                )}
+              </button>
+              <p className="text-[11px] text-slate-500">
+                Enter a valid 12-digit Aadhaar number first, then verify — or skip this optional step.
+              </p>
+              {aadhaarVerify.state === "failed" && (
+                <p className="text-[11px] text-rose-600">
+                  {aadhaarVerify.error || "DigiLocker failed."}
+                  {aadhaarMode === "hybrid"
+                    ? " Upload card images below, or skip."
+                    : " You can skip and continue."}
+                </p>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
+      {(uploadAllowedFor(aadhaarMode, aadhaarVerify) ||
+        !!docPreviews.aadhaar_front ||
+        !!docPreviews.aadhaar_back) &&
+        aadhaarVerify.state !== "verified" &&
+        !form.aadhaar_is_verified && (
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
         {/* Front side card */}
         {docPreviews.aadhaar_front ? (
@@ -1069,18 +2330,20 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
           </div>
         )}
       </div>
-      <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] sm:text-xs text-amber-800">
-        Both sides should be clear and readable.
-      </div>
+      )}
+      {!isElectronic(aadhaarMode) && (
+        <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] sm:text-xs text-amber-800">
+          Both sides should be clear and readable.
+        </div>
+      )}
     </div>
   );
 
   const renderGstOptionalBlock = () => (
     <>
-      {gstCertificateToggle === "YES" && (
         <div className="mt-1 space-y-2">
           <label className="block text-xs font-medium text-slate-700 mb-1">
-            GSTIN
+            GSTIN {isElectronic(gstMode) ? "(if providing)" : ""}
           </label>
           <div className="flex flex-col gap-2">
             <div className="flex flex-col sm:flex-row sm:items-center sm:gap-2">
@@ -1107,55 +2370,170 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
                   </span>
                 )}
               </div>
-              <div className="mt-2 sm:mt-0 flex items-center gap-2">
-                <label className="inline-flex items-center px-3 py-1.5 rounded-lg border border-dashed border-slate-300 text-[11px] font-medium text-slate-700 cursor-pointer hover:bg-slate-50">
-                  {uploadingDocType === "gst" && (
-                    <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
-                  )}
-                  <span>{docPreviews.gst ? "Change file" : "Upload Certificate"}</span>
-                  <input
-                    type="file"
-                    accept="image/*,.pdf"
-                    className="hidden"
-                    onChange={(e) => handleFileUpload(e, "gst")}
-                    disabled={uploadingDocType === "gst"}
-                  />
-                </label>
-                {docPreviews.gst && (
-                  <>
-                    <button
-                      type="button"
-                      className="inline-flex items-center rounded-full bg-emerald-50 border border-emerald-200 px-2 py-1 text-[11px] text-emerald-800 hover:bg-emerald-100"
-                      onClick={() =>
-                        window.open(docPreviews.gst, "_blank", "noopener,noreferrer")
-                      }
-                    >
-                      View GST certificate
-                    </button>
-                    <div className="flex items-center gap-1 rounded-full bg-slate-50 border border-slate-200 px-2 py-1 text-[11px] text-slate-800">
-                      <span className="truncate max-w-[110px]">
-                        {getFileNameFromUrl(docPreviews.gst)}
-                      </span>
+              {(!isElectronic(gstMode) ||
+                uploadAllowedFor(gstMode, gstVerify) ||
+                !!docPreviews.gst) &&
+                gstVerify.state !== "verified" &&
+                !form.gst_is_verified && (
+                <div className="mt-2 sm:mt-0 flex items-center gap-2">
+                  <label className="inline-flex items-center px-3 py-1.5 rounded-lg border border-dashed border-slate-300 text-[11px] font-medium text-slate-700 cursor-pointer hover:bg-slate-50">
+                    {uploadingDocType === "gst" && (
+                      <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+                    )}
+                    <span>{docPreviews.gst ? "Change file" : "Upload Certificate"}</span>
+                    <input
+                      type="file"
+                      accept="image/*,.pdf"
+                      className="hidden"
+                      onChange={(e) => handleFileUpload(e, "gst")}
+                      disabled={uploadingDocType === "gst"}
+                    />
+                  </label>
+                  {docPreviews.gst && (
+                    <>
                       <button
                         type="button"
-                        className="ml-1 text-slate-500 hover:text-slate-800"
+                        className="inline-flex items-center rounded-full bg-emerald-50 border border-emerald-200 px-2 py-1 text-[11px] text-emerald-800 hover:bg-emerald-100"
                         onClick={() =>
-                          setDocPreviews((prev) => {
-                            const next = { ...prev };
-                            if (next.gst) URL.revokeObjectURL(next.gst);
-                            delete next.gst;
-                            return next;
-                          })
+                          window.open(docPreviews.gst, "_blank", "noopener,noreferrer")
                         }
                       >
-                        ×
+                        View GST certificate
                       </button>
-                    </div>
-                  </>
+                      <div className="flex items-center gap-1 rounded-full bg-slate-50 border border-slate-200 px-2 py-1 text-[11px] text-slate-800">
+                        <span className="truncate max-w-[110px]">
+                          {getFileNameFromUrl(docPreviews.gst)}
+                        </span>
+                        <button
+                          type="button"
+                          className="ml-1 text-slate-500 hover:text-slate-800"
+                          onClick={() =>
+                            setDocPreviews((prev) => {
+                              const next = { ...prev };
+                              if (next.gst) URL.revokeObjectURL(next.gst);
+                              delete next.gst;
+                              return next;
+                            })
+                          }
+                        >
+                          ×
+                        </button>
+                      </div>
+                    </>
+                  )}
+                </div>
+              )}
+            </div>
+            {isElectronic(gstMode) && (
+              <div className="space-y-2">
+                {gstVerify.state === "verified" || form.gst_is_verified ? (
+                  <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3">
+                    <p className="text-sm font-semibold text-emerald-800">
+                      GSTIN verified automatically
+                    </p>
+                    {verifiedDetailRows(
+                      gstVerify.details || form.gst_verified_details || undefined,
+                    ).map(([label, value]) => (
+                      <p key={label} className="mt-1 text-xs text-emerald-800">
+                        <span className="font-medium">{label}:</span> {value}
+                      </p>
+                    ))}
+                    <p className="mt-2 text-[11px] text-emerald-700">
+                      No certificate upload needed. You can continue.
+                    </p>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => verifyDocNow("gstin")}
+                    disabled={
+                      gstVerify.state === "verifying" ||
+                      !(form.gst_number || "").trim() ||
+                      !!documentFormatValidators.gst(
+                        (form.gst_number || "").trim(),
+                      ) ||
+                      !storeInternalId
+                    }
+                    className="inline-flex items-center rounded-lg bg-indigo-600 px-4 py-2 text-xs font-semibold text-white hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {gstVerify.state === "verifying" ? (
+                      <>
+                        <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+                        Verifying…
+                      </>
+                    ) : (
+                      "Verify GSTIN"
+                    )}
+                  </button>
+                )}
+                {gstVerify.state === "failed" && (
+                  <p className="text-[11px] text-rose-600">
+                    {gstVerify.error || "Automatic verification failed."}
+                    {gstMode === "hybrid"
+                      ? " Upload the GST certificate to continue."
+                      : ""}
+                  </p>
                 )}
               </div>
-            </div>
-            {docPreviews.gst && (
+            )}
+            {/* Manual GST business details: only in manual mode, or after auto-verify fails / falls back */}
+            {(form.gst_number || "").trim() &&
+              !form.gst_is_verified &&
+              gstVerify.state !== "verified" &&
+              (!isElectronic(gstMode) ||
+                gstVerify.state === "failed" ||
+                gstVerify.state === "manual" ||
+                uploadAllowedFor(gstMode, gstVerify)) && (
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                {isElectronic(gstMode) &&
+                  (gstVerify.state === "failed" || gstVerify.state === "manual") && (
+                  <p className="sm:col-span-2 text-[11px] text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                    Auto verification didn&apos;t succeed — enter business details manually (and upload certificate if needed).
+                  </p>
+                )}
+                <div className="sm:col-span-2">
+                  <label className="block text-xs font-medium text-slate-700 mb-1">
+                    Legal Name of Business
+                  </label>
+                  <input
+                    type="text"
+                    name="gst_legal_business_name"
+                    value={form.gst_legal_business_name ?? ""}
+                    onChange={handleChange}
+                    className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
+                    placeholder="Enter legal name of business"
+                  />
+                </div>
+                <div className="sm:col-span-2">
+                  <label className="block text-xs font-medium text-slate-700 mb-1">
+                    Principal Place of Business
+                  </label>
+                  <textarea
+                    name="gst_principal_place_of_business"
+                    value={form.gst_principal_place_of_business ?? ""}
+                    onChange={handleChange}
+                    rows={2}
+                    className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm resize-y"
+                    placeholder="Enter principal place of business"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-slate-700 mb-1">
+                    Effective Date of Registration
+                  </label>
+                  <input
+                    type="date"
+                    name="gst_effective_registration_date"
+                    value={(form.gst_effective_registration_date || "").slice(0, 10)}
+                    onChange={handleChange}
+                    className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
+                  />
+                </div>
+              </div>
+            )}
+            {docPreviews.gst &&
+              gstVerify.state !== "verified" &&
+              !form.gst_is_verified && (
               <div className="flex justify-start">
                 <img
                   src={docPreviews.gst}
@@ -1165,7 +2543,9 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
               </div>
             )}
             <p className="text-[11px] text-slate-500">
-              Optional for non-GST businesses.
+              {isElectronic(gstMode)
+                ? "Optional — verify GSTIN automatically when available."
+                : "Optional for non-GST businesses."}
             </p>
             {docFormatErrors.gst_number && (
               <p className="mt-0.5 text-[11px] text-rose-600">
@@ -1174,24 +2554,77 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
             )}
           </div>
         </div>
-      )}
     </>
   );
 
   const renderGstSection = () => (
     <div className="space-y-2">
+      <div className="rounded-lg border border-purple-200 bg-purple-50/80 p-2.5">
+        <div className="flex items-start gap-3">
+          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-purple-100 text-purple-700">
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
+              />
+            </svg>
+          </div>
+          <div>
+            <p className="text-sm font-semibold text-purple-900">
+              GST Certificate (Optional)
+            </p>
+            <p className="text-xs text-purple-700 mt-0.5">
+              {isElectronic(gstMode)
+                ? "Optional — Cashfree verify GSTIN, or skip and continue anytime."
+                : "Optional — enter GSTIN and upload certificate, or skip anytime."}
+            </p>
+          </div>
+        </div>
+      </div>
+      {renderGstOptionalBlock()}
+      <div className="mt-1 rounded-lg border border-indigo-100 bg-indigo-50 px-3.5 py-2 text-[11px] sm:text-xs text-indigo-800">
+        <div className="flex items-start gap-2">
+          <div className="mt-[2px] flex h-4 w-4 items-center justify-center rounded-full bg-indigo-600 text-white text-[10px]">
+            i
+          </div>
+          <div>
+            <p className="font-semibold mb-0.5">Note</p>
+            <p>
+              GST may be required based on turnover. You can skip this step if you do
+              not have a GSTIN yet.
+            </p>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+
+  const renderLicenceSection = () => (
+    <div className="space-y-2">
       {/* Pharma specific layout (images 1 & 2) */}
       {upperStoreType === "PHARMA" ? (
         <>
           {/* Pharma documents header */}
-          <div className="rounded-lg border border-indigo-100 bg-indigo-50/70 px-3 py-1.5">
-            <p className="text-[11px] sm:text-xs font-semibold text-indigo-900">
-              Pharma Documents (Mandatory)
-            </p>
-            <p className="mt-0.5 text-[10px] sm:text-[11px] text-indigo-700">
-              Drug License and Pharmacist details mandatory for pharmacy as per drug
-              regulations.
-            </p>
+          <div className="rounded-lg border border-violet-100 bg-violet-50/80 p-2.5">
+            <div className="flex items-start gap-3">
+              <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-violet-100 text-violet-600">
+                <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
+                  <path
+                    fillRule="evenodd"
+                    d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z"
+                    clipRule="evenodd"
+                  />
+                </svg>
+              </div>
+              <div>
+                <p className="text-sm font-semibold text-violet-900">Pharma Documents (Mandatory)</p>
+                <p className="text-xs text-violet-700 mt-0.5">
+                  Drug License and Pharmacist details mandatory for pharmacy as per drug regulations.
+                </p>
+              </div>
+            </div>
           </div>
 
           {/* Drug licence number + upload */}
@@ -1205,24 +2638,34 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
                 name="drug_license_number"
                 value={form.drug_license_number ?? ""}
                 onChange={handleChange}
-                className={`w-full rounded-lg border px-3 py-2 text-sm ${
+                className={`w-full rounded-lg border px-3 pr-9 py-2 text-sm ${
                   docFormatErrors.drug_license_number
                     ? "border-rose-400 focus:border-rose-500 focus:ring-rose-200"
+                    : licenceDup.drugOk && !licenceDup.checkingDrug
+                    ? "border-emerald-400 focus:border-indigo-500 focus:ring-indigo-200"
                     : "border-slate-300 focus:border-indigo-500 focus:ring-indigo-200"
                 }`}
                 placeholder="Enter Drug Licence Number"
               />
-              {form.drug_license_number &&
-                !docFormatErrors.drug_license_number && (
-                  <span className="pointer-events-none absolute inset-y-0 right-2 flex items-center">
-                    <span className="inline-flex h-3.5 w-3.5 items-center justify-center rounded-full bg-emerald-600 text-white text-[8px]">
-                      ✓
-                    </span>
+              <span className="pointer-events-none absolute inset-y-0 right-2 flex items-center">
+                {licenceDup.checkingDrug ? (
+                  <Loader2 className="h-4 w-4 animate-spin text-indigo-600" />
+                ) : form.drug_license_number &&
+                  !docFormatErrors.drug_license_number &&
+                  licenceDup.drugOk ? (
+                  <span className="inline-flex h-3.5 w-3.5 items-center justify-center rounded-full bg-emerald-600 text-white text-[8px]">
+                    ✓
                   </span>
-                )}
+                ) : null}
+              </span>
               {docFormatErrors.drug_license_number && (
                 <p className="mt-0.5 text-[11px] text-rose-600">
                   {docFormatErrors.drug_license_number}
+                </p>
+              )}
+              {licenceDup.checkingDrug && !docFormatErrors.drug_license_number && (
+                <p className="mt-0.5 text-[11px] text-indigo-600">
+                  Checking Drug Licence number…
                 </p>
               )}
               <p className="mt-0.5 text-[11px] text-slate-500">
@@ -1263,7 +2706,6 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
                       <button
                         type="button"
                         onClick={() => {
-                          // allow replacing via same input
                           const input = document.getElementById(
                             "drug-license-upload-input"
                           ) as HTMLInputElement | null;
@@ -1320,7 +2762,7 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
           </div>
 
           {/* Pharmacist details */}
-            <div className="space-y-1.5">
+          <div className="space-y-1.5">
             <div className="sm:col-span-2 relative">
               <label className="block text-xs font-medium text-slate-700 mb-1">
                 Pharmacist Registration Number <span className="text-rose-600">*</span>
@@ -1501,42 +2943,6 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
             </div>
           </div>
 
-          {/* GST Certificate optional toggle card */}
-          <div className="mt-1 rounded-lg border border-purple-200 bg-purple-50/80 px-3.5 py-2 flex items-center justify-between gap-3">
-            <div>
-              <p className="text-xs sm:text-sm font-semibold text-purple-800">
-                GST Certificate (Optional)
-              </p>
-            </div>
-            <div className="inline-flex items-center rounded-full bg-white px-0.5 py-[2px] text-[11px] font-medium">
-              <button
-                type="button"
-                onClick={() => setGstCertificateToggle("NO")}
-                className={`px-3 py-1 rounded-full ${
-                  gstCertificateToggle === "NO"
-                    ? "bg-gradient-to-r from-fuchsia-500 to-purple-600 text-white shadow-sm"
-                    : "text-slate-600"
-                }`}
-              >
-                No
-              </button>
-              <button
-                type="button"
-                onClick={() => setGstCertificateToggle("YES")}
-                className={`px-3 py-1 rounded-full ${
-                  gstCertificateToggle === "YES"
-                    ? "bg-gradient-to-r from-fuchsia-500 to-purple-600 text-white shadow-sm"
-                    : "text-slate-600"
-                }`}
-              >
-                Yes
-              </button>
-            </div>
-          </div>
-
-          {/* When GST is Yes, show GSTIN + upload row (shared layout) */}
-          {renderGstOptionalBlock()}
-
           {/* Note card as per design */}
           <div className="mt-1 rounded-lg border border-indigo-100 bg-indigo-50 px-3.5 py-2 text-[11px] sm:text-xs text-indigo-800">
             <div className="flex items-start gap-2">
@@ -1547,7 +2953,8 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
                 <p className="font-semibold mb-0.5">Note</p>
                 <p>
                   Pharma documents are mandatory. Store cannot operate without valid
-                  Drug Licence and Pharmacist details.
+                  Drug Licence and Pharmacist details. GST is optional and can be added
+                  separately in the GST section.
                 </p>
               </div>
             </div>
@@ -1555,12 +2962,37 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
         </>
       ) : isFoodRelatedStoreType ? (
         <>
-          {/* FSSAI layout for food (matches provided design) */}
-          <div className="rounded-lg border border-amber-200 bg-amber-50/80 px-3.5 py-2">
-            <p className="text-[11px] sm:text-xs font-semibold text-amber-800">
-              FSSAI Certificate (Mandatory) – FSSAI license is mandatory for restaurant as per food safety regulations.
-            </p>
+          {/* FSSAI documents header */}
+          <div className="rounded-lg border border-amber-100 bg-amber-50/80 p-2.5">
+            <div className="flex items-start gap-3">
+              <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-amber-100 text-amber-600">
+                <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
+                  <path
+                    fillRule="evenodd"
+                    d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z"
+                    clipRule="evenodd"
+                  />
+                </svg>
+              </div>
+              <div>
+                <p className="text-sm font-semibold text-amber-900">
+                  FSSAI Certificate (Mandatory)
+                </p>
+                <p className="text-xs text-amber-700 mt-0.5">
+                  FSSAI licence is mandatory for restaurants as per food safety
+                  regulations.
+                </p>
+              </div>
+            </div>
           </div>
+          {(() => {
+            const fssaiUnlocked =
+              licenceDup.fssaiOk &&
+              !licenceDup.checkingFssai &&
+              !licenceDup.fssai &&
+              !docFormatErrors.fssai_number &&
+              (form.fssai_number || "").replace(/\D/g, "").length === 14;
+            return (
           <div className="grid grid-cols-1 sm:grid-cols-[minmax(0,2.1fr)_minmax(0,1.35fr)] gap-2">
             <div className="space-y-2">
               <div>
@@ -1573,35 +3005,50 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
                     name="fssai_number"
                     value={form.fssai_number ?? ""}
                     onChange={handleChange}
-                    className={`w-full rounded-lg border px-3 pr-8 py-2 text-sm ${
+                    maxLength={14}
+                    inputMode="numeric"
+                    className={`w-full rounded-lg border px-3 pr-9 py-2 text-sm ${
                       form.fssai_number
-                        ? docFormatErrors.fssai_number
+                        ? docFormatErrors.fssai_number || licenceDup.fssai
                           ? "border-rose-400"
-                          : "border-emerald-400"
+                          : licenceDup.fssaiOk
+                            ? "border-emerald-400"
+                            : "border-slate-300"
                         : "border-slate-300"
                     }`}
                     placeholder="FSSAI License Number"
                   />
-                  {form.fssai_number && !docFormatErrors.fssai_number && (
-                    <span className="pointer-events-none absolute inset-y-0 right-2 flex items-center">
+                  <span className="pointer-events-none absolute inset-y-0 right-2 flex items-center">
+                    {licenceDup.checkingFssai ? (
+                      <Loader2 className="h-4 w-4 animate-spin text-indigo-600" />
+                    ) : licenceDup.fssaiOk &&
+                      !docFormatErrors.fssai_number &&
+                      !licenceDup.fssai ? (
                       <span className="inline-flex h-3.5 w-3.5 items-center justify-center rounded-full bg-emerald-600 text-white text-[8px]">
                         ✓
                       </span>
-                    </span>
-                  )}
+                    ) : null}
+                  </span>
                 </div>
                 {docFormatErrors.fssai_number && (
                   <p className="mt-0.5 text-[11px] text-rose-600">
                     {docFormatErrors.fssai_number}
                   </p>
                 )}
-                {!form.fssai_number && !docFormatErrors.fssai_number && (
+                {!form.fssai_number &&
+                  !docFormatErrors.fssai_number &&
+                  !licenceDup.checkingFssai && (
                   <p className="mt-0.5 text-[11px] text-slate-500">
                     Required for food businesses as per FSSAI regulations (14 digits)
                   </p>
                 )}
+                {licenceDup.checkingFssai && (
+                  <p className="mt-0.5 text-[11px] text-indigo-600">
+                    Checking FSSAI number…
+                  </p>
+                )}
               </div>
-              <div>
+              <div className={!fssaiUnlocked ? "opacity-50 pointer-events-none" : undefined}>
                 <label className="block text-xs font-medium text-slate-700 mb-1">
                   FSSAI Expiry Date <span className="text-rose-600">*</span>
                 </label>
@@ -1610,14 +3057,21 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
                   name="fssai_expiry_date"
                   value={form.fssai_expiry_date ?? ""}
                   onChange={handleChange}
-                  className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
+                  disabled={!fssaiUnlocked}
+                  className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm disabled:bg-slate-50 disabled:cursor-not-allowed"
                 />
                 <p className="mt-0.5 text-[11px] text-slate-500">
-                  FSSAI license expiry date (mandatory)
+                  {fssaiUnlocked
+                    ? "FSSAI license expiry date (mandatory)"
+                    : "Enter a unique 14-digit FSSAI number first"}
                 </p>
               </div>
             </div>
-            <div className="flex items-end pt-2 sm:pt-0">
+            <div
+              className={`flex items-end pt-2 sm:pt-0 ${
+                !fssaiUnlocked ? "opacity-50 pointer-events-none" : ""
+              }`}
+            >
               <div className="w-full space-y-1.5">
                 <span className="block text-xs font-medium text-slate-700">
                   Upload Certificate <span className="text-rose-600">*</span>
@@ -1634,7 +3088,8 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
                         </p>
                         <button
                           type="button"
-                          className="text-[11px] font-medium text-emerald-800 underline underline-offset-2"
+                          disabled={!fssaiUnlocked}
+                          className="text-[11px] font-medium text-emerald-800 underline underline-offset-2 disabled:cursor-not-allowed"
                           onClick={() =>
                             window.open(
                               docPreviews.fssai,
@@ -1650,20 +3105,27 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
                     <div className="flex items-center gap-2">
                       <button
                         type="button"
+                        disabled={!fssaiUnlocked}
                         onClick={() => {
                           const input = document.getElementById(
                             "fssai-upload-input"
                           ) as HTMLInputElement | null;
                           input?.click();
                         }}
-                        className="rounded-lg border border-emerald-500 bg-white px-3 py-1.5 text-xs font-medium text-emerald-700 hover:bg-emerald-50"
+                        className="rounded-lg border border-emerald-500 bg-white px-3 py-1.5 text-xs font-medium text-emerald-700 hover:bg-emerald-50 disabled:cursor-not-allowed disabled:opacity-60"
                       >
                         Change
                       </button>
                     </div>
                   </div>
                 ) : null}
-                <label className="flex h-[40px] items-center justify-center rounded-lg border-2 border-dashed border-rose-300 bg-rose-50/60 px-3 text-[11px] font-semibold text-rose-700 cursor-pointer hover:bg-rose-100">
+                <label
+                  className={`flex h-[40px] items-center justify-center rounded-lg border-2 border-dashed border-rose-300 bg-rose-50/60 px-3 text-[11px] font-semibold text-rose-700 ${
+                    fssaiUnlocked
+                      ? "cursor-pointer hover:bg-rose-100"
+                      : "cursor-not-allowed"
+                  }`}
+                >
                   {uploadingDocType === "fssai" && (
                     <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
                   )}
@@ -1680,48 +3142,14 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
                     accept="image/*,.pdf"
                     className="hidden"
                     onChange={(e) => handleFileUpload(e, "fssai")}
-                    disabled={uploadingDocType === "fssai"}
+                    disabled={!fssaiUnlocked || uploadingDocType === "fssai"}
                   />
                 </label>
               </div>
             </div>
           </div>
-
-          {/* GST optional toggle similar to pharma design */}
-          <div className="mt-1 rounded-lg border border-purple-200 bg-purple-50/80 px-3.5 py-2 flex items-center justify-between gap-3">
-            <div>
-              <p className="text-xs sm:text-sm font-semibold text-purple-800">
-                GST Certificate (Optional)
-              </p>
-            </div>
-            <div className="inline-flex items-center rounded-full bg-white px-0.5 py-[2px] text-[11px] font-medium">
-              <button
-                type="button"
-                onClick={() => setGstCertificateToggle("NO")}
-                className={`px-3 py-1 rounded-full ${
-                  gstCertificateToggle === "NO"
-                    ? "bg-gradient-to-r from-fuchsia-500 to-purple-600 text-white shadow-sm"
-                    : "text-slate-600"
-                }`}
-              >
-                No
-              </button>
-              <button
-                type="button"
-                onClick={() => setGstCertificateToggle("YES")}
-                className={`px-3 py-1 rounded-full ${
-                  gstCertificateToggle === "YES"
-                    ? "bg-gradient-to-r from-fuchsia-500 to-purple-600 text-white shadow-sm"
-                    : "text-slate-600"
-                }`}
-              >
-                Yes
-              </button>
-            </div>
-          </div>
-
-          {/* Shared GST optional UI (matches GST design) */}
-          {renderGstOptionalBlock()}
+            );
+          })()}
 
           <div className="mt-1 rounded-lg border border-indigo-100 bg-indigo-50 px-3.5 py-2 text-[11px] sm:text-xs text-indigo-800">
             <div className="flex items-start gap-2">
@@ -1731,8 +3159,8 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
               <div>
                 <p className="font-semibold mb-0.5">Note</p>
                 <p>
-                  FSSAI is mandatory for food businesses. GST may be required based on
-                  turnover.
+                  FSSAI is mandatory for food businesses. GST is optional and can be
+                  added separately in the GST section.
                 </p>
               </div>
             </div>
@@ -1740,56 +3168,25 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
         </>
       ) : (
         <>
-          <div className="rounded-lg border border-slate-200 bg-slate-50/80 px-3.5 py-2">
-            <p className="text-[11px] sm:text-xs font-semibold text-slate-700">
-              FSSAI is not required for this store type. You can upload GST details if applicable.
-            </p>
-          </div>
-
-          {/* GST optional toggle */}
-          <div className="mt-1 rounded-lg border border-purple-200 bg-purple-50/80 px-3.5 py-2 flex items-center justify-between gap-3">
-            <div>
-              <p className="text-xs sm:text-sm font-semibold text-purple-800">
-                GST Certificate (Optional)
-              </p>
-            </div>
-            <div className="inline-flex items-center rounded-full bg-white px-0.5 py-[2px] text-[11px] font-medium">
-              <button
-                type="button"
-                onClick={() => setGstCertificateToggle("NO")}
-                className={`px-3 py-1 rounded-full ${
-                  gstCertificateToggle === "NO"
-                    ? "bg-gradient-to-r from-fuchsia-500 to-purple-600 text-white shadow-sm"
-                    : "text-slate-600"
-                }`}
-              >
-                No
-              </button>
-              <button
-                type="button"
-                onClick={() => setGstCertificateToggle("YES")}
-                className={`px-3 py-1 rounded-full ${
-                  gstCertificateToggle === "YES"
-                    ? "bg-gradient-to-r from-fuchsia-500 to-purple-600 text-white shadow-sm"
-                    : "text-slate-600"
-                }`}
-              >
-                Yes
-              </button>
-            </div>
-          </div>
-
-          {renderGstOptionalBlock()}
-
-          <div className="mt-1 rounded-lg border border-indigo-100 bg-indigo-50 px-3.5 py-2 text-[11px] sm:text-xs text-indigo-800">
-            <div className="flex items-start gap-2">
-              <div className="mt-[2px] flex h-4 w-4 items-center justify-center rounded-full bg-indigo-600 text-white text-[10px]">
-                i
+          {/* Non-food store types */}
+          <div className="rounded-lg border border-slate-200 bg-slate-50/80 p-2.5">
+            <div className="flex items-start gap-3">
+              <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-slate-100 text-slate-600">
+                <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
+                  <path
+                    fillRule="evenodd"
+                    d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z"
+                    clipRule="evenodd"
+                  />
+                </svg>
               </div>
               <div>
-                <p className="font-semibold mb-0.5">Note</p>
-                <p>
-                  For non-food businesses, GST is optional in onboarding and can be added if available.
+                <p className="text-sm font-semibold text-slate-800">
+                  FSSAI not required
+                </p>
+                <p className="text-xs text-slate-600 mt-0.5">
+                  FSSAI is not required for this store type. Add other licences below
+                  if applicable.
                 </p>
               </div>
             </div>
@@ -1797,7 +3194,6 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
         </>
       )}
 
-      {/* Additional licences shared across store types – shown as a next (skippable) step */}
       {!showOtherLicences &&
       !form.trade_license_number &&
       !form.trade_license_expiry_date &&
@@ -1807,7 +3203,19 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
       !form.other_document_type &&
       !form.other_document_number &&
       !form.other_expiry_date ? (
-        <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50/80 px-4 py-3 flex items-center justify-between gap-3">
+        <div
+          className={`mt-4 rounded-xl border border-slate-200 bg-slate-50/80 px-4 py-3 flex items-center justify-between gap-3 ${
+            isFoodRelatedStoreType &&
+            !(
+              licenceDup.fssaiOk &&
+              !licenceDup.checkingFssai &&
+              !licenceDup.fssai &&
+              !docFormatErrors.fssai_number
+            )
+              ? "opacity-50 pointer-events-none"
+              : ""
+          }`}
+        >
           <div>
             <p className="text-xs sm:text-sm font-semibold text-slate-800">
               Other licences (optional but recommended)
@@ -2301,62 +3709,71 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
     </div>
   );
 
-  const renderBankSection = () => (
-    <div className="space-y-4">
-      <div className="rounded-xl border border-amber-200 bg-amber-50/80 px-3 py-2">
-        <p className="text-[11px] sm:text-xs font-medium text-amber-900 flex items-center gap-1.5">
-          <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-amber-400 text-white text-xs">
+  const renderBankSection = () => {
+    const bankVerified =
+      bankVerify.state === "verified" || !!form.bank_is_verified;
+    const showManualBankFields =
+      !bankVerified &&
+      (!isElectronic(bankMode) || uploadAllowedFor(bankMode, bankVerify));
+
+    return (
+    <div className="space-y-3">
+      <div className="rounded-lg bg-amber-50/80 border border-amber-100 p-3">
+        <div className="flex items-start gap-2">
+          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-amber-100 text-amber-700 text-sm font-bold">
             ₹
-          </span>
-          Payout details
-        </p>
-        <p className="mt-0.5 text-[10px] sm:text-[11px] text-amber-800">
-          Choose bank account or UPI. Upload proof as required.
-        </p>
+          </div>
+          <div>
+            <p className="text-sm font-semibold text-amber-900">Payout details</p>
+            <p className="text-xs text-amber-800 mt-0.5">
+              Choose Bank Account or UPI for payouts. Switch the toggle to verify
+              each separately.
+            </p>
+          </div>
+        </div>
       </div>
 
-      {/* Tab switcher */}
-      <div className="rounded-xl border border-slate-200 bg-slate-50/80 px-2 py-1 flex text-xs sm:text-sm font-medium text-slate-600">
-        <button
-          type="button"
-          onClick={() => setPayoutMode("BANK")}
-          className={`flex-1 rounded-lg py-2 ${
-            payoutMode === "BANK"
-              ? "bg-white text-indigo-700 shadow-sm border border-indigo-200"
-              : "text-slate-500"
-          }`}
-        >
-          Bank Account
-        </button>
-        <button
-          type="button"
-          onClick={() => setPayoutMode("UPI")}
-          className={`flex-1 rounded-lg py-2 ${
-            payoutMode === "UPI"
-              ? "bg-white text-indigo-700 shadow-sm border border-indigo-200"
-              : "text-slate-500"
-          }`}
-        >
-          UPI
-        </button>
+      <div className="rounded-lg border border-slate-200 bg-slate-50/80 p-3 space-y-2">
+        <p className="text-xs font-medium text-slate-700">
+          Use for payout <span className="text-rose-600">*</span>
+        </p>
+        <div className="rounded-lg border border-slate-200 bg-white p-1 flex text-xs sm:text-sm font-medium text-slate-600">
+          <button
+            type="button"
+            onClick={() => setPayoutMode("BANK")}
+            className={`flex-1 rounded-md py-2 transition-colors ${
+              payoutMode === "BANK"
+                ? "bg-indigo-600 text-white shadow"
+                : "text-slate-600 hover:text-slate-800"
+            }`}
+          >
+            Bank Account
+          </button>
+          <button
+            type="button"
+            onClick={() => setPayoutMode("UPI")}
+            className={`flex-1 rounded-md py-2 transition-colors ${
+              payoutMode === "UPI"
+                ? "bg-indigo-600 text-white shadow"
+                : "text-slate-600 hover:text-slate-800"
+            }`}
+          >
+            UPI
+          </button>
+        </div>
       </div>
 
-      {payoutMode === "BANK" ? (
-        <>
+      {payoutMode === "BANK" && (
+      <div className="rounded-xl border border-slate-200 bg-white p-3 space-y-3">
+        <div className="flex items-center justify-between gap-2">
+          <p className="text-sm font-semibold text-slate-800">Bank account</p>
+          {bankVerified && (
+            <span className="text-[11px] font-medium text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-full px-2 py-0.5">
+              Verified
+            </span>
+          )}
+        </div>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <div>
-              <label className="block text-xs font-medium text-slate-700 mb-1">
-                Account holder name <span className="text-rose-600">*</span>
-              </label>
-              <input
-                type="text"
-                name="bank_account_holder_name"
-                value={form.bank_account_holder_name ?? ""}
-                onChange={handleChange}
-                className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
-                placeholder="As per bank record"
-              />
-            </div>
             <div>
               <label className="block text-xs font-medium text-slate-700 mb-1">
                 Account number <span className="text-rose-600">*</span>
@@ -2366,9 +3783,14 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
                 name="bank_account_number"
                 value={form.bank_account_number ?? ""}
                 onChange={handleChange}
-                className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
+                className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm font-mono"
                 placeholder="e.g. 123456789012"
               />
+              {docFormatErrors.bank_account_number && (
+                <p className="text-xs text-rose-600 mt-1">
+                  {docFormatErrors.bank_account_number}
+                </p>
+              )}
             </div>
             <div>
               <label className="block text-xs font-medium text-slate-700 mb-1">
@@ -2379,130 +3801,276 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
                 name="bank_ifsc_code"
                 value={form.bank_ifsc_code ?? ""}
                 onChange={handleChange}
-                className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm uppercase"
+                className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm font-mono uppercase"
                 placeholder="E.g. SBIN0001234"
               />
-            </div>
-            <div>
-              <label className="block text-xs font-medium text-slate-700 mb-1">
-                Bank name <span className="text-rose-600">*</span>
-              </label>
-              <input
-                type="text"
-                name="bank_name"
-                value={form.bank_name ?? ""}
-                onChange={handleChange}
-                className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
-                placeholder="e.g. State Bank of India"
-              />
-            </div>
-            <div>
-              <label className="block text-xs font-medium text-slate-700 mb-1">
-                Branch name
-              </label>
-              <input
-                type="text"
-                name="bank_branch_name"
-                value={form.bank_branch_name ?? ""}
-                onChange={handleChange}
-                className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
-                placeholder="Optional"
-              />
-            </div>
-            <div>
-              <label className="block text-xs font-medium text-slate-700 mb-1">
-                Account type
-              </label>
-              <select
-                name="bank_account_type"
-                value={form.bank_account_type ?? ""}
-                onChange={handleChange}
-                className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white"
-              >
-                <option value="">Select</option>
-                <option value="SAVINGS">Savings</option>
-                <option value="CURRENT">Current</option>
-              </select>
-            </div>
-          </div>
-
-          {/* Bank proof selection + upload */}
-          <div className="space-y-2">
-            <div>
-              <p className="text-xs font-medium text-slate-700">
-                Bank proof <span className="text-rose-600">*</span>
-              </p>
-              <p className="text-[11px] text-slate-500">
-                Upload one: Passbook, Cancelled cheque, or Bank statement
-              </p>
-            </div>
-            <div className="flex flex-wrap gap-4 text-[11px] text-slate-700">
-              {["PASSBOOK", "CHEQUE", "STATEMENT"].map((type) => (
-                <label key={type} className="inline-flex items-center gap-1 cursor-pointer">
-                  <input
-                    type="radio"
-                    name="bank_proof_type"
-                    className="h-3 w-3 text-indigo-600"
-                    checked={form.bank_proof_type === type}
-                    onChange={() =>
-                      setForm((prev) => ({ ...prev, bank_proof_type: type }))
-                    }
-                  />
-                  <span>
-                    {type === "PASSBOOK"
-                      ? "Passbook"
-                      : type === "CHEQUE"
-                      ? "Cancelled Cheque"
-                      : "Bank Statement"}
-                  </span>
-                </label>
-              ))}
-            </div>
-          </div>
-
-          <div className="rounded-lg border-2 border-dashed border-slate-300 bg-slate-50/80 px-4 py-4 text-center">
-            <p className="text-xs sm:text-sm font-medium text-slate-700 mb-1">
-              Upload passbook / cancelled cheque / bank statement
-            </p>
-            <p className="text-[11px] text-slate-500">
-              File will be saved as bank proof and used for payout verification.
-            </p>
-            <div className="mt-3 flex flex-col items-center gap-2">
-              <label className="inline-flex items-center px-3 py-1.5 rounded-lg bg-indigo-600 text-white text-xs font-medium cursor-pointer hover:bg-indigo-700">
-                {uploadingDocType === "bank_proof" && (
-                  <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
-                )}
-                <span>
-                  {uploadingDocType === "bank_proof"
-                    ? "Uploading..."
-                    : docPreviews.bank_proof
-                    ? "Upload new file"
-                    : "Upload passbook / cheque / statement"}
-                </span>
-                <input
-                  type="file"
-                  accept="image/*,.pdf"
-                  className="hidden"
-                  onChange={(e) => handleFileUpload(e, "bank_proof")}
-                  disabled={uploadingDocType === "bank_proof"}
-                />
-              </label>
-              {docPreviews.bank_proof && (
-                <button
-                  type="button"
-                  className="text-[11px] text-emerald-800 underline underline-offset-2"
-                  onClick={() =>
-                    window.open(docPreviews.bank_proof, "_blank", "noopener,noreferrer")
-                  }
-                >
-                  View uploaded proof
-                </button>
+              {docFormatErrors.bank_ifsc_code && (
+                <p className="text-xs text-rose-600 mt-1">
+                  {docFormatErrors.bank_ifsc_code}
+                </p>
               )}
             </div>
           </div>
-        </>
-      ) : (
-        <>
+
+          {isElectronic(bankMode) &&
+            !!String(form.bank_account_number || "").trim() &&
+            !!String(form.bank_ifsc_code || "").trim() && (
+              <div className="space-y-2">
+                {bankVerified ? (
+                  <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3">
+                    <p className="text-sm font-semibold text-emerald-800 flex items-center gap-1.5">
+                      <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-emerald-600 text-white text-[11px]">
+                        ✓
+                      </span>
+                      Bank account verified automatically
+                    </p>
+                    {verifiedDetailRows(
+                      bankVerify.details ||
+                        form.bank_verified_details ||
+                        undefined,
+                    ).map(([l, v]) => (
+                      <p key={l} className="mt-1 text-xs text-emerald-800">
+                        <span className="font-medium">{l}:</span> {v}
+                      </p>
+                    ))}
+                    <div className="mt-2 max-w-xs">
+                      <label className="block text-xs font-medium text-emerald-900 mb-1">
+                        Account type <span className="text-rose-600">*</span>
+                      </label>
+                      <select
+                        name="bank_account_type"
+                        value={
+                          ["SAVINGS", "CURRENT"].includes(
+                            String(form.bank_account_type || "").toUpperCase(),
+                          )
+                            ? String(form.bank_account_type).toUpperCase()
+                            : ""
+                        }
+                        onChange={handleChange}
+                        className="w-full rounded-lg border border-emerald-200 px-3 py-2 text-sm bg-white"
+                      >
+                        <option value="">Select</option>
+                        <option value="SAVINGS">Savings</option>
+                        <option value="CURRENT">Current</option>
+                      </select>
+                      <p className="mt-1 text-[11px] text-emerald-700">
+                        Cashfree does not return account type — please confirm
+                        Savings or Current.
+                      </p>
+                    </div>
+                    <p className="mt-1.5 text-xs text-emerald-700">
+                      No bank proof upload needed. You can continue.
+                    </p>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    disabled={
+                      bankVerify.state === "verifying" ||
+                      !!documentFormatValidators.accountNumber(
+                        String(form.bank_account_number || ""),
+                      ) ||
+                      !!documentFormatValidators.ifsc(
+                        String(form.bank_ifsc_code || ""),
+                      )
+                    }
+                    onClick={() => verifyDocNow("bank")}
+                    className="inline-flex w-fit items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {bankVerify.state === "verifying" ? (
+                      <>
+                        <Loader2 className="h-4 w-4 animate-spin" /> Verifying…
+                      </>
+                    ) : (
+                      "Verify Bank Account"
+                    )}
+                  </button>
+                )}
+                {bankVerify.state === "failed" && (
+                  <div
+                    className={`rounded-lg border p-3 text-xs ${
+                      bankMode === "auto"
+                        ? "border-rose-200 bg-rose-50 text-rose-700"
+                        : "border-amber-200 bg-amber-50 text-amber-800"
+                    }`}
+                  >
+                    <span className="font-semibold">
+                      {bankMode === "auto"
+                        ? "Bank verification failed. "
+                        : "Instant verification didn't succeed. "}
+                    </span>
+                    {bankVerify.error || "Please check account number / IFSC."}
+                    {bankMode === "hybrid"
+                      ? " Enter details manually and upload bank proof."
+                      : " Retry later — automatic verification is required."}
+                  </div>
+                )}
+              </div>
+            )}
+
+          {showManualBankFields && (
+            <>
+              {isElectronic(bankMode) &&
+                uploadAllowedFor(bankMode, bankVerify) && (
+                  <p className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                    Auto verification didn&apos;t succeed — enter bank details
+                    manually and upload proof.
+                  </p>
+                )}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-medium text-slate-700 mb-1">
+                    Account holder name <span className="text-rose-600">*</span>
+                  </label>
+                  <input
+                    type="text"
+                    name="bank_account_holder_name"
+                    value={form.bank_account_holder_name ?? ""}
+                    onChange={handleChange}
+                    className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
+                    placeholder="As per bank record"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-slate-700 mb-1">
+                    Bank name <span className="text-rose-600">*</span>
+                  </label>
+                  <input
+                    type="text"
+                    name="bank_name"
+                    value={form.bank_name ?? ""}
+                    onChange={handleChange}
+                    className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
+                    placeholder="e.g. State Bank of India"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-slate-700 mb-1">
+                    Branch name
+                  </label>
+                  <input
+                    type="text"
+                    name="bank_branch_name"
+                    value={form.bank_branch_name ?? ""}
+                    onChange={handleChange}
+                    className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
+                    placeholder="Optional"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-slate-700 mb-1">
+                    Account type
+                  </label>
+                  <select
+                    name="bank_account_type"
+                    value={form.bank_account_type ?? ""}
+                    onChange={handleChange}
+                    className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white"
+                  >
+                    <option value="">Select</option>
+                    <option value="SAVINGS">Savings</option>
+                    <option value="CURRENT">Current</option>
+                  </select>
+                </div>
+              </div>
+
+              {/* Bank proof selection + upload */}
+              <div className="space-y-2">
+                <div>
+                  <p className="text-xs font-medium text-slate-700">
+                    Bank proof <span className="text-rose-600">*</span>
+                  </p>
+                  <p className="text-[11px] text-slate-500">
+                    Upload one: Passbook, Cancelled cheque, or Bank statement
+                  </p>
+                </div>
+                <div className="flex flex-wrap gap-4 text-[11px] text-slate-700">
+                  {["PASSBOOK", "CHEQUE", "STATEMENT"].map((type) => (
+                    <label
+                      key={type}
+                      className="inline-flex items-center gap-1 cursor-pointer"
+                    >
+                      <input
+                        type="radio"
+                        name="bank_proof_type"
+                        className="h-3 w-3 text-indigo-600"
+                        checked={form.bank_proof_type === type}
+                        onChange={() =>
+                          setForm((prev) => ({ ...prev, bank_proof_type: type }))
+                        }
+                      />
+                      <span>
+                        {type === "PASSBOOK"
+                          ? "Passbook"
+                          : type === "CHEQUE"
+                            ? "Cancelled Cheque"
+                            : "Bank Statement"}
+                      </span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+
+              <div className="rounded-lg border-2 border-dashed border-slate-300 bg-slate-50/80 px-4 py-4 text-center">
+                <p className="text-xs sm:text-sm font-medium text-slate-700 mb-1">
+                  Upload passbook / cancelled cheque / bank statement
+                </p>
+                <p className="text-[11px] text-slate-500">
+                  File will be saved as bank proof and used for payout
+                  verification.
+                </p>
+                <div className="mt-3 flex flex-col items-center gap-2">
+                  <label className="inline-flex items-center px-3 py-1.5 rounded-lg bg-indigo-600 text-white text-xs font-medium cursor-pointer hover:bg-indigo-700">
+                    {uploadingDocType === "bank_proof" && (
+                      <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+                    )}
+                    <span>
+                      {uploadingDocType === "bank_proof"
+                        ? "Uploading..."
+                        : docPreviews.bank_proof
+                          ? "Upload new file"
+                          : "Upload passbook / cheque / statement"}
+                    </span>
+                    <input
+                      type="file"
+                      accept="image/*,.pdf"
+                      className="hidden"
+                      onChange={(e) => handleFileUpload(e, "bank_proof")}
+                      disabled={uploadingDocType === "bank_proof"}
+                    />
+                  </label>
+                  {docPreviews.bank_proof && (
+                    <button
+                      type="button"
+                      className="text-[11px] text-emerald-800 underline underline-offset-2"
+                      onClick={() =>
+                        window.open(
+                          docPreviews.bank_proof,
+                          "_blank",
+                          "noopener,noreferrer",
+                        )
+                      }
+                    >
+                      View uploaded proof
+                    </button>
+                  )}
+                </div>
+              </div>
+            </>
+          )}
+        </div>
+      )}
+
+      {payoutMode === "UPI" && (
+        <div className="rounded-xl border border-slate-200 bg-white p-3 space-y-3">
+          <div className="flex items-center justify-between gap-2">
+            <p className="text-sm font-semibold text-slate-800">UPI</p>
+            {(upiVerify.state === "verified" || !!form.upi_verified) && (
+              <span className="text-[11px] font-medium text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-full px-2 py-0.5">
+                Verified
+              </span>
+            )}
+          </div>
           <div className="grid grid-cols-1 gap-3">
             <div>
               <label className="block text-xs font-medium text-slate-700 mb-1">
@@ -2518,153 +4086,282 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
               />
             </div>
           </div>
-          <div className="rounded-lg border-2 border-dashed border-slate-300 bg-slate-50/80 px-4 py-4 text-center">
-            <p className="text-xs sm:text-sm font-medium text-slate-700 mb-1">
-              UPI QR screenshot <span className="text-rose-600">*</span>
-            </p>
-            <p className="text-[11px] text-slate-500">
-              Upload screenshot where UPI ID is clearly visible on the QR.
-            </p>
-            <div className="mt-3 flex flex-col items-center gap-2">
-              <label className="inline-flex items-center px-3 py-1.5 rounded-lg bg-indigo-600 text-white text-xs font-medium cursor-pointer hover:bg-indigo-700">
-                {uploadingDocType === "bank_proof" && (
-                  <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
-                )}
-                <span>
-                  {uploadingDocType === "bank_proof"
-                    ? "Uploading..."
-                    : docPreviews.upi_qr
-                    ? "Upload new screenshot"
-                    : "Upload QR screenshot (UPI ID visible)"}
-                </span>
-                <input
-                  type="file"
-                  accept="image/*,.pdf"
-                  className="hidden"
-                  onChange={(e) => handleFileUpload(e, "bank_proof")}
-                  disabled={uploadingDocType === "bank_proof"}
-                />
-              </label>
-              {docPreviews.upi_qr && (
+
+          {isElectronic(upiMode) && !!String(form.upi_id || "").trim() && (
+            <div className="space-y-2">
+              {upiVerify.state === "verified" || form.upi_verified ? (
+                <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3">
+                  <p className="text-sm font-semibold text-emerald-800 flex items-center gap-1.5">
+                    <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-emerald-600 text-white text-[11px]">
+                      ✓
+                    </span>
+                    UPI ID verified automatically
+                  </p>
+                  {verifiedDetailRows(
+                    upiVerify.details || form.upi_verified_details || undefined,
+                  ).map(([l, v]) => (
+                    <p key={l} className="mt-1 text-xs text-emerald-800">
+                      <span className="font-medium">{l}:</span> {v}
+                    </p>
+                  ))}
+                  <p className="mt-1.5 text-xs text-emerald-700">
+                    No QR screenshot needed. You can continue.
+                  </p>
+                </div>
+              ) : (
                 <button
                   type="button"
-                  className="text-[11px] text-emerald-800 underline underline-offset-2"
-                  onClick={() =>
-                    window.open(docPreviews.upi_qr, "_blank", "noopener,noreferrer")
+                  disabled={
+                    upiVerify.state === "verifying" ||
+                    !/^[a-z0-9.\-_]{2,256}@[a-z0-9]{2,64}$/i.test(
+                      String(form.upi_id || "").trim(),
+                    )
                   }
+                  onClick={() => verifyDocNow("upi")}
+                  className="inline-flex w-fit items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
-                  View QR screenshot
+                  {upiVerify.state === "verifying" ? (
+                    <>
+                      <Loader2 className="h-4 w-4 animate-spin" /> Verifying…
+                    </>
+                  ) : (
+                    "Verify UPI ID"
+                  )}
                 </button>
               )}
+              {upiVerify.state === "failed" && (
+                <div
+                  className={`rounded-lg border p-3 text-xs ${
+                    upiMode === "auto"
+                      ? "border-rose-200 bg-rose-50 text-rose-700"
+                      : "border-amber-200 bg-amber-50 text-amber-800"
+                  }`}
+                >
+                  <span className="font-semibold">
+                    {upiMode === "auto"
+                      ? "UPI verification failed. "
+                      : "Instant verification didn't succeed. "}
+                  </span>
+                  {upiVerify.error || "Please check the UPI ID."}
+                  {upiMode === "hybrid"
+                    ? " Upload a UPI QR screenshot where the UPI ID is clearly visible."
+                    : " Retry later — automatic verification is required."}
+                </div>
+              )}
             </div>
-          </div>
-        </>
+          )}
+
+          {!(
+            upiVerify.state === "verified" || form.upi_verified
+          ) &&
+            (!isElectronic(upiMode) || uploadAllowedFor(upiMode, upiVerify)) && (
+              <div className="rounded-lg border-2 border-dashed border-slate-300 bg-slate-50/80 px-4 py-4 text-center">
+                {isElectronic(upiMode) && uploadAllowedFor(upiMode, upiVerify) && (
+                  <p className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mb-2 text-left">
+                    Auto verification didn&apos;t succeed — upload a QR screenshot
+                    with UPI ID visible.
+                  </p>
+                )}
+                <label className="block text-xs font-medium text-slate-700 mb-1">
+                  UPI QR screenshot <span className="text-rose-600">*</span>
+                </label>
+                <p className="text-[11px] text-slate-500">
+                  Upload screenshot where UPI ID is clearly visible on the QR.
+                </p>
+                <div className="mt-3 flex flex-col items-center gap-2">
+                  <label className="inline-flex items-center px-3 py-1.5 rounded-lg bg-indigo-600 text-white text-xs font-medium cursor-pointer hover:bg-indigo-700">
+                    {uploadingDocType === "bank_proof" && (
+                      <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+                    )}
+                    <span>
+                      {uploadingDocType === "bank_proof"
+                        ? "Uploading..."
+                        : docPreviews.upi_qr
+                          ? "Upload new screenshot"
+                          : "Upload QR screenshot (UPI ID visible)"}
+                    </span>
+                    <input
+                      type="file"
+                      accept="image/*,.pdf"
+                      className="hidden"
+                      onChange={(e) => handleFileUpload(e, "bank_proof")}
+                      disabled={uploadingDocType === "bank_proof"}
+                    />
+                  </label>
+                  {docPreviews.upi_qr && (
+                    <button
+                      type="button"
+                      className="text-[11px] text-emerald-800 underline underline-offset-2"
+                      onClick={() =>
+                        window.open(docPreviews.upi_qr, "_blank", "noopener,noreferrer")
+                      }
+                    >
+                      View QR screenshot
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
+        </div>
       )}
     </div>
-  );
+    );
+  };
 
   let sectionContent: React.ReactNode = null;
   if (section === "PAN") sectionContent = renderPanSection();
   else if (section === "AADHAAR") sectionContent = renderAadhaarSection();
+  else if (section === "LICENCE") sectionContent = renderLicenceSection();
   else if (section === "GST") sectionContent = renderGstSection();
   else sectionContent = renderBankSection();
 
   return (
-    <div className="w-full pt-1.5 pb-3 sm:pt-2 sm:pb-4">
-      <div className="grid grid-cols-1 lg:grid-cols-[250px_minmax(0,1fr)] gap-3 sm:gap-4 items-start">
-        {/* Left sidebar (Store Documents + section list) */}
-        <aside className="rounded-xl border border-slate-200 bg-white/95 shadow-sm sticky top-0 self-start">
-          <div className="border-b border-slate-200 px-4 py-2.5">
-            <h2 className="text-sm font-semibold text-slate-900">
-              Store Documents
-            </h2>
-            <p className="mt-1 text-[11px] text-slate-500">
+    <>
+      <DigilockerConsentSheet
+        open={aadhaarVerify.state === "verifying"}
+        url={aadhaarVerify.digilockerUrl || null}
+        preparing={aadhaarVerify.state === "verifying" && !aadhaarVerify.digilockerUrl}
+        popupRef={digilockerPopupRef}
+        onClose={() => {
+          if (aadhaarPollRef.current) {
+            clearInterval(aadhaarPollRef.current);
+            aadhaarPollRef.current = null;
+          }
+          if (digilockerPopupRef.current && !digilockerPopupRef.current.closed) {
+            try {
+              digilockerPopupRef.current.close();
+            } catch {
+              /* ignore */
+            }
+          }
+          digilockerPopupRef.current = null;
+          setAadhaarVerify({ state: "idle" });
+          setErr(null);
+        }}
+        onConsentActivity={() => {
+          void pollAadhaarStatusOnce();
+        }}
+      />
+    <div className="w-full min-h-0 max-w-full bg-slate-50/50 overflow-x-hidden">
+      <div className="mx-auto flex w-full max-w-6xl flex-col lg:flex-row gap-3 sm:gap-4 p-1 sm:p-2">
+        {/* Left: title + business type + tabs (partnersite layout) */}
+        <aside className="w-full lg:w-52 xl:w-60 shrink-0 flex flex-col gap-2 sm:gap-3 min-w-0 lg:sticky lg:top-4 lg:self-start">
+          <div className="rounded-xl border border-slate-200 bg-white p-3 sm:p-4 shadow-sm">
+            <h2 className="text-base sm:text-lg font-semibold text-slate-800">Store Documents</h2>
+            <p className="mt-0.5 text-xs text-slate-600">
               Upload required documents for verification.
             </p>
-            <div className="mt-2 rounded-lg bg-indigo-50 px-3 py-2 text-[11px] text-indigo-800 font-medium">
-              {upperStoreType}
-              <span className="block text-[10px] text-indigo-700 font-normal">
-                {upperStoreType === "PHARMA"
-                  ? "Pharma documents mandatory as per regulations."
-                  : isFoodRelatedStoreType
-                  ? "FSSAI mandatory for food."
-                  : "GST optional for non-food stores."}
-              </span>
+            <div className="mt-3 rounded-lg bg-indigo-50/80 border border-indigo-100 p-2.5">
+              <p className="text-xs font-semibold text-indigo-900">
+                {upperStoreType.replace(/_/g, " ")}
+              </p>
+              {upperStoreType === "PHARMA" ? (
+                <p className="mt-0.5 text-[11px] text-indigo-700">
+                  Drug License & Pharmacist mandatory.
+                </p>
+              ) : isFoodRelatedStoreType ? (
+                <p className="mt-0.5 text-[11px] text-indigo-700">FSSAI mandatory for food.</p>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => goToSectionFromSidebar("GST")}
+                  disabled={step4SectionOrder.indexOf("GST") > maxReachedSectionIdx}
+                  className="mt-0.5 text-[11px] text-indigo-700 hover:text-indigo-900 hover:underline text-left disabled:opacity-50 disabled:no-underline disabled:cursor-not-allowed"
+                >
+                  Optional docs recommended.
+                </button>
+              )}
             </div>
           </div>
-          <div className="px-3 py-2.5 space-y-1.5">
-            {(["PAN", "AADHAAR", "GST", "BANK"] as Step4SectionKey[]).map((s) => (
-              <button
-                key={s}
-                type="button"
-                onClick={() => setSection(s)}
-                className={`w-full rounded-lg px-3 py-2 text-left text-xs font-medium cursor-pointer transition-colors ${
-                  section === s
-                    ? "bg-indigo-600 text-white"
-                    : "bg-slate-50 text-slate-700 hover:bg-slate-100"
-                }`}
-              >
-                {s === "PAN"
-                  ? "PAN"
-                  : s === "AADHAAR"
-                  ? "Aadhaar"
-                  : s === "GST"
-                  ? upperStoreType === "PHARMA"
-                    ? "Drug Lic. / GST"
-                    : isFoodRelatedStoreType
-                    ? "GST / FSSAI"
-                    : "GST"
-                  : "Bank"}
-              </button>
-            ))}
+          <div className="rounded-xl border border-slate-200 bg-white p-2 shadow-sm">
+            <p className="px-2 py-1 text-xs font-medium text-slate-500">Sections</p>
+            {(["PAN", "AADHAAR", "LICENCE", "GST", "BANK"] as Step4SectionKey[]).map(
+              (s) => {
+                const isActive = section === s;
+                const sIdx = step4SectionOrder.indexOf(s);
+                const locked = sIdx > maxReachedSectionIdx;
+                return (
+                  <button
+                    key={s}
+                    type="button"
+                    onClick={() => {
+                      if (locked) return;
+                      goToSectionFromSidebar(s);
+                    }}
+                    disabled={locked}
+                    aria-disabled={locked}
+                    title={
+                      locked
+                        ? "Use Save & Continue to open the next section"
+                        : undefined
+                    }
+                    className={`w-full rounded-lg px-3 py-2 text-left text-xs font-medium transition-colors focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-inset ${
+                      isActive
+                        ? "bg-indigo-600 text-white"
+                        : locked
+                          ? "cursor-not-allowed text-slate-400"
+                          : "text-slate-600 hover:bg-slate-100"
+                    }`}
+                  >
+                    {s === "PAN"
+                      ? "PAN"
+                      : s === "AADHAAR"
+                      ? "Aadhaar"
+                      : s === "LICENCE"
+                      ? upperStoreType === "PHARMA"
+                        ? "Drug Lic."
+                        : isFoodRelatedStoreType
+                        ? "FSSAI"
+                        : "OTHERS"
+                      : s === "GST"
+                      ? "GST"
+                      : "Bank"}
+                  </button>
+                );
+              }
+            )}
           </div>
         </aside>
 
-        {/* Right: active section content */}
-        <section className="rounded-xl border border-slate-200 bg-white/95 shadow-sm flex flex-col">
-          <div className="px-4 sm:px-6 py-1.5 border-b border-slate-200 flex items-center justify-between gap-2">
-            <div>
-              <p className="text-[11px] font-semibold text-slate-700 uppercase tracking-wide">
-                {section === "PAN"
-                  ? "PAN Card"
-                  : section === "AADHAAR"
-                  ? "Aadhaar Card"
-                  : section === "GST"
-                  ? upperStoreType === "PHARMA"
-                    ? "Drug Licence / GST"
-                    : "FSSAI / GST"
-                  : "Payout details"}
-              </p>
-              <p className="mt-0.5 text-[10px] text-slate-500">
-                {section === "PAN"
-                  ? "Required for verification"
-                  : section === "AADHAAR"
-                  ? "Optional identity verification"
-                  : section === "GST"
-                  ? upperStoreType === "PHARMA"
-                    ? "Drug licence mandatory for pharma businesses"
-                    : isFoodRelatedStoreType
-                    ? "FSSAI mandatory for food businesses"
-                    : "GST optional for non-food businesses"
-                  : "Bank account details for payouts"}
-              </p>
+        {/* Right: content + inline actions */}
+        <main className="flex-1 min-w-0 flex flex-col overflow-hidden">
+          <div className="rounded-xl border border-slate-200 bg-white shadow-sm overflow-hidden flex flex-col min-h-[320px] sm:min-h-[380px]">
+            <div className="flex-1 overflow-y-auto overflow-x-hidden p-3 sm:p-4">
+              {err && (
+                <div className="mb-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+                  {err}
+                </div>
+              )}
+              {sectionContent}
+            </div>
+            <div className="shrink-0 border-t border-slate-200 bg-slate-50/80 px-3 sm:px-4 py-2 flex flex-wrap items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => onPrevious?.()}
+                disabled={actionLoading || !onPrevious}
+                className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs sm:text-sm font-medium text-slate-700 shadow-sm hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 disabled:opacity-60 disabled:cursor-not-allowed inline-flex items-center gap-1.5"
+              >
+                {actionLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
+                Previous
+              </button>
+              <button
+                type="button"
+                onClick={() => onContinue?.()}
+                disabled={actionLoading || continueDisabled || !onContinue}
+                className="rounded-lg bg-indigo-600 px-3 py-1.5 text-xs sm:text-sm font-medium text-white shadow-sm hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed inline-flex items-center gap-1.5"
+              >
+                {actionLoading ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                  </svg>
+                )}
+                {actionLoading ? "Saving…" : continueLabel}
+              </button>
             </div>
           </div>
-
-          <div className="px-4 sm:px-6 py-4 flex-1 overflow-y-auto">
-            {err && (
-              <div className="mb-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
-                {err}
-              </div>
-            )}
-            {sectionContent}
-          </div>
-
-          {/* Footer actions are handled by the main flow's global Save & Continue button */}
-          <div className="px-4 sm:px-6 py-3 border-t border-slate-200 flex justify-end text-[11px] text-slate-500">
-            Changes will be saved when you click <strong className="ml-1">Save &amp; Continue</strong> below.
-          </div>
-        </section>
+        </main>
       </div>
       {replaceTarget && (
         <div className="fixed inset-0 z-[2400] flex items-center justify-center bg-black/40">
@@ -2711,6 +4408,7 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
         </div>
       )}
     </div>
+    </>
   );
 };
 

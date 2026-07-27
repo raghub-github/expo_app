@@ -126,7 +126,10 @@ export async function GET(req: NextRequest) {
     if (direction === 'CREDIT' || direction === 'DEBIT') {
       query = query.eq('direction', direction);
     }
-    if (category) {
+    if (category === 'WITHDRAWAL') {
+      // Merchant "Withdrawal" filter includes the AVAILABLE debit created at request time.
+      query = query.in('category', ['WITHDRAWAL', 'HOLD_LOCK']);
+    } else if (category) {
       query = query.eq('category', category);
     }
     if (search) {
@@ -239,6 +242,35 @@ export async function GET(req: NextRequest) {
     );
 
     const enrichedList = applyWithdrawableBalanceToLedgerEntries(list, withdrawableById);
+
+    const holdLedgerIds = enrichedList
+      .filter((e) => String(e.category ?? '').toUpperCase() === 'HOLD_LOCK')
+      .map((e) => e.id);
+    if (holdLedgerIds.length > 0) {
+      const { data: payoutRows } = await db
+        .from('merchant_payout_requests')
+        .select('id, hold_ledger_id, status')
+        .in('hold_ledger_id', holdLedgerIds);
+      const payoutByHoldId = new Map(
+        (payoutRows ?? []).map((p: { id: number; hold_ledger_id: number; status: string }) => [
+          Number(p.hold_ledger_id),
+          { id: Number(p.id), status: String(p.status ?? '') },
+        ])
+      );
+      for (const entry of enrichedList) {
+        const linked = payoutByHoldId.get(entry.id);
+        if (!linked) continue;
+        entry.metadata = {
+          ...(entry.metadata ?? {}),
+          payout_request_id: linked.id,
+          payout_status: linked.status,
+        };
+        if (entry.reference_id == null || Number(entry.reference_id) <= 0) {
+          entry.reference_id = linked.id;
+        }
+      }
+    }
+
     const withPgIds = await enrichLedgerWithPgTransactionIds(db, enrichedList);
     const withDescriptions = await enrichMerchantLedgerDescriptions(db, withPgIds);
     const { entries: mergedEntries } = mergeCancellationLedgerEntries(withDescriptions);

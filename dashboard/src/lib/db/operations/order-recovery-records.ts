@@ -19,8 +19,34 @@ export interface OrderRecoveryRecord {
   /** Always a positive magnitude. Sign is derived from `impact` in the UI. */
   amount: number;
   impact: RecoveryImpact;
+  /** Whether the debit was a partial or full charge (null when N/A). */
+  debitScope: "partial" | "full" | null;
   status: string | null;
   createdAt: string | null;
+}
+
+function resolveDebitScope(
+  debitMode: string | null | undefined,
+  impact: RecoveryImpact,
+  amount: number,
+  referenceAmount: number | null
+): "partial" | "full" | null {
+  const mode = (debitMode ?? "").trim().toLowerCase();
+  if (mode.includes("partial")) return "partial";
+  if (mode.includes("full")) return "full";
+  // Credits never have a debit scope.
+  if (impact === "credit") return null;
+  if (
+    referenceAmount != null &&
+    referenceAmount > 0 &&
+    amount > 0 &&
+    amount < referenceAmount - 0.01
+  ) {
+    return "partial";
+  }
+  // Debits (and info-only cancellation charges) default to full when amount > 0.
+  if (impact === "debit" || (impact === "info" && amount > 0)) return "full";
+  return null;
 }
 
 function isRelationMissingError(e: unknown): boolean {
@@ -93,14 +119,17 @@ async function listRiderPenalties(orderCoreId: number): Promise<OrderRecoveryRec
         /_/g,
         " "
       );
+      const impact: RecoveryImpact = reversed ? "info" : "debit";
+      const amount = toNum(row.amount);
       return {
         id: `rider-penalty-${row.id}`,
         party: "rider" as const,
         partyLabel,
         kind,
         reason: row.reason?.trim() || null,
-        amount: toNum(row.amount),
-        impact: reversed ? "info" : "debit",
+        amount,
+        impact,
+        debitScope: resolveDebitScope(null, impact, amount, null),
         status,
         createdAt: toIso(row.imposed_at),
       };
@@ -164,14 +193,16 @@ async function listMerchantCancellationLedger(
           : impact === "info"
             ? "Merchant cancellation (no wallet impact)"
             : "Merchant debit";
+      const amount = toNum(row.amount);
       return {
         id: `merchant-ledger-${row.id}`,
         party: "merchant" as const,
         partyLabel: "Merchant",
         kind,
         reason: row.description?.trim() || null,
-        amount: toNum(row.amount),
+        amount,
         impact,
+        debitScope: resolveDebitScope(row.debit_mode, impact, amount, null),
         status: row.status?.trim() || null,
         createdAt: toIso(row.created_at),
       };

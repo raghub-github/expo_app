@@ -51,6 +51,11 @@ import {
 } from "@/lib/merchant/store-profile-media";
 import { resolveAttachmentProxyUrl } from "@/lib/attachments/resolve-attachment-proxy-url";
 import { DocumentAttachmentThumb } from "@/components/verification/DocumentAttachmentThumb";
+import { DocAutoVerificationDetails } from "@/components/verification/DocAutoVerificationDetails";
+import {
+  getAdminDocAutoVerificationDisplay,
+  mergeAutoVerificationMetadata,
+} from "@/lib/merchant-doc-auto-verification";
 
 /** Console: filter `profile-media-gallery` (development-only). */
 function galleryProfileMediaDebug(...args: unknown[]) {
@@ -842,6 +847,21 @@ function buildStep4DocumentPreviewMeta(
 
   const dv = doc[`${p}_document_version`];
   if (dv != null && dv !== "") lines.push({ label: "Version", value: String(dv) });
+
+  const autoDisplay = getAdminDocAutoVerificationDisplay(p, doc);
+  if (autoDisplay) {
+    if (autoDisplay.method) lines.push({ label: "Auto-verify method", value: autoDisplay.method });
+    if (autoDisplay.status) {
+      lines.push({
+        label: "Auto-verify status",
+        value: autoDisplay.status === "verified" ? "Provider verified" : "Needs manual review",
+      });
+    }
+    for (const rowDetail of autoDisplay.rows) {
+      if (lines.some((l) => l.label === rowDetail.label && l.value === rowDetail.value)) continue;
+      lines.push(rowDetail);
+    }
+  }
 
   return lines;
 }
@@ -3668,6 +3688,11 @@ function StepDetailContentEditable({
                           </span>
                         </div>
                       )}
+                      <DocAutoVerificationDetails
+                        docType={row.docType}
+                        documents={docRec}
+                        hidden={isAadhaarBack}
+                      />
                       {storeIdForDocUpload != null && onDocumentsUpdated && (
                         <div className="flex flex-col gap-2 border-t border-gray-100 pt-2">
                           {hasResubmittedAfterReject && needsImageResubmission && (
@@ -3781,6 +3806,51 @@ function StepDetailContentEditable({
                               row.docType === "pan"
                                 ? ((docRec.pan_holder_name as string) ?? null)
                                 : null,
+                          }}
+                          onVerified={(verifiedData) => {
+                            const nextDocs: Record<string, unknown> = {
+                              ...(form.documents ?? {}),
+                            } as Record<string, unknown>;
+                            const metaKey =
+                              row.docType === "pan"
+                                ? "pan_document_metadata"
+                                : "gst_document_metadata";
+                            const method = "AGENT" as const;
+                            nextDocs[metaKey] = mergeAutoVerificationMetadata(
+                              nextDocs[metaKey],
+                              {
+                                method,
+                                status: "verified",
+                                verified_at: new Date().toISOString(),
+                                verified_data: verifiedData ?? {},
+                                document_number:
+                                  (doc[row.numberKey] as string) ?? null,
+                              },
+                            );
+                            nextDocs[`${row.docType}_verification_method`] = method;
+                            if (row.docType === "pan") {
+                              const registered = String(
+                                verifiedData.registered_name ?? "",
+                              ).trim();
+                              if (registered) nextDocs.pan_holder_name = registered;
+                            }
+                            if (row.docType === "gst") {
+                              const legal = String(
+                                verifiedData.legal_name_of_business ?? "",
+                              ).trim();
+                              const place = String(
+                                verifiedData.principal_place_address ?? "",
+                              ).trim();
+                              const regDate = String(
+                                verifiedData.date_of_registration ?? "",
+                              ).trim();
+                              if (legal) nextDocs.gst_legal_business_name = legal;
+                              if (place) nextDocs.gst_principal_place_of_business = place;
+                              if (regDate) nextDocs.gst_effective_registration_date = regDate;
+                            }
+                            onChange({
+                              documents: nextDocs,
+                            } as Partial<VerificationDataStore>);
                           }}
                           className="mt-2"
                         />

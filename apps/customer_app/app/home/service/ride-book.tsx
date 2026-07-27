@@ -35,7 +35,7 @@ import { filterRideCatalogOptions } from "@/lib/ride-catalog-display";
 import { useNearbyRideAvailability } from "@/hooks/useNearbyRideAvailability";
 import type { RideAvailabilityOption } from "@/services/rideAvailability.service";
 import { RIDE_RIDER_SEARCH_TIMEOUT_SEC } from "@/features/ride/rideOptions";
-import { getRideFareQuote, type RideFareQuote } from "@/services/rideQuote.service";
+import { getRideFareQuoteBatch, type RideFareQuote } from "@/services/rideQuote.service";
 import { useLocationStore } from "@/store/locationStore";
 import { pickupGeoHintsFromAddress } from "@/lib/ride-geo-hints";
 import { RidePreBookTipSheet } from "@/features/ride/RidePreBookTipSheet";
@@ -262,6 +262,7 @@ export default function RideBookScreen() {
   const [pricingBanner, setPricingBanner] = useState<PricingBanner | null>(null);
   const fareQuoteRequestRef = useRef(0);
   const fareQuoteKeyRef = useRef<string | null>(null);
+  const fareQuoteAbortRef = useRef<AbortController | null>(null);
   const pricingBannerTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const entrySurgeBannerShownRef = useRef(false);
   const entrySurgeRouteKeyRef = useRef<string | null>(null);
@@ -461,6 +462,17 @@ export default function RideBookScreen() {
     () => filterRideCatalogOptions(availability?.options ?? EMPTY_RIDE_OPTIONS),
     [availability?.options]
   );
+
+  /** Quote all active catalog codes as soon as tripKm is ready — don't wait on supply. */
+  const fareCatalogCodes = useMemo(() => {
+    const fromApi = (availability?.catalogCodes ?? []).filter(
+      (c) => typeof c === "string" && c.length > 0 && c !== "travel"
+    );
+    if (fromApi.length > 0) return fromApi;
+    return availableOptions.map((o) => o.id);
+  }, [availability?.catalogCodes, availableOptions]);
+
+  const fareCatalogCodesKey = useMemo(() => fareCatalogCodes.join("\u0000"), [fareCatalogCodes]);
 
   const displayFareQuotes = useMemo(() => applyBikeLiteFareRule(fareQuotes), [fareQuotes]);
 
@@ -673,9 +685,11 @@ export default function RideBookScreen() {
       dropLat == null ||
       dropLng == null ||
       fareTripKm == null ||
-      availableOptions.length === 0
+      fareCatalogCodes.length === 0
     ) {
       fareQuoteKeyRef.current = null;
+      fareQuoteAbortRef.current?.abort();
+      fareQuoteAbortRef.current = null;
       setFareQuotes({});
       setFareQuoteMeta({});
       setFareQuotesLoading(false);
@@ -688,7 +702,7 @@ export default function RideBookScreen() {
       dropLat,
       dropLng,
       fareTripKm,
-      availableOptionIdsKey,
+      fareCatalogCodesKey,
       pickupPincode ?? "",
       pickupState ?? "",
     ].join("\u0000");
@@ -696,47 +710,57 @@ export default function RideBookScreen() {
     if (quoteKey === fareQuoteKeyRef.current) return;
     fareQuoteKeyRef.current = quoteKey;
 
+    fareQuoteAbortRef.current?.abort();
+    const abort = new AbortController();
+    fareQuoteAbortRef.current = abort;
+
     const requestId = ++fareQuoteRequestRef.current;
     setFareQuotes({});
     setFareQuoteMeta({});
     setFareQuotesLoading(true);
-    logRideRouteDebug("fare_quote_request", {
+    const startedAt = Date.now();
+    logRideRouteDebug("fare_quote_batch_request", {
       tripKm: fareTripKm,
       pickupLat,
       pickupLng,
       dropLat,
       dropLng,
-      vehicleCount: availableOptions.length,
+      vehicleCount: fareCatalogCodes.length,
+      catalogCodes: fareCatalogCodes,
     });
-    const options = availableOptions;
+
     void (async () => {
       try {
-        const entries = await Promise.all(
-          options.map(async (option) => {
-            const result = await getRideFareQuote({
-              pickupLat,
-              pickupLng,
-              dropLat,
-              dropLng,
-              tripKm: fareTripKm,
-              catalogCode: option.id,
-              pickupPincode,
-              pickupState,
-            });
-            if (!result.ok || !result.quote.eligible || result.quote.finalFare <= 0) return null;
-            return [option.id, result.quote] as const;
-          })
-        );
+        const result = await getRideFareQuoteBatch({
+          pickupLat,
+          pickupLng,
+          dropLat,
+          dropLng,
+          tripKm: fareTripKm,
+          catalogCodes: fareCatalogCodes,
+          pickupPincode,
+          pickupState,
+          signal: abort.signal,
+        });
         if (requestId !== fareQuoteRequestRef.current) return;
+        if (!result.ok) {
+          if (result.code === "ABORTED") return;
+          return;
+        }
+
         const next: Record<string, number> = {};
         const nextMeta: Record<string, RideFareQuote> = {};
-        for (const entry of entries) {
-          if (!entry) continue;
-          nextMeta[entry[0]] = entry[1];
-          next[entry[0]] = resolveRideQuotePayableAmount(entry[1]);
+        for (const [code, quote] of Object.entries(result.quotes)) {
+          nextMeta[code] = quote;
+          next[code] = resolveRideQuotePayableAmount(quote);
         }
         setFareQuoteMeta(nextMeta);
         setFareQuotes(applyBikeLiteFareRule(next));
+        logRideRouteDebug("fare_quote_batch_ms", {
+          ms: Date.now() - startedAt,
+          vehicleCount: Object.keys(next).length,
+          serverTimings: result.timings ?? null,
+        });
       } catch {
         if (requestId !== fareQuoteRequestRef.current) return;
       } finally {
@@ -745,6 +769,10 @@ export default function RideBookScreen() {
         }
       }
     })();
+
+    return () => {
+      abort.abort();
+    };
   }, [
     isFocused,
     pickupLat,
@@ -752,10 +780,10 @@ export default function RideBookScreen() {
     dropLat,
     dropLng,
     fareTripKm,
-    availableOptionIdsKey,
+    fareCatalogCodesKey,
+    fareCatalogCodes,
     pickupPincode,
     pickupState,
-    availableOptions.length,
   ]);
 
   const mapFitPoints = useMemo(() => {

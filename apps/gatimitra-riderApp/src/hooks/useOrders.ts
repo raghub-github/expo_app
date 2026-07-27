@@ -85,7 +85,7 @@ export function useAvailableOrders() {
     },
     refetchIntervalInBackground: false,
     refetchOnWindowFocus: true,
-    refetchOnMount: "always",
+    refetchOnMount: true,
     staleTime: 3000,
     retry: 2,
     retryDelay: (attempt) => Math.min(1_500 * 2 ** attempt, 12_000),
@@ -128,9 +128,10 @@ export function useActiveOrders() {
     queryFn: () => riderApi.getActiveOrders(),
     enabled: !!session?.accessToken,
     refetchInterval: 5000,
-    refetchOnMount: "always",
+    refetchOnMount: true,
     refetchOnWindowFocus: true,
-    staleTime: 2000,
+    staleTime: 15_000,
+    placeholderData: (prev) => prev,
     retry: 2,
   });
 }
@@ -143,9 +144,9 @@ export function useRidePaymentHolds() {
     queryFn: () => riderApi.getRidePaymentHolds(),
     enabled: !!session?.accessToken,
     refetchInterval: 5000,
-    refetchOnMount: "always",
+    refetchOnMount: true,
     refetchOnWindowFocus: true,
-    staleTime: 2000,
+    staleTime: 10_000,
     retry: 2,
   });
 }
@@ -210,6 +211,13 @@ export function useRideOrder(
     staleTime: 5000,
     refetchInterval: opts?.refetchInterval,
     retry: 2,
+    // Prefer cached list/detail so Active Ride opens without a full-screen spinner.
+    initialData: () =>
+      orderId ? findRiderOrderInQueryCache(queryClient, orderId) : undefined,
+    initialDataUpdatedAt: () =>
+      orderId
+        ? queryClient.getQueryState(RIDER_ORDER_DETAIL_QUERY_KEY(orderId))?.dataUpdatedAt
+        : undefined,
     placeholderData: () =>
       orderId ? findRiderOrderInQueryCache(queryClient, orderId) : undefined,
   });
@@ -306,10 +314,16 @@ export function useCancelAssignedRide() {
         reasonCode: args.reasonCode,
         reasonText: args.reasonText,
       }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["rider", "orders"] });
-      queryClient.invalidateQueries({ queryKey: ["rider", "earnings", "summary"] });
-      queryClient.invalidateQueries({ queryKey: ["rider", "ledger"] });
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["rider", "orders"] }),
+        queryClient.invalidateQueries({ queryKey: ["rider", "earnings"] }),
+        queryClient.invalidateQueries({ queryKey: ["rider", "ledger"] }),
+        queryClient.invalidateQueries({ queryKey: ["rider", "wallet"] }),
+        queryClient.invalidateQueries({ queryKey: ["rider", "duty"] }),
+      ]);
+      // Force ledger lists to refetch so penalty debit is visible immediately.
+      await queryClient.refetchQueries({ queryKey: ["rider", "ledger"], type: "active" });
     },
   });
 }

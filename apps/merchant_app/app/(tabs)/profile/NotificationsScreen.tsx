@@ -1,15 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import {
-  View,
-  Text,
-  StyleSheet,
-  ScrollView,
-  Switch,
-  ActivityIndicator,
-  Alert,
-  TextInput,
-  Pressable,
-} from "react-native";
+import { AppText as Text } from "@/components/AppText";
+import { View, StyleSheet, ScrollView, Switch, ActivityIndicator, Alert, TextInput, Pressable } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { GatiMitraMerchant, H_PADDING } from "@/constants/theme";
 import { useStoreSettings } from "@/context/StoreSettingsContext";

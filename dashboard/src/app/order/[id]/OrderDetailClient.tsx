@@ -30,6 +30,14 @@ import {
 } from "./OrderCustomerFeedbackSideSheet";
 import { OrderPartnerChatSideSheet } from "./OrderPartnerChatSideSheet";
 import {
+  OrderRoutedToHistorySideSheet,
+  fetchRoutedToHistory,
+  invalidateRoutedToHistory,
+  peekRoutedToHistory,
+  seedRoutedToHistory,
+  type RoutedToHistoryItem,
+} from "./OrderRoutedToHistorySideSheet";
+import {
   isManualStatusOptionDisabled,
   canApplyManualStatusUpdate,
   resolveDispatchManualStage,
@@ -263,19 +271,6 @@ interface MerchantSummaryFromApi {
   delisted_at?: string | null;
 }
 
-/** Penalty / debit / credit record from GET /api/orders/[id]/recovery-records */
-export interface OrderRecoveryRecordItem {
-  id: string;
-  party: "rider" | "merchant";
-  partyLabel: string;
-  kind: string;
-  reason: string | null;
-  amount: number;
-  impact: "debit" | "credit" | "info";
-  status: string | null;
-  createdAt: string | null;
-}
-
 /** Refund list item from GET /api/orders/[id]/refunds */
 export interface OrderRefundListItem {
   id: number;
@@ -289,12 +284,30 @@ export interface OrderRefundListItem {
   executionStatus: string | null;
   executionRoute: string | null;
   failureReason: string | null;
+  /** Razorpay refund id (rfnd_…) when available. */
+  razorpayRefundId?: string | null;
+  pgRefundId?: string | null;
   refundInitiatedBy: string | null;
   refundInitiatedById: number | null;
   initiatedByEmail: string | null;
   createdAt: string;
   processedAt: string | null;
   completedAt: string | null;
+}
+
+/** Penalty / debit / credit record from GET /api/orders/[id]/recovery-records */
+export interface OrderRecoveryRecordItem {
+  id: string;
+  party: "rider" | "merchant";
+  partyLabel: string;
+  kind: string;
+  reason: string | null;
+  amount: number;
+  impact: "debit" | "credit" | "info";
+  /** Whether the debit was partial or full. */
+  debitScope?: "partial" | "full" | null;
+  status: string | null;
+  createdAt: string | null;
 }
 
 interface OrderTicketSummary {
@@ -593,6 +606,9 @@ export default function OrderDetailClient({
   const itemsPrefetchInFlight = useRef(false);
   const [orderTickets, setOrderTickets] = useState<OrderTicketSummary[]>([]);
   const [showTicketsModal, setShowTicketsModal] = useState(false);
+  const [showRoutedToHistory, setShowRoutedToHistory] = useState(false);
+  const [routedToHistory, setRoutedToHistory] = useState<RoutedToHistoryItem[] | null>(null);
+  const routedToPrefetchInFlight = useRef(false);
   const [statusHistory, setStatusHistory] = useState<OrderStatusHistoryEntry[]>([]);
   const [showHistoryModal, setShowHistoryModal] = useState(false);
   const [statusUpdateError, setStatusUpdateError] = useState<string | null>(null);
@@ -626,6 +642,28 @@ export default function OrderDetailClient({
         itemsPrefetchInFlight.current = false;
       });
   }, [order?.id, orderItemsPayload?.items?.length]);
+
+  const ensureRoutedToHistoryPrefetch = useCallback(() => {
+    const orderId = order?.id;
+    if (orderId == null || !Number.isFinite(orderId)) return;
+    const cached = peekRoutedToHistory(orderId);
+    if (cached) {
+      setRoutedToHistory(cached);
+      return;
+    }
+    if (routedToPrefetchInFlight.current) return;
+    routedToPrefetchInFlight.current = true;
+    void fetchRoutedToHistory(orderId)
+      .then((rows) => setRoutedToHistory(rows))
+      .catch(() => setRoutedToHistory([]))
+      .finally(() => {
+        routedToPrefetchInFlight.current = false;
+      });
+  }, [order?.id]);
+
+  useEffect(() => {
+    setRoutedToHistory(null);
+  }, [order?.id]);
 
   const auth = useAuthOptional();
   const loggedInEmail = auth?.user?.email ?? null;
@@ -834,6 +872,7 @@ export default function OrderDetailClient({
             riderActivityLog?: RiderActivityLogCacheEntry | null;
             riderDispatchUi?: unknown;
             partnerChat?: unknown;
+            routedToHistory?: RoutedToHistoryItem[];
           };
         } catch {
           throw new Error("Invalid order response");
@@ -1030,6 +1069,20 @@ export default function OrderDetailClient({
               if (!cancelled) setOrderRecoveryRecords([]);
             }
           })();
+
+          // Prefer history embedded in order-core (instant). Fallback to dedicated prefetch.
+          if (Array.isArray(body.routedToHistory) && coreOrderId != null) {
+            seedRoutedToHistory(coreOrderId, body.routedToHistory);
+            setRoutedToHistory(body.routedToHistory);
+          } else if (coreOrderId != null) {
+            void fetchRoutedToHistory(coreOrderId)
+              .then((rows) => {
+                if (!cancelled) setRoutedToHistory(rows);
+              })
+              .catch(() => {
+                if (!cancelled) setRoutedToHistory([]);
+              });
+          }
 
           void itemsPromise.then((parsed) => {
             if (!cancelled && parsed) setOrderItemsPayload(parsed);
@@ -1598,9 +1651,19 @@ export default function OrderDetailClient({
               {effectiveRoutedTo && (
                 <p className="text-[11px] text-slate-500">
                   Routed To:{" "}
-                  <span className="font-medium text-slate-800">
+                  <button
+                    type="button"
+                    onMouseEnter={ensureRoutedToHistoryPrefetch}
+                    onFocus={ensureRoutedToHistoryPrefetch}
+                    onClick={() => {
+                      setShowRoutedToHistory(true);
+                      ensureRoutedToHistoryPrefetch();
+                    }}
+                    className="font-medium text-slate-800 underline-offset-2 hover:underline cursor-pointer"
+                    title="View Routed To history"
+                  >
                     {effectiveRoutedTo}
-                  </span>
+                  </button>
                 </p>
               )}
               <button
@@ -1988,10 +2051,18 @@ export default function OrderDetailClient({
           initialNotifications={embeddedNotifications ?? undefined}
           initialRecons={embeddedRecons ?? undefined}
           activityRefreshKey={refetchTrigger}
-          onRoutedToChange={(email) =>
-            setOrder((prev) => (prev ? { ...prev, routedToEmail: email } : prev))
-          }
-          onRefundCreated={() => setRefetchTrigger((t) => t + 1)}
+          onRoutedToChange={(email) => {
+            setOrder((prev) => (prev ? { ...prev, routedToEmail: email } : prev));
+            if (order?.id != null) invalidateRoutedToHistory(order.id);
+            setRoutedToHistory(null);
+            ensureRoutedToHistoryPrefetch();
+          }}
+          onRefundCreated={() => {
+            setRefetchTrigger((t) => t + 1);
+            if (order?.id != null) invalidateRoutedToHistory(order.id);
+            setRoutedToHistory(null);
+            ensureRoutedToHistoryPrefetch();
+          }}
           onPrefetchOrderItems={ensureOrderItemsPrefetch}
           orderCancelledOnTimeline={orderCancelledOnTimeline}
           orderFullyRefunded={refundLock.fullyRefunded}
@@ -2169,6 +2240,15 @@ export default function OrderDetailClient({
           customerName={order.customerName}
           riderName={order.riderName}
           onClose={() => setPartnerChatOpen(false)}
+        />
+      ) : null}
+
+      {showRoutedToHistory && order ? (
+        <OrderRoutedToHistorySideSheet
+          orderId={order.id}
+          currentEmail={effectiveRoutedTo}
+          initialItems={routedToHistory ?? peekRoutedToHistory(order.id)}
+          onClose={() => setShowRoutedToHistory(false)}
         />
       ) : null}
     </>

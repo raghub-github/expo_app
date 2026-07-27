@@ -1,12 +1,8 @@
-import { useCallback, useEffect, useState } from "react";
+import { useMemo } from "react";
 import type { OrderRecord } from "@/hooks/useOrders";
-import {
-  fetchMerchantRiderTracking,
-  MERCHANT_RIDER_TRACKING_POLL_MS,
-  type MerchantRiderTrackingPayload,
-} from "@/services/riderTrackingApi";
 import { canTrackAssignedRider, orderHasAssignedRider } from "@/lib/orderAssignedRider";
 import { riderEnRouteToMerchant, resolveRiderCardVariant } from "@/lib/riderMerchantArrivalDisplay";
+import { useMerchantRiderLiveTracking } from "@/hooks/useMerchantRiderLiveTracking";
 
 function parseOrdersFoodId(orderId: string): number | null {
   const n = parseInt(orderId, 10);
@@ -20,6 +16,7 @@ export type MerchantRiderLiveEnrichment = {
   assignmentStatus: string | null;
   arrivalSubtitle: string | null;
   loading: boolean;
+  wsConnected: boolean;
 };
 
 export function useMerchantRiderLiveEnrichment(
@@ -31,7 +28,7 @@ export function useMerchantRiderLiveEnrichment(
   const ordersFoodId = parseOrdersFoodId(order.id);
   const variant = resolveRiderCardVariant(order);
   const enRoute = riderEnRouteToMerchant(order);
-  const shouldPoll =
+  const shouldTrack =
     enabled &&
     !!storeId &&
     !!token &&
@@ -40,34 +37,20 @@ export function useMerchantRiderLiveEnrichment(
     canTrackAssignedRider(order) &&
     (enRoute || variant === "arrived" || variant === "picked_up");
 
-  const [tracking, setTracking] = useState<MerchantRiderTrackingPayload | null>(null);
-  const [loading, setLoading] = useState(false);
+  const wsOrderIds = useMemo(() => {
+    const ids: string[] = [];
+    if (order.formattedOrderId?.trim()) ids.push(order.formattedOrderId.trim());
+    if (order.orderNumber?.trim()) ids.push(order.orderNumber.trim());
+    return ids;
+  }, [order.formattedOrderId, order.orderNumber]);
 
-  const load = useCallback(
-    async (silent = true) => {
-      if (!shouldPoll || !storeId || !token || ordersFoodId == null) return;
-      if (!silent) setLoading(true);
-      try {
-        const payload = await fetchMerchantRiderTracking(storeId, ordersFoodId, token);
-        setTracking(payload);
-      } catch {
-        /* keep last good payload */
-      } finally {
-        if (!silent) setLoading(false);
-      }
-    },
-    [shouldPoll, storeId, token, ordersFoodId]
-  );
-
-  useEffect(() => {
-    if (!shouldPoll) {
-      setTracking(null);
-      return;
-    }
-    void load(false);
-    const id = setInterval(() => void load(true), MERCHANT_RIDER_TRACKING_POLL_MS);
-    return () => clearInterval(id);
-  }, [shouldPoll, load]);
+  const { data: tracking, loading, wsConnected } = useMerchantRiderLiveTracking({
+    enabled: shouldTrack,
+    storeId,
+    ordersFoodId,
+    wsOrderIds,
+    token,
+  });
 
   const riderName =
     (tracking?.rider.name ?? order.riderName ?? "").trim() || "Delivery partner";
@@ -97,5 +80,6 @@ export function useMerchantRiderLiveEnrichment(
     assignmentStatus: tracking?.rider.assignment_status ?? order.riderAssignmentStatus ?? null,
     arrivalSubtitle,
     loading,
+    wsConnected,
   };
 }

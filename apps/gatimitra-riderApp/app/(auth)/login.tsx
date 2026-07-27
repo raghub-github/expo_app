@@ -287,12 +287,15 @@ export default function LoginScreen() {
 
       if (status.onboardingStatus === "approved") {
         router.replace("/(tabs)/orders");
-      } else if (status.onboardingStatus === "pending_approval") {
+      } else if (
+        status.onboardingStatus === "pending_approval" &&
+        status.paymentCompleted === true
+      ) {
         router.replace("/(onboarding)/pending");
       } else if (status.exists) {
         router.replace("/");
       } else {
-        router.replace("/(onboarding)/method-selection");
+        router.replace("/(onboarding)/aadhaar");
       }
     } catch (e) {
       setError(e instanceof Error ? e.message : t("login.failedVerify"));

@@ -36,7 +36,7 @@ export type { LocationPermissionStatus, DeviceLocationReadiness };
 const GEOCODE_MS = 10_000;
 const STORAGE_KEY = "@gatimitra/last_selected_location_v1";
 /** Toggle verbose location logging for field debugging (raw coords, accuracy, PIN). */
-const LOCATION_DEBUG = true;
+const LOCATION_DEBUG = __DEV__;
 
 function logLocation(event: string, data: Record<string, unknown>): void {
   if (!LOCATION_DEBUG) return;

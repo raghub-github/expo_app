@@ -149,12 +149,15 @@ async function syncStep5ToMerchantStores(
     return `/api/attachments/proxy?key=${encodeURIComponent(trimmed.replace(/^\/+/, ""))}`;
   };
 
-  const bannerUrlRaw = (step5 as any).banner_url;
+  const bannerUrlRaw =
+    (step5 as any).banner_url ?? (step5 as any).banner_preview;
   const bannerUrl = normalizeStoredMediaUrl(bannerUrlRaw);
 
-  const galleryRaw = (step5 as any).gallery_image_urls;
+  const galleryRaw =
+    (step5 as any).gallery_image_urls ?? (step5 as any).gallery_previews;
+  // Empty gallery array must clear DB when the key is present.
   const galleryImages =
-    Array.isArray(galleryRaw) && galleryRaw.length
+    Array.isArray(galleryRaw)
       ? (galleryRaw as unknown[])
           .map((u) => normalizeStoredMediaUrl(u))
           .filter((u): u is string => typeof u === "string" && u.length > 0)
@@ -168,9 +171,12 @@ async function syncStep5ToMerchantStores(
           .map((u) => (u as string).trim())
       : null;
 
-  // If none of these fields were present on the patch, skip update.
-  const hasBanner = Object.prototype.hasOwnProperty.call(step5, "banner_url");
-  const hasGallery = Object.prototype.hasOwnProperty.call(step5, "gallery_image_urls");
+  const hasBanner =
+    Object.prototype.hasOwnProperty.call(step5, "banner_url") ||
+    Object.prototype.hasOwnProperty.call(step5, "banner_preview");
+  const hasGallery =
+    Object.prototype.hasOwnProperty.call(step5, "gallery_image_urls") ||
+    Object.prototype.hasOwnProperty.call(step5, "gallery_previews");
   const hasCuisines = Object.prototype.hasOwnProperty.call(step5, "cuisine_types");
 
   const deliveryRadiusRaw = (step5 as any).delivery_radius_km;
@@ -189,20 +195,92 @@ async function syncStep5ToMerchantStores(
     deliveryRadiusNum <= 50;
   const delivery_radius_km = canUpdateDeliveryRadius ? deliveryRadiusNum : null;
 
+  // Mirror partnersite syncMerchantStoreFromStep5 field set.
+  const hasPrep = Object.prototype.hasOwnProperty.call(step5, "avg_preparation_time_minutes");
+  const prepRaw = (step5 as any).avg_preparation_time_minutes;
+  const prepNum =
+    typeof prepRaw === "number"
+      ? prepRaw
+      : typeof prepRaw === "string" && prepRaw.trim()
+        ? Number(prepRaw)
+        : null;
+  const avg_preparation_time_minutes =
+    hasPrep && prepNum != null && Number.isFinite(prepNum) && prepNum > 0 ? Math.floor(prepNum) : 30;
+
+  const hasMinOrder = Object.prototype.hasOwnProperty.call(step5, "min_order_amount");
+  const minOrderRaw = (step5 as any).min_order_amount;
+  const minOrderNum =
+    typeof minOrderRaw === "number"
+      ? minOrderRaw
+      : typeof minOrderRaw === "string" && minOrderRaw.trim()
+        ? Number(minOrderRaw)
+        : null;
+  const min_order_amount =
+    hasMinOrder && minOrderNum != null && Number.isFinite(minOrderNum) && minOrderNum >= 0
+      ? minOrderNum
+      : 0;
+
+  const hasPureVeg = Object.prototype.hasOwnProperty.call(step5, "is_pure_veg");
+  const is_pure_veg = hasPureVeg ? !!(step5 as any).is_pure_veg : null;
+
+  const hasOnlinePay = Object.prototype.hasOwnProperty.call(step5, "accepts_online_payment");
+  const accepts_online_payment = hasOnlinePay
+    ? (step5 as any).accepts_online_payment !== false
+    : null;
+
+  const hasCash = Object.prototype.hasOwnProperty.call(step5, "accepts_cash");
+  const accepts_cash = hasCash ? (step5 as any).accepts_cash !== false : null;
+
   const operatingHoursRaw = (step5 as any).store_hours;
   const hasOperatingHours =
     operatingHoursRaw && typeof operatingHoursRaw === "object";
 
-  if (!hasBanner && !hasGallery && !hasCuisines && !canUpdateDeliveryRadius && !hasOperatingHours) return;
+  const hasOperationalFlags =
+    hasPrep || hasMinOrder || hasPureVeg || hasOnlinePay || hasCash;
 
-  if (hasBanner || hasGallery || hasCuisines || canUpdateDeliveryRadius) {
+  if (
+    !hasBanner &&
+    !hasGallery &&
+    !hasCuisines &&
+    !canUpdateDeliveryRadius &&
+    !hasOperatingHours &&
+    !hasOperationalFlags
+  ) {
+    return;
+  }
+
+  if (
+    hasBanner ||
+    hasGallery ||
+    hasCuisines ||
+    canUpdateDeliveryRadius ||
+    hasOperationalFlags
+  ) {
+    // Prefer sql.array for text[] — matches merchant-stores.updateMerchantStore.
+    const galleryClause =
+      !hasGallery
+        ? sql``
+        : galleryImages == null || galleryImages.length === 0
+          ? sql`gallery_images = NULL,`
+          : sql`gallery_images = ${sql.array(galleryImages)}::text[],`;
+    const cuisineClause =
+      !hasCuisines
+        ? sql``
+        : cuisineTypes == null || cuisineTypes.length === 0
+          ? sql`cuisine_types = NULL,`
+          : sql`cuisine_types = ${sql.array(cuisineTypes)}::text[],`;
     await sql`
       UPDATE merchant_stores
       SET
         ${hasBanner ? sql`banner_url = ${bannerUrl},` : sql``}
-        ${hasGallery ? sql`gallery_images = ${galleryImages}::text[],` : sql``}
-        ${hasCuisines ? sql`cuisine_types = ${cuisineTypes}::text[],` : sql``}
+        ${galleryClause}
+        ${cuisineClause}
         ${canUpdateDeliveryRadius ? sql`delivery_radius_km = ${delivery_radius_km},` : sql``}
+        ${hasPrep ? sql`avg_preparation_time_minutes = ${avg_preparation_time_minutes},` : sql``}
+        ${hasMinOrder ? sql`min_order_amount = ${min_order_amount},` : sql``}
+        ${hasPureVeg ? sql`is_pure_veg = ${is_pure_veg},` : sql``}
+        ${hasOnlinePay ? sql`accepts_online_payment = ${accepts_online_payment},` : sql``}
+        ${hasCash ? sql`accepts_cash = ${accepts_cash},` : sql``}
         updated_at = NOW()
       WHERE id = ${storeInternalId}
     `;
@@ -290,7 +368,26 @@ async function syncStep5ToMerchantStores(
 
     const oh = operatingHoursRaw as Record<string, unknown>;
 
-    const dayValues = DAYS.map((d) => normalizeDay(oh[d] as StoreHoursDay));
+    const defaultDayHours: StoreHoursDay = {
+      closed: false,
+      slot1_open: "09:00",
+      slot1_close: "22:00",
+      slot2_open: "",
+      slot2_close: "",
+    };
+    const weekendDefaults: Record<string, StoreHoursDay> = {
+      saturday: { ...defaultDayHours, slot1_open: "10:00", slot1_close: "23:00" },
+      sunday: { ...defaultDayHours, slot1_open: "10:00", slot1_close: "22:00" },
+    };
+
+    const dayValues = DAYS.map((d) => {
+      const raw = oh[d];
+      const day =
+        raw && typeof raw === "object"
+          ? (raw as StoreHoursDay)
+          : weekendDefaults[d] || defaultDayHours;
+      return normalizeDay(day);
+    });
 
     const sameForAllDays =
       dayValues.every((v, i) => {
@@ -369,6 +466,16 @@ export async function upsertChildStoreProgress(params: {
   const step5 = mergedFormData?.step5 as Record<string, unknown> | undefined;
   if (step5 && typeof step5 === "object") {
     await syncStep5ToMerchantStores(sql, params.storeInternalId, step5);
+    // Keep merchant_store_cuisines aligned with cuisine_types text[].
+    if (Object.prototype.hasOwnProperty.call(step5, "cuisine_types") && Array.isArray(step5.cuisine_types)) {
+      try {
+        const { syncLegacyCuisineTypesToStoreLinks } = await import("@/lib/db/operations/menu-category-rules");
+        // First ensure cuisine_types column is written, then link rows.
+        await syncLegacyCuisineTypesToStoreLinks(params.storeInternalId);
+      } catch (e) {
+        console.warn("[upsertChildStoreProgress] cuisine link sync failed:", e);
+      }
+    }
   }
 
   if (existing) {

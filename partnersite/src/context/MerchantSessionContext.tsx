@@ -1,6 +1,7 @@
 "use client";
 
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
+import { clearPartnerStoreSelection } from "@/lib/partner-selected-store";
 
 interface MerchantSessionUser {
   id: string;
@@ -95,6 +96,7 @@ export function MerchantSessionProvider({ children }: { children: React.ReactNod
   }, [fetchSession]);
 
   const logout = useCallback(async () => {
+    clearPartnerStoreSelection();
     await fetch("/api/auth/logout", { method: "POST" });
     setUser(null);
     setSessionStatus(null);

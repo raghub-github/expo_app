@@ -22,17 +22,6 @@ async function customerTokensForOrdersCoreId(
   return rows.map((r) => r.token).filter(Boolean);
 }
 
-async function riderDisplayName(riderId: number): Promise<string> {
-  const sql = getSql();
-  const rows = await sql<{ name: string | null }[]>`
-    SELECT NULLIF(TRIM(name), '') AS name
-    FROM riders
-    WHERE id = ${riderId}
-    LIMIT 1
-  `;
-  return rows[0]?.name?.trim() || "Captain";
-}
-
 /** Rapido-style push when an assigned captain cancels / unassigns before pickup. */
 export async function notifyCustomerRideCaptainCancelled(
   ordersCoreId: number,
@@ -46,7 +35,11 @@ export async function notifyCustomerRideCaptainCancelled(
       templateCode: "RIDE_CAPTAIN_CANCELLED",
       variables: { orderId: orderIdText, orderShortId: orderIdText },
       target: { device_tokens: tokens },
-      metadata: { gmType: "RIDE_CAPTAIN_CANCELLED", orderId: orderIdText },
+      metadata: {
+        gmType: "RIDE_CAPTAIN_CANCELLED",
+        liveService: "ride",
+        orderId: orderIdText,
+      },
     });
   } catch (err) {
     console.warn(
@@ -56,32 +49,22 @@ export async function notifyCustomerRideCaptainCancelled(
   }
 }
 
-/** Push when a captain accepts — including re-assignment after a prior cancel. */
+/** Push when a captain accepts a person-ride — Super Admin template ORDER_RIDER_ASSIGNED. */
 export async function notifyCustomerRideCaptainOnTheWay(
   ordersCoreId: number,
   orderIdText: string,
   riderId: number
 ): Promise<void> {
   try {
-    const tokens = await customerTokensForOrdersCoreId(ordersCoreId);
-    if (tokens.length === 0) return;
-
-    const captainName = await riderDisplayName(riderId);
-
-    await sendNotification({
-      templateCode: "RIDE_CAPTAIN_ON_THE_WAY",
-      variables: {
-        orderId: orderIdText,
-        orderShortId: orderIdText,
-        captainName,
-        riderId: String(riderId),
-      },
-      target: { device_tokens: tokens },
-      metadata: { gmType: "RIDE_CAPTAIN_ON_THE_WAY", orderId: orderIdText, riderId: String(riderId) },
+    const { notifyCustomerRideLifecycle } = await import("./customer-lifecycle-notify.js");
+    await notifyCustomerRideLifecycle({
+      orderIdText,
+      templateCode: "ORDER_RIDER_ASSIGNED",
+      riderId,
     });
   } catch (err) {
     console.warn(
-      "[ride] captain-on-the-way customer push failed (tolerated)",
+      "[ride] ORDER_RIDER_ASSIGNED customer push failed (tolerated)",
       (err as Error).message
     );
   }

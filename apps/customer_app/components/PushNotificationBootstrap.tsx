@@ -15,6 +15,8 @@ import { Image } from "expo-image";
 import {
   navigateFromPushData,
   usePushPermissionController,
+  enqueueInAppBannerFromPush,
+  FloatingInAppBannerHost,
   type PushNotificationOpenPayload,
 } from "@gatimitra/expo-push-kit";
 import { useAuthStore } from "@/store/authStore";
@@ -22,6 +24,27 @@ import { useOrderStore } from "@/store/orderStore";
 import { buildPrepDelayMessage } from "@/lib/order-eta-display";
 import { getConfig } from "@/config/env";
 import { colors } from "@/theme";
+import { applyLiveProgressFromPush } from "@/components/LiveOrderProgressNotification";
+import { playCustomerNotificationSound } from "@/lib/playCustomerNotificationSound";
+import { isRideServicePush } from "@/lib/isRideServicePush";
+
+/**
+ * Ride-only CX chime channel (sound is immutable after first Android create).
+ * Other customer channels keep the OS default so food/parcel stay quiet.
+ */
+const CX_SOUND = "cx_notification";
+const CUSTOMER_PUSH_CHANNELS = [
+  {
+    channelId: "customer_ride_cx",
+    name: "Ride updates",
+    lightColor: "#14b8a6",
+    sound: CX_SOUND,
+  },
+  { channelId: "customer_default", name: "Orders & updates", lightColor: "#14b8a6" },
+  { channelId: "customer_live_order", name: "Live trip progress", lightColor: "#14b8a6" },
+  { channelId: "customer_cx", name: "Orders & updates", lightColor: "#14b8a6" },
+  { channelId: "default", name: "Orders & updates", lightColor: "#14b8a6" },
+] as const;
 
 const isExpoGo = Constants.appOwnership === "expo";
 
@@ -65,6 +88,7 @@ function PushNotificationBootstrapInner() {
   const handleOpen = useCallback(
     (payload: PushNotificationOpenPayload) => {
       handlePrepDelayPush(payload.data);
+      void applyLiveProgressFromPush(payload.data);
       navigateFromPushData(router, payload.data);
       const gmType = typeof payload.data.gmType === "string" ? payload.data.gmType : "";
       const imageUrl =
@@ -82,7 +106,13 @@ function PushNotificationBootstrapInner() {
 
   const handleForeground = useCallback(
     (payload: PushNotificationOpenPayload) => {
+      // CX chime only for ride-service floating updates (accept / nearby / drop / …).
+      if (isRideServicePush(payload.data)) {
+        void playCustomerNotificationSound();
+      }
       handlePrepDelayPush(payload.data);
+      void applyLiveProgressFromPush(payload.data);
+      enqueueInAppBannerFromPush(payload);
       const gmType = typeof payload.data.gmType === "string" ? payload.data.gmType : "";
       const imageUrl =
         typeof payload.data.imageUrl === "string" ? payload.data.imageUrl.trim() : "";
@@ -105,10 +135,7 @@ function PushNotificationBootstrapInner() {
     () => ({
       apiBaseUrl,
       androidPackageName: Constants.expoConfig?.android?.package,
-      androidChannels: [
-        { channelId: "default", name: "Orders & updates", lightColor: "#14b8a6" },
-        { channelId: "customer_default", name: "Orders & updates", lightColor: "#14b8a6" },
-      ],
+      androidChannels: [...CUSTOMER_PUSH_CHANNELS],
       getAuth: () => {
         const { session: s, hydrated: h } = authRef.current;
         if (!h || !s?.accessToken || s.role !== "customer") return null;
@@ -134,6 +161,31 @@ function PushNotificationBootstrapInner() {
 
   const { controller } = usePushPermissionController(pushOptions);
 
+  // Foreground: we play CX sound ourselves — skip OS default chime (avoids double play).
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const Notifications = await import("expo-notifications");
+        if (cancelled) return;
+        Notifications.setNotificationHandler({
+          handleNotification: async () => ({
+            shouldShowAlert: true,
+            shouldPlaySound: false,
+            shouldSetBadge: true,
+            shouldShowBanner: true,
+            shouldShowList: true,
+          }),
+        });
+      } catch {
+        /* ignore */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   // Re-sync tokens once auth hydrates / session appears (lifecycle may have
   // run earlier with getAuth() === null and skipped registration).
   useEffect(() => {
@@ -142,7 +194,13 @@ function PushNotificationBootstrapInner() {
   }, [hydrated, session?.accessToken, session?.role, controller]);
 
   return (
-    <Modal visible={!!richModal} transparent animationType="fade" onRequestClose={() => setRichModal(null)}>
+    <>
+      <FloatingInAppBannerHost
+        onPressBanner={(item) => {
+          if (item.data) navigateFromPushData(router, item.data);
+        }}
+      />
+      <Modal visible={!!richModal} transparent animationType="fade" onRequestClose={() => setRichModal(null)}>
       {richModal ? (
         <Pressable style={styles.backdrop} onPress={() => setRichModal(null)}>
           <Pressable style={styles.card} onPress={() => {}}>
@@ -156,6 +214,7 @@ function PushNotificationBootstrapInner() {
         </Pressable>
       ) : null}
     </Modal>
+    </>
   );
 }
 

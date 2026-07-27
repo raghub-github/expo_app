@@ -124,7 +124,7 @@ export async function POST(req: NextRequest) {
       p_reference_type: 'WITHDRAWAL',
       p_reference_id: 0,
       p_idempotency_key: holdKey,
-      p_description: `Withdrawal hold: ₹${amount.toFixed(2)}`,
+      p_description: `Withdrawal requested: ₹${amount.toFixed(2)}`,
       p_metadata: { source: 'partnersite' },
     });
 
@@ -142,7 +142,7 @@ export async function POST(req: NextRequest) {
       p_reference_type: 'WITHDRAWAL',
       p_reference_id: 0,
       p_idempotency_key: holdKey + '_credit_hold',
-      p_description: `Withdrawal hold (hold bucket): ₹${amount.toFixed(2)}`,
+      p_description: `Withdrawal requested (processing): ₹${amount.toFixed(2)}`,
       p_metadata: { hold_debit_ledger_id: holdLedgerId },
     });
 

@@ -16,7 +16,7 @@ import {
   canPerformRiderServiceAction,
   canPerformRiderActionAnyService,
 } from "@/lib/permissions/actions";
-import { isInvalidRefreshToken } from "@/lib/auth/session-errors";
+import { isInvalidRefreshToken, signOutIfSessionDead } from "@/lib/auth/session-errors";
 
 export const runtime = "nodejs";
 
@@ -31,7 +31,7 @@ export async function GET() {
     if (userError || !user || !user.email) {
       // Check if it's an invalid refresh token error
       if (isInvalidRefreshToken(userError)) {
-        await supabase.auth.signOut();
+        await signOutIfSessionDead(supabase, userError);
         return NextResponse.json(
           { success: false, error: "Session invalid", code: "SESSION_INVALID" },
           { status: 401 }

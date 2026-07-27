@@ -4,16 +4,8 @@
  */
 
 import React, { useEffect, useMemo, useState } from "react";
-import {
-  Modal,
-  View,
-  Text,
-  Pressable,
-  TextInput,
-  ScrollView,
-  StyleSheet,
-  Platform,
-} from "react-native";
+import { AppText as Text } from "@/components/AppText";
+import { Modal, View, Pressable, TextInput, ScrollView, StyleSheet, Platform } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import type { ChildStore } from "@/context/AuthContext";
@@ -269,7 +261,7 @@ export function ManageOrdersStoresSheet({
               </View>
               <Text style={styles.confirmCardTitle}>{confirmLabel}</Text>
               <Text style={styles.confirmCardBody}>
-                {`You will manage orders only from these ${selectedCount} restaurants`}
+                {`After you confirm, new orders from all ${selectedCount} selected restaurants will land on this same orders board. Each incoming order will show the store locality so you know which outlet it belongs to.`}
               </Text>
               <Pressable
                 onPress={handleConfirmDialog}

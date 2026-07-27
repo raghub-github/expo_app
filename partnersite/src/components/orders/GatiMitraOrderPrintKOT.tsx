@@ -12,12 +12,12 @@ import {
   normalizeThermalPrinterWidthMm,
   type KotLineItem,
   type KotPrintPayload,
+  getUtensilsCustomerLabel,
   type ThermalPrinterWidthMm,
 } from '@gatimitra/kot-print';
 import { printHtmlDocument } from '@gatimitra/print-utils';
 import type { OrdersFoodRow } from '@/hooks/useFoodOrders';
 import type { NormalizedOrderLineItem } from '@/lib/orderLineItems';
-import { getUtensilsCustomerLabel } from '@/lib/orderUtensilsLabel';
 import { parseMerchantInstructionsList } from '@/lib/merchant-order-instructions';
 
 export type GatiMitraKotStoreInfo = {

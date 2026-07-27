@@ -4,21 +4,82 @@
  * so the client retries instead of showing "Not authenticated" or hanging.
  */
 
+function authErrorParts(err: unknown): { message: string; code: string; name: string } {
+  if (!err || typeof err !== "object") return { message: "", code: "", name: "" };
+  const e = err as { message?: string; code?: string; name?: string };
+  return {
+    message: (e.message ?? "").toLowerCase(),
+    code: e.code ?? "",
+    name: e.name ?? "",
+  };
+}
+
+/**
+ * Parallel getUser()/getSession() races often yield "refresh_token_already_used".
+ * That means another request already rotated the token — do NOT signOut or you
+ * will wipe the cookies the winning request just wrote (instant auto-logout).
+ */
+export function isRefreshTokenAlreadyUsed(err: unknown): boolean {
+  const { message, code } = authErrorParts(err);
+  return (
+    code === "refresh_token_already_used" ||
+    message.includes("refresh_token_already_used") ||
+    (message.includes("refresh") && message.includes("already used"))
+  );
+}
+
+/** Refresh token is gone / revoked — session cannot be recovered. */
+export function isRefreshTokenNotFound(err: unknown): boolean {
+  const { message, code } = authErrorParts(err);
+  return (
+    code === "refresh_token_not_found" ||
+    message.includes("refresh_token_not_found") ||
+    message.includes("refresh token not found")
+  );
+}
+
+/**
+ * Any refresh-token failure (already used, not found, or invalid).
+ * Use for branching response codes; use shouldClearAuthSession before signOut.
+ */
 export function isInvalidRefreshToken(err: unknown): boolean {
   if (!err || typeof err !== "object") return false;
-  const e = err as { message?: string; code?: string; name?: string };
-  const message = (e.message ?? "").toLowerCase();
+  if (isRefreshTokenAlreadyUsed(err) || isRefreshTokenNotFound(err)) return true;
+  const { message, name } = authErrorParts(err);
   return (
-    e.name === "AuthApiError" && (message.includes("refresh") && (message.includes("not found") || message.includes("invalid") || message.includes("already used"))) ||
-    e.code === "refresh_token_already_used" ||
-    e.code === "refresh_token_not_found" ||
-    e.message?.includes("refresh_token_already_used") ||
-    e.message?.includes("refresh_token_not_found") ||
+    (name === "AuthApiError" &&
+      message.includes("refresh") &&
+      (message.includes("not found") || message.includes("invalid"))) ||
     message.includes("invalid refresh token") ||
-    message.includes("refresh token not found") ||
-    message.includes("already used") ||
     (message.includes("invalid") && message.includes("refresh") && message.includes("token"))
   );
+}
+
+/**
+ * Only clear cookies for irrecoverable refresh failures.
+ * Never clear on already_used — that is a parallel-refresh race.
+ */
+export function shouldClearAuthSession(err: unknown): boolean {
+  if (!isInvalidRefreshToken(err)) return false;
+  if (isRefreshTokenAlreadyUsed(err)) return false;
+  return true;
+}
+
+/**
+ * Sign out only when the refresh token is truly dead.
+ * Returns true if signOut was attempted.
+ */
+export async function signOutIfSessionDead(
+  supabase: { auth: { signOut: () => Promise<unknown> } },
+  err: unknown
+): Promise<boolean> {
+  if (!shouldClearAuthSession(err)) return false;
+  try {
+    await supabase.auth.signOut();
+  } catch {
+    // ignore
+  }
+  return true;
 }
 
 /** Supabase Auth rate limit (429). Do not retry in a loop – return 503 and let client retry after delay. */

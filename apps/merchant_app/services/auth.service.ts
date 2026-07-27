@@ -376,5 +376,76 @@ export const merchantAuthService = {
     assertExchangePayload(dataJson);
     return dataJson;
   },
+
+  /**
+   * Create a short-lived partnersite SSO handoff so Add Store / incomplete
+   * onboarding opens already logged-in on the partner portal.
+   */
+  async createPartnerHandoff(payload: {
+    accessToken: string;
+    redirectPath: string;
+    supabaseUserId?: string | null;
+  }): Promise<{
+    handoffToken: string;
+    accessToken: string;
+    refreshToken: string;
+    redirectPath: string;
+    expiresInSec: number;
+  }> {
+    const sbRaw = typeof payload.supabaseUserId === "string" ? payload.supabaseUserId.trim() : "";
+    const supabaseUserId =
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(sbRaw)
+        ? sbRaw
+        : undefined;
+    const res = await fetchWithTimeout(`${apiBaseUrl}${AUTH_PREFIX}/merchant/partner-handoff`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${payload.accessToken}`,
+      },
+      body: JSON.stringify({
+        redirectPath: payload.redirectPath,
+        ...(supabaseUserId ? { supabaseUserId } : {}),
+      }),
+      timeoutMs: 20000,
+    });
+    const raw = await res.text();
+    let dataJson: any = {};
+    try {
+      dataJson = raw ? JSON.parse(raw) : {};
+    } catch {
+      dataJson = {};
+    }
+    if (!res.ok) {
+      const msg =
+        (typeof dataJson?.message === "string" && dataJson.message) ||
+        (typeof dataJson?.error === "string" && dataJson.error) ||
+        "Could not open partner portal.";
+      if (res.status === 401) {
+        throw new MerchantAuthError("session_revoked", "Please log in again to add a store.");
+      }
+      throw new MerchantAuthError(
+        typeof dataJson?.error === "string" ? dataJson.error : "handoff_failed",
+        msg
+      );
+    }
+    const accessToken = typeof dataJson?.accessToken === "string" ? dataJson.accessToken : "";
+    const refreshToken = typeof dataJson?.refreshToken === "string" ? dataJson.refreshToken : "";
+    const redirectPath =
+      typeof dataJson?.redirectPath === "string" ? dataJson.redirectPath : payload.redirectPath;
+    if (!accessToken || !refreshToken) {
+      throw new MerchantAuthError("handoff_failed", "Could not open partner portal.");
+    }
+    return {
+      handoffToken: typeof dataJson?.handoffToken === "string" ? dataJson.handoffToken : "",
+      accessToken,
+      refreshToken,
+      redirectPath,
+      expiresInSec: typeof dataJson?.expiresInSec === "number" ? dataJson.expiresInSec : 120,
+    };
+  },
 };
+
+/** Alias used by some screens — same object as `merchantAuthService`. */
+export const authService = merchantAuthService;
 

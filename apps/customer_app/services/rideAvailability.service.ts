@@ -32,6 +32,8 @@ export type RideAvailabilityResponse = {
   radiusKm: number;
   nearbyRiderCount: number;
   onDutyRiderCount: number;
+  /** Active catalog codes for fare batch (present even when supply is empty). */
+  catalogCodes?: string[];
   options: RideAvailabilityOption[];
   riders: NearbySupplyRider[];
 };

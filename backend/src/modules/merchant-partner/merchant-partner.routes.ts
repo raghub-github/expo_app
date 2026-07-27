@@ -2918,6 +2918,32 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
           const offers = (rows as any[]).map((r) =>
             shapeMerchantPartnerOfferRow(r, idsByOfferPk.get(Number(r.id)) ?? null, itemIdByPk)
           );
+
+          try {
+            const {
+              loadMerchantOfferTrackStats,
+              mergeOfferTrackStatsIntoMetadata,
+            } = await import("./merchant-offer-track-stats.service.js");
+            const stats = await loadMerchantOfferTrackStats(
+              sql as unknown as Parameters<typeof loadMerchantOfferTrackStats>[0],
+              storeId,
+              offerPks
+            );
+            for (const offer of offers as Array<Record<string, unknown>>) {
+              const pk = Number(offer.id);
+              const stat = stats.get(pk);
+              if (!stat) continue;
+              const meta = (offer.offer_metadata as Record<string, unknown>) ?? {};
+              offer.offer_metadata = mergeOfferTrackStatsIntoMetadata(
+                meta,
+                stat,
+                offer.current_uses as number | null | undefined,
+              );
+            }
+          } catch (e) {
+            req.log?.warn?.({ err: e, storeId }, "offer track stats enrichment failed");
+          }
+
           return reply.send({ success: true, offers });
         }
       );
@@ -3433,8 +3459,8 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
         }
       );
 
-      /** GET /merchant-partner/stores/:storeId/wallet — wallet summary. */
-      protectedApp.get<{ Params: { storeId: string } }>(
+      /** GET /merchant-partner/stores/:storeId/wallet — wallet summary (Partner Site parity). */
+      protectedApp.get<{ Params: { storeId: string }; Querystring: { reconcile?: string; lite?: string } }>(
         "/stores/:storeId/wallet",
         async (req, reply) => {
           if (req.auth?.role !== "merchant" || !req.auth?.sub) return reply.code(401).send({ error: "merchant_required" });
@@ -3447,7 +3473,10 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
           if (sc.length === 0) return reply.code(404).send({ error: "store_not_found" });
 
           const { getWalletSummary } = await import("../../lib/merchant-wallet-engine.js");
-          const summary = await getWalletSummary(storeId);
+          // Default lite=0 for App so pending/in-process payouts match Partner payments page (lite=0).
+          const lite = req.query.lite === "1";
+          const reconcile = req.query.reconcile === "1";
+          const summary = await getWalletSummary(storeId, { lite, reconcile });
           return reply.send({ success: true, ...summary });
         }
       );
@@ -3479,16 +3508,44 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
         }
       );
 
-      /** GET /merchant-partner/stores/:storeId/wallet/payout-settlement — A−B−C summary for a period. */
-      protectedApp.get<{ Params: { storeId: string }; Querystring: { from?: string; to?: string } }>(
+      /** GET /merchant-partner/stores/:storeId/payout-requests — Partner Site payout list parity. */
+      protectedApp.get<{ Params: { storeId: string }; Querystring: { limit?: string } }>(
+        "/stores/:storeId/payout-requests",
+        async (req, reply) => {
+          if (req.auth?.role !== "merchant" || !req.auth?.sub) return reply.code(401).send({ error: "merchant_required" });
+          const storeId = Number(req.params.storeId);
+          if (!Number.isInteger(storeId) || storeId < 1) return reply.code(400).send({ error: "invalid_store_id" });
+          const sql = getSql();
+          const parentId = await getPartnerParentId(sql, req.auth.sub);
+          if (parentId == null) return reply.code(404).send({ error: "partner_not_found" });
+          const sc = await sql`SELECT id FROM merchant_stores WHERE id = ${storeId} AND parent_id = ${parentId} AND deleted_at IS NULL LIMIT 1`;
+          if (sc.length === 0) return reply.code(404).send({ error: "store_not_found" });
+
+          const { listPayoutRequests } = await import("../../lib/merchant-wallet-engine.js");
+          const result = await listPayoutRequests(storeId, Number(req.query.limit) || 5);
+          return reply.send({ success: true, ...result });
+        }
+      );
+
+      /** GET /merchant-partner/stores/:storeId/wallet/payout-settlement — ledger SSOT summary for a period/cycle. */
+      protectedApp.get<{
+        Params: { storeId: string };
+        Querystring: { from?: string; to?: string; cycleId?: string };
+      }>(
         "/stores/:storeId/wallet/payout-settlement",
         async (req, reply) => {
           if (req.auth?.role !== "merchant" || !req.auth?.sub) return reply.code(401).send({ error: "merchant_required" });
           const storeId = Number(req.params.storeId);
           if (!Number.isInteger(storeId) || storeId < 1) return reply.code(400).send({ error: "invalid_store_id" });
+          const cycleIdRaw = req.query.cycleId ? Number(req.query.cycleId) : null;
+          const cycleId =
+            cycleIdRaw != null && Number.isInteger(cycleIdRaw) && cycleIdRaw > 0 ? cycleIdRaw : null;
           const periodStart = req.query.from ? new Date(req.query.from) : null;
           const periodEnd = req.query.to ? new Date(req.query.to) : null;
-          if (!periodStart || !periodEnd || Number.isNaN(periodStart.getTime()) || Number.isNaN(periodEnd.getTime())) {
+          if (
+            !cycleId &&
+            (!periodStart || !periodEnd || Number.isNaN(periodStart.getTime()) || Number.isNaN(periodEnd.getTime()))
+          ) {
             return reply.code(400).send({ error: "from_and_to_required" });
           }
 
@@ -3500,11 +3557,41 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
 
           try {
             const { getPayoutSettlement } = await import("../../lib/merchant-payout-settlement.js");
-            const settlement = await getPayoutSettlement(storeId, periodStart, periodEnd);
+            const settlement = await getPayoutSettlement(
+              storeId,
+              periodStart ?? new Date(0),
+              periodEnd ?? new Date(),
+              { cycleId },
+            );
             return reply.send({ success: true, settlement });
           } catch (e) {
             req.log.error({ err: e, storeId }, "payout-settlement failed");
             return reply.code(500).send({ error: "settlement_failed" });
+          }
+        }
+      );
+
+      /** GET /merchant-partner/stores/:storeId/wallet/payout-cycles — open + closed payout cycles. */
+      protectedApp.get<{ Params: { storeId: string }; Querystring: { limit?: string } }>(
+        "/stores/:storeId/wallet/payout-cycles",
+        async (req, reply) => {
+          if (req.auth?.role !== "merchant" || !req.auth?.sub) return reply.code(401).send({ error: "merchant_required" });
+          const storeId = Number(req.params.storeId);
+          if (!Number.isInteger(storeId) || storeId < 1) return reply.code(400).send({ error: "invalid_store_id" });
+
+          const sql = getSql();
+          const parentId = await getPartnerParentId(sql, req.auth.sub);
+          if (parentId == null) return reply.code(404).send({ error: "partner_not_found" });
+          const sc = await sql`SELECT id FROM merchant_stores WHERE id = ${storeId} AND parent_id = ${parentId} AND deleted_at IS NULL LIMIT 1`;
+          if (sc.length === 0) return reply.code(404).send({ error: "store_not_found" });
+
+          try {
+            const { listPayoutCycles } = await import("../../lib/merchant-payout-settlement.js");
+            const cycles = await listPayoutCycles(storeId, Number(req.query.limit) || 50);
+            return reply.send({ success: true, cycles });
+          } catch (e) {
+            req.log.error({ err: e, storeId }, "payout-cycles failed");
+            return reply.code(500).send({ error: "payout_cycles_failed" });
           }
         }
       );
@@ -7662,6 +7749,78 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
           }
         }
       );
+
+      /** POST /merchant-partner/stores/:storeId/food-orders/kot-print — Merchant App KOT audit. */
+      protectedApp.post<{
+        Params: { storeId: string };
+        Body: {
+          order_id?: number;
+          kot_number?: string | null;
+          printed_by?: string;
+          print_channel?: string;
+        };
+      }>("/stores/:storeId/food-orders/kot-print", async (req, reply) => {
+        if (req.auth?.role !== "merchant" || !req.auth?.sub) {
+          return reply.code(401).send({ error: "merchant_required" });
+        }
+        const storeId = Number(req.params.storeId);
+        const orderId = Number(req.body?.order_id);
+        if (!Number.isInteger(storeId) || storeId < 1 || !Number.isFinite(orderId) || orderId < 1) {
+          return reply.code(400).send({ error: "invalid_request" });
+        }
+        const sql = getSql();
+        const parentId = await getPartnerParentId(sql, req.auth.sub);
+        if (parentId == null) return reply.code(404).send({ error: "partner_not_found" });
+        const storeRows = await sql`
+          SELECT id FROM merchant_stores
+          WHERE id = ${storeId} AND parent_id = ${parentId} AND deleted_at IS NULL
+          LIMIT 1
+        `;
+        if (storeRows.length === 0) return reply.code(404).send({ error: "store_not_found" });
+
+        try {
+          const tokRows = await sql`
+            SELECT id, kot_number, kot_print_count, kot_version
+            FROM order_pickup_tokens
+            WHERE order_id = ${orderId}
+            LIMIT 1
+          `;
+          const tok = tokRows[0] as
+            | {
+                id: number;
+                kot_number: string | null;
+                kot_print_count: number | null;
+                kot_version: number | null;
+              }
+            | undefined;
+          if (tok?.id) {
+            await sql`
+              UPDATE order_pickup_tokens
+              SET last_kot_printed_at = now(),
+                  kot_print_count = COALESCE(kot_print_count, 0) + 1,
+                  updated_at = now()
+              WHERE id = ${tok.id}
+            `;
+            await sql`
+              INSERT INTO order_kot_print_events (
+                order_id, store_id, token_id, kot_number, printed_by, print_channel, kot_version
+              )
+              VALUES (
+                ${orderId},
+                ${storeId},
+                ${tok.id},
+                ${req.body?.kot_number ?? tok.kot_number ?? null},
+                ${(req.body?.printed_by ?? "merchant_app").slice(0, 64)},
+                ${(req.body?.print_channel ?? "expo_print").slice(0, 64)},
+                ${Number(tok.kot_version ?? 1) || 1}
+              )
+            `;
+          }
+        } catch (err) {
+          req.log.warn({ err, storeId, orderId }, "[kot-print] audit failed");
+        }
+        return reply.send({ ok: true });
+      });
 
       /** GET /merchant-partner/stores/:storeId/food-orders/:orderId — single food order. */
       protectedApp.get<{ Params: { storeId: string; orderId: string } }>(

@@ -14,11 +14,28 @@ function normalizeAttachmentHref(url: string | null | undefined): string | null 
   if (url == null || typeof url !== "string") return null;
   const u = url.trim();
   if (!u) return null;
-  if (u.startsWith("http://") || u.startsWith("https://")) return u;
   if (u.startsWith("data:")) return u;
   const origin = typeof window !== "undefined" ? window.location.origin : "";
+
+  // Rebuild proxy URLs so `key` is always URI-encoded (unencoded keys with `/` break some img loads).
+  if (u.includes("/api/attachments/proxy") || u.includes("/v1/attachments/proxy")) {
+    try {
+      const parsed = new URL(u.startsWith("http") ? u : `http://local.invalid${u.startsWith("/") ? "" : "/"}${u}`);
+      const key = parsed.searchParams.get("key");
+      if (key?.trim()) {
+        const path = `/api/attachments/proxy?key=${encodeURIComponent(key.trim())}`;
+        return origin ? `${origin}${path}` : path;
+      }
+    } catch {
+      /* fall through */
+    }
+  }
+
+  if (u.startsWith("http://") || u.startsWith("https://")) return u;
   if (u.startsWith("/")) return origin ? `${origin}${u}` : u;
-  return origin ? `${origin}/api/attachments/proxy?key=${encodeURIComponent(u)}` : `/api/attachments/proxy?key=${encodeURIComponent(u)}`;
+  return origin
+    ? `${origin}/api/attachments/proxy?key=${encodeURIComponent(u)}`
+    : `/api/attachments/proxy?key=${encodeURIComponent(u)}`;
 }
 
 /** Same as normalizeAttachmentHref; use for img src so logo/banner/gallery load when stored as R2 key or relative path. */

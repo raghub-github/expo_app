@@ -511,6 +511,10 @@ export function mapboxRideNavScript(): string {
           navCameraRaf = null;
           return;
         }
+        if (typeof window.isGeofenceCameraActive === 'function' && window.isGeofenceCameraActive()) {
+          navCameraRaf = requestAnimationFrame(navCameraTick);
+          return;
+        }
         if (navTargetBearing == null || navTargetCenter == null) {
           computeNavCameraTargets(false);
         }

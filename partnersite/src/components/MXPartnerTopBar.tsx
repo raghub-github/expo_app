@@ -69,6 +69,9 @@ import { usePartnerDeviceOrderAlerts } from '@/hooks/usePartnerDeviceOrderAlerts
 import {
   PARTNER_SELECTED_STORE_CHANGED,
   isValidPartnerStoreId,
+  persistPartnerManagedStoreIds,
+  clearPartnerManagedStoreIds,
+  readPartnerManagedStoreIds,
   readPartnerSelectedStoreId,
 } from '@/lib/partner-selected-store';
 import { partnerSurfaceOnlineFromStoreOperationsBody } from '@/lib/partnerStoreSurfaceOnline';
@@ -500,6 +503,8 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
   const [pendingStoreSwitch, setPendingStoreSwitch] = useState<{
     storeId: string;
     storeName: string;
+    /** Multi-outlet manage confirm (orders land on one board). */
+    managedStoreIds?: string[];
   } | null>(null);
   /** Same close / open modals as dashboard store status card (not the simple confirm dialog). */
   const [operationalCloseModal, setOperationalCloseModal] = useState<{ storeId: string; storeName: string } | null>(
@@ -1227,9 +1232,10 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
     }
   }, [rushStorePick, resolvedStoreId, refreshRushStatus, refreshStoreOperations, refetchStoreOp]);
 
-  const switchToStore = (id: string) => {
+  const switchToStore = (id: string, managedIds?: string[]) => {
     if (typeof localStorage !== 'undefined') {
       localStorage.setItem('selectedStoreId', id);
+      persistPartnerManagedStoreIds(managedIds?.length ? managedIds : [id]);
       void import('@/lib/partner-selected-store').then((m) => m.notifyPartnerSelectedStoreChanged(id));
     }
     setSheet(null);
@@ -1241,7 +1247,8 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
 
   const goToAllStores = () => {
     setSheet(null);
-    window.location.href = '/partners/all-stores';
+    // ?picker=1 keeps the hub visible even when only one child (add / manage stores).
+    window.location.href = '/partners/all-stores?picker=1';
   };
 
   const clearPartnerLocalStorage = () => {
@@ -1250,6 +1257,7 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
     localStorage.removeItem('restaurantName');
     localStorage.removeItem('selectedStoreId');
     localStorage.removeItem('storeList');
+    clearPartnerManagedStoreIds();
   };
 
   const handleLogout = async () => {
@@ -1782,17 +1790,38 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
     const ids = [...checkedOutletIds];
     if (ids.length === 0) return;
     const primary =
-      (resolvedStoreId && checkedOutletIds.has(resolvedStoreId) ? resolvedStoreId : null) ?? ids[0];
-    if (!primary || primary === resolvedStoreId) return;
-    const store = displayStores.find((s) => s.store_id === primary);
-    if (!store) return;
-    setPendingStoreSwitch({ storeId: store.store_id, storeName: store.store_name });
+      (resolvedStoreId && checkedOutletIds.has(resolvedStoreId) ? resolvedStoreId : null) ?? ids[0]!;
+    const primaryStore = displayStores.find((s) => s.store_id === primary);
+    if (!primaryStore) return;
+
+    if (ids.length === 1) {
+      if (primary === resolvedStoreId) {
+        persistPartnerManagedStoreIds([primary]);
+        setSheet(null);
+        return;
+      }
+      setPendingStoreSwitch({
+        storeId: primaryStore.store_id,
+        storeName: primaryStore.store_name,
+        managedStoreIds: [primary],
+      });
+      return;
+    }
+
+    setPendingStoreSwitch({
+      storeId: primaryStore.store_id,
+      storeName: primaryStore.store_name,
+      managedStoreIds: ids,
+    });
   }, [checkedOutletIds, resolvedStoreId, displayStores]);
 
   useEffect(() => {
     if (sheet === 'status' && statusTab === 'manage') {
       setOutletSearchQuery('');
-      if (resolvedStoreId) {
+      const managed = readPartnerManagedStoreIds(resolvedStoreId);
+      if (managed.length > 0) {
+        setCheckedOutletIds(new Set(managed));
+      } else if (resolvedStoreId) {
         setCheckedOutletIds(new Set([resolvedStoreId]));
       }
     }
@@ -2337,7 +2366,7 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
                   className="flex w-full items-center justify-center gap-2 rounded-2xl border border-slate-200/90 bg-white py-3.5 text-sm font-semibold text-slate-800 shadow-sm ring-1 ring-slate-100 transition hover:border-sky-200/80 hover:bg-sky-50/60 hover:text-sky-950"
                   onClick={() => {
                     setSheet(null);
-                    router.push('/partners/all-stores');
+                    router.push('/partners/all-stores?picker=1');
                   }}
                 >
                   View all outlets
@@ -3286,20 +3315,39 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
 
       <PartnerToggleConfirmModal
         isOpen={pendingStoreSwitch != null}
-        title="Switch active outlet?"
-        message={
-          pendingStoreSwitch
-            ? `You are about to manage “${pendingStoreSwitch.storeName}”. The page will reload and dashboard, orders, menu, and settings will show that outlet.`
-            : ''
+        title={
+          pendingStoreSwitch?.managedStoreIds && pendingStoreSwitch.managedStoreIds.length > 1
+            ? `Confirm (${pendingStoreSwitch.managedStoreIds.length} restaurants)`
+            : 'Switch active outlet?'
         }
-        confirmLabel="Switch outlet"
+        message={
+          pendingStoreSwitch?.managedStoreIds && pendingStoreSwitch.managedStoreIds.length > 1
+            ? `After you confirm, new orders from all ${pendingStoreSwitch.managedStoreIds.length} selected restaurants will land on this same orders board. Each incoming order will show the store locality so you know which outlet it belongs to.`
+            : pendingStoreSwitch
+              ? `You are about to manage “${pendingStoreSwitch.storeName}”. The page will reload and dashboard, orders, menu, and settings will show that outlet.`
+              : ''
+        }
+        confirmLabel={
+          pendingStoreSwitch?.managedStoreIds && pendingStoreSwitch.managedStoreIds.length > 1
+            ? 'Confirm'
+            : 'Switch outlet'
+        }
         cancelLabel="Cancel"
         onClose={() => setPendingStoreSwitch(null)}
         onConfirm={() => {
           if (!pendingStoreSwitch) return;
           const id = pendingStoreSwitch.storeId;
+          const managed = pendingStoreSwitch.managedStoreIds ?? [id];
           setPendingStoreSwitch(null);
-          switchToStore(id);
+          if (managed.length > 1 && id === resolvedStoreId) {
+            persistPartnerManagedStoreIds(managed);
+            setSheet(null);
+            toast.success(
+              `Managing orders from ${managed.length} restaurants on this board`
+            );
+            return;
+          }
+          switchToStore(id, managed);
         }}
       />
 

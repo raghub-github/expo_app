@@ -1,5 +1,6 @@
 import { useMemo } from "react";
-import { View, Text, Pressable, StyleSheet, Platform } from "react-native";
+import { AppText as Text } from "@/components/AppText";
+import { View, Pressable, StyleSheet, Platform } from "react-native";
 import { useRouter, useSegments } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";

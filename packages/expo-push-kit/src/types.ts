@@ -50,6 +50,8 @@ export type PushControllerOptions = {
     importance?: number;
     vibrationPattern?: number[];
     lightColor?: string;
+    /** Android raw sound name (no extension). */
+    sound?: string;
   }>;
   /** Android package for APP_NOTIFICATION_SETTINGS. */
   androidPackageName?: string;

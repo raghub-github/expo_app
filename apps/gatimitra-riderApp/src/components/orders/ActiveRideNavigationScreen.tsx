@@ -7,6 +7,7 @@ import {
   ActivityIndicator,
   Alert,
   Linking,
+  AppState,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { StatusBar } from "expo-status-bar";
@@ -21,6 +22,7 @@ import { PersonRideNavigateBottomSheet } from "@/src/components/orders/PersonRid
 import type { NavMapViewMode } from "@/src/lib/map-assets";
 import {
   FoodNavigateBottomSheet,
+  FOOD_NAV_SHEET_COLLAPSED_HEIGHT,
   FOOD_NAV_SHEET_HEIGHT,
 } from "@/src/components/orders/FoodNavigateBottomSheet";
 import {
@@ -28,6 +30,7 @@ import {
   isRidePickupWaitActive,
 } from "@/src/lib/ride-pickup-wait";
 import {
+  PERSON_RIDE_NAV_SHEET_COLLAPSED_HEIGHT,
   PERSON_RIDE_NAV_SHEET_HEIGHT,
 } from "@/src/components/orders/PersonRideNavigateBottomSheet";
 import { buildNavMapEdgeInsets } from "@/src/lib/navigation-camera-fit";
@@ -87,6 +90,8 @@ import { useMilestoneGeoFence } from "@/src/hooks/useMilestoneGeoFence";
 import { resolveMilestoneGeoUi } from "@/src/lib/milestone-geo-hint";
 import { RiderRideCancelReasonSheet } from "@/src/components/orders/RiderRideCancelReasonSheet";
 import { RiderCancelPenaltyConfirmSheet } from "@/src/components/orders/RiderCancelPenaltyConfirmSheet";
+import { RiderCancelFailedSheet } from "@/src/components/orders/RiderCancelFailedSheet";
+import { RiderCancelSuccessSheet } from "@/src/components/orders/RiderCancelSuccessSheet";
 import { RiderAdminOrderCancelledSheet } from "@/src/components/orders/RiderAdminOrderCancelledSheet";
 import { PickupUpdatedBanner } from "@/src/components/orders/PickupUpdatedBanner";
 import { PickupOtpBottomSheet } from "@/src/components/orders/PickupOtpBottomSheet";
@@ -108,7 +113,10 @@ import {
   analyzeRiderOnRoute,
   buildRiderRouteConnectorGeoJson,
   OFF_ROUTE_REROUTE_M,
+  resolveDisplayRiderPosition,
+  rerouteDebounceMs,
 } from "@/src/lib/navigation-route-progress";
+import { trackDebug } from "@gatimitra/map-tracking-engine";
 import {
   resolveCustomerDropPin,
   resolveRestaurantPickupPin,
@@ -153,12 +161,17 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
         timeIntervalMs: 800,
         distanceIntervalM: 2,
         minAccuracyM: 80,
+        profileId: "active-nav",
       }),
     []
   );
   const [trackerState, setTrackerState] = useState<LocationTrackerState>(tracker.getState());
+  const stickyFixRef = useRef<NonNullable<Extract<LocationTrackerState, { status: "tracking" }>["lastFix"]> | undefined>(
+    undefined
+  );
   const [route, setRoute] = useState<NavigationRoute | null>(null);
-  const [routeLoading, setRouteLoading] = useState(true);
+  // Start false so cached order UI paints immediately; fetch flips this when needed.
+  const [routeLoading, setRouteLoading] = useState(false);
   const [routeError, setRouteError] = useState(false);
   const lastRouteFromRef = useRef<string | null>(null);
   const lastPickupKeyRef = useRef<string | null>(null);
@@ -198,6 +211,12 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
   const queryClient = useQueryClient();
   const [cancelSheetOpen, setCancelSheetOpen] = useState(false);
   const [penaltySheetOpen, setPenaltySheetOpen] = useState(false);
+  const [cancelFailedMessage, setCancelFailedMessage] = useState<string | null>(null);
+  const [cancelSuccess, setCancelSuccess] = useState<{
+    reasonLabel: string;
+    penaltyApplied: boolean;
+    penaltyAmount: number;
+  } | null>(null);
   const [pendingCancel, setPendingCancel] = useState<{ reasonCode: string; label: string } | null>(
     null
   );
@@ -229,11 +248,16 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
   const [customerCallSheetOpen, setCustomerCallSheetOpen] = useState(false);
   const [customerFeedbackOpen, setCustomerFeedbackOpen] = useState(false);
   const [sosSheetOpen, setSosSheetOpen] = useState(false);
+  const [navSheetExpanded, setNavSheetExpanded] = useState(true);
   const [adminCancelSheetOpen, setAdminCancelSheetOpen] = useState(false);
   const [adminCancelPenaltyAmount, setAdminCancelPenaltyAmount] = useState<number | null>(null);
   const [waitTick, setWaitTick] = useState(() => Date.now());
   const hadActiveOrderRef = useRef(false);
   const adminCancelHandledRef = useRef(false);
+
+  useEffect(() => {
+    setNavSheetExpanded(true);
+  }, [orderId]);
 
   useEffect(() => {
     void queryClient.prefetchQuery({
@@ -283,6 +307,8 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
 
   useEffect(() => {
     if (adminCancelHandledRef.current || isLoading) return;
+    // Rider self-cancel already shows RiderCancelSuccessSheet — don't treat 404 as admin cancel.
+    if (cancelSuccess) return;
     if (!hadActiveOrderRef.current && !order) return;
 
     const unassignedByAdmin = isError && isOrderFetchNotFoundError(error);
@@ -306,6 +332,7 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
     void queryClient.invalidateQueries({ queryKey: RIDER_ACTIVE_ORDERS_QUERY_KEY });
     queryClient.removeQueries({ queryKey: ["rider", "orders", "detail", orderId] });
   }, [
+    cancelSuccess,
     error,
     isError,
     isLoading,
@@ -329,7 +356,11 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
   ]);
 
   const sheetBottomInset = useNavScreenBottomInset();
-  const riderFix = trackerState.status === "tracking" ? trackerState.lastFix : undefined;
+  const liveFix = trackerState.status === "tracking" ? trackerState.lastFix : undefined;
+  useEffect(() => {
+    if (liveFix) stickyFixRef.current = liveFix;
+  }, [liveFix]);
+  const riderFix = liveFix ?? stickyFixRef.current;
   const smoothDurationMs = useMemo(() => {
     const speed = riderFix?.speedMps;
     if (speed == null || speed < 0.5) return 550;
@@ -562,10 +593,25 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
     };
   }, [tracker]);
 
+  useEffect(() => {
+    const sub = AppState.addEventListener("change", (next) => {
+      if (next !== "active") return;
+      void (async () => {
+        await tracker.stop();
+        await tracker.start();
+      })();
+    });
+    return () => sub.remove();
+  }, [tracker]);
+
   const fetchRoute = useCallback(
     async (force = false) => {
       const navRider = riderForRoute ?? riderLocation;
-      if (!navRider || !navDestination) return;
+      if (!navRider || !navDestination) {
+        // Keep prior polyline; wait for GPS — do not spin forever.
+        if (!hadRouteRef.current) setRouteLoading(true);
+        return;
+      }
 
       const pickupLat = Number(navDestination.lat);
       const pickupLng = Number(navDestination.lng);
@@ -591,18 +637,25 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
         if (result) {
           setRoute(result);
           lastRouteFromRef.current = fromKey;
+          trackDebug(force ? "rerouting_completed" : "route_generated", {
+            orderId,
+            points: result.coordinates?.length ?? 0,
+            distanceKm: result.distanceKm,
+            force,
+          });
         } else {
-          setRoute(null);
+          // Keep last good polyline so the map never blanks on a flaky Directions call.
+          if (!hadRouteRef.current) setRoute(null);
           setRouteError(true);
         }
       } catch {
-        setRoute(null);
+        if (!hadRouteRef.current) setRoute(null);
         setRouteError(true);
       } finally {
         setRouteLoading(false);
       }
     },
-    [riderForRoute, riderLocation, navDestination, order?.rideType, route?.coordinates?.length]
+    [riderForRoute, riderLocation, navDestination, order?.rideType, route?.coordinates?.length, orderId]
   );
 
   useEffect(() => {
@@ -686,16 +739,25 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
     if (!deviation) return;
 
     const shouldReroute =
+      deviation.shouldReroute === true ||
       deviation.offRouteM > OFF_ROUTE_REROUTE_M ||
       (deviation.wrongWay && deviation.offRouteM > 12);
 
     if (!shouldReroute) return;
 
+    trackDebug("off_route_detected", {
+      orderId,
+      offRouteM: Math.round(deviation.offRouteM),
+      wrongWay: deviation.wrongWay,
+    });
+
     lastRouteFromRef.current = null;
     if (offRouteRefetchTimerRef.current) clearTimeout(offRouteRefetchTimerRef.current);
+    const debounceMs = rerouteDebounceMs(deviation);
+    trackDebug("rerouting_started", { orderId, debounceMs });
     offRouteRefetchTimerRef.current = setTimeout(() => {
       void fetchRoute(true);
-    }, deviation.wrongWay ? 1400 : 1800);
+    }, debounceMs);
 
     return () => {
       if (offRouteRefetchTimerRef.current) clearTimeout(offRouteRefetchTimerRef.current);
@@ -709,6 +771,7 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
     navDestination,
     route?.coordinates,
     fetchRoute,
+    orderId,
   ]);
 
   const routeProgress = useMemo(() => {
@@ -768,14 +831,27 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
   }, [riderLocation, navDestination, routeProgress.remainingDistanceM]);
 
   const mapRiderLocation = useMemo(() => {
-    if (riderLocation) return riderLocation;
-    if (!riderForRoute) return undefined;
-    return {
-      lat: riderForRoute.lat,
-      lng: riderForRoute.lng,
-      headingDeg: riderFix?.headingDeg,
-    };
-  }, [riderLocation, riderForRoute, riderFix?.headingDeg]);
+    const raw = riderLocation
+      ? riderLocation
+      : riderForRoute
+        ? {
+            lat: riderForRoute.lat,
+            lng: riderForRoute.lng,
+            headingDeg: riderFix?.headingDeg,
+          }
+        : undefined;
+    if (!raw) return undefined;
+    const coords = route?.coordinates;
+    if (coords && coords.length >= 2) {
+      const display = resolveDisplayRiderPosition(coords, {
+        latitude: raw.lat,
+        longitude: raw.lng,
+        headingDeg: raw.headingDeg,
+      });
+      return { lat: display.latitude, lng: display.longitude, headingDeg: raw.headingDeg };
+    }
+    return raw;
+  }, [riderLocation, riderForRoute, riderFix?.headingDeg, route?.coordinates]);
 
   const navigationFollowMode =
     !!mapRiderLocation && (route?.coordinates?.length ?? 0) >= 2;
@@ -785,7 +861,8 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
   const handleUserMapGesture = useCallback(() => {
     userControllingMapRef.current = true;
     setMapFollowEnabled(false);
-  }, []);
+    trackDebug("camera_follow_disabled", { orderId, reason: "user_pan" });
+  }, [orderId]);
 
   const releaseMapFollow = useCallback(() => {
     userControllingMapRef.current = true;
@@ -795,8 +872,9 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
   const handleMapRecenter = useCallback(() => {
     userControllingMapRef.current = false;
     setMapFollowEnabled(true);
+    trackDebug("camera_follow_enabled", { orderId });
     mapRef.current?.recenter(true);
-  }, []);
+  }, [orderId]);
 
   const handleMapRouteOverview = useCallback(() => {
     releaseMapFollow();
@@ -1618,44 +1696,50 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
   );
 
   const handleProceedCancel = useCallback(() => {
-    if (!pendingCancel) return;
+    if (!pendingCancel || cancelAssigned.isPending) return;
+    setCancelFailedMessage(null);
+    const reasonLabel = pendingCancel.label;
     cancelAssigned.mutate(
       { orderId, reasonCode: pendingCancel.reasonCode, reasonText: pendingCancel.label },
       {
         onSuccess: (res) => {
           setPenaltySheetOpen(false);
           setPendingCancel(null);
-          if (res.penaltyApplied && (res.penaltyAmount ?? 0) > 0) {
-            Alert.alert(
-              t("orders.cancel.penaltyDebitedTitle", "Penalty applied"),
-              t(
-                "orders.cancel.penaltyDebitedMessage",
-                "₹{{amount}} has been debited from your wallet as a penalty.",
-                { amount: res.penaltyAmount }
-              )
-            );
-          }
-          router.replace("/(tabs)/orders");
+          setCancelFailedMessage(null);
+          setCancelSheetOpen(false);
+          adminCancelHandledRef.current = true; // suppress admin-cancel 404 sheet
+          void tracker.stop();
+          setCancelSuccess({
+            reasonLabel,
+            penaltyApplied: Boolean(res.penaltyApplied),
+            penaltyAmount: Number(res.penaltyAmount ?? 0),
+          });
         },
-        onError: () => {
-          Alert.alert(
-            isFoodOrder
-              ? t("orders.activeFood.cancelFailedTitle", "Could not cancel")
-              : t("orders.activeRide.cancelFailedTitle", "Could not cancel"),
-            isFoodOrder
-              ? t(
-                  "orders.activeFood.cancelFailedMessage",
-                  "Please try again or contact support."
-                )
-              : t(
-                  "orders.activeRide.cancelFailedMessage",
-                  "Please try again or contact support."
-                )
-          );
+        onError: (err) => {
+          const fallback = isFoodOrder
+            ? t(
+                "orders.activeFood.cancelFailedMessage",
+                "Please try again or contact support."
+              )
+            : t(
+                "orders.activeRide.cancelFailedMessage",
+                "Please try again or contact support."
+              );
+          setCancelFailedMessage(extractApiErrorMessage(err, fallback));
         },
       }
     );
-  }, [cancelAssigned, orderId, pendingCancel, t, isFoodOrder]);
+  }, [cancelAssigned, orderId, pendingCancel, t, isFoodOrder, tracker]);
+
+  const dismissCancelSuccess = useCallback(() => {
+    setCancelSuccess(null);
+    router.replace("/(tabs)/orders");
+  }, []);
+
+  const openLedgerAfterCancel = useCallback(() => {
+    setCancelSuccess(null);
+    router.replace("/(tabs)/ledger");
+  }, []);
 
   const handleVerifyOtp = useCallback(
     (otp: string) => {
@@ -1706,7 +1790,6 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
         })
         .catch((err) => {
           verifyPickupOtp.reset();
-          setOtpResetKey((k) => k + 1);
           setOtpError(
             extractApiErrorMessage(
               err,
@@ -1721,6 +1804,7 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
                   )
             )
           );
+          setOtpResetKey((k) => k + 1);
         });
     },
     [
@@ -1820,10 +1904,14 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
     deliveryOtpSheetOpen,
   ]);
 
-  const navSheetHeight = useMemo(
-    () => (isFoodOrder ? FOOD_NAV_SHEET_HEIGHT : PERSON_RIDE_NAV_SHEET_HEIGHT),
-    [isFoodOrder]
-  );
+  const navSheetHeight = useMemo(() => {
+    if (isFoodOrder) {
+      return navSheetExpanded ? FOOD_NAV_SHEET_HEIGHT : FOOD_NAV_SHEET_COLLAPSED_HEIGHT;
+    }
+    return navSheetExpanded
+      ? PERSON_RIDE_NAV_SHEET_HEIGHT
+      : PERSON_RIDE_NAV_SHEET_COLLAPSED_HEIGHT;
+  }, [isFoodOrder, navSheetExpanded]);
 
   const speedKmh = useMemo(() => {
     const mps = riderFix?.speedMps;
@@ -1917,12 +2005,34 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
   }, []);
 
   const shouldShowAdminCancelSheet =
-    adminCancelSheetOpen ||
-    (hadActiveOrderRef.current && isRiderOrderCancelled(order)) ||
-    (hadActiveOrderRef.current &&
-      isError &&
-      isOrderFetchNotFoundError(error) &&
-      adminCancelHandledRef.current);
+    !cancelSuccess &&
+    (adminCancelSheetOpen ||
+      (hadActiveOrderRef.current && isRiderOrderCancelled(order)) ||
+      (hadActiveOrderRef.current &&
+        isError &&
+        isOrderFetchNotFoundError(error) &&
+        adminCancelHandledRef.current));
+
+  if (cancelSuccess) {
+    return (
+      <View style={styles.centered}>
+        <StatusBar style="dark" />
+        <RiderCancelSuccessSheet
+          visible
+          orderIdLabel={order?.formattedOrderId?.trim() || orderId}
+          reasonLabel={cancelSuccess.reasonLabel}
+          penaltyApplied={cancelSuccess.penaltyApplied}
+          penaltyAmount={cancelSuccess.penaltyAmount}
+          onGoToOrders={dismissCancelSuccess}
+          onViewLedger={
+            cancelSuccess.penaltyApplied && cancelSuccess.penaltyAmount > 0
+              ? openLedgerAfterCancel
+              : undefined
+          }
+        />
+      </View>
+    );
+  }
 
   if (shouldShowAdminCancelSheet) {
     return (
@@ -2035,8 +2145,11 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
           mapViewMode={mapViewMode}
           onUserMapGesture={handleUserMapGesture}
           arrivedAtDestination={
-            pickupConfirmed ||
-            (metersToPickup != null && metersToPickup <= 40)
+            // Hide only for the *current* nav destination (pickup OR drop).
+            // Never use sticky pickupConfirmed — that hid the drop-leg polyline.
+            showDropOnMap
+              ? atCustomer || (metersToPickup != null && metersToPickup <= 40)
+              : metersToPickup != null && metersToPickup <= 40
           }
           remainingDistanceM={metersToPickup}
           style={styles.mapFill}
@@ -2134,6 +2247,10 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
           }
           milestoneGeo={milestoneGeo}
           suppressDropDeliverSlider={dropOrderScreenOpen}
+          sheetExpanded={navSheetExpanded}
+          onToggleSheetExpanded={() => setNavSheetExpanded((v) => !v)}
+          pickupFullAddress={pickup?.address?.trim() || ""}
+          dropFullAddress={delivery?.address?.trim() || ""}
         />
       ) : (
         <PersonRideNavigateBottomSheet
@@ -2149,6 +2266,8 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
           locationName={passengerName}
           locationAddress={pickupAddressParts.line1}
           locationLandmark={pickupAddressParts.landmark}
+          pickupAddress={pickup?.address?.trim() || ""}
+          dropAddress={delivery?.address?.trim() || ""}
           routeMeta={{
             etaMinutes: liveEtaMinutes,
             distanceKm: liveDistanceKm,
@@ -2183,6 +2302,8 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
           onGoHome={handleGoHomeAfterRide}
           callDisabled={!hasCustomerCallablePhone}
           milestoneGeo={milestoneGeo}
+          sheetExpanded={navSheetExpanded}
+          onToggleSheetExpanded={() => setNavSheetExpanded((v) => !v)}
         />
       )}
       </View>
@@ -2372,13 +2493,14 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
 
       {pendingCancel ? (
         <RiderCancelPenaltyConfirmSheet
-          visible={penaltySheetOpen}
+          visible={penaltySheetOpen && cancelFailedMessage == null}
           orderId={orderId}
           reasonCode={pendingCancel.reasonCode}
           reasonLabel={pendingCancel.label}
           variant={isFoodOrder ? "food" : "ride"}
           loading={cancelAssigned.isPending}
           onClose={() => {
+            if (cancelAssigned.isPending) return;
             setPenaltySheetOpen(false);
             setPendingCancel(null);
             setCancelSheetOpen(true);
@@ -2386,6 +2508,21 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
           onProceed={handleProceedCancel}
         />
       ) : null}
+
+      <RiderCancelFailedSheet
+        visible={cancelFailedMessage != null}
+        title={
+          isFoodOrder
+            ? t("orders.activeFood.cancelFailedTitle", "Could not cancel")
+            : t("orders.activeRide.cancelFailedTitle", "Could not cancel")
+        }
+        message={cancelFailedMessage ?? undefined}
+        onDismiss={() => setCancelFailedMessage(null)}
+        onRetry={() => {
+          setCancelFailedMessage(null);
+          handleProceedCancel();
+        }}
+      />
 
       {isFoodOrder && order ? (
         <>
@@ -2457,6 +2594,7 @@ const styles = StyleSheet.create({
     zIndex: 50,
     elevation: 32,
     backgroundColor: "transparent",
+    overflow: "visible",
   },
   sheetOverlayBehindOtp: {
     opacity: 0,
