@@ -34,6 +34,10 @@ COPY packages/queue/package.json             ./packages/queue/package.json
 COPY packages/redis/package.json             ./packages/redis/package.json
 COPY packages/slab-pricing/package.json      ./packages/slab-pricing/package.json
 COPY packages/store-status/package.json      ./packages/store-status/package.json
+# @gatimitra/bill-print is consumed at runtime by backend/src/modules/merchant-partner/
+# merchant-food-orders.service.ts. Source-only for bundlers, but its `node` export
+# condition points at ./dist/index.js (esbuild bundle) so `node dist/index.js` resolves it.
+COPY packages/bill-print/package.json        ./packages/bill-print/package.json
 # @gatimitra/merchant-payout is consumed by backend/src/lib/merchant-payout-*.
 # Depends on @gatimitra/contracts (already listed above).
 COPY packages/merchant-payout/package.json   ./packages/merchant-payout/package.json
@@ -76,6 +80,7 @@ COPY packages/queue           ./packages/queue
 COPY packages/redis           ./packages/redis
 COPY packages/slab-pricing    ./packages/slab-pricing
 COPY packages/store-status    ./packages/store-status
+COPY packages/bill-print      ./packages/bill-print
 COPY packages/merchant-payout ./packages/merchant-payout
 # shared-config carries the tsconfig.*.json files the 4 packages above extend.
 # No build step here (no source) — it's a config-only workspace.
@@ -109,6 +114,15 @@ RUN npm run build \
       --workspace=@gatimitra/logger \
       --workspace=@gatimitra/queue \
       --workspace=@gatimitra/backend
+
+# @gatimitra/bill-print is source-only (consumed from src by Metro/Next). The
+# backend runs under `node dist/index.js`, so its `node` export condition points
+# at ./dist/index.js — bundle that self-contained ESM here (esbuild is available
+# via the backend's tsx devDependency). No source changes; other consumers keep
+# using src.
+RUN node_modules/.bin/esbuild packages/bill-print/src/index.ts \
+      --bundle --format=esm --platform=node \
+      --outfile=packages/bill-print/dist/index.js
 
 # Drop devDependencies so the runtime image doesn't carry TypeScript, tsx,
 # pino-pretty, etc. Done after build (TS is a devDep but is required during

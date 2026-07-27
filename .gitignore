@@ -64,3 +64,4 @@ serviceAccountKey.json
 **/google-services.json
 **/GoogleService-Info.plist
 
+packages/bill-print/dist/
