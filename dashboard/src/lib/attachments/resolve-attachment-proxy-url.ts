@@ -79,10 +79,19 @@ export function withAttachmentCacheBust(url: string, version?: string | number):
 
 /** True when URL or stored file name indicates a PDF (not an image thumbnail). */
 export function isPdfAttachment(url: string, fileName?: string | null): boolean {
-  const u = (url.split("?")[0] ?? "").toLowerCase();
-  const n = (fileName ?? "").toLowerCase();
-  if (u.endsWith(".pdf") || n.endsWith(".pdf")) return true;
-  if (u.includes(".pdf?") || n.includes("pdf")) return n.endsWith(".pdf") || u.includes(".pdf");
+  const full = String(url || "").toLowerCase();
+  const pathOnly = (full.split("?")[0] ?? "").toLowerCase();
+  const n = String(fileName || "").toLowerCase();
+  if (pathOnly.endsWith(".pdf") || n.endsWith(".pdf")) return true;
+  // Proxy URLs keep the object key in ?key=…/file.pdf — path alone has no extension.
+  if (full.includes(".pdf")) return true;
+  try {
+    const u = new URL(url, "https://local.invalid");
+    const key = u.searchParams.get("key");
+    if (key && decodeURIComponent(key).toLowerCase().includes(".pdf")) return true;
+  } catch {
+    /* ignore */
+  }
   return false;
 }
 

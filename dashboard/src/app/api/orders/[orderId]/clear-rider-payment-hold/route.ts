@@ -1,7 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine";
+import { getSystemUserByEmail } from "@/lib/db/operations/users";
 import { clearRiderPaymentHoldOnBackend } from "@/lib/orders/rider-management-backend";
+import { stampOrderRoutedTo } from "@/lib/orders/stamp-order-routed-to";
 
 export const runtime = "nodejs";
 
@@ -34,7 +36,8 @@ export async function POST(
 
     const allowed =
       (await isSuperAdmin(user.id, user.email ?? "")) ||
-      (await hasDashboardAccessByAuth(user.id, user.email ?? "", "ORDER_FOOD"));
+      (await hasDashboardAccessByAuth(user.id, user.email ?? "", "ORDER_FOOD")) ||
+      (await hasDashboardAccessByAuth(user.id, user.email ?? "", "ORDER_PERSON_RIDE"));
 
     if (!allowed) {
       return NextResponse.json(
@@ -52,13 +55,32 @@ export async function POST(
       return NextResponse.json({ success: false, error: result.error }, { status: result.status });
     }
 
-    return NextResponse.json({ success: true, credited: result.credited ?? false });
+    const systemUser = await getSystemUserByEmail(user.email ?? "");
+    const actorName = systemUser?.fullName?.trim() || user.email || null;
+    const actorRole = systemUser?.primaryRole ?? "AGENT";
+
+    await stampOrderRoutedTo({
+      orderId: orderCoreId,
+      systemUserId: systemUser?.id ?? null,
+      actorEmail: user.email ?? null,
+      actorName,
+      actorRole,
+      action: "clear_rider_hold",
+      actionLabel: "Cleared rider payment hold",
+    });
+
+    return NextResponse.json({
+      success: true,
+      credited: result.credited ?? false,
+      routedToEmail: user.email ?? null,
+      routedToName: actorName,
+    });
   } catch (error) {
     console.error("[POST /api/orders/[orderId]/clear-rider-payment-hold] Error:", error);
     return NextResponse.json(
       {
         success: false,
-        error: error instanceof Error ? error.message : "Unknown error",
+        error: error instanceof Error ? error.message : "Failed to clear rider payment hold",
       },
       { status: 500 }
     );

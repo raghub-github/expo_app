@@ -14,5 +14,8 @@ export function getOrdersNavHref(
 
 export function isOrdersSectionPath(path: string): boolean {
   const clean = path.split("?")[0].split("#")[0];
-  return clean === "/dashboard/orders" || clean.startsWith("/dashboard/orders/");
+  if (clean === "/dashboard/orders" || clean.startsWith("/dashboard/orders/")) return true;
+  // Standalone order detail URLs share the Orders module chrome / active nav.
+  if (clean === "/order" || clean.startsWith("/order/")) return true;
+  return false;
 }

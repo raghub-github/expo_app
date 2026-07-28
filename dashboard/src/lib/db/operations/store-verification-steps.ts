@@ -5,6 +5,10 @@
  */
 
 import { getSql } from "../client";
+import {
+  discardPendingStepResubmissions,
+  flattenLastResubmissionOldValues,
+} from "./onboarding-resubmissions";
 
 export interface VerificationStepRecord {
   step_number: number;
@@ -215,6 +219,65 @@ export async function syncStep6FromBankAccounts(
   return byStep;
 }
 
+/**
+ * Step 7 (commission plan) auto-verifies when a real onboarding payment is captured.
+ * Agents should not manually verify/reject a successfully paid step.
+ */
+export async function syncStep7FromOnboardingPayment(
+  storeId: number,
+  byStepIn?: Record<number, VerificationStepApiRow>
+): Promise<Record<number, VerificationStepApiRow>> {
+  const byStep = byStepIn ?? (await getStoreVerificationStepsApiRowsRaw(storeId));
+  if (byStep[7]?.verified_at) return byStep;
+
+  const sql = getSql();
+  let capturedAt: string | null = null;
+  try {
+    const rows = await sql<{ captured_at: string | null }[]>`
+      SELECT COALESCE(captured_at, created_at)::text AS captured_at
+      FROM merchant_onboarding_payments
+      WHERE merchant_store_id = ${storeId}
+        AND (
+          LOWER(COALESCE(status, '')) = 'captured'
+          OR LOWER(COALESCE(razorpay_status, '')) = 'captured'
+        )
+      ORDER BY captured_at DESC NULLS LAST, created_at DESC
+      LIMIT 1
+    `;
+    const row = Array.isArray(rows) ? rows[0] : null;
+    if (!row) return byStep;
+    capturedAt = row.captured_at ?? new Date().toISOString();
+  } catch {
+    return byStep;
+  }
+
+  try {
+    await upsertStoreVerificationStep({
+      storeId,
+      stepNumber: 7,
+      verifiedBy: null,
+      verifiedByName: "System (payment captured)",
+      notes: "AUTO_FROM_PAYMENT_CAPTURED",
+    });
+    try {
+      await clearStoreVerificationStepRejection(storeId, 7);
+    } catch {
+      // non-fatal
+    }
+  } catch {
+    // non-fatal — still surface as verified in API response
+  }
+
+  byStep[7] = {
+    verified_at: capturedAt ?? new Date().toISOString(),
+    verified_by: null,
+    verified_by_name: "System (payment captured)",
+    notes: "AUTO_FROM_PAYMENT_CAPTURED",
+    rejection: null,
+  };
+  return byStep;
+}
+
 async function getStoreVerificationStepsApiRowsRaw(
   storeId: number
 ): Promise<Record<number, VerificationStepApiRow>> {
@@ -228,7 +291,8 @@ async function getStoreVerificationStepsApiRowsRaw(
 export async function getStoreVerificationStepsApiRows(
   storeId: number
 ): Promise<Record<number, VerificationStepApiRow>> {
-  return syncStep6FromBankAccounts(storeId);
+  const afterBank = await syncStep6FromBankAccounts(storeId);
+  return syncStep7FromOnboardingPayment(storeId, afterBank);
 }
 
 async function insertStoreVerificationStepRejectionHistory(params: {
@@ -291,40 +355,83 @@ export async function upsertStoreVerificationStepRejection(params: {
   const detailJson =
     params.stepRejectionDetail != null ? JSON.stringify(params.stepRejectionDetail) : null;
   try {
-    await sql`
-      INSERT INTO store_verification_step_rejections (
-        store_id,
-        step_number,
-        rejection_reason,
-        step_label,
-        rejected_by,
-        rejected_by_name,
-        email_sent,
-        email_skip_reason,
-        step_rejection_detail
-      ) VALUES (
-        ${params.storeId},
-        ${params.stepNumber},
-        ${params.reason},
-        ${params.stepLabel},
-        ${params.rejectedBy},
-        ${params.rejectedByName},
-        ${params.emailSent},
-        ${params.emailSkipReason},
-        ${detailJson}::jsonb
-      )
-      ON CONFLICT (store_id, step_number)
-      DO UPDATE SET
-        rejected_at = now(),
-        rejection_reason = EXCLUDED.rejection_reason,
-        step_label = EXCLUDED.step_label,
-        rejected_by = EXCLUDED.rejected_by,
-        rejected_by_name = EXCLUDED.rejected_by_name,
-        email_sent = EXCLUDED.email_sent,
-        email_skip_reason = EXCLUDED.email_skip_reason,
-        merchant_resubmitted_at = NULL,
-        step_rejection_detail = EXCLUDED.step_rejection_detail
-    `;
+    try {
+      await sql`
+        INSERT INTO store_verification_step_rejections (
+          store_id,
+          step_number,
+          rejection_reason,
+          step_label,
+          rejected_by,
+          rejected_by_name,
+          email_sent,
+          email_skip_reason,
+          step_rejection_detail,
+          rejection_round
+        ) VALUES (
+          ${params.storeId},
+          ${params.stepNumber},
+          ${params.reason},
+          ${params.stepLabel},
+          ${params.rejectedBy},
+          ${params.rejectedByName},
+          ${params.emailSent},
+          ${params.emailSkipReason},
+          ${detailJson}::jsonb,
+          1
+        )
+        ON CONFLICT (store_id, step_number)
+        DO UPDATE SET
+          rejected_at = now(),
+          rejection_reason = EXCLUDED.rejection_reason,
+          step_label = EXCLUDED.step_label,
+          rejected_by = EXCLUDED.rejected_by,
+          rejected_by_name = EXCLUDED.rejected_by_name,
+          email_sent = EXCLUDED.email_sent,
+          email_skip_reason = EXCLUDED.email_skip_reason,
+          -- Re-reject after resubmit (before Verify): reopen Fix on partner + AM
+          merchant_resubmitted_at = NULL,
+          rejection_round = COALESCE(store_verification_step_rejections.rejection_round, 1) + 1,
+          step_rejection_detail = EXCLUDED.step_rejection_detail
+      `;
+    } catch (insertErr) {
+      // Fallback when rejection_round column not migrated yet
+      console.warn("[upsertStoreVerificationStepRejection] with rejection_round failed, retry:", insertErr);
+      await sql`
+        INSERT INTO store_verification_step_rejections (
+          store_id,
+          step_number,
+          rejection_reason,
+          step_label,
+          rejected_by,
+          rejected_by_name,
+          email_sent,
+          email_skip_reason,
+          step_rejection_detail
+        ) VALUES (
+          ${params.storeId},
+          ${params.stepNumber},
+          ${params.reason},
+          ${params.stepLabel},
+          ${params.rejectedBy},
+          ${params.rejectedByName},
+          ${params.emailSent},
+          ${params.emailSkipReason},
+          ${detailJson}::jsonb
+        )
+        ON CONFLICT (store_id, step_number)
+        DO UPDATE SET
+          rejected_at = now(),
+          rejection_reason = EXCLUDED.rejection_reason,
+          step_label = EXCLUDED.step_label,
+          rejected_by = EXCLUDED.rejected_by,
+          rejected_by_name = EXCLUDED.rejected_by_name,
+          email_sent = EXCLUDED.email_sent,
+          email_skip_reason = EXCLUDED.email_skip_reason,
+          merchant_resubmitted_at = NULL,
+          step_rejection_detail = EXCLUDED.step_rejection_detail
+      `;
+    }
     await insertStoreVerificationStepRejectionHistory({
       storeId: params.storeId,
       stepNumber: params.stepNumber,
@@ -336,6 +443,59 @@ export async function upsertStoreVerificationStepRejection(params: {
       emailSkipReason: params.emailSkipReason,
       stepRejectionDetail: params.stepRejectionDetail ?? null,
     });
+    // Fresh reject cycle: mark staged New as discarded (keep R2) + snapshot for Rejected UI.
+    try {
+      const discardedRows = await discardPendingStepResubmissions(
+        params.storeId,
+        params.stepNumber
+      );
+      if (discardedRows.length > 0) {
+        const lastResubmitted = flattenLastResubmissionOldValues(discardedRows);
+        const existingRows = await sql`
+          SELECT step_rejection_detail
+          FROM store_verification_step_rejections
+          WHERE store_id = ${params.storeId}
+            AND step_number = ${params.stepNumber}
+          LIMIT 1
+        `;
+        const existingRaw = (Array.isArray(existingRows) ? existingRows[0] : existingRows) as
+          | { step_rejection_detail?: unknown }
+          | undefined;
+        const existingDetail =
+          existingRaw?.step_rejection_detail &&
+          typeof existingRaw.step_rejection_detail === "object" &&
+          !Array.isArray(existingRaw.step_rejection_detail)
+            ? (existingRaw.step_rejection_detail as Record<string, unknown>)
+            : {};
+        const mergedDetail = {
+          ...existingDetail,
+          last_resubmitted: lastResubmitted,
+        };
+        const detailJson = JSON.stringify(mergedDetail);
+        await sql`
+          UPDATE store_verification_step_rejections
+          SET step_rejection_detail = ${detailJson}::jsonb
+          WHERE store_id = ${params.storeId}
+            AND step_number = ${params.stepNumber}
+        `;
+      }
+    } catch (discardErr) {
+      console.warn("[upsertStoreVerificationStepRejection] discard pending:", discardErr);
+    }
+    // Clear doc "resubmitted" flags so admin/partner gates reset for this round.
+    if (params.stepNumber === 4 || params.stepNumber === 6) {
+      try {
+        await sql`
+          UPDATE merchant_store_documents
+          SET
+            step4_resubmission_flags = '{}'::jsonb,
+            updated_at = now()
+          WHERE store_id = ${params.storeId}
+        `;
+      } catch (flagErr) {
+        console.warn("[upsertStoreVerificationStepRejection] clear step4 flags:", flagErr);
+      }
+    }
     return true;
   } catch (e) {
     console.error("[upsertStoreVerificationStepRejection]", e);
@@ -358,6 +518,30 @@ export async function clearStoreVerificationStepRejection(
   } catch (e) {
     console.error("[clearStoreVerificationStepRejection]", e);
     return false;
+  }
+}
+
+/** Partner/AM finished fixing — unlock admin "Verify again". */
+export async function markMerchantResubmittedForRejectedSteps(
+  storeId: number,
+  verificationSteps: number[]
+): Promise<void> {
+  const steps = verificationSteps
+    .map((n) => Math.floor(Number(n)))
+    .filter((n) => Number.isFinite(n) && n >= 1 && n <= 8);
+  if (!Number.isFinite(storeId) || storeId <= 0 || steps.length === 0) return;
+  const sql = getSql();
+  try {
+    for (const step of steps) {
+      await sql`
+        UPDATE store_verification_step_rejections
+        SET merchant_resubmitted_at = now()
+        WHERE store_id = ${storeId}
+          AND step_number = ${step}
+      `;
+    }
+  } catch (e) {
+    console.warn("[markMerchantResubmittedForRejectedSteps]", e);
   }
 }
 

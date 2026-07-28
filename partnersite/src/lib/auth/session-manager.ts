@@ -1,7 +1,8 @@
 /**
- * Session Management (same as main dashboard)
- * - 24h sliding window: session expires after 24h of inactivity.
- * - 7-day cap: user must log in again at least once within 7 days of first login.
+ * Session Management (partner portal)
+ * - Sliding inactivity window: session stays alive while the merchant keeps visiting.
+ * - Absolute cap: after this from first login, middleware re-inits partner_* cookies if Supabase
+ *   refresh is still valid (hard logout only when Supabase/device session is gone).
  * - Cookie names are environment-isolated (dev vs prod) to avoid localhost/production conflicts.
  */
 
@@ -11,9 +12,12 @@ import {
   sessionIdCookie,
 } from "./auth-cookie-names";
 
-export const SESSION_DURATION = 24 * 60 * 60 * 1000; // 24 hours (sliding window)
-export const MAX_SESSION_DURATION = 7 * 24 * 60 * 60 * 1000; // 7 days (must re-login after)
-export const INACTIVITY_TIMEOUT = 24 * 60 * 60 * 1000; // 24 hours
+/** Soft UX timer for "time remaining" display (matches inactivity window). */
+export const SESSION_DURATION = 30 * 24 * 60 * 60 * 1000; // 30 days
+/** Absolute partner_* cookie lifetime / re-init boundary. */
+export const MAX_SESSION_DURATION = 30 * 24 * 60 * 60 * 1000; // 30 days
+/** Idle timeout before partner_* cookies are considered stale (re-init if Supabase still valid). */
+export const INACTIVITY_TIMEOUT = 30 * 24 * 60 * 60 * 1000; // 30 days
 
 export interface SessionMetadata {
   sessionStartTime: number;

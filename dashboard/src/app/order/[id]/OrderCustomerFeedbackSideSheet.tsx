@@ -5,6 +5,7 @@ import { createPortal } from "react-dom";
 import { Star, X } from "lucide-react";
 import type { OrderCustomerFeedback } from "@/lib/orders/order-customer-feedback";
 import { formatTipInr } from "@/lib/orders/order-customer-feedback";
+import { OrderMixedText, OrderNum } from "@/components/orders/orders-typography";
 
 export type FeedbackSheetTarget = "merchant" | "rider";
 
@@ -19,7 +20,7 @@ function Stars({ value }: { value: number }) {
           aria-hidden
         />
       ))}
-      <span className="ml-1 text-sm font-semibold text-slate-800">{n}/5</span>
+      <OrderMixedText className="ml-1 text-sm font-semibold text-slate-800">{`${n}/5`}</OrderMixedText>
     </div>
   );
 }
@@ -169,7 +170,7 @@ export function OrderCustomerFeedbackSideSheet({
             <p className="text-[11px] font-medium text-slate-500 uppercase tracking-wide">
               Rated on
             </p>
-            <p className="mt-0.5">{formatRatedAt(feedback.ratedAtIso)}</p>
+            <p className="mt-0.5"><OrderNum>{formatRatedAt(feedback.ratedAtIso)}</OrderNum></p>
           </div>
 
           {isMerchant ? (
@@ -223,7 +224,9 @@ export function OrderCustomerFeedbackSideSheet({
                   <p className="text-[11px] font-medium text-emerald-700 uppercase tracking-wide">
                     Tip received
                   </p>
-                  <p className="text-lg font-bold text-emerald-800 mt-1">{tipLabel}</p>
+                  <p className="text-lg font-bold text-emerald-800 mt-1">
+                    <OrderNum>{tipLabel}</OrderNum>
+                  </p>
                 </div>
               ) : null}
 

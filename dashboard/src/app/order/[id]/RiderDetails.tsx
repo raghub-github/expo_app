@@ -27,6 +27,7 @@ import {
 } from "@/lib/riderActivityLogCache";
 import { useToast } from "@/context/ToastContext";
 import { riderDeliveryMilestoneLabel } from "@/lib/riders/rider-order-status-display";
+import { OrderMixedText, OrderNum } from "@/components/orders/orders-typography";
 
 function riderManagementToastMessage(error: string | undefined, fallback: string): string {
   if (!error) return fallback;
@@ -190,7 +191,7 @@ function readRiderActivityLogSnapshot(orderId: number | null | undefined) {
   };
 }
 
-function RiderLogModal({ isOpen, orderId, refreshKey = 0, onClose, onCopy }: RiderLogModalProps) {
+export function RiderLogModal({ isOpen, orderId, refreshKey = 0, onClose, onCopy }: RiderLogModalProps) {
   const [logs, setLogs] = useState<RiderActivityLogApiRow[]>([]);
   const [summary, setSummary] = useState<RiderActivityLogSummary>(EMPTY_RIDER_ACTIVITY_SUMMARY);
   const [error, setError] = useState<string | null>(null);
@@ -340,10 +341,10 @@ function RiderLogModal({ isOpen, orderId, refreshKey = 0, onClose, onCopy }: Rid
                   >
                     <td className="px-3 py-2 whitespace-nowrap text-[11px] text-gray-900 border-r border-gray-100">
                       <div className="font-medium">
-                        {log.createdAt.split(" ")[0]}
+                        <OrderNum>{log.createdAt.split(" ")[0]}</OrderNum>
                       </div>
                       <div className="text-[10px] text-gray-500">
-                        {log.createdAt.split(" ")[1]}
+                        <OrderNum>{log.createdAt.split(" ")[1]}</OrderNum>
                       </div>
                     </td>
                     <td className="px-3 py-2 whitespace-nowrap text-[11px] border-r border-gray-100">
@@ -364,7 +365,7 @@ function RiderLogModal({ isOpen, orderId, refreshKey = 0, onClose, onCopy }: Rid
                     <td className="px-3 py-2 whitespace-nowrap text-[11px] border-r border-gray-100">
                       {log.riderMobile ? (
                         <div className="flex items-center gap-1.5">
-                          <span className="text-gray-900">{log.riderMobile}</span>
+                          <span className="text-gray-900 orders-num">{log.riderMobile}</span>
                           <button
                             type="button"
                             onClick={() => onCopy(log.riderMobile!)}
@@ -411,12 +412,12 @@ function RiderLogModal({ isOpen, orderId, refreshKey = 0, onClose, onCopy }: Rid
                         <span className="text-slate-900">-</span>
                       )}
                     </td>
-                    <td className="px-3 py-2 whitespace-nowrap text-[11px] text-gray-900 border-r border-gray-100">
+                    <td className="px-3 py-2 whitespace-nowrap text-[11px] text-gray-900 border-r border-gray-100 orders-num">
                       {distanceCx || (
                         <span className="text-gray-400 italic">-</span>
                       )}
                     </td>
-                    <td className="px-3 py-2 whitespace-nowrap text-[11px] text-gray-900 border-r border-gray-100">
+                    <td className="px-3 py-2 whitespace-nowrap text-[11px] text-gray-900 border-r border-gray-100 orders-num">
                       {distanceMx || (
                         <span className="text-gray-400 italic">-</span>
                       )}
@@ -890,7 +891,7 @@ export default function RiderDetails({
                 </span>
                 {order.riderId != null && Number.isFinite(Number(order.riderId)) ? (
                   <span className="inline-flex items-center shrink-0 text-slate-400">
-                    <span>· #{order.riderId}</span>
+                    <OrderMixedText>{`· #${String(order.riderId)}`}</OrderMixedText>
                     <CopyIconButton
                       value={String(order.riderId)}
                       fieldKey="riderId"
@@ -951,10 +952,10 @@ export default function RiderDetails({
                       className="text-gati-primary no-underline font-medium inline-flex items-center gap-0.5 truncate"
                     >
                       <i className="bi bi-telephone text-[11px]" />
-                      <span className="truncate">{riderMobile}</span>
+                      <OrderNum className="truncate">{riderMobile}</OrderNum>
                     </button>
                   ) : (
-                    <span className="font-semibold">{riderMobile}</span>
+                    <OrderNum className="font-semibold">{riderMobile}</OrderNum>
                   )}
                   <CopyIconButton
                     value={order.riderMobile || ""}
@@ -968,7 +969,7 @@ export default function RiderDetails({
               </DetailField>
               <DetailField label="Tracking order ID">
                 <div className="flex items-center gap-1.5 font-semibold leading-snug">
-                  <span className="truncate">{trackingOrderId}</span>
+                  <OrderNum className="truncate">{trackingOrderId}</OrderNum>
                   {trackingOrderId !== "—" ? (
                     <CopyIconButton
                       value={trackingOrderId}
@@ -1037,7 +1038,7 @@ export default function RiderDetails({
                     onClick={onOpenFeedback}
                     className="inline-flex items-center gap-1.5 cursor-pointer group font-semibold"
                   >
-                    <span>{customerFeedback.deliveryRating}</span>
+                    <OrderNum>{customerFeedback.deliveryRating}</OrderNum>
                     <Star className="h-3.5 w-3.5 fill-amber-400 text-amber-400 shrink-0" aria-hidden />
                     <span className="text-[10px] text-emerald-700 group-hover:underline">
                       Feedback
@@ -1047,7 +1048,7 @@ export default function RiderDetails({
               ) : null}
               {tipLabel ? (
                 <DetailField label="Tip received">
-                  <span className="font-bold text-emerald-700">{tipLabel}</span>
+                  <OrderNum className="font-bold text-emerald-700">{tipLabel}</OrderNum>
                 </DetailField>
               ) : null}
             </div>

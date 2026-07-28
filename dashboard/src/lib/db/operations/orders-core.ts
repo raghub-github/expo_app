@@ -27,7 +27,11 @@ import {
   sqlFoodOrderActiveListScope,
   sqlFoodOrderDashboardStageFilter,
 } from "./food-orders-dashboard-stages";
-import { filterOrderProgressTimelineEntries } from "@/lib/orders/order-timeline-rider-filter";
+import {
+  dedupeOrderCancellationTimelineEntries,
+  filterOrderProgressTimelineEntries,
+  isRiderAssignmentCancellationTimelineEntry,
+} from "@/lib/orders/order-timeline-rider-filter";
 
 /** Prefer denormalized Routed To; fall back to latest remark actor for older rows. */
 const sqlRoutedToEmail = sql<string | null>`(
@@ -226,14 +230,20 @@ export async function listOrdersCore(
   }
 
   const statusFilter = filters.statusFilter ?? null;
-  const skipDashboardStageFilters = orderType === "food" && isFoodOrderDirectLookup(filters);
+  // Customer profile listings must show all orders for that user — not the food ops board
+  // (which defaults to PAYMENT DONE + hides delivered/cancelled).
+  const isCustomerProfileListing =
+    filters.customerDbId != null && Number.isFinite(filters.customerDbId);
+  const skipDashboardStageFilters =
+    orderType === "food" &&
+    (isFoodOrderDirectLookup(filters) || isCustomerProfileListing);
   const effectiveStatusFilter =
     orderType === "food" && !skipDashboardStageFilters
       ? (statusFilter ?? "PAYMENT DONE")
       : statusFilter;
 
   // Food orders dashboard list: hide delivered/cancelled and filter by stage tab.
-  // Direct order-id lookups (detail page / search by Order Id) skip these filters.
+  // Direct order-id lookups and customer profile tabs skip these filters.
   if (orderType === "food" && !skipDashboardStageFilters) {
     conditions.push(sqlFoodOrderActiveListScope());
     if (effectiveStatusFilter === "BULK") {
@@ -1065,11 +1075,19 @@ export async function getOrderTimelineEntries(
 
 /**
  * Timeline entries for order detail / API: same as GET /api/orders/[id]/timeline (synthetic "Created" when empty).
+ * Person-ride OMS statuses (RIDER_ASSIGNED, etc.) are rider milestones for food but are the
+ * primary progress trail for rides — keep them when `includeRiderMilestones` is true.
  */
 export async function getOrderTimelineEntriesWithFallback(
-  orderId: number
+  orderId: number,
+  options?: { includeRiderMilestones?: boolean }
 ): Promise<OrderTimelineEntry[]> {
-  let entries = filterOrderProgressTimelineEntries(await getOrderTimelineEntries(orderId));
+  const raw = await getOrderTimelineEntries(orderId);
+  let entries = options?.includeRiderMilestones
+    ? dedupeOrderCancellationTimelineEntries(
+        raw.filter((entry) => !isRiderAssignmentCancellationTimelineEntry(entry))
+      )
+    : filterOrderProgressTimelineEntries(raw);
   if (entries.length === 0) {
     const createdAt = await getOrderCreatedAt(orderId);
     if (createdAt) {

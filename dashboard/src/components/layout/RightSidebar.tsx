@@ -55,6 +55,7 @@ import {
 import { getDashboardTypeFromPath } from "@/lib/permissions/path-mapping";
 import { StoreInfoCard, StoreInfoCardSkeleton, type StoreInfoCardData } from "@/components/layout/StoreInfoCard";
 import { WalletRequestsSummarySidebar } from "@/components/merchants/WalletRequestsSummarySidebar";
+import { OnboardingFailedSummarySidebar } from "@/components/area-manager/OnboardingFailedSummarySidebar";
 import { useStore } from "@/hooks/useStore";
 import { useMerchantsSearch } from "@/context/MerchantsSearchContext";
 import { useCurrentRoute } from "@/context/CurrentRouteContext";
@@ -96,10 +97,12 @@ export function RightSidebar({
 
   const handleSidebarNavClickCapture = useCallback(
     (event: React.MouseEvent<HTMLElement>) => {
+      if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
       const anchor = (event.target as HTMLElement).closest("a[href]");
       if (!anchor || !(anchor instanceof HTMLAnchorElement)) return;
       const rawHref = anchor.getAttribute("href");
       if (!rawHref || rawHref.startsWith("http") || rawHref.startsWith("#")) return;
+      // Intent only — never preventDefault; <Link> owns navigation.
       if (!shouldShowDashboardNavOverlay(cleanPathname, rawHref)) return;
       currentRoute?.startNavigation(rawHref.split("?")[0].split("#")[0]);
     },
@@ -221,6 +224,18 @@ export function RightSidebar({
     return () => window.removeEventListener(MERCHANT_RESUBMITTED_DOCS_REFRESH_EVENT, onRefresh);
   }, [refreshResubmittedDocsCount]);
 
+  // Partner resubmits from another app — poll so the sidebar badge updates without a hard refresh.
+  useEffect(() => {
+    const isAdminMerchantsArea =
+      cleanPathname.startsWith("/dashboard/merchants") && portal === "admin";
+    if (!isAdminMerchantsArea) return;
+    const id = window.setInterval(() => {
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
+      refreshResubmittedDocsCount();
+    }, 12_000);
+    return () => window.clearInterval(id);
+  }, [cleanPathname, portal, refreshResubmittedDocsCount]);
+
   const currentSubRoutes = useMemo((): DashboardSubRoute[] => {
     let filtered = rawSubRoutes;
 
@@ -333,21 +348,28 @@ export function RightSidebar({
     (ticketPropertiesRailOpen !== undefined ? ticketPropertiesRailOpen : isOpen);
   /** Same active / inactive treatment as `HierarchicalSidebar` main nav. */
   const queueNavActive = queueDarkLeftRail
-    ? "bg-gradient-to-r from-blue-500/90 to-indigo-500/90 text-white shadow-lg shadow-blue-500/25"
-    : "bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-lg shadow-blue-500/25";
+    ? "bg-white/10 text-white"
+    : "bg-white text-[#121212] shadow-sm";
   const queueNavInactive = queueDarkLeftRail
     ? "text-white/85 hover:bg-white/10 hover:text-white"
-    : "text-gray-800 hover:bg-gray-200/80";
+    : "text-[#121212]/75 hover:bg-white/80 hover:text-[#121212]";
   const queueNavCollapsedActive = queueDarkLeftRail
-    ? "bg-gradient-to-r from-blue-500/90 to-indigo-500/90 text-white shadow-lg"
-    : "bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-lg";
+    ? "bg-white/10 text-white"
+    : "bg-white text-[#121212] shadow-sm";
   /** Manager row when a child section is selected — softer than full active. */
   const queueNavParentFaded = queueDarkLeftRail
-    ? "bg-gradient-to-r from-blue-500/40 to-indigo-500/40 text-white/80 shadow-md shadow-blue-950/20 ring-1 ring-white/10"
-    : "bg-gradient-to-r from-blue-500/50 to-indigo-500/50 text-white shadow-sm";
+    ? "bg-white/10 text-white/80"
+    : "bg-white/90 text-[#121212]/80 shadow-sm";
   const queueNavCollapsedParentFaded = queueDarkLeftRail
-    ? "bg-gradient-to-r from-blue-500/40 to-indigo-500/40 text-white/90 shadow-md"
-    : "bg-gradient-to-r from-blue-500/50 to-indigo-500/50 text-white shadow-sm";
+    ? "bg-white/10 text-white/90"
+    : "bg-white/90 text-[#121212]/80 shadow-sm";
+
+  /** Light right-rail nav (Merchants / Riders / etc.) — matches left sidebar language on #F3F7FA. */
+  const rsbNavActive = "bg-white text-[#121212] shadow-sm";
+  const rsbNavIdle = "text-[#121212]/75 hover:bg-white/80 hover:text-[#121212]";
+  const rsbNavCtaIdle =
+    "border border-[#121212]/10 bg-white/60 text-[#121212] hover:bg-white hover:border-[#121212]/15";
+  const rsbNavCtaActive = "border border-[#121212]/15 bg-white text-[#121212] shadow-sm";
   const onAgentActivityPage = cleanPathname === AGENT_ACTIVITY_PATH;
   const onTicketsHelpdeskDashboard = cleanPathname === TICKETS_HELPDESK_DASHBOARD_PATH;
   const onTicketsHubSectionsPage = onAgentActivityPage || onTicketsHelpdeskDashboard;
@@ -422,7 +444,7 @@ export function RightSidebar({
       )}
       <aside
         onClickCapture={handleSidebarNavClickCapture}
-        className={`fixed z-40 flex flex-col ${isTicketDetailPage ? "shadow-none" : "shadow-xl"} transition-[transform,width] duration-300 ease-out ${
+        className={`fixed z-40 flex flex-col shadow-none transition-[transform,width] duration-300 ease-out ${
           /* Queue left rail: full viewport height (matches queue home). Right-docked ticket detail: start below header row. */
           isTicketDetailPage && !(queueDarkLeftRail && dockLeft) ? "bottom-0 top-14" : "inset-y-0"
         }
@@ -443,9 +465,9 @@ export function RightSidebar({
                 ...(dockLeft
                   ? { left: filterSidebarOpen ? "14rem" : 0, right: "auto" as const }
                   : { right: filterSidebarOpen ? "14rem" : 0, left: "auto" as const }),
-                backgroundColor: isTicketDetailPage ? "#F5F7F9" : "#E8F0F2",
+                backgroundColor: "#F3F7FA",
                 scrollbarWidth: "thin",
-                scrollbarColor: isTicketDetailPage ? "#9CA3AF #F5F7F9" : "#9CA3AF #E8F0F2",
+                scrollbarColor: "#9CA3AF #F3F7FA",
               }
         }
       >
@@ -454,7 +476,7 @@ export function RightSidebar({
             className={`relative z-20 flex h-14 min-h-14 w-full min-w-0 shrink-0 items-center border-b ${
               queueDarkLeftRail
                 ? "border-white/10 bg-transparent px-3"
-                : "border-gray-300/30 bg-[#E8F0F2] px-2 sm:px-3"
+                : "border-gray-300/30 bg-[#F3F7FA] px-2 sm:px-3"
             } ${isOpen ? "gap-2" : "justify-center"}`}
           >
             {queueDarkLeftRail ? (
@@ -494,17 +516,17 @@ export function RightSidebar({
             ) : isOpen ? (
               <>
                 {currentDashboard?.icon && (
-                  <div className="flex shrink-0 items-center justify-center rounded-lg bg-gradient-to-r from-blue-600 to-indigo-600 p-1.5">
+                  <div className="flex shrink-0 items-center justify-center rounded-[10px] bg-[#121212] p-1.5">
                     <currentDashboard.icon className="h-4 w-4 text-white" aria-hidden />
                   </div>
                 )}
-                <h2 className="min-w-0 flex-1 truncate text-left text-xs font-bold leading-snug text-gray-800">
+                <h2 className="min-w-0 flex-1 truncate text-left text-xs font-bold leading-snug text-[#121212]">
                   {currentDashboard?.name}
                 </h2>
               </>
             ) : (
               currentDashboard?.icon && (
-                <div className="rounded-lg bg-gradient-to-r from-blue-600 to-indigo-600 p-1.5">
+                <div className="rounded-[10px] bg-[#121212] p-1.5">
                   <currentDashboard.icon className="h-4 w-4 text-white" aria-hidden />
                 </div>
               )
@@ -519,8 +541,8 @@ export function RightSidebar({
               ? dockLeft
                 ? ticketDetailQueueDarkLeft
                   ? "border-r border-white/10 bg-transparent"
-                  : "border-r border-gray-200 bg-[#F5F7F9]"
-                : "border-l border-gray-200 bg-[#F5F7F9]"
+                  : "border-r-0 bg-[#F3F7FA]"
+                : "border-l-0 bg-[#F3F7FA]"
               : ""
           }`}
         >
@@ -544,40 +566,22 @@ export function RightSidebar({
                     <Link
                       href={TICKETS_QUEUE_HOME_PATH}
                       scroll={false}
-                      className={`group relative flex cursor-pointer items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition-all duration-150 ${
+                      className={`group relative flex cursor-pointer items-center gap-3 rounded-[10px] px-3 py-2.5 text-sm font-medium transition-colors duration-150 ${
                         onQueueHome ? queueNavActive : queueNavInactive
                       }`}
                     >
-                      {onQueueHome ? (
-                        <span
-                          className="absolute left-0 top-1/2 h-6 w-0.5 -translate-y-1/2 rounded-r-full bg-white/90"
-                          aria-hidden
-                        />
-                      ) : null}
                       <Home className="h-5 w-5 shrink-0" aria-hidden />
                       <span className="min-w-0 flex-1 truncate">Queue</span>
-                      {onQueueHome ? (
-                        <span
-                          className="absolute right-2.5 h-1.5 w-1.5 animate-pulse rounded-full bg-white/90"
-                          aria-hidden
-                        />
-                      ) : null}
                     </Link>
                     {showQueueSupervisorNav ? (
                       <Link
                         href={queueSupervisorHref("updated-agents", queueSupervisorAgentInUrl || undefined)}
                         scroll={false}
                         aria-expanded={onQueueSupervisor}
-                        className={`group relative flex cursor-pointer items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition-all duration-150 ${
+                        className={`group relative flex cursor-pointer items-center gap-3 rounded-[10px] px-3 py-2.5 text-sm font-medium transition-colors duration-150 ${
                           onQueueSupervisor ? queueNavParentFaded : queueNavInactive
                         }`}
                       >
-                        {onQueueSupervisor ? (
-                          <span
-                            className="absolute left-0 top-1/2 h-5 w-0.5 -translate-y-1/2 rounded-r-full bg-white/50"
-                            aria-hidden
-                          />
-                        ) : null}
                         <Users className="h-5 w-5 shrink-0 opacity-90" aria-hidden />
                         <span className="min-w-0 flex-1 truncate">Supervisor</span>
                         <ChevronDown
@@ -603,23 +607,11 @@ export function RightSidebar({
                               key={id}
                               href={queueSupervisorHref(id, queueSupervisorAgentInUrl || undefined)}
                               scroll={false}
-                              className={`group relative flex min-h-[2.25rem] cursor-pointer items-center rounded-xl px-3 py-2 text-xs font-medium transition-all duration-150 ${
+                              className={`group relative flex min-h-[2.25rem] cursor-pointer items-center rounded-[10px] px-3 py-2 text-xs font-medium transition-colors duration-150 ${
                                 active ? queueNavActive : queueNavInactive
                               }`}
                             >
-                              {active ? (
-                                <span
-                                  className="absolute left-0 top-1/2 h-5 w-0.5 -translate-y-1/2 rounded-r-full bg-white/90"
-                                  aria-hidden
-                                />
-                              ) : null}
                               <span className="min-w-0 flex-1 truncate pl-0.5">{label}</span>
-                              {active ? (
-                                <span
-                                  className="absolute right-2.5 h-1.5 w-1.5 animate-pulse rounded-full bg-white/90"
-                                  aria-hidden
-                                />
-                              ) : null}
                             </Link>
                           );
                         })}
@@ -630,16 +622,10 @@ export function RightSidebar({
                         href={TICKETS_QUEUE_MANAGER_PATH}
                         scroll={false}
                         aria-expanded={onQueueManager}
-                        className={`group relative flex cursor-pointer items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition-all duration-150 ${
+                        className={`group relative flex cursor-pointer items-center gap-3 rounded-[10px] px-3 py-2.5 text-sm font-medium transition-colors duration-150 ${
                           onQueueManager ? queueNavParentFaded : queueNavInactive
                         }`}
                       >
-                        {onQueueManager ? (
-                          <span
-                            className="absolute left-0 top-1/2 h-5 w-0.5 -translate-y-1/2 rounded-r-full bg-white/50"
-                            aria-hidden
-                          />
-                        ) : null}
                         <Zap className="h-5 w-5 shrink-0 opacity-90" aria-hidden />
                         <span className="min-w-0 flex-1 truncate">Manager</span>
                         <ChevronDown
@@ -669,23 +655,11 @@ export function RightSidebar({
                               key={id}
                               href={`${TICKETS_QUEUE_MANAGER_PATH}?section=${id}`}
                               scroll={false}
-                              className={`group relative flex min-h-[2.25rem] cursor-pointer items-center rounded-xl px-3 py-2 text-xs font-medium transition-all duration-150 ${
+                              className={`group relative flex min-h-[2.25rem] cursor-pointer items-center rounded-[10px] px-3 py-2 text-xs font-medium transition-colors duration-150 ${
                                 active ? queueNavActive : queueNavInactive
                               }`}
                             >
-                              {active ? (
-                                <span
-                                  className="absolute left-0 top-1/2 h-5 w-0.5 -translate-y-1/2 rounded-r-full bg-white/90"
-                                  aria-hidden
-                                />
-                              ) : null}
                               <span className="min-w-0 flex-1 truncate pl-0.5">{label}</span>
-                              {active ? (
-                                <span
-                                  className="absolute right-2.5 h-1.5 w-1.5 animate-pulse rounded-full bg-white/90"
-                                  aria-hidden
-                                />
-                              ) : null}
                             </Link>
                           );
                         })}
@@ -694,7 +668,7 @@ export function RightSidebar({
                   </div>
                 </nav>
                 {showQueueDetailPropertiesPanel ? (
-                  <div className="flex min-h-0 flex-1 flex-col border-t border-white/10 bg-[#F5F7F9] lg:hidden">
+                  <div className="flex min-h-0 flex-1 flex-col border-t border-[#121212]/08 bg-[#F3F7FA] lg:hidden">
                     {rightSidebarCtx?.ticketRightSidebarPanel === "settings" ? (
                       <TicketRightSidebarSettingsPanel />
                     ) : (
@@ -709,10 +683,8 @@ export function RightSidebar({
                   <Link
                     href={TICKETS_HELPDESK_DASHBOARD_PATH}
                     scroll={false}
-                    className={`flex cursor-pointer items-center gap-2 rounded-lg px-2 py-2 text-xs font-medium transition-colors ${
-                      onTicketsHelpdeskDashboard
-                        ? "bg-blue-600 text-white shadow-sm"
-                        : "text-gray-800 hover:bg-gray-200/80"
+                    className={`flex cursor-pointer items-center gap-2 rounded-[10px] px-2 py-2 text-xs font-medium transition-colors ${
+                      onTicketsHelpdeskDashboard ? rsbNavActive : rsbNavIdle
                     }`}
                   >
                     <LayoutDashboard className="h-4 w-4 shrink-0" aria-hidden />
@@ -721,10 +693,10 @@ export function RightSidebar({
                   <Link
                     href={`${AGENT_ACTIVITY_PATH}?section=activity`}
                     scroll={false}
-                    className={`flex cursor-pointer items-center gap-2 rounded-lg px-2 py-2 text-xs font-medium transition-colors ${
+                    className={`flex cursor-pointer items-center gap-2 rounded-[10px] px-2 py-2 text-xs font-medium transition-colors ${
                       onAgentActivityPage && agentActivitySection === "activity"
-                        ? "bg-blue-600 text-white shadow-sm"
-                        : "text-gray-800 hover:bg-gray-200/80"
+                        ? rsbNavActive
+                        : rsbNavIdle
                     }`}
                   >
                     <LineChart className="h-4 w-4 shrink-0" aria-hidden />
@@ -737,50 +709,32 @@ export function RightSidebar({
                 <div className="space-y-1">
                   <Link
                     href={TICKETS_QUEUE_HOME_PATH}
-                    className={`group relative flex w-full cursor-pointer items-center justify-center rounded-xl p-2.5 transition-all duration-150 ${
+                    className={`group relative flex w-full cursor-pointer items-center justify-center rounded-[10px] p-2.5 transition-colors duration-150 ${
                       onQueueHome ? queueNavCollapsedActive : queueNavInactive
                     }`}
                     title="Queue"
                   >
-                    {onQueueHome ? (
-                      <span
-                        className="absolute left-0 top-1/2 h-6 w-0.5 -translate-y-1/2 rounded-r-full bg-white/90"
-                        aria-hidden
-                      />
-                    ) : null}
                     <Home className="h-5 w-5 shrink-0" aria-hidden />
                   </Link>
                   {showQueueSupervisorNav ? (
                     <Link
                       href={queueSupervisorHref("updated-agents", queueSupervisorAgentInUrl || undefined)}
-                      className={`group relative flex w-full cursor-pointer items-center justify-center rounded-xl p-2.5 transition-all duration-150 ${
+                      className={`group relative flex w-full cursor-pointer items-center justify-center rounded-[10px] p-2.5 transition-colors duration-150 ${
                         onQueueSupervisor ? queueNavCollapsedParentFaded : queueNavInactive
                       }`}
                       title="Supervisor"
                     >
-                      {onQueueSupervisor ? (
-                        <span
-                          className="absolute left-0 top-1/2 h-5 w-0.5 -translate-y-1/2 rounded-r-full bg-white/50"
-                          aria-hidden
-                        />
-                      ) : null}
                       <Users className="h-5 w-5 shrink-0 opacity-90" aria-hidden />
                     </Link>
                   ) : null}
                   {showQueueManagerNav ? (
                     <Link
                       href={TICKETS_QUEUE_MANAGER_PATH}
-                      className={`group relative flex w-full cursor-pointer items-center justify-center rounded-xl p-2.5 transition-all duration-150 ${
+                      className={`group relative flex w-full cursor-pointer items-center justify-center rounded-[10px] p-2.5 transition-colors duration-150 ${
                         onQueueManager ? queueNavCollapsedParentFaded : queueNavInactive
                       }`}
                       title="Manager"
                     >
-                      {onQueueManager ? (
-                        <span
-                          className="absolute left-0 top-1/2 h-5 w-0.5 -translate-y-1/2 rounded-r-full bg-white/50"
-                          aria-hidden
-                        />
-                      ) : null}
                       <Zap className="h-5 w-5 shrink-0 opacity-90" aria-hidden />
                     </Link>
                   ) : null}
@@ -807,8 +761,11 @@ export function RightSidebar({
                 const allRoutesForActive = [...currentSubRoutes];
                 // When on Assign AM page, don't highlight the main Merchants tabs; the dedicated
                 // "Assign AM to Stores" link below should be the only active item.
+                const isAmOnboardingFailedPath =
+                  cleanPathname.startsWith("/dashboard/area-managers/stores/onboarding-failed") ||
+                  cleanPathname.startsWith("/dashboard/area-managers/stores/resubmit-onboarding");
                 const activeHref =
-                  cleanPathname === "/dashboard/merchants/assign-am"
+                  cleanPathname === "/dashboard/merchants/assign-am" || isAmOnboardingFailedPath
                     ? null
                     : allRoutesForActive
                         .filter((r) => {
@@ -831,21 +788,17 @@ export function RightSidebar({
                     <Link
                       key={route.href}
                       href={appendMerchantPortal(appendRiderSearch(route.href))}
-                      className={`group relative cursor-pointer rounded-lg transition-all duration-200 ${
+                      className={`group relative cursor-pointer rounded-[10px] transition-colors duration-200 ${
                         isOpen
                           ? `grid w-full min-w-0 ${
                               showMenuReviewBadge
                                 ? "grid-cols-[1.25rem_minmax(0,1fr)_auto]"
                                 : "grid-cols-[1.25rem_minmax(0,1fr)]"
                             } items-center gap-x-2 px-2 py-2 text-xs font-medium ${
-                              isActive
-                                ? "bg-gradient-to-r from-blue-600 to-purple-600 text-white shadow-lg shadow-blue-500/20"
-                                : "text-gray-900 hover:bg-gray-200/80 hover:text-gray-900 hover:-translate-x-1"
+                              isActive ? rsbNavActive : rsbNavIdle
                             }`
                           : `flex justify-center px-2 py-2.5 ${
-                              isActive
-                                ? "bg-gradient-to-r from-blue-600 to-purple-600 text-white shadow-lg"
-                                : "text-gray-900 hover:bg-gray-200/80 hover:text-gray-900"
+                              isActive ? rsbNavActive : rsbNavIdle
                             }`
                       }`}
                       title={
@@ -861,19 +814,13 @@ export function RightSidebar({
                           <span className="flex size-5 items-center justify-center justify-self-start text-current">
                             <Icon className="h-4 w-4 shrink-0" aria-hidden />
                           </span>
-                          <span className="relative min-w-0 truncate pr-5 text-left">
+                          <span className="relative min-w-0 truncate text-left">
                             {route.name}
-                            {isActive && (
-                              <span
-                                className="pointer-events-none absolute right-0 top-1/2 h-2 w-2 -translate-y-1/2 rounded-full bg-white shadow-lg shadow-white/50 animate-pulse"
-                                aria-hidden
-                              />
-                            )}
                           </span>
                           {showMenuReviewBadge ? (
                             <span
                               className={`rounded-full px-1.5 py-0.5 text-[10px] font-bold ${
-                                isActive ? "bg-white/20 text-white" : "bg-amber-100 text-amber-800"
+                                isActive ? "bg-[#121212]/10 text-[#121212]" : "bg-amber-100 text-amber-800"
                               }`}
                             >
                               {menuReviewBadgeCount}
@@ -891,11 +838,11 @@ export function RightSidebar({
                         </>
                       )}
                       {!isOpen && (
-                        <div className="absolute right-full mr-2 px-2 py-1 bg-gray-900 text-white text-xs rounded opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity whitespace-nowrap z-50 shadow-lg">
+                        <div className="absolute right-full mr-2 px-2 py-1 bg-[#121212] text-white text-xs rounded-[10px] opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity whitespace-nowrap z-50 shadow-lg">
                           {showMenuReviewBadge
                             ? `${route.name} (${menuReviewBadgeCount} pending)`
                             : route.name}
-                          <div className="absolute right-0 top-1/2 -translate-y-1/2 translate-x-1 border-4 border-transparent border-l-gray-900"></div>
+                          <div className="absolute right-0 top-1/2 -translate-y-1/2 translate-x-1 border-4 border-transparent border-l-[#121212]"></div>
                         </div>
                       )}
                     </Link>
@@ -915,15 +862,21 @@ export function RightSidebar({
                 return (
                   <>
                     {currentSubRoutes.map((route) => linkEl(route))}
+                    {isAreaManagerDashboard &&
+                      (areaManagerType === "MERCHANT" ||
+                        areaManagerType === null ||
+                        isSuperAdmin) && (
+                      <div className={isOpen ? "mt-2 min-w-0" : "mt-1"}>
+                        <OnboardingFailedSummarySidebar collapsed={!isOpen} />
+                      </div>
+                    )}
                     {/* Assign AM link for admin portal merchants dashboard (shown open and collapsed) */}
                     {isMerchantsDashboard && portal === "admin" && (
                       isOpen ? (
                         <Link
                           href="/dashboard/merchants/assign-am"
-                          className={`mt-1 grid w-full min-w-0 cursor-pointer grid-cols-[1.25rem_minmax(0,1fr)] items-center gap-x-2 rounded-lg px-2 py-2 text-xs font-medium transition-all duration-200 ${
-                            isAssignAmActive
-                              ? "bg-gradient-to-r from-blue-600 to-purple-600 text-white shadow-lg shadow-blue-500/20"
-                              : "text-gray-900 hover:bg-gray-200/80 hover:text-gray-900 hover:-translate-x-1"
+                          className={`mt-1 grid w-full min-w-0 cursor-pointer grid-cols-[1.25rem_minmax(0,1fr)] items-center gap-x-2 rounded-[10px] px-2 py-2 text-xs font-medium transition-colors duration-200 ${
+                            isAssignAmActive ? rsbNavActive : rsbNavIdle
                           }`}
                         >
                           <span className="flex size-5 items-center justify-center justify-self-start text-current">
@@ -935,16 +888,14 @@ export function RightSidebar({
                         <Link
                           href="/dashboard/merchants/assign-am"
                           title="Assign AM to Stores"
-                          className={`group relative mt-1 flex cursor-pointer items-center justify-center rounded-lg px-2 py-2.5 transition-all duration-200 ${
-                            isAssignAmActive
-                              ? "bg-gradient-to-r from-blue-600 to-purple-600 text-white shadow-lg"
-                              : "text-gray-900 hover:bg-gray-200/80 hover:text-gray-900"
+                          className={`group relative mt-1 flex cursor-pointer items-center justify-center rounded-[10px] px-2 py-2.5 transition-colors duration-200 ${
+                            isAssignAmActive ? rsbNavActive : rsbNavIdle
                           }`}
                         >
                           <Users className="h-5 w-5 flex-shrink-0" />
-                          <div className="absolute right-full mr-2 px-2 py-1 bg-gray-900 text-white text-xs rounded opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity whitespace-nowrap z-50 shadow-lg">
+                          <div className="absolute right-full mr-2 px-2 py-1 bg-[#121212] text-white text-xs rounded-[10px] opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity whitespace-nowrap z-50 shadow-lg">
                             Assign AM to Stores
-                            <div className="absolute right-0 top-1/2 -translate-y-1/2 translate-x-1 border-4 border-transparent border-l-gray-900" />
+                            <div className="absolute right-0 top-1/2 -translate-y-1/2 translate-x-1 border-4 border-transparent border-l-[#121212]" />
                           </div>
                         </Link>
                       )
@@ -960,10 +911,8 @@ export function RightSidebar({
                       isOpen ? (
                         <Link
                           href="/dashboard/merchants/menu-requests"
-                          className={`mt-2 grid w-full min-w-0 cursor-pointer grid-cols-[1.25rem_minmax(0,1fr)_auto] items-center gap-x-2 rounded-lg border px-2 py-2 text-xs font-semibold transition-all duration-200 ${
-                            isMenuRequestsActive
-                              ? "border-purple-700 bg-gradient-to-r from-purple-600 to-indigo-600 text-white shadow-lg shadow-purple-500/20"
-                              : "border-purple-200 bg-purple-50 text-purple-900 hover:border-purple-300 hover:bg-purple-100 hover:-translate-x-1"
+                          className={`mt-2 grid w-full min-w-0 cursor-pointer grid-cols-[1.25rem_minmax(0,1fr)_auto] items-center gap-x-2 rounded-[10px] px-2 py-2 text-xs font-semibold transition-colors duration-200 ${
+                            isMenuRequestsActive ? rsbNavCtaActive : rsbNavCtaIdle
                           }`}
                         >
                           <span className="flex size-5 items-center justify-center justify-self-start text-current">
@@ -971,9 +920,7 @@ export function RightSidebar({
                           </span>
                           <span className="min-w-0 truncate text-left">Menu change requests</span>
                           {pendingMenuRequestsCount > 0 && (
-                            <span className={`rounded-full px-1.5 py-0.5 text-[10px] font-bold ${
-                              isMenuRequestsActive ? "bg-white/20 text-white" : "bg-amber-100 text-amber-800"
-                            }`}>
+                            <span className="rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-bold text-amber-800">
                               {pendingMenuRequestsCount} Pending
                             </span>
                           )}
@@ -982,10 +929,8 @@ export function RightSidebar({
                         <Link
                           href="/dashboard/merchants/menu-requests"
                           title={pendingMenuRequestsCount > 0 ? `Menu change requests (${pendingMenuRequestsCount} pending)` : "Menu change requests"}
-                          className={`group relative mt-2 flex cursor-pointer items-center justify-center rounded-lg border px-2 py-2.5 transition-all duration-200 ${
-                            isMenuRequestsActive
-                              ? "border-purple-700 bg-gradient-to-r from-purple-600 to-indigo-600 text-white shadow-lg"
-                              : "border-purple-200 bg-purple-50 text-purple-900 hover:border-purple-300 hover:bg-purple-100"
+                          className={`group relative mt-2 flex cursor-pointer items-center justify-center rounded-[10px] px-2 py-2.5 transition-colors duration-200 ${
+                            isMenuRequestsActive ? rsbNavCtaActive : rsbNavCtaIdle
                           }`}
                         >
                           <ClipboardList className="h-5 w-5 flex-shrink-0" />
@@ -994,11 +939,11 @@ export function RightSidebar({
                               {pendingMenuRequestsCount}
                             </span>
                           )}
-                          <div className="absolute right-full mr-2 px-2 py-1 bg-gray-900 text-white text-xs rounded opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity whitespace-nowrap z-50 shadow-lg">
+                          <div className="absolute right-full mr-2 px-2 py-1 bg-[#121212] text-white text-xs rounded-[10px] opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity whitespace-nowrap z-50 shadow-lg">
                             {pendingMenuRequestsCount > 0
                               ? `Menu change requests (${pendingMenuRequestsCount} pending)`
                               : "Menu change requests"}
-                            <div className="absolute right-0 top-1/2 -translate-y-1/2 translate-x-1 border-4 border-transparent border-l-gray-900" />
+                            <div className="absolute right-0 top-1/2 -translate-y-1/2 translate-x-1 border-4 border-transparent border-l-[#121212]" />
                           </div>
                         </Link>
                       )
@@ -1007,10 +952,8 @@ export function RightSidebar({
                       isOpen ? (
                         <Link
                           href="/dashboard/merchants?portal=admin&category=resubmitted"
-                          className={`mt-2 grid w-full min-w-0 cursor-pointer grid-cols-[1.25rem_minmax(0,1fr)_auto] items-center gap-x-2 rounded-lg border px-2 py-2 text-xs font-semibold transition-all duration-200 ${
-                            isResubmittedActive
-                              ? "border-violet-700 bg-gradient-to-r from-violet-600 to-purple-600 text-white shadow-lg shadow-violet-500/20"
-                              : "border-violet-200 bg-violet-50 text-violet-900 hover:border-violet-300 hover:bg-violet-100 hover:-translate-x-1"
+                          className={`mt-2 grid w-full min-w-0 cursor-pointer grid-cols-[1.25rem_minmax(0,1fr)_auto] items-center gap-x-2 rounded-[10px] px-2 py-2 text-xs font-semibold transition-colors duration-200 ${
+                            isResubmittedActive ? rsbNavCtaActive : rsbNavCtaIdle
                           }`}
                         >
                           <span className="flex size-5 items-center justify-center justify-self-start text-current">
@@ -1018,11 +961,7 @@ export function RightSidebar({
                           </span>
                           <span className="min-w-0 truncate text-left">{EXPIRED_RESUBMITTED_DOCS_LABEL}</span>
                           {resubmittedDocsCount > 0 && (
-                            <span
-                              className={`rounded-full px-1.5 py-0.5 text-[10px] font-bold ${
-                                isResubmittedActive ? "bg-white/20 text-white" : "bg-violet-200 text-violet-900"
-                              }`}
-                            >
+                            <span className="rounded-full bg-[#121212]/10 px-1.5 py-0.5 text-[10px] font-bold text-[#121212]">
                               {resubmittedDocsCount}
                             </span>
                           )}
@@ -1035,21 +974,19 @@ export function RightSidebar({
                               ? `${EXPIRED_RESUBMITTED_DOCS_LABEL} (${resubmittedDocsCount})`
                               : EXPIRED_RESUBMITTED_DOCS_LABEL
                           }
-                          className={`group relative mt-2 flex cursor-pointer items-center justify-center rounded-lg border px-2 py-2.5 transition-all duration-200 ${
-                            isResubmittedActive
-                              ? "border-violet-700 bg-gradient-to-r from-violet-600 to-purple-600 text-white shadow-lg"
-                              : "border-violet-200 bg-violet-50 text-violet-900 hover:border-violet-300 hover:bg-violet-100"
+                          className={`group relative mt-2 flex cursor-pointer items-center justify-center rounded-[10px] px-2 py-2.5 transition-colors duration-200 ${
+                            isResubmittedActive ? rsbNavCtaActive : rsbNavCtaIdle
                           }`}
                         >
                           <FileUp className="h-5 w-5 flex-shrink-0" />
                           {resubmittedDocsCount > 0 && (
-                            <span className="absolute -top-1 -right-1 rounded-full bg-violet-600 px-1.5 py-0.5 text-[10px] font-bold text-white">
+                            <span className="absolute -top-1 -right-1 rounded-full bg-[#121212] px-1.5 py-0.5 text-[10px] font-bold text-white">
                               {resubmittedDocsCount}
                             </span>
                           )}
-                          <div className="absolute right-full mr-2 px-2 py-1 bg-gray-900 text-white text-xs rounded opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity whitespace-nowrap z-50 shadow-lg">
+                          <div className="absolute right-full mr-2 px-2 py-1 bg-[#121212] text-white text-xs rounded-[10px] opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity whitespace-nowrap z-50 shadow-lg">
                             {EXPIRED_RESUBMITTED_DOCS_LABEL}
-                            <div className="absolute right-0 top-1/2 -translate-y-1/2 translate-x-1 border-4 border-transparent border-l-gray-900" />
+                            <div className="absolute right-0 top-1/2 -translate-y-1/2 translate-x-1 border-4 border-transparent border-l-[#121212]" />
                           </div>
                         </Link>
                       )
@@ -1059,7 +996,7 @@ export function RightSidebar({
               })()}
               </nav>
               {isOpen && portal === "merchant" && showRightSidebarStoreCard ? (
-                <div className="shrink-0 border-t border-gray-300/50 bg-[#E8F0F2] px-2 py-2 min-h-0 max-h-[34vh] overflow-y-auto overscroll-y-contain">
+                <div className="shrink-0 border-t border-gray-300/50 bg-[#F3F7FA] px-2 py-2 min-h-0 max-h-[34vh] overflow-y-auto overscroll-y-contain">
                   {showMerchantSearchSkeleton ? (
                     <StoreInfoCardSkeleton />
                   ) : isMerchantsSearchListRoot ? (
@@ -1079,17 +1016,21 @@ export function RightSidebar({
         </div>
 
         {!isTicketsDashboard && (
-          <div className="relative z-20 shrink-0 border-t border-gray-300/40 bg-[#E8F0F2] p-2 shadow-[0_-4px_12px_-6px_rgba(15,23,42,0.1)]">
+          <div className="relative z-20 shrink-0 border-t border-[#121212]/08 bg-[#F3F7FA] p-2">
             <button
               type="button"
               onClick={onToggle}
-              className={`flex w-full cursor-pointer items-center justify-center rounded-lg bg-gray-300/60 text-gray-800 transition-all hover:bg-gray-400/70 hover:shadow-md ${
-                isOpen ? "gap-2 px-3 py-2" : "p-2"
+              className={`flex h-10 w-full cursor-pointer items-center justify-center rounded-[10px] border border-[#121212]/10 bg-white text-[#121212] transition-colors duration-200 hover:bg-white/90 ${
+                isOpen ? "gap-2 px-3" : ""
               }`}
               title={isOpen ? "Collapse sidebar" : "Expand sidebar"}
+              aria-label={isOpen ? "Collapse sidebar" : "Expand sidebar"}
             >
-              <ChevronRight className={`h-4 w-4 shrink-0 transition-transform duration-200 ${isOpen ? "rotate-180" : ""}`} />
-              {isOpen && <span className="text-xs font-semibold">Hide</span>}
+              <ChevronRight
+                className={`h-4 w-4 shrink-0 transition-transform duration-200 ${isOpen ? "rotate-180" : ""}`}
+                aria-hidden
+              />
+              {isOpen ? <span className="text-xs font-semibold tracking-wide">Hide</span> : null}
             </button>
           </div>
         )}
@@ -1098,7 +1039,7 @@ export function RightSidebar({
       {/* Queue-origin ticket detail: properties live on the right; left rail stays queue nav */}
       {showQueueDetailPropertiesPanel && isTicketsDashboard ? (
         <aside
-          className="fixed z-40 bottom-0 top-14 hidden w-64 flex-col border-l border-gray-200/80 bg-[#F5F7F9] shadow-xl lg:flex"
+          className="fixed z-40 bottom-0 top-14 hidden w-64 flex-col border-l-0 bg-[#F3F7FA] lg:flex"
           style={{
             right: filterSidebarOpen ? "14rem" : 0,
             transition: "right 0.3s ease-out",

@@ -35,27 +35,16 @@ export function isGmailEmail(email: string): boolean {
 }
 
 /**
- * Deterministic pastel background color from a string (email).
- * Same input → same color across sessions, so an avatar looks stable.
- */
-function stringToPastelColor(seed: string): string {
-  let hash = 0;
-  for (let i = 0; i < seed.length; i++) hash = (hash * 31 + seed.charCodeAt(i)) | 0;
-  const hue = Math.abs(hash) % 360;
-  // 40% saturation, 55% lightness → readable, WCAG-decent contrast with white text.
-  return `hsl(${hue}, 40%, 55%)`;
-}
-
-/**
  * Generate an inline SVG data URL for an initials avatar. Zero network requests,
  * zero external tracking, no browser Tracking Prevention warnings.
+ * Uses charcoal #121212 to match dashboard sidebar fallback language.
  */
 export function generateInitialsAvatarDataUrl(
   seed: string,
   initials: string,
   size: number = 40,
 ): string {
-  const bg = stringToPastelColor(seed);
+  const bg = "#121212";
   const fontSize = Math.floor(size * 0.42);
   const safeInitials = initials.slice(0, 2).replace(/[<>&"]/g, "");
   const svg =

@@ -9,6 +9,7 @@ import { Ticket } from "@/hooks/tickets/useTickets";
 import { prefetchTicketDetail } from "@/hooks/tickets/useTicketDetail";
 import { buildTicketDetailHref } from "@/lib/tickets/ticket-path-utils";
 import { InlineSearchableSelect, type Option } from "./InlineSearchableSelect";
+import { TicketMixedText, TicketNum } from "./tickets-typography";
 
 interface TicketListRowProps {
   ticket: Ticket;
@@ -435,7 +436,7 @@ export const TicketListRow = React.memo(function TicketListRow({
   return (
     <>
     <div
-      className="flex items-center gap-2 border-b border-gray-200 bg-white pl-2 pr-1 py-2.5 hover:bg-slate-50/80 transition-colors min-h-0 relative group"
+      className="flex items-center gap-2 border-b border-gray-200 bg-white pl-2 pr-1 py-2 hover:bg-slate-50/80 transition-colors min-h-0 relative group"
       style={{ overflow: "visible" }}
       onPointerEnter={prefetchThisTicket}
     >
@@ -454,7 +455,7 @@ export const TicketListRow = React.memo(function TicketListRow({
       <Link
         href={detailLink}
         scroll={false}
-        className="shrink-0 w-8 h-8 rounded-lg bg-gradient-to-br from-indigo-500 to-violet-600 flex items-center justify-center text-white text-sm font-semibold leading-none tabular-nums shadow-sm hover:shadow-md hover:scale-[1.02] transition-all"
+        className="shrink-0 w-8 h-8 rounded-[10px] bg-[#121212] flex items-center justify-center text-white text-xs font-semibold leading-none tickets-num shadow-sm hover:bg-black hover:scale-[1.02] transition-all"
         aria-label={`Open ticket ${ticket.ticketNumber}${sourceLabel ? ` (${sourceLabel})` : ""}`}
         title={sourceLabel ? `Type: ${sourceLabel}` : undefined}
       >
@@ -467,7 +468,7 @@ export const TicketListRow = React.memo(function TicketListRow({
           {showOverdue && (
             <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-medium bg-red-100 text-red-800">
               <AlertCircle className="h-2.5 w-2.5 shrink-0" />
-              {overdueLabel}
+              <TicketMixedText>{overdueLabel}</TicketMixedText>
             </span>
           )}
           <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-slate-100 text-slate-700 capitalize">
@@ -495,7 +496,7 @@ export const TicketListRow = React.memo(function TicketListRow({
           )}
           {categoryLabel && (
             <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-amber-50 text-amber-800">
-              {categoryLabel}
+              <TicketMixedText>{categoryLabel}</TicketMixedText>
             </span>
           )}
         </div>
@@ -508,30 +509,38 @@ export const TicketListRow = React.memo(function TicketListRow({
           className="inline-flex w-fit max-w-full min-w-0 text-left hover:underline underline-offset-2"
           title={`${ticket.subject} · #${ticket.ticketNumber || ticket.id}`}
         >
-          <span className="font-medium text-gray-900 text-xs [overflow-wrap:anywhere]">{ticket.subject}</span>
-          <span className="text-[11px] text-gray-500 font-mono font-normal whitespace-nowrap align-baseline ml-2">
+          <TicketMixedText className="font-medium text-[#121212] text-[12.5px] leading-snug [overflow-wrap:anywhere]">
+            {ticket.subject}
+          </TicketMixedText>
+          <TicketNum className="text-[11px] text-[#121212]/55 font-medium whitespace-nowrap align-baseline ml-2">
             #{ticket.ticketNumber || ticket.id}
-          </span>
+          </TicketNum>
         </Link>
 
-        <div className="flex w-full min-w-0 items-center gap-x-2 gap-y-0.5 text-[10px] text-gray-500 flex-wrap text-left">
+        <div className="flex w-full min-w-0 items-center gap-x-2 gap-y-0.5 text-[11px] text-[#121212]/55 flex-wrap text-left">
           <span>
-            <span className="text-gray-600 font-medium">Agent:</span> {agentLabel}
+            <span className="text-[#121212]/70 font-medium">Agent:</span> {agentLabel}
           </span>
-          <span aria-hidden className="text-gray-300">
+          <span aria-hidden className="text-[#121212]/25">
             ·
           </span>
-          <span>Created {formatDateTime(ticket.createdAt)}</span>
-          <span aria-hidden className="text-gray-300">
+          <span>
+            Created <TicketNum>{formatDateTime(ticket.createdAt)}</TicketNum>
+          </span>
+          <span aria-hidden className="text-[#121212]/25">
             ·
           </span>
-          <span>Updated {formatDateTime(ticket.updatedAt)}</span>
+          <span>
+            Updated <TicketNum>{formatDateTime(ticket.updatedAt)}</TicketNum>
+          </span>
           {ticket.slaDueAt ? (
             <>
-              <span aria-hidden className="text-gray-300">
+              <span aria-hidden className="text-[#121212]/25">
                 ·
               </span>
-              <span>SLA due {formatDateTime(ticket.slaDueAt)}</span>
+              <span>
+                SLA due <TicketNum>{formatDateTime(ticket.slaDueAt)}</TicketNum>
+              </span>
             </>
           ) : null}
         </div>
@@ -550,7 +559,7 @@ export const TicketListRow = React.memo(function TicketListRow({
                     : "bg-violet-50 text-violet-700"
               }`}
             >
-              Resumes in {snoozeCountdown.label}
+              Resumes in <span className="tickets-num">{snoozeCountdown.label}</span>
             </span>
           </div>
         ) : null}

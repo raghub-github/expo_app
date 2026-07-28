@@ -36,7 +36,7 @@ import {
   readCachedStoreOperationsPanel,
   writeCachedStoreOperationsPanel,
 } from '@/lib/store-operations-panel-cache'
-import { settlementNoteVisibleUntil } from '@/lib/refund-settlement'
+import { getSettlementNotePhase } from '@/lib/refund-settlement'
 import { billingCycleLabel, billingCycleSuffix } from '@/lib/billingCycleLabel'
 
 const StoreLocationMapboxGL = dynamicImport(() => import('@/components/StoreLocationMapboxGL'), { ssr: false })
@@ -3788,16 +3788,10 @@ function StoreSettingsContent() {
                             ? new Date(entry.billing_period_end)
                             : null
                         const refundCompletedAt = entry.refund?.completed_at ?? null
-                        const refundSevenDayUntil = settlementNoteVisibleUntil(refundCompletedAt, 7)
-                        const refundTenDayUntil = settlementNoteVisibleUntil(refundCompletedAt, 10)
-                        const nowMs = refundMessageNow
-                        const showInitialSettlementNote =
-                          Boolean(refundSevenDayUntil) &&
-                          nowMs < Date.parse(String(refundSevenDayUntil))
-                        const showDelayedSettlementNote =
-                          Boolean(refundSevenDayUntil && refundTenDayUntil) &&
-                          nowMs >= Date.parse(String(refundSevenDayUntil)) &&
-                          nowMs < Date.parse(String(refundTenDayUntil))
+                        // Message 1 for 4 calendar days after completed_at, message 2 for 1 more day, then hide.
+                        const settlementPhase = getSettlementNotePhase(refundCompletedAt, refundMessageNow)
+                        const showInitialSettlementNote = settlementPhase === 'initial'
+                        const showDelayedSettlementNote = settlementPhase === 'followup'
                         return (
                         <div key={entry.id} className="p-2.5 bg-gray-50 rounded-lg border border-gray-100">
                           <div className="flex items-start justify-between mb-2">
@@ -3948,7 +3942,7 @@ function StoreSettingsContent() {
                               </div>
                             </div>
                           )}
-                          {/* Settlement note changes after 7 working days and hides after 10. */}
+                          {/* Settlement note: 4 calendar days → follow-up 1 day → then hide. */}
                           {entry.refund &&
                             String(entry.refund.status ?? '').toUpperCase() === 'COMPLETED' &&
                             (showInitialSettlementNote || showDelayedSettlementNote) && (

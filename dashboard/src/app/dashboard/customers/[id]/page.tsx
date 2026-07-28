@@ -1,10 +1,10 @@
 "use client";
 
-import { useState, useEffect, useRef, Suspense } from "react";
+import { useState, useEffect, useRef, useMemo, Suspense } from "react";
 import { useAppParams, useAppPathname, useAppSearchParams } from "@/hooks/useAppSearchParams";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { AlertCircle, ChevronDown, ExternalLink } from "lucide-react";
+import { AlertCircle, ChevronDown, ExternalLink, Search } from "lucide-react";
 import {
   resolveTrustTier,
   TRUST_TIER_LABEL,
@@ -220,15 +220,19 @@ type CustomerTicketRow = {
   createdAt: string;
 };
 
-function customerNavPillClass(active: boolean, disabled?: boolean) {
-  if (disabled) {
-    return "inline-flex w-full min-h-[2.5rem] cursor-not-allowed items-center justify-center gap-1 rounded-full border border-slate-200/80 bg-slate-50/90 px-2 py-2 text-center text-[11px] font-medium leading-tight text-[#0f2d42]/45 sm:text-xs";
-  }
-  if (active) {
-    return "inline-flex w-full min-h-[2.5rem] items-center justify-center gap-1 rounded-full border-2 border-[#0d5c4a] bg-[#E6F6F5] px-2 py-2 text-center text-[11px] font-semibold leading-tight text-[#0f2d42] shadow-sm ring-2 ring-[#0d5c4a]/20 sm:text-xs";
-  }
-  return "inline-flex w-full min-h-[2.5rem] items-center justify-center gap-1 rounded-full border border-teal-200/60 bg-white/90 px-2 py-2 text-center text-[11px] font-medium leading-tight text-[#0f2d42] shadow-sm transition hover:bg-[#E6F6F5]/95 hover:border-teal-300/80 sm:text-xs";
-}
+type CustomerWalletTxnRow = {
+  id: number;
+  transactionId: string;
+  transactionType: string;
+  amount: number | string;
+  balanceBefore: number | string;
+  balanceAfter: number | string;
+  description: string;
+  status: string | null;
+  referenceId: string | null;
+  referenceType: string | null;
+  createdAt: string;
+};
 
 /** Compact pills for sticky nav strip (smaller hit target, premium tight spacing). */
 function customerNavPillStripClass(active: boolean, disabled?: boolean) {
@@ -265,6 +269,11 @@ function CustomerDetailsContent() {
   const [customerTickets, setCustomerTickets] = useState<CustomerTicketRow[]>([]);
   const [ticketsLoading, setTicketsLoading] = useState(false);
   const [ticketsError, setTicketsError] = useState<string | null>(null);
+  const [customerTxns, setCustomerTxns] = useState<CustomerWalletTxnRow[]>([]);
+  const [txnsLoading, setTxnsLoading] = useState(false);
+  const [txnsError, setTxnsError] = useState<string | null>(null);
+  const [panelQuery, setPanelQuery] = useState("");
+  const ctaNavRef = useRef<HTMLElement>(null);
   const router = useRouter();
   const pathname = useAppPathname();
 
@@ -283,9 +292,14 @@ function CustomerDetailsContent() {
       setError("Invalid customer ID");
       setLoading(false);
     }
-  }, [customerId]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- refetch when path id or search identity changes
+  }, [customerId, searchQs]);
 
   const activeNavFromUrl = searchParams.get("nav");
+
+  useEffect(() => {
+    setPanelQuery("");
+  }, [activeNavFromUrl]);
 
   useEffect(() => {
     const nav = activeNavFromUrl;
@@ -388,6 +402,53 @@ function CustomerDetailsContent() {
   }, [activeNavFromUrl, customerId]);
 
   useEffect(() => {
+    if (activeNavFromUrl !== "transactions" || !customerId) {
+      setCustomerTxns([]);
+      setTxnsError(null);
+      setTxnsLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    setTxnsLoading(true);
+    setTxnsError(null);
+
+    void (async () => {
+      try {
+        const res = await fetch(
+          `/api/customers/${encodeURIComponent(customerId)}/wallet-transactions?limit=50`
+        );
+        const json: unknown = await res.json();
+        const body = json as {
+          success?: boolean;
+          error?: string;
+          data?: CustomerWalletTxnRow[];
+        };
+        if (!res.ok) {
+          throw new Error(body.error || "Failed to load transactions");
+        }
+        if (!body.success) {
+          throw new Error(body.error || "Failed to load transactions");
+        }
+        if (!cancelled) {
+          setCustomerTxns(Array.isArray(body.data) ? body.data : []);
+        }
+      } catch (e) {
+        if (!cancelled) {
+          setTxnsError(e instanceof Error ? e.message : "Failed to load transactions");
+          setCustomerTxns([]);
+        }
+      } finally {
+        if (!cancelled) setTxnsLoading(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeNavFromUrl, customerId]);
+
+  useEffect(() => {
     if (!addressMenuOpen) return;
     function handlePointerDown(e: MouseEvent) {
       if (
@@ -432,7 +493,20 @@ function CustomerDetailsContent() {
       const result = await response.json();
 
       if (result.success) {
-        setCustomer(result.data);
+        const loaded = result.data as CustomerDetail;
+        const searchWant = (searchQs || "").trim().replace(/\s/g, "");
+        // If URL still has a stale numeric path from a previous bug, but search asks for a different GM… id — re-resolve.
+        if (
+          /^GM\d+$/i.test(searchWant) &&
+          loaded?.customerId &&
+          loaded.customerId.toLowerCase() !== searchWant.toLowerCase()
+        ) {
+          router.replace(
+            `/dashboard/customers/${encodeURIComponent(searchWant)}?search=${encodeURIComponent(searchWant)}`
+          );
+          return;
+        }
+        setCustomer(loaded);
       } else {
         setError(result.error || "Failed to fetch customer");
       }
@@ -448,6 +522,63 @@ function CustomerDetailsContent() {
     if (amount === null || amount === undefined) return "—";
     return `₹${Number(amount).toFixed(2)}`;
   };
+
+  const panelSearchNeedle = panelQuery.trim().toLowerCase();
+
+  const filteredOrders = useMemo(() => {
+    if (!panelSearchNeedle) return customerOrders;
+    return customerOrders.filter((row) => {
+      const hay = [
+        row.formattedOrderId,
+        String(row.id),
+        row.status,
+        row.paymentStatus,
+        row.dropAddressRaw,
+        row.grandTotal != null ? String(row.grandTotal) : "",
+        row.fareAmount != null ? String(row.fareAmount) : "",
+      ]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase();
+      return hay.includes(panelSearchNeedle);
+    });
+  }, [customerOrders, panelSearchNeedle]);
+
+  const filteredTickets = useMemo(() => {
+    if (!panelSearchNeedle) return customerTickets;
+    return customerTickets.filter((row) => {
+      const hay = [
+        row.ticketId,
+        String(row.id),
+        row.status,
+        row.priority,
+        row.serviceType,
+        row.subject,
+      ]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase();
+      return hay.includes(panelSearchNeedle);
+    });
+  }, [customerTickets, panelSearchNeedle]);
+
+  const filteredTxns = useMemo(() => {
+    if (!panelSearchNeedle) return customerTxns;
+    return customerTxns.filter((row) => {
+      const hay = [
+        row.transactionId,
+        row.transactionType,
+        row.status,
+        row.description,
+        row.referenceId,
+        String(row.amount),
+      ]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase();
+      return hay.includes(panelSearchNeedle);
+    });
+  }, [customerTxns, panelSearchNeedle]);
 
   if (loading) {
     return (
@@ -469,7 +600,11 @@ function CustomerDetailsContent() {
           </div>
           <div className="mt-4">
             <Link
-              href="/dashboard/customers/all"
+              href={
+                searchQs
+                  ? `/dashboard/customers/all?search=${encodeURIComponent(searchQs)}`
+                  : "/dashboard/customers/all"
+              }
               className="inline-flex items-center gap-2 text-sm font-medium text-[#0d5c4a] hover:underline"
             >
               Back to search
@@ -503,12 +638,6 @@ function CustomerDetailsContent() {
 
   const searchParam = encodeURIComponent(customer.customerId);
 
-  const setNavKey = (key: string) => {
-    const p = new URLSearchParams(searchParams.toString());
-    p.set("nav", key);
-    router.replace(`${pathname}?${p.toString()}`, { scroll: false });
-  };
-
   const toggleOrderPillNav = (key: (typeof ORDER_NAV_KEYS)[number]) => {
     const p = new URLSearchParams(searchParams.toString());
     if (activeNavFromUrl === key) {
@@ -529,6 +658,16 @@ function CustomerDetailsContent() {
     router.replace(`${pathname}?${p.toString()}`, { scroll: false });
   };
 
+  const toggleTransactionsNav = () => {
+    const p = new URLSearchParams(searchParams.toString());
+    if (activeNavFromUrl === "transactions") {
+      p.delete("nav");
+    } else {
+      p.set("nav", "transactions");
+    }
+    router.replace(`${pathname}?${p.toString()}`, { scroll: false });
+  };
+
   const navActive = (key: string) => activeNavFromUrl === key;
 
   const showOrdersPanel =
@@ -536,13 +675,25 @@ function CustomerDetailsContent() {
     (ORDER_NAV_KEYS as readonly string[]).includes(activeNavFromUrl);
 
   const showTicketsPanel = activeNavFromUrl === "tickets";
+  const showTransactionsPanel = activeNavFromUrl === "transactions";
+
+  const showPanelSearch =
+    (showOrdersPanel && !ordersLoading && !ordersError && customerOrders.length > 0) ||
+    (showTicketsPanel && !ticketsLoading && !ticketsError && customerTickets.length > 0) ||
+    (showTransactionsPanel && !txnsLoading && !txnsError && customerTxns.length > 0);
+
+  const panelSearchPlaceholder = showOrdersPanel
+    ? "Search orders…"
+    : showTicketsPanel
+      ? "Search tickets…"
+      : "Search transactions…";
 
   return (
-    <div className="flex w-full min-w-0 max-w-full flex-1 flex-col min-h-0">
-      <div className="rounded-2xl border border-teal-200/35 bg-gradient-to-br from-[#E6F6F5] via-white to-[#f0fdf9] shadow-sm ring-1 ring-[#0f2d42]/5">
+    <div className="flex w-full min-w-0 max-w-full flex-1 flex-col pt-3 sm:pt-4">
+      <div className="mb-3 rounded-2xl border border-teal-200/35 bg-gradient-to-br from-[#E6F6F5] via-white to-[#f0fdf9] shadow-sm ring-1 ring-[#0f2d42]/5 sm:mb-4">
         {/* User Stats header + scrollable detail grid */}
         <div className="px-4 py-5 sm:px-6">
-        <div className="flex flex-col gap-3">
+          <div className="flex flex-col gap-3">
           <div className="flex flex-row items-baseline justify-between gap-4">
             <p className="text-sm font-semibold uppercase tracking-[0.12em] text-[#0f2d42]/80">
               User Stats
@@ -745,11 +896,13 @@ function CustomerDetailsContent() {
       </div>
 
       <nav
-        className="sticky top-[2px] z-[100] mt-3 w-full min-w-0 shrink-0 bg-white px-2 py-2 sm:mt-4 sm:px-3 sm:py-2.5"
+        ref={ctaNavRef}
+        className="sticky top-0 z-40 w-full min-w-0 shrink-0 border-b border-[#121212]/08 bg-white py-2 sm:py-2.5"
         aria-label="Order and account shortcuts"
       >
-          <div className="max-w-full overflow-x-auto overflow-y-visible [-webkit-overflow-scrolling:touch] [scrollbar-width:thin]">
-            <div className="flex min-w-full flex-wrap items-center justify-center gap-2 sm:gap-2.5">
+        <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:items-center sm:justify-between sm:gap-3">
+          <div className="max-w-full min-w-0 overflow-x-auto overflow-y-visible [-webkit-overflow-scrolling:touch] [scrollbar-width:thin]">
+            <div className="flex w-max min-w-full flex-nowrap items-center justify-start gap-2 sm:gap-2.5 sm:justify-center">
               <button
                 type="button"
                 onClick={() => toggleOrderPillNav("food-orders")}
@@ -778,20 +931,46 @@ function CustomerDetailsContent() {
               >
                 Tickets
               </button>
-              <Link
-                href="/dashboard/payments"
-                onClick={() => setNavKey("transactions")}
+              <button
+                type="button"
+                onClick={toggleTransactionsNav}
                 className={`${NAV_PILL_MIN} cursor-pointer ${customerNavPillStripClass(navActive("transactions"))}`}
               >
                 Transactions
-              </Link>
+              </button>
             </div>
           </div>
+
+          {showPanelSearch ? (
+            <form
+              className="flex w-full min-w-0 shrink-0 items-center gap-1.5 sm:w-auto sm:max-w-xs"
+              onSubmit={(e) => e.preventDefault()}
+              role="search"
+              aria-label="Filter panel results"
+            >
+              <input
+                type="search"
+                value={panelQuery}
+                onChange={(e) => setPanelQuery(e.target.value)}
+                placeholder={panelSearchPlaceholder}
+                className="h-8 min-w-0 flex-1 rounded-[10px] border border-[#121212]/10 bg-white px-2.5 text-[11px] text-[#121212] placeholder:text-[#121212]/40 shadow-sm focus:border-[#121212]/25 focus:outline-none focus:ring-2 focus:ring-[#121212]/15 sm:w-44 sm:flex-none"
+              />
+              <button
+                type="submit"
+                className="inline-flex h-8 shrink-0 cursor-pointer items-center justify-center gap-1 rounded-[10px] bg-[#121212] px-2.5 text-[11px] font-medium text-white transition-colors hover:bg-black"
+                aria-label="Search results"
+              >
+                <Search className="h-3.5 w-3.5" aria-hidden />
+                <span className="hidden sm:inline">Search</span>
+              </button>
+            </form>
+          ) : null}
+        </div>
       </nav>
 
       {showOrdersPanel ? (
         <section
-          className={RESULT_CARD_SHELL}
+          className={`${RESULT_CARD_SHELL} min-h-[55vh] overflow-x-hidden`}
           aria-label="Customer orders from orders_core"
         >
           {ordersLoading ? (
@@ -800,6 +979,8 @@ function CustomerDetailsContent() {
             <p className="text-sm font-medium text-red-700">{ordersError}</p>
           ) : customerOrders.length === 0 ? (
             <p className="text-sm text-[#0f2d42]/65">No orders found for this type.</p>
+          ) : filteredOrders.length === 0 ? (
+            <p className="text-sm text-[#0f2d42]/65">No orders match your search.</p>
           ) : (
             <div className="overflow-x-auto -mx-1 px-1">
               <table className="min-w-[640px] w-full border-collapse text-left text-sm text-[#0f2d42]">
@@ -814,7 +995,7 @@ function CustomerDetailsContent() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-teal-100/90">
-                  {customerOrders.map((row) => {
+                  {filteredOrders.map((row) => {
                     const orderLabel = row.formattedOrderId ?? `#${row.id}`;
                     const orderHref = controlPortalOrderUrl(row.formattedOrderId);
                     return (
@@ -863,7 +1044,7 @@ function CustomerDetailsContent() {
 
       {showTicketsPanel ? (
         <section
-          className={RESULT_CARD_SHELL}
+          className={`${RESULT_CARD_SHELL} min-h-[55vh] overflow-x-hidden`}
           aria-label="Customer tickets from unified_tickets"
         >
           {ticketsLoading ? (
@@ -872,6 +1053,8 @@ function CustomerDetailsContent() {
             <p className="text-sm font-medium text-red-700">{ticketsError}</p>
           ) : customerTickets.length === 0 ? (
             <p className="text-sm text-[#0f2d42]/65">No tickets found for this customer.</p>
+          ) : filteredTickets.length === 0 ? (
+            <p className="text-sm text-[#0f2d42]/65">No tickets match your search.</p>
           ) : (
             <div className="overflow-x-auto -mx-1 px-1">
               <table className="min-w-[640px] w-full border-collapse text-left text-sm text-[#0f2d42]">
@@ -886,7 +1069,7 @@ function CustomerDetailsContent() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-teal-100/90">
-                  {customerTickets.map((row) => (
+                  {filteredTickets.map((row) => (
                     <tr key={row.id} className="align-top hover:bg-[#f0fdf9]/80">
                       <td className="py-2.5 pr-4 font-medium">
                         <a
@@ -907,6 +1090,62 @@ function CustomerDetailsContent() {
                       </td>
                       <td className="py-2.5 max-w-md text-[#0f2d42]/90 [overflow-wrap:anywhere]">
                         {row.subject ?? "—"}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </section>
+      ) : null}
+
+      {showTransactionsPanel ? (
+        <section
+          className={`${RESULT_CARD_SHELL} min-h-[55vh] overflow-x-hidden`}
+          aria-label="Customer wallet transactions"
+        >
+          {txnsLoading ? (
+            <p className="text-sm text-[#0f2d42]/65">Loading transactions…</p>
+          ) : txnsError ? (
+            <p className="text-sm font-medium text-red-700">{txnsError}</p>
+          ) : customerTxns.length === 0 ? (
+            <p className="text-sm text-[#0f2d42]/65">No wallet transactions found for this customer.</p>
+          ) : filteredTxns.length === 0 ? (
+            <p className="text-sm text-[#0f2d42]/65">No transactions match your search.</p>
+          ) : (
+            <div className="overflow-x-auto -mx-1 px-1">
+              <table className="min-w-[720px] w-full border-collapse text-left text-sm text-[#0f2d42]">
+                <thead>
+                  <tr className="border-b border-teal-200/70 text-xs font-semibold uppercase tracking-wide text-[#0f2d42]/70">
+                    <th className="whitespace-nowrap py-2 pr-4">Txn id</th>
+                    <th className="whitespace-nowrap py-2 pr-4">Type</th>
+                    <th className="whitespace-nowrap py-2 pr-4 text-right">Amount</th>
+                    <th className="whitespace-nowrap py-2 pr-4 text-right">Balance after</th>
+                    <th className="whitespace-nowrap py-2 pr-4">Status</th>
+                    <th className="whitespace-nowrap py-2 pr-4">Created</th>
+                    <th className="py-2 min-w-[12rem]">Description</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-teal-100/90">
+                  {filteredTxns.map((row) => (
+                    <tr key={row.id} className="align-top hover:bg-[#f0fdf9]/80">
+                      <td className="py-2.5 pr-4 font-medium tabular-nums text-[#0d5c4a]">
+                        {row.transactionId}
+                      </td>
+                      <td className="py-2.5 pr-4 capitalize">{row.transactionType}</td>
+                      <td className="py-2.5 pr-4 text-right tabular-nums">
+                        ₹{Number(row.amount).toFixed(2)}
+                      </td>
+                      <td className="py-2.5 pr-4 text-right tabular-nums">
+                        ₹{Number(row.balanceAfter).toFixed(2)}
+                      </td>
+                      <td className="py-2.5 pr-4 capitalize">{row.status ?? "—"}</td>
+                      <td className="py-2.5 pr-4 whitespace-nowrap text-[#0f2d42]/85">
+                        {formatShortDateTime(row.createdAt)}
+                      </td>
+                      <td className="py-2.5 max-w-md text-[#0f2d42]/90 [overflow-wrap:anywhere]">
+                        {row.description || "—"}
                       </td>
                     </tr>
                   ))}

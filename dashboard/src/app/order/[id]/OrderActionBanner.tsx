@@ -1,6 +1,7 @@
 "use client";
 
 import { Lora } from "next/font/google";
+import { OrderMixedText } from "@/components/orders/orders-typography";
 
 const lora = Lora({
   subsets: ["latin"],
@@ -17,7 +18,7 @@ export default function OrderActionBanner({ message }: { message: string }) {
       <p
         className={`${lora.className} text-center text-[11px] font-semibold leading-tight text-teal-900 tracking-wide`}
       >
-        {message}
+        <OrderMixedText>{message}</OrderMixedText>
       </p>
     </div>
   );

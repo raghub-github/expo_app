@@ -19,8 +19,8 @@ export function DashboardNavOverlay({
 
   const className =
     scope === "main"
-      ? "pointer-events-auto absolute inset-0 z-20 flex flex-col items-center justify-center bg-white/95 backdrop-blur-[1px]"
-      : `pointer-events-auto fixed inset-y-0 right-0 z-[70] flex flex-col items-center justify-center bg-white/98 backdrop-blur-[2px] ${leftOffsetClass}`;
+      ? "pointer-events-auto absolute inset-0 z-[80] flex flex-col items-center justify-center bg-[#F3F7FA]"
+      : `pointer-events-auto fixed inset-y-0 right-0 z-[70] flex flex-col items-center justify-center bg-[#F3F7FA] ${leftOffsetClass}`;
 
   return (
     <div

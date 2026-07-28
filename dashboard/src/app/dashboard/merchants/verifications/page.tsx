@@ -7,7 +7,13 @@ import { VerificationPageSkeleton } from "./VerificationPageSkeleton";
 export default async function MerchantVerificationsPage({
   searchParams,
 }: {
-  searchParams: Promise<{ storeId?: string; returnTo?: string }>;
+  searchParams: Promise<{
+    storeId?: string;
+    returnTo?: string;
+    step?: string;
+    portal?: string;
+    reviewRejected?: string;
+  }>;
 }) {
   await requireDashboardAccess("MERCHANT");
   const params = await searchParams;
@@ -15,27 +21,25 @@ export default async function MerchantVerificationsPage({
   const returnTo = params.returnTo?.trim() || null;
 
   return (
-    <div className="space-y-6 w-full max-w-full overflow-x-hidden">
-      <div className="rounded-lg border border-gray-200 bg-white p-6">
-        {storeId ? (
-          <Suspense fallback={<VerificationPageSkeleton />}>
-            <StoreVerificationInnerWrapper
-              storeId={storeId}
-              returnTo={returnTo}
-            />
-          </Suspense>
-        ) : (
-          <>
-            <h1 className="text-lg font-semibold text-gray-900 mb-2">
-              Store Verifications
-            </h1>
-            <p className="text-gray-500 mb-4">
-              Go to Merchants, select a store, and click Verify to open verification for that store. No data is shown here until you do that.
-            </p>
-            <MerchantVerificationsClient />
-          </>
-        )}
-      </div>
+    <div className="verification-typo w-full max-w-full overflow-x-hidden">
+      {storeId ? (
+        <Suspense fallback={<VerificationPageSkeleton />}>
+          <StoreVerificationInnerWrapper
+            storeId={storeId}
+            returnTo={returnTo}
+          />
+        </Suspense>
+      ) : (
+        <div className="space-y-6 rounded-lg border border-gray-200 bg-white p-6">
+          <h1 className="mb-2 text-lg font-semibold text-gray-900">
+            Store Verifications
+          </h1>
+          <p className="mb-4 text-gray-500">
+            Go to Merchants, select a store, and click Verify to open verification for that store. No data is shown here until you do that.
+          </p>
+          <MerchantVerificationsClient />
+        </div>
+      )}
     </div>
   );
 }

@@ -93,13 +93,9 @@ async function fetchSession(): Promise<SessionData> {
       throw new Error(SESSION_SERVICE_UNAVAILABLE);
     }
     if (response.status === 401 && result.code === "SESSION_INVALID") {
-      const params = new URLSearchParams();
-      params.set("redirect", typeof window !== "undefined" ? window.location.pathname + window.location.search : "/dashboard");
-      params.set("reason", "session_invalid");
       if (typeof window !== "undefined") {
-        fetch("/api/auth/logout", { method: "POST", credentials: "include" }).finally(() => {
-          window.location.href = `/login?${params.toString()}`;
-        });
+        const { redirectToLoginOnSessionExpired } = await import("@/lib/auth/redirect-to-login");
+        redirectToLoginOnSessionExpired({ reason: "session_invalid" });
         return new Promise(() => {});
       }
     }
@@ -131,16 +127,21 @@ async function fetchSessionStatus(): Promise<SessionStatus> {
   if (!result.success) {
     if (response.status === 401 && (result as { code?: string }).code === "SESSION_INVALID") {
       if (typeof window !== "undefined") {
-        const params = new URLSearchParams();
-        params.set("redirect", window.location.pathname + window.location.search || "/dashboard");
-        params.set("reason", "session_invalid");
-        fetch("/api/auth/logout", { method: "POST", credentials: "include" }).finally(() => {
-          window.location.href = `/login?${params.toString()}`;
-        });
+        const { redirectToLoginOnSessionExpired } = await import("@/lib/auth/redirect-to-login");
+        redirectToLoginOnSessionExpired({ reason: "session_invalid" });
         return new Promise<SessionStatus>(() => {});
       }
     }
     throw new Error(result.error || "Failed to fetch session status");
+  }
+
+  // App session TTL expired while Supabase cookie may still look valid.
+  if (result.expired) {
+    if (typeof window !== "undefined") {
+      const { redirectToLoginOnSessionExpired } = await import("@/lib/auth/redirect-to-login");
+      redirectToLoginOnSessionExpired({ reason: result.reason || "session_expired" });
+      return new Promise<SessionStatus>(() => {});
+    }
   }
 
   return {

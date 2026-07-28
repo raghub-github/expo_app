@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { Suspense } from "react";
 import { Geist, Geist_Mono } from "next/font/google";
 import "bootstrap-icons/font/bootstrap-icons.css";
 import "./globals.css";
@@ -7,6 +8,8 @@ import { QueryProvider } from "@/providers/QueryProvider";
 import { GlobalErrorHandler } from "@/components/GlobalErrorHandler";
 import { ToastProvider } from "@/context/ToastContext";
 import { ChunkLoadErrorBoundary } from "@/components/ChunkLoadErrorBoundary";
+import ControlAppShell from "@/providers/ControlAppShell";
+import { ticketsNumFont, ticketsTextFont } from "@/lib/fonts/tickets-fonts";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -46,13 +49,17 @@ export default function RootLayout({
         <link rel="apple-touch-icon" href="/favicon.png?v=1" />
       </head>
       <body
-        className={`${geistSans.variable} ${geistMono.variable} antialiased`}
+        className={`${geistSans.variable} ${geistMono.variable} ${ticketsTextFont.variable} ${ticketsNumFont.variable} antialiased`}
       >
         <ChunkLoadErrorBoundary>
           <GlobalErrorHandler />
           <ReduxProvider>
             <QueryProvider>
-              <ToastProvider>{children}</ToastProvider>
+              <ToastProvider>
+                <Suspense fallback={null}>
+                  <ControlAppShell>{children}</ControlAppShell>
+                </Suspense>
+              </ToastProvider>
             </QueryProvider>
           </ReduxProvider>
         </ChunkLoadErrorBoundary>

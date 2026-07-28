@@ -14,6 +14,7 @@ import {
   formatLinkedContactPhone,
   shouldShowCustomerContactsDropdown,
 } from "@/lib/orders/customer-linked-contacts";
+import { OrderMixedText, OrderNum } from "@/components/orders/orders-typography";
 
 function buildCustomerDashboardUrl(
   customerDbId: number | null | undefined,
@@ -133,7 +134,7 @@ function CustomerLinkedContactsModal({
         <ul className="list-disc space-y-2 px-8 py-4 text-[13px] text-slate-800">
           {phones.map((phone) => (
             <li key={phone} className="flex items-center gap-1.5">
-              <span>{formatLinkedContactPhone(phone)}</span>
+              <OrderNum>{formatLinkedContactPhone(phone)}</OrderNum>
               <button
                 type="button"
                 className="inline-flex items-center justify-center text-[11px] cursor-pointer opacity-80 hover:opacity-100 transition-opacity"
@@ -289,7 +290,7 @@ export default function CustomerDetails({
               </span>
               <span>
                 <span>CX Details </span>
-                <span className="font-normal">#{userId}</span>
+                <OrderMixedText className="font-normal">{`#${userId}`}</OrderMixedText>
               </span>
             </span>
             {order.riskFlag && (
@@ -371,7 +372,7 @@ export default function CustomerDetails({
                 className="text-gati-primary no-underline font-medium inline-flex items-center gap-0.5 text-[12px]"
               >
                 <i className="bi bi-telephone" />
-                {order.customerMobile || "—"}
+                <OrderNum>{order.customerMobile || "—"}</OrderNum>
               </a>
               <button
                 type="button"
@@ -467,9 +468,9 @@ export default function CustomerDetails({
               Lat/Lon:
             </div>
             <div className="text-[12px] text-gati-text-primary font-normal flex items-center gap-2 flex-wrap leading-snug">
-              <span className="text-xs text-gati-text-light font-semibold">
+              <OrderNum className="text-xs text-gati-text-light font-semibold">
                 {order.customerLatLon || "—"}
-              </span>
+              </OrderNum>
               {order.customerLatLon && (
                 <button
                   type="button"

@@ -3,7 +3,7 @@ import { cookies } from "next/headers";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { validateMerchantFromSession } from "@/lib/auth/validate-merchant";
 import { isNetworkOrTransientError } from "@/lib/auth/session-errors";
-import { hasActiveSessionForDevice, replaceSessionForDevice, generateDeviceId } from "@/lib/auth/merchant-session-db";
+import { hasActiveSessionForDevice, replaceSessionForDevice, generateDeviceId, touchSessionLastSeen } from "@/lib/auth/merchant-session-db";
 import { deviceIdCookie } from "@/lib/auth/auth-cookie-names";
 import { createClient } from "@supabase/supabase-js";
 import { fetchVerificationRejectionsByStoreIds } from "@/lib/onboarding/partner-verification-rejections";
@@ -63,7 +63,10 @@ export async function GET() {
     if (!hasDeviceSession) {
       try {
         deviceId = deviceId || generateDeviceId();
-        await replaceSessionForDevice(deviceId, parentId);
+        await replaceSessionForDevice(deviceId, parentId, {
+          loginMethod: "self_heal",
+          deviceLabel: "Restored session",
+        });
         hasDeviceSession = true;
         setDeviceCookieOnResponse = true;
       } catch (e) {
@@ -73,6 +76,9 @@ export async function GET() {
           { status: 401 }
         );
       }
+    } else if (deviceId) {
+      // Best-effort heartbeat for device list "last seen"
+      void touchSessionLastSeen(deviceId, parentId);
     }
 
     const db = getSupabaseAdmin();

@@ -19,7 +19,7 @@ async function syncHasAddonsFlag(sql: ReturnType<typeof getSql>, storeId: number
   const hasLinks = Boolean((row as any)?.has_links);
   await sql`
     UPDATE merchant_menu_items
-    SET has_addons = ${hasLinks}
+    SET has_addons = ${hasLinks}, updated_at = NOW()
     WHERE id = ${menuItemId} AND store_id = ${storeId}
   `;
 }

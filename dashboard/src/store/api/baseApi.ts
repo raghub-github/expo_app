@@ -1,9 +1,11 @@
 import { createApi, fetchBaseQuery } from "@reduxjs/toolkit/query/react";
+import type { BaseQueryFn, FetchArgs, FetchBaseQueryError } from "@reduxjs/toolkit/query";
+import { redirectToLoginOnSessionExpired } from "@/lib/auth/redirect-to-login";
 
 /** If `getSession()` never settles (rare Supabase client deadlock), RTK requests would hang forever. */
 const SESSION_HEADER_TIMEOUT_MS = 5000;
 
-const baseQuery = fetchBaseQuery({
+const rawBaseQuery = fetchBaseQuery({
   baseUrl: "/api",
   credentials: "include",
   /** Avoid stale browser HTTP cache for GET /api/* after mutations (e.g. billing rules priorities). */
@@ -35,6 +37,18 @@ const baseQuery = fetchBaseQuery({
     return headers;
   },
 });
+
+const baseQuery: BaseQueryFn<string | FetchArgs, unknown, FetchBaseQueryError> = async (
+  args,
+  api,
+  extraOptions
+) => {
+  const result = await rawBaseQuery(args, api, extraOptions);
+  if (result.error?.status === 401) {
+    redirectToLoginOnSessionExpired({ reason: "session_expired" });
+  }
+  return result;
+};
 
 export const baseApi = createApi({
   reducerPath: "api",

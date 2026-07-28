@@ -12,6 +12,7 @@ import {
   gte,
   lte,
   desc,
+  inArray,
   sql,
   type SQL,
 } from "drizzle-orm";
@@ -61,7 +62,27 @@ const PERSON_RIDE_STATUSES = [
   "cancelled",
 ] as const;
 
+/** Ops board “active” pipeline — same idea as food list hiding delivered/cancelled. */
+export const PERSON_RIDE_ACTIVE_STATUSES = [
+  "assigned",
+  "accepted",
+  "reached_store",
+  "picked_up",
+  "in_transit",
+] as const;
+
 export { PERSON_RIDE_STATUSES };
+
+function isPersonRideDirectOrderIdLookup(
+  filters: ListPersonRideOrdersFilters
+): boolean {
+  const search = filters.search?.trim();
+  if (!search) return false;
+  const searchType = normalizePersonRideSearchType(
+    typeof filters.searchType === "string" ? filters.searchType : undefined
+  );
+  return searchType === "Order Id";
+}
 
 function buildPersonRideSearchCondition(
   search: string,
@@ -150,9 +171,21 @@ export async function listPersonRideOrders(
 
   const conditions: SQL[] = [eq(ordersCore.orderType, "person_ride")];
 
-  if (filters.status?.trim() && isValidPersonRideStatus(filters.status.trim())) {
+  const status = filters.status?.trim() ?? "";
+  const skipActiveScope = isPersonRideDirectOrderIdLookup(filters);
+
+  if (status && isValidPersonRideStatus(status)) {
+    // Explicit tab (including delivered/cancelled if ever requested).
     conditions.push(
-      eq(ordersCore.status, filters.status.trim() as (typeof PERSON_RIDE_STATUSES)[number])
+      eq(ordersCore.status, status as (typeof PERSON_RIDE_STATUSES)[number])
+    );
+  } else if (!skipActiveScope) {
+    // ALL / no status: only active rides (food board style — hide completed/cancelled).
+    conditions.push(
+      inArray(
+        ordersCore.status,
+        PERSON_RIDE_ACTIVE_STATUSES as unknown as (typeof PERSON_RIDE_STATUSES)[number][]
+      )
     );
   }
 

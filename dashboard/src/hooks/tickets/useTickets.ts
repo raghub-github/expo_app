@@ -146,6 +146,25 @@ export interface TicketsResponse {
   offset: number;
 }
 
+/** Strip undefined so list query keys match prefetch / snapshot (stableSerialize keeps undefined keys). */
+export function compactTicketFilters(
+  filters: TicketFilters
+): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(filters as Record<string, unknown>).filter(([, v]) => v !== undefined)
+  );
+}
+
+/** Default Active-tab list filters — must match TicketList cold-load query key. */
+export const DEFAULT_TICKETS_LIST_FILTERS: TicketFilters = {
+  sortBy: "created_at",
+  sortOrder: "desc",
+  limit: 30,
+  offset: 0,
+  includeSnoozed: false,
+  snoozedOnly: false,
+};
+
 const TICKETS_FETCH_TIMEOUT_MS = 60_000; // 60s so slow DB doesn't hang the UI forever
 
 export async function fetchTickets(filters: TicketFilters = {}, signal?: AbortSignal): Promise<TicketsResponse> {
@@ -233,9 +252,9 @@ export function useTickets(
 ) {
   const auth = useAuthOptional();
   const sessionUser = auth?.user;
-  const permissions = auth?.permissions;
   const authReady = auth?.authReady ?? false;
-  const isAllowed = Boolean(authReady && sessionUser && permissions);
+  // Session cookie is enough for GET /api/tickets — don't wait on permissions bootstrap.
+  const isAllowed = Boolean(authReady && sessionUser);
   const pathname = useAppPathname();
   const isOnTicketsRoute = pathname.startsWith("/dashboard/tickets");
   const extraEnabled = options?.enabled ?? true;
@@ -245,19 +264,21 @@ export function useTickets(
     return ticketsPathTicketId(cleanPath) != null ? "/dashboard/tickets" : cleanPath;
   }, [cleanPath]);
 
+  const compactFilters = useMemo(() => compactTicketFilters(filters), [filters]);
+
   /** Keep last list warm across reloads so agents see tickets immediately. */
   const SNAPSHOT_TTL_MS = 30 * 60 * 1000;
   const snapshotKey = useMemo(() => {
     if (!isAllowed || !isOnTicketsRoute) return null;
-    return `dashboard_snapshot:tickets:${snapshotPathKey}:${JSON.stringify(filters)}`;
-  }, [isAllowed, isOnTicketsRoute, snapshotPathKey, filters]);
+    return `dashboard_snapshot:tickets:${snapshotPathKey}:${JSON.stringify(compactFilters)}`;
+  }, [isAllowed, isOnTicketsRoute, snapshotPathKey, compactFilters]);
   const initialSnapshot = useMemo(() => {
     if (!snapshotKey) return null;
     return loadClientSnapshot<TicketsResponse>(snapshotKey, SNAPSHOT_TTL_MS);
   }, [snapshotKey]);
 
   const query = useQuery<TicketsResponse>({
-    queryKey: queryKeys.tickets.list(filters as unknown as Record<string, unknown>),
+    queryKey: queryKeys.tickets.list(compactFilters),
     queryFn: ({ signal }) => fetchTickets(filters, signal),
     enabled: isAllowed && isOnTicketsRoute && extraEnabled,
     ...(initialSnapshot != null ? { initialData: initialSnapshot } : {}),

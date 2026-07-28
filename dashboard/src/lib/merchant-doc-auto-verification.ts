@@ -558,3 +558,40 @@ export function getAdminDocAutoVerificationDisplay(
     rows,
   };
 }
+
+/**
+ * Cashfree / DigiLocker auto-verify often confirms a number without an uploaded scan.
+ * Use this to show an empty-state message instead of a broken image thumb.
+ */
+export function isProviderAutoVerifiedWithoutImage(
+  docType: string,
+  documents: Record<string, unknown> | null | undefined,
+  hasFile: boolean,
+): boolean {
+  if (hasFile || !documents || typeof documents !== "object") return false;
+  const verified = documents[`${docType}_is_verified`] === true;
+  if (!verified) return false;
+
+  const methodRaw = String(documents[`${docType}_verification_method`] ?? "").toUpperCase();
+  if (
+    methodRaw.includes("CASHFREE") ||
+    methodRaw === "DIGILOCKER" ||
+    methodRaw.includes("AUTO")
+  ) {
+    return true;
+  }
+
+  const meta = readAutoVerificationFromMetadata(documents[`${docType}_document_metadata`]);
+  if (meta) {
+    const m = String(meta.method || "CASHFREE_AUTO").toUpperCase();
+    if (m.includes("CASHFREE") || m === "DIGILOCKER" || m.includes("AUTO")) return true;
+  }
+
+  const display = getAdminDocAutoVerificationDisplay(docType, documents);
+  if (display?.method) {
+    const m = display.method.toLowerCase();
+    if (m.includes("cashfree") || m.includes("digilocker") || m.includes("auto")) return true;
+  }
+
+  return false;
+}

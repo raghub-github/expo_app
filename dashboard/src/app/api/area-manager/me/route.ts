@@ -4,29 +4,23 @@
  */
 
 import { NextResponse } from "next/server";
-import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { requireAreaManagerApiAuth } from "@/lib/area-manager/auth";
 import { getSystemUserByEmail } from "@/lib/auth/user-mapping";
+import { getAuthUserSafe } from "@/lib/auth/resolve-supabase-user";
 import { apiErrorResponse } from "@/lib/api-errors";
 
 export const runtime = "nodejs";
 
 export async function GET() {
   try {
-    const supabase = await createServerSupabaseClient();
-    const getAuthUser = async () => {
-      const { data } = await supabase.auth.getUser();
-      return data?.user ?? null;
-    };
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
-    const authResult = await requireAreaManagerApiAuth(getAuthUser);
+    const authUser = await getAuthUserSafe();
+    const authResult = await requireAreaManagerApiAuth(async () => authUser);
     if (authResult.error) return authResult.error;
     const { resolved } = authResult;
 
     const systemUser =
-      user?.email != null ? await getSystemUserByEmail(user.email) : null;
+      authUser?.email != null ? await getSystemUserByEmail(authUser.email) : null;
+
     return NextResponse.json({
       success: true,
       data: {
@@ -38,9 +32,9 @@ export async function GET() {
         areaManagerEmail: systemUser?.email ?? null,
       },
     });
-  } catch (error) {
-    console.error("[GET /api/area-manager/me]", error);
-    const { body, status } = apiErrorResponse(error);
+  } catch (e) {
+    console.error("[GET /api/area-manager/me]", e);
+    const { body, status } = apiErrorResponse(e);
     return NextResponse.json(body, { status });
   }
 }

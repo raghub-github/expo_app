@@ -1,5 +1,6 @@
-import AuthenticatedShell from "@/providers/AuthenticatedShell";
-import DashboardLayoutClient from "./DashboardLayoutClient";
+// Authenticated chrome (AuthProvider + HierarchicalSidebar + Header) lives in
+// root `ControlAppShell` for `/dashboard/*` only. Standalone `/order/*` uses
+// its own layout shell (logo header, no left sidebar).
 
 // Every page under /dashboard/* requires an authenticated session and calls
 // Supabase server-side (`getRequiredSupabaseEnv()` throws when env is unset).
@@ -8,15 +9,10 @@ import DashboardLayoutClient from "./DashboardLayoutClient";
 // pass for these routes. Individual pages still control their own caching.
 export const dynamic = "force-dynamic";
 
-/** Layout shell is static; individual pages opt into dynamic data via `cookies()` / server checks. Keeps client navigation from over-invalidating the whole dashboard. */
 export default function DashboardLayout({
   children,
 }: {
   children: React.ReactNode;
 }) {
-  return (
-    <AuthenticatedShell>
-      <DashboardLayoutClient>{children}</DashboardLayoutClient>
-    </AuthenticatedShell>
-  );
+  return children;
 }

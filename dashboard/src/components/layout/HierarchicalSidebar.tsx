@@ -4,6 +4,7 @@ import { useAppPathname } from "@/hooks/useAppSearchParams";
 import { useState, useMemo, useEffect, useCallback } from "react";
 import Link from "next/link";
 import Image from "next/image";
+import { Poppins } from "next/font/google";
 
 import { useQueryClient } from "@tanstack/react-query";
 import { prefetchDashboardSection } from "@/lib/dashboard-prefetch";
@@ -16,8 +17,6 @@ import {
   getCurrentDashboard,
   getCurrentDashboardSubRoutes,
   isSuperAdminNavPath,
-  type MainNavItem,
-  type DashboardSubRoute,
 } from "@/lib/navigation/dashboard-routes";
 import { getOrdersNavHref, isOrdersSectionPath } from "@/lib/navigation/orders-nav-href";
 import { useLeftSidebarMobile } from "@/context/LeftSidebarMobileContext";
@@ -28,9 +27,18 @@ import { useCurrentRoute } from "@/context/CurrentRouteContext";
 import { TICKETS_QUEUE_HOME_PATH, isTicketsQueueWorkspacePath } from "@/lib/tickets/ticket-path-utils";
 import {
   cleanDashboardHref,
-  getDashboardModuleKey,
   isDashboardNavAlreadyAtTarget,
 } from "@/lib/navigation/dashboard-nav-transition";
+
+const sidebarFont = Poppins({
+  subsets: ["latin"],
+  weight: ["400", "500", "600", "700"],
+  display: "swap",
+});
+
+/** Premium dark sidebar chrome — charcoal black */
+const SIDEBAR_BG = "#121212";
+const TOOLTIP_BG = "#121212";
 
 interface HierarchicalSidebarProps {
   isOpen: boolean;
@@ -38,9 +46,23 @@ interface HierarchicalSidebarProps {
   isInSpecificDashboard?: boolean;
   /** Called on mousedown with target href so layout can show section-specific skeleton. */
   onNavigationStart?: (targetHref: string) => void;
+  /**
+   * When true, the rail is visually hidden (display:none) but stays mounted so
+   * permissions/menu state survive special layouts (queue, from-order, add-child).
+   */
+  shellHidden?: boolean;
 }
 
-export function HierarchicalSidebar({ isOpen, onToggle, isInSpecificDashboard: propIsInSpecificDashboard, onNavigationStart }: HierarchicalSidebarProps) {
+/** Survives remounts within the same browser tab session after first successful nav paint. */
+let leftSidebarSessionPrimed = false;
+
+export function HierarchicalSidebar({
+  isOpen,
+  onToggle,
+  isInSpecificDashboard: propIsInSpecificDashboard,
+  onNavigationStart,
+  shellHidden = false,
+}: HierarchicalSidebarProps) {
   const pathname = useAppPathname();
   const queryClient = useQueryClient();
   const { dashboards, loading: accessLoading, error: accessError } = useDashboardAccess();
@@ -56,11 +78,8 @@ export function HierarchicalSidebar({ isOpen, onToggle, isInSpecificDashboard: p
   const [internalMobileOpen, setInternalMobileOpen] = useState(false);
   const isMobileMenuOpen = mobileCtx ? mobileCtx.isMobileMenuOpen : internalMobileOpen;
   const setMobileMenuOpen = mobileCtx ? mobileCtx.setMobileMenuOpen : setInternalMobileOpen;
-  const [hydrated, setHydrated] = useState(false);
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
   const currentRouteCtx = useCurrentRoute();
-  /** Optimistic active state: shared via CurrentRouteContext during cross-section navigation. */
-  const pendingNavHref = currentRouteCtx?.pendingNavHref ?? null;
   const { user: authUser, systemUser } = useAuth();
   const logoutMutation = useLogout();
   const [identityReady, setIdentityReady] = useState(false);
@@ -79,8 +98,14 @@ export function HierarchicalSidebar({ isOpen, onToggle, isInSpecificDashboard: p
 
   useEffect(() => {
     setIdentityReady(true);
-    setHydrated(true);
   }, []);
+
+  // New session / logout must allow a fresh cold-load skeleton; do not keep a prior user's primed shell.
+  useEffect(() => {
+    if (!authUser && !systemUser) {
+      leftSidebarSessionPrimed = false;
+    }
+  }, [authUser, systemUser]);
 
   // Remove query parameters for comparison
   const cleanPathname = useMemo(() => pathname.split('?')[0].split('#')[0], [pathname]);
@@ -111,6 +136,13 @@ export function HierarchicalSidebar({ isOpen, onToggle, isInSpecificDashboard: p
   const isLoading = accessLoading || permissionsLoading;
   const hasError = Boolean(accessError || permissionsError);
 
+  // Mark session primed once permissions/access have resolved so remounts never re-skeleton.
+  useEffect(() => {
+    if (!isLoading) {
+      leftSidebarSessionPrimed = true;
+    }
+  }, [isLoading]);
+
   // null = super-admin / error fallback (show all dashboard sections); Set = filter by access.
   const accessibleDashboards = useMemo(() => {
     if (hasError) return null;
@@ -121,36 +153,25 @@ export function HierarchicalSidebar({ isOpen, onToggle, isInSpecificDashboard: p
     );
   }, [dashboards, isLoading, hasError, isSuperAdmin]);
 
-  // Sidebar highlight syncs via CurrentRouteContext (cleared when route arrives or times out).
-
-  /** Overlay + prefetch on pointer down; Link handles instant URL change (no preventDefault). */
-  const handleModuleNavIntent = useCallback(
-    (targetHref: string) => {
-      const cleanTarget = cleanDashboardHref(targetHref);
-      if (isDashboardNavAlreadyAtTarget(cleanPathname, cleanTarget)) return;
-      onNavigationStart?.(cleanTarget);
-    },
-    [cleanPathname, onNavigationStart]
-  );
-
-  const handleModuleNavPointerDown = useCallback(
-    (event: React.PointerEvent<HTMLAnchorElement>, targetHref: string) => {
-      if (event.button !== 0) return;
-      if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
-      handleModuleNavIntent(targetHref);
-    },
-    [handleModuleNavIntent]
-  );
-
+  /**
+   * Click handlers are for UI feedback only (mobile close, overlay intent).
+   * Next.js <Link> always owns the actual navigation — never router.push here.
+   */
   const handleModuleNavClick = useCallback(
     (event: React.MouseEvent<HTMLAnchorElement>, targetHref: string) => {
+      // Modifier clicks open a new tab/window — leave native Link behavior alone.
       if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
       setMobileMenuOpen(false);
-      if (isDashboardNavAlreadyAtTarget(cleanPathname, cleanDashboardHref(targetHref))) {
+      const cleanTarget = cleanDashboardHref(targetHref);
+      // Duplicate same-route: skip navigation, keep URL stable.
+      if (isDashboardNavAlreadyAtTarget(cleanPathname, cleanTarget)) {
         event.preventDefault();
+        return;
       }
+      // Different route: do not preventDefault — Link must navigate even under RSC load.
+      onNavigationStart?.(cleanTarget);
     },
-    [cleanPathname, setMobileMenuOpen]
+    [cleanPathname, onNavigationStart, setMobileMenuOpen]
   );
 
   const effectiveSuperAdmin = hasError ? true : isSuperAdmin;
@@ -188,52 +209,75 @@ export function HierarchicalSidebar({ isOpen, onToggle, isInSpecificDashboard: p
     return () => window.removeEventListener("popstate", onPop);
   }, [isMobileMenuOpen, setMobileMenuOpen]);
 
-  // SSR and first client paint must match; persisted RQ cache only applies after mount.
-  const showSkeleton = !hydrated || isLoading;
-  // Same width as right sidebar: w-56 (224px) when expanded, w-16 when collapsed. Mobile: w-72 when open.
-  const sidebarWidth = `max-lg:w-72 ${isOpen ? "lg:w-56" : "lg:w-16"}`;
+  // Cold-load skeleton only once per browser-tab session after login. Never re-skeleton on remount/nav.
+  const showSkeleton = !leftSidebarSessionPrimed && isLoading;
+  const isNavigating = currentRouteCtx?.isNavigating ?? false;
   const mobileTranslate = isMobileMenuOpen ? "max-lg:translate-x-0" : "max-lg:-translate-x-full";
+  /** Skip width animation while skeleton mounts or nav is in-flight so the rail doesn't flash collapsed→expand. */
   const sidebarBase =
-    `fixed inset-y-0 left-0 z-40 flex h-screen flex-col shrink-0 transition-[transform,width] duration-300 ease-out lg:translate-x-0 ${mobileTranslate} ${sidebarWidth}`;
+    `fixed inset-y-0 left-0 z-40 flex h-screen max-lg:w-72 flex-col shrink-0 overflow-hidden lg:translate-x-0 ${mobileTranslate} ${isOpen ? "lg:w-56" : "lg:w-16"} ${sidebarFont.className} ${
+      showSkeleton || isNavigating ? "" : "transition-[transform,width] duration-[220ms] ease-in-out"
+    }${shellHidden ? " !hidden" : ""}`;
 
-  /** Single source of truth for sidebar chrome - same on every page. Min-width prevents any flex reflow. */
+  /** Full-bleed sidebar chrome — 100% width & height of allocated rail. */
   const asideStyle: React.CSSProperties = {
-    background: "linear-gradient(180deg, #0f2d42 0%, #12344D 50%, #0f2d42 100%)",
-    boxShadow: "4px 0 24px rgba(0,0,0,0.15)",
+    background: SIDEBAR_BG,
     scrollbarWidth: "thin",
     scrollbarColor: "rgba(255,255,255,0.2) transparent",
-    minWidth: isOpen ? 224 : undefined,
   };
+
+  const navItemBase =
+    "group relative flex h-11 w-full items-center rounded-xl outline-none transition-[background-color,color] duration-[220ms] ease-in-out focus-visible:ring-2 focus-visible:ring-white/30 focus-visible:ring-offset-2 focus-visible:ring-offset-[#121212]";
+
+  /** Soft white wash — no green/teal highlight */
+  const navItemActive = "bg-white/10 text-white";
+
+  const navItemIdle = "text-slate-300 hover:bg-white/[0.06] hover:text-white";
 
   if (showSkeleton) {
     return (
-      <aside className={sidebarBase} style={asideStyle}>
-        <div className="flex h-14 min-h-14 items-center justify-between border-b border-white/10 px-2.5 shrink-0">
-          {isOpen ? (
-            <div className="flex items-center gap-2.5 flex-1 min-w-0 pl-3">
-              <div className="h-10 w-10 rounded-full bg-white/15 animate-pulse shrink-0" />
-              <div className="h-4 w-24 rounded-lg bg-white/15 animate-pulse" />
+      <aside className={sidebarBase} style={asideStyle} aria-busy="true" aria-label="Loading navigation">
+        <div className="flex h-full min-h-0 w-full flex-1 flex-col overflow-hidden" style={{ background: SIDEBAR_BG }}>
+          <div className="flex h-[72px] min-h-[72px] items-center px-3 shrink-0" style={{ background: SIDEBAR_BG }}>
+            <span
+              className="flex size-10 shrink-0 items-center justify-center rounded-[12px] ring-1 ring-white/10"
+              style={{ background: SIDEBAR_BG }}
+            >
+              <Image
+                src="/onlylogo.png"
+                alt=""
+                width={32}
+                height={32}
+                className="opacity-80"
+                priority
+              />
+            </span>
+            {isOpen ? (
+              <div className="ml-3 space-y-1.5 min-w-0">
+                <div className="h-3.5 w-24 rounded-md bg-white/10 animate-pulse" />
+                <div className="h-2.5 w-16 rounded-md bg-white/10 animate-pulse" />
+              </div>
+            ) : null}
+          </div>
+          <nav className="flex-1 min-h-0 overflow-x-hidden overflow-y-auto px-3 pb-3 pt-2">
+            <div className="space-y-1.5">
+              {[1, 2, 3, 4, 5, 6, 7].map((i) => (
+                <div key={i} className="flex h-11 w-full items-center rounded-xl">
+                  <span className="flex size-10 shrink-0 items-center justify-center">
+                    <span className="h-5 w-5 rounded-md bg-white/10 animate-pulse" />
+                  </span>
+                  {isOpen ? <span className="ml-0 h-3.5 w-24 rounded bg-white/10 animate-pulse" /> : null}
+                </div>
+              ))}
             </div>
-          ) : (
-            <div className="flex w-full items-center justify-start pl-3">
-              <div className="h-10 w-10 rounded-full bg-white/15 animate-pulse shrink-0" />
+          </nav>
+          <div className="mt-auto shrink-0 flex flex-col">
+            <div className="mx-3 hidden h-px bg-white/[0.08] lg:block" aria-hidden />
+            <div className="hidden lg:block p-3">
+              <div className="flex h-10 w-full items-center justify-center rounded-[10px] border border-white/10 bg-transparent">
+                <div className="h-4 w-4 rounded bg-white/15 animate-pulse" />
+              </div>
             </div>
-          )}
-        </div>
-        <nav className="flex-1 min-h-0 overflow-y-auto px-2.5 py-4 space-y-0.5">
-          {[1, 2, 3, 4, 5, 6].map((i) => (
-            <div key={i} className="rounded-xl flex items-center px-3 py-2.5 gap-3">
-              <div className="h-5 w-5 rounded-md bg-white/15 animate-pulse shrink-0" />
-              {isOpen && <div className="h-3.5 w-20 rounded bg-white/15 animate-pulse" />}
-            </div>
-          ))}
-        </nav>
-        <div className="border-t border-white/10 bg-white/5 backdrop-blur-md p-2.5 shrink-0">
-          <div className={`flex w-full items-center justify-center rounded-xl bg-white/10 ${
-            isOpen ? "gap-2 px-3 py-2.5" : "p-2.5"
-          }`}>
-            <div className="h-4 w-4 rounded bg-white/25 animate-pulse" />
-            {isOpen && <div className="h-3 w-10 rounded bg-white/25 animate-pulse" />}
           </div>
         </div>
       </aside>
@@ -244,173 +288,188 @@ export function HierarchicalSidebar({ isOpen, onToggle, isInSpecificDashboard: p
   return (
     <>
       <aside className={sidebarBase} style={asideStyle}>
-        {/* LOGO - top */}
-        <div className="flex h-14 min-h-14 items-center justify-between border-b border-white/10 px-2.5 shrink-0">
-          {isOpen ? (
-            <>
-              <Link
-                href="/dashboard"
-                scroll={false}
-                className="flex flex-1 min-w-0 items-center gap-2.5 pl-3 pr-1"
-                onPointerDown={(e) => handleModuleNavPointerDown(e, "/dashboard")}
-                onClick={(e) => handleModuleNavClick(e, "/dashboard")}
+        <div className="flex h-full min-h-0 w-full flex-1 flex-col overflow-hidden" style={{ background: SIDEBAR_BG }}>
+          {/* HEADER — same bg as sidebar; fixed logo slot (no separate header fill) */}
+          <div
+            className="flex h-[72px] min-h-[72px] items-center px-3 shrink-0"
+            style={{ background: SIDEBAR_BG }}
+          >
+            <Link
+              href="/dashboard"
+              scroll={false}
+              className="flex min-w-0 flex-1 items-center outline-none focus-visible:ring-2 focus-visible:ring-white/30 rounded-xl"
+              onClick={(e) => handleModuleNavClick(e, "/dashboard")}
+              title="GatiMitra"
+            >
+              <span
+                className="flex size-10 shrink-0 items-center justify-center rounded-[12px] ring-1 ring-white/10"
+                style={{ background: SIDEBAR_BG }}
               >
                 <Image
                   src="/onlylogo.png"
                   alt="GatiMitra"
-                  width={42}
-                  height={42}
-                  className="size-[42px] shrink-0 object-contain"
+                  width={32}
+                  height={32}
+                  className="size-8 object-contain"
                   priority
                 />
-                <span className="text-sm font-semibold text-white truncate">GatiMitra</span>
-              </Link>
-              <button onClick={onToggle} className="rounded-lg p-1.5 text-white/70 hover:bg-white/10 hover:text-white lg:hidden" aria-label="Close sidebar">
-                <X className="h-4 w-4" />
-              </button>
-            </>
-          ) : (
-            <Link
-              href="/dashboard"
-              scroll={false}
-              className="flex w-full items-center justify-start gap-2.5 pl-3 pr-2 max-lg:pl-3"
-              onPointerDown={(e) => handleModuleNavPointerDown(e, "/dashboard")}
-              onClick={(e) => handleModuleNavClick(e, "/dashboard")}
-            >
-              <Image
-                src="/onlylogo.png"
-                alt="GatiMitra"
-                width={44}
-                height={44}
-                className="size-11 shrink-0 object-contain"
-                priority
-              />
-              <span className="text-sm font-semibold text-white truncate lg:hidden">GatiMitra</span>
+              </span>
+              <span
+                className={`min-w-0 flex flex-col overflow-hidden transition-[opacity,margin] duration-[220ms] ease-in-out ${
+                  isOpen ? "ml-3 opacity-100" : "pointer-events-none ml-0 w-0 opacity-0 max-lg:pointer-events-auto max-lg:ml-3 max-lg:w-auto max-lg:opacity-100"
+                }`}
+                aria-hidden={!isOpen}
+              >
+                <span className="truncate text-[15px] font-semibold leading-tight tracking-wide text-white whitespace-nowrap">
+                  GatiMitra
+                </span>
+                <span className="mt-0.5 truncate text-[10px] font-medium leading-tight tracking-[0.06em] uppercase text-slate-400 whitespace-nowrap">
+                  Control Dashboard
+                </span>
+              </span>
             </Link>
-          )}
-        </div>
-
-        {/* MENU ITEMS - same on every page */}
-        <nav className="flex-1 min-h-0 overflow-y-auto px-2.5 py-4">
-          <div className="space-y-0.5">
-            {filteredNavigation.map((item) => {
-              const inQueueWorkspace = isTicketsQueueWorkspacePath(cleanPathname);
-              const prefetchHref =
-                item.href === "/dashboard/tickets" && inQueueWorkspace
-                  ? TICKETS_QUEUE_HOME_PATH
-                  : item.dashboardType === "ORDER_FOOD"
-                    ? getOrdersNavHref(accessibleDashboards, effectiveSuperAdmin)
-                    : item.href;
-              const moduleRootHref =
-                item.dashboardType === "ORDER_FOOD"
-                  ? "/dashboard/orders"
-                  : item.href === "/dashboard/tickets" && inQueueWorkspace
-                    ? TICKETS_QUEUE_HOME_PATH
-                    : item.href;
-              const isRouteActive =
-                cleanPathname === moduleRootHref ||
-                (item.href !== "/dashboard" && cleanPathname.startsWith(item.href + "/")) ||
-                (item.dashboardType === "ORDER_FOOD" && isOrdersSectionPath(cleanPathname)) ||
-                (item.href === "/dashboard/super-admin" && isSuperAdminNavPath(cleanPathname));
-              const isActive =
-                pendingNavHref !== null
-                  ? moduleRootHref === pendingNavHref ||
-                    getDashboardModuleKey(moduleRootHref) === getDashboardModuleKey(pendingNavHref)
-                  : isRouteActive;
-              const Icon = item.icon;
-              return (
-                <Link
-                  key={item.name}
-                  href={moduleRootHref}
-                  scroll={false}
-                  onMouseEnter={() => handleNavPrefetch(prefetchHref)}
-                  onFocus={() => handleNavPrefetch(prefetchHref)}
-                  onPointerDown={(e) => handleModuleNavPointerDown(e, moduleRootHref)}
-                  onClick={(e) => handleModuleNavClick(e, moduleRootHref)}
-                  className={`group relative flex items-center rounded-xl transition-all duration-150 max-lg:gap-3 max-lg:px-3 max-lg:py-2.5 max-lg:text-sm ${
-                    isOpen
-                      ? `gap-3 px-3 py-2.5 text-sm font-medium ${
-                          isActive
-                            ? "bg-gradient-to-r from-blue-500/90 to-indigo-500/90 text-white shadow-lg shadow-blue-500/25"
-                            : "text-white/85 hover:bg-white/10 hover:text-white"
-                        }`
-                      : `justify-center p-2.5 lg:justify-start lg:px-3 lg:py-2.5 ${
-                          isActive
-                            ? "bg-gradient-to-r from-blue-500/90 to-indigo-500/90 text-white shadow-lg"
-                            : "text-white/85 hover:bg-white/10 hover:text-white"
-                        }`
-                  }`}
-                  title={!isOpen ? item.name : undefined}
-                >
-                  {isActive && (
-                    <span className="absolute left-0 top-1/2 -translate-y-1/2 w-0.5 h-6 bg-white/90 rounded-r-full" aria-hidden />
-                  )}
-                  <Icon className="h-5 w-5 shrink-0" />
-                  {(isOpen && <span className="truncate">{item.name}</span>) || <span className="truncate lg:hidden">{item.name}</span>}
-                  {isActive && isOpen ? (
-                    <span className="absolute right-2.5 h-1.5 w-1.5 rounded-full bg-white/90 animate-pulse" aria-hidden />
-                  ) : null}
-                  {!isOpen && (
-                    <div
-                      className="absolute left-full ml-2 px-2.5 py-1.5 text-xs font-medium text-white rounded-lg opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity duration-200 whitespace-nowrap z-50 shadow-xl border border-white/10 max-lg:hidden"
-                      style={{ background: "linear-gradient(135deg, #0f2d42 0%, #12344D 100%)" }}
-                    >
-                      {item.name}
-                      <span className="absolute left-0 top-1/2 -translate-y-1/2 -translate-x-1 border-[6px] border-transparent" style={{ borderRightColor: "#12344D" }} />
-                    </div>
-                  )}
-                </Link>
-              );
-            })}
-          </div>
-        </nav>
-
-        {/* BOTTOM: Desktop = collapse toggle; Mobile = user section */}
-        <div className="shrink-0 border-t border-white/10 flex flex-col">
-          <div className="hidden lg:block bg-white/5 backdrop-blur-md p-2.5">
+            {/* Mobile close only — no header chevron on desktop */}
             <button
+              type="button"
               onClick={onToggle}
-              className={`flex w-full items-center justify-center rounded-xl bg-white/10 text-white transition-all duration-200 hover:bg-white/15 hover:shadow-md ${isOpen ? "gap-2 px-3 py-2.5" : "p-2.5"}`}
-              title={isOpen ? "Collapse sidebar" : "Expand sidebar"}
+              className="inline-flex shrink-0 rounded-lg p-1.5 text-slate-400 transition-colors duration-[220ms] hover:bg-white/[0.06] hover:text-white lg:hidden"
+              aria-label="Close sidebar"
             >
-              <ChevronLeft className={`h-4 w-4 transition-transform duration-200 ${isOpen ? "" : "rotate-180"}`} />
-              {isOpen && <span className="text-xs font-semibold">Collapse</span>}
+              <X className="h-4 w-4" />
             </button>
           </div>
-          <div className="lg:hidden px-4 py-5">
-            {!identityReady ? (
-              <div className="flex items-center gap-3 mb-3" aria-hidden>
-                <div className="h-10 w-10 rounded-full bg-white/20 shrink-0 animate-pulse" />
-                <div className="min-w-0 flex-1 space-y-2">
-                  <div className="h-4 w-24 rounded bg-white/20 animate-pulse" />
-                  <div className="h-3 w-32 rounded bg-white/15 animate-pulse" />
-                </div>
-              </div>
-            ) : (
-              <div className="flex items-center gap-3 mb-3">
-                <div className="h-10 w-10 rounded-full bg-white/20 flex items-center justify-center text-white text-sm font-semibold overflow-hidden shrink-0">
-                  {avatarUrl ? (
-                    <img src={avatarUrl} alt="" className="h-full w-full object-cover" />
-                  ) : (
-                    getUserInitials(userName, userEmail)
-                  )}
-                </div>
-                <div className="min-w-0 flex-1">
-                  <p className="text-sm font-semibold text-white truncate">{userName || "User"}</p>
-                  {userEmail ? <p className="text-xs text-white/70 truncate">{userEmail}</p> : null}
-                </div>
-              </div>
-            )}
-            {!isTicketsQueueWorkspace && (
+
+          {/* MENU — stable icon column (w-10) prevents jump on collapse/expand */}
+          <nav className="flex-1 min-h-0 overflow-x-hidden overflow-y-auto px-3 pb-3 pt-2">
+            <div className="space-y-1.5">
+              {filteredNavigation.map((item) => {
+                const inQueueWorkspace = isTicketsQueueWorkspacePath(cleanPathname);
+                const prefetchHref =
+                  item.href === "/dashboard/tickets" && inQueueWorkspace
+                    ? TICKETS_QUEUE_HOME_PATH
+                    : item.dashboardType === "ORDER_FOOD"
+                      ? getOrdersNavHref(accessibleDashboards, effectiveSuperAdmin)
+                      : item.href;
+                const moduleRootHref =
+                  item.dashboardType === "ORDER_FOOD"
+                    ? "/dashboard/orders"
+                    : item.href === "/dashboard/tickets" && inQueueWorkspace
+                      ? TICKETS_QUEUE_HOME_PATH
+                      : item.href;
+                // Active state is always derived from the live router pathname — never pending UI state.
+                const isActive =
+                  cleanPathname === moduleRootHref ||
+                  (item.href !== "/dashboard" && cleanPathname.startsWith(item.href + "/")) ||
+                  (item.dashboardType === "ORDER_FOOD" && isOrdersSectionPath(cleanPathname)) ||
+                  (item.href === "/dashboard/super-admin" && isSuperAdminNavPath(cleanPathname));
+                const Icon = item.icon;
+                return (
+                  <Link
+                    key={item.name}
+                    href={moduleRootHref}
+                    scroll={false}
+                    onMouseEnter={() => handleNavPrefetch(prefetchHref)}
+                    onFocus={() => handleNavPrefetch(prefetchHref)}
+                    onClick={(e) => handleModuleNavClick(e, moduleRootHref)}
+                    className={`${navItemBase} ${isActive ? navItemActive : navItemIdle}`}
+                    title={!isOpen ? item.name : undefined}
+                    aria-current={isActive ? "page" : undefined}
+                  >
+                    <span className="flex size-10 shrink-0 items-center justify-center">
+                      <Icon
+                        className={`h-5 w-5 stroke-[1.6] transition-colors duration-[220ms] ${
+                          isActive ? "text-white" : "text-slate-300 group-hover:text-white"
+                        }`}
+                      />
+                    </span>
+                    <span
+                      className={`min-w-0 flex-1 truncate text-[14px] font-medium tracking-wide whitespace-nowrap transition-[opacity,max-width] duration-[220ms] ease-in-out ${
+                        isOpen
+                          ? "max-w-[140px] opacity-100 pr-2"
+                          : "max-w-0 opacity-0 overflow-hidden max-lg:max-w-[140px] max-lg:opacity-100 max-lg:pr-2"
+                      }`}
+                    >
+                      {item.name}
+                    </span>
+                    {!isOpen && (
+                      <div
+                        className="pointer-events-none absolute left-full z-50 ml-3 whitespace-nowrap rounded-lg border border-white/10 px-2.5 py-1.5 text-xs font-medium text-white opacity-0 shadow-xl transition-opacity duration-[220ms] group-hover:opacity-100 max-lg:hidden"
+                        style={{ background: TOOLTIP_BG }}
+                      >
+                        {item.name}
+                        <span
+                          className="absolute left-0 top-1/2 -translate-x-1 -translate-y-1/2 border-[6px] border-transparent"
+                          style={{ borderRightColor: TOOLTIP_BG }}
+                        />
+                      </div>
+                    )}
+                  </Link>
+                );
+              })}
+            </div>
+          </nav>
+
+          {/* BOTTOM — Collapse control (chevron only here as the action affordance) */}
+          <div className="mt-auto shrink-0 flex flex-col">
+            <div className="mx-3 hidden h-px bg-white/[0.08] lg:block" aria-hidden />
+            <div className="hidden lg:block p-3">
               <button
                 type="button"
-                onClick={() => setShowLogoutConfirm(true)}
-                className="w-full flex items-center justify-center gap-2 rounded-xl border border-red-400/80 text-red-200 py-3 text-sm font-medium hover:bg-red-500/20 transition-colors min-h-[44px]"
+                onClick={onToggle}
+                className={`flex h-10 w-full items-center justify-center rounded-[10px] border border-white/10 bg-transparent text-white transition-colors duration-[220ms] hover:bg-white/[0.04] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/30 ${
+                  isOpen ? "gap-2" : ""
+                }`}
+                title={isOpen ? "Collapse sidebar" : "Expand sidebar"}
+                aria-label={isOpen ? "Collapse sidebar" : "Expand sidebar"}
               >
-                <LogOut className="h-4 w-4" />
-                Logout
+                <ChevronLeft
+                  className={`h-4 w-4 stroke-[1.75] shrink-0 transition-transform duration-[220ms] ${
+                    isOpen ? "" : "rotate-180"
+                  }`}
+                  aria-hidden
+                />
+                {isOpen ? (
+                  <span className="text-[13px] font-medium tracking-wide whitespace-nowrap">
+                    Collapse
+                  </span>
+                ) : null}
               </button>
-            )}
+            </div>
+            <div className="lg:hidden px-4 py-5">
+              {!identityReady ? (
+                <div className="flex items-center gap-3 mb-3" aria-hidden>
+                  <div className="h-10 w-10 rounded-full bg-white/15 shrink-0 animate-pulse" />
+                  <div className="min-w-0 flex-1 space-y-2">
+                    <div className="h-4 w-24 rounded bg-white/15 animate-pulse" />
+                    <div className="h-3 w-32 rounded bg-white/10 animate-pulse" />
+                  </div>
+                </div>
+              ) : (
+                <div className="flex items-center gap-3 mb-3">
+                  <div className="h-10 w-10 rounded-full bg-white/15 flex items-center justify-center text-white text-sm font-semibold overflow-hidden shrink-0 ring-1 ring-white/15">
+                    {avatarUrl ? (
+                      <img src={avatarUrl} alt="" className="h-full w-full object-cover" />
+                    ) : (
+                      getUserInitials(userName, userEmail)
+                    )}
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm font-semibold text-white truncate">{userName || "User"}</p>
+                    {userEmail ? <p className="text-xs text-slate-400 truncate">{userEmail}</p> : null}
+                  </div>
+                </div>
+              )}
+              {!isTicketsQueueWorkspace && (
+                <button
+                  type="button"
+                  onClick={() => setShowLogoutConfirm(true)}
+                  className="w-full flex items-center justify-center gap-2 rounded-xl border border-red-400/50 text-red-200 py-3 text-sm font-medium hover:bg-red-500/20 transition-colors duration-[220ms] min-h-[44px]"
+                >
+                  <LogOut className="h-4 w-4" />
+                  Logout
+                </button>
+              )}
+            </div>
           </div>
         </div>
       </aside>
@@ -455,4 +514,3 @@ export function HierarchicalSidebar({ isOpen, onToggle, isInSpecificDashboard: p
     </>
   );
 }
-

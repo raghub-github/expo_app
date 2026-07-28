@@ -216,26 +216,13 @@ function AuthCallbackContent() {
 
         const code = searchParams?.get("code");
         if (code) {
-          const { data, error: exchangeError } = await supabase.auth.exchangeCodeForSession(code);
-          if (exchangeError) {
-            fail(exchangeError.message || "Could not complete sign in.");
-            return;
-          }
-          if (data?.session) {
-            const result = await setCookieAndRedirect(
-              data.session.access_token,
-              data.session.refresh_token,
-              next
-            );
-            if (!result.ok) {
-              await supabase.auth.signOut().catch(() => {});
-              fail(result.error);
-              return;
-            }
-            sessionStorage.removeItem("auth_redirect");
-            window.location.replace(next.startsWith("/") ? next : `/${next.replace(/^\//, "")}`);
-            return;
-          }
+          // Delegate code exchange to the server-side API route to avoid PKCE
+          // verifier mismatch when the browser tab/storage changes between login
+          // and callback (e.g. magic-link opened in a different browser).
+          const apiUrl = `/api/auth/callback?code=${encodeURIComponent(code)}${next && next !== "/partners/all-stores" ? `&next=${encodeURIComponent(next)}` : ""}`;
+          sessionStorage.removeItem("auth_redirect");
+          window.location.replace(apiUrl);
+          return;
         }
 
         const sessionPromise = supabase.auth.getSession();

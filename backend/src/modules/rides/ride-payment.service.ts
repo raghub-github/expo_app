@@ -4,7 +4,7 @@ import {
   debitCustomerGatiCashForRideFare,
   getCustomerGatiCashAvailable,
 } from "../../lib/checkout-gaticash-wallet-ops.js";
-import { customers, ordersCore, ordersRide } from "../../db/schema.js";
+import { customers, ordersCore, ordersCorePayments, ordersRide } from "../../db/schema.js";
 import { customerOrderRefWhere } from "../../lib/order-ref-resolve.js";
 import { normalizeCustomerOrderStatus } from "../../lib/customer-order-status-resolve.js";
 import { verifyRazorpaySignature, verifyRazorpayPaymentDetails } from "../../services/payment/razorpayService.js";
@@ -200,6 +200,31 @@ export async function confirmRideFarePaymentForCustomer(input: {
         updatedAt: now,
       })
       .where(eq(ordersRide.orderId, orderRow.id));
+
+    // Persist capture row so dashboard refunds/guard see the same SSOT as food.
+    const razorpayPaymentId = input.razorpayPaymentId?.trim() || null;
+    const razorpayOrderId = input.razorpayOrderId?.trim() || null;
+    await tx.insert(ordersCorePayments).values({
+      orderId: orderIdText,
+      paymentGateway: razorpayPaymentId ? "razorpay" : gatiCashApplied > 0.005 ? "gati_cash" : "ride_fare",
+      paymentMethod: razorpayPaymentId
+        ? "UPI"
+        : gatiCashApplied > 0.005
+          ? "WALLET"
+          : "ONLINE",
+      transactionId: razorpayPaymentId || `ride_fare:${orderRow.id}:${now.getTime()}`,
+      amount: String(fareDue),
+      currency: "INR",
+      paymentStatus: "PAID",
+      gatewayResponse: {
+        source: "person_ride_fare",
+        razorpayPaymentId,
+        razorpayOrderId,
+        gatiCashApplied,
+        amountPaid: fareDue,
+      },
+      paidAt: now,
+    });
   });
 
   void insertRideCustomerPaymentSnapshot(db, {

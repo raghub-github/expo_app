@@ -265,7 +265,8 @@ export async function GET(
 
     const canView =
       (await isSuperAdmin(user.id, user.email ?? "")) ||
-      (await hasDashboardAccessByAuth(user.id, user.email ?? "", "ORDER_FOOD"));
+      (await hasDashboardAccessByAuth(user.id, user.email ?? "", "ORDER_FOOD")) ||
+      (await hasDashboardAccessByAuth(user.id, user.email ?? "", "ORDER_PERSON_RIDE"));
     if (!canView) {
       return NextResponse.json(
         { success: false, error: "Insufficient permissions to view order refunds." },
@@ -327,11 +328,10 @@ export async function POST(
       );
     }
 
-    const canRefund = await canRefundOrder(
-      user.id,
-      user.email ?? "",
-      "ORDER_FOOD"
-    );
+    const canRefund =
+      (await isSuperAdmin(user.id, user.email ?? "")) ||
+      (await canRefundOrder(user.id, user.email ?? "", "ORDER_FOOD")) ||
+      (await canRefundOrder(user.id, user.email ?? "", "ORDER_PERSON_RIDE"));
     if (!canRefund) {
       return NextResponse.json(
         {
@@ -396,6 +396,53 @@ export async function POST(
         },
         { status: 400 }
       );
+    }
+
+    // Person-ride: money/cancel refunds only when fare payment is captured in DB.
+    {
+      const sql = getSql();
+      const metaRows = (await sql`
+        SELECT
+          order_type AS "orderType",
+          payment_status AS "paymentStatus",
+          order_id AS "orderIdText"
+        FROM orders_core
+        WHERE id = ${orderId}
+        LIMIT 1
+      `) as Array<{
+        orderType: string | null;
+        paymentStatus: string | null;
+        orderIdText: string | null;
+      }>;
+      const meta = metaRows[0];
+      if (String(meta?.orderType ?? "") === "person_ride") {
+        const pay = String(meta?.paymentStatus ?? "").trim().toLowerCase();
+        const statusPaid = pay === "paid" || pay === "completed";
+        const orderIdText = meta?.orderIdText?.trim() || null;
+        let hasCaptureRow = false;
+        if (orderIdText) {
+          const payRows = (await sql`
+            SELECT 1 AS ok
+            FROM orders_core_payments
+            WHERE order_id = ${orderIdText}
+              AND UPPER(COALESCE(payment_status, '')) IN (
+                'PAID', 'CAPTURED', 'SUCCESS', 'COMPLETED'
+              )
+            LIMIT 1
+          `) as Array<{ ok: number }>;
+          hasCaptureRow = payRows.length > 0;
+        }
+        if (!statusPaid && !hasCaptureRow) {
+          return NextResponse.json(
+            {
+              success: false,
+              error:
+                "Payment not captured for this ride. Refund is unavailable until the fare payment is recorded.",
+            },
+            { status: 409 }
+          );
+        }
+      }
     }
 
     // ── Money-safety guard ────────────────────────────────────────────────
@@ -540,6 +587,8 @@ export async function POST(
           merchantWalletDebit,
         },
         message: "Order cancelled via Financial Rule Engine (no refund row).",
+        routedToEmail: user.email ?? null,
+        routedToName: systemUser?.fullName?.trim() || user.email || null,
       });
     }
 
@@ -622,7 +671,7 @@ export async function POST(
       refundAmount: effectiveRefundAmount,
       refundFee: 0,
       netRefundAmount: effectiveRefundAmount,
-      productType: "order",
+      productType: refundMetadata?.personRide === true ? "person_ride" : "order",
       mxDebitAmount: resolvedMxDebitAmount > 0 ? resolvedMxDebitAmount : 0,
       mxDebitReason: mxDebitReason?.trim() ?? null,
       refundInitiatedBy,
@@ -757,6 +806,8 @@ export async function POST(
         success: true,
         data: { ...record, riderPenalty, merchantWalletDebit, executor },
         message: "Order cancelled and refund initiated successfully.",
+        routedToEmail: user.email ?? null,
+        routedToName: systemUser?.fullName?.trim() || user.email || null,
       });
     }
 
@@ -798,6 +849,8 @@ export async function POST(
       success: true,
       data: { ...record, merchantWalletDebit, executor },
       message: "Refund created successfully.",
+      routedToEmail: user.email ?? null,
+      routedToName: systemUser?.fullName?.trim() || user.email || null,
     });
   } catch (error) {
     console.error("[POST /api/orders/[orderId]/refunds] Error:", error);

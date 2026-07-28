@@ -12,6 +12,7 @@ import { resolveAssignedAreaManagersForStoreVerification } from "@/lib/db/operat
 import { getSql } from "@/lib/db/client";
 import { mapRowToMenuMediaFile, type MenuMediaFile } from "@/lib/merchant-menu-media";
 import { normalizeMerchantDocumentUrls } from "@/lib/attachments/resolve-attachment-proxy-url";
+import { listPendingOnboardingResubmissions } from "@/lib/db/operations/onboarding-resubmissions";
 
 export const runtime = "nodejs";
 
@@ -77,6 +78,10 @@ export async function GET(
       store_id: store.store_id,
       name: store.store_display_name || store.store_name,
       store_name: store.store_name,
+      owner_full_name:
+        (store as { owner_full_name?: string | null }).owner_full_name?.trim() ||
+        (store as { parent?: { owner_name?: string | null } }).parent?.owner_name?.trim() ||
+        null,
       store_display_name: store.store_display_name,
       store_description: store.store_description,
       store_email: store.store_email ?? null,
@@ -89,17 +94,21 @@ export async function GET(
       country: store.country ?? null,
       latitude: store.latitude ?? null,
       longitude: store.longitude ?? null,
-      logo_url: null,      banner_url: store.banner_url ?? null,
+      logo_url: null,
+      banner_url: store.banner_url ?? null,
       gallery_images: store.gallery_images ?? null,
       cuisine_types: store.cuisine_types ?? null,
-      food_categories: null,
+      food_categories: (store as { food_categories?: string[] | null }).food_categories ?? null,
       avg_preparation_time_minutes: store.avg_preparation_time_minutes ?? null,
+      packaging_charge_amount:
+        (store as { packaging_charge_amount?: number | null }).packaging_charge_amount ?? null,
       min_order_amount: store.min_order_amount ?? null,
       delivery_radius_km: store.delivery_radius_km ?? null,
       is_pure_veg: store.is_pure_veg ?? null,
       accepts_online_payment: store.accepts_online_payment ?? null,
       accepts_cash: store.accepts_cash ?? null,
       store_type: store.store_type ?? null,
+      custom_store_type: (store as { custom_store_type?: string | null }).custom_store_type ?? null,
       approval_status: store.approval_status,
       current_onboarding_step: store.current_onboarding_step ?? null,
       onboarding_completed: store.onboarding_completed ?? false,
@@ -125,6 +134,11 @@ export async function GET(
           if (value instanceof Date) d[key] = value.toISOString();
         });
         documents = normalizeMerchantDocumentUrls(d);
+        if (!storePayload.owner_full_name) {
+          const panHolder =
+            typeof d.pan_holder_name === "string" ? d.pan_holder_name.trim() : "";
+          if (panHolder) storePayload.owner_full_name = panHolder;
+        }
       }
     } catch (e) {
       console.warn("[verification-data] merchant_store_documents:", e);
@@ -293,6 +307,11 @@ export async function GET(
           if (v instanceof Date) o[k] = v.toISOString();
         });
         agreementAcceptance = o;
+        if (!storePayload.owner_full_name) {
+          const signer =
+            typeof o.signer_name === "string" ? o.signer_name.trim() : "";
+          if (signer) storePayload.owner_full_name = signer;
+        }
       }
     } catch {
       // table may not exist or RLS
@@ -359,6 +378,31 @@ export async function GET(
       console.warn("[verification-data] assignedAreaManagers:", e);
     }
 
+    let pendingResubmissions: Awaited<ReturnType<typeof listPendingOnboardingResubmissions>> = [];
+    try {
+      pendingResubmissions = await listPendingOnboardingResubmissions(storeId);
+      // Do NOT overwrite live store/documents URLs — admin UI shows Old (live) + New (pending) side by side.
+      // Mark flags only so existing badges still work.
+      if (documents && pendingResubmissions.length > 0) {
+        const docs = { ...documents } as Record<string, unknown>;
+        for (const p of pendingResubmissions) {
+          if (p.field_key === "fssai") docs.fssai_pending_resubmission = true;
+          else if (p.field_key === "pan") docs.pan_pending_resubmission = true;
+          else if (p.field_key === "gst") docs.gst_pending_resubmission = true;
+          else if (p.field_key === "aadhaar") docs.aadhaar_pending_resubmission = true;
+          else if (p.field_key === "bank_proof") docs.bank_proof_pending_resubmission = true;
+          if (p.field_key === "banner_url") {
+            (
+              storePayload as { banner_pending_resubmission?: boolean }
+            ).banner_pending_resubmission = true;
+          }
+        }
+        documents = docs;
+      }
+    } catch (e) {
+      console.warn("[verification-data] pending resubmissions:", e);
+    }
+
     return NextResponse.json({
       success: true,
       store: storePayload,
@@ -369,6 +413,7 @@ export async function GET(
       menuMediaFiles,
       bankAccounts,
       assignedAreaManagers,
+      pendingResubmissions,
     });
   } catch (e) {
     console.error("[GET /api/merchant/stores/[id]/verification-data]", e);

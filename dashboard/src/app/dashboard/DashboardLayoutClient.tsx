@@ -22,7 +22,12 @@ import { MerchantsSearchProvider } from "@/context/MerchantsSearchContext";
 import { StoreVerificationSheetProvider } from "@/context/StoreVerificationSheetContext";
 import { LeftSidebarMobileProvider, useLeftSidebarMobile } from "@/context/LeftSidebarMobileContext";
 import { TicketFilterSidebarProvider, useTicketFilterSidebar } from "@/context/TicketFilterSidebarContext";
-import { getCurrentDashboard, getCurrentDashboardSubRoutes } from "@/lib/navigation/dashboard-routes";
+import { getCurrentDashboard } from "@/lib/navigation/dashboard-routes";
+import { isOrdersSectionPath } from "@/lib/navigation/orders-nav-href";
+import {
+  isStoreVerificationDetailPath,
+  parseStoreVerificationStepParam,
+} from "@/lib/merchants/store-verification-path";
 import { queryKeys } from "@/lib/queryKeys";
 import { prefetchDashboardSection } from "@/lib/dashboard-prefetch";
 import {
@@ -43,6 +48,36 @@ import type { TicketOtherAgentViewer } from "@/lib/tickets/ticket-presence";
 
 const SIDEBAR_STATE_KEY = "dashboard-sidebar-open";
 
+/**
+ * Whether a control-app path *can* show a secondary (right) rail.
+ */
+function pathHasRightSidebar(pathname: string): boolean {
+  const clean = cleanDashboardHref(pathname);
+  if (clean.startsWith("/dashboard/customers")) return false;
+  if (isOrdersSectionPath(clean)) return false;
+  if (clean === "/dashboard/riders" || clean.startsWith("/dashboard/riders/")) return true;
+  const dashboard = getCurrentDashboard(clean);
+  const isInSpecificDashboard = Boolean(dashboard && clean !== "/dashboard");
+  return isInSpecificDashboard && (dashboard?.subRoutes?.length ?? 0) > 0;
+}
+
+/**
+ * Whether the right rail is actually active (visible with content) for this URL.
+ * Until then, the left sidebar must stay expanded — e.g. Riders before a search.
+ */
+function pathRightSidebarActive(
+  pathname: string,
+  searchParams?: { get: (key: string) => string | null } | null
+): boolean {
+  if (!pathHasRightSidebar(pathname)) return false;
+  const clean = cleanDashboardHref(pathname);
+  // Inside a store's verification flow — full-width content, no merchants right rail.
+  if (isStoreVerificationDetailPath(clean, searchParams)) return false;
+  if (clean === "/dashboard/riders" || clean.startsWith("/dashboard/riders/")) {
+    return Boolean((searchParams?.get("search") || "").trim());
+  }
+  return true;
+}
 type PersistedSidebar = "left" | "right" | "none";
 
 function getPersistedSidebar(): PersistedSidebar | null {
@@ -179,33 +214,38 @@ function DashboardLayoutClientInner({
     () => /^\/dashboard\/area-managers\/stores\/add-child(\/|$)/.test(cleanPathname),
     [cleanPathname]
   );
+  const isAmResubmitOnboardingPage = useMemo(
+    () =>
+      /^\/dashboard\/area-managers\/stores\/resubmit-onboarding(\/|$)/.test(cleanPathname),
+    [cleanPathname]
+  );
+  /** Full-bleed AM store wizard pages (add-child + resubmit). */
+  const isAmStoreWizardPage = isAddChildPage || isAmResubmitOnboardingPage;
   const isAreaManagersSection = useMemo(
     () => /^\/dashboard\/area-managers(\/|$)/.test(cleanPathname),
     [cleanPathname]
   );
   const currentDashboard = useMemo(() => getCurrentDashboard(cleanPathname), [cleanPathname]);
-  const currentSubRoutes = useMemo(() => getCurrentDashboardSubRoutes(cleanPathname), [cleanPathname]);
   const isInSpecificDashboard: boolean = Boolean(currentDashboard && cleanPathname !== "/dashboard");
 
-  const isRiderDashboardLayout =
-    cleanPathname === "/dashboard/riders" || cleanPathname.startsWith("/dashboard/riders/");
-  const isCustomersSection = cleanPathname.startsWith("/dashboard/customers");
-  const isOrdersSection = cleanPathname.startsWith("/dashboard/orders");
+  const isOrderDetailPage =
+    cleanPathname === "/order" || cleanPathname.startsWith("/order/");
   const isCustomerDetailFromOrder = useMemo(
     () => isCustomerDetailOpenedFromOrder(cleanPathname, searchParams),
     [cleanPathname, searchParams]
   );
 
-  const hasRightSidebar = useMemo(() => {
-    // Customer dashboard: use full width — no secondary (right) nav rail.
-    if (isCustomersSection) return false;
-    // Orders dashboard: order-type switch lives in header dropdown; use full width.
-    if (isOrdersSection) return false;
-    // For rider dashboard we always allow a right sidebar; the inner layout
-    // will still hide it until a rider is actually selected.
-    if (isRiderDashboardLayout) return true;
-    return isInSpecificDashboard && currentSubRoutes.length > 0;
-  }, [isCustomersSection, isOrdersSection, isInSpecificDashboard, currentSubRoutes.length, isRiderDashboardLayout]);
+  const hasRightSidebar = useMemo(
+    () => pathHasRightSidebar(cleanPathname),
+    [cleanPathname]
+  );
+  /** Right rail is showing real content — only then may the left rail collapse. */
+  const rightSidebarActive = useMemo(
+    () => pathRightSidebarActive(cleanPathname, searchParams),
+    // riders: search; store verification: storeId
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [cleanPathname, searchParams.get("search"), searchParams.get("storeId")]
+  );
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -237,76 +277,109 @@ function DashboardLayoutClientInner({
     [cleanPathname, searchParams.toString()]
   );
 
-  /** Single stable dep so effect arity never changes (avoids dev/HMR "dependency array changed size" warnings). */
+  /** Single stable dep for layout-mode flags only — not every pathname — so nested
+   * routes within the same shell mode do not collapse/expand the left rail. */
   const shellSidebarRouteKey = useMemo(
     () =>
       [
         hasRightSidebar ? "1" : "0",
+        rightSidebarActive ? "1" : "0",
         isStoreOrdersPath ? "1" : "0",
         isSettingsPage ? "1" : "0",
         isQueueTicketDetailForShell ? "1" : "0",
         isCustomerDetailFromOrder ? "1" : "0",
-        cleanPathname,
+        isAmStoreWizardPage ? "1" : "0",
       ].join("\0"),
-    [hasRightSidebar, isStoreOrdersPath, isSettingsPage, isQueueTicketDetailForShell, isCustomerDetailFromOrder, cleanPathname]
+    [
+      hasRightSidebar,
+      rightSidebarActive,
+      isStoreOrdersPath,
+      isSettingsPage,
+      isQueueTicketDetailForShell,
+      isCustomerDetailFromOrder,
+      isAmStoreWizardPage,
+    ]
   );
 
   // Deterministic initial state (no localStorage) so server and client match and hydration succeeds
   const [isLeftSidebarOpen, setIsLeftSidebarOpen] = useState(() => {
-    if (!hasRightSidebar) return true;
-    if (isStoreOrdersPath) return false; // Orders page: left closed by default
+    if (!rightSidebarActive) return true;
+    if (isStoreOrdersPath) return false;
     return false;
   });
   const [isRightSidebarOpen, setIsRightSidebarOpen] = useState(() => {
-    if (!hasRightSidebar) return false;
-    if (isStoreOrdersPath) return true; // Orders page: right (order filters) open by default
+    if (!rightSidebarActive) return false;
+    if (isStoreOrdersPath) return true;
     return true;
   });
 
-  // Apply sidebar state on navigation.
-  // Orders page: always left closed, right open. Settings: right open.
-  // Other pages:
-  // - If the page has a right sidebar, auto-close left and open right.
-  // - If the page does not have a right sidebar, keep left open and right closed.
+  // Apply sidebar state on navigation:
+  // - Right rail active → left collapsed, right expanded
+  // - Right rail absent or not yet active → left expanded
   useEffect(() => {
-    if (isSettingsPage && hasRightSidebar) {
+    if (isCustomerDetailFromOrder || isAmStoreWizardPage) {
+      setIsLeftSidebarOpen(false);
+      setIsRightSidebarOpen(false);
+      return;
+    }
+    if (isQueueTicketDetailForShell && rightSidebarActive) {
+      setIsLeftSidebarOpen(false);
+      setIsRightSidebarOpen(false);
+      return;
+    }
+    if (isSettingsPage && rightSidebarActive) {
       setIsRightSidebarOpen(true);
       setIsLeftSidebarOpen(false);
       return;
     }
-    if (isStoreOrdersPath && hasRightSidebar) {
+    if (isStoreOrdersPath && rightSidebarActive) {
       setIsLeftSidebarOpen(false);
       setIsRightSidebarOpen(true);
       return;
     }
-    if (isQueueTicketDetailForShell && hasRightSidebar) {
-      setIsLeftSidebarOpen(false);
+    if (!rightSidebarActive) {
       setIsRightSidebarOpen(false);
+      setIsLeftSidebarOpen(true);
       return;
     }
-    if (isCustomerDetailFromOrder) {
-      setIsLeftSidebarOpen(false);
-      setIsRightSidebarOpen(false);
-      return;
-    }
-    if (!hasRightSidebar) {
-      setIsRightSidebarOpen(false);
-      setIsLeftSidebarOpen(true); // pages without right sidebar: show only left
-      return;
-    }
-    // Default: pages with right sidebar → open right, close left
+    // Right sidebar is active: left collapsed, right expanded
     setIsLeftSidebarOpen(false);
     setIsRightSidebarOpen(true);
   }, [shellSidebarRouteKey]);
 
-  // Enforce only one sidebar open at a time (never both expanded)
+  // Enforce: never leave left collapsed while the right rail is inactive.
   useEffect(() => {
-    if (hasRightSidebar && isLeftSidebarOpen && isRightSidebarOpen) {
+    if (rightSidebarActive) return;
+    if (isCustomerDetailFromOrder || isAmStoreWizardPage) return;
+    if (!isLeftSidebarOpen) {
+      setIsLeftSidebarOpen(true);
       setIsRightSidebarOpen(false);
     }
-  }, [hasRightSidebar, isLeftSidebarOpen, isRightSidebarOpen]);
+  }, [rightSidebarActive, isLeftSidebarOpen, isCustomerDetailFromOrder, isAmStoreWizardPage]);
+
+  // Enforce only one sidebar open at a time (never both expanded)
+  useEffect(() => {
+    if (rightSidebarActive && isLeftSidebarOpen && isRightSidebarOpen) {
+      setIsRightSidebarOpen(false);
+    }
+  }, [rightSidebarActive, isLeftSidebarOpen, isRightSidebarOpen]);
+
+  /** Notify Home map (and others) to reflow after sidebar width/margin animation. */
+  const notifyDashboardLayoutChange = () => {
+    if (typeof window === "undefined") return;
+    const fire = () => window.dispatchEvent(new Event("gm-dashboard-layout"));
+    fire();
+    window.setTimeout(fire, 50);
+    window.setTimeout(fire, 180);
+    window.setTimeout(fire, 320);
+    window.setTimeout(fire, 450);
+  };
 
   const handleLeftSidebarToggle = () => {
+    // Right rail not active → left must stay expanded.
+    if (!rightSidebarActive && isLeftSidebarOpen) {
+      return;
+    }
     const nextLeftOpen = !isLeftSidebarOpen;
     if (nextLeftOpen) {
       setIsRightSidebarOpen(false);
@@ -315,26 +388,23 @@ function DashboardLayoutClientInner({
       setPersistedSidebar("none");
     }
     setIsLeftSidebarOpen(nextLeftOpen);
+    notifyDashboardLayoutChange();
   };
 
   const handleRightSidebarToggle = () => {
+    if (!hasRightSidebar || !rightSidebarActive) return;
     const nextRightOpen = !isRightSidebarOpen;
     if (nextRightOpen) {
       setIsLeftSidebarOpen(false);
       setPersistedSidebar("right");
     } else {
-      setPersistedSidebar("none");
+      // Closing right: restore left so the shell is never empty.
+      setIsLeftSidebarOpen(true);
+      setPersistedSidebar("left");
     }
     setIsRightSidebarOpen(nextRightOpen);
+    notifyDashboardLayoutChange();
   };
-
-  if (isAddChildPage) {
-    return (
-      <div className="flex h-screen overflow-hidden bg-gradient-to-br from-slate-50 to-slate-100 text-gray-900">
-        {children}
-      </div>
-    );
-  }
 
   return (
     <CurrentRouteProvider>
@@ -342,6 +412,7 @@ function DashboardLayoutClientInner({
         <DashboardLayoutContent
           isLeftSidebarOpen={isLeftSidebarOpen}
           isRightSidebarOpen={isRightSidebarOpen}
+          setLeftSidebarOpen={setIsLeftSidebarOpen}
           setRightSidebarOpen={setIsRightSidebarOpen}
           hasRightSidebar={hasRightSidebar}
           handleRightSidebarToggle={handleRightSidebarToggle}
@@ -349,6 +420,8 @@ function DashboardLayoutClientInner({
           isInSpecificDashboard={isInSpecificDashboard}
           isStoreOrdersPath={isStoreOrdersPath}
           isCustomerDetailFromOrder={isCustomerDetailFromOrder}
+          isAddChildPage={isAmStoreWizardPage}
+          isOrderDetailPage={isOrderDetailPage}
         >
           {children}
         </DashboardLayoutContent>
@@ -361,6 +434,7 @@ function DashboardLayoutContent({
   children,
   isLeftSidebarOpen,
   isRightSidebarOpen,
+  setLeftSidebarOpen,
   setRightSidebarOpen,
   hasRightSidebar,
   handleRightSidebarToggle,
@@ -368,10 +442,13 @@ function DashboardLayoutContent({
   isInSpecificDashboard,
   isStoreOrdersPath,
   isCustomerDetailFromOrder,
+  isAddChildPage,
+  isOrderDetailPage,
 }: {
   children: React.ReactNode;
   isLeftSidebarOpen: boolean;
   isRightSidebarOpen: boolean;
+  setLeftSidebarOpen: (open: boolean) => void;
   setRightSidebarOpen: (open: boolean) => void;
   hasRightSidebar: boolean;
   handleRightSidebarToggle: () => void;
@@ -379,6 +456,8 @@ function DashboardLayoutContent({
   isInSpecificDashboard: boolean;
   isStoreOrdersPath: boolean;
   isCustomerDetailFromOrder: boolean;
+  isAddChildPage: boolean;
+  isOrderDetailPage: boolean;
 }) {
   const pathname = useAppPathname();
   const searchParams = useDashboardSearchParams();
@@ -393,6 +472,15 @@ function DashboardLayoutContent({
   const isTicketsHubGreyPage =
     cleanPathname === "/dashboard/tickets/agent-activity" ||
     cleanPathname === "/dashboard/tickets/dashboard_snapshot";
+  /** Customer profile (/customers/GM… or /customers/123) — sticky CTA must sit flush under app header. */
+  const isCustomerDetailProfilePage = useMemo(() => {
+    const match = cleanPathname.match(/^\/dashboard\/customers\/([^/]+)$/);
+    if (!match) return false;
+    const segment = match[1];
+    return !["all", "food", "parcel", "person-ride", "deletion-requests"].includes(segment);
+  }, [cleanPathname]);
+  const isOrdersSectionPage =
+    cleanPathname.startsWith("/dashboard/orders") || isOrderDetailPage;
   /** Tickets list / queue / detail: fill space below header without main scroll (inner panes scroll). */
   const isTicketsFullBleedLayout =
     cleanPathname.startsWith("/dashboard/tickets") && !isTicketsHubGreyPage;
@@ -548,11 +636,34 @@ function DashboardLayoutContent({
     (targetHref: string) => {
       const cleanTarget = cleanDashboardHref(targetHref);
       if (isDashboardNavAlreadyAtTarget(cleanPathname, cleanTarget)) return;
-      prefetchDashboardSection(queryClient, cleanTarget);
-      currentRouteCtx?.startNavigation(cleanTarget);
-      cancelInFlightPageQueries();
+
+      // Already navigating to this exact target — keep overlay; let <Link> proceed.
+      // A different target replaces pending via startNavigation (latest click wins).
+      const alreadyPendingSameTarget = currentRouteCtx?.pendingNavHref === cleanTarget;
+      if (!alreadyPendingSameTarget) {
+        prefetchDashboardSection(queryClient, cleanTarget);
+        currentRouteCtx?.startNavigation(cleanTarget);
+        cancelInFlightPageQueries();
+      }
+
+      // Instantly clear the right rail from the main area when leaving via left nav
+      // to a left-only / not-yet-active-right page (no collapsed strip during load).
+      if (pathRightSidebarActive(cleanTarget, null)) {
+        setLeftSidebarOpen(false);
+        setRightSidebarOpen(true);
+      } else {
+        setRightSidebarOpen(false);
+        setLeftSidebarOpen(true);
+      }
     },
-    [queryClient, currentRouteCtx, cleanPathname, cancelInFlightPageQueries]
+    [
+      queryClient,
+      currentRouteCtx,
+      cleanPathname,
+      cancelInFlightPageQueries,
+      setLeftSidebarOpen,
+      setRightSidebarOpen,
+    ]
   );
 
   const isRiderDashboardLayout =
@@ -563,12 +674,30 @@ function DashboardLayoutContent({
   const hasRightSidebarEligible =
     hasRightSidebar && (!isRiderDashboardLayout || hasRiderSidebarContent);
 
-  /** Ticket detail mounts the properties rail via RightSidebar; list/hub pages use filters/sub-nav instead. */
-  const shouldRenderRightSidebar = hasRightSidebarEligible || isTicketDetailPage;
+  const pendingNavHref = currentRouteCtx?.pendingNavHref ?? null;
+  /** While left-nav is in flight to a page without an active right rail, hide right immediately. */
+  const pendingSuppressesRight =
+    pendingNavHref != null && !pathRightSidebarActive(pendingNavHref, null);
+  const isStoreVerificationDetail = isStoreVerificationDetailPath(
+    cleanPathname,
+    searchParams
+  );
+  const isStoreVerificationStepView =
+    isStoreVerificationDetail &&
+    parseStoreVerificationStepParam(searchParams.get("step")) != null;
+
+  /** Ticket detail mounts the properties rail via RightSidebar; list/hub pages use filters/sub-nav instead.
+   * Keep the rail mounted when merely collapsed so the expand chevron stays available. */
+  const shouldRenderRightSidebar =
+    !isAddChildPage &&
+    !isCustomerDetailFromOrder &&
+    !isStoreVerificationDetail &&
+    (hasRightSidebarEligible || isTicketDetailPage) &&
+    !pendingSuppressesRight;
 
   const showWorkspaceOverlay = isNavigating;
 
-  const mainLgMarginLeft = isCustomerDetailFromOrder
+  const mainLgMarginLeft = isCustomerDetailFromOrder || isAddChildPage
     ? ""
     : isTicketsQueueWorkspace
       ? isRightSidebarOpen
@@ -582,27 +711,30 @@ function DashboardLayoutContent({
   const mainLgMarginRight =
     isTicketsQueueWorkspace || isTicketDetailPage
       ? ""
-      : hasRightSidebarEligible && isRightSidebarOpen
+      : !shouldRenderRightSidebar
+        ? ""
+      : isRightSidebarOpen
         ? isFilterSidebarOpen
           ? "lg:mr-[28rem]"
           : "lg:mr-56"
-        : hasRightSidebarEligible && !isRightSidebarOpen
-          ? "lg:mr-16"
-          : "";
+        : "lg:mr-14";
 
   /** Left sidebar stays visible; overlay sits above fixed right rail (z-40). */
+
+  /** Left sidebar is a persistent shell — hide with CSS for full-bleed layouts; never unmount. */
+  const leftSidebarShellHidden =
+    isTicketsQueueWorkspace || isCustomerDetailFromOrder || isAddChildPage;
 
   return (
     <LeftSidebarMobileProvider>
       <div className="flex h-screen overflow-hidden" style={{ backgroundColor: "#E6F6F5" }}>
-        {!isTicketsQueueWorkspace && !isCustomerDetailFromOrder && (
-          <HierarchicalSidebar
-            isOpen={isLeftSidebarOpen}
-            onToggle={handleLeftSidebarToggle}
-            isInSpecificDashboard={isInSpecificDashboard}
-            onNavigationStart={handleSidebarNavigationStart}
-          />
-        )}
+        <HierarchicalSidebar
+          isOpen={isLeftSidebarOpen}
+          onToggle={handleLeftSidebarToggle}
+          isInSpecificDashboard={isInSpecificDashboard}
+          onNavigationStart={handleSidebarNavigationStart}
+          shellHidden={leftSidebarShellHidden}
+        />
         <RightSidebarProvider value={rightSidebarContextValue}>
           <StoreVerificationSheetProvider>
           <MerchantsSearchProvider>
@@ -610,22 +742,40 @@ function DashboardLayoutContent({
             <div className="relative flex min-w-0 flex-1 min-h-0">
               <div
                 className={`flex flex-1 flex-col overflow-hidden w-full min-w-0 ${mainLgMarginLeft} ${mainLgMarginRight}`}
-                style={{ transition: "margin 0.3s ease-out" }}
+                style={
+                  showWorkspaceOverlay
+                    ? undefined
+                    : { transition: "margin 0.3s ease-out" }
+                }
               >
-                <Header />
+                {isAddChildPage ? null : <Header />}
                 <div className="relative flex min-h-0 min-w-0 flex-1 overflow-hidden w-full">
                   <main
                     className={`flex-1 transition-all duration-300 w-full flex flex-col min-h-0 relative text-gray-900 ${
-                      isTicketsFullBleedLayout
+                      isAddChildPage
+                        ? "overflow-hidden bg-gradient-to-br from-slate-50 to-slate-100 p-0"
+                        : isOrderDetailPage
+                        ? "overflow-hidden bg-transparent p-0"
+                        : isTicketsFullBleedLayout
                         ? "overflow-hidden bg-white px-2 pb-3 pt-2 sm:px-3 sm:pb-4 sm:pt-2.5"
                         : isStoreOrdersPath
                           ? "overflow-hidden bg-white p-0 sm:p-0"
                         : isTicketsHubGreyPage
                           ? "overflow-y-auto bg-[#f4f5f7] p-4 sm:p-6"
+                          : isOrdersSectionPage
+                            ? "overflow-y-auto bg-[#f3f5f7] p-3 sm:p-4"
+                          : isCustomerDetailProfilePage
+                            ? "overflow-y-auto bg-white px-3 pb-3 pt-0 sm:px-4 sm:pb-4 sm:pt-0"
+                          : isStoreVerificationStepView
+                            ? "overflow-y-auto bg-[#f4f5f7] px-3 pb-3 pt-0 sm:px-4 sm:pb-4 sm:pt-0"
                           : "overflow-y-auto bg-white p-3 sm:p-4"
                     }`}
                   >
-                    <div className="w-full max-w-full min-w-0 flex-1 flex flex-col min-h-0 relative">
+                    <div
+                      className={`relative flex min-h-0 w-full max-w-full min-w-0 flex-1 flex-col ${
+                        isAddChildPage ? "h-full" : ""
+                      }`}
+                    >
                       {children}
                       <DashboardNavOverlay visible={showWorkspaceOverlay} scope="main" />
                     </div>

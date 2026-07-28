@@ -4,7 +4,7 @@
 
 import { eq } from "drizzle-orm";
 import { getDb } from "../client";
-import { ordersRide } from "../schema";
+import { ordersCore, ordersRide } from "../schema";
 import type { PersonRideOrderDetail } from "@/lib/orders/person-ride-order-types";
 
 export type { PersonRideOrderDetail } from "@/lib/orders/person-ride-order-types";
@@ -49,5 +49,58 @@ export async function getPersonRideOrderDetail(
     parkingCharges: parseNum(row.parkingCharges),
     pickupDistanceFromBookerKm: parseNum(row.pickupDistanceFromBookerKm),
     intermediateStopsCount: stops.length,
+    adminRiderPaymentClearedAt:
+      row.adminRiderPaymentClearedAt instanceof Date
+        ? row.adminRiderPaymentClearedAt.toISOString()
+        : row.adminRiderPaymentClearedAt
+          ? String(row.adminRiderPaymentClearedAt)
+          : null,
+  };
+}
+
+/** Billing snapshot + live payment status from orders_core (person-ride fare card). */
+export async function getPersonRideBillingContext(orderCoreId: number): Promise<{
+  billingSnapshot: Record<string, unknown> | null;
+  paymentStatus: string | null;
+  paymentMethod: string | null;
+  fareAmount: number | null;
+  itemTotal: number | null;
+  grandTotal: number | null;
+  tipAmount: number | null;
+}> {
+  const db = getDb();
+  const [row] = await db
+    .select({
+      billingSnapshot: ordersCore.billingSnapshot,
+      paymentStatus: ordersCore.paymentStatus,
+      paymentMethod: ordersCore.paymentMethod,
+      fareAmount: ordersCore.fareAmount,
+      itemTotal: ordersCore.itemTotal,
+      grandTotal: ordersCore.grandTotal,
+      tipAmount: ordersCore.tipAmount,
+    })
+    .from(ordersCore)
+    .where(eq(ordersCore.id, orderCoreId))
+    .limit(1);
+
+  const snap =
+    row?.billingSnapshot != null && typeof row.billingSnapshot === "object"
+      ? (row.billingSnapshot as Record<string, unknown>)
+      : null;
+
+  const num = (v: unknown): number | null => {
+    if (v == null) return null;
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  };
+
+  return {
+    billingSnapshot: snap,
+    paymentStatus: row?.paymentStatus != null ? String(row.paymentStatus) : null,
+    paymentMethod: row?.paymentMethod != null ? String(row.paymentMethod) : null,
+    fareAmount: num(row?.fareAmount),
+    itemTotal: num(row?.itemTotal),
+    grandTotal: num(row?.grandTotal),
+    tipAmount: num(row?.tipAmount),
   };
 }

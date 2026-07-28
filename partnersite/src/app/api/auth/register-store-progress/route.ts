@@ -938,7 +938,15 @@ export async function GET(req: NextRequest) {
       });
     }
 
-    return NextResponse.json({ success: true, progress: patchedProgress });
+    // Keep in-memory form_data enrichment (step1/step4/step5 from merchant tables).
+    // DB patch only updates flags/steps — returning patchedProgress alone drops hydrated values.
+    return NextResponse.json({
+      success: true,
+      progress: {
+        ...patchedProgress,
+        form_data: progress.form_data,
+      },
+    });
   } catch (e) {
     console.error("[register-store-progress][GET]", e);
     return NextResponse.json({ success: false, error: "Internal error" }, { status: 500 });

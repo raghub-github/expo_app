@@ -1,59 +1,75 @@
 /**
- * Refund settlement-window logic (single source of truth).
+ * Refund settlement-note timing (single source of truth).
  *
- * After a subscription refund is CONFIRMED by the gateway (refund_completed_at
- * set), merchants see settlement guidance. The initial 5–7 working-day message
- * changes after day 7, and all guidance auto-hides after 10 WORKING days.
+ * After a subscription refund is CONFIRMED by the gateway (`completed_at` set):
+ *  - Days 0–4 (calendar): initial "credited within 5–7 working days" message
+ *  - Days 4–5 (calendar): follow-up "contact bank/support if not reflected" message
+ *  - After day 5: hide both messages
  *
- * The whole calculation is done here so the Partner Portal and any future
- * platform compute an identical, deterministic, timezone-safe deadline. Working
- * days are evaluated in IST (Asia/Kolkata, fixed UTC+5:30, no DST) because that
- * is the platform + settlement timezone.
+ * Windows are plain calendar days from the completion instant (not business days),
+ * so Partner Portal and API evaluate the same cutovers.
  */
 
-const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
+/** Calendar days the first settlement message stays visible. */
+export const SETTLEMENT_NOTE_INITIAL_DAYS = 4;
 
-/** Day of week (0=Sun … 6=Sat) for a UTC instant, evaluated in IST. */
-function istDayOfWeek(utcMs: number): number {
-  return new Date(utcMs + IST_OFFSET_MS).getUTCDay();
-}
+/** Extra calendar days the second settlement message stays visible after the first ends. */
+export const SETTLEMENT_NOTE_FOLLOWUP_DAYS = 1;
 
-function isWeekendIST(utcMs: number): boolean {
-  const dow = istDayOfWeek(utcMs);
-  return dow === 0 || dow === 6; // Sun or Sat
+/** Total calendar days from completion until all settlement notes hide. */
+export const SETTLEMENT_NOTE_HIDE_AFTER_DAYS =
+  SETTLEMENT_NOTE_INITIAL_DAYS + SETTLEMENT_NOTE_FOLLOWUP_DAYS;
+
+export type SettlementNotePhase = 'initial' | 'followup' | 'hidden';
+
+/**
+ * Instant `calendarDays` after `completedAtIso`. Returns null if missing/unparseable.
+ */
+export function addCalendarDaysIso(
+  completedAtIso: string | null | undefined,
+  calendarDays: number
+): string | null {
+  if (!completedAtIso) return null;
+  const ms = Date.parse(completedAtIso);
+  if (!Number.isFinite(ms)) return null;
+  return new Date(ms + calendarDays * 24 * 60 * 60 * 1000).toISOString();
 }
 
 /**
- * The instant at which the settlement note should stop showing: the moment
- * `workingDays` business days (Mon–Fri, IST) after `completedAtIso`. Deterministic
- * — advances one calendar day at a time and only counts non-weekend days.
- * Returns null if the timestamp is missing/unparseable.
+ * Instant at which settlement guidance stops showing entirely
+ * (`SETTLEMENT_NOTE_HIDE_AFTER_DAYS` calendar days after completion).
  */
 export function settlementNoteVisibleUntil(
   completedAtIso: string | null | undefined,
-  workingDays = 10
+  calendarDays: number = SETTLEMENT_NOTE_HIDE_AFTER_DAYS
 ): string | null {
-  if (!completedAtIso) return null;
-  let ms = Date.parse(completedAtIso);
-  if (!Number.isFinite(ms)) return null;
-  let counted = 0;
-  while (counted < workingDays) {
-    ms += 24 * 60 * 60 * 1000;
-    if (!isWeekendIST(ms)) counted++;
-  }
-  return new Date(ms).toISOString();
+  return addCalendarDaysIso(completedAtIso, calendarDays);
 }
 
 /**
- * Whether refund settlement guidance should be visible RIGHT NOW: the refund is
- * confirmed complete and is still inside the 10-working-day guidance window.
+ * Whether any settlement guidance should be visible right now.
  */
 export function isSettlementNoteVisible(
   completedAtIso: string | null | undefined,
   now: number = Date.now(),
-  workingDays = 10
+  calendarDays: number = SETTLEMENT_NOTE_HIDE_AFTER_DAYS
 ): boolean {
-  const until = settlementNoteVisibleUntil(completedAtIso, workingDays);
+  const until = settlementNoteVisibleUntil(completedAtIso, calendarDays);
   if (!until) return false;
   return now < Date.parse(until);
+}
+
+/**
+ * Which settlement message (if any) to show for a completed refund.
+ */
+export function getSettlementNotePhase(
+  completedAtIso: string | null | undefined,
+  now: number = Date.now()
+): SettlementNotePhase {
+  const initialUntil = addCalendarDaysIso(completedAtIso, SETTLEMENT_NOTE_INITIAL_DAYS);
+  const hideUntil = addCalendarDaysIso(completedAtIso, SETTLEMENT_NOTE_HIDE_AFTER_DAYS);
+  if (!initialUntil || !hideUntil) return 'hidden';
+  if (now < Date.parse(initialUntil)) return 'initial';
+  if (now < Date.parse(hideUntil)) return 'followup';
+  return 'hidden';
 }

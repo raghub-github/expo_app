@@ -17,6 +17,7 @@ import {
   isRefundFailed,
   settledRefundTotal,
 } from '@/lib/orders/refund-status';
+import { OrderNum } from '@/components/orders/orders-typography';
 
 interface OrderForPaymentCard {
   id: number;
@@ -296,7 +297,7 @@ function PaymentDetailsModal({
                     index % 2 === 0 ? 'bg-white' : 'bg-gray-50/50'
                   }`}
                 >
-                  <td className={`${TD} font-medium`}>{record.paymentId}</td>
+                  <td className={`${TD} font-medium orders-num`}>{record.paymentId}</td>
                   <td className={`${TD} font-mono`}>{formatPlain(record.transactionId)}</td>
                   <td className={`${TD} font-mono`}>{formatPlain(record.mpTransactionId)}</td>
                   <td className={TD}>
@@ -867,13 +868,13 @@ export default function PaymentDetails({
         <div className="space-y-1.5">
           <p className="text-[12px]">
             <span className="text-gati-text-secondary font-medium">Total Amount (CTC):</span>{' '}
-            <span className="text-gati-text-primary font-semibold">
+            <span className="text-gati-text-primary font-semibold orders-num">
               {formatCurrency(resolved.totalAmount)}
             </span>
           </p>
           <p className="text-[12px]">
             <span className="text-gati-text-secondary font-medium">Merchant amount (CTM):</span>{' '}
-            <span className="text-gati-text-primary font-semibold">
+            <span className="text-gati-text-primary font-semibold orders-num">
               {formatCurrency(resolved.totalCtm)}
             </span>
           </p>
@@ -882,7 +883,7 @@ export default function PaymentDetails({
           resolved.gatiCashUsed > 0 ? (
             <p className="text-[12px]">
               <span className="text-gati-text-secondary font-medium">GatiCash used:</span>{' '}
-              <span className="text-gati-text-primary font-semibold">
+              <span className="text-gati-text-primary font-semibold orders-num">
                 {formatCurrency(resolved.gatiCashUsed)}
               </span>
             </p>
@@ -891,7 +892,7 @@ export default function PaymentDetails({
             <span className="text-gati-text-secondary font-medium">
               Total Discount Granted on Ord:
             </span>{' '}
-            <span className="text-gati-text-primary font-medium">
+            <span className="text-gati-text-primary font-medium orders-num">
               {formatCurrency(resolved.totalDiscountGranted)}
             </span>
             {resolved.discountOfferSource ? (
@@ -908,13 +909,13 @@ export default function PaymentDetails({
             resolved.deliveryFeeQuoted != null &&
             resolved.deliveryFeeQuoted > 0 ? (
               <span className="text-gati-text-primary font-medium inline-flex items-center gap-1.5">
-                <span className="line-through text-slate-400 decoration-slate-400">
+                <span className="line-through text-slate-400 decoration-slate-400 orders-num">
                   {formatCurrency(resolved.deliveryFeeQuoted)}
                 </span>
-                <span>₹0.00</span>
+                <OrderNum>₹0.00</OrderNum>
               </span>
             ) : (
-              <span className="text-gati-text-primary font-medium">
+              <span className="text-gati-text-primary font-medium orders-num">
                 {formatCurrency(resolved.deliveryFee)}
               </span>
             )}
@@ -948,7 +949,7 @@ export default function PaymentDetails({
           resolved.refundAmount > 0 ? (
             <p className="text-[12px]">
               <span className="text-gati-text-secondary font-medium">Refund Amount:</span>{' '}
-              <span className="text-gati-text-primary font-medium">
+              <span className="text-gati-text-primary font-medium orders-num">
                 {formatCurrency(resolved.refundAmount)}
               </span>
             </p>

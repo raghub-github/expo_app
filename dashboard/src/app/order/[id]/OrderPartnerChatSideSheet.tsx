@@ -9,6 +9,7 @@ import {
   type PartnerChatCacheEntry,
   type PartnerChatCacheMessage,
 } from "@/lib/partnerChatCache";
+import { OrderMixedText, OrderNum } from "@/components/orders/orders-typography";
 
 export type PartnerChatMessage = PartnerChatCacheMessage;
 
@@ -113,10 +114,14 @@ export function OrderPartnerChatSideSheet({
               <h2 className="text-base font-semibold leading-tight text-slate-900">
                 Order Chat History
               </h2>
-              <p className="mt-1 truncate text-[11px] text-slate-500">{headerSubtitle}</p>
+              <p className="mt-1 truncate text-[11px] text-slate-500">
+                <OrderMixedText>{headerSubtitle}</OrderMixedText>
+              </p>
               {messages.length > 0 ? (
                 <p className="mt-0.5 text-[10px] text-slate-400">
-                  {messages.length} message{messages.length === 1 ? "" : "s"}
+                  <OrderMixedText>
+                    {`${messages.length} message${messages.length === 1 ? "" : "s"}`}
+                  </OrderMixedText>
                 </p>
               ) : null}
             </div>
@@ -192,7 +197,9 @@ export function OrderPartnerChatSideSheet({
                         isCustomer ? "text-left" : "text-right"
                       }`}
                     >
-                      {formatMessageTime(msg.createdAt)}
+                      {formatMessageTime(msg.createdAt) ? (
+                        <OrderNum>{formatMessageTime(msg.createdAt)}</OrderNum>
+                      ) : null}
                     </p>
                   </div>
                 );

@@ -1,13 +1,13 @@
 "use client";
 
-const PAGE_BG = "#F4F6F9";
+const PAGE_BG = "#f3f5f7";
 const CONTENT_BG = "#FFFFFF";
-const MINT_GREEN = "#4EE5C1";
+const ACCENT = "#121212";
 
 /** Skeleton matching Food Orders list layout (filters, tabs, table). */
 export function FoodOrdersPageSkeleton() {
   return (
-    <div className="space-y-2 w-full max-w-full overflow-x-hidden animate-in fade-in duration-150" style={{ backgroundColor: PAGE_BG }}>
+    <div className="orders-typo space-y-2 w-full max-w-full overflow-x-hidden animate-in fade-in duration-150" style={{ backgroundColor: PAGE_BG }}>
       <div className="p-2" style={{ backgroundColor: CONTENT_BG }}>
         <div className="flex flex-wrap items-center gap-2">
           {[1, 2, 3, 4, 5, 6, 7].map((i) => (
@@ -23,7 +23,7 @@ export function FoodOrdersPageSkeleton() {
             <div
               key={i}
               className="flex-1 h-9 rounded-md animate-pulse"
-              style={{ backgroundColor: i === 1 ? MINT_GREEN : "#F0F2F5", opacity: i === 1 ? 0.55 : 1 }}
+              style={{ backgroundColor: i === 1 ? ACCENT : "#eef1f4", opacity: i === 1 ? 0.35 : 1 }}
             />
           ))}
         </div>

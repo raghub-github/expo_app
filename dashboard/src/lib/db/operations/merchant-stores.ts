@@ -11,6 +11,7 @@ export interface MerchantStoreRow {
   store_id: string;
   parent_id: number;
   store_name: string;
+  owner_full_name?: string | null;
   store_display_name: string | null;
   store_description: string | null;
   store_email: string | null;
@@ -26,6 +27,7 @@ export interface MerchantStoreRow {
   banner_url: string | null;
   gallery_images: string[] | null;
   cuisine_types: string[] | null;
+  food_categories?: string[] | null;
   avg_preparation_time_minutes: number | null;
   /** Default packaging fee (₹) for the store; per-item overrides use merchant_menu_items.packaging_charges */
   packaging_charge_amount: number | null;
@@ -53,6 +55,7 @@ export interface MerchantStoreRow {
   delist_reason: string | null;
   delisted_at: Date | null;
   store_type: string | null;
+  custom_store_type?: string | null;
   operational_status: string | null;
   created_at: Date;
   updated_at: Date;
@@ -812,34 +815,85 @@ export async function getMerchantStoreById(
   areaManagerId: number | null
 ): Promise<(MerchantStoreRow & { parent?: MerchantParentRow }) | null> {
   const sql = getSql();
-  const scope =
+  const isMissingFoodCategoriesColumnError = (e: unknown): boolean => {
+    const err = e as { code?: string; message?: string };
+    return (
+      err?.code === "42703" &&
+      String(err.message ?? "")
+        .toLowerCase()
+        .includes("food_categories")
+    );
+  };
+
+  const selectWithFoodCategories =
     areaManagerId != null
-      ? await sql`
-    SELECT id, store_id, parent_id, store_name, store_display_name, store_description, store_email,
+      ? sql`
+    SELECT id, store_id, parent_id, store_name, owner_full_name, store_display_name, store_description, store_email,
            store_phones, full_address, landmark, city, state, postal_code, country, latitude, longitude,
-           banner_url, gallery_images, cuisine_types, avg_preparation_time_minutes,           min_order_amount, delivery_radius_km, is_pure_veg, accepts_online_payment, accepts_cash,
+           banner_url, gallery_images, cuisine_types, food_categories, avg_preparation_time_minutes,
+           packaging_charge_amount, min_order_amount, delivery_radius_km, is_pure_veg, accepts_online_payment, accepts_cash,
            area_manager_id, status, approval_status, approval_reason, approved_by, approved_at,
            rejected_reason, current_onboarding_step, onboarding_completed, onboarding_completed_at,
            is_active, is_accepting_orders, is_available, last_activity_at, deleted_at, deleted_by,
-           delist_reason, delisted_at, store_type, operational_status, created_at, updated_at,
+           delist_reason, delisted_at, store_type, custom_store_type, operational_status, created_at, updated_at,
            created_by, updated_by
     FROM merchant_stores
     WHERE id = ${id} AND deleted_at IS NULL AND area_manager_id = ${areaManagerId}
     LIMIT 1
   `
-      : await sql`
-    SELECT id, store_id, parent_id, store_name, store_display_name, store_description, store_email,
+      : sql`
+    SELECT id, store_id, parent_id, store_name, owner_full_name, store_display_name, store_description, store_email,
            store_phones, full_address, landmark, city, state, postal_code, country, latitude, longitude,
-           banner_url, gallery_images, cuisine_types, avg_preparation_time_minutes,           min_order_amount, delivery_radius_km, is_pure_veg, accepts_online_payment, accepts_cash,
+           banner_url, gallery_images, cuisine_types, food_categories, avg_preparation_time_minutes,
+           packaging_charge_amount, min_order_amount, delivery_radius_km, is_pure_veg, accepts_online_payment, accepts_cash,
            area_manager_id, status, approval_status, approval_reason, approved_by, approved_at,
            rejected_reason, current_onboarding_step, onboarding_completed, onboarding_completed_at,
            is_active, is_accepting_orders, is_available, last_activity_at, deleted_at, deleted_by,
-           delist_reason, delisted_at, store_type, operational_status, created_at, updated_at,
+           delist_reason, delisted_at, store_type, custom_store_type, operational_status, created_at, updated_at,
            created_by, updated_by
     FROM merchant_stores
     WHERE id = ${id} AND deleted_at IS NULL
     LIMIT 1
   `;
+
+  const selectWithoutFoodCategories =
+    areaManagerId != null
+      ? sql`
+    SELECT id, store_id, parent_id, store_name, owner_full_name, store_display_name, store_description, store_email,
+           store_phones, full_address, landmark, city, state, postal_code, country, latitude, longitude,
+           banner_url, gallery_images, cuisine_types, NULL::text[] AS food_categories, avg_preparation_time_minutes,
+           packaging_charge_amount, min_order_amount, delivery_radius_km, is_pure_veg, accepts_online_payment, accepts_cash,
+           area_manager_id, status, approval_status, approval_reason, approved_by, approved_at,
+           rejected_reason, current_onboarding_step, onboarding_completed, onboarding_completed_at,
+           is_active, is_accepting_orders, is_available, last_activity_at, deleted_at, deleted_by,
+           delist_reason, delisted_at, store_type, custom_store_type, operational_status, created_at, updated_at,
+           created_by, updated_by
+    FROM merchant_stores
+    WHERE id = ${id} AND deleted_at IS NULL AND area_manager_id = ${areaManagerId}
+    LIMIT 1
+  `
+      : sql`
+    SELECT id, store_id, parent_id, store_name, owner_full_name, store_display_name, store_description, store_email,
+           store_phones, full_address, landmark, city, state, postal_code, country, latitude, longitude,
+           banner_url, gallery_images, cuisine_types, NULL::text[] AS food_categories, avg_preparation_time_minutes,
+           packaging_charge_amount, min_order_amount, delivery_radius_km, is_pure_veg, accepts_online_payment, accepts_cash,
+           area_manager_id, status, approval_status, approval_reason, approved_by, approved_at,
+           rejected_reason, current_onboarding_step, onboarding_completed, onboarding_completed_at,
+           is_active, is_accepting_orders, is_available, last_activity_at, deleted_at, deleted_by,
+           delist_reason, delisted_at, store_type, custom_store_type, operational_status, created_at, updated_at,
+           created_by, updated_by
+    FROM merchant_stores
+    WHERE id = ${id} AND deleted_at IS NULL
+    LIMIT 1
+  `;
+
+  let scope: unknown;
+  try {
+    scope = await selectWithFoodCategories;
+  } catch (e) {
+    if (!isMissingFoodCategoriesColumnError(e)) throw e;
+    scope = await selectWithoutFoodCategories;
+  }
   const row = Array.isArray(scope) ? scope[0] : scope;
   if (!row) return null;
   const store = row as MerchantStoreRow;

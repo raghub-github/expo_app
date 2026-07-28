@@ -7,6 +7,7 @@ import {
   ORDER_ROUTED_TO_ACTION_LABELS,
   type OrderRoutedToAction,
 } from "@/lib/orders/stamp-order-routed-to-labels";
+import { OrderNum } from "@/components/orders/orders-typography";
 
 export type RoutedToHistoryItem = {
   id: number;
@@ -214,7 +215,7 @@ export function OrderRoutedToHistorySideSheet({
                         <p className="mt-0.5 break-words text-[11px] text-slate-500">{meta}</p>
                       ) : null}
                       <p className="mt-0.5 whitespace-nowrap text-[11px] text-slate-500">
-                        {formatWhen(item.createdAt)}
+                        <OrderNum>{formatWhen(item.createdAt)}</OrderNum>
                       </p>
                     </div>
                     {index === 0 ? (

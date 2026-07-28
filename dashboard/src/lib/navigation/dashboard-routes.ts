@@ -530,6 +530,11 @@ export function getCurrentDashboard(pathname: string): MainNavItem | null {
   // Remove query parameters and hash from pathname
   const cleanPath = pathname.split('?')[0].split('#')[0];
 
+  // Order detail lives outside /dashboard/orders/* but belongs to the Orders module.
+  if (cleanPath === "/order" || cleanPath.startsWith("/order/")) {
+    return mainNavigation.find((n) => n.href === "/dashboard/orders") ?? null;
+  }
+
   const superAdminItem = mainNavigation.find((n) => n.href === "/dashboard/super-admin");
   if (superAdminItem && isSuperAdminNavPath(cleanPath)) {
     return superAdminItem;
@@ -570,6 +575,10 @@ export function getCurrentDashboardSubRoutes(pathname: string): DashboardSubRout
  */
 export function getCurrentPageName(pathname: string): string {
   const cleanPath = pathname.split('?')[0].split('#')[0];
+
+  if (cleanPath === "/order" || cleanPath.startsWith("/order/")) {
+    return "Order Details";
+  }
   
   // Get current dashboard
   const currentDashboard = getCurrentDashboard(cleanPath);
@@ -589,6 +598,14 @@ export function getCurrentPageName(pathname: string): string {
 
   if (cleanPath.startsWith("/dashboard/tickets/queue")) {
     return "Queue";
+  }
+
+  if (cleanPath.startsWith("/dashboard/area-managers/stores/onboarding-failed")) {
+    return "Onboarding failed";
+  }
+
+  if (cleanPath.startsWith("/dashboard/area-managers/stores/resubmit-onboarding")) {
+    return "Resubmit onboarding details";
   }
   
   // Check if we're on a sub-route (most specific first: match longer hrefs so wallet-history → Wallet & Earnings)

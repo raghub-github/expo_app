@@ -3,10 +3,12 @@
 
 import { useEffect, useState, useCallback, useMemo } from "react";
 import { useRouter } from "next/navigation";
-import { Store, Loader2, Plus, LogOut, Leaf } from "lucide-react";
+import { Store, Plus, LogOut, Leaf } from "lucide-react";
+import { toast } from "sonner";
 import LogoutConfirmModal from "@/components/LogoutConfirmModal";
 import NeedHelpBadge from "@/components/NeedHelpBadge";
-import { StoreVerificationRejectionsBadge } from "@/components/partner/StoreVerificationRejectionsBadge";
+import { PartnerAccountLoadingSpinner } from "@/components/PartnerAccountLoadingSpinner";
+import { StoreVerificationRejectedHeaderBanner } from "@/components/partner/StoreVerificationRejectedHeaderBanner";
 import {
   getStoreOnboardingBadge,
   isStoreOnboardingSubmitted,
@@ -74,16 +76,32 @@ export function PartnersAllStoresPage() {
           setStatus("retry");
           return;
         }
-        try {
-          await fetch("/api/auth/logout", { method: "POST", credentials: "include" });
-        } catch {
-          // ignore
-        }
         const code = result.code;
-        const errMsg = result.error;
-        const query =
-          code === "MERCHANT_NOT_FOUND" && errMsg ? `?error=${encodeURIComponent(errMsg)}` : "";
-        window.location.href = `/auth/login${query}`;
+        const fatalAuth =
+          res.status === 401 ||
+          code === "SESSION_INVALID" ||
+          code === "DEVICE_SESSION_INVALID" ||
+          code === "MERCHANT_NOT_FOUND";
+
+        if (fatalAuth) {
+          // Only clear cookies when the backend says the session is genuinely gone.
+          if (code === "SESSION_INVALID" || code === "DEVICE_SESSION_INVALID") {
+            try {
+              const { partnerLogoutLocal } = await import("@/lib/auth/partner-logout");
+              await partnerLogoutLocal({ redirectToLogin: false, clearStoreSelection: true });
+            } catch {
+              // ignore
+            }
+          }
+          const errMsg = result.error;
+          const query =
+            code === "MERCHANT_NOT_FOUND" && errMsg ? `?error=${encodeURIComponent(errMsg)}` : "";
+          window.location.href = `/auth/login${query}`;
+          return;
+        }
+
+        // Ambiguous / non-auth failure — keep cookies, show retry (do NOT logout).
+        setStatus("retry");
         return;
       }
 
@@ -124,7 +142,12 @@ export function PartnersAllStoresPage() {
     if (typeof window === "undefined") return;
     const u = new URL(window.location.href);
     if (u.searchParams.get("verification_updates_submitted") !== "1") return;
+    // Keep flag briefly so single-store auto-dashboard redirect does not fire.
     setVerificationSubmittedBanner(true);
+    toast.success(
+      "Your updates have been successfully submitted. Our team will review and verify them shortly.",
+      { duration: 5500 }
+    );
     const hi = u.searchParams.get("highlight_store")?.trim();
     if (hi) setHighlightStorePublicId(hi);
     u.searchParams.delete("verification_updates_submitted");
@@ -156,9 +179,10 @@ export function PartnersAllStoresPage() {
     const parentId = data?.parentId ?? data?.onboardingProgress?.parent_id ?? 0;
     const store = storeId && data?.stores ? data.stores.find((s) => s.store_id === storeId) : undefined;
     const rej = store?.verification_step_rejections;
+    const openRej = Array.isArray(rej) ? rej : [];
     const fixParam =
-      Array.isArray(rej) && rej.length > 0
-        ? `&verification_fix_step=${Math.min(...rej.map((r) => Number(r.step_number)))}`
+      openRej.length > 0
+        ? `&verification_fix_step=${Math.min(...openRej.map((r) => Number(r.step_number)))}`
         : "";
     const query = storeId
       ? `?parent_id=${parentId}&store_id=${encodeURIComponent(storeId)}${fixParam}`
@@ -193,6 +217,18 @@ export function PartnersAllStoresPage() {
     return list;
   }, [data?.stores, highlightStorePublicId]);
 
+  /** Prefer highlighted store; else first store with open verification rejection. */
+  const storeNeedingVerificationFix = useMemo(() => {
+    const stores = data?.stores ?? [];
+    if (highlightStorePublicId) {
+      const highlighted = stores.find(
+        (s) => s.store_id === highlightStorePublicId && storeHasOpenVerificationFix(s)
+      );
+      if (highlighted) return highlighted;
+    }
+    return stores.find((s) => storeHasOpenVerificationFix(s)) ?? null;
+  }, [data?.stores, highlightStorePublicId]);
+
   /** Single approved child → open dashboard. Do NOT auto-open the register-store form
    * for a single submitted/pending store — stay on the All Stores picker so "View Store"
    * after onboarding does not dump the merchant back into the form. */
@@ -218,15 +254,7 @@ export function PartnersAllStoresPage() {
   if (status === "loading") {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-slate-50 via-blue-50 to-purple-50 px-4">
-        <div className="text-center space-y-6">
-          <div className="inline-flex p-4 rounded-full bg-blue-100">
-            <Store className="w-10 h-10 text-blue-600" />
-          </div>
-          <div className="flex justify-center">
-            <Loader2 className="h-8 w-8 animate-spin text-blue-600" />
-          </div>
-          <p className="text-sm font-medium text-slate-700">Loading your account...</p>
-        </div>
+        <PartnerAccountLoadingSpinner label="Loading your account..." />
       </div>
     );
   }
@@ -272,10 +300,7 @@ export function PartnersAllStoresPage() {
   ) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-slate-50 via-blue-50 to-purple-50 px-4">
-        <div className="text-center space-y-4">
-          <Loader2 className="mx-auto h-8 w-8 animate-spin text-blue-600" />
-          <p className="text-sm font-medium text-slate-700">Opening your store…</p>
-        </div>
+        <PartnerAccountLoadingSpinner size="sm" label="Opening your store…" />
       </div>
     );
   }
@@ -283,11 +308,11 @@ export function PartnersAllStoresPage() {
   const handleSignOut = async () => {
     setIsLoggingOut(true);
     try {
-      clearPartnerStoreSelection();
-      await fetch("/api/auth/logout", { method: "POST" });
-      window.location.href = "/auth/login";
+      const { partnerLogoutLocal } = await import("@/lib/auth/partner-logout");
+      await partnerLogoutLocal({ redirectToLogin: true, clearStoreSelection: true });
     } catch (error) {
       console.error("Logout error:", error);
+      window.location.href = "/auth/login";
     } finally {
       setIsLoggingOut(false);
       setShowLogoutModal(false);
@@ -321,37 +346,64 @@ export function PartnersAllStoresPage() {
         </div>
 
         <div className="px-3 sm:px-6 pt-3 sm:pt-4 pb-2 sm:pb-3">
-          <div className="mx-auto max-w-5xl text-center">
-            <p className="text-sm sm:text-base font-semibold text-slate-900">{parentName || ownerName || "Partner"}</p>
+          <div className="mx-auto max-w-5xl flex flex-wrap items-center justify-center gap-x-3 gap-y-1 text-center sm:gap-x-4">
+            <p className="text-sm sm:text-base font-semibold text-slate-900">
+              {parentName || ownerName || "Partner"}
+            </p>
+            <span className="hidden sm:inline text-slate-300" aria-hidden>
+              ·
+            </span>
             <p className="text-xs sm:text-sm text-slate-500 font-mono">{parentMerchantId ?? "—"}</p>
             {ownerEmail ? (
-              <p className="text-[11px] sm:text-xs text-slate-500 truncate max-w-[92vw] mx-auto">{ownerEmail}</p>
+              <>
+                <span className="hidden sm:inline text-slate-300" aria-hidden>
+                  ·
+                </span>
+                <p className="text-[11px] sm:text-xs text-slate-500 truncate max-w-[min(92vw,28rem)]">
+                  {ownerEmail}
+                </p>
+              </>
             ) : null}
           </div>
         </div>
       </header>
 
-      <main className="flex-1 px-3 sm:px-6 pb-8 sm:pb-10">
-        <div className="mx-auto max-w-6xl">
-          {verificationSubmittedBanner && (
-            <div
-              className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-950 shadow-sm flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between mb-4"
-              role="status"
-            >
-              <p className="leading-relaxed pr-2">
-                Your updates have been successfully submitted. Our team will review and verify them shortly.
-              </p>
-              <button
-                type="button"
-                onClick={() => setVerificationSubmittedBanner(false)}
-                className="shrink-0 self-end sm:self-start rounded-lg border border-emerald-300 bg-white px-3 py-1.5 text-xs font-semibold text-emerald-900 hover:bg-emerald-100"
-              >
-                Dismiss
-              </button>
+      <main className="flex-1 px-2 sm:px-4 lg:px-6 pb-8 sm:pb-10">
+        <div className="mx-auto max-w-7xl">
+          {storeNeedingVerificationFix ? (
+            <div className="mt-3 sm:mt-4 w-full">
+              <StoreVerificationRejectedHeaderBanner
+                badgeLabel={
+                  (storeNeedingVerificationFix.verification_step_rejections?.length ?? 0) > 1
+                    ? "Few onboarding details Rejected"
+                    : "Onboarding detail Rejected"
+                }
+                title="Please review & fix your onboarding"
+                primaryMessage={
+                  storeNeedingVerificationFix.store_name
+                    ? `${storeNeedingVerificationFix.store_name} — update the rejected steps so we can verify your store.`
+                    : "Update the rejected steps so we can verify your store."
+                }
+                secondaryMessage="Complete onboarding is mandatory to keep your store active on GatiMitra."
+                ctaLabel="Fix onboarding details"
+                onFix={() => {
+                  const storeId = storeNeedingVerificationFix.store_id;
+                  const parentId = data?.parentId ?? data?.onboardingProgress?.parent_id ?? 0;
+                  const rej = storeNeedingVerificationFix.verification_step_rejections;
+                  const openRej = Array.isArray(rej) ? rej : [];
+                  const fixStep =
+                    openRej.length > 0
+                      ? Math.min(...openRej.map((r) => Number(r.step_number)))
+                      : 4;
+                  router.push(
+                    `/auth/resubmit-onboarding?store_id=${encodeURIComponent(storeId)}&parent_id=${encodeURIComponent(String(parentId))}&verification_fix_step=${fixStep}&returnTo=${encodeURIComponent("/partners/all-stores?picker=1")}`
+                  );
+                }}
+              />
             </div>
-          )}
+          ) : null}
 
-          <div className="text-center mt-2">
+          <div className="text-center mt-5 sm:mt-6">
             <p className="text-xs sm:text-sm font-semibold tracking-wide text-slate-500 uppercase">Select Store</p>
           </div>
 
@@ -361,33 +413,37 @@ export function PartnersAllStoresPage() {
                 {storesOrdered.map((store) => {
                   const badge = getStatusBadge(store);
                   const pendingOnboarding = isOnboardingPending(store);
+                  const hasOpenFix = storeHasOpenVerificationFix(store);
                   const isApproved = String(store.approval_status || "").toUpperCase() === "APPROVED";
-                  const hasStepRejections =
-                    Array.isArray(store.verification_step_rejections) && store.verification_step_rejections.length > 0;
-                  const anyResubmitted =
-                    hasStepRejections && (store.verification_step_rejections ?? []).some((r) => r.merchant_resubmitted_at);
                   const canContinueOnboarding = storeNeedsOnboardingAction(store);
                   const isHighlighted = !!highlightStorePublicId && store.store_id === highlightStorePublicId;
-                  const bannerSrc =
-                    !pendingOnboarding && store.banner_url
-                      ? normalizeMerchantStoreMediaUrl(store.banner_url) ?? store.banner_url
-                      : null;
+                  // Always prefer store banner when available — including rejected onboarding.
+                  const bannerSrc = store.banner_url
+                    ? normalizeMerchantStoreMediaUrl(store.banner_url) ?? store.banner_url
+                    : null;
+                  const showDraftPlaceholder = pendingOnboarding && !hasOpenFix && !bannerSrc;
 
                   const onCardClick = () => {
-                    if (isApproved) {
-                      goToDashboard(store.store_id);
+                    // Open rejection steps still need the fix flow.
+                    if (hasOpenFix) {
+                      const parentId = data?.parentId ?? data?.onboardingProgress?.parent_id ?? 0;
+                      const openRej = store.verification_step_rejections ?? [];
+                      const fixStep =
+                        openRej.length > 0
+                          ? Math.min(...openRej.map((r) => Number(r.step_number)))
+                          : 4;
+                      router.push(
+                        `/auth/resubmit-onboarding?store_id=${encodeURIComponent(store.store_id)}&parent_id=${encodeURIComponent(String(parentId))}&verification_fix_step=${fixStep}&returnTo=${encodeURIComponent("/partners/all-stores?picker=1")}`
+                      );
                       return;
                     }
-                    if (isStoreOnboardingSubmitted(store) && !storeHasOpenVerificationFix(store)) {
-                      return;
-                    }
-                    if (canContinueOnboarding && !(anyResubmitted && hasStepRejections)) {
+                    // Incomplete draft → continue onboarding form.
+                    if (canContinueOnboarding && !isStoreOnboardingSubmitted(store) && !isApproved) {
                       goToOnboarding(store.store_id);
                       return;
                     }
-                    if (canContinueOnboarding) {
-                      goToOnboarding(store.store_id);
-                    }
+                    // Verified or under review / submitted — always allow partner dashboard entry.
+                    goToDashboard(store.store_id);
                   };
 
                   return (
@@ -403,7 +459,7 @@ export function PartnersAllStoresPage() {
                       >
                       <div className="flex flex-col items-center">
                         <div className="relative">
-                          {pendingOnboarding ? (
+                          {showDraftPlaceholder ? (
                             <span className="absolute -top-1 left-1/2 z-10 -translate-x-1/2 inline-flex items-center justify-center rounded-full bg-emerald-500 p-1.5 shadow-md ring-2 ring-white">
                               <Leaf className="h-3.5 w-3.5 text-white" aria-hidden />
                             </span>
@@ -413,21 +469,21 @@ export function PartnersAllStoresPage() {
                               isHighlighted ? "ring-4 ring-emerald-300" : "ring-2 ring-slate-200"
                             }`}
                           >
-                            {pendingOnboarding ? (
-                              <div className="absolute inset-0 flex items-center justify-center bg-gradient-to-br from-emerald-50 via-teal-50 to-emerald-100">
-                                <span className="text-4xl sm:text-5xl font-bold text-emerald-700 select-none">P</span>
-                              </div>
-                            ) : bannerSrc ? (
+                            {bannerSrc ? (
                               <img
                                 src={bannerSrc}
                                 alt=""
                                 className="absolute inset-0 h-full w-full object-cover"
                                 loading="lazy"
                               />
+                            ) : showDraftPlaceholder ? (
+                              <div className="absolute inset-0 flex items-center justify-center bg-gradient-to-br from-emerald-50 via-teal-50 to-emerald-100">
+                                <span className="text-4xl sm:text-5xl font-bold text-emerald-700 select-none">P</span>
+                              </div>
                             ) : (
                               <div className="absolute inset-0 bg-gradient-to-br from-slate-100 via-blue-50 to-purple-50" />
                             )}
-                            {!pendingOnboarding ? (
+                            {bannerSrc || !showDraftPlaceholder ? (
                               <div className="absolute inset-0 bg-gradient-to-t from-black/55 via-black/15 to-transparent" />
                             ) : null}
                             <span
@@ -440,17 +496,6 @@ export function PartnersAllStoresPage() {
                           <p className="mt-2 text-[11px] sm:text-xs text-slate-600 font-mono truncate max-w-[160px] text-center">
                             {store.store_id}
                           </p>
-
-                          {hasStepRejections ? (
-                            <div className="mt-2 w-[160px] sm:w-[180px]">
-                              <StoreVerificationRejectionsBadge
-                                rejections={store.verification_step_rejections}
-                                variant="inline"
-                                hideInlineResubmittedChip={anyResubmitted}
-                                className="max-w-full"
-                              />
-                            </div>
-                          ) : null}
                         </div>
                       </div>
 
@@ -461,7 +506,7 @@ export function PartnersAllStoresPage() {
                         </div>
                       </button>
 
-                      {pendingOnboarding && canContinueOnboarding ? (
+                      {pendingOnboarding && canContinueOnboarding && !hasOpenFix ? (
                         <button
                           type="button"
                           onClick={(e) => {

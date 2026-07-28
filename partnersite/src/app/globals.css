@@ -251,6 +251,70 @@ body.modal-open-blur aside * {
   animation: store-closed-marquee 28s linear infinite;
 }
 
+/* Dual opposite gradient rings around a centered icon (account loading) */
+@keyframes partner-spin-cw {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes partner-spin-ccw {
+  to {
+    transform: rotate(-360deg);
+  }
+}
+
+.partner-dual-spinner {
+  position: relative;
+  width: 7rem;
+  height: 7rem;
+  margin-inline: auto;
+}
+
+.partner-dual-spinner--sm {
+  width: 6rem;
+  height: 6rem;
+}
+
+.partner-dual-spinner__ring {
+  position: absolute;
+  inset: 0;
+  border-radius: 9999px;
+  background: conic-gradient(
+    from 0deg,
+    #2563eb 0%,
+    #22d3ee 28%,
+    #a855f7 55%,
+    transparent 72%
+  );
+  -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 3.5px), #000 calc(100% - 3.5px));
+  mask: radial-gradient(farthest-side, transparent calc(100% - 3.5px), #000 calc(100% - 3.5px));
+  animation: partner-spin-cw 1.05s linear infinite;
+}
+
+.partner-dual-spinner__ring--rev {
+  inset: 0.55rem;
+  background: conic-gradient(
+    from 180deg,
+    #f59e0b 0%,
+    #ef4444 30%,
+    #3b82f6 58%,
+    transparent 75%
+  );
+  -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 3px), #000 calc(100% - 3px));
+  mask: radial-gradient(farthest-side, transparent calc(100% - 3px), #000 calc(100% - 3px));
+  animation: partner-spin-ccw 1.4s linear infinite;
+}
+
+.partner-dual-spinner__core {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+
 /* Merchant shell: one band height for left sidebar store row + primary page headers + panel headers */
 :root {
   /* Fixed partner shell header band (critical for strict dashboards like Support Inbox) */

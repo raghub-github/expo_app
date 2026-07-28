@@ -47,7 +47,7 @@ export function CustomersGlobalSearchView() {
   const trimmed = search.trim();
   const shouldFetch = trimmed.length > 0;
 
-  const { data, isLoading, error, isError } = useCustomersQuery({
+  const { data, isLoading, isFetching, isPlaceholderData, error, isError } = useCustomersQuery({
     page,
     limit: 20,
     search: trimmed || undefined,
@@ -56,6 +56,8 @@ export function CustomersGlobalSearchView() {
 
   const customers = data?.customers ?? [];
   const structured = isStructuredCustomerSearch(trimmed);
+  const searchResultsFresh =
+    shouldFetch && !isLoading && !isFetching && !isPlaceholderData && !isError;
 
   /** Prefer exact customer_id match when redirecting (e.g. GM100001 before GM1000010). */
   const customersSorted = useMemo(() => {
@@ -71,27 +73,61 @@ export function CustomersGlobalSearchView() {
   }, [customers, trimmed]);
 
   /** Show table only for name-like search when several users match. */
-  const showMultiNameList = !isError && customersSorted.length > 1 && !structured;
+  const showMultiNameList = searchResultsFresh && customersSorted.length > 1 && !structured;
 
   /** Auto-open detail for a single user, or structured multi-match (open first). */
   useLayoutEffect(() => {
-    if (isLoading || isError || !shouldFetch) return;
+    // Wait for fresh results for *this* search — placeholder/stale rows open the wrong customer.
+    if (!searchResultsFresh) return;
     if (customersSorted.length === 0) return;
     const q = encodeURIComponent(trimmed);
-    if (customersSorted.length === 1) {
-      router.replace(`/dashboard/customers/${customersSorted[0].id}?search=${q}`);
+
+    const shouldAutoRedirect =
+      customersSorted.length === 1 ||
+      (customersSorted.length > 1 && structured);
+
+    if (!shouldAutoRedirect) return;
+
+    const match = customersSorted[0];
+    const compactGm = trimmed.replace(/\s/g, "");
+    // For GM… searches, only open when the public customer_id matches exactly.
+    if (/^GM\d+$/i.test(compactGm) && match.customerId.toLowerCase() !== compactGm.toLowerCase()) {
       return;
     }
-    if (customersSorted.length > 1 && structured) {
-      router.replace(`/dashboard/customers/${customersSorted[0].id}?search=${q}`);
+
+    // Navigate by public customer_id (GM…) so detail loads from customers.customer_id, not stale numeric pk.
+    const targetKey = encodeURIComponent(match.customerId);
+    const targetPath = `/dashboard/customers/${targetKey}`;
+
+    // Already on the correct customer detail page — no redirect needed.
+    // This prevents an infinite search → redirect loop when searching from the detail page.
+    if (
+      typeof window !== "undefined" &&
+      window.location.pathname === targetPath
+    ) {
+      return;
     }
-  }, [isLoading, isError, shouldFetch, customersSorted, router, structured, trimmed]);
+
+    router.replace(`${targetPath}?search=${q}`);
+  }, [searchResultsFresh, customersSorted, router, structured, trimmed]);
 
   const handlePageChange = (newPage: number) => {
     setPage(newPage);
   };
 
-  const showInitialLoading = shouldFetch && !isError && isLoading && customersSorted.length === 0;
+  const showInitialLoading =
+    shouldFetch && !isError && (isLoading || isFetching || isPlaceholderData) && customersSorted.length === 0;
+
+  // Structured search (GM/phone) that will auto-open detail — one continuous "Loading customer…" instead of list then detail.
+  const willAutoOpenDetail =
+    shouldFetch &&
+    !isError &&
+    structured &&
+    (isLoading ||
+      isFetching ||
+      isPlaceholderData ||
+      customersSorted.length === 1 ||
+      customersSorted.length > 1);
 
   if (permissionsLoading) {
     return (
@@ -123,11 +159,11 @@ export function CustomersGlobalSearchView() {
     );
   }
 
-  if (showInitialLoading) {
+  if (showInitialLoading || (willAutoOpenDetail && !showMultiNameList && !isError)) {
     return (
       <div className="space-y-6 w-full max-w-full min-w-0 overflow-x-hidden px-2 sm:px-4 md:px-6">
         <div className="rounded-2xl border border-teal-200/50 bg-gradient-to-br from-[#E6F6F5]/90 to-white p-12 text-center ring-1 ring-[#0f2d42]/5">
-          <p className="text-[#0f2d42]/70">Loading…</p>
+          <p className="text-[#0f2d42]/70">Loading customer…</p>
         </div>
       </div>
     );
@@ -145,7 +181,7 @@ export function CustomersGlobalSearchView() {
             </div>
           )}
 
-          {trimmed && !isLoading && !isError && customersSorted.length === 0 && (
+          {trimmed && searchResultsFresh && customersSorted.length === 0 && (
             <div className="rounded-xl border border-amber-200/80 bg-amber-50/80 p-4">
               <div className="flex items-start space-x-3">
                 <AlertCircle className="h-5 w-5 text-amber-700 mt-0.5 shrink-0" />

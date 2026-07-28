@@ -167,7 +167,7 @@ export function TicketFilters({ variant = "sidebar", onClose, dark = false }: Ti
     : "block text-[10px] font-medium text-gray-600 mb-0.5";
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
+    <div className="tickets-typo flex h-full min-h-0 flex-col">
       {/* Header: FILTERS + count | Clear, square search (reference layout) */}
       <div
         className={`flex items-center justify-between gap-1.5 shrink-0 px-2.5 py-2.5 border-b ${
@@ -184,7 +184,7 @@ export function TicketFilters({ variant = "sidebar", onClose, dark = false }: Ti
           </span>
           {appliedTicketFilterCount > 0 && (
             <span
-              className={`rounded-full px-1 py-0.5 text-[9px] font-semibold shrink-0 leading-none ${
+              className={`tickets-num rounded-full px-1 py-0.5 text-[9px] font-semibold shrink-0 leading-none ${
                 dark ? "bg-blue-500/30 text-blue-200" : "bg-blue-100 text-blue-700"
               }`}
             >
@@ -596,9 +596,7 @@ export function TicketFilters({ variant = "sidebar", onClose, dark = false }: Ti
           type="button"
           onClick={handleApplyFilters}
           disabled={applyBusy}
-          className={`flex w-full cursor-pointer items-center justify-center gap-2 rounded border border-blue-600 bg-blue-600 px-3 py-2 text-[12px] font-semibold text-white shadow-none transition-colors disabled:cursor-not-allowed disabled:opacity-80 enabled:hover:opacity-95 ${
-            dark ? "enabled:hover:bg-blue-500" : "enabled:hover:bg-blue-700"
-          }`}
+          className="flex w-full cursor-pointer items-center justify-center gap-2 rounded-[10px] border border-[#121212] bg-[#121212] px-3 py-2 text-[12px] font-semibold text-white shadow-none transition-colors disabled:cursor-not-allowed disabled:opacity-80 enabled:hover:bg-black"
         >
           {applyBusy ? (
             <>

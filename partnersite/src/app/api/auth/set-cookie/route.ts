@@ -6,6 +6,8 @@ import { validateMerchantFromSession } from "@/lib/auth/validate-merchant";
 import {
   replaceSessionForDevice,
   generateDeviceId,
+  clientIpFromRequest,
+  deviceLabelFromUserAgent,
 } from "@/lib/auth/merchant-session-db";
 import { deviceIdCookie } from "@/lib/auth/auth-cookie-names";
 
@@ -147,7 +149,13 @@ export async function POST(request: NextRequest) {
     const deviceId = (bodyDeviceId && bodyDeviceId.trim()) || cookieDeviceId || generateDeviceId();
 
     try {
-      await replaceSessionForDevice(deviceId.trim(), merchantId);
+      const ua = request.headers.get("user-agent");
+      await replaceSessionForDevice(deviceId.trim(), merchantId, {
+        userAgent: ua,
+        ipAddress: clientIpFromRequest(request.headers),
+        deviceLabel: deviceLabelFromUserAgent(ua),
+        loginMethod: "unknown",
+      });
     } catch (sessionDbErr) {
       console.error("[set-cookie] merchant_sessions error (table may not exist yet):", sessionDbErr);
     }

@@ -19,7 +19,7 @@ import {
   type OrdersCoreRow,
 } from "@/lib/db/operations/orders-core";
 import { getOrderDetailEnrichment } from "@/lib/db/operations/order-detail-enrichment";
-import { getPersonRideOrderDetail } from "@/lib/db/operations/person-ride-order-detail";
+import { getPersonRideOrderDetail, getPersonRideBillingContext } from "@/lib/db/operations/person-ride-order-detail";
 import {
   getOrderRiderAssignmentSnapshot,
   type OrderRiderAssignmentSnapshot,
@@ -155,7 +155,9 @@ async function enrichSingleOrderDetail(
         console.error("[GET /api/orders/core] order detail enrichment failed", err);
         return null;
       }),
-      getOrderTimelineEntriesWithFallback(orderId).catch((err) => {
+      getOrderTimelineEntriesWithFallback(orderId, {
+        includeRiderMilestones: first?.orderType === "person_ride",
+      }).catch((err) => {
         console.error("[GET /api/orders/core] timeline fetch failed", err);
         return [] as OrderTimelineEntry[];
       }),
@@ -245,16 +247,49 @@ async function enrichSingleOrderDetail(
       ] as unknown as typeof enrichedData;
     }
     if (first?.orderType === "person_ride" && orderId != null) {
-      const rideDetail = await getPersonRideOrderDetail(orderId);
-      if (rideDetail) {
-        enrichedData = [
-          {
-            ...(enrichedData[0] as Record<string, unknown>),
-            rideDetail,
-            pickupOtp: rideDetail.pickupOtp ?? (enrichedData[0] as { pickupOtp?: string | null }).pickupOtp,
-          },
-        ] as unknown as typeof enrichedData;
-      }
+      const [rideDetail, billingCtx] = await Promise.all([
+        getPersonRideOrderDetail(orderId),
+        getPersonRideBillingContext(orderId),
+      ]);
+      enrichedData = [
+        {
+          ...(enrichedData[0] as Record<string, unknown>),
+          ...(rideDetail
+            ? {
+                rideDetail,
+                pickupOtp:
+                  rideDetail.pickupOtp ??
+                  (enrichedData[0] as { pickupOtp?: string | null }).pickupOtp,
+              }
+            : {}),
+          billingSnapshot: billingCtx.billingSnapshot,
+          // Prefer live DB payment fields over list-cache stale values
+          paymentStatus:
+            billingCtx.paymentStatus ??
+            (enrichedData[0] as { paymentStatus?: string | null }).paymentStatus ??
+            null,
+          paymentMethod:
+            billingCtx.paymentMethod ??
+            (enrichedData[0] as { paymentMethod?: string | null }).paymentMethod ??
+            null,
+          fareAmount:
+            billingCtx.fareAmount ??
+            (enrichedData[0] as { fareAmount?: number | null }).fareAmount ??
+            null,
+          itemTotal:
+            billingCtx.itemTotal ??
+            (enrichedData[0] as { itemTotal?: number | null }).itemTotal ??
+            null,
+          grandTotal:
+            billingCtx.grandTotal ??
+            (enrichedData[0] as { grandTotal?: number | null }).grandTotal ??
+            null,
+          tipAmount:
+            billingCtx.tipAmount ??
+            (enrichedData[0] as { tipAmount?: number | null }).tipAmount ??
+            null,
+        },
+      ] as unknown as typeof enrichedData;
     }
     data = enrichedData;
   } else if (storeId != null && Number.isFinite(storeId)) {

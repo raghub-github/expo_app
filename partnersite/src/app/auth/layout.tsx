@@ -27,7 +27,7 @@ function showHelpOnRoute(pathname: string): boolean {
   if (p.startsWith("/auth/register") && !p.includes("register-store")) return false;
   if (p.includes("register-store")) return false;
   if (p.startsWith("/auth/search")) return false;
-  if (p.startsWith("/auth/callback")) return false;
+  if (p.startsWith("/auth/resubmit-onboarding")) return false;
   if (p.startsWith("/auth/register-phone")) return false;
   if (p.startsWith("/auth/register-business")) return false;
   if (p.startsWith("/auth/register-parent")) return false;
@@ -38,11 +38,13 @@ export default function AuthLayout({ children }: { children: React.ReactNode }) 
   const pathname = usePathname();
   const showHelp = showHelpOnRoute(pathname ?? "");
   const isRegister = (pathname ?? "").includes("/auth/register");
+  const isResubmit = (pathname ?? "").includes("/auth/resubmit-onboarding");
+  const useLoraPage = isRegister || isResubmit;
 
   return (
     <div
       className={`${authLora.variable} ${authPoppins.variable} ${
-        isRegister ? "auth-register-page" : ""
+        useLoraPage ? "auth-register-page" : ""
       }`}
     >
       {children}

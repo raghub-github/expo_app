@@ -11,14 +11,15 @@ import { formatRiderOrderStatusDisplayLabel } from "@/lib/riders/rider-order-sta
 import { PersonRideTableRowsSkeleton } from "@/components/skeletons/PersonRideOrdersPageSkeleton";
 import { loadClientSnapshot, saveClientSnapshot } from "@/lib/client-route-snapshot";
 
-const PAGE_BG = "#F4F6F9";
+const PAGE_BG = "#f3f5f7";
 const CONTENT_BG = "#FFFFFF";
-const MINT_GREEN = "#4EE5C1";
-const INACTIVE_BG = "#F0F2F5";
-const INACTIVE_TEXT = "#1E3A8A";
-const BORDER_COLOR = "#D5DBDE";
-const DARK_TEXT = "#000000";
-const TABLE_TEXT = "#000000";
+const ACCENT = "#121212";
+const ACCENT_TEXT = "#FFFFFF";
+const INACTIVE_BG = "#eef1f4";
+const INACTIVE_TEXT = "#121212";
+const BORDER_COLOR = "rgba(18,18,18,0.12)";
+const DARK_TEXT = "#121212";
+const TABLE_TEXT = "#121212";
 const ORDER_TAG_BG = "#E8F0FE";
 const ORDER_TAG_TEXT = "#1E40AF";
 
@@ -61,8 +62,6 @@ const STATUS_TABS: StatusTab[] = [
   { value: "reached_store", label: "REACHED PICKUP" },
   { value: "picked_up", label: "PICKED UP" },
   { value: "in_transit", label: "IN TRANSIT" },
-  { value: "delivered", label: "COMPLETED" },
-  { value: "cancelled", label: "CANCELLED" },
 ];
 
 const STATUS_BADGE: Record<string, { bg: string; text: string }> = {
@@ -155,7 +154,7 @@ export async function fetchPersonRideOrders(
 
 function getButtonStyles(isActive: boolean) {
   if (isActive) {
-    return { backgroundColor: MINT_GREEN, color: DARK_TEXT, borderColor: BORDER_COLOR };
+    return { backgroundColor: ACCENT, color: ACCENT_TEXT, borderColor: ACCENT };
   }
   return { backgroundColor: INACTIVE_BG, color: INACTIVE_TEXT, borderColor: BORDER_COLOR };
 }
@@ -182,6 +181,18 @@ export default function PersonRideOrdersClient() {
     setDateFrom(urlDateFrom);
     setDateTo(urlDateTo);
   }, [urlDateFrom, urlDateTo]);
+
+  // Ops board no longer lists completed/cancelled tabs — clear stale URL status.
+  useEffect(() => {
+    if (urlStatus !== "delivered" && urlStatus !== "cancelled") return;
+    const params = new URLSearchParams(searchParams.toString());
+    params.delete("status");
+    params.delete("page");
+    const qs = params.toString();
+    router.replace(qs ? `/dashboard/orders/person-ride?${qs}` : "/dashboard/orders/person-ride", {
+      scroll: false,
+    });
+  }, [urlStatus, searchParams, router]);
 
   const limit = 20;
 
@@ -241,7 +252,8 @@ export default function PersonRideOrdersClient() {
   const total = data?.total ?? cachedListData?.total ?? initialSnapshot?.total ?? 0;
   const totalPages = data?.totalPages ?? cachedListData?.totalPages ?? initialSnapshot?.totalPages ?? 1;
   const showTableLoading = hasMounted && isLoading && orders.length === 0;
-  const isRefreshing = hasMounted && isFetching && orders.length > 0;
+  const [manualRefreshing, setManualRefreshing] = useState(false);
+  const isRefreshing = manualRefreshing || (hasMounted && isFetching && orders.length > 0);
 
   const replaceParams = useCallback(
     (patch: Record<string, string | null>) => {
@@ -284,9 +296,15 @@ export default function PersonRideOrdersClient() {
   const hasDateFilter = Boolean(urlDateFrom || urlDateTo);
 
   return (
-    <div className="space-y-2 w-full max-w-full overflow-x-hidden" style={{ backgroundColor: PAGE_BG }}>
+    <div
+      className="orders-typo space-y-2 w-full max-w-full min-h-full overflow-x-hidden"
+      style={{ backgroundColor: PAGE_BG }}
+    >
       {/* Date filters */}
-      <div className="p-2" style={{ backgroundColor: CONTENT_BG }}>
+      <div
+        className="rounded-xl border p-2 shadow-[0_1px_3px_rgba(18,18,18,0.04)]"
+        style={{ backgroundColor: CONTENT_BG, borderColor: BORDER_COLOR }}
+      >
         <div className="flex flex-wrap items-end gap-2">
           <div>
             <label className="block text-[10px] font-medium text-gray-500 mb-0.5">Date from</label>
@@ -312,7 +330,7 @@ export default function PersonRideOrdersClient() {
             type="button"
             onClick={applyDateFilters}
             className="h-7 px-3 rounded-md text-xs font-semibold border cursor-pointer"
-            style={{ backgroundColor: MINT_GREEN, color: DARK_TEXT, borderColor: BORDER_COLOR }}
+            style={{ backgroundColor: ACCENT, color: ACCENT_TEXT, borderColor: ACCENT }}
           >
             Apply
           </button>
@@ -371,10 +389,13 @@ export default function PersonRideOrdersClient() {
         <div className="flex items-center gap-2">
           <button
             type="button"
-            onClick={() => void refetch()}
+            onClick={() => {
+              setManualRefreshing(true);
+              void Promise.resolve(refetch()).finally(() => setManualRefreshing(false));
+            }}
             disabled={isFetching && orders.length === 0}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium border cursor-pointer disabled:opacity-60"
-            style={{ backgroundColor: MINT_GREEN, color: DARK_TEXT, borderColor: BORDER_COLOR }}
+            style={{ backgroundColor: ACCENT, color: ACCENT_TEXT, borderColor: ACCENT }}
           >
             <RefreshCw className={`h-3.5 w-3.5 ${isRefreshing ? "animate-spin" : ""}`} />
             Refresh
@@ -442,13 +463,15 @@ export default function PersonRideOrdersClient() {
                 </td>
               </tr>
             ) : orders.length === 0 ? (
-              <tr>
-                <td colSpan={9} className="px-2 py-6 text-center text-xs" style={{ color: TABLE_TEXT }}>
-                  {hasActiveSearch
-                    ? `No rides found for ${urlSearchType}: "${urlSearch}"`
-                    : "No person ride orders found."}
-                </td>
-              </tr>
+              hasActiveSearch || hasDateFilter ? (
+                <tr>
+                  <td colSpan={9} className="px-2 py-6 text-center text-xs" style={{ color: TABLE_TEXT }}>
+                    {hasActiveSearch
+                      ? `No rides found for ${urlSearchType}: "${urlSearch}"`
+                      : "No person ride orders found for these dates."}
+                  </td>
+                </tr>
+              ) : null
             ) : (
               orders.map((order) => {
                 const publicId = displayOrderId(order);

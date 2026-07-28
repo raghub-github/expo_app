@@ -52,6 +52,20 @@ export function rejectionRequiresNewFileUpload(detail: Step4RejectionDetail | nu
   return detail.issues.includes("INVALID_OR_UNCLEAR_DOCUMENT_IMAGE");
 }
 
+export function formatRejectionAlertMessage(
+  docLabel: string,
+  reason: string | null | undefined,
+  detail: Step4RejectionDetail | null
+): string {
+  if (detail?.issues?.length) {
+    const labels = detail.issues.map((c) => DOCUMENT_REJECTION_ISSUE_LABELS[c]).join("; ");
+    const note = detail.note?.trim();
+    return note ? `${docLabel}: ${labels}. ${note}` : `${docLabel}: ${labels}.`;
+  }
+  if (reason?.trim()) return reason.trim();
+  return `${docLabel} was rejected. Please upload a valid document.`;
+}
+
 export function buildStoredRejectionReason(issues: DocumentRejectionIssueCode[], note?: string): string {
   const parts = issues.map((c) => DOCUMENT_REJECTION_ISSUE_LABELS[c]);
   let s = parts.join(". ");

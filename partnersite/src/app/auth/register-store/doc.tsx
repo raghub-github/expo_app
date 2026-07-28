@@ -12,6 +12,7 @@ import {
   normalizeAadhaarVerifiedDetails,
 } from "@/lib/mask-aadhaar";
 import { pickGstFetchedBusinessInfo, pickBankFetchedInfo, pickUpiFetchedInfo } from "@/lib/merchant-doc-auto-verification";
+import { rejectionDetailForDocType } from "@/lib/merchant-store-document-rejection";
 
 /** Cashfree requires https:// — DigiLocker return page notifies the opener via postMessage. */
 function digilockerRedirectUrl(): string {
@@ -394,10 +395,78 @@ function normalizeStep4ActiveSection(raw: string): DocActiveSection | null {
   return valid.has(section as DocActiveSection) ? (section as DocActiveSection) : null;
 }
 
+/** Which Store Documents tabs have open admin rejections (for verification-fix lock). */
+function rejectedDocSectionsFromDocuments(
+  d: Record<string, unknown>,
+  bankRejectionExtra?: string | null
+): DocActiveSection[] {
+  const out: DocActiveSection[] = [];
+  if (adminRejectionText(d, 'pan_rejection_reason')) out.push('pan');
+  if (adminRejectionText(d, 'aadhaar_rejection_reason')) out.push('aadhar');
+
+  const detailRoot =
+    (d.step4_rejection_details && typeof d.step4_rejection_details === 'object'
+      ? d.step4_rejection_details
+      : null) ||
+    (d.step_rejection_detail && typeof d.step_rejection_detail === 'object'
+      ? d.step_rejection_detail
+      : null);
+
+  const licenceRejected = Boolean(
+    adminRejectionText(d, 'fssai_rejection_reason') ||
+      adminRejectionText(d, 'drug_license_rejection_reason') ||
+      adminRejectionText(d, 'pharmacist_certificate_rejection_reason') ||
+      adminRejectionText(d, 'pharmacy_council_registration_rejection_reason') ||
+      adminRejectionText(d, 'trade_license_rejection_reason') ||
+      adminRejectionText(d, 'shop_establishment_rejection_reason') ||
+      adminRejectionText(d, 'udyam_rejection_reason') ||
+      adminRejectionText(d, 'other_rejection_reason') ||
+      rejectionDetailForDocType(detailRoot, 'fssai') ||
+      rejectionDetailForDocType(detailRoot, 'drug_license') ||
+      rejectionDetailForDocType(detailRoot, 'pharmacist_certificate') ||
+      rejectionDetailForDocType(detailRoot, 'pharmacy_council_registration') ||
+      rejectionDetailForDocType(detailRoot, 'trade_license') ||
+      rejectionDetailForDocType(detailRoot, 'shop_establishment') ||
+      rejectionDetailForDocType(detailRoot, 'udyam') ||
+      rejectionDetailForDocType(detailRoot, 'other')
+  );
+  if (licenceRejected) out.push('licence');
+
+  if (
+    adminRejectionText(d, 'gst_rejection_reason') ||
+    rejectionDetailForDocType(detailRoot, 'gst')
+  ) {
+    out.push('gst');
+  }
+
+  const bankFromDoc = adminRejectionText(d, 'bank_proof_rejection_reason');
+  const bankExtra =
+    typeof bankRejectionExtra === 'string' && bankRejectionExtra.trim()
+      ? bankRejectionExtra.trim()
+      : null;
+  if (bankFromDoc || bankExtra || rejectionDetailForDocType(detailRoot, 'bank_proof')) {
+    out.push('bank');
+  }
+
+  // PAN / Aadhaar from structured detail when reason string is empty
+  if (!out.includes('pan') && rejectionDetailForDocType(detailRoot, 'pan')) out.unshift('pan');
+  if (!out.includes('aadhar') && rejectionDetailForDocType(detailRoot, 'aadhaar')) {
+    const panIdx = out.indexOf('pan');
+    out.splice(panIdx >= 0 ? panIdx + 1 : 0, 0, 'aadhar');
+  }
+
+  return out;
+}
+
 interface CombinedComponentProps {
   initialDocuments?: Partial<DocumentData> | null;
   /** Active dashboard verification step 6 (bank) rejection text when not yet on `bank_proof_rejection_reason`. */
   verificationBankRejectionReason?: string | null;
+  /**
+   * When true (partner step 4 locked for verification fix): open the first rejected doc tab
+   * and disable all non-rejected tabs (PAN / Aadhaar / GST / Bank / etc.).
+   */
+  verificationDocFixActive?: boolean;
   initialStoreSetup?: Partial<StoreSetupData> | null;
   onDocumentComplete?: (documents: DocumentData, savedPatch?: Record<string, unknown>) => void | Promise<void>;
   /** Called on every "Save & Continue" to persist current doc data. Returns the built patch so completion can reuse it (avoids duplicate bank/doc uploads). */
@@ -445,6 +514,7 @@ const defaultStoreSetupData: StoreSetupData = {
 const CombinedDocumentStoreSetup: React.FC<CombinedComponentProps> = ({
   initialDocuments,
   verificationBankRejectionReason = null,
+  verificationDocFixActive = false,
   initialStoreSetup,
   onDocumentComplete,
   onDocumentSave,
@@ -1513,6 +1583,43 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
     return adminRejectionText(d, 'gst_rejection_reason');
   }, [documents]);
 
+  const rejectedDocSections = useMemo(
+    () =>
+      rejectedDocSectionsFromDocuments(
+        documents as Record<string, unknown>,
+        verificationBankRejectionReason
+      ),
+    [documents, verificationBankRejectionReason]
+  );
+  const rejectedDocSectionSet = useMemo(
+    () => new Set<DocActiveSection>(rejectedDocSections),
+    [rejectedDocSections]
+  );
+
+  // Verification fix: land on first rejected doc tab (e.g. FSSAI → licence), not Bank.
+  useEffect(() => {
+    if (!verificationDocFixActive || currentStep !== 'documents') return;
+    if (rejectedDocSections.length === 0) return;
+    if (!rejectedDocSectionSet.has(activeSection)) {
+      setActiveSection(rejectedDocSections[0]!);
+    }
+  }, [
+    verificationDocFixActive,
+    currentStep,
+    rejectedDocSections,
+    rejectedDocSectionSet,
+    activeSection,
+  ]);
+
+  const goToSectionFromSidebarLocked = (section: DocActiveSection) => {
+    if (verificationDocFixActive) {
+      if (!rejectedDocSectionSet.has(section)) return;
+      setActiveSection(section);
+      return;
+    }
+    goToSectionFromSidebar(section);
+  };
+
   // Sync from parent when navigating back so saved data is shown (including persisted document URLs)
   // Track the last hydrated initialDocuments to detect when it changes
   const lastHydratedDocumentsRef = useRef<string>('');
@@ -1710,34 +1817,43 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
         }
 
         // After reload: jump to the first incomplete doc subsection (don't stay on a finished PAN).
-        const savedSection = typeof init.step4_active_section === 'string' ? String(init.step4_active_section) : '';
-        const normalizedSection = savedSection ? normalizeStep4ActiveSection(savedSection) : null;
-        if (normalizedSection) {
-          setActiveSection(normalizedSection);
+        // Verification fix: always open the first rejected tab (FSSAI → licence), never Bank just because it was last saved.
+        const rejectedOnLoad = rejectedDocSectionsFromDocuments(
+          init as Record<string, unknown>,
+          verificationBankRejectionReason
+        );
+        if (verificationDocFixActive && rejectedOnLoad.length > 0) {
+          setActiveSection(rejectedOnLoad[0]!);
         } else {
-          const panDone = Boolean(init.pan_is_verified);
-          const bank = (init.bank && typeof init.bank === 'object' ? init.bank : null) as Record<string, unknown> | null;
-          const bankStarted = Boolean(
-            (bank?.account_number && String(bank.account_number).trim()) ||
-              (bank?.upi_id && String(bank.upi_id).trim()) ||
-              (bank?.bank_proof_file_url && String(bank.bank_proof_file_url).trim())
-          );
-          const licenceStarted = Boolean(
-            (typeof init.fssai_number === 'string' && init.fssai_number.trim()) ||
-              (typeof init.drug_license_number === 'string' && init.drug_license_number.trim()) ||
-              (typeof init.trade_license_number === 'string' && init.trade_license_number.trim()) ||
-              (typeof init.shop_establishment_number === 'string' && init.shop_establishment_number.trim()) ||
-              (typeof init.udyam_number === 'string' && init.udyam_number.trim())
-          );
-          const gstStarted = Boolean(typeof init.gst_number === 'string' && init.gst_number.trim());
-          if (bankStarted) setActiveSection('bank');
-          else if (licenceStarted) setActiveSection('licence');
-          else if (gstStarted) setActiveSection('gst');
-          else if (panDone) setActiveSection('aadhar');
+          const savedSection = typeof init.step4_active_section === 'string' ? String(init.step4_active_section) : '';
+          const normalizedSection = savedSection ? normalizeStep4ActiveSection(savedSection) : null;
+          if (normalizedSection) {
+            setActiveSection(normalizedSection);
+          } else {
+            const panDone = Boolean(init.pan_is_verified);
+            const bank = (init.bank && typeof init.bank === 'object' ? init.bank : null) as Record<string, unknown> | null;
+            const bankStarted = Boolean(
+              (bank?.account_number && String(bank.account_number).trim()) ||
+                (bank?.upi_id && String(bank.upi_id).trim()) ||
+                (bank?.bank_proof_file_url && String(bank.bank_proof_file_url).trim())
+            );
+            const licenceStarted = Boolean(
+              (typeof init.fssai_number === 'string' && init.fssai_number.trim()) ||
+                (typeof init.drug_license_number === 'string' && init.drug_license_number.trim()) ||
+                (typeof init.trade_license_number === 'string' && init.trade_license_number.trim()) ||
+                (typeof init.shop_establishment_number === 'string' && init.shop_establishment_number.trim()) ||
+                (typeof init.udyam_number === 'string' && init.udyam_number.trim())
+            );
+            const gstStarted = Boolean(typeof init.gst_number === 'string' && init.gst_number.trim());
+            if (bankStarted) setActiveSection('bank');
+            else if (licenceStarted) setActiveSection('licence');
+            else if (gstStarted) setActiveSection('gst');
+            else if (panDone) setActiveSection('aadhar');
+          }
         }
       }
     }
-  }, [initialDocuments, currentStep]);
+  }, [initialDocuments, currentStep, verificationDocFixActive, verificationBankRejectionReason]);
   
   // Reset hydration ref when switching to documents step to force re-hydration
   useEffect(() => {
@@ -2350,6 +2466,26 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
           : undefined;
 
       let nextSection: DocActiveSection | null = null;
+      if (verificationDocFixActive) {
+        // Stay within rejected tabs only — never auto-advance to Bank/GST/PAN.
+        const curIdx = rejectedDocSections.indexOf(activeSection);
+        const nextRejected =
+          curIdx >= 0 && curIdx < rejectedDocSections.length - 1
+            ? rejectedDocSections[curIdx + 1]!
+            : null;
+        if (nextRejected) {
+          setActiveSection(nextRejected);
+          if (onDocumentSave) {
+            void onDocumentSave({
+              ...documents,
+              step4_active_section: nextRejected,
+            } as DocumentData & { step4_active_section?: string });
+          }
+        } else if (onDocumentComplete) {
+          onDocumentComplete(documents, patchArg);
+        }
+        return;
+      }
       if (activeSection === 'pan') {
         nextSection = 'aadhar';
       } else if (activeSection === 'aadhar') {
@@ -2866,6 +3002,15 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
     if (currentStep === 'store-setup') {
       setCurrentStep('documents');
     } else if (currentStep === 'documents') {
+      if (verificationDocFixActive) {
+        const curIdx = rejectedDocSections.indexOf(activeSection);
+        if (curIdx > 0) {
+          setActiveSection(rejectedDocSections[curIdx - 1]!);
+        } else {
+          onBack();
+        }
+        return;
+      }
       const sectionOrder: DocActiveSection[] = showOtherDocs
         ? ['pan', 'aadhar', 'licence', 'gst', 'bank', 'other']
         : ['pan', 'aadhar', 'licence', 'gst', 'bank'];
@@ -4865,8 +5010,12 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
                 ) : (
                   <button
                     type="button"
-                    onClick={() => goToSectionFromSidebar('licence')}
-                    disabled={docSectionOrder.indexOf('licence') > maxReachedSectionIdx}
+                    onClick={() => goToSectionFromSidebarLocked('licence')}
+                    disabled={
+                      verificationDocFixActive
+                        ? !rejectedDocSectionSet.has('licence')
+                        : docSectionOrder.indexOf('licence') > maxReachedSectionIdx
+                    }
                     className="mt-0.5 text-[11px] text-indigo-700 hover:text-indigo-900 hover:underline text-left disabled:opacity-50 disabled:no-underline disabled:cursor-not-allowed"
                   >
                     Optional docs recommended.
@@ -4879,7 +5028,12 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
               {(['pan', 'aadhar', 'licence', 'gst', 'bank'] as const).map((section) => {
                 const isActive = activeSection === section;
                 const sIdx = docSectionOrder.indexOf(section);
-                const locked = sIdx > maxReachedSectionIdx;
+                const lockedByProgress = sIdx > maxReachedSectionIdx;
+                const lockedByVerificationFix =
+                  verificationDocFixActive && !rejectedDocSectionSet.has(section);
+                const locked = verificationDocFixActive
+                  ? lockedByVerificationFix
+                  : lockedByProgress;
                 const showRejected =
                   section === 'pan'
                     ? !!docRejection.pan
@@ -4910,13 +5064,15 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
                   type="button"
                   onClick={() => {
                     if (locked) return;
-                    goToSectionFromSidebar(section);
+                    goToSectionFromSidebarLocked(section);
                   }}
                   disabled={locked}
                   aria-disabled={locked}
                   title={
                     locked
-                      ? 'Use Save & Continue to open the next section'
+                      ? verificationDocFixActive
+                        ? 'Only rejected documents can be edited'
+                        : 'Use Save & Continue to open the next section'
                       : undefined
                   }
                   className={`w-full rounded-lg px-3 py-2 text-left text-xs font-medium transition-colors focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-inset ${

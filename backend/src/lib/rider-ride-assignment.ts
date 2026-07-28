@@ -144,7 +144,13 @@ export async function recordRiderOrderAccepted(
        OR delivery_assignments.rider_id = EXCLUDED.rider_id
   `);
 
-  if (serviceType === "food" || serviceType === "parcel") {
+  // Dashboard Rider Activity Log reads order_rider_assignments + timeline events.
+  // Food/parcel already wrote these; person_ride must too or logs stay empty.
+  if (
+    serviceType === "food" ||
+    serviceType === "parcel" ||
+    serviceType === "person_ride"
+  ) {
     await recordRiderAssignmentAccepted(tx, {
       orderCorePk: input.orderCorePk,
       orderIdText,

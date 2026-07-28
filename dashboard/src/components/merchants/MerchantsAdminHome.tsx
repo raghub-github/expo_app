@@ -5,10 +5,10 @@ import { useRouter } from "next/navigation";
 import {
   Area,
   AreaChart,
-  Bar,
-  BarChart,
   CartesianGrid,
   Legend,
+  Line,
+  LineChart,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -78,7 +78,7 @@ function storeTypeBadgeClass(storeType: string | null | undefined): string {
   const t = (storeType ?? "").toUpperCase();
   if (t === "CLOUD_KITCHEN") return "bg-orange-50 text-orange-700 ring-1 ring-orange-200/60";
   if (t === "PHARMA") return "bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200/60";
-  return "bg-indigo-50 text-indigo-700 ring-1 ring-indigo-200/60";
+  return "bg-[#121212]/08 text-[#121212] ring-1 ring-[#121212]/10";
 }
 
 function StatusPill({ status }: { status: string }) {
@@ -142,7 +142,7 @@ function TrendPeriodSelect({
     <select
       value={value}
       onChange={(e) => onChange(e.target.value as TrendPresetValue)}
-      className={`h-8 rounded-lg border border-gray-200 bg-white pl-2.5 pr-7 text-xs font-medium text-gray-700 shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 ${className}`}
+      className={`h-8 rounded-[10px] border border-[#121212]/10 bg-white pl-2.5 pr-7 text-xs font-medium text-[#121212] shadow-sm focus:border-[#121212]/25 focus:outline-none focus:ring-1 focus:ring-[#121212]/15 ${className}`}
       aria-label="Trend period"
     >
       {TREND_PRESETS.map((p) => (
@@ -178,15 +178,15 @@ function TrendChartControls({
             type="date"
             value={trendFromInput}
             onChange={(e) => onTrendFromChange(e.target.value)}
-            className="h-8 rounded-lg border border-gray-200 bg-white px-2 text-xs shadow-sm focus:border-indigo-500 focus:outline-none"
+            className="h-8 rounded-[10px] border border-[#121212]/10 bg-white px-2 text-xs text-[#121212] shadow-sm focus:border-[#121212]/25 focus:outline-none"
             aria-label="Trend from date"
           />
-          <span className="text-xs text-gray-300">–</span>
+          <span className="text-xs text-[#121212]/30">–</span>
           <input
             type="date"
             value={trendToInput}
             onChange={(e) => onTrendToChange(e.target.value)}
-            className="h-8 rounded-lg border border-gray-200 bg-white px-2 text-xs shadow-sm focus:border-indigo-500 focus:outline-none"
+            className="h-8 rounded-[10px] border border-[#121212]/10 bg-white px-2 text-xs text-[#121212] shadow-sm focus:border-[#121212]/25 focus:outline-none"
             aria-label="Trend to date"
           />
         </>
@@ -321,8 +321,8 @@ export function MerchantsAdminHome({
       count: stats?.total ?? 0,
       hint: growthTotal > 0 ? `+ ${growthTotal} in ${trendLabel.toLowerCase()}` : null,
       icon: Store,
-      iconBg: "bg-violet-100 text-violet-600",
-      accent: "border-violet-100",
+      iconBg: "bg-[#121212] text-white",
+      accent: "border-[#121212]/08",
     },
     {
       key: "verified" as const,
@@ -330,8 +330,8 @@ export function MerchantsAdminHome({
       count: stats?.verified ?? 0,
       hint: stats?.total ? `${verifiedPct}% of total stores` : null,
       icon: CheckCircle,
-      iconBg: "bg-emerald-100 text-emerald-600",
-      accent: "border-emerald-100",
+      iconBg: "bg-emerald-100 text-emerald-700",
+      accent: "border-[#121212]/08",
     },
     {
       key: "pending" as const,
@@ -339,8 +339,8 @@ export function MerchantsAdminHome({
       count: stats?.pending ?? 0,
       hint: stats?.pending ? "Requires attention" : null,
       icon: Clock,
-      iconBg: "bg-amber-100 text-amber-600",
-      accent: "border-amber-100",
+      iconBg: "bg-amber-100 text-amber-700",
+      accent: "border-[#121212]/08",
     },
     {
       key: "drafted" as const,
@@ -348,8 +348,8 @@ export function MerchantsAdminHome({
       count: stats?.drafted ?? 0,
       hint: stats?.drafted ? "Action needed" : null,
       icon: Pencil,
-      iconBg: "bg-sky-100 text-sky-600",
-      accent: "border-sky-100",
+      iconBg: "bg-[#121212]/08 text-[#121212]",
+      accent: "border-[#121212]/08",
     },
     {
       key: "rejected" as const,
@@ -357,8 +357,8 @@ export function MerchantsAdminHome({
       count: stats?.rejected ?? 0,
       hint: stats?.rejected === 0 ? "Good job!" : null,
       icon: Ban,
-      iconBg: "bg-red-100 text-red-600",
-      accent: "border-red-100",
+      iconBg: "bg-red-100 text-red-700",
+      accent: "border-[#121212]/08",
     },
   ];
 
@@ -389,22 +389,22 @@ export function MerchantsAdminHome({
   };
 
   return (
-    <div className="space-y-6 pb-8 -m-3 sm:-m-4 p-3 sm:p-5 bg-[#f4f6fa]">
+    <div className="space-y-6 pb-8 -m-3 sm:-m-4 p-3 sm:p-5 bg-[#F3F7FA]">
       {/* Header */}
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div className="min-w-0">
-          <h1 className="text-xl font-bold tracking-tight text-gray-900">Merchants</h1>
-          <p className="mt-1 text-sm text-gray-500">Manage merchants, verifications and store operations.</p>
+          <h1 className="text-xl font-bold tracking-tight text-[#121212]">Merchants</h1>
+          <p className="mt-1 text-sm text-[#121212]/55">Manage merchants, verifications and store operations.</p>
         </div>
         <div className="flex flex-wrap items-center gap-2.5">
           <div className="relative">
-            <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-gray-400" />
+            <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[#121212]/40" />
             <input
               type="search"
               value={searchInput}
               onChange={(e) => setSearchInput(e.target.value)}
               placeholder="Search store by name, ID or phone"
-              className="h-9 w-52 rounded-xl border border-gray-200 bg-white pl-8 pr-3 text-xs text-gray-900 shadow-sm placeholder:text-gray-400 focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 sm:w-60"
+              className="h-9 w-52 rounded-[10px] border border-[#121212]/10 bg-white pl-8 pr-3 text-xs text-[#121212] shadow-sm placeholder:text-[#121212]/40 focus:border-[#121212]/25 focus:outline-none focus:ring-2 focus:ring-[#121212]/10 sm:w-60"
               onKeyDown={(e) => {
                 if (e.key === "Enter") handleSearch();
               }}
@@ -413,7 +413,7 @@ export function MerchantsAdminHome({
           <select
             value={storeTypeFilter}
             onChange={(e) => onStoreTypeChange(e.target.value)}
-            className="h-9 rounded-xl border border-gray-200 bg-white px-3 text-xs font-medium text-gray-700 shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+            className="h-9 rounded-[10px] border border-[#121212]/10 bg-white px-3 text-xs font-medium text-[#121212] shadow-sm focus:border-[#121212]/25 focus:outline-none focus:ring-2 focus:ring-[#121212]/10"
             aria-label="Store type"
           >
             <option value="">All types</option>
@@ -423,34 +423,34 @@ export function MerchantsAdminHome({
             <option value="PHARMA">Pharma</option>
             <option value="GROCERY">Grocery</option>
           </select>
-          <div className="flex items-center gap-1.5 rounded-xl border border-gray-200 bg-white px-2 py-1 shadow-sm">
+          <div className="flex items-center gap-1.5 rounded-[10px] border border-[#121212]/10 bg-white px-2 py-1 shadow-sm">
             <input
               type="date"
               value={dateFromInput}
               onChange={(e) => onDateFromChange(e.target.value)}
-              className="h-7 border-0 bg-transparent px-1 text-xs text-gray-700 focus:outline-none focus:ring-0"
+              className="h-7 border-0 bg-transparent px-1 text-xs text-[#121212] focus:outline-none focus:ring-0"
               aria-label="From date"
             />
-            <span className="text-xs text-gray-300">–</span>
+            <span className="text-xs text-[#121212]/30">–</span>
             <input
               type="date"
               value={dateToInput}
               onChange={(e) => onDateToChange(e.target.value)}
-              className="h-7 border-0 bg-transparent px-1 text-xs text-gray-700 focus:outline-none focus:ring-0"
+              className="h-7 border-0 bg-transparent px-1 text-xs text-[#121212] focus:outline-none focus:ring-0"
               aria-label="To date"
             />
           </div>
           <button
             type="button"
             onClick={fromDate || toDate ? onClearFilters : onApplyFilters}
-            className="h-9 rounded-xl border border-gray-200 bg-white px-3 text-xs font-semibold text-gray-700 shadow-sm hover:bg-gray-50"
+            className="h-9 rounded-[10px] border border-[#121212]/10 bg-white px-3 text-xs font-semibold text-[#121212] shadow-sm transition-colors hover:bg-white/90"
           >
             {fromDate || toDate ? "Clear" : "Apply"}
           </button>
           <button
             type="button"
             onClick={() => router.push(`/dashboard/merchants/verifications?${portalQuery}`)}
-            className="inline-flex h-9 items-center gap-1.5 rounded-xl bg-gradient-to-r from-indigo-600 to-violet-600 px-4 text-xs font-semibold text-white shadow-md shadow-indigo-200/50 hover:from-indigo-700 hover:to-violet-700"
+            className="inline-flex h-9 items-center gap-1.5 rounded-[10px] bg-[#121212] px-4 text-xs font-semibold text-white transition-colors hover:bg-black"
           >
             <Plus className="h-3.5 w-3.5" />
             Add Merchant
@@ -463,7 +463,7 @@ export function MerchantsAdminHome({
         {(statsLoading ? Array.from({ length: 5 }) : statCards).map((card, i) => {
           if (statsLoading) {
             return (
-              <div key={i} className="h-[108px] animate-pulse rounded-2xl border border-gray-100 bg-white shadow-sm" />
+              <div key={i} className="h-[108px] animate-pulse rounded-[10px] border border-[#121212]/08 bg-white shadow-[0_2px_12px_rgba(18,18,18,0.04)]" />
             );
           }
           const c = card as (typeof statCards)[number];
@@ -474,21 +474,21 @@ export function MerchantsAdminHome({
               key={c.key}
               type="button"
               onClick={() => onCategoryClick(c.key)}
-              className={`flex flex-col rounded-2xl border bg-white p-4 text-left shadow-sm transition hover:shadow-md ${c.accent} ${
-                active ? "ring-2 ring-indigo-500 ring-offset-2" : ""
+              className={`flex flex-col rounded-[10px] border bg-white p-4 text-left shadow-[0_2px_12px_rgba(18,18,18,0.04)] transition hover:shadow-[0_4px_16px_rgba(18,18,18,0.06)] ${c.accent} ${
+                active ? "ring-2 ring-[#121212] ring-offset-2 ring-offset-[#F3F7FA]" : ""
               }`}
             >
               <div className="flex items-center gap-3">
-                <span className={`inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-xl ${c.iconBg}`}>
+                <span className={`inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-[10px] ${c.iconBg}`}>
                   <Icon className="h-5 w-5" />
                 </span>
                 <div className="min-w-0">
-                  <span className="text-2xl font-bold leading-none text-gray-900">{c.count}</span>
-                  <span className="mt-1 block text-xs font-medium text-gray-500">{c.label}</span>
+                  <span className="text-2xl font-bold leading-none text-[#121212]">{c.count}</span>
+                  <span className="mt-1 block text-xs font-medium text-[#121212]/55">{c.label}</span>
                 </div>
               </div>
               {c.hint ? (
-                <span className="mt-3 text-[11px] font-medium leading-snug text-gray-400">{c.hint}</span>
+                <span className="mt-3 text-[11px] font-medium leading-snug text-[#121212]/40">{c.hint}</span>
               ) : (
                 <span className="mt-3 block h-[15px]" aria-hidden />
               )}
@@ -499,11 +499,11 @@ export function MerchantsAdminHome({
 
       {/* Charts */}
       <div className="grid grid-cols-1 gap-5 xl:grid-cols-2">
-        <div className="rounded-2xl border border-gray-100 bg-white p-4 shadow-sm sm:p-5">
+        <div className="rounded-[10px] border border-[#121212]/08 bg-white p-4 shadow-[0_2px_12px_rgba(18,18,18,0.04)] sm:p-5">
           <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
             <div className="flex items-center gap-1.5">
-              <span className="text-sm font-semibold text-gray-800">Merchant Growth</span>
-              <Info className="h-3.5 w-3.5 text-gray-300" aria-hidden />
+              <span className="text-sm font-semibold text-[#121212]">Merchant Growth</span>
+              <Info className="h-3.5 w-3.5 text-[#121212]/30" aria-hidden />
             </div>
             <TrendChartControls
               trendPreset={trendPreset}
@@ -516,31 +516,31 @@ export function MerchantsAdminHome({
           </div>
           <div style={{ height: CHART_HEIGHT }}>
             {overviewQuery.isLoading ? (
-              <div className="h-full animate-pulse rounded-lg bg-gray-100" />
+              <div className="h-full animate-pulse rounded-[10px] bg-[#F3F7FA]" />
             ) : (
               <ResponsiveContainer width="100%" height={CHART_HEIGHT}>
                 <AreaChart data={growthData} margin={{ top: 8, right: 8, left: -16, bottom: 0 }}>
                   <defs>
                     <linearGradient id="growthFillAdmin" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="0%" stopColor="#6366f1" stopOpacity={0.4} />
-                      <stop offset="100%" stopColor="#6366f1" stopOpacity={0.02} />
+                      <stop offset="0%" stopColor="#121212" stopOpacity={0.28} />
+                      <stop offset="100%" stopColor="#121212" stopOpacity={0.02} />
                     </linearGradient>
                   </defs>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" vertical={false} />
-                  <XAxis dataKey="label" tick={{ fontSize: 10, fill: "#9ca3af" }} interval="preserveStartEnd" />
-                  <YAxis tick={{ fontSize: 10, fill: "#9ca3af" }} allowDecimals={false} width={28} />
+                  <CartesianGrid strokeDasharray="3 3" stroke="#e8eef2" vertical={false} />
+                  <XAxis dataKey="label" tick={{ fontSize: 10, fill: "#6b7280" }} interval="preserveStartEnd" />
+                  <YAxis tick={{ fontSize: 10, fill: "#6b7280" }} allowDecimals={false} width={28} />
                   <Tooltip
-                    contentStyle={{ fontSize: 12, borderRadius: 8, border: "1px solid #e5e7eb" }}
+                    contentStyle={{ fontSize: 12, borderRadius: 10, border: "1px solid rgba(18,18,18,0.1)" }}
                     formatter={(value) => [value, "New stores"]}
                   />
                   <Area
                     type="monotone"
                     dataKey="count"
-                    stroke="#6366f1"
+                    stroke="#121212"
                     fill="url(#growthFillAdmin)"
                     strokeWidth={2.5}
                     dot={false}
-                    activeDot={{ r: 4, fill: "#6366f1" }}
+                    activeDot={{ r: 4, fill: "#121212" }}
                   />
                 </AreaChart>
               </ResponsiveContainer>
@@ -548,11 +548,11 @@ export function MerchantsAdminHome({
           </div>
         </div>
 
-        <div className="rounded-2xl border border-gray-100 bg-white p-4 shadow-sm sm:p-5">
+        <div className="rounded-[10px] border border-[#121212]/08 bg-white p-4 shadow-[0_2px_12px_rgba(18,18,18,0.04)] sm:p-5">
           <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
             <div className="flex items-center gap-1.5">
-              <span className="text-sm font-semibold text-gray-800">Verification Trend</span>
-              <Info className="h-3.5 w-3.5 text-gray-300" aria-hidden />
+              <span className="text-sm font-semibold text-[#121212]">Verification Trend</span>
+              <Info className="h-3.5 w-3.5 text-[#121212]/30" aria-hidden />
             </div>
             <TrendChartControls
               trendPreset={trendPreset}
@@ -563,24 +563,69 @@ export function MerchantsAdminHome({
               onTrendToChange={setTrendToInput}
             />
           </div>
-          <div style={{ height: CHART_HEIGHT }}>
+          <div className="bg-white" style={{ height: CHART_HEIGHT }}>
             {overviewQuery.isLoading ? (
-              <div className="h-full animate-pulse rounded-lg bg-gray-100" />
+              <div className="h-full animate-pulse rounded-[10px] bg-[#F3F7FA]" />
             ) : (
               <ResponsiveContainer width="100%" height={CHART_HEIGHT}>
-                <BarChart data={verificationData} margin={{ top: 8, right: 8, left: -16, bottom: 0 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" vertical={false} />
-                  <XAxis dataKey="label" tick={{ fontSize: 10, fill: "#9ca3af" }} interval="preserveStartEnd" />
-                  <YAxis tick={{ fontSize: 10, fill: "#9ca3af" }} allowDecimals={false} width={28} />
-                  <Tooltip contentStyle={{ fontSize: 12, borderRadius: 8, border: "1px solid #e5e7eb" }} />
+                <LineChart data={verificationData} margin={{ top: 12, right: 12, left: -8, bottom: 4 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#e8eef2" vertical={false} />
+                  <XAxis dataKey="label" tick={{ fontSize: 10, fill: "#6b7280" }} interval="preserveStartEnd" />
+                  <YAxis tick={{ fontSize: 10, fill: "#6b7280" }} allowDecimals={false} width={28} />
+                  <Tooltip
+                    contentStyle={{
+                      fontSize: 12,
+                      borderRadius: 10,
+                      border: "1px solid rgba(18,18,18,0.1)",
+                      backgroundColor: "#ffffff",
+                    }}
+                  />
                   <Legend
                     wrapperStyle={{ fontSize: 10 }}
                     iconType="circle"
                     formatter={(value) => (value === "verified" ? "Verified" : "Rejected")}
                   />
-                  <Bar dataKey="verified" name="verified" fill="#10b981" radius={[3, 3, 0, 0]} maxBarSize={10} />
-                  <Bar dataKey="rejected" name="rejected" fill="#ef4444" radius={[3, 3, 0, 0]} maxBarSize={10} />
-                </BarChart>
+                  <Line
+                    type="monotone"
+                    dataKey="verified"
+                    name="verified"
+                    stroke="#8B5CF6"
+                    strokeWidth={2.5}
+                    dot={{
+                      r: 5,
+                      stroke: "#8B5CF6",
+                      strokeWidth: 2,
+                      fill: "#ffffff",
+                    }}
+                    activeDot={{
+                      r: 6,
+                      stroke: "#8B5CF6",
+                      strokeWidth: 2,
+                      fill: "#ffffff",
+                    }}
+                    connectNulls
+                  />
+                  <Line
+                    type="monotone"
+                    dataKey="rejected"
+                    name="rejected"
+                    stroke="#EF4444"
+                    strokeWidth={2.5}
+                    dot={{
+                      r: 5,
+                      stroke: "#EF4444",
+                      strokeWidth: 2,
+                      fill: "#ffffff",
+                    }}
+                    activeDot={{
+                      r: 6,
+                      stroke: "#EF4444",
+                      strokeWidth: 2,
+                      fill: "#ffffff",
+                    }}
+                    connectNulls
+                  />
+                </LineChart>
               </ResponsiveContainer>
             )}
           </div>
@@ -588,15 +633,15 @@ export function MerchantsAdminHome({
       </div>
 
       {/* Table */}
-      <div className="overflow-hidden rounded-2xl border border-gray-100 bg-white shadow-sm">
-        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-gray-100 px-4 py-4 sm:px-5">
-          <span className="text-sm font-semibold text-gray-900">All Merchants</span>
+      <div className="overflow-hidden rounded-[10px] border border-[#121212]/08 bg-white shadow-[0_2px_12px_rgba(18,18,18,0.04)]">
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[#121212]/08 px-4 py-4 sm:px-5">
+          <span className="text-sm font-semibold text-[#121212]">All Merchants</span>
           <div className="flex items-center gap-2">
             <button
               type="button"
               onClick={exportCsv}
               disabled={stores.length === 0}
-              className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-3 text-[11px] font-semibold text-gray-600 shadow-sm hover:bg-gray-50 disabled:opacity-40"
+              className="inline-flex h-8 items-center gap-1.5 rounded-[10px] border border-[#121212]/10 bg-white px-3 text-[11px] font-semibold text-[#121212]/75 shadow-sm transition-colors hover:bg-[#F3F7FA] disabled:opacity-40"
             >
               <Download className="h-3.5 w-3.5" />
               Export CSV
@@ -604,7 +649,7 @@ export function MerchantsAdminHome({
             <button
               type="button"
               onClick={() => onCategoryClick("total")}
-              className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-3 text-[11px] font-semibold text-gray-600 shadow-sm hover:bg-gray-50"
+              className="inline-flex h-8 items-center gap-1.5 rounded-[10px] border border-[#121212]/10 bg-white px-3 text-[11px] font-semibold text-[#121212]/75 shadow-sm transition-colors hover:bg-[#F3F7FA]"
             >
               <Filter className="h-3.5 w-3.5" />
               View all
@@ -613,7 +658,7 @@ export function MerchantsAdminHome({
         </div>
         <div className="overflow-x-auto">
           <table className="w-full min-w-[720px] text-left text-sm">
-            <thead className="bg-gray-50 text-[11px] font-semibold uppercase tracking-wide text-gray-500">
+            <thead className="bg-[#F3F7FA] text-[11px] font-semibold uppercase tracking-wide text-[#121212]/55">
               <tr>
                 <th className="px-4 py-3 sm:px-5">Store Name</th>
                 <th className="px-4 py-3">Store ID</th>
@@ -623,18 +668,18 @@ export function MerchantsAdminHome({
                 <th className="px-4 py-3 text-right sm:px-5">Action</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-gray-100">
+            <tbody className="divide-y divide-[#121212]/08">
               {overviewQuery.isLoading ? (
                 Array.from({ length: 5 }).map((_, i) => (
                   <tr key={i}>
                     <td colSpan={6} className="px-4 py-3">
-                      <div className="h-9 animate-pulse rounded-lg bg-gray-100" />
+                      <div className="h-9 animate-pulse rounded-[10px] bg-[#F3F7FA]" />
                     </td>
                   </tr>
                 ))
               ) : stores.length === 0 ? (
                 <tr>
-                  <td colSpan={6} className="px-4 py-10 text-center text-sm text-gray-500">
+                  <td colSpan={6} className="px-4 py-10 text-center text-sm text-[#121212]/55">
                     No merchants found.
                   </td>
                 </tr>
@@ -643,16 +688,16 @@ export function MerchantsAdminHome({
                   const status = (store.approval_status || "").toUpperCase();
                   const isVerified = status === "APPROVED";
                   return (
-                    <tr key={store.id} className="transition hover:bg-indigo-50/30">
+                    <tr key={store.id} className="transition hover:bg-[#F3F7FA]/80">
                       <td className="px-4 py-3.5 sm:px-5">
                         <div className="flex items-center gap-3">
-                          <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-indigo-100 to-violet-100 text-xs font-bold text-indigo-700">
+                          <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[#121212]/08 text-xs font-bold text-[#121212]">
                             {(store.name || "S").charAt(0).toUpperCase()}
                           </span>
-                          <span className="font-medium text-gray-900 line-clamp-2">{store.name}</span>
+                          <span className="font-medium text-[#121212] line-clamp-2">{store.name}</span>
                         </div>
                       </td>
-                      <td className="px-4 py-3.5 font-mono text-xs text-gray-500">{store.store_id}</td>
+                      <td className="px-4 py-3.5 font-mono text-xs text-[#121212]/55">{store.store_id}</td>
                       <td className="px-4 py-3.5">
                         <span
                           className={`rounded-full px-2.5 py-0.5 text-[10px] font-semibold ${storeTypeBadgeClass(store.store_type)}`}
@@ -660,7 +705,7 @@ export function MerchantsAdminHome({
                           {storeTypeLabel(store.store_type)}
                         </span>
                       </td>
-                      <td className="px-4 py-3.5 text-gray-600">{store.city ?? "—"}</td>
+                      <td className="px-4 py-3.5 text-[#121212]/70">{store.city ?? "—"}</td>
                       <td className="px-4 py-3.5">
                         <StatusPill status={store.approval_status} />
                       </td>
@@ -668,9 +713,9 @@ export function MerchantsAdminHome({
                         <button
                           type="button"
                           onClick={() => router.push(buildStoreUrl(store))}
-                          className={`inline-flex items-center gap-0.5 rounded-lg px-3 py-1.5 text-[11px] font-semibold text-white shadow-sm ${
+                          className={`inline-flex items-center gap-0.5 rounded-[10px] px-3 py-1.5 text-[11px] font-semibold text-white transition-colors ${
                             isVerified
-                              ? "bg-indigo-600 hover:bg-indigo-700"
+                              ? "bg-[#121212] hover:bg-black"
                               : "bg-amber-500 hover:bg-amber-600"
                           }`}
                         >
@@ -685,12 +730,12 @@ export function MerchantsAdminHome({
             </tbody>
           </table>
         </div>
-        <div className="flex flex-wrap items-center justify-between gap-2 border-t border-gray-100 px-4 py-3 text-xs text-gray-500 sm:px-5">
+        <div className="flex flex-wrap items-center justify-between gap-2 border-t border-[#121212]/08 px-4 py-3 text-xs text-[#121212]/55 sm:px-5">
           <span>
             Showing 1 to {stores.length} of {total} entries
           </span>
           <div className="flex items-center gap-1">
-            <button type="button" className="rounded-md bg-indigo-600 px-2.5 py-1 text-[10px] font-semibold text-white">
+            <button type="button" className="rounded-[10px] bg-[#121212] px-2.5 py-1 text-[10px] font-semibold text-white">
               1
             </button>
           </div>

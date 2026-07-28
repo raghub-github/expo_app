@@ -170,12 +170,13 @@ export async function GET(
 }
 
 const PATCH_STRING_KEYS = [
-  "store_name", "store_display_name", "store_description", "store_email",
-  "full_address", "landmark", "city", "state", "postal_code", "country", "store_type",
+  "store_name", "owner_full_name", "store_display_name", "store_description", "store_email",
+  "full_address", "landmark", "city", "state", "postal_code", "country", "store_type", "custom_store_type",
   "banner_url",
 ] as const;
 const PATCH_NUMBER_KEYS = [
   "latitude", "longitude", "avg_preparation_time_minutes", "min_order_amount", "delivery_radius_km",
+  "packaging_charge_amount",
 ] as const;
 const PATCH_BOOLEAN_KEYS = ["is_pure_veg", "accepts_online_payment", "accepts_cash"] as const;
 

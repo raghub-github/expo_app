@@ -73,6 +73,7 @@ import { hasOrderCancellationOnProgressTimeline } from "@/lib/orders/order-timel
 import type { PersonRideOrderDetail } from "@/lib/orders/person-ride-order-types";
 import PersonRideOrderSections from "./PersonRideOrderSections";
 import { formatRiderOrderStatusDisplayLabel } from "@/lib/riders/rider-order-status-display";
+import { OrderMixedText, OrderNum } from "@/components/orders/orders-typography";
 
 /** Status options for "Update order status" modal (value = DB enum) */
 const STATUS_OPTIONS = [
@@ -668,6 +669,7 @@ export default function OrderDetailClient({
   const auth = useAuthOptional();
   const loggedInEmail = auth?.user?.email ?? null;
   const isOrderPage = useIsActiveRoute("/order");
+  /** Used to pause background refresh only — never gate the initial order load. */
   const pageVisible = usePageVisible();
 
   /** Payment detail loads after first paint so /api/orders/core stays fast. */
@@ -761,7 +763,11 @@ export default function OrderDetailClient({
   }, [order?.id]);
 
   useEffect(() => {
-    if (!isOrderPage || !pageVisible) return;
+    // Do not gate on pageVisible — tab blur / DevTools focus would cancel the
+    // in-flight core fetch and leave loading=true with order=null forever.
+    if (!isOrderPage) return;
+    // Wait for auth without bumping generation (avoids orphaning an in-flight fetch).
+    if (!auth?.authReady) return;
 
     let cancelled = false;
     const generation = ++fetchGenerationRef.current;
@@ -777,10 +783,6 @@ export default function OrderDetailClient({
       setError("Invalid order ID.");
       setLoading(false);
       setIsRefreshing(false);
-      return;
-    }
-
-    if (!auth?.authReady) {
       return;
     }
 
@@ -846,14 +848,18 @@ export default function OrderDetailClient({
         });
     };
 
-    fetch(`/api/orders/core?${params.toString()}`)
+    fetch(`/api/orders/core?${params.toString()}`, { credentials: "include" })
       .then(async (res) => {
         const text = await res.text();
         if (!text.trim()) {
-          return { success: false, error: res.ok ? "Empty response" : `HTTP ${res.status}` };
+          return {
+            success: false as const,
+            error: res.ok ? "Empty response" : `HTTP ${res.status}`,
+            httpStatus: res.status,
+          };
         }
         try {
-          return JSON.parse(text) as {
+          const parsed = JSON.parse(text) as {
             success?: boolean;
             data?: unknown[];
             error?: string;
@@ -874,6 +880,7 @@ export default function OrderDetailClient({
             partnerChat?: unknown;
             routedToHistory?: RoutedToHistoryItem[];
           };
+          return { ...parsed, httpStatus: res.status };
         } catch {
           throw new Error("Invalid order response");
         }
@@ -1110,7 +1117,21 @@ export default function OrderDetailClient({
           setInitialReconsCount(0);
           setStatusHistory([]);
           setTimelineEntries(null);
-          setError("Order not found.");
+          const httpStatus =
+            typeof (body as { httpStatus?: number }).httpStatus === "number"
+              ? (body as { httpStatus: number }).httpStatus
+              : 0;
+          const apiError =
+            typeof body.error === "string" && body.error.trim() ? body.error.trim() : null;
+          if (httpStatus === 401) {
+            setError(apiError ?? "Not authenticated. Please sign in again.");
+          } else if (httpStatus === 403) {
+            setError(
+              apiError ?? "Insufficient permissions. Access to Orders dashboard required."
+            );
+          } else {
+            setError(apiError ?? "Order not found.");
+          }
           setOrderRefunds([]);
           setOrderRecoveryRecords([]);
           setOrderTickets([]);
@@ -1138,7 +1159,7 @@ export default function OrderDetailClient({
     return () => {
       cancelled = true;
     };
-  }, [orderPublicId, refetchTrigger, isOrderPage, pageVisible, auth?.authReady]);
+  }, [orderPublicId, refetchTrigger, isOrderPage, auth?.authReady]);
 
   const dispatchStage = useMemo(
     () =>
@@ -1415,12 +1436,14 @@ export default function OrderDetailClient({
   }, [riderSelfieUrl]);
 
   const authPending = !auth?.authReady;
-  const awaitingOrder = !order && (loading || authPending);
+  // Show spinner while auth resolves OR while the first fetch is in flight.
+  // Do not treat a cancelled/hidden-tab state as a permanent load.
+  const awaitingOrder = !order && !error && (loading || authPending);
 
   if (awaitingOrder) {
     return (
       <div
-        className="fixed inset-x-0 bottom-0 top-11 z-10 flex items-center justify-center bg-[#F8FAFC] sm:top-12"
+        className="flex h-full min-h-[50vh] w-full flex-1 items-center justify-center bg-[#F8FAFC]"
         aria-busy="true"
         aria-label="Loading order details"
       >
@@ -1432,7 +1455,7 @@ export default function OrderDetailClient({
   if (error || !order) {
     return (
       <div
-        className="flex min-h-screen w-full items-center justify-center bg-[#F8FAFC] px-4"
+        className="flex h-full min-h-[50vh] w-full flex-1 items-center justify-center bg-[#F8FAFC] px-4"
         role="alert"
       >
         <p className="text-center text-sm font-medium text-red-600">
@@ -1591,7 +1614,7 @@ export default function OrderDetailClient({
 
   return (
     <>
-      <div className="flex h-full min-h-0 flex-col gap-3 overflow-y-auto overscroll-y-contain lg:flex-row lg:gap-4 lg:overflow-hidden text-[12px] md:text-[13px] text-slate-700">
+      <div className="orders-typo flex h-full min-h-0 flex-1 flex-col gap-3 text-[12px] text-slate-700 md:text-[13px] lg:flex-row lg:gap-4">
       <div className="w-full min-w-0 space-y-3 bg-[#F8FAFC] lg:min-h-0 lg:flex-[4] lg:overflow-y-auto lg:overscroll-y-contain lg:pr-3">
         {/* Primary order summary just below main header */}
         <section className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 pb-2 border-b border-slate-100">
@@ -1643,7 +1666,7 @@ export default function OrderDetailClient({
               </button>
             </h1>
             <p className="mt-0.5 text-[11px] text-slate-600">
-              <span className="text-slate-800">{createdLabel}</span>
+              <OrderNum className="text-slate-800">{createdLabel}</OrderNum>
             </p>
           </div>
           <div className="flex flex-col items-end gap-1 text-[11px]">
@@ -1659,7 +1682,7 @@ export default function OrderDetailClient({
                       setShowRoutedToHistory(true);
                       ensureRoutedToHistoryPrefetch();
                     }}
-                    className="font-medium text-slate-800 underline-offset-2 hover:underline cursor-pointer"
+                    className="font-medium text-slate-800 cursor-pointer hover:text-slate-950"
                     title="View Routed To history"
                   >
                     {effectiveRoutedTo}
@@ -1704,7 +1727,7 @@ export default function OrderDetailClient({
                   </span>
                   {orderTickets.length > 1 && (
                     <span className="text-[10px] text-slate-500">
-                      +{orderTickets.length - 1} more
+                      <OrderMixedText>{`+${orderTickets.length - 1} more`}</OrderMixedText>
                     </span>
                   )}
                   <span className="ml-0.5 text-[10px] text-slate-500">▾</span>
@@ -2030,8 +2053,8 @@ export default function OrderDetailClient({
         </div>
       </div>
 
-        {/* Right sidebar */}
-      <div className="w-full min-w-0 bg-[#F8FAFC] lg:min-h-0 lg:flex-1 lg:overflow-y-auto lg:overscroll-y-contain lg:pl-2 lg:max-w-[320px] xl:max-w-[360px]">
+        {/* Right sidebar — keep compact (was stretched to 320/360) */}
+      <div className="w-full min-w-0 bg-[#F8FAFC] lg:min-h-0 lg:w-[260px] lg:max-w-[260px] lg:flex-none lg:overflow-y-auto lg:overscroll-y-contain lg:pl-2 xl:w-[280px] xl:max-w-[280px]">
         <OrderRightSidebar
           order={order}
           orderRefunds={orderRefunds}
@@ -2120,7 +2143,7 @@ export default function OrderDetailClient({
                               entry.toStatus.replace(/_/g, " ")}
                         </td>
                         <td className="py-2 pr-3 text-slate-600 whitespace-nowrap">
-                          {new Date(entry.createdAt).toLocaleString()}
+                          <OrderNum>{new Date(entry.createdAt).toLocaleString()}</OrderNum>
                         </td>
                         <td className="py-2 pr-3">
                           <AgentRoleBadge role={entry.updatedByRole} />
@@ -2185,7 +2208,7 @@ export default function OrderDetailClient({
                           </span>
                         )}
                         <span className="text-[10px] text-slate-500">
-                          {new Date(t.createdAt).toLocaleString()}
+                          <OrderNum>{new Date(t.createdAt).toLocaleString()}</OrderNum>
                         </span>
                       </div>
                     </div>

@@ -95,6 +95,16 @@ export async function POST(
       WHERE id = ${oId}
     `;
 
+    // Bump parent menu item so version fingerprint changes and delta sync / realtime picks it up.
+    await sql`
+      UPDATE merchant_menu_items mi
+      SET updated_at = NOW()
+      FROM merchant_menu_item_customizations c
+      WHERE c.menu_item_id = mi.id
+        AND c.id = (SELECT customization_id FROM merchant_menu_item_addons WHERE id = ${oId})
+        AND mi.store_id = ${storeId}
+    `.catch(() => { /* non-fatal */ });
+
     try {
       await logStoreActivity({
         storeId,
@@ -141,6 +151,16 @@ export async function DELETE(
       SET addon_image_url = NULL, updated_at = NOW()
       WHERE id = ${oId}
     `;
+
+    // Bump parent menu item so version fingerprint changes and delta sync / realtime picks it up.
+    await sql`
+      UPDATE merchant_menu_items mi
+      SET updated_at = NOW()
+      FROM merchant_menu_item_customizations c
+      WHERE c.menu_item_id = mi.id
+        AND c.id = (SELECT customization_id FROM merchant_menu_item_addons WHERE id = ${oId})
+        AND mi.store_id = ${storeId}
+    `.catch(() => { /* non-fatal */ });
 
     try {
       await logStoreActivity({

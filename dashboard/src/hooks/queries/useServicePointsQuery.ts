@@ -51,6 +51,8 @@ async function fetchServicePoints(): Promise<ServicePoint[]> {
     clearTimeout(timeoutId);
 
     if (response.status === 401) {
+      const { redirectToLoginOnSessionExpired } = await import("@/lib/auth/redirect-to-login");
+      redirectToLoginOnSessionExpired({ reason: "session_expired" });
       throw new Error(SESSION_EXPIRED_MESSAGE);
     }
 

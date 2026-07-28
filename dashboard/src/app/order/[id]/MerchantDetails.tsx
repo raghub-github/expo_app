@@ -8,6 +8,7 @@ import {
 } from "@/lib/merchants/store-open-display";
 import type { OrderCustomerFeedback } from "@/lib/orders/order-customer-feedback";
 import { hasMerchantFeedback } from "@/lib/orders/order-customer-feedback";
+import { OrderMixedText, OrderNum } from "@/components/orders/orders-typography";
 
 interface Merchant {
   storeId?: number | null;
@@ -274,7 +275,7 @@ export default function MerchantDetails({
             Parent Merchant Id:
           </div>
           <div className="text-[12px] text-gati-text-primary font-normal flex items-center gap-1.5 leading-snug">
-            <span>{profile?.parentMerchantId ?? "—"}</span>
+            <OrderNum>{profile?.parentMerchantId ?? "—"}</OrderNum>
             {profile?.parentMerchantId && (
               <button
                 type="button"
@@ -320,7 +321,7 @@ export default function MerchantDetails({
         <div className="grid grid-cols-[140px_1fr] items-start min-h-[20px]">
           <div className="text-[12px] text-gati-text-secondary font-medium">Merchant Id:</div>
           <div className="text-[12px] text-gati-text-primary font-normal flex items-center gap-1.5 leading-snug">
-            <span>{profile?.storeCode ?? "—"}</span>
+            <OrderNum>{profile?.storeCode ?? "—"}</OrderNum>
             {profile?.storeCode && (
               <button
                 type="button"
@@ -360,7 +361,7 @@ export default function MerchantDetails({
                   className="text-gati-primary no-underline font-medium inline-flex items-center gap-0.5 text-[11px]"
                 >
                   <i className="bi bi-telephone text-[12px]" />
-                  {profile.phones[0]}
+                  <OrderNum>{profile.phones[0]}</OrderNum>
                 </a>
                 {profile.phones.length > 1 && (
                   <button
@@ -398,7 +399,7 @@ export default function MerchantDetails({
                 >
                   {timingsDisplay.pill}
                 </span>
-                <span className="ml-1 text-[11px] text-slate-700">{timingsDisplay.label}</span>
+                <OrderMixedText className="ml-1 text-[11px] text-slate-700">{timingsDisplay.label}</OrderMixedText>
                 <span className="ml-1 text-[10px] text-slate-500">▾</span>
               </button>
             ) : (
@@ -416,7 +417,7 @@ export default function MerchantDetails({
               className="inline-flex items-center gap-1.5 text-left cursor-pointer group"
             >
               <span className="text-[13px] font-semibold text-gati-text-primary">
-                {customerFeedback.storeRating}
+                <OrderNum>{customerFeedback.storeRating}</OrderNum>
               </span>
               <Star className="h-3.5 w-3.5 fill-amber-400 text-amber-400 shrink-0" aria-hidden />
               <span className="text-[11px] font-semibold text-emerald-700 group-hover:underline">
@@ -502,7 +503,7 @@ export default function MerchantDetails({
                       >
                         {status}
                       </span>
-                      <span className="text-[11px] text-slate-800">{detail}</span>
+                      <OrderMixedText className="text-[11px] text-slate-800">{detail}</OrderMixedText>
                     </div>
                   </div>
                 );
@@ -601,7 +602,7 @@ export default function MerchantDetails({
               </p>
               <p>
                 <span className="font-medium text-slate-600">Order Paid at: </span>
-                <span>{merchant.orderPaidAtLabel ?? "—"}</span>
+                <OrderNum>{merchant.orderPaidAtLabel ?? "—"}</OrderNum>
               </p>
               <p>
                 <span className="font-medium text-slate-600">Merchant Id (MID): </span>

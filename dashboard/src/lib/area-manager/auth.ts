@@ -9,6 +9,11 @@ import { areaManagers, systemUsers } from "@/lib/db/schema";
 import { eq, and } from "drizzle-orm";
 import { getSystemUserByEmail } from "@/lib/auth/user-mapping";
 import { isSuperAdmin } from "@/lib/permissions/engine";
+import { getAuthUserSafe } from "@/lib/auth/resolve-supabase-user";
+import {
+  isNetworkOrTransientError,
+  isTimeoutOrAbortError,
+} from "@/lib/auth/session-errors";
 
 export type ManagerType = "MERCHANT" | "RIDER";
 
@@ -175,15 +180,34 @@ export async function getAreaManagerFromAuth(
 /**
  * Require area manager auth for API routes.
  * Returns { resolved } or { error: NextResponse }.
- * Use: const result = await requireAreaManagerApiAuth(request); if (result.error) return result.error;
+ * Use: const result = await requireAreaManagerApiAuth(getAuthUser); if (result.error) return result.error;
+ *
+ * `getAuthUser` may throw `TypeError: fetch failed` when Supabase Auth is unreachable —
+ * we catch that and fall back to cookie-session resolve (same as page protection).
  */
 export async function requireAreaManagerApiAuth(
-  getAuthUser: () => Promise<{ id: string; email?: string } | null>
+  getAuthUser?: () => Promise<{ id: string; email?: string } | null>
 ): Promise<
   | { resolved: ResolvedAreaManager; error?: never }
   | { error: Response; resolved?: never }
 > {
-  const user = await getAuthUser();
+  let user: { id: string; email?: string } | null = null;
+  if (getAuthUser) {
+    try {
+      user = await getAuthUser();
+    } catch (err) {
+      if (
+        !(isTimeoutOrAbortError(err) || isNetworkOrTransientError(err)) &&
+        process.env.NODE_ENV === "development"
+      ) {
+        console.warn("[requireAreaManagerApiAuth] getAuthUser failed:", err);
+      }
+      user = null;
+    }
+  }
+  if (!user?.email) {
+    user = await getAuthUserSafe();
+  }
   if (!user?.email) {
     return {
       error: new Response(
