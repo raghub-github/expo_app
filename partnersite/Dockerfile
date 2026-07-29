@@ -99,10 +99,12 @@ ENV NEXT_PUBLIC_ENABLE_PHONE_OTP_REGISTER=${NEXT_PUBLIC_ENABLE_PHONE_OTP_REGISTE
 # Next's webpack SERVER build matches that `node` condition — so the dist MUST
 # exist before `next build`, or gmmportal fails with
 #   Module not found: Can't resolve '@gatimitra/bill-print'
-# Bundle it self-contained here, exactly as backend/Dockerfile does for its node
-# runtime (esbuild is available via the hoisted tsx devDependency). kot-print /
-# print-utils have no `node` condition, so they resolve to src (transpilePackages).
-RUN node_modules/.bin/esbuild packages/bill-print/src/index.ts \
+# Bundle it self-contained here, like backend/Dockerfile does for its node
+# runtime. NOTE: unlike the backend image, the partnersite deps stage does not
+# copy backend/package.json, so esbuild is NOT installed (no tsx). Fetch the
+# pinned esbuild on demand via npx. kot-print / print-utils have no `node`
+# condition, so they resolve to src (transpilePackages) and need no dist.
+RUN npx --yes esbuild@0.25.12 packages/bill-print/src/index.ts \
       --bundle --format=esm --platform=node \
       --outfile=packages/bill-print/dist/index.js
 
