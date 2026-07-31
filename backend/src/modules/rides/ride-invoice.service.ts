@@ -26,11 +26,12 @@ function formatRideServiceLabel(rideType: string | null | undefined): string {
 
 function formatPaymentMethod(method: string | null | undefined): string {
   const m = String(method ?? "").trim().toLowerCase();
-  if (!m) return "Online";
+  if (!m) return "Online (pay after ride)";
   if (m === "cod" || m === "cash") return "Cash";
   if (m === "upi") return "UPI";
-  if (m === "online" || m === "prepaid") return "Online";
-  return method ?? "Online";
+  // "prepaid" is a legacy DB alias for online — payment still happens AFTER the ride.
+  if (m === "online" || m === "prepaid") return "Online (pay after ride)";
+  return method ?? "Online (pay after ride)";
 }
 
 function formatTripStats(distanceKm: unknown, durationMins: unknown): string | null {

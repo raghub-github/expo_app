@@ -2244,17 +2244,32 @@ export async function acceptOrderForRider(
     throw Object.assign(new Error("Order not found"), { statusCode: 404 });
   }
 
+  let summary: RiderOrderSummary;
   if (meta.orderType === "food") {
-    return acceptFoodOrderForRider(riderId, orderRef);
-  }
-  if (meta.orderType === "person_ride") {
-    return acceptRideOrderForRider(riderId, orderRef);
-  }
-  if (meta.orderType === "parcel") {
-    return acceptParcelOrderForRider(riderId, orderRef);
+    summary = await acceptFoodOrderForRider(riderId, orderRef);
+  } else if (meta.orderType === "person_ride") {
+    summary = await acceptRideOrderForRider(riderId, orderRef);
+  } else if (meta.orderType === "parcel") {
+    summary = await acceptParcelOrderForRider(riderId, orderRef);
+  } else {
+    throw Object.assign(new Error("Order type not supported for rider accept"), { statusCode: 409 });
   }
 
-  throw Object.assign(new Error("Order type not supported for rider accept"), { statusCode: 409 });
+  // Daily GMitra Max: charge on first accept of the IST day (best-effort).
+  try {
+    const { maybeChargeDailySubscriptionOnFirstAccept } = await import(
+      "../../lib/rider-subscription-accept-fee.js"
+    );
+    await maybeChargeDailySubscriptionOnFirstAccept(riderId);
+  } catch (err) {
+    console.warn(
+      "[acceptOrderForRider] daily subscription fee skipped:",
+      riderId,
+      (err as Error)?.message ?? err
+    );
+  }
+
+  return summary;
 }
 
 async function acceptFoodOrderForRider(

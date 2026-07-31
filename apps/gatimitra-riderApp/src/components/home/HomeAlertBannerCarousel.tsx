@@ -220,6 +220,9 @@ export function HomeAlertBannerCarousel({ slides }: Props) {
             bounces={false}
             scrollEnabled={canScroll}
             nestedScrollEnabled
+            // Android can drop Pressable taps inside horizontal lists when
+            // clipped offscreen neighbors are removed from the native tree.
+            removeClippedSubviews={false}
             showsHorizontalScrollIndicator={false}
             decelerationRate="fast"
             snapToInterval={containerWidth}

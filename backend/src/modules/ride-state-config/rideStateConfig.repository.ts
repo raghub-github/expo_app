@@ -28,6 +28,9 @@ export type StateSurgeVehicleScope =
   | "4_wheeler_non_ac"
   | "4_wheeler_ac";
 
+/** Who pays the surge amount. See migration 0465. */
+export type SurgeFundingMode = "CUSTOMER_100" | "COMPANY_100" | "SHARED";
+
 export type StateSurgeConfigRow = {
   id: number;
   stateId: string;
@@ -43,6 +46,9 @@ export type StateSurgeConfigRow = {
   maxRidersOnly: boolean;
   priority: number;
   manualActive: boolean;
+  fundingMode: SurgeFundingMode;
+  customerSharePct: number;
+  companySharePct: number;
 };
 
 export type StateSurgeTimeSlotRow = {
@@ -64,7 +70,37 @@ function mapLimit(r: Record<string, unknown>): RideVehicleLimitRow {
   };
 }
 
+function normalizeFundingMode(v: unknown): SurgeFundingMode {
+  const s = typeof v === "string" ? v.toUpperCase() : "";
+  if (s === "COMPANY_100" || s === "SHARED") return s;
+  return "CUSTOMER_100";
+}
+
+function clampPct(v: unknown, fallback: number): number {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return fallback;
+  if (n < 0) return 0;
+  if (n > 100) return 100;
+  return n;
+}
+
 function mapSurge(r: Record<string, unknown>): StateSurgeConfigRow {
+  const fundingMode = normalizeFundingMode(r.funding_mode);
+  // For CUSTOMER_100 / COMPANY_100 the DB stores canonical shares; if a row
+  // was written before migration 0465 (columns missing / null), collapse to
+  // canonical CUSTOMER_100 so the resolver never sees partial data.
+  const customerSharePct =
+    fundingMode === "CUSTOMER_100"
+      ? 100
+      : fundingMode === "COMPANY_100"
+        ? 0
+        : clampPct(r.customer_share_pct, 100);
+  const companySharePct =
+    fundingMode === "CUSTOMER_100"
+      ? 0
+      : fundingMode === "COMPANY_100"
+        ? 100
+        : clampPct(r.company_share_pct, 0);
   return {
     id: Number(r.id),
     stateId: String(r.state_id),
@@ -80,6 +116,9 @@ function mapSurge(r: Record<string, unknown>): StateSurgeConfigRow {
     maxRidersOnly: r.max_riders_only === true,
     priority: Number(r.priority ?? 100),
     manualActive: r.manual_active === true,
+    fundingMode,
+    customerSharePct,
+    companySharePct,
   };
 }
 

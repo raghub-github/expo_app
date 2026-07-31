@@ -3,7 +3,13 @@ import { useLocalSearchParams, useRouter } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
 import { orderService } from "@/services/order.service";
 import { RideFareCheckoutScreen } from "@/components/ride/RideFareCheckoutScreen";
+import { RideCashPayScreen } from "@/components/ride/RideCashPayScreen";
 import { GatiMitraColors } from "@/constants/gatimitra";
+
+function isCashRideOrder(paymentMethod: string | null | undefined): boolean {
+  const m = String(paymentMethod ?? "").trim().toLowerCase();
+  return m === "cash" || m === "cod";
+}
 
 export default function RideFareCheckoutRoute() {
   const router = useRouter();
@@ -32,6 +38,10 @@ export default function RideFareCheckoutRoute() {
   if (isError || !order) {
     router.back();
     return null;
+  }
+
+  if (isCashRideOrder(order.paymentMethod)) {
+    return <RideCashPayScreen order={order} onBack={() => router.back()} />;
   }
 
   return <RideFareCheckoutScreen order={order} onBack={() => router.back()} />;

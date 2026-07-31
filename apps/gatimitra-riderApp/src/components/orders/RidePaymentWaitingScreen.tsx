@@ -10,13 +10,14 @@ import {
   ImageBackground,
   Linking,
   Platform,
+  Alert,
 } from "react-native";
 import { router, useLocalSearchParams } from "expo-router";
 import { useTranslation } from "react-i18next";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { StatusBar } from "expo-status-bar";
 import { Ionicons } from "@expo/vector-icons";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { LinearGradient } from "expo-linear-gradient";
 import { colors } from "@/src/theme";
 import { riderApi } from "@/src/services/api/riderApi";
@@ -28,6 +29,15 @@ import { useAppAssetSource } from "@/src/components/AppAssetImage";
 import { RX } from "@/src/lib/appAssetKeys";
 
 const POLL_MS = 15_000;
+
+function isCashRideOrder(order: unknown): boolean {
+  const method = String(
+    (order as { paymentMethod?: string })?.paymentMethod ?? ""
+  )
+    .trim()
+    .toLowerCase();
+  return method === "cash" || method === "cod";
+}
 const MINT = colors.primary[600];
 const MINT_DARK = colors.primary[700];
 
@@ -93,6 +103,8 @@ export function RidePaymentWaitingScreen() {
   const orderId = typeof params.orderId === "string" ? params.orderId : "";
   const [lastCheckedAt, setLastCheckedAt] = useState(() => new Date());
 
+  const isCashRide = useMemo(() => isCashRideOrder(order), [order]);
+
   const { data: order, isFetching } = useQuery({
     queryKey: ["rider", "orders", "detail", orderId],
     queryFn: async () => {
@@ -101,7 +113,8 @@ export function RidePaymentWaitingScreen() {
       return row;
     },
     enabled: orderId.length > 0,
-    refetchInterval: POLL_MS,
+    // Cash rides never need polling — the rider taps "Cash received" to finish.
+    refetchInterval: isCashRide ? false : POLL_MS,
   });
 
   const goToSuccess = useCallback(
@@ -121,12 +134,45 @@ export function RidePaymentWaitingScreen() {
     goToSuccess(order);
   }, [order, goToSuccess]);
 
+  const cashMutation = useMutation({
+    mutationFn: async () => riderApi.confirmRideCashCollected(orderId),
+    onSuccess: async () => {
+      // Refresh the underlying order (payment_status becomes completed) so the
+      // success-navigation effect above fires.
+      void queryClient.invalidateQueries({ queryKey: RIDER_ACTIVE_ORDERS_QUERY_KEY });
+      void queryClient.invalidateQueries({ queryKey: RIDER_RIDE_PAYMENT_HOLDS_QUERY_KEY });
+      const refreshed = await riderApi.getRideOrder(orderId);
+      goToSuccess(refreshed);
+    },
+    onError: (err) => {
+      const message =
+        (err as { message?: string })?.message ??
+        t(
+          "orders.ridePaymentWait.cashError",
+          "Could not confirm the cash collection. Please try again."
+        );
+      Alert.alert(t("common.error", "Something went wrong"), String(message));
+    },
+  });
+
   const displayId = params.displayId?.trim() || order?.formattedOrderId || orderId;
   const earningBreakdown = useMemo(
     () => buildRiderRideEarningBreakdown(order, t),
     [order, t]
   );
-  const fareAmount = earningBreakdown.totalEarning;
+  const riderReceives = earningBreakdown.totalEarning;
+  const customerPays = useMemo(() => {
+    const fromOrder = Number(
+      (order as { totalAmount?: number; grandTotal?: number; fareAmount?: number })?.totalAmount ??
+        (order as { grandTotal?: number })?.grandTotal ??
+        (order as { fareAmount?: number })?.fareAmount ??
+        0
+    );
+    if (Number.isFinite(fromOrder) && fromOrder > 0) return Math.round(fromOrder);
+    return riderReceives;
+  }, [order, riderReceives]);
+  const companyKeeps = Math.max(0, customerPays - riderReceives);
+  const fareAmount = customerPays;
   const completedAt = order?.createdAt ?? null;
 
   const timelineSteps = useMemo<TimelineStep[]>(
@@ -241,6 +287,34 @@ export function RidePaymentWaitingScreen() {
 
           <View style={styles.breakdownCard}>
             <Text style={styles.breakdownTitle}>
+              {t("orders.ridePaymentWait.settlementTitle", "Settlement summary")}
+            </Text>
+            <View style={styles.feeRow}>
+              <Text style={styles.feeRowLabel}>
+                {t("orders.ridePaymentWait.customerPays", "Customer Pays")}
+              </Text>
+              <Text style={styles.feeRowValue}>{formatFare(customerPays)}</Text>
+            </View>
+            <View style={styles.feeRow}>
+              <Text style={styles.feeRowLabel}>
+                {t("orders.ridePaymentWait.riderReceives", "Rider Receives")}
+              </Text>
+              <Text style={[styles.feeRowValue, { color: MINT_DARK }]}>
+                {formatFare(riderReceives)}
+              </Text>
+            </View>
+            <View style={[styles.feeRow, styles.feeRowTotal]}>
+              <Text style={[styles.feeRowLabel, styles.feeRowLabelTotal]}>
+                {t("orders.ridePaymentWait.companyKeeps", "Company Keeps")}
+              </Text>
+              <Text style={[styles.feeRowValue, styles.feeRowValueTotal]}>
+                {formatFare(companyKeeps)}
+              </Text>
+            </View>
+          </View>
+
+          <View style={styles.breakdownCard}>
+            <Text style={styles.breakdownTitle}>
               {t("orders.ridePaymentWait.breakdownTitle", "Earnings breakdown")}
             </Text>
             {earningBreakdown.lines.map((line, idx) => (
@@ -260,36 +334,93 @@ export function RidePaymentWaitingScreen() {
             ))}
           </View>
 
-          <View style={styles.liveCard}>
-            <View style={styles.liveIconWrap}>
-              <ActivityIndicator color={MINT} size="small" />
+          {isCashRide ? (
+            <View style={styles.cashCard}>
+              <View style={styles.cashIconWrap}>
+                <Ionicons name="cash-outline" size={22} color={MINT_DARK} />
+              </View>
+              <View style={styles.cashTextCol}>
+                <Text style={styles.cashTitle}>
+                  {t(
+                    "orders.ridePaymentWait.cashTitle",
+                    "Collect {{amount}} in cash",
+                    { amount: formatFare(fareAmount) }
+                  )}
+                </Text>
+                <Text style={styles.cashSub}>
+                  {t(
+                    "orders.ridePaymentWait.cashSub",
+                    "Company share (≈ {{company}}) will be deducted from your wallet; you keep {{rider}}.",
+                    {
+                      company: formatFare(companyKeeps),
+                      rider: formatFare(riderReceives),
+                    }
+                  )}
+                </Text>
+                <TouchableOpacity
+                  style={[
+                    styles.cashCta,
+                    (cashMutation.isPending || cashMutation.isSuccess) && styles.cashCtaDisabled,
+                  ]}
+                  onPress={() => cashMutation.mutate()}
+                  disabled={cashMutation.isPending || cashMutation.isSuccess}
+                  activeOpacity={0.85}
+                  accessibilityRole="button"
+                  accessibilityLabel={t(
+                    "orders.ridePaymentWait.cashCta",
+                    "Cash received"
+                  )}
+                >
+                  {cashMutation.isPending ? (
+                    <ActivityIndicator color="#fff" size="small" />
+                  ) : (
+                    <>
+                      <Ionicons name="checkmark-circle" size={18} color="#fff" />
+                      <Text style={styles.cashCtaLabel}>
+                        {t(
+                          "orders.ridePaymentWait.cashCta",
+                          "Cash received"
+                        )}
+                      </Text>
+                    </>
+                  )}
+                </TouchableOpacity>
+              </View>
             </View>
-            <View style={styles.liveTextCol}>
-              <Text style={styles.liveTitle}>
-                {t("orders.ridePaymentWait.liveTitle", "Checking payment status…")}
-              </Text>
-              <Text style={styles.liveSub}>
-                {t(
-                  "orders.ridePaymentWait.liveSub",
-                  "We're waiting for the passenger to pay online."
-                )}
-              </Text>
-            </View>
-          </View>
+          ) : (
+            <>
+              <View style={styles.liveCard}>
+                <View style={styles.liveIconWrap}>
+                  <ActivityIndicator color={MINT} size="small" />
+                </View>
+                <View style={styles.liveTextCol}>
+                  <Text style={styles.liveTitle}>
+                    {t("orders.ridePaymentWait.liveTitle", "Checking payment status…")}
+                  </Text>
+                  <Text style={styles.liveSub}>
+                    {t(
+                      "orders.ridePaymentWait.liveSub",
+                      "We're waiting for the passenger to pay online."
+                    )}
+                  </Text>
+                </View>
+              </View>
 
-          <View style={styles.refreshRow}>
-            <View style={styles.refreshLeft}>
-              <Ionicons name="refresh-outline" size={14} color="#6B7280" />
-              <Text style={styles.refreshText}>
-                {t("orders.ridePaymentWait.autoRefresh", "Auto refresh every 15 sec")}
-              </Text>
-            </View>
-            <Text style={styles.lastChecked}>
-              {t("orders.ridePaymentWait.lastChecked", "Last checked: {{time}}", {
-                time: formatClock(lastCheckedAt.toISOString()),
-              })}
-            </Text>
-          </View>
+              <View style={styles.refreshRow}>
+                <View style={styles.refreshLeft}>
+                  <Ionicons name="refresh-outline" size={14} color="#6B7280" />
+                  <Text style={styles.refreshText}>
+                    {t("orders.ridePaymentWait.autoRefresh", "Auto refresh every 15 sec")}
+                  </Text>
+                </View>
+                <Text style={styles.lastChecked}>
+                  {t("orders.ridePaymentWait.lastChecked", "Last checked: {{time}}", {
+                    time: formatClock(lastCheckedAt.toISOString()),
+                  })}
+                </Text>
+              </View>
+            </>
+          )}
 
           <View style={styles.safeCard}>
             <View style={styles.safeIconWrap}>
@@ -297,13 +428,26 @@ export function RidePaymentWaitingScreen() {
             </View>
             <View style={styles.safeTextCol}>
               <Text style={styles.safeTitle}>
-                {t("orders.ridePaymentWait.safeTitle", "Don't worry, your earnings are safe.")}
+                {isCashRide
+                  ? t(
+                      "orders.ridePaymentWait.cashSafeTitle",
+                      "Cash goes straight to you."
+                    )
+                  : t(
+                      "orders.ridePaymentWait.safeTitle",
+                      "Don't worry, your earnings are safe."
+                    )}
               </Text>
               <Text style={styles.safeSub}>
-                {t(
-                  "orders.ridePaymentWait.safeSub",
-                  "Your earnings will be credited automatically once the passenger completes payment. No action is required from your side."
-                )}
+                {isCashRide
+                  ? t(
+                      "orders.ridePaymentWait.cashSafeSub",
+                      "Only the platform's share is recovered from your wallet after you confirm."
+                    )
+                  : t(
+                      "orders.ridePaymentWait.safeSub",
+                      "Your earnings will be credited automatically once the passenger completes payment. No action is required from your side."
+                    )}
               </Text>
             </View>
           </View>
@@ -505,6 +649,46 @@ const styles = StyleSheet.create({
   liveTextCol: { flex: 1, gap: 2 },
   liveTitle: { fontSize: 14, fontWeight: "800", color: "#111827" },
   liveSub: { fontSize: 12, color: "#6B7280", lineHeight: 17, fontWeight: "500" },
+  cashCard: {
+    flexDirection: "row",
+    gap: 14,
+    backgroundColor: "#FFFFFF",
+    borderRadius: 18,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: "#BBF7D0",
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.05,
+    shadowRadius: 8,
+    elevation: 2,
+  },
+  cashIconWrap: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: "#DCFCE7",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  cashTextCol: { flex: 1, gap: 6 },
+  cashTitle: { fontSize: 15, fontWeight: "900", color: "#111827" },
+  cashSub: { fontSize: 12, color: "#4B5563", lineHeight: 17, fontWeight: "500" },
+  cashCta: {
+    marginTop: 6,
+    alignSelf: "flex-start",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    backgroundColor: MINT,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderRadius: 12,
+    minWidth: 168,
+    justifyContent: "center",
+  },
+  cashCtaDisabled: { opacity: 0.65 },
+  cashCtaLabel: { color: "#fff", fontSize: 13, fontWeight: "800" },
   refreshRow: {
     flexDirection: "row",
     alignItems: "center",

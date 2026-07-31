@@ -20,6 +20,8 @@ import {
 } from "./rideStateConfig.repository.js";
 import { isCatalogOptionEligibleForTrip } from "./rideEligibility.service.js";
 import { applyBikeLiteCustomerFare } from "./rideCustomerFare.js";
+import { loadBikeLiteDiscount } from "../rides/pricing/rideVehicleDiscount.js";
+import { resolveCustomerRideSurge } from "../rides/pricing/rideSurgeResolver.js";
 import { formatRideCustomerRateCardSummary, formatRideWaitingChargeNote } from "./rideRateCardDisplay.js";
 import { DEFAULT_RIDE_PICKUP_FREE_WAIT_MINUTES } from "../../lib/ride-pickup-wait.js";
 import { cachedRideQuoteValue } from "./rideQuoteConfigCache.js";
@@ -36,7 +38,18 @@ export type RideFareQuoteOk = {
   distanceFare: number;
   surgeTotal: number;
   finalFare: number;
-  appliedSurges: Array<{ name: string; amount: number }>;
+  appliedSurges: Array<{
+    name: string;
+    amount: number;
+    /** Phase 3 — funding mode for this surge (CUSTOMER_100 / COMPANY_100 / SHARED). */
+    fundingMode?: "CUSTOMER_100" | "COMPANY_100" | "SHARED";
+    customerShareAmount?: number;
+    companyShareAmount?: number;
+  }>;
+  /** Phase 3 — sum of customer-funded portions across all applied surges. */
+  surgeCustomerShare: number;
+  /** Phase 3 — sum of company-funded portions across all applied surges. */
+  surgeCompanyShare: number;
   rateCardSummary: string | null;
   waitingChargeNote: string | null;
 };
@@ -293,6 +306,8 @@ function ineligibleOk(
     surgeTotal: 0,
     finalFare: 0,
     appliedSurges: [],
+    surgeCustomerShare: 0,
+    surgeCompanyShare: 0,
     rateCardSummary: null,
     waitingChargeNote: null,
   };
@@ -343,10 +358,18 @@ export async function quoteCustomerRideFareWithContext(
       }
     }
     if (bikeFinal != null && bikeFinal > 0) {
-      const finalFare = applyBikeLiteCustomerFare(bikeFinal);
-      const ratio = bikeFinal > 0 ? finalFare / bikeFinal : 1;
+      const bikeLiteDiscount = await loadBikeLiteDiscount();
+      const bikeLiteBase = applyBikeLiteCustomerFare(bikeFinal, bikeLiteDiscount);
+      const surge = await resolveCustomerRideSurge({
+        stateId: ctx.stateId,
+        pricingVehicle,
+        baseFareForPct: bikeLiteBase,
+      });
+      const finalFare =
+        Math.round((bikeLiteBase + surge.customerShareTotal) * 100) / 100;
+      const ratio = bikeFinal > 0 ? bikeLiteBase / bikeFinal : 1;
       const baseFare = Math.round((bikeBase ?? 0) * ratio * 100) / 100;
-      const distanceFare = Math.round((finalFare - baseFare) * 100) / 100;
+      const distanceFare = Math.round((bikeLiteBase - baseFare) * 100) / 100;
       const bikeSlabs = await ensureVehicleSlabs(ctx, pricingVehicle);
       ctx.timings.pricingMs += Date.now() - t0;
       return {
@@ -359,9 +382,17 @@ export async function quoteCustomerRideFareWithContext(
         maxDistanceKm,
         baseFare,
         distanceFare,
-        surgeTotal: 0,
+        surgeTotal: surge.surgeTotal,
         finalFare,
-        appliedSurges: [],
+        appliedSurges: surge.appliedSurges.map((a) => ({
+          name: a.name,
+          amount: a.appliedAmount,
+          fundingMode: a.fundingMode,
+          customerShareAmount: a.customerShareAmount,
+          companyShareAmount: a.companyShareAmount,
+        })),
+        surgeCustomerShare: surge.customerShareTotal,
+        surgeCompanyShare: surge.companyShareTotal,
         rateCardSummary: formatRideCustomerRateCardSummary(bikeSlabs.rateCardSlabs),
         waitingChargeNote: ctx.waitingChargeNote,
       };
@@ -388,9 +419,19 @@ export async function quoteCustomerRideFareWithContext(
   }
 
   const subtotal = slabQuote.quote.finalAmount;
-  const finalFare = Math.round(subtotal * 100) / 100;
+  const slabFare = Math.round(subtotal * 100) / 100;
   const baseFare = slabQuote.quote.baseFareApplied;
   const distanceFare = subtotal - slabQuote.quote.baseFareApplied;
+
+  // Phase 3 — apply surge on top of slab fare. Only the customer-funded share
+  // is added to `finalFare`; the company-funded share is quoted for downstream
+  // settlement so the rider still receives the full surge amount.
+  const surge = await resolveCustomerRideSurge({
+    stateId: ctx.stateId,
+    pricingVehicle,
+    baseFareForPct: slabFare,
+  });
+  const finalFare = Math.round((slabFare + surge.customerShareTotal) * 100) / 100;
 
   const waitNote =
     ctx.waitingChargeNote ??
@@ -410,9 +451,17 @@ export async function quoteCustomerRideFareWithContext(
     maxDistanceKm,
     baseFare,
     distanceFare,
-    surgeTotal: 0,
+    surgeTotal: surge.surgeTotal,
     finalFare,
-    appliedSurges: [],
+    appliedSurges: surge.appliedSurges.map((a) => ({
+      name: a.name,
+      amount: a.appliedAmount,
+      fundingMode: a.fundingMode,
+      customerShareAmount: a.customerShareAmount,
+      companyShareAmount: a.companyShareAmount,
+    })),
+    surgeCustomerShare: surge.customerShareTotal,
+    surgeCompanyShare: surge.companyShareTotal,
     rateCardSummary: formatRideCustomerRateCardSummary(bundle.rateCardSlabs),
     waitingChargeNote: waitNote,
   };

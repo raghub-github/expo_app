@@ -591,11 +591,54 @@ export async function applyRidePickupWaitingToBilling(
     rideType: row.rideType,
   });
 
-  const customerWaiting = computeCustomerPickupWaitingCharge({
-    pickupWaitSeconds: waitSeconds,
+  let waitingMax: number | null = null;
+  let waitingFundingMode: "CUSTOMER_100" | "COMPANY_100" | "SHARED" = "CUSTOMER_100";
+  let waitingCustomerSharePct = 100;
+  let waitingCompanySharePct = 0;
+  try {
+    const geoHints = rideGeoFromCheckoutMetadata(row.checkoutMetadata);
+    const { resolveRidePricingGeoFromPickup } = await import(
+      "../modules/ride-state-config/rideStateConfig.repository.js"
+    );
+    const rideGeo = await resolveRidePricingGeoFromPickup({
+      pickupLat: Number(row.pickupLat),
+      pickupLng: Number(row.pickupLon),
+      pickupPincode: geoHints.pickupPincode,
+      pickupState: geoHints.pickupState,
+    });
+    if (rideGeo.pricingGeo) {
+      const { loadEffectiveServicePayoutRule } = await import(
+        "../modules/rider-payout-pricing/riderPayoutPricing.repository.js"
+      );
+      const { rule } = await loadEffectiveServicePayoutRule({
+        level: rideGeo.pricingGeo.level,
+        refId: rideGeo.pricingGeo.refId,
+        service: "ride",
+      });
+      if (rule) {
+        waitingMax = rule.waitingMaxCharge;
+        waitingFundingMode = rule.waitingFundingMode ?? "CUSTOMER_100";
+        waitingCustomerSharePct = rule.waitingCustomerSharePct ?? 100;
+        waitingCompanySharePct = rule.waitingCompanySharePct ?? 0;
+      }
+    }
+  } catch {
+    /* keep defaults */
+  }
+
+  const { computeWaitingCharge } = await import(
+    "../modules/rides/pricing/rideWaitingCharge.js"
+  );
+  const waitingSplit = computeWaitingCharge(waitSeconds, {
     freeMinutes,
     chargePerMin: customerPerMin,
+    maxCharge: waitingMax,
+    fundingMode: waitingFundingMode,
+    customerSharePct: waitingCustomerSharePct,
+    companySharePct: waitingCompanySharePct,
   });
+  // Customer bill only includes the customer-funded share.
+  const customerWaiting = waitingSplit.customerShare;
 
   let riderWaiting = 0;
   if (waitSeconds > 0) {
@@ -667,6 +710,25 @@ export async function applyRidePickupWaitingToBilling(
     pickupWaitSeconds: waitSeconds,
     skipIfPaid: true,
   });
+
+  // Persist waiting funding split for settlement (company-funded waiting is a subsidy).
+  {
+    const { getSql } = await import("../db/client.js");
+    const sql = getSql();
+    await sql`
+      UPDATE orders_core
+      SET billing_snapshot = COALESCE(billing_snapshot, '{}'::jsonb) || ${JSON.stringify({
+        waiting_charge: customerWaiting,
+        waiting_charge_gross: waitingSplit.capped,
+        waiting_customer_share: waitingSplit.customerShare,
+        waiting_company_share: waitingSplit.companyShare,
+        waiting_funding_mode: waitingSplit.fundingMode,
+        company_funded_waiting: waitingSplit.companyShare,
+      })}::jsonb,
+          updated_at = NOW()
+      WHERE id = ${orderCorePk}
+    `;
+  }
 
   if (!synced.ok) {
     const tip = round0(Number(row.customerTipAmount) || Number(row.tipAmount) || 0);

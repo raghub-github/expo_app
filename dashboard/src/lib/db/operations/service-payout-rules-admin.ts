@@ -17,6 +17,10 @@ export type ServicePayoutRuleRow = {
   platformPercentage: number;
   waitingChargePerMin: number | null;
   waitingFreeMinutes: number;
+  waitingMaxCharge: number | null;
+  waitingFundingMode: "CUSTOMER_100" | "COMPANY_100" | "SHARED";
+  waitingCustomerSharePct: number;
+  waitingCompanySharePct: number;
   priority: number;
   isActive: boolean;
   effectiveFrom: string | null;
@@ -26,6 +30,11 @@ export type ServicePayoutRuleRow = {
 };
 
 function mapRule(r: Record<string, unknown>): ServicePayoutRuleRow {
+  const fundingRaw = String(r.waiting_funding_mode ?? "CUSTOMER_100").toUpperCase();
+  const fundingMode =
+    fundingRaw === "COMPANY_100" || fundingRaw === "SHARED"
+      ? (fundingRaw as ServicePayoutRuleRow["waitingFundingMode"])
+      : "CUSTOMER_100";
   return {
     id: Number(r.id),
     serviceType: String(r.service_type) as RiderPayoutServiceType,
@@ -35,6 +44,10 @@ function mapRule(r: Record<string, unknown>): ServicePayoutRuleRow {
     platformPercentage: Number(r.platform_percentage),
     waitingChargePerMin: r.waiting_charge_per_min == null ? null : Number(r.waiting_charge_per_min),
     waitingFreeMinutes: Number(r.waiting_free_minutes ?? 2),
+    waitingMaxCharge: r.waiting_max_charge == null ? null : Number(r.waiting_max_charge),
+    waitingFundingMode: fundingMode,
+    waitingCustomerSharePct: Number(r.waiting_customer_share_pct ?? 100),
+    waitingCompanySharePct: Number(r.waiting_company_share_pct ?? 0),
     priority: Number(r.priority ?? 100),
     isActive: r.is_active === true,
     effectiveFrom: r.effective_from == null ? null : String(r.effective_from),
@@ -126,6 +139,10 @@ export type ServicePayoutRuleInput = {
   platformPercentage: number;
   waitingChargePerMin: number | null;
   waitingFreeMinutes: number;
+  waitingMaxCharge?: number | null;
+  waitingFundingMode?: "CUSTOMER_100" | "COMPANY_100" | "SHARED";
+  waitingCustomerSharePct?: number;
+  waitingCompanySharePct?: number;
   priority: number;
   isActive: boolean;
   effectiveFrom: string | null;
@@ -134,15 +151,20 @@ export type ServicePayoutRuleInput = {
 
 export async function insertServicePayoutRule(args: ServicePayoutRuleInput): Promise<ServicePayoutRuleRow> {
   const sql = getSql();
+  const funding = args.waitingFundingMode ?? "CUSTOMER_100";
   const rows = await sql`
     INSERT INTO service_payout_rules (
       service_type, geo_level, geo_ref_id, rider_percentage, platform_percentage,
       waiting_charge_per_min, waiting_free_minutes,
+      waiting_max_charge, waiting_funding_mode,
+      waiting_customer_share_pct, waiting_company_share_pct,
       priority, is_active, effective_from, effective_to
     ) VALUES (
       ${args.service}, ${args.level}::geo_pricing_level, ${args.refId}::uuid,
       ${args.riderPercentage}, ${args.platformPercentage},
       ${args.waitingChargePerMin}, ${args.waitingFreeMinutes},
+      ${args.waitingMaxCharge ?? null}, ${funding},
+      ${args.waitingCustomerSharePct ?? 100}, ${args.waitingCompanySharePct ?? 0},
       ${args.priority}, ${args.isActive}, ${args.effectiveFrom}, ${args.effectiveTo}
     ) RETURNING *
   `;
@@ -154,12 +176,17 @@ export async function updateServicePayoutRule(
   patch: Omit<ServicePayoutRuleInput, "level" | "refId" | "service">
 ): Promise<ServicePayoutRuleRow | null> {
   const sql = getSql();
+  const funding = patch.waitingFundingMode ?? "CUSTOMER_100";
   const rows = await sql`
     UPDATE service_payout_rules SET
       rider_percentage = ${patch.riderPercentage},
       platform_percentage = ${patch.platformPercentage},
       waiting_charge_per_min = ${patch.waitingChargePerMin},
       waiting_free_minutes = ${patch.waitingFreeMinutes},
+      waiting_max_charge = ${patch.waitingMaxCharge ?? null},
+      waiting_funding_mode = ${funding},
+      waiting_customer_share_pct = ${patch.waitingCustomerSharePct ?? 100},
+      waiting_company_share_pct = ${patch.waitingCompanySharePct ?? 0},
       priority = ${patch.priority},
       is_active = ${patch.isActive},
       effective_from = ${patch.effectiveFrom},

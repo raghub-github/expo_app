@@ -831,6 +831,13 @@ export async function riderRoutes(app: FastifyInstance) {
     },
   );
 
+  const ServiceBreakdownSchema = z.object({
+    earnings: z.number(),
+    penalties: z.number(),
+    penaltyReverts: z.number(),
+    offers: z.number(),
+    net: z.number(),
+  });
   const EarningsSummarySchema = z.object({
     totalBalance: z.number(),
     withdrawable: z.number(),
@@ -839,11 +846,27 @@ export async function riderRoutes(app: FastifyInstance) {
     thisWeek: z.number(),
     thisMonth: z.number(),
     hasBankAccount: z.boolean(),
+    /** Rider can withdraw only when the wallet is positive and above this amount. */
+    minWithdrawal: z.number().optional(),
+    canWithdraw: z.boolean().optional(),
     breakdown: z.object({
       food: z.number(),
       parcel: z.number(),
       ride: z.number(),
     }),
+    /** Full per-service breakdown (earnings, penalties, reverts, offers) + common bucket. */
+    breakdownDetail: z
+      .object({
+        food: ServiceBreakdownSchema,
+        parcel: ServiceBreakdownSchema,
+        ride: ServiceBreakdownSchema,
+        common: z.object({
+          subscriptionDebited: z.number(),
+          otherOffers: z.number(),
+          otherPenaltyReverts: z.number(),
+        }),
+      })
+      .optional(),
     accountRestrictions: z.object({
       accountRestricted: z.boolean(),
       accountRestrictedReason: z.enum([
@@ -922,7 +945,12 @@ export async function riderRoutes(app: FastifyInstance) {
       const { getRiderWithdrawableBalance } = await import(
         "../../lib/rider-withdrawal.service.js"
       );
-      const withdrawable = await getRiderWithdrawableBalance(riderId);
+      const { getRiderWalletBreakdown } = await import("../../lib/rider-wallet-breakdown.js");
+      const [withdrawable, breakdownDetail] = await Promise.all([
+        getRiderWithdrawableBalance(riderId),
+        getRiderWalletBreakdown(riderId),
+      ]);
+      const MIN_WITHDRAWAL_BALANCE = 300;
       return {
         totalBalance: total,
         withdrawable,
@@ -931,7 +959,10 @@ export async function riderRoutes(app: FastifyInstance) {
         thisWeek: periodTotals.thisWeek,
         thisMonth: periodTotals.thisMonth,
         hasBankAccount,
+        minWithdrawal: MIN_WITHDRAWAL_BALANCE,
+        canWithdraw: total > MIN_WITHDRAWAL_BALANCE,
         breakdown: { food, parcel, ride },
+        breakdownDetail,
         accountRestrictions: {
           accountRestricted: accountRestrictions.accountRestricted,
           accountRestrictedReason: accountRestrictions.accountRestrictedReason,
@@ -3268,6 +3299,176 @@ export async function riderRoutes(app: FastifyInstance) {
         const err = e as Error & { statusCode?: number };
         const status = err.statusCode ?? 500;
         return reply.status(status as 409).send({ error: err.message || "Update failed" });
+      }
+    }
+  );
+
+  app.post(
+    "/orders/:id/ride/confirm-cash-collected",
+    {
+      schema: {
+        params: z.object({ id: z.string().min(1) }),
+        response: {
+          200: z.object({
+            ok: z.literal(true),
+            alreadySettled: z.boolean(),
+            orderId: z.string(),
+            customerBill: z.number(),
+            companyReceivable: z.number(),
+            walletDebit: z.number(),
+            walletBalanceAfter: z.number().nullable(),
+            settlementId: z.string(),
+          }),
+          400: z.object({ error: z.string(), code: z.string().optional() }),
+          403: z.object({ error: z.string() }),
+          404: z.object({ error: z.string() }),
+          409: z.object({ error: z.string(), code: z.string().optional() }),
+        },
+      },
+    },
+    async (req, reply) => {
+      const riderId = parseRiderIdFromAuth(req.auth!.sub);
+      if (riderId == null) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (reply as any).status(403).send({ error: "Invalid rider session" });
+      }
+      const { id } = req.params as { id: string };
+      try {
+        const { confirmRideCashCollectionForRider } = await import(
+          "../rides/ride-cash-payment.service.js"
+        );
+        return await confirmRideCashCollectionForRider({
+          riderId,
+          orderRef: id,
+        });
+      } catch (e) {
+        const err = e as Error & { statusCode?: number; code?: string };
+        const status = err.statusCode ?? 500;
+        const payload: { error: string; code?: string } = {
+          error: err.message || "Could not confirm cash",
+        };
+        if (err.code) payload.code = err.code;
+        return reply.status(status as 409).send(payload);
+      }
+    }
+  );
+
+  app.post(
+    "/orders/:id/ride/toll",
+    {
+      schema: {
+        params: z.object({ id: z.string().min(1) }),
+        body: z.object({
+          amount: z.number().positive().max(5000),
+          lat: z.number().finite().optional(),
+          lng: z.number().finite().optional(),
+          note: z.string().max(500).optional(),
+          proofUrl: z.string().url().max(2048).optional(),
+        }),
+        response: {
+          200: z.object({
+            ok: z.literal(true),
+            toll: z.object({
+              id: z.number(),
+              amount: z.number(),
+              totalToll: z.number(),
+              createdAt: z.string(),
+            }),
+          }),
+          400: z.object({ error: z.string(), code: z.string().optional() }),
+          403: z.object({ error: z.string() }),
+          404: z.object({ error: z.string() }),
+        },
+      },
+    },
+    async (req, reply) => {
+      const riderId = parseRiderIdFromAuth(req.auth!.sub);
+      if (riderId == null) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (reply as any).status(403).send({ error: "Invalid rider session" });
+      }
+      const { id } = req.params as { id: string };
+      const body = req.body as {
+        amount: number;
+        lat?: number;
+        lng?: number;
+        note?: string;
+        proofUrl?: string;
+      };
+      try {
+        const sql = (await import("../../db/client.js")).getSql();
+        let orderCoreId: number | null = null;
+        const asNum = Number(id);
+        if (Number.isFinite(asNum) && asNum > 0) {
+          orderCoreId = asNum;
+        } else {
+          const rows = await sql<Array<{ id: number }>>`
+            SELECT id FROM orders_core
+            WHERE order_id = ${id} OR formatted_order_id = ${id}
+            LIMIT 1
+          `;
+          orderCoreId = rows[0]?.id != null ? Number(rows[0].id) : null;
+        }
+        if (orderCoreId == null) {
+          return reply.status(404).send({ error: "Order not found" });
+        }
+        const { addRideTollEvent, sumRideTollAmount } = await import(
+          "../rides/pricing/rideToll.service.js"
+        );
+        const toll = await addRideTollEvent({
+          orderCoreId,
+          riderId,
+          amount: body.amount,
+          lat: body.lat,
+          lng: body.lng,
+          note: body.note,
+          proofUrl: body.proofUrl,
+        });
+        const totalToll = await sumRideTollAmount(orderCoreId);
+        // Persist toll total onto billing snapshot for settlement.
+        await sql`
+          UPDATE orders_core
+          SET billing_snapshot = COALESCE(billing_snapshot, '{}'::jsonb) || ${JSON.stringify({
+            toll_charge: totalToll,
+            toll_charges: totalToll,
+          })}::jsonb,
+              updated_at = NOW()
+          WHERE id = ${orderCoreId}
+        `;
+        try {
+          const { recordRideBillingActivity } = await import(
+            "../rides/settlement/rideBillingActivity.js"
+          );
+          await recordRideBillingActivity({
+            orderCoreId,
+            riderId,
+            eventType: "TOLL_ADDED",
+            amount: toll.amount,
+            summary: `Toll added ₹${toll.amount}`,
+            payload: { tollId: toll.id, totalToll },
+            actorType: "rider",
+            actorId: String(riderId),
+          });
+        } catch {
+          /* ignore */
+        }
+        return {
+          ok: true as const,
+          toll: {
+            id: toll.id,
+            amount: toll.amount,
+            totalToll,
+            createdAt: toll.createdAt,
+          },
+        };
+      } catch (e) {
+        const err = e as Error & { statusCode?: number; code?: string };
+        const status = err.statusCode ?? 500;
+        const payload: { error: string; code?: string } = {
+          error: err.message || "Could not add toll",
+        };
+        if (err.code) payload.code = err.code;
+        return reply.status(status as 400).send(payload);
       }
     }
   );

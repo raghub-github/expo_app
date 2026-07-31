@@ -14,6 +14,7 @@ import { useRiderBankPaymentMethod } from "@/src/hooks/useRiderBankAccount";
 import {
   EarningsAddAccountFooter,
   EARNINGS_ADD_ACCOUNT_FOOTER_HEIGHT,
+  MIN_WITHDRAWAL_BALANCE,
 } from "@/src/components/earnings/EarningsAddAccountFooter";
 import { useEarningsBankSheetStore } from "@/src/stores/earningsBankSheetStore";
 import { EarningsWithdrawalModal } from "@/src/components/earnings/EarningsWithdrawalModal";
@@ -91,18 +92,49 @@ export default function EarningsScreen() {
 
           <View style={styles.sectionCard}>
             <Text style={styles.sectionTitle}>{t("earnings.breakdown")}</Text>
-            <EarningItem
-              label={t("earnings.foodOrders")}
-              amount={formatCurrency(display.breakdown.food)}
-            />
-            <EarningItem
-              label={t("earnings.parcelOrders")}
-              amount={formatCurrency(display.breakdown.parcel)}
-            />
-            <EarningItem
-              label={t("earnings.rideTrips")}
-              amount={formatCurrency(display.breakdown.ride)}
-            />
+            {display.breakdownDetail ? (
+              <>
+                <ServiceBreakdownBlock
+                  label={t("earnings.foodOrders")}
+                  data={display.breakdownDetail.food}
+                  format={formatCurrency}
+                  t={t}
+                />
+                <ServiceBreakdownBlock
+                  label={t("earnings.parcelOrders")}
+                  data={display.breakdownDetail.parcel}
+                  format={formatCurrency}
+                  t={t}
+                />
+                <ServiceBreakdownBlock
+                  label={t("earnings.rideTrips")}
+                  data={display.breakdownDetail.ride}
+                  format={formatCurrency}
+                  t={t}
+                />
+                {display.breakdownDetail.common.subscriptionDebited > 0 ? (
+                  <EarningItem
+                    label={t("earnings.subscriptionDebited", "Subscription debited")}
+                    amount={`- ${formatCurrency(display.breakdownDetail.common.subscriptionDebited)}`}
+                  />
+                ) : null}
+              </>
+            ) : (
+              <>
+                <EarningItem
+                  label={t("earnings.foodOrders")}
+                  amount={formatCurrency(display.breakdown.food)}
+                />
+                <EarningItem
+                  label={t("earnings.parcelOrders")}
+                  amount={formatCurrency(display.breakdown.parcel)}
+                />
+                <EarningItem
+                  label={t("earnings.rideTrips")}
+                  amount={formatCurrency(display.breakdown.ride)}
+                />
+              </>
+            )}
             <View style={styles.totalDivider}>
               <EarningItem
                 label={t("earnings.total")}
@@ -144,6 +176,7 @@ export default function EarningsScreen() {
             bankAccount={bankAccount}
             isLoading={isBankAccountLoading}
             hasBankAccount={display.hasBankAccount}
+            canWithdraw={display.totalBalance > MIN_WITHDRAWAL_BALANCE}
             onAddAccount={openBankSheet}
             onRequestWithdrawal={() => setWithdrawOpen(true)}
           />
@@ -177,6 +210,52 @@ function EarningItem({ label, amount, bold }: { label: string; amount: string; b
     <View style={styles.earningRow}>
       <Text style={[styles.earningLabel, bold && styles.earningLabelBold]}>{label}</Text>
       <Text style={[styles.earningAmount, bold && styles.earningAmountBold]}>{amount}</Text>
+    </View>
+  );
+}
+
+type ServiceBreakdownData = {
+  earnings: number;
+  penalties: number;
+  penaltyReverts: number;
+  offers: number;
+  net: number;
+};
+
+/** One service (Food/Parcel/Ride) with its net and any earnings/penalty/revert/offer sub-lines. */
+function ServiceBreakdownBlock({
+  label,
+  data,
+  format,
+  t,
+}: {
+  label: string;
+  data: ServiceBreakdownData;
+  format: (n: number) => string;
+  t: (key: string, fallback?: string) => string;
+}) {
+  const subLines: Array<{ key: string; label: string; value: string; tone: "credit" | "debit" }> = [];
+  if (data.earnings > 0)
+    subLines.push({ key: "earn", label: t("earnings.svcEarnings", "Earnings"), value: `+ ${format(data.earnings)}`, tone: "credit" });
+  if (data.penalties > 0)
+    subLines.push({ key: "pen", label: t("earnings.svcPenalties", "Penalties"), value: `- ${format(data.penalties)}`, tone: "debit" });
+  if (data.penaltyReverts > 0)
+    subLines.push({ key: "rev", label: t("earnings.svcReverts", "Penalty reverted"), value: `+ ${format(data.penaltyReverts)}`, tone: "credit" });
+  if (data.offers > 0)
+    subLines.push({ key: "off", label: t("earnings.svcOffers", "Offers & incentives"), value: `+ ${format(data.offers)}`, tone: "credit" });
+
+  return (
+    <View style={styles.svcBlock}>
+      <View style={styles.earningRow}>
+        <Text style={[styles.earningLabel, styles.earningLabelBold]}>{label}</Text>
+        <Text style={[styles.earningAmount, styles.earningAmountBold]}>{format(data.net)}</Text>
+      </View>
+      {subLines.map((s) => (
+        <View key={s.key} style={styles.svcSubRow}>
+          <Text style={styles.svcSubLabel}>{s.label}</Text>
+          <Text style={[styles.svcSubValue, s.tone === "debit" && styles.svcSubValueDebit]}>{s.value}</Text>
+        </View>
+      ))}
     </View>
   );
 }
@@ -323,6 +402,28 @@ const styles = StyleSheet.create({
     borderTopColor: "#E5E7EB",
     paddingTop: 4,
     marginTop: 4,
+  },
+  svcBlock: {
+    paddingVertical: 2,
+  },
+  svcSubRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    paddingLeft: 12,
+    paddingVertical: 2,
+  },
+  svcSubLabel: {
+    fontSize: 12.5,
+    color: "#6B7280",
+  },
+  svcSubValue: {
+    fontSize: 12.5,
+    fontWeight: "600",
+    color: colors.success[600],
+  },
+  svcSubValueDebit: {
+    color: colors.error[600],
   },
   walletRow: {
     flexDirection: "row",

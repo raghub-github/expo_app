@@ -204,9 +204,25 @@ export interface RiderDetailsResponse {
   onboardingPayments: RiderOnboardingPaymentEntry[];
 }
 
+export interface RiderServiceBreakdown {
+  earnings: number;
+  penalties: number;
+  penaltyReverts: number;
+  offers: number;
+  net: number;
+}
+
+export interface RiderWalletBreakdown {
+  food: RiderServiceBreakdown;
+  parcel: RiderServiceBreakdown;
+  ride: RiderServiceBreakdown;
+  common: { otherOffers: number; otherPenaltyReverts: number };
+}
+
 export interface RiderWalletSummaryResponse {
   rider: { id: number; name: string | null; mobile: string };
   wallet: RiderWalletInfo | null;
+  breakdown?: RiderWalletBreakdown;
   onboardingPayments: RiderOnboardingPaymentEntry[];
 }
 

@@ -10,7 +10,12 @@ import {
 import { useRiderSubscriptionDuesPayment } from "@/src/hooks/useRiderSubscriptionDuesPayment";
 import { useRiderPenaltyPayment } from "@/src/hooks/useRiderPenaltyPayment";
 import { useRiderProfile } from "@/src/hooks/useRiderProfile";
-import { openRazorpayCheckout, isNativeRazorpayAvailable } from "@/src/lib/razorpay-native";
+import {
+  openRazorpayCheckout,
+  isNativeRazorpayAvailable,
+  extractRazorpayError,
+  isRazorpayUserCancel,
+} from "@/src/lib/razorpay-native";
 import { extractApiErrorMessage } from "@/src/services/http";
 import { colors } from "@/src/theme";
 
@@ -20,9 +25,7 @@ function formatRupee(amount: number) {
 
 /**
  * Earnings-page settle card. Shown ONLY when the wallet balance is negative.
- * The amount is read-only (= abs(balance)). Routes to the correct native flow:
- * subscription dues when dues exist, otherwise the negative-wallet (penalty) flow.
- * Hidden entirely when the wallet is zero or positive.
+ * Amount is read-only (= abs(balance)). Native Razorpay Android/iOS SDK only.
  */
 export function NegativeWalletPayCard() {
   const { t } = useTranslation();
@@ -45,39 +48,70 @@ export function NegativeWalletPayCard() {
 
   const runNative = useCallback(
     async (order: { orderId: string; keyId: string; amount: number }, description: string) => {
-      const result = await openRazorpayCheckout({
-        order: { orderId: order.orderId, amount: order.amount, keyId: order.keyId },
+      return openRazorpayCheckout({
+        order: {
+          orderId: order.orderId,
+          amount: order.amount,
+          keyId: order.keyId,
+        },
         prefill: { name: riderProfile?.name, contact: riderProfile?.mobile },
         name: "GatiMitra",
         description,
         themeColor: "#0EA47A",
       });
-      return result;
     },
     [riderProfile?.name, riderProfile?.mobile]
+  );
+
+  const simulateOrAlertDummy = useCallback(
+    (
+      order: { orderId: string; amountRupees?: number; amount: number },
+      verify: (orderId: string, paymentId: string, signature: string) => Promise<void>
+    ) => {
+      const amountLabel = formatRupee(order.amountRupees ?? order.amount / 100);
+      Alert.alert(
+        t("earnings.payTitle", "Clear negative balance"),
+        t(
+          "earnings.payDummyMessage",
+          "Dummy payment mode — simulate Razorpay success for ₹{{amount}}?",
+          { amount: amountLabel }
+        ),
+        [
+          {
+            text: t("common.cancel", "Cancel"),
+            style: "cancel",
+            onPress: () => setPaying(false),
+          },
+          {
+            text: t("home.simulatePayment", "Simulate payment"),
+            onPress: () => {
+              void verify(order.orderId, `pay_${Date.now()}`, "simulated_signature").finally(() =>
+                setPaying(false)
+              );
+            },
+          },
+        ]
+      );
+    },
+    [t]
   );
 
   const handlePay = useCallback(async () => {
     if (paying || payable <= 0) return;
     setPaying(true);
     try {
-      if (!isNativeRazorpayAvailable()) {
-        Alert.alert(
-          t("common.error", "Error"),
-          t("earnings.payNativeMissing", "Please update the app to complete this payment.")
-        );
-        setPaying(false);
-        return;
-      }
-
-      // Subscription dues take priority (separate accounting); otherwise the
-      // negative wallet is a penalty balance.
+      // Subscription dues take priority when present.
       if (subscriptionDue > 0) {
         if (canPayFromWallet) {
           const walletRes = await payDuesFromWallet.mutateAsync();
           await refreshAll();
           if (walletRes.totalDueAfter <= 0) {
-            setPaying(false);
+            Alert.alert(
+              t("subscription.duesPaidTitle", "Payment successful"),
+              t("subscription.duesPaidFromWallet", "{{amount}} cleared from wallet.", {
+                amount: `₹${formatRupee(walletRes.paidAmount ?? 0)}`,
+              })
+            );
             return;
           }
         }
@@ -86,7 +120,28 @@ export function NegativeWalletPayCard() {
           throw new Error(t("subscription.payFailed", "Payment failed"));
         }
         if (order.dummyMode || order.keyId === "dummy_key") {
-          setPaying(false);
+          simulateOrAlertDummy(order, async (oid, pid, sig) => {
+            await subDuesPayment.verifyPayment.mutateAsync({
+              razorpayOrderId: oid,
+              razorpayPaymentId: pid,
+              razorpaySignature: sig,
+            });
+            await refreshAll();
+            Alert.alert(
+              t("subscription.duesPaidTitle", "Payment successful"),
+              t("subscription.duesPaidMessage", "Subscription dues cleared.")
+            );
+          });
+          return;
+        }
+        if (!isNativeRazorpayAvailable()) {
+          Alert.alert(
+            t("common.error", "Error"),
+            t(
+              "earnings.payNativeMissing",
+              "Native Razorpay is not available in this build. Please install the latest Play Store / APK build (not Expo Go)."
+            )
+          );
           return;
         }
         try {
@@ -97,8 +152,18 @@ export function NegativeWalletPayCard() {
             razorpaySignature: r.razorpaySignature,
           });
           await refreshAll();
-        } catch {
-          setPaying(false);
+          Alert.alert(
+            t("subscription.duesPaidTitle", "Payment successful"),
+            t("subscription.duesPaidMessage", "Subscription dues cleared.")
+          );
+        } catch (rzpErr) {
+          if (!isRazorpayUserCancel(rzpErr)) {
+            const { description, code } = extractRazorpayError(rzpErr);
+            Alert.alert(
+              t("common.error", "Error"),
+              description || code || t("subscription.payFailed", "Payment failed")
+            );
+          }
         }
         return;
       }
@@ -109,7 +174,28 @@ export function NegativeWalletPayCard() {
         throw new Error(t("home.penaltyPayFailedMessage", "Could not start payment."));
       }
       if (order.dummyMode || order.keyId === "dummy_key") {
-        setPaying(false);
+        simulateOrAlertDummy(order, async (oid, pid, sig) => {
+          await penaltyPayment.verifyPayment.mutateAsync({
+            razorpayOrderId: oid,
+            razorpayPaymentId: pid,
+            razorpaySignature: sig,
+          });
+          await refreshAll();
+          Alert.alert(
+            t("earnings.paySuccessTitle", "Payment successful"),
+            t("earnings.paySuccessBody", "Your wallet balance has been updated.")
+          );
+        });
+        return;
+      }
+      if (!isNativeRazorpayAvailable()) {
+        Alert.alert(
+          t("common.error", "Error"),
+          t(
+            "earnings.payNativeMissing",
+            "Native Razorpay is not available in this build. Please install the latest Play Store / APK build (not Expo Go)."
+          )
+        );
         return;
       }
       try {
@@ -120,11 +206,25 @@ export function NegativeWalletPayCard() {
           razorpaySignature: r.razorpaySignature,
         });
         await refreshAll();
-      } catch {
+        Alert.alert(
+          t("earnings.paySuccessTitle", "Payment successful"),
+          t("earnings.paySuccessBody", "Your wallet balance has been updated.")
+        );
+      } catch (rzpErr) {
         void penaltyPayment.recordAttempt
-          .mutateAsync({ razorpayOrderId: order.orderId, status: "cancelled" })
+          .mutateAsync({
+            razorpayOrderId: order.orderId,
+            status: isRazorpayUserCancel(rzpErr) ? "cancelled" : "failed",
+            reason: extractRazorpayError(rzpErr).description || undefined,
+          })
           .catch(() => undefined);
-        setPaying(false);
+        if (!isRazorpayUserCancel(rzpErr)) {
+          const { description, code } = extractRazorpayError(rzpErr);
+          Alert.alert(
+            t("common.error", "Error"),
+            description || code || t("home.penaltyPayFailedMessage", "Could not start payment.")
+          );
+        }
       }
     } catch (e) {
       Alert.alert(
@@ -147,16 +247,19 @@ export function NegativeWalletPayCard() {
     penaltyPayment.recordAttempt,
     runNative,
     refreshAll,
+    simulateOrAlertDummy,
     t,
   ]);
 
-  // Hidden when the wallet is zero or positive.
   if (payable <= 0) return null;
 
   const reason =
     subscriptionDue > 0
       ? t("earnings.negativeSubscription", "Subscription dues have made your wallet negative.")
-      : t("earnings.negativePenalty", "A penalty has made your wallet negative. Clear it to receive orders.");
+      : t(
+          "earnings.negativePenalty",
+          "A penalty has made your wallet negative. Clear it to receive orders."
+        );
 
   return (
     <View style={styles.card}>
@@ -173,9 +276,12 @@ export function NegativeWalletPayCard() {
       </View>
       <Pressable
         style={[styles.payBtn, paying && styles.payBtnDisabled]}
-        onPress={() => void handlePay()}
+        onPress={() => {
+          void handlePay();
+        }}
         disabled={paying}
         accessibilityRole="button"
+        hitSlop={8}
       >
         {paying ? (
           <ActivityIndicator color="#FFFFFF" />

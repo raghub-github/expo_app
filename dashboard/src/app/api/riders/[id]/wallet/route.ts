@@ -6,7 +6,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { getDb } from "@/lib/db/client";
 import { riders, riderWallet, onboardingPayments, walletLedger } from "@/lib/db/schema";
-import { eq, desc } from "drizzle-orm";
+import { eq, desc, sql } from "drizzle-orm";
 import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine";
 
 export const runtime = "nodejs";
@@ -128,6 +128,62 @@ export async function GET(
       }
     }
 
+    // Per-service breakdown (mirrors backend getRiderWalletBreakdown): earnings +
+    // penalties from the authoritative wallet columns; penalty reverts + offers
+    // aggregated from wallet_ledger via service_type. Keeps app + dashboard identical.
+    const n2 = (v: unknown) => {
+      const x = Number(v ?? 0);
+      return Number.isFinite(x) ? Math.round(x * 100) / 100 : 0;
+    };
+    const svcKey = (raw: unknown): "food" | "parcel" | "ride" | null => {
+      const s = String(raw ?? "").toLowerCase();
+      if (s === "food") return "food";
+      if (s === "parcel") return "parcel";
+      if (s === "ride" || s === "person_ride") return "ride";
+      return null;
+    };
+    type SvcBreakdown = { earnings: number; penalties: number; penaltyReverts: number; offers: number; net: number };
+    const mk = (e: unknown, p: unknown): SvcBreakdown => ({ earnings: n2(e), penalties: n2(p), penaltyReverts: 0, offers: 0, net: 0 });
+    const breakdown = {
+      food: mk(walletRow?.earningsFood, walletRow?.penaltiesFood),
+      parcel: mk(walletRow?.earningsParcel, walletRow?.penaltiesParcel),
+      ride: mk(walletRow?.earningsPersonRide, walletRow?.penaltiesPersonRide),
+      common: { otherOffers: 0, otherPenaltyReverts: 0 },
+    };
+    try {
+      const rows = (await db.execute(sql`
+        SELECT
+          LOWER(COALESCE(NULLIF(service_type, ''), metadata->>'serviceType', metadata->>'service_type', '')) AS svc,
+          LOWER(entry_type::text) AS et,
+          COALESCE(SUM(amount::numeric), 0) AS total
+        FROM wallet_ledger
+        WHERE rider_id = ${riderId}
+          AND LOWER(entry_type::text) IN ('penalty_reversal', 'cancellation_payout', 'bonus', 'referral_bonus')
+        GROUP BY 1, 2
+      `)) as unknown as { rows?: Array<Record<string, unknown>> } | Array<Record<string, unknown>>;
+      const list = Array.isArray(rows) ? rows : (rows.rows ?? []);
+      for (const r of list) {
+        const amt = n2(r.total);
+        if (amt <= 0) continue;
+        const key = svcKey(r.svc);
+        const bucket = key === "food" ? breakdown.food : key === "parcel" ? breakdown.parcel : key === "ride" ? breakdown.ride : null;
+        if (String(r.et) === "penalty_reversal") {
+          if (bucket) bucket.penaltyReverts += amt;
+          else breakdown.common.otherPenaltyReverts += amt;
+        } else {
+          if (bucket) bucket.offers += amt;
+          else breakdown.common.otherOffers += amt;
+        }
+      }
+    } catch {
+      // best-effort; earnings/penalties from columns still stand
+    }
+    for (const b of [breakdown.food, breakdown.parcel, breakdown.ride]) {
+      b.penaltyReverts = n2(b.penaltyReverts);
+      b.offers = n2(b.offers);
+      b.net = n2(b.earnings - b.penalties + b.penaltyReverts + b.offers);
+    }
+
     return NextResponse.json({
       success: true,
       data: {
@@ -137,6 +193,7 @@ export async function GET(
           mobile: rider.mobile,
         },
         wallet,
+        breakdown,
         onboardingPayments: onboardingRows.map((r) => {
           const meta = (r.metadata ?? {}) as Record<string, unknown>;
           const asStr = (v: unknown): string | null =>

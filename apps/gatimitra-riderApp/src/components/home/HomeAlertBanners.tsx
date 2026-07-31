@@ -116,6 +116,8 @@ export function PenaltyBanner({ amount, onPay, paying = false }: PenaltyBannerPr
         <Pressable
           style={[styles.payBtn, paying && styles.payBtnDisabled]}
           disabled={paying}
+          hitSlop={12}
+          delayPressIn={0}
           onPress={onPay ?? (() => router.push("/(tabs)/earnings"))}
         >
           <Text style={styles.payBtnText}>

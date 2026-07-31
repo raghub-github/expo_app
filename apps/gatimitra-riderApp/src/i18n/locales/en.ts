@@ -123,6 +123,7 @@ export const en = {
     gpsDisabled: "GPS Disabled",
     gpsDisabledMessage: "Turn on GPS/Location services to continue. Location is mandatory for receiving orders.",
     enableLocation: "Enable Location",
+    turnOnGps: "Turn On Location",
     turnedOn: "I Turned It On",
     gettingLocation: "Getting your location…",
     liveLocation: "Live Location",

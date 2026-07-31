@@ -12,6 +12,8 @@ import { useRiderProfile } from "@/src/hooks/useRiderProfile";
 import {
   openRazorpayCheckout,
   isNativeRazorpayAvailable,
+  extractRazorpayError,
+  isRazorpayUserCancel,
 } from "@/src/lib/razorpay-native";
 import { extractApiErrorMessage } from "@/src/services/http";
 import { BannerPagerIndicators } from "@/src/components/home/HomeAlertBannerCarousel";
@@ -152,7 +154,10 @@ export function SubscriptionDuesBanner({ embedded = false }: { embedded?: boolea
       if (!isNativeRazorpayAvailable()) {
         Alert.alert(
           t("common.error", "Error"),
-          t("subscription.nativeMissing", "Please update the app to complete this payment.")
+          t(
+            "subscription.nativeMissing",
+            "Native Razorpay is not available in this build. Please install the latest Play Store / APK build (not Expo Go)."
+          )
         );
         setPaying(false);
         return;
@@ -175,8 +180,14 @@ export function SubscriptionDuesBanner({ embedded = false }: { embedded?: boolea
           result.razorpayPaymentId,
           result.razorpaySignature
         );
-      } catch {
-        // User cancelled or gateway failed — just re-enable the button.
+      } catch (rzpErr) {
+        if (!isRazorpayUserCancel(rzpErr)) {
+          const { description, code } = extractRazorpayError(rzpErr);
+          Alert.alert(
+            t("common.error", "Error"),
+            description || code || t("subscription.payFailed", "Payment failed")
+          );
+        }
         setPaying(false);
       }
     } catch (e) {
@@ -221,6 +232,8 @@ export function SubscriptionDuesBanner({ embedded = false }: { embedded?: boolea
             style={[styles.payBtn, paying && { opacity: 0.7 }]}
             onPress={() => void handlePay()}
             disabled={paying}
+            hitSlop={12}
+            delayPressIn={0}
           >
             {paying ? (
               <ActivityIndicator size="small" color="#111827" />

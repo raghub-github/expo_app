@@ -25,6 +25,8 @@ import { useRiderProfile } from "@/src/hooks/useRiderProfile";
 import {
   openRazorpayCheckout,
   isNativeRazorpayAvailable,
+  extractRazorpayError,
+  isRazorpayUserCancel,
 } from "@/src/lib/razorpay-native";
 import { extractApiErrorMessage } from "@/src/services/http";
 import { colors } from "@/src/theme";
@@ -164,7 +166,10 @@ export function SubscriptionDutyBlockedSheet({ visible, onClose }: Props) {
       if (!isNativeRazorpayAvailable()) {
         Alert.alert(
           t("common.error", "Error"),
-          t("subscription.nativeMissing", "Please update the app to complete this payment.")
+          t(
+            "subscription.nativeMissing",
+            "Native Razorpay is not available in this build. Please install the latest Play Store / APK build (not Expo Go)."
+          )
         );
         setPaying(false);
         return;
@@ -187,7 +192,14 @@ export function SubscriptionDutyBlockedSheet({ visible, onClose }: Props) {
           result.razorpayPaymentId,
           result.razorpaySignature
         );
-      } catch {
+      } catch (rzpErr) {
+        if (!isRazorpayUserCancel(rzpErr)) {
+          const { description, code } = extractRazorpayError(rzpErr);
+          Alert.alert(
+            t("common.error", "Error"),
+            description || code || t("subscription.payFailed", "Payment failed")
+          );
+        }
         setPaying(false);
       }
     } catch (e) {

@@ -7,6 +7,12 @@ import { computeBillForRide } from "../billing/rideBilling.service.js";
 import type { BillingResult } from "../billing/types.js";
 import type { AppliedLine } from "../billing/types.js";
 import { resolveInvoiceDiscounts } from "./ride-invoice-summary.js";
+import {
+  attachRideSurgeToSnapshot,
+  resolveCustomerRideSurge,
+} from "./pricing/rideSurgeResolver.js";
+import { catalogCodeToPricingVehicle } from "../ride-state-config/catalogVehicleMap.js";
+import { resolveRideStateIdFromCoords } from "../ride-state-config/rideStateConfig.repository.js";
 
 function round2(n: number): number {
   return Math.round(n * 100) / 100;
@@ -43,6 +49,13 @@ function mergeBillingIntoSnapshot(
   extras?: {
     pickupWaitingCharge?: number;
     pickupWaitSeconds?: number;
+    /** Phase 3 — surge shares carried on the snapshot for settlement. */
+    surge?: {
+      total: number;
+      customerShare: number;
+      companyShare: number;
+      applied?: unknown[];
+    };
   }
 ): Record<string, unknown> {
   let charges: AppliedLine[] = [...(billing.charges ?? [])];
@@ -87,6 +100,19 @@ function mergeBillingIntoSnapshot(
           pickup_wait_seconds: extras?.pickupWaitSeconds ?? prevSnap.pickup_wait_seconds,
         }
       : {}),
+    ...(extras?.surge
+      ? {
+          surge_total: extras.surge.total,
+          surge_customer_share: extras.surge.customerShare,
+          surge_company_share: extras.surge.companyShare,
+          applied_surges: extras.surge.applied ?? [],
+        }
+      : {
+          surge_total: prevSnap.surge_total,
+          surge_customer_share: prevSnap.surge_customer_share,
+          surge_company_share: prevSnap.surge_company_share,
+          applied_surges: prevSnap.applied_surges,
+        }),
     ride_fare_coupon_code: prevSnap.ride_fare_coupon_code,
     ride_fare_platform_offer_id: prevSnap.ride_fare_platform_offer_id,
     ride_fare_offer_discount: prevSnap.ride_fare_offer_discount,
@@ -195,6 +221,58 @@ export async function syncRideCustomerBillingSnapshot(
 
   if (!billRes.ok) return { ok: false };
 
+  // Phase 3 — resolve surge shares so admin snapshot mirrors what settlement
+  // will see. Silently degrades to previous snapshot values if we lack the
+  // vehicle / state context (e.g. legacy orders without rideType metadata).
+  let surgeExtras:
+    | {
+        total: number;
+        customerShare: number;
+        companyShare: number;
+        applied: unknown[];
+      }
+    | undefined;
+  const metaObj =
+    row.checkoutMetadata != null && typeof row.checkoutMetadata === "object"
+      ? (row.checkoutMetadata as Record<string, unknown>)
+      : {};
+  const rideType =
+    typeof metaObj.rideType === "string" ? metaObj.rideType.trim() : "";
+  const pricingVehicle = rideType ? catalogCodeToPricingVehicle(rideType) : null;
+  if (pricingVehicle) {
+    try {
+      const stateId = await resolveRideStateIdFromCoords({
+        pickupLat: billNum(row.pickupLat),
+        pickupLng: billNum(row.pickupLon),
+        pickupPincode:
+          typeof metaObj.pickupPincode === "string" ? metaObj.pickupPincode : null,
+        pickupState:
+          typeof metaObj.pickupState === "string" ? metaObj.pickupState : null,
+      });
+      const surge = await resolveCustomerRideSurge({
+        stateId,
+        pricingVehicle,
+        baseFareForPct: rideFare,
+      });
+      surgeExtras = {
+        total: surge.surgeTotal,
+        customerShare: surge.customerShareTotal,
+        companyShare: surge.companyShareTotal,
+        applied: surge.appliedSurges.map((a) => ({
+          surge_id: a.surgeId,
+          name: a.name,
+          applied_amount: a.appliedAmount,
+          funding_mode: a.fundingMode,
+          customer_share_amount: a.customerShareAmount,
+          company_share_amount: a.companyShareAmount,
+        })),
+      };
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn("[ride-bill-sync] surge attachment skipped", err);
+    }
+  }
+
   const mergedSnapshot = mergeBillingIntoSnapshot(
     billRes.billing,
     billRes.snapshot,
@@ -202,6 +280,7 @@ export async function syncRideCustomerBillingSnapshot(
     {
       pickupWaitingCharge: opts?.pickupWaitingCharge,
       pickupWaitSeconds: opts?.pickupWaitSeconds,
+      surge: surgeExtras,
     }
   );
   const finalAmount = round2(billNum(mergedSnapshot.final_amount));
@@ -376,6 +455,87 @@ export async function computeRideBillForCustomerOrder(
 
   const rideType =
     typeof meta.rideType === "string" ? meta.rideType.trim() || null : null;
+
+  // Phase 3 — attach the surge funding split to the snapshot BEFORE it flows
+  // into the settlement engine (billingToComponents reads
+  // `surge_customer_share` / `surge_company_share` from the snapshot). The
+  // customer bill is unaffected (finalFare already includes customer surge
+  // from quote time); we're only recording who funds the rider's surge pass-
+  // through so settlement debits the right party.
+  const pricingVehicle = rideType ? catalogCodeToPricingVehicle(rideType) : null;
+  if (pricingVehicle) {
+    try {
+      const stateId = await resolveRideStateIdFromCoords({
+        pickupLat,
+        pickupLng,
+        pickupPincode:
+          typeof meta.pickupPincode === "string" ? meta.pickupPincode : null,
+        pickupState:
+          typeof meta.pickupState === "string" ? meta.pickupState : null,
+      });
+      const surge = await resolveCustomerRideSurge({
+        stateId,
+        pricingVehicle,
+        baseFareForPct: rideFare,
+      });
+      attachRideSurgeToSnapshot(billRes.snapshot, surge);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn("[ride-bill] surge attachment skipped", err);
+    }
+  }
+
+  // Toll history total → snapshot (rider pass-through).
+  try {
+    const { sumRideTollAmount } = await import("./pricing/rideToll.service.js");
+    const tollTotal = await sumRideTollAmount(orderRow.id);
+    if (tollTotal > 0) {
+      billRes.snapshot.toll_charge = tollTotal;
+      billRes.snapshot.toll_charges = tollTotal;
+      billRes.billing.final_amount = round2(
+        Number(billRes.billing.final_amount) + tollTotal
+      );
+    }
+  } catch (err) {
+    console.warn("[ride-bill] toll attachment skipped", err);
+  }
+
+  // Night charge when an active geo config matches completion time.
+  try {
+    const { loadActiveNightConfig } = await import(
+      "./pricing/rideNightConfig.repository.js"
+    );
+    const { computeNightCharge } = await import("./pricing/rideNightCharge.js");
+    const stateHint =
+      typeof meta.pickupState === "string" ? meta.pickupState : null;
+    const nightCfg = await loadActiveNightConfig({
+      geoLevel: "state",
+      geoRefId: stateHint,
+      stateRefId: stateHint,
+    });
+    if (nightCfg) {
+      const night = computeNightCharge({
+        at: new Date(),
+        tripKm: distanceKm ?? 0,
+        baseAmount: rideFare,
+        config: nightCfg,
+      });
+      if (night.applicable && night.total > 0) {
+        billRes.snapshot.night_charge = night.customerShare;
+        billRes.snapshot.night_charge_total = night.total;
+        billRes.snapshot.night_customer_share = night.customerShare;
+        billRes.snapshot.night_company_share = night.companyShare;
+        billRes.snapshot.night_funding_mode = night.fundingMode;
+        if (night.customerShare > 0) {
+          billRes.billing.final_amount = round2(
+            Number(billRes.billing.final_amount) + night.customerShare
+          );
+        }
+      }
+    }
+  } catch (err) {
+    console.warn("[ride-bill] night attachment skipped", err);
+  }
 
   return {
     ok: true,

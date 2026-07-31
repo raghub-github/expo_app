@@ -128,7 +128,27 @@ export function PermissionStepSheet({
       ? batteryOptimizationCopy(step)
       : step.key === "background_running"
         ? backgroundRunningCopy(step)
-        : { title: step.title, message: step.description, instructions: null };
+        : step.key === "notifications"
+          ? {
+              title: step.title,
+              message: step.description,
+              instructions: [
+                "Tap Allow below",
+                "Allow notifications when the system asks",
+                "If blocked: enable Notifications for GatiMitra in the settings screen that opens",
+              ],
+            }
+          : step.key === "display_over_apps"
+            ? {
+                title: step.title,
+                message: step.description,
+                instructions: [
+                  "Tap Allow below",
+                  "Find GatiMitra in Display over other apps",
+                  "Turn the toggle ON, then return here",
+                ],
+              }
+            : { title: step.title, message: step.description, instructions: null };
 
   return (
     <PermissionBottomSheetShell visible={visible} maxHeightRatio={0.82}>

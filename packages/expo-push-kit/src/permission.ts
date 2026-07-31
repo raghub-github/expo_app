@@ -83,6 +83,9 @@ export async function requestNotificationPermission(): Promise<NotificationPermi
 /**
  * Open the platform notification settings screen so the user can re-enable
  * notifications after deny/block.
+ *
+ * Android targets the exact app notification channel screen when possible
+ * (APP_NOTIFICATION_SETTINGS), then app details, then generic Settings.
  */
 export async function openNotificationSettings(androidPackageName?: string): Promise<void> {
   if (Platform.OS === "ios") {
@@ -97,26 +100,42 @@ export async function openNotificationSettings(androidPackageName?: string): Pro
       (Constants.manifest as { android?: { package?: string } } | null)?.android?.package ||
       undefined;
 
-    try {
-      const IntentLauncher = await import("expo-intent-launcher");
-      await IntentLauncher.startActivityAsync(
-        IntentLauncher.ActivityAction.APP_NOTIFICATION_SETTINGS,
-        pkg
-          ? {
-              // Some Android versions want extra.packageName; IntentLauncher
-              // also accepts `data: package:...` via APPLICATION_DETAILS.
-              extra: { "android.provider.extra.APP_PACKAGE": pkg },
-            }
-          : {}
-      );
-      return;
-    } catch {
-      // fall through
-    }
+    const IntentLauncher = await import("expo-intent-launcher");
 
+    // 1) Exact notification settings for this package (Android 8+).
     if (pkg) {
       try {
-        const IntentLauncher = await import("expo-intent-launcher");
+        await IntentLauncher.startActivityAsync(
+          IntentLauncher.ActivityAction.APP_NOTIFICATION_SETTINGS,
+          {
+            data: `package:${pkg}`,
+            extra: {
+              "android.provider.extra.APP_PACKAGE": pkg,
+              app_package: pkg,
+            },
+          }
+        );
+        return;
+      } catch {
+        // try alternate extra shape / fallbacks below
+      }
+
+      try {
+        await IntentLauncher.startActivityAsync(
+          IntentLauncher.ActivityAction.APP_NOTIFICATION_SETTINGS,
+          {
+            extra: {
+              "android.provider.extra.APP_PACKAGE": pkg,
+            },
+          }
+        );
+        return;
+      } catch {
+        // fall through
+      }
+
+      // 2) App details → user can open Notifications from there.
+      try {
         await IntentLauncher.startActivityAsync(
           IntentLauncher.ActivityAction.APPLICATION_DETAILS_SETTINGS,
           { data: `package:${pkg}` }

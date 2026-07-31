@@ -51,17 +51,31 @@ export async function openNotificationPermissionSettings(): Promise<void> {
     return;
   }
 
+  const packageName = getAndroidPackageName();
+
+  // Exact app notification settings (Android 8+). Try package data + extras.
+  if (
+    await tryStartAndroidActivity(IntentLauncher.ActivityAction.APP_NOTIFICATION_SETTINGS, {
+      data: `package:${packageName}`,
+      extra: {
+        "android.provider.extra.APP_PACKAGE": packageName,
+        app_package: packageName,
+      },
+    })
+  ) {
+    return;
+  }
+
+  if (
+    await tryStartAndroidActivity(IntentLauncher.ActivityAction.APP_NOTIFICATION_SETTINGS, {
+      extra: { "android.provider.extra.APP_PACKAGE": packageName },
+    })
+  ) {
+    return;
+  }
+
   try {
-    const packageName = getAndroidPackageName();
-    await IntentLauncher.startActivityAsync(
-      IntentLauncher.ActivityAction.APP_NOTIFICATION_SETTINGS,
-      {
-        data: `package:${packageName}`,
-        extra: {
-          "android.provider.extra.APP_PACKAGE": packageName,
-        },
-      }
-    );
+    await openAndroidAppDetails();
   } catch (error) {
     console.warn("Failed to open notification settings, falling back to app settings:", error);
     await Linking.openSettings();
@@ -113,6 +127,7 @@ export async function openBatteryOptimizationSettings(
 
   if (mode === "request") {
     // Official system permission dialog (ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).
+    // This is the exact "Allow / Don't optimize" screen for THIS package.
     const opened = await tryStartAndroidActivity(
       IntentLauncher.ActivityAction.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
       { data: `package:${packageName}` }
@@ -121,7 +136,9 @@ export async function openBatteryOptimizationSettings(
     // Dialog unavailable — fall through to guide screens.
   }
 
-  // System list of apps exempt from battery optimization.
+  // Per-app battery details when available (Android 6+ RequestIgnore path failed).
+  // Some OEMs resolve APPLICATION_DETAILS and the user taps Battery → Unrestricted.
+  // Prefer the system ignore-list next so the toggle is one screen away.
   if (
     await tryStartAndroidActivity(
       IntentLauncher.ActivityAction.IGNORE_BATTERY_OPTIMIZATION_SETTINGS

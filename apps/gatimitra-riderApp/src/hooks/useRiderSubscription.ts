@@ -90,8 +90,9 @@ export type RiderSubscriptionStatus = {
     autoWalletDeduction: boolean;
     startDate: string;
     expiryDate: string;
-    nextRenewalDate?: string;
+    nextRenewalDate?: string | null;
     lastDeductionDate?: string;
+    renewalMode?: "on_first_accept" | "schedule";
   } | null;
   dues?: RiderSubscriptionDues;
 };

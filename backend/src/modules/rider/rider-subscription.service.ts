@@ -21,6 +21,7 @@ import {
   persistRiderSubscriptionSchedule,
   resolveRiderSubscriptionSchedule,
 } from "../../lib/rider-subscription-schedule.js";
+import { isTimeBasedSubscriptionRenewalCycle } from "../../lib/rider-subscription-accept-fee.js";
 
 export type BillingCycle = "daily" | "monthly" | "semi_yearly" | "yearly";
 
@@ -354,7 +355,8 @@ export async function getRiderSubscriptionStatus(riderId: number) {
     });
 
     const expiryIso = schedule.expiresAt.toISOString();
-    const nextRenewal = schedule.nextRenewalAt.toISOString();
+    const isDailyAcceptBilling = billingCycle === "daily" && autoWallet;
+    const nextRenewal = isDailyAcceptBilling ? null : schedule.nextRenewalAt.toISOString();
     const lastDeductionIso = schedule.lastDeductionAt?.toISOString() ?? "";
 
     return {
@@ -371,6 +373,7 @@ export async function getRiderSubscriptionStatus(riderId: number) {
         expiryDate: expiryIso,
         nextRenewalDate: nextRenewal,
         lastDeductionDate: lastDeductionIso,
+        renewalMode: isDailyAcceptBilling ? ("on_first_accept" as const) : ("schedule" as const),
       },
       dues: {
         totalDue: dues.totalDue,
@@ -516,10 +519,14 @@ async function upsertSubscription(args: {
   const lastDeduction =
     args.autoWalletDeduction ? (args.lastDeductionAt ?? now) : null;
   const end = addBillingPeriod(now, args.billingCycle);
+  const dailyAcceptLinked =
+    args.billingCycle === "daily" && args.autoWalletDeduction;
   const nextDeduction =
-    args.autoWalletDeduction && lastDeduction
-      ? addBillingPeriod(lastDeduction, args.billingCycle)
-      : null;
+    dailyAcceptLinked
+      ? null
+      : args.autoWalletDeduction && lastDeduction
+        ? addBillingPeriod(lastDeduction, args.billingCycle)
+        : null;
 
   const existing = await args.sql`
     SELECT id FROM rider_subscriptions
@@ -591,7 +598,7 @@ async function upsertSubscription(args: {
       `;
     }
     const subId = Number(existingId);
-    if (args.autoWalletDeduction) {
+    if (args.autoWalletDeduction && isTimeBasedSubscriptionRenewalCycle(args.billingCycle)) {
       const schedule = await resolveRiderSubscriptionSchedule({
         riderId: args.riderId,
         billingCycle: args.billingCycle,
@@ -604,6 +611,28 @@ async function upsertSubscription(args: {
         riderId: args.riderId,
         schedule,
       });
+    } else if (dailyAcceptLinked) {
+      try {
+        const { toIstDateStr } = await import("../../lib/rider-subscription-accept-fee.js");
+        const todayIst = toIstDateStr(lastDeduction ?? now);
+        await args.sql`
+          UPDATE rider_subscriptions
+          SET
+            last_accept_fee_on_date = ${todayIst}::date,
+            next_deduction_at = NULL,
+            last_deduction_at = ${patch.lastDeduction},
+            end_date = ${patch.end},
+            updated_at = NOW()
+          WHERE id = ${subId}
+        `;
+      } catch (err: unknown) {
+        if ((err as { code?: string })?.code !== "42703") throw err;
+        await args.sql`
+          UPDATE rider_subscriptions
+          SET next_deduction_at = NULL, updated_at = NOW()
+          WHERE id = ${subId}
+        `;
+      }
     }
     return subId;
   }
@@ -647,7 +676,7 @@ async function upsertSubscription(args: {
     subId = Number((inserted[0] as { id: number }).id);
   }
 
-  if (args.autoWalletDeduction) {
+  if (args.autoWalletDeduction && isTimeBasedSubscriptionRenewalCycle(args.billingCycle)) {
     const schedule = await resolveRiderSubscriptionSchedule({
       riderId: args.riderId,
       billingCycle: args.billingCycle,
@@ -660,6 +689,28 @@ async function upsertSubscription(args: {
       riderId: args.riderId,
       schedule,
     });
+  } else if (dailyAcceptLinked) {
+    try {
+      const { toIstDateStr } = await import("../../lib/rider-subscription-accept-fee.js");
+      const todayIst = toIstDateStr(lastDeduction ?? now);
+      await args.sql`
+        UPDATE rider_subscriptions
+        SET
+          last_accept_fee_on_date = ${todayIst}::date,
+          next_deduction_at = NULL,
+          last_deduction_at = ${patch.lastDeduction},
+          end_date = ${patch.end},
+          updated_at = NOW()
+        WHERE id = ${subId}
+      `;
+    } catch (err: unknown) {
+      if ((err as { code?: string })?.code !== "42703") throw err;
+      await args.sql`
+        UPDATE rider_subscriptions
+        SET next_deduction_at = NULL, updated_at = NOW()
+        WHERE id = ${subId}
+      `;
+    }
   }
   return subId;
 }
@@ -886,8 +937,9 @@ export async function updateRiderSubscriptionAutoRenewal(args: {
     SET
       auto_wallet_deduction = ${args.enabled},
       next_deduction_at = CASE
-        WHEN ${args.enabled} THEN COALESCE(next_deduction_at, end_date)
-        ELSE NULL
+        WHEN ${args.enabled} = false THEN NULL
+        WHEN billing_cycle = 'daily' THEN NULL
+        ELSE COALESCE(next_deduction_at, end_date)
       END,
       updated_at = NOW()
     WHERE rider_id = ${args.riderId}
@@ -911,17 +963,22 @@ export async function updateRiderSubscriptionAutoRenewal(args: {
     fallbackStart: startIso ? new Date(startIso) : new Date(),
     subscriptionId,
   });
-  if (autoWallet && subscriptionId > 0) {
+  if (autoWallet && subscriptionId > 0 && isTimeBasedSubscriptionRenewalCycle(cycle)) {
     await persistRiderSubscriptionSchedule({
       subscriptionId,
       riderId: args.riderId,
       schedule,
     });
   }
+  const nextRenewalDate =
+    cycle === "daily" && autoWallet
+      ? null
+      : schedule.nextRenewalAt.toISOString();
   return {
     ok: true as const,
     autoWalletDeduction: autoWallet,
-    nextRenewalDate: schedule.nextRenewalAt.toISOString(),
+    nextRenewalDate,
+    renewalMode: cycle === "daily" && autoWallet ? ("on_first_accept" as const) : ("schedule" as const),
   };
 }
 
@@ -987,6 +1044,7 @@ async function processRiderSubscriptionRenewalsOnce(
             JOIN subscription_plans p ON p.id = rs.plan_id
             WHERE rs.status = 'active'
               AND rs.auto_wallet_deduction = TRUE
+              AND rs.billing_cycle <> 'daily'
               AND rs.next_deduction_at IS NOT NULL
               AND rs.next_deduction_at <= NOW()
               AND rs.rider_id = ${riderIdFilter}
@@ -1007,6 +1065,7 @@ async function processRiderSubscriptionRenewalsOnce(
             JOIN subscription_plans p ON p.id = rs.plan_id
             WHERE rs.status = 'active'
               AND rs.auto_wallet_deduction = TRUE
+              AND rs.billing_cycle <> 'daily'
               AND rs.next_deduction_at IS NOT NULL
               AND rs.next_deduction_at <= NOW()
           `;
@@ -1028,6 +1087,7 @@ async function processRiderSubscriptionRenewalsOnce(
               JOIN subscription_plans p ON p.id = rs.plan_id
               WHERE rs.status = 'active'
                 AND rs.auto_wallet_deduction = TRUE
+                AND rs.billing_cycle <> 'daily'
                 AND rs.next_deduction_at IS NOT NULL
                 AND rs.next_deduction_at <= NOW()
                 AND rs.rider_id = ${riderIdFilter}
@@ -1046,6 +1106,7 @@ async function processRiderSubscriptionRenewalsOnce(
               JOIN subscription_plans p ON p.id = rs.plan_id
               WHERE rs.status = 'active'
                 AND rs.auto_wallet_deduction = TRUE
+                AND rs.billing_cycle <> 'daily'
                 AND rs.next_deduction_at IS NOT NULL
                 AND rs.next_deduction_at <= NOW()
             `;
@@ -1066,6 +1127,11 @@ async function processRiderSubscriptionRenewalsOnce(
     const subId = Number(row.id);
 
     try {
+      // Defense in depth: daily fees are accept-linked, never cron.
+      if (!isTimeBasedSubscriptionRenewalCycle(cycle)) {
+        continue;
+      }
+
       const loaded = await loadPrice(sql, planId, cycle);
       if (!loaded) {
         failed += 1;

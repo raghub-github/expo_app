@@ -191,6 +191,22 @@ export async function creditRiderOrderEarningOnDelivered(
     };
   }
 
+  // Settlement engine is the SSOT for person_ride wallet credits. Skip legacy
+  // percentage-payout credit when a ride_settlements row already exists.
+  if (input.orderType === "person_ride") {
+    const settled = await sql<Array<{ settlement_id: string | null }>>`
+      SELECT settlement_id FROM orders_ride WHERE order_id = ${coreId} LIMIT 1
+    `;
+    if (settled[0]?.settlement_id) {
+      return {
+        credited: false,
+        deliveryCredited: false,
+        tipCredited: false,
+        error: "ride_settlement_ssot",
+      };
+    }
+  }
+
   let deliveryFee = input.deliveryFee;
   let tipAmount = input.tipAmount;
   let orderIdText = input.orderIdText?.trim() || null;

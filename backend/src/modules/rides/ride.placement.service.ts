@@ -843,6 +843,47 @@ async function cancelRideOrderForRow(
     metadata: { reasonCode, cancelMode, displayReason: reasonCode },
   });
 
+  // Pre-pickup compensation: customer cancel after rider reached pickup.
+  if (cancelledByType === "customer" && row.riderId != null && row.riderId > 0) {
+    try {
+      const rideRows = await sqlClient<
+        Array<{
+          rider_reached_pickup_at: Date | string | null;
+          pickup_wait_seconds: number | null;
+          estimated_fare: string | null;
+        }>
+      >`
+        SELECT rider_reached_pickup_at, pickup_wait_seconds, estimated_fare::text
+        FROM orders_ride
+        WHERE order_id = ${row.id}
+        LIMIT 1
+      `;
+      const ride = rideRows[0];
+      const atPickup = ride?.rider_reached_pickup_at != null;
+      if (atPickup) {
+        const waitSec = Number(ride?.pickup_wait_seconds ?? 0);
+        const waitingMinutes =
+          Number.isFinite(waitSec) && waitSec > 0 ? Math.ceil(waitSec / 60) : 0;
+        const fareBase = Number(ride?.estimated_fare ?? 0);
+        const { postPrePickupCancellationCompensation } = await import(
+          "./cancellation/cancelCompensation.engine.js"
+        );
+        await postPrePickupCancellationCompensation({
+          orderCoreId: row.id,
+          serviceType: "ride",
+          riderId: row.riderId,
+          customerId: input.customerPk,
+          riderAtPickup: true,
+          pickupKm: 0,
+          waitingMinutes,
+          fareBase: Number.isFinite(fareBase) ? fareBase : 0,
+        });
+      }
+    } catch (err) {
+      console.warn("[cancelRideOrder] pre-pickup compensation skipped:", err);
+    }
+  }
+
   return { orderId: row.orderId, status: "CANCELLED" };
 }
 
