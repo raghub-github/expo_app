@@ -302,6 +302,7 @@ export function RiderWalletClient() {
   }, [walletError]);
 
   const wallet = walletData?.wallet ?? null;
+  const breakdown = walletData?.breakdown ?? null;
   const onboardingPayments = walletData?.onboardingPayments ?? [];
   const recentLedger = ledgerData?.ledger ?? [];
   const ledgerTotal = ledgerData?.total ?? recentLedger.length;
@@ -401,6 +402,53 @@ export function RiderWalletClient() {
                       icon={<Landmark className="h-5 w-5" />}
                     />
                   </div>
+
+                  {breakdown && (
+                    <div className="mt-4 overflow-x-auto rounded-xl border border-gray-200 bg-white">
+                      <div className="border-b border-gray-100 px-4 py-2.5">
+                        <h3 className="text-sm font-semibold text-gray-900">Per-service breakdown</h3>
+                        <p className="text-xs text-gray-500">Earnings, penalties, penalty reverts & offers per service</p>
+                      </div>
+                      <table className="w-full min-w-[520px] text-sm">
+                        <thead>
+                          <tr className="text-xs text-gray-500">
+                            <th className="px-4 py-2 text-left font-medium">Service</th>
+                            <th className="px-3 py-2 text-right font-medium">Earnings</th>
+                            <th className="px-3 py-2 text-right font-medium">Penalties</th>
+                            <th className="px-3 py-2 text-right font-medium">Reverts</th>
+                            <th className="px-3 py-2 text-right font-medium">Offers</th>
+                            <th className="px-4 py-2 text-right font-medium">Net</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-gray-100">
+                          {([
+                            ["Food", breakdown.food],
+                            ["Parcel", breakdown.parcel],
+                            ["Person Ride", breakdown.ride],
+                          ] as const).map(([label, b]) => (
+                            <tr key={label} className="tabular-nums">
+                              <td className="px-4 py-2 font-medium text-gray-800">{label}</td>
+                              <td className="px-3 py-2 text-right text-emerald-700">₹{b.earnings.toFixed(2)}</td>
+                              <td className="px-3 py-2 text-right text-red-600">₹{b.penalties.toFixed(2)}</td>
+                              <td className="px-3 py-2 text-right text-emerald-700">₹{b.penaltyReverts.toFixed(2)}</td>
+                              <td className="px-3 py-2 text-right text-emerald-700">₹{b.offers.toFixed(2)}</td>
+                              <td className="px-4 py-2 text-right font-semibold text-gray-900">₹{b.net.toFixed(2)}</td>
+                            </tr>
+                          ))}
+                          {(breakdown.common.otherOffers > 0 || breakdown.common.otherPenaltyReverts > 0) && (
+                            <tr className="tabular-nums bg-gray-50/60">
+                              <td className="px-4 py-2 font-medium text-gray-600">Common (subscription/other)</td>
+                              <td className="px-3 py-2 text-right text-gray-400">—</td>
+                              <td className="px-3 py-2 text-right text-gray-400">—</td>
+                              <td className="px-3 py-2 text-right text-emerald-700">₹{breakdown.common.otherPenaltyReverts.toFixed(2)}</td>
+                              <td className="px-3 py-2 text-right text-emerald-700">₹{breakdown.common.otherOffers.toFixed(2)}</td>
+                              <td className="px-4 py-2 text-right text-gray-400">—</td>
+                            </tr>
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
 
                   {completedOnboarding.length > 0 && (
                     <div className="mt-4 flex flex-wrap items-center gap-2 rounded-xl border border-sky-100 bg-sky-50 px-4 py-3 text-sm text-sky-900">
