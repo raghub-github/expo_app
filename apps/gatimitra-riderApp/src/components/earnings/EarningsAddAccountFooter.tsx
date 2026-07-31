@@ -5,10 +5,15 @@ import { Ionicons } from "@expo/vector-icons";
 import { colors } from "@/src/theme";
 import type { RiderBankPaymentMethod } from "@/src/services/api/riderApi";
 
+/** Minimum wallet balance (₹) required before a rider can withdraw. */
+export const MIN_WITHDRAWAL_BALANCE = 300;
+
 type Props = {
   bankAccount: RiderBankPaymentMethod | null | undefined;
   isLoading?: boolean;
   hasBankAccount?: boolean;
+  /** Enable the withdrawal button only when the wallet is positive and > ₹300. */
+  canWithdraw?: boolean;
   onAddAccount: () => void;
   onRequestWithdrawal?: () => void;
 };
@@ -17,12 +22,14 @@ export function EarningsAddAccountFooter({
   bankAccount,
   isLoading,
   hasBankAccount = false,
+  canWithdraw = false,
   onAddAccount,
   onRequestWithdrawal,
 }: Props) {
   const { t } = useTranslation();
 
   const handleRequestWithdrawal = () => {
+    if (!canWithdraw) return;
     if (onRequestWithdrawal) {
       onRequestWithdrawal();
       return;
@@ -48,10 +55,12 @@ export function EarningsAddAccountFooter({
           </Text>
         ) : null}
         <TouchableOpacity
-          activeOpacity={0.88}
+          activeOpacity={canWithdraw ? 0.88 : 1}
           onPress={handleRequestWithdrawal}
-          style={styles.button}
+          disabled={!canWithdraw}
+          style={[styles.button, !canWithdraw && styles.buttonDisabled]}
           accessibilityRole="button"
+          accessibilityState={{ disabled: !canWithdraw }}
           accessibilityLabel={t("earnings.requestWithdrawal", "Request Withdrawal")}
         >
           <Text style={styles.buttonText}>
@@ -59,7 +68,11 @@ export function EarningsAddAccountFooter({
           </Text>
         </TouchableOpacity>
         <Text style={styles.withdrawalNote}>
-          {t("earnings.withdrawalNote", "Withdrawals are processed weekly")}
+          {canWithdraw
+            ? t("earnings.withdrawalNote", "Withdrawals are processed weekly")
+            : t("earnings.withdrawalMinNote", "Minimum ₹{{min}} balance required to withdraw", {
+                min: MIN_WITHDRAWAL_BALANCE,
+              })}
         </Text>
       </View>
     );
@@ -150,6 +163,9 @@ const styles = StyleSheet.create({
     backgroundColor: colors.primary[500],
     alignItems: "center",
     justifyContent: "center",
+  },
+  buttonDisabled: {
+    backgroundColor: colors.gray[300],
   },
   buttonText: {
     color: "#FFFFFF",

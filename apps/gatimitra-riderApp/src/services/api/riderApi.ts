@@ -179,6 +179,14 @@ const AccountRestrictionsSchema = z
     };
   });
 
+const ServiceBreakdownSchema = z.object({
+  earnings: z.number(),
+  penalties: z.number(),
+  penaltyReverts: z.number(),
+  offers: z.number(),
+  net: z.number(),
+});
+
 const EarningsSummarySchema = z.object({
   totalBalance: z.number(),
   withdrawable: z.number(),
@@ -187,11 +195,25 @@ const EarningsSummarySchema = z.object({
   thisWeek: z.number(),
   thisMonth: z.number(),
   hasBankAccount: z.boolean(),
+  minWithdrawal: z.number().optional(),
+  canWithdraw: z.boolean().optional(),
   breakdown: z.object({
     food: z.number(),
     parcel: z.number(),
     ride: z.number(),
   }),
+  breakdownDetail: z
+    .object({
+      food: ServiceBreakdownSchema,
+      parcel: ServiceBreakdownSchema,
+      ride: ServiceBreakdownSchema,
+      common: z.object({
+        subscriptionDebited: z.number(),
+        otherOffers: z.number(),
+        otherPenaltyReverts: z.number(),
+      }),
+    })
+    .optional(),
   accountRestrictions: AccountRestrictionsSchema.optional().transform((value) =>
     value ?? {
       accountRestricted: false,
