@@ -3,8 +3,6 @@
  * Penalties update rider_wallet.negative_used_*; subscription debits do not.
  */
 
-const MAX_SUBSCRIPTION_NEGATIVE_BALANCE = 35;
-
 function round2(n: number): number {
   return Math.round(n * 100) / 100;
 }
@@ -101,11 +99,10 @@ export function splitWalletNegativeBalance(
     penaltyNegative = 0;
   }
 
-  if (subscriptionDues > 0 && subscriptionNegative > MAX_SUBSCRIPTION_NEGATIVE_BALANCE) {
-    const overflow = round2(subscriptionNegative - MAX_SUBSCRIPTION_NEGATIVE_BALANCE);
-    penaltyNegative = round2(penaltyNegative + overflow);
-    subscriptionNegative = MAX_SUBSCRIPTION_NEGATIVE_BALANCE;
-  }
+  // Post-fold: subscription fees fully debit the wallet, so the whole
+  // non-penalty negative IS the subscription portion. We no longer cap it at
+  // ₹35 or push the overflow into penalty (that used to mis-attribute
+  // subscription debt as penalty and trip service blocks).
 
   return { walletBalance: balance, penaltyNegative, subscriptionNegative };
 }

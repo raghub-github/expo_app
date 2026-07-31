@@ -543,18 +543,17 @@ export async function debitRiderSubscriptionFee(args: {
 
   const sql = getSql();
   const balance = await readRiderWalletBalance(args.riderId);
-  const floor = -MAX_SUBSCRIPTION_NEGATIVE_BALANCE;
+
+  // Single source of truth: the subscription fee FULLY debits the main wallet
+  // (no −₹35 cap). The wallet balance alone reflects everything owed, so
+  // `subscription_dues_outstanding` is never accrued — riders clear the whole
+  // amount by bringing the wallet back to ₹0. (Legacy split kept below only to
+  // drain any pre-fold outstanding value; new debits never add to it.)
   const targetBalance = round2(balance - amount);
 
-  let debited = amount;
-  let addedToOutstanding = 0;
+  const debited = amount;
+  const addedToOutstanding = 0;
   let balanceAfter = targetBalance;
-
-  if (targetBalance < floor) {
-    debited = round2(Math.max(0, balance - floor));
-    addedToOutstanding = round2(amount - debited);
-    balanceAfter = round2(balance - debited);
-  }
 
   if (debited > 0) {
     await insertWalletEntry({
