@@ -14,6 +14,9 @@
  *      GET    /v1/notifications/campaigns                — list
  *      POST   /v1/notifications/campaigns/:id/cancel     — cancel scheduled/running
  *      POST   /v1/notifications/campaigns/:id/resend     — resend stored campaign
+ *      POST   /v1/notifications/campaigns/:id/revoke     — hide a sent campaign from every inbox
+ *      DELETE /v1/notifications/campaigns/:id            — hard-delete campaign + its dispatch rows
+ *      POST   /v1/notifications/dispatch/:nid/revoke     — hide one delivered notification
  *      POST   /v1/notifications/topics/subscribe         — add tokens to topic
  *      POST   /v1/notifications/topics/unsubscribe       — remove tokens
  *      GET    /v1/notifications/analytics/summary        — dashboard counts
@@ -53,6 +56,29 @@ import {
   templateRoleMatchesTarget,
 } from "./campaignTarget.js";
 import type { NotificationRole, TargetFilter, TemplateVariables } from "./types.js";
+
+/**
+ * `revoked_at` arrives with migration 0482. Probe once so an un-migrated
+ * database keeps serving the inbox instead of 500-ing on a missing column.
+ */
+let revokeColumnSupported: boolean | null = null;
+async function supportsRevoke(): Promise<boolean> {
+  if (revokeColumnSupported != null) return revokeColumnSupported;
+  try {
+    const rows = await getSql()`
+      SELECT 1
+      FROM information_schema.columns
+      WHERE table_schema = 'public'
+        AND table_name = 'notification_dispatch_logs'
+        AND column_name = 'revoked_at'
+      LIMIT 1
+    `;
+    revokeColumnSupported = rows.length > 0;
+  } catch {
+    revokeColumnSupported = false;
+  }
+  return revokeColumnSupported;
+}
 
 function isAdminLikeRole(role: string): boolean {
   const r = role.toLowerCase();
@@ -485,6 +511,86 @@ export const notificationRoutes: FastifyPluginAsync = async (app) => {
       return reply.send({ ok: true, campaignId: id, status: "cancelled" });
     });
 
+    // --- campaigns: hard-delete (campaign row + every dispatch log it produced) ---
+    // FK is ON DELETE SET NULL, so logs must be removed first or they stay in every inbox.
+    admin.delete<{ Params: { id: string } }>("/campaigns/:id", async (req, reply) => {
+      const id = Number(req.params.id);
+      if (!Number.isInteger(id) || id < 1) return reply.code(400).send({ error: "invalid_id" });
+      const sql = getSql();
+      const existing = await getCampaignById(id);
+      if (!existing) return reply.code(404).send({ error: "not_found", message: "Campaign not found." });
+      if (existing.status === "running") {
+        return reply.code(409).send({
+          error: "campaign_busy",
+          message: "Cancel the campaign first, then delete it.",
+        });
+      }
+      const deletedLogs = await sql`
+        DELETE FROM public.notification_dispatch_logs
+        WHERE campaign_id = ${id}
+        RETURNING id
+      `;
+      const deletedCampaign = await sql`
+        DELETE FROM public.notification_campaigns
+        WHERE id = ${id}
+        RETURNING id
+      `;
+      if (!deletedCampaign.length) {
+        return reply.code(404).send({ error: "not_found", message: "Campaign not found." });
+      }
+      return reply.send({
+        ok: true,
+        campaignId: id,
+        deletedLogs: deletedLogs.length,
+      });
+    });
+
+    // --- campaigns: revoke (pull an already-sent announcement back out of every inbox) ---
+    admin.post<{ Params: { id: string } }>("/campaigns/:id/revoke", async (req, reply) => {
+      const id = Number(req.params.id);
+      if (!Number.isInteger(id) || id < 1) return reply.code(400).send({ error: "invalid_id" });
+      if (!(await supportsRevoke())) {
+        return reply.code(409).send({
+          error: "migration_pending",
+          message: "Run migration 0482_notification_revoke.sql to enable blocking.",
+        });
+      }
+      const sql = getSql();
+      // Audit rows stay; they just stop being served to apps.
+      const rows = await sql`
+        UPDATE public.notification_dispatch_logs
+        SET revoked_at = now()
+        WHERE campaign_id = ${id}
+          AND revoked_at IS NULL
+        RETURNING notification_id
+      `;
+      return reply.send({ ok: true, campaignId: id, revoked: rows.length });
+    });
+
+    // --- inbox row: revoke a single notification for everyone who received it ---
+    admin.post<{ Params: { notificationId: string } }>(
+      "/dispatch/:notificationId/revoke",
+      async (req, reply) => {
+        const nid = req.params.notificationId;
+        if (!/^[0-9a-f-]{36}$/i.test(nid)) return reply.code(400).send({ error: "invalid_id" });
+        if (!(await supportsRevoke())) {
+          return reply.code(409).send({
+            error: "migration_pending",
+            message: "Run migration 0482_notification_revoke.sql to enable blocking.",
+          });
+        }
+        const sql = getSql();
+        const rows = await sql`
+          UPDATE public.notification_dispatch_logs
+          SET revoked_at = now()
+          WHERE notification_id = ${nid}
+            AND revoked_at IS NULL
+          RETURNING notification_id
+        `;
+        return reply.send({ ok: true, notificationId: nid, revoked: rows.length });
+      },
+    );
+
     // --- campaigns: resend (same template / target / variables) ---
     admin.post<{ Params: { id: string } }>("/campaigns/:id/resend", async (req, reply) => {
       const id = Number(req.params.id);
@@ -753,11 +859,13 @@ export const notificationRoutes: FastifyPluginAsync = async (app) => {
       const limit = Math.min(200, Math.max(1, Number(q.limit ?? 50)));
       const offset = Math.max(0, Number(q.offset ?? 0));
       const sql = getSql();
+      const notRevoked = (await supportsRevoke()) ? sql`AND d.revoked_at IS NULL` : sql``;
       const rows = await sql`
         SELECT notification_id, template_code, title, body, image_url, deep_link,
                priority, status, queued_at, delivered_at, clicked_at, metadata
         FROM public.notification_dispatch_logs d
         WHERE recipient_user_id = ${req.auth!.sub}
+          ${notRevoked}
           AND (
             channel = 'in_app'
             OR (
@@ -781,6 +889,7 @@ export const notificationRoutes: FastifyPluginAsync = async (app) => {
         FROM public.notification_dispatch_logs d
         WHERE recipient_user_id = ${req.auth!.sub}
           AND clicked_at IS NULL
+          ${notRevoked}
           AND (
             channel = 'in_app'
             OR (
@@ -808,14 +917,20 @@ export const notificationRoutes: FastifyPluginAsync = async (app) => {
       return reply.code(204).send();
     });
 
-    // Mark read (no clicked_at set; just status change so the inbox dot clears)
+    // Mark read — also sets clicked_at so the inbox unread badge / green dot clears.
     user.post<{ Params: { notificationId: string } }>("/:notificationId/read", async (req, reply) => {
       const nid = req.params.notificationId;
       if (!/^[0-9a-f-]{36}$/i.test(nid)) return reply.code(400).send({ error: "invalid_id" });
       const sql = getSql();
       await sql`
         UPDATE public.notification_dispatch_logs
-        SET status = CASE WHEN status IN ('queued','sent') THEN 'delivered' ELSE status END
+        SET
+          status = CASE
+            WHEN status IN ('queued', 'sent', 'delivered') THEN 'clicked'
+            ELSE status
+          END,
+          delivered_at = COALESCE(delivered_at, now()),
+          clicked_at = COALESCE(clicked_at, now())
         WHERE notification_id = ${nid}::uuid AND recipient_user_id = ${req.auth!.sub}
       `;
       return reply.code(204).send();
@@ -825,8 +940,12 @@ export const notificationRoutes: FastifyPluginAsync = async (app) => {
       const sql = getSql();
       await sql`
         UPDATE public.notification_dispatch_logs
-        SET status = 'delivered', delivered_at = COALESCE(delivered_at, now())
-        WHERE recipient_user_id = ${req.auth!.sub} AND status IN ('queued','sent')
+        SET
+          status = 'clicked',
+          delivered_at = COALESCE(delivered_at, now()),
+          clicked_at = COALESCE(clicked_at, now())
+        WHERE recipient_user_id = ${req.auth!.sub}
+          AND clicked_at IS NULL
       `;
       return reply.code(204).send();
     });

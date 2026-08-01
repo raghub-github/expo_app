@@ -1,23 +1,36 @@
 /**
  * Post-onboarding permission sheets — one at a time.
  * Priority: SMS (only when READ_SMS is applicable) → Location.
+ *
+ * Does not push live GPS as Current Location. Signed-in bootstrap / resume
+ * reconcile owns the active pin (saved address vs current).
  */
 
 import { useCallback, useEffect } from "react";
 import { AppState, type AppStateStatus } from "react-native";
 import { useSegments } from "expo-router";
+import { useQueryClient } from "@tanstack/react-query";
 import { LocationPermissionModal } from "@/components/LocationPermissionModal";
 import { SmsPermissionBottomSheet } from "@/components/SmsPermissionBottomSheet";
 import { useLocationStore } from "@/store/locationStore";
 import { useSmsPermissionStore } from "@/store/smsPermissionStore";
+import { useAuthStore } from "@/store/authStore";
+import { reconcileActiveLocationFromGps } from "@/lib/reconcileActiveLocationFromGps";
+import {
+  isActiveLocationReconcileReady,
+  runExclusiveActiveLocationReconcile,
+} from "@/lib/activeLocationReconcileGate";
+import { getDeviceLocationReadiness } from "@gatimitra/expo-location-kit";
 
 export function CustomerPermissionSheetsHost() {
   const segments = useSegments() as string[];
+  const queryClient = useQueryClient();
   const showLocationModal = useLocationStore((s) => s.showPermissionModal);
   const setShowLocationModal = useLocationStore((s) => s.setShowPermissionModal);
   const promptLocationPermissionIfNeeded = useLocationStore(
     (s) => s.promptLocationPermissionIfNeeded
   );
+  const requestPermissionAndFetch = useLocationStore((s) => s.requestPermissionAndFetch);
   const showSmsSheet = useSmsPermissionStore((s) => s.showSheet);
   const allowInFlight = useSmsPermissionStore((s) => s.allowInFlight);
   const blocksLocation = useSmsPermissionStore((s) => s.blocksLocation);
@@ -30,15 +43,48 @@ export function CustomerPermissionSheetsHost() {
   const isOnboarding = segments[0] === "(onboarding)";
   const canShow = !isAuth && !isOnboarding;
 
+  const finishActiveLocationBootstrap = useCallback(async () => {
+    if (useSmsPermissionStore.getState().blocksLocation) return;
+    await runExclusiveActiveLocationReconcile(async () => {
+      await promptLocationPermissionIfNeeded({ force: true, skipDeviceFetch: true });
+      const readiness = await getDeviceLocationReadiness();
+      if (!readiness.isReady) {
+        if (useAuthStore.getState().session) {
+          const { applyActiveLocationFromBackend } = await import(
+            "@/lib/applyActiveLocationFromBackend"
+          );
+          await applyActiveLocationFromBackend(queryClient);
+        }
+        return "done";
+      }
+      if (useAuthStore.getState().session) {
+        const result = await reconcileActiveLocationFromGps(queryClient);
+        if (__DEV__) {
+          console.log("[active-location] sheets_host_decision", {
+            path: "CustomerPermissionSheetsHost",
+            addressId: result?.addressId ?? null,
+            source: result?.source ?? null,
+            reason: result?.reason ?? null,
+            distanceM: result?.distanceM ?? null,
+            retentionRadiusM: result?.retentionRadiusM ?? null,
+          });
+        }
+      } else {
+        await requestPermissionAndFetch({ forceDevice: true });
+      }
+      return "done";
+    });
+  }, [promptLocationPermissionIfNeeded, requestPermissionAndFetch, queryClient]);
+
   useEffect(() => {
     if (!canShow) return;
     void (async () => {
       await promptSmsPermissionIfNeeded();
       if (!useSmsPermissionStore.getState().blocksLocation) {
-        await promptLocationPermissionIfNeeded({ force: true });
+        await finishActiveLocationBootstrap();
       }
     })();
-  }, [canShow, promptSmsPermissionIfNeeded, promptLocationPermissionIfNeeded]);
+  }, [canShow, promptSmsPermissionIfNeeded, finishActiveLocationBootstrap]);
 
   useEffect(() => {
     if (!canShow) return;
@@ -50,17 +96,18 @@ export function CustomerPermissionSheetsHost() {
         // Fresh OS revalidation after Settings / dialog — never use stale cache.
         await recheckAfterAppActive();
         if (!useSmsPermissionStore.getState().blocksLocation) {
-          await promptLocationPermissionIfNeeded();
+          if (isActiveLocationReconcileReady()) return;
+          await finishActiveLocationBootstrap();
         }
       })();
     });
     return () => sub.remove();
-  }, [canShow, recheckAfterAppActive, promptLocationPermissionIfNeeded]);
+  }, [canShow, recheckAfterAppActive, finishActiveLocationBootstrap]);
 
   useEffect(() => {
     if (!canShow || blocksLocation || allowInFlight) return;
-    void promptLocationPermissionIfNeeded({ force: true });
-  }, [canShow, blocksLocation, allowInFlight, promptLocationPermissionIfNeeded]);
+    void finishActiveLocationBootstrap();
+  }, [canShow, blocksLocation, allowInFlight, finishActiveLocationBootstrap]);
 
   const onAllowSms = useCallback(async () => {
     await handleAllowSmsPermission();

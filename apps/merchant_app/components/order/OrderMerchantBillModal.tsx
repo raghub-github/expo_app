@@ -48,7 +48,7 @@ function BillItemRow({
           <View style={styles.itemTitleRow}>
             <ItemVegMark vegNonveg={item.veg_nonveg ?? orderVeg} name={item.name} size={14} />
             <Text style={styles.itemTitle} numberOfLines={3}>
-              {qty} × {item.name}
+              {item.name}
             </Text>
           </View>
           {variantLabel ? (
@@ -56,6 +56,11 @@ function BillItemRow({
               <Text style={styles.variantBadgeText}>{variantLabel}</Text>
             </View>
           ) : null}
+        </View>
+        <View style={styles.qtyCol}>
+          <View style={styles.qtyCell}>
+            <Text style={styles.qtyText}>{qty}</Text>
+          </View>
         </View>
         <Text style={styles.itemLineTotal}>{formatMerchantRs(parts.total)}</Text>
       </View>
@@ -155,6 +160,12 @@ export function OrderMerchantBillModal({ visible, onClose, order }: Props) {
           Items ({items.length})
         </Text>
 
+        <View style={styles.columnsHeader}>
+          <Text style={styles.itemNameHeader}>Item</Text>
+          <Text style={styles.qtyHeader}>QTY</Text>
+          <Text style={styles.amountHeader}>Amount</Text>
+        </View>
+
         {items.map((item, idx) => (
           <BillItemRow key={`${item.name}-${idx}`} item={item} orderVeg={order.veg_non_veg} />
         ))}
@@ -187,6 +198,7 @@ export function OrderMerchantBillModal({ visible, onClose, order }: Props) {
 }
 
 const AMOUNT_WIDTH = 88;
+const QTY_WIDTH = 38;
 
 const styles = StyleSheet.create({
   handle: {
@@ -231,8 +243,60 @@ const styles = StyleSheet.create({
   },
   itemTopRow: {
     flexDirection: "row",
-    alignItems: "flex-start",
+    alignItems: "center",
     gap: 10,
+  },
+  columnsHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    paddingBottom: 6,
+    marginBottom: 8,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: GatiMitraMerchant.divider,
+  },
+  itemNameHeader: {
+    flex: 1,
+    minWidth: 0,
+    fontSize: 10,
+    fontWeight: "700",
+    color: GatiMitraMerchant.textSecondary,
+  },
+  qtyHeader: {
+    width: QTY_WIDTH,
+    textAlign: "center",
+    fontSize: 10,
+    fontWeight: "700",
+    color: GatiMitraMerchant.textSecondary,
+  },
+  amountHeader: {
+    width: AMOUNT_WIDTH,
+    textAlign: "right",
+    fontSize: 10,
+    fontWeight: "700",
+    color: GatiMitraMerchant.textSecondary,
+  },
+  qtyCol: {
+    width: QTY_WIDTH,
+    flexShrink: 0,
+    alignItems: "center",
+  },
+  qtyCell: {
+    minWidth: 30,
+    height: 28,
+    paddingHorizontal: 6,
+    borderWidth: 1,
+    borderColor: "#D7DCE2",
+    borderRadius: 4,
+    backgroundColor: "#FFFFFF",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  qtyText: {
+    fontSize: 13,
+    fontWeight: "600",
+    color: GatiMitraMerchant.textPrimary,
+    fontVariant: ["tabular-nums"],
   },
   itemNameCol: {
     flex: 1,

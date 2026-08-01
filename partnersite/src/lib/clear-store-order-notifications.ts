@@ -5,6 +5,21 @@ export function shouldClearOrderNotifications(newStatus: string): boolean {
   return s !== "CREATED" && s !== "NEW" && s !== "ORDER_PLACED" && s !== "PENDING";
 }
 
+/** Delivered / cancelled / completed — list purge drops every linked order inbox row. */
+export const ORDER_NOTIFICATION_TERMINAL = new Set([
+  "DELIVERED",
+  "COMPLETED",
+  "COMPLETE",
+  "CANCELLED",
+  "CANCELED",
+  "REJECTED",
+  "FAILED",
+  "EXPIRED",
+  "RTO_DELIVERED",
+  "RTO_COMPLETED",
+]);
+
+
 /** Delete order-type in-app notifications for a food order (Supabase partnersite). */
 export async function clearStoreOrderNotifications(
   db: SupabaseClient,

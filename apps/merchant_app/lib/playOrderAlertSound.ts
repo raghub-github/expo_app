@@ -1,4 +1,4 @@
-import { Audio, InterruptionModeAndroid, InterruptionModeIOS } from "expo-av";
+import { createAudioPlayer, setAudioModeAsync, type AudioPlayer } from "expo-audio";
 import { Platform, Vibration } from "react-native";
 import type { OrderAcceptanceSettings } from "@/services/orderAcceptanceApi";
 import {
@@ -11,8 +11,16 @@ import { normalizeAlertSoundSlots, resolveAlertSoundUrl } from "@/lib/resolveAle
 
 const BUNDLED_NOTIFICATION = require("../assets/sounds/notification.wav");
 
+/** Load/playback guards — a stalled remote chime must never block the fallback tone. */
+const LOAD_TIMEOUT_MS = 6_000;
+const PLAY_TIMEOUT_MS = 12_000;
+
 let chimeRunId = 0;
-let activeSound: Audio.Sound | null = null;
+let activePlayer: AudioPlayer | null = null;
+
+function warnAlert(message: string, err?: unknown) {
+  if (__DEV__) console.warn(`[orderAlertSound] ${message}`, err ?? "");
+}
 
 function acceptanceSoundSlots(
   settings: Pick<OrderAcceptanceSettings, "alert_sound_url" | "alert_sound_urls_by_slot">
@@ -39,74 +47,109 @@ export function resolveIncomingOrderChimeUrl(
   );
 }
 
-async function playSingleChime(
+function releasePlayer(player: AudioPlayer | null) {
+  if (!player) return;
+  if (activePlayer === player) activePlayer = null;
+  try {
+    player.pause();
+  } catch {
+    /* already torn down */
+  }
+  try {
+    player.remove();
+  } catch {
+    /* already released */
+  }
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function waitUntilLoaded(player: AudioPlayer, myRun: number): Promise<boolean> {
+  const deadline = Date.now() + LOAD_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    if (chimeRunId !== myRun) return false;
+    if (player.isLoaded) return true;
+    await delay(80);
+  }
+  return player.isLoaded;
+}
+
+function waitUntilFinished(player: AudioPlayer, maxWaitMs: number): Promise<void> {
+  return new Promise<void>((resolve) => {
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      sub.remove();
+      resolve();
+    };
+    const sub = player.addListener("playbackStatusUpdate", (status) => {
+      if (status.didJustFinish) finish();
+    });
+    const timer = setTimeout(finish, maxWaitMs);
+  });
+}
+
+/** Play one source `repeats` times back-to-back. Returns false when it never sounded. */
+async function playChime(
   source: number | { uri: string },
   volume: number,
+  repeats: number,
   myRun: number
 ): Promise<boolean> {
   if (chimeRunId !== myRun) return false;
 
-  let sound: Audio.Sound | null = null;
+  let player: AudioPlayer | null = null;
   try {
-    if (activeSound) {
-      await activeSound.stopAsync().catch(() => undefined);
-      await activeSound.unloadAsync().catch(() => undefined);
-      activeSound = null;
-    }
-
-    const downloadFirst = typeof source === "object" && "uri" in source;
-    const created = await Audio.Sound.createAsync(
-      source,
-      {
-        volume,
-        shouldPlay: false,
-        isLooping: false,
-      },
-      undefined,
-      downloadFirst
-    );
-    sound = created.sound;
-
-    if (chimeRunId !== myRun) {
-      await sound.unloadAsync().catch(() => undefined);
-      return false;
-    }
-
-    activeSound = sound;
-
-    const initial = await sound.getStatusAsync();
-    if (!initial.isLoaded) {
-      await sound.unloadAsync().catch(() => undefined);
-      if (activeSound === sound) activeSound = null;
-      return false;
-    }
-
-    await sound.playAsync();
-
-    await new Promise<void>((resolve) => {
-      let settled = false;
-      const finish = () => {
-        if (settled) return;
-        settled = true;
-        void sound?.unloadAsync().catch(() => undefined);
-        if (activeSound === sound) activeSound = null;
-        resolve();
-      };
-      const timeout = setTimeout(finish, 12_000);
-      sound!.setOnPlaybackStatusUpdate((status) => {
-        if (status.isLoaded && status.didJustFinish) {
-          clearTimeout(timeout);
-          finish();
-        }
-      });
-    });
-    return true;
-  } catch {
-    if (sound) {
-      await sound.unloadAsync().catch(() => undefined);
-      if (activeSound === sound) activeSound = null;
-    }
+    player = createAudioPlayer(source, { downloadFirst: true });
+  } catch (err) {
+    warnAlert("audio player unavailable", err);
     return false;
+  }
+
+  try {
+    releasePlayer(activePlayer);
+    activePlayer = player;
+    player.loop = false;
+    player.volume = volume;
+
+    const loaded = await waitUntilLoaded(player, myRun);
+    if (chimeRunId !== myRun) return false;
+    if (!loaded) {
+      warnAlert("chime source failed to load");
+      return false;
+    }
+
+    // Never wait longer than the clip itself — a missing didJustFinish must not
+    // stretch a 7× repeat into minutes of dead air.
+    const clipMs = player.duration > 0 ? Math.round(player.duration * 1000) + 700 : PLAY_TIMEOUT_MS;
+    const passWaitMs = Math.min(PLAY_TIMEOUT_MS, clipMs);
+
+    for (let i = 0; i < repeats; i += 1) {
+      if (chimeRunId !== myRun) break;
+      // expo-audio keeps the player parked at the end of the clip after each
+      // pass, so every repeat has to rewind before playing again.
+      if (i > 0) {
+        try {
+          await player.seekTo(0);
+        } catch {
+          break;
+        }
+        if (chimeRunId !== myRun) break;
+      }
+      const finished = waitUntilFinished(player, passWaitMs);
+      player.play();
+      await finished;
+    }
+    return true;
+  } catch (err) {
+    warnAlert("chime playback failed", err);
+    return false;
+  } finally {
+    releasePlayer(player);
   }
 }
 
@@ -117,7 +160,8 @@ export type PlayOrderAlertOptions = {
 
 /**
  * Play configured alert URL (best-effort) + vibration — partnersite parity.
- * Falls back to bundled notification.wav when no remote URL is configured or it fails.
+ * The bundled notification.wav is the safety net: a missing, unreachable or
+ * undecodable custom sound must never leave an incoming order silent.
  */
 export async function playOrderAlertSound(
   url: string | null | undefined,
@@ -127,6 +171,7 @@ export async function playOrderAlertSound(
   opts?: PlayOrderAlertOptions
 ): Promise<boolean> {
   const myRun = ++chimeRunId;
+  releasePlayer(activePlayer);
   const trimmed = resolveAlertSoundUrl(url) ?? "";
   const shouldVibrate = opts?.vibrate !== false;
 
@@ -135,38 +180,31 @@ export async function playOrderAlertSound(
   }
 
   try {
-    await Audio.setAudioModeAsync({
-      allowsRecordingIOS: false,
-      playsInSilentModeIOS: ringInSilent,
-      staysActiveInBackground: true,
-      shouldDuckAndroid: false,
-      interruptionModeAndroid: InterruptionModeAndroid.DoNotMix,
-      interruptionModeIOS: InterruptionModeIOS.DoNotMix,
-      playThroughEarpieceAndroid: false,
+    await setAudioModeAsync({
+      playsInSilentMode: ringInSilent,
+      shouldPlayInBackground: true,
+      interruptionMode: "doNotMix",
+      shouldRouteThroughEarpiece: false,
     });
-  } catch {
-    /* non-fatal */
+  } catch (err) {
+    warnAlert("audio mode not applied", err);
   }
+
+  if (chimeRunId !== myRun) return false;
 
   const safeRepeats = Math.max(1, Math.min(25, Math.floor(repeatCount || 1)));
   const volume = Math.min(1, Math.max(0, volume01));
-  let anyPlayed = false;
 
-  for (let i = 0; i < safeRepeats; i += 1) {
-    if (chimeRunId !== myRun) break;
-
-    let played = false;
-    if (trimmed) {
-      played = await playSingleChime({ uri: trimmed }, volume, myRun);
-    }
-    // Only fall back to bundled tone when no remote URL is configured (not on load failure).
-    if (!played && !trimmed) {
-      played = await playSingleChime(BUNDLED_NOTIFICATION, volume, myRun);
-    }
-    if (played) anyPlayed = true;
+  let played = false;
+  if (trimmed) {
+    played = await playChime({ uri: trimmed }, volume, safeRepeats, myRun);
+    if (!played) warnAlert(`custom chime unusable, falling back: ${trimmed}`);
+  }
+  if (!played && chimeRunId === myRun) {
+    played = await playChime(BUNDLED_NOTIFICATION, volume, safeRepeats, myRun);
   }
 
-  return anyPlayed;
+  return played;
 }
 
 /** Settings-screen preview — always audible (even in silent), no vibration. */
@@ -186,11 +224,7 @@ export async function previewOrderAlertSound(args: {
 
 export function stopOrderAlertSound(): void {
   chimeRunId += 1;
-  if (activeSound) {
-    void activeSound.stopAsync().catch(() => undefined);
-    void activeSound.unloadAsync().catch(() => undefined);
-    activeSound = null;
-  }
+  releasePlayer(activePlayer);
 }
 
 export async function playIncomingOrderAlert(

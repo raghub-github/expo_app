@@ -192,7 +192,12 @@ function MainHeader({
   pathname?: string;
 }) {
   const { isOnline, scheduledClosure, manualCloseUntil, restrictionType } = useStoreStatus();
-  const { selectedStore, managedStores, setManagedStores } = useSelectedStore();
+  const {
+    selectedStore,
+    managedStores,
+    manageAllStores,
+    setManagedStores,
+  } = useSelectedStore();
   const { unreadCount } = useNotifications();
   const hasScheduledClosure =
     scheduledClosure != null ||
@@ -211,10 +216,12 @@ function MainHeader({
   const earningsSubPageTitle = isEarningsSection ? resolveEarningsSubPage(pathname) : null;
   const subPageTitle = profileSubPageTitle ?? earningsSubPageTitle;
   const pageTitle = PAGE_TITLES[String(tab)] ?? "Dashboard";
-  const stores = partner?.childStores ?? [];
-  const isMultiStoreMode = managedStores.length > 1;
+  const stores = (partner?.childStores ?? []).filter(
+    (s) => String(s.approval_status || "").toUpperCase() === "APPROVED"
+  );
+  const isMultiStoreMode = manageAllStores || managedStores.length > 1;
   const headerTitle = isMultiStoreMode
-    ? `All Restaurants (${managedStores.length})`
+    ? `All Stores (${managedStores.length})`
     : truncateStoreNameForHeader(
         selectedStore?.store_name ?? "Select a store",
         HEADER_STORE_NAME_MAX_CHARS
@@ -279,7 +286,12 @@ function MainHeader({
               {subPageTitle
                 ? ""
                 : isMultiStoreMode
-                  ? `${managedStores.length} restaurants selected`
+                  ? manageAllStores
+                    ? `Managing all stores · Active: ${truncateStoreNameForHeader(
+                        selectedStore?.store_name ?? "Outlet",
+                        18
+                      )}`
+                    : `${managedStores.length} outlets on board`
                   : selectedStore
                     ? `Store ID: ${selectedStore.store_id}`
                     : pageTitle}
@@ -363,15 +375,14 @@ function MainHeader({
         managedStores={managedStores}
         activeStoreOnline={isOnline}
         onClose={() => setPickerVisible(false)}
-        onConfirm={(selected) => {
-          setPickerVisible(false);
-          setManagedStores(selected);
+        onManagedStoresChange={(next) => {
+          setManagedStores(next);
         }}
-        onSingleStoreSelected={(store) => {
-          setManagedStores([store]);
-          if (store.id !== selectedStore?.id) {
-            onRequestSwitchStore(store);
-          }
+        onSwitchOutlet={(store) => {
+          if (store.id === selectedStore?.id) return;
+          // Warning modal confirms the active-outlet change; multi-store
+          // board is preserved via switchActiveOutlet when already managing many.
+          onRequestSwitchStore(store);
         }}
       />
     </View>
@@ -654,7 +665,7 @@ export function MerchantCustomHeader() {
       manualCloseUntil !== "" &&
       new Date(manualCloseUntil).getTime() > Date.now()) ||
     upcomingScheduledClosure != null;
-  const { setSelectedStore } = useSelectedStore();
+  const { switchActiveOutlet } = useSelectedStore();
 
   const [pickerVisible, setPickerVisible] = useState(false);
   const [warningModal, setWarningModal] = useState<{
@@ -847,7 +858,8 @@ export function MerchantCustomHeader() {
           });
       }
     } else if (warningModal.type === "switch-store" && warningModal.storeToSwitch) {
-      setSelectedStore(warningModal.storeToSwitch);
+      // Preserve Manage All Stores board when switching the active outlet.
+      switchActiveOutlet(warningModal.storeToSwitch);
       setPickerVisible(false);
       router.replace("/(tabs)");
       closeWarningModal();

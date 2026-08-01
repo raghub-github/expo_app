@@ -24,24 +24,29 @@ import {
 } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { SafeAreaProvider, useSafeAreaInsets } from "react-native-safe-area-context";
-import { QueryClient, QueryClientProvider, focusManager, useQueryClient } from "@tanstack/react-query";
+import { QueryClientProvider, focusManager, useQueryClient } from "@tanstack/react-query";
+import { queryClient } from "@/lib/queryClient";
 import { useAuthStore } from "@/store/authStore";
 import { useCartStore } from "@/store/cartStore";
 import { useLanguageStore } from "@/store/languageStore";
 import { useLocationStore, getDeviceLocationReadiness, coordsMovedSignificantly } from "@/store/locationStore";
 import { invalidateFoodHomeLocationQueries } from "@/lib/invalidateFoodHomeLocationQueries";
-import { syncActiveLocationFromStore } from "@/lib/syncActiveLocationFromStore";
+import { reconcileActiveLocationFromGps } from "@/lib/reconcileActiveLocationFromGps";
+import { runExclusiveActiveLocationReconcile } from "@/lib/activeLocationReconcileGate";
 import { useStoreStatusStore } from "@/store/storeStatusStore";
 import { useStoreStatusRealtime } from "@/hooks/useStoreStatusRealtime";
+import { usePreventServicesRealtime } from "@/hooks/usePreventServicesRealtime";
 import { useOrderRealtime } from "@/hooks/useOrderRealtime";
 import { useActiveOrdersHydration } from "@/hooks/useActiveOrdersHydration";
 import { LocationWatchSync } from "@/components/LocationWatchSync";
 import { CustomerPermissionSheetsHost } from "@/components/CustomerPermissionSheetsHost";
+import { ServiceBlockedGateHost } from "@/components/ServiceBlockedGateHost";
 import { useSmsPermissionStore } from "@/store/smsPermissionStore";
 import { GlobalFloatingCart } from "@/components/GlobalFloatingCart";
 import { MerchantNavTransitionShutter } from "@/components/MerchantNavTransitionShutter";
 import { CheckoutBottomSheetHost } from "@/components/checkout/CheckoutBottomSheetHost";
 import { CartCheckoutGateHost } from "@/components/cart/CartCheckoutGateHost";
+import { CartUpdatedModal } from "@/components/cart/CartUpdatedModal";
 import { CustomerSystemChrome } from "@/components/CustomerSystemChrome";
 import { StatusBarRouteChromeGuard } from "@/components/StatusBarRouteChromeGuard";
 import { GatiMitraBootstrapScreen } from "@/components/GatiMitraBootstrapScreen";
@@ -55,8 +60,13 @@ import { FeaturedOffersPrefetch } from "@/components/FeaturedOffersPrefetch";
 import { WeatherPrefetch } from "@/components/WeatherPrefetch";
 import { WeatherRealtimeSync } from "@/components/WeatherRealtimeSync";
 import { resumePendingAddressShare } from "@/lib/pendingAddressShare";
+import {
+  clearPendingReferral,
+  peekPendingReferral,
+} from "@/lib/pendingReferral";
+import { capturePlayInstallReferrerOnce } from "@/lib/playInstallReferrer";
+import { referralService } from "@/services/referral.service";
 import { extendStartupApiGate } from "@/lib/startup-api-gate";
-import { isNetworkError } from "@/utils/networkError";
 import { UserAppCategoriesPrefetch } from "@/components/UserAppCategoriesPrefetch";
 import { ProfilePrefetch } from "@/components/ProfilePrefetch";
 import { WalletBalancePrefetch } from "@/components/WalletBalancePrefetch";
@@ -177,30 +187,9 @@ SplashScreen.preventAutoHideAsync().catch(() => {
   // Ignore keep-awake related failures so app still loads
 });
 
-const queryClient = new QueryClient({
-  defaultOptions: {
-    queries: {
-      staleTime: 60 * 1000,
-      gcTime: 30 * 60 * 1000,
-      refetchOnWindowFocus: false,
-      retry: (failureCount, error) => {
-        if (failureCount >= 3) return false;
-        const status = (error as { status?: number })?.status;
-        if (status === 503 || isNetworkError(error)) return true;
-        return failureCount < 1;
-      },
-      retryDelay: (attempt) => Math.min(1500 * 2 ** attempt, 10_000),
-    },
-    mutations: {
-      retry: (failureCount, error) => {
-        if (failureCount >= 2) return false;
-        const status = (error as { status?: number })?.status;
-        return status === 503 || isNetworkError(error);
-      },
-      retryDelay: (attempt) => 2000 * (attempt + 1),
-    },
-  },
-});
+// Singleton lives in @/lib/queryClient so logout/customer-scope teardown can
+// clear it from outside the React tree.
+
 
 export default function RootLayout() {
   const [fontsLoaded] = useFonts({
@@ -291,32 +280,56 @@ export default function RootLayout() {
   useEffect(() => {
     if (!hydrated || !cartHydrated) return;
     void (async () => {
-      await hydrateLocation();
-      // SMS first on Android — never fire GPS / Location Accuracy over the SMS sheet.
-      if (useSmsPermissionStore.getState().allowInFlight) return;
-      const smsOk = await useSmsPermissionStore.getState().promptSmsPermissionIfNeeded();
-      if (!smsOk && useSmsPermissionStore.getState().blocksLocation) {
-        return;
-      }
-      // Always request fresh GPS on launch. Persisted selected pins are cleared in hydrate()
-      // so a previous city cannot keep driving merchant discovery after travel.
-      await promptLocationPermissionIfNeeded({ force: true });
-      const readiness = await getDeviceLocationReadiness();
-      if (!readiness.isReady) return;
-      const before = useLocationStore.getState().coords;
-      if (useLocationStore.getState().locationSource === "selected") {
-        // Only if something set selected during bootstrap (explicit pick).
-        return;
-      }
-      await requestPermissionAndFetch({ forceDevice: true });
-      const { coords, address } = useLocationStore.getState();
-      if (coords) {
-        await restoreAndPrefetchLocationWeather(queryClient, address, coords);
-      }
-      await syncActiveLocationFromStore();
-      if (coordsMovedSignificantly(before, coords)) {
-        void invalidateFoodHomeLocationQueries(queryClient);
-      }
+      await runExclusiveActiveLocationReconcile(async () => {
+        await hydrateLocation();
+        // SMS first on Android — never fire GPS / Location Accuracy over the SMS sheet.
+        if (useSmsPermissionStore.getState().allowInFlight) return "deferred";
+        const smsOk = await useSmsPermissionStore.getState().promptSmsPermissionIfNeeded();
+        if (!smsOk && useSmsPermissionStore.getState().blocksLocation) {
+          return "deferred";
+        }
+        // Permission only — do not push GPS as Current Location before reconcile.
+        await promptLocationPermissionIfNeeded({ force: true, skipDeviceFetch: true });
+        const readiness = await getDeviceLocationReadiness();
+        if (!readiness.isReady) {
+          if (useAuthStore.getState().session) {
+            const { applyActiveLocationFromBackend } = await import(
+              "@/lib/applyActiveLocationFromBackend"
+            );
+            await applyActiveLocationFromBackend(queryClient);
+          }
+          return "done";
+        }        const before = useLocationStore.getState().coords;
+        let reconciled = null as Awaited<ReturnType<typeof reconcileActiveLocationFromGps>>;
+        if (useAuthStore.getState().session) {
+          // Backend is SoT: keep saved address within retention, else Current Location.
+          reconciled = await reconcileActiveLocationFromGps(queryClient);
+          if (__DEV__) {
+            console.log("[active-location] cold_start_decision", {
+              path: "RootLayout.bootstrap",
+              addressId: reconciled?.addressId ?? null,
+              source: reconciled?.source ?? null,
+              reason: reconciled?.reason ?? null,
+              distanceM: reconciled?.distanceM ?? null,
+              retentionRadiusM: reconciled?.retentionRadiusM ?? null,
+            });
+          }
+        } else {
+          await requestPermissionAndFetch({ forceDevice: true });
+        }
+        const { coords, address } = useLocationStore.getState();
+        if (coords) {
+          await restoreAndPrefetchLocationWeather(queryClient, address, coords);
+        }
+        if (
+          coordsMovedSignificantly(before, coords) ||
+          reconciled?.switchedToCurrent ||
+          reconciled?.source === "selected"
+        ) {
+          void invalidateFoodHomeLocationQueries(queryClient);
+        }
+        return "done";
+      });
     })();
   }, [hydrated, cartHydrated, hydrateLocation, promptLocationPermissionIfNeeded, requestPermissionAndFetch, queryClient]);
 
@@ -344,6 +357,7 @@ export default function RootLayout() {
               <>
                 <ReactQueryFocusSync />
                 <StoreStatusRealtimeSync />
+                <PreventServicesRealtimeSync />
                 <OrderRealtimeSync />
                 <SessionRevokedHandler />
                 <CustomerPermissionsRealtimeSync />
@@ -355,8 +369,10 @@ export default function RootLayout() {
                 <RootStack onLayoutRootView={onLayoutRootView} splashActive={!splashExited} />
                 <CheckoutBottomSheetHost />
                 <CartCheckoutGateHost />
+                <CartUpdatedModal />
                 <GlobalFloatingCart />
                 <CustomerPermissionSheetsHost />
+                <ServiceBlockedGateHost />
                 <PushNotificationBootstrap />
                 <LiveOrderProgressNotification />
                 <PlayInAppUpdateBootstrap />
@@ -366,6 +382,7 @@ export default function RootLayout() {
                 <WeatherPrefetch />
                 <WeatherRealtimeSync />
                 <PendingAddressShareResume />
+                <PendingReferralResume />
                 <FoodHomeLayoutPrefetch />
                 <ProfilePrefetch />
                 <WalletBalancePrefetch />
@@ -407,6 +424,12 @@ function ReactQueryFocusSync() {
   return null;
 }
 
+/** Emergency service blocks (Geo & coverage → Prevent Services) land within ~1s. */
+function PreventServicesRealtimeSync() {
+  usePreventServicesRealtime();
+  return null;
+}
+
 function StoreStatusRealtimeSync() {
   useStoreStatusRealtime();
   useEffect(() => {
@@ -445,6 +468,54 @@ function PendingAddressShareResume() {
     if (!hydrated || !session?.accessToken) return;
     void resumePendingAddressShare(router);
   }, [hydrated, router, session?.accessToken]);
+
+  return null;
+}
+
+function PendingReferralResume() {
+  const session = useAuthStore((s) => s.session);
+  const hydrated = useAuthStore((s) => s.hydrated);
+
+  // First launch: read Play Install Referrer (Android) before / regardless of auth.
+  useEffect(() => {
+    if (!hydrated) return;
+    void capturePlayInstallReferrerOnce().catch(() => undefined);
+  }, [hydrated]);
+
+  useEffect(() => {
+    if (!hydrated || !session?.accessToken) return;
+    void (async () => {
+      // Prefer freshly captured Play Install Referrer, then any pending deep-link code.
+      const capture = await capturePlayInstallReferrerOnce().catch(() => null);
+      if (capture?.code && !capture.alreadyConsumed) {
+        try {
+          await referralService.apply({
+            referralCode: capture.code,
+            playReferrer: capture.raw ?? undefined,
+            source: "play_install_referrer",
+            deviceFingerprint: undefined,
+          });
+          await clearPendingReferral();
+          return;
+        } catch {
+          /* fall through to pending */
+        }
+      }
+
+      const pending = await peekPendingReferral();
+      if (!pending?.code) return;
+      try {
+        await referralService.apply({
+          referralCode: pending.code,
+          clickToken: pending.clickToken ?? undefined,
+          source: pending.source,
+        });
+        await clearPendingReferral();
+      } catch {
+        /* retry on next launch */
+      }
+    })();
+  }, [hydrated, session?.accessToken]);
 
   return null;
 }
@@ -552,20 +623,71 @@ function LocationPermissionResumeCheck() {
       if (useSmsPermissionStore.getState().blocksLocation) {
         return;
       }
-      const { locationSource, coords: before } = useLocationStore.getState();
-      await promptLocationPermissionIfNeeded();
-      // Explicit session selection stays; otherwise refresh live GPS.
-      if (locationSource === "selected") return;
-      const readiness = await getDeviceLocationReadiness();
-      if (!readiness.isReady) return;
-      await requestPermissionAndFetch({ forceDevice: true });
-      const after = useLocationStore.getState().coords;
-      await syncActiveLocationFromStore();
-      const baseline = lastResumeCoordsRef.current ?? before;
-      if (coordsMovedSignificantly(baseline, after)) {
-        void invalidateFoodHomeLocationQueries(queryClient);
-      }
-      if (after) lastResumeCoordsRef.current = after;
+      await runExclusiveActiveLocationReconcile(
+        async () => {
+          const { coords: before } = useLocationStore.getState();
+          // Permission only — reconcile owns the pin when signed in.
+          await promptLocationPermissionIfNeeded({ skipDeviceFetch: true });
+          const readiness = await getDeviceLocationReadiness();
+          if (!readiness.isReady) {
+            if (useAuthStore.getState().session) {
+              const { applyActiveLocationFromBackend } = await import(
+                "@/lib/applyActiveLocationFromBackend"
+              );
+              await applyActiveLocationFromBackend(queryClient);
+            }
+            return "done";
+          }
+          let reconciled = null as Awaited<ReturnType<typeof reconcileActiveLocationFromGps>>;
+          if (useAuthStore.getState().session) {
+            // Multi-device SoT: pull server active pin first, then GPS retention reconcile.
+            const { applyActiveLocationFromBackend } = await import(
+              "@/lib/applyActiveLocationFromBackend"
+            );
+            const priorBound = useLocationStore.getState().sessionBoundAddressId;
+            await applyActiveLocationFromBackend(queryClient);
+            const afterBound = useLocationStore.getState().sessionBoundAddressId;
+            if (__DEV__ && priorBound !== afterBound) {
+              console.log("[active-location] multi_device_sync", {
+                path: "LocationPermissionResumeCheck",
+                priorBoundAddressId: priorBound,
+                nextBoundAddressId: afterBound,
+              });
+            }
+            reconciled = await reconcileActiveLocationFromGps(queryClient, {
+              allowRemoteSessionPreserve: true,
+            });
+            if (__DEV__) {
+              console.log("[active-location] resume_decision", {
+                path: "LocationPermissionResumeCheck",
+                addressId: reconciled?.addressId ?? null,
+                source: reconciled?.source ?? null,
+                reason: reconciled?.reason ?? null,
+                distanceM: reconciled?.distanceM ?? null,
+                retentionRadiusM: reconciled?.retentionRadiusM ?? null,
+                sessionSelectionKind: useLocationStore.getState().sessionSelectionKind,
+              });
+            }
+          } else {
+            const { locationSource } = useLocationStore.getState();
+            if (locationSource !== "selected") {
+              await requestPermissionAndFetch({ forceDevice: true });
+            }
+          }
+          const after = useLocationStore.getState().coords;
+          const baseline = lastResumeCoordsRef.current ?? before;
+          if (
+            coordsMovedSignificantly(baseline, after) ||
+            reconciled?.switchedToCurrent ||
+            reconciled?.source === "selected"
+          ) {
+            void invalidateFoodHomeLocationQueries(queryClient);
+          }
+          if (after) lastResumeCoordsRef.current = after;
+          return "done";
+        },
+        { force: true }
+      );
     };
 
     const sub = AppState.addEventListener("change", (nextState: AppStateStatus) => {
@@ -576,7 +698,7 @@ function LocationPermissionResumeCheck() {
       if (AppState.currentState !== "active") return;
       if (useSmsPermissionStore.getState().blocksLocation) return;
       if (useLocationStore.getState().showPermissionModal) {
-        void promptLocationPermissionIfNeeded();
+        void promptLocationPermissionIfNeeded({ skipDeviceFetch: true });
       }
     }, 2000);
 
@@ -589,7 +711,7 @@ function LocationPermissionResumeCheck() {
   useEffect(() => {
     if (!showPermissionModal) return;
     if (useSmsPermissionStore.getState().blocksLocation) return;
-    void promptLocationPermissionIfNeeded();
+    void promptLocationPermissionIfNeeded({ skipDeviceFetch: true });
   }, [showPermissionModal, promptLocationPermissionIfNeeded]);
 
   return null;
@@ -704,11 +826,16 @@ function RootStack({
           screenOptions={{
             headerShown: false,
             statusBarHidden: false,
-            statusBarStyle: splashChromeActive ? "light" : "dark",
+            statusBarStyle: resolvedStatusBarStyle,
             statusBarBackgroundColor: splashChromeActive
               ? "transparent"
-              : "#FFFFFF",
-            statusBarTranslucent: splashChromeActive,
+              : resolvedStatusBarBackground === "transparent"
+                ? "#FFFFFF"
+                : resolvedStatusBarBackground,
+            statusBarTranslucent:
+              splashChromeActive ||
+              immersiveStatusBar ||
+              resolvedStatusBarBackground === "transparent",
             contentStyle: {
               backgroundColor: splashChromeActive
                 ? SPLASH_CHROME_COLOR

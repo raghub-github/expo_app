@@ -110,15 +110,11 @@ export default function TemplatesPage() {
   }, [data, query]);
 
   return (
-    <div className="min-h-screen bg-slate-50 p-6">
-      <div className="mx-auto max-w-7xl">
-        <div className="flex flex-wrap items-end justify-between gap-4">
-          <div>
-            <div className="inline-flex items-center gap-1.5 rounded-full bg-teal-50 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide text-teal-700">
-              <Bell className="h-3 w-3" /> Notifications
-            </div>
-            <h1 className="mt-2 text-2xl font-semibold text-slate-900">Templates</h1>
-            <p className="mt-1 max-w-2xl text-sm text-slate-500">
+    <div className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden bg-slate-50 px-3 pb-3 pt-1 sm:px-5 sm:pt-2 xl:px-6">
+      <div className="mx-auto flex h-full min-h-0 w-full min-w-0 max-w-7xl flex-col">
+        <div className="shrink-0 flex flex-wrap items-center justify-between gap-3">
+          <div className="min-w-0">
+            <p className="max-w-2xl text-sm text-slate-500">
               Every automatic event uses one of these templates. Click a row to see the full
               text, hit <b>Test</b> to send it to yourself or any user_id, and use <b>Edit</b>
               to change the wording, image or deep link — no code deploy required. Uses{" "}
@@ -135,7 +131,7 @@ export default function TemplatesPage() {
         </div>
 
         {/* Filters */}
-        <div className="mt-6 flex flex-wrap items-center gap-2">
+        <div className="mt-3 flex shrink-0 flex-wrap items-center gap-2">
           <div className="relative">
             <Search className="pointer-events-none absolute left-2 top-2.5 h-4 w-4 text-slate-400" />
             <input
@@ -167,13 +163,13 @@ export default function TemplatesPage() {
         </div>
 
         {/* Table — horizontal slide (touch / trackpad / scrollbar) */}
-        <div className="mt-4 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+        <div className="mt-4 min-h-0 max-w-full flex-1 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
           <div
-            className="overflow-x-auto overscroll-x-contain scroll-smooth [-webkit-overflow-scrolling:touch] [scrollbar-gutter:stable]"
+            className="h-full overflow-auto overscroll-x-contain scroll-smooth [-webkit-overflow-scrolling:touch] [scrollbar-gutter:stable]"
             style={{ WebkitOverflowScrolling: "touch" }}
           >
             <table className="w-full min-w-[960px] border-separate border-spacing-0 divide-y divide-slate-200 text-sm">
-              <thead className="bg-slate-50 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+              <thead className="sticky top-0 z-30 bg-slate-50 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-500 shadow-[0_1px_0_0_#e2e8f0]">
                 <tr>
                   <th className="sticky left-0 z-20 bg-slate-50 px-4 py-3 shadow-[2px_0_6px_-2px_rgba(15,23,42,0.08)]">
                     Code
@@ -280,7 +276,7 @@ export default function TemplatesPage() {
           </div>
         </div>
 
-        <p className="mt-4 text-xs text-slate-500">
+        <p className="mt-2 shrink-0 text-xs text-slate-500">
           Want to broadcast to a whole role bucket? Go to{" "}
           <Link href="/dashboard/super-admin/notifications/campaigns" className="text-teal-700 underline">
             Campaigns

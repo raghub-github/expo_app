@@ -1,6 +1,9 @@
 /**
  * Resolves which saved delivery address coordinates checkout uses for routing/billing,
  * so store listing + merchant header can use the same drop point (route-wise km stays consistent).
+ *
+ * Backend `activeLocation.addressId` is the single source of truth when present and the
+ * user is not in live-GPS (`current`) mode.
  */
 
 import { haversineKm } from "@/lib/billSummary";
@@ -24,54 +27,67 @@ export function matchSavedAddressIdNearCoords(
 /**
  * Resolves a saved delivery address for checkout / quotes.
  *
- * When browsing on live GPS (`current`), only snap to a saved address near the
- * current coords — never fall back to stale active-location / default city.
- * When the user explicitly selected a pin, snap that pin (then active pin).
- * Only when there is no session pin at all do we fall back to last-used / default.
+ * Prefer backend-bound `activeLocation.addressId` whenever present and the session is
+ * not explicitly on live GPS. Never invent a far default/home when the pin is map-only
+ * or GPS-only without a nearby saved row — return null so checkout prompts selection.
  */
 export function resolveCheckoutDeliveryAddress(
   addresses: Address[],
   sessionCoords: { latitude: number; longitude: number } | null,
   locationSource: "selected" | "current" | null,
-  activeLocation: { latitude: number | null; longitude: number | null } | null | undefined
+  activeLocation:
+    | {
+        latitude: number | null;
+        longitude: number | null;
+        addressId?: number | null;
+      }
+    | null
+    | undefined
 ): Address | null {
   if (addresses.length === 0) return null;
 
-  let resolvedId: number | null = null;
-  if (sessionCoords && (locationSource === "selected" || locationSource === "current")) {
-    resolvedId = matchSavedAddressIdNearCoords(
+  const boundId = activeLocation?.addressId ?? null;
+
+  // Live GPS must never snap to a far bound remote address (order-for-someone-else).
+  if (locationSource === "current") {
+    if (!sessionCoords) return null;
+    const nearId = matchSavedAddressIdNearCoords(
       addresses,
       sessionCoords.latitude,
       sessionCoords.longitude,
       0.25
     );
-    if (resolvedId != null) {
-      return addresses.find((a) => a.id === resolvedId) ?? null;
-    }
-    // Live GPS with no nearby saved address: do not invent a far-away default.
-    if (locationSource === "current") return null;
+    return nearId != null ? (addresses.find((a) => a.id === nearId) ?? null) : null;
   }
+
+  // Selected / bootstrap (null source): honor backend binding first.
+  if (boundId != null && addresses.some((a) => a.id === boundId)) {
+    return addresses.find((a) => a.id === boundId) ?? null;
+  }
+
+  // Map pin / proximity only — no far default invent.
+  if (sessionCoords) {
+    const nearId = matchSavedAddressIdNearCoords(
+      addresses,
+      sessionCoords.latitude,
+      sessionCoords.longitude,
+      0.25
+    );
+    if (nearId != null) return addresses.find((a) => a.id === nearId) ?? null;
+  }
+
   if (
-    resolvedId == null &&
-    locationSource === "selected" &&
     activeLocation?.latitude != null &&
     activeLocation.longitude != null
   ) {
-    resolvedId = matchSavedAddressIdNearCoords(
+    const nearId = matchSavedAddressIdNearCoords(
       addresses,
       activeLocation.latitude,
       activeLocation.longitude,
       0.08
     );
+    if (nearId != null) return addresses.find((a) => a.id === nearId) ?? null;
   }
-  if (resolvedId != null) {
-    return addresses.find((a) => a.id === resolvedId) ?? null;
-  }
-  if (locationSource === "current") return null;
-  return (
-    addresses.find((a) => a.isLastUsed) ??
-    addresses.find((a) => a.isDefault) ??
-    addresses[0] ??
-    null
-  );
+
+  return null;
 }

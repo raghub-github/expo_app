@@ -37,6 +37,9 @@ async function patchCancellationReasonRow(
   input: RecordOrderCancellationInput,
   refund: { refundStatus: string; refundAmount: number | null }
 ): Promise<void> {
+  const reasonCode =
+    (input.reasonCode ?? "").trim() ||
+    slugReasonCode(input.displayReason || input.reasonText || "CANCELLED");
   const displayReason = (input.displayReason ?? input.reasonText ?? "").trim();
   const meta = {
     ...(input.metadata ?? {}),
@@ -45,11 +48,13 @@ async function patchCancellationReasonRow(
     rejected_reason: displayReason || null,
     action_source: input.actionSource ?? null,
     cancel_mode: input.cancelMode ?? null,
+    reason_code: reasonCode,
   };
   try {
     await sql`
       UPDATE order_cancellation_reasons
       SET
+        reason_code = COALESCE(NULLIF(${reasonCode}, ''), reason_code),
         cancelled_by_type = COALESCE(${input.cancelledByType}, cancelled_by_type),
         cancelled_by_label = COALESCE(${input.cancelledByLabel}, cancelled_by_label),
         display_reason = COALESCE(${displayReason || null}, display_reason),

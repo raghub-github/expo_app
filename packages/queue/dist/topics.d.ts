@@ -17,6 +17,8 @@ export declare const QUEUE_NAMES: {
     readonly PAYMENT_WEBHOOK_RETRY: "q.payment.webhook-retry";
     readonly ETA_RECALC: "q.eta.recalc";
     readonly FINANCIAL_RULE_APPROVAL_NOTIFY: "q.financial-rule.approval-notify";
+    readonly REFERRAL_REWARD: "q.referral.reward";
+    readonly REFERRAL_RECONCILE: "q.referral.reconcile";
 };
 export type QueueName = (typeof QUEUE_NAMES)[keyof typeof QUEUE_NAMES];
 export type PushSendJob = {
@@ -52,11 +54,21 @@ export type EtaRecalcJob = {
 export type FinancialRuleApprovalNotifyJob = {
     scheduled: boolean;
 };
+export type ReferralRewardJob = {
+    relationshipId: number;
+    jobKeys?: string[];
+    jobId?: number;
+};
+export type ReferralReconcileJob = {
+    scheduled: boolean;
+};
 export type JobShape = {
     [QUEUE_NAMES.PUSH_SEND]: PushSendJob;
     [QUEUE_NAMES.PAYMENT_RECONCILE]: PaymentReconcileJob;
     [QUEUE_NAMES.PAYMENT_WEBHOOK_RETRY]: PaymentWebhookRetryJob;
     [QUEUE_NAMES.ETA_RECALC]: EtaRecalcJob;
     [QUEUE_NAMES.FINANCIAL_RULE_APPROVAL_NOTIFY]: FinancialRuleApprovalNotifyJob;
+    [QUEUE_NAMES.REFERRAL_REWARD]: ReferralRewardJob;
+    [QUEUE_NAMES.REFERRAL_RECONCILE]: ReferralReconcileJob;
 };
 //# sourceMappingURL=topics.d.ts.map

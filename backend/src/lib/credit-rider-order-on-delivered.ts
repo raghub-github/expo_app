@@ -69,6 +69,43 @@ function deliveryRef(coreId: number): string {
   return `rider_earn:delivery:${coreId}`;
 }
 
+async function runReferralEvalAfterDelivery(opts: {
+  riderId: number;
+  coreId: number;
+  orderType?: string;
+}): Promise<void> {
+  try {
+    const sql = getSql();
+    const {
+      evaluateRiderReferralOnOrderDelivered,
+      evaluateCustomerReferralOnOrderDelivered,
+    } = await import("../modules/referral/referral.engine.js");
+    await evaluateRiderReferralOnOrderDelivered({
+      riderId: opts.riderId,
+      ordersCoreId: opts.coreId,
+      orderType: opts.orderType,
+    });
+    const [orderRow] = await sql<Array<{ customer_id: string | null }>>`
+      SELECT customer_id::text AS customer_id
+      FROM orders_core
+      WHERE id = ${opts.coreId}
+      LIMIT 1
+    `;
+    const customerPk = Number(orderRow?.customer_id ?? 0);
+    if (Number.isFinite(customerPk) && customerPk > 0) {
+      await evaluateCustomerReferralOnOrderDelivered({
+        customerPk,
+        ordersCoreId: opts.coreId,
+      });
+    }
+  } catch (refErr) {
+    console.warn(
+      "[creditRiderOrderEarningOnDelivered] referral eval failed (tolerated)",
+      (refErr as Error).message,
+    );
+  }
+}
+
 function tipRef(coreId: number): string {
   return `rider_earn:tip:${coreId}`;
 }
@@ -183,6 +220,7 @@ export async function creditRiderOrderEarningOnDelivered(
   const sql = getSql();
   const eligibility = await isRiderEligibleForDeliveryWalletCredit(coreId, riderId, sql);
   if (!eligibility.eligible) {
+    void runReferralEvalAfterDelivery({ riderId, coreId, orderType: input.orderType });
     return {
       credited: false,
       deliveryCredited: false,
@@ -397,6 +435,13 @@ export async function creditRiderOrderEarningOnDelivered(
       await touchRiderIncomeTimestamp(riderId);
       await autoSettleSubscriptionDuesFromEarnings(riderId);
     }
+
+    // Unified referral engine — rider milestones + customer first-order rewards
+    await runReferralEvalAfterDelivery({
+      riderId,
+      coreId,
+      orderType: serviceType,
+    });
 
     return { credited: true, deliveryCredited, tipCredited };
   } catch (err) {

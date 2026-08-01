@@ -202,6 +202,27 @@ function walletCreditForUnlockGap(unlockGapInr: number): number {
   return Math.min(Math.ceil(unlockGapInr), 500);
 }
 
+/**
+ * GatiCash Unlock Card visibility — same rule for every customer (no per-user hardcoding).
+ * Show only when unlock savings are close to the GatiCash top-up:
+ * - save ≥ add, or
+ * - (add − save) ≤ ₹20
+ * Hides junk like "Add ₹398 & save ₹100" on a tiny cart for anyone.
+ */
+export function isGatiCashUnlockCardVisible(addAmount: number, saveAmount: number): boolean {
+  if (!(addAmount > 0) || !(saveAmount > 0)) return false;
+  if (saveAmount >= addAmount) return true;
+  return addAmount - saveAmount <= 20;
+}
+
+/** Fair unlock for a min-cart gap + estimated savings (checkout card + offers sheet). */
+export function isFairGatiCashUnlock(unlockGapInr: number, estimatedSavingsInr: number): boolean {
+  return isGatiCashUnlockCardVisible(
+    walletCreditForUnlockGap(unlockGapInr),
+    estimatedSavingsInr
+  );
+}
+
 function buildCompensation(
   best: MissedCandidate,
   merchantId: string,
@@ -212,6 +233,8 @@ function buildCompensation(
     best.unlockGapInr < Number.MAX_SAFE_INTEGER ? best.unlockGapInr : 0;
   const walletCreditInr = walletCreditForUnlockGap(gap);
   if (walletCreditInr <= 0) return null;
+  // Card copy is "Add ₹X … & save ₹Y" — don't surface it when Y is too far below X.
+  if (!isFairGatiCashUnlock(gap, offerSavingsInr)) return null;
 
   const addItemsHint = humanMissedReason(best.reason, best.lockReason, cartSubtotal);
 
@@ -302,6 +325,7 @@ export function listMissedOfferWalletCandidates(
 
   return [...ineligiblePlatform, ...ineligibleMerchant]
     .filter((c) => c.unlockGapInr > 0 && c.unlockGapInr < Number.MAX_SAFE_INTEGER)
+    .filter((c) => isFairGatiCashUnlock(c.unlockGapInr, c.estimatedSavingsInr))
     .sort((a, b) => {
       if (a.unlockGapInr !== b.unlockGapInr) return a.unlockGapInr - b.unlockGapInr;
       return b.estimatedSavingsInr - a.estimatedSavingsInr;
@@ -321,12 +345,23 @@ export function resolveMissedOfferWalletCompensation(
   const candidates = listMissedOfferWalletCandidates(offers, cartSubtotal);
   if (candidates.length === 0) return null;
 
-  const picked =
-    selectedKey != null
-      ? candidates.find((c) => `${c.source}:${c.id}:${merchantId}` === selectedKey) ?? candidates[0]
-      : candidates[0];
+  // Prefer an explicitly selected offer when it still passes the fair unlock gate;
+  // never force a poor-value "closest" offer (same for every customer).
+  if (selectedKey != null) {
+    const preferred = candidates.find(
+      (c) => `${c.source}:${c.id}:${merchantId}` === selectedKey
+    );
+    if (preferred) {
+      const built = buildCompensation(preferred, merchantId, cartSubtotal);
+      if (built) return built;
+    }
+  }
 
-  return buildCompensation(picked, merchantId, cartSubtotal);
+  for (const candidate of candidates) {
+    const built = buildCompensation(candidate, merchantId, cartSubtotal);
+    if (built) return built;
+  }
+  return null;
 }
 
 export function missedOfferKeyForCandidate(

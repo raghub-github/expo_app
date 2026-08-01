@@ -172,6 +172,13 @@ export async function tryActivateRiderIfEligible(riderId: number): Promise<boole
         updatedAt: new Date(),
       })
       .where(eq(riders.id, riderId));
+
+    void import("../modules/referral/referral.engine.js")
+      .then(({ evaluateRiderReferralOnKycApproved }) =>
+        evaluateRiderReferralOnKycApproved({ riderId }),
+      )
+      .catch(() => undefined);
+
     return false;
   }
 
@@ -184,6 +191,14 @@ export async function tryActivateRiderIfEligible(riderId: number): Promise<boole
       updatedAt: new Date(),
     })
     .where(eq(riders.id, riderId));
+
+  void import("../modules/referral/referral.engine.js")
+    .then(({ evaluateRiderReferralOnKycApproved }) =>
+      evaluateRiderReferralOnKycApproved({ riderId }),
+    )
+    .catch((err) =>
+      console.warn("[tryActivateRiderIfEligible] referral kyc hook failed", (err as Error).message),
+    );
 
   return true;
 }

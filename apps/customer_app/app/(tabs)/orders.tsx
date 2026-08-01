@@ -232,7 +232,8 @@ function ActiveOrderCard({
           <AppText style={styles.activeStatusText}>{displayOrderId(order)}</AppText>
         </View>
         <TouchableOpacity style={styles.trackBtn} onPress={onTrack} activeOpacity={0.85}>
-          <AppText style={styles.trackBtnText}>Track Order</AppText>
+          <Ionicons name="navigate" size={14} color={GREEN} />
+          <AppText style={styles.trackBtnText}>Track</AppText>
         </TouchableOpacity>
       </View>
     </View>
@@ -430,9 +431,14 @@ function HistoryOrderCard({
         <TouchableOpacity style={styles.orderFooter} onPress={onPress} activeOpacity={0.85}>
           <AppText style={styles.orderDate}>Order placed on {formatOrderDate(order.createdAt)}</AppText>
           <View style={styles.priceRow}>
-            {order.totalAmount != null && (
-              <AppText style={styles.orderPrice}>₹{order.totalAmount.toFixed(2)}</AppText>
-            )}
+            <View style={styles.priceCol}>
+              {order.totalAmount != null && (
+                <AppText style={styles.orderPrice}>₹{order.totalAmount.toFixed(2)}</AppText>
+              )}
+              {order.fullyGatiCashUsed === true ? (
+                <AppText style={styles.gatiCashUsedHint}>100% GatiCash used</AppText>
+              ) : null}
+            </View>
             <Ionicons name="chevron-forward" size={16} color="#9CA3AF" />
           </View>
         </TouchableOpacity>
@@ -450,7 +456,14 @@ function HistoryOrderCard({
                     <AppText style={styles.paymentFailedText}>{cancellationDisplayLabel}</AppText>
                   </View>
                   {showRefunded ? (
-                    <AppText style={styles.refundedText}>Refunded</AppText>
+                    <AppText style={styles.refundedText}>
+                      Refunded
+                      {order.refundAmount != null &&
+                      Number.isFinite(order.refundAmount) &&
+                      order.refundAmount > 0
+                        ? ` · ₹${order.refundAmount.toFixed(2)}`
+                        : ""}
+                    </AppText>
                   ) : null}
                 </View>
               ) : hasRating ? (
@@ -1034,11 +1047,15 @@ const styles = StyleSheet.create({
     color: TEXT_GRAY,
   },
   trackBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
     borderWidth: 1.5,
     borderColor: GREEN,
     borderRadius: 10,
     paddingVertical: 9,
-    paddingHorizontal: 16,
+    paddingHorizontal: 14,
     backgroundColor: "#fff",
   },
   trackBtnText: {
@@ -1219,6 +1236,16 @@ const styles = StyleSheet.create({
     lineHeight: 18,
     fontWeight: "700",
     color: TITLE_DARK,
+  },
+  priceCol: {
+    alignItems: "flex-end",
+  },
+  gatiCashUsedHint: {
+    marginTop: 2,
+    fontSize: 10,
+    lineHeight: 13,
+    fontWeight: "600",
+    color: GREEN,
   },
   actionRow: {
     flexDirection: "row",

@@ -83,13 +83,13 @@ export async function recordAcceptanceTimeline(
     )
   `;
 
+  // First ETA (first_eta_at) is frozen at order placement — never write it on accept.
   await dbSql`
     UPDATE orders_core
     SET
       current_status = 'ACCEPTED',
       updated_at = NOW(),
-      estimated_delivery_time = COALESCE(estimated_delivery_time, ${etaAt}::timestamptz),
-      first_eta_at = COALESCE(first_eta_at, ${etaAt}::timestamptz)
+      estimated_delivery_time = COALESCE(estimated_delivery_time, ${etaAt}::timestamptz)
     WHERE id = ${input.orderCorePk}
       AND upper(COALESCE(current_status, '')) NOT IN ('CANCELLED', 'DELIVERED', 'RTO')
   `;

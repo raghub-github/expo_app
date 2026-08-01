@@ -77,6 +77,8 @@ export async function GET(req: NextRequest) {
               "billing_period_start",
               "billing_period_end",
               "notes",
+              "plan_name_snapshot",
+              "plan_code_snapshot",
             ].join(",")
           )
           .eq("store_id", merchantStoreId)
@@ -154,14 +156,23 @@ export async function GET(req: NextRequest) {
         const eventAt = row.payment_date
           ? new Date(String(row.payment_date)).toISOString()
           : new Date(0).toISOString();
+        const snapName =
+          row.plan_name_snapshot != null ? String(row.plan_name_snapshot).trim() : "";
+        const snapCode =
+          row.plan_code_snapshot != null ? String(row.plan_code_snapshot).trim() : "";
         return {
           eventType: "PURCHASE" as const,
           eventAt,
           id: Number(row.id),
           subscriptionId: Number(row.subscription_id),
           planId,
-          planName: planId != null ? planLookup[planId]?.plan_name ?? null : null,
-          planCode: planId != null ? planLookup[planId]?.plan_code ?? null : null,
+          planName:
+            snapName ||
+            (planId != null ? planLookup[planId]?.plan_name ?? null : null),
+          planCode:
+            snapCode ||
+            (planId != null ? planLookup[planId]?.plan_code ?? null : null) ||
+            null,
           amount: Number(row.amount ?? 0),
           totalPaise: Number(row.total_paise ?? 0),
           gstPercent: row.gst_percent_applied != null ? Number(row.gst_percent_applied) : 0,
@@ -175,18 +186,32 @@ export async function GET(req: NextRequest) {
         };
       });
 
+      const purchaseNameById = new Map<number, { planName: string | null; planCode: string | null }>();
+      for (const purchase of purchases) {
+        purchaseNameById.set(purchase.id, {
+          planName: purchase.planName,
+          planCode: purchase.planCode,
+        });
+      }
+
       const refunds = refundsRaw.map((r) => {
         const row = r as unknown as Record<string, unknown>;
         const planId = row.plan_id != null ? Number(row.plan_id) : null;
+        const paymentId = Number(row.payment_id);
+        const fromPurchase = purchaseNameById.get(paymentId);
         return {
           eventType: "REFUND" as const,
           eventAt: new Date(String(row.initiated_at)).toISOString(),
           id: Number(row.id),
-          paymentId: Number(row.payment_id),
+          paymentId,
           subscriptionId: Number(row.subscription_id),
           planId,
-          planName: planId != null ? planLookup[planId]?.plan_name ?? null : null,
-          planCode: planId != null ? planLookup[planId]?.plan_code ?? null : null,
+          planName:
+            fromPurchase?.planName ??
+            (planId != null ? planLookup[planId]?.plan_name ?? null : null),
+          planCode:
+            fromPurchase?.planCode ??
+            (planId != null ? planLookup[planId]?.plan_code ?? null : null),
           gateway: String(row.gateway).toUpperCase() as "WALLET" | "RAZORPAY",
           amount: Number(row.amount ?? 0),
           totalPaise: Number(row.total_paise ?? 0),

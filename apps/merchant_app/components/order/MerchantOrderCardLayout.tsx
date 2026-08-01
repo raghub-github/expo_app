@@ -1,4 +1,4 @@
-import { useMemo, useState, type ReactNode } from "react";
+import { useCallback, useMemo, useRef, useState, type ReactNode } from "react";
 import { AppText as Text } from "@/components/AppText";
 import { View, Pressable } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
@@ -8,6 +8,7 @@ import {
   MerchantOrderIdRow,
 } from "@/components/order/MerchantOrderCardToolbar";
 import { OrderCardItemRow } from "@/components/order/OrderCardItemRow";
+import { OrderLineAddImagePrompt } from "@/components/order/OrderLineAddImagePrompt";
 import { OrderCardMerchantInstructions } from "@/components/order/OrderCardMerchantInstructions";
 import { sliceOrderLineItems } from "@/lib/orderCardDisplay";
 import { formatOrderCardCustomerLabel } from "@/components/order/orderFormatters";
@@ -39,6 +40,16 @@ export type MerchantOrderCardLayoutProps = {
   footer?: ReactNode;
   detailsDefaultOpen?: boolean;
   showRider?: boolean;
+  /**
+   * Completed cards: tap anywhere on the card opens order details.
+   * Details / Total bill section heads still only expand/collapse.
+   */
+  pressCardOpensDetail?: boolean;
+  /**
+   * Preparing/accepted cards: show Zomato-style “Add photo” under line items
+   * that have no menu image yet (admin must approve before live).
+   */
+  showAddImagePrompt?: boolean;
 };
 
 export function MerchantOrderCardLayout({
@@ -63,6 +74,8 @@ export function MerchantOrderCardLayout({
   footer,
   detailsDefaultOpen = true,
   showRider = true,
+  pressCardOpensDetail = false,
+  showAddImagePrompt = false,
 }: MerchantOrderCardLayoutProps) {
   const [detailsOpen, setDetailsOpen] = useState(detailsDefaultOpen);
   const [billOpen, setBillOpen] = useState(false);
@@ -96,15 +109,52 @@ export function MerchantOrderCardLayout({
       )
     ) : null;
 
-  const openDetail = () => onViewDetail?.();
+  const detailNavLockRef = useRef(false);
+  const openDetail = useCallback(() => {
+    if (!onViewDetail || detailNavLockRef.current) return;
+    detailNavLockRef.current = true;
+    onViewDetail();
+    setTimeout(() => {
+      detailNavLockRef.current = false;
+    }, 900);
+  }, [onViewDetail]);
+
+  const toolbar =
+    headerRight ??
+    (showToolbar ? (
+      <MerchantOrderCardToolbar
+        onPrint={onPrint ? () => onPrint() : undefined}
+        onSpeak={() => onSpeak?.()}
+        onMenu={() => onMenu?.()}
+        speakingActive={speakingActive}
+      />
+    ) : null);
+
+  const cardOpensDetail = pressCardOpensDetail && Boolean(onViewDetail);
+  const CardShell = cardOpensDetail ? Pressable : View;
+  const cardShellProps = cardOpensDetail
+    ? {
+        onPress: openDetail,
+        accessibilityRole: "button" as const,
+        accessibilityLabel: "Open order details",
+      }
+    : {};
 
   return (
     <View style={styles.wrap}>
       {outerBanner}
 
-      <View style={[styles.card, outerBanner ? styles.cardUnderBanner : null]}>
-        {statusBadge ? <View style={styles.statusBadgeRow}>{statusBadge}</View> : null}
-        <View style={styles.headerRow}>
+      <CardShell
+        {...cardShellProps}
+        style={[styles.card, outerBanner ? styles.cardUnderBanner : null]}
+      >
+        {statusBadge ? (
+          <View style={styles.statusBadgeRow}>
+            <View style={styles.statusBadgeLeft}>{statusBadge}</View>
+            {toolbar}
+          </View>
+        ) : null}
+        <View style={[styles.headerRow, statusBadge ? styles.headerRowAfterBadge : null]}>
           <Pressable
             onPress={openDetail}
             disabled={!onViewDetail}
@@ -125,21 +175,19 @@ export function MerchantOrderCardLayout({
               </Text>
             ) : null}
           </Pressable>
-          {headerRight ??
-            (showToolbar ? (
-              <MerchantOrderCardToolbar
-                onPrint={onPrint ? () => onPrint() : undefined}
-                onSpeak={() => onSpeak?.()}
-                onMenu={() => onMenu?.()}
-                speakingActive={speakingActive}
-              />
-            ) : null)}
+          {!statusBadge ? toolbar : null}
         </View>
 
         {headerBelow}
 
         <Pressable
-          onPress={() => (onCustomerPress ? onCustomerPress() : openDetail())}
+          onPress={() =>
+            cardOpensDetail
+              ? openDetail()
+              : onCustomerPress
+                ? onCustomerPress()
+                : openDetail()
+          }
           style={({ pressed }) => [styles.customerRow, pressed && styles.pressed]}
         >
           <Text style={styles.customerLabel} numberOfLines={2}>
@@ -164,13 +212,17 @@ export function MerchantOrderCardLayout({
           {detailsOpen ? (
             <View style={styles.itemsBox}>
               {visibleItems.map((item, idx) => (
-                <OrderCardItemRow
-                  key={`${order.id}-${idx}`}
-                  item={item}
-                  orderVeg={order.vegNonVeg}
-                  onItemNamePress={() => onItemPress?.(item)}
-                  onRowPress={openDetail}
-                />
+                <View key={`${order.id}-${idx}`}>
+                  <OrderCardItemRow
+                    item={item}
+                    orderVeg={order.vegNonVeg}
+                    onItemNamePress={() => onItemPress?.(item)}
+                    onRowPress={openDetail}
+                  />
+                  {showAddImagePrompt ? (
+                    <OrderLineAddImagePrompt item={item} enabled />
+                  ) : null}
+                </View>
               ))}
               {moreCount > 0 ? (
                 <Pressable onPress={openDetail}>
@@ -190,7 +242,7 @@ export function MerchantOrderCardLayout({
         ) : null}
 
         <View style={styles.section}>
-          <Pressable onPress={() => setBillOpen((v) => !v)} style={styles.sectionHead}>
+          <Pressable onPress={() => setBillOpen((v) => !v)} style={styles.billSectionHead}>
             <Ionicons name="receipt-outline" size={18} color="#444444" />
             <Text style={styles.sectionTitle}>Total bill</Text>
             <Text style={styles.billAmount}>{formatMerchantRs(order.total)}</Text>
@@ -207,8 +259,16 @@ export function MerchantOrderCardLayout({
 
         {showRider ? riderContent ?? defaultRiderContent : null}
 
-        {footer ? <View style={styles.footer}>{footer}</View> : null}
-      </View>
+        {footer ? (
+          <View
+            style={styles.footer}
+            onStartShouldSetResponder={() => true}
+            onMoveShouldSetResponder={() => true}
+          >
+            {footer}
+          </View>
+        ) : null}
+      </CardShell>
     </View>
   );
 }

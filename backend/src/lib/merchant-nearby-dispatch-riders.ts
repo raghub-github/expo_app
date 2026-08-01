@@ -102,7 +102,12 @@ async function computeNearbyDispatchRiderSummary(
     effectiveRadiusMeters,
   };
 
-  const riders = await listEligibleRidersForDispatchOrder(target);
+  const riders = await Promise.race([
+    listEligibleRidersForDispatchOrder(target),
+    new Promise<Awaited<ReturnType<typeof listEligibleRidersForDispatchOrder>>>((resolve) => {
+      setTimeout(() => resolve([]), 2_000);
+    }),
+  ]);
   const nearbyCount = riders.length;
   const radiusKm = Math.round((effectiveRadiusMeters / 1000) * 10) / 10;
 

@@ -15,10 +15,15 @@ export function geoAvailabilityToRiderServices(
 ): RiderServiceTypeValue[] | null {
   if (!availability) return null;
   if (!availability.found) return [];
+  // Prefer coverage* (pre-Prevent Services) so a blocked area never strips
+  // duty services wholesale — only order pickup/drop points are filtered.
+  const food = availability.coverageFood ?? availability.food;
+  const parcel = availability.coverageParcel ?? availability.parcel;
+  const ride = availability.coverageRide ?? availability.ride;
   const out: RiderServiceTypeValue[] = [];
-  if (availability.food) out.push("food");
-  if (availability.parcel) out.push("parcel");
-  if (availability.ride) out.push("person_ride");
+  if (food) out.push("food");
+  if (parcel) out.push("parcel");
+  if (ride) out.push("person_ride");
   return out;
 }
 

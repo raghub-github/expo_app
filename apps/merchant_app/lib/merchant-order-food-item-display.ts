@@ -68,6 +68,38 @@ export function foodOrderHasCustomizations(item: ApiFoodOrderItem): boolean {
   );
 }
 
+/** Per-line cooking request — matches customer cart "Cooking: …" copy. */
+export function resolveLineItemCookingNote(item: {
+  specialInstructions?: string | null;
+  special_instructions?: string | null;
+  customization_lines?: ApiFoodOrderItem["customization_lines"];
+}): string | null {
+  const direct =
+    String(item.specialInstructions ?? item.special_instructions ?? "").trim() || null;
+  if (direct) return direct;
+  const fromLines = (item.customization_lines ?? [])
+    .filter((l) => l.kind === "note")
+    .map((l) => String(l.name ?? "").trim())
+    .filter(Boolean);
+  return fromLines[0] ?? null;
+}
+
+/** True when the merchant should open item details (customizations and/or cooking note). */
+export function lineItemHasKitchenDetails(item: {
+  has_customizations?: boolean;
+  customization_lines?: ApiFoodOrderItem["customization_lines"];
+  customizations?: string[];
+  customizations_total?: number;
+  variant_tag?: string | null;
+  specialInstructions?: string | null;
+  special_instructions?: string | null;
+}): boolean {
+  return (
+    foodOrderHasCustomizations(item as ApiFoodOrderItem) ||
+    resolveLineItemCookingNote(item) != null
+  );
+}
+
 export function lineItemHasCustomizations(item: {
   has_customizations?: boolean;
   customization_lines?: ApiFoodOrderItem["customization_lines"];

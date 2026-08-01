@@ -54,6 +54,8 @@ function payloadSyncKey(p: DeliveryMapPayload): string {
     p.riderArrived ? "1" : "0",
     p.refitCamera ? "1" : "0",
     p.mapPhase ?? "",
+    p.showPickupMarker === false ? "0" : "1",
+    p.showDropMarker === false ? "0" : "1",
   ].join("|");
 }
 

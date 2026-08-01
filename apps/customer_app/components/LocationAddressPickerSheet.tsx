@@ -97,7 +97,12 @@ export function LocationAddressPickerSheet({ onBack, onComplete, autoFocusSearch
       latitude: number,
       longitude: number
     ) => {
-      await addressService.setActiveLocation({ latitude, longitude, address: fullAddress });
+      await addressService.setActiveLocation({
+        latitude,
+        longitude,
+        address: fullAddress,
+        addressId: null,
+      });
       setAddressAndCoords(
         { primary, secondary: fullAddress.slice(0, 80), fullAddress },
         { latitude, longitude },
@@ -114,22 +119,10 @@ export function LocationAddressPickerSheet({ onBack, onComplete, autoFocusSearch
     async (addr: Address) => {
       setSelectingId(addr.id);
       try {
-        await Promise.all([
-          addressService.setActiveLocation({
-            latitude: addr.latitude,
-            longitude: addr.longitude,
-            address: addr.fullAddress,
-          }),
-          addressService.setAddressDefault(addr.id).catch(() => {}),
-        ]);
-        const primary = addr.label ?? "Address";
-        setAddressAndCoords(
-          { primary, secondary: addr.fullAddress.slice(0, 80), fullAddress: addr.fullAddress },
-          { latitude: addr.latitude, longitude: addr.longitude },
-          { source: "selected" }
+        const { applySelectedDeliveryAddress } = await import(
+          "@/lib/applySelectedDeliveryAddress"
         );
-        await queryClient.invalidateQueries({ queryKey: ADDRESSES_QUERY_KEY });
-        await queryClient.invalidateQueries({ queryKey: ACTIVE_LOCATION_QUERY_KEY });
+        await applySelectedDeliveryAddress(addr, queryClient);
         onComplete();
       } catch {
         Alert.alert("Could not select address", "Please try again.");
@@ -137,7 +130,7 @@ export function LocationAddressPickerSheet({ onBack, onComplete, autoFocusSearch
         setSelectingId(null);
       }
     },
-    [onComplete, queryClient, setAddressAndCoords]
+    [onComplete, queryClient]
   );
 
   const handleSelectSearchResult = useCallback(

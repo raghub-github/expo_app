@@ -6,7 +6,7 @@ import {
   type NearbyDispatchRiderSummary,
 } from "@/services/ordersApi";
 
-const POLL_MS = 12_000;
+const POLL_MS = 20_000;
 
 export function useNearbyDispatchRiders(
   ordersFoodId: number | null | undefined,

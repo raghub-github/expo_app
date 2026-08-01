@@ -6,9 +6,14 @@ export type GeoServiceAvailability = {
   food: boolean;
   parcel: boolean;
   ride: boolean;
+  /** Pre-prevent coverage — use for rider duty so blocks stay area-level. */
+  coverageFood?: boolean;
+  coverageParcel?: boolean;
+  coverageRide?: boolean;
   pincode: string | null;
   stateName: string | null;
   resolvedLevel: string | null;
+  preventBlocked?: string[];
 };
 
 export type GeoServiceAvailabilityResult =

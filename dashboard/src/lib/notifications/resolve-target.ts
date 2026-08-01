@@ -18,21 +18,23 @@ export type ResolvedTarget =
     };
 
 type MerchantStoreRow = {
-  id: number;
+  /** postgres.js returns bigint columns as strings, so accept both. */
+  id: number | string;
   store_id: string;
   store_name: string;
   store_display_name: string | null;
 };
 
 function mapResolvedStore(store: MerchantStoreRow): ResolvedTarget {
+  const id = Number(store.id);
   const name =
     store.store_display_name?.trim() ||
     store.store_name?.trim() ||
     store.store_id?.trim() ||
-    `Store #${store.id}`;
+    `Store #${id}`;
   return {
     kind: "store",
-    id: store.id,
+    id,
     name,
     subtitle: store.store_id ?? null,
   };

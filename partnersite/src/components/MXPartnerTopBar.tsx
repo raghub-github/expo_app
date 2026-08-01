@@ -73,9 +73,10 @@ import {
   clearPartnerManagedStoreIds,
   readPartnerManagedStoreIds,
   readPartnerSelectedStoreId,
+  switchPartnerActiveOutlet,
 } from '@/lib/partner-selected-store';
 import { partnerSurfaceOnlineFromStoreOperationsBody } from '@/lib/partnerStoreSurfaceOnline';
-import { emitPartnerStoreOperationsRefresh } from '@/lib/partnerStoreOperationsRefresh';
+import { emitPartnerStoreOperationsRefresh, PARTNER_STORE_OPERATIONS_REFRESH_EVENT } from '@/lib/partnerStoreOperationsRefresh';
 import { STORE_SETTINGS_TAB_LABELS } from '@/lib/store-settings-tabs';
 import {
   migrateDeviceOrderAlertsFromServer,
@@ -416,6 +417,31 @@ function OutletSheetCheckbox({
   );
 }
 
+function OutletSheetRadio({
+  selected,
+  onChange,
+  ariaLabel,
+}: {
+  selected: boolean;
+  onChange: () => void;
+  ariaLabel: string;
+}) {
+  return (
+    <button
+      type="button"
+      role="radio"
+      aria-checked={selected}
+      aria-label={ariaLabel}
+      onClick={onChange}
+      className={`flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded-full border-2 transition ${
+        selected ? 'border-sky-600 bg-sky-600' : 'border-slate-300 bg-white'
+      }`}
+    >
+      {selected ? <span className="h-1.5 w-1.5 rounded-full bg-white" /> : null}
+    </button>
+  );
+}
+
 interface MXPartnerTopBarProps {
   restaurantName?: string;
   restaurantId?: string;
@@ -474,6 +500,8 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
   const partnerShellHeader = usePartnerShellHeader();
   const topbarRef = useRef<HTMLElement | null>(null);
   const [statusTab, setStatusTab] = useState<'manage' | 'schedule' | 'rush'>('manage');
+  /** Nested tabs inside Manage Orders — mirrors merchant app Manage Order | Switch Outlet. */
+  const [outletOrdersTab, setOutletOrdersTab] = useState<'manage' | 'switch'>('manage');
   const [showLogoutModal, setShowLogoutModal] = useState(false);
   const [showLogoutAllModal, setShowLogoutAllModal] = useState(false);
   const [isLoggingOut, setIsLoggingOut] = useState(false);
@@ -507,6 +535,8 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
     storeName: string;
     /** Multi-outlet manage confirm (orders land on one board). */
     managedStoreIds?: string[];
+    /** manage = update board outlets; switch = change active outlet on this device. */
+    mode?: 'manage' | 'switch';
   } | null>(null);
   /** Same close / open modals as dashboard store status card (not the simple confirm dialog). */
   const [operationalCloseModal, setOperationalCloseModal] = useState<{ storeId: string; storeName: string } | null>(
@@ -782,7 +812,12 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
   const parentBrandLogoRaw = merchantSession?.parent?.store_logo?.trim() || null;
   const parentBrandLogo = parentBrandLogoRaw ? (toStoredDocumentUrl(parentBrandLogoRaw) ?? parentBrandLogoRaw) : null;
   const effectiveAvatarUrl = localAvatarDataUrl || sessionAvatarUrl || parentBrandLogo;
-  const avatarSrc = effectiveAvatarUrl && effectiveAvatarUrl !== brokenAvatarSrc ? effectiveAvatarUrl : null;
+  // Gate on profileHydrated so SSR + first client paint both show the initial letter
+  // (avoids hydration mismatch when session/logo only exists on the client).
+  const avatarSrc =
+    profileHydrated && effectiveAvatarUrl && effectiveAvatarUrl !== brokenAvatarSrc
+      ? effectiveAvatarUrl
+      : null;
 
   useLayoutEffect(() => {
     if (!profileDropdownOpen || !profileTriggerRef.current) {
@@ -831,7 +866,7 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
       const data = await queryClient.fetchQuery({
         queryKey: merchantKeys.storeOperations(resolvedStoreId),
         queryFn: () => fetchStoreOperations(resolvedStoreId),
-        staleTime: 2 * 60 * 1000,
+        staleTime: 0,
       });
       if (data && typeof data.operational_status === 'string') {
         applyLicenseFieldsFromStoreOps(data as unknown as Record<string, unknown>);
@@ -883,7 +918,7 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
       const data = await queryClient.fetchQuery({
         queryKey: merchantKeys.storeOperations(storeId),
         queryFn: () => fetchStoreOperations(storeId),
-        staleTime: 2 * 60 * 1000,
+        staleTime: 0,
       });
       if (data && typeof data.operational_status === 'string') {
         const withinH =
@@ -987,6 +1022,17 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
     const t = window.setInterval(refreshStoreOperations, 30_000);
     return () => window.clearInterval(t);
   }, [refreshStoreOperations, resolvedStoreId]);
+
+  useEffect(() => {
+    if (!resolvedStoreId || typeof window === 'undefined') return;
+    const onRefresh = (ev: Event) => {
+      const ce = ev as CustomEvent<{ storeId?: string }>;
+      const sid = ce.detail?.storeId;
+      if (sid && sid === resolvedStoreId) void refreshStoreOperations();
+    };
+    window.addEventListener(PARTNER_STORE_OPERATIONS_REFRESH_EVENT, onRefresh as EventListener);
+    return () => window.removeEventListener(PARTNER_STORE_OPERATIONS_REFRESH_EVENT, onRefresh as EventListener);
+  }, [resolvedStoreId, refreshStoreOperations]);
 
   useEffect(() => {
     if (!resolvedStoreId) return;
@@ -1241,9 +1287,11 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
 
   const switchToStore = (id: string, managedIds?: string[]) => {
     if (typeof localStorage !== 'undefined') {
-      localStorage.setItem('selectedStoreId', id);
-      persistPartnerManagedStoreIds(managedIds?.length ? managedIds : [id]);
-      void import('@/lib/partner-selected-store').then((m) => m.notifyPartnerSelectedStoreChanged(id));
+      // Preserve the multi-outlet board when switching the active outlet
+      // (merchant-app switchActiveOutlet parity).
+      switchPartnerActiveOutlet(id, {
+        managedStoreIds: managedIds?.length ? managedIds : undefined,
+      });
     }
     setSheet(null);
     const base = (pathname || '/partners/dashboard').split('?')[0];
@@ -1782,43 +1830,68 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
   const toggleOutletChecked = useCallback((storeId: string) => {
     setCheckedOutletIds((prev) => {
       const next = new Set(prev);
-      if (next.has(storeId)) next.delete(storeId);
-      else next.add(storeId);
+      if (next.has(storeId)) {
+        // Keep at least one outlet on the orders board.
+        if (next.size <= 1) return prev;
+        next.delete(storeId);
+      } else {
+        next.add(storeId);
+      }
       return next;
     });
   }, []);
 
   const toggleAllFilteredOutlets = useCallback(() => {
     setCheckedOutletIds((prev) => {
-      const next = new Set(prev);
       if (allFilteredOutletsChecked) {
-        filteredOutletsForStatus.forEach((s) => next.delete(s.store_id));
-      } else {
-        filteredOutletsForStatus.forEach((s) => next.add(s.store_id));
+        // Collapse to the active outlet only (same as merchant "Active outlet only").
+        const fallback = resolvedStoreId || filteredOutletsForStatus[0]?.store_id;
+        return fallback ? new Set([fallback]) : new Set(prev);
       }
+      const next = new Set(prev);
+      filteredOutletsForStatus.forEach((s) => next.add(s.store_id));
       return next;
     });
-  }, [allFilteredOutletsChecked, filteredOutletsForStatus]);
+  }, [allFilteredOutletsChecked, filteredOutletsForStatus, resolvedStoreId]);
 
-  const confirmOutletSelection = useCallback(() => {
+  /** Apply multi-select managed outlets — does not change the active outlet. */
+  const confirmManagedOutlets = useCallback(() => {
     const ids = [...checkedOutletIds];
     if (ids.length === 0) return;
+    // Keep the current active outlet if it is still on the board; else first selected.
     const primary =
       (resolvedStoreId && checkedOutletIds.has(resolvedStoreId) ? resolvedStoreId : null) ?? ids[0]!;
     const primaryStore = displayStores.find((s) => s.store_id === primary);
     if (!primaryStore) return;
 
-    if (ids.length === 1) {
-      if (primary === resolvedStoreId) {
-        persistPartnerManagedStoreIds([primary]);
-        setSheet(null);
-        return;
-      }
+    const currentManaged = readPartnerManagedStoreIds(resolvedStoreId);
+    const sameManaged =
+      currentManaged.length === ids.length && ids.every((id) => currentManaged.includes(id));
+    if (sameManaged && primary === resolvedStoreId) {
+      setSheet(null);
+      return;
+    }
+
+    if (ids.length === 1 && primary !== resolvedStoreId) {
+      // Single selection that is not the active outlet → switch active too.
       setPendingStoreSwitch({
         storeId: primaryStore.store_id,
         storeName: primaryStore.store_name,
         managedStoreIds: [primary],
+        mode: 'manage',
       });
+      return;
+    }
+
+    if (primary === resolvedStoreId) {
+      // Same active outlet — only update which stores feed the board (no reload).
+      persistPartnerManagedStoreIds(ids);
+      setSheet(null);
+      toast.success(
+        ids.length > 1
+          ? `Receiving orders from ${ids.length} outlets on this board`
+          : 'Receiving orders from this outlet only'
+      );
       return;
     }
 
@@ -1826,12 +1899,36 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
       storeId: primaryStore.store_id,
       storeName: primaryStore.store_name,
       managedStoreIds: ids,
+      mode: 'manage',
     });
   }, [checkedOutletIds, resolvedStoreId, displayStores]);
+
+  /** Switch the active outlet for this browser; preserve the multi-outlet board. */
+  const confirmSwitchOutlet = useCallback(
+    (storeId: string) => {
+      if (!storeId || storeId === resolvedStoreId) return;
+      const store = displayStores.find((s) => s.store_id === storeId);
+      if (!store) return;
+      const managed = readPartnerManagedStoreIds(resolvedStoreId);
+      const nextManaged = managed.includes(storeId)
+        ? managed
+        : managed.length > 0
+          ? [...managed, storeId]
+          : [storeId];
+      setPendingStoreSwitch({
+        storeId: store.store_id,
+        storeName: store.store_name,
+        managedStoreIds: nextManaged,
+        mode: 'switch',
+      });
+    },
+    [resolvedStoreId, displayStores]
+  );
 
   useEffect(() => {
     if (sheet === 'status' && statusTab === 'manage') {
       setOutletSearchQuery('');
+      setOutletOrdersTab('manage');
       const managed = readPartnerManagedStoreIds(resolvedStoreId);
       if (managed.length > 0) {
         setCheckedOutletIds(new Set(managed));
@@ -2347,7 +2444,7 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
                 }`}
                 onClick={() => setStatusTab('manage')}
               >
-                Manage Outlet
+                Manage Orders
               </button>
               <button
                 type="button"
@@ -2374,10 +2471,42 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
             </div>
 
             {statusTab === 'manage' ? (
-              <div className="space-y-5">
+              <div className="space-y-4">
+                {/* Merchant-app parity: Manage Order (multi-select) | Switch Outlet (radio) */}
+                <div className="flex rounded-xl bg-[#EFEFEF] p-1">
+                  <button
+                    type="button"
+                    className={`flex-1 rounded-lg py-2.5 text-[12px] font-semibold transition ${
+                      outletOrdersTab === 'manage'
+                        ? 'bg-white text-slate-900 shadow-sm'
+                        : 'text-slate-500 hover:text-slate-800'
+                    }`}
+                    onClick={() => setOutletOrdersTab('manage')}
+                  >
+                    Manage Order
+                  </button>
+                  <button
+                    type="button"
+                    className={`flex-1 rounded-lg py-2.5 text-[12px] font-semibold transition ${
+                      outletOrdersTab === 'switch'
+                        ? 'bg-white text-slate-900 shadow-sm'
+                        : 'text-slate-500 hover:text-slate-800'
+                    }`}
+                    onClick={() => setOutletOrdersTab('switch')}
+                  >
+                    Switch Outlet
+                  </button>
+                </div>
+
+                <p className="text-[12px] leading-snug text-slate-500">
+                  {outletOrdersTab === 'manage'
+                    ? 'Tick one or more outlets to receive incoming orders on this device. You can select every linked store.'
+                    : 'Choose the active outlet for this device. Dashboard, menu, reports, and settings load for that outlet.'}
+                </p>
+
                 <button
                   type="button"
-                  className="flex w-full items-center justify-center gap-2 rounded-2xl border border-slate-200/90 bg-white py-3.5 text-sm font-semibold text-slate-800 shadow-sm ring-1 ring-slate-100 transition hover:border-sky-200/80 hover:bg-sky-50/60 hover:text-sky-950"
+                  className="flex w-full items-center justify-center gap-2 rounded-2xl border border-slate-200/90 bg-white py-3 text-sm font-semibold text-slate-800 shadow-sm ring-1 ring-slate-100 transition hover:border-sky-200/80 hover:bg-sky-50/60 hover:text-sky-950"
                   onClick={() => {
                     setSheet(null);
                     router.push('/partners/all-stores?picker=1');
@@ -2402,20 +2531,20 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
                     />
                   </div>
 
-                  <button
-                    type="button"
-                    className="mb-2 flex w-full items-center justify-between gap-2 rounded-lg px-1 py-1 text-left"
-                    onClick={toggleAllFilteredOutlets}
-                  >
-                    <span className="text-sm font-bold text-slate-900">
-                      All Restaurants ({outletsOrderedForStatus.length})
-                    </span>
-                    <OutletSheetCheckbox
-                      checked={allFilteredOutletsChecked}
-                      onChange={toggleAllFilteredOutlets}
-                      ariaLabel="Select all restaurants"
-                    />
-                  </button>
+                  {outletOrdersTab === 'manage' && outletsOrderedForStatus.length > 1 ? (
+                    <div className="mb-2 flex items-center justify-between gap-2 px-1">
+                      <button
+                        type="button"
+                        className="rounded-lg bg-slate-100 px-2.5 py-1.5 text-[11px] font-semibold text-slate-700 hover:bg-slate-200"
+                        onClick={toggleAllFilteredOutlets}
+                      >
+                        {allFilteredOutletsChecked ? 'Active outlet only' : 'Select all stores'}
+                      </button>
+                      <span className="text-[11px] font-medium text-slate-500">
+                        {checkedOutletIds.size}/{outletsOrderedForStatus.length} selected
+                      </span>
+                    </div>
+                  ) : null}
 
                   {outletsOrderedForStatus.length === 0 ? (
                     <p className="py-4 text-center text-xs text-gray-500">No approved stores yet.</p>
@@ -2449,6 +2578,7 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
                               ? 'bg-emerald-500'
                               : 'bg-rose-400';
                         const isChecked = checkedOutletIds.has(s.store_id);
+                        const isManageTab = outletOrdersTab === 'manage';
                         return (
                           <li key={s.store_id}>
                             {index > 0 ? (
@@ -2456,23 +2586,42 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
                             ) : null}
                             <div
                               className={`flex items-start gap-2.5 rounded-lg border bg-white px-2.5 py-2.5 shadow-sm transition-colors ${
-                                isCurrent
-                                  ? 'border-sky-200/90 ring-1 ring-sky-100'
-                                  : 'border-gray-200 hover:border-gray-300'
+                                isManageTab
+                                  ? isChecked
+                                    ? 'border-sky-200/90 ring-1 ring-sky-100'
+                                    : 'border-gray-200 hover:border-gray-300'
+                                  : isCurrent
+                                    ? 'border-sky-200/90 ring-1 ring-sky-100'
+                                    : 'border-gray-200 hover:border-gray-300'
                               }`}
                             >
                               <OutletBannerThumb url={s.banner_url} />
                               <button
                                 type="button"
                                 className="min-w-0 flex-1 text-left"
-                                onClick={() => toggleOutletChecked(s.store_id)}
+                                onClick={() => {
+                                  if (isManageTab) toggleOutletChecked(s.store_id);
+                                  else confirmSwitchOutlet(s.store_id);
+                                }}
                               >
-                                <span className="mb-1 inline-flex items-center gap-1 rounded-full bg-slate-100 px-1.5 py-0.5">
-                                  <span className={`h-1.5 w-1.5 rounded-full ${statusDotClass}`} />
-                                  <span className="text-[10px] font-semibold text-slate-600">
-                                    {statusLabel}
+                                <div className="mb-1 flex flex-wrap items-center gap-1">
+                                  <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-1.5 py-0.5">
+                                    <span className={`h-1.5 w-1.5 rounded-full ${statusDotClass}`} />
+                                    <span className="text-[10px] font-semibold text-slate-600">
+                                      {statusLabel}
+                                    </span>
                                   </span>
-                                </span>
+                                  {isCurrent ? (
+                                    <span className="inline-flex items-center rounded-full bg-sky-50 px-1.5 py-0.5 text-[10px] font-semibold text-sky-700 ring-1 ring-sky-100">
+                                      Active on this device
+                                    </span>
+                                  ) : null}
+                                  {!isManageTab && isChecked && !isCurrent ? (
+                                    <span className="inline-flex items-center rounded-full bg-emerald-50 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-700 ring-1 ring-emerald-100">
+                                      In board
+                                    </span>
+                                  ) : null}
+                                </div>
                                 <p
                                   className="text-[13px] font-semibold leading-tight text-gray-900"
                                   title={s.store_name}
@@ -2488,11 +2637,19 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
                                 </p>
                               </button>
                               <div className="flex shrink-0 flex-col items-end gap-2 pt-0.5">
-                                <OutletSheetCheckbox
-                                  checked={isChecked}
-                                  onChange={() => toggleOutletChecked(s.store_id)}
-                                  ariaLabel={`Select ${s.store_name}`}
-                                />
+                                {isManageTab ? (
+                                  <OutletSheetCheckbox
+                                    checked={isChecked}
+                                    onChange={() => toggleOutletChecked(s.store_id)}
+                                    ariaLabel={`Select ${s.store_name}`}
+                                  />
+                                ) : (
+                                  <OutletSheetRadio
+                                    selected={isCurrent}
+                                    onChange={() => confirmSwitchOutlet(s.store_id)}
+                                    ariaLabel={`Switch to ${s.store_name}`}
+                                  />
+                                )}
                                 <CompactSwitch
                                   on={isOn === true}
                                   disabled={
@@ -2548,16 +2705,16 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
                     </ul>
                   )}
 
-                  {outletsOrderedForStatus.length > 1 ? (
+                  {outletOrdersTab === 'manage' ? (
                     <button
                       type="button"
                       disabled={checkedOutletIds.size === 0}
-                      onClick={confirmOutletSelection}
-                      className="mt-3 w-full rounded-xl bg-slate-900 py-3 text-sm font-bold text-white shadow-sm transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-45"
+                      onClick={confirmManagedOutlets}
+                      className="mt-3 w-full rounded-xl bg-sky-100 py-3 text-sm font-bold text-sky-950 shadow-sm transition hover:bg-sky-200/80 disabled:cursor-not-allowed disabled:opacity-45"
                     >
-                      {checkedOutletIds.size === 1
-                        ? 'Confirm (1 restaurant)'
-                        : `Confirm (${checkedOutletIds.size} restaurants)`}
+                      {checkedOutletIds.size <= 1
+                        ? 'Receive orders from this outlet'
+                        : `Receive orders from ${checkedOutletIds.size} outlets`}
                     </button>
                   ) : null}
                 </div>
@@ -3354,21 +3511,27 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
       <PartnerToggleConfirmModal
         isOpen={pendingStoreSwitch != null}
         title={
-          pendingStoreSwitch?.managedStoreIds && pendingStoreSwitch.managedStoreIds.length > 1
-            ? `Confirm (${pendingStoreSwitch.managedStoreIds.length} restaurants)`
-            : 'Switch active outlet?'
+          pendingStoreSwitch?.mode === 'switch'
+            ? 'Switch active outlet?'
+            : pendingStoreSwitch?.managedStoreIds && pendingStoreSwitch.managedStoreIds.length > 1
+              ? `Confirm (${pendingStoreSwitch.managedStoreIds.length} restaurants)`
+              : 'Switch active outlet?'
         }
         message={
-          pendingStoreSwitch?.managedStoreIds && pendingStoreSwitch.managedStoreIds.length > 1
-            ? `After you confirm, new orders from all ${pendingStoreSwitch.managedStoreIds.length} selected restaurants will land on this same orders board. Each incoming order will show the store locality so you know which outlet it belongs to.`
-            : pendingStoreSwitch
-              ? `You are about to manage “${pendingStoreSwitch.storeName}”. The page will reload and dashboard, orders, menu, and settings will show that outlet.`
-              : ''
+          pendingStoreSwitch?.mode === 'switch'
+            ? `You are about to make “${pendingStoreSwitch.storeName}” the active outlet on this device. Dashboard, menu, reports, and settings will load for that outlet. Your multi-outlet orders board selection is kept.`
+            : pendingStoreSwitch?.managedStoreIds && pendingStoreSwitch.managedStoreIds.length > 1
+              ? `After you confirm, new orders from all ${pendingStoreSwitch.managedStoreIds.length} selected restaurants will land on this same orders board. Each incoming order will show the store locality so you know which outlet it belongs to.`
+              : pendingStoreSwitch
+                ? `You are about to manage “${pendingStoreSwitch.storeName}”. The page will reload and dashboard, orders, menu, and settings will show that outlet.`
+                : ''
         }
         confirmLabel={
-          pendingStoreSwitch?.managedStoreIds && pendingStoreSwitch.managedStoreIds.length > 1
-            ? 'Confirm'
-            : 'Switch outlet'
+          pendingStoreSwitch?.mode === 'switch'
+            ? 'Switch outlet'
+            : pendingStoreSwitch?.managedStoreIds && pendingStoreSwitch.managedStoreIds.length > 1
+              ? 'Confirm'
+              : 'Switch outlet'
         }
         cancelLabel="Cancel"
         onClose={() => setPendingStoreSwitch(null)}
@@ -3376,12 +3539,15 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
           if (!pendingStoreSwitch) return;
           const id = pendingStoreSwitch.storeId;
           const managed = pendingStoreSwitch.managedStoreIds ?? [id];
+          const mode = pendingStoreSwitch.mode ?? 'manage';
           setPendingStoreSwitch(null);
-          if (managed.length > 1 && id === resolvedStoreId) {
+          if (mode === 'manage' && managed.length >= 1 && id === resolvedStoreId) {
             persistPartnerManagedStoreIds(managed);
             setSheet(null);
             toast.success(
-              `Managing orders from ${managed.length} restaurants on this board`
+              managed.length > 1
+                ? `Managing orders from ${managed.length} restaurants on this board`
+                : 'Receiving orders from this outlet only'
             );
             return;
           }

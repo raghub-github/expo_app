@@ -52,31 +52,32 @@ export default function HistoryPage() {
   );
 
   return (
-    <div className="p-6">
-      <div className="text-xs font-semibold uppercase tracking-wide text-teal-700">Notifications</div>
-      <h1 className="text-2xl font-semibold text-slate-900">History</h1>
-      <p className="mt-1 text-sm text-slate-500">Per-recipient delivery log. Filter by user, template, or status.</p>
+    <div className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden bg-slate-50 px-3 pb-3 pt-1 sm:px-5 sm:pt-2 xl:px-6">
+      <div className="mx-auto flex h-full min-h-0 w-full min-w-0 max-w-7xl flex-col">
+        <div className="shrink-0">
+          <p className="max-w-2xl text-sm text-slate-500">Per-recipient delivery log. Filter by user, template, or status.</p>
+        </div>
 
-      <div className="mt-6 flex flex-wrap items-center gap-2">
-        <input placeholder="user_id (GMC-…)" className="rounded-md border border-slate-200 px-3 py-2 text-sm" value={userId} onChange={(e) => setUserId(e.target.value)} />
-        <input placeholder="template_code" className="rounded-md border border-slate-200 px-3 py-2 text-sm font-mono" value={template} onChange={(e) => setTemplate(e.target.value)} />
-        <select className="rounded-md border border-slate-200 px-3 py-2 text-sm" value={status} onChange={(e) => setStatus(e.target.value)}>
-          <option value="">Any status</option>
-          {["queued", "sent", "delivered", "clicked", "failed", "expired"].map((s) => <option key={s} value={s}>{s}</option>)}
-        </select>
-      </div>
+        <div className="mt-3 flex shrink-0 flex-wrap items-center gap-2">
+          <input placeholder="user_id (GMC-…)" className="rounded-md border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:border-teal-600 focus:ring-1 focus:ring-teal-600" value={userId} onChange={(e) => setUserId(e.target.value)} />
+          <input placeholder="template_code" className="rounded-md border border-slate-200 bg-white px-3 py-2 text-sm font-mono outline-none focus:border-teal-600 focus:ring-1 focus:ring-teal-600" value={template} onChange={(e) => setTemplate(e.target.value)} />
+          <select className="rounded-md border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:border-teal-600 focus:ring-1 focus:ring-teal-600" value={status} onChange={(e) => setStatus(e.target.value)}>
+            <option value="">Any status</option>
+            {["queued", "sent", "delivered", "clicked", "failed", "expired"].map((s) => <option key={s} value={s}>{s}</option>)}
+          </select>
+        </div>
 
-      <div className="mt-4 overflow-hidden rounded-xl border border-slate-200 bg-white">
-        <table className="min-w-full divide-y divide-slate-200 text-xs">
-          <thead className="bg-slate-50 text-left font-semibold uppercase tracking-wide text-slate-500">
+        <div className="mt-4 min-h-0 max-w-full flex-1 overflow-auto rounded-xl border border-slate-200 bg-white shadow-sm">
+          <table className="w-full min-w-[880px] divide-y divide-slate-200 text-xs">
+            <thead className="sticky top-0 z-10 bg-slate-50 text-left font-semibold uppercase tracking-wide text-slate-500 shadow-[0_1px_0_0_#e2e8f0]">
             <tr>
-              <th className="px-3 py-2">Queued</th>
-              <th className="px-3 py-2">Template</th>
-              <th className="px-3 py-2">Recipient</th>
-              <th className="px-3 py-2">Channel</th>
-              <th className="px-3 py-2">Status</th>
-              <th className="px-3 py-2">Title</th>
-              <th className="px-3 py-2">Error</th>
+              <th className="px-3 py-3 sm:px-4">Queued</th>
+              <th className="px-3 py-3">Template</th>
+              <th className="px-3 py-3">Recipient</th>
+              <th className="px-3 py-3">Channel</th>
+              <th className="px-3 py-3">Status</th>
+              <th className="px-3 py-3">Title</th>
+              <th className="px-3 py-3">Error</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100">
@@ -86,24 +87,25 @@ export default function HistoryPage() {
               <tr><td colSpan={7} className="px-3 py-6 text-center text-slate-500">No matches.</td></tr>
             ) : (
               data.items.map((r) => (
-                <tr key={r.id} className="hover:bg-slate-50/50">
-                  <td className="px-3 py-2 whitespace-nowrap text-slate-600">{new Date(r.queued_at).toLocaleString()}</td>
-                  <td className="px-3 py-2 font-mono text-slate-800">{r.template_code ?? "—"}</td>
-                  <td className="px-3 py-2 text-slate-700">
+                <tr key={r.id} className="transition hover:bg-teal-50/40">
+                  <td className="whitespace-nowrap px-3 py-3 text-slate-600 sm:px-4">{new Date(r.queued_at).toLocaleString()}</td>
+                  <td className="px-3 py-3 font-mono text-slate-800">{r.template_code ?? "—"}</td>
+                  <td className="px-3 py-3 text-slate-700">
                     {r.recipient_user_id}
                     <div className="text-[10px] text-slate-400">{r.recipient_role} · {r.platform ?? "?"}</div>
                   </td>
-                  <td className="px-3 py-2 text-slate-500">{r.channel}</td>
-                  <td className="px-3 py-2">
+                  <td className="px-3 py-3 text-slate-500">{r.channel}</td>
+                  <td className="px-3 py-3">
                     <span className={"rounded-md px-1.5 py-0.5 " + (STATUS[r.status] ?? "bg-slate-100")}>{r.status}</span>
                   </td>
-                  <td className="px-3 py-2 max-w-[240px] truncate text-slate-800">{r.title}</td>
-                  <td className="px-3 py-2 text-rose-600">{r.error_code ?? ""}</td>
+                  <td className="max-w-[240px] truncate px-3 py-3 text-slate-800">{r.title}</td>
+                  <td className="px-3 py-3 text-rose-600">{r.error_code ?? ""}</td>
                 </tr>
               ))
             )}
           </tbody>
         </table>
+        </div>
       </div>
     </div>
   );

@@ -143,7 +143,7 @@ function LoginPageContent() {
           if (typeof next === 'string' && next.startsWith('/partners/') && !next.startsWith('/partners/all-stores')) {
             next = '/partners/all-stores';
           }
-          window.location.href = next.startsWith('/') ? next : '/partners/all-stores';
+          window.location.replace(next.startsWith('/') ? next : '/partners/all-stores');
           return;
         }
         throw new Error('Server temporarily unavailable (502). Please try again.');
@@ -163,7 +163,8 @@ function LoginPageContent() {
     if (typeof next === 'string' && next.startsWith('/partners/') && !next.startsWith('/partners/all-stores')) {
       next = '/partners/all-stores';
     }
-    window.location.href = next.startsWith('/') ? next : '/partners/all-stores';
+    // Replace so browser Back cannot return to Login/OTP while session is valid.
+    window.location.replace(next.startsWith('/') ? next : '/partners/all-stores');
   };
 
   const handleGoogleLogin = async () => {

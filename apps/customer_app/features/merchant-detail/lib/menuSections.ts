@@ -1,6 +1,19 @@
 import type { MenuItem } from "@/services/merchant.service";
 import type { MenuListRow, MenuSection } from "../types";
 
+/** Collapse rows that describe the same dish, so a repeated API row never renders twice. */
+export function dedupeMenuItems(menu: MenuItem[]): MenuItem[] {
+  const seen = new Set<string>();
+  const out: MenuItem[] = [];
+  for (const item of menu) {
+    const key = item.menuItemId != null ? `pk:${item.menuItemId}` : `id:${item.id}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(item);
+  }
+  return out;
+}
+
 /** Group menu by category_id / categoryName from DB. */
 export function groupMenuByCategory(menu: MenuItem[]): { title: string; data: MenuItem[] }[] {
   const byKey = new Map<string, { title: string; data: MenuItem[] }>();
@@ -15,20 +28,29 @@ export function groupMenuByCategory(menu: MenuItem[]): { title: string; data: Me
   return sections;
 }
 
-/** Smart sections first, then DB categories. */
+/**
+ * DB categories only — every dish appears exactly once. The old "Recommended for you" /
+ * "Best in category" sections repeated dishes that also live in a category (and a dish flagged
+ * both showed up three times). Those signals now ride along on the row itself as badges.
+ */
 export function buildMenuSections(menu: MenuItem[]): MenuSection[] {
-  const out: MenuSection[] = [];
-  const recommended = menu.filter((m) => m.isRecommended);
-  const popular = menu.filter((m) => m.isPopular);
-  if (recommended.length > 0) {
-    out.push({ title: "Recommended for you", data: recommended as MenuListRow[], isSmart: true });
-  }
-  if (popular.length > 0) {
-    out.push({ title: "Best in category", data: popular as MenuListRow[], isSmart: true });
-  }
-  const categorySections = groupMenuByCategory(menu);
-  categorySections.forEach((s) => out.push({ ...s, data: s.data as MenuListRow[], isSmart: false }));
-  return out;
+  const unique = dedupeMenuItems(menu);
+  return groupMenuByCategory(unique).map((s) => ({
+    ...s,
+    data: s.data as MenuListRow[],
+    isSmart: false,
+  }));
+}
+
+/**
+ * One flat section that preserves the incoming order. Used when an explicit sort is active:
+ * re-grouping a price-sorted list by category scatters it back into per-category runs, which
+ * reads as "sorting does nothing".
+ */
+export function buildSortedMenuSection(menu: MenuItem[], title: string): MenuSection[] {
+  const unique = dedupeMenuItems(menu);
+  if (unique.length === 0) return [];
+  return [{ title, data: unique as MenuListRow[], isSmart: true }];
 }
 
 export function lowestAvailableMenuPrice(menu: MenuItem[]): number | null {

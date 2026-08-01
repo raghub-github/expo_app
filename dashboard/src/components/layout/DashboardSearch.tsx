@@ -49,10 +49,12 @@ function DashboardSearchInner({ compact = false }: DashboardSearchProps) {
   useEffect(() => {
     const pathOnly = pathname.split("?")[0] ?? "";
     if (searchValue) {
-      setLocalSearchValue(searchValue);
+      const next =
+        dashboardType === "CUSTOMER" ? searchValue.toUpperCase() : searchValue;
+      setLocalSearchValue(next);
       if (dashboardType === "CUSTOMER") {
         try {
-          sessionStorage.setItem("customerDashboardLastSearch", searchValue);
+          sessionStorage.setItem("customerDashboardLastSearch", next);
         } catch {
           /* ignore */
         }
@@ -65,7 +67,7 @@ function DashboardSearchInner({ compact = false }: DashboardSearchProps) {
     if (dashboardType === "CUSTOMER" && /^\/dashboard\/customers\/(GM\d+|\d+)(\/.*)?$/i.test(pathOnly)) {
       try {
         const stored = sessionStorage.getItem("customerDashboardLastSearch");
-        if (stored) setLocalSearchValue(stored);
+        if (stored) setLocalSearchValue(stored.toUpperCase());
       } catch {
         /* ignore */
       }
@@ -237,7 +239,7 @@ function DashboardSearchInner({ compact = false }: DashboardSearchProps) {
 
         if (dashboardType === "CUSTOMER") {
           try {
-            sessionStorage.setItem("customerDashboardLastSearch", value);
+            sessionStorage.setItem("customerDashboardLastSearch", value.toUpperCase());
           } catch {
             /* ignore */
           }
@@ -246,15 +248,17 @@ function DashboardSearchInner({ compact = false }: DashboardSearchProps) {
         // For customer dashboard, route directly to /all with search params
         // For area manager stores, keep search on stores page
         const params = new URLSearchParams(searchParams.toString());
-        params.set("search", value);
+        const searchForNav =
+          dashboardType === "CUSTOMER" ? value.toUpperCase() : value;
+        params.set("search", searchForNav);
 
         let targetPath: string;
         if (dashboardType === "CUSTOMER") {
-          const compact = value.replace(/\s/g, "");
+          const compact = searchForNav.replace(/\s/g, "");
           // Exact GM… id → open detail in one hop (skip /all list loading → redirect).
           if (/^GM\d+$/i.test(compact)) {
             router.push(
-              `/dashboard/customers/${encodeURIComponent(compact)}?search=${encodeURIComponent(value)}`
+              `/dashboard/customers/${encodeURIComponent(compact)}?search=${encodeURIComponent(searchForNav)}`
             );
             return;
           }
@@ -273,8 +277,11 @@ function DashboardSearchInner({ compact = false }: DashboardSearchProps) {
           value={localSearchValue}
           onChange={(e) => {
             let value = e.target.value;
-            // For Rider dashboard, auto-uppercase GMR prefix
-            if (dashboardType === "RIDER" && /^g/i.test(value)) {
+            // Customer dashboard: always uppercase (GM IDs / codes).
+            if (dashboardType === "CUSTOMER") {
+              value = value.toUpperCase();
+            } else if (dashboardType === "RIDER" && /^g/i.test(value)) {
+              // Rider dashboard: auto-uppercase GMR prefix
               value = value.toUpperCase();
             }
             setLocalSearchValue(value);
@@ -282,8 +289,8 @@ function DashboardSearchInner({ compact = false }: DashboardSearchProps) {
           onKeyDown={handleKeyDown}
           placeholder={placeholder}
           className={`flex-1 border border-[#121212]/10 rounded-[10px] shadow-sm focus:outline-none focus:ring-2 focus:ring-[#121212]/15 focus:border-[#121212]/25 bg-white text-[#121212] placeholder:text-[#121212]/40 transition-colors duration-200 ${
-            compact ? "px-3 py-1.5 text-sm h-9" : "px-4 py-2"
-          }`}
+            dashboardType === "CUSTOMER" ? "uppercase" : ""
+          } ${compact ? "px-3 py-1.5 text-sm h-9" : "px-4 py-2"}`}
         />
         <button
           type="submit"

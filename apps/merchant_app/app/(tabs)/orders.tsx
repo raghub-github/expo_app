@@ -17,9 +17,16 @@ import {
   ActivityIndicator,
   LayoutChangeEvent,
   FlatList,
-  PanResponder,
   Alert,
+  useWindowDimensions,
 } from "react-native";
+import { Gesture, GestureDetector } from "react-native-gesture-handler";
+import Animated, {
+  runOnJS,
+  useAnimatedStyle,
+  useSharedValue,
+  withTiming,
+} from "react-native-reanimated";
 import { AppText as Text } from "@/components/AppText";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter, useLocalSearchParams } from "expo-router";
@@ -65,6 +72,12 @@ import {
   type OrderDateRange,
 } from "@/lib/orderDateRange";
 import { isActiveMerchantOrderStage } from "@/lib/merchantActiveOrders";
+import {
+  claimHorizontalGesture,
+  horizontalGestureClaimed,
+  releaseHorizontalGesture,
+} from "@/lib/horizontalGestureLock";
+import { openOrderDetailOnce } from "@/lib/openOrderDetailOnce";
 import { useStoreStatus } from "@/context/StoreStatusContext";
 
 export type OrdersListMode = "live" | "history";
@@ -95,7 +108,11 @@ const SWIPE_TAB_ORDER: LiveFilterKey[] = [
   SCHEDULED_TAB.key,
 ];
 
-const SWIPE_THRESHOLD = 48;
+const SWIPE_THRESHOLD = 56;
+/** Flick past this (px/s) and the stage switches even on a short drag. */
+const SWIPE_VELOCITY = 550;
+/** List body tracks the finger — chrome (search / tabs) stays fixed outside this transform. */
+const SWIPE_DRAG_DAMPING = 0.85;
 
 function tabPillActiveStyle(isActive: boolean) {
   return isActive ? styles.tabPillActive : null;
@@ -204,7 +221,14 @@ function StatusTabs({
   const scheduledActive = activeKey === SCHEDULED_TAB.key;
 
   return (
-    <View style={styles.tabsOuter}>
+    // The pill strip scrolls sideways itself, so hold the horizontal gesture
+    // while it is touched instead of letting the board switch stages.
+    <View
+      style={styles.tabsOuter}
+      onTouchStart={claimHorizontalGesture}
+      onTouchEnd={releaseHorizontalGesture}
+      onTouchCancel={releaseHorizontalGesture}
+    >
       <ScrollView
         ref={scrollRef}
         horizontal
@@ -300,7 +324,7 @@ export function OrdersListScreen({ mode }: { mode: OrdersListMode }) {
   const router = useRouter();
   const params = useLocalSearchParams<{ tab?: string }>();
   const scrollBottomPadding = isHistory ? 24 : TAB_BAR_SCROLL_CONTENT_PADDING;
-  const { selectedStore } = useSelectedStore();
+  const { selectedStore, managedStores } = useSelectedStore();
   const { isOnline } = useStoreStatus();
 
   const { orders, loading, error, refetch, transitionOrder, extendPrepDelay, acceptanceWindowMinutes } = useOrders();
@@ -353,36 +377,101 @@ export function OrdersListScreen({ mode }: { mode: OrdersListMode }) {
     setFilterKey(key);
   }, []);
 
+  /** `next` advances toward Scheduled, `previous` moves back toward Preparing. */
   const shiftTabBySwipe = useCallback(
-    (direction: "left" | "right") => {
+    (direction: "next" | "previous") => {
       if (filterKey === "all") return;
       const idx = SWIPE_TAB_ORDER.indexOf(filterKey);
       if (idx < 0) return;
-      const nextIdx = direction === "right" ? idx + 1 : idx - 1;
+      const nextIdx = direction === "next" ? idx + 1 : idx - 1;
       if (nextIdx < 0 || nextIdx >= SWIPE_TAB_ORDER.length) return;
       handleFilterChange(SWIPE_TAB_ORDER[nextIdx]!);
     },
     [filterKey, handleFilterChange]
   );
 
-  const tabSwipePanHandlers = useMemo(() => {
-    if (isHistory) return {};
-    return PanResponder.create({
-      // Never steal the initial touch — let cards/buttons receive presses.
-      onStartShouldSetPanResponder: () => false,
-      onStartShouldSetPanResponderCapture: () => false,
-      onMoveShouldSetPanResponderCapture: () => false,
-      onMoveShouldSetPanResponder: (_, g) =>
-        Math.abs(g.dx) > 24 && Math.abs(g.dx) > Math.abs(g.dy) * 1.5,
-      onPanResponderRelease: (_, g) => {
-        if (g.dx >= SWIPE_THRESHOLD) {
-          shiftTabBySwipe("right");
-        } else if (g.dx <= -SWIPE_THRESHOLD) {
-          shiftTabBySwipe("left");
-        }
-      },
-    }).panHandlers;
-  }, [isHistory, shiftTabBySwipe]);
+  const { width: windowWidth } = useWindowDimensions();
+  const dragX = useSharedValue(0);
+  const touchStartX = useSharedValue(0);
+  const touchStartY = useSharedValue(0);
+  const pageWidthSV = useSharedValue(Math.max(280, windowWidth));
+  const swipeCommitting = useSharedValue(false);
+
+  useEffect(() => {
+    pageWidthSV.value = Math.max(280, windowWidth);
+  }, [windowWidth, pageWidthSV]);
+
+  /**
+   * Sideways pan only on the order list body. Search / banners / status pills
+   * stay outside this detector so the top chrome never slides with the finger.
+   * Manual activation keeps vertical list scrolling intact.
+   */
+  const tabSwipeGesture = useMemo(
+    () =>
+      Gesture.Pan()
+        .enabled(!isHistory)
+        .manualActivation(true)
+        .onTouchesDown((e) => {
+          "worklet";
+          const touch = e.changedTouches[0];
+          if (!touch) return;
+          touchStartX.value = touch.absoluteX;
+          touchStartY.value = touch.absoluteY;
+          swipeCommitting.value = false;
+        })
+        .onTouchesMove((e, state) => {
+          "worklet";
+          const touch = e.changedTouches[0];
+          if (!touch) return;
+          if (horizontalGestureClaimed.value) {
+            state.fail();
+            return;
+          }
+          const dx = touch.absoluteX - touchStartX.value;
+          const dy = touch.absoluteY - touchStartY.value;
+          if (Math.abs(dy) > 14 && Math.abs(dy) >= Math.abs(dx)) {
+            state.fail();
+            return;
+          }
+          if (Math.abs(dx) > 18 && Math.abs(dx) > Math.abs(dy) * 1.5) {
+            state.activate();
+          }
+        })
+        .onUpdate((e) => {
+          "worklet";
+          if (horizontalGestureClaimed.value) return;
+          const maxDrag = Math.min(pageWidthSV.value * 0.42, 180);
+          const damped = e.translationX * SWIPE_DRAG_DAMPING;
+          dragX.value = Math.max(-maxDrag, Math.min(maxDrag, damped));
+        })
+        .onEnd((e) => {
+          "worklet";
+          if (horizontalGestureClaimed.value) return;
+          const commitNext =
+            e.translationX <= -SWIPE_THRESHOLD || e.velocityX <= -SWIPE_VELOCITY;
+          const commitPrev =
+            e.translationX >= SWIPE_THRESHOLD || e.velocityX >= SWIPE_VELOCITY;
+          if (commitNext || commitPrev) {
+            // Switch tab immediately — no exit/enter off-screen hop (that left a blank gap).
+            swipeCommitting.value = true;
+            runOnJS(shiftTabBySwipe)(commitNext ? "next" : "previous");
+            dragX.value = withTiming(0, { duration: 120 });
+            return;
+          }
+          dragX.value = withTiming(0, { duration: 160 });
+        })
+        .onFinalize(() => {
+          "worklet";
+          if (!swipeCommitting.value) {
+            dragX.value = withTiming(0, { duration: 160 });
+          }
+        }),
+    [dragX, isHistory, pageWidthSV, shiftTabBySwipe, swipeCommitting, touchStartX, touchStartY]
+  );
+
+  const swipeAreaStyle = useAnimatedStyle(() => ({
+    transform: [{ translateX: dragX.value }],
+  }));
 
   const liveBoardOrders = useMemo(
     () => orders.filter((o) => isVisibleOnLiveOrdersBoard(o, nowMs)),
@@ -511,20 +600,24 @@ export function OrdersListScreen({ mode }: { mode: OrdersListMode }) {
 
   const handleAdvance = useCallback(
     (order: OrderRecord) => {
-      switch (order.status) {
-        case "preparing":
-          transitionOrder(order.id, "ready");
-          break;
-        case "ready":
-          transitionOrder(order.id, "picked_up");
-          break;
-        case "picked_up":
-          if (canMerchantMarkDelivered(order)) {
-            transitionOrder(order.id, "delivered");
-          }
-          break;
-        default:
-          break;
+      const pipeline = (order.pipelineStatus ?? "").toUpperCase();
+      if (
+        order.status === "preparing" ||
+        pipeline === "ACCEPTED" ||
+        pipeline === "PREPARING"
+      ) {
+        void transitionOrder(order.id, "ready").catch(() => {});
+        return;
+      }
+      if (order.status === "ready" || pipeline === "READY_FOR_PICKUP") {
+        void transitionOrder(order.id, "picked_up").catch(() => {});
+        return;
+      }
+      if (
+        (order.status === "picked_up" || pipeline === "OUT_FOR_DELIVERY") &&
+        canMerchantMarkDelivered(order)
+      ) {
+        void transitionOrder(order.id, "delivered").catch(() => {});
       }
     },
     [transitionOrder]
@@ -540,7 +633,7 @@ export function OrdersListScreen({ mode }: { mode: OrdersListMode }) {
         );
         return;
       }
-      router.push({ pathname: "/order/[id]", params: { id } });
+      openOrderDetailOnce(router, id);
     },
     [router]
   );
@@ -566,13 +659,19 @@ export function OrdersListScreen({ mode }: { mode: OrdersListMode }) {
   );
 
   const renderOrder = ({ item }: { item: OrderRecord }) => {
+    const orderStoreName =
+      item.merchantStoreName?.trim() ||
+      (item.merchantStoreId != null
+        ? managedStores.find((s) => s.id === item.merchantStoreId)?.store_name
+        : null) ||
+      selectedStore?.store_name;
     if (isHistory || filterKey === "completed") {
       if (isOrderWithinLast24Hours(item)) {
         return (
           <RecentCompletedOrderCard
             order={item}
             rejectedReason={item.rejectedReason}
-            storeName={selectedStore?.store_name}
+            storeName={orderStoreName}
             onPress={() => handleViewDetail(item)}
           />
         );
@@ -581,7 +680,7 @@ export function OrdersListScreen({ mode }: { mode: OrdersListMode }) {
         <TerminalOrderCard
           order={item}
           rejectedReason={item.rejectedReason}
-          storeName={selectedStore?.store_name}
+          storeName={orderStoreName}
           onPress={() => handleViewDetail(item)}
         />
       );
@@ -591,7 +690,7 @@ export function OrdersListScreen({ mode }: { mode: OrdersListMode }) {
         order={item}
         nowMs={nowMs}
         acceptanceWindowMinutes={acceptanceWindowMinutes}
-        storeName={selectedStore?.store_name}
+        storeName={orderStoreName}
         onAccept={() => handleAccept(item)}
         onReject={() => handleReject(item)}
         onAdvance={() => handleAdvance(item)}
@@ -614,8 +713,10 @@ export function OrdersListScreen({ mode }: { mode: OrdersListMode }) {
       />
       <OrderDateRangeBar range={dateRange} onPress={() => setDateSheetOpen(true)} />
     </>
-  ) : (
-    <>
+  ) : null;
+
+  const liveFixedChrome = !isHistory ? (
+    <View style={styles.fixedChrome}>
       <SearchBar
         value={search}
         onChangeText={setSearch}
@@ -630,8 +731,8 @@ export function OrdersListScreen({ mode }: { mode: OrdersListMode }) {
         counts={liveCounts}
         onChange={handleFilterChange}
       />
-    </>
-  );
+    </View>
+  ) : null;
 
   if (error && !loading && orders.length === 0) {
     return (
@@ -695,7 +796,14 @@ export function OrdersListScreen({ mode }: { mode: OrdersListMode }) {
         onClose={() => !prepDelayLoading && setPrepDelayOrder(null)}
         onSelectMinutes={(mins) => void confirmPrepDelay(mins)}
       />
-      <View style={styles.listSwipeArea} {...tabSwipePanHandlers}>
+      {liveFixedChrome}
+      <GestureDetector gesture={tabSwipeGesture}>
+        <Animated.View
+          style={[
+            styles.listSwipeArea,
+            !isHistory ? swipeAreaStyle : null,
+          ]}
+        >
           <FlatList
             data={filteredOrders}
             keyExtractor={(item) => item.id}
@@ -703,6 +811,7 @@ export function OrdersListScreen({ mode }: { mode: OrdersListMode }) {
             ListHeaderComponent={listHeader}
             contentContainerStyle={[
               styles.listContent,
+              !isHistory ? styles.listContentUnderChrome : null,
               { paddingBottom: scrollBottomPadding },
             ]}
             ItemSeparatorComponent={() => <View style={styles.separator} />}
@@ -715,7 +824,7 @@ export function OrdersListScreen({ mode }: { mode: OrdersListMode }) {
               />
             }
             ListEmptyComponent={
-              loading ? (
+              loading && orders.length === 0 ? (
                 <View style={styles.loadingWrap}>
                   <ActivityIndicator
                     size="large"
@@ -749,11 +858,15 @@ export function OrdersListScreen({ mode }: { mode: OrdersListMode }) {
               )
             }
             showsVerticalScrollIndicator={false}
-            initialNumToRender={8}
-            windowSize={5}
-            removeClippedSubviews
+            initialNumToRender={12}
+            windowSize={7}
+            maxToRenderPerBatch={12}
+            updateCellsBatchingPeriod={16}
+            removeClippedSubviews={false}
+            extraData={filterKey}
           />
-      </View>
+        </Animated.View>
+      </GestureDetector>
     </View>
   );
 }
@@ -767,12 +880,22 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: GatiMitraMerchant.surfaceWarm,
   },
+  fixedChrome: {
+    paddingHorizontal: H_PADDING,
+    paddingTop: 12,
+    backgroundColor: GatiMitraMerchant.surfaceWarm,
+    zIndex: 2,
+  },
   listSwipeArea: {
     flex: 1,
+    overflow: "hidden",
   },
   listContent: {
     paddingHorizontal: H_PADDING,
     paddingTop: 12,
+  },
+  listContentUnderChrome: {
+    paddingTop: 8,
   },
   separator: {
     height: 14,
@@ -842,6 +965,8 @@ const styles = StyleSheet.create({
     alignItems: "center",
     backgroundColor: SEARCH_BG,
     borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#BFDBFE",
     paddingHorizontal: 14,
     paddingVertical: Platform.OS === "ios" ? 12 : 10,
     gap: 10,
@@ -896,12 +1021,17 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   tabPill: {
+    minHeight: 32,
     paddingHorizontal: 12,
-    paddingVertical: 7,
-    borderRadius: 999,
-    borderWidth: 0,
+    paddingVertical: 6,
+    borderRadius: 10,
+    // Kept on every pill (transparent when idle) so selecting one does not
+    // resize it and push the label off-centre.
+    borderWidth: 1,
     borderColor: "transparent",
     backgroundColor: "transparent",
+    alignItems: "center",
+    justifyContent: "center",
   },
   tabPillActive: {
     borderWidth: 1,
@@ -912,7 +1042,6 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: 5,
-    marginLeft: 2,
   },
   tabItemPressed: {
     opacity: 0.7,
@@ -921,12 +1050,18 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: "600",
     color: TAB_TEXT_COLOR,
+    lineHeight: 18,
+    textAlign: "center",
+    // Android's default font padding is uneven and lifts the label inside the pill.
+    includeFontPadding: false,
+    textAlignVertical: "center",
   },
   tabLabelActivePill: {
     color: "#FFFFFF",
   },
   emptyWrap: {
-    paddingVertical: 40,
+    paddingTop: 120,
+    paddingBottom: 48,
     alignItems: "center",
     gap: 12,
   },

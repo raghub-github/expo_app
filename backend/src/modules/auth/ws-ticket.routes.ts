@@ -92,6 +92,8 @@ export async function wsTicketRoutes(app: FastifyInstance) {
               }
             }
           }
+          // Live referral/rewards config broadcasts (Super Admin CRUD → apps).
+          channels.push("config:referral");
           // We could later: query orders_core to verify the caller actually
           // owns those order ids. Skipping for now because order ids are
           // already opaque ULIDs — a non-owner can't guess them.

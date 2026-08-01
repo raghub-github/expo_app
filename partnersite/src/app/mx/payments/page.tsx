@@ -1,6 +1,7 @@
 'use client'
 
 import React, { useState, useEffect, useCallback, useMemo } from 'react'
+import { createPortal } from 'react-dom'
 import Link from 'next/link'
 import { useSearchParams, usePathname } from 'next/navigation'
 import { MXLayoutWhite } from '@/components/MXLayoutWhite'
@@ -291,20 +292,28 @@ function PaymentsContent() {
   const [selectedBankAccount, setSelectedBankAccount] = useState<BankAccount | null>(null)
   const [withdrawBankId, setWithdrawBankId] = useState<number | ''>('')
   const [addBankForm, setAddBankForm] = useState({
-    payout_method: 'bank' as 'bank' | 'upi',
+    payout_method: 'bank' as 'bank',
     account_holder_name: '',
     account_number: '',
     ifsc_code: '',
     bank_name: '',
     branch_name: '',
     account_type: '' as '' | 'savings' | 'current',
-    upi_id: '',
     bank_proof_type: '' as '' | 'passbook' | 'cancelled_cheque' | 'bank_statement',
     bank_proof_file_url: '',
   })
   const [bankProofFile, setBankProofFile] = useState<File | null>(null)
   const [bankProofUploading, setBankProofUploading] = useState(false)
   const [addBankSubmitting, setAddBankSubmitting] = useState(false)
+  const [bankVerifyLoading, setBankVerifyLoading] = useState<number | null>(null)
+  /** Superadmin policy for bank_account: manual | auto | hybrid | disabled */
+  const [bankPolicyMode, setBankPolicyMode] = useState<'manual' | 'auto' | 'hybrid' | 'disabled'>('manual')
+  /** When hybrid verify fails, force the manual proof upload form */
+  const [addBankForceManual, setAddBankForceManual] = useState(false)
+  const [addBankElectronicVerified, setAddBankElectronicVerified] = useState(false)
+  const [addBankVerifyError, setAddBankVerifyError] = useState<string | null>(null)
+  const [addBankVerifying, setAddBankVerifying] = useState(false)
+  const [bankPolicyLoading, setBankPolicyLoading] = useState(false)
 
   const [expandedLedgerId, setExpandedLedgerId] = useState<number | null>(null)
   const [expandedRidersLedgerId, setExpandedRidersLedgerId] = useState<number | null>(null)
@@ -459,89 +468,291 @@ function PaymentsContent() {
     setExpandedRidersLedgerId((prev) => (prev === ledgerId ? null : ledgerId))
   }
 
-  const handleAddBank = async () => {
-    const { payout_method, account_holder_name, account_number, ifsc_code, bank_name, branch_name, account_type, upi_id, bank_proof_type } = addBankForm
+  const isElectronicBankMode = bankPolicyMode === 'auto' || bankPolicyMode === 'hybrid'
+
+  const resetAddBankSheet = useCallback(() => {
+    setAddBankForm({
+      payout_method: 'bank',
+      account_holder_name: '',
+      account_number: '',
+      ifsc_code: '',
+      bank_name: '',
+      branch_name: '',
+      account_type: '',
+      bank_proof_type: '',
+      bank_proof_file_url: '',
+    })
+    setBankProofFile(null)
+    setAddBankForceManual(false)
+    setAddBankElectronicVerified(false)
+    setAddBankVerifyError(null)
+    setAddBankVerifying(false)
+  }, [])
+
+  const openAddBankSheet = useCallback(async () => {
+    resetAddBankSheet()
+    setShowAddBank(true)
+    setBankPolicyLoading(true)
+    try {
+      const res = await fetch('/api/onboarding/verification-modes', { credentials: 'include' })
+      const data = await res.json().catch(() => ({}))
+      const raw = String(data?.modes?.bank_account ?? data?.modes?.bank ?? 'manual').toLowerCase()
+      const mode =
+        raw === 'auto' || raw === 'hybrid' || raw === 'disabled' || raw === 'manual' ? raw : 'manual'
+      setBankPolicyMode(mode)
+      if (mode === 'manual' || mode === 'disabled') setAddBankForceManual(true)
+    } catch {
+      setBankPolicyMode('manual')
+      setAddBankForceManual(true)
+    } finally {
+      setBankPolicyLoading(false)
+    }
+  }, [resetAddBankSheet])
+
+  const handleAddBank = async (opts?: { skipProof?: boolean; alreadyVerified?: boolean }) => {
+    const { account_holder_name, account_number, ifsc_code, bank_name, branch_name, account_type, bank_proof_type } = addBankForm
+    const skipProof = !!opts?.skipProof
     if (!account_holder_name.trim() || !account_number.trim()) {
       toast.error('Account holder name and account number are required')
       return
     }
-    if (payout_method === 'bank') {
-      if (!ifsc_code.trim() || !bank_name.trim()) {
-        toast.error('IFSC and bank name are required for bank account')
+    if (!ifsc_code.trim() || !bank_name.trim()) {
+      toast.error('IFSC and bank name are required for bank account')
+      return
+    }
+    if (!account_type || (account_type !== 'savings' && account_type !== 'current')) {
+      toast.error('Please select account type (Savings or Current)')
+      return
+    }
+    let bankProofUrl: string | undefined
+    let proofType: 'passbook' | 'cancelled_cheque' | 'bank_statement' | null = null
+    if (!skipProof) {
+      proofType = bank_proof_type === 'passbook' || bank_proof_type === 'cancelled_cheque' || bank_proof_type === 'bank_statement' ? bank_proof_type : null
+      if (!proofType) {
+        toast.error('Please select proof type (passbook, cancelled cheque, or bank statement)')
         return
       }
-      if (!account_type || (account_type !== 'savings' && account_type !== 'current')) {
-        toast.error('Please select account type (Savings or Current)')
+      if (!bankProofFile) {
+        toast.error('Please upload cancelled cheque, bank statement, or passbook')
         return
       }
-    }
-    if (payout_method === 'upi' && !upi_id.trim()) {
-      toast.error('UPI ID is required for UPI')
-      return
-    }
-    const proofType = bank_proof_type === 'passbook' || bank_proof_type === 'cancelled_cheque' || bank_proof_type === 'bank_statement' ? bank_proof_type : null
-    if (!proofType) {
-      toast.error('Please select proof type (passbook, cancelled cheque, or bank statement)')
-      return
-    }
-    if (!bankProofFile) {
-      toast.error('Please upload cancelled cheque, bank statement, or passbook')
-      return
     }
     if (!storeId) return
     setAddBankSubmitting(true)
-    setBankProofUploading(true)
-    let bankProofUrl = addBankForm.bank_proof_file_url
     try {
-      const ext = bankProofFile.name.split('.').pop()?.toLowerCase() || 'pdf'
-      const parent = `merchants/${storeId}/bank`
-      const filename = `proof_${Date.now()}.${ext}`
-      const formData = new FormData()
-      formData.append('file', bankProofFile)
-      formData.append('parent', parent)
-      formData.append('filename', filename)
-      const uploadRes = await fetch('/api/upload/r2', { method: 'POST', body: formData })
-      const uploadData = await uploadRes.json()
-      if (!uploadRes.ok || (!uploadData.url && !uploadData.key && !uploadData.path)) {
-        toast.error(uploadData.error || 'Upload failed')
+      if (!skipProof && bankProofFile) {
+        setBankProofUploading(true)
+        const ext = bankProofFile.name.split('.').pop()?.toLowerCase() || 'pdf'
+        const parent = `merchants/${storeId}/bank`
+        const filename = `proof_${Date.now()}.${ext}`
+        const formData = new FormData()
+        formData.append('file', bankProofFile)
+        formData.append('parent', parent)
+        formData.append('filename', filename)
+        const uploadRes = await fetch('/api/upload/r2', { method: 'POST', body: formData })
+        const uploadData = await uploadRes.json()
+        if (!uploadRes.ok || (!uploadData.url && !uploadData.key && !uploadData.path)) {
+          toast.error(uploadData.error || 'Upload failed')
+          setBankProofUploading(false)
+          setAddBankSubmitting(false)
+          return
+        }
+        bankProofUrl = uploadData.key ?? uploadData.path ?? uploadData.url
         setBankProofUploading(false)
-        setAddBankSubmitting(false)
-        return
       }
-      bankProofUrl = uploadData.key ?? uploadData.path ?? uploadData.url
-      setBankProofUploading(false)
       const res = await fetch('/api/merchant/bank-accounts', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           storeId,
-          payout_method,
+          payout_method: 'bank',
           account_holder_name: account_holder_name.trim(),
-          account_number: (payout_method === 'upi' && !account_number.trim() ? upi_id.trim() : account_number.trim()) || upi_id.trim(),
-          ifsc_code: ifsc_code.trim() || undefined,
-          bank_name: bank_name.trim() || undefined,
+          account_number: account_number.trim(),
+          ifsc_code: ifsc_code.trim(),
+          bank_name: bank_name.trim(),
           branch_name: branch_name.trim() || undefined,
-          account_type: payout_method === 'bank' && account_type ? account_type.trim() : undefined,
-          upi_id: payout_method === 'upi' ? upi_id.trim() : undefined,
-          bank_proof_type: proofType,
+          account_type: account_type.trim(),
+          bank_proof_type: proofType || undefined,
           bank_proof_file_url: bankProofUrl,
         }),
       })
       const data = await res.json()
-      if (data.success) {
-        toast.success('Bank/UPI account added')
-        setShowAddBank(false)
-        setAddBankForm({ payout_method: 'bank', account_holder_name: '', account_number: '', ifsc_code: '', bank_name: '', branch_name: '', account_type: '', upi_id: '', bank_proof_type: '', bank_proof_file_url: '' })
-        setBankProofFile(null)
-        if (storeId) invalidateBankAccounts(storeId)
-      } else {
+      if (!data.success) {
         toast.error(data.error || 'Failed to add')
+        return
       }
+
+      const newId = Number(data?.account?.id ?? data?.id)
+      if (opts?.alreadyVerified && Number.isFinite(newId) && newId > 0) {
+        // Row was just created; Cashfree already confirmed — mark verified via verify API.
+        try {
+          await fetch('/api/merchant/bank-account/verify', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify({
+              storeId,
+              bankAccountId: newId,
+              bank: {
+                account_holder_name: account_holder_name.trim(),
+                account_number: account_number.trim().replace(/\D/g, ''),
+                ifsc_code: ifsc_code.trim().toUpperCase(),
+                bank_name: bank_name.trim(),
+                branch_name: branch_name.trim() || undefined,
+              },
+            }),
+          })
+        } catch {
+          /* account saved; verify badge can be retried from list */
+        }
+      }
+
+      toast.success(
+        opts?.alreadyVerified
+          ? 'Bank account added and verified'
+          : 'Bank account added. You can verify it from the list.'
+      )
+      setShowAddBank(false)
+      resetAddBankSheet()
+      if (storeId) invalidateBankAccounts(storeId)
     } catch {
       toast.error('Failed to add account')
       setBankProofUploading(false)
     } finally {
       setAddBankSubmitting(false)
+    }
+  }
+
+  const handleElectronicVerify = async () => {
+    const account_number = addBankForm.account_number.trim().replace(/\D/g, '')
+    const ifsc_code = addBankForm.ifsc_code.trim().toUpperCase()
+    if (!account_number || account_number.length < 6) {
+      toast.error('Enter a valid account number')
+      return
+    }
+    if (!/^[A-Z]{4}0[A-Z0-9]{6}$/.test(ifsc_code)) {
+      toast.error('Enter a valid IFSC code')
+      return
+    }
+    if (!storeId) return
+    const holderFallback =
+      String(
+        (restaurant as { store_display_name?: string; store_name?: string; owner_full_name?: string } | null)
+          ?.store_display_name ||
+          (restaurant as { store_name?: string } | null)?.store_name ||
+          displayName ||
+          'Account Holder'
+      ).trim() || 'Account Holder'
+    const bankFallback = ifsc_code.slice(0, 4)
+    setAddBankVerifying(true)
+    setAddBankVerifyError(null)
+    try {
+      const res = await fetch('/api/merchant/bank-account/verify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({
+          storeId,
+          bank: {
+            account_holder_name: holderFallback,
+            account_number,
+            ifsc_code,
+            bank_name: bankFallback,
+          },
+        }),
+      })
+      const data = await res.json()
+      if (data.success && data.verified) {
+        setAddBankForm((f) => ({
+          ...f,
+          account_holder_name: String(data.name_at_bank || f.account_holder_name || holderFallback).trim(),
+          bank_name: String(data.bank_name || f.bank_name || bankFallback).trim(),
+          account_number,
+          ifsc_code,
+        }))
+        setAddBankElectronicVerified(true)
+        setAddBankForceManual(false)
+        toast.success(data.message || 'Account verified — confirm account type and save')
+        if (storeId) invalidateBankAccounts(storeId)
+        return
+      }
+      if (data.success && !data.verified) {
+        if (bankPolicyMode === 'hybrid') {
+          setAddBankForceManual(true)
+          setAddBankVerifyError(data.message || 'Instant verification pending. Enter details and upload bank proof.')
+        } else {
+          setAddBankVerifyError(data.message || 'Could not verify instantly. Automatic verification is required.')
+        }
+        return
+      }
+      const err = data.error || 'Verification failed'
+      setAddBankVerifyError(err)
+      if (bankPolicyMode === 'hybrid') {
+        setAddBankForceManual(true)
+        toast.error(err)
+      } else {
+        toast.error(err)
+      }
+    } catch {
+      const err = 'Verification request failed'
+      setAddBankVerifyError(err)
+      if (bankPolicyMode === 'hybrid') setAddBankForceManual(true)
+      toast.error(err)
+    } finally {
+      setAddBankVerifying(false)
+    }
+  }
+
+  const handleVerifyCashfree = async (acc: BankAccount) => {
+    if (!storeId) return
+    if (acc.is_verified) {
+      toast.success('Account already verified')
+      return
+    }
+    if (String(acc.payout_method || 'bank').toLowerCase() === 'upi') {
+      toast.error('UPI add/verify is temporarily disabled. Please use a bank account.')
+      return
+    }
+    const accountNumber = String(acc.account_number || '').replace(/\D/g, '')
+    if (!accountNumber || !acc.ifsc_code || !acc.bank_name || !acc.account_holder_name) {
+      toast.error('Bank details incomplete. Update the account and try again.')
+      return
+    }
+    setBankVerifyLoading(acc.id)
+    try {
+      const res = await fetch('/api/merchant/bank-account/verify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({
+          storeId,
+          bankAccountId: acc.id,
+          bank: {
+            account_holder_name: acc.account_holder_name,
+            account_number: accountNumber,
+            ifsc_code: acc.ifsc_code,
+            bank_name: acc.bank_name,
+            branch_name: acc.branch_name || undefined,
+          },
+        }),
+      })
+      const data = await res.json()
+      if (data.success && data.verified) {
+        toast.success(data.message || 'Bank account verified')
+        invalidateBankAccounts(storeId)
+        if (selectedBankAccount?.id === acc.id) {
+          setSelectedBankAccount({ ...acc, is_verified: true, verification_status: 'verified' })
+        }
+      } else if (data.success) {
+        toast.success(data.message || 'Saved for manual verification')
+        invalidateBankAccounts(storeId)
+      } else {
+        toast.error(data.error || 'Verification failed')
+      }
+    } catch {
+      toast.error('Verification request failed')
+    } finally {
+      setBankVerifyLoading(null)
     }
   }
 
@@ -805,16 +1016,16 @@ function PaymentsContent() {
                   <div>
                     <h3 className="text-sm font-semibold text-gray-900 flex items-center gap-2">
                       <Building2 size={16} className="text-gray-700" />
-                      Bank & UPI Accounts
+                      Bank Accounts
                     </h3>
-                    <p className="text-xs text-gray-600 mt-1">Manage bank and UPI accounts for receiving payouts</p>
+                    <p className="text-xs text-gray-600 mt-1">Add and verify bank accounts for payouts</p>
                   </div>
                   <button
-                    onClick={() => { setBankProofFile(null); setAddBankForm((f) => ({ ...f, bank_proof_type: '', bank_proof_file_url: '' })); setShowAddBank(true); }}
+                    onClick={() => { void openAddBankSheet() }}
                     className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-600 text-white text-xs font-medium hover:bg-emerald-700 transition-colors flex-shrink-0"
                   >
                     <Plus size={14} />
-                    Add Bank / UPI
+                    Add Bank Account
                   </button>
                 </div>
 
@@ -828,8 +1039,8 @@ function PaymentsContent() {
                   ) : bankAccounts.length === 0 ? (
                     <div className="flex flex-col items-center justify-center py-8 text-center bg-gray-50 rounded-lg">
                       <Building2 size={32} className="text-gray-300 mb-2" />
-                      <p className="text-sm text-gray-600 font-medium">No bank or UPI account added</p>
-                      <p className="text-xs text-gray-500 mt-0.5">Add an account to start receiving payouts</p>
+                      <p className="text-sm text-gray-600 font-medium">No bank account added</p>
+                      <p className="text-xs text-gray-500 mt-0.5">Add a bank account to start receiving payouts</p>
                     </div>
                   ) : (
                     bankAccounts.map((acc) => (
@@ -851,10 +1062,28 @@ function PaymentsContent() {
                               {acc.is_primary && (
                                 <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700 whitespace-nowrap">Default</span>
                               )}
+                              {acc.is_verified ? (
+                                <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-green-100 text-green-700 whitespace-nowrap">Verified</span>
+                              ) : (
+                                <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-amber-100 text-amber-700 whitespace-nowrap">Pending</span>
+                              )}
                             </div>
                           </div>
                         </div>
                         <div className="flex items-center gap-2 flex-shrink-0">
+                          {!acc.is_verified && String(acc.payout_method || 'bank').toLowerCase() !== 'upi' && (
+                            <button
+                              onClick={() => handleVerifyCashfree(acc)}
+                              disabled={bankVerifyLoading === acc.id}
+                              className="px-3 py-1.5 rounded-lg border border-indigo-200 text-indigo-700 text-xs font-medium hover:bg-indigo-50 transition-colors disabled:opacity-50"
+                            >
+                              {bankVerifyLoading === acc.id ? (
+                                <span className="inline-flex items-center gap-1"><Loader2 size={12} className="animate-spin" /> Verifying…</span>
+                              ) : (
+                                'Verify Account'
+                              )}
+                            </button>
+                          )}
                           <button
                             onClick={() => handleOpenManageBank(acc)}
                             className="px-3 py-1.5 rounded-lg border border-gray-300 text-gray-700 text-xs font-medium hover:bg-gray-50 transition-colors"
@@ -1349,21 +1578,30 @@ function PaymentsContent() {
         </div>
       </MXLayoutWhite>
 
-      {/* Modals - Rendered after MXLayoutWhite but inside the Fragment */}
-      {showWithdrawal && (
-        <div className="fixed inset-0 z-[99999] flex">
+      {/* Withdraw sidesheet — portal to body (same as Store status: covers header + blurs rest) */}
+      {showWithdrawal &&
+        typeof document !== 'undefined' &&
+        createPortal(
+        <div className="fixed inset-0 z-[1100] flex justify-end" role="presentation">
           <div
-            className="absolute inset-0 bg-black/50 backdrop-blur-sm"
+            className="absolute inset-0 bg-black/40 backdrop-blur-[1px]"
+            aria-hidden
             onClick={() => setShowWithdrawal(false)}
           />
-          <aside className="relative ml-auto w-full max-w-md h-full bg-white shadow-2xl flex flex-col overflow-hidden border-l border-gray-200">
+          <aside
+            className="relative flex h-dvh min-h-0 w-full max-w-md flex-col overflow-hidden border-l border-gray-200 bg-white shadow-2xl"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="withdraw-sheet-title"
+            onClick={(e) => e.stopPropagation()}
+          >
             <div className="flex-shrink-0 px-5 py-4 border-b border-gray-200 flex items-center justify-between bg-white">
               <div className="flex items-center gap-3 min-w-0">
                 <div className="p-2 rounded-lg bg-emerald-50">
                   <Wallet className="text-emerald-600 shrink-0" size={20} />
                 </div>
                 <div className="min-w-0">
-                  <h2 className="text-lg font-bold text-gray-900">Withdraw</h2>
+                  <h2 id="withdraw-sheet-title" className="text-lg font-bold text-gray-900">Withdraw</h2>
                   <p className="text-xs text-gray-500 truncate">
                     Available {formatInr(wallet?.withdrawable_balance ?? wallet?.available_balance ?? 0)}
                   </p>
@@ -1447,7 +1685,7 @@ function PaymentsContent() {
                     <p className="text-sm text-gray-600 mb-3">No active bank account</p>
                     <button
                       type="button"
-                      onClick={() => { setShowWithdrawal(false); setShowAddBank(true) }}
+                      onClick={() => { setShowWithdrawal(false); void openAddBankSheet() }}
                       className="text-sm px-4 py-2 rounded-lg bg-emerald-600 text-white font-semibold hover:bg-emerald-700"
                     >
                       Add account
@@ -1543,7 +1781,8 @@ function PaymentsContent() {
               </button>
             </div>
           </aside>
-        </div>
+        </div>,
+        document.body
       )}
 
       {/* Refund Policy right-sheet */}
@@ -1617,13 +1856,30 @@ function PaymentsContent() {
                     {selectedBankAccount.is_disabled ? 'Disabled' : 'Active'}
                   </p>
                 </div>
+                <div className="rounded-lg border border-gray-200 p-3">
+                  <p className="text-xs text-gray-500">Verification</p>
+                  <p className={`font-semibold ${selectedBankAccount.is_verified ? 'text-green-600' : 'text-amber-600'}`}>
+                    {selectedBankAccount.is_verified ? 'Verified' : 'Pending'}
+                  </p>
+                </div>
               </div>
             </div>
-            <div className="p-5 border-t border-gray-200 flex gap-3 bg-gray-50">
+            <div className="p-5 border-t border-gray-200 flex flex-wrap gap-2 bg-gray-50">
+              {!selectedBankAccount.is_verified && String(selectedBankAccount.payout_method || 'bank').toLowerCase() !== 'upi' && (
+                <button
+                  type="button"
+                  onClick={() => handleVerifyCashfree(selectedBankAccount)}
+                  disabled={bankVerifyLoading === selectedBankAccount.id}
+                  className="flex-1 min-w-[140px] py-2.5 bg-indigo-600 text-white rounded-xl font-medium hover:bg-indigo-700 disabled:opacity-50 flex items-center justify-center gap-2"
+                >
+                  {bankVerifyLoading === selectedBankAccount.id ? <Loader2 size={16} className="animate-spin" /> : null}
+                  Verify Account
+                </button>
+              )}
               <button
                 type="button"
                 onClick={() => setShowManageBank(false)}
-                className="flex-1 py-2.5 border border-gray-300 rounded-xl text-gray-700 font-medium hover:bg-white"
+                className="flex-1 min-w-[100px] py-2.5 border border-gray-300 rounded-xl text-gray-700 font-medium hover:bg-white"
               >
                 Close
               </button>
@@ -1631,7 +1887,7 @@ function PaymentsContent() {
                 type="button"
                 onClick={handleDisableBank}
                 disabled={selectedBankAccount.is_disabled || bankActionLoading === selectedBankAccount.id}
-                className="flex-1 py-2.5 bg-red-600 text-white rounded-xl font-medium hover:bg-red-700 disabled:opacity-50 flex items-center justify-center gap-2"
+                className="flex-1 min-w-[120px] py-2.5 bg-red-600 text-white rounded-xl font-medium hover:bg-red-700 disabled:opacity-50 flex items-center justify-center gap-2"
               >
                 {bankActionLoading === selectedBankAccount.id ? <Loader2 size={16} className="animate-spin" /> : <Ban size={16} />}
                 {selectedBankAccount.is_disabled ? 'Disabled' : 'Disable account'}
@@ -1641,177 +1897,291 @@ function PaymentsContent() {
         </div>
       )}
 
-      {/* Add Bank / UPI modal */}
-      {showAddBank && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[99999] p-4">
-          <div className="bg-white rounded-2xl shadow-xl max-w-md w-full overflow-hidden max-h-[90vh] overflow-y-auto">
-            <div className="p-5 border-b border-gray-200 flex items-center justify-between">
-              <h2 className="text-lg font-bold text-gray-900">Add bank or UPI</h2>
-              <button onClick={() => setShowAddBank(false)} className="p-2 rounded-lg hover:bg-gray-100 text-gray-600">
+      {/* Add Bank sidesheet — portal to body (same as Store status) */}
+      {showAddBank &&
+        typeof document !== 'undefined' &&
+        createPortal(
+        <div className="fixed inset-0 z-[1100] flex justify-end" role="presentation">
+          <div
+            className="absolute inset-0 bg-black/40 backdrop-blur-[1px]"
+            aria-hidden
+            onClick={() => { setShowAddBank(false); resetAddBankSheet() }}
+          />
+          <aside
+            className="relative flex h-dvh min-h-0 w-full max-w-md flex-col overflow-hidden border-l border-gray-200 bg-white shadow-2xl"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="add-bank-sheet-title"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex-shrink-0 px-5 py-4 border-b border-gray-200 flex items-center justify-between bg-white">
+              <div className="flex items-center gap-3 min-w-0">
+                <div className="p-2 rounded-lg bg-emerald-50">
+                  <Building2 className="text-emerald-600 shrink-0" size={20} />
+                </div>
+                <div className="min-w-0">
+                  <h2 id="add-bank-sheet-title" className="text-lg font-bold text-gray-900">Add bank account</h2>
+                  <p className="text-xs text-gray-500 truncate">
+                    {bankPolicyLoading
+                      ? 'Loading…'
+                      : bankPolicyMode === 'auto'
+                        ? 'Auto verify'
+                        : bankPolicyMode === 'hybrid'
+                          ? 'Auto verify · manual fallback'
+                          : 'Manual add with bank proof'}
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => { setShowAddBank(false); resetAddBankSheet() }}
+                className="p-2 rounded-lg hover:bg-gray-100 text-gray-500"
+              >
                 <X size={20} />
               </button>
             </div>
-            <div className="p-5 space-y-4">
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Type</label>
-                <select
-                  value={addBankForm.payout_method}
-                  onChange={(e) => setAddBankForm((f) => ({ ...f, payout_method: e.target.value as 'bank' | 'upi' }))}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-xl bg-white"
-                >
-                  <option value="bank">Bank account</option>
-                  <option value="upi">UPI</option>
-                </select>
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Account holder name *</label>
-                <input
-                  type="text"
-                  value={addBankForm.account_holder_name}
-                  onChange={(e) => setAddBankForm((f) => ({ ...f, account_holder_name: e.target.value }))}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-xl"
-                  placeholder="Name as per bank"
-                />
-              </div>
-              {addBankForm.payout_method === 'bank' ? (
-                <>
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">Account number *</label>
-                    <input
-                      type="text"
-                      value={addBankForm.account_number}
-                      onChange={(e) => setAddBankForm((f) => ({ ...f, account_number: e.target.value }))}
-                      className="w-full px-3 py-2 border border-gray-300 rounded-xl"
-                      placeholder="Account number"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">IFSC *</label>
-                    <input
-                      type="text"
-                      value={addBankForm.ifsc_code}
-                      onChange={(e) => setAddBankForm((f) => ({ ...f, ifsc_code: e.target.value }))}
-                      className="w-full px-3 py-2 border border-gray-300 rounded-xl"
-                      placeholder="e.g. SBIN0001234"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">Bank name *</label>
-                    <input
-                      type="text"
-                      value={addBankForm.bank_name}
-                      onChange={(e) => setAddBankForm((f) => ({ ...f, bank_name: e.target.value }))}
-                      className="w-full px-3 py-2 border border-gray-300 rounded-xl"
-                      placeholder="Bank name"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">Branch (optional)</label>
-                    <input
-                      type="text"
-                      value={addBankForm.branch_name}
-                      onChange={(e) => setAddBankForm((f) => ({ ...f, branch_name: e.target.value }))}
-                      className="w-full px-3 py-2 border border-gray-300 rounded-xl"
-                      placeholder="Branch name"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">Account type *</label>
-                    <select
-                      value={addBankForm.account_type}
-                      onChange={(e) => setAddBankForm((f) => ({ ...f, account_type: e.target.value as '' | 'savings' | 'current' }))}
-                      className="w-full px-3 py-2 border border-gray-300 rounded-xl bg-white"
-                    >
-                      <option value="">Select account type</option>
-                      <option value="savings">Savings</option>
-                      <option value="current">Current</option>
-                    </select>
-                  </div>
-                </>
+
+            <div className="flex-1 min-h-0 overflow-y-auto hide-scrollbar px-5 py-5 space-y-4">
+              {bankPolicyLoading ? (
+                <div className="flex items-center justify-center py-16 text-gray-500 gap-2 text-sm">
+                  <Loader2 size={18} className="animate-spin" />
+                  Loading…
+                </div>
               ) : (
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">UPI ID *</label>
-                  <input
-                    type="text"
-                    value={addBankForm.upi_id}
-                    onChange={(e) => setAddBankForm((f) => ({ ...f, upi_id: e.target.value }))}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-xl"
-                    placeholder="e.g. name@upi"
-                  />
-                  <p className="text-xs text-gray-500 mt-1">Account number can be same as UPI ID or any reference.</p>
-                  <input
-                    type="text"
-                    value={addBankForm.account_number}
-                    onChange={(e) => setAddBankForm((f) => ({ ...f, account_number: e.target.value }))}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-xl mt-2"
-                    placeholder="Account number (optional for UPI)"
-                  />
-                </div>
-              )}
-              <div className="border-t border-gray-200 pt-4 mt-4">
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Bank proof (cancelled cheque / statement / passbook) *
-                </label>
-                <p className="text-xs text-gray-500 mb-2">Upload a clear image or PDF of cancelled cheque, bank statement, or passbook showing account details.</p>
-                <select
-                  value={addBankForm.bank_proof_type}
-                  onChange={(e) => setAddBankForm((f) => ({ ...f, bank_proof_type: e.target.value as '' | 'passbook' | 'cancelled_cheque' | 'bank_statement' }))}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-xl bg-white mb-2"
-                >
-                  <option value="">Select proof type</option>
-                  <option value="cancelled_cheque">Cancelled cheque</option>
-                  <option value="bank_statement">Bank statement</option>
-                  <option value="passbook">Passbook</option>
-                </select>
-                <div className="flex items-center gap-2">
-                  <label className="inline-flex items-center gap-2 px-3 py-2 rounded-xl border border-gray-300 bg-gray-50 hover:bg-gray-100 cursor-pointer text-sm font-medium text-gray-700">
-                    <FileImage size={18} />
-                    {bankProofFile ? bankProofFile.name : 'Choose file'}
-                    <input
-                      type="file"
-                      accept="image/*,.pdf"
-                      className="hidden"
-                      onChange={(e) => setBankProofFile(e.target.files?.[0] ?? null)}
-                    />
-                  </label>
-                  {bankProofFile && (
-                    <button
-                      type="button"
-                      onClick={() => setBankProofFile(null)}
-                      className="text-xs text-red-600 hover:underline"
-                    >
-                      Remove
-                    </button>
+                <>
+                  {bankPolicyMode === 'auto' && addBankVerifyError && !addBankForceManual && (
+                    <div className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2.5 text-xs text-rose-800">
+                      <span className="font-semibold">Verification failed. </span>
+                      {addBankVerifyError} Fix the details and retry.
+                    </div>
                   )}
-                </div>
-                {bankProofUploading && (
-                  <p className="text-xs text-amber-600 mt-1 flex items-center gap-1">
-                    <Loader2 size={14} className="animate-spin" />
-                    Uploading to secure storage...
-                  </p>
-                )}
-              </div>
+
+                  {/* Auto / hybrid electronic step: account number + IFSC only */}
+                  {isElectronicBankMode && !addBankForceManual && !addBankElectronicVerified && (
+                    <>
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">Account number *</label>
+                        <input
+                          type="text"
+                          value={addBankForm.account_number}
+                          onChange={(e) => setAddBankForm((f) => ({ ...f, account_number: e.target.value.replace(/\D/g, '').slice(0, 18) }))}
+                          className="w-full px-3 py-2 border border-gray-300 rounded-xl font-mono"
+                          placeholder="Account number"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">IFSC *</label>
+                        <input
+                          type="text"
+                          value={addBankForm.ifsc_code}
+                          onChange={(e) => setAddBankForm((f) => ({ ...f, ifsc_code: e.target.value.toUpperCase().slice(0, 11) }))}
+                          className="w-full px-3 py-2 border border-gray-300 rounded-xl font-mono uppercase"
+                          placeholder="e.g. SBIN0001234"
+                        />
+                      </div>
+                    </>
+                  )}
+
+                  {addBankElectronicVerified && (
+                    <div className="space-y-3">
+                      <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-3 text-sm text-emerald-900">
+                        <p className="font-semibold flex items-center gap-1.5">
+                          <Check size={16} className="text-emerald-600" />
+                          Account verified
+                        </p>
+                        <p className="text-xs text-emerald-700 mt-1">Confirm account type and save. No bank proof needed.</p>
+                      </div>
+                      {addBankForm.account_holder_name ? (
+                        <div className="text-xs text-gray-600">
+                          <span className="text-gray-500">Holder:</span>{' '}
+                          <span className="font-semibold text-gray-900">{addBankForm.account_holder_name}</span>
+                        </div>
+                      ) : null}
+                      <div className="text-xs text-gray-600">
+                        <span className="text-gray-500">Account:</span>{' '}
+                        <span className="font-semibold text-gray-900 font-mono">{addBankForm.account_number}</span>
+                        {' · '}
+                        <span className="font-semibold text-gray-900 font-mono">{addBankForm.ifsc_code}</span>
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">Account type *</label>
+                        <select
+                          value={addBankForm.account_type}
+                          onChange={(e) => setAddBankForm((f) => ({ ...f, account_type: e.target.value as '' | 'savings' | 'current' }))}
+                          className="w-full px-3 py-2 border border-gray-300 rounded-xl bg-white"
+                        >
+                          <option value="">Select account type</option>
+                          <option value="savings">Savings</option>
+                          <option value="current">Current</option>
+                        </select>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Manual form (policy manual, or hybrid fallback) */}
+                  {(bankPolicyMode === 'manual' || addBankForceManual) && !addBankElectronicVerified && (
+                    <div className="space-y-4">
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">Account holder name *</label>
+                        <input
+                          type="text"
+                          value={addBankForm.account_holder_name}
+                          onChange={(e) => setAddBankForm((f) => ({ ...f, account_holder_name: e.target.value }))}
+                          className="w-full px-3 py-2 border border-gray-300 rounded-xl"
+                          placeholder="Name as per bank"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">Account number *</label>
+                        <input
+                          type="text"
+                          value={addBankForm.account_number}
+                          onChange={(e) => setAddBankForm((f) => ({ ...f, account_number: e.target.value.replace(/\D/g, '').slice(0, 18) }))}
+                          className="w-full px-3 py-2 border border-gray-300 rounded-xl font-mono"
+                          placeholder="Account number"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">IFSC *</label>
+                        <input
+                          type="text"
+                          value={addBankForm.ifsc_code}
+                          onChange={(e) => setAddBankForm((f) => ({ ...f, ifsc_code: e.target.value.toUpperCase().slice(0, 11) }))}
+                          className="w-full px-3 py-2 border border-gray-300 rounded-xl font-mono uppercase"
+                          placeholder="e.g. SBIN0001234"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">Bank name *</label>
+                        <input
+                          type="text"
+                          value={addBankForm.bank_name}
+                          onChange={(e) => setAddBankForm((f) => ({ ...f, bank_name: e.target.value }))}
+                          className="w-full px-3 py-2 border border-gray-300 rounded-xl"
+                          placeholder="Bank name"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">Branch (optional)</label>
+                        <input
+                          type="text"
+                          value={addBankForm.branch_name}
+                          onChange={(e) => setAddBankForm((f) => ({ ...f, branch_name: e.target.value }))}
+                          className="w-full px-3 py-2 border border-gray-300 rounded-xl"
+                          placeholder="Branch name"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">Account type *</label>
+                        <select
+                          value={addBankForm.account_type}
+                          onChange={(e) => setAddBankForm((f) => ({ ...f, account_type: e.target.value as '' | 'savings' | 'current' }))}
+                          className="w-full px-3 py-2 border border-gray-300 rounded-xl bg-white"
+                        >
+                          <option value="">Select account type</option>
+                          <option value="savings">Savings</option>
+                          <option value="current">Current</option>
+                        </select>
+                      </div>
+                      <div className="border-t border-gray-200 pt-4 space-y-3">
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-1">
+                            Bank proof (cancelled cheque / statement / passbook) *
+                          </label>
+                          <p className="text-xs text-gray-500 mb-2">Upload a clear image or PDF showing account details.</p>
+                          <select
+                            value={addBankForm.bank_proof_type}
+                            onChange={(e) => setAddBankForm((f) => ({ ...f, bank_proof_type: e.target.value as '' | 'passbook' | 'cancelled_cheque' | 'bank_statement' }))}
+                            className="w-full px-3 py-2 border border-gray-300 rounded-xl bg-white mb-2"
+                          >
+                            <option value="">Select proof type</option>
+                            <option value="cancelled_cheque">Cancelled cheque</option>
+                            <option value="bank_statement">Bank statement</option>
+                            <option value="passbook">Passbook</option>
+                          </select>
+                          <div className="flex items-center gap-2">
+                            <label className="inline-flex items-center gap-2 px-3 py-2 rounded-xl border border-gray-300 bg-gray-50 hover:bg-gray-100 cursor-pointer text-sm font-medium text-gray-700">
+                              <FileImage size={18} />
+                              {bankProofFile ? bankProofFile.name : 'Choose file'}
+                              <input
+                                type="file"
+                                accept="image/*,.pdf"
+                                className="hidden"
+                                onChange={(e) => setBankProofFile(e.target.files?.[0] ?? null)}
+                              />
+                            </label>
+                            {bankProofFile && (
+                              <button
+                                type="button"
+                                onClick={() => setBankProofFile(null)}
+                                className="text-xs text-red-600 hover:underline"
+                              >
+                                Remove
+                              </button>
+                            )}
+                          </div>
+                          {bankProofUploading && (
+                            <p className="text-xs text-amber-600 mt-1 flex items-center gap-1">
+                              <Loader2 size={14} className="animate-spin" />
+                              Uploading to secure storage...
+                            </p>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </>
+              )}
             </div>
-            <div className="p-5 border-t border-gray-200 flex gap-3">
+
+            <div className="flex-shrink-0 p-5 border-t border-gray-200 flex flex-col gap-2 bg-gray-50">
+              {isElectronicBankMode && !addBankForceManual && !addBankElectronicVerified && (
+                <button
+                  type="button"
+                  onClick={() => void handleElectronicVerify()}
+                  disabled={addBankVerifying || bankPolicyLoading}
+                  className="w-full py-2.5 bg-indigo-600 text-white rounded-xl font-medium hover:bg-indigo-700 disabled:opacity-50 flex items-center justify-center gap-2"
+                >
+                  {addBankVerifying ? <Loader2 size={18} className="animate-spin" /> : <Check size={18} />}
+                  Verify Account
+                </button>
+              )}
+              {(addBankElectronicVerified || bankPolicyMode === 'manual' || addBankForceManual) && (
+                <button
+                  type="button"
+                  onClick={() =>
+                    void handleAddBank({
+                      skipProof: addBankElectronicVerified,
+                      alreadyVerified: addBankElectronicVerified,
+                    })
+                  }
+                  disabled={
+                    addBankSubmitting ||
+                    !addBankForm.account_type ||
+                    (!addBankElectronicVerified &&
+                      (!bankProofFile ||
+                        !addBankForm.bank_proof_type ||
+                        (addBankForm.bank_proof_type !== 'passbook' &&
+                          addBankForm.bank_proof_type !== 'cancelled_cheque' &&
+                          addBankForm.bank_proof_type !== 'bank_statement')))
+                  }
+                  className="w-full py-2.5 bg-emerald-600 text-white rounded-xl font-medium hover:bg-emerald-700 disabled:opacity-50 flex items-center justify-center gap-2"
+                >
+                  {addBankSubmitting ? <Loader2 size={18} className="animate-spin" /> : <Check size={18} />}
+                  {addBankElectronicVerified ? 'Save verified account' : 'Add account'}
+                </button>
+              )}
               <button
                 type="button"
-                onClick={() => setShowAddBank(false)}
-                className="flex-1 py-2.5 border border-gray-300 rounded-xl text-gray-700 font-medium hover:bg-gray-50"
+                onClick={() => { setShowAddBank(false); resetAddBankSheet() }}
+                className="w-full py-2.5 border border-gray-300 rounded-xl text-gray-700 font-medium hover:bg-white"
               >
                 Cancel
               </button>
-              <button
-                type="button"
-                onClick={handleAddBank}
-                disabled={addBankSubmitting || !bankProofFile || !addBankForm.bank_proof_type || (addBankForm.bank_proof_type !== 'passbook' && addBankForm.bank_proof_type !== 'cancelled_cheque' && addBankForm.bank_proof_type !== 'bank_statement') || (addBankForm.payout_method === 'bank' && !addBankForm.account_type)}
-                className="flex-1 py-2.5 bg-emerald-600 text-white rounded-xl font-medium hover:bg-emerald-700 disabled:opacity-50 flex items-center justify-center gap-2"
-              >
-                {addBankSubmitting ? <Loader2 size={18} className="animate-spin" /> : <Check size={18} />}
-                Add account
-              </button>
             </div>
-          </div>
-        </div>
+          </aside>
+        </div>,
+        document.body
       )}
     </>
   )

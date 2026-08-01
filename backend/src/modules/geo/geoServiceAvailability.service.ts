@@ -11,9 +11,29 @@ export type GeoServiceAvailability = {
   food: boolean;
   parcel: boolean;
   ride: boolean;
+  /**
+   * Coverage flags BEFORE Prevent Services is applied. Riders must use these
+   * for duty eligibility so a blocked area never turns a rider offline —
+   * only order pickup/drop points are filtered at dispatch.
+   */
+  coverageFood: boolean;
+  coverageParcel: boolean;
+  coverageRide: boolean;
   pincode: string | null;
   stateName: string | null;
   resolvedLevel: string | null;
+  /**
+   * Service codes disabled by an active Prevent Services rule at this point —
+   * distinct from "outside coverage", so clients can show the emergency
+   * "Service Temporarily Unavailable" copy only when it actually applies.
+   */
+  preventBlocked: string[];
+  /** Admin-configured reason from the nearest matching Prevent Services rule. */
+  preventReason: string | null;
+  preventLocationName: string | null;
+  preventRuleId: string | null;
+  preventStartsAt: string | null;
+  preventEndsAt: string | null;
 };
 
 type ServiceFlagRow = {
@@ -97,9 +117,18 @@ async function resolveFromPincodeRpc(args: {
     food: results[0]?.available === true,
     parcel: results[1]?.available === true,
     ride: results[2]?.available === true,
+    coverageFood: results[0]?.available === true,
+    coverageParcel: results[1]?.available === true,
+    coverageRide: results[2]?.available === true,
     pincode: args.pincode.trim(),
     stateName: null,
     resolvedLevel: "pincode",
+    preventBlocked: [],
+    preventReason: null,
+    preventLocationName: null,
+    preventRuleId: null,
+    preventStartsAt: null,
+    preventEndsAt: null,
   };
 }
 
@@ -117,9 +146,18 @@ async function resolveFromGeoRefs(
     food: flags.is_food_enabled,
     parcel: flags.is_parcel_enabled,
     ride: flags.is_ride_enabled,
+    coverageFood: flags.is_food_enabled,
+    coverageParcel: flags.is_parcel_enabled,
+    coverageRide: flags.is_ride_enabled,
     pincode,
     stateName,
     resolvedLevel: anchor.level,
+    preventBlocked: [],
+    preventReason: null,
+    preventLocationName: null,
+    preventRuleId: null,
+    preventStartsAt: null,
+    preventEndsAt: null,
   };
 }
 
@@ -137,9 +175,18 @@ async function resolveFromStateName(stateName: string): Promise<GeoServiceAvaila
     food: row.is_food_enabled,
     parcel: row.is_parcel_enabled,
     ride: row.is_ride_enabled,
+    coverageFood: row.is_food_enabled,
+    coverageParcel: row.is_parcel_enabled,
+    coverageRide: row.is_ride_enabled,
     pincode: null,
     stateName: stateName.trim(),
     resolvedLevel: "state",
+    preventBlocked: [],
+    preventReason: null,
+    preventLocationName: null,
+    preventRuleId: null,
+    preventStartsAt: null,
+    preventEndsAt: null,
   };
 }
 
@@ -161,28 +208,89 @@ export async function resolveGeoServiceAvailability(args: {
   const lat = args.lat ?? null;
   const lng = args.lng ?? null;
 
+  let base: GeoServiceAvailability | null = null;
+
   if (pincode) {
     const fromPincode = await resolveFromPincodeRpc({ pincode, lat, lng });
-    if (fromPincode) return fromPincode;
+    if (fromPincode) base = fromPincode;
   }
 
-  if (geo.refs) {
+  if (!base && geo.refs) {
     const fromRefs = await resolveFromGeoRefs(geo.refs, pincode, stateName);
-    if (fromRefs) return fromRefs;
+    if (fromRefs) base = fromRefs;
   }
 
-  if (stateName) {
+  if (!base && stateName) {
     const fromState = await resolveFromStateName(stateName);
-    if (fromState) return fromState;
+    if (fromState) base = fromState;
   }
 
-  return {
-    found: false,
-    food: false,
-    parcel: false,
-    ride: false,
-    pincode,
-    stateName,
-    resolvedLevel: null,
-  };
+  if (!base) {
+    base = {
+      found: false,
+      food: false,
+      parcel: false,
+      ride: false,
+      coverageFood: false,
+      coverageParcel: false,
+      coverageRide: false,
+      pincode,
+      stateName,
+      resolvedLevel: null,
+      preventBlocked: [],
+      preventReason: null,
+      preventLocationName: null,
+      preventRuleId: null,
+      preventStartsAt: null,
+      preventEndsAt: null,
+    };
+  }
+
+  // Snapshot coverage BEFORE prevent — riders use these for duty eligibility so a
+  // blocked area never turns them offline wholesale.
+  const coverageFood = base.food;
+  const coverageParcel = base.parcel;
+  const coverageRide = base.ride;
+
+  // Emergency Prevent Services radius blocks (nearest overlapping rule wins messaging;
+  // any matching block disables the service for the customer pin only).
+  try {
+    const { applyPreventServicesToGeoFlags } = await import(
+      "../prevent-services/preventServices.engine.js"
+    );
+    const merged = await applyPreventServicesToGeoFlags({
+      food: base.food,
+      parcel: base.parcel,
+      ride: base.ride,
+      lat,
+      lng,
+    });
+    return {
+      ...base,
+      coverageFood,
+      coverageParcel,
+      coverageRide,
+      food: merged.food,
+      parcel: merged.parcel,
+      ride: merged.ride,
+      preventBlocked: merged.preventBlocked,
+      preventReason: merged.preventReason,
+      preventLocationName: merged.preventLocationName,
+      preventRuleId: merged.preventRuleId,
+      preventStartsAt: merged.preventStartsAt,
+      preventEndsAt: merged.preventEndsAt,
+    };
+  } catch {
+    return {
+      ...base,
+      coverageFood,
+      coverageParcel,
+      coverageRide,
+      preventReason: null,
+      preventLocationName: null,
+      preventRuleId: null,
+      preventStartsAt: null,
+      preventEndsAt: null,
+    };
+  }
 }

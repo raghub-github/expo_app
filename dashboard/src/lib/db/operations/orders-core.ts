@@ -116,6 +116,53 @@ function isFoodOrderDirectLookup(filters: ListOrdersCoreFilters): boolean {
   return searchType === "Order Id" || searchType === "Internal Order Id";
 }
 
+/**
+ * Match public order refs across formatted_order_id, legacy order_id (GM…),
+ * core numeric id, and orders_food.formatted_order_id (GMF/GMC/GMP + GM alias).
+ */
+function sqlPublicOrderIdMatch(
+  exactUpper: string,
+  orderType: "food" | "parcel" | "person_ride"
+): SQL {
+  const bare = exactUpper.replace(/^#/, "").trim().toUpperCase();
+  const candidates = new Set<string>([bare]);
+  const prefixed = bare.match(/^(GMF|GMC|GMP|GM)(\d+)$/);
+  if (prefixed) {
+    const digits = prefixed[2];
+    candidates.add(`GM${digits}`);
+    candidates.add(`GMF${digits}`);
+    candidates.add(`GMC${digits}`);
+    candidates.add(`GMP${digits}`);
+  }
+
+  const idParts: SQL[] = [];
+  for (const c of candidates) {
+    idParts.push(sql`upper(trim(COALESCE(${ordersCore.formattedOrderId}, ''))) = ${c}`);
+    idParts.push(sql`upper(trim(COALESCE(${ordersCore.orderId}, ''))) = ${c}`);
+  }
+
+  const digitMatch = bare.match(/^(?:GM[FCP]?)?(\d+)$/);
+  if (digitMatch) {
+    const legacyId = parseInt(digitMatch[1], 10);
+    if (Number.isFinite(legacyId) && legacyId > 0) {
+      idParts.push(and(eq(ordersCore.id, legacyId), eq(ordersCore.orderType, orderType))!);
+    }
+  }
+
+  idParts.push(
+    sql`EXISTS (
+      SELECT 1 FROM orders_food ofood
+      WHERE ofood.order_id = ${ordersCore.id}
+        AND upper(trim(COALESCE(ofood.formatted_order_id, ''))) IN (${sql.join(
+          [...candidates].map((c) => sql`${c}`),
+          sql`, `
+        )})
+    )`
+  );
+
+  return or(...idParts)!;
+}
+
 /** Restaurant / meal vertical store types (not grocery/pharma/fashion). Matches merchant onboarding `store_type`. */
 const STORE_TYPES_FOOD_VERTICAL = [
   "RESTAURANT",
@@ -196,7 +243,7 @@ export interface OrdersCoreRow {
   etaSeconds?: number | null;
   /** Expected delivery timestamp (preferred over createdAt + etaSeconds for ETA). */
   estimatedDeliveryTime?: Date | null;
-  /** First ETA set when order accepted / first estimated (sidebar "First ETA"). */
+  /** First ETA frozen at order placement (sidebar "First ETA"). Immutable after create. */
   firstEtaAt?: Date | null;
   /** When ETA was first breached (for ETA breached tag; mins elapsed computed at display time). */
   etaBreachedAt?: Date | null;
@@ -324,25 +371,22 @@ export async function listOrdersCore(
     const exactUpper = exact.toUpperCase();
     switch (searchType) {
       case "Order Id":
-        if (/^GMP\d+$/.test(exactUpper) && orderType === "person_ride") {
-          conditions.push(eq(ordersCore.formattedOrderId, exactUpper));
-          break;
-        }
-        if (/^GMF\d+$/.test(exactUpper) && orderType === "food") {
-          conditions.push(eq(ordersCore.formattedOrderId, exactUpper));
-          break;
-        }
-        if (/^GMC\d+$/.test(exactUpper) && orderType === "parcel") {
-          conditions.push(eq(ordersCore.formattedOrderId, exactUpper));
+      case "Internal Order Id": {
+        const bareUpper = exactUpper.replace(/^#/, "");
+        if (/^(GMF|GMC|GMP|GM)\d+$/i.test(bareUpper) || /^\d+$/.test(bareUpper)) {
+          conditions.push(sqlPublicOrderIdMatch(bareUpper, orderType));
           break;
         }
         conditions.push(
           or(
             ilike(ordersCore.formattedOrderId, term),
-            eq(ordersCore.formattedOrderId, exact)
+            ilike(ordersCore.orderId, term),
+            eq(ordersCore.formattedOrderId, exact),
+            eq(ordersCore.orderId, exact)
           )!
         );
         break;
+      }
       case "Merchant Id":
         const merchantNum = parseInt(search, 10);
         if (Number.isFinite(merchantNum)) {
@@ -369,7 +413,6 @@ export async function listOrdersCore(
       case "ONDC Order Id":
       case "Client Reference Id":
       case "Partner Order Id":
-      case "Internal Order Id":
         conditions.push(
           or(
             ilike(ordersCore.externalRef, term),
@@ -881,11 +924,11 @@ export async function insertOrderTimelineEntry(params: {
       .limit(1);
     if (existing?.estimatedDeliveryTime == null) {
       const etaToSet = expectedBy ?? new Date(now.getTime() + DEFAULT_ETA_MINUTES_AFTER_STATUS_UPDATE * 60 * 1000);
+      // Current ETA only — First ETA (first_eta_at) is immutable from placement.
       await db
         .update(ordersCore)
         .set({
           estimatedDeliveryTime: etaToSet,
-          firstEtaAt: etaToSet,
           updatedAt: now,
         })
         .where(eq(ordersCore.id, params.orderId));
@@ -922,10 +965,8 @@ export async function getOrderCreatedAt(
 }
 
 /**
- * ETA engine: set estimated_delivery_time and first_eta_at from Payment Done (same as other company), else Accepted.
- * - Only runs if order has no estimatedDeliveryTime and status is one of: accepted, dispatch ready, dispatched, reached_store, picked_up, in_transit.
- * - Never sets ETA for cancelled/rejected orders.
- * - Prefer "Payment Done" timeline entry (expectedByAt if present, else occurredAt + DEFAULT_ETA_MINUTES); fallback to "Accepted".
+ * Backfill current estimated_delivery_time when missing (Payment Done, else Accepted).
+ * Does NOT write first_eta_at — First ETA is an immutable placement snapshot.
  * Called on order detail load (GET /api/orders/core).
  */
 export async function ensureOrderEtaWhenAccepted(
@@ -966,7 +1007,6 @@ export async function ensureOrderEtaWhenAccepted(
         .update(ordersCore)
         .set({
           estimatedDeliveryTime: etaToSet,
-          firstEtaAt: etaToSet,
           updatedAt: new Date(),
         })
         .where(eq(ordersCore.id, orderId));
@@ -987,7 +1027,6 @@ export async function ensureOrderEtaWhenAccepted(
     .update(ordersCore)
     .set({
       estimatedDeliveryTime: etaToSet,
-      firstEtaAt: etaToSet,
       updatedAt: new Date(),
     })
     .where(eq(ordersCore.id, orderId));
@@ -1172,8 +1211,8 @@ export async function updateOrderStatus(
           updatedAt: now,
           ...(existingEta == null || isNaN(existingEta.getTime())
             ? {
+                // Current ETA only — never invent First ETA on status changes.
                 estimatedDeliveryTime: etaToSet,
-                ...(existing.firstEtaAt == null ? { firstEtaAt: etaToSet } : {}),
               }
             : {}),
         })

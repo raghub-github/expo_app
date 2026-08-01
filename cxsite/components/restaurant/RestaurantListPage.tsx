@@ -1,9 +1,10 @@
 "use client"
 
-import React, { useState, useMemo } from 'react'
+import React, { useState, useMemo, useEffect } from 'react'
 import Image from 'next/image'
 import Link from 'next/link'
 import { useSearchParams, useRouter } from 'next/navigation'
+import { createClient } from '@supabase/supabase-js'
 import { formatMerchantDeliveryTime } from '@/lib/merchantDeliveryTime'
 import GatiMitraSpinner from '@/components/common/GatiMitraSpinner'
 import { useLocationContext } from '@/components/providers/LocationProvider'
@@ -419,6 +420,51 @@ const RestaurantListPage = () => {
       })
       .finally(() => setLoading(false));
   }, [selectedCategory, effectiveGeoQs]);
+
+  // Live OPEN/CLOSED from merchant_stores (hours edits + schedule tick).
+  useEffect(() => {
+    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+    const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+    if (!supabaseUrl || !supabaseAnonKey) return;
+
+    const supabase = createClient(supabaseUrl, supabaseAnonKey);
+    const channel = supabase
+      .channel('cx-restaurant-list-status')
+      .on(
+        'postgres_changes',
+        { event: 'UPDATE', schema: 'public', table: 'merchant_stores' },
+        (payload: { new?: { id?: number | string; store_id?: string; operational_status?: string | null } }) => {
+          const row = payload?.new;
+          if (!row) return;
+          const pk = row.id != null ? String(row.id) : '';
+          const publicId = row.store_id != null ? String(row.store_id) : '';
+          const status =
+            row.operational_status != null && String(row.operational_status).trim() !== ''
+              ? String(row.operational_status)
+              : null;
+          setRestaurants((prev) => {
+            let changed = false;
+            const next = prev.map((r) => {
+              const match =
+                (pk && r.merchantStorePk === pk) ||
+                (publicId && (r.store_id === publicId || r.id === publicId));
+              if (!match) return r;
+              if (r.operational_status === status) return r;
+              changed = true;
+              return { ...r, operational_status: status };
+            });
+            return changed ? next : prev;
+          });
+        }
+      )
+      .subscribe();
+
+    return () => {
+      try {
+        supabase.removeChannel(channel);
+      } catch {}
+    };
+  }, []);
 
   React.useEffect(() => {
     if (!urlLocation || !urlHasValidCoords || !urlLat || !urlLon) return

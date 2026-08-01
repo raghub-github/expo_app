@@ -2,6 +2,10 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { settlementNoteVisibleUntil, isSettlementNoteVisible } from '@/lib/refund-settlement'
+import {
+  resolveHistoricalPlanCode,
+  resolveHistoricalPlanName,
+} from '@/lib/plan-purchase-snapshot'
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder.supabase.co"
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "placeholder-service-role-key"
@@ -111,6 +115,9 @@ export async function GET(req: NextRequest) {
             cancelled_at,
             updated_at,
             created_at,
+            plan_name_snapshot,
+            plan_code_snapshot,
+            plan_list_price_paise,
             merchant_plans (plan_name, plan_code, price)
           `)
           .eq('store_id', store.id)
@@ -184,8 +191,15 @@ export async function GET(req: NextRequest) {
       history.push({
         id: key,
         kind: 'payment',
-        plan_name: plan?.plan_name ?? 'Plan Payment',
-        plan_code: plan?.plan_code ?? null,
+        plan_name: resolveHistoricalPlanName({
+          plan_name_snapshot: p.plan_name_snapshot as string | null,
+          merchant_plans: plan,
+          plan_name: 'Plan Payment',
+        }),
+        plan_code: resolveHistoricalPlanCode({
+          plan_code_snapshot: p.plan_code_snapshot as string | null,
+          merchant_plans: plan,
+        }),
         amount: paidAmount,
         total_paise: totalPaise,
         gst_amount_paise: p.gst_amount_paise != null ? Number(p.gst_amount_paise) : null,
@@ -212,14 +226,30 @@ export async function GET(req: NextRequest) {
       const status = String(s.subscription_status ?? '').toUpperCase()
       const expiry = toIso(s.billing_end_at ?? s.expiry_date)
       const isPastExpiry = expiry != null && expiry <= nowIso
-      const planPrice = plan?.price != null ? Number(plan.price) : 0
+      // Prefer purchase-time list price on the subscription row; never live catalog.
+      const listPaise =
+        s.plan_list_price_paise != null ? Number(s.plan_list_price_paise) : null
+      const planPrice =
+        listPaise != null && Number.isFinite(listPaise)
+          ? listPaise / 100
+          : plan?.price != null
+            ? Number(plan.price)
+            : 0
+      const planName = resolveHistoricalPlanName({
+        plan_name_snapshot: s.plan_name_snapshot as string | null,
+        merchant_plans: plan,
+      })
+      const planCode = resolveHistoricalPlanCode({
+        plan_code_snapshot: s.plan_code_snapshot as string | null,
+        merchant_plans: plan,
+      })
 
       if (status === 'UPGRADED') {
         history.push({
           id: `upgraded:${String(s.id)}`,
           kind: 'upgraded',
-          plan_name: plan?.plan_name ?? 'Plan',
-          plan_code: plan?.plan_code ?? null,
+          plan_name: planName,
+          plan_code: planCode,
           amount: planPrice > 0 ? planPrice : null,
           subscription_status: status,
           payment_date: toIso(s.updated_at ?? s.created_at),
@@ -235,8 +265,8 @@ export async function GET(req: NextRequest) {
         history.push({
           id: `cancelled:${String(s.id)}`,
           kind: 'cancelled',
-          plan_name: plan?.plan_name ?? 'Plan',
-          plan_code: plan?.plan_code ?? null,
+          plan_name: planName,
+          plan_code: planCode,
           amount: planPrice > 0 ? planPrice : null,
           subscription_status: status,
           payment_date: toIso(s.cancelled_at ?? s.updated_at ?? s.created_at),
@@ -252,8 +282,8 @@ export async function GET(req: NextRequest) {
         history.push({
           id: `expired:${String(s.id)}`,
           kind: 'expired',
-          plan_name: plan?.plan_name ?? 'Plan',
-          plan_code: plan?.plan_code ?? null,
+          plan_name: planName,
+          plan_code: planCode,
           amount: planPrice > 0 ? planPrice : null,
           subscription_status: isPastExpiry && status === 'ACTIVE' ? 'EXPIRED' : status,
           payment_date: expiry,

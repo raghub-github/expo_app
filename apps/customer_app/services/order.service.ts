@@ -49,12 +49,20 @@ export type OrderSummary = {
   cancelledByLabel?: string | null;
   /** From order_cancellation_reasons — Refunded line on history when completed. */
   refundStatus?: string | null;
+  /** Settled refund amount (₹) when a refund row exists. */
+  refundAmount?: number | null;
+  /** True when checkout was settled entirely with GatiCash (no gateway charge). */
+  fullyGatiCashUsed?: boolean | null;
+  gatiCashUsed?: number | null;
   orderType?: string | null;
   rideType?: string | null;
   deliveryAddress?: string | null;
   pickupOtp?: string | null;
   pickupLat?: number | null;
   pickupLng?: number | null;
+  /** Immutable delivery drop snapshot from order placement (orders_core.drop_*). */
+  deliveryLat?: number | null;
+  deliveryLng?: number | null;
   /** Trip distance in km when available (rides). Mirrors OrderDetail.distanceKm. */
   distanceKm?: number | null;
   billingSnapshot?: Record<string, unknown> | null;
@@ -138,6 +146,25 @@ export type OrderDetail = OrderSummary & {
     actualMinutes: number;
     deltaMinutes: number;
     message: string;
+  } | null;
+  refundStatus?: string | null;
+  refundAmount?: number | null;
+  fullyGatiCashUsed?: boolean | null;
+  gatiCashUsed?: number | null;
+  refund?: {
+    status: string | null;
+    amount: number | null;
+    reference: string | null;
+    walletReference?: string | null;
+    gatewayReference?: string | null;
+    originalGatiCashTxnId?: string | null;
+    route: string | null;
+    walletAmount: number | null;
+    gatewayAmount: number | null;
+    initiatedAt: string | null;
+    processedAt: string | null;
+    completedAt: string | null;
+    timeline: { key: string; label: string; at: string | null }[];
   } | null;
 };
 
@@ -329,6 +356,38 @@ export const orderService = {
       timeout: ORDER_PLACEMENT_TIMEOUT_MS,
     });
     return data;
+  },
+
+  /**
+   * Place a pending order whose payable is ₹0 because GatiCash covered the whole bill.
+   * No Razorpay order exists for it, so there is nothing to verify — the backend settles
+   * it off the wallet ledger. Idempotent, so retries are safe.
+   */
+  async finalizeWalletOnlyOrder(pendingId: string): Promise<FinalizeOrderResponse> {
+    const { data } = await api.post<FinalizeOrderResponse>(
+      `${ORDERS_PREFIX}/finalize-wallet`,
+      { pendingId },
+      { timeout: ORDER_PLACEMENT_TIMEOUT_MS }
+    );
+    return data;
+  },
+
+  async finalizeWalletOnlyOrderWithRetry(
+    pendingId: string,
+    opts: { retries?: number; delayMs?: number } = {}
+  ): Promise<FinalizeOrderResponse> {
+    const { retries = 3, delayMs = 1500 } = opts;
+    let lastErr: unknown;
+    for (let attempt = 0; attempt <= retries; attempt++) {
+      try {
+        return await this.finalizeWalletOnlyOrder(pendingId);
+      } catch (e) {
+        lastErr = e;
+        if (!isRetriableCheckoutError(e) || attempt === retries) throw e;
+        await new Promise((r) => setTimeout(r, delayMs));
+      }
+    }
+    throw lastErr;
   },
 
   async getPendingOrderStatus(pendingId: string): Promise<PendingOrderStatusResponse> {

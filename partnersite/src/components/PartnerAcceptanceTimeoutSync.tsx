@@ -33,11 +33,23 @@ function PartnerAcceptanceTimeoutSyncInner({ restaurantId }: { restaurantId?: st
         `/api/merchant/sync-acceptance-timeout?store_id=${encodeURIComponent(sid)}`,
         { method: 'POST', credentials: 'include', cache: 'no-store' }
       );
-      const data = (await res.json().catch(() => ({}))) as { cancelled?: number };
-      if (!res.ok) return;
+      const data = (await res.json().catch(() => ({}))) as {
+        cancelled?: number;
+        error?: string;
+      };
 
+      // Always mark attempted for this tab — avoids 403 spam when the session
+      // cannot own the store (staff preview / stale cookie) while the dashboard
+      // still works via service-role store-operations.
       if (typeof window !== 'undefined') {
         sessionStorage.setItem(syncSessionKey(sid), String(Date.now()));
+      }
+
+      if (!res.ok) {
+        if (res.status !== 401 && res.status !== 403) {
+          console.warn('[acceptance-timeout-sync]', res.status, data.error ?? 'failed');
+        }
+        return;
       }
 
       const cancelled = Number(data.cancelled ?? 0);
@@ -61,7 +73,11 @@ function PartnerAcceptanceTimeoutSyncInner({ restaurantId }: { restaurantId?: st
 
   useEffect(() => {
     if (!storeReady) return;
-    void runSync();
+    // Defer slightly so auth cookies from OTP / handoff settle before the gate runs.
+    const t = window.setTimeout(() => {
+      void runSync();
+    }, 800);
+    return () => window.clearTimeout(t);
   }, [storeReady, runSync]);
 
   useEffect(() => {

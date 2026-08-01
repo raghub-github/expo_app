@@ -173,9 +173,9 @@ try {
   }
   // Pattern subscribe so we don't have to subscribe/unsubscribe per client.
   // Three domains: orders, riders, stores. Backend publishes onto these.
-  await subscriber.psubscribe("order:*", "rider:*", "store:*", "zone:*");
+  await subscriber.psubscribe("order:*", "rider:*", "store:*", "zone:*", "config:*");
   redisReady = true;
-  app.log.info("redis pattern-subscribed: order:*, rider:*, store:*, zone:*");
+  app.log.info("redis pattern-subscribed: order:*, rider:*, store:*, zone:*, config:*");
 } catch (err) {
   app.log.error(
     { err },

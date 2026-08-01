@@ -1915,12 +1915,13 @@ function MenuContent() {
   const imageLimitReached = planLimits != null && imageLimit != null && imageUsed >= imageLimit;
   const imageSlotsLeft = imageLimit != null ? Math.max(0, imageLimit - imageUsed) : null;
 
-  interface MenuFileEntry { id: number; url: string; fileName: string; type: 'image' | 'pdf' | 'csv'; verificationStatus: string }
+  /** `id` is the DB row; `entryId` identifies one image inside a JSONB bundle row (null for PDF/CSV/legacy rows). */
+  interface MenuFileEntry { id: number; entryId?: string | null; url: string; fileName: string; type: 'image' | 'pdf' | 'csv'; verificationStatus: string }
   const [menuFiles, setMenuFiles] = useState<MenuFileEntry[]>([]);
   const [menuUploadMode, setMenuUploadMode] = useState<'csv' | 'image' | 'pdf' | null>(null);
   const [menuPendingFiles, setMenuPendingFiles] = useState<File[]>([]);
   const [menuUploading, setMenuUploading] = useState(false);
-  const [menuDeleting, setMenuDeleting] = useState<number | null>(null);
+  const [menuDeleting, setMenuDeleting] = useState<string | null>(null);
   const [menuReplaceError, setMenuReplaceError] = useState('');
   const [csvValidationError, setCsvValidationError] = useState('');
   const [showMenuFileSection, setShowMenuFileSection] = useState(false);
@@ -2103,11 +2104,19 @@ function MenuContent() {
     }
   };
 
-  const handleMenuFileDelete = async (fileId: number) => {
+  /** Unique per rendered row: several images can share one DB row (JSONB bundle). */
+  const menuFileKey = (file: MenuFileEntry) => `${file.id}:${file.entryId ?? 'row'}`;
+
+  const handleMenuFileDelete = async (file: MenuFileEntry) => {
     if (!storeId) return;
-    setMenuDeleting(fileId);
+    setMenuDeleting(menuFileKey(file));
     try {
-      const res = await fetch(`/api/merchant/menu-upload?storeId=${encodeURIComponent(storeId)}&fileId=${fileId}`, { method: 'DELETE' });
+      // entryId removes just this image from a bundle row; without it the whole row is removed.
+      const entryParam = file.entryId ? `&entryId=${encodeURIComponent(file.entryId)}` : '';
+      const res = await fetch(
+        `/api/merchant/menu-upload?storeId=${encodeURIComponent(storeId)}&fileId=${file.id}${entryParam}`,
+        { method: 'DELETE' }
+      );
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
         toast.error(data?.error || 'Delete failed.');
@@ -4111,9 +4120,11 @@ function MenuContent() {
             </div>
             ) : null}
             <button
-              disabled
-              title="Adding categories manually is disabled. Upload a menu file instead."
-              className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-semibold rounded-lg bg-gray-100 text-gray-400 border border-gray-200 cursor-not-allowed"
+              type="button"
+              disabled={!canAddCategory}
+              title={canAddCategory ? "Add a new menu category" : "Category limit reached for your plan. Upgrade to add more categories."}
+              onClick={() => { setCategoryModalMode('add'); setShowCategoryModal(true); setParentCategoryIdInForm(null); setCategoryForm({ category_name: '', is_active: true }); }}
+              className={`flex items-center gap-1.5 px-3 py-1.5 text-sm font-semibold rounded-lg border transition-colors ${canAddCategory ? 'bg-white text-gray-700 border-gray-200 hover:bg-gray-50' : 'bg-gray-100 text-gray-400 border-gray-200 cursor-not-allowed'}`}
             >
               <Plus size={16} />
               Add Category
@@ -4122,9 +4133,22 @@ function MenuContent() {
               )}
             </button>
             <button
-              disabled
-              title="Adding menu items manually is disabled. Upload a menu file instead."
-              className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-semibold rounded-lg bg-gray-300 text-gray-500 cursor-not-allowed"
+              type="button"
+              disabled={!canAddItem}
+              title={canAddItem ? "Add a new menu item (will be reviewed before going live)" : "Menu item limit reached for your plan. Upgrade to add more items."}
+              onClick={() => {
+                if (!canAddItem) return;
+                if (categories.length === 0) {
+                  if (!canAddCategory) return;
+                  setCategoryModalMode('add');
+                  setShowCategoryModal(true);
+                  setParentCategoryIdInForm(null);
+                  setCategoryForm({ category_name: '', is_active: true });
+                  return;
+                }
+                setShowAddModal(true);
+              }}
+              className={`flex items-center gap-1.5 px-3 py-1.5 text-sm font-semibold rounded-lg transition-colors ${canAddItem ? 'bg-orange-600 text-white hover:bg-orange-700' : 'bg-gray-300 text-gray-500 cursor-not-allowed'}`}
             >
               <Plus size={16} />
               Add Menu Item
@@ -4279,7 +4303,23 @@ function MenuContent() {
                   : 'Add your first menu item to get started'}
             </p>
             {contentScope === 'item' && categories.length === 0 && (
-              <p className="text-sm text-gray-400 mt-2">You need to create a category first</p>
+              <div className="mt-4 flex flex-col items-center gap-2">
+                <p className="text-sm text-gray-400">You need to create a category first</p>
+                <button
+                  type="button"
+                  disabled={!canAddCategory}
+                  onClick={() => {
+                    if (!canAddCategory) return;
+                    setCategoryModalMode('add');
+                    setShowCategoryModal(true);
+                    setParentCategoryIdInForm(null);
+                    setCategoryForm({ category_name: '', is_active: true });
+                  }}
+                  className={`px-4 py-2 text-sm font-semibold rounded-lg ${canAddCategory ? 'bg-orange-600 text-white hover:bg-orange-700' : 'bg-gray-300 text-gray-500 cursor-not-allowed'}`}
+                >
+                  Add Category
+                </button>
+              </div>
             )}
           </div>
         ) : contentScope === 'cust' ? (
@@ -4601,6 +4641,17 @@ function MenuContent() {
 
                       {/* Indicators for item properties */}
                       <div className="flex flex-wrap gap-1 mb-1.5">
+                        {/* Pending approval badge — item not visible to customers yet */}
+                        {String(item.approval_status ?? '').toUpperCase() === 'PENDING' && (
+                          <span className="px-1.5 py-0.5 bg-yellow-50 text-yellow-700 text-[10px] font-semibold rounded border border-yellow-200 flex items-center gap-0.5">
+                            ⏳ Pending Approval
+                          </span>
+                        )}
+                        {String(item.approval_status ?? '').toUpperCase() === 'REJECTED' && (
+                          <span className="px-1.5 py-0.5 bg-red-50 text-red-700 text-[10px] font-semibold rounded border border-red-200 flex items-center gap-0.5">
+                            ✗ Rejected
+                          </span>
+                        )}
                         {item.is_popular && (
                           <span className="px-1.5 py-0.5 bg-amber-50 text-amber-700 text-[10px] font-semibold rounded">
                             Popular
@@ -5313,9 +5364,10 @@ function MenuContent() {
                 <ul className="list-none m-0 p-0 flex flex-col gap-0 divide-y divide-gray-100">
                   {menuFiles.map((file) => {
                     const fullUrl = file.url.startsWith('http') ? file.url : (typeof window !== 'undefined' ? window.location.origin : '') + file.url;
-                    const isDeleting = menuDeleting === file.id;
+                    const rowKey = menuFileKey(file);
+                    const isDeleting = menuDeleting === rowKey;
                     return (
-                      <li key={file.id} className="flex items-center gap-3 px-3 py-2.5">
+                      <li key={rowKey} className="flex items-center gap-3 px-3 py-2.5">
                         {file.type === 'image' ? (
                           <div className="w-12 h-12 rounded-lg bg-gray-100 overflow-hidden shrink-0 border border-gray-200">
                             <img src={fullUrl} alt={file.fileName} className="w-full h-full object-cover" loading="lazy" />
@@ -5339,7 +5391,7 @@ function MenuContent() {
                         <button
                           type="button"
                           disabled={isDeleting}
-                          onClick={() => handleMenuFileDelete(file.id)}
+                          onClick={() => handleMenuFileDelete(file)}
                           className="text-xs text-rose-600 hover:text-rose-700 font-medium shrink-0 px-2 py-1.5 rounded-lg hover:bg-rose-50 transition-colors disabled:opacity-50"
                         >
                           {isDeleting ? (

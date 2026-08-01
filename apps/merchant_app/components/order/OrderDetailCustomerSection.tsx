@@ -123,7 +123,6 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "#E5E7EB",
     padding: 14,
-    ...GatiMitraMerchant.shadowSm,
   },
   topRow: {
     flexDirection: "row",

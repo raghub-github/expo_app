@@ -224,13 +224,24 @@ export async function proxy(request: NextRequest) {
       return NextResponse.redirect(redirectUrl);
     }
 
-    if (session && (pathname === "/auth/login" || pathname === "/auth/login-store")) {
-      return NextResponse.redirect(new URL("/partners/all-stores", request.url));
-    }
-
-    // If already logged in, never show the /auth landing page; always go to post-login.
-    if (session && pathname === "/auth") {
-      return NextResponse.redirect(new URL("/partners/all-stores", request.url));
+    // Authenticated users must never land on sign-in / signup entry pages.
+    // Keep onboarding routes (/auth/register-store, resubmit-onboarding, callback) accessible.
+    if (session) {
+      const pathNorm = pathname.replace(/\/$/, "") || "/";
+      const authEntryPaths = new Set([
+        "/auth",
+        "/auth/login",
+        "/auth/login-store",
+        "/auth/login-store/list",
+        "/auth/register",
+        "/auth/register-phone",
+        "/auth/register-parent",
+        "/auth/register-business",
+        "/auth/search",
+      ]);
+      if (authEntryPaths.has(pathNorm)) {
+        return NextResponse.redirect(new URL("/partners/all-stores", request.url));
+      }
     }
 
     if (session && isProtected) {

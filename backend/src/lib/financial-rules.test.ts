@@ -15,12 +15,29 @@ describe("financial-rules", () => {
     assert.equal(mapActorToTriggeredBy("system"), "SYSTEM");
   });
 
-  it("resolves pre-pickup milestone", () => {
+  it("resolves pre-accept milestone as ORDER_CREATED", () => {
     const r = resolvePaymentCancellationMilestone({
       previousStatus: "CREATED",
+      cancelledByType: "customer",
+    });
+    assert.equal(r.orderMilestone, "ORDER_CREATED");
+    assert.equal(r.cancelledBy, "CUSTOMER");
+  });
+
+  it("resolves accepted milestone", () => {
+    const r = resolvePaymentCancellationMilestone({
+      previousStatus: "ACCEPTED",
+      cancelledByType: "customer",
+    });
+    assert.equal(r.orderMilestone, "ORDER_ACCEPTED");
+  });
+
+  it("resolves preparing as MERCHANT_PREPARING (pre-pickup shorthand elsewhere)", () => {
+    const r = resolvePaymentCancellationMilestone({
+      previousStatus: "PREPARING",
       cancelledByType: "merchant",
     });
-    assert.equal(r.orderMilestone, "PRE_PICKUP_CANCELLED");
+    assert.equal(r.orderMilestone, "MERCHANT_PREPARING");
     assert.equal(r.cancelledBy, "MERCHANT");
   });
 

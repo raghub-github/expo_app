@@ -664,6 +664,12 @@ export function PayoutDetailClient({
                           bold
                           green
                         />
+                        {(settlement.withdrawalReversalCredits ?? 0) > 0 ? (
+                          <SettlementRow
+                            label="Withdrawal returned (not payout)"
+                            amount={settlement.withdrawalReversalCredits ?? 0}
+                          />
+                        ) : null}
                       </div>
                     </div>
                   </section>

@@ -17,6 +17,7 @@ import {
 } from "@gatimitra/expo-push-kit";
 import { useAuth } from "@/context/AuthContext";
 import { useSelectedStore } from "@/context/SelectedStoreContext";
+import { useNotifications } from "@/context/NotificationContext";
 import { useOrders, mapApiOrder } from "@/hooks/useOrders";
 import { useIncomingOrderSheet } from "@/context/IncomingOrderSheetContext";
 import { fetchFoodOrder } from "@/services/ordersApi";
@@ -52,6 +53,11 @@ function NotificationSetupImpl() {
   const { token: authToken, isAuthenticated } = useAuth();
   const { selectedStore } = useSelectedStore();
   const storeId = selectedStore?.id ?? null;
+  const { refresh: refreshNotifications, applyIncomingPush } = useNotifications();
+  const refreshNotificationsRef = useRef(refreshNotifications);
+  refreshNotificationsRef.current = refreshNotifications;
+  const applyIncomingPushRef = useRef(applyIncomingPush);
+  applyIncomingPushRef.current = applyIncomingPush;
   const { orders, upsertOrder } = useOrders();
   const { openIncomingOrderSheet } = useIncomingOrderSheet();
   const { forceOpen, closePermissionGate, signalNotificationsGranted, setNotificationsGranted } =
@@ -192,7 +198,24 @@ function NotificationSetupImpl() {
       },
       onNotificationOpen: handleOpen,
       onForeground: (payload: PushNotificationOpenPayload) => {
-        if (isMerchantNewOrderPush(payload.data)) return;
+        // Move the bell badge on arrival, then reconcile with the server.
+        const data = payload.data ?? {};
+        const pick = (...keys: string[]): string | null => {
+          for (const k of keys) {
+            const v = data[k];
+            if (typeof v === "string" && v.trim()) return v.trim();
+          }
+          return null;
+        };
+        applyIncomingPushRef.current({
+          notificationId: pick("notification_id", "notificationId"),
+          title: pick("gmTitle", "title") ?? payload.title ?? null,
+          body: pick("gmMessage", "body") ?? payload.body ?? null,
+          deepLink: pick("deepLink", "deep_link", "url"),
+          templateCode: pick("template_code", "gmType"),
+          orderId: pick("foodOrderId", "orderId", "order_id"),
+        });
+        if (isMerchantNewOrderPush(data)) return;
         enqueueInAppBannerFromPush(payload);
       },
     }),

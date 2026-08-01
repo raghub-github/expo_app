@@ -81,7 +81,7 @@ export default function StoreListPage() {
 
   const goToDashboard = (storeId: string) => {
     localStorage.setItem("selectedStoreId", storeId);
-    window.location.href = "/partners/dashboard";
+    window.location.replace("/partners/dashboard");
   };
 
   const goToOnboarding = (storeId?: string) => {

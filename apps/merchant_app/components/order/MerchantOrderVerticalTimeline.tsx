@@ -72,7 +72,7 @@ function expandedMeta(detail: ReturnType<typeof parseActorDetailFromAction>): {
 } {
   if (!detail) return {};
   if (detail.variant === "admin") {
-    return { source: detail.source, extra: detail.acceptedBy };
+    return { source: timelineSourceShort(detail.source), extra: detail.acceptedBy };
   }
   return {
     email: detail.email,

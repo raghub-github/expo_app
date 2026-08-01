@@ -3,6 +3,11 @@
 import { useRouter } from 'next/navigation';
 import { motion } from 'framer-motion';
 import { Zap, Shield, Wallet, Gift, Clock, TrendingUp, Star, Heart, Sparkles } from 'lucide-react';
+import {
+  useReferralConfig,
+  formatReward,
+  firstMilestone,
+} from '@/hooks/useReferralConfig';
 
 const benefits = [
   {
@@ -16,7 +21,9 @@ const benefits = [
   {
     icon: Wallet,
     title: 'Higher Earnings',
-    highlight: '₹99 Welcome Bonus',
+    // Amount is filled in from live Super Admin config; see resolveBonusCopy.
+    highlight: null,
+    highlightKey: 'welcomeBonus',
     subItems: ['NO Hidden charges', 'Instant Payouts', 'Surge Pricing', 'Daily Incentives'],
     color: 'from-green-500 to-emerald-500',
     gradient: 'bg-gradient-to-br from-green-500/20 to-emerald-500/20'
@@ -55,15 +62,54 @@ const benefits = [
   }
 ];
 
-const stats = [
-  { value: '₹99', label: 'Instant Signup Bonus', icon: Star },
+const staticStats = [
   { value: 'Zero', label: 'Hidden Charges', icon: TrendingUp },
   { value: '24/7', label: 'Support Available', icon: Shield },
   { value: '4.8★', label: 'Rider Rating', icon: Star }
 ];
 
+/**
+ * All bonus copy is derived from the live referral config. When the config has
+ * not loaded (or the backend is down) we fall back to number-free wording so the
+ * site never advertises an amount that Super Admin has changed.
+ */
+function resolveBonusCopy(config) {
+  const milestone = firstMilestone(config);
+  const amount = milestone ? formatReward(milestone.rewardAmount, config?.currency) : null;
+  const orders = milestone?.milestoneOrders ?? 0;
+  const rewardsLive = Boolean(config?.rewardEnabled) && Boolean(amount);
+
+  if (!rewardsLive) {
+    return {
+      statValue: 'Milestone',
+      statLabel: 'Bonuses on Deliveries',
+      highlight: 'Milestone Bonuses',
+      subheading: 'Complete your first deliveries and unlock milestone bonuses',
+      cta: 'Join Now',
+    };
+  }
+
+  const deliveryWord = orders === 1 ? 'delivery' : 'deliveries';
+  return {
+    statValue: amount,
+    statLabel: orders > 0 ? `Bonus after ${orders} ${deliveryWord}` : 'Milestone Bonus',
+    highlight: `${amount} Welcome Bonus`,
+    subheading:
+      orders > 0
+        ? `Complete your first ${orders} ${deliveryWord} and earn ${amount} bonus`
+        : `Complete your first deliveries and earn ${amount} bonus`,
+    cta: `Join Now & Get ${amount}`,
+  };
+}
+
 export default function Features() { // Changed from RiderBenefits to Features
   const router = useRouter();
+  const { config } = useReferralConfig();
+  const bonus = resolveBonusCopy(config);
+  const stats = [
+    { value: bonus.statValue, label: bonus.statLabel, icon: Star },
+    ...staticStats,
+  ];
 
   const handleBecomeRider = () => {
     const el = document.getElementById('contact');
@@ -110,20 +156,20 @@ export default function Features() { // Changed from RiderBenefits to Features
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           transition={{ delay: 0.2 }}
-          className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-12 max-w-4xl mx-auto"
+          className="grid grid-cols-2 md:grid-cols-4 gap-2.5 mb-8 max-w-4xl mx-auto"
         >
           {stats.map((stat, idx) => {
             const Icon = stat.icon;
             return (
               <div
                 key={idx}
-                className="bg-gradient-to-b from-gray-900/50 to-gray-900/30 backdrop-blur-sm rounded-xl p-4 border border-gray-800"
+                className="bg-gradient-to-b from-gray-900/50 to-gray-900/30 backdrop-blur-sm rounded-lg px-3 py-2 border border-gray-800"
               >
-                <div className="flex items-center gap-2 mb-1">
-                  <Icon className="w-4 h-4 text-orange-400" />
-                  <div className="text-2xl font-bold text-white">{stat.value}</div>
+                <div className="flex items-center gap-1.5">
+                  <Icon className="w-3.5 h-3.5 text-orange-400 shrink-0" />
+                  <div className="text-lg font-bold text-white leading-tight">{stat.value}</div>
                 </div>
-                <div className="text-xs text-gray-400">{stat.label}</div>
+                <div className="text-[11px] text-gray-400 mt-0.5 leading-tight">{stat.label}</div>
               </div>
             );
           })}
@@ -155,7 +201,11 @@ export default function Features() { // Changed from RiderBenefits to Features
                     </div>
                     <div className="flex-1 min-w-0">
                       <h3 className="text-xl font-bold text-white truncate">{benefit.title}</h3>
-                      <p className="text-sm font-medium text-gray-300 mt-1">{benefit.highlight}</p>
+                      <p className="text-sm font-medium text-gray-300 mt-1">
+                        {benefit.highlightKey === 'welcomeBonus'
+                          ? bonus.highlight
+                          : benefit.highlight}
+                      </p>
                     </div>
                   </div>
 
@@ -204,7 +254,7 @@ export default function Features() { // Changed from RiderBenefits to Features
               </h2>
               
               <p className="text-gray-400 mb-6">
-                Complete your first 5 deliveries and earn ₹99 bonus instantly
+                {bonus.subheading}
               </p>
               
               <div className="flex flex-col sm:flex-row gap-4 justify-center">
@@ -216,7 +266,7 @@ export default function Features() { // Changed from RiderBenefits to Features
                 >
                   <span className="flex items-center justify-center gap-2">
                     <Zap className="w-4 h-4" />
-                    Join Now & Get ₹99
+                    {bonus.cta}
                   </span>
                 </motion.button>
                 

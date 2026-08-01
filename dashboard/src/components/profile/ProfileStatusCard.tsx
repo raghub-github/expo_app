@@ -3,6 +3,10 @@
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { AlertTriangle, Copy } from "lucide-react";
+import {
+  ticketsNumFont as profileNumFont,
+  ticketsTextFont as profileTextFont,
+} from "@/lib/fonts/tickets-fonts";
 import { getUserInitials } from "@/lib/user-avatar";
 import { useAuthOptional } from "@/providers/AuthProvider";
 
@@ -13,6 +17,7 @@ interface ProfileStatusData {
   systemUserId: string;
   fullName: string;
   email?: string | null;
+  primaryRole?: string | null;
   avatarUrl?: string | null;
   status: LiveStatus;
   loginTime: string | null;
@@ -47,6 +52,15 @@ function formatSeconds(sec: number) {
   return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(
     s
   ).padStart(2, "0")}`;
+}
+
+function formatRole(role: string | null | undefined) {
+  if (!role) return "User";
+  return role
+    .toLowerCase()
+    .split("_")
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
 }
 
 function useLiveWorkingTimer(loginTime: string | null, status: LiveStatus) {
@@ -135,6 +149,7 @@ export function ProfileStatusCard({ open, onClose, onSignOut }: ProfileStatusCar
           systemUserId: String(d.systemUserId ?? ""),
           fullName: d.fullName,
           email: d.email ?? null,
+          primaryRole: d.primaryRole ?? null,
           avatarUrl: d.avatarUrl ?? null,
           status: d.status,
           loginTime: d.loginTime ?? null,
@@ -193,6 +208,7 @@ export function ProfileStatusCard({ open, onClose, onSignOut }: ProfileStatusCar
           systemUserId: String(d.systemUserId ?? ""),
           fullName: d.fullName,
           email: d.email ?? null,
+          primaryRole: d.primaryRole ?? null,
           avatarUrl: d.avatarUrl ?? null,
           status: d.status,
           loginTime: d.loginTime ?? null,
@@ -232,7 +248,7 @@ export function ProfileStatusCard({ open, onClose, onSignOut }: ProfileStatusCar
     showOfflineWarning && typeof document !== "undefined"
       ? createPortal(
           <div
-            className="fixed inset-0 z-[10050] flex items-center justify-center bg-black/60 p-4"
+            className={`${profileTextFont.className} fixed inset-0 z-[10050] flex items-center justify-center bg-black/60 p-4`}
             role="alertdialog"
             aria-labelledby="profile-offline-title"
             aria-describedby="profile-offline-desc"
@@ -276,228 +292,178 @@ export function ProfileStatusCard({ open, onClose, onSignOut }: ProfileStatusCar
       : null;
 
   return (
-    <div className="fixed inset-0 z-40 pointer-events-none bg-white/20 backdrop-blur-sm">
-      <div className="flex justify-end pr-6 pt-18">
-        {/* Card */}
-        <div className="relative pointer-events-auto w-full max-w-xs rounded-2xl border border-slate-800/60 bg-slate-900/95 p-4 shadow-xl shadow-black/60 cursor-pointer">
-          {/* Pointer linking card to header avatar */}
-          <div className="absolute -top-2 right-8 h-3 w-3 rotate-45 border-l border-t border-slate-800/60 bg-slate-900/95" />
+    <div className="pointer-events-none fixed inset-0 z-40 bg-slate-900/15 backdrop-blur-[2px]">
+      <div className="flex justify-end px-4 pt-[4.5rem] sm:pr-6">
+        <div className={`${profileTextFont.className} pointer-events-auto relative w-full max-w-[430px] overflow-visible rounded-xl border border-slate-200 bg-white shadow-[0_18px_50px_rgba(15,23,42,0.22)]`}>
+          <div className="absolute -top-2 right-8 h-4 w-4 rotate-45 border-l border-t border-slate-200 bg-white" />
 
-          {/* Header: avatar + email + name + id */}
-          <div className="mb-3 flex items-center justify-between gap-3">
-            <div className="flex items-center gap-3 min-w-0">
-              {(() => {
-                if (!displayName && !displayEmail && !data) {
-                  return (
-                    <div className="flex h-10 w-10 items-center justify-center rounded-md bg-indigo-500 text-xs font-semibold text-white">
-                      U
-                    </div>
-                  );
-                }
+          <div className="relative flex items-start gap-4 px-5 py-5 sm:px-6">
+            {(() => {
+              const initials = getUserInitials(displayName, displayEmail);
+              const resolvedAvatar = !avatarError ? data?.avatarUrl ?? null : null;
 
-                const initials = getUserInitials(displayName, displayEmail);
-                const resolvedAvatar = !avatarError ? data?.avatarUrl ?? null : null;
-
-                if (resolvedAvatar) {
-                  return (
-                    <img
-                      src={resolvedAvatar}
-                      alt={displayName || displayEmail || "User"}
-                      className="h-10 w-10 rounded-md object-cover border border-slate-700 bg-slate-800"
-                      onError={() => setAvatarError(true)}
-                    />
-                  );
-                }
-
+              if (resolvedAvatar) {
                 return (
-                  <div className="flex h-10 w-10 items-center justify-center rounded-md bg-indigo-500 text-xs font-semibold text-white">
-                    {initials}
-                  </div>
+                  <img
+                    src={resolvedAvatar}
+                    alt={displayName || displayEmail || "User"}
+                    className="h-16 w-16 shrink-0 rounded-full border-[3px] border-white object-cover shadow-md"
+                    onError={() => setAvatarError(true)}
+                  />
                 );
-              })()}
-              <div className="min-w-0">
-                <h2 className="text-sm font-semibold text-slate-50 truncate max-w-[180px]">
-                  Agent: {displayName ?? "—"}
-                </h2>
-                <div className="mt-0.5 flex items-center gap-2 text-[11px] text-slate-300">
-                  <span className="uppercase tracking-wide text-slate-400">
-                    ID
-                  </span>
-                  <span className="rounded-md bg-slate-800 px-1.5 py-0.5 font-mono text-[11px] text-slate-100 truncate max-w-[120px]">
-                    {displaySystemUserId ?? "—"}
-                  </span>
-                  {displaySystemUserId && (
-                    <button
-                      type="button"
-                      onClick={async () => {
-                        if (!displaySystemUserId) return;
-                        try {
-                          await navigator.clipboard?.writeText(displaySystemUserId);
-                          setCopied(true);
-                          setTimeout(() => setCopied(false), 2000);
-                        } catch {
-                          // ignore clipboard errors
-                        }
-                      }}
-                      className="inline-flex h-5 items-center justify-center rounded px-1 hover:bg-slate-800 text-slate-400 hover:text-slate-100"
-                      aria-label="Copy system_user_id"
-                    >
-                      {copied ? (
-                        <span className="text-[10px] text-emerald-300">Copied</span>
-                      ) : (
-                        <Copy className="h-3 w-3" />
-                      )}
-                    </button>
-                  )}
+              }
+
+              return (
+                <div className="flex h-16 w-16 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-indigo-500 to-violet-600 text-lg font-semibold text-white shadow-md">
+                  {displayName || displayEmail || data ? initials : "U"}
                 </div>
-                <p className="mt-0.5 text-[11px] text-slate-400 truncate max-w-[220px]">
-                  {displayEmail ?? "—"}
-                </p>
+              );
+            })()}
+
+            <div className="min-w-0 flex-1 pt-1">
+              <div className="flex flex-wrap items-center gap-2">
+                <h2 className="truncate text-lg font-medium text-slate-800">
+                  {displayName ?? "—"}
+                </h2>
+                <span className="rounded border border-indigo-200 bg-indigo-50 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-indigo-600">
+                  {formatRole(data?.primaryRole)}
+                </span>
+              </div>
+              <p className="mt-1 truncate text-sm text-slate-500">{displayEmail ?? "—"}</p>
+              <div className="mt-2 flex min-w-0 items-center gap-2 text-xs text-slate-500">
+                <span className="font-medium text-slate-400">ID</span>
+                <span className={`${profileNumFont.className} truncate text-slate-700`}>
+                  {displaySystemUserId ?? "—"}
+                </span>
+                {displaySystemUserId && (
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      try {
+                        await navigator.clipboard?.writeText(displaySystemUserId);
+                        setCopied(true);
+                        setTimeout(() => setCopied(false), 2000);
+                      } catch {
+                        // Ignore clipboard errors.
+                      }
+                    }}
+                    className="rounded p-1 text-slate-400 transition hover:bg-slate-100 hover:text-indigo-600"
+                    aria-label="Copy system user ID"
+                  >
+                    {copied ? <span className="text-[10px] text-emerald-600">Copied</span> : <Copy className="h-3.5 w-3.5" />}
+                  </button>
+                )}
               </div>
             </div>
+
             <button
+              type="button"
               onClick={onClose}
-              className="rounded-full p-1 text-slate-400 hover:bg-slate-800 hover:text-slate-100"
+              className="rounded-full p-1.5 text-slate-400 transition hover:bg-slate-100 hover:text-slate-700"
               aria-label="Close profile card"
             >
               ✕
             </button>
           </div>
 
-        {/* Status row: custom dropdown + badge (50/50) */}
-        <div className="mb-2 flex items-center gap-2">
-          <div className="relative w-1/2">
-            <label className="mb-1 block text-[11px] font-medium text-slate-300">
-              Status
-            </label>
-            <button
-              type="button"
-              disabled={statusSaving}
-              onClick={() => setStatusOpen((o) => !o)}
-              className="flex w-full items-center justify-between rounded-md border border-slate-600 bg-slate-800 px-2 py-1.5 text-left text-xs font-medium text-white hover:border-indigo-400 focus:outline-none focus:ring-1 focus:ring-indigo-400 disabled:opacity-60"
-            >
-              <span className="truncate">
-                {localStatus === "online"
-                  ? "Online"
-                  : localStatus === "break"
-                  ? "Break"
-                  : localStatus === "offline"
-                  ? "Offline"
-                  : "Emergency"}
-              </span>
-              <span className="ml-2 text-[10px] text-slate-400">▼</span>
-            </button>
-            {statusOpen && (
-              <div className="absolute z-50 mt-1 w-full rounded-md border border-slate-700 bg-slate-900 py-1 text-xs text-white shadow-lg">
-                {[
-                  { value: "online", label: "Online" },
-                  { value: "break", label: "Break" },
-                  { value: "offline", label: "Offline" },
-                  { value: "emergency", label: "Emergency" },
-                ].map((opt) => (
-                  <button
-                    key={opt.value}
-                    type="button"
-                    disabled={statusSaving}
-                    onClick={() => requestStatusChange(opt.value as LiveStatus)}
-                    className={`flex w-full items-center justify-between px-3 py-1.5 text-left hover:bg-slate-800 ${
-                      localStatus === opt.value ? "bg-slate-800" : ""
-                    }`}
-                  >
-                    <span>{opt.label}</span>
-                  </button>
-                ))}
+          <div className="border-t border-slate-200">
+            <div className="grid grid-cols-2 divide-x divide-slate-200 border-b border-slate-200 sm:grid-cols-4">
+              {[
+                { label: "Login time", value: formatTime(data?.loginTime ?? null) },
+                { label: "Logout time", value: formatTime(data?.logoutTime ?? null) },
+                { label: "Offline at", value: formatTime(data?.offlineAt ?? null) },
+                { label: "Login duration", value: workingTimer },
+              ].map((item) => (
+                <div key={item.label} className="min-w-0 px-3 py-3">
+                  <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+                    {item.label}
+                  </p>
+                  <p className={`${profileNumFont.className} mt-1 break-words text-xs font-medium text-slate-700`}>
+                    {item.value}
+                  </p>
+                </div>
+              ))}
+            </div>
+
+            <div className="grid gap-5 px-5 py-4 sm:grid-cols-2 sm:px-6">
+              <div>
+                <p className={`${profileNumFont.className} text-xl font-light text-slate-800`}>
+                  {formatSeconds(data?.todayWorkSeconds ?? 0)}
+                </p>
+                <p className="mt-1 text-xs text-slate-500">Total login time today</p>
+                <div className="mt-3 h-1 overflow-hidden rounded-full bg-slate-100">
+                  <div className="h-full w-2/3 rounded-full bg-blue-500" />
+                </div>
               </div>
+              <div>
+                <p className={`${profileNumFont.className} text-xl font-light text-slate-800`}>
+                  {data?.todayOrderCount ?? 0}
+                </p>
+                <p className="mt-1 text-xs text-slate-500">Orders completed today</p>
+                <div className="mt-3 h-1 overflow-hidden rounded-full bg-slate-100">
+                  <div className="h-full w-1/2 rounded-full bg-emerald-500" />
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="flex flex-col gap-3 border-t border-slate-200 bg-slate-50 px-5 py-3 sm:flex-row sm:items-end sm:justify-between sm:px-6">
+            <div className="relative w-full sm:max-w-[230px]">
+              <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+                Availability status
+              </label>
+              <button
+                type="button"
+                disabled={statusSaving}
+                onClick={() => setStatusOpen((value) => !value)}
+                className="flex w-full items-center justify-between rounded-lg border border-slate-200 bg-white px-3 py-2 text-left text-xs font-medium text-slate-700 shadow-sm transition hover:border-indigo-300 disabled:opacity-60"
+              >
+                <StatusBadge status={localStatus} />
+                <span className="text-[10px] text-slate-400">▼</span>
+              </button>
+              {statusOpen && (
+                <div className="absolute bottom-full z-50 mb-1 w-full overflow-hidden rounded-lg border border-slate-200 bg-white py-1 text-xs text-slate-700 shadow-xl">
+                  {[
+                    { value: "online", label: "Online" },
+                    { value: "break", label: "Break" },
+                    { value: "offline", label: "Offline" },
+                    { value: "emergency", label: "Emergency" },
+                  ].map((opt) => (
+                    <button
+                      key={opt.value}
+                      type="button"
+                      disabled={statusSaving}
+                      onClick={() => requestStatusChange(opt.value as LiveStatus)}
+                      className={`flex w-full px-3 py-2 text-left transition hover:bg-slate-50 ${
+                        localStatus === opt.value ? "bg-indigo-50 text-indigo-700" : ""
+                      }`}
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {onSignOut && (
+              <button
+                type="button"
+                onClick={onSignOut}
+                className="inline-flex w-full items-center justify-center rounded-lg border border-red-600 bg-red-600 px-5 py-2 text-xs font-semibold text-white shadow-sm transition hover:border-red-700 hover:bg-red-700 sm:w-auto"
+              >
+                Log out
+              </button>
             )}
           </div>
-          <div className="flex w-1/2 justify-end mt-6">
-            <StatusBadge status={localStatus} />
-          </div>
-        </div>
 
-        {/* Session Info (compact) */}
-        <div className="mb-2 rounded-xl border border-slate-700 bg-slate-900/80 p-2">
-          <p className="mb-1 text-[11px] font-semibold text-slate-300 uppercase">
-            Session Info
-          </p>
-          <div className="grid grid-cols-2 gap-1.5 text-[11px]">
-            <div>
-              <p className="text-slate-400">Login Time</p>
-              <p className="font-medium text-slate-50">
-                {formatTime(data?.loginTime ?? null)}
-              </p>
+          {(loading || error) && (
+            <div className="border-t border-slate-200 px-6 py-2.5 text-xs sm:px-8">
+              {loading && (
+                <p className="text-slate-400">{seed ? "Syncing session…" : "Loading profile…"}</p>
+              )}
+              {error && <p className="text-red-500">Failed to load: {error}</p>}
             </div>
-            <div>
-              <p className="text-slate-400">Logout Time</p>
-              <p className="font-medium text-slate-50">
-                {formatTime(data?.logoutTime ?? null)}
-              </p>
-            </div>
-            <div className="col-span-2">
-              <p className="text-slate-400">Offline at</p>
-              <p className="font-medium text-slate-50">
-                {formatTime(data?.offlineAt ?? null)}
-              </p>
-            </div>
-            <div className="col-span-2">
-              <p className="text-slate-400">Current Working Time</p>
-              <p className="font-mono text-xs font-semibold text-slate-50">
-                {workingTimer}
-              </p>
-            </div>
-          </div>
-        </div>
-
-        {/* Today Stats */}
-        <div className="mb-3 rounded-xl border border-slate-700 bg-slate-900/80 p-2.5">
-          <p className="mb-2 text-xs font-semibold text-slate-300 uppercase">
-            Today Stats
-          </p>
-          <div className="grid grid-cols-2 gap-2 text-xs">
-            <div>
-              <p className="text-slate-400">Total Working Hours</p>
-              <p className="font-mono text-xs font-semibold text-slate-50">
-                {formatSeconds(data?.todayWorkSeconds ?? 0)}
-              </p>
-            </div>
-            <div>
-              <p className="text-slate-400">Order Count (today)</p>
-              <p className="text-xs font-semibold text-slate-50">
-                {data?.todayOrderCount ?? 0}
-              </p>
-            </div>
-          </div>
-        </div>
-
-        {/* Status Controls - compact helper text */}
-        <p className="mt-1 text-[10px] text-slate-400">
-          Login opens a new online session. After you mark offline, start a new session with Online. Work time for
-          that visit is saved on the row (see user_sessions.offline_at).
-        </p>
-
-        {/* Sign out inside profile card */}
-        {onSignOut && (
-          <div className="mt-3 border-t border-slate-700 pt-2">
-            <button
-              type="button"
-              onClick={onSignOut}
-              className="w-full inline-flex items-center justify-center rounded-xl bg-red-600 px-3 py-1.5 text-xs font-semibold text-white shadow-sm hover:bg-red-500"
-            >
-              Sign out
-            </button>
-          </div>
-        )}
-
-        {loading && (
-          <p className="mt-3 text-xs text-slate-400">
-            {seed ? "Syncing session…" : "Loading profile…"}
-          </p>
-        )}
-        {error && (
-          <p className="mt-3 text-xs text-red-400">
-            Failed to load: {error}
-          </p>
-        )}
+          )}
         </div>
       </div>
       {offlineModal}

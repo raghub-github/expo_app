@@ -13,6 +13,7 @@ import { DEMO_RESTAURANT_ID as DEMO_STORE_ID } from '@/lib/constants'
 import {
   PARTNER_STORE_OPERATIONS_REFRESH_EVENT,
   type PartnerStoreOperationsRefreshDetail,
+  emitPartnerStoreOperationsRefresh,
 } from '@/lib/partnerStoreOperationsRefresh'
 import { toastStoreOperationsPostFailure, isOutsideOperatingHoursStoreOpsError } from '@/lib/storeOperationsPostFeedback'
 import { OutsideOperatingHoursModal } from '@/components/OutsideOperatingHoursModal'
@@ -53,7 +54,9 @@ import { BusinessReportsPanel } from '@/components/merchant/BusinessReportsPanel
 import { prefetchBusinessInsights, warmLivePreviewCache } from '@/lib/merchant-growth/growth-insights-cache';
 import { warmDashboardWalletCache } from '@/lib/partner-dashboard-cache';
 import { createClient } from '@/lib/supabase/client';
-import { useMerchantWallet, useSelfDeliveryRiders, useStoreOperations } from '@/hooks/useMerchantApi';
+import { useMerchantWallet, useSelfDeliveryRiders, useStoreOperations } from '@/hooks/useMerchantApi'
+import { merchantKeys } from '@/lib/query-keys'
+import { useQueryClient } from '@tanstack/react-query';
 import { PlanExpiredWarningModal } from '@/components/merchant/PlanExpiredWarningModal';
 import { shouldShowPlanExpiredWarning } from '@/lib/plan-expired-warning';
 import {
@@ -210,6 +213,7 @@ function DashboardContent() {
   )
   // Store Status & Delivery Mode — card follows GET /api/store-operations (same effective OPEN as dashboard); engine for modals + persistence.
   const engine = useLocalStoreStatusEngineStore()
+  const queryClient = useQueryClient()
   const [storeOpsPainted, setStoreOpsPainted] = useState(false)
   const {
     data: storeOpsData,
@@ -217,6 +221,8 @@ function DashboardContent() {
     isFetching: storeOpsFetching,
   } = useStoreOperations(storeId, { enabled: queriesEnabled, refetchInterval: false })
   const storeOpsReady = storeOpsPainted || !!storeOpsData
+  const boundarySyncInFlightRef = useRef(false)
+  const boundarySyncAttemptsRef = useRef(0)
   const [isStoreOpen, setIsStoreOpen] = useState(false)
   const [mxDeliveryEnabled, setMxDeliveryEnabled] = useState(false)
   const { data: selfDeliveryRidersData = [], isLoading: selfDeliveryRidersLoading } = useSelfDeliveryRiders(storeId, mxDeliveryEnabled)
@@ -717,10 +723,30 @@ function DashboardContent() {
     await refetchStoreOperations()
   }, [storeId, refetchStoreOperations])
 
+  // Skip self-emitted refresh events from forceStoreOperationsSync (already refetched).
+  const skipRefreshEventRef = useRef(false)
+
+  /** Hard refresh at schedule boundaries — invalidate + refetch so countdown 0 flips Open without a page reload. */
+  const forceStoreOperationsSync = React.useCallback(async () => {
+    if (!storeId) return
+    await queryClient.invalidateQueries({ queryKey: merchantKeys.storeOperations(storeId) })
+    await queryClient.refetchQueries({
+      queryKey: merchantKeys.storeOperations(storeId),
+      type: 'active',
+    })
+    // Keep header Offline/Online chip in sync; skip our own listener (already refetched).
+    skipRefreshEventRef.current = true
+    emitPartnerStoreOperationsRefresh(storeId)
+    queueMicrotask(() => {
+      skipRefreshEventRef.current = false
+    })
+  }, [storeId, queryClient])
+
   // Header / schedule sheet updates store-operations fetch there first — mirror here without reload.
   useEffect(() => {
     if (!storeId || typeof window === 'undefined') return
     const onRefresh = (ev: Event) => {
+      if (skipRefreshEventRef.current) return
       const ce = ev as CustomEvent<PartnerStoreOperationsRefreshDetail>
       const sid = ce.detail?.storeId
       if (sid && sid === storeId) void fetchStoreOperations()
@@ -734,27 +760,78 @@ function DashboardContent() {
   useEffect(() => {
     if (!storeId) return
     let timer: ReturnType<typeof setTimeout> | undefined
+    const boundaryIso = activeCountdownAt ?? nextScheduleTransitionAt
     const nextDelay = () => {
-      const transitionMs = nextScheduleTransitionAt
-        ? new Date(nextScheduleTransitionAt).getTime() - Date.now()
+      const transitionMs = boundaryIso
+        ? new Date(boundaryIso).getTime() - Date.now()
         : null
-      // "Near boundary" covers both approaching a transition AND just having passed one — a
-      // transition time in the recent past (e.g. the tab was backgrounded) still needs fast
-      // retries until the fetch catches up; anything older than 2 min falls back to slow polling
-      // so a stuck/stale timestamp can't cause an infinite fast-poll loop.
+      // Near boundary: approaching OR just past (tab backgrounded / slow GET).
       const nearBoundary = transitionMs != null && transitionMs > -120_000 && transitionMs <= 120_000
-      return nearBoundary ? Math.max(3_000, Math.min(Math.max(transitionMs!, 0) + 500, 15_000)) : 30_000
+      // When already past due, poll every 2s until status catches up.
+      if (transitionMs != null && transitionMs <= 0 && transitionMs > -120_000) return 2_000
+      return nearBoundary ? Math.max(2_000, Math.min(Math.max(transitionMs!, 0) + 250, 8_000)) : 30_000
     }
     const schedulePoll = () => {
       void refetchStoreOperations().finally(() => {
         timer = setTimeout(schedulePoll, nextDelay())
       })
     }
-    timer = setTimeout(schedulePoll, nextDelay())
+    // If already past the open time, sync immediately (don't wait for nextDelay).
+    const firstDelay =
+      boundaryIso && new Date(boundaryIso).getTime() - Date.now() <= 0 ? 0 : nextDelay()
+    timer = setTimeout(schedulePoll, firstDelay)
     return () => {
       if (timer) clearTimeout(timer)
     }
-  }, [storeId, refetchStoreOperations, nextScheduleTransitionAt])
+  }, [storeId, refetchStoreOperations, nextScheduleTransitionAt, activeCountdownAt])
+
+  // Exact timer: fire at opens_at / transition (±250ms) so we don't sit on 00:00:00 waiting for a 30s poll.
+  useEffect(() => {
+    if (!storeId || !activeCountdownAt || isStoreOpen) {
+      boundarySyncAttemptsRef.current = 0
+      return
+    }
+    const targetMs = new Date(activeCountdownAt).getTime()
+    if (Number.isNaN(targetMs)) return
+
+    let cancelled = false
+    const timers: ReturnType<typeof setTimeout>[] = []
+
+    const runSyncBurst = async () => {
+      if (cancelled || boundarySyncInFlightRef.current) return
+      if (boundarySyncAttemptsRef.current >= 8) return
+      boundarySyncInFlightRef.current = true
+      boundarySyncAttemptsRef.current += 1
+      try {
+        await forceStoreOperationsSync()
+      } catch {
+        /* ignore — retries below */
+      } finally {
+        boundarySyncInFlightRef.current = false
+      }
+    }
+
+    const msUntil = targetMs - Date.now()
+    if (msUntil > 0) {
+      // Wake ~250ms after the scheduled open so server wall-clock is inside the slot.
+      timers.push(setTimeout(() => void runSyncBurst(), msUntil + 250))
+      // Also nudge just before so GET is already in flight when the second hits.
+      if (msUntil > 1_500) {
+        timers.push(setTimeout(() => void runSyncBurst(), Math.max(0, msUntil - 400)))
+      }
+    } else if (msUntil > -120_000) {
+      // Already past due (e.g. 00:00:00 stuck) — sync now + short retries.
+      void runSyncBurst()
+      timers.push(setTimeout(() => void runSyncBurst(), 1_500))
+      timers.push(setTimeout(() => void runSyncBurst(), 3_500))
+      timers.push(setTimeout(() => void runSyncBurst(), 7_000))
+    }
+
+    return () => {
+      cancelled = true
+      for (const t of timers) clearTimeout(t)
+    }
+  }, [storeId, activeCountdownAt, isStoreOpen, forceStoreOperationsSync])
 
   // When close popup opens, set default date (today, local) and time (now + 10 min) for Temporary Closed
   useEffect(() => {
@@ -793,13 +870,19 @@ function DashboardContent() {
       !scheduledTimeOffs.some((x) => x.phase === 'active') &&
       scheduledTimeOffs.some((x) => x.phase === 'upcoming')
     if (!needClosedCountdown && !needsUpcomingScheduledOffTick) return
+    let hitZeroSync = false
     const t = setInterval(() => {
       if (needClosedCountdown && activeCountdownAt) {
         const ms = new Date(activeCountdownAt).getTime() - Date.now()
         if (ms <= 0) {
-          void fetchStoreOperations()
+          if (!hitZeroSync) {
+            hitZeroSync = true
+            void forceStoreOperationsSync()
+          }
+          setCountdownTick((n) => n + 1)
           return
         }
+        hitZeroSync = false
       }
       if (needsUpcomingScheduledOffTick) {
         const now = Date.now()
@@ -810,28 +893,54 @@ function DashboardContent() {
           if (Number.isNaN(st) || st <= now) continue
           if (best === null || st < best) best = st
         }
-        if (best === null || best <= now) void fetchStoreOperations()
+        if (best === null || best <= now) void forceStoreOperationsSync()
       }
       setCountdownTick((n) => n + 1)
     }, 1000)
     return () => clearInterval(t)
-  }, [showScheduleCountdown, activeCountdownAt, fetchStoreOperations, isStoreOpen, scheduledTimeOffs])
+  }, [showScheduleCountdown, activeCountdownAt, forceStoreOperationsSync, isStoreOpen, scheduledTimeOffs])
 
-  // Re-sync when store shows OPEN but schedule says outside hours (break / before slot)
+  // Re-sync when store shows OPEN but schedule says outside hours (break / before slot),
+  // OR stuck CLOSED while still within today's operating hours (auto-open lag),
+  // OR countdown already elapsed (00:00:00) but card still Closed.
   useEffect(() => {
+    const countdownPastDue =
+      !isStoreOpen &&
+      !!activeCountdownAt &&
+      !Number.isNaN(new Date(activeCountdownAt).getTime()) &&
+      new Date(activeCountdownAt).getTime() <= Date.now()
     const needsScheduleSync =
-      isStoreOpen &&
-      (withinOperatingHours === false ||
-        schedulePhase === 'BREAK' ||
-        schedulePhase === 'PRE_BREAK' ||
-        schedulePhase === 'OUTSIDE_HOURS')
+      (isStoreOpen &&
+        (withinOperatingHours === false ||
+          schedulePhase === 'BREAK' ||
+          schedulePhase === 'PRE_BREAK' ||
+          schedulePhase === 'OUTSIDE_HOURS')) ||
+      (!isStoreOpen &&
+        withinOperatingHours === true &&
+        schedulePhase === 'WITHIN_SLOT' &&
+        !manualActivationLock) ||
+      countdownPastDue
     if (!needsScheduleSync) return
-    const pollMs = schedulePhase === 'BREAK' ? 5_000 : 15_000
+    const pollMs =
+      countdownPastDue || schedulePhase === 'BREAK' || (!isStoreOpen && withinOperatingHours)
+        ? 2_000
+        : 15_000
     const t = setInterval(() => {
-      void fetchStoreOperations()
+      void forceStoreOperationsSync()
     }, pollMs)
+    // Kick once immediately when past due / stuck closed.
+    if (countdownPastDue || (!isStoreOpen && withinOperatingHours === true)) {
+      void forceStoreOperationsSync()
+    }
     return () => clearInterval(t)
-  }, [isStoreOpen, withinOperatingHours, schedulePhase, fetchStoreOperations])
+  }, [
+    isStoreOpen,
+    withinOperatingHours,
+    schedulePhase,
+    forceStoreOperationsSync,
+    manualActivationLock,
+    activeCountdownAt,
+  ])
 
   // Delivery mode from merchant_store_settings (self_delivery)
   const fetchDeliverySettings = React.useCallback(async () => {

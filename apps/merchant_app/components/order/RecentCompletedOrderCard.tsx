@@ -15,7 +15,6 @@ import { OrderTimelineSheet } from "@/components/order/OrderTimelineSheet";
 import { OrderCustomerBottomSheet } from "@/components/order/OrderCustomerBottomSheet";
 import { formatOrderDateTime } from "@/components/order/orderFormatters";
 import { formatTerminalOrderFooter } from "@/lib/terminalOrderFooter";
-import { printOrderKot } from "@/lib/orderCardActions";
 import { Ionicons } from "@expo/vector-icons";
 
 type Props = {
@@ -85,13 +84,12 @@ export function RecentCompletedOrderCard({
         placedAt={placedAt}
         onViewDetail={onPress}
         onItemPress={onItemPress}
-        onCustomerPress={() => setCustomerOpen(true)}
         speakingActive={speaking}
         onSpeak={() => void speak(order)}
-        onPrint={() => void printOrderKot(order, printContext)}
         onMenu={() => setMenuOpen(true)}
         showRider={false}
         detailsDefaultOpen={false}
+        pressCardOpensDetail
         statusBadge={
           <View style={[styles.badge, { backgroundColor: badge.bg, borderColor: badge.border }]}>
             <Text style={[styles.badgeText, { color: badge.color }]}>{badge.label}</Text>

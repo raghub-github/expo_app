@@ -4,6 +4,7 @@
  */
 import { STORAGE_KEYS } from "@/constants";
 import { fastGetString, fastSetString, hydrateFastKvFromAsyncStorage } from "@/lib/fastKv";
+import { getActiveCustomerScopeId, isOwnedByActiveCustomer } from "@/lib/customerScope";
 
 const KEY = STORAGE_KEYS.ACTIVE_PERSON_RIDE_IDS;
 
@@ -13,18 +14,28 @@ function normalizeId(orderId: string | null | undefined): string {
   return String(orderId ?? "").trim();
 }
 
+function normalizeIds(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return [
+    ...new Set(
+      value.map((x) => normalizeId(typeof x === "string" ? x : "")).filter(Boolean)
+    ),
+  ];
+}
+
+/**
+ * Ride ids hydrate the Track pill before any network call, so a payload that is
+ * not stamped with the signed-in customer is dropped rather than trusted. The
+ * legacy bare-array shape carries no owner and is therefore discarded.
+ */
 function parse(raw: string | null | undefined): string[] {
   if (!raw) return [];
   try {
     const parsed = JSON.parse(raw) as unknown;
-    if (!Array.isArray(parsed)) return [];
-    return [
-      ...new Set(
-        parsed
-          .map((x) => normalizeId(typeof x === "string" ? x : ""))
-          .filter(Boolean)
-      ),
-    ];
+    if (Array.isArray(parsed)) return [];
+    const entry = parsed as { customerId?: string | null; ids?: unknown } | null;
+    if (!entry || !isOwnedByActiveCustomer(entry.customerId)) return [];
+    return normalizeIds(entry.ids);
   } catch {
     return [];
   }
@@ -38,7 +49,7 @@ function hydrateMemorySync(): void {
 function persist(ids: string[]): void {
   memoryIds = ids;
   try {
-    fastSetString(KEY, JSON.stringify(ids));
+    fastSetString(KEY, JSON.stringify({ customerId: getActiveCustomerScopeId(), ids }));
   } catch {
     /* non-blocking */
   }

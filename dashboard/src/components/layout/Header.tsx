@@ -22,6 +22,7 @@ import {
   ArrowLeft,
   IndianRupee,
   SlidersHorizontal,
+  Bell,
 } from "lucide-react";
 import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
 import { useLogout } from "@/hooks/queries/useAuthQuery";
@@ -485,8 +486,82 @@ function HeaderComponent() {
   const isGeoRiderAvailabilityPage =
     cleanPathname === "/dashboard/area-managers/availability" ||
     cleanPathname.startsWith("/dashboard/area-managers/availability/");
+  const isAnalyticsPage =
+    cleanPathname === "/dashboard/analytics" ||
+    cleanPathname.startsWith("/dashboard/analytics/");
+  const analyticsSegments = isAnalyticsPage
+    ? cleanPathname.slice("/dashboard/analytics".length).split("/").filter(Boolean)
+    : [];
+  const analyticsCategoryLabels: Record<string, string> = {
+    agents: "Agents",
+    tickets: "Tickets",
+    orders: "Orders",
+    sessions: "Sessions",
+  };
+  const analyticsCategory = analyticsSegments[0]
+    ? analyticsCategoryLabels[analyticsSegments[0]] ?? "Analytics"
+    : null;
+  const analyticsHeaderTitle = analyticsCategory ?? "Agent Analytics";
+  const isAnalyticsDetailPage = analyticsSegments.length === 2;
+  const isAnalyticsDayAuditPage = analyticsSegments.length >= 3;
+  const analyticsDayLabel = isAnalyticsDayAuditPage
+    ? (() => {
+        const day = analyticsSegments[2] ?? "";
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return "Day audit";
+        return new Date(`${day}T12:00:00`).toLocaleDateString("en-IN", {
+          day: "2-digit",
+          month: "short",
+          year: "numeric",
+        });
+      })()
+    : null;
+  const analyticsAuditViewLabel =
+    analyticsSegments[3] === "sessions"
+      ? "Login duration"
+      : analyticsSegments[3] === "tickets"
+        ? "Tickets worked"
+        : analyticsSegments[3] === "orders"
+          ? "Orders worked"
+          : null;
+  const analyticsBackHref = isAnalyticsDayAuditPage
+    ? `/dashboard/analytics/${analyticsSegments[0]}/${analyticsSegments[1]}`
+    : isAnalyticsDetailPage
+      ? `/dashboard/analytics/${analyticsSegments[0]}`
+      : analyticsCategory
+        ? "/dashboard/analytics"
+        : null;
   const isAmOnboardingFailedPage =
     cleanPathname.startsWith("/dashboard/area-managers/stores/onboarding-failed");
+  const isNotificationsArea = cleanPathname.startsWith(
+    "/dashboard/super-admin/notifications"
+  );
+  const notificationsPageLabel = useMemo(() => {
+    const segment = cleanPathname
+      .slice("/dashboard/super-admin/notifications".length)
+      .split("/")
+      .filter(Boolean)[0];
+    const labels: Record<string, string> = {
+      templates: "Templates",
+      campaigns: "Campaigns",
+      scheduled: "Scheduled",
+      history: "History",
+      analytics: "Analytics",
+      devices: "Devices",
+      logs: "Logs / Failures",
+      settings: "Settings",
+    };
+    return segment ? labels[segment] ?? "Notifications" : "Dashboard";
+  }, [cleanPathname]);
+  const notificationsBackHref = useMemo(() => {
+    const rest = cleanPathname
+      .slice("/dashboard/super-admin/notifications".length)
+      .split("/")
+      .filter(Boolean);
+    // Deeper pages step up one level; the notifications hub goes back to Super Admin.
+    if (rest.length > 1) return `/dashboard/super-admin/notifications/${rest[0]}`;
+    if (rest.length === 1) return "/dashboard/super-admin/notifications";
+    return SUPER_ADMIN_HUB_PATH;
+  }, [cleanPathname]);
   const isSuperAdminSubRoute = useMemo(
     () =>
       cleanPathname.startsWith(`${SUPER_ADMIN_HUB_PATH}/`) &&
@@ -501,12 +576,13 @@ function HeaderComponent() {
   const currentDashboard = useMemo(() => getCurrentDashboard(cleanPathname), [cleanPathname]);
   const currentSubRoutes = useMemo(() => getCurrentDashboardSubRoutes(cleanPathname), [cleanPathname]);
   const hasRightSidebar = Boolean(
-    currentDashboard &&
+    isNotificationsArea ||
+    (currentDashboard &&
       cleanPathname !== "/dashboard" &&
       currentSubRoutes.length > 0 &&
       !cleanPathname.startsWith("/dashboard/customers") &&
       !cleanPathname.startsWith("/dashboard/orders") &&
-      !(cleanPathname === "/order" || cleanPathname.startsWith("/order/"))
+      !(cleanPathname === "/order" || cleanPathname.startsWith("/order/")))
   );
   const { canTogglePortal = false, isSuperAdmin = false } = usePermissions();
   const { data: dashboardAccessData } = useDashboardAccessQuery();
@@ -956,6 +1032,28 @@ function HeaderComponent() {
             </Link>
             <h2 className="min-w-0 truncate text-base font-semibold text-gray-900 sm:text-lg">{pageName}</h2>
           </div>
+        ) : isNotificationsArea ? (
+          <div className="flex min-w-0 items-center gap-2.5">
+            <Link
+              href={notificationsBackHref}
+              className="shrink-0 cursor-pointer rounded-md p-1.5 text-gray-600 transition hover:bg-gray-100"
+              aria-label="Back"
+              title="Back"
+            >
+              <ArrowLeft className="h-4 w-4" />
+            </Link>
+            <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-[10px] bg-[#121212] text-white">
+              <Bell className="h-4 w-4" aria-hidden />
+            </span>
+            <div className="min-w-0 leading-tight">
+              <div className="truncate text-[10px] font-semibold uppercase tracking-wide text-teal-700">
+                Notifications
+              </div>
+              <h2 className="truncate text-base font-semibold text-[#121212]">
+                {notificationsPageLabel}
+              </h2>
+            </div>
+          </div>
         ) : isSuperAdminSubRoute ? (
           <div className="flex min-w-0 items-center gap-2 sm:gap-2.5">
             <Link
@@ -990,6 +1088,80 @@ function HeaderComponent() {
             <p className="mt-0.5 hidden max-w-xl truncate text-xs text-gray-500 sm:block">
               Child stores with rejected verification steps. Fix and resubmit for admin review.
             </p>
+          </div>
+        ) : isAnalyticsPage ? (
+          <div className="flex min-w-0 items-center gap-2">
+            {analyticsBackHref && (
+              <Link
+                href={analyticsBackHref}
+                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-gray-200 text-gray-700 transition hover:bg-gray-100 hover:text-black"
+                aria-label="Go back to previous analytics page"
+                title="Back"
+              >
+                <ArrowLeft className="h-4 w-4" />
+              </Link>
+            )}
+            <div className="min-w-0 flex-shrink">
+              <h2 className="min-w-0 truncate text-base font-semibold text-[#121212] sm:text-lg">
+                {analyticsHeaderTitle}
+              </h2>
+              <nav
+                className="mt-0.5 hidden min-w-0 items-center gap-1 truncate text-[11px] font-medium text-slate-600 sm:flex"
+                aria-label="Analytics breadcrumb"
+              >
+                <Link href="/dashboard/analytics" className="text-blue-700 hover:text-blue-900">
+                  Analytics
+                </Link>
+                <span className="text-slate-400">-</span>
+                <Link href="/dashboard/analytics" className="text-blue-700 hover:text-blue-900">
+                  Agent Analytics
+                </Link>
+                {analyticsCategory && (
+                  <>
+                    <span className="text-slate-400">-</span>
+                    <Link
+                      href={`/dashboard/analytics/${analyticsSegments[0]}`}
+                      className={
+                        isAnalyticsDetailPage || isAnalyticsDayAuditPage
+                          ? "text-blue-700 hover:text-blue-900"
+                          : "text-slate-800"
+                      }
+                    >
+                      {analyticsCategory}
+                    </Link>
+                  </>
+                )}
+                {(isAnalyticsDetailPage || isAnalyticsDayAuditPage) && (
+                  <>
+                    <span className="text-slate-400">-</span>
+                    {isAnalyticsDayAuditPage ? (
+                      <Link
+                        href={`/dashboard/analytics/${analyticsSegments[0]}/${analyticsSegments[1]}`}
+                        className="text-blue-700 hover:text-blue-900"
+                      >
+                        Agent details
+                      </Link>
+                    ) : (
+                      <span className="text-slate-800">Agent details</span>
+                    )}
+                  </>
+                )}
+                {isAnalyticsDayAuditPage && analyticsDayLabel && (
+                  <>
+                    <span className="text-slate-400">-</span>
+                    <span className={analyticsAuditViewLabel ? "text-blue-700" : "text-slate-800"}>
+                      {analyticsDayLabel}
+                    </span>
+                  </>
+                )}
+                {analyticsAuditViewLabel && (
+                  <>
+                    <span className="text-slate-400">-</span>
+                    <span className="text-slate-800">{analyticsAuditViewLabel}</span>
+                  </>
+                )}
+              </nav>
+            </div>
           </div>
         ) : isGeoRiderAvailabilityPage ? null : (
           <h2

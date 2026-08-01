@@ -28,6 +28,9 @@ import {
   type WalletTransaction,
   type WalletTxFilter,
 } from "@/services/wallet.service";
+import { refreshCustomerWallet } from "@/lib/refreshCustomerWallet";
+import { writeWalletBalanceCache } from "@/lib/walletBalanceCache";
+import { WALLET_BALANCE_QUERY_KEY } from "@/hooks/useWalletBalance";
 
 const PAGE_BG = "#F4F5F7";
 const TEXT = "#111827";
@@ -47,10 +50,16 @@ const FILTERS: { id: WalletTxFilter; label: string }[] = [
 function formatTxDate(iso: string): string {
   try {
     const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return iso;
     const day = d.getDate();
     const month = d.toLocaleDateString("en-IN", { month: "short" });
     const year = d.getFullYear();
-    return `${day} ${month}, ${year}`;
+    const time = d.toLocaleTimeString("en-IN", {
+      hour: "numeric",
+      minute: "2-digit",
+      hour12: true,
+    });
+    return `${day} ${month}, ${year} · ${time}`;
   } catch {
     return iso;
   }
@@ -74,6 +83,9 @@ function txIcon(type: WalletTransaction["type"]): {
 }
 
 function unlockedOfferTxLines(tx: WalletTransaction): { title: string; offerName: string | null } {
+  if (tx.type === "refund") {
+    return { title: "GatiCash Refunded - Credit Wallet", offerName: null };
+  }
   if (tx.reference_type !== "missed_offer_compensation") {
     return { title: tx.title, offerName: null };
   }
@@ -128,13 +140,21 @@ export default function WalletScreen() {
   const handledTopupKeyRef = useRef<string | null>(null);
 
   const balanceQ = useQuery({
-    queryKey: ["wallet", "balance"],
-    queryFn: () => walletService.getBalance(),
+    queryKey: WALLET_BALANCE_QUERY_KEY,
+    queryFn: async () => {
+      const data = await walletService.getBalance();
+      void writeWalletBalanceCache(data);
+      return data;
+    },
+    staleTime: 15_000,
+    refetchOnWindowFocus: true,
   });
 
   const txQ = useQuery({
     queryKey: ["wallet", "transactions", filter],
     queryFn: () => walletService.getTransactions({ filter, limit: 50 }),
+    staleTime: 15_000,
+    refetchOnWindowFocus: true,
   });
 
   useEffect(() => {
@@ -158,7 +178,7 @@ export default function WalletScreen() {
     handledTopupKeyRef.current = key;
 
     setTopupSuccess({ amount, balanceAfter });
-    void queryClient.invalidateQueries({ queryKey: ["wallet"] });
+    void refreshCustomerWallet(queryClient);
     router.setParams({ topupAmount: "", balanceAfter: "" });
   }, [params.topupAmount, params.balanceAfter, queryClient, router]);
 
@@ -168,9 +188,9 @@ export default function WalletScreen() {
   const refreshing = (balanceQ.isFetching || txQ.isFetching) && !loading;
 
   const onRefresh = useCallback(() => {
-    void balanceQ.refetch();
+    void refreshCustomerWallet(queryClient);
     void txQ.refetch();
-  }, [balanceQ, txQ]);
+  }, [queryClient, txQ]);
 
   const handleAddMoney = useCallback(() => {
     router.push("/wallet/add-money");
@@ -178,7 +198,7 @@ export default function WalletScreen() {
 
   const closeTopupSuccess = useCallback(() => {
     setTopupSuccess(null);
-    void queryClient.invalidateQueries({ queryKey: ["wallet"] });
+    void refreshCustomerWallet(queryClient);
   }, [queryClient]);
 
   const lockedNote = useMemo(() => {

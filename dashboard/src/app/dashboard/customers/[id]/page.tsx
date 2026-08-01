@@ -54,6 +54,9 @@ interface CustomerDetail {
   locationPermission?: boolean | null;
   contactsPermission?: boolean | null;
   gmitraPlusActive?: boolean | null;
+  gmitraPlusActivatedAt?: Date | string | null;
+  gmitraPlusExpiresAt?: Date | string | null;
+  gmitraPlusSubscriptionStatus?: string | null;
   lastLoginAt?: Date | string | null;
   lastOrderAt?: Date | string | null;
   lastActivityAt?: Date | string | null;
@@ -835,6 +838,12 @@ function CustomerDetailsContent() {
               ) : (
                 <span className="font-semibold text-red-600">Not active</span>
               )}
+            </FieldItem>
+            <FieldItem label="Activated date">
+              {formatIsoDateTime(customer.gmitraPlusActivatedAt)}
+            </FieldItem>
+            <FieldItem label="Expiry date">
+              {formatIsoDateTime(customer.gmitraPlusExpiresAt)}
             </FieldItem>
             <FieldItem label="Referral code">{fmtText(customer.referralCode)}</FieldItem>
             <FieldItem label="Referred by (code)">{fmtText(customer.referredBy)}</FieldItem>

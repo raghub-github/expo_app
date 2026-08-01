@@ -9,10 +9,26 @@ type FetchBackendOptions = {
   timeoutMs?: number;
 };
 
-function isConnectionRefused(e: unknown): boolean {
+/**
+ * Connect-phase failures only — the request never reached the backend, so it is safe to
+ * retry the next candidate even for POST. A stale LAN IP shows up as UND_ERR_CONNECT_TIMEOUT.
+ */
+const UNREACHABLE_CAUSE_CODES = new Set([
+  'ECONNREFUSED',
+  'ECONNRESET',
+  'EPIPE',
+  'EHOSTUNREACH',
+  'ENETUNREACH',
+  'ENOTFOUND',
+  'EAI_AGAIN',
+  'UND_ERR_CONNECT_TIMEOUT',
+  'UND_ERR_SOCKET',
+]);
+
+function isUnreachableBase(e: unknown): boolean {
   if (!e || typeof e !== 'object') return false;
-  const cause = (e as { cause?: { code?: string } }).cause;
-  return cause?.code === 'ECONNREFUSED';
+  const code = (e as { cause?: { code?: string } }).cause?.code;
+  return code != null && UNREACHABLE_CAUSE_CODES.has(code);
 }
 
 /** Server-side fetch to Fastify — tries configured backend URLs until one connects. */
@@ -40,11 +56,11 @@ export async function fetchBackend(
       });
     } catch (e) {
       lastError = e;
+      if (isUnreachableBase(e)) continue;
       const isTimeout =
         e instanceof Error &&
         (e.name === 'TimeoutError' || e.name === 'AbortError' || /timeout|aborted/i.test(e.message));
       if (isTimeout) return null;
-      if (isConnectionRefused(e)) continue;
       console.warn('[fetch-backend]', normalizedPath, e);
       return null;
     }
@@ -54,7 +70,7 @@ export async function fetchBackend(
     console.warn(
       '[fetch-backend]',
       normalizedPath,
-      'all backend URLs refused connection:',
+      'no reachable backend URL:',
       bases.join(', ')
     );
   }

@@ -1,8 +1,8 @@
-/** Show "Open soon" + live countdown when store opens within this window. */
-export const OPEN_SOON_WINDOW_MS = 30 * 60 * 1000;
+/** Show "Opens in MM:SS" when store opens within this window. */
+export const OPEN_SOON_WINDOW_MS = 20 * 60 * 1000;
 
-/** Show "Closes in …" countdown (red) only within this window before close. */
-export const CLOSING_SOON_WINDOW_MS = 30 * 60 * 1000;
+/** Show "Closes in MM:SS" only within this window before close. */
+export const CLOSING_SOON_WINDOW_MS = 15 * 60 * 1000;
 
 export function toTimestamp(v: string | number | null | undefined): number | null {
   if (v == null) return null;
@@ -17,6 +17,14 @@ export function formatCountdown(msLeft: number): { hr: number; min: number; sec:
   const min = Math.floor((msLeft / (1000 * 60)) % 60);
   const hr = Math.floor(msLeft / (1000 * 60 * 60));
   return { hr, min, sec };
+}
+
+/** Live badge countdown — always MM:SS (windows are ≤20 min). */
+export function countdownMmSs(msLeft: number): string {
+  const totalSec = Math.max(0, Math.floor(msLeft / 1000));
+  const min = Math.floor(totalSec / 60);
+  const sec = totalSec % 60;
+  return `${String(min).padStart(2, "0")}:${String(sec).padStart(2, "0")}`;
 }
 
 export function countdownString(msLeft: number, compact = false): string {
@@ -35,18 +43,21 @@ export function countdownString(msLeft: number, compact = false): string {
   return parts.join(" ");
 }
 
+/** Clock time as HH:MM (24h) for simple status badges. */
+export function formatClockHHMM(ts: number): string {
+  const d = new Date(ts);
+  const hh = String(d.getHours()).padStart(2, "0");
+  const mm = String(d.getMinutes()).padStart(2, "0");
+  return `${hh}:${mm}`;
+}
+
 export function formatNextOpenTime(ts: number): string {
   const d = new Date(ts);
   const now = new Date();
-  const timeStr = d.toLocaleTimeString("en-IN", {
-    hour: "numeric",
-    minute: "2-digit",
-    hour12: true,
-  });
+  const timeStr = formatClockHHMM(ts);
   // Real calendar-day difference — NOT just "is it a different day". Naming the actual
   // day matters when the next open skips a closed weekday (e.g. store shut Tue → opens
-  // Wed, which is 2 days out). Previously this said "tomorrow" for ANY future day, so it
-  // disagreed with the merchant dashboard ("Wed, 22 Jul"). Now it matches.
+  // Wed, which is 2 days out).
   const startOfDay = (x: Date) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
   const dayDiff = Math.round((startOfDay(d) - startOfDay(now)) / 86_400_000);
   if (dayDiff <= 0) return `Opens at ${timeStr}`;
@@ -91,9 +102,13 @@ export function closedStoreCtaCopy(
   const { isOpenSoon, msUntilOpen } = getOpenSoonState(nextOpenAt, nowMs, true);
   if (isOpenSoon && msUntilOpen != null) {
     return {
-      title: "Open soon",
-      sub: countdownString(msUntilOpen, true),
+      title: "Opens soon",
+      sub: countdownMmSs(msUntilOpen),
     };
+  }
+  const ts = toTimestamp(nextOpenAt);
+  if (ts != null && ts > nowMs) {
+    return { title: "Store closed", sub: `Opens at ${formatClockHHMM(ts)}` };
   }
   return { title: "Store closed", sub: fallbackSub };
 }

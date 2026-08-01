@@ -111,6 +111,7 @@ import {
 } from "@/lib/checkout-discount-display";
 import {
   computeAppliedCheckoutSavings,
+  formatCheckoutSavingsRupees,
   hasAppliedMembershipFreeDelivery,
 } from "@/lib/checkoutAppliedSavings";
 import {
@@ -567,8 +568,8 @@ const PAYMENT_OPTIONS = [
   { id: "wallet", label: "Wallets (Paytm, Amazon Pay & more)", displayName: "Wallet" },
 ] as const;
 
-/** Max tip amount (₹) sent to billing. */
-const TIP_SLIDER_MAX = 60;
+/** Max tip amount (₹) for custom "Other" — was 60 and silently capped every larger tip to ₹60. */
+const TIP_CUSTOM_MAX = 10_000;
 
 /** Horizontal marquee for restaurant note below utility pills. */
 function RestaurantNoteMarquee({ note }: { note: string }) {
@@ -1338,9 +1339,8 @@ export default function CheckoutScreen() {
       Math.abs(activeLng - lng) < 1e-6;
 
     if (locationSource === "current") {
-      // Live GPS mode: only sync server active pin when checkout address matches GPS
-      // (nearby saved). Never flip home discovery from an auto-filled checkout address —
-      // explicit picks go through selectAddressFromCheckoutSheet.
+      // Live GPS: sync pin coords only when checkout snapped to a nearby saved row.
+      // Omit addressId so we never clear a concurrent Saved Address binding.
       const nearGps =
         sessionCoords != null &&
         matchSavedAddressIdNearCoords(addresses, sessionCoords.latitude, sessionCoords.longitude, 0.25) ===
@@ -1357,7 +1357,14 @@ export default function CheckoutScreen() {
       return;
     }
 
-    if (sameAsSession && sameAsActive && locationSource === "selected") return;
+    if (
+      sameAsSession &&
+      sameAsActive &&
+      locationSource === "selected" &&
+      activeLocation?.addressId === selectedAddress.id
+    ) {
+      return;
+    }
 
     // Update local app "selected" location (used by merchants list + merchant detail).
     if (!sameAsSession || locationSource !== "selected") {
@@ -1376,18 +1383,20 @@ export default function CheckoutScreen() {
     }
 
     // Best-effort: update backend active location so future sessions/devices are consistent.
-    if (!sameAsActive) {
+    if (!sameAsActive || activeLocation?.addressId !== selectedAddress.id) {
       addressService
         .setActiveLocation({
           latitude: lat,
           longitude: lng,
           address: selectedAddress.fullAddress,
+          addressId: selectedAddress.id,
         })
         .catch(() => {});
     }
   }, [
     activeLocation?.latitude,
     activeLocation?.longitude,
+    activeLocation?.addressId,
     addresses,
     locationSource,
     sessionCoords?.latitude,
@@ -1405,16 +1414,24 @@ export default function CheckoutScreen() {
 
   /**
    * Delivery pin must follow the same source as home / "Select a location":
-   * 1) In-memory map pin when user chose a saved address or map (locationSource === "selected")
-   * 2) Nearby saved address to live GPS (when source === "current")
-   * 3) Server active-location only when source is selected
+   * 1) Backend-bound activeLocation.addressId (Saved / Add New)
+   * 2) In-memory map pin when user chose a saved address or map (locationSource === "selected")
+   * 3) Nearby saved address to live GPS (when source === "current")
+   * 4) Server active-location coords only when source is selected
    * Never auto-pick a far default/home while on live GPS.
    */
   useEffect(() => {
     if (addresses.length === 0 || selectedAddressId != null || !merchantId) return;
 
     let resolved: number | null = null;
-    if (sessionCoords && locationSource === "selected") {
+    if (
+      locationSource !== "current" &&
+      activeLocation?.addressId != null &&
+      addresses.some((a) => a.id === activeLocation.addressId)
+    ) {
+      resolved = activeLocation.addressId;
+    }
+    if (resolved == null && sessionCoords && locationSource === "selected") {
       resolved = matchSavedAddressIdNearCoords(
         addresses,
         sessionCoords.latitude,
@@ -1444,14 +1461,18 @@ export default function CheckoutScreen() {
       );
     }
 
-    if (resolved == null && locationSource !== "current") {
-      const defaultAddr =
-        addresses.find((a) => a.isLastUsed) ?? addresses.find((a) => a.isDefault) ?? addresses[0];
-      resolved = defaultAddr?.id ?? null;
-    }
-
+    // Never invent a far default/home — prompt Select Address instead.
     if (resolved == null) return;
     const candidateId = resolved;
+    const fromBackendBinding =
+      locationSource !== "current" && activeLocation?.addressId === candidateId;
+
+    // Backend already recorded this saved address as active — bind immediately so
+    // checkout never asks the user to re-select. Still re-check serviceability.
+    if (fromBackendBinding) {
+      setSelectedAddressId((prev) => prev ?? candidateId);
+    }
+
     let cancelled = false;
     void getStoreDeliveryQuote({
       storeId: merchantId,
@@ -1459,12 +1480,19 @@ export default function CheckoutScreen() {
       serviceType: "FOOD",
     })
       .then((quote) => {
-        if (!cancelled && quote.serviceable) {
+        if (cancelled) return;
+        if (quote.serviceable) {
           setSelectedAddressId((prev) => prev ?? candidateId);
+          return;
+        }
+        if (fromBackendBinding) {
+          setSelectedAddressId((prev) => (prev === candidateId ? null : prev));
+          setOutOfZoneMessageVisible(true);
         }
       })
       .catch(() => {
-        // Strict fail-closed: an unverifiable address is not selected.
+        // Strict fail-closed for proximity/default candidates only.
+        // Backend-bound id stays until quote proves unserviceable.
       });
     return () => {
       cancelled = true;
@@ -1478,6 +1506,7 @@ export default function CheckoutScreen() {
     locationSource,
     activeLocation?.latitude,
     activeLocation?.longitude,
+    activeLocation?.addressId,
   ]);
 
   useEffect(() => {
@@ -1657,9 +1686,27 @@ export default function CheckoutScreen() {
 
   const deleteCheckoutAddressMutation = useMutation({
     mutationFn: (id: number) => addressService.deleteAddress(id),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["addresses"] });
-      void queryClient.invalidateQueries({ queryKey: ["active-location"] });
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["addresses"] });
+      await queryClient.invalidateQueries({ queryKey: ["active-location"] });
+      const { applyActiveLocationFromBackend } = await import(
+        "@/lib/applyActiveLocationFromBackend"
+      );
+      await applyActiveLocationFromBackend(queryClient);
+      const { promptCartIfLocationBrokeServiceability } = await import(
+        "@/lib/promptCartIfLocationBrokeServiceability"
+      );
+      void promptCartIfLocationBrokeServiceability(queryClient);
+      setSelectedAddressId((prev) => {
+        const active = queryClient.getQueryData<{ addressId?: number | null }>([
+          "active-location",
+        ]);
+        if (prev != null && active?.addressId != null && prev !== active.addressId) {
+          return active.addressId;
+        }
+        if (prev != null && active?.addressId == null) return null;
+        return prev;
+      });
     },
   });
 
@@ -1691,6 +1738,7 @@ export default function CheckoutScreen() {
             latitude: addr.latitude,
             longitude: addr.longitude,
             address: addr.fullAddress,
+            addressId: addr.id,
           }),
           addressService.setAddressDefault(addr.id).catch(() => {}),
         ]);
@@ -1893,7 +1941,7 @@ export default function CheckoutScreen() {
   );
 
   const tipValue = useMemo(
-    () => Math.max(0, Math.min(TIP_SLIDER_MAX, tipSliderValue)),
+    () => Math.max(0, Math.min(TIP_CUSTOM_MAX, tipSliderValue)),
     [tipSliderValue]
   );
 
@@ -1905,7 +1953,12 @@ export default function CheckoutScreen() {
   }, [merchantId]);
 
   const donationValue = donationEnabled
-    ? (donationPreset !== "custom" && donationPreset != null ? Number(donationPreset) : parseFloat(donationAmount) || 0)
+    ? donationPreset !== "custom" && donationPreset != null
+      ? Number(donationPreset)
+      : (() => {
+          const n = parseFloat(String(donationAmount).replace(/[^\d.]/g, ""));
+          return Number.isFinite(n) ? Math.max(0, n) : 0;
+        })()
     : 0;
 
   const debouncedTipForBilling = useDebouncedValue(tipValue, BILLING_INPUT_DEBOUNCE_MS);
@@ -1925,14 +1978,19 @@ export default function CheckoutScreen() {
 
   const handleBillTipCustomMode = useCallback(() => {
     setTipCustomMode(true);
-    const n = parseFloat(tipCustomInput);
-    setTipSliderValue(Number.isFinite(n) ? Math.min(TIP_SLIDER_MAX, Math.max(0, Math.round(n))) : 0);
+    const n = parseFloat(String(tipCustomInput).replace(/[^\d.]/g, ""));
+    setTipSliderValue(Number.isFinite(n) ? Math.min(TIP_CUSTOM_MAX, Math.max(0, Math.round(n))) : 0);
   }, [tipCustomInput]);
 
   const handleBillTipCustomInputChange = useCallback((v: string) => {
-    setTipCustomInput(v);
-    const n = parseFloat(v.replace(/[^\d.]/g, ""));
-    setTipSliderValue(Number.isFinite(n) ? Math.min(TIP_SLIDER_MAX, Math.max(0, Math.round(n))) : 0);
+    const cleaned = v.replace(/[^\d.]/g, "");
+    setTipCustomInput(cleaned);
+    const n = parseFloat(cleaned);
+    setTipSliderValue(Number.isFinite(n) ? Math.min(TIP_CUSTOM_MAX, Math.max(0, Math.round(n))) : 0);
+  }, []);
+
+  const handleDonationAmountChange = useCallback((v: string) => {
+    setDonationAmount(v.replace(/[^\d.]/g, ""));
   }, []);
 
   const handleDonationPresetPress = useCallback(
@@ -1962,7 +2020,7 @@ export default function CheckoutScreen() {
       donationAmount,
       onDonationPresetPress: handleDonationPresetPress,
       onDonationClear: clearCheckoutDonation,
-      onDonationAmountChange: setDonationAmount,
+      onDonationAmountChange: handleDonationAmountChange,
       onFeedingInfoPress: () => setCommunityInitiativeSheetVisible(true),
       onDonateEveryOrderPress: () => setDonateWithSheetVisible(true),
       donationScope,
@@ -1979,6 +2037,7 @@ export default function CheckoutScreen() {
       donationAmount,
       handleDonationPresetPress,
       clearCheckoutDonation,
+      handleDonationAmountChange,
       donationScope,
     ]
   );
@@ -2102,6 +2161,23 @@ export default function CheckoutScreen() {
     hasDeliveryAddress && billingQuery.isPlaceholderData
       ? null
       : (billingQuery.data ?? null);
+
+  /**
+   * Live tip/donation vs last settled bill — keeps Total / GatiCash / CTA in sync while
+   * billing-calculate is still debouncing (custom amounts must not only appear on the wallet row).
+   */
+  const gratitudePendingDelta = useMemo(() => {
+    if (serverBill == null) return 0;
+    const serverTip = serverBill.tipAmount ?? 0;
+    const serverDonation = serverBill.donationAmount ?? 0;
+    return roundBillAmount(tipValue - serverTip + (donationValue - serverDonation));
+  }, [serverBill, tipValue, donationValue]);
+
+  /** Settled bill finalAmount + any tip/donation still awaiting billing refetch. */
+  const billFinalWithLiveGratitude = useMemo(() => {
+    if (serverBill == null) return null;
+    return roundBillAmount(serverBill.finalAmount + gratitudePendingDelta);
+  }, [serverBill, gratitudePendingDelta]);
 
   useEffect(() => {
     if (
@@ -2649,7 +2725,8 @@ export default function CheckoutScreen() {
   const fulfillPendingMissedOfferWallet = useCallback(async () => {
     pendingMissedOfferWalletRef.current = null;
     setMissedOfferWalletPending(false);
-    void queryClient.invalidateQueries({ queryKey: ["wallet", "balance"] });
+    const { refreshCustomerWallet } = await import("@/lib/refreshCustomerWallet");
+    void refreshCustomerWallet(queryClient);
   }, [queryClient]);
 
   const featuredCoupon = useMemo(() => {
@@ -2713,16 +2790,16 @@ export default function CheckoutScreen() {
       const promoSave = primaryCheckoutDiscount.amount;
       const promoLabel = friendlyCheckoutDiscountLabel(primaryCheckoutDiscount.label);
       if (membershipApplied && subSave > 0.005 && subLabel) {
-        return `You saved ₹${Math.round(promoSave + subSave)} with ${promoLabel} + free delivery`;
+        return `You saved ₹${formatCheckoutSavingsRupees(promoSave + subSave)} with ${promoLabel} + free delivery`;
       }
       if (promoSave > 0.005) {
-        return `You saved ₹${Math.round(promoSave)} with ${promoLabel}`;
+        return `You saved ₹${formatCheckoutSavingsRupees(promoSave)} with ${promoLabel}`;
       }
       return `${promoLabel} applied!`;
     }
 
     if (membershipApplied && subSave > 0.005 && subLabel) {
-      return `You saved ₹${Math.round(subSave)} with ${friendlyCheckoutDiscountLabel(subLabel)}`;
+      return `You saved ₹${formatCheckoutSavingsRupees(subSave)} with ${friendlyCheckoutDiscountLabel(subLabel)}`;
     }
 
     if (appliedCouponCode) {
@@ -2749,7 +2826,7 @@ export default function CheckoutScreen() {
 
   const offersAppliedSubline = useMemo(() => {
     if (missedOfferWalletPending && displayMissedOfferWalletComp) {
-      return `Saving ₹${Math.round(displayMissedOfferWalletComp.offerSavingsInr)} on this order · ₹${Math.round(displayMissedOfferWalletComp.amountInr)} to GatiCash after order`;
+      return `Saving ₹${formatCheckoutSavingsRupees(displayMissedOfferWalletComp.offerSavingsInr)} on this order · ₹${formatCheckoutSavingsRupees(displayMissedOfferWalletComp.amountInr)} to GatiCash after order`;
     }
     return null;
   }, [missedOfferWalletPending, displayMissedOfferWalletComp]);
@@ -3294,10 +3371,10 @@ export default function CheckoutScreen() {
   }, [missedOfferWalletPending, displayMissedOfferWalletComp]);
 
   const gatiCashMaxApply = useMemo(() => {
-    if (!serverBill || gatiCashAvailable <= 0.005) return 0;
-    const base = roundBillAmount(serverBill.finalAmount - missedOfferUnlockDiscount);
+    if (billFinalWithLiveGratitude == null || gatiCashAvailable <= 0.005) return 0;
+    const base = roundBillAmount(billFinalWithLiveGratitude - missedOfferUnlockDiscount);
     return Math.min(gatiCashAvailable, Math.max(0, base));
-  }, [serverBill, gatiCashAvailable, missedOfferUnlockDiscount]);
+  }, [billFinalWithLiveGratitude, gatiCashAvailable, missedOfferUnlockDiscount]);
 
   const gatiCashApplyAmount = useMemo(() => {
     if (!useGatiCashWallet || gatiCashMaxApply <= 0.005) return 0;
@@ -3317,9 +3394,9 @@ export default function CheckoutScreen() {
 
   /** Authoritative total from the last SETTLED server bill (not a mid-flight placeholder). */
   const confirmedToPayAmount = useMemo(() => {
-    if (serverBill == null) return undefined;
+    if (serverBill == null || billFinalWithLiveGratitude == null) return undefined;
     return computeCheckoutToPayAmount({
-      finalAmount: serverBill.finalAmount,
+      finalAmount: billFinalWithLiveGratitude,
       deliveryType,
       deliveryFeePending,
       pendingDeliveryFee: Math.max(
@@ -3335,6 +3412,7 @@ export default function CheckoutScreen() {
     });
   }, [
     serverBill,
+    billFinalWithLiveGratitude,
     gatiCashApplyAmount,
     missedOfferUnlockDiscount,
     missedOfferWalletPending,
@@ -3381,21 +3459,36 @@ export default function CheckoutScreen() {
     if (Math.abs(delta) < 0.005) return confirmedToPayAmount;
     return Math.max(0, roundBillAmount(snapshot.toPayAmount + delta));
   }, [confirmedToPayAmount, items, itemOfferById]);
-  /** List price strike — only when payable is actually lower (hide when wallet top-up inflates total). */
+  /** List price strike — only when payable is actually lower (hide when wallet top-up inflates total).
+   * Also when GatiCash covers 100% (₹0 to-pay), strike the pre-wallet amount so CTA/Total Bill
+   * explain why the bold total is zero.
+   *
+   * CRITICAL: tip + Feeding India are part of `finalAmount` / GatiCash. Strike must use
+   * pre-wallet total (`toPay + gatiCash`), not `toPay + savings` alone — otherwise custom
+   * tip/donation vanish from Total while still inflating the wallet row.
+   */
   const gmStrikethroughTotal = useMemo(() => {
-    if (toPayAmount == null || checkoutSavingsTotal <= 0.005) return null;
+    if (toPayAmount == null) return null;
     const walletAdd =
       missedOfferWalletPending && missedOfferWalletPendingAmount > 0.005
         ? missedOfferWalletPendingAmount
         : 0;
     // Wallet add makes bold total higher than food bill — don't show a misleading strike.
     if (walletAdd > 0.005) return null;
-    const list = Math.round((toPayAmount + checkoutSavingsTotal) * 100) / 100;
-    if (list <= toPayAmount + 0.005) return null;
-    return list;
+    const preWalletTotal = roundBillAmount(toPayAmount + gatiCashApplyAmount);
+    if (checkoutSavingsTotal > 0.005) {
+      const list = Math.round((preWalletTotal + checkoutSavingsTotal) * 100) / 100;
+      if (list > toPayAmount + 0.005) return list;
+    }
+    // 100% GatiCash settlement — strike the amount wallet just covered (incl. tip/donation).
+    if (toPayAmount <= 0.005 && gatiCashApplyAmount > 0.005) {
+      return Math.round(gatiCashApplyAmount * 100) / 100;
+    }
+    return null;
   }, [
     toPayAmount,
     checkoutSavingsTotal,
+    gatiCashApplyAmount,
     missedOfferWalletPending,
     missedOfferWalletPendingAmount,
   ]);
@@ -3406,6 +3499,9 @@ export default function CheckoutScreen() {
   const billingReady = serverBill != null;
   const animatedToPayAmount = useAnimatedCount(toPayAmount ?? 0, 260, billingReady);
   const animatedGmStrikethroughTotal = useAnimatedCount(gmStrikethroughTotal ?? 0, 260, billingReady);
+  /** Payable is fully covered by wallet — explain ₹0 on the Place Order CTA. */
+  const fullyPaidByGatiCash =
+    toPayAmount != null && toPayAmount <= 0.005 && gatiCashApplyAmount > 0.005;
   const hasValidPayment = paymentMethod !== "cod" && ["upi", "card", "wallet"].includes(paymentMethod);
   /** Placeable only when the bill is settled for the selected address (not keepPreviousData). */
   const canPlaceOrder =
@@ -3548,8 +3644,15 @@ export default function CheckoutScreen() {
         merchantName: merchantName ?? undefined,
         merchantPublicName: merchantName ?? null,
         merchantPublicStoreId: merchantId ?? null,
+        // Seed tracking map from checkout snapshots until GET /orders/:id returns.
         deliveryLat: selectedAddress.latitude,
         deliveryLng: selectedAddress.longitude,
+        ...(merchant?.latitude != null && merchant?.longitude != null
+          ? {
+              pickupLat: Number(merchant.latitude),
+              pickupLng: Number(merchant.longitude),
+            }
+          : {}),
       });
     },
     [
@@ -3568,6 +3671,7 @@ export default function CheckoutScreen() {
       restaurantNote,
       merchantName,
       merchantId,
+      merchant,
     ]
   );
 
@@ -3614,22 +3718,42 @@ export default function CheckoutScreen() {
         queryClient.invalidateQueries({ queryKey: ["my-orders"] });
       }, 0);
     },
-    onError: (err: Error & { response?: { data?: { message?: string } } }) => {
+    onError: (err: Error & { response?: { data?: { message?: string; error?: string; code?: string; title?: string } } }) => {
       setRazorpayModalVisible(false);
       setRazorpayOrderParams(null);
-      const msg = err?.response?.data?.message ?? err?.message ?? "Could not place order.";
+      const data = err?.response?.data;
+      const blocked =
+        data?.code === "SERVICE_BLOCKED_IN_LOCATION" || data?.error === "SERVICE_BLOCKED_IN_LOCATION";
+      const msg = blocked
+        ? data?.message ??
+          "This service is temporarily unavailable in your current location. Please try again later or choose another nearby location."
+        : data?.message ?? err?.message ?? "Could not place order.";
       router.replace({
         pathname: "/orders/payment-failure",
-        params: { message: msg + ORDER_FAILED_REFUND_NOTE },
+        params: {
+          message: blocked ? msg : msg + ORDER_FAILED_REFUND_NOTE,
+          ...(blocked && data?.title ? { title: data.title } : {}),
+        },
       });
     },
   });
 
-  const finalizeArgsRef = useRef<{ pendingId: string; result: RazorpayPaymentResult } | null>(null);
+  const finalizeArgsRef = useRef<{ pendingId: string; result: RazorpayPaymentResult | null } | null>(
+    null
+  );
 
   const finalizeOrder = useMutation({
-    mutationFn: (args: { pendingId: string; result: RazorpayPaymentResult }) => {
+    // `result: null` means GatiCash covered the whole bill, so no gateway payment exists to
+    // verify. Both settlements share this mutation so success / recovery / failure handling
+    // below stays identical for every payment shape.
+    mutationFn: (args: { pendingId: string; result: RazorpayPaymentResult | null }) => {
       finalizeArgsRef.current = args;
+      if (!args.result) {
+        return orderService.finalizeWalletOnlyOrderWithRetry(args.pendingId, {
+          retries: 3,
+          delayMs: 1500,
+        });
+      }
       return orderService.finalizeOrderWithRetry(
         {
           pendingId: args.pendingId,
@@ -3709,8 +3833,15 @@ export default function CheckoutScreen() {
       const apiCode = (err as unknown as { response?: { data?: { error?: string } } })?.response?.data?.error;
       const networkErr = isNetworkError(err);
 
+      // A GatiCash-settled order has no gateway payment and no webhook, so nothing can
+      // finalize it in the background — the "confirming payment" screen would poll forever.
+      // Money only leaves the wallet once the order is created, so failing here means
+      // nothing was charged and the customer can simply retry.
+      const walletSettled = finalizeArgsRef.current?.result === null;
+
       const shouldDeferToRecovery =
         finalizeArgsRef.current &&
+        !walletSettled &&
         (networkErr ||
           err?.response == null ||
           apiCode === "PAYMENT_PENDING_CONFIRMATION" ||
@@ -3735,7 +3866,11 @@ export default function CheckoutScreen() {
         // vs "Check connection & retry").
         router.replace({
           pathname: "/orders/payment-failure",
-          params: { message: msg + ORDER_FAILED_REFUND_NOTE, code: apiCode ?? "" },
+          // No refund note for wallet-settled failures — the balance was never debited.
+          params: {
+            message: walletSettled ? msg : msg + ORDER_FAILED_REFUND_NOTE,
+            code: apiCode ?? "",
+          },
         });
       }
     },
@@ -3771,6 +3906,13 @@ export default function CheckoutScreen() {
           ...payload,
           idempotencyKey: idempotencyKeyRef.current,
         });
+        // GatiCash covered the whole bill: there is nothing to charge, so skip Razorpay
+        // entirely and let the backend settle the order off the wallet ledger. Minting a
+        // ₹0 gateway order is impossible and used to fail checkout outright.
+        if (pending.amount <= 0) {
+          finalizeOrder.mutate({ pendingId: pending.pendingId, result: null });
+          return;
+        }
         const razorpayOrder = await paymentService.createRazorpayOrderWithRetry({
           amountPaise: pending.amount,
           receipt: pending.pendingId,
@@ -3813,7 +3955,7 @@ export default function CheckoutScreen() {
     canPlaceOrder,
     baseOrderPayload,
     placeOrder,
-    finalizeOrder.isPending,
+    finalizeOrder,
     razorpayCreating,
     hasValidPayment,
     merchantId,
@@ -4340,7 +4482,7 @@ export default function CheckoutScreen() {
       {checkoutSavingsTotal > 0.005 ? (
         <View style={styles.checkoutSavingsTag}>
           <CheckoutText style={styles.checkoutSavingsTagText} bold>
-            🥳 You saved ₹{checkoutSavingsTotal.toFixed(0)} on this order
+            {`🥳 You saved ₹${formatCheckoutSavingsRupees(checkoutSavingsTotal)} on this order`}
           </CheckoutText>
         </View>
       ) : null}
@@ -4791,7 +4933,12 @@ export default function CheckoutScreen() {
               <Ionicons name="receipt-outline" size={22} color={GatiMitraColors.textSecondary} />
               <View style={styles.gmBillHeaderContent}>
                 <View style={styles.gmBillTopRow}>
-                  <CheckoutText style={styles.gmBillTitle}>Total Bill</CheckoutText>
+                  <View style={styles.gmBillTitleCol}>
+                    <CheckoutText style={styles.gmBillTitle}>Total Bill</CheckoutText>
+                    {fullyPaidByGatiCash ? (
+                      <CheckoutText style={styles.gmBillGatiCashHint}>100% GatiCash used</CheckoutText>
+                    ) : null}
+                  </View>
                   {!showBillSkeleton ? (
                     <>
                       <View style={styles.gmBillPriceCluster}>
@@ -4804,7 +4951,7 @@ export default function CheckoutScreen() {
                         {checkoutSavingsTotal > 0.005 ? (
                           <View style={styles.gmSavedPill}>
                             <CheckoutText style={styles.gmSavedPillText}>
-                              You saved ₹{Math.round(checkoutSavingsTotal)}
+                              You saved ₹{formatCheckoutSavingsRupees(checkoutSavingsTotal)}
                             </CheckoutText>
                           </View>
                         ) : null}
@@ -5152,12 +5299,26 @@ export default function CheckoutScreen() {
                   collapsable={false}
                 >
                   <View style={styles.ctaSolidLeft}>
-                    <CheckoutText style={styles.ctaSolidAmount} bold numberOfLines={1}>
-                      {toPayAmount != null ? `₹${animatedToPayAmount.toFixed(2)}` : "—"}
-                    </CheckoutText>
-                    <CheckoutText style={styles.ctaSolidTotal} bold numberOfLines={1}>
-                      TOTAL
-                    </CheckoutText>
+                    <View style={styles.ctaSolidAmountRow}>
+                      {gmStrikethroughTotal != null ? (
+                        <CheckoutText style={styles.ctaSolidStrike} bold numberOfLines={1}>
+                          ₹{animatedGmStrikethroughTotal.toFixed(2)}
+                        </CheckoutText>
+                      ) : null}
+                      <CheckoutText style={styles.ctaSolidAmount} bold numberOfLines={1}>
+                        {toPayAmount != null ? `₹${animatedToPayAmount.toFixed(2)}` : "—"}
+                      </CheckoutText>
+                    </View>
+                    <View style={styles.ctaSolidTotalRow}>
+                      <CheckoutText style={styles.ctaSolidTotal} bold numberOfLines={1}>
+                        TOTAL
+                      </CheckoutText>
+                      {fullyPaidByGatiCash ? (
+                        <CheckoutText style={styles.ctaSolidGatiCashHint} bold numberOfLines={1}>
+                          · 100% GatiCash
+                        </CheckoutText>
+                      ) : null}
+                    </View>
                   </View>
                   <View style={styles.ctaSolidRight}>
                     {canPlaceOrder &&
@@ -6258,15 +6419,17 @@ const styles = StyleSheet.create({
     borderTopColor: "#BFDBFE",
     borderBottomWidth: 1,
     borderBottomColor: "#BFDBFE",
-    alignItems: "center",
+    alignItems: "stretch",
     justifyContent: "center",
   },
   checkoutSavingsTagText: {
     fontSize: 12,
     fontWeight: "600",
-    lineHeight: 15,
+    lineHeight: 18,
     color: "#2563EB",
     textAlign: "center",
+    width: "100%",
+    flexShrink: 1,
   },
   distanceBannerOuter: {
     width: "100%",
@@ -7066,7 +7229,14 @@ const styles = StyleSheet.create({
     gap: 6,
   },
   gmBillHeaderMid: { flex: 1, minWidth: 0 },
-  gmBillTitle: { fontSize: 14, fontWeight: "700", color: GatiMitraColors.textPrimary, flex: 1, minWidth: 0 },
+  gmBillTitleCol: { flex: 1, minWidth: 0 },
+  gmBillTitle: { fontSize: 14, fontWeight: "700", color: GatiMitraColors.textPrimary },
+  gmBillGatiCashHint: {
+    marginTop: 2,
+    fontSize: 11,
+    fontWeight: "600",
+    color: GatiMitraColors.splashMint,
+  },
   gmBillSub: { fontSize: 11, color: GatiMitraColors.textSecondary, marginTop: 2 },
   gmBillPendingWallet: {
     fontSize: 11,
@@ -8719,16 +8889,41 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: 2,
   },
+  ctaSolidAmountRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    flexWrap: "wrap",
+    gap: 6,
+    maxWidth: "100%",
+  },
+  ctaSolidStrike: {
+    fontSize: 12,
+    fontFamily: "Lora_700Bold",
+    color: "rgba(255,255,255,0.72)",
+    textDecorationLine: "line-through",
+  },
   ctaSolidAmount: {
     fontSize: 15,
     fontFamily: "Lora_700Bold",
     color: "#FFFFFF",
   },
+  ctaSolidTotalRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    flexWrap: "wrap",
+    gap: 4,
+    marginTop: 1,
+    maxWidth: "100%",
+  },
   ctaSolidTotal: {
     fontSize: 10,
     fontFamily: "Lora_700Bold",
     color: "rgba(255,255,255,0.92)",
-    marginTop: 1,
+  },
+  ctaSolidGatiCashHint: {
+    fontSize: 9,
+    fontFamily: "Lora_700Bold",
+    color: "rgba(255,255,255,0.88)",
   },
   ctaSolidTitle: {
     fontSize: 13,

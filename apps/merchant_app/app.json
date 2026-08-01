@@ -10,12 +10,12 @@
     "splash": {
       "image": "./assets/images/splash-logo.png",
       "resizeMode": "contain",
-      "backgroundColor": "#FFFFFF"
+      "backgroundColor": "#0B241C"
     },
     "androidStatusBar": {
       "translucent": false,
-      "backgroundColor": "#FFFFFF",
-      "barStyle": "dark-content"
+      "backgroundColor": "#0B241C",
+      "barStyle": "light-content"
     },
     "ios": {
       "supportsTablet": true,
@@ -28,7 +28,7 @@
     "android": {
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/splash-logo.png",
-        "backgroundColor": "#000000"
+        "backgroundColor": "#0B241C"
       },
       "icon": "./assets/images/splash-logo.png",
       "package": "com.gatimitra.partner",

@@ -1,6 +1,6 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import "react-native-gesture-handler";
-import { LogBox } from "react-native";
+import { LogBox, View } from "react-native";
 import { Stack } from "expo-router";
 import { useFonts } from "expo-font";
 import { Lora_400Regular, Lora_700Bold } from "@expo-google-fonts/lora";
@@ -23,9 +23,12 @@ import { SubscriptionProvider } from "@/context/SubscriptionContext";
 import { LiveSupportTicketProvider } from "@/context/LiveSupportTicketContext";
 import { FloatingLiveSupportTicket } from "@/components/FloatingLiveSupportTicket";
 import LiveOrdersOngoingNotification from "../components/LiveOrdersOngoingNotification";
+import LiveOrdersStickyPushRefresh from "../components/LiveOrdersStickyPushRefresh";
 import IncomingOrderModal from "../components/IncomingOrderModal";
 import IncomingOrderNotificationBridge from "../components/IncomingOrderNotificationBridge";
 import AcceptanceTimeoutSync from "../components/AcceptanceTimeoutSync";
+import PreventServicesRealtime from "../components/PreventServicesRealtime";
+import ServiceRestrictedNotice from "../components/ServiceRestrictedNotice";
 import { IncomingOrderSheetProvider } from "@/context/IncomingOrderSheetContext";
 import { SessionRevokedGate } from "@/components/SessionRevokedGate";
 import NotificationSetup from "../components/NotificationSetup";
@@ -39,6 +42,10 @@ import StoreOnlineStatusNotifier from "../components/StoreOnlineStatusNotifier";
 import { NetworkStatusProvider } from "@/context/NetworkStatusContext";
 import { OfflineNetworkChrome } from "@/components/OfflineNetworkChrome";
 import { PlayInAppUpdateBootstrap } from "@/components/PlayInAppUpdateBootstrap";
+import {
+  MerchantBootstrapScreen,
+  MERCHANT_SPLASH_BG,
+} from "@/components/MerchantBootstrapScreen";
 
 void SplashScreen.preventAutoHideAsync().catch(() => {});
 
@@ -62,6 +69,8 @@ const queryClient = new QueryClient({
 const ASSETS_FETCH_TIMEOUT_MS = 2500;
 /** Don't hold splash forever if font download/cache stalls (common with --offline). */
 const FONTS_READY_FALLBACK_MS = 8000;
+/** Keep the branded splash on screen long enough to actually be read. */
+const MIN_SPLASH_VISIBLE_MS = 1200;
 
 export default function RootLayout() {
   const [fontsLoaded, fontsError] = useFonts({
@@ -71,11 +80,23 @@ export default function RootLayout() {
     Poppins_700Bold,
   });
   const [fontsTimedOut, setFontsTimedOut] = useState(false);
+  const [splashExited, setSplashExited] = useState(false);
+  const [minSplashElapsed, setMinSplashElapsed] = useState(false);
+  const typographyReady = fontsLoaded || fontsTimedOut;
 
   useEffect(() => {
     const t = setTimeout(() => setFontsTimedOut(true), FONTS_READY_FALLBACK_MS);
     return () => clearTimeout(t);
   }, []);
+
+  useEffect(() => {
+    // Keep the native image splash visible until Lora has been registered.
+    // Rendering branded copy before this point makes React Native permanently
+    // measure its first frame with the system fallback font.
+    if (!typographyReady) return;
+    const t = setTimeout(() => setMinSplashElapsed(true), MIN_SPLASH_VISIBLE_MS);
+    return () => clearTimeout(t);
+  }, [typographyReady]);
 
   useEffect(() => {
     if (fontsError && __DEV__) {
@@ -108,23 +129,32 @@ export default function RootLayout() {
   }, []);
 
   // Prefer real font registration; only soft-timeout so login is never blocked forever.
-  const ready = fontsLoaded || fontsTimedOut;
+  const ready = typographyReady;
+  const appReady = ready && minSplashElapsed;
 
-  useEffect(() => {
-    if (!ready) return;
+  /** Native splash must drop as soon as the branded JS splash has painted. */
+  const handleSplashReady = useCallback(() => {
     void SplashScreen.hideAsync().catch(() => {});
-  }, [ready]);
+  }, []);
 
-  // Keep native Expo splash (splash-logo.png) until fonts are ready so the React
-  // bootstrap can render title/subtitle in Lora immediately after.
-  if (!ready) {
-    return null;
-  }
+  const handleSplashExitComplete = useCallback(() => {
+    setSplashExited(true);
+    void SplashScreen.hideAsync().catch(() => {});
+  }, []);
 
   return (
     <QueryClientProvider client={queryClient}>
       <GestureHandlerRootView style={{ flex: 1 }}>
         <SafeAreaProvider>
+          <View
+            style={{
+              flex: 1,
+              backgroundColor: splashExited
+                ? GatiMitraMerchant.background
+                : MERCHANT_SPLASH_BG,
+            }}
+          >
+          {ready ? (
           <NetworkStatusProvider>
           <AuthProvider>
             <SelectedStoreProvider>
@@ -147,6 +177,7 @@ export default function RootLayout() {
                               <BackgroundOrderPermissionsGate />
                               <NewOrderAutoOpenHandler />
                               <OrderAlertPushHandler />
+                              <LiveOrdersStickyPushRefresh />
                               <WaitingForOrderNotifier />
                               <StoreOnlineStatusNotifier />
                               <LiveOrdersOngoingNotification />
@@ -154,6 +185,8 @@ export default function RootLayout() {
                               <IncomingOrderModal />
                               <IncomingOrderNotificationBridge />
                               <AcceptanceTimeoutSync />
+                              <PreventServicesRealtime />
+                              <ServiceRestrictedNotice />
                               <SessionRevokedGate />
                               <Stack
                                 screenOptions={{
@@ -167,7 +200,8 @@ export default function RootLayout() {
                                 <Stack.Screen name="(tabs)" />
                                 <Stack.Screen name="order/[id]" options={{ headerShown: false }} />
                                 <Stack.Screen name="order-history" options={{ headerShown: false }} />
-                                <Stack.Screen name="notifications" options={{ headerShown: false }} />
+                                <Stack.Screen name="notifications/index" options={{ headerShown: false }} />
+                                <Stack.Screen name="notifications/[id]" options={{ headerShown: false }} />
                                 <Stack.Screen name="restaurant-status" options={{ headerShown: false }} />
                               </Stack>
                               <OfflineNetworkChrome />
@@ -184,6 +218,19 @@ export default function RootLayout() {
             </SelectedStoreProvider>
           </AuthProvider>
           </NetworkStatusProvider>
+          ) : null}
+          {!splashExited && typographyReady ? (
+            <MerchantBootstrapScreen
+              variant="root"
+              appReady={appReady}
+              statusMessage={
+                fontsTimedOut && !fontsLoaded ? "Starting GatiMitra Partner..." : null
+              }
+              onSplashReady={handleSplashReady}
+              onExitComplete={handleSplashExitComplete}
+            />
+          ) : null}
+          </View>
         </SafeAreaProvider>
       </GestureHandlerRootView>
     </QueryClientProvider>

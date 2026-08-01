@@ -12,13 +12,17 @@ import type { ApiFoodOrder } from "@/services/ordersApi";
 import type { OrderStage } from "@/hooks/useOrders";
 import { useAuth } from "@/context/AuthContext";
 import { useSelectedStore } from "@/context/SelectedStoreContext";
+import { useOrdersContext } from "@/context/OrdersContext";
 import {
   formatOrderDateTime,
   formatOrderIdDisplay,
   splitRejectionMessage,
 } from "@/components/order/orderFormatters";
-import { OrderCardMerchantInstructions } from "@/components/order/OrderCardMerchantInstructions";
 import { OrderCancellationBanner } from "@/components/order/OrderCancellationBanner";
+import { OrderPreparedLateTopBanner } from "@/components/order/OrderPrepDelayedBanner";
+import { ReadyHandoverTimeline } from "@/components/order/ReadyHandoverTimeline";
+import { resolvePreparedLateMinutes } from "@/lib/order-prep-time";
+import { resolvePreparedAtForHandover } from "@/lib/orderHandoverTimeline";
 import { GatiMitraMerchant } from "@/constants/theme";
 
 type StatusStyle = { label: string; bg: string; color: string };
@@ -40,8 +44,10 @@ export function OrderDetailCustomerCard({
 }: Props) {
   const { token } = useAuth();
   const { selectedStore } = useSelectedStore();
+  const { orderNowMs } = useOrdersContext();
   const [copied, setCopied] = useState(false);
   const isClosed = stage === "rejected" || stage === "rto";
+  const isReady = stage === "ready";
   const placedLabel = formatOrderDateTime(
     isClosed && order.cancelled_at ? order.cancelled_at : order.created_at
   );
@@ -55,6 +61,32 @@ export function OrderDetailCustomerCard({
   const storeLine = [storeName?.trim() || selectedStore?.store_name?.trim()]
     .filter(Boolean)
     .join("");
+
+  const preparedLateMins = useMemo(
+    () =>
+      resolvePreparedLateMinutes({
+        prepared_late_minutes: order.prepared_late_minutes,
+        prepared_at: order.prepared_at,
+        prep_ready_by_at: order.prep_ready_by_at,
+      }),
+    [order.prepared_late_minutes, order.prepared_at, order.prep_ready_by_at]
+  );
+
+  const preparedAtForTimeline = useMemo(
+    () =>
+      resolvePreparedAtForHandover(order.prepared_at, {
+        isReady,
+        preparingAt: order.preparing_at,
+        acceptedAt: order.accepted_at,
+        createdAt: order.created_at,
+      }),
+    [order.prepared_at, order.preparing_at, order.accepted_at, order.created_at, isReady]
+  );
+
+  const showDelayedBanner =
+    (isReady || stage === "picked_up") &&
+    preparedLateMins != null &&
+    preparedLateMins > 0;
 
   const rejection =
     isClosed
@@ -74,98 +106,123 @@ export function OrderDetailCustomerCard({
   };
 
   return (
-    <View style={styles.card}>
-      <View style={[styles.statusBadge, { backgroundColor: statusStyle.bg }]}>
-        <Text style={[styles.statusBadgeText, { color: statusStyle.color }]}>
-          {statusStyle.label.toUpperCase()}
-        </Text>
-      </View>
+    <View style={[styles.shell, showDelayedBanner ? styles.shellWithBanner : null]}>
+      {showDelayedBanner ? <OrderPreparedLateTopBanner lateMinutes={preparedLateMins!} /> : null}
 
-      <View style={styles.idRow}>
-        <Pressable
-          onPress={() => void onCopyId()}
-          style={({ pressed }) => [styles.idPress, pressed && { opacity: 0.7 }]}
-          accessibilityRole="button"
-          accessibilityLabel="Copy order ID"
-        >
-          <Text style={styles.idText} numberOfLines={1}>
-            ID: {idDisplay || "—"}
+      <View style={[styles.card, showDelayedBanner ? styles.cardUnderBanner : null]}>
+        <View style={[styles.statusBadge, { backgroundColor: statusStyle.bg }]}>
+          <Text style={[styles.statusBadgeText, { color: statusStyle.color }]}>
+            {statusStyle.label.toUpperCase()}
           </Text>
-          <Ionicons
-            name={copied ? "checkmark" : "copy-outline"}
-            size={16}
-            color={copied ? "#16A34A" : GatiMitraMerchant.textSecondary}
-          />
-        </Pressable>
-        <Text style={styles.timeText}>{placedLabel}</Text>
-      </View>
-
-      {storeLine ? (
-        <Text style={styles.storeLine} numberOfLines={2}>
-          {storeLine}
-        </Text>
-      ) : null}
-
-      {rejection && (rejection.prefix || rejection.detail) ? (
-        <Text style={styles.rejectLine}>
-          {rejection.prefix}
-          {rejection.detail ? (
-            <Text style={styles.rejectDetail}> {rejection.detail}</Text>
-          ) : null}
-        </Text>
-      ) : null}
-
-      <OrderCardMerchantInstructions
-        merchantInstructionsList={order.merchant_instructions_list}
-        requiresUtensils={order.requires_utensils}
-      />
-
-      {isClosed && order.cancellation_compensation ? (
-        <View style={styles.cancelMargin}>
-          <OrderCancellationBanner
-            rejectedReason={order.rejected_reason}
-            cancelledByLabel={order.cancelled_by_label}
-            cancelledByType={order.cancelled_by_type}
-            cancelledAt={order.cancelled_at}
-            orderStatus={order.order_status}
-            cancellationCompensation={order.cancellation_compensation}
-            storeId={selectedStore?.id}
-            authToken={token}
-            variant="detail"
-            preparedAt={order.prepared_at}
-            prepReadyByAt={order.prep_ready_by_at}
-            preparedLateMinutes={order.prepared_late_minutes}
-          />
         </View>
-      ) : null}
 
-      {prepBanner ? <View style={styles.prepWrap}>{prepBanner}</View> : null}
+        {isReady ? (
+          <View style={styles.timelineWrap}>
+            <ReadyHandoverTimeline
+              preparedAt={preparedAtForTimeline}
+              handedOverAt={order.handed_over_to_rider_at}
+              pickedUpAt={order.rider_picked_up_at}
+              pickupOtp={order.pickup_otp}
+              nowMs={orderNowMs}
+            />
+          </View>
+        ) : null}
+
+        <View style={styles.idRow}>
+          <Pressable
+            onPress={() => void onCopyId()}
+            style={({ pressed }) => [styles.idPress, pressed && { opacity: 0.7 }]}
+            accessibilityRole="button"
+            accessibilityLabel="Copy order ID"
+          >
+            <Text style={styles.idText} numberOfLines={1}>
+              ID: {idDisplay || "—"}
+            </Text>
+            <Ionicons
+              name={copied ? "checkmark" : "copy-outline"}
+              size={16}
+              color={copied ? "#16A34A" : GatiMitraMerchant.textSecondary}
+            />
+          </Pressable>
+          <Text style={styles.timeText}>{placedLabel}</Text>
+        </View>
+
+        {storeLine ? (
+          <Text style={styles.storeLine} numberOfLines={2}>
+            {storeLine}
+          </Text>
+        ) : null}
+
+        {/* Prefer cancellation banner — avoid duplicate "Auto Cancelled" copy above it. */}
+        {isClosed && !order.cancellation_compensation && rejection && (rejection.prefix || rejection.detail) ? (
+          <Text style={styles.rejectLine}>
+            {rejection.prefix}
+            {rejection.detail ? (
+              <Text style={styles.rejectDetail}> {rejection.detail}</Text>
+            ) : null}
+          </Text>
+        ) : null}
+
+        {isClosed ? (
+          <View style={styles.cancelMargin}>
+            <OrderCancellationBanner
+              rejectedReason={order.rejected_reason}
+              cancelledByLabel={order.cancelled_by_label}
+              cancelledByType={order.cancelled_by_type}
+              cancelledAt={order.cancelled_at}
+              orderStatus={order.order_status}
+              cancellationCompensation={order.cancellation_compensation}
+              storeId={selectedStore?.id}
+              authToken={token}
+              variant="detail"
+              preparedAt={order.prepared_at}
+              prepReadyByAt={order.prep_ready_by_at}
+              preparedLateMinutes={order.prepared_late_minutes}
+            />
+          </View>
+        ) : null}
+
+        {prepBanner ? <View style={styles.prepWrap}>{prepBanner}</View> : null}
+      </View>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  card: {
-    backgroundColor: "#FFFFFF",
+  shell: {
     borderRadius: 14,
+    overflow: "hidden",
     borderWidth: 1,
     borderColor: "#E5E7EB",
+    backgroundColor: "#FFFFFF",
+  },
+  shellWithBanner: {
+    borderColor: "#E5E7EB",
+  },
+  card: {
+    backgroundColor: "#FFFFFF",
     padding: 14,
-    ...GatiMitraMerchant.shadowSm,
+  },
+  cardUnderBanner: {
+    borderTopWidth: 0,
   },
   statusBadge: {
     alignSelf: "flex-start",
     paddingVertical: 5,
     paddingHorizontal: 10,
     borderRadius: 8,
-    marginBottom: 10,
   },
   statusBadgeText: {
     fontSize: 11,
     fontWeight: "800",
     letterSpacing: 0.4,
   },
+  timelineWrap: {
+    marginTop: 10,
+    marginBottom: 4,
+  },
   idRow: {
+    marginTop: 10,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",

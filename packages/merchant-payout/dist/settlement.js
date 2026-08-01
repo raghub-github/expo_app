@@ -203,6 +203,7 @@ function ledgerOrderGrossParts(meta, entryAmount) {
  * Est. payout = A (ORDER_EARNING credits) + cancellation compensation + other credits − C
  * Store offer discounts (B) are informational only — never subtracted from Est. payout.
  * Mechanism fee is informational when A is already post-fee net (default).
+ * Withdrawal reversal credits (returned principal) are reported but excluded from Est. payout.
  */
 export function buildSummaryFromParts(parts) {
     const itemSubtotal = roundMoney(parts.itemSubtotal);
@@ -236,8 +237,17 @@ export function buildSummaryFromParts(parts) {
     const gstCredits = roundMoney(parts.gstCredits ?? 0);
     const penaltyReversalCredits = roundMoney(parts.penaltyReversalCredits ?? 0);
     const otherCreditsFromParts = roundMoney(parts.otherCredits ?? 0);
-    const otherCreditsBreakdown = withdrawalReversalCredits + manualCredits + adjustmentCredits + gstCredits + penaltyReversalCredits;
-    const otherCredits = roundMoney(otherCreditsFromParts > 0 ? otherCreditsFromParts : otherCreditsBreakdown);
+    const hasCreditBreakdown = parts.withdrawalReversalCredits != null ||
+        parts.manualCredits != null ||
+        parts.adjustmentCredits != null ||
+        parts.gstCredits != null ||
+        parts.penaltyReversalCredits != null;
+    const earningCredits = manualCredits + adjustmentCredits + gstCredits + penaltyReversalCredits;
+    // A returned withdrawal is the merchant's own principal coming back, not money the
+    // platform owes them: it stays out of other_credits so it can never inflate Est. payout.
+    const otherCredits = roundMoney(hasCreditBreakdown
+        ? earningCredits
+        : Math.max(0, otherCreditsFromParts - withdrawalReversalCredits));
     const estimatedPayout = roundMoney(Math.max(0, netOrderValue + cancellationCompensation + otherCredits - orderDeductions));
     const deliveredOrderCount = parts.deliveredOrderCount;
     const rejectedOrderCount = parts.rejectedOrderCount;

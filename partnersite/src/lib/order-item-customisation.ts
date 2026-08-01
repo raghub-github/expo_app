@@ -657,6 +657,31 @@ export function enrichRawOrderItemFromCoreRow(args: {
   const capturedBase = round2((Number(args.row.base_price) || 0) * qty);
   const capturedAddon = round2(Number(args.row.addon_price) || 0);
 
+  const specialFromRow = String(
+    (args.row as { special_instructions?: string | null }).special_instructions ?? ''
+  ).trim();
+  const specialFromSnap =
+    args.row.item_snapshot && typeof args.row.item_snapshot === 'object'
+      ? String(
+          (args.row.item_snapshot as Record<string, unknown>).special_instructions ??
+            (args.row.item_snapshot as Record<string, unknown>).specialInstructions ??
+            (args.row.item_snapshot as Record<string, unknown>).item_instructions ??
+            ''
+        ).trim()
+      : '';
+  const specialFromCart = cartLine
+    ? String(
+        cartLine.specialInstructions ??
+          cartLine.special_instructions ??
+          cartLine.item_instructions ??
+          ''
+      ).trim()
+    : '';
+  const noteFromLines = breakdown.lines.find((l) => l.kind === 'note')?.name?.trim() || '';
+  const specialInstructions =
+    (specialFromRow || specialFromSnap || specialFromCart || noteFromLines || null)?.slice(0, 100) ||
+    null;
+
   return {
     ...args.raw,
     name: String(args.row.item_name ?? "Item").trim() || "Item",
@@ -669,6 +694,8 @@ export function enrichRawOrderItemFromCoreRow(args: {
     captured_base_amount: capturedBase,
     captured_addon_amount: capturedAddon > 0 ? capturedAddon : breakdown.customizationsTotal,
     has_customizations: breakdown.lines.length > 0 || labels.length > 0,
+    special_instructions: specialInstructions,
+    specialInstructions,
   };
 }
 

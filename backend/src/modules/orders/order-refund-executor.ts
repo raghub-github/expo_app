@@ -34,6 +34,13 @@
 import { createHash } from "node:crypto";
 import { getSql } from "../../db/client.js";
 import { createRazorpayRefund } from "../../services/payment/razorpayService.js";
+import { syncOrderRefundCompletionMarkers } from "../../lib/order-refund-completion-sync.js";
+import {
+  isLegacyGatiCashTxnId,
+  isModernGatiCashTxnId,
+  readStoredGatiCashTxnId,
+} from "../../lib/gaticash-txn-id.js";
+import { ensureRefundRrn } from "../../lib/refund-rrn.js";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -92,12 +99,54 @@ interface OrderPaymentSnapshot {
   customerId: number | null;
   orderIdText: string | null;
   grandTotal: number;
+  /** GatiCash consumed at checkout (must return to wallet). */
+  gatiCashUsed: number;
+  /** Amount captured on the payment gateway (must return via Razorpay). */
+  gatewayAmount: number;
+  /** Original unique GatiCash payment txn id (GC-{UUID} or legacy). */
+  gatiCashTxnId: string | null;
+}
+
+function round2(n: number): number {
+  return Math.round(n * 100) / 100;
+}
+
+function numOrZero(v: unknown): number {
+  const n = typeof v === "number" ? v : Number(v);
+  return Number.isFinite(n) ? n : 0;
+}
+
+/** Read gatiCashUsed / gatewayAmount from orders_core_payments.gateway_response.breakdown. */
+function parseBreakdownAmounts(gatewayResponse: unknown): {
+  gatiCashUsed: number;
+  gatewayAmount: number;
+  settlement: string | null;
+} {
+  if (!gatewayResponse || typeof gatewayResponse !== "object") {
+    return { gatiCashUsed: 0, gatewayAmount: 0, settlement: null };
+  }
+  const root = gatewayResponse as Record<string, unknown>;
+  const breakdown =
+    root.breakdown && typeof root.breakdown === "object"
+      ? (root.breakdown as Record<string, unknown>)
+      : root;
+  return {
+    gatiCashUsed: Math.max(0, round2(numOrZero(breakdown.gatiCashUsed))),
+    gatewayAmount: Math.max(0, round2(numOrZero(breakdown.gatewayAmount))),
+    settlement:
+      typeof breakdown.settlement === "string"
+        ? breakdown.settlement.trim().toLowerCase()
+        : null,
+  };
 }
 
 /**
  * Load the payment context for an order. Prefers orders_core_payments (the
  * canonical settlement source) and falls back to the orders_core.payment_method
  * column for legacy rows where a payments row wasn't written.
+ *
+ * Source-of-truth for split refunds is gateway_response.breakdown
+ * (gatiCashUsed + gatewayAmount), with pending_orders.gati_cash_applied as fallback.
  */
 async function loadOrderPaymentSnapshot(
   sql: ReturnType<typeof getSql>,
@@ -115,7 +164,8 @@ async function loadOrderPaymentSnapshot(
       p.payment_method                  AS payment_method,
       p.transaction_id                  AS transaction_id,
       p.amount                          AS payment_amount,
-      p.gateway_response                AS gateway_response
+      p.gateway_response                AS gateway_response,
+      po.gati_cash_applied              AS pending_gati_cash
     FROM orders_core c
     LEFT JOIN LATERAL (
       SELECT *
@@ -125,6 +175,13 @@ async function loadOrderPaymentSnapshot(
       ORDER BY op.paid_at DESC NULLS LAST, op.id DESC
       LIMIT 1
     ) p ON true
+    LEFT JOIN LATERAL (
+      SELECT gati_cash_applied
+      FROM pending_orders po
+      WHERE po.finalized_order_id = c.order_id
+      ORDER BY po.finalized_at DESC NULLS LAST
+      LIMIT 1
+    ) po ON true
     WHERE c.id = ${orderCoreId}
     LIMIT 1
   `;
@@ -142,22 +199,127 @@ async function loadOrderPaymentSnapshot(
       : "";
   // orders_core carries no razorpay identifiers — the captured payment id
   // (pay_…) lives on orders_core_payments.transaction_id.
-  const razorpayPaymentId =
-    typeof r.transaction_id === "string" && /^pay_/.test(r.transaction_id)
-      ? String(r.transaction_id)
-      : null;
+  const txn =
+    typeof r.transaction_id === "string" ? String(r.transaction_id).trim() : "";
+  const razorpayPaymentId = /^pay_/.test(txn) ? txn : null;
 
-  const effectiveGateway =
+  const fromBreakdown = parseBreakdownAmounts(r.gateway_response);
+  const pendingGati = Math.max(0, round2(numOrZero(r.pending_gati_cash)));
+  const paymentAmount = r.payment_amount != null ? round2(numOrZero(r.payment_amount)) : 0;
+  const grandTotal = round2(numOrZero(r.grand_total));
+
+  let gatiCashUsed = fromBreakdown.gatiCashUsed;
+  let gatewayAmount = fromBreakdown.gatewayAmount;
+
+  if (gatiCashUsed <= 0.005 && pendingGati > 0.005) {
+    gatiCashUsed = pendingGati;
+  }
+
+  // Infer missing half when breakdown was incomplete.
+  if (gatiCashUsed > 0.005 && gatewayAmount <= 0.005 && razorpayPaymentId) {
+    // Mixed checkout often stamps payment_gateway=razorpay with amount = post-wallet payable.
+    gatewayAmount = paymentAmount > 0.005 ? paymentAmount : grandTotal;
+  }
+  if (
+    gatewayAmount <= 0.005 &&
+    razorpayPaymentId &&
+    gatiCashUsed <= 0.005 &&
+    paymentAmount > 0.005
+  ) {
+    gatewayAmount = paymentAmount;
+  }
+  if (
+    gatiCashUsed <= 0.005 &&
+    !razorpayPaymentId &&
+    (gwFromPayments === "gati_cash" ||
+      gwFromPayments === "wallet" ||
+      methodFromCore === "wallet" ||
+      methodFromCore === "gati_cash" ||
+      methodFromPayments === "wallet" ||
+      methodFromPayments === "gati_cash")
+  ) {
+    // Prefer payment amount; grand_total is often 0 for 100% wallet checkouts.
+    gatiCashUsed = paymentAmount > 0.005 ? paymentAmount : grandTotal;
+  }
+
+  // Prepaid / GatiCash often stamped payment_gateway=online with no pay_* id.
+  if (
+    gatiCashUsed <= 0.005 &&
+    !razorpayPaymentId &&
+    paymentAmount > 0.005 &&
+    gwFromPayments !== "cod" &&
+    methodFromCore !== "cash" &&
+    methodFromCore !== "cod" &&
+    methodFromPayments !== "cash" &&
+    methodFromPayments !== "cod"
+  ) {
+    gatiCashUsed = paymentAmount;
+  }
+
+  gatiCashUsed = round2(gatiCashUsed);
+  gatewayAmount = round2(gatewayAmount);
+
+  // Never map bare "online" → razorpay without a pay_* capture. Prepaid wallet
+  // checkouts are stamped PaymentMode=Online / Source=Wallet and have no gateway id;
+  // treating them as Razorpay leaves refunds stuck (Pending RRN / never credited).
+  let effectiveGateway =
     gwFromPayments ||
     (razorpayPaymentId
       ? "razorpay"
       : methodFromCore === "cash" || methodFromCore === "cod"
       ? "cod"
-      : methodFromCore === "wallet"
-      ? "wallet"
-      : methodFromCore === "upi" || methodFromCore === "card" || methodFromCore === "online"
+      : methodFromCore === "wallet" || methodFromCore === "gati_cash"
+      ? "gati_cash"
+      : methodFromCore === "upi" || methodFromCore === "card"
       ? "razorpay"
+      : methodFromCore === "online"
+      ? "online"
       : "unknown");
+
+  if (fromBreakdown.settlement === "mixed" || (gatiCashUsed > 0.005 && gatewayAmount > 0.005)) {
+    effectiveGateway = "mixed";
+  } else if (gatiCashUsed > 0.005 && gatewayAmount <= 0.005) {
+    effectiveGateway = "gati_cash";
+  } else if (gatewayAmount > 0.005 && gatiCashUsed <= 0.005 && razorpayPaymentId) {
+    effectiveGateway = "razorpay";
+  } else if (
+    !razorpayPaymentId &&
+    (effectiveGateway === "online" ||
+      effectiveGateway === "unknown" ||
+      effectiveGateway === "razorpay")
+  ) {
+    // Wallet / prepaid "online"/mis-stamped razorpay with no pay_* → GatiCash.
+    if (gatiCashUsed > 0.005 || paymentAmount > 0.005 || grandTotal > 0.005) {
+      effectiveGateway = "gati_cash";
+      if (gatiCashUsed <= 0.005) {
+        gatiCashUsed = round2(paymentAmount > 0.005 ? paymentAmount : grandTotal);
+      }
+    }
+  }
+
+  const totalPaid = round2(
+    Math.max(
+      gatiCashUsed + gatewayAmount,
+      paymentAmount,
+      grandTotal
+    )
+  );
+
+  const fromResp = readStoredGatiCashTxnId(
+    r.gateway_response && typeof r.gateway_response === "object"
+      ? (r.gateway_response as Record<string, unknown>)
+      : null
+  );
+  let gatiCashTxnId: string | null = fromResp;
+  if (
+    !gatiCashTxnId &&
+    txn &&
+    (effectiveGateway === "gati_cash" ||
+      isModernGatiCashTxnId(txn) ||
+      isLegacyGatiCashTxnId(txn))
+  ) {
+    gatiCashTxnId = txn;
+  }
 
   return {
     ordersCorePaymentId:
@@ -165,28 +327,190 @@ async function loadOrderPaymentSnapshot(
     gateway: effectiveGateway,
     method: methodFromPayments || methodFromCore || "unknown",
     razorpayPaymentId,
-    amount: r.payment_amount != null ? Number(r.payment_amount) : Number(r.grand_total ?? 0),
+    amount: totalPaid,
     customerId: r.customer_id != null ? Number(r.customer_id) : null,
     orderIdText: typeof r.order_id_text === "string" ? r.order_id_text : null,
-    grandTotal: Number(r.grand_total ?? 0),
+    grandTotal,
+    gatiCashUsed,
+    gatewayAmount,
+    gatiCashTxnId,
   };
 }
 
 /**
- * Decide the execution route from the payment snapshot. Consolidates the
- * whitelist of gateway/method values into one of 4 routes.
+ * Decide the execution route from the ORIGINAL payment distribution.
+ * Wallet → wallet only; gateway → Razorpay only; both → MIXED (never collapse to one pipe).
  */
 function chooseRoute(snap: OrderPaymentSnapshot): RefundExecutionRoute {
-  const gw = snap.gateway;
-  if (gw === "cod" || snap.method === "cash" || snap.method === "cod") return "COD_NOOP";
-  if (gw === "wallet") return "WALLET";
-  if (gw === "razorpay" || gw === "upi" || gw === "card" || gw === "netbanking") return "RAZORPAY";
-  if (gw === "mixed") return "MIXED";
-  // Default to RAZORPAY if the row shows a razorpay_payment_id even when
-  // gateway wasn't set (legacy). A wallet-only order without a razorpay id
-  // would already have been caught above.
-  if (snap.razorpayPaymentId) return "RAZORPAY";
+  const looksCod =
+    snap.gateway === "cod" || snap.method === "cash" || snap.method === "cod";
+  // True COD with nothing paid → no money to move.
+  if (
+    looksCod &&
+    snap.gatiCashUsed <= 0.005 &&
+    !snap.gatiCashTxnId &&
+    snap.amount <= 0.005
+  ) {
+    return "COD_NOOP";
+  }
+
+  const walletPart = snap.gatiCashUsed > 0.005 || Boolean(snap.gatiCashTxnId);
+  const gatewayPart = snap.gatewayAmount > 0.005 || !!snap.razorpayPaymentId;
+
+  if (walletPart && gatewayPart && snap.gatiCashUsed > 0.005 && snap.gatewayAmount > 0.005) {
+    return "MIXED";
+  }
+  if (walletPart && !snap.razorpayPaymentId) return "WALLET";
+  if (
+    snap.gateway === "wallet" ||
+    snap.gateway === "gati_cash" ||
+    snap.method === "wallet" ||
+    snap.method === "gati_cash"
+  ) {
+    return "WALLET";
+  }
+  if (snap.gateway === "mixed") return "MIXED";
+  if (
+    snap.gateway === "razorpay" ||
+    snap.gateway === "upi" ||
+    snap.gateway === "card" ||
+    snap.gateway === "netbanking" ||
+    snap.razorpayPaymentId
+  ) {
+    // Razorpay-stamped row that still consumed GatiCash → restore both sources.
+    if (walletPart && snap.gatiCashUsed > 0.005 && snap.gatewayAmount > 0.005) {
+      return "MIXED";
+    }
+    // Stamped razorpay/online but never captured a pay_* → money was prepaid (wallet).
+    if (!snap.razorpayPaymentId) return "WALLET";
+    if (walletPart && snap.gatiCashUsed > 0.005) return "MIXED";
+    return "RAZORPAY";
+  }
+  if (snap.gateway === "online") return "WALLET";
+  if (walletPart) return "WALLET";
+  // Paid amount exists but no Razorpay capture → treat as wallet settlement
+  // (covers legacy 100% GatiCash rows that were mis-routed to COD_NOOP).
+  if (!snap.razorpayPaymentId && snap.amount > 0.005) return "WALLET";
+  // Mis-stamped COD/cash but money was paid (GatiCash / prepaid) → still wallet.
+  if (!snap.razorpayPaymentId && (snap.grandTotal > 0.005 || snap.amount > 0.005)) {
+    return "WALLET";
+  }
   return "COD_NOOP";
+}
+
+/**
+ * Split a (possibly partial) refund across wallet vs gateway using the original
+ * payment ratio. Full refunds use the exact original amounts.
+ */
+function splitRefundByOriginalSources(
+  snap: OrderPaymentSnapshot,
+  refundAmount: number
+): { walletPart: number; razorpayPart: number } {
+  const walletOrig = Math.max(0, round2(snap.gatiCashUsed));
+  const gatewayOrig = Math.max(0, round2(snap.gatewayAmount));
+  const totalOrig = round2(walletOrig + gatewayOrig);
+  const amount = round2(Math.max(0, refundAmount));
+
+  if (totalOrig <= 0.005) {
+    if (snap.razorpayPaymentId) return { walletPart: 0, razorpayPart: amount };
+    return { walletPart: amount, razorpayPart: 0 };
+  }
+
+  // Exact full refund — mirror the original distribution to the paise.
+  if (Math.abs(amount - totalOrig) < 0.015) {
+    return { walletPart: walletOrig, razorpayPart: gatewayOrig };
+  }
+
+  const walletPart = round2(Math.min(walletOrig, (amount * walletOrig) / totalOrig));
+  const razorpayPart = round2(Math.max(0, amount - walletPart));
+  return { walletPart, razorpayPart };
+}
+
+function buildRefundTimelineJson(args: {
+  amount: number;
+  initiatedAtIso?: string | null;
+  processedAtIso?: string | null;
+  completedAtIso?: string | null;
+  completed: boolean;
+}): string {
+  const amt = ` for ₹${round2(args.amount).toFixed(2)}`;
+  const initiated = args.initiatedAtIso ?? new Date().toISOString();
+  const processed = args.processedAtIso ?? initiated;
+  const steps: Array<{ key: string; label: string; at: string }> = [
+    { key: "initiated", label: `Refund initiated${amt}`, at: initiated },
+    { key: "processed", label: "Refund processed", at: processed },
+  ];
+  if (args.completed) {
+    steps.push({
+      key: "completed",
+      label: "Refund completed",
+      at: args.completedAtIso ?? processed,
+    });
+  }
+  return JSON.stringify(steps);
+}
+
+async function stampRefundSourceSnapshot(
+  sql: ReturnType<typeof getSql>,
+  args: {
+    refundId: number;
+    gatiCashUsed: number;
+    gatewayAmount: number;
+    timelineJson: string;
+    reference?: string | null;
+    originalGatiCashTxnId?: string | null;
+    markInitiated?: boolean;
+  }
+): Promise<void> {
+  const rrn = ensureRefundRrn(args.reference);
+  try {
+    await sql`
+      UPDATE order_refunds
+      SET original_gati_cash_amount = COALESCE(original_gati_cash_amount, ${args.gatiCashUsed}),
+          original_gateway_amount   = COALESCE(original_gateway_amount, ${args.gatewayAmount}),
+          refund_timeline           = ${args.timelineJson}::jsonb,
+          original_gati_cash_txn_id = COALESCE(
+            NULLIF(TRIM(original_gati_cash_txn_id), ''),
+            NULLIF(TRIM(${args.originalGatiCashTxnId ?? null}), '')
+          ),
+          refund_reference          = CASE
+            WHEN refund_reference IS NOT NULL
+              AND TRIM(refund_reference) ~* '^RRN-[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}$'
+              THEN refund_reference
+            ELSE ${rrn}
+          END,
+          initiated_at = CASE
+            WHEN ${args.markInitiated === true} THEN COALESCE(initiated_at, NOW())
+            ELSE initiated_at
+          END
+      WHERE id = ${args.refundId}
+    `;
+  } catch {
+    /* 0483/0484/0485 columns may be absent until migration runs */
+    try {
+      await sql`
+        UPDATE order_refunds
+        SET original_gati_cash_amount = COALESCE(original_gati_cash_amount, ${args.gatiCashUsed}),
+            original_gateway_amount   = COALESCE(original_gateway_amount, ${args.gatewayAmount}),
+            refund_timeline           = ${args.timelineJson}::jsonb,
+            refund_reference          = CASE
+              WHEN refund_reference IS NOT NULL
+                AND TRIM(refund_reference) ~* '^RRN-[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}$'
+                THEN refund_reference
+              WHEN ${rrn}::text IS NOT NULL AND TRIM(${rrn}::text) <> ''
+                THEN ${rrn}
+              ELSE refund_reference
+            END,
+            initiated_at = CASE
+              WHEN ${args.markInitiated === true} THEN COALESCE(initiated_at, NOW())
+              ELSE initiated_at
+            END
+        WHERE id = ${args.refundId}
+      `;
+    } catch {
+      /* ignore */
+    }
+  }
 }
 
 // ─── Executor ─────────────────────────────────────────────────────────────────
@@ -220,22 +544,59 @@ export async function executeOrderRefund(
       }
     | undefined;
   if (prior) {
-    return {
-      ok: prior.execution_status !== "FAILED",
-      refundId: Number(prior.id),
-      route: prior.execution_route as RefundExecutionRoute,
-      status: prior.execution_status as RefundExecutionStatus,
-      razorpayRefundId: prior.razorpay_refund_id,
-      customerWalletLedgerId: prior.customer_wallet_ledger_id,
-      splitRazorpayAmount: prior.split_razorpay_amount != null
-        ? Number(prior.split_razorpay_amount)
-        : undefined,
-      splitWalletAmount: prior.split_wallet_amount != null
-        ? Number(prior.split_wallet_amount)
-        : undefined,
-      failureReason: prior.failure_reason ?? undefined,
-      idempotent: true,
-    };
+    const priorLedger =
+      prior.customer_wallet_ledger_id != null && Number(prior.customer_wallet_ledger_id) > 0
+        ? Number(prior.customer_wallet_ledger_id)
+        : null;
+    const priorRazorpay = String(prior.razorpay_refund_id ?? "").trim() || null;
+    const priorStatus = String(prior.execution_status ?? "").toUpperCase();
+    // INITIATED / hollow COMPLETED / PROCESSING-without-rfnd must retry — otherwise
+    // accept-timeout refunds stay "Pending RRN" forever after a mid-flight crash.
+    const hollowIncomplete =
+      !priorLedger &&
+      !priorRazorpay &&
+      args.refundAmount > 0.005 &&
+      (priorStatus === "COMPLETED" ||
+        priorStatus === "NOOP" ||
+        priorStatus === "INITIATED" ||
+        priorStatus === "PROCESSING" ||
+        (priorStatus === "FAILED" &&
+          /razorpay_payment_id_missing|customer_id_missing/i.test(
+            String(prior.failure_reason ?? "")
+          )));
+    if (hollowIncomplete) {
+      await sql`
+        UPDATE order_refunds
+        SET execution_key = NULL,
+            execution_status = NULL,
+            execution_route = NULL,
+            failure_reason = NULL,
+            failed_at = NULL,
+            refund_status = 'pending',
+            refund_reference = CASE
+              WHEN TRIM(COALESCE(refund_reference, '')) ~* '^RFND-\\d+$' THEN NULL
+              ELSE refund_reference
+            END
+        WHERE id = ${prior.id}
+      `;
+    } else {
+      return {
+        ok: prior.execution_status !== "FAILED",
+        refundId: Number(prior.id),
+        route: prior.execution_route as RefundExecutionRoute,
+        status: prior.execution_status as RefundExecutionStatus,
+        razorpayRefundId: prior.razorpay_refund_id,
+        customerWalletLedgerId: prior.customer_wallet_ledger_id,
+        splitRazorpayAmount: prior.split_razorpay_amount != null
+          ? Number(prior.split_razorpay_amount)
+          : undefined,
+        splitWalletAmount: prior.split_wallet_amount != null
+          ? Number(prior.split_wallet_amount)
+          : undefined,
+        failureReason: prior.failure_reason ?? undefined,
+        idempotent: true,
+      };
+    }
   }
 
   // Load payment source. If order can't be found, hard fail without touching
@@ -254,6 +615,8 @@ export async function executeOrderRefund(
   }
 
   const route = chooseRoute(snap);
+  const sourceSplit = splitRefundByOriginalSources(snap, args.refundAmount);
+  const initiatedIso = new Date().toISOString();
 
   // Stamp INITIATED + actor + snapshot upfront so a crash mid-flight leaves
   // an auditable "attempted" row rather than a ghost.
@@ -272,9 +635,80 @@ export async function executeOrderRefund(
         order_gross_snapshot     = ${snap.grandTotal}
     WHERE id = ${args.refundId}
   `;
+  await stampRefundSourceSnapshot(sql, {
+    refundId: args.refundId,
+    gatiCashUsed: sourceSplit.walletPart,
+    gatewayAmount: sourceSplit.razorpayPart,
+    originalGatiCashTxnId: snap.gatiCashTxnId,
+    reference: ensureRefundRrn(null),
+    timelineJson: buildRefundTimelineJson({
+      amount: args.refundAmount,
+      initiatedAtIso: initiatedIso,
+      completed: false,
+    }),
+    markInitiated: true,
+  });
 
   try {
     if (route === "COD_NOOP") {
+      // Never stamp Completed for a positive refund with no money moved.
+      // Mis-classified prepaid/GatiCash checkouts must credit the wallet.
+      if (args.refundAmount > 0.005 && snap.customerId != null) {
+        const walletAmount = args.refundAmount;
+        const ledgerId = await creditCustomerWallet(sql, {
+          customerId: snap.customerId,
+          orderIdText: snap.orderIdText,
+          refundId: args.refundId,
+          amount: walletAmount,
+          reason: args.refundReason,
+          actor: args.actor,
+          originalGatiCashTxnId: snap.gatiCashTxnId,
+        });
+        await sql`
+          UPDATE order_refunds
+          SET execution_status          = 'COMPLETED',
+              execution_route           = 'WALLET',
+              executed_at               = NOW(),
+              completed_at              = NOW(),
+              customer_wallet_ledger_id = ${ledgerId},
+              customer_wallet_amount    = ${walletAmount},
+              split_wallet_amount       = ${walletAmount},
+              split_razorpay_amount     = 0,
+              refund_status             = 'completed'
+          WHERE id = ${args.refundId}
+        `;
+        await syncOrderRefundCompletionMarkers({
+          orderCoreId: args.orderCoreId,
+          refundId: args.refundId,
+          kind: "completed",
+          refundAmount: walletAmount,
+        }, sql);
+        await stampRefundSourceSnapshot(sql, {
+          refundId: args.refundId,
+          gatiCashUsed: walletAmount,
+          gatewayAmount: 0,
+          reference: ensureRefundRrn(null),
+          originalGatiCashTxnId: snap.gatiCashTxnId,
+          timelineJson: buildRefundTimelineJson({
+            amount: walletAmount,
+            initiatedAtIso: initiatedIso,
+            processedAtIso: new Date().toISOString(),
+            completedAtIso: new Date().toISOString(),
+            completed: true,
+          }),
+        });
+        return {
+          ok: true,
+          refundId: args.refundId,
+          route: "WALLET",
+          status: "COMPLETED",
+          customerWalletLedgerId: ledgerId,
+          splitWalletAmount: walletAmount,
+          splitRazorpayAmount: 0,
+          idempotent: false,
+        };
+      }
+
       await sql`
         UPDATE order_refunds
         SET execution_status = 'NOOP',
@@ -283,6 +717,12 @@ export async function executeOrderRefund(
             refund_status    = 'completed'
         WHERE id = ${args.refundId}
       `;
+      await syncOrderRefundCompletionMarkers({
+        orderCoreId: args.orderCoreId,
+        refundId: args.refundId,
+        kind: "completed",
+        refundAmount: 0,
+      }, sql);
       return {
         ok: true,
         refundId: args.refundId,
@@ -293,13 +733,19 @@ export async function executeOrderRefund(
     }
 
     if (route === "WALLET") {
+      // Pure wallet route: always restore the full requested amount (already capped
+      // to paid by callers). Do not clamp to a possibly-incomplete gatiCashUsed
+      // snapshot — that left accept-timeout refunds under-credited / stuck.
+      const walletAmount = round2(args.refundAmount);
+      if (!snap.customerId) throw new Error("customer_id_missing_on_order");
       const ledgerId = await creditCustomerWallet(sql, {
         customerId: snap.customerId,
         orderIdText: snap.orderIdText,
         refundId: args.refundId,
-        amount: args.refundAmount,
+        amount: walletAmount,
         reason: args.refundReason,
         actor: args.actor,
+        originalGatiCashTxnId: snap.gatiCashTxnId,
       });
       await sql`
         UPDATE order_refunds
@@ -307,27 +753,112 @@ export async function executeOrderRefund(
             executed_at              = NOW(),
             completed_at             = NOW(),
             customer_wallet_ledger_id = ${ledgerId},
-            customer_wallet_amount   = ${args.refundAmount},
+            customer_wallet_amount   = ${walletAmount},
+            split_wallet_amount      = ${walletAmount},
+            split_razorpay_amount    = 0,
             refund_status            = 'completed'
         WHERE id = ${args.refundId}
       `;
+      await syncOrderRefundCompletionMarkers({
+        orderCoreId: args.orderCoreId,
+        refundId: args.refundId,
+        kind: "completed",
+        refundAmount: walletAmount,
+      }, sql);
+      await stampRefundSourceSnapshot(sql, {
+        refundId: args.refundId,
+        gatiCashUsed: walletAmount,
+        gatewayAmount: 0,
+        reference: ensureRefundRrn(null),
+        originalGatiCashTxnId: snap.gatiCashTxnId,
+        timelineJson: buildRefundTimelineJson({
+          amount: walletAmount,
+          initiatedAtIso: initiatedIso,
+          processedAtIso: new Date().toISOString(),
+          completedAtIso: new Date().toISOString(),
+          completed: true,
+        }),
+      });
       return {
         ok: true,
         refundId: args.refundId,
         route,
         status: "COMPLETED",
         customerWalletLedgerId: ledgerId,
+        splitWalletAmount: walletAmount,
+        splitRazorpayAmount: 0,
         idempotent: false,
       };
     }
 
     if (route === "RAZORPAY") {
       if (!snap.razorpayPaymentId) {
-        throw new Error("razorpay_payment_id_missing");
+        // Mis-stamped gateway row with no capture — restore via wallet instead of
+        // leaving Pending RRN forever.
+        if (!snap.customerId) throw new Error("razorpay_payment_id_missing");
+        const walletAmount = round2(args.refundAmount);
+        const ledgerId = await creditCustomerWallet(sql, {
+          customerId: snap.customerId,
+          orderIdText: snap.orderIdText,
+          refundId: args.refundId,
+          amount: walletAmount,
+          reason: args.refundReason,
+          actor: args.actor,
+          originalGatiCashTxnId: snap.gatiCashTxnId,
+        });
+        await sql`
+          UPDATE order_refunds
+          SET execution_status          = 'COMPLETED',
+              execution_route           = 'WALLET',
+              executed_at               = NOW(),
+              completed_at              = NOW(),
+              customer_wallet_ledger_id = ${ledgerId},
+              customer_wallet_amount    = ${walletAmount},
+              split_wallet_amount       = ${walletAmount},
+              split_razorpay_amount     = 0,
+              refund_status             = 'completed',
+              failure_reason            = NULL,
+              failed_at                 = NULL
+          WHERE id = ${args.refundId}
+        `;
+        await syncOrderRefundCompletionMarkers({
+          orderCoreId: args.orderCoreId,
+          refundId: args.refundId,
+          kind: "completed",
+          refundAmount: walletAmount,
+        }, sql);
+        await stampRefundSourceSnapshot(sql, {
+          refundId: args.refundId,
+          gatiCashUsed: walletAmount,
+          gatewayAmount: 0,
+          reference: ensureRefundRrn(null),
+          originalGatiCashTxnId: snap.gatiCashTxnId,
+          timelineJson: buildRefundTimelineJson({
+            amount: walletAmount,
+            initiatedAtIso: initiatedIso,
+            processedAtIso: new Date().toISOString(),
+            completedAtIso: new Date().toISOString(),
+            completed: true,
+          }),
+        });
+        return {
+          ok: true,
+          refundId: args.refundId,
+          route: "WALLET",
+          status: "COMPLETED",
+          customerWalletLedgerId: ledgerId,
+          splitWalletAmount: walletAmount,
+          splitRazorpayAmount: 0,
+          idempotent: false,
+        };
       }
+      const gatewayRefundAmount =
+        snap.gatewayAmount > 0.005
+          ? round2(Math.min(args.refundAmount, snap.gatewayAmount))
+          : args.refundAmount;
       const refund = await createRazorpayRefund({
         paymentId: snap.razorpayPaymentId,
-        amountPaise: Math.round(args.refundAmount * 100),
+        amountPaise: Math.round(gatewayRefundAmount * 100),
         receipt: `order_refund_${args.refundId}`,
         notes: {
           order_core_id: String(args.orderCoreId),
@@ -346,41 +877,63 @@ export async function executeOrderRefund(
             razorpay_refund_id  = ${refund.id},
             razorpay_payment_id = ${snap.razorpayPaymentId},
             razorpay_response   = ${JSON.stringify(refund)}::jsonb,
+            split_razorpay_amount = ${gatewayRefundAmount},
+            split_wallet_amount   = 0,
             refund_status       = 'processing'
         WHERE id = ${args.refundId}
       `;
+      await syncOrderRefundCompletionMarkers({
+        orderCoreId: args.orderCoreId,
+        refundId: args.refundId,
+        kind: "processing",
+        refundAmount: gatewayRefundAmount,
+      }, sql);
+      await stampRefundSourceSnapshot(sql, {
+        refundId: args.refundId,
+        gatiCashUsed: 0,
+        gatewayAmount: gatewayRefundAmount,
+        reference: ensureRefundRrn(null),
+        originalGatiCashTxnId: snap.gatiCashTxnId,
+        timelineJson: buildRefundTimelineJson({
+          amount: gatewayRefundAmount,
+          initiatedAtIso: initiatedIso,
+          processedAtIso: new Date().toISOString(),
+          completed: false,
+        }),
+      });
       return {
         ok: true,
         refundId: args.refundId,
         route,
         status: "PROCESSING",
         razorpayRefundId: refund.id,
+        splitRazorpayAmount: gatewayRefundAmount,
+        splitWalletAmount: 0,
         idempotent: false,
       };
     }
 
-    // MIXED: split proportionally by original payment split. We do NOT have
-    // per-source amounts split in orders_core today, so approximate:
-    // treat the wallet-portion as (snap.grandTotal - razorpay portion).
-    // Real per-source split requires reading orders_core_payments per row
-    // grouped by gateway — implemented as a later enhancement.
-    // For now: 50/50 split if we hit MIXED. Ops can adjust via a dedicated
-    // manual refund tool if needed.
-    const walletPart = Math.round(args.refundAmount * 100 * 0.5) / 100;
-    const razorpayPart = Math.round((args.refundAmount - walletPart) * 100) / 100;
+    // MIXED: restore wallet portion to GatiCash and gateway portion via Razorpay.
+    // Never collapse a split payment into a single pipe.
+    const { walletPart, razorpayPart } = splitRefundByOriginalSources(snap, args.refundAmount);
     let ledgerId: number | null = null;
-    if (walletPart > 0) {
+    if (walletPart > 0.005) {
       ledgerId = await creditCustomerWallet(sql, {
         customerId: snap.customerId,
         orderIdText: snap.orderIdText,
         refundId: args.refundId,
         amount: walletPart,
-        reason: `${args.refundReason} (wallet portion)`,
+        reason: `${args.refundReason} (GatiCash portion)`,
         actor: args.actor,
+        originalGatiCashTxnId: snap.gatiCashTxnId,
       });
     }
     let refundIdRazorpay: string | null = null;
-    if (razorpayPart > 0 && snap.razorpayPaymentId) {
+    let razorpayPayload: Record<string, unknown> | null = null;
+    if (razorpayPart > 0.005) {
+      if (!snap.razorpayPaymentId) {
+        throw new Error("razorpay_payment_id_missing_for_mixed_refund");
+      }
       const refund = await createRazorpayRefund({
         paymentId: snap.razorpayPaymentId,
         amountPaise: Math.round(razorpayPart * 100),
@@ -389,28 +942,75 @@ export async function executeOrderRefund(
           order_core_id: String(args.orderCoreId),
           refund_id: String(args.refundId),
           split: "MIXED_RAZORPAY_PART",
+          wallet_part: String(walletPart),
+          razorpay_part: String(razorpayPart),
         },
       });
       refundIdRazorpay = refund.id;
+      razorpayPayload = refund as unknown as Record<string, unknown>;
     }
-    await sql`
-      UPDATE order_refunds
-      SET execution_status          = 'PROCESSING',
-          executed_at               = NOW(),
-          razorpay_refund_id        = ${refundIdRazorpay},
-          razorpay_payment_id       = ${snap.razorpayPaymentId},
-          customer_wallet_ledger_id = ${ledgerId},
-          split_razorpay_amount     = ${razorpayPart},
-          split_wallet_amount       = ${walletPart},
-          customer_wallet_amount    = ${walletPart},
-          refund_status             = 'processing'
-      WHERE id = ${args.refundId}
-    `;
+
+    const mixedDone = razorpayPart <= 0.005 || !refundIdRazorpay;
+    const mixedStatus = mixedDone ? "COMPLETED" : "PROCESSING";
+    const mixedRefundStatus = mixedDone ? "completed" : "processing";
+
+    if (mixedDone) {
+      await sql`
+        UPDATE order_refunds
+        SET execution_status          = 'COMPLETED',
+            executed_at               = NOW(),
+            completed_at              = NOW(),
+            razorpay_refund_id        = ${refundIdRazorpay},
+            razorpay_payment_id       = ${snap.razorpayPaymentId},
+            razorpay_response         = ${razorpayPayload ? JSON.stringify(razorpayPayload) : null}::jsonb,
+            customer_wallet_ledger_id = ${ledgerId},
+            split_razorpay_amount     = ${razorpayPart},
+            split_wallet_amount       = ${walletPart},
+            customer_wallet_amount    = ${walletPart},
+            refund_status             = 'completed'
+        WHERE id = ${args.refundId}
+      `;
+    } else {
+      await sql`
+        UPDATE order_refunds
+        SET execution_status          = 'PROCESSING',
+            executed_at               = NOW(),
+            razorpay_refund_id        = ${refundIdRazorpay},
+            razorpay_payment_id       = ${snap.razorpayPaymentId},
+            razorpay_response         = ${razorpayPayload ? JSON.stringify(razorpayPayload) : null}::jsonb,
+            customer_wallet_ledger_id = ${ledgerId},
+            split_razorpay_amount     = ${razorpayPart},
+            split_wallet_amount       = ${walletPart},
+            customer_wallet_amount    = ${walletPart},
+            refund_status             = 'processing'
+        WHERE id = ${args.refundId}
+      `;
+    }
+    await syncOrderRefundCompletionMarkers({
+      orderCoreId: args.orderCoreId,
+      refundId: args.refundId,
+      kind: mixedDone ? "completed" : "processing",
+      refundAmount: args.refundAmount,
+    }, sql);
+    await stampRefundSourceSnapshot(sql, {
+      refundId: args.refundId,
+      gatiCashUsed: walletPart,
+      gatewayAmount: razorpayPart,
+      reference: ensureRefundRrn(null),
+      originalGatiCashTxnId: snap.gatiCashTxnId,
+      timelineJson: buildRefundTimelineJson({
+        amount: args.refundAmount,
+        initiatedAtIso: initiatedIso,
+        processedAtIso: new Date().toISOString(),
+        completedAtIso: mixedDone ? new Date().toISOString() : null,
+        completed: mixedDone,
+      }),
+    });
     return {
       ok: true,
       refundId: args.refundId,
       route,
-      status: "PROCESSING",
+      status: mixedStatus as RefundExecutionStatus,
       razorpayRefundId: refundIdRazorpay,
       customerWalletLedgerId: ledgerId,
       splitRazorpayAmount: razorpayPart,
@@ -420,6 +1020,12 @@ export async function executeOrderRefund(
   } catch (err) {
     const msg = (err as Error)?.message ?? String(err);
     await markFailed(sql, args.refundId, executionKey, msg, args.actor, route);
+    await syncOrderRefundCompletionMarkers({
+      orderCoreId: args.orderCoreId,
+      refundId: args.refundId,
+      kind: "failed",
+      refundAmount: args.refundAmount,
+    }, sql);
     return {
       ok: false,
       refundId: args.refundId,
@@ -469,10 +1075,12 @@ async function creditCustomerWallet(
     amount: number;
     reason: string;
     actor: RefundExecutionActor;
+    originalGatiCashTxnId?: string | null;
   }
 ): Promise<number> {
   if (!args.customerId) throw new Error("customer_id_missing_on_order");
   const creditKey = `order_refund_${args.refundId}`;
+  const walletDescription = "GatiCash Refunded - Credit Wallet";
 
   // De-dupe on transaction_id — customer_wallet_credit uses it internally,
   // but this cheap pre-check saves a round trip on the happy path.
@@ -490,18 +1098,42 @@ async function creditCustomerWallet(
       'REFUND'::public.wallet_transaction_type,
       ${args.orderIdText ?? `refund_${args.refundId}`},
       ${"order_refund"},
-      ${args.reason},
+      ${walletDescription},
       NULL,
       ${creditKey},
       ${JSON.stringify({
         refund_id: args.refundId,
+        refund_reason: args.reason,
         actor_email: args.actor.actorEmail,
         actor_role: args.actor.actorRole,
+        original_gati_cash_txn_id: args.originalGatiCashTxnId ?? null,
       })}::jsonb
     ) AS id
   `;
   const rowId = rows[0]?.id;
   if (rowId == null) throw new Error("customer_wallet_credit_returned_null");
+
+  try {
+    const { emitEvent } = await import("../notifications/eventBus.js");
+    const balRows = await sql<{ available_balance: string | number }[]>`
+      SELECT available_balance
+      FROM public.customer_wallet
+      WHERE customer_id = ${args.customerId}
+      LIMIT 1
+    `;
+    const balance = Number(balRows[0]?.available_balance ?? 0);
+    emitEvent("wallet.updated", {
+      userId: String(args.customerId),
+      role: "customer",
+      direction: "CREDIT",
+      amount: args.amount,
+      balance: Number.isFinite(balance) ? balance : args.amount,
+      reason: args.reason || "order_refund",
+    });
+  } catch {
+    /* notification best-effort */
+  }
+
   return Number(rowId);
 }
 
@@ -521,13 +1153,20 @@ export async function completeOrderRefundFromRazorpayWebhook(args: {
 }): Promise<{ ok: boolean; matched: boolean }> {
   const sql = getSql();
   const found = await sql`
-    SELECT id FROM order_refunds
+    SELECT id, order_id, refund_amount
+    FROM order_refunds
     WHERE razorpay_refund_id = ${args.razorpayRefundId}
       AND execution_status IN ('PROCESSING','INITIATED')
     LIMIT 1
   `;
   if (found.length === 0) return { ok: true, matched: false };
-  const refundId = Number((found[0] as { id: number }).id);
+  const row = found[0] as { id: number; order_id: number; refund_amount: string | number | null };
+  const refundId = Number(row.id);
+  const orderCoreId = Number(row.order_id);
+  const refundAmount =
+    row.refund_amount != null && Number.isFinite(Number(row.refund_amount))
+      ? Number(row.refund_amount)
+      : null;
 
   await sql`
     UPDATE order_refunds
@@ -542,5 +1181,14 @@ export async function completeOrderRefundFromRazorpayWebhook(args: {
         })}::jsonb
     WHERE id = ${refundId}
   `;
+
+  if (Number.isFinite(orderCoreId) && orderCoreId > 0) {
+    await syncOrderRefundCompletionMarkers({
+      orderCoreId,
+      refundId,
+      kind: "completed",
+      refundAmount,
+    }, sql);
+  }
   return { ok: true, matched: true };
 }

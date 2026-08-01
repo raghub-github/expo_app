@@ -1,3 +1,9 @@
+import {
+  AUTO_CANCELLED_LABEL,
+  humanizeMerchantCancellationReason,
+  isMerchantAcceptTimeoutReason,
+} from '@/lib/merchant-cancellation-display';
+
 export type MerchantCancellationCompensationDisplay = {
   engine_enabled: boolean;
   admin_override?: boolean;
@@ -184,10 +190,15 @@ export function resolveCancellationMessageParts(args: {
   policySentence: string | null;
 } {
   const eligible = args.eligibleMessage?.trim();
-  const rejected =
+  const rawRejected =
     args.rejectedReason?.trim() ||
     args.reasonDetail?.trim() ||
     null;
+  const rejected = rawRejected
+    ? isMerchantAcceptTimeoutReason(rawRejected)
+      ? AUTO_CANCELLED_LABEL
+      : humanizeMerchantCancellationReason(rawRejected)
+    : null;
 
   if (eligible) {
     const split = splitCancellationEligibleMessage(eligible);

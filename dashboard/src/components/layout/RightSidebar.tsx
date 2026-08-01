@@ -15,6 +15,7 @@ import {
   ChevronRight,
   ClipboardList,
   FileUp,
+  Bell,
 } from "lucide-react";
 import {
   getCurrentDashboard,
@@ -22,6 +23,7 @@ import {
   getMerchantSubRoutesForPath,
   adminPortalMerchantRoutes,
   merchantPortalSidebarRoutes,
+  notificationDashboardRoutes,
   type DashboardSubRoute,
   type AreaManagerTypeFilter,
 } from "@/lib/navigation/dashboard-routes";
@@ -124,6 +126,9 @@ export function RightSidebar({
 
   // Sub-routes for current dashboard. When on merchants: admin portal = only All Merchants + Verifications; merchant portal = Dashboard, Orders, Menu, etc. When on a store page, show store-scoped links.
   const rawSubRoutes = useMemo(() => {
+    if (cleanPathname.startsWith("/dashboard/super-admin/notifications")) {
+      return notificationDashboardRoutes;
+    }
     const dashboard = getCurrentDashboard(cleanPathname);
     if (dashboard?.href === "/dashboard/merchants") {
       const isStorePath = /^\/dashboard\/merchants\/stores\/\d+/.test(cleanPathname);
@@ -515,21 +520,31 @@ export function RightSidebar({
               )
             ) : isOpen ? (
               <>
-                {currentDashboard?.icon && (
+                {cleanPathname.startsWith("/dashboard/super-admin/notifications") ? (
+                  <div className="flex shrink-0 items-center justify-center rounded-[10px] bg-[#121212] p-1.5">
+                    <Bell className="h-4 w-4 text-white" aria-hidden />
+                  </div>
+                ) : currentDashboard?.icon ? (
                   <div className="flex shrink-0 items-center justify-center rounded-[10px] bg-[#121212] p-1.5">
                     <currentDashboard.icon className="h-4 w-4 text-white" aria-hidden />
                   </div>
-                )}
+                ) : null}
                 <h2 className="min-w-0 flex-1 truncate text-left text-xs font-bold leading-snug text-[#121212]">
-                  {currentDashboard?.name}
+                  {cleanPathname.startsWith("/dashboard/super-admin/notifications")
+                    ? "Notifications"
+                    : currentDashboard?.name}
                 </h2>
               </>
             ) : (
-              currentDashboard?.icon && (
+              cleanPathname.startsWith("/dashboard/super-admin/notifications") ? (
+                <div className="rounded-[10px] bg-[#121212] p-1.5">
+                  <Bell className="h-4 w-4 text-white" aria-hidden />
+                </div>
+              ) : currentDashboard?.icon ? (
                 <div className="rounded-[10px] bg-[#121212] p-1.5">
                   <currentDashboard.icon className="h-4 w-4 text-white" aria-hidden />
                 </div>
-              )
+              ) : null
             )}
           </div>
         )}
@@ -748,7 +763,7 @@ export function RightSidebar({
               <div className="min-h-0" aria-hidden />
             ) : (
               <div className="flex min-h-0 flex-1 flex-col">
-              <nav className="flex-1 min-h-0 overflow-y-auto overscroll-y-contain space-y-1.5 px-2 pb-2 pt-0" dir="ltr">
+              <nav className="flex-1 min-h-0 overflow-y-auto overscroll-y-contain space-y-2 px-2.5 pb-3 pt-2" dir="ltr">
               {(() => {
                 // Wallet & Earnings sub-pages (wallet-history, earnings) should highlight "Wallet & Earnings", not Rider Information
                 const isWalletOrEarningsPath =
@@ -790,14 +805,14 @@ export function RightSidebar({
                       href={appendMerchantPortal(appendRiderSearch(route.href))}
                       className={`group relative cursor-pointer rounded-[10px] transition-colors duration-200 ${
                         isOpen
-                          ? `grid w-full min-w-0 ${
+                          ? `grid min-h-10 w-full min-w-0 ${
                               showMenuReviewBadge
                                 ? "grid-cols-[1.25rem_minmax(0,1fr)_auto]"
                                 : "grid-cols-[1.25rem_minmax(0,1fr)]"
-                            } items-center gap-x-2 px-2 py-2 text-xs font-medium ${
+                            } items-center gap-x-2.5 px-3 py-2.5 text-xs font-medium ${
                               isActive ? rsbNavActive : rsbNavIdle
                             }`
-                          : `flex justify-center px-2 py-2.5 ${
+                          : `flex min-h-10 justify-center px-2 py-2.5 ${
                               isActive ? rsbNavActive : rsbNavIdle
                             }`
                       }`}
@@ -996,7 +1011,7 @@ export function RightSidebar({
               })()}
               </nav>
               {isOpen && portal === "merchant" && showRightSidebarStoreCard ? (
-                <div className="shrink-0 border-t border-gray-300/50 bg-[#F3F7FA] px-2 py-2 min-h-0 max-h-[34vh] overflow-y-auto overscroll-y-contain">
+                <div className="relative z-10 flex shrink-0 items-center border-t border-gray-300/50 bg-[#F3F7FA] px-2 py-2.5">
                   {showMerchantSearchSkeleton ? (
                     <StoreInfoCardSkeleton />
                   ) : isMerchantsSearchListRoot ? (

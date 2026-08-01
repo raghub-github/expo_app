@@ -28,11 +28,19 @@ import { getOrCreateMerchantDeviceId } from "@/lib/merchantDeviceId";
 import { GatiMitraMerchant, SAFE_AREA_TOP_MIN } from "@/constants/theme";
 import { getPartnerLegalUrls } from "@/lib/partnerLegalUrls";
 import { merchantOtpVerifyTheme } from "@/lib/otpVerifyTheme";
+import { MerchantBottomSheetShell } from "@/components/order/MerchantBottomSheetShell";
 
 const OTP_LEN = 6;
 const legalUrls = getPartnerLegalUrls();
 const LORA_BOLD = "Lora_700Bold";
 const POPPINS_BOLD = "Poppins_700Bold";
+const NOT_REGISTERED_SHEET_MESSAGE = "No Partner Account registered with this no";
+
+function isNotRegisteredPartnerError(e: unknown): boolean {
+  if (isMerchantAuthError(e) && e.code === "not_registered") return true;
+  const msg = e instanceof Error ? e.message : String(e ?? "");
+  return /isn't registered|not registered as a gatimitra partner|not_registered/i.test(msg);
+}
 
 /** Narrow exchange API partner payload to PartnerData after minimal structural checks. */
 function partnerDataFromExchange(partner: { parent: unknown; childStores: unknown[] }): PartnerData {
@@ -61,6 +69,7 @@ export default function LoginScreen() {
   const [step, setStep] = useState<"phone" | "otp">("phone");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [notRegisteredSheetOpen, setNotRegisteredSheetOpen] = useState(false);
   const [deviceSessionMode, setDeviceSessionMode] = useState(false);
   const [lastExchange, setLastExchange] = useState<LastExchange>(null);
   const [resendSeconds, setResendSeconds] = useState(0);
@@ -128,7 +137,13 @@ export default function LoginScreen() {
 
   const clearErrors = () => {
     setError("");
+    setNotRegisteredSheetOpen(false);
     setDeviceSessionMode(false);
+  };
+
+  const openRegisterStore = () => {
+    setNotRegisteredSheetOpen(false);
+    router.push("/(auth)/signup-webview");
   };
 
   const handleRequestOtp = async () => {
@@ -147,8 +162,13 @@ export default function LoginScreen() {
       setResendSeconds(60);
       setStep("otp");
     } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : "Could not send OTP. Try again.";
-      setError(msg);
+      if (isNotRegisteredPartnerError(e)) {
+        setNotRegisteredSheetOpen(true);
+        setError("");
+      } else {
+        const msg = e instanceof Error ? e.message : "Could not send OTP. Try again.";
+        setError(msg);
+      }
     } finally {
       setLoading(false);
     }
@@ -519,6 +539,25 @@ export default function LoginScreen() {
           </View>
         }
       />
+
+      <MerchantBottomSheetShell
+        visible={notRegisteredSheetOpen}
+        onClose={() => setNotRegisteredSheetOpen(false)}
+        maxHeightPercent="42%"
+      >
+        <View style={styles.notRegSheetBody}>
+          <View style={styles.notRegIconWrap}>
+            <Ionicons name="alert-circle" size={28} color={GatiMitraMerchant.error} />
+          </View>
+          <Text style={styles.notRegTitle}>{NOT_REGISTERED_SHEET_MESSAGE}</Text>
+          <Pressable
+            style={({ pressed }) => [styles.registerStoreBtn, pressed && styles.pressed]}
+            onPress={openRegisterStore}
+          >
+            <Text style={styles.registerStoreBtnText}>Register Store</Text>
+          </Pressable>
+        </View>
+      </MerchantBottomSheetShell>
     </View>
   );
 }
@@ -759,5 +798,41 @@ const styles = StyleSheet.create({
     fontFamily: LORA_BOLD,
     fontSize: 13,
     color: "#92400E",
+  },
+  notRegSheetBody: {
+    paddingHorizontal: 22,
+    paddingTop: 8,
+    paddingBottom: 8,
+    alignItems: "center",
+  },
+  notRegIconWrap: {
+    width: 52,
+    height: 52,
+    borderRadius: 26,
+    backgroundColor: "#FEF2F2",
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 14,
+  },
+  notRegTitle: {
+    fontFamily: LORA_BOLD,
+    fontSize: 18,
+    color: GatiMitraMerchant.textPrimary,
+    textAlign: "center",
+    lineHeight: 26,
+    marginBottom: 20,
+  },
+  registerStoreBtn: {
+    width: "100%",
+    borderRadius: 14,
+    backgroundColor: GatiMitraMerchant.primary,
+    paddingVertical: 14,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  registerStoreBtnText: {
+    fontFamily: POPPINS_BOLD,
+    fontSize: 15,
+    color: "#FFFFFF",
   },
 });

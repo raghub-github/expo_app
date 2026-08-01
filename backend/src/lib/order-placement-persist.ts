@@ -80,14 +80,18 @@ export async function runInSavepoint(
   } catch (e) {
     try {
       await tx.execute(sql.raw(`ROLLBACK TO SAVEPOINT ${sp}`));
+      console.warn(`[order-placement] ${savepoint} skipped:`, (e as Error).message);
     } catch (rollbackErr) {
+      // PgBouncer / aborted txn: rolling back the savepoint can itself fail. Releasing the
+      // shadow-write path must NEVER take down a paid (or wallet-settled) order — log and
+      // continue; later statements may still succeed if the driver recovered.
       console.warn(
         `[order-placement] ${savepoint} rollback failed:`,
-        (rollbackErr as Error).message
+        (rollbackErr as Error).message,
+        "| original:",
+        (e as Error).message
       );
-      throw e;
     }
-    console.warn(`[order-placement] ${savepoint} skipped:`, (e as Error).message);
   }
 }
 

@@ -13,6 +13,23 @@ export function formatInr(
   }).format(Number.isFinite(amount) ? amount : 0);
 }
 
+/** ₹ with a light gap before digits — for dashboard order payment surfaces. */
+export function formatInrWithGap(
+  value?: number | null,
+  options?: { minimumFractionDigits?: number; maximumFractionDigits?: number }
+): string {
+  if (value == null) return "—";
+  const num = Number(value);
+  if (!Number.isFinite(num)) return "—";
+  const min = options?.minimumFractionDigits ?? 2;
+  const max = options?.maximumFractionDigits ?? 2;
+  const digits = num.toLocaleString("en-IN", {
+    minimumFractionDigits: min,
+    maximumFractionDigits: max,
+  });
+  return `₹ ${digits}`;
+}
+
 export function formatInrCompact(amount: number): string {
   if (amount >= 100_000) {
     return new Intl.NumberFormat("en-IN", {

@@ -37,6 +37,8 @@ import {
   fulfillCheckoutGatiCashWalletOps,
   getCustomerGatiCashAvailable,
 } from "../../lib/checkout-gaticash-wallet-ops.js";
+import { ensureGatiCashTxnIdInCheckoutMetadata } from "../../lib/gaticash-txn-id.js";
+import { buildOrderPaymentBreakdown } from "../../lib/order-payment-breakdown.js";
 import {
   resolveOrdersCorePk,
   writeOrderItemCommissionSnapshots,
@@ -60,6 +62,10 @@ import { getSql } from "../../db/client.js";
 import { notifyMerchantStoreNewOrder } from "../../lib/merchant-new-order-notify.js";
 import { maybeStartOrderDispatch } from "../../lib/order-dispatch.service.js";
 import { captureOrderWeatherSnapshot } from "../weather/weather.order-snapshot.js";
+import {
+  getActiveLocation,
+  setAddressLastUsed,
+} from "../addresses/address.service.js";
 
 const EM_DASH = "\u2014";
 
@@ -214,13 +220,25 @@ async function persistOmsLedgerArtifacts(
     orderId: string;
     pendingId: string;
     pending: (typeof pendingOrders.$inferSelect);
-    razorpayOrderId: string;
-    razorpayPaymentId: string;
+    /** Null for wallet-settled orders — no gateway was involved. */
+    razorpayOrderId: string | null;
+    razorpayPaymentId: string | null;
     paymentMethodEnum: "upi" | "card" | "wallet" | "online" | "cod" | "other";
+    /** Unique GatiCash payment txn id when wallet settled the bill (or mixed wallet portion). */
+    gatiCashTxnId?: string | null;
   }
 ): Promise<void> {
   const { orderId, pendingId, pending, razorpayOrderId, razorpayPaymentId, paymentMethodEnum } = args;
   const versionNo = 1;
+  // A GatiCash-covered order has no gateway transaction, so the ledger reference is the
+  // unique GatiCash txn id. Keeps (gateway, transaction_reference) unique either way.
+  const settledByWallet = !razorpayPaymentId;
+  const ledgerGateway = settledByWallet ? "gati_cash" : "razorpay";
+  const ledgerTxnRef =
+    razorpayPaymentId ??
+    (args.gatiCashTxnId?.trim() || null) ??
+    // Should not happen for new wallet settlements — retained as last-resort only.
+    `gaticash_${orderId}`;
   const snap = (pending.billingSnapshot as Record<string, unknown> | null) ?? null;
 
   await tx.execute(sql`
@@ -364,42 +382,68 @@ async function persistOmsLedgerArtifacts(
   `);
 
   const paymentIntentId = `pi_${pendingId}`;
+  const breakdown = buildOrderPaymentBreakdown(pending, {
+    gatewayAmount: settledByWallet ? 0 : payableTotal,
+    gatewayMethod: settledByWallet ? null : paymentMethodEnum,
+  });
+  // Wallet-settled orders still have a real settlement amount (GatiCash debit). Ledger /
+  // payment_intents should record that, not ₹0 — otherwise support thinks nothing was paid.
+  const settlementAmount = settledByWallet
+    ? Math.max(payableTotal, asNumber(pending.gatiCashApplied ?? 0), breakdown.totalBillAmount)
+    : payableTotal;
+
   await tx.execute(sql`
     INSERT INTO payment_intents (intent_id, order_id, idempotency_key, amount, currency, status, metadata)
     VALUES (
       ${paymentIntentId},
       ${orderId},
       ${`intent:${paymentIntentId}`},
-      ${String(payableTotal)},
+      ${String(settlementAmount)},
       ${pending.currency ?? "INR"},
       'succeeded',
-      ${toJson({ source: "finalizeOrder" })}::jsonb
+      ${toJson({
+        source: "finalizeOrder",
+        settlement: settledByWallet ? "gati_cash" : "gateway",
+        breakdown,
+      })}::jsonb
     )
     ON CONFLICT (intent_id) DO NOTHING
   `);
 
-  const [pi] = await tx.execute(sql`
+  const piRows = await tx.execute(sql`
     SELECT id FROM payment_intents WHERE intent_id = ${paymentIntentId} LIMIT 1
-  `) as unknown as Array<{ id: number }>;
-
-  await tx.execute(sql`
-    INSERT INTO payment_transactions (
-      payment_intent_id, order_id, gateway, payment_mode, transaction_reference, status, amount, currency, idempotency_key, raw_response
-    )
-    VALUES (
-      ${pi?.id ?? null},
-      ${orderId},
-      'razorpay',
-      ${paymentMethodEnum},
-      ${razorpayPaymentId},
-      'succeeded',
-      ${String(payableTotal)},
-      ${pending.currency ?? "INR"},
-      ${`payment:${razorpayPaymentId}`},
-      ${toJson({ razorpayPaymentId, razorpayOrderId })}::jsonb
-    )
-    ON CONFLICT (gateway, transaction_reference) DO NOTHING
   `);
+  const piRow = Array.isArray(piRows)
+    ? (piRows[0] as { id?: number } | undefined)
+    : ((piRows as { rows?: Array<{ id?: number }> })?.rows?.[0] ?? undefined);
+  const paymentIntentPk = piRow?.id != null ? Number(piRow.id) : null;
+
+  // payment_intent_id is NOT NULL — skip the txn row if the intent select missed (pooler
+  // shape quirks) rather than aborting the whole finalize behind a flaky savepoint.
+  if (paymentIntentPk != null && Number.isFinite(paymentIntentPk)) {
+    await tx.execute(sql`
+      INSERT INTO payment_transactions (
+        payment_intent_id, order_id, gateway, payment_mode, transaction_reference, status, amount, currency, idempotency_key, raw_response
+      )
+      VALUES (
+        ${paymentIntentPk},
+        ${orderId},
+        ${ledgerGateway},
+        ${paymentMethodEnum},
+        ${ledgerTxnRef},
+        'succeeded',
+        ${String(settlementAmount)},
+        ${pending.currency ?? "INR"},
+        ${`payment:${ledgerTxnRef}`},
+        ${toJson(
+          settledByWallet
+            ? { settledBy: "gati_cash_wallet", gatiCashApplied: asNumber(pending.gatiCashApplied ?? 0) }
+            : { razorpayPaymentId, razorpayOrderId }
+        )}::jsonb
+      )
+      ON CONFLICT (gateway, transaction_reference) DO NOTHING
+    `);
+  }
 
   await tx.execute(sql`
     INSERT INTO ledger_accounts (account_code, account_name, account_type, owner_entity_type, owner_entity_id)
@@ -418,31 +462,40 @@ async function persistOmsLedgerArtifacts(
       'order_finalized_payment',
       'posted',
       ${pending.currency ?? "INR"},
-      ${toJson({ pendingId, razorpayPaymentId })}::jsonb
+      ${toJson({ pendingId, razorpayPaymentId, settlement: ledgerGateway, ledgerTxnRef })}::jsonb
     )
     ON CONFLICT (journal_ref) DO NOTHING
   `);
 
-  const [journal] = await tx.execute(sql`
+  const journalRows = await tx.execute(sql`
     SELECT id FROM ledger_journals WHERE journal_ref = ${journalRef} LIMIT 1
-  `) as unknown as Array<{ id: number }>;
-
-  const [ar] = await tx.execute(sql`SELECT id FROM ledger_accounts WHERE account_code = 'AR_CUSTOMER' LIMIT 1`) as unknown as Array<{ id: number }>;
-  const [rev] = await tx.execute(sql`SELECT id FROM ledger_accounts WHERE account_code = 'REV_PLATFORM' LIMIT 1`) as unknown as Array<{ id: number }>;
+  `);
+  const journal = Array.isArray(journalRows)
+    ? (journalRows[0] as { id?: number } | undefined)
+    : ((journalRows as { rows?: Array<{ id?: number }> })?.rows?.[0] ?? undefined);
+  const arRows = await tx.execute(sql`SELECT id FROM ledger_accounts WHERE account_code = 'AR_CUSTOMER' LIMIT 1`);
+  const revRows = await tx.execute(sql`SELECT id FROM ledger_accounts WHERE account_code = 'REV_PLATFORM' LIMIT 1`);
+  const ar = Array.isArray(arRows)
+    ? (arRows[0] as { id?: number } | undefined)
+    : ((arRows as { rows?: Array<{ id?: number }> })?.rows?.[0] ?? undefined);
+  const rev = Array.isArray(revRows)
+    ? (revRows[0] as { id?: number } | undefined)
+    : ((revRows as { rows?: Array<{ id?: number }> })?.rows?.[0] ?? undefined);
 
   if (journal?.id && ar?.id && rev?.id) {
     await tx.execute(sql`
       INSERT INTO ledger_entries (journal_id, order_id, account_id, direction, amount, entry_no, metadata)
       VALUES
-        (${journal.id}, ${orderId}, ${ar.id}, 'debit', ${String(payableTotal)}, 1, ${toJson({ source: "finalizeOrder" })}::jsonb),
-        (${journal.id}, ${orderId}, ${rev.id}, 'credit', ${String(payableTotal)}, 2, ${toJson({ source: "finalizeOrder" })}::jsonb)
+        (${journal.id}, ${orderId}, ${ar.id}, 'debit', ${String(settlementAmount)}, 1, ${toJson({ source: "finalizeOrder" })}::jsonb),
+        (${journal.id}, ${orderId}, ${rev.id}, 'credit', ${String(settlementAmount)}, 2, ${toJson({ source: "finalizeOrder" })}::jsonb)
       ON CONFLICT (journal_id, entry_no) DO NOTHING
     `);
+    // reference_id is NOT NULL — never pass a null razorpay id on wallet-settled orders.
     await tx.execute(sql`
       INSERT INTO ledger_references (journal_id, reference_type, reference_id, metadata)
       VALUES
         (${journal.id}, 'order_id', ${orderId}, '{}'::jsonb),
-        (${journal.id}, 'payment_txn', ${razorpayPaymentId}, '{}'::jsonb)
+        (${journal.id}, 'payment_txn', ${ledgerTxnRef}, '{}'::jsonb)
       ON CONFLICT (journal_id, reference_type, reference_id) DO NOTHING
     `);
   }
@@ -685,7 +738,6 @@ export async function createPendingOrder(
   const {
     customerId,
     merchantId,
-    addressId,
     paymentMethod,
     tipAmount = 0,
     donationAmount = 0,
@@ -693,6 +745,19 @@ export async function createPendingOrder(
     subscriptionPlanId,
     subscriptionBillingCycle,
   } = input;
+
+  // Order delivery snapshot = checkout addressId (what the customer confirmed).
+  // Never override with customer_active_location — active pin can be live GPS or a
+  // different Saved Address and must not rewrite immutable order drop coords.
+  const active = await getActiveLocation(customerId);
+  const addressId = input.addressId;
+  if (active?.addressId != null && active.addressId !== addressId) {
+    console.info("[orders] pending_address_checkout_wins_over_active", {
+      customerId,
+      checkoutAddressId: addressId,
+      activeAddressId: active.addressId,
+    });
+  }
 
   // Production-critical serviceability gate. Run this before idempotency
   // lookup and independently of billing flags so even retries cannot reuse a
@@ -724,6 +789,61 @@ export async function createPendingOrder(
           : "This address is outside the restaurant's delivery area. Please select a deliverable address or add a new one.",
       };
     }
+  }
+
+  // Emergency Prevent Services — block new food orders inside an active radius.
+  try {
+    const { customerAddresses: addrTable } = await import("../../db/schema.js");
+    const { assertServiceNotPrevented, preventCodesForStoreType } = await import(
+      "../prevent-services/preventServices.engine.js"
+    );
+    const [addrCoords] = await db
+      .select({
+        latitude: addrTable.latitude,
+        longitude: addrTable.longitude,
+      })
+      .from(addrTable)
+      .where(
+        and(
+          eq(addrTable.id, addressId),
+          eq(addrTable.customerId, customerId),
+          eq(addrTable.isActive, true),
+          isNull(addrTable.deletedAt)
+        )
+      )
+      .limit(1);
+    const dropLat = addrCoords?.latitude != null ? Number(addrCoords.latitude) : null;
+    const dropLng = addrCoords?.longitude != null ? Number(addrCoords.longitude) : null;
+    // store_type decides which prevent codes apply (grocery / pharmacy / courier).
+    let storeType: string | null = null;
+    try {
+      const { getSql } = await import("../../db/client.js");
+      const [storeRow] = await getSql()<Array<{ store_type: string | null }>>`
+        SELECT store_type
+        FROM merchant_stores
+        WHERE id = ${Number(merchantId)}
+        LIMIT 1
+      `;
+      storeType = storeRow?.store_type ?? null;
+    } catch {
+      storeType = null;
+    }
+    for (const code of preventCodesForStoreType(storeType)) {
+      const blocked = await assertServiceNotPrevented({
+        lat: dropLat,
+        lng: dropLng,
+        service: code,
+      });
+      if (!blocked.ok) {
+        return {
+          ok: false,
+          code: blocked.code,
+          message: blocked.message,
+        };
+      }
+    }
+  } catch {
+    /* schema missing / non-fatal — placement continues */
   }
 
   const idemKey = input.idempotencyKey?.trim() || null;
@@ -861,7 +981,7 @@ export async function createPendingOrder(
       customerId,
       merchantId: input.merchantId,
       items,
-      addressId: input.addressId,
+      addressId,
       tipAmount,
       donationAmount,
       couponCode: couponStored,
@@ -929,10 +1049,26 @@ export async function createPendingOrder(
   const dropAddressRaw = [addrRow.addressLine1, addrRow.addressLine2, addrRow.city, addrRow.state, addrRow.postalCode]
     .filter(Boolean)
     .join(", ");
+  // Immutable delivery snapshot from the checkout address row (never live GPS /
+  // customer_active_location lat/lng — those can diverge while addressId is bound).
   const dropLat = addrRow.latitude != null ? Number(addrRow.latitude) : 0;
   const dropLon = addrRow.longitude != null ? Number(addrRow.longitude) : 0;
-  const pickupLat = input.pickupLat ?? storeForOrder?.latitude ?? dropLat;
-  const pickupLon = input.pickupLon ?? storeForOrder?.longitude ?? dropLon;
+  // Immutable store snapshot: prefer merchant_stores row at place time, then client
+  // echo, never the delivery pin (that made store+home collapse onto GPS for some carts).
+  const storePickupLat =
+    storeForOrder?.latitude != null && Number.isFinite(storeForOrder.latitude)
+      ? Number(storeForOrder.latitude)
+      : null;
+  const storePickupLon =
+    storeForOrder?.longitude != null && Number.isFinite(storeForOrder.longitude)
+      ? Number(storeForOrder.longitude)
+      : null;
+  const clientPickupLat =
+    input.pickupLat != null && Number.isFinite(input.pickupLat) ? Number(input.pickupLat) : null;
+  const clientPickupLon =
+    input.pickupLon != null && Number.isFinite(input.pickupLon) ? Number(input.pickupLon) : null;
+  const pickupLat = storePickupLat ?? clientPickupLat ?? 0;
+  const pickupLon = storePickupLon ?? clientPickupLon ?? 0;
 
   // Reuse route distance from billing snapshot when available — createPending already
   // ran computeBillForOrder above, which calls the same routing engine. Skipping a
@@ -1044,6 +1180,17 @@ export async function createPendingOrder(
     expiresAt,
   });
 
+  // MRU: bump last_used for the address that actually entered the order pipeline.
+  try {
+    await setAddressLastUsed(customerId, addressId);
+  } catch (err) {
+    console.warn("[orders] setAddressLastUsed failed", {
+      customerId,
+      addressId,
+      err: err instanceof Error ? err.message : String(err),
+    });
+  }
+
   return {
     ok: true,
     pendingId,
@@ -1054,9 +1201,13 @@ export async function createPendingOrder(
 
 export type FinalizeInput = {
   pendingId: string;
-  razorpayOrderId: string;
-  razorpayPaymentId: string;
-  razorpaySignature: string;
+  /**
+   * Absent for wallet-settled orders — when GatiCash covers the whole bill the payable is
+   * ₹0, no gateway order is ever minted, and there is nothing to verify a signature against.
+   */
+  razorpayOrderId?: string | null;
+  razorpayPaymentId?: string | null;
+  razorpaySignature?: string | null;
   customerId: number;
 };
 
@@ -1069,7 +1220,7 @@ export async function finalizeOrder(
   db: PostgresJsDatabase<Record<string, unknown>>,
   input: FinalizeInput
 ): Promise<FinalizeResult> {
-  const { pendingId, razorpayOrderId, razorpayPaymentId, razorpaySignature, customerId } = input;
+  const { pendingId, customerId } = input;
 
   const [pending] = await db
     .select()
@@ -1082,26 +1233,93 @@ export async function finalizeOrder(
   }
 
   const expectedAmountPaise = Math.round(Number(pending.grandTotal ?? 0) * 100);
-  const paymentCheck = await verifyRazorpayPaymentDetails(
-    razorpayOrderId,
-    razorpayPaymentId,
-    razorpaySignature,
-    expectedAmountPaise,
-    String(pending.currency ?? "INR")
-  );
-  if (!paymentCheck.ok) {
-    return paymentCheck;
-  }
+  const gatiCashApplied = Number(pending.gatiCashApplied ?? 0);
 
-  const paymentMethodEnum = paymentMethodToEnum(paymentCheck.paymentMethod);
+  // GatiCash covered the whole bill: settle off the wallet ledger. There is no gateway
+  // order, payment id, or signature to verify — the wallet debit below IS the payment.
+  const walletSettled = expectedAmountPaise <= 0;
+
+  let razorpayOrderId: string | null = input.razorpayOrderId?.trim() || null;
+  let razorpayPaymentId: string | null = input.razorpayPaymentId?.trim() || null;
+  const razorpaySignature = input.razorpaySignature?.trim() || null;
+
+  let paymentMethodEnum: ReturnType<typeof paymentMethodToEnum>;
+
+  if (walletSettled) {
+    if (gatiCashApplied <= 0.005) {
+      return {
+        ok: false,
+        code: "ZERO_PAYABLE_WITHOUT_WALLET",
+        message: "This order has nothing to pay and no wallet amount to settle against.",
+      };
+    }
+    // Re-check the balance at finalize time: the pending row may be up to 30 minutes old
+    // and the customer could have spent the balance elsewhere in the meantime.
+    const available = await getCustomerGatiCashAvailable(getSql(), Number(pending.customerId));
+    if (available + 0.005 < gatiCashApplied && !pending.finalizedOrderId) {
+      return {
+        ok: false,
+        code: "INSUFFICIENT_GATICASH",
+        message: "Insufficient GatiCash balance. Please update wallet and try again.",
+      };
+    }
+    // Gateway ids stay null — the wallet transaction id is the payment reference.
+    razorpayOrderId = null;
+    razorpayPaymentId = null;
+    paymentMethodEnum = "wallet";
+  } else {
+    if (!razorpayOrderId || !razorpayPaymentId || !razorpaySignature) {
+      return {
+        ok: false,
+        code: "PAYMENT_NOT_VERIFIED",
+        message: "Payment details are missing. Please retry the payment.",
+      };
+    }
+    const paymentCheck = await verifyRazorpayPaymentDetails(
+      razorpayOrderId,
+      razorpayPaymentId,
+      razorpaySignature,
+      expectedAmountPaise,
+      String(pending.currency ?? "INR")
+    );
+    if (!paymentCheck.ok) {
+      return paymentCheck;
+    }
+    paymentMethodEnum = paymentMethodToEnum(paymentCheck.paymentMethod);
+  }
 
   if (pending.finalizedOrderId) {
     const [existing] = await db
-      .select({ orderId: ordersCore.orderId, grandTotal: ordersCore.grandTotal, placedAt: ordersCore.placedAt })
+      .select({
+        orderId: ordersCore.orderId,
+        grandTotal: ordersCore.grandTotal,
+        placedAt: ordersCore.placedAt,
+        merchantStoreId: ordersCore.merchantStoreId,
+        pickupLat: ordersCore.pickupLat,
+        pickupLon: ordersCore.pickupLon,
+        dropLat: ordersCore.dropLat,
+        dropLon: ordersCore.dropLon,
+        distanceKm: ordersCore.distanceKm,
+      })
       .from(ordersCore)
       .where(eq(ordersCore.orderId, pending.finalizedOrderId))
       .limit(1);
     if (existing?.orderId) {
+      // Idempotent replay — still ensure First ETA exists (webhook/client race).
+      void freezeEtaForPlacedOrder({
+        orderIdText: existing.orderId,
+        merchantStoreId: Number(existing.merchantStoreId) || pending.merchantStoreId,
+        pickupLat: Number(existing.pickupLat ?? pending.pickupLat ?? 0) || 0,
+        pickupLon: Number(existing.pickupLon ?? pending.pickupLon ?? 0) || 0,
+        dropLat: Number(existing.dropLat ?? pending.dropLat ?? 0) || 0,
+        dropLon: Number(existing.dropLon ?? pending.dropLon ?? 0) || 0,
+        precomputedDistanceKm:
+          existing.distanceKm != null
+            ? Number(existing.distanceKm)
+            : pending.distanceKm != null
+              ? Number(pending.distanceKm)
+              : null,
+      });
       return {
         ok: true,
         orderId: existing.orderId,
@@ -1156,6 +1374,27 @@ export async function finalizeOrder(
     typeof pending.checkoutMetadata === "object" && pending.checkoutMetadata != null
       ? String((pending.checkoutMetadata as Record<string, unknown>).deliveryCity ?? "").trim() || null
       : null;
+
+  // Mint (or reuse) a unique GatiCash payment txn id whenever wallet settles any portion.
+  // Stored on pending.checkout_metadata so finalize + webhook retries share one reference.
+  let gatiCashTxnId: string | null = null;
+  let checkoutMetadataForTxn: Record<string, unknown> | null = null;
+  if (walletSettled || gatiCashApplied > 0.005) {
+    const ensured = ensureGatiCashTxnIdInCheckoutMetadata(pending.checkoutMetadata);
+    gatiCashTxnId = ensured.gatiCashTxnId;
+    checkoutMetadataForTxn = ensured.metadata;
+    try {
+      await db
+        .update(pendingOrders)
+        .set({
+          checkoutMetadata: ensured.metadata,
+          updatedAt: new Date(),
+        })
+        .where(eq(pendingOrders.pendingId, pending.pendingId));
+    } catch (e) {
+      console.warn("[gaticash] failed to persist gatiCashTxnId on pending:", (e as Error).message);
+    }
+  }
 
   let orderIdText: string | undefined;
   let orderCorePk: number | undefined;
@@ -1352,15 +1591,70 @@ export async function finalizeOrder(
         );
       }
 
+      // Full money trail on the payment row: total bill, every discount, GatiCash consumed,
+      // and what actually cleared the gateway. Reconciliation reads this instead of
+      // re-deriving amounts from the billing snapshot.
+      const breakdown = buildOrderPaymentBreakdown(pending, {
+        gatewayAmount: walletSettled ? 0 : Number(pending.grandTotal ?? 0),
+        gatewayMethod: walletSettled ? null : paymentMethodEnum,
+      });
+      // Wallet-only: amount is the GatiCash that settled the bill (not ₹0). Gateway
+      // amount stays 0 inside breakdown.gatewayAmount.
+      // Mixed: persist total customer outlay (wallet + gateway) and stamp gateway=mixed
+      // so refunds restore each source instead of Razorpay-only.
+      const isMixedSettlement = breakdown.settlement === "mixed";
+      const paymentRowAmount = walletSettled
+        ? String(breakdown.gatiCashUsed > 0.005 ? breakdown.gatiCashUsed : breakdown.totalBillAmount)
+        : isMixedSettlement
+          ? String(
+              Math.round((breakdown.gatiCashUsed + breakdown.gatewayAmount) * 100) / 100
+            )
+          : pending.grandTotal;
+      const paymentGatewayStamp = walletSettled
+        ? "gati_cash"
+        : isMixedSettlement
+          ? "mixed"
+          : "razorpay";
+
+      // 100% GatiCash → unique GC-{UUID} as payment.transaction_id (and wallet ledger key).
+      // Mixed → Razorpay payment id remains primary; GatiCash txn stored in gateway_response.
+      const paymentTransactionId = walletSettled
+        ? (gatiCashTxnId as string)
+        : (razorpayPaymentId as string);
+
       await tx.insert(ordersCorePayments).values({
         orderId: orderIdText,
-        paymentGateway: "razorpay",
+        paymentGateway: paymentGatewayStamp,
         paymentMethod: paymentMethodEnum,
-        transactionId: razorpayPaymentId,
-        amount: pending.grandTotal,
+        transactionId: paymentTransactionId,
+        amount: paymentRowAmount,
         currency: pending.currency ?? "INR",
         paymentStatus: "PAID",
-        gatewayResponse: { razorpayPaymentId, razorpayOrderId },
+        gatewayResponse: {
+          ...(walletSettled
+            ? {
+                settledBy: "gati_cash_wallet",
+                gatiCashTxnId,
+              }
+            : {
+                razorpayPaymentId,
+                razorpayOrderId,
+                ...(isMixedSettlement
+                  ? {
+                      settledBy: "mixed",
+                      gatiCashUsed: breakdown.gatiCashUsed,
+                      gatewayAmount: breakdown.gatewayAmount,
+                      gatiCashTxnId,
+                    }
+                  : gatiCashTxnId
+                    ? { gatiCashTxnId }
+                    : {}),
+              }),
+          breakdown: {
+            ...breakdown,
+            ...(gatiCashTxnId ? { gatiCashTxnId } : {}),
+          },
+        },
         paidAt: new Date(),
       });
 
@@ -1370,7 +1664,11 @@ export async function finalizeOrder(
           finalizedOrderId: orderIdText,
           finalizedAt: new Date(),
           updatedAt: new Date(),
-          razorpayOrderId,
+          paymentState: PENDING_PAYMENT_STATES.FINALIZED,
+          paymentVerifiedAt: new Date(),
+          ...(checkoutMetadataForTxn ? { checkoutMetadata: checkoutMetadataForTxn } : {}),
+          ...(razorpayOrderId ? { razorpayOrderId } : {}),
+          ...(razorpayPaymentId ? { razorpayPaymentId } : {}),
         })
         .where(eq(pendingOrders.pendingId, pendingId));
 
@@ -1386,6 +1684,7 @@ export async function finalizeOrder(
               razorpayOrderId,
               razorpayPaymentId,
               paymentMethodEnum,
+              gatiCashTxnId,
             });
           }
         );
@@ -1417,11 +1716,10 @@ export async function finalizeOrder(
     orderIdText = result.orderIdText;
     orderCorePk = result.orderCorePk;
 
-    // Freeze the ETA snapshot now that the order row exists. Runs OUTSIDE the
-    // transaction on purpose — the ETA write is a separate UPDATE and we
-    // don't want a transient Mapbox/OSRM failure to roll back a paid order.
-    // freezeEtaForPlacedOrder logs + swallows errors internally.
-    void freezeEtaForPlacedOrder({
+    // Freeze ETA + first_eta_at outside the payment txn so Mapbox failures never
+    // roll back a paid order. Await so new orders always have First ETA before
+    // the client continues (errors are swallowed inside freezeEtaForPlacedOrder).
+    await freezeEtaForPlacedOrder({
       orderIdText,
       merchantStoreId: pending.merchantStoreId,
       pickupLat: Number(pickupLat) || 0,
@@ -1469,10 +1767,14 @@ export async function finalizeOrder(
     if (detail) console.error("[API] finalizeOrder detail:", detail);
     if (constraint) console.error("[API] finalizeOrder constraint:", constraint);
     if (e?.cause && !detail) console.error("[API] finalizeOrder cause:", e.cause);
+    const hint =
+      typeof e?.message === "string" && e.message.trim() && e.message.length < 180
+        ? ` (${e.message.trim()})`
+        : "";
     return {
       ok: false,
       code: "ORDER_CREATION_FAILED",
-      message: "Order could not be created. Please try again.",
+      message: `Order could not be created. Please try again.${hint}`,
     };
   }
 
@@ -1532,15 +1834,51 @@ export async function finalizeOrder(
         Number(pending.missedOfferWalletAdd ?? 0))
   );
   if (finalizeAdj.gatiCashApplied > 0.005 || finalizeAdj.missedOfferWalletAdd > 0.005) {
-    void fulfillCheckoutGatiCashWalletOps(getSql(), {
+    const walletOps = fulfillCheckoutGatiCashWalletOps(getSql(), {
       customerInternalId: Number(pending.customerId),
       orderIdText,
       merchantStoreId: Number(pending.merchantStoreId),
       adjustments: finalizeAdj,
-    }).catch((e) => {
-      console.error("[gaticash] post-finalize wallet ops failed:", e);
+      gatiCashTxnId,
     });
+    if (walletSettled) {
+      // The wallet debit IS this order's payment — it has to land before we report success,
+      // otherwise a placed order could exist with no money moved anywhere. Awaited (and
+      // idempotent by the unique GatiCash txn id), unlike the gateway path where the debit
+      // is a side settlement that can safely lag.
+      try {
+        await walletOps;
+      } catch (e) {
+        console.error("[gaticash] wallet-settled debit failed:", e);
+        return {
+          ok: false,
+          code: "WALLET_DEBIT_FAILED",
+          message: "Could not settle GatiCash for this order. Please try again.",
+        };
+      }
+    } else {
+      void walletOps.catch((e) => {
+        console.error("[gaticash] post-finalize wallet ops failed:", e);
+      });
+    }
   }
+
+  await logPaymentEvent(db, {
+    eventType: walletSettled ? "ORDER_FINALIZED_WALLET_ONLY" : "ORDER_FINALIZED",
+    source: "client",
+    pendingId,
+    orderId: orderIdText,
+    razorpayOrderId: razorpayOrderId ?? undefined,
+    razorpayPaymentId: razorpayPaymentId ?? undefined,
+    newState: PENDING_PAYMENT_STATES.FINALIZED,
+    amountPaise: expectedAmountPaise,
+    payload: {
+      breakdown: buildOrderPaymentBreakdown(pending, {
+        gatewayAmount: walletSettled ? 0 : Number(pending.grandTotal ?? 0),
+        gatewayMethod: walletSettled ? null : paymentMethodEnum,
+      }),
+    },
+  });
 
   return {
     ok: true,
@@ -1580,6 +1918,7 @@ export async function logPaymentEvent(
     newState?: string | null;
     failureCode?: string | null;
     failureMessage?: string | null;
+    amountPaise?: number | null;
     payload?: Record<string, unknown>;
   }
 ): Promise<void> {
@@ -1593,6 +1932,7 @@ export async function logPaymentEvent(
       orderId: args.orderId ?? null,
       prevState: args.prevState ?? null,
       newState: args.newState ?? null,
+      amountPaise: args.amountPaise ?? null,
       failureCode: args.failureCode ?? null,
       failureMessage: args.failureMessage ?? null,
       payload: args.payload ?? {},
@@ -1692,6 +2032,11 @@ export async function finalizePendingOrderFromWebhook(
         addon_total: string | null;
         grand_total: string;
         tip_amount: string | null;
+        donation_amount: string | null;
+        coupon_code: string | null;
+        gati_cash_applied: string | null;
+        missed_offer_discount: string | null;
+        missed_offer_wallet_add: string | null;
         currency: string | null;
         items_snapshot: unknown;
         billing_snapshot: unknown;
@@ -1708,7 +2053,9 @@ export async function finalizePendingOrderFromWebhook(
         delivery_type: string | null;
       }>(sql`
         SELECT id, pending_id, customer_id, merchant_store_id, merchant_parent_id,
-               item_total, addon_total, grand_total, tip_amount, currency,
+               item_total, addon_total, grand_total, tip_amount, donation_amount,
+               coupon_code, gati_cash_applied, missed_offer_discount, missed_offer_wallet_add,
+               currency,
                items_snapshot, billing_snapshot, billing_ruleset_version,
                checkout_metadata, created_at, payment_started_at,
                pickup_address_normalized, delivery_address,
@@ -1731,6 +2078,11 @@ export async function finalizePendingOrderFromWebhook(
             addon_total: string | null;
             grand_total: string;
             tip_amount: string | null;
+            donation_amount: string | null;
+            coupon_code: string | null;
+            gati_cash_applied: string | null;
+            missed_offer_discount: string | null;
+            missed_offer_wallet_add: string | null;
             currency: string | null;
             items_snapshot: unknown;
             billing_snapshot: unknown;
@@ -1977,7 +2329,46 @@ export async function finalizePendingOrderFromWebhook(
         amount: pending.grand_total,
         currency: pending.currency ?? "INR",
         paymentStatus: "PAID",
-        gatewayResponse: { razorpayPaymentId, razorpayOrderId, via: "webhook" },
+        gatewayResponse: (() => {
+          const whBreakdown = buildOrderPaymentBreakdown(
+            {
+              itemTotal: pending.item_total,
+              addonTotal: pending.addon_total,
+              tipAmount: pending.tip_amount,
+              donationAmount: pending.donation_amount,
+              grandTotal: pending.grand_total,
+              currency: pending.currency,
+              couponCode: pending.coupon_code,
+              gatiCashApplied: pending.gati_cash_applied,
+              missedOfferDiscount: pending.missed_offer_discount,
+              missedOfferWalletAdd: pending.missed_offer_wallet_add,
+              billingSnapshot: pending.billing_snapshot,
+            },
+            {
+              gatewayAmount: Number(pending.grand_total ?? 0),
+              gatewayMethod: paymentMethodEnum,
+            }
+          );
+          const meta =
+            pending.checkout_metadata && typeof pending.checkout_metadata === "object"
+              ? (pending.checkout_metadata as Record<string, unknown>)
+              : null;
+          const ensured = ensureGatiCashTxnIdInCheckoutMetadata(meta);
+          const gatiCashTxnId =
+            Number(pending.gati_cash_applied ?? 0) > 0.005 ? ensured.gatiCashTxnId : null;
+          return {
+            razorpayPaymentId,
+            razorpayOrderId,
+            via: "webhook",
+            ...(gatiCashTxnId ? { gatiCashTxnId } : {}),
+            // Same money trail as the client finalize path, so support and reconciliation see
+            // one shape regardless of which side won the race.
+            breakdown: {
+              ...whBreakdown,
+              ...(gatiCashTxnId ? { gatiCashTxnId } : {}),
+            },
+          };
+        })(),
         paidAt: new Date(),
       });
 
@@ -2025,21 +2416,61 @@ export async function finalizePendingOrderFromWebhook(
           const [pendingRow] = await db
             .select({
               customerId: pendingOrders.customerId,
+              merchantStoreId: pendingOrders.merchantStoreId,
               checkoutMetadata: pendingOrders.checkoutMetadata,
+              grandTotal: pendingOrders.grandTotal,
+              gatiCashApplied: pendingOrders.gatiCashApplied,
+              missedOfferDiscount: pendingOrders.missedOfferDiscount,
+              missedOfferWalletAdd: pendingOrders.missedOfferWalletAdd,
             })
             .from(pendingOrders)
             .where(eq(pendingOrders.pendingId, result.pendingIdValue!))
             .limit(1);
           if (!pendingRow) return;
+          const checkoutMeta =
+            pendingRow.checkoutMetadata && typeof pendingRow.checkoutMetadata === "object"
+              ? (pendingRow.checkoutMetadata as Record<string, unknown>)
+              : null;
+
+          // The webhook can beat the client's finalize call, in which case this is the only
+          // place the GatiCash debit happens. Without it a partly-wallet-paid order would
+          // leave the customer's balance untouched. Idempotent by the unique GatiCash txn id
+          // (also recoverable from orders_core_payments / pending checkout_metadata).
+          const adj = parseCheckoutGatiCashAdjustments(
+            checkoutMeta,
+            Number(pendingRow.grandTotal ?? 0) +
+              (Number(pendingRow.gatiCashApplied ?? 0) +
+                Number(pendingRow.missedOfferDiscount ?? 0) -
+                Number(pendingRow.missedOfferWalletAdd ?? 0))
+          );
+          if (adj.gatiCashApplied > 0.005 || adj.missedOfferWalletAdd > 0.005) {
+            try {
+              const metaTxn =
+                checkoutMeta && typeof checkoutMeta === "object"
+                  ? String(
+                      (checkoutMeta as Record<string, unknown>).gatiCashTxnId ??
+                        (checkoutMeta as Record<string, unknown>).gati_cash_txn_id ??
+                        ""
+                    ).trim() || null
+                  : null;
+              await fulfillCheckoutGatiCashWalletOps(getSql(), {
+                customerInternalId: Number(pendingRow.customerId),
+                orderIdText: String(result.orderId),
+                merchantStoreId: Number(pendingRow.merchantStoreId),
+                adjustments: adj,
+                gatiCashTxnId: metaTxn,
+              });
+            } catch (e) {
+              console.error("[gaticash] webhook post-finalize wallet ops failed:", e);
+            }
+          }
+
           const { maybeActivateSubscriptionFromOrderMetadata } = await import(
             "../subscription/customer-subscription.service.js"
           );
           await maybeActivateSubscriptionFromOrderMetadata({
             customerId: Number(pendingRow.customerId),
-            checkoutMetadata:
-              pendingRow.checkoutMetadata && typeof pendingRow.checkoutMetadata === "object"
-                ? (pendingRow.checkoutMetadata as Record<string, unknown>)
-                : null,
+            checkoutMetadata: checkoutMeta,
             razorpayOrderId,
             razorpayPaymentId,
           });
@@ -2068,11 +2499,8 @@ export async function finalizePendingOrderFromWebhook(
       return { ok: true };
     }
 
-    // Freeze ETA snapshot for the webhook-finalize path too. We don't have the
-    // pending coords in scope here (preflight is a sparse projection), so we
-    // re-read the just-finalized orders_core row for everything the engine
-    // needs. Fully best-effort: a failure inside freezeEtaForPlacedOrder
-    // doesn't roll back the placed order — it just leaves ETA columns NULL.
+    // Freeze First ETA BEFORE notifying the merchant so accept/SLA never race
+    // a null first_eta_at. Still outside the payment txn; failures are non-fatal.
     if (result.orderId) {
       void (async () => {
         try {
@@ -2088,14 +2516,6 @@ export async function finalizePendingOrderFromWebhook(
           ) as unknown as Array<Record<string, unknown>>;
           if (!oc) return;
           const coreOrderPk = Number(oc.id);
-          if (Number.isFinite(coreOrderPk) && coreOrderPk > 0) {
-            void maybeStartOrderDispatch(coreOrderPk);
-          }
-          await notifyMerchantStoreNewOrder(getSql(), {
-            merchantStoreId: Number(oc.merchant_store_id),
-            orderIdText: result.orderId,
-            grandTotal: Number(oc.grand_total ?? 0),
-          });
           await freezeEtaForPlacedOrder({
             orderIdText: result.orderId,
             merchantStoreId: Number(oc.merchant_store_id),
@@ -2105,6 +2525,14 @@ export async function finalizePendingOrderFromWebhook(
             dropLon: Number(oc.drop_lon ?? 0),
             precomputedDistanceKm:
               oc.distance_km != null ? Number(oc.distance_km) : null,
+          });
+          if (Number.isFinite(coreOrderPk) && coreOrderPk > 0) {
+            void maybeStartOrderDispatch(coreOrderPk);
+          }
+          await notifyMerchantStoreNewOrder(getSql(), {
+            merchantStoreId: Number(oc.merchant_store_id),
+            orderIdText: result.orderId,
+            grandTotal: Number(oc.grand_total ?? 0),
           });
         } catch (e) {
           console.warn("[eta] webhook-path post-place hooks failed (non-fatal)", {

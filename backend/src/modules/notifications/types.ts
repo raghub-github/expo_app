@@ -74,12 +74,41 @@ export type TemplateVariables = Record<string, string | number | boolean | null 
  * Target filter shape — JSONB column in notification_campaigns. The
  * targetResolver walks this and produces a list of (userId, role) pairs.
  */
+/**
+ * Optional geo overlay. Any of city / lat+lng may be set:
+ *  - city only → match by city name
+ *  - lat+lng only → match within radius_km of the point
+ *  - both → must match city AND (when coords exist) fall inside the radius
+ */
+export type TargetGeoFilter = {
+  city?: string;
+  lat?: number;
+  lng?: number;
+  /** Defaults to 25 km when lat/lng are set. */
+  radius_km?: number;
+};
+
 export type TargetFilter =
   | { user_ids: string[] }
   | { user_id: string }
-  | { role: NotificationRole; city?: string; zone?: string; status?: string }
+  | {
+      role: NotificationRole;
+      city?: string;
+      zone?: string;
+      status?: string;
+      lat?: number;
+      lng?: number;
+      radius_km?: number;
+    }
   | { topic: string }
   | { store_id: number }
+  /** Multiple merchant outlets (comma-separated store picker). */
+  | { store_ids: number[] }
+  /**
+   * City / coordinate audience. Optional `role` narrows to one app;
+   * omit → customers + merchants + riders in that area.
+   */
+  | ({ geo: true; role?: NotificationRole } & TargetGeoFilter)
   | { order_id: string }
   | { device_token: string }
   | { device_tokens: string[] }

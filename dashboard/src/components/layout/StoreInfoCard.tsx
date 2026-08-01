@@ -308,32 +308,24 @@ function StepDetailContent({ stepNum, data }: { stepNum: number; data: Verificat
 export function StoreInfoCardSkeleton({ className = "" }: { className?: string }) {
   return (
     <div
-      className={`rounded-xl border-0 bg-white p-2.5 shadow-[0_2px_8px_rgba(0,0,0,0.06)] min-w-0 animate-pulse ${className}`}
+      className={`w-full rounded-lg border border-gray-100 bg-white px-2.5 py-2.5 shadow-sm min-w-0 animate-pulse ${className}`}
       role="status"
       aria-label="Loading store information"
     >
-      <div className="h-3 w-12 rounded bg-gray-200 mb-1.5" />
-      <div className="space-y-1.5 min-w-0">
-        <div className="h-3.5 w-24 rounded bg-gray-200" />
-        <div className="h-3 w-full max-w-[90%] rounded bg-gray-100" />
-        <div className="h-3 w-20 rounded bg-gray-100 pt-0.5" />
-        <div className="space-y-0.5 pt-0.5">
-          <div className="h-3 w-28 rounded bg-gray-100" />
-          <div className="h-3 w-20 rounded bg-gray-100" />
-        </div>
-        <div className="h-6 w-16 rounded-lg bg-gray-200 pt-1.5" />
-      </div>
+      <div className="h-4 w-28 rounded bg-gray-200" />
     </div>
   );
 }
 
 /**
  * Card displayed in the right sidebar below Profile when a store is selected.
- * Shows store info plus Verified/Pending button; click opens modal with verification details.
+ * Compact: name only; click opens an in-sidebar details popup.
+ * Status badge opens the verification details modal.
  */
 export function StoreInfoCard({ store, className = "", compact = false }: StoreInfoCardProps) {
   const { openVerificationSheet } = useStoreVerificationSheet();
   const { canStoreVerify } = useCanStoreVerify();
+  const [detailsOpen, setDetailsOpen] = useState(false);
   const [modalOpen, setModalOpen] = useState(false);
   const [steps, setSteps] = useState<Record<number, StepVerification> | null>(null);
   const [loading, setLoading] = useState(false);
@@ -344,7 +336,6 @@ export function StoreInfoCard({ store, className = "", compact = false }: StoreI
   const [detailsError, setDetailsError] = useState<string | null>(null);
 
   const approval = (store.approval_status || "").toUpperCase();
-  const isVerified = approval === "APPROVED";
 
   const openModal = useCallback(() => {
     setModalOpen(true);
@@ -430,58 +421,136 @@ export function StoreInfoCard({ store, className = "", compact = false }: StoreI
     [openVerificationSheet, store.storeId]
   );
 
+  const statusButton = (
+    <button
+      type="button"
+      onClick={(e) => {
+        e.stopPropagation();
+        openModal();
+      }}
+      className={`inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[10px] font-medium text-white shadow-sm focus:outline-none focus:ring-2 focus:ring-offset-1 ${
+        approval === "APPROVED"
+          ? "bg-emerald-600 hover:bg-emerald-700 focus:ring-emerald-500"
+          : approval === "DELISTED" ||
+              approval === "REJECTED" ||
+              approval === "BLOCKED" ||
+              approval === "SUSPENDED"
+            ? "bg-red-600 hover:bg-red-700 focus:ring-red-500"
+            : "bg-amber-500 hover:bg-amber-600 focus:ring-amber-500"
+      }`}
+    >
+      {approval === "APPROVED" && <CheckCircle className="h-3 w-3 shrink-0" />}
+      {approval === "DELISTED" && <XCircle className="h-3 w-3 shrink-0" />}
+      {approval !== "APPROVED" && approval !== "DELISTED" && <Clock className="h-3 w-3 shrink-0" />}
+      <span>
+        {approval === "APPROVED"
+          ? "Approved"
+          : approval === "DELISTED"
+            ? "Delisted"
+            : approval === "REJECTED"
+              ? "Rejected"
+              : approval === "BLOCKED"
+                ? "Blocked"
+                : approval === "SUSPENDED"
+                  ? "Suspended"
+                  : "Pending"}
+      </span>
+    </button>
+  );
+
+  const fullDetailsBody = (
+    <div className="min-w-0 space-y-1.5">
+      <p className="text-xs font-semibold leading-tight text-gray-900" title={store.name}>
+        {store.name}
+      </p>
+      {store.full_address ? (
+        <p className="text-[10px] leading-snug text-gray-600 break-words" title={store.full_address}>
+          {store.full_address}
+        </p>
+      ) : null}
+      <p className="truncate font-mono text-[10px] text-gray-500" title={store.store_id}>
+        {store.store_id}
+      </p>
+      {store.created_at ? (
+        <p className="pt-0.5 text-[10px] text-gray-500">
+          Created:{" "}
+          {new Date(store.created_at).toLocaleString(undefined, {
+            dateStyle: "medium",
+            timeStyle: "short",
+          })}
+        </p>
+      ) : null}
+      <div className="flex flex-wrap gap-1.5 pt-1">{statusButton}</div>
+    </div>
+  );
+
   return (
     <>
-      <div
-        className={`border border-gray-100 bg-white min-w-0 ${
-          compact ? "rounded-lg p-2 shadow-sm" : "rounded-xl p-2.5 shadow-[0_2px_8px_rgba(0,0,0,0.06)]"
-        } ${className}`}
-        role="region"
-        aria-label="Store information"
-      >
-        <span className={`block font-medium uppercase tracking-widest text-gray-400 ${compact ? "text-[8px] mb-1" : "text-[9px] mb-1.5"}`}>Store</span>
-        <div className={`min-w-0 ${compact ? "space-y-1" : "space-y-1.5"}`}>
-          <p className={`font-semibold text-gray-900 truncate leading-tight ${compact ? "text-[11px]" : "text-xs"}`} title={store.name}>{store.name}</p>
-          {store.full_address && (
-            <p className={`text-gray-600 break-words leading-snug ${compact ? "text-[9px] line-clamp-1" : "text-[10px] line-clamp-2"}`} title={store.full_address}>{store.full_address}</p>
-          )}
-          <p className={`font-mono text-gray-500 truncate ${compact ? "text-[9px]" : "text-[10px] pt-0.5"}`} title={store.store_id}>{store.store_id}</p>
-          {!compact && store.created_at && (
-            <p className="text-[10px] text-gray-500 pt-0.5">
-              Created: {new Date(store.created_at).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })}
-            </p>
-          )}
-          <div className={`flex flex-wrap gap-1.5 ${compact ? "pt-0.5" : "pt-1.5"}`}>
+      <div className={`relative min-w-0 w-full ${className}`}>
+        {compact ? (
+          <>
             <button
               type="button"
-              onClick={openModal}
-              className={`inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[10px] font-medium text-white shadow-sm focus:outline-none focus:ring-2 focus:ring-offset-1 ${
-                approval === "APPROVED"
-                  ? "bg-emerald-600 hover:bg-emerald-700 focus:ring-emerald-500"
-                  : approval === "DELISTED" || approval === "REJECTED" || approval === "BLOCKED" || approval === "SUSPENDED"
-                    ? "bg-red-600 hover:bg-red-700 focus:ring-red-500"
-                    : "bg-amber-500 hover:bg-amber-600 focus:ring-amber-500"
-              }`}
+              onClick={() => setDetailsOpen((v) => !v)}
+              className="flex h-10 w-full min-w-0 items-center gap-1.5 rounded-lg border border-gray-100 bg-white px-2.5 text-left shadow-sm transition hover:border-gray-200 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-gray-300"
+              aria-expanded={detailsOpen}
+              aria-controls="store-info-sidebar-popup"
+              title={store.name}
             >
-              {approval === "APPROVED" && <CheckCircle className="h-3 w-3 shrink-0" />}
-              {approval === "DELISTED" && <XCircle className="h-3 w-3 shrink-0" />}
-              {approval !== "APPROVED" && approval !== "DELISTED" && <Clock className="h-3 w-3 shrink-0" />}
-              <span>
-                {approval === "APPROVED"
-                  ? "Approved"
-                  : approval === "DELISTED"
-                    ? "Delisted"
-                    : approval === "REJECTED"
-                      ? "Rejected"
-                      : approval === "BLOCKED"
-                        ? "Blocked"
-                        : approval === "SUSPENDED"
-                          ? "Suspended"
-                          : "Pending"}
+              <span className="min-w-0 flex-1 truncate text-[11px] font-semibold leading-tight text-gray-900">
+                {store.name}
               </span>
+              <ChevronRight
+                className={`h-3.5 w-3.5 shrink-0 text-gray-400 transition-transform ${detailsOpen ? "-rotate-90" : "rotate-90"}`}
+                aria-hidden
+              />
             </button>
+
+            {detailsOpen ? (
+              <>
+                <button
+                  type="button"
+                  className="fixed inset-0 z-[25] cursor-default bg-transparent"
+                  aria-label="Close store details"
+                  onClick={() => setDetailsOpen(false)}
+                />
+                <div
+                  id="store-info-sidebar-popup"
+                  role="dialog"
+                  aria-label="Store details"
+                  className="absolute bottom-full left-0 right-0 z-[30] mb-1.5 max-h-[min(42vh,280px)] overflow-y-auto rounded-xl border border-gray-200 bg-white p-2.5 shadow-[0_8px_28px_rgba(0,0,0,0.12)]"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <div className="mb-1.5 flex items-center justify-between gap-2">
+                    <span className="text-[8px] font-medium uppercase tracking-widest text-gray-400">
+                      Store
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setDetailsOpen(false)}
+                      className="rounded p-0.5 text-gray-400 hover:bg-gray-100 hover:text-gray-700"
+                      aria-label="Close"
+                    >
+                      <X className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                  {fullDetailsBody}
+                </div>
+              </>
+            ) : null}
+          </>
+        ) : (
+          <div
+            className="min-w-0 rounded-xl border border-gray-100 bg-white p-2.5 shadow-[0_2px_8px_rgba(0,0,0,0.06)]"
+            role="region"
+            aria-label="Store information"
+          >
+            <span className="mb-1.5 block text-[9px] font-medium uppercase tracking-widest text-gray-400">
+              Store
+            </span>
+            {fullDetailsBody}
           </div>
-        </div>
+        )}
       </div>
 
       {/* Verification details modal — full-viewport overlay via portal, blur covers header + sidebars */}

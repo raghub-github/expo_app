@@ -1,7 +1,9 @@
 import type { OrdersFoodRow } from '@/hooks/useFoodOrders';
 import {
   GATIMITRA_TEAM_REJECTION_LABEL,
+  humanizeMerchantCancellationReason,
   isCatalogCancellationReason,
+  isMerchantAcceptTimeoutReason,
 } from '@/lib/merchant-cancellation-display';
 import {
   normalizeActionMode,
@@ -415,8 +417,10 @@ const CANCELLED_DEF: StepDef = {
   resolveAt: ({ order, actions, atByKey }) =>
     pickTimestamp(order.cancelled_at, actionAt(actions, ['CANCELLED']), atByKey.cancelled),
   resolveDetail: (order) => {
-    const reason = (order.rejected_reason ?? '').trim();
+    const rawReason = (order.rejected_reason ?? '').trim();
+    const reason = humanizeMerchantCancellationReason(rawReason);
     const label = (order.cancelled_by_label ?? '').trim();
+    if (isMerchantAcceptTimeoutReason(rawReason)) return null;
     if (reason && label && reason !== label) return reason;
     return reason || label || null;
   },

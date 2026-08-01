@@ -13,6 +13,8 @@ import { formatOrderDateTime } from "@/components/order/orderFormatters";
 import { resolvePreparedAtForHandover } from "@/lib/orderHandoverTimeline";
 import { resolvePreparedLateMinutes } from "@/lib/order-prep-time";
 import { OrderPreparedLateTopBanner } from "@/components/order/OrderPrepDelayedBanner";
+import { OrderPriorityBanner } from "@/components/order/OrderPriorityBanner";
+import { orderShowsRiderPriority } from "@/lib/orderRiderPriority";
 import { RiderAssignPendingCard } from "@/components/order/RiderAssignPendingCard";
 import { MerchantAssignedRiderRow } from "@/components/order/MerchantAssignedRiderRow";
 import { useNearbyDispatchRiders } from "@/hooks/useNearbyDispatchRiders";
@@ -85,8 +87,14 @@ export function MerchantReadyOrderCard({
         onPrint={() => void printOrderKot(order, printContext)}
         onMenu={() => setMenuOpen(true)}
         outerBanner={
-          preparedLateMins != null && preparedLateMins > 0 ? (
-            <OrderPreparedLateTopBanner lateMinutes={preparedLateMins} />
+          orderShowsRiderPriority(order, nowMs) ||
+          (preparedLateMins != null && preparedLateMins > 0) ? (
+            <>
+              {orderShowsRiderPriority(order, nowMs) ? <OrderPriorityBanner /> : null}
+              {preparedLateMins != null && preparedLateMins > 0 ? (
+                <OrderPreparedLateTopBanner lateMinutes={preparedLateMins} />
+              ) : null}
+            </>
           ) : undefined
         }
         midContent={

@@ -1,8 +1,21 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AppText as Text } from "@/components/AppText";
-import { View, Pressable, StyleSheet, ScrollView, ActivityIndicator, Modal, Platform, Animated as RNAnimated, PanResponder, Vibration } from "react-native";
+import {
+  View,
+  Pressable,
+  StyleSheet,
+  ScrollView,
+  ActivityIndicator,
+  Modal,
+  Platform,
+  Dimensions,
+  Animated as RNAnimated,
+  PanResponder,
+  Vibration,
+} from "react-native";
 import Animated, {
   Easing,
+  runOnJS,
   useAnimatedStyle,
   useSharedValue,
   withRepeat,
@@ -28,15 +41,22 @@ import { RejectOrderSheet } from "@/components/order/RejectOrderSheet";
 import { RejectFollowUpHost, useRejectFollowUp } from "@/components/order/RejectFollowUpHost";
 import { OrderCardItemRow } from "@/components/order/OrderCardItemRow";
 import { IncomingOrderAllItemsSheet } from "@/components/order/IncomingOrderAllItemsSheet";
+import { MerchantIncomingBillCard } from "@/components/order/MerchantIncomingBillCard";
+import { IncomingOrderBillBreakdownSheet } from "@/components/order/IncomingOrderBillBreakdownSheet";
+import {
+  IncomingDeliveryBanner,
+  type IncomingBannerSlide,
+} from "@/components/order/IncomingDeliveryBanner";
+import { parseMerchantInstructionsList } from "@/lib/merchant-order-instructions";
+import { isPrepaidOrder } from "@/lib/merchant-order-payment";
 import { IncomingOrderCustomizationSheet } from "@/components/order/IncomingOrderCustomizationSheet";
 import { FormattedOrderId } from "@/components/order/FormattedOrderId";
 import { formatPartnerIncomingCustomerLabel } from "@/components/order/orderFormatters";
 import { AnimatedPlacedTime } from "@/components/order/AnimatedPlacedTime";
-import { lineItemHasCustomizations } from "@/lib/merchant-order-food-item-display";
+import { lineItemHasKitchenDetails } from "@/lib/merchant-order-food-item-display";
 import { GatiMitraMerchant, H_PADDING, CARD_RADIUS } from "@/constants/theme";
-import { formatMerchantRs } from "@/lib/merchant-line-total";
 import { merchantIncomingBillPartsFromOrder } from "@/lib/resolveMerchantOrderTotal";
-import { shortLocalityFromAddress } from "@/lib/selectedStoreStorage";
+import { requestMerchantDashboardStatsRefresh } from "@/lib/merchantDashboardStatsBus";
 import type { MerchantCancellationReason } from "@/lib/merchantCancellationReasons";
 import { rejectReasonNeedsFollowUp } from "@/lib/merchantCancellationReasons";
 import {
@@ -50,6 +70,7 @@ import {
   PREP_TIME_MIN,
   PREP_TIME_MAX,
 } from "@/lib/order-prep-time";
+import { TypographyVariantProvider } from "@/lib/typographyVariant";
 import * as SecureStore from "expo-secure-store";
 
 // v3: clear prior dismiss poison (v1 auto-dismissed on list flicker; v2 still
@@ -58,6 +79,13 @@ import * as SecureStore from "expo-secure-store";
 const DISMISS_KEY = "merchant_incoming_order_dismissed_v3";
 const MAX_PREVIEW_ITEMS = 3;
 const PREP_STEP_MINUTES = 5;
+
+/** Oldest CREATED food order first — merchant must clear backlog FIFO. */
+function pendingCreatedFifo(orders: OrderRecord[]): OrderRecord[] {
+  return orders
+    .filter((o) => o.status === "created" && !o.id.startsWith("core-"))
+    .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+}
 
 function isInvalidTransitionError(err: unknown): boolean {
   const msg = err instanceof Error ? err.message : String(err ?? "");
@@ -197,6 +225,8 @@ function NewOrderFusePill({
 
 const ACCEPT_HANDLE_W = 44;
 const ACCEPT_HANDLE_INSET = 6;
+/** Half a swipe accepts — merchants shouldn't have to drag the full width. */
+const ACCEPT_SWIPE_RATIO = 0.45;
 
 function SwipeHintArrows({ color }: { color: string }) {
   const shift = useSharedValue(0);
@@ -230,6 +260,7 @@ function AcceptOrderSwipeButton({
   countdown,
   timeProgress,
   urgent,
+  orderKey,
   onPress,
 }: {
   loading: boolean;
@@ -238,6 +269,8 @@ function AcceptOrderSwipeButton({
   /** 0–1 remaining acceptance window — synced with new-order fuse */
   timeProgress: number;
   urgent: boolean;
+  /** Resets the track when the merchant pages to another pending order. */
+  orderKey: string;
   onPress: () => void;
 }) {
   const trackWidth = useRef(0);
@@ -245,6 +278,24 @@ function AcceptOrderSwipeButton({
   const confirmedRef = useRef(false);
   const btnPulse = useSharedValue(1);
   const progressWidth = useSharedValue(timeProgress * 100);
+  const liveRef = useRef<{
+    loading: boolean;
+    disabled: boolean;
+    onPress: () => void;
+    confirm: () => void;
+    reset: () => void;
+    max: () => number;
+  }>({
+    loading,
+    disabled,
+    onPress,
+    confirm: () => {},
+    reset: () => {},
+    max: () => 0,
+  });
+  liveRef.current.loading = loading;
+  liveRef.current.disabled = disabled;
+  liveRef.current.onPress = onPress;
 
   useEffect(() => {
     btnPulse.value = withRepeat(
@@ -261,52 +312,72 @@ function AcceptOrderSwipeButton({
     progressWidth.value = withTiming(timeProgress * 100, { duration: 280, easing: Easing.linear });
   }, [progressWidth, timeProgress]);
 
+  useEffect(() => {
+    confirmedRef.current = false;
+    dragX.setValue(0);
+  }, [orderKey, dragX]);
+
   const resetDrag = useCallback(() => {
     confirmedRef.current = false;
     RNAnimated.timing(dragX, {
       toValue: 0,
-      duration: 180,
+      duration: 140,
       useNativeDriver: true,
     }).start();
   }, [dragX]);
 
+  const maxTravel = useCallback(
+    () => Math.max(0, trackWidth.current - ACCEPT_HANDLE_W - ACCEPT_HANDLE_INSET * 2),
+    []
+  );
+
+  /** Fire the accept the instant the swipe passes the line — no release, no settle wait. */
   const confirmSwipe = useCallback(() => {
-    if (confirmedRef.current || disabled || loading) return;
+    const { loading: isLoading, disabled: isDisabled, onPress: press } = liveRef.current;
+    if (confirmedRef.current || isDisabled || isLoading) return;
     confirmedRef.current = true;
     Vibration.vibrate(15);
-    onPress();
-    setTimeout(resetDrag, 320);
-  }, [disabled, loading, onPress, resetDrag]);
+    press();
+    RNAnimated.timing(dragX, {
+      toValue: maxTravel(),
+      duration: 90,
+      useNativeDriver: true,
+    }).start();
+  }, [dragX, maxTravel]);
+
+  liveRef.current.confirm = confirmSwipe;
+  liveRef.current.reset = resetDrag;
+  liveRef.current.max = maxTravel;
 
   const panResponder = useRef(
     PanResponder.create({
-      onStartShouldSetPanResponder: () => !disabled && !loading,
+      onStartShouldSetPanResponder: () =>
+        !liveRef.current.disabled && !liveRef.current.loading,
       onMoveShouldSetPanResponder: (_, gesture) =>
-        !disabled && !loading && Math.abs(gesture.dx) > 6,
+        !liveRef.current.disabled && !liveRef.current.loading && Math.abs(gesture.dx) > 2,
       onPanResponderMove: (_, gesture) => {
-        if (disabled || loading) return;
-        const max = Math.max(0, trackWidth.current - ACCEPT_HANDLE_W - ACCEPT_HANDLE_INSET * 2);
-        dragX.setValue(Math.min(max, Math.max(0, gesture.dx)));
+        if (confirmedRef.current || liveRef.current.disabled || liveRef.current.loading) return;
+        const max = liveRef.current.max();
+        const next = Math.min(max, Math.max(0, gesture.dx));
+        dragX.setValue(next);
+        if (max > 0 && next >= max * ACCEPT_SWIPE_RATIO) liveRef.current.confirm();
       },
       onPanResponderRelease: (_, gesture) => {
-        if (disabled || loading) {
-          resetDrag();
+        if (confirmedRef.current) return;
+        const max = liveRef.current.max();
+        if (
+          !liveRef.current.disabled &&
+          !liveRef.current.loading &&
+          max > 0 &&
+          gesture.dx >= max * ACCEPT_SWIPE_RATIO
+        ) {
+          liveRef.current.confirm();
           return;
         }
-        const max = Math.max(0, trackWidth.current - ACCEPT_HANDLE_W - ACCEPT_HANDLE_INSET * 2);
-        const threshold = max * 0.72;
-        if (gesture.dx >= threshold) {
-          RNAnimated.timing(dragX, {
-            toValue: max,
-            duration: 140,
-            useNativeDriver: true,
-          }).start(confirmSwipe);
-        } else {
-          resetDrag();
-        }
+        liveRef.current.reset();
       },
       onPanResponderTerminate: () => {
-        resetDrag();
+        if (!confirmedRef.current) liveRef.current.reset();
       },
     })
   ).current;
@@ -324,11 +395,13 @@ function AcceptOrderSwipeButton({
 
   return (
     <Animated.View style={[styles.acceptBtnWrap, wrapStyle]}>
+      {/* Drag starts anywhere on the track — grabbing the small handle wasted seconds. */}
       <View
         style={[styles.acceptBtn, { backgroundColor: btnBg }, disabled && styles.btnDisabled]}
         onLayout={(e) => {
           trackWidth.current = e.nativeEvent.layout.width;
         }}
+        {...panResponder.panHandlers}
       >
         <Animated.View style={[styles.acceptProgressFill, progressStyle]} />
         <Text style={styles.acceptText} pointerEvents="none">
@@ -336,7 +409,7 @@ function AcceptOrderSwipeButton({
         </Text>
         <RNAnimated.View
           style={[styles.acceptHandle, { transform: [{ translateX: dragX }] }]}
-          {...panResponder.panHandlers}
+          pointerEvents="none"
         >
           {loading ? (
             <ActivityIndicator color={accent} size="small" />
@@ -363,7 +436,7 @@ function openCustomizationSheet(
   item: LineItem,
   setItem: (item: LineItem | null) => void
 ) {
-  if (lineItemHasCustomizations(item)) setItem(item);
+  if (lineItemHasKitchenDetails(item)) setItem(item);
 }
 
 /**
@@ -372,16 +445,27 @@ function openCustomizationSheet(
 export default function IncomingOrderModal() {
   const insets = useSafeAreaInsets();
   const { token } = useAuth();
-  const { selectedStore, managedStores } = useSelectedStore();
-  const { registerOpenHandler } = useIncomingOrderSheet();
+  const { selectedStore } = useSelectedStore();
+  const {
+    registerOpenHandler,
+    registerRescanHandler,
+    setSheetOpen,
+    parked,
+    setParked,
+  } = useIncomingOrderSheet();
+  const parkedRef = useRef(parked);
+  parkedRef.current = parked;
   const storeId = selectedStore?.id ?? null;
 
   const [sheetOrder, setSheetOrder] = useState<OrderRecord | null>(null);
+  const sheetOrderRef = useRef<OrderRecord | null>(null);
+  sheetOrderRef.current = sheetOrder;
   const { orders, refetch } = useOrders();
   const { settings: acceptanceSettings, acceptanceWindowMinutes } = useOrderAcceptanceSettings();
 
   const [rejectOpen, setRejectOpen] = useState(false);
   const [allItemsOpen, setAllItemsOpen] = useState(false);
+  const [billBreakdownOpen, setBillBreakdownOpen] = useState(false);
   const [customizationItem, setCustomizationItem] = useState<LineItem | null>(null);
   const [actionLoading, setActionLoading] = useState(false);
   const [prepMinutes, setPrepMinutes] = useState(PLATFORM_DEFAULT_PREP_MINUTES);
@@ -399,6 +483,8 @@ export default function IncomingOrderModal() {
     async (order: OrderRecord) => {
       if (!storeId || !token) return;
       if (order.status !== "created" || order.id.startsWith("core-")) return;
+      // X parks auto-popup until the floating pill clears it (partnersite parity).
+      if (parkedRef.current) return;
 
       // Session + persistent dedupe — never re-pop an order already shown/dismissed.
       const dedupeKey = `c:${order.ordersCoreId}`;
@@ -418,32 +504,86 @@ export default function IncomingOrderModal() {
         return;
       }
 
-      // Show the accept sheet. This must NOT depend on device alert/sound prefs —
-      // a merchant with sound muted still has to SEE and accept the order. The
-      // alert preference only decides whether the chime plays.
       shownCoreIdsRef.current.add(dedupeKey);
-      setSheetOrder(order);
+      seenFoodIdsRef.current.add(order.id);
 
-      if (soundPlayedForOrderRef.current !== order.id) {
-        soundPlayedForOrderRef.current = order.id;
+      // Already viewing a pending card — keep oldest on screen; new order is Next.
+      if (sheetOrderRef.current) {
+        return;
+      }
+
+      // Always land on the oldest still-pending order (FIFO). A push for a newer
+      // order must not jump the merchant past an older unaccepted card.
+      const fifo = pendingCreatedFifo(orders);
+      const hasIncoming = fifo.some(
+        (o) => o.id === order.id || o.ordersCoreId === order.ordersCoreId
+      );
+      const queue = hasIncoming
+        ? fifo
+        : [...fifo, order].sort(
+            (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+          );
+      const target = queue[0] ?? order;
+      setSheetOrder(target);
+
+      if (soundPlayedForOrderRef.current !== target.id) {
+        soundPlayedForOrderRef.current = target.id;
         const dev = await readDeviceOrderAlertsAsync(storeId);
         if (dev.orderAlertsEnabled && dev.soundAlertsEnabled) {
           void playIncomingOrderAlert(acceptanceSettings, dev);
         }
       }
     },
-    [storeId, token, acceptanceWindowMinutes, acceptanceSettings]
+    [storeId, token, acceptanceWindowMinutes, acceptanceSettings, orders]
   );
 
   const openSheetManually = useCallback(
     (order: OrderRecord) => {
       if (order.status !== "created" || order.id.startsWith("core-")) return;
-      setSheetOrder(order);
+      setParked(false);
       const dedupeKey = `c:${order.ordersCoreId}`;
       shownCoreIdsRef.current.add(dedupeKey);
+      seenFoodIdsRef.current.add(order.id);
+
+      // Sheet already showing an older pending order — keep FIFO; new order is Next.
+      const current = sheetOrderRef.current;
+      if (
+        current &&
+        current.status === "created" &&
+        !current.id.startsWith("core-")
+      ) {
+        return;
+      }
+
+      const fifo = pendingCreatedFifo(orders);
+      const hasIncoming = fifo.some(
+        (o) => o.id === order.id || o.ordersCoreId === order.ordersCoreId
+      );
+      const queue = hasIncoming
+        ? fifo
+        : [...fifo, order].sort(
+            (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+          );
+      setSheetOrder(queue[0] ?? order);
     },
-    []
+    [setParked, orders]
   );
+
+  /** Floating pill: clear park + open the oldest still-CREATED order. */
+  const rescanParkedOrders = useCallback(() => {
+    setParked(false);
+    const created = pendingCreatedFifo(orders);
+    for (const o of created) {
+      shownCoreIdsRef.current.delete(`c:${o.ordersCoreId}`);
+      seenFoodIdsRef.current.delete(o.id);
+    }
+    const target = created[0];
+    if (!target) return;
+    soundPlayedForOrderRef.current = null;
+    setSheetOrder(target);
+    shownCoreIdsRef.current.add(`c:${target.ordersCoreId}`);
+    seenFoodIdsRef.current.add(target.id);
+  }, [orders, setParked]);
 
   useEffect(() => {
     if (!sheetOrder) return;
@@ -451,9 +591,18 @@ export default function IncomingOrderModal() {
   }, [sheetOrder?.id]);
 
   useEffect(() => {
+    setSheetOpen(!!sheetOrder);
+  }, [sheetOrder, setSheetOpen]);
+
+  useEffect(() => {
     registerOpenHandler(openSheetManually);
     return () => registerOpenHandler(null);
   }, [registerOpenHandler, openSheetManually]);
+
+  useEffect(() => {
+    registerRescanHandler(rescanParkedOrders);
+    return () => registerRescanHandler(null);
+  }, [registerRescanHandler, rescanParkedOrders]);
 
   useEffect(() => {
     if (!sheetOrder || !storeId) return;
@@ -473,24 +622,21 @@ export default function IncomingOrderModal() {
   useEffect(() => {
     if (!storeId || !token) return;
     if (sheetOrder) return;
+    if (parked) return;
     // Surface the oldest still-actionable pending order FIRST (FIFO), including
     // orders that were already CREATED when the app mounted / resumed. This gives
     // the merchant app cold-start parity with the Partner Site incoming queue, so
     // both platforms show the same order instead of one silently hiding a pending
     // order after a restart/store-switch. `openIfNew` still guards against orders
     // outside the accept window and ones already dismissed on this device.
-    const created = orders
-      .filter((o) => o.status === "created" && !o.id.startsWith("core-"))
-      .sort(
-        (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
-      );
+    const created = pendingCreatedFifo(orders);
     for (const o of created) {
       if (seenFoodIdsRef.current.has(o.id)) continue;
       seenFoodIdsRef.current.add(o.id);
       void openIfNew(o);
       break;
     }
-  }, [orders, storeId, token, sheetOrder, openIfNew]);
+  }, [orders, storeId, token, sheetOrder, openIfNew, parked]);
 
   useEffect(() => {
     if (!sheetOrder) {
@@ -555,57 +701,68 @@ export default function IncomingOrderModal() {
     return storeId;
   }, [displayOrder?.merchantStoreId, sheetOrder?.merchantStoreId, storeId]);
 
-  const orderLocality = useMemo(() => {
-    const direct = displayOrder?.merchantStoreLocality?.trim() || sheetOrder?.merchantStoreLocality?.trim();
-    if (direct) return direct;
-    const sid = displayOrder?.merchantStoreId ?? sheetOrder?.merchantStoreId ?? storeId;
-    const store =
-      managedStores.find((s) => s.id === sid) ??
-      (selectedStore?.id === sid ? selectedStore : null);
-    if (!store?.full_address) return "";
-    return shortLocalityFromAddress(store.full_address);
-  }, [
-    displayOrder?.merchantStoreLocality,
-    displayOrder?.merchantStoreId,
-    sheetOrder?.merchantStoreLocality,
-    sheetOrder?.merchantStoreId,
-    storeId,
-    managedStores,
-    selectedStore,
-  ]);
-
   /** All still-pending orders (FIFO) the merchant can page through while the sheet is open. */
-  const pendingList = useMemo(
-    () =>
-      orders
-        .filter((o) => o.status === "created" && !o.id.startsWith("core-"))
-        .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()),
-    [orders]
-  );
+  const pendingList = useMemo(() => pendingCreatedFifo(orders), [orders]);
   const currentIndex = useMemo(() => {
     if (!sheetOrder) return -1;
-    return pendingList.findIndex(
-      (o) => o.id === sheetOrder.id || o.ordersCoreId === sheetOrder.ordersCoreId
-    );
+    const byId = pendingList.findIndex((o) => o.id === sheetOrder.id);
+    if (byId >= 0) return byId;
+    return pendingList.findIndex((o) => o.ordersCoreId === sheetOrder.ordersCoreId);
   }, [pendingList, sheetOrder]);
   const pendingTotal = pendingList.length;
+  const orderSlideX = useSharedValue(0);
+  const orderSlideStyle = useAnimatedStyle(() => ({
+    transform: [{ translateX: orderSlideX.value }],
+  }));
 
-  /** Move to the previous/next pending order without replaying the alert chime. */
+  /** Move to the previous/next pending order with a horizontal slide.
+   *  delta -1 = older (Prev), +1 = newer (Next). Index 0 is always oldest. */
+  const applyOrderTarget = useCallback((target: OrderRecord) => {
+    soundPlayedForOrderRef.current = target.id;
+    shownCoreIdsRef.current.add(`c:${target.ordersCoreId}`);
+    seenFoodIdsRef.current.add(target.id);
+    setRejectOpen(false);
+    setAllItemsOpen(false);
+    setBillBreakdownOpen(false);
+    setCustomizationItem(null);
+    setSheetOrder(target);
+  }, []);
+
   const goToOrder = useCallback(
     (delta: number) => {
-      if (currentIndex < 0 || pendingTotal <= 1) return;
-      const nextIdx = Math.min(pendingTotal - 1, Math.max(0, currentIndex + delta));
+      if (pendingTotal <= 1) return;
+      const idx =
+        currentIndex >= 0
+          ? currentIndex
+          : pendingList.findIndex(
+              (o) =>
+                o.id === sheetOrder?.id || o.ordersCoreId === sheetOrder?.ordersCoreId
+            );
+      const safeIdx = idx >= 0 ? idx : 0;
+      const nextIdx = Math.min(pendingTotal - 1, Math.max(0, safeIdx + delta));
       const target = pendingList[nextIdx];
       if (!target || target.id === sheetOrder?.id) return;
-      soundPlayedForOrderRef.current = target.id; // suppress re-chime on manual navigation
-      shownCoreIdsRef.current.add(`c:${target.ordersCoreId}`);
-      seenFoodIdsRef.current.add(target.id);
-      setRejectOpen(false);
-      setAllItemsOpen(false);
-      setCustomizationItem(null);
-      setSheetOrder(target);
+
+      const width = Dimensions.get("window").width;
+      const outX = delta > 0 ? -width : width;
+      const inX = delta > 0 ? width : -width;
+
+      orderSlideX.value = withTiming(outX * 0.35, { duration: 140 }, (finished) => {
+        if (!finished) return;
+        runOnJS(applyOrderTarget)(target);
+        orderSlideX.value = inX * 0.35;
+        orderSlideX.value = withTiming(0, { duration: 180 });
+      });
     },
-    [currentIndex, pendingTotal, pendingList, sheetOrder?.id]
+    [
+      currentIndex,
+      pendingTotal,
+      pendingList,
+      sheetOrder?.id,
+      sheetOrder?.ordersCoreId,
+      applyOrderTarget,
+      orderSlideX,
+    ]
   );
 
   const showToast = useCallback((message: string) => {
@@ -623,25 +780,130 @@ export default function IncomingOrderModal() {
     };
   }, []);
 
+  /** Drop the current card; keep other pending orders open (advance). Close only if none left. */
+  const advanceOrCloseSheet = useCallback(
+    async (opts?: {
+      markDismissed?: boolean;
+      parkIfLast?: boolean;
+      /** When set, no-op if the sheet already advanced past this order (accept/sync race). */
+      forCoreId?: number | null;
+      forFoodId?: string | null;
+    }) => {
+      const markDismissed = opts?.markDismissed !== false;
+      const parkIfLast = opts?.parkIfLast === true;
+      stopOrderAlertSound();
+
+      const current = sheetOrderRef.current;
+      if (
+        opts?.forCoreId != null &&
+        Number.isFinite(Number(opts.forCoreId)) &&
+        current &&
+        Number(current.ordersCoreId) !== Number(opts.forCoreId)
+      ) {
+        if (markDismissed) await addDismissed(Number(opts.forCoreId));
+        return;
+      }
+      if (
+        opts?.forFoodId != null &&
+        current &&
+        String(current.id) !== String(opts.forFoodId)
+      ) {
+        if (markDismissed && opts.forCoreId != null) {
+          await addDismissed(Number(opts.forCoreId));
+        }
+        return;
+      }
+
+      const others = pendingList.filter(
+        (o) =>
+          !current ||
+          (o.id !== current.id && o.ordersCoreId !== current.ordersCoreId)
+      );
+
+      if (current && markDismissed) {
+        await addDismissed(current.ordersCoreId);
+      }
+
+      setRejectOpen(false);
+      setAllItemsOpen(false);
+      setBillBreakdownOpen(false);
+      setCustomizationItem(null);
+
+      if (others.length > 0) {
+        // Prefer the next FIFO neighbour; else the previous one.
+        const idx = currentIndex >= 0 ? currentIndex : 0;
+        const after = pendingList
+          .slice(idx + 1)
+          .filter(
+            (o) =>
+              !current ||
+              (o.id !== current.id && o.ordersCoreId !== current.ordersCoreId)
+          );
+        const before = pendingList
+          .slice(0, Math.max(0, idx))
+          .filter(
+            (o) =>
+              !current ||
+              (o.id !== current.id && o.ordersCoreId !== current.ordersCoreId)
+          );
+        const target = after[0] ?? before[before.length - 1] ?? others[0]!;
+        // Suppress re-chime when advancing to an already-queued order.
+        soundPlayedForOrderRef.current = target.id;
+        shownCoreIdsRef.current.add(`c:${target.ordersCoreId}`);
+        seenFoodIdsRef.current.add(target.id);
+        if (current && !markDismissed) {
+          shownCoreIdsRef.current.delete(`c:${current.ordersCoreId}`);
+          seenFoodIdsRef.current.delete(current.id);
+        }
+        setParked(false);
+        setSheetOrder(target);
+        void refetch();
+        return;
+      }
+
+      // Last pending card — close the sheet.
+      soundPlayedForOrderRef.current = null;
+      if (parkIfLast) {
+        setParked(true);
+        if (current) {
+          shownCoreIdsRef.current.delete(`c:${current.ordersCoreId}`);
+          seenFoodIdsRef.current.delete(current.id);
+        }
+      } else {
+        setParked(false);
+      }
+      setSheetOrder(null);
+      void refetch();
+    },
+    [pendingList, currentIndex, refetch, setParked]
+  );
+
   const minimizeSheet = useCallback(() => {
+    // X / backdrop: always close + park so the floating bell can reopen the queue.
     stopOrderAlertSound();
-    setSheetOrder(null);
     setRejectOpen(false);
     setAllItemsOpen(false);
+    setBillBreakdownOpen(false);
     setCustomizationItem(null);
-    void refetch();
-  }, [refetch]);
+    setParked(true);
+    const current = sheetOrderRef.current;
+    if (current) {
+      // Allow FAB rescan to show these again (not permanently dismissed).
+      shownCoreIdsRef.current.delete(`c:${current.ordersCoreId}`);
+      seenFoodIdsRef.current.delete(current.id);
+    }
+    // Also un-mark other pending cards so reopen shows the full FIFO queue.
+    for (const o of pendingList) {
+      shownCoreIdsRef.current.delete(`c:${o.ordersCoreId}`);
+      seenFoodIdsRef.current.delete(o.id);
+    }
+    soundPlayedForOrderRef.current = null;
+    setSheetOrder(null);
+  }, [setParked, pendingList]);
 
   const dismissSheet = useCallback(async () => {
-    stopOrderAlertSound();
-    soundPlayedForOrderRef.current = null;
-    if (sheetOrder) await addDismissed(sheetOrder.ordersCoreId);
-    setSheetOrder(null);
-    setRejectOpen(false);
-    setAllItemsOpen(false);
-    setCustomizationItem(null);
-    void refetch();
-  }, [sheetOrder, refetch]);
+    await advanceOrCloseSheet({ markDismissed: true, parkIfLast: false });
+  }, [advanceOrCloseSheet]);
 
   const patchStatus = useCallback(
     async (
@@ -651,6 +913,8 @@ export default function IncomingOrderModal() {
     ) => {
       if (!actionStoreId || !token || !sheetOrder || sheetOrder.id.startsWith("core-")) return;
       const foodId = parseInt(sheetOrder.id, 10);
+      const actedCoreId = Number(sheetOrder.ordersCoreId);
+      const actedFoodId = sheetOrder.id;
       if (!Number.isFinite(foodId)) return;
       setActionLoading(true);
       try {
@@ -664,20 +928,32 @@ export default function IncomingOrderModal() {
             : {}),
           ...(status === "CANCELLED" ? { cancel_mode: mode } : {}),
         });
+        requestMerchantDashboardStatsRefresh();
         if (status === "CANCELLED" && mode === "auto") {
           showToast("Order cancelled");
         }
-        await dismissSheet();
+        await advanceOrCloseSheet({
+          markDismissed: true,
+          parkIfLast: false,
+          forCoreId: actedCoreId,
+          forFoodId: actedFoodId,
+        });
       } catch (err) {
         if (status === "CANCELLED" && isInvalidTransitionError(err)) {
           if (mode === "auto") showToast("Order cancelled");
-          await dismissSheet();
+          requestMerchantDashboardStatsRefresh();
+          await advanceOrCloseSheet({
+            markDismissed: true,
+            parkIfLast: false,
+            forCoreId: actedCoreId,
+            forFoodId: actedFoodId,
+          });
         }
       } finally {
         setActionLoading(false);
       }
     },
-    [actionStoreId, token, sheetOrder, dismissSheet, showToast, prepMinutes]
+    [actionStoreId, token, sheetOrder, advanceOrCloseSheet, showToast, prepMinutes]
   );
 
   const stepPrep = useCallback((delta: number) => {
@@ -698,9 +974,15 @@ export default function IncomingOrderModal() {
     // closing here would both hide and permanently dismiss a still-pending order.
     // `displayOrder` falls back to the opened sheetOrder; the next reconcile restores it.
     if (live && live.status !== "created") {
-      void dismissSheet();
+      // Drop only the acted order; advanceOrClose keeps other pending cards open.
+      void advanceOrCloseSheet({
+        markDismissed: true,
+        parkIfLast: false,
+        forCoreId: sheetOrder.ordersCoreId,
+        forFoodId: sheetOrder.id,
+      });
     }
-  }, [orders, sheetOrder, dismissSheet]);
+  }, [orders, sheetOrder, advanceOrCloseSheet]);
 
   /**
    * Authoritative liveness check while the incoming sheet is open.
@@ -712,6 +994,7 @@ export default function IncomingOrderModal() {
     if (!sheetOrder || !actionStoreId || !token) return;
     if (sheetOrder.id.startsWith("core-")) return;
     const foodId = parseInt(sheetOrder.id, 10);
+    const syncCoreId = Number(sheetOrder.ordersCoreId);
     if (!Number.isFinite(foodId)) return;
 
     let cancelled = false;
@@ -739,9 +1022,19 @@ export default function IncomingOrderModal() {
 
         const updated = await fetchFoodOrder(actionStoreId, foodId, token);
         if (cancelled) return;
+        // Only drop THIS order — if the pager already advanced to another card, do nothing.
+        const stillViewing =
+          sheetOrderRef.current?.id === String(foodId) ||
+          Number(sheetOrderRef.current?.ordersCoreId) === syncCoreId;
+        if (!stillViewing) return;
         const stage = String(updated.order_status || "").toUpperCase();
         if (stage && stage !== "CREATED" && stage !== "NEW" && stage !== "PLACED") {
-          await dismissSheet();
+          await advanceOrCloseSheet({
+            markDismissed: true,
+            parkIfLast: false,
+            forCoreId: syncCoreId,
+            forFoodId: String(foodId),
+          });
         }
       } catch {
         /* network blip — retry on next tick */
@@ -768,22 +1061,52 @@ export default function IncomingOrderModal() {
     sheetOrder?.id,
     sheetOrder?.createdAt,
     sheetOrder?.merchantResponseDeadlineAt,
+    sheetOrder?.ordersCoreId,
     actionStoreId,
     token,
     acceptanceWindowMinutes,
-    dismissSheet,
+    advanceOrCloseSheet,
   ]);
+
+  const order = displayOrder;
+
+  const deliverySlides = useMemo((): IncomingBannerSlide[] => {
+    if (!order) {
+      return [{ key: "delivery", icon: "bicycle-outline", text: "GatiMitra delivery", tone: "delivery" }];
+    }
+    const notes = parseMerchantInstructionsList(order.merchantInstructionsList).filter(
+      (line) => !/cutlery|utensil/i.test(line)
+    );
+    const slides: IncomingBannerSlide[] = [
+      { key: "delivery", icon: "bicycle-outline", text: "GatiMitra delivery", tone: "delivery" },
+    ];
+    if (order.requiresUtensils != null) {
+      slides.push({
+        key: "cutlery",
+        icon: "restaurant-outline",
+        text: order.requiresUtensils ? "Send cutlery & utensils" : "Don't send cutlery",
+        tone: "cutlery",
+      });
+    }
+    notes.forEach((line, i) => {
+      slides.push({
+        key: `note-${i}`,
+        icon: "document-text-outline",
+        text: line,
+        tone: "note",
+      });
+    });
+    return slides;
+  }, [order?.id, order?.merchantInstructionsList, order?.requiresUtensils]);
 
   if (!storeId && !actionStoreId) return null;
 
-  const order = displayOrder;
   // Deterministic merchant bill: item subtotal (Boost/BOGO-adjusted nets) + packaging
   // − frozen orders_core.merchant_precision_discount — recomputed from items (total: 0),
   // matching PartnerIncomingOrderModal exactly.
   const incomingBill = order ? merchantIncomingBillPartsFromOrder(order) : null;
-  const precisionDiscount = incomingBill?.discount ?? 0;
-  const orderValue = incomingBill?.total ?? order?.total ?? 0;
-  const sheetVisible = !!order && !rejectOpen && !allItemsOpen && !customizationItem;
+  const sheetVisible =
+    !!order && !rejectOpen && !allItemsOpen && !billBreakdownOpen && !customizationItem;
   const lineItems = order?.lineItems ?? [];
   const previewItems = lineItems.slice(0, MAX_PREVIEW_ITEMS);
   const moreCount = Math.max(0, lineItems.length - MAX_PREVIEW_ITEMS);
@@ -797,7 +1120,14 @@ export default function IncomingOrderModal() {
       )
     : "";
 
+  /** Checkout notes are rotated into the GatiMitra delivery banner slideshow. */
+  const orderIsPaid = order ? isPrepaidOrder(order) : false;
+
+  /** Modest bottom inset — same visual gap as the original accept-button padding. */
+  const bottomGap = Math.max(insets.bottom, Platform.OS === "ios" ? 8 : 10);
+
   return (
+    <TypographyVariantProvider variant="sans">
     <>
       <Modal
         visible={sheetVisible}
@@ -810,30 +1140,10 @@ export default function IncomingOrderModal() {
         <View style={styles.overlay}>
           <Pressable style={styles.dismissArea} onPress={() => minimizeSheet()} />
 
-          {order ? (
-            <Pressable
-              onPress={() => minimizeSheet()}
-              style={[styles.minimizeBtn, { top: insets.top + 8 }]}
-              accessibilityRole="button"
-              accessibilityLabel="Close incoming order sheet"
-              hitSlop={8}
-            >
-              <Ionicons name="close" size={22} color="#FFFFFF" />
-            </Pressable>
-          ) : null}
-
           <View style={styles.sheetStack}>
             {order ? (
               <>
                 <View style={styles.sheetOverlapHeader} pointerEvents="box-none">
-                  {orderLocality ? (
-                    <View style={styles.localityPill} pointerEvents="none">
-                      <Ionicons name="location-outline" size={13} color={GatiMitraMerchant.primaryDark} />
-                      <Text style={styles.localityPillText} numberOfLines={1}>
-                        {orderLocality}
-                      </Text>
-                    </View>
-                  ) : null}
                   <NewOrderFusePill borderProgress={fuseProgress} urgent={fuseUrgent} />
                   <Pressable
                     onPress={() => setRejectOpen(true)}
@@ -851,15 +1161,9 @@ export default function IncomingOrderModal() {
                 </View>
 
                 <View style={styles.sheet}>
-                <View style={styles.sheetTopCap} pointerEvents="none" />
-                <ScrollView
-                  style={styles.body}
-                  contentContainerStyle={styles.bodyContent}
-                  showsVerticalScrollIndicator={false}
-                  bounces={false}
-                >
+                  <View style={styles.sheetTopCap} pointerEvents="none" />
                   {pendingTotal > 1 ? (
-                    <View style={styles.pagerRow}>
+                    <View style={styles.pagerRowFixed}>
                       <Pressable
                         onPress={() => goToOrder(-1)}
                         disabled={currentIndex <= 0}
@@ -905,19 +1209,27 @@ export default function IncomingOrderModal() {
                       </Pressable>
                     </View>
                   ) : null}
-
-                  <View style={styles.deliveryBanner}>
-                    <Ionicons name="bicycle-outline" size={14} color={GatiMitraMerchant.primaryDark} />
-                    <Text style={styles.deliveryBannerText}>GatiMitra delivery</Text>
-                  </View>
+                  <Animated.View style={[orderSlideStyle, { overflow: "hidden" }]}>
+                    <ScrollView
+                      style={styles.body}
+                      contentContainerStyle={styles.bodyContent}
+                      showsVerticalScrollIndicator={false}
+                      bounces={false}
+                    >
+                  <IncomingDeliveryBanner slides={deliverySlides} resetKey={order.id} />
 
                   <View style={styles.orderMetaRow}>
-                    <FormattedOrderId
-                      formattedOrderId={order.formattedOrderId}
-                      fallbackCoreId={order.ordersCoreId}
-                      fallbackFoodId={parseInt(order.id, 10) || undefined}
-                      size="lg"
-                    />
+                    <View style={styles.orderIdWithCount}>
+                      <FormattedOrderId
+                        formattedOrderId={order.formattedOrderId}
+                        fallbackCoreId={order.ordersCoreId}
+                        fallbackFoodId={parseInt(order.id, 10) || undefined}
+                        size="lg"
+                      />
+                      {itemCount > 0 ? (
+                        <Text style={styles.itemCountBeside}>({itemCount})</Text>
+                      ) : null}
+                    </View>
                     <AnimatedPlacedTime
                       createdAt={order.createdAt}
                       nowMs={nowTick}
@@ -936,34 +1248,6 @@ export default function IncomingOrderModal() {
                       </View>
                     </View>
                   ) : null}
-
-                  <View style={styles.earningsCard}>
-                    <View style={styles.earningsMain}>
-                      <Text style={styles.earningsLabel}>Order value</Text>
-                      {precisionDiscount > 0.005 ? (
-                        <Text style={styles.earningsPrecisionLine}>
-                          Merchant Precision Discount −{formatMerchantRs(precisionDiscount)}
-                        </Text>
-                      ) : null}
-                      <Text style={styles.earningsValue}>
-                        {formatMerchantRs(orderValue)}
-                      </Text>
-                    </View>
-                    <View style={styles.earningsDivider} />
-                    <View style={styles.earningsMeta}>
-                      <Text style={styles.earningsMetaLabel}>Items</Text>
-                      <Text style={styles.earningsMetaValue}>{itemCount}</Text>
-                    </View>
-                    {order.distanceKm != null && order.distanceKm > 0 ? (
-                      <>
-                        <View style={styles.earningsDivider} />
-                        <View style={styles.earningsMeta}>
-                          <Text style={styles.earningsMetaLabel}>Distance</Text>
-                          <Text style={styles.earningsMetaValue}>{order.distanceKm.toFixed(1)} km</Text>
-                        </View>
-                      </>
-                    ) : null}
-                  </View>
 
                   {order.dropAddress ? (
                     <View style={styles.addressCard}>
@@ -987,21 +1271,30 @@ export default function IncomingOrderModal() {
                     {previewItems.length === 0 ? (
                       <Text style={styles.emptyItems}>No items listed.</Text>
                     ) : (
-                      previewItems.map((item, idx) => (
-                        <View
-                          key={`${item.name}-${idx}`}
-                          style={[styles.itemRowWrap, idx < previewItems.length - 1 && styles.itemRowBorder]}
-                        >
-                          <OrderCardItemRow
-                            item={item}
-                            orderVeg={order.vegNonVeg}
-                            showPrice
-                            showExpandChevron
-                            onItemNamePress={() => openCustomizationSheet(item, setCustomizationItem)}
-                            onRowPress={() => openCustomizationSheet(item, setCustomizationItem)}
-                          />
+                      <>
+                        <View style={styles.itemColumnsHeader}>
+                          <Text style={styles.itemNameHeader}>Items to be packed</Text>
+                          <Text style={styles.qtyHeader}>QTY</Text>
+                          <Text style={styles.amountHeader}>Amount</Text>
                         </View>
-                      ))
+                        {previewItems.map((item, idx) => (
+                          <View
+                            key={`${item.name}-${idx}`}
+                            style={[styles.itemRowWrap, idx < previewItems.length - 1 && styles.itemRowBorder]}
+                          >
+                            <OrderCardItemRow
+                              item={item}
+                              orderVeg={order.vegNonVeg}
+                              showPrice
+                              showQuantityColumn
+                              showExpandChevron
+                              dense
+                              onItemNamePress={() => openCustomizationSheet(item, setCustomizationItem)}
+                              onRowPress={() => openCustomizationSheet(item, setCustomizationItem)}
+                            />
+                          </View>
+                        ))}
+                      </>
                     )}
                   </View>
 
@@ -1014,57 +1307,98 @@ export default function IncomingOrderModal() {
                       <Text style={styles.moreRowLink}>View all</Text>
                     </Pressable>
                   ) : null}
-                </ScrollView>
 
-                <View style={styles.prepSection}>
-                  <Text style={styles.prepTitle}>Preparation time</Text>
-                  <Text style={styles.prepHint}>
-                    {PREP_TIME_MIN}–{PREP_TIME_MAX} min · shown to customer
-                  </Text>
-                  <View style={styles.prepRow}>
-                    <Pressable
-                      style={[styles.prepBtn, prepMinutes <= PREP_TIME_MIN && styles.prepBtnDisabled]}
-                      disabled={prepMinutes <= PREP_TIME_MIN || actionLoading}
-                      onPress={() => stepPrep(-PREP_STEP_MINUTES)}
-                    >
-                      <Text style={styles.prepBtnText}>−</Text>
-                    </Pressable>
-                    <Text style={styles.prepValue}>{prepMinutes} mins</Text>
-                    <Pressable
-                      style={[styles.prepBtn, prepMinutes >= PREP_TIME_MAX && styles.prepBtnDisabled]}
-                      disabled={prepMinutes >= PREP_TIME_MAX || actionLoading}
-                      onPress={() => stepPrep(PREP_STEP_MINUTES)}
-                    >
-                      <Text style={styles.prepBtnText}>+</Text>
-                    </Pressable>
+                  {incomingBill ? (
+                    <MerchantIncomingBillCard
+                      bill={incomingBill}
+                      itemCount={itemCount}
+                      paid={orderIsPaid}
+                      mode="summary"
+                      onPress={() => setBillBreakdownOpen(true)}
+                    />
+                  ) : null}
+                    </ScrollView>
+                  </Animated.View>
+
+                  <View style={[styles.footerBlock, { paddingBottom: bottomGap }]}>
+                    <View style={styles.prepFooterRow}>
+                      <View style={styles.prepLabelHalf}>
+                        <Text style={styles.prepTitle} numberOfLines={1}>
+                          Preparation time
+                        </Text>
+                        <Text style={styles.prepHint} numberOfLines={1}>
+                          {PREP_TIME_MIN}–{PREP_TIME_MAX} min
+                        </Text>
+                      </View>
+                      <View style={styles.prepStepperHalf}>
+                        <View style={styles.prepStepper}>
+                          <Pressable
+                            style={[styles.prepBtn, prepMinutes <= PREP_TIME_MIN && styles.prepBtnDisabled]}
+                            disabled={prepMinutes <= PREP_TIME_MIN || actionLoading}
+                            onPress={() => stepPrep(-PREP_STEP_MINUTES)}
+                          >
+                            <Text style={styles.prepBtnText}>−</Text>
+                          </Pressable>
+                          <Text style={styles.prepValue}>{prepMinutes}m</Text>
+                          <Pressable
+                            style={[styles.prepBtn, prepMinutes >= PREP_TIME_MAX && styles.prepBtnDisabled]}
+                            disabled={prepMinutes >= PREP_TIME_MAX || actionLoading}
+                            onPress={() => stepPrep(PREP_STEP_MINUTES)}
+                          >
+                            <Text style={styles.prepBtnText}>+</Text>
+                          </Pressable>
+                        </View>
+                      </View>
+                    </View>
+
+                    <View style={styles.footer}>
+                      <AcceptOrderSwipeButton
+                        loading={actionLoading}
+                        disabled={secondsLeft <= 0}
+                        countdown={mmss}
+                        timeProgress={fuseProgress}
+                        urgent={fuseUrgent}
+                        orderKey={order.id}
+                        onPress={() =>
+                          void patchStatus("ACCEPTED", { preparation_time_minutes: prepMinutes }, "manual")
+                        }
+                      />
+                    </View>
                   </View>
                 </View>
-
-                <View style={[styles.footer, { paddingBottom: insets.bottom }]}>
-                  <AcceptOrderSwipeButton
-                    loading={actionLoading}
-                    disabled={secondsLeft <= 0}
-                    countdown={mmss}
-                    timeProgress={fuseProgress}
-                    urgent={fuseUrgent}
-                    onPress={() =>
-                      void patchStatus("ACCEPTED", { preparation_time_minutes: prepMinutes }, "manual")
-                    }
-                  />
-                </View>
-              </View>
               </>
             ) : null}
           </View>
+
+          {order ? (
+            <Pressable
+              onPress={() => minimizeSheet()}
+              style={[styles.minimizeBtn, { top: insets.top + 8 }]}
+              accessibilityRole="button"
+              accessibilityLabel="Close incoming order sheet"
+              hitSlop={12}
+            >
+              <Ionicons name="close" size={22} color="#FFFFFF" />
+            </Pressable>
+          ) : null}
         </View>
       </Modal>
 
       {order ? (
         <>
+          <IncomingOrderBillBreakdownSheet
+            visible={billBreakdownOpen}
+            bill={incomingBill ?? { itemsSubtotal: 0, packaging: 0, discount: 0, taxes: 0, total: order.total }}
+            itemCount={itemCount}
+            paid={orderIsPaid}
+            onClose={() => setBillBreakdownOpen(false)}
+          />
+
           <IncomingOrderAllItemsSheet
             visible={allItemsOpen}
             items={lineItems}
-            total={incomingBill?.total ?? order.total}
+            bill={incomingBill ?? { itemsSubtotal: 0, packaging: 0, discount: 0, taxes: 0, total: order.total }}
+            paid={orderIsPaid}
             orderVeg={order.vegNonVeg}
             onClose={() => setAllItemsOpen(false)}
             onItemPress={(item) => openCustomizationSheet(item, setCustomizationItem)}
@@ -1099,7 +1433,13 @@ export default function IncomingOrderModal() {
                   } catch (err) {
                     if (!isInvalidTransitionError(err)) throw err;
                   }
-                  await dismissSheet();
+                  requestMerchantDashboardStatsRefresh();
+                  await advanceOrCloseSheet({
+                    markDismissed: true,
+                    parkIfLast: false,
+                    forCoreId: snap.ordersCoreId,
+                    forFoodId: snap.id,
+                  });
                 });
                 return;
               }
@@ -1112,12 +1452,24 @@ export default function IncomingOrderModal() {
                     action_source: "app",
                     cancel_mode: "manual",
                   });
-                  await dismissSheet();
+                  requestMerchantDashboardStatsRefresh();
+                  await advanceOrCloseSheet({
+                    markDismissed: true,
+                    parkIfLast: false,
+                    forCoreId: snap.ordersCoreId,
+                    forFoodId: snap.id,
+                  });
                 } catch (err) {
                   if (!isInvalidTransitionError(err)) {
                     /* list refresh will reconcile */
                   } else {
-                    await dismissSheet();
+                    requestMerchantDashboardStatsRefresh();
+                    await advanceOrCloseSheet({
+                      markDismissed: true,
+                      parkIfLast: false,
+                      forCoreId: snap.ordersCoreId,
+                      forFoodId: snap.id,
+                    });
                   }
                 } finally {
                   setActionLoading(false);
@@ -1145,12 +1497,13 @@ export default function IncomingOrderModal() {
         </Modal>
       ) : null}
     </>
+    </TypographyVariantProvider>
   );
 }
 
 const styles = StyleSheet.create({
   overlay: {
-    flex: 1,
+    ...StyleSheet.absoluteFillObject,
     backgroundColor: "rgba(15, 23, 42, 0.52)",
     justifyContent: "flex-end",
     margin: 0,
@@ -1160,13 +1513,14 @@ const styles = StyleSheet.create({
   minimizeBtn: {
     position: "absolute",
     right: H_PADDING,
-    zIndex: 40,
+    zIndex: 80,
+    elevation: 24,
     width: 40,
     height: 40,
     borderRadius: 20,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(15, 23, 42, 0.45)",
+    backgroundColor: "rgba(15, 23, 42, 0.55)",
   },
   sheetStack: {
     width: "100%",
@@ -1251,38 +1605,6 @@ const styles = StyleSheet.create({
       default: {},
     }),
   },
-  localityPill: {
-    position: "absolute",
-    top: -10,
-    left: H_PADDING,
-    maxWidth: "36%",
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 4,
-    paddingHorizontal: 10,
-    paddingVertical: 7,
-    borderRadius: 999,
-    backgroundColor: "#FFFFFF",
-    borderWidth: 1,
-    borderColor: "#BFDBFE",
-    zIndex: 11,
-    ...Platform.select({
-      ios: {
-        shadowColor: "#000",
-        shadowOffset: { width: 0, height: 2 },
-        shadowOpacity: 0.1,
-        shadowRadius: 5,
-      },
-      android: { elevation: 3 },
-      default: {},
-    }),
-  },
-  localityPillText: {
-    flexShrink: 1,
-    fontSize: 12,
-    fontWeight: "700",
-    color: GatiMitraMerchant.primaryDark,
-  },
   rejectPillText: {
     fontSize: 13,
     fontWeight: "700",
@@ -1297,8 +1619,8 @@ const styles = StyleSheet.create({
     borderBottomLeftRadius: 0,
     borderBottomRightRadius: 0,
     overflow: "hidden",
-    maxHeight: "98%",
-    paddingTop: BADGE_OVERLAP + 10,
+    maxHeight: "97%",
+    paddingTop: BADGE_OVERLAP + 6,
     ...Platform.select({
       ios: {
         shadowColor: "#000",
@@ -1316,26 +1638,42 @@ const styles = StyleSheet.create({
     top: 0,
     left: 0,
     right: 0,
-    height: BADGE_OVERLAP + 10,
+    height: BADGE_OVERLAP + 6,
     backgroundColor: "#FFFFFF",
     borderTopLeftRadius: CARD_RADIUS + 6,
     borderTopRightRadius: CARD_RADIUS + 6,
     zIndex: 1,
   },
-  body: { maxHeight: 600 },
+  body: { maxHeight: 580 },
   bodyContent: {
     paddingHorizontal: H_PADDING,
-    paddingTop: 10,
-    paddingBottom: 16,
+    paddingTop: 6,
+    paddingBottom: 10,
   },
   pagerRow: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
     gap: 8,
-    marginTop: 2,
-    marginBottom: 12,
-    paddingVertical: 6,
+    marginTop: 0,
+    marginBottom: 8,
+    paddingVertical: 4,
+    paddingHorizontal: 6,
+    borderRadius: 12,
+    backgroundColor: GatiMitraMerchant.surfaceWarm,
+    borderWidth: 1,
+    borderColor: GatiMitraMerchant.border,
+  },
+  /** Fixed above sliding order body — does not animate with Prev/Next. */
+  pagerRowFixed: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 8,
+    marginHorizontal: H_PADDING,
+    marginTop: 4,
+    marginBottom: 6,
+    paddingVertical: 4,
     paddingHorizontal: 6,
     borderRadius: 12,
     backgroundColor: GatiMitraMerchant.surfaceWarm,
@@ -1363,31 +1701,25 @@ const styles = StyleSheet.create({
   pagerDots: { flexDirection: "row", alignItems: "center", gap: 5, marginTop: 5 },
   pagerDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: GatiMitraMerchant.border },
   pagerDotActive: { width: 16, backgroundColor: GatiMitraMerchant.primaryDark },
-  deliveryBanner: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 6,
-    backgroundColor: "#ECFDF5",
-    borderRadius: 10,
-    paddingVertical: 8,
-    marginTop: 4,
-    marginBottom: 14,
-    borderWidth: 1,
-    borderColor: "#A7F3D0",
-  },
-  deliveryBannerText: {
-    fontSize: 12,
-    fontWeight: "800",
-    color: GatiMitraMerchant.primaryDark,
-    letterSpacing: 0.6,
-    textTransform: "uppercase",
-  },
   orderMetaRow: {
     flexDirection: "row",
     alignItems: "flex-start",
     justifyContent: "space-between",
     gap: 8,
+  },
+  orderIdWithCount: {
+    flex: 1,
+    minWidth: 0,
+    flexDirection: "row",
+    alignItems: "baseline",
+    flexWrap: "wrap",
+    gap: 6,
+  },
+  itemCountBeside: {
+    fontSize: 15,
+    fontWeight: "800",
+    color: GatiMitraMerchant.textSecondary,
+    fontVariant: ["tabular-nums"],
   },
   orderTime: {
     fontSize: 12,
@@ -1395,18 +1727,18 @@ const styles = StyleSheet.create({
     color: GatiMitraMerchant.textSecondary,
   },
   customerName: {
-    marginTop: 6,
-    fontSize: 15,
+    marginTop: 4,
+    fontSize: 14,
     fontWeight: "700",
     color: GatiMitraMerchant.textPrimary,
-    lineHeight: 21,
+    lineHeight: 19,
   },
   bulkBanner: {
     flexDirection: "row",
     alignItems: "flex-start",
     gap: 10,
-    marginTop: 12,
-    padding: 12,
+    marginTop: 8,
+    padding: 10,
     borderRadius: CARD_RADIUS,
     backgroundColor: "#FFFBEB",
     borderWidth: 1,
@@ -1415,61 +1747,13 @@ const styles = StyleSheet.create({
   bulkTextWrap: { flex: 1 },
   bulkTitle: { fontSize: 14, fontWeight: "800", color: "#92400E" },
   bulkSub: { fontSize: 12, color: "#B45309", marginTop: 2, lineHeight: 16 },
-  earningsCard: {
-    flexDirection: "row",
-    alignItems: "center",
-    marginTop: 14,
-    paddingVertical: 14,
-    paddingHorizontal: 14,
-    borderRadius: CARD_RADIUS,
-    backgroundColor: GatiMitraMerchant.surfaceWarm,
-    borderWidth: 1,
-    borderColor: GatiMitraMerchant.border,
-  },
-  earningsMain: { flex: 1.2 },
-  earningsLabel: {
-    fontSize: 12,
-    fontWeight: "600",
-    color: GatiMitraMerchant.textSecondary,
-  },
-  earningsPrecisionLine: {
-    fontSize: 12,
-    fontWeight: "700",
-    color: "#059669",
-    marginTop: 2,
-    fontVariant: ["tabular-nums"],
-  },
-  earningsValue: {
-    fontSize: 24,
-    fontWeight: "800",
-    color: GatiMitraMerchant.textPrimary,
-    marginTop: 2,
-    fontVariant: ["tabular-nums"],
-  },
-  earningsDivider: {
-    width: 1,
-    alignSelf: "stretch",
-    backgroundColor: GatiMitraMerchant.border,
-    marginHorizontal: 10,
-  },
-  earningsMeta: { flex: 0.8, alignItems: "center" },
-  earningsMetaLabel: {
-    fontSize: 11,
-    fontWeight: "600",
-    color: GatiMitraMerchant.textSecondary,
-  },
-  earningsMetaValue: {
-    fontSize: 16,
-    fontWeight: "800",
-    color: GatiMitraMerchant.textPrimary,
-    marginTop: 2,
-  },
   addressCard: {
     flexDirection: "row",
     alignItems: "flex-start",
     gap: 8,
-    marginTop: 12,
-    padding: 12,
+    marginTop: 10,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
     borderRadius: CARD_RADIUS,
     backgroundColor: "#FFFFFF",
     borderWidth: 1,
@@ -1485,8 +1769,8 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    marginTop: 16,
-    marginBottom: 8,
+    marginTop: 12,
+    marginBottom: 6,
   },
   itemsHeading: {
     fontSize: 13,
@@ -1507,10 +1791,40 @@ const styles = StyleSheet.create({
     overflow: "hidden",
     backgroundColor: "#FFFFFF",
   },
-  itemRowWrap: { paddingHorizontal: 12, paddingVertical: 10 },
+  itemRowWrap: { paddingHorizontal: 10, paddingVertical: 6 },
   itemRowBorder: {
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: GatiMitraMerchant.divider,
+  },
+  itemColumnsHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: GatiMitraMerchant.divider,
+    backgroundColor: "#F8FAFC",
+  },
+  itemNameHeader: {
+    flex: 1,
+    minWidth: 0,
+    fontSize: 10,
+    fontWeight: "700",
+    color: GatiMitraMerchant.textSecondary,
+  },
+  qtyHeader: {
+    width: 46,
+    textAlign: "center",
+    fontSize: 10,
+    fontWeight: "700",
+    color: GatiMitraMerchant.textSecondary,
+  },
+  amountHeader: {
+    width: 73,
+    textAlign: "right",
+    fontSize: 10,
+    fontWeight: "700",
+    color: GatiMitraMerchant.textSecondary,
   },
   emptyItems: {
     fontSize: 13,
@@ -1527,53 +1841,68 @@ const styles = StyleSheet.create({
   },
   moreRowText: { fontSize: 12, fontWeight: "600", color: GatiMitraMerchant.textSecondary },
   moreRowLink: { fontSize: 12, fontWeight: "800", color: "#2563EB" },
-  prepSection: {
-    paddingHorizontal: H_PADDING,
-    paddingTop: 10,
-    paddingBottom: 4,
+  footerBlock: {
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: GatiMitraMerchant.border,
     backgroundColor: "#FFFFFF",
+    paddingTop: 8,
+    gap: 8,
   },
-  prepTitle: { fontSize: 13, fontWeight: "700", color: GatiMitraMerchant.textPrimary },
-  prepHint: { fontSize: 11, color: GatiMitraMerchant.textSecondary, marginTop: 2 },
-  prepRow: {
-    marginTop: 8,
+  prepFooterRow: {
     flexDirection: "row",
     alignItems: "center",
+    gap: 10,
+    paddingHorizontal: H_PADDING,
+  },
+  prepLabelHalf: {
+    flex: 1,
+    minWidth: 0,
+  },
+  prepStepperHalf: {
+    flex: 1,
+    minWidth: 0,
+    alignItems: "stretch",
+  },
+  prepTitle: { fontSize: 12, fontWeight: "700", color: GatiMitraMerchant.textPrimary },
+  prepHint: { fontSize: 10, color: GatiMitraMerchant.textSecondary, marginTop: 2 },
+  prepStepper: {
+    flexDirection: "row",
+    alignItems: "stretch",
+    overflow: "hidden",
+    borderRadius: 10,
     borderWidth: 1,
     borderColor: GatiMitraMerchant.border,
-    borderRadius: 10,
-    overflow: "hidden",
+    backgroundColor: "#FFFFFF",
+    width: "100%",
   },
   prepBtn: {
-    width: 48,
+    width: 40,
     alignItems: "center",
     justifyContent: "center",
-    paddingVertical: 10,
+    paddingVertical: 8,
     backgroundColor: "#FFFFFF",
   },
   prepBtnDisabled: { opacity: 0.4 },
-  prepBtnText: { fontSize: 20, fontWeight: "700", color: GatiMitraMerchant.textPrimary },
+  prepBtnText: { fontSize: 18, fontWeight: "700", color: GatiMitraMerchant.textPrimary },
   prepValue: {
     flex: 1,
     textAlign: "center",
-    fontSize: 15,
-    fontWeight: "700",
+    fontSize: 14,
+    fontWeight: "800",
     color: GatiMitraMerchant.textPrimary,
     borderLeftWidth: 1,
     borderRightWidth: 1,
     borderColor: GatiMitraMerchant.border,
-    paddingVertical: 10,
+    paddingVertical: 8,
+    fontVariant: ["tabular-nums"],
   },
   footer: {
     paddingHorizontal: H_PADDING,
-    paddingTop: 12,
+    paddingTop: 0,
     paddingBottom: 0,
     backgroundColor: "#FFFFFF",
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: GatiMitraMerchant.border,
     width: "100%",
+    marginBottom: 0,
   },
   acceptBtnWrap: {
     width: "100%",

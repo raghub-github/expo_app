@@ -12,7 +12,7 @@ import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { StatusBar } from "expo-status-bar";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { LiveTrackingStatusChip } from "@/components/orders/LiveTrackingStatusChip";
 import { MapboxWebDeliveryMap } from "@/components/maps/MapboxWebDeliveryMap";
 import type { DeliveryMapPayload } from "@/components/maps/mapbox-web-delivery-html";
@@ -20,6 +20,7 @@ import { GatiMitraColors } from "@/constants/gatimitra";
 import { DEFAULT_STATUS_BAR_HEIGHT, STATUS_BAR_TO_HEADER_GAP } from "@/constants/layout";
 import { useScreenChromeStore } from "@/store/screenChromeStore";
 import type { OrderDetail, OrderTrackingResponse } from "@/services/order.service";
+import { merchantService } from "@/services/merchant.service";
 import { useLocationWeather } from "@/hooks/useLocationWeather";
 import { WeatherStatusChip } from "@/components/weather";
 import { PrepDelayMarqueeBanner } from "@/components/orders/PrepDelayMarqueeBanner";
@@ -33,6 +34,7 @@ import { FoodOrderTipSheet } from "@/components/orders/FoodOrderTipSheet";
 import { parseOrderBillFromSnapshot } from "@/lib/orderBillBreakdown";
 import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
 import { useFoodDeliveryRouteProgress } from "@/hooks/useFoodDeliveryRouteProgress";
+import { resolveOrderTrackingMapSnapshots } from "@/lib/orderTrackingMapSnapshots";
 import {
   FOOD_DELIVERY_GEOFENCE_RADIUS_M,
   FOOD_DELIVERY_GEOFENCE_PROXIMITY_M,
@@ -79,8 +81,6 @@ const BORDER = GatiMitraColors.border;
 const TEXT = GatiMitraColors.textPrimaryNew;
 const MUTED = GatiMitraColors.textSecondary;
 
-const DEFAULT_LAT = 20.5937;
-const DEFAULT_LNG = 78.9629;
 const { height: SCREEN_H } = Dimensions.get("window");
 const MAP_CORNER_RADIUS = 20;
 const MAP_HEIGHT = Math.round(SCREEN_H * 0.4);
@@ -246,7 +246,10 @@ export function FoodLiveTrackingScreen({
     prepDelayBanner.expiresAt > Date.now();
 
   const orderStatus = normalizeCustomerOrderStatus(order.status);
-  const hasRider = !!(order.rider || tracking?.rider);
+  /** Assigned delivery partner on the order — keep dashed store↔home map until then. */
+  const hasRider = Boolean(
+    order.rider && (order.rider.id || order.rider.name || order.rider.phone)
+  );
   const riderArrived = isRiderAtCustomerStatus(orderStatus);
   const showDeliveryOtpNow = shouldShowCustomerDeliveryOtp(orderStatus, order.deliveryOtp);
   const [deliveryOtpPinned, setDeliveryOtpPinned] = useState(false);
@@ -303,10 +306,30 @@ export function FoodLiveTrackingScreen({
     setDeliveryEditLocked({ contact: false, address: false, instructions: false });
   }, [order.orderId]);
 
-  const deliveryLat = order.deliveryLat != null ? order.deliveryLat : DEFAULT_LAT + 0.008;
-  const deliveryLng = order.deliveryLng != null ? order.deliveryLng : DEFAULT_LNG + 0.008;
-  const pickupLat = order.pickupLat != null ? order.pickupLat : DEFAULT_LAT - 0.006;
-  const pickupLng = order.pickupLng != null ? order.pickupLng : DEFAULT_LNG - 0.006;
+  // Immutable order snapshots + store fallback when pickup was stored as 0/null.
+  const storeIdForMap =
+    order.merchantPublicStoreId?.trim() ||
+    (order.merchantStoreId != null ? String(order.merchantStoreId) : null);
+  const { data: mapStore } = useQuery({
+    queryKey: ["merchant", storeIdForMap, "tracking-map"],
+    queryFn: () => merchantService.getMerchantById(storeIdForMap!),
+    enabled: Boolean(storeIdForMap),
+    staleTime: 5 * 60 * 1000,
+  });
+  const {
+    deliveryLat,
+    deliveryLng,
+    pickupLat,
+    pickupLng,
+  } = resolveOrderTrackingMapSnapshots({
+    deliveryLat: order.deliveryLat,
+    deliveryLng: order.deliveryLng,
+    pickupLat: order.pickupLat,
+    pickupLng: order.pickupLng,
+    storeLat: mapStore?.latitude ?? null,
+    storeLng: mapStore?.longitude ?? null,
+    distanceKm: order.distanceKm ?? null,
+  });
 
   const riderLat = tracking?.rider?.latitude ?? null;
   const riderLng = tracking?.rider?.longitude ?? null;
@@ -419,6 +442,8 @@ export function FoodLiveTrackingScreen({
       geofenceProximityM: FOOD_DELIVERY_GEOFENCE_PROXIMITY_M,
       riderArrived,
       mapPhase,
+      showPickupMarker: !hasRider || mapPhase === "rider_to_pickup",
+      showDropMarker: !hasRider || mapPhase === "rider_to_drop",
       mapPadding: { top: 64, bottom: 64, left: 40, right: 40 },
     }),
     [
@@ -439,6 +464,7 @@ export function FoodLiveTrackingScreen({
       highlightDropZone,
       riderArrived,
       mapPhase,
+      hasRider,
     ]
   );
 
@@ -822,6 +848,7 @@ export function FoodLiveTrackingScreen({
         onOpenHelp={onOpenHelp}
         onOpenChat={handleMessageRider}
         onCancelled={onOrderCancelled}
+        chatEnabled={hasRider}
       />
 
       {order.rider && existingTip <= 0 ? (

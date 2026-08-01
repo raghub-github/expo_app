@@ -4,6 +4,10 @@ import crypto from 'crypto'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { validateMerchantFromSession } from '@/lib/auth/validate-merchant'
 import { enforcePlanLimitsForStoreNumericId } from '@/lib/plan-enforce'
+import {
+  buildPlanPurchaseSnapshot,
+  expiryFromBillingCycle,
+} from '@/lib/plan-purchase-snapshot'
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder.supabase.co"
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "placeholder-service-role-key"
@@ -13,7 +17,6 @@ const supabase = createClient(supabaseUrl, supabaseServiceKey, {
 })
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000
-const DEFAULT_BILLING_DAYS = 30
 
 /**
  * POST /api/merchant/subscription/upgrade
@@ -178,8 +181,8 @@ export async function POST(req: NextRequest) {
     }
 
     const now = new Date()
-    const newExpiry = new Date(now)
-    newExpiry.setDate(newExpiry.getDate() + DEFAULT_BILLING_DAYS)
+    const newExpiry = expiryFromBillingCycle(now, newPlan.billing_cycle)
+    const planSnap = buildPlanPurchaseSnapshot(newPlan)
 
     if (activeSubscription) {
       const { error: updateOldError } = await supabase
@@ -218,6 +221,7 @@ export async function POST(req: NextRequest) {
         billing_end_at: newExpiry.toISOString(),
         last_payment_date: now.toISOString(),
         next_billing_date: newExpiry.toISOString(),
+        ...planSnap,
       })
       .select('id')
       .single();
@@ -256,6 +260,7 @@ export async function POST(req: NextRequest) {
       billing_period_start: now.toISOString(),
       billing_period_end: newExpiry.toISOString(),
       notes: creditToApply > 0 ? `Upgrade: ₹${creditToApply} credit applied from previous plan` : 'Plan upgrade',
+      ...planSnap,
     });
 
     await enforcePlanLimitsForStoreNumericId(store.id);

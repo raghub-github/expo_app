@@ -48,26 +48,27 @@ export default function ScheduledPage() {
   };
 
   return (
-    <div className="p-6">
-      <div className="text-xs font-semibold uppercase tracking-wide text-teal-700">Notifications</div>
-      <h1 className="text-2xl font-semibold text-slate-900">Scheduled</h1>
-      <p className="mt-1 text-sm text-slate-500">Campaigns waiting to fire. The backend poller sweeps every 30 s.</p>
-
-      {cancelError ? (
-        <div className="mt-4 rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-800">
-          {cancelError}
+    <div className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden bg-slate-50 px-3 pb-3 pt-1 sm:px-5 sm:pt-2 xl:px-6">
+      <div className="mx-auto flex h-full min-h-0 w-full min-w-0 max-w-7xl flex-col">
+        <div className="shrink-0">
+          <p className="max-w-2xl text-sm text-slate-500">Campaigns waiting to fire. The backend poller sweeps every 30 s.</p>
         </div>
-      ) : null}
 
-      <div className="mt-6 overflow-hidden rounded-xl border border-slate-200 bg-white">
-        <table className="min-w-full divide-y divide-slate-200 text-sm">
-          <thead className="bg-slate-50 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-500">
-            <tr>
-              <th className="px-4 py-2">Name</th>
-              <th className="px-4 py-2">Template</th>
-              <th className="px-4 py-2">Scheduled for</th>
-              <th className="px-4 py-2">Created by</th>
-              <th className="px-4 py-2"></th>
+        {cancelError ? (
+          <div className="mt-3 shrink-0 rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-800">
+            {cancelError}
+          </div>
+        ) : null}
+
+        <div className="mt-4 min-h-0 max-w-full flex-1 overflow-auto rounded-xl border border-slate-200 bg-white shadow-sm">
+          <table className="w-full min-w-[760px] divide-y divide-slate-200 text-sm">
+            <thead className="sticky top-0 z-10 bg-slate-50 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-500 shadow-[0_1px_0_0_#e2e8f0]">
+              <tr>
+                <th className="px-3 py-3 sm:px-4">Name</th>
+                <th className="px-3 py-3">Template</th>
+                <th className="px-3 py-3">Scheduled for</th>
+                <th className="px-3 py-3">Created by</th>
+                <th className="px-3 py-3"></th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100">
@@ -79,12 +80,12 @@ export default function ScheduledPage() {
               </td></tr>
             ) : (
               data.items.map((c) => (
-                <tr key={c.id} className="hover:bg-slate-50/60">
-                  <td className="px-4 py-2 font-medium text-slate-900">{c.name}</td>
-                  <td className="px-4 py-2 font-mono text-xs text-slate-700">{c.template_code}</td>
-                  <td className="px-4 py-2 text-slate-600">{c.scheduled_at ? new Date(c.scheduled_at).toLocaleString() : "—"}</td>
-                  <td className="px-4 py-2 text-xs text-slate-500">{c.created_by ?? "—"}</td>
-                  <td className="px-4 py-2 text-right">
+                <tr key={c.id} className="transition hover:bg-teal-50/40">
+                  <td className="px-3 py-3 font-medium text-slate-900 sm:px-4">{c.name}</td>
+                  <td className="px-3 py-3 font-mono text-xs text-slate-700">{c.template_code}</td>
+                  <td className="px-3 py-3 text-slate-600">{c.scheduled_at ? new Date(c.scheduled_at).toLocaleString() : "—"}</td>
+                  <td className="px-3 py-3 text-xs text-slate-500">{c.created_by ?? "—"}</td>
+                  <td className="px-3 py-3 text-right">
                     <button
                       onClick={() => {
                         setCancelError(null);
@@ -98,6 +99,7 @@ export default function ScheduledPage() {
             )}
           </tbody>
         </table>
+        </div>
       </div>
 
       <ConfirmModal

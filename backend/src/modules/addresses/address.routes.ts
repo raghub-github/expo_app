@@ -19,6 +19,7 @@ import {
   setAddressDefault,
   getActiveLocation,
   setActiveLocation,
+  reconcileActiveLocationWithGps,
   doorImageProxyUrlFromR2Key,
 } from "./address.service.js";
 
@@ -46,6 +47,39 @@ const activeLocationBodySchema = z.object({
   latitude: z.number().min(-90).max(90),
   longitude: z.number().min(-180).max(180),
   address: z.string().max(500).optional().nullable(),
+  /** Explicit saved address for delivery. null clears (live GPS). Omit to leave unchanged. */
+  addressId: z.number().int().positive().optional().nullable(),
+});
+
+const reconcileActiveLocationBodySchema = z.object({
+  latitude: z.number().min(-90).max(90),
+  longitude: z.number().min(-180).max(180),
+  address: z.string().max(500).optional().nullable(),
+});
+
+const reconcileActiveLocationResponseSchema = z.object({
+  latitude: z.number().nullable(),
+  longitude: z.number().nullable(),
+  address: z.string().nullable(),
+  addressId: z.number().nullable(),
+  lockedForOrder: z.boolean(),
+  source: z.enum(["selected", "current"]),
+  switchedToCurrent: z.boolean(),
+  reason: z.enum(["kept_nearby", "switched_far", "no_bound_address", "bound_missing"]),
+  distanceM: z.number().nullable(),
+  retentionRadiusM: z.number(),
+  savedAddress: z
+    .object({
+      id: z.number(),
+      label: z.string().nullable(),
+      fullAddress: z.string(),
+      city: z.string().nullable(),
+      state: z.string().nullable(),
+      pincode: z.string().nullable(),
+      latitude: z.number(),
+      longitude: z.number(),
+    })
+    .nullable(),
 });
 
 export async function addressRoutes(app: FastifyInstance) {
@@ -75,6 +109,9 @@ export async function addressRoutes(app: FastifyInstance) {
               deliveryInstructionsList: z.array(z.string()).optional(),
               isDefault: z.boolean(),
               isLastUsed: z.boolean(),
+              /** ISO timestamp — backend MRU key; clients must not re-sort by this. */
+              lastUsedAt: z.string().nullable().optional(),
+              isSelected: z.boolean(),
             })
           ),
           403: z.object({ error: z.string() }),
@@ -105,6 +142,12 @@ export async function addressRoutes(app: FastifyInstance) {
               deliveryInstructionsList: r.deliveryInstructionsList ?? [],
             isDefault: r.isDefault ?? false,
             isLastUsed: r.isLastUsed ?? false,
+            lastUsedAt: r.lastUsedAt
+              ? (r.lastUsedAt instanceof Date
+                  ? r.lastUsedAt.toISOString()
+                  : new Date(r.lastUsedAt).toISOString())
+              : null,
+            isSelected: r.isSelected ?? false,
           }))
         );
       } catch (err: unknown) {
@@ -326,6 +369,7 @@ export async function addressRoutes(app: FastifyInstance) {
             latitude: z.number().nullable(),
             longitude: z.number().nullable(),
             address: z.string().nullable(),
+            addressId: z.number().nullable(),
             lockedForOrder: z.boolean(),
           }),
           403: z.object({ error: z.string() }),
@@ -339,19 +383,32 @@ export async function addressRoutes(app: FastifyInstance) {
       try {
         const row = await getActiveLocation(customerPk);
         if (!row) {
-          return reply.send({ latitude: null, longitude: null, address: null, lockedForOrder: false });
+          return reply.send({
+            latitude: null,
+            longitude: null,
+            address: null,
+            addressId: null,
+            lockedForOrder: false,
+          });
         }
         return reply.send({
           latitude: row.latitude != null ? parseFloat(row.latitude) : null,
           longitude: row.longitude != null ? parseFloat(row.longitude) : null,
           address: row.address,
+          addressId: row.addressId ?? null,
           lockedForOrder: row.lockedForOrder ?? false,
         });
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
         if (msg.includes("does not exist") || msg.includes("customer_active_location")) {
           request.log.warn({ err: msg }, "customer_active_location table missing – run migration backend/drizzle/0070_*");
-          return reply.send({ latitude: null, longitude: null, address: null, lockedForOrder: false });
+          return reply.send({
+            latitude: null,
+            longitude: null,
+            address: null,
+            addressId: null,
+            lockedForOrder: false,
+          });
         }
         throw err;
       }
@@ -366,6 +423,7 @@ export async function addressRoutes(app: FastifyInstance) {
         response: {
           200: z.object({ ok: z.boolean() }),
           403: z.object({ error: z.string() }),
+          404: z.object({ error: z.string() }),
           423: z.object({ error: z.string(), lockedForOrder: z.boolean() }),
         },
       },
@@ -375,14 +433,68 @@ export async function addressRoutes(app: FastifyInstance) {
       const customerPk = await resolveCustomerPk(request.auth!);
       if (customerPk === null) return reply.status(403).send({ error: "Customer only" });
       const body = activeLocationBodySchema.parse(request.body);
-      const ok = await setActiveLocation(customerPk, body);
-      if (!ok) {
-        return reply.status(423).send({
-          error: "Location is locked for an active order",
-          lockedForOrder: true,
-        });
+      try {
+        const ok = await setActiveLocation(customerPk, body);
+        if (!ok) {
+          return reply.status(423).send({
+            error: "Location is locked for an active order",
+            lockedForOrder: true,
+          });
+        }
+        return reply.send({ ok: true });
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (msg === "Address not found") {
+          return reply.status(404).send({ error: "Address not found" });
+        }
+        throw err;
       }
-      return reply.send({ ok: true });
+    }
+  );
+
+  /**
+   * Reconcile session active delivery address against live GPS.
+   * Keeps a bound saved address when GPS is within retention radius;
+   * otherwise switches to Current Location (clears addressId).
+   */
+  app.post(
+    "/active-location/reconcile",
+    {
+      schema: {
+        body: reconcileActiveLocationBodySchema,
+        response: {
+          200: reconcileActiveLocationResponseSchema,
+          403: z.object({ error: z.string() }),
+        },
+      },
+    },
+    async (request, reply) => {
+      const customerPk = await resolveCustomerPk(request.auth!);
+      if (customerPk === null) return reply.status(403).send({ error: "Customer only" });
+      const body = reconcileActiveLocationBodySchema.parse(request.body);
+      try {
+        const result = await reconcileActiveLocationWithGps(customerPk, body);
+        return reply.send(result);
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (msg.includes("does not exist") || msg.includes("customer_active_location")) {
+          request.log.warn({ err: msg }, "customer_active_location table missing");
+          return reply.send({
+            latitude: body.latitude,
+            longitude: body.longitude,
+            address: body.address ?? "Current location",
+            addressId: null,
+            lockedForOrder: false,
+            source: "current" as const,
+            switchedToCurrent: false,
+            reason: "no_bound_address" as const,
+            distanceM: null,
+            retentionRadiusM: 500,
+            savedAddress: null,
+          });
+        }
+        throw err;
+      }
     }
   );
 }

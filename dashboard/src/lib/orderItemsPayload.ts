@@ -2,6 +2,11 @@
 
 import type { OrderItemCustomisationDetail } from "@/lib/order-item-customisation";
 import { customerDiscountLinesFromBilling, discountTotalFromBilling } from "@/lib/merchant-billing-discount";
+import {
+  extractGatiCashAppliedFromBilling,
+  resolveCustomerCtcPaidAmount,
+  roundCtcMoney,
+} from "@/lib/orders/customer-ctc";
 
 export type OrderItemLineAmounts = {
   amountPerQuantity: number;
@@ -62,7 +67,12 @@ export type OrderPricingSummary = {
   miscFee: number;
   tipAmount: number;
   donationAmount: number;
+  /** Full amount paid by customer (Cashin + GatiCash). */
   totalOrderAmount: number;
+  /** Gateway / COD portion of CTC (excludes GatiCash). */
+  cashinAmount?: number;
+  /** GatiCash wallet used (payment — not a discount). */
+  gatiCashUsed?: number;
 };
 
 /** Membership free-delivery display from billing_snapshot (mirrors customer checkout). */
@@ -152,7 +162,8 @@ function round2(n: number): number {
   return Math.round(n * 100) / 100;
 }
 
-/** GatiCash / missed-offer checkout lines stored on billing_snapshot.checkoutAdjustments. */
+/** GatiCash / missed-offer checkout lines stored on billing_snapshot.checkoutAdjustments.
+ *  GatiCash is a payment settlement — never emitted as a discount line. */
 function checkoutAdjustmentLinesFromOrder(
   snap: Record<string, unknown> | null,
   checkoutMeta: Record<string, unknown> | null
@@ -163,20 +174,11 @@ function checkoutAdjustmentLinesFromOrder(
     adjRaw && typeof adjRaw === "object" ? (adjRaw as Record<string, unknown>) : null;
 
   const pushFromFields = (fields: {
-    gatiCashApplied: number;
     missedOfferDiscount: number;
     missedOfferWalletAdd: number;
     offerTitle?: string;
   }) => {
-    const { gatiCashApplied, missedOfferDiscount, missedOfferWalletAdd, offerTitle } = fields;
-    if (gatiCashApplied > 0.005) {
-      out.push({
-        key: "gati_cash_applied",
-        label: "GatiCash wallet applied",
-        amount: round2(gatiCashApplied),
-        kind: "discount",
-      });
-    }
+    const { missedOfferDiscount, missedOfferWalletAdd, offerTitle } = fields;
     if (missedOfferDiscount > 0.005) {
       out.push({
         key: "missed_offer_discount",
@@ -201,14 +203,14 @@ function checkoutAdjustmentLinesFromOrder(
       customLines.forEach((raw, i) => {
         if (!raw || typeof raw !== "object") return;
         const row = raw as Record<string, unknown>;
+        const kindKey = String(row.kind ?? "");
+        // Payment settlement — not a bill discount.
+        if (kindKey === "gati_cash_applied") return;
         const signed = asNum(row.amount);
         const amount = round2(Math.abs(signed));
         if (amount <= 0.005) return;
-        const kindKey = String(row.kind ?? "");
         const isDiscount =
-          signed < 0 ||
-          kindKey === "gati_cash_applied" ||
-          kindKey === "missed_offer_discount";
+          signed < 0 || kindKey === "missed_offer_discount";
         out.push({
           key: `checkout_adj_${kindKey || i}`,
           label: String(row.label ?? "Checkout adjustment").trim() || "Checkout adjustment",
@@ -216,7 +218,7 @@ function checkoutAdjustmentLinesFromOrder(
           kind: isDiscount ? "discount" : "charge",
         });
       });
-      return out;
+      if (out.length > 0) return out;
     }
 
     const comp =
@@ -224,7 +226,6 @@ function checkoutAdjustmentLinesFromOrder(
         ? (adj.missedOfferCompensation as Record<string, unknown>)
         : null;
     pushFromFields({
-      gatiCashApplied: asNum(adj.gatiCashApplied),
       missedOfferDiscount: asNum(adj.missedOfferDiscount),
       missedOfferWalletAdd: asNum(adj.missedOfferWalletAdd),
       offerTitle: comp?.offerTitle != null ? String(comp.offerTitle) : undefined,
@@ -238,7 +239,6 @@ function checkoutAdjustmentLinesFromOrder(
   const comp =
     compRaw && typeof compRaw === "object" ? (compRaw as Record<string, unknown>) : null;
   pushFromFields({
-    gatiCashApplied: asNum(checkoutMeta.gatiCashAmount),
     missedOfferDiscount: asNum(comp?.discountInr),
     missedOfferWalletAdd: asNum(comp?.amountInr),
     offerTitle:
@@ -355,7 +355,8 @@ function namedExtraChargeLinesFromBilling(
 
 /**
  * Customer (CTC) bill from billing_snapshot + orders_core.
- * CTC uses grand_total (customer order value); never orders_food.food_items_total_value — that field is frozen CTM.
+ * CTC = Cashin + GatiCash (full amount paid by customer). Never treat GatiCash as a discount.
+ * `orders_core.grand_total` alone is post-wallet to-pay — not CTC.
  */
 export function buildOrderPricingSummary(
   billingSnap: Record<string, unknown> | null,
@@ -484,13 +485,18 @@ export function buildOrderPricingSummary(
     lines.push(adjLine);
   }
 
-  const totalOrderAmount = round2(
+  const gatiCashUsed = extractGatiCashAppliedFromBilling(snap, checkoutMeta);
+  const netPayable = round2(
     asNum(core.grand_total) ||
       asNum(snap.grand_total) ||
       asNum(snap.final_amount) ||
       asNum(snap.final_payable) ||
       0
   );
+  const { ctc: totalOrderAmount, cashin: cashinAmount } = resolveCustomerCtcPaidAmount({
+    netPayable,
+    gatiCashUsed,
+  });
 
   const linesSum = round2(
     lines.reduce((s, l) => {
@@ -499,6 +505,7 @@ export function buildOrderPricingSummary(
     }, 0)
   );
 
+  // Anchor bill lines to CTC (Cashin + GatiCash), not post-wallet grand_total.
   const diff = round2(totalOrderAmount - linesSum);
   if (Math.abs(diff) >= 0.01) {
     lines.push({
@@ -527,6 +534,8 @@ export function buildOrderPricingSummary(
     tipAmount,
     donationAmount,
     totalOrderAmount,
+    cashinAmount,
+    gatiCashUsed: gatiCashUsed > 0.005 ? roundCtcMoney(gatiCashUsed) : undefined,
   };
 }
 
@@ -556,6 +565,14 @@ function parsePricingSummary(pr: Record<string, unknown>): OrderPricingSummary {
     tipAmount: Number(pr.tipAmount) || 0,
     donationAmount: Number(pr.donationAmount) || 0,
     totalOrderAmount: Number(pr.totalOrderAmount) || 0,
+    cashinAmount:
+      pr.cashinAmount != null && Number(pr.cashinAmount) >= 0
+        ? Number(pr.cashinAmount)
+        : undefined,
+    gatiCashUsed:
+      pr.gatiCashUsed != null && Number(pr.gatiCashUsed) > 0
+        ? Number(pr.gatiCashUsed)
+        : undefined,
   };
 }
 

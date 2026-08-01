@@ -3,13 +3,16 @@ import { View, StyleSheet, ScrollView, Pressable } from "react-native";
 import { MerchantBottomSheetShell } from "@/components/order/MerchantBottomSheetShell";
 import { OrderCardItemRow } from "@/components/order/OrderCardItemRow";
 import type { LineItem } from "@/hooks/useOrders";
+import { MerchantIncomingBillCard } from "@/components/order/MerchantIncomingBillCard";
 import { GatiMitraMerchant, H_PADDING, CARD_RADIUS } from "@/constants/theme";
-import { formatMerchantRs } from "@/lib/merchant-line-total";
+import type { MerchantBillParts } from "@/lib/resolveMerchantOrderTotal";
 
 type Props = {
   visible: boolean;
   items: LineItem[];
-  total: number;
+  /** Same parts the incoming sheet shows, so both surfaces explain the total identically. */
+  bill: MerchantBillParts;
+  paid?: boolean;
   orderVeg?: string | null;
   onClose: () => void;
   onItemPress: (item: LineItem) => void;
@@ -18,11 +21,13 @@ type Props = {
 export function IncomingOrderAllItemsSheet({
   visible,
   items,
-  total,
+  bill,
+  paid,
   orderVeg,
   onClose,
   onItemPress,
 }: Props) {
+  const itemCount = items.reduce((sum, it) => sum + Math.max(1, it.qty || 1), 0);
   return (
     <MerchantBottomSheetShell visible={visible} onClose={onClose} maxHeightPercent="88%">
       <View style={styles.header}>
@@ -37,6 +42,13 @@ export function IncomingOrderAllItemsSheet({
         showsVerticalScrollIndicator={false}
       >
         <View style={styles.listCard}>
+          {items.length > 0 ? (
+            <View style={styles.columnsHeader}>
+              <Text style={styles.itemNameHeader}>Items to be packed</Text>
+              <Text style={styles.qtyHeader}>QTY</Text>
+              <Text style={styles.amountHeader}>Amount</Text>
+            </View>
+          ) : null}
           {items.map((item, idx) => (
             <View
               key={`${item.name}-${idx}`}
@@ -46,6 +58,7 @@ export function IncomingOrderAllItemsSheet({
                 item={item}
                 orderVeg={orderVeg}
                 showPrice
+                showQuantityColumn
                 showExpandChevron
                 onItemNamePress={() => onItemPress(item)}
                 onRowPress={() => onItemPress(item)}
@@ -54,10 +67,7 @@ export function IncomingOrderAllItemsSheet({
           ))}
         </View>
 
-        <View style={styles.totalRow}>
-          <Text style={styles.totalLabel}>Order total</Text>
-          <Text style={styles.totalAmount}>{formatMerchantRs(total)}</Text>
-        </View>
+        <MerchantIncomingBillCard bill={bill} itemCount={itemCount} paid={paid} mode="full" />
       </ScrollView>
 
       <Pressable onPress={onClose} style={styles.doneBtn}>
@@ -106,28 +116,35 @@ const styles = StyleSheet.create({
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: GatiMitraMerchant.divider,
   },
-  totalRow: {
+  columnsHeader: {
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "space-between",
-    marginTop: 14,
-    paddingVertical: 12,
-    paddingHorizontal: 14,
-    borderRadius: CARD_RADIUS,
-    backgroundColor: GatiMitraMerchant.surfaceWarm,
-    borderWidth: 1,
-    borderColor: GatiMitraMerchant.border,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: GatiMitraMerchant.divider,
+    backgroundColor: "#F8FAFC",
   },
-  totalLabel: {
-    fontSize: 14,
-    fontWeight: "600",
+  itemNameHeader: {
+    flex: 1,
+    minWidth: 0,
+    fontSize: 10,
+    fontWeight: "700",
     color: GatiMitraMerchant.textSecondary,
   },
-  totalAmount: {
-    fontSize: 18,
-    fontWeight: "800",
-    color: GatiMitraMerchant.textPrimary,
-    fontVariant: ["tabular-nums"],
+  qtyHeader: {
+    width: 46,
+    textAlign: "center",
+    fontSize: 10,
+    fontWeight: "700",
+    color: GatiMitraMerchant.textSecondary,
+  },
+  amountHeader: {
+    width: 73,
+    textAlign: "right",
+    fontSize: 10,
+    fontWeight: "700",
+    color: GatiMitraMerchant.textSecondary,
   },
   doneBtn: {
     marginHorizontal: H_PADDING,

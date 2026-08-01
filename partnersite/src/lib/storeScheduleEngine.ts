@@ -497,6 +497,17 @@ export function computeOpensAtIso(args: {
 
   if (displayOperational === 'OPEN') return null;
 
+  // Already inside today's slot with no manual hold — do not advertise tomorrow's open.
+  // Backend tick / partner-status should flip OPEN; UI must not show a 24h countdown.
+  if (
+    schedule.withinOperatingHours &&
+    !blockAutoOpen &&
+    !manualCloseUntil &&
+    (unavailableReason?.trim().toLowerCase() ?? '') !== 'manual_indefinite'
+  ) {
+    return null;
+  }
+
   const manualIso = manualCloseUntil ? manualCloseUntil.toISOString() : null;
   const unavailNorm = unavailableReason?.trim().toLowerCase() ?? '';
 

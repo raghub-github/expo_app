@@ -34,6 +34,11 @@ import {
 import { loadMerchantLicenseEvaluation } from '@/lib/syncMerchantLicenseCompliance';
 import { fetchPartnerStoreStatusSnapshot } from '@/lib/fetchPartnerStoreStatusSnapshot';
 import { resetPartnerNotificationsPanelCleared } from '@/lib/partner-notifications-panel';
+import { syncStoreStatusAfterOperatingHoursChange } from '@/lib/storeScheduleSync';
+import { triggerStoreScheduleTick } from '@/lib/triggerStoreScheduleTick';
+
+export const dynamic = 'force-dynamic';
+export const revalidate = 0;
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder.supabase.co";
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "placeholder-service-role-key";
@@ -224,7 +229,18 @@ export async function GET(req: NextRequest) {
     if (!storeInternalId) return NextResponse.json({ error: 'Store not found' }, { status: 404 });
 
     await ensureAvailabilityRow(db, storeInternalId);
-    const authoritative = await fetchPartnerStoreStatusSnapshot(storeInternalId);
+    let authoritative = await fetchPartnerStoreStatusSnapshot(storeInternalId);
+
+    // Backend unreachable → local schedule heal so partner UI still matches wall clock.
+    if (!authoritative) {
+      try {
+        await syncStoreStatusAfterOperatingHoursChange(db, storeInternalId, 'Asia/Kolkata');
+      } catch (e) {
+        console.warn('[store-operations] local schedule heal failed', e);
+      }
+      void triggerStoreScheduleTick(storeInternalId);
+      authoritative = await fetchPartnerStoreStatusSnapshot(storeInternalId);
+    }
 
     const trace = (step: string, payload: Record<string, unknown>) => {
       if (!storeOpsDebugEnabled()) return;
@@ -233,7 +249,7 @@ export async function GET(req: NextRequest) {
       storeOpsDebugLog(`GET:${step}`, row);
     };
 
-    const [{ data: store }, { data: avail }, { data: oh }] = await Promise.all([
+    const [{ data: storeRowInitial }, { data: availRowInitial }, { data: oh }] = await Promise.all([
       db
         .from('merchant_stores')
         .select(
@@ -257,10 +273,16 @@ export async function GET(req: NextRequest) {
       db.from('merchant_store_operating_hours').select('*').eq('store_id', storeInternalId).single(),
     ]);
 
+    let store = storeRowInitial;
+    let avail = availRowInitial;
+
     const storeTz = (store as { timezone?: string } | null)?.timezone || 'Asia/Kolkata';
     const ohRecord = (oh ?? null) as Record<string, unknown> | null;
     const schedule = evaluateStoreSchedule(ohRecord, storeTz);
-    let withinHours = authoritative?.within_operating_hours ?? schedule.withinOperatingHours;
+    // Prefer local wall-clock schedule (same hours shown on the card). Backend snapshot can lag
+    // a tick and wrongly report outside-hours, which blocked auto-open heal at countdown 0.
+    const withinHoursLocal = schedule.withinOperatingHours;
+    let withinHours = withinHoursLocal;
     const isTodayScheduledClosed = schedule.isTodayScheduledClosed;
 
     trace('initial_read', {
@@ -279,15 +301,71 @@ export async function GET(req: NextRequest) {
     });
 
     // Auto open/close is owned by backend store-schedule-engine; GET triggers a tick so reads match merchant app.
-    const manualCloseUntil = parseManualCloseUntilDate(
-      (authoritative?.manual_close_until ?? avail?.manual_close_until) as string | null | undefined
-    );
-    const availFinal = avail;
     const licenseStatus = await loadMerchantLicenseEvaluation(db, storeInternalId);
 
     let storeGated = store;
     let displayOperational: 'OPEN' | 'CLOSED' = authoritative?.operational_status
       ?? effectiveOpenFromMerchantStoreRow(storeGated as MerchantStoreGateRow);
+
+    const rawAvailEarly = avail ?? null;
+    const blockAutoOpenEarly =
+      authoritative?.block_auto_open ?? rawAvailEarly?.block_auto_open === true;
+    const unavailNormEarly = authoritative?.unavailable_reason
+      ? String(authoritative.unavailable_reason).trim().toLowerCase()
+      : rawAvailEarly?.unavailable_reason != null
+        ? String(rawAvailEarly.unavailable_reason).trim().toLowerCase()
+        : '';
+    let manualCloseUntil = parseManualCloseUntilDate(
+      (authoritative?.manual_close_until ?? avail?.manual_close_until) as string | null | undefined
+    );
+
+    // Stuck CLOSED while wall-clock is inside today's slot → heal before building the card.
+    if (
+      withinHoursLocal &&
+      displayOperational === 'CLOSED' &&
+      !blockAutoOpenEarly &&
+      !manualCloseUntil &&
+      unavailNormEarly !== 'manual_indefinite'
+    ) {
+      try {
+        await syncStoreStatusAfterOperatingHoursChange(db, storeInternalId, storeTz);
+        // Await tick so partner-status / live columns match before we respond (countdown→open).
+        await triggerStoreScheduleTick(storeInternalId);
+        const healed = await fetchPartnerStoreStatusSnapshot(storeInternalId);
+        if (healed) {
+          authoritative = healed;
+          displayOperational = healed.operational_status;
+          withinHours = withinHoursLocal || healed.within_operating_hours;
+          manualCloseUntil = parseManualCloseUntilDate(healed.manual_close_until);
+        } else {
+          const { data: storeAfterHeal } = await db
+            .from('merchant_stores')
+            .select(
+              'operational_status, is_active, is_accepting_orders, is_available, approval_status, deleted_at, delisted_at, live_schedule_phase, next_open_at, next_close_at, manual_override_active, live_status_updated_at'
+            )
+            .eq('id', storeInternalId)
+            .single();
+          if (storeAfterHeal) {
+            storeGated = storeAfterHeal;
+            store = storeAfterHeal;
+          }
+          displayOperational = effectiveOpenFromMerchantStoreRow(
+            storeGated as MerchantStoreGateRow
+          );
+          withinHours = withinHoursLocal;
+        }
+        const { data: availAfter } = await db
+          .from('merchant_store_availability')
+          .select(
+            'manual_close_until, close_reason, auto_open_from_schedule, block_auto_open, restriction_type, unavailable_reason, is_available, is_accepting_orders, is_manual_override, schedule_end_prompt_expires_at, schedule_end_prompted_at, last_toggled_by_email, last_toggled_by_name, last_toggled_by_id, last_toggle_type, last_toggled_at'
+          )
+          .eq('store_id', storeInternalId)
+          .single();
+        if (availAfter) avail = availAfter;
+      } catch (e) {
+        console.warn('[store-operations] stuck-closed heal failed', e);
+      }
+    }
 
     trace('authoritative_status', {
       from_backend: authoritative != null,
@@ -299,7 +377,7 @@ export async function GET(req: NextRequest) {
       db_is_accepting_orders: store?.is_accepting_orders ?? null,
     });
 
-    const rawAvail: typeof availFinal | typeof avail | null | undefined = availFinal ?? avail ?? null;
+    const rawAvail = avail ?? null;
 
     const blockAutoOpen = authoritative?.block_auto_open ?? rawAvail?.block_auto_open === true;
     const unavailNorm = authoritative?.unavailable_reason
@@ -429,7 +507,27 @@ export async function GET(req: NextRequest) {
       !!scheduleEndPromptExpiresAt && Date.now() < scheduleEndPromptExpiresAt.getTime();
 
     const surfaceOnline =
-      authoritative?.surface_online ?? (displayOperational === 'OPEN' && withinHours);
+      authoritative?.surface_online ??
+      (displayOperational === 'OPEN' && withinHours);
+
+    // Stale close_reason from last auto-close must not contradict "Within operating hours".
+    const closeReasonRaw = rawAvail?.close_reason as string | null | undefined;
+    const rawCloseReason = closeReasonRaw != null ? String(closeReasonRaw).trim() : '';
+    const suppressStaleCloseReason =
+      withinHours &&
+      displayOperational === 'CLOSED' &&
+      !blockAutoOpen &&
+      !manualCloseUntil &&
+      unavailNorm !== 'manual_indefinite' &&
+      (rawCloseReason === '' ||
+        /outside operating hours/i.test(rawCloseReason) ||
+        /schedule/i.test(rawCloseReason));
+    const closeReasonForClient =
+      displayOperational === 'OPEN' || suppressStaleCloseReason
+        ? null
+        : rawCloseReason !== ''
+          ? rawCloseReason
+          : null;
 
     const liveStoreRow = store as {
       live_schedule_phase?: string | null;
@@ -470,7 +568,7 @@ export async function GET(req: NextRequest) {
       is_accepting_orders: displayOperational === 'OPEN',
       is_available: authoritative?.is_available ?? (storeGated as MerchantStoreGateRow | null)?.is_available ?? null,
       manual_close_until: manualCloseUntil ? manualCloseUntil.toISOString() : null,
-      close_reason: (rawAvail?.close_reason as string | null | undefined) ?? null,
+      close_reason: closeReasonForClient,
       opens_at,
       auto_open_from_schedule: authoritative?.auto_open_from_schedule
         ?? isAutoOpenFromScheduleEnabled(rawAvail?.auto_open_from_schedule ?? avail?.auto_open_from_schedule),
@@ -492,7 +590,7 @@ export async function GET(req: NextRequest) {
       last_toggle_type: authoritative?.last_toggle_type ?? rawAvail?.last_toggle_type ?? null,
       last_toggled_at: authoritative?.last_toggled_at ?? rawAvail?.last_toggled_at ?? null,
       within_hours_but_restricted: withinHoursButRestricted,
-      is_manual_override: (availFinal?.is_manual_override ?? rawAvail?.is_manual_override) === true,
+      is_manual_override: rawAvail?.is_manual_override === true,
       schedule_end_prompt_active: scheduleEndPromptActive,
       schedule_end_prompt_expires_at: scheduleEndPromptExpiresAt
         ? scheduleEndPromptExpiresAt.toISOString()
@@ -512,7 +610,11 @@ export async function GET(req: NextRequest) {
       };
     }
 
-    return NextResponse.json(responseBody);
+    return NextResponse.json(responseBody, {
+      headers: {
+        'Cache-Control': 'private, no-store, max-age=0, must-revalidate',
+      },
+    });
   } catch (err) {
     console.error('[store-operations GET]', err);
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });

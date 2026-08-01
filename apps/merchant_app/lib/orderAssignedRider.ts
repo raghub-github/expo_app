@@ -22,6 +22,66 @@ export function riderFirstName(name: string | null | undefined): string {
   return n.split(/\s+/)[0] ?? n;
 }
 
+export function isInactiveRiderAssignment(
+  status: string | null | undefined,
+  cancelledAt?: string | null,
+  rejectedAt?: string | null
+): boolean {
+  if ((cancelledAt ?? "").trim() || (rejectedAt ?? "").trim()) return true;
+  const st = (status ?? "").toUpperCase();
+  return st === "CANCELLED" || st === "REJECTED" || st === "UNASSIGNED";
+}
+
+/** First non-cancelled assignment from riders-log (API returns newest first). */
+export function resolveActiveRiderFromLog(
+  riders: FoodOrderRiderLogEntry[]
+): FoodOrderRiderLogEntry | null {
+  for (const r of riders) {
+    if (!isInactiveRiderAssignment(r.assignment_status, r.cancelled_at, r.rejected_at)) {
+      return r;
+    }
+  }
+  return null;
+}
+
+/** Prior cancelled / rejected assignments. */
+export function resolveCancelledRidersFromLog(
+  riders: FoodOrderRiderLogEntry[]
+): FoodOrderRiderLogEntry[] {
+  return riders.filter((r) =>
+    isInactiveRiderAssignment(r.assignment_status, r.cancelled_at, r.rejected_at)
+  );
+}
+
+/** Prior assignments for the rider log sheet — keeps cancelled rows even if same rider is active again. */
+export function resolveRiderHistoryExcludingCurrent(
+  riders: FoodOrderRiderLogEntry[],
+  current: FoodOrderRiderLogEntry | null
+): FoodOrderRiderLogEntry[] {
+  const currentActive =
+    current != null &&
+    !isInactiveRiderAssignment(
+      current.assignment_status,
+      current.cancelled_at,
+      current.rejected_at
+    )
+      ? current
+      : null;
+
+  return riders.filter((r) => {
+    if (!currentActive) return true;
+    const sameRider = Number(r.rider_id) === Number(currentActive.rider_id);
+    const rActive = !isInactiveRiderAssignment(
+      r.assignment_status,
+      r.cancelled_at,
+      r.rejected_at
+    );
+    // Drop only the live current assignment row; keep earlier cancelled spells of the same rider.
+    if (sameRider && rActive) return false;
+    return true;
+  });
+}
+
 export function riderStatusLabelFromOrder(order: OrderRecord): string {
   if (order.riderPickedUpAt) return "Out for delivery";
   if (order.riderReachedAt) return "Rider at store";
@@ -63,6 +123,26 @@ export function shouldShowPendingRiderAssign(
 
 export function apiFoodOrderToRiderLog(order: ApiFoodOrder): FoodOrderRiderLogEntry | null {
   if (order.rider_id == null && !order.rider_name?.trim()) return null;
+  const status = (order.rider_assignment_status ?? "ACTIVE").toUpperCase();
+  if (status === "CANCELLED" || status === "REJECTED" || status === "UNASSIGNED") {
+    return {
+      rider_id: Number(order.rider_id ?? 0),
+      rider_name: order.rider_name ?? null,
+      rider_mobile: order.rider_mobile ?? null,
+      selfie_url: order.rider_selfie_url ?? null,
+      assignment_status: order.rider_assignment_status ?? "CANCELLED",
+      assigned_at: null,
+      accepted_at: null,
+      rejected_at: status === "REJECTED" ? order.cancelled_at ?? null : null,
+      reached_merchant_at: order.rider_reached_at ?? null,
+      picked_up_at: order.rider_picked_up_at ?? null,
+      delivered_at: order.delivered_at ?? null,
+      cancelled_at:
+        status === "CANCELLED" || status === "UNASSIGNED"
+          ? order.cancelled_at ?? new Date().toISOString()
+          : null,
+    };
+  }
   return {
     rider_id: Number(order.rider_id ?? 0),
     rider_name: order.rider_name ?? null,

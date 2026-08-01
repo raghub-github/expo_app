@@ -21,13 +21,24 @@ export function merchantCancellationDisplay(args: {
   headline: string | null;
   detail: string | null;
 } {
-  const reason = (args.rejected_reason ?? '').trim();
-  const label = (args.cancelled_by_label ?? '').trim();
+  const rawReason = (args.rejected_reason ?? '').trim();
+  const reason =
+    /^merchant_accept_timeout$/i.test(rawReason) || /merchant_accept_timeout/i.test(rawReason)
+      ? 'Auto Cancelled'
+      : rawReason;
+  const labelRaw = (args.cancelled_by_label ?? '').trim();
+  const label =
+    /^merchant_accept_timeout$/i.test(labelRaw) || /merchant_accept_timeout/i.test(labelRaw)
+      ? 'Auto Cancelled'
+      : labelRaw;
   if (!reason && !label) return { headline: null, detail: null };
   if (cancellationReasonsAreDuplicate(reason, label)) {
-    return { headline: reason || label, detail: null };
+    return { headline: label || reason, detail: null };
   }
   if (reason && label) {
+    if (/merchant_accept_timeout/i.test(rawReason)) {
+      return { headline: 'Auto Cancelled', detail: null };
+    }
     return { headline: label, detail: reason };
   }
   return { headline: reason || label, detail: null };
@@ -156,14 +167,23 @@ export function dashboardRejectionCancellationDisplay(info: OrderCancellationInf
     cancelled_by_label: info.cancelledByLabel,
   });
   const reasonText = info.reasonText?.trim() || null;
+  const humanizedCode =
+    info.reasonCode?.trim()?.toUpperCase() === "MERCHANT_ACCEPT_TIMEOUT"
+      ? "Auto Cancelled"
+      : info.reasonCode?.trim() || null;
   const reason =
     headline ||
     reasonText ||
-    info.reasonCode?.trim() ||
-    info.rejectedReason?.trim() ||
+    humanizedCode ||
+    (info.rejectedReason?.trim()?.toUpperCase() === "MERCHANT_ACCEPT_TIMEOUT"
+      ? "Auto Cancelled"
+      : info.rejectedReason?.trim()) ||
     "Order cancelled";
   let detailText = detail;
-  if (!detailText && reasonText && reasonText !== reason) {
+  if (detailText?.toUpperCase() === "MERCHANT_ACCEPT_TIMEOUT") {
+    detailText = null;
+  }
+  if (!detailText && reasonText && reasonText !== reason && reasonText.toUpperCase() !== "MERCHANT_ACCEPT_TIMEOUT") {
     detailText = reasonText;
   }
 

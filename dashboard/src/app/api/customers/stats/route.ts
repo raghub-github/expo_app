@@ -28,17 +28,24 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    // Check if user is super admin or has CUSTOMER dashboard access
+    // Customer and Analytics dashboards both consume these aggregate statistics.
     const userIsSuperAdmin = await isSuperAdmin(user.id, user.email ?? "");
-    const hasDashboardAccess = await hasDashboardAccessByAuth(
-      user.id,
-      user.email ?? "",
-      "CUSTOMER"
-    );
+    const [hasCustomerAccess, hasAnalyticsAccess] = await Promise.all([
+      hasDashboardAccessByAuth(
+        user.id,
+        user.email ?? "",
+        "CUSTOMER"
+      ),
+      hasDashboardAccessByAuth(
+        user.id,
+        user.email ?? "",
+        "ANALYTICS"
+      ),
+    ]);
 
-    if (!userIsSuperAdmin && !hasDashboardAccess) {
+    if (!userIsSuperAdmin && !hasCustomerAccess && !hasAnalyticsAccess) {
       return NextResponse.json(
-        { success: false, error: "Insufficient permissions. You need access to the Customer dashboard." },
+        { success: false, error: "Insufficient permissions. You need access to the Customer or Analytics dashboard." },
         { status: 403 }
       );
     }

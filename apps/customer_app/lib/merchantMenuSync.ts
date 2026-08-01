@@ -85,6 +85,36 @@ export async function syncMerchantMenuInBackground(
     queryClient.setQueryData(queryKey, nextDetail);
     await updateCachedMerchantMenu(merchantId, nextDetail);
 
+    // Invalidate cart lines that disappeared from the customer-visible menu
+    // (plan-locked, deleted, OOS, rejected). Checkout already rejects these;
+    // this keeps the in-app cart honest in realtime.
+    try {
+      const { useCartStore } = await import("@/store/cartStore");
+      // Menu rows expose BOTH `id` (business item_id) and `menuItemId` (numeric PK).
+      // Cart lines usually store the PK — matching only `id` falsely wiped carts after
+      // force-close / delta sync when re-entering via floating cart.
+      const available = new Set<string>();
+      for (const m of mergedMenu ?? []) {
+        const bizId = String(m.id ?? "").trim();
+        if (bizId) available.add(bizId);
+        if (m.menuItemId != null && Number.isFinite(Number(m.menuItemId))) {
+          available.add(String(m.menuItemId));
+        }
+      }
+      // Never wipe the cart against an empty/broken menu snapshot.
+      if (available.size > 0) {
+        const removed = useCartStore
+          .getState()
+          .removeUnavailableMenuItems(merchantId, available);
+        if (removed > 0) {
+          const { useCartNoticeStore } = await import("@/store/cartNoticeStore");
+          useCartNoticeStore.getState().showRemovedItems(removed);
+        }
+      }
+    } catch {
+      /* cart prune is best-effort */
+    }
+
     if (delta.changedItems?.length) {
       void prefetchMenuItemImagesForMenu(delta.changedItems);
     }

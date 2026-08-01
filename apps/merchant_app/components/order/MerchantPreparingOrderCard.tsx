@@ -20,6 +20,8 @@ import {
   type PrepCountdownOrder,
 } from "@/lib/order-prep-time";
 import { OrderPrepDelayedBanner, ExtraPrepTimeAddedBanner } from "@/components/order/OrderPrepDelayedBanner";
+import { OrderPriorityBanner } from "@/components/order/OrderPriorityBanner";
+import { orderShowsRiderPriority } from "@/lib/orderRiderPriority";
 import {
   formatOrderDateTime,
 } from "@/components/order/orderFormatters";
@@ -163,11 +165,17 @@ export function MerchantPreparingOrderCard({
         onSpeak={() => void speak(order)}
         onPrint={() => void printOrderKot(order, printContext)}
         onMenu={() => setMenuOpen(true)}
+        showAddImagePrompt
         outerBanner={
-          performanceOverdue ? (
+          orderShowsRiderPriority(order, nowMs) || performanceOverdue ? (
             <>
-              <OrderPrepDelayedBanner order={prepOrder} nowMs={nowMs} />
-              {extraTimeLabel ? <ExtraPrepTimeAddedBanner label={extraTimeLabel} /> : null}
+              {orderShowsRiderPriority(order, nowMs) ? <OrderPriorityBanner /> : null}
+              {performanceOverdue ? (
+                <>
+                  <OrderPrepDelayedBanner order={prepOrder} nowMs={nowMs} />
+                  {extraTimeLabel ? <ExtraPrepTimeAddedBanner label={extraTimeLabel} /> : null}
+                </>
+              ) : null}
             </>
           ) : undefined
         }

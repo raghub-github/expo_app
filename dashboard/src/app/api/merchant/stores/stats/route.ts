@@ -9,7 +9,7 @@ import { getAuthenticatedApiUser } from "@/lib/auth/api-session";
 import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine";
 import { getSystemUserByEmail } from "@/lib/auth/user-mapping";
 import { getAreaManagerByUserId } from "@/lib/area-manager/auth";
-import { countMerchantStoresByStatus } from "@/lib/db/operations/merchant-stores";
+import { countMerchantStoresByStatus, countMerchantParents } from "@/lib/db/operations/merchant-stores";
 
 export const runtime = "nodejs";
 
@@ -59,7 +59,8 @@ export async function GET(request: NextRequest) {
       createdTo: toDate,
       storeType: storeType && storeType !== "" ? storeType : undefined,
     });
-    return NextResponse.json({ success: true, ...stats });
+    const partners = await countMerchantParents(areaManagerId);
+    return NextResponse.json({ success: true, ...stats, partners });
   } catch (e) {
     console.error("[GET /api/merchant/stores/stats]", e);
     return NextResponse.json(

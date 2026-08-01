@@ -445,6 +445,246 @@ async function recipientsForRole(role: NotificationRole): Promise<Recipient[]> {
   return dedupeByToken([...expo, ...native]);
 }
 
+const DEFAULT_GEO_RADIUS_KM = 25;
+
+function hasGeoFields(target: {
+  city?: string;
+  lat?: number;
+  lng?: number;
+}): boolean {
+  const city = typeof target.city === "string" && target.city.trim().length > 0;
+  const hasCoords =
+    typeof target.lat === "number" &&
+    Number.isFinite(target.lat) &&
+    typeof target.lng === "number" &&
+    Number.isFinite(target.lng);
+  return city || hasCoords;
+}
+
+/**
+ * Resolve user ids (customers / riders / merchant parent + store ids) for a geo filter.
+ * City-only, lat/lng-only, or both (city AND radius when coords exist).
+ */
+async function resolveGeoAudience(opts: {
+  city?: string;
+  lat?: number;
+  lng?: number;
+  radius_km?: number;
+  role?: NotificationRole | null;
+}): Promise<{
+  customerIds: string[];
+  riderIds: string[];
+  merchantParentIds: string[];
+  storeIds: number[];
+}> {
+  const sql = getSql();
+  const city = opts.city?.trim() ?? "";
+  const hasCity = city.length > 0;
+  const hasCoords =
+    typeof opts.lat === "number" &&
+    Number.isFinite(opts.lat) &&
+    typeof opts.lng === "number" &&
+    Number.isFinite(opts.lng);
+  const radiusKm =
+    typeof opts.radius_km === "number" && Number.isFinite(opts.radius_km) && opts.radius_km > 0
+      ? opts.radius_km
+      : DEFAULT_GEO_RADIUS_KM;
+  const role = opts.role && opts.role !== "all" ? opts.role : null;
+
+  const customerIds: string[] = [];
+  const riderIds: string[] = [];
+  const merchantParentIds: string[] = [];
+  const storeIds: number[] = [];
+
+  if (!hasCity && !hasCoords) {
+    return { customerIds, riderIds, merchantParentIds, storeIds };
+  }
+
+  // Haversine in km — identifiers are hardcoded (never from user input).
+  // Coordinates are only read behind `hasCoords`, so pin them as numbers here.
+  const centerLat = typeof opts.lat === "number" ? opts.lat : 0;
+  const centerLng = typeof opts.lng === "number" ? opts.lng : 0;
+  const withinRadius = (pair: "ca" | "cal" | "c" | "r" | "ra" | "ms") => {
+    const cols =
+      pair === "ca"
+        ? { lat: sql`ca.latitude`, lng: sql`ca.longitude` }
+        : pair === "cal"
+          ? { lat: sql`cal.latitude`, lng: sql`cal.longitude` }
+          : pair === "c"
+            ? { lat: sql`c.latitude`, lng: sql`c.longitude` }
+            : pair === "r"
+              ? { lat: sql`r.lat`, lng: sql`r.lon` }
+              : pair === "ra"
+                ? { lat: sql`ra.latitude`, lng: sql`ra.longitude` }
+                : { lat: sql`ms.latitude`, lng: sql`ms.longitude` };
+    return sql`
+      (
+        6371 * acos(
+          least(
+            1.0,
+            greatest(
+              -1.0,
+              cos(radians(${centerLat})) * cos(radians(${cols.lat}))
+                * cos(radians(${cols.lng}) - radians(${centerLng}))
+                + sin(radians(${centerLat})) * sin(radians(${cols.lat}))
+            )
+          )
+        )
+      ) <= ${radiusKm}
+    `;
+  };
+
+  if (!role || role === "customer") {
+    try {
+      const rows = (await sql`
+        SELECT DISTINCT c.customer_id AS user_id
+        FROM public.customers c
+        LEFT JOIN public.customer_addresses ca
+          ON ca.customer_id = c.id
+          AND ca.deleted_at IS NULL
+          AND ca.is_active IS DISTINCT FROM false
+        LEFT JOIN public.customer_active_location cal ON cal.customer_id = c.id
+        WHERE c.deleted_at IS NULL
+          AND c.customer_id IS NOT NULL
+          AND (
+            ${
+              hasCity && hasCoords
+                ? sql`(
+                    lower(coalesce(ca.city, c.city, '')) = lower(${city})
+                    AND (
+                      (ca.latitude IS NOT NULL AND ca.longitude IS NOT NULL AND ${withinRadius("ca")})
+                      OR (cal.latitude IS NOT NULL AND cal.longitude IS NOT NULL AND ${withinRadius("cal")})
+                      OR (c.latitude IS NOT NULL AND c.longitude IS NOT NULL AND ${withinRadius("c")})
+                      OR (ca.latitude IS NULL AND cal.latitude IS NULL AND c.latitude IS NULL)
+                    )
+                  )`
+                : hasCity
+                  ? sql`lower(coalesce(ca.city, c.city, '')) = lower(${city})`
+                  : sql`(
+                      (ca.latitude IS NOT NULL AND ca.longitude IS NOT NULL AND ${withinRadius("ca")})
+                      OR (cal.latitude IS NOT NULL AND cal.longitude IS NOT NULL AND ${withinRadius("cal")})
+                      OR (c.latitude IS NOT NULL AND c.longitude IS NOT NULL AND ${withinRadius("c")})
+                    )`
+            }
+          )
+      `) as unknown as Array<{ user_id: string }>;
+      for (const r of rows) if (r.user_id) customerIds.push(r.user_id);
+    } catch (e) {
+      console.warn("[notifications] geo customers lookup failed:", (e as Error).message);
+    }
+  }
+
+  if (!role || role === "rider") {
+    try {
+      const rows = (await sql`
+        SELECT DISTINCT ('usr_' || r.id::text) AS user_id
+        FROM public.riders r
+        LEFT JOIN public.rider_addresses ra
+          ON ra.rider_id = r.id AND ra.is_primary = true
+        LEFT JOIN public.cities ci ON ci.id = ra.city_id
+        WHERE r.deleted_at IS NULL
+          AND (
+            ${
+              hasCity && hasCoords
+                ? sql`(
+                    (
+                      lower(coalesce(r.city, ci.name, '')) = lower(${city})
+                    )
+                    AND (
+                      (r.lat IS NOT NULL AND r.lon IS NOT NULL AND ${withinRadius("r")})
+                      OR (ra.latitude IS NOT NULL AND ra.longitude IS NOT NULL AND ${withinRadius("ra")})
+                      OR (r.lat IS NULL AND ra.latitude IS NULL)
+                    )
+                  )`
+                : hasCity
+                  ? sql`lower(coalesce(r.city, ci.name, '')) = lower(${city})`
+                  : sql`(
+                      (r.lat IS NOT NULL AND r.lon IS NOT NULL AND ${withinRadius("r")})
+                      OR (ra.latitude IS NOT NULL AND ra.longitude IS NOT NULL AND ${withinRadius("ra")})
+                    )`
+            }
+          )
+      `) as unknown as Array<{ user_id: string }>;
+      for (const r of rows) if (r.user_id) riderIds.push(r.user_id);
+    } catch (e) {
+      console.warn("[notifications] geo riders lookup failed:", (e as Error).message);
+    }
+  }
+
+  if (!role || role === "merchant") {
+    try {
+      const rows = (await sql`
+        SELECT ms.id AS store_id, mp.parent_merchant_id AS parent_id
+        FROM public.merchant_stores ms
+        INNER JOIN public.merchant_parents mp ON mp.id = ms.parent_id
+        WHERE ms.deleted_at IS NULL
+          AND (
+            ${
+              hasCity && hasCoords
+                ? sql`(
+                    lower(coalesce(ms.city, '')) = lower(${city})
+                    AND (
+                      (ms.latitude IS NOT NULL AND ms.longitude IS NOT NULL AND ${withinRadius("ms")})
+                      OR (ms.latitude IS NULL)
+                    )
+                  )`
+                : hasCity
+                  ? sql`lower(coalesce(ms.city, '')) = lower(${city})`
+                  : sql`(ms.latitude IS NOT NULL AND ms.longitude IS NOT NULL AND ${withinRadius("ms")})`
+            }
+          )
+      `) as unknown as Array<{ store_id: number | string; parent_id: string | null }>;
+      for (const r of rows) {
+        const sid = Number(r.store_id);
+        if (Number.isFinite(sid) && sid > 0) storeIds.push(sid);
+        if (r.parent_id) merchantParentIds.push(r.parent_id);
+      }
+    } catch (e) {
+      console.warn("[notifications] geo merchants lookup failed:", (e as Error).message);
+    }
+  }
+
+  return {
+    customerIds: [...new Set(customerIds)],
+    riderIds: [...new Set(riderIds)],
+    merchantParentIds: [...new Set(merchantParentIds)],
+    storeIds: [...new Set(storeIds)],
+  };
+}
+
+async function recipientsForGeo(opts: {
+  city?: string;
+  lat?: number;
+  lng?: number;
+  radius_km?: number;
+  role?: NotificationRole | null;
+}): Promise<Recipient[]> {
+  const audience = await resolveGeoAudience(opts);
+  const out: Recipient[] = [];
+
+  if (audience.customerIds.length) {
+    const expo = await tokensForUserIds(audience.customerIds, "customer");
+    const native = await nativeFcmTokens({ userIds: audience.customerIds, role: "customer" });
+    out.push(...expo, ...native);
+  }
+  if (audience.riderIds.length) {
+    const expo = await tokensForUserIds(audience.riderIds, "rider");
+    const native = await nativeFcmTokens({ userIds: audience.riderIds, role: "rider" });
+    out.push(...expo, ...native);
+  }
+  if (audience.storeIds.length || audience.merchantParentIds.length) {
+    out.push(
+      ...(await merchantRecipients({
+        storeIds: audience.storeIds.length ? audience.storeIds : undefined,
+        parentMerchantIds: audience.merchantParentIds.length
+          ? audience.merchantParentIds
+          : undefined,
+      })),
+    );
+  }
+  return dedupeByToken(out);
+}
+
 /**
  * Resolve a target filter into concrete delivery recipients.
  */
@@ -495,7 +735,28 @@ export async function resolveTarget(target: TargetFilter): Promise<Recipient[]> 
     return dedupeByToken([...expo, ...merchant, ...native]);
   }
 
+  // Dedicated city / lat-lng target (`geo: true`).
+  if ("geo" in target && target.geo === true && hasGeoFields(target)) {
+    return recipientsForGeo({
+      city: target.city,
+      lat: target.lat,
+      lng: target.lng,
+      radius_km: target.radius_km,
+      role: target.role ?? null,
+    });
+  }
+
   if ("role" in target && typeof target.role === "string") {
+    // Role + optional city / lat-lng overlay (typed fields were previously ignored).
+    if (hasGeoFields(target)) {
+      return recipientsForGeo({
+        city: "city" in target ? target.city : undefined,
+        lat: "lat" in target ? target.lat : undefined,
+        lng: "lng" in target ? target.lng : undefined,
+        radius_km: "radius_km" in target ? target.radius_km : undefined,
+        role: target.role,
+      });
+    }
     return recipientsForRole(target.role);
   }
 
@@ -507,6 +768,14 @@ export async function resolveTarget(target: TargetFilter): Promise<Recipient[]> 
   }
   if ("all_riders" in target && target.all_riders) {
     return recipientsForRole("rider");
+  }
+
+  if ("store_ids" in target && Array.isArray(target.store_ids)) {
+    const ids = target.store_ids
+      .map((n) => Number(n))
+      .filter((n) => Number.isFinite(n) && n > 0);
+    if (ids.length === 0) return [];
+    return merchantRecipients({ storeIds: ids });
   }
 
   if ("store_id" in target && typeof target.store_id === "number") {

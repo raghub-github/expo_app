@@ -26,7 +26,14 @@ export function MerchantBottomSheetShell({
   const insets = useSafeAreaInsets();
 
   return (
-    <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
+    <Modal
+      visible={visible}
+      transparent
+      animationType="slide"
+      onRequestClose={onClose}
+      statusBarTranslucent
+      {...(Platform.OS === "android" ? { navigationBarTranslucent: true } : null)}
+    >
       <View style={styles.overlay}>
         <Pressable style={styles.dismissArea} onPress={onClose} accessibilityLabel="Close" />
         <View style={[styles.sheetWrap, { maxHeight: maxHeightPercent }]}>
@@ -42,9 +49,12 @@ export function MerchantBottomSheetShell({
             </Pressable>
           ) : null}
 
-          <View style={[styles.sheet, { paddingBottom: Math.max(insets.bottom, 12) }]}>
-            {children}
-            {footer}
+          {/* Sheet bg must paint to the physical bottom; safe-area is inner padding only. */}
+          <View style={styles.sheet}>
+            <View style={{ paddingBottom: Math.max(insets.bottom, 8) }}>
+              {children}
+              {footer}
+            </View>
           </View>
         </View>
       </View>
@@ -63,6 +73,8 @@ const styles = StyleSheet.create({
   },
   sheetWrap: {
     maxHeight: "88%",
+    width: "100%",
+    marginBottom: 0,
   },
   closeFab: {
     alignSelf: "center",
@@ -88,7 +100,11 @@ const styles = StyleSheet.create({
     backgroundColor: GatiMitraMerchant.cardBg,
     borderTopLeftRadius: CARD_RADIUS + 4,
     borderTopRightRadius: CARD_RADIUS + 4,
+    borderBottomLeftRadius: 0,
+    borderBottomRightRadius: 0,
     maxHeight: "100%",
     overflow: "hidden",
+    width: "100%",
+    marginBottom: 0,
   },
 });

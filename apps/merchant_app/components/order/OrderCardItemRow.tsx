@@ -4,7 +4,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { ItemVegMark } from "@/components/order/ItemVegMark";
 import type { LineItem } from "@/hooks/useOrders";
 import type { ApiFoodOrderItem } from "@/services/ordersApi";
-import { lineItemHasCustomizations } from "@/lib/merchant-order-food-item-display";
+import { lineItemHasCustomizations, resolveLineItemCookingNote } from "@/lib/merchant-order-food-item-display";
 import { formatMerchantRs, merchantFoodItemCatalogAndNet } from "@/lib/merchant-line-total";
 
 type Props = {
@@ -13,8 +13,12 @@ type Props = {
   onItemNamePress: () => void;
   onRowPress: () => void;
   showPrice?: boolean;
+  /** Incoming-order table presentation: Item | QTY | Amount. */
+  showQuantityColumn?: boolean;
   /** Chevron when item has customizations (expandable row). */
   showExpandChevron?: boolean;
+  /** Tighter padding for compact sheets (incoming order). */
+  dense?: boolean;
 };
 
 export function OrderCardItemRow({
@@ -23,10 +27,13 @@ export function OrderCardItemRow({
   onItemNamePress,
   onRowPress,
   showPrice,
+  showQuantityColumn = false,
   showExpandChevron = false,
+  dense = false,
 }: Props) {
   const hasCust = lineItemHasCustomizations(item);
-  const expandable = showExpandChevron && hasCust;
+  const cookingNote = resolveLineItemCookingNote(item);
+  const expandable = showExpandChevron && (hasCust || !!cookingNote);
   const { catalog, net, showStrike, offerBadge, offerKind } = merchantFoodItemCatalogAndNet(
     item as ApiFoodOrderItem
   );
@@ -36,11 +43,12 @@ export function OrderCardItemRow({
       onPress={onRowPress}
       style={({ pressed }) => [
         styles.row,
+        dense && styles.rowDense,
         expandable && styles.rowExpandable,
         pressed && styles.pressed,
       ]}
     >
-      <ItemVegMark vegNonveg={item.vegNonveg ?? orderVeg} name={item.name} size={14} />
+      <ItemVegMark vegNonveg={item.vegNonveg ?? orderVeg} name={item.name} size={dense ? 15 : 14} />
       <View style={styles.body}>
         {offerBadge ? (
           <View
@@ -62,8 +70,9 @@ export function OrderCardItemRow({
         ) : null}
         <View style={styles.titleRow}>
           <Pressable onPress={onItemNamePress} hitSlop={4} style={styles.itemNamePress}>
-            <Text style={styles.itemLabel}>
-              {item.qty} x <Text style={styles.itemName}>{item.name}</Text>
+            <Text style={[styles.itemLabel, dense && styles.itemLabelDense]}>
+              {showQuantityColumn ? null : `${item.qty} x `}
+              <Text style={styles.itemName}>{item.name}</Text>
             </Text>
           </Pressable>
           {hasCust ? (
@@ -72,19 +81,26 @@ export function OrderCardItemRow({
             </View>
           ) : null}
         </View>
-        {item.specialInstructions?.trim() ? (
-          <Text style={styles.cookingNote} numberOfLines={2}>
-            Cooking instructions: {item.specialInstructions.trim()}
+        {cookingNote ? (
+          <Text style={styles.cookingNote} numberOfLines={dense ? 1 : 3}>
+            Cooking: {cookingNote}
           </Text>
         ) : null}
       </View>
       {expandable ? (
-        <Ionicons name="chevron-down" size={18} color="#0F766E" style={styles.chevron} />
+        <Ionicons name="chevron-down" size={dense ? 16 : 18} color="#0F766E" style={styles.chevron} />
+      ) : null}
+      {showQuantityColumn ? (
+        <View style={styles.qtyCol}>
+          <View style={[styles.qtyCell, dense && styles.qtyCellDense]}>
+            <Text style={[styles.qtyText, dense && styles.qtyTextDense]}>{item.qty}</Text>
+          </View>
+        </View>
       ) : null}
       {showPrice ? (
-        <View style={styles.priceCol}>
+        <View style={[styles.priceCol, showQuantityColumn && styles.amountCol]}>
           {showStrike ? <Text style={styles.priceStrike}>{formatMerchantRs(catalog)}</Text> : null}
-          <Text style={styles.price}>{formatMerchantRs(net)}</Text>
+          <Text style={[styles.price, dense && styles.priceDense]}>{formatMerchantRs(net)}</Text>
         </View>
       ) : null}
     </Pressable>
@@ -96,6 +112,9 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
+  },
+  rowDense: {
+    gap: 6,
   },
   rowExpandable: {
     paddingVertical: 2,
@@ -121,6 +140,10 @@ const styles = StyleSheet.create({
     borderBottomColor: "#CCCCCC",
     borderStyle: "dashed",
     paddingBottom: 2,
+  },
+  itemLabelDense: {
+    fontSize: 12,
+    paddingBottom: 0,
   },
   itemNamePress: {
     flexShrink: 1,
@@ -182,6 +205,39 @@ const styles = StyleSheet.create({
     alignItems: "flex-end",
     flexShrink: 0,
   },
+  qtyCol: {
+    width: 38,
+    flexShrink: 0,
+    alignItems: "center",
+  },
+  qtyCell: {
+    minWidth: 30,
+    height: 28,
+    paddingHorizontal: 6,
+    borderWidth: 1,
+    borderColor: "#D7DCE2",
+    borderRadius: 4,
+    backgroundColor: "#FFFFFF",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  qtyCellDense: {
+    height: 22,
+    minWidth: 26,
+    paddingHorizontal: 4,
+  },
+  qtyText: {
+    fontSize: 13,
+    fontWeight: "600",
+    color: "#1A1A1A",
+    fontVariant: ["tabular-nums"],
+  },
+  qtyTextDense: {
+    fontSize: 12,
+  },
+  amountCol: {
+    width: 65,
+  },
   priceStrike: {
     fontSize: 11,
     fontWeight: "600",
@@ -193,5 +249,8 @@ const styles = StyleSheet.create({
     fontWeight: "600",
     color: "#1A1A1A",
     fontVariant: ["tabular-nums"],
+  },
+  priceDense: {
+    fontSize: 12,
   },
 });

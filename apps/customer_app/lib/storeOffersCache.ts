@@ -10,7 +10,7 @@ import {
   buildStoreOffersQueryKey,
   type StoreOffersGeo,
   STORE_OFFERS_STALE_MS,
-} from "@/lib/prefetchStoreOffers";
+} from "@/lib/storeOffersQueryKey";
 
 type CachedOffersEntry = {
   data: StoreOffersResponse;

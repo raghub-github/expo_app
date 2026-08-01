@@ -58,11 +58,14 @@ export function CatalogPhotoUploadOptionsSheet({
       }
       setBusy(true);
       try {
+        // Close sheet first so native picker isn't stacked under Modal (Android crash).
+        onClose();
+        await new Promise<void>((resolve) => {
+          InteractionManager.runAfterInteractions(() => resolve());
+        });
+        await new Promise((r) => setTimeout(r, 120));
         const file = await pickCatalogPhoto(source);
         if (!file) return;
-        InteractionManager.runAfterInteractions(() => {
-          onClose();
-        });
         await uploadCatalogPhotoWithProgress(item, storeId, token, file, uploadCallbacks);
         onUploaded();
       } catch (e) {

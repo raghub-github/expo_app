@@ -1,25 +1,34 @@
 /**
- * GatiMitra-style floating active-order pill — white bar above tab nav.
+ * Floating active-order pill — same chrome as View Cart bar (mint bar + green CTA).
+ * No remove/X control; tap opens order tracking.
  */
 
-import { View, TouchableOpacity, StyleSheet } from "react-native";
-import { AppText } from "@/components/AppText";
-
+import { useMemo, useState } from "react";
+import { View, TouchableOpacity, StyleSheet, Image, Pressable } from "react-native";
+import { useQuery } from "@tanstack/react-query";
 import { Ionicons } from "@expo/vector-icons";
-import { LinearGradient } from "expo-linear-gradient";
 import { GatiMitraColors } from "@/constants/gatimitra";
+import { StoreFonts } from "@/constants/storeTypography";
+import { StoreText } from "@/components/store/StoreText";
 import type { ActiveOrder } from "@/store/orderStore";
 import { getFloatingOrderStatusText } from "@/lib/customer-order-status-display";
 import { formatSingleEtaMinutes } from "@/lib/order-eta-display";
 import { PartnerChatUnreadBadge } from "@/components/orders/PartnerChatUnreadBadge";
+import { merchantService } from "@/services/merchant.service";
+import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
 
-const MINT = GatiMitraColors.primaryMint;
-const MINT_DARK = GatiMitraColors.deepMintStart;
+const FLOAT_CART_GREEN = "#137243";
+const FLOAT_CART_RADIUS = 10;
+const FLOAT_BAR_BG = "#E8F5EE";
+const FLOAT_BAR_BORDER = "rgba(19, 114, 67, 0.22)";
+const DOCK_PILL_MIN_HEIGHT = 60;
 
 type FloatingOrderTrackingPillProps = {
   order: ActiveOrder;
   onPress: () => void;
   chatUnreadCount?: number;
+  /** Kept for call-site compat; cart-matching UI is always the same height/chrome. */
+  emphasis?: "primary" | "secondary";
 };
 
 export function FloatingOrderTrackingPill({
@@ -27,59 +36,103 @@ export function FloatingOrderTrackingPill({
   onPress,
   chatUnreadCount = 0,
 }: FloatingOrderTrackingPillProps) {
+  const [thumbFailed, setThumbFailed] = useState(false);
+  const storeId = order.storeId?.trim() || null;
   const storeLabel = order.storeName?.trim() || "Your order";
   const statusLine = getFloatingOrderStatusText(order.status);
   const etaLabel = formatSingleEtaMinutes(order.etaMinutes > 0 ? order.etaMinutes : null);
   const showEta = order.etaMinutes > 0;
 
-  return (
-    <TouchableOpacity activeOpacity={0.92} onPress={onPress} style={styles.touchable}>
-      <View style={styles.shell}>
-        <PartnerChatUnreadBadge count={chatUnreadCount} style={styles.floatingUnreadBadge} />
-        <View style={styles.scooterWrap}>
-          <Ionicons name="bicycle" size={26} color="#111827" />
-        </View>
+  const merchantQuery = useQuery({
+    queryKey: ["merchant", storeId],
+    queryFn: () => merchantService.getMerchantById(storeId!),
+    enabled: !!storeId,
+    staleTime: 2 * 60 * 1000,
+  });
 
-        <View style={styles.centerCol}>
-          <AppText style={styles.storeName} numberOfLines={1}>
+  const thumbUri = useMemo(() => {
+    const m = merchantQuery.data;
+    if (!m) return null;
+    const raw =
+      m.displayImage ??
+      m.banner_url ??
+      (m as { imageUrl?: string | null }).imageUrl ??
+      null;
+    if (!raw) return null;
+    return toAbsoluteImageUrl(raw) ?? raw;
+  }, [merchantQuery.data]);
+
+  return (
+    <View style={styles.shell}>
+      <PartnerChatUnreadBadge count={chatUnreadCount} style={styles.floatingUnreadBadge} />
+      <Pressable
+        style={styles.leftPress}
+        onPress={onPress}
+        hitSlop={4}
+        android_ripple={{ color: "rgba(5, 150, 105, 0.08)" }}
+        accessibilityRole="button"
+        accessibilityLabel={`Track order from ${storeLabel}`}
+      >
+        <View style={styles.thumb}>
+          {thumbUri && !thumbFailed ? (
+            <Image
+              source={{ uri: thumbUri }}
+              style={styles.thumbImg}
+              resizeMode="cover"
+              onError={() => setThumbFailed(true)}
+            />
+          ) : (
+            <View style={styles.thumbPlaceholder}>
+              <Ionicons name="bicycle" size={20} color={GatiMitraColors.textSecondary} />
+            </View>
+          )}
+        </View>
+        <View style={styles.leftTextCol}>
+          <StoreText style={styles.storeName} bold numberOfLines={1}>
             {storeLabel}
-          </AppText>
+          </StoreText>
           <View style={styles.statusRow}>
-            <AppText style={styles.statusText} numberOfLines={1}>
+            <StoreText style={styles.statusText} bold numberOfLines={1}>
               {statusLine}
-            </AppText>
-            <Ionicons name="chevron-forward" size={14} color={GatiMitraColors.warmOrange} />
+            </StoreText>
+            <Ionicons name="chevron-forward" size={10} color={FLOAT_CART_GREEN} />
           </View>
         </View>
+      </Pressable>
 
-        <LinearGradient
-          colors={[MINT_DARK, MINT]}
-          start={{ x: 0, y: 0 }}
-          end={{ x: 1, y: 1 }}
-          style={styles.etaPill}
-        >
-          <AppText style={styles.etaTop}>{showEta ? "arriving in" : "delivery"}</AppText>
-          <AppText style={styles.etaBottom}>{showEta ? etaLabel : "Updating…"}</AppText>
-        </LinearGradient>
-      </View>
-    </TouchableOpacity>
+      <TouchableOpacity
+        activeOpacity={0.92}
+        onPress={onPress}
+        style={styles.cta}
+        accessibilityLabel={showEta ? `Arriving in ${etaLabel}` : "Track order"}
+      >
+        <View style={styles.ctaFill} pointerEvents="none">
+          <StoreText style={styles.ctaTitle} bold>
+            {showEta ? "arriving in" : "Track order"}
+          </StoreText>
+          <StoreText style={styles.ctaSub} bold>
+            {showEta ? etaLabel : "Live"}
+          </StoreText>
+        </View>
+      </TouchableOpacity>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  touchable: {
-    width: "100%",
-  },
   shell: {
+    width: "100%",
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: "#FFFFFF",
+    backgroundColor: FLOAT_BAR_BG,
     borderRadius: 16,
-    paddingVertical: 10,
-    paddingHorizontal: 12,
-    gap: 10,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: "#ECECEC",
+    minHeight: DOCK_PILL_MIN_HEIGHT,
+    paddingLeft: 10,
+    paddingRight: 10,
+    paddingVertical: 8,
+    gap: 4,
+    borderWidth: 1,
+    borderColor: FLOAT_BAR_BORDER,
     position: "relative",
   },
   floatingUnreadBadge: {
@@ -88,53 +141,78 @@ const styles = StyleSheet.create({
     right: 8,
     zIndex: 2,
   },
-  scooterWrap: {
-    width: 40,
-    height: 40,
+  leftPress: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    minWidth: 0,
+    paddingVertical: 2,
+    paddingRight: 4,
+  },
+  thumb: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    overflow: "hidden",
+    backgroundColor: GatiMitraColors.mintSoft,
+  },
+  thumbImg: {
+    width: "100%",
+    height: "100%",
+  },
+  thumbPlaceholder: {
+    flex: 1,
     alignItems: "center",
     justifyContent: "center",
+    backgroundColor: GatiMitraColors.mintSoft,
   },
-  centerCol: {
+  leftTextCol: {
     flex: 1,
     minWidth: 0,
     justifyContent: "center",
   },
   storeName: {
-    fontSize: 15,
-    fontWeight: "800",
-    color: "#111827",
-    letterSpacing: -0.2,
+    fontSize: 14,
+    fontFamily: StoreFonts.loraBold,
+    color: GatiMitraColors.textPrimary,
   },
   statusRow: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 2,
+    gap: 1,
     marginTop: 2,
   },
   statusText: {
     flexShrink: 1,
     fontSize: 12,
-    fontWeight: "500",
-    color: "#374151",
+    fontFamily: StoreFonts.loraBold,
+    color: FLOAT_CART_GREEN,
   },
-  etaPill: {
-    borderRadius: 10,
-    paddingHorizontal: 10,
-    paddingVertical: 7,
+  cta: {
+    borderRadius: FLOAT_CART_RADIUS,
+    overflow: "hidden",
+    minWidth: 96,
+    flexShrink: 0,
+  },
+  ctaFill: {
+    paddingHorizontal: 11,
+    paddingVertical: 6,
     alignItems: "center",
     justifyContent: "center",
-    minWidth: 72,
+    minHeight: 42,
+    backgroundColor: FLOAT_CART_GREEN,
+    borderRadius: FLOAT_CART_RADIUS,
   },
-  etaTop: {
-    fontSize: 10,
-    fontWeight: "600",
-    color: "rgba(255,255,255,0.92)",
-    textTransform: "lowercase",
-  },
-  etaBottom: {
+  ctaTitle: {
     fontSize: 13,
-    fontWeight: "800",
+    fontFamily: StoreFonts.loraBold,
     color: "#FFFFFF",
+  },
+  ctaSub: {
+    fontSize: 10,
+    fontFamily: StoreFonts.loraBold,
+    color: "rgba(255,255,255,0.95)",
     marginTop: 1,
   },
 });

@@ -102,8 +102,36 @@ export async function GET(req: NextRequest) {
         return NextResponse.json({ error: error.message || "query failed" }, { status: 500 });
       }
 
-      // Optionally join plan name for display. Small extra query, cached
-      // aggressively by Postgres via its statement cache.
+      // Prefer purchase-time plan name from the linked payment snapshot.
+      const paymentIds = Array.from(
+        new Set(
+          (data ?? [])
+            .map((r) => (r as { payment_id?: number | null }).payment_id)
+            .filter((x): x is number => x != null)
+        )
+      );
+      const snapByPaymentId: Record<
+        number,
+        { plan_name: string | null; plan_code: string | null }
+      > = {};
+      if (paymentIds.length > 0) {
+        const { data: pays } = await db
+          .from("subscription_payments")
+          .select("id, plan_name_snapshot, plan_code_snapshot, plan_id")
+          .in("id", paymentIds);
+        (pays ?? []).forEach((p) => {
+          const row = p as {
+            id: number;
+            plan_name_snapshot?: string | null;
+            plan_code_snapshot?: string | null;
+          };
+          snapByPaymentId[Number(row.id)] = {
+            plan_name: row.plan_name_snapshot ? String(row.plan_name_snapshot) : null,
+            plan_code: row.plan_code_snapshot ? String(row.plan_code_snapshot) : null,
+          };
+        });
+      }
+
       const planIds = Array.from(
         new Set(
           (data ?? [])
@@ -128,14 +156,20 @@ export async function GET(req: NextRequest) {
       const items = (data ?? []).map((r) => {
         const row = r as unknown as Record<string, unknown>;
         const planId = row.plan_id != null ? Number(row.plan_id) : null;
+        const paymentId = Number(row.payment_id);
+        const snap = snapByPaymentId[paymentId];
         return {
           id: Number(row.id),
-          paymentId: Number(row.payment_id),
+          paymentId,
           subscriptionId: Number(row.subscription_id),
           storeId: Number(row.store_id),
           planId,
-          planName: planId != null ? planLookup[planId]?.plan_name ?? null : null,
-          planCode: planId != null ? planLookup[planId]?.plan_code ?? null : null,
+          planName:
+            snap?.plan_name ||
+            (planId != null ? planLookup[planId]?.plan_name ?? null : null),
+          planCode:
+            snap?.plan_code ||
+            (planId != null ? planLookup[planId]?.plan_code ?? null : null),
           gateway: String(row.gateway).toUpperCase(),
           amount: Number(row.amount),
           totalPaise: Number(row.total_paise),

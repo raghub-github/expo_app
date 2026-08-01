@@ -25,9 +25,10 @@ export function useWalletBalance() {
       }
     },
     enabled: hydrated && !!session,
-    staleTime: 60_000,
+    staleTime: 15_000,
     gcTime: 24 * 60 * 60_000,
     retry: 1,
+    refetchOnWindowFocus: true,
     placeholderData: () => readSyncWalletBalance() ?? walletBalanceFallback(),
     initialData: () => readSyncWalletBalance() ?? walletBalanceFallback(),
   });

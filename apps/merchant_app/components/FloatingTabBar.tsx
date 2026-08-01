@@ -36,7 +36,10 @@ type MainTabName = (typeof MAIN_TAB_ORDER)[number];
 const ICON_SIZE = 22;
 const LABEL_FONT_SIZE = 11;
 const ICON_LABEL_GAP = 2;
-const MAIN_TAB_PRESS_DEBOUNCE_MS = 450;
+/** Only guards true double-fires on dock switches; main tab taps must never feel delayed. */
+const DOCK_PRESS_DEBOUNCE_MS = 220;
+const DOCK_SWITCH_OVERLAY_MS = 380;
+const TAB_HIT_SLOP = { top: 8, bottom: 8, left: 6, right: 6 };
 
 /** True when the profile stack is showing the home screen (index), not a pushed child route. */
 function isProfileStackAtRoot(tabState: BottomTabBarProps["state"]): boolean {
@@ -94,13 +97,17 @@ export function FloatingTabBar({ state, descriptors, navigation }: BottomTabBarP
   const { setActiveTab } = useActiveTab();
   const { setOpenProfileRootOnNextFocus } = useProfileNav();
   const bottomInset = insets.bottom;
-  const lastMainTabPressAt = useRef(0);
   const keyboardShown = useIsKeyboardShown();
   const focusedOptions = descriptors[state.routes[state.index].key].options;
   const hideTabBarOnKeyboard = focusedOptions.tabBarHideOnKeyboard === true;
-  const tabBarHidden = hideTabBarOnKeyboard && keyboardShown;
 
   const currentName = state.routes[state.index]?.name ?? "index";
+  /** Hide Zone/Flow dock on Profile nested screens (Preferences, tickets, etc.). */
+  const profileInnerPage =
+    currentName === "profile" && !isProfileStackAtRoot(state);
+  const tabBarHidden =
+    (hideTabBarOnKeyboard && keyboardShown) || profileInnerPage;
+
   const [dock, setDock] = useState<"main" | "hub">(() =>
     isHubTab(currentName) ? "hub" : "main"
   );
@@ -111,68 +118,99 @@ export function FloatingTabBar({ state, descriptors, navigation }: BottomTabBarP
   const [switchKind, setSwitchKind] = useState<"flow" | "home">("flow");
 
   useEffect(() => {
-    const name = state.routes[state.index]?.name ?? "index";
-    if (isHubTab(name)) {
+    if (isHubTab(currentName)) {
       setDock("hub");
-      setActiveTab(name);
-    } else if (isMainTab(name)) {
+      setActiveTab(currentName);
+    } else if (isMainTab(currentName)) {
       setDock("main");
-      lastMainRoute.current = name;
-      setActiveTab(name);
+      lastMainRoute.current = currentName;
+      setActiveTab(currentName);
     }
-  }, [state.index, state.routes, setActiveTab]);
+  }, [currentName, setActiveTab]);
 
   const runDockSwitch = useCallback(
     (nextDock: "main" | "hub", kind: "flow" | "home", navigate: () => void) => {
+      // Navigate on the same tick as the press: any pre-delay behind the full-screen
+      // overlay swallows follow-up taps and reads as a dead button.
       setSwitchKind(kind);
       setSwitchOverlay(true);
-      const delay = Platform.OS === "web" ? 180 : 260;
-      // Keep this short: a long full-screen overlay can feel like the Flow/Home buttons "disappeared".
-      const messageMs = 450;
-      setTimeout(() => {
-        setDock(nextDock);
-        navigate();
-        setTimeout(() => setSwitchOverlay(false), messageMs);
-      }, delay);
+      setDock(nextDock);
+      navigate();
+      setTimeout(() => setSwitchOverlay(false), DOCK_SWITCH_OVERLAY_MS);
     },
     []
   );
 
   const navigateToMainTab = useCallback(
     (routeName: MainTabName) => {
+      // Optimistic highlight first so Catalog/Home feel instant on tap.
       setActiveTab(routeName);
-      navigation.dispatch(CommonActions.navigate({ name: routeName } as never));
       lastMainRoute.current = routeName;
+      // jumpTo switches tabs without stack push overhead.
+      const tabNav = navigation as typeof navigation & {
+        jumpTo?: (name: string) => void;
+      };
+      if (typeof tabNav.jumpTo === "function") {
+        tabNav.jumpTo(routeName);
+      } else {
+        navigation.dispatch(CommonActions.navigate({ name: routeName } as never));
+      }
     },
     [navigation, setActiveTab]
   );
 
+  /** Match focused tab by route name (stable vs key during transitions / nested state). */
+  const focusedRouteName = state.routes[state.index]?.name;
+
+  const lastMainTabPressAt = useRef(0);
+  const lastMainTabPressed = useRef<MainTabName | null>(null);
+
   const onPressMainTab = useCallback(
     (routeName: MainTabName, isActive: boolean) => {
       const now = Date.now();
-      if (now - lastMainTabPressAt.current < MAIN_TAB_PRESS_DEBOUNCE_MS) return;
+      // Multi-tap on Profile (or any main tab) must not stack screens.
+      if (
+        lastMainTabPressed.current === routeName &&
+        now - lastMainTabPressAt.current < 1_000
+      ) {
+        return;
+      }
       lastMainTabPressAt.current = now;
+      lastMainTabPressed.current = routeName;
 
-      if (isActive) {
+      const alreadyOnTab = isActive || focusedRouteName === routeName;
+
+      if (alreadyOnTab) {
+        // Re-tapping the current tab pops its stack; Catalog → index root.
         if (routeName === "profile" && !isProfileStackAtRoot(state)) {
           setOpenProfileRootOnNextFocus(true);
           router.replace("/(tabs)/profile");
+          return;
+        }
+        if (routeName === "menu") {
+          router.replace("/(tabs)/menu" as never);
         }
         return;
       }
 
       navigateToMainTab(routeName);
     },
-    [navigateToMainTab, state, router, setOpenProfileRootOnNextFocus]
+    [
+      focusedRouteName,
+      navigateToMainTab,
+      state,
+      router,
+      setOpenProfileRootOnNextFocus,
+    ]
   );
 
   const lastHubTabPressAt = useRef(0);
 
   const goHub = useCallback(() => {
-    const now = Date.now();
-    if (now - lastHubTabPressAt.current < MAIN_TAB_PRESS_DEBOUNCE_MS) return;
-    lastHubTabPressAt.current = now;
     if (dock === "hub") return;
+    const now = Date.now();
+    if (now - lastHubTabPressAt.current < DOCK_PRESS_DEBOUNCE_MS) return;
+    lastHubTabPressAt.current = now;
     runDockSwitch("hub", "flow", () => {
       setActiveTab("earnings");
       navigation.dispatch(CommonActions.navigate({ name: "earnings" } as never));
@@ -180,10 +218,10 @@ export function FloatingTabBar({ state, descriptors, navigation }: BottomTabBarP
   }, [navigation, runDockSwitch, setActiveTab, dock]);
 
   const goMainDock = useCallback(() => {
-    const now = Date.now();
-    if (now - lastHubTabPressAt.current < MAIN_TAB_PRESS_DEBOUNCE_MS) return;
-    lastHubTabPressAt.current = now;
     if (dock === "main") return;
+    const now = Date.now();
+    if (now - lastHubTabPressAt.current < DOCK_PRESS_DEBOUNCE_MS) return;
+    lastHubTabPressAt.current = now;
     const target = lastMainRoute.current;
     runDockSwitch("main", "home", () => {
       navigateToMainTab(target);
@@ -196,8 +234,6 @@ export function FloatingTabBar({ state, descriptors, navigation }: BottomTabBarP
     return { route };
   }).filter(Boolean) as { route: (typeof state.routes)[0] }[];
 
-  /** Match focused tab by route name (stable vs key during transitions / nested state). */
-  const focusedRouteName = state.routes[state.index]?.name;
   /** Same height as `(tabs)/_layout` tabBarStyle so this strip fills the slot — no default grey “plate” behind the pill. */
   const tabSlotHeight = TAB_BAR_HEIGHT + bottomInset + TAB_BAR_FLOATING_GAP;
 
@@ -297,6 +333,7 @@ export function FloatingTabBar({ state, descriptors, navigation }: BottomTabBarP
                   <Pressable
                     key={route.key}
                     onPress={() => onPressMainTab(route.name as MainTabName, isActive)}
+                    hitSlop={TAB_HIT_SLOP}
                     style={({ pressed }) => [
                       styles.mainTab,
                       pressed && styles.pressed,
@@ -372,13 +409,14 @@ export function FloatingTabBar({ state, descriptors, navigation }: BottomTabBarP
                     <Pressable
                       key={routeName}
                       onPress={() => {
-                        const now = Date.now();
-                        if (now - lastHubTabPressAt.current < MAIN_TAB_PRESS_DEBOUNCE_MS) return;
-                        lastHubTabPressAt.current = now;
                         if (isFocused) return;
+                        const now = Date.now();
+                        if (now - lastHubTabPressAt.current < DOCK_PRESS_DEBOUNCE_MS) return;
+                        lastHubTabPressAt.current = now;
                         setActiveTab(routeName);
                         navigation.dispatch(CommonActions.navigate({ name: routeName } as never));
                       }}
+                      hitSlop={TAB_HIT_SLOP}
                       style={({ pressed }) => [
                         styles.hubPillPress,
                         pressed && styles.pressed,

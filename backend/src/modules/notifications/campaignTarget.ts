@@ -52,16 +52,22 @@ export function expectedRoleFromTarget(
   if (typeof target.store_id === "number" || typeof target.store_id === "string") {
     return "merchant";
   }
+  if (Array.isArray(target.store_ids) && target.store_ids.length > 0) {
+    return "merchant";
+  }
   if (typeof target.role === "string") {
     const r = target.role.toLowerCase();
     if (r === "customer" || r === "merchant" || r === "rider") return r;
   }
+  // Pure geo target (`geo: true` without role) is role-ambiguous — template may be `all`.
+  if (target.geo === true) return null;
   if (typeof target.topic === "string") {
     const t = target.topic.trim();
     if (t === "app_customer") return "customer";
     if (t === "app_merchant") return "merchant";
     if (t === "app_rider") return "rider";
   }
+  // Pure geo target (city / lat-lng without an explicit role) is role-ambiguous.
   return null;
 }
 

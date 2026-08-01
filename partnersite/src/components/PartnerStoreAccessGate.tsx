@@ -6,6 +6,7 @@ import {
   clearPartnerStoreSelection,
   readPartnerSelectedStoreId,
 } from '@/lib/partner-selected-store';
+import { PartnerContentSkeleton } from '@/components/PageSkeleton';
 
 type ResolvePayload = {
   success?: boolean;
@@ -29,9 +30,11 @@ const FATAL_AUTH_CODES = new Set([
 export function PartnerStoreAccessGate({ children }: { children: React.ReactNode }) {
   const pathname = usePathname() ?? '';
   const router = useRouter();
-  const [allowed, setAllowed] = useState<boolean | null>(null);
 
   const isAllStores = pathname === '/partners/all-stores' || pathname.startsWith('/partners/all-stores/');
+
+  // The hub needs no check, so it renders on the very first pass instead of flashing a skeleton.
+  const [allowed, setAllowed] = useState<boolean | null>(() => (isAllStores ? true : null));
 
   useEffect(() => {
     let cancelled = false;
@@ -113,9 +116,10 @@ export function PartnerStoreAccessGate({ children }: { children: React.ReactNode
     };
   }, [isAllStores, pathname, router]);
 
-  // null = check pending (suppress any flash); false = redirect in progress
+  // null = check pending; false = redirect in progress. The surrounding shell stays mounted,
+  // so this skeleton only ever fills the main content area.
   if (allowed !== true) {
-    return null;
+    return <PartnerContentSkeleton />;
   }
 
   return <>{children}</>;

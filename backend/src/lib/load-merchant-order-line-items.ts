@@ -7,12 +7,15 @@ import {
   type MerchantItemCustomizationLine,
 } from "./order-item-customisation.js";
 import { readOrderItemSpecialInstructions } from "./order-item-special-instructions.js";
+import { toAbsoluteClientMediaUrl } from "../utils/publicAttachmentUrl.js";
 
 export type MerchantOrderLineItem = {
   qty: number;
   name: string;
   price: number;
   menu_item_id?: number | null;
+  /** Live catalog primary image URL (empty → merchant can Add photo). */
+  item_image_url?: string | null;
   veg_nonveg?: string | null;
   customizations?: string[];
   special_instructions?: string | null;
@@ -436,6 +439,125 @@ export async function loadMerchantOrderLineItemsByTextIds(
       };
     });
     out.set(oid, lines);
+  }
+
+  // Attach live menu primary image so preparing cards can show Add-photo without extra client fetches.
+  const allMenuIds = [
+    ...new Set(
+      [...out.values()]
+        .flat()
+        .map((l) => (l.menu_item_id != null ? Number(l.menu_item_id) : NaN))
+        .filter((n) => Number.isFinite(n) && n > 0)
+    ),
+  ];
+  if (allMenuIds.length > 0) {
+    try {
+      const imgRows = await sql<
+        Array<{ id: number; item_image_url: string | null }>
+      >`
+        SELECT id, item_image_url
+        FROM merchant_menu_items
+        WHERE id = ANY(${allMenuIds}::int[])
+      `;
+      const imgById = new Map<number, string | null>();
+      for (const r of imgRows) {
+        const id = Number(r.id);
+        if (!Number.isFinite(id)) continue;
+        const raw = r.item_image_url != null ? String(r.item_image_url).trim() : "";
+        imgById.set(id, raw ? toAbsoluteClientMediaUrl(raw) : null);
+      }
+      for (const [, lines] of out) {
+        for (const line of lines) {
+          const mid =
+            line.menu_item_id != null && Number.isFinite(Number(line.menu_item_id))
+              ? Number(line.menu_item_id)
+              : null;
+          if (mid == null) continue;
+          line.item_image_url = imgById.has(mid) ? imgById.get(mid) ?? null : null;
+        }
+      }
+    } catch (err) {
+      const code = (err as { code?: string })?.code;
+      if (code !== "42P01" && code !== "42703") {
+        console.warn(
+          "[merchant-line-items] menu image enrich failed:",
+          (err as Error)?.message ?? err
+        );
+      }
+    }
+  }
+
+  return out;
+}
+
+/**
+ * Lightweight board enrichment: menu_item_id + live item_image_url only.
+ * Avoids full customization/CTM SQL that timed out the merchant order board.
+ */
+export async function loadMerchantOrderItemMenuMetaByTextIds(
+  sql: Sql,
+  orderTextIds: string[],
+): Promise<
+  Map<string, Array<{ menu_item_id: number | null; item_image_url: string | null }>>
+> {
+  const unique = [...new Set(orderTextIds.map((t) => String(t ?? "").trim()).filter(Boolean))];
+  const out = new Map<
+    string,
+    Array<{ menu_item_id: number | null; item_image_url: string | null }>
+  >();
+  if (unique.length === 0) return out;
+
+  type Row = {
+    order_id: string;
+    menu_item_id: number | null;
+    item_image_url: string | null;
+  };
+
+  let rows: Row[];
+  try {
+    rows = (await sql`
+      SELECT oci.order_id, oci.menu_item_id, mmi.item_image_url
+      FROM orders_core_items oci
+      LEFT JOIN merchant_menu_items mmi ON mmi.id = oci.menu_item_id
+      WHERE oci.order_id = ANY(${unique}::text[])
+      ORDER BY oci.id ASC
+    `) as Row[];
+  } catch (err) {
+    const code = (err as { code?: string })?.code;
+    if (code === "42P01" || code === "42703") {
+      try {
+        rows = (await sql`
+          SELECT order_id, menu_item_id, NULL::text AS item_image_url
+          FROM orders_core_items
+          WHERE order_id = ANY(${unique}::text[])
+          ORDER BY id ASC
+        `) as Row[];
+      } catch {
+        return out;
+      }
+    } else {
+      console.warn(
+        "[merchant-line-items] lite menu meta failed:",
+        (err as Error)?.message ?? err
+      );
+      return out;
+    }
+  }
+
+  for (const r of rows) {
+    const oid = String(r.order_id ?? "").trim();
+    if (!oid) continue;
+    const mid =
+      r.menu_item_id != null && Number.isFinite(Number(r.menu_item_id))
+        ? Number(r.menu_item_id)
+        : null;
+    const raw = r.item_image_url != null ? String(r.item_image_url).trim() : "";
+    const list = out.get(oid) ?? [];
+    list.push({
+      menu_item_id: mid,
+      item_image_url: raw ? toAbsoluteClientMediaUrl(raw) : null,
+    });
+    out.set(oid, list);
   }
 
   return out;

@@ -27,6 +27,11 @@ import { colors } from "@/theme";
 import { applyLiveProgressFromPush } from "@/components/LiveOrderProgressNotification";
 import { playCustomerNotificationSound } from "@/lib/playCustomerNotificationSound";
 import { isRideServicePush } from "@/lib/isRideServicePush";
+import {
+  isWalletAffectingPush,
+  refreshCustomerWallet,
+} from "@/lib/refreshCustomerWallet";
+import { useQueryClient } from "@tanstack/react-query";
 
 /**
  * Ride-only CX chime channel (sound is immutable after first Android create).
@@ -55,6 +60,7 @@ export function PushNotificationBootstrap() {
 
 function PushNotificationBootstrapInner() {
   const router = useRouter();
+  const queryClient = useQueryClient();
   const session = useAuthStore((s) => s.session);
   const hydrated = useAuthStore((s) => s.hydrated);
   const showPrepDelayBanner = useOrderStore((s) => s.showPrepDelayBanner);
@@ -89,6 +95,9 @@ function PushNotificationBootstrapInner() {
     (payload: PushNotificationOpenPayload) => {
       handlePrepDelayPush(payload.data);
       void applyLiveProgressFromPush(payload.data);
+      if (isWalletAffectingPush(payload.data)) {
+        void refreshCustomerWallet(queryClient);
+      }
       navigateFromPushData(router, payload.data);
       const gmType = typeof payload.data.gmType === "string" ? payload.data.gmType : "";
       const imageUrl =
@@ -101,7 +110,7 @@ function PushNotificationBootstrapInner() {
         });
       }
     },
-    [handlePrepDelayPush, router]
+    [handlePrepDelayPush, queryClient, router]
   );
 
   const handleForeground = useCallback(
@@ -112,6 +121,9 @@ function PushNotificationBootstrapInner() {
       }
       handlePrepDelayPush(payload.data);
       void applyLiveProgressFromPush(payload.data);
+      if (isWalletAffectingPush(payload.data)) {
+        void refreshCustomerWallet(queryClient);
+      }
       enqueueInAppBannerFromPush(payload);
       const gmType = typeof payload.data.gmType === "string" ? payload.data.gmType : "";
       const imageUrl =
@@ -124,7 +136,7 @@ function PushNotificationBootstrapInner() {
         });
       }
     },
-    [handlePrepDelayPush]
+    [handlePrepDelayPush, queryClient]
   );
 
   const { apiBaseUrl } = getConfig();

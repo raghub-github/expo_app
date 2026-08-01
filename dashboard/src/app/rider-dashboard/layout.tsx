@@ -4,20 +4,9 @@ import { Suspense, useState } from "react";
 import { useAppPathname, useAppSearchParams } from "@/hooks/useAppSearchParams";
 import { useRouter } from "next/navigation";
 
-import type { Metadata } from "next";
-import { Inter, Roboto_Mono } from "next/font/google";
 import "./globals.css";
 import Link from "next/link";
-
-const geistSans = Inter({
-  variable: "--font-geist-sans",
-  subsets: ["latin"],
-});
-
-const geistMono = Roboto_Mono({
-  variable: "--font-geist-mono",
-  subsets: ["latin"],
-});
+import { riderMono, riderSans } from "@/lib/fonts/app-fonts";
 
 // Metadata moved to layout.metadata.ts for server-side export
 
@@ -75,7 +64,7 @@ function RiderDashboardLayoutInner({
   }
 
   return (
-    <div className={`${geistSans.variable} ${geistMono.variable} antialiased bg-[var(--background)] text-[var(--foreground)]`} style={{overflow: 'hidden'}}>
+    <div className={`${riderSans.variable} ${riderMono.variable} antialiased bg-[var(--background)] text-[var(--foreground)]`} style={{overflow: 'hidden'}}>
       {/* Header */}
       <header className="fixed top-0 left-0 w-full flex flex-col justify-center z-50" style={{height: '56px', minHeight: '48px', background: 'linear-gradient(90deg, #e0e7ff 0%, #f0fdfa 100%)', boxShadow: '0 2px 12px 0 rgba(60, 60, 120, 0.08)', borderBottomLeftRadius: '12px', borderBottomRightRadius: '12px'}}>
         <div className="flex items-center justify-between px-4 w-full h-12" style={{minHeight: '44px'}}>
@@ -134,7 +123,7 @@ export default function RiderDashboardLayout({
     <Suspense
       fallback={
         <div
-          className={`${geistSans.variable} ${geistMono.variable} antialiased bg-[var(--background)] text-[var(--foreground)] flex min-h-screen items-center justify-center`}
+          className={`${riderSans.variable} ${riderMono.variable} antialiased bg-[var(--background)] text-[var(--foreground)] flex min-h-screen items-center justify-center`}
         >          <div className="h-8 w-8 animate-spin rounded-full border-2 border-blue-500 border-t-transparent" />
         </div>
       }

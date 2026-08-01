@@ -491,8 +491,21 @@ export const DASHBOARD_DEFINITIONS: Record<
   },
   ANALYTICS: {
     label: "Analytics Dashboard",
-    description: "View analytics and reports",
-    accessPoints: [],
+    description: "View agent analytics and reports (choose Own Record or Overall)",
+    accessPoints: [
+      {
+        group: "ANALYTICS_OWN",
+        label: "Own Record",
+        description: "User can only see their own agent analytics (sessions, tickets, orders).",
+        allowedActions: ["VIEW"],
+      },
+      {
+        group: "ANALYTICS_OVERALL",
+        label: "Overall User Record",
+        description: "User can see analytics for all agents / team members.",
+        allowedActions: ["VIEW"],
+      },
+    ],
   },
 };
 
@@ -521,6 +534,14 @@ export function DashboardAccessSelector({
     } else {
       // Add dashboard
       onDashboardsChange([...selectedDashboards, dashboardType]);
+      // Analytics requires an explicit Own vs Overall scope (default Own).
+      if (dashboardType === "ANALYTICS") {
+        const current = selectedAccessPoints.ANALYTICS || [];
+        if (!current.includes("ANALYTICS_OWN") && !current.includes("ANALYTICS_OVERALL")) {
+          onAccessPointsChange("ANALYTICS", ["ANALYTICS_OWN"]);
+        }
+        setExpandedDashboards((prev) => new Set(prev).add("ANALYTICS"));
+      }
     }
   };
 
@@ -529,6 +550,13 @@ export function DashboardAccessSelector({
 
     const currentPoints = selectedAccessPoints[dashboardType] || [];
     if (currentPoints.includes(accessPointGroup)) {
+      // Analytics scope is required — do not allow clearing both scopes.
+      if (
+        dashboardType === "ANALYTICS" &&
+        (accessPointGroup === "ANALYTICS_OWN" || accessPointGroup === "ANALYTICS_OVERALL")
+      ) {
+        return;
+      }
       onAccessPointsChange(
         dashboardType,
         currentPoints.filter((p) => p !== accessPointGroup)
@@ -537,6 +565,15 @@ export function DashboardAccessSelector({
         onCanTogglePortalChange?.(false);
       }
     } else {
+      // Own vs Overall are mutually exclusive for Analytics.
+      if (dashboardType === "ANALYTICS" && accessPointGroup === "ANALYTICS_OWN") {
+        onAccessPointsChange(dashboardType, ["ANALYTICS_OWN"]);
+        return;
+      }
+      if (dashboardType === "ANALYTICS" && accessPointGroup === "ANALYTICS_OVERALL") {
+        onAccessPointsChange(dashboardType, ["ANALYTICS_OVERALL"]);
+        return;
+      }
       onAccessPointsChange(dashboardType, [...currentPoints, accessPointGroup]);
       if (dashboardType === "MERCHANT" && accessPointGroup === "MERCHANT_ADMIN_MERCHANT_ACCESS") {
         onCanTogglePortalChange?.(true);
@@ -635,11 +672,20 @@ export function DashboardAccessSelector({
 
                 {expanded && hasAccessPoints && (
                   <div className="border-t border-gray-200 bg-white p-3 space-y-2">
+                    {dashboardType === "ANALYTICS" && (
+                      <p className="mb-1 text-[11px] text-slate-500">
+                        Pick one scope: Own Record or Overall User Record (mutually exclusive).
+                      </p>
+                    )}
                     {config.accessPoints.map((accessPoint) => {
                       const pointSelected = isAccessPointSelected(
                         dashboardType,
                         accessPoint.group
                       );
+                      const isAnalyticsScope =
+                        dashboardType === "ANALYTICS" &&
+                        (accessPoint.group === "ANALYTICS_OWN" ||
+                          accessPoint.group === "ANALYTICS_OVERALL");
 
                       return (
                         <div
@@ -657,7 +703,9 @@ export function DashboardAccessSelector({
                                 toggleAccessPoint(dashboardType, accessPoint.group)
                               }
                               disabled={disabled || !selected}
-                              className={`mt-0.5 w-4 h-4 rounded border-2 flex items-center justify-center transition-colors flex-shrink-0 ${
+                              className={`mt-0.5 w-4 h-4 ${
+                                isAnalyticsScope ? "rounded-full" : "rounded"
+                              } border-2 flex items-center justify-center transition-colors flex-shrink-0 ${
                                 pointSelected
                                   ? "bg-blue-500 border-blue-500"
                                   : "border-gray-300 bg-white"

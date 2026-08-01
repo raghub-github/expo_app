@@ -13,37 +13,17 @@ import {
   readSyncPersistedStoreOffers,
   writePersistedStoreOffers,
 } from "@/lib/storeOffersCache";
+import {
+  buildStoreOffersQueryKey,
+  STORE_OFFERS_STALE_MS,
+  type StoreOffersGeo,
+} from "@/lib/storeOffersQueryKey";
 
-export const STORE_OFFERS_STALE_MS = 60_000;
-
-export type StoreOffersGeo = {
-  pincode?: string | null;
-  state?: string | null;
-  city?: string | null;
-  lat?: number | null;
-  lng?: number | null;
+export {
+  buildStoreOffersQueryKey,
+  STORE_OFFERS_STALE_MS,
+  type StoreOffersGeo,
 };
-
-export function buildStoreOffersQueryKey(
-  merchantId: string,
-  geo?: StoreOffersGeo
-): readonly [
-  "store-offers",
-  string,
-  string | undefined,
-  string | undefined,
-  number | undefined,
-  number | undefined,
-] {
-  return [
-    "store-offers",
-    merchantId,
-    geo?.pincode?.trim() || undefined,
-    geo?.state?.trim() || undefined,
-    geo?.lat ?? undefined,
-    geo?.lng ?? undefined,
-  ] as const;
-}
 
 /** Invalidate every geo-keyed store-offers query for one restaurant (offer-only). */
 export function invalidateStoreOffersForMerchant(

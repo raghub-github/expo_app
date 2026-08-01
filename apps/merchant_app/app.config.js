@@ -12,6 +12,8 @@ const appJson = require("./app.json");
 // EAS Android builds provide the real file, so FCM stays wired there.
 const googleServicesFile = path.resolve(__dirname, "google-services.json");
 const hasGoogleServices = fs.existsSync(googleServicesFile);
+/** Match MerchantBootstrapScreen so the native-to-React handoff has no white flash. */
+const MERCHANT_SPLASH_BG = "#0B241C";
 
 module.exports = ({ config }) => ({
   ...appJson,
@@ -26,7 +28,7 @@ module.exports = ({ config }) => ({
       ...(appJson.expo.splash || {}),
       image: "./assets/images/splash-logo.png",
       resizeMode: "contain",
-      backgroundColor: "#FFFFFF",
+      backgroundColor: MERCHANT_SPLASH_BG,
     },
     ios: {
       ...appJson.expo.ios,
@@ -58,7 +60,7 @@ module.exports = ({ config }) => ({
       icon: "./assets/images/splash-logo.png",
       adaptiveIcon: {
         foregroundImage: "./assets/images/splash-logo.png",
-        backgroundColor: "#000000",
+        backgroundColor: MERCHANT_SPLASH_BG,
       },
       ...(hasGoogleServices ? { googleServicesFile: "./google-services.json" } : {}),
       softwareKeyboardLayoutMode: "pan",
@@ -68,6 +70,16 @@ module.exports = ({ config }) => ({
       "expo-dev-client",
       "./plugins/withMerchantOrderWake",
       "./plugins/withAndroidUpiQueries",
+      [
+        "./plugins/withBootReconnectNotification",
+        {
+          title: "Reconnect to receive orders",
+          body: "Your device was restarted. Open the app to resume order notifications.",
+          channelId: "merchant_boot_reconnect",
+          channelName: "Reconnect after restart",
+          notificationId: 91001,
+        },
+      ],
       [
         "expo-notifications",
         {
@@ -91,6 +103,16 @@ module.exports = ({ config }) => ({
       EXPO_PUBLIC_SUPABASE_ANON_KEY: process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY || null,
       EXPO_PUBLIC_PHONE_OTP_USE_BACKEND: process.env.EXPO_PUBLIC_PHONE_OTP_USE_BACKEND || null,
       GOOGLE_WEB_CLIENT_ID: process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID || null,
+      EXPO_PUBLIC_MAPBOX_ACCESS_TOKEN:
+        process.env.EXPO_PUBLIC_MAPBOX_ACCESS_TOKEN ||
+        process.env.EXPO_PUBLIC_MAPBOX_PUBLIC_TOKEN ||
+        process.env.MAPBOX_PUBLIC_TOKEN ||
+        null,
+      MAPBOX_PUBLIC_TOKEN:
+        process.env.EXPO_PUBLIC_MAPBOX_ACCESS_TOKEN ||
+        process.env.EXPO_PUBLIC_MAPBOX_PUBLIC_TOKEN ||
+        process.env.MAPBOX_PUBLIC_TOKEN ||
+        null,
       eas: {
         ...(appJson.expo.extra?.eas && typeof appJson.expo.extra.eas === "object" ? appJson.expo.extra.eas : {}),
         ...(config?.expo?.extra?.eas && typeof config.expo.extra.eas === "object" ? config.expo.extra.eas : {}),

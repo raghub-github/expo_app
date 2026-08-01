@@ -46,6 +46,7 @@ import { useCartAnimation, triggerCartAnimation } from '@/components/cart/CartAn
 import CustomizeModal from '@/components/cart/CustomizeModal'
 import RestaurantSwitchModal from '@/components/cart/RestaurantSwitchModal'
 import { useRestaurantMenuRealtime } from '@/lib/hooks/useRestaurantMenuRealtime'
+import { useRestaurantStoreStatusRealtime } from '@/lib/hooks/useRestaurantStoreStatusRealtime'
 // Define MenuItem and Restaurant interfaces as before
 interface MenuItem {
   id: string;
@@ -305,6 +306,64 @@ function RestaurantPage({
   // Realtime: subscribe to live menu table changes → silent refresh without page reload.
   useRestaurantMenuRealtime(restaurantId, storeNumericId, silentRefreshMenu);
 
+  /**
+   * Keep store hours / open status fresh while the page stays open.
+   * Merchant schedule edits write operating_hours + merchant_stores live columns —
+   * realtime wakes this; focus/interval remain as fallbacks.
+   */
+  const refreshStoreMeta = useCallback(() => {
+    if (!restaurantId) return;
+    if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+    void fetch(`/api/restaurants/${encodeURIComponent(restaurantId)}`, {
+      cache: 'no-store',
+      headers: { 'Cache-Control': 'no-cache' },
+    })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (!data || typeof data !== 'object') return;
+        setRestaurant((prev) => {
+          if (!prev) return data;
+          return {
+            ...prev,
+            ...data,
+            // Preserve already-loaded menu-adjacent fields if API omits them
+            operating_hours: data.operating_hours ?? prev.operating_hours,
+            opening_time: data.opening_time ?? prev.opening_time,
+            closing_time: data.closing_time ?? prev.closing_time,
+            operational_status: data.operational_status ?? prev.operational_status,
+          };
+        });
+      })
+      .catch(() => {
+        /* non-fatal background refresh */
+      });
+  }, [restaurantId]);
+
+  useRestaurantStoreStatusRealtime(restaurantId, storeNumericId, refreshStoreMeta);
+
+  useEffect(() => {
+    if (!restaurantId) return;
+
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') {
+        refreshStoreMeta();
+        silentRefreshMenu();
+      }
+    };
+    const onFocus = () => {
+      refreshStoreMeta();
+      silentRefreshMenu();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    window.addEventListener('focus', onFocus);
+    const intervalId = window.setInterval(refreshStoreMeta, 45_000);
+    return () => {
+      document.removeEventListener('visibilitychange', onVisible);
+      window.removeEventListener('focus', onFocus);
+      window.clearInterval(intervalId);
+    };
+  }, [restaurantId, silentRefreshMenu, refreshStoreMeta]);
+
   // Fetch data: restaurant from API; menu loads in parallel (page renders before menu finishes).
   useEffect(() => {
     setError(null);
@@ -317,6 +376,7 @@ function RestaurantPage({
     const menuAc = new AbortController();
     let menuTimedOut = false;
     const MENU_FETCH_TIMEOUT_MS = 20_000;
+
     const menuTimeoutId = window.setTimeout(() => {
       menuTimedOut = true;
       menuAc.abort();
@@ -406,61 +466,6 @@ function RestaurantPage({
       window.clearTimeout(menuTimeoutId);
     };
   }, [restaurantId]);
-
-  /**
-   * Keep store hours / open status fresh while the page stays open.
-   * Merchant schedule edits write operating_hours instantly — re-fetch on tab
-   * focus and on a short interval so the hero never stays on a stale snapshot.
-   */
-  useEffect(() => {
-    if (!restaurantId) return;
-
-    const refreshStoreMeta = () => {
-      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
-      void fetch(`/api/restaurants/${encodeURIComponent(restaurantId)}`, {
-        cache: 'no-store',
-        headers: { 'Cache-Control': 'no-cache' },
-      })
-        .then((res) => (res.ok ? res.json() : null))
-        .then((data) => {
-          if (!data || typeof data !== 'object') return;
-          setRestaurant((prev) => {
-            if (!prev) return data;
-            return {
-              ...prev,
-              ...data,
-              // Preserve already-loaded menu-adjacent fields if API omits them
-              operating_hours: data.operating_hours ?? prev.operating_hours,
-              opening_time: data.opening_time ?? prev.opening_time,
-              closing_time: data.closing_time ?? prev.closing_time,
-              operational_status: data.operational_status ?? prev.operational_status,
-            };
-          });
-        })
-        .catch(() => {
-          /* non-fatal background refresh */
-        });
-    };
-
-    const onVisible = () => {
-      if (document.visibilityState === 'visible') {
-        refreshStoreMeta();
-        silentRefreshMenu();
-      }
-    };
-    const onFocus = () => {
-      refreshStoreMeta();
-      silentRefreshMenu();
-    };
-    document.addEventListener('visibilitychange', onVisible);
-    window.addEventListener('focus', onFocus);
-    const intervalId = window.setInterval(refreshStoreMeta, 45_000);
-    return () => {
-      document.removeEventListener('visibilitychange', onVisible);
-      window.removeEventListener('focus', onFocus);
-      window.clearInterval(intervalId);
-    };
-  }, [restaurantId, silentRefreshMenu]);
 
   // Sidebar: All + unique category names + VEG/NON_VEG
   const categories = ['All', ...Array.from(new Set([...menuItems.map(i => i.category), ...menuItems.map(i => i.category_item)].filter(Boolean)))]

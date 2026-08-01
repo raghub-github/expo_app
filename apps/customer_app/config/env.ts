@@ -100,6 +100,12 @@ function preferredDevLanHost(): string | null {
 }
 
 /**
+ * getConfig() runs on nearly every render and request, so the heal below would log
+ * thousands of identical lines. Report each distinct rewrite once per JS session.
+ */
+const loggedLanHeals = new Set<string>();
+
+/**
  * Wi‑Fi IPs change often. In __DEV__, if a configured/overridden URL points at a
  * *different* private LAN IP than this PC's current host, rewrite so the phone
  * keeps talking to this machine (not a stale IP). Leaves production / ngrok alone.
@@ -118,8 +124,14 @@ function healStaleLanApiUrl(url: string): string {
     /* keep apiDevPort() */
   }
   const healed = `http://${lan}:${port}`;
-  // eslint-disable-next-line no-console
-  console.log(`[env] healed stale LAN API URL ${url} → ${healed}`);
+  const healKey = `${url}→${healed}`;
+  if (!loggedLanHeals.has(healKey)) {
+    loggedLanHeals.add(healKey);
+    // eslint-disable-next-line no-console
+    console.log(
+      `[env] healed stale LAN API URL ${url} → ${healed} (set EXPO_PUBLIC_API_BASE_URL=${healed} to silence)`
+    );
+  }
   return healed;
 }
 

@@ -276,6 +276,7 @@ async function finalizeCancelledRow(
       orderCorePk: coreId,
       cancelledBy: "SYSTEM",
       displayReason: MERCHANT_ACCEPT_TIMEOUT_REASON,
+      reasonCode: MERCHANT_ACCEPT_TIMEOUT_REASON,
       cancelledByType: "system",
       cancelledByLabel: MERCHANT_ACCEPT_TIMEOUT_LABEL,
       actionSource: "system",
@@ -286,6 +287,7 @@ async function finalizeCancelledRow(
       refundAmount: refund.refundAmount,
       metadata: {
         reason_code: MERCHANT_ACCEPT_TIMEOUT_REASON,
+        rejected_reason: MERCHANT_ACCEPT_TIMEOUT_REASON,
         ...(engineResult.raw ? { financial_rule_engine: engineResult.raw } : {}),
       },
     });
@@ -363,6 +365,14 @@ async function finalizeCancelledRow(
         merchantStoreId: storeId,
         merchantName: owner?.store_name ?? null,
         reason: MERCHANT_ACCEPT_TIMEOUT_REASON,
+        // Accept-timeout always auto-refunds what the customer paid.
+        refundEligible: true,
+        refundStatus:
+          refund.refundStatus === "no_refund" ? "pending" : refund.refundStatus,
+        refundAmount:
+          refund.refundAmount != null && Number(refund.refundAmount) > 0.005
+            ? Number(refund.refundAmount)
+            : Number(row.grand_total ?? 0) || null,
       });
     } catch {
       /* notification fan-out is best-effort */
@@ -417,6 +427,82 @@ async function processAutoAcceptTargets(
 }
 
 /**
+ * Repair auto-cancelled orders that never got a settled customer refund
+ * (e.g. dashboard sync cancelled but HTTP auto-refund hop failed).
+ */
+async function repairUnrefundedAcceptTimeoutCancels(
+  sql: Sql,
+  log: TimeoutLog,
+  opts?: { merchantStoreId?: number; limit?: number }
+): Promise<number> {
+  const limit = Math.max(1, Math.min(100, opts?.limit ?? 40));
+  const storeId = opts?.merchantStoreId;
+  const storeFilter =
+    storeId != null && Number.isFinite(storeId) && storeId > 0
+      ? sql`AND f.merchant_store_id = ${storeId}`
+      : sql``;
+
+  const rows = (await sql`
+    SELECT DISTINCT c.id AS core_id
+    FROM orders_food f
+    JOIN orders_core c ON c.id = f.order_id
+    WHERE upper(COALESCE(f.order_status, '')) = 'CANCELLED'
+      AND f.cancelled_at IS NOT NULL
+      AND f.cancelled_at > NOW() - INTERVAL '30 days'
+      AND (
+        upper(COALESCE(f.rejected_reason, '')) = ${MERCHANT_ACCEPT_TIMEOUT_REASON}
+        OR upper(COALESCE(f.cancelled_by_label, '')) = ${MERCHANT_ACCEPT_TIMEOUT_LABEL.toUpperCase()}
+        OR upper(COALESCE(f.cancellation_details->>'reason_code', '')) = ${MERCHANT_ACCEPT_TIMEOUT_REASON}
+      )
+      ${storeFilter}
+      AND NOT EXISTS (
+        SELECT 1
+        FROM order_refunds r
+        WHERE r.order_id = c.id
+          AND UPPER(COALESCE(r.execution_status, '')) <> 'FAILED'
+          AND LOWER(COALESCE(r.refund_status, '')) NOT IN ('failed', 'cancelled', 'rejected')
+          AND (
+            r.customer_wallet_ledger_id IS NOT NULL
+            OR NULLIF(TRIM(COALESCE(r.razorpay_refund_id, '')), '') IS NOT NULL
+            OR (
+              UPPER(COALESCE(r.execution_status, '')) = 'PROCESSING'
+              AND NULLIF(TRIM(COALESCE(r.razorpay_refund_id, '')), '') IS NOT NULL
+            )
+          )
+      )
+    ORDER BY c.id DESC
+    LIMIT ${limit}
+  `) as Array<{ core_id: number }>;
+
+  let repaired = 0;
+  for (const row of rows) {
+    const coreId = Number(row.core_id);
+    if (!Number.isFinite(coreId) || coreId <= 0) continue;
+    try {
+      const outcome = await autoRefundOnCancellation(
+        {
+          orderCoreId: coreId,
+          reason: `${MERCHANT_ACCEPT_TIMEOUT_LABEL} — ${MERCHANT_ACCEPT_TIMEOUT_REASON}`,
+          actorEmail: null,
+          actorRole: "system",
+        },
+        sql
+      );
+      if (outcome.triggered) {
+        repaired += 1;
+        log.info(
+          { coreId, status: outcome.result?.status, skipped: outcome.skippedReason },
+          "order_acceptance_timeout_auto_refund_repair"
+        );
+      }
+    } catch (err) {
+      log.error({ err, coreId }, "order_acceptance_timeout_auto_refund_repair_failed");
+    }
+  }
+  return repaired;
+}
+
+/**
  * Auto-cancel unaccepted orders after the configured acceptance window per store.
  * Writes orders_food / orders_core + order_timelines "Cancelled" (idempotent).
  */
@@ -432,9 +518,11 @@ export async function runOrderAcceptanceTimeoutTick(log: TimeoutLog): Promise<vo
       const cancelledRows = await fetchExpiredAcceptanceTargets(sql, { limit: 200 });
       await finalizeCancelledRows(sql, cancelledRows, log);
 
+      const repaired = await repairUnrefundedAcceptTimeoutCancels(sql, log, { limit: 40 });
+
       const cancelled = cancelledRows.length;
-      if (cancelled > 0 || autoAccepted > 0) {
-        log.info({ cancelled, autoAccepted, now }, "order_acceptance_timeout_tick");
+      if (cancelled > 0 || autoAccepted > 0 || repaired > 0) {
+        log.info({ cancelled, autoAccepted, repaired, now }, "order_acceptance_timeout_tick");
       }
     });
   } catch (e) {
@@ -463,9 +551,17 @@ export async function syncOrderAcceptanceTimeoutForStore(
     });
     await finalizeCancelledRows(sql, cancelledRows, log);
 
+    const repaired = await repairUnrefundedAcceptTimeoutCancels(sql, log, {
+      merchantStoreId,
+      limit: 40,
+    });
+
     const cancelled = cancelledRows.length;
-    if (cancelled > 0 || autoAccepted > 0) {
-      log.info({ cancelled, autoAccepted, merchantStoreId, now }, "order_acceptance_timeout_store_sync");
+    if (cancelled > 0 || autoAccepted > 0 || repaired > 0) {
+      log.info(
+        { cancelled, autoAccepted, repaired, merchantStoreId, now },
+        "order_acceptance_timeout_store_sync"
+      );
     }
     return { cancelled, auto_accepted: autoAccepted };
   } catch (e) {

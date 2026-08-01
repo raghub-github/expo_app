@@ -73,6 +73,21 @@ module.exports = {
         schemes: ["google.navigation", "geo", "comgooglemaps", "https"],
         packages: ["com.google.android.apps.maps"]
       },
+      // Android App Links for rider referral invites. autoVerify needs this
+      // package listed in https://gatimitra.com/.well-known/assetlinks.json,
+      // otherwise the link falls back to the browser landing page (which still
+      // forwards to the Play Store with the install-referrer payload).
+      intentFilters: [
+        {
+          action: "VIEW",
+          autoVerify: true,
+          data: [
+            { scheme: "https", host: "gatimitra.com", pathPrefix: "/rider-ref" },
+            { scheme: "gatimitra-rider", host: "referral" }
+          ],
+          category: ["BROWSABLE", "DEFAULT"]
+        }
+      ],
       // Bundle size optimization
       enableProguardInReleaseBuilds: true,
       enableShrinkResourcesInReleaseBuilds: true,
@@ -120,6 +135,16 @@ module.exports = {
           sounds: [],
           defaultChannel: "default",
         }
+      ],
+      [
+        "./plugins/withBootReconnectNotification",
+        {
+          title: "Reconnect to receive orders",
+          body: "Your device was restarted. Open the app to resume order notifications.",
+          channelId: "rider_boot_reconnect",
+          channelName: "Reconnect after restart",
+          notificationId: 91002,
+        },
       ],
       [
         "expo-camera",

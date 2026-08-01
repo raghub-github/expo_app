@@ -110,6 +110,10 @@ export interface OrdersFoodRow {
   distance_km?: number | null;
   /** Estimated delivery ETA in seconds (orders_core.eta_seconds). */
   eta_seconds?: number | null;
+  /** Immutable First ETA at placement (orders_core.first_eta_at). */
+  first_eta_at?: string | null;
+  promised_delivery_at?: string | null;
+  estimated_delivery_time?: string | null;
   // Customer character flags
   customer_scores?: {
     trust_score?: number | null;

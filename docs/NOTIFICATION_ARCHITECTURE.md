@@ -214,6 +214,7 @@ CREATE TABLE notification_dispatch_logs (
   delivered_at    TIMESTAMPTZ,
   clicked_at      TIMESTAMPTZ,
   expired_at      TIMESTAMPTZ,
+  revoked_at      TIMESTAMPTZ,                      -- super-admin "Block": hidden from /inbox, kept for audit (0482)
   metadata        JSONB
 );
 CREATE INDEX ON notification_dispatch_logs (recipient_user_id, queued_at DESC);

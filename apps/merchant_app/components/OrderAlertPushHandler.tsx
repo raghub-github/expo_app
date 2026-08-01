@@ -1,6 +1,9 @@
 /**
  * Plays configured alert chime when a new-order push arrives (foreground / background JS alive).
  * When the app is fully killed, the OS plays the push notification's default sound.
+ *
+ * Uses a single foreground subscription + short-window dedupe so dual Expo/FCM
+ * delivery (or double listeners) cannot chime the same event twice.
  */
 import { useEffect, useRef } from "react";
 import Constants from "expo-constants";
@@ -10,9 +13,34 @@ import { useOrderAcceptanceSettings } from "@/hooks/useOrderAcceptanceSettings";
 import { readDeviceOrderAlertsAsync } from "@/lib/deviceOrderAlerts";
 import { playIncomingOrderAlert } from "@/lib/playOrderAlertSound";
 
+const DEDUPE_WINDOW_MS = 8000;
+const recentChimes = new Map<string, number>();
+
 function isNewOrderPush(data: Record<string, unknown>): boolean {
   const t = String(data.type ?? data.event ?? "").toLowerCase();
   return t === "merchant_new_order" || t === "new_order";
+}
+
+function chimeDedupeKey(data: Record<string, unknown>): string {
+  const orderId =
+    data.foodOrderId ??
+    data.orderId ??
+    data.order_id ??
+    data.notification_id ??
+    data.notificationId ??
+    "";
+  return String(orderId || "new_order");
+}
+
+function shouldChimeOnce(key: string): boolean {
+  const now = Date.now();
+  for (const [k, at] of recentChimes) {
+    if (now - at > DEDUPE_WINDOW_MS) recentChimes.delete(k);
+  }
+  const last = recentChimes.get(key);
+  if (last != null && now - last < DEDUPE_WINDOW_MS) return false;
+  recentChimes.set(key, now);
+  return true;
 }
 
 async function playNewOrderChime(
@@ -36,29 +64,10 @@ export default function OrderAlertPushHandler() {
     if (Constants.appOwnership === "expo") return;
     const sub = subscribeToForegroundNotifications(({ data }) => {
       if (!isNewOrderPush(data) || !storeId) return;
+      if (!shouldChimeOnce(chimeDedupeKey(data))) return;
       void playNewOrderChime(storeId, settingsRef.current);
     });
     return () => sub.remove();
-  }, [storeId]);
-
-  // Background delivery (Android / iOS while JS process still alive).
-  useEffect(() => {
-    if (!storeId || Constants.appOwnership === "expo") return;
-    let remove: (() => void) | undefined;
-    void (async () => {
-      try {
-        const Notifications = await import("expo-notifications");
-        const sub = Notifications.addNotificationReceivedListener((notification) => {
-          const data = (notification.request.content.data ?? {}) as Record<string, unknown>;
-          if (!isNewOrderPush(data)) return;
-          void playNewOrderChime(storeId, settingsRef.current);
-        });
-        remove = () => sub.remove();
-      } catch {
-        /* expo-notifications unavailable */
-      }
-    })();
-    return () => remove?.();
   }, [storeId]);
 
   return null;

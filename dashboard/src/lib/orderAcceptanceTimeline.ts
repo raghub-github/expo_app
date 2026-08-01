@@ -73,17 +73,18 @@ export async function appendAcceptanceTimeline(input: AcceptanceTimelineInput): 
 
   const { data: core } = await db
     .from("orders_core")
-    .select("estimated_delivery_time, first_eta_at")
+    .select("estimated_delivery_time")
     .eq("id", input.orderCorePk)
     .maybeSingle();
 
+  // First ETA (first_eta_at) is frozen at order placement — never write it on accept.
   await db
     .from("orders_core")
     .update({
       current_status: "ACCEPTED",
       updated_at: new Date().toISOString(),
       ...(core && !core.estimated_delivery_time
-        ? { estimated_delivery_time: etaAt, first_eta_at: core.first_eta_at ?? etaAt }
+        ? { estimated_delivery_time: etaAt }
         : {}),
     })
     .eq("id", input.orderCorePk);

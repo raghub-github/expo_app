@@ -51,6 +51,7 @@ const SLUG_TITLES: Record<string, string> = {
   "tax-reports": "Tax Reports",
   offers: "Offers & Promotions",
   "activity-feed": "Recent Activity",
+  preferences: "Preferences",
   notifications: "Notifications",
   language: "Language",
   help: "Help Centre",
@@ -96,7 +97,9 @@ export default function ProfileSlugScreen() {
     return <Redirect href="/restaurant-status" />;
   }
 
-  if (slug === "notifications") {
+  if (slug === "preferences" || slug === "notifications") {
+    // `notifications` slug kept as alias for old deep links → store Preferences
+    // (floating order pill + outlet prefs). Inbox lives at `/notifications`.
     return <NotificationsScreen />;
   }
 

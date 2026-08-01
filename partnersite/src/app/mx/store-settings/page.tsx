@@ -1986,7 +1986,9 @@ function StoreSettingsContent() {
         if (data.success && data.captured) {
           clearInterval(t);
           setPendingSubscriptionOrderId(null);
-          toast.success('Payment confirmed. Your subscription is active.');
+          toast.success('Payment successful. Your plan is now active.', {
+            id: 'subscription-payment-outcome',
+          });
           await reloadSubscriptionData();
         }
       } catch {
@@ -2006,7 +2008,9 @@ function StoreSettingsContent() {
         const data = await res.json();
         if (data.success && data.captured) {
           setPendingSubscriptionOrderId(null);
-          toast.success('Payment confirmed. Your subscription is active.');
+          toast.success('Payment successful. Your plan is now active.', {
+            id: 'subscription-payment-outcome',
+          });
           await reloadSubscriptionData();
         }
       } catch {
@@ -2148,6 +2152,109 @@ function StoreSettingsContent() {
       };
       setPendingSubscriptionOrderId(orderData.orderId);
 
+      /** Set when we close checkout after payment.failed — skip "cancelled by user" toast. */
+      let closedAfterPaymentFailure = false;
+      let paymentFailedHandled = false;
+
+      const forceCloseCheckout = (instance: { close?: () => void }) => {
+        const tryClose = () => {
+          try {
+            instance?.close?.();
+          } catch {
+            /* ignore */
+          }
+        };
+        tryClose();
+        // Razorpay often keeps the failure/retry UI up after payment.failed —
+        // close again on next ticks, then strip leftover overlay as last resort.
+        window.setTimeout(tryClose, 0);
+        window.setTimeout(tryClose, 150);
+        window.setTimeout(() => {
+          tryClose();
+          try {
+            document
+              .querySelectorAll(".razorpay-container, .razorpay-backdrop")
+              .forEach((el) => el.parentElement?.removeChild(el));
+            document.body.style.overflow = "";
+          } catch {
+            /* ignore */
+          }
+        }, 400);
+      };
+
+      const notifyPaymentNotCompleted = (rawDescription?: string) => {
+        const desc = String(rawDescription || "").trim();
+        const rateLimited = /too many requests/i.test(desc);
+        toast.error(
+          rateLimited
+            ? "Payment could not be completed (too many requests). If money was deducted from your bank, do not pay again — we will confirm the payment shortly. Check Plans history in a few minutes or contact support."
+            : `Payment could not be completed${desc ? `: ${desc}` : ""}. If money was deducted from your bank, do not pay again — we will confirm shortly. Check Plans history or contact support.`,
+          { duration: 10000, id: "subscription-payment-outcome" }
+        );
+      };
+
+      const checkPendingOrderCaptured = async (): Promise<boolean> => {
+        try {
+          const res = await fetch(
+            `/api/merchant/subscription/order-status?orderId=${encodeURIComponent(orderData.orderId)}`
+          );
+          const data = await res.json().catch(() => ({}));
+          if (data?.success && data?.captured) {
+            setPendingSubscriptionOrderId(null);
+            toast.success("Payment successful. Your plan is now active.", {
+              duration: 6000,
+              id: "subscription-payment-outcome",
+            });
+            await reloadSubscriptionData();
+            return true;
+          }
+        } catch {
+          /* keep polling via pendingSubscriptionOrderId */
+        }
+        return false;
+      };
+
+      /**
+       * Razorpay may fire payment.failed (e.g. retry rate-limit) even after money was captured.
+       * Only run the capture check when a payment_id exists — otherwise it is usually a
+       * pre-debit gateway throttle and we should not scare the merchant.
+       */
+      const resolveAfterCheckoutFailure = async (opts: {
+        rawDescription?: string;
+        paymentId?: string | null;
+      }) => {
+        const desc = String(opts.rawDescription || "").trim();
+        const rateLimited = /too many requests/i.test(desc);
+        const paymentId = opts.paymentId != null ? String(opts.paymentId).trim() : "";
+        const likelyPreDebitThrottle = rateLimited && !paymentId;
+
+        if (likelyPreDebitThrottle) {
+          setPendingSubscriptionOrderId((id) =>
+            id === orderData.orderId ? null : id
+          );
+          toast.error(
+            "Payment gateway is busy (too many requests). Please wait 1–2 minutes, then try again. No payment was started.",
+            { duration: 8000, id: "subscription-payment-outcome" }
+          );
+          return;
+        }
+
+        const verifyingToastId = "subscription-payment-verifying";
+        toast.loading("Checking payment status…", { id: verifyingToastId });
+        for (let i = 0; i < 5; i++) {
+          if (i > 0) {
+            await new Promise((r) => setTimeout(r, 1500));
+          }
+          const ok = await checkPendingOrderCaptured();
+          if (ok) {
+            toast.dismiss(verifyingToastId);
+            return;
+          }
+        }
+        toast.dismiss(verifyingToastId);
+        notifyPaymentNotCompleted(desc);
+      };
+
       // Open Razorpay checkout
       const rzp = new (window as any).Razorpay({
         key: orderData.keyId,
@@ -2162,8 +2269,14 @@ function StoreSettingsContent() {
         },
         modal: {
           ondismiss: () => {
+            if (closedAfterPaymentFailure) {
+              clearProcessing();
+              return;
+            }
             toast.info('ℹ️ Payment cancelled by user');
             clearProcessing();
+            // User may have paid then dismissed — confirm before assuming cancel stuck.
+            void checkPendingOrderCaptured();
           },
         },
         handler: async (response: any) => {
@@ -2183,21 +2296,45 @@ function StoreSettingsContent() {
               verifyData = await verifyRes.json();
             } catch (jsonError) {
               console.error('Failed to parse verification JSON:', jsonError);
-              toast.error('Payment verification failed');
+              // May still be captured — prefer status check over hard failure.
+              const captured = await checkPendingOrderCaptured();
+              if (!captured) {
+                toast.error(
+                  'Payment verification failed. If money was deducted, do not pay again — we will confirm shortly.',
+                  { duration: 10000, id: "subscription-payment-outcome" }
+                );
+              }
               clearProcessing();
               return;
             }
 
             if (verifyRes.ok && verifyData.success) {
               setPendingSubscriptionOrderId(null);
-              toast.success(isUpgrade ? '🎉 Upgrade successful! Your new plan is active.' : '🎉 Payment successful! Subscription activated.');
+              toast.success(
+                isUpgrade
+                  ? '🎉 Upgrade successful! Your new plan is active.'
+                  : '🎉 Payment successful! Subscription activated.',
+                { id: "subscription-payment-outcome" }
+              );
               await reloadSubscriptionData();
             } else {
-              toast.error(verifyData.error || 'Payment verification failed');
+              const captured = await checkPendingOrderCaptured();
+              if (!captured) {
+                toast.error(
+                  `${verifyData.error || 'Payment verification failed'}. If money was deducted, do not pay again — check Plans history shortly.`,
+                  { duration: 10000, id: "subscription-payment-outcome" }
+                );
+              }
             }
           } catch (error) {
             console.error('Error verifying payment:', error);
-            toast.error('Payment verification failed');
+            const captured = await checkPendingOrderCaptured();
+            if (!captured) {
+              toast.error(
+                'Payment verification failed. If money was deducted, do not pay again — we will confirm shortly.',
+                { duration: 10000, id: "subscription-payment-outcome" }
+              );
+            }
           } finally {
             clearProcessing();
           }
@@ -2209,8 +2346,21 @@ function StoreSettingsContent() {
       });
 
       rzp.on('payment.failed', (response: any) => {
-        toast.error(`Payment failed: ${response.error?.description || 'Unknown error'}`);
+        if (paymentFailedHandled) return;
+        paymentFailedHandled = true;
+        closedAfterPaymentFailure = true;
+        const err = response?.error ?? {};
+        const meta = (err.metadata ?? {}) as Record<string, unknown>;
+        const paymentId =
+          (meta.payment_id != null && String(meta.payment_id)) ||
+          (meta.paymentId != null && String(meta.paymentId)) ||
+          null;
+        forceCloseCheckout(rzp);
         clearProcessing();
+        void resolveAfterCheckoutFailure({
+          rawDescription: err.description,
+          paymentId,
+        });
       });
 
       rzp.on('modal.close', () => clearProcessing());

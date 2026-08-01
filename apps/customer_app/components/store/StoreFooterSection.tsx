@@ -1,7 +1,7 @@
 import React, { useState } from "react";
 import { AppText } from "@/components/AppText";
 
-import { View, TouchableOpacity, StyleSheet, Image, useWindowDimensions } from "react-native";
+import { View, TouchableOpacity, StyleSheet, Image, useWindowDimensions, Platform } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 import { useRouter } from "expo-router";
@@ -15,64 +15,135 @@ import { CX } from "@/lib/appAssetKeys";
 
 export type StoreFooterSectionProps = {
   similarMerchants: MerchantSummary[];
+  /** Extra bottom pad (FAB / cart clearance) — same gray as footer so no white strip shows. */
+  bottomPadding?: number;
 };
 
-export function StoreFooterSection({ similarMerchants }: StoreFooterSectionProps) {
-  const router = useRouter();
-  const { width } = useWindowDimensions();
-  const cardW = (width - 16 * 2 - 12) / 2;
+/** Split offer copy into up to 2 short lines for the image badge (e.g. "60% OFF" / "up to ₹120"). */
+function splitOfferLines(offer: string): [string, string?] {
+  const raw = offer.trim();
+  if (!raw) return [""];
+  const upper = raw.replace(/\s+/g, " ");
+  const pipe = upper.split("|").map((s) => s.trim()).filter(Boolean);
+  if (pipe.length >= 2) return [pipe[0]!.toUpperCase(), pipe[1]!.toUpperCase()];
+  const upto = upper.match(/^(.+?)\s+(up\s*to\s*.+)$/i);
+  if (upto) return [upto[1]!.toUpperCase(), upto[2]!.toUpperCase()];
+  if (upper.length > 18) {
+    const mid = Math.ceil(upper.length / 2);
+    const space = upper.lastIndexOf(" ", mid);
+    if (space > 4) {
+      return [upper.slice(0, space).toUpperCase(), upper.slice(space + 1).toUpperCase()];
+    }
+  }
+  return [upper.toUpperCase()];
+}
+
+function SimilarRestaurantCard({
+  merchant,
+  width,
+  onPress,
+}: {
+  merchant: MerchantSummary;
+  width: number;
+  onPress: () => void;
+}) {
+  const img = merchant.displayImage ?? merchant.banner_url;
+  const uri = img ? toAbsoluteImageUrl(img) : null;
+  const offer = merchant.offerText?.trim();
+  const [line1, line2] = offer ? splitOfferLines(offer) : [""];
+  const eta =
+    merchant.deliveryTime ??
+    (merchant.etaMinMinutes && merchant.etaMaxMinutes
+      ? `${merchant.etaMinMinutes}-${merchant.etaMaxMinutes} min`
+      : "30-40 min");
+  // Square thumb ~42% of card width (matches Swiggy similar-restaurant tiles).
+  const imageSize = Math.round(Math.min(76, Math.max(64, width * 0.42)));
 
   return (
-    <View style={styles.wrap}>
+    <TouchableOpacity
+      style={[styles.restCard, { width }]}
+      onPress={onPress}
+      activeOpacity={0.88}
+    >
+      <View style={[styles.restImageWrap, { width: imageSize, height: imageSize }]}>
+        {uri ? (
+          <Image source={{ uri }} style={styles.restImage} resizeMode="cover" />
+        ) : (
+          <View style={styles.restImagePlaceholder}>
+            <MenuItemImagePlaceholder size="md" />
+          </View>
+        )}
+        {line1 ? (
+          <View style={styles.restOfferBadge} pointerEvents="none">
+            <AppText style={styles.restOfferLine1} numberOfLines={1}>
+              {line1}
+            </AppText>
+            {line2 ? (
+              <AppText style={styles.restOfferLine2} numberOfLines={1}>
+                {line2}
+              </AppText>
+            ) : null}
+          </View>
+        ) : null}
+      </View>
+
+      <View style={styles.restBody}>
+        <View style={styles.restTextTop}>
+          <AppText style={styles.restName} numberOfLines={2}>
+            {merchant.name}
+          </AppText>
+          {merchant.cuisines?.length ? (
+            <AppText style={styles.restCuisine} numberOfLines={1}>
+              {merchant.cuisines.slice(0, 2).join(", ")}
+            </AppText>
+          ) : null}
+        </View>
+        <View style={styles.restEtaRow}>
+          <Ionicons name="time-outline" size={11} color="#686B78" />
+          <AppText style={styles.restEta}>{eta}</AppText>
+        </View>
+      </View>
+    </TouchableOpacity>
+  );
+}
+
+export function StoreFooterSection({
+  similarMerchants,
+  bottomPadding = 0,
+}: StoreFooterSectionProps) {
+  const router = useRouter();
+  const { width } = useWindowDimensions();
+  const [expanded, setExpanded] = useState(true);
+  const cardW = (width - 16 * 2 - 10) / 2;
+
+  return (
+    <View style={[styles.wrap, bottomPadding > 0 ? { paddingBottom: bottomPadding } : null]}>
       {similarMerchants.length > 0 ? (
         <View style={styles.block}>
-          <SimilarRestaurantsHeader />
-          <View style={styles.grid}>
-            {similarMerchants.slice(0, 4).map((m) => {
-              const img = m.displayImage ?? m.banner_url;
-              const uri = img ? toAbsoluteImageUrl(img) : null;
-              const offer = m.offerText?.trim();
-              return (
-                <TouchableOpacity
+          <TouchableOpacity
+            style={styles.similarHeader}
+            onPress={() => setExpanded((v) => !v)}
+            activeOpacity={0.8}
+          >
+            <AppText style={styles.similarTitle}>Try these similar restaurants</AppText>
+            <Ionicons
+              name={expanded ? "chevron-up" : "chevron-down"}
+              size={18}
+              color={StoreTheme.textPrimary}
+            />
+          </TouchableOpacity>
+          {expanded ? (
+            <View style={styles.grid}>
+              {similarMerchants.slice(0, 4).map((m) => (
+                <SimilarRestaurantCard
                   key={m.id}
-                  style={[styles.restCard, { width: cardW }]}
+                  merchant={m}
+                  width={cardW}
                   onPress={() => router.push(`/home/merchant/${m.id}`)}
-                  activeOpacity={0.85}
-                >
-                  <View style={styles.restImageWrap}>
-                    {uri ? (
-                      <Image source={{ uri }} style={styles.restImage} resizeMode="cover" />
-                    ) : (
-                      <MenuItemImagePlaceholder size="lg" />
-                    )}
-                    {offer ? (
-                      <View style={styles.restOfferBadge}>
-                        <AppText style={styles.restOfferText} numberOfLines={1}>
-                          {offer.toUpperCase()}
-                        </AppText>
-                      </View>
-                    ) : null}
-                  </View>
-                  <AppText style={styles.restName} numberOfLines={1}>
-                    {m.name}
-                  </AppText>
-                  {m.cuisines?.length ? (
-                    <AppText style={styles.restCuisine} numberOfLines={1}>
-                      {m.cuisines.slice(0, 2).join(", ")}
-                    </AppText>
-                  ) : null}
-                  <View style={styles.restEtaRow}>
-                    <Ionicons name="time-outline" size={12} color={StoreTheme.textSecondary} />
-                    <AppText style={styles.restEta}>
-                      {m.deliveryTime ?? (m.etaMinMinutes && m.etaMaxMinutes
-                        ? `${m.etaMinMinutes}-${m.etaMaxMinutes} min`
-                        : "30-40 min")}
-                    </AppText>
-                  </View>
-                </TouchableOpacity>
-              );
-            })}
-          </View>
+                />
+              ))}
+            </View>
+          ) : null}
         </View>
       ) : null}
 
@@ -106,26 +177,8 @@ export function StoreFooterSection({ similarMerchants }: StoreFooterSectionProps
         ))}
       </View>
 
-      <BrandingFooter />
+      <BrandingFooter compact />
     </View>
-  );
-}
-
-function SimilarRestaurantsHeader() {
-  const [expanded, setExpanded] = useState(true);
-  return (
-    <TouchableOpacity
-      style={styles.similarHeader}
-      onPress={() => setExpanded((v) => !v)}
-      activeOpacity={0.8}
-    >
-      <AppText style={styles.similarTitle}>Try these similar restaurants</AppText>
-      <Ionicons
-        name={expanded ? "chevron-up" : "chevron-down"}
-        size={18}
-        color={StoreTheme.textPrimary}
-      />
-    </TouchableOpacity>
   );
 }
 
@@ -138,10 +191,10 @@ const DISCLAIMERS = [
 
 const styles = StyleSheet.create({
   wrap: {
-    backgroundColor: StoreTheme.background,
+    backgroundColor: "#F5F5F5",
     paddingHorizontal: 16,
     paddingTop: 28,
-    paddingBottom: 8,
+    paddingBottom: 4,
   },
   block: {
     marginBottom: 16,
@@ -150,70 +203,108 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    paddingVertical: 12,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: StoreTheme.border,
-    marginBottom: 12,
+    paddingVertical: 10,
+    marginBottom: 10,
   },
   similarTitle: {
-    fontSize: 16,
+    fontSize: 17,
     fontWeight: "700",
-    color: StoreTheme.textPrimary,
+    color: "#02060C",
+    flex: 1,
+    paddingRight: 8,
   },
   grid: {
     flexDirection: "row",
     flexWrap: "wrap",
-    gap: 12,
+    gap: 10,
   },
   restCard: {
-    marginBottom: 4,
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#FFFFFF",
+    borderRadius: 12,
+    padding: 8,
+    gap: 8,
+    ...Platform.select({
+      ios: {
+        shadowColor: "#000000",
+        shadowOffset: { width: 0, height: 1 },
+        shadowOpacity: 0.08,
+        shadowRadius: 6,
+      },
+      android: {
+        elevation: 2,
+      },
+      default: {},
+    }),
   },
   restImageWrap: {
-    width: "100%",
-    aspectRatio: 1.1,
-    borderRadius: 12,
+    borderRadius: 8,
     overflow: "hidden",
-    backgroundColor: "#F2F2F2",
-    marginBottom: 8,
+    backgroundColor: "#F0F0F5",
     position: "relative",
   },
   restImage: {
     width: "100%",
     height: "100%",
   },
+  restImagePlaceholder: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+  },
   restOfferBadge: {
     position: "absolute",
     bottom: 0,
     left: 0,
     right: 0,
-    backgroundColor: "rgba(0,0,0,0.65)",
-    paddingVertical: 4,
-    paddingHorizontal: 6,
+    backgroundColor: "rgba(2, 6, 12, 0.78)",
+    paddingVertical: 3,
+    paddingHorizontal: 5,
   },
-  restOfferText: {
-    fontSize: 10,
-    fontWeight: "700",
-    color: "#fff",
+  restOfferLine1: {
+    fontSize: 9,
+    fontWeight: "800",
+    color: "#FFFFFF",
+    letterSpacing: 0.15,
+  },
+  restOfferLine2: {
+    fontSize: 8,
+    fontWeight: "600",
+    color: "rgba(255,255,255,0.92)",
+    marginTop: 0.5,
+  },
+  restBody: {
+    flex: 1,
+    minWidth: 0,
+    minHeight: 64,
+    justifyContent: "space-between",
+    paddingVertical: 1,
+  },
+  restTextTop: {
+    gap: 2,
   },
   restName: {
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: "700",
-    color: StoreTheme.textPrimary,
-    marginBottom: 2,
+    color: "#02060C",
+    lineHeight: 17,
   },
   restCuisine: {
-    fontSize: 12,
-    color: StoreTheme.textSecondary,
-    marginBottom: 4,
+    fontSize: 11,
+    color: "#686B78",
+    lineHeight: 14,
   },
   restEtaRow: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 4,
+    gap: 3,
+    marginTop: 4,
   },
   restEta: {
-    fontSize: 12,
-    color: StoreTheme.textSecondary,
+    fontSize: 11,
+    fontWeight: "600",
+    color: "#686B78",
   },
   promoBanner: {
     flexDirection: "row",
