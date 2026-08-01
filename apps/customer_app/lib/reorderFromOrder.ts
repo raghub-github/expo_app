@@ -3,6 +3,7 @@
  */
 
 import type { OrderSummary } from "@/services/order.service";
+import { useCartStore, type CartItem } from "@/store/cartStore";
 import { hydrateCartLine } from "@/lib/cart-line-identity";
 import { normalizeOrderItemSpecialInstructions } from "@/lib/order-item-special-instructions";
 

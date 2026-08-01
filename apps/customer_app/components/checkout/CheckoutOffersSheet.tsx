@@ -167,8 +167,6 @@ function OfferRow({
           style={[styles.gatiCashUnlockBtn, gatiCashPending && styles.gatiCashUnlockBtnPending]}
           onPress={onUnlockWithGatiCash}
           activeOpacity={0.85}
-          // Keep button fully opaque even if parent styles change.
-          collapsable={false}
         >
           <CheckoutText
             style={[styles.gatiCashUnlockText, gatiCashPending && styles.gatiCashUnlockTextPending]}

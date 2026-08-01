@@ -822,7 +822,10 @@ export default function MerchantDetailScreen() {
     return buildItemOfferDisplayMap(merchantOffers, catalog);
   }, [storeOffersData?.merchant_offers, merchant?.menu]);
 
-  const cachedMyOrders = useMemo(() => readSyncMyOrders(), [merchantId]);
+  const cachedMyOrders = useMemo(
+    () => readSyncMyOrders() as OrderSummary[] | undefined,
+    [merchantId]
+  );
 
   const { data: myOrders = EMPTY_MY_ORDERS } = useQuery({
     queryKey: ["my-orders-store", merchantId],

@@ -20,9 +20,8 @@ import {
   formatRideFare,
   getRideServiceLabel,
   parseRideDeliveredBill,
+  buildRidePaymentFareBreakdown,
 } from "@/lib/ride-order-display";
-import { RideCheckoutBillSummary } from "@/components/ride/RideCheckoutBillSummary";
-import { buildRideCheckoutCompactBill } from "@/lib/ride-fare-bill-display";
 
 type Props = {
   order: OrderDetail;
@@ -33,15 +32,16 @@ const MINT_DARK = GatiMitraColors.deepMintStart;
 
 export function RideCashPayScreen({ order, onBack }: Props) {
   const insets = useSafeAreaInsets();
-  const deliveredBill = parseRideDeliveredBill(order);
-  const compact = useMemo(
-    () => buildRideCheckoutCompactBill(deliveredBill),
-    [deliveredBill]
+  const deliveredBill = useMemo(() => parseRideDeliveredBill(order), [order]);
+  const fareBreakdown = useMemo(() => buildRidePaymentFareBreakdown(order), [order]);
+  const fareLineItems = useMemo(
+    () => fareBreakdown.lines.filter((line) => !line.emphasis),
+    [fareBreakdown.lines]
   );
 
   const rideLabel = getRideServiceLabel(order.rideType);
   const displayOrderId = order.formattedOrderId ?? order.orderId;
-  const amount = deliveredBill?.finalAmount ?? Number(order.totalAmount ?? 0);
+  const amount = deliveredBill.total > 0 ? deliveredBill.total : Number(order.totalAmount ?? 0);
   const amountLabel = formatRideFare(amount);
 
   const bottomInset = resolveBottomSafeInset(insets.bottom);
@@ -86,10 +86,27 @@ export function RideCashPayScreen({ order, onBack }: Props) {
           </AppText>
         </View>
 
-        {compact ? (
+        {fareLineItems.length > 0 ? (
           <View style={styles.billCard}>
             <AppText style={styles.billTitle}>Fare breakdown</AppText>
-            <RideCheckoutBillSummary bill={compact} />
+            {fareLineItems.map((line, idx) => (
+              <View key={`${line.label}-${idx}`} style={styles.fareRow}>
+                <AppText style={styles.fareLabel}>{line.label}</AppText>
+                <AppText
+                  style={[styles.fareValue, line.isDiscount && styles.fareDiscountValue]}
+                >
+                  {line.isDiscount
+                    ? `- ${formatRideFare(Math.abs(line.amount))}`
+                    : formatRideFare(line.amount)}
+                </AppText>
+              </View>
+            ))}
+            <View style={styles.fareTotalRow}>
+              <AppText style={styles.fareTotalLabel}>Total</AppText>
+              <AppText style={styles.fareTotalValue}>
+                {formatRideFare(fareBreakdown.total)}
+              </AppText>
+            </View>
           </View>
         ) : null}
 
@@ -183,6 +200,25 @@ const styles = StyleSheet.create({
     textTransform: "uppercase",
     letterSpacing: 0.4,
   },
+  fareRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+  },
+  fareLabel: { fontSize: 13, color: "#4B5563", fontWeight: "500", flex: 1 },
+  fareValue: { fontSize: 13, color: "#111827", fontWeight: "600" },
+  fareDiscountValue: { color: "#059669" },
+  fareTotalRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginTop: 4,
+    paddingTop: 8,
+    borderTopWidth: 1,
+    borderTopColor: "#E5E7EB",
+  },
+  fareTotalLabel: { fontSize: 14, fontWeight: "800", color: "#111827" },
+  fareTotalValue: { fontSize: 15, fontWeight: "900", color: "#111827" },
   infoCard: {
     marginTop: 12,
     flexDirection: "row",

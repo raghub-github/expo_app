@@ -196,6 +196,7 @@ export default function RideSearchingScreen() {
     selectedRideName?: string;
     selectedRideImageKey?: string;
     estimatedFare?: string;
+    quotedGrandTotal?: string;
     tripKm?: string;
     orderId?: string;
     returnTo?: string;
