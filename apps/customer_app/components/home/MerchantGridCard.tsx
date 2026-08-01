@@ -19,6 +19,7 @@ import {
   GRID_RATING_PILL,
 } from "@/components/home/GridCardRatingCutout";
 import { AppText } from "@/components/AppText";
+import { usePreventServicesAtPin } from "@/hooks/usePreventServicesAtPin";
 
 const { width: SCREEN_W } = Dimensions.get("window");
 const GRID_PAD = 16;
@@ -60,11 +61,16 @@ export function MerchantGridCard({
   weatherDelayMinutes = 0,
   width = MERCHANT_RAIL_CARD_W,
 }: MerchantGridCardProps) {
+  const { foodLocked } = usePreventServicesAtPin();
   const bannerUri = useMemo(() => resolveMerchantBannerUri(merchant), [merchant]);
+  const handlePress = () => {
+    if (foodLocked) return;
+    onPress();
+  };
   // Shutter only on committed onPress (via navigateToMerchant) — not pressIn,
   // so cancelled scrolls never flash a full-screen Modal over the next tap.
-  const cardPress = useScrollSafePress(onPress, {
-    onPressIn: onPressIn,
+  const cardPress = useScrollSafePress(handlePress, {
+    onPressIn: foodLocked ? undefined : onPressIn,
   });
 
   useEffect(() => {
@@ -79,7 +85,7 @@ export function MerchantGridCard({
   const imageH = merchantRailImageHeight(width);
 
   return (
-    <View style={[styles.card, { width }]}>
+    <View style={[styles.card, { width }, foodLocked && styles.cardBlocked]}>
       <View style={[styles.imageStage, { width }]}>
         <View style={[styles.imageClip, { width, height: imageH }]}>
           <TouchableOpacity
@@ -89,11 +95,12 @@ export function MerchantGridCard({
             {...({ onTouchMove: cardPress.onTouchMove } as { onTouchMove?: (e: GestureResponderEvent) => void })}
             activeOpacity={0.92}
             style={styles.imageTap}
+            disabled={foodLocked}
           >
             {bannerUri ? (
               <Image
                 source={{ uri: bannerUri }}
-                style={styles.banner}
+                style={[styles.banner, foodLocked && styles.bannerDimmed]}
                 contentFit="cover"
                 cachePolicy="memory-disk"
                 transition={0}
@@ -109,7 +116,14 @@ export function MerchantGridCard({
                 <Ionicons name="restaurant" size={28} color="rgba(180,120,60,0.35)" />
               </View>
             )}
-            {offerBadge ? (
+            {foodLocked ? (
+              <View style={styles.preventOverlay} pointerEvents="none">
+                <View style={styles.preventBadge}>
+                  <Ionicons name="lock-closed" size={12} color="#fff" />
+                  <AppText style={styles.preventBadgeText}>Blocked</AppText>
+                </View>
+              </View>
+            ) : offerBadge ? (
               <View style={styles.offerImageTag}>
                 <AppText style={styles.offerImageTagText} numberOfLines={2}>
                   {offerBadge}
@@ -119,10 +133,12 @@ export function MerchantGridCard({
           </TouchableOpacity>
         </View>
 
-        <GridCardRatingCutout
-          rating={merchant.avgRating}
-          totalReviews={merchant.totalReviews}
-        />
+        {!foodLocked ? (
+          <GridCardRatingCutout
+            rating={merchant.avgRating}
+            totalReviews={merchant.totalReviews}
+          />
+        ) : null}
       </View>
 
       <TouchableOpacity
@@ -132,12 +148,17 @@ export function MerchantGridCard({
         {...({ onTouchMove: cardPress.onTouchMove } as { onTouchMove?: (e: GestureResponderEvent) => void })}
         activeOpacity={0.7}
         style={styles.body}
+        disabled={foodLocked}
       >
         <AppText style={styles.name} numberOfLines={1}>
           {merchant.name}
         </AppText>
         <View style={styles.metaRow}>
-          {showNearFast ? (
+          {foodLocked ? (
+            <AppText style={[styles.metaText, styles.metaBlocked]} numberOfLines={1}>
+              Unavailable in this area
+            </AppText>
+          ) : showNearFast ? (
             <>
               <Ionicons name="flash" size={11} color="#22C55E" />
               <AppText style={[styles.metaText, styles.metaFast]} numberOfLines={1}>
@@ -166,6 +187,9 @@ const styles = StyleSheet.create({
   card: {
     marginBottom: 14,
   },
+  cardBlocked: {
+    opacity: 0.78,
+  },
   imageStage: {
     position: "relative",
     overflow: "visible",
@@ -176,6 +200,34 @@ const styles = StyleSheet.create({
     borderBottomLeftRadius: 0,
     overflow: "hidden",
     backgroundColor: "#FFF4E8",
+  },
+  bannerDimmed: {
+    opacity: 0.55,
+  },
+  preventOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(15, 23, 42, 0.5)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  preventBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    backgroundColor: "#DC2626",
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 999,
+  },
+  preventBadgeText: {
+    color: "#fff",
+    fontSize: 10,
+    fontWeight: "800",
+    textTransform: "uppercase",
+  },
+  metaBlocked: {
+    color: "#DC2626",
+    fontWeight: "600",
   },
   imageTap: {
     flex: 1,

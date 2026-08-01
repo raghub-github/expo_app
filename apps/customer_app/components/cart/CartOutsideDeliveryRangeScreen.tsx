@@ -48,6 +48,8 @@ type Props = {
   onClearCart: () => void;
   /** Dismiss without clearing cart (UI back + Android system back). */
   onClose?: () => void;
+  /** When false, Android back is left to a parent overlay (e.g. address sheet). */
+  hardwareBackEnabled?: boolean;
 };
 
 export function CartOutsideDeliveryRangeScreen({
@@ -56,6 +58,7 @@ export function CartOutsideDeliveryRangeScreen({
   onChangeAddress,
   onClearCart,
   onClose,
+  hardwareBackEnabled = true,
 }: Props) {
   const insets = useSafeAreaInsets();
   const bannerUri = merchant?.bannerUrl
@@ -70,13 +73,13 @@ export function CartOutsideDeliveryRangeScreen({
   const bottomPad = insets.bottom;
 
   useEffect(() => {
-    if (!visible || !onClose) return;
+    if (!visible || !onClose || !hardwareBackEnabled) return;
     const sub = BackHandler.addEventListener("hardwareBackPress", () => {
       onClose();
       return true;
     });
     return () => sub.remove();
-  }, [visible, onClose]);
+  }, [visible, onClose, hardwareBackEnabled]);
 
   useEffect(() => {
     if (!visible) return;
@@ -88,7 +91,7 @@ export function CartOutsideDeliveryRangeScreen({
       visible={visible}
       animationType="fade"
       presentationStyle="fullScreen"
-      onRequestClose={onClose}
+      onRequestClose={hardwareBackEnabled ? onClose : undefined}
       statusBarTranslucent
     >
       <View style={styles.screen}>

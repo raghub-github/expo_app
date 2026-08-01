@@ -18,6 +18,8 @@ import { merchantBasePriceForLineItem, formatMerchantRs } from "@/lib/merchant-l
 import { getCachedMenuItem, setCachedMenuItem } from "@/lib/menuItemCache";
 import type { LineItem } from "@/hooks/useOrders";
 import { GatiMitraMerchant, CARD_RADIUS } from "@/constants/theme";
+import { resolveLineItemCookingNote } from "@/lib/merchant-order-food-item-display";
+import { OrderLineAddImagePrompt } from "@/components/order/OrderLineAddImagePrompt";
 
 type Props = {
   visible: boolean;
@@ -179,6 +181,8 @@ export function OrderItemDetailsSheet({ visible, lineItem, onClose }: Props) {
 
   if (!visible || !lineItem) return null;
 
+  const cookingNote = resolveLineItemCookingNote(lineItem);
+
   return (
     <>
       <MerchantBottomSheetShell
@@ -235,11 +239,16 @@ export function OrderItemDetailsSheet({ visible, lineItem, onClose }: Props) {
               <View style={styles.imagePlaceholder}>
                 <Ionicons name="restaurant-outline" size={32} color={GatiMitraMerchant.textTertiary} />
                 <Text style={styles.imagePlaceholderText}>
-                  {imageUri ? "Image not available" : "Loading image…"}
+                  {imageUri ? "Image not available" : "No photo on menu yet"}
                 </Text>
               </View>
             )}
           </View>
+          {lineItem ? (
+            <View style={{ paddingHorizontal: 16, marginTop: 8 }}>
+              <OrderLineAddImagePrompt item={lineItem} enabled />
+            </View>
+          ) : null}
 
           <View style={styles.body}>
             <View style={styles.titleRow}>
@@ -255,6 +264,13 @@ export function OrderItemDetailsSheet({ visible, lineItem, onClose }: Props) {
             <Text style={[styles.description, !description && styles.descriptionEmpty]}>
               {description || "No description added"}
             </Text>
+
+            {cookingNote ? (
+              <View style={styles.cookingNoteCard}>
+                <Text style={styles.cookingNoteLabel}>Cooking request</Text>
+                <Text style={styles.cookingNoteText}>Cooking: {cookingNote}</Text>
+              </View>
+            ) : null}
           </View>
         </ScrollView>
       </MerchantBottomSheetShell>
@@ -367,6 +383,29 @@ const styles = StyleSheet.create({
   },
   descriptionEmpty: {
     color: "#F472B6",
+  },
+  cookingNoteCard: {
+    marginTop: 14,
+    borderWidth: 1,
+    borderColor: "#FCD34D",
+    borderRadius: CARD_RADIUS,
+    backgroundColor: "#FFFBEB",
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    gap: 4,
+  },
+  cookingNoteLabel: {
+    fontSize: 11,
+    fontWeight: "800",
+    color: GatiMitraMerchant.textSecondary,
+    letterSpacing: 0.6,
+    textTransform: "uppercase",
+  },
+  cookingNoteText: {
+    fontSize: 14,
+    fontWeight: "600",
+    color: "#B45309",
+    lineHeight: 20,
   },
   stockFooter: {
     borderTopWidth: StyleSheet.hairlineWidth,

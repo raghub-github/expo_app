@@ -7,6 +7,7 @@ export type StoreProfile = {
   store_id: string;
   name: string;
   store_name: string;
+  owner_full_name?: string | null;
   store_display_name?: string | null;
   store_description?: string | null;
   store_email?: string | null;

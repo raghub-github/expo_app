@@ -3,6 +3,10 @@ import { createClient } from "@supabase/supabase-js";
 import crypto from "crypto";
 import { createServerSupabaseClient } from '@/lib/supabase/server';
 import { validateMerchantFromSession } from '@/lib/auth/validate-merchant';
+import {
+  buildPlanPurchaseSnapshot,
+  expiryFromBillingCycle,
+} from '@/lib/plan-purchase-snapshot';
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder.supabase.co";
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "placeholder-service-role-key";
@@ -122,8 +126,7 @@ export async function POST(request: NextRequest) {
     }
 
     const now = new Date();
-    const expiryDate = new Date(now);
-    expiryDate.setMonth(expiryDate.getMonth() + 1); // Default 1 month
+    const expiryDate = expiryFromBillingCycle(now, plan.billing_cycle);
 
     // Amount breakdown for audit (subtotal is plan price; GST derived from plan.gst_percent).
     const gstPercent = (() => {
@@ -133,6 +136,7 @@ export async function POST(request: NextRequest) {
     const subtotalPaise = Math.round(Number(plan.price ?? 0) * 100);
     const gstAmountPaise = Math.round((subtotalPaise * gstPercent) / 100);
     const totalPaise = subtotalPaise + gstAmountPaise;
+    const planSnap = buildPlanPurchaseSnapshot(plan);
 
     // Create or update subscription (only consider ACTIVE so we don't touch UPGRADED/EXPIRED)
     const { data: existingSubscription } = await supabase
@@ -159,6 +163,7 @@ export async function POST(request: NextRequest) {
           last_payment_date: now.toISOString(),
           next_billing_date: expiryDate.toISOString(),
           updated_at: now.toISOString(),
+          ...planSnap,
         })
         .eq('id', existingSubscription.id)
         .select('id')
@@ -184,6 +189,7 @@ export async function POST(request: NextRequest) {
           auto_renew: false, // Default to false
           last_payment_date: now.toISOString(),
           next_billing_date: expiryDate.toISOString(),
+          ...planSnap,
         })
         .select('id')
         .single();
@@ -216,6 +222,7 @@ export async function POST(request: NextRequest) {
       payment_date: now.toISOString(),
       billing_period_start: now.toISOString(),
       billing_period_end: expiryDate.toISOString(),
+      ...planSnap,
     });
 
     // Unlock plan-locked items after successful upgrade

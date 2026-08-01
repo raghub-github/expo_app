@@ -1,6 +1,5 @@
 /**
  * Post-pickup cancellation: order closed after a rider had already picked up.
- * Delivery partner on order details is shown only in this case.
  */
 
 import type { ApiFoodOrder, FoodOrderRiderLogEntry } from "@/services/ordersApi";

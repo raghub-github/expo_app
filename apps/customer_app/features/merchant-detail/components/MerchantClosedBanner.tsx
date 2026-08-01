@@ -39,11 +39,14 @@ export function MerchantClosedBanner({
       nextCloseAt,
       nowMs: scheduleNow,
     });
-    if (openStatusLabel.label === "Open soon" && openStatusLabel.sub) {
-      return `Opening soon — browse the menu. ${openStatusLabel.sub} remaining.`;
+    if (openStatusLabel.isOpeningSoon && openStatusLabel.sub) {
+      return `Opening soon — browse the menu. Opens in ${openStatusLabel.sub}.`;
     }
     if (nextOpenAt) {
-      return `Closed for now — browse the menu. ${formatNextOpenTime(toTimestamp(nextOpenAt)!)}.`;
+      const ts = toTimestamp(nextOpenAt);
+      if (ts != null) {
+        return `Closed for now — browse the menu. ${formatNextOpenTime(ts)}.`;
+      }
     }
     return "Closed for now — you can still browse the menu. Ordering resumes when we open.";
   }, [merchantLoaded, isStoreClosedForStatus, nextOpenAt, nextCloseAt, scheduleNow]);

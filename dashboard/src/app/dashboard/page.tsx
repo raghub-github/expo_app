@@ -5,6 +5,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { AlertCircle, MapPin, Shield } from "lucide-react";
 import dynamic from "next/dynamic";
 import { ServicePointForm } from "@/components/map/ServicePointForm";
+import { useLogout } from "@/hooks/queries/useAuthQuery";
 import { usePermissionsQuery } from "@/hooks/queries/usePermissionsQuery";
 import { queryKeys } from "@/lib/queryKeys";
 
@@ -33,6 +34,7 @@ const ServicePointsMap = dynamic(
 export default function DashboardHome() {
   const queryClient = useQueryClient();
   const { data: userPerms, error, isError } = usePermissionsQuery();
+  const logoutMutation = useLogout();
   const [hasMounted, setHasMounted] = useState(false);
 
   useEffect(() => {
@@ -40,6 +42,7 @@ export default function DashboardHome() {
   }, []);
 
   const isSuperAdmin = hasMounted && (userPerms?.isSuperAdmin ?? false);
+  const needsAccountSetup = hasMounted && !!userPerms && !userPerms.exists;
 
   const handleRetry = () => {
     queryClient.invalidateQueries({ queryKey: queryKeys.permissions() });
@@ -75,17 +78,45 @@ export default function DashboardHome() {
         </div>
       )}
 
-      {/* Account setup warning – defer until mount to avoid hydration mismatch vs SSR (no query cache on server). */}
-      {hasMounted && userPerms && !userPerms.exists && (
-        <div className="mb-4 rounded-xl border border-yellow-200/80 bg-yellow-50 p-4">
-          <div className="flex flex-start">
-            <AlertCircle className="mt-0.5 h-5 w-5 flex-shrink-0 text-yellow-600" />
-            <div className="ml-3">
-              <h3 className="text-sm font-medium text-yellow-800">Account Setup Required</h3>
-              <p className="mt-1 text-sm text-yellow-700">
-                Your account is authenticated but not yet added to the system. Please contact an administrator to complete your account setup.
-              </p>
+      {/* Account setup modal – centered; Got it signs out and sends user to login. */}
+      {needsAccountSetup && (
+        <div
+          className="fixed inset-0 z-[100] flex items-center justify-center bg-black/45 p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="account-setup-title"
+          aria-describedby="account-setup-desc"
+        >
+          <div className="w-full max-w-md rounded-2xl border border-amber-200 bg-white p-6 shadow-xl">
+            <div className="flex items-start gap-3">
+              <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-full bg-amber-50">
+                <AlertCircle className="h-5 w-5 text-amber-600" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <h3
+                  id="account-setup-title"
+                  className="text-base font-semibold text-slate-900"
+                >
+                  Account Setup Required
+                </h3>
+                <p
+                  id="account-setup-desc"
+                  className="mt-2 text-sm leading-relaxed text-slate-600"
+                >
+                  Your account is authenticated but not yet added to the system.
+                  Please contact an administrator to complete your account setup.
+                </p>
+              </div>
             </div>
+
+            <button
+              type="button"
+              disabled={logoutMutation.isPending}
+              onClick={() => logoutMutation.mutate()}
+              className="mt-6 w-full rounded-xl bg-[#121212] px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-black disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {logoutMutation.isPending ? "Signing out…" : "Got it"}
+            </button>
           </div>
         </div>
       )}

@@ -710,7 +710,8 @@ export default function OrderRaiseTicketScreen() {
             <HelpActionRow
               icon="chatbubble-ellipses-outline"
               title="Chat with delivery partner"
-              onPress={handleChatRider}
+              subtitle={hasRider ? null : "Available once a delivery partner is assigned"}
+              onPress={hasRider ? handleChatRider : undefined}
             />
           </HelpSectionBlock>
         ) : hasRider ? (

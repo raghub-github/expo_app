@@ -57,8 +57,7 @@ api.interceptors.request.use(
       config.headers.Authorization = `Bearer ${token}`;
     }
     if (!shouldBypassStartupGate(config.url)) {
-      await enterStartupApiGate(config.url);
-      cfg.__startupGate = true;
+      cfg.__startupGate = await enterStartupApiGate(config.url);
     }
     return config;
   },

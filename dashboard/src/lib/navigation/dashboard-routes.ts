@@ -35,6 +35,10 @@ import {
   Layers,
   ClipboardList,
   Star,
+  CalendarClock,
+  Megaphone,
+  Smartphone,
+  ListChecks,
 } from "lucide-react";
 
 /** For Area Manager sidebar: show only routes allowed for this manager type. */
@@ -422,6 +426,64 @@ export const areaManagerDashboardRoutes: DashboardSubRoute[] = [
     icon: History,
     description: "Who onboarded, verified, rejected",
     areaManagerType: "BOTH",
+  },
+];
+
+/** Super Admin Notifications module — rendered in the shared right sidebar. */
+export const notificationDashboardRoutes: DashboardSubRoute[] = [
+  {
+    name: "Dashboard",
+    href: "/dashboard/super-admin/notifications",
+    icon: LayoutDashboard,
+    description: "Notification delivery overview",
+  },
+  {
+    name: "Templates",
+    href: "/dashboard/super-admin/notifications/templates",
+    icon: FileText,
+    description: "Manage notification templates",
+  },
+  {
+    name: "Campaigns",
+    href: "/dashboard/super-admin/notifications/campaigns",
+    icon: Megaphone,
+    description: "Create and manage campaigns",
+  },
+  {
+    name: "Scheduled",
+    href: "/dashboard/super-admin/notifications/scheduled",
+    icon: CalendarClock,
+    description: "View scheduled campaigns",
+  },
+  {
+    name: "History",
+    href: "/dashboard/super-admin/notifications/history",
+    icon: History,
+    description: "Notification history",
+  },
+  {
+    name: "Analytics",
+    href: "/dashboard/super-admin/notifications/analytics",
+    icon: BarChart3,
+    description: "Delivery and engagement analytics",
+  },
+  {
+    name: "Devices",
+    href: "/dashboard/super-admin/notifications/devices",
+    icon: Smartphone,
+    description: "Registered notification devices",
+  },
+  {
+    name: "Logs / Failures",
+    href: "/dashboard/super-admin/notifications/logs",
+    icon: ListChecks,
+    description: "Dispatch logs and failures",
+  },
+  {
+    name: "Settings",
+    href: "/dashboard/super-admin/notifications/settings",
+    icon: Settings,
+    description: "Notification settings",
   },
 ];
 

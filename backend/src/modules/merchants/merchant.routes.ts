@@ -3,6 +3,7 @@ import type { FastifyInstance } from "fastify";
 import {
   listStores,
   getMenuByStoreId,
+  assertStoreHasCustomerVisibleMenu,
   getMenuVersion,
   getMenuDelta,
   getStoreLiveStatus,
@@ -858,6 +859,10 @@ export async function merchantRoutes(app: FastifyInstance) {
 
       const { store, items } = await getMenuByStoreId(id, q);
       if (!store) {
+        return reply.status(404).send({ error: "Store not found" });
+      }
+      // Empty / fully locked catalogs must not be customer-visible (deep links included).
+      if (!(await assertStoreHasCustomerVisibleMenu(store))) {
         return reply.status(404).send({ error: "Store not found" });
       }
       const storeInternalId = Number(store.id);

@@ -19,6 +19,7 @@ import {
   formatPeriodRange,
   formatShortDate,
   payoutCardToParams,
+  payoutReturnedDisplayAmount,
   resolveWalletDisplayBalance,
   statusBadgeStyle,
   statusLabel,
@@ -38,6 +39,7 @@ const STATUS_FILTERS: { key: StatusFilter; label: string }[] = [
   { key: 'PENDING', label: 'Pending' },
   { key: 'PROCESSING', label: 'In process' },
   { key: 'PAID', label: 'Settled' },
+  { key: 'RETURNED', label: 'Returned' },
   { key: 'FAILED', label: 'Failed' },
 ];
 
@@ -323,9 +325,19 @@ function PayoutHistoryContent() {
                             >
                               <td className="py-3.5 px-5 text-gray-900 font-medium">
                                 {formatPeriodRange(card.periodStart, card.periodEnd)}
+                                {card.closeNote ? (
+                                  <span className="block text-xs font-normal text-amber-700 mt-0.5">
+                                    {card.closeNote}
+                                  </span>
+                                ) : null}
                               </td>
                               <td className="py-3.5 px-5 text-right font-semibold text-gray-900 tabular-nums">
                                 {formatCurrency(card.netPayout)}
+                                {payoutReturnedDisplayAmount(card) > 0 ? (
+                                  <span className="block text-xs font-normal text-gray-500">
+                                    {formatCurrency(payoutReturnedDisplayAmount(card))} returned
+                                  </span>
+                                ) : null}
                               </td>
                               <td className="py-3.5 px-5 text-center text-gray-600 tabular-nums">
                                 {card.orderCount}

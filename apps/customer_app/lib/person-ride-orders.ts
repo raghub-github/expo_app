@@ -11,18 +11,9 @@ import { rideFareDistanceNavParams, parseRideFareDistanceKm } from "@/lib/ride-f
 import { rideLabelsFromCheckoutMetadata } from "@/lib/ride-address-labels";
 import { isDismissedRideOrder } from "@/lib/ride-dismissed-orders";
 import { isOutstandingRideFareOrder } from "@/lib/ride-fare-gate";
+import { isPersonRideOrderSummary } from "@/lib/person-ride-order-kind";
 
-/** List row heuristics when orderType is absent from summary API. */
-export function isPersonRideOrderSummary(order: OrderSummary): boolean {
-  if ((order.orderType ?? "").trim().toLowerCase() === "person_ride") return true;
-  const ref = (order.formattedOrderId ?? order.orderId ?? "").trim().toUpperCase();
-  if (/^GMP\d*/.test(ref)) return true;
-  if ((order.rideType ?? "").trim().length > 0) return true;
-  const items = order.items ?? [];
-  if (order.merchantStoreId != null) return false;
-  if (items.length > 0) return false;
-  return true;
-}
+export { isPersonRideOrderSummary };
 
 export function isActivePersonRideOrder(order: OrderSummary): boolean {
   if (!isPersonRideOrderSummary(order)) return false;

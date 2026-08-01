@@ -17,6 +17,7 @@ import {
 } from "@/lib/cart-line-identity";
 import { normalizeOrderItemSpecialInstructions } from "@/lib/order-item-special-instructions";
 import { cartQtyDebug } from "@/lib/cartQtyDebug";
+import { merchantCartMatchesRoute } from "@/lib/merchantRouteId";
 
 export type { CartDeliveryAnchor } from "@/lib/cartDeliveryAnchor";
 
@@ -97,6 +98,11 @@ type CartState = {
   ) => void;
   updateQuantity: (lineId: string, delta: number) => void;
   removeItem: (lineId: string) => void;
+  /**
+   * Drop cart lines whose base menu item id is no longer sellable (locked / OOS /
+   * deleted / filtered out of the live customer menu). Used after menu delta sync.
+   */
+  removeUnavailableMenuItems: (merchantId: string, availableMenuItemIds: Set<string>) => number;
   /** Atomic line replace — used by checkout edit flows. */
   replaceLine: (lineId: string, next: CartLineInput, quantity: number) => void;
   /** Partial line update (e.g. instruction-only edit). */
@@ -406,6 +412,45 @@ export const useCartStore = create<CartState>((set, get) => ({
 
   removeItem: (lineId) => {
     get().updateQuantity(lineId, -999);
+  },
+
+  removeUnavailableMenuItems: (merchantId, availableMenuItemIds) => {
+    const state = get();
+    if (
+      !merchantId ||
+      !merchantCartMatchesRoute(state.merchantId, merchantId) ||
+      state.items.length === 0
+    ) {
+      return 0;
+    }
+    // Empty available set is treated as "unknown" — never mass-delete the cart.
+    if (availableMenuItemIds.size === 0) return 0;
+
+    const next = state.items.filter((i) => {
+      const base = cartItemBaseId(i.menuItemId);
+      if (availableMenuItemIds.has(base) || availableMenuItemIds.has(i.menuItemId)) {
+        return true;
+      }
+      // Composite lines: base_variant_addons — accept if any available id prefixes the line.
+      for (const id of availableMenuItemIds) {
+        if (i.menuItemId === id || i.menuItemId.startsWith(`${id}_`)) return true;
+      }
+      return false;
+    });
+    const removed = state.items.length - next.length;
+    if (removed <= 0) return 0;
+    if (next.length === 0) {
+      set({
+        ...defaultState,
+        stashedCarts: state.stashedCarts,
+        hydrated: state.hydrated,
+        lastUpdatedAt: Date.now(),
+      });
+    } else {
+      set({ items: next, lastUpdatedAt: Date.now() });
+    }
+    queueCartPersist(get);
+    return removed;
   },
 
   replaceLine: (lineId, nextItem, quantity) => {

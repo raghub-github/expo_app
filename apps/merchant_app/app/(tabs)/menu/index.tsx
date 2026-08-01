@@ -76,7 +76,8 @@ type ChangeRequestFilter = "ALL" | "DELETE" | "UPDATE";
 type ItemKindFilter = "ALL" | "ITEMS" | "COMBOS" | "ADDONS";
 
 type MenuViewMode = "card" | "tree";
-const MENU_VIEW_MODE_KEY = "gatimitra_merchant_menu_view_mode";
+/** Bumped so existing installs pick list (tree) as the new default once. */
+const MENU_VIEW_MODE_KEY = "gatimitra_merchant_menu_view_mode_v2";
 const CATALOG_TOGGLE_RADIUS = 15;
 
 type CatalogKindTab = "ALL" | "COMBOS" | "ADDONS";
@@ -393,7 +394,6 @@ function MenuItemCard({
   photoUpload?: { previewUri: string; progress: number } | null;
 }) {
   const [toggling, setToggling] = useState(false);
-  const [recommendToggling, setRecommendToggling] = useState(false);
   const { token } = useAuth();
   const baseNum = Number(item.base_price);
   const sellingNum = Number(item.selling_price);
@@ -416,10 +416,8 @@ function MenuItemCard({
   }, [imageUri, token]);
 
   const handleRecommendToggle = () => {
-    if (recommendToggling || isLocked) return;
-    setRecommendToggling(true);
+    if (isLocked) return;
     onToggleRecommended(item, !isRecommended);
-    setTimeout(() => setRecommendToggling(false), 250);
   };
 
   const handleStockToggle = (nextInStock: boolean) => {
@@ -530,8 +528,9 @@ function MenuItemCard({
         <TouchableOpacity
           style={styles.catalogRecommendBtn}
           onPress={handleRecommendToggle}
-          disabled={recommendToggling || isLocked}
+          disabled={isLocked}
           activeOpacity={0.75}
+          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
           accessibilityRole="switch"
           accessibilityState={{ checked: isRecommended }}
           accessibilityLabel="Recommend item"
@@ -783,7 +782,7 @@ export default function MenuScreen() {
   const [searchDebounced, setSearchDebounced] = useState("");
   const [addMenuVisible, setAddMenuVisible] = useState(false);
   const [manageSheetVisible, setManageSheetVisible] = useState(false);
-  const [viewMode, setViewMode] = useState<MenuViewMode>("card");
+  const [viewMode, setViewMode] = useState<MenuViewMode>("tree");
   const [openTreeGroups, setOpenTreeGroups] = useState<Record<string, boolean>>({});
   const [categoryFilterSheetVisible, setCategoryFilterSheetVisible] = useState(false);
   const [subcategoryFilterSheetVisible, setSubcategoryFilterSheetVisible] = useState(false);
@@ -1326,14 +1325,8 @@ export default function MenuScreen() {
   const handleAddItem = useCallback(() => {
     setAddMenuVisible(false);
     if ((categories?.length ?? 0) === 0) {
-      Alert.alert(
-        "Add a category first",
-        "You need at least one category before adding menu items. Add a category now?",
-        [
-          { text: "Cancel", style: "cancel" },
-          { text: "Add category", onPress: () => router.push("/menu/categories" as any) },
-        ]
-      );
+      // Open Add Category form first — items require at least one category.
+      router.push("/menu/categories?add=1" as any);
       return;
     }
     router.push("/menu/add-edit-item" as any);
@@ -1913,35 +1906,49 @@ export default function MenuScreen() {
     [refetchCatalog, queryClient, storeId],
   );
 
+  const applyRecommendedLocally = useCallback(
+    (itemId: number, value: boolean) => {
+      queryClient.setQueriesData<ListItemsResponse>(
+        { queryKey: ["menu", "items", storeId] },
+        (old) => {
+          if (!old?.items) return old;
+          return {
+            ...old,
+            items: old.items.map((it) =>
+              it.id === itemId ? { ...it, is_recommended: value } : it
+            ),
+          };
+        }
+      );
+      setItemPreviewSheet((prev) =>
+        prev && prev.id === itemId ? { ...prev, is_recommended: value } : prev
+      );
+      setItemPhotoSheet((prev) =>
+        prev && prev.id === itemId ? { ...prev, is_recommended: value } : prev
+      );
+    },
+    [queryClient, storeId]
+  );
+
+  const recommendRequestSeq = useRef(new Map<number, number>());
+
   const handleToggleRecommended = useCallback(
     async (item: MenuItemRow, nextRecommended: boolean) => {
       if (!storeId || !token) return;
+      const seq = (recommendRequestSeq.current.get(item.id) ?? 0) + 1;
+      recommendRequestSeq.current.set(item.id, seq);
+      // Flip first so one tap shows immediately; roll back only if this is still the latest tap.
+      applyRecommendedLocally(item.id, nextRecommended);
       try {
         await patchItemFlags(storeId, item.id, token, { is_recommended: nextRecommended });
-        queryClient.setQueriesData<ListItemsResponse>(
-          { queryKey: ["menu", "items", storeId] },
-          (old) => {
-            if (!old?.items) return old;
-            return {
-              ...old,
-              items: old.items.map((it) =>
-                it.id === item.id ? { ...it, is_recommended: nextRecommended } : it
-              ),
-            };
-          }
-        );
-        setItemPreviewSheet((prev) =>
-          prev && prev.id === item.id ? { ...prev, is_recommended: nextRecommended } : prev
-        );
-        setItemPhotoSheet((prev) =>
-          prev && prev.id === item.id ? { ...prev, is_recommended: nextRecommended } : prev
-        );
       } catch (e) {
+        if (recommendRequestSeq.current.get(item.id) !== seq) return;
+        applyRecommendedLocally(item.id, !nextRecommended);
         const msg = e instanceof Error ? e.message : "Could not update recommendation";
         Alert.alert("Update failed", msg);
       }
     },
-    [storeId, token, queryClient]
+    [storeId, token, applyRecommendedLocally]
   );
 
   const handlePreviewUpdateStock = useCallback(() => {
@@ -2582,32 +2589,52 @@ export default function MenuScreen() {
                                     }}
                                     activeOpacity={0.8}
                                   >
-                                    <View style={{ flexDirection: "row", alignItems: "center", gap: 6, minWidth: 0 }}>
-                                      <Text
-                                        style={[styles.treeItemName, treeLocked && styles.treeItemNameLocked]}
-                                        numberOfLines={1}
-                                      >
-                                        {item.item_name}
-                                      </Text>
-                                      {treeLocked ? (
-                                        <View style={styles.treeLockedPill}>
-                                          <Text style={styles.treeLockedPillText}>Locked</Text>
+                                    <View style={styles.treeThumbWrap}>
+                                      {item.item_image_url ? (
+                                        <AuthProxyImage
+                                          uri={item.item_image_url}
+                                          token={token}
+                                          style={StyleSheet.absoluteFillObject}
+                                          resizeMode="cover"
+                                        />
+                                      ) : (
+                                        <View style={styles.treeThumbPlaceholder}>
+                                          <Ionicons
+                                            name="image-outline"
+                                            size={16}
+                                            color={GatiMitraMerchant.textTertiary}
+                                          />
                                         </View>
-                                      ) : null}
+                                      )}
                                     </View>
-                                    {treeLocked ? (
-                                      <Text style={styles.treeOosSubtext} numberOfLines={1}>
-                                        Locked — upgrade your current plan to unlock
-                                      </Text>
-                                    ) : getItemOosLabel(item) ? (
-                                      <Text style={styles.treeOosSubtext} numberOfLines={2}>
-                                        {getItemOosLabel(item)}
-                                      </Text>
-                                    ) : (
-                                      <Text style={styles.treeInStockSubtext} numberOfLines={1}>
-                                        In stock
-                                      </Text>
-                                    )}
+                                    <View style={styles.treeRowTextCol}>
+                                      <View style={{ flexDirection: "row", alignItems: "center", gap: 6, minWidth: 0 }}>
+                                        <Text
+                                          style={[styles.treeItemName, treeLocked && styles.treeItemNameLocked]}
+                                          numberOfLines={1}
+                                        >
+                                          {item.item_name}
+                                        </Text>
+                                        {treeLocked ? (
+                                          <View style={styles.treeLockedPill}>
+                                            <Text style={styles.treeLockedPillText}>Locked</Text>
+                                          </View>
+                                        ) : null}
+                                      </View>
+                                      {treeLocked ? (
+                                        <Text style={styles.treeOosSubtext} numberOfLines={1}>
+                                          Locked — upgrade your current plan to unlock
+                                        </Text>
+                                      ) : getItemOosLabel(item) ? (
+                                        <Text style={styles.treeOosSubtext} numberOfLines={2}>
+                                          {getItemOosLabel(item)}
+                                        </Text>
+                                      ) : (
+                                        <Text style={styles.treeInStockSubtext} numberOfLines={1}>
+                                          In stock
+                                        </Text>
+                                      )}
+                                    </View>
                                   </TouchableOpacity>
                                   <View style={styles.treeRowRight}>
                                     <Text style={styles.treePrice}>
@@ -3684,7 +3711,29 @@ const styles = StyleSheet.create({
     borderTopWidth: 1,
     borderTopColor: GatiMitraMerchant.border,
   },
-  treeRowLeft: { flex: 1, minWidth: 0, paddingRight: 10 },
+  treeRowLeft: {
+    flex: 1,
+    minWidth: 0,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    paddingRight: 10,
+  },
+  treeThumbWrap: {
+    width: 44,
+    height: 44,
+    borderRadius: 10,
+    overflow: "hidden",
+    backgroundColor: GatiMitraMerchant.surfaceWarm,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: GatiMitraMerchant.border,
+  },
+  treeThumbPlaceholder: {
+    ...StyleSheet.absoluteFillObject,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  treeRowTextCol: { flex: 1, minWidth: 0 },
   treeItemName: { fontSize: 14, fontWeight: "700", color: GatiMitraMerchant.textPrimary },
   treeOosSubtext: { fontSize: 11, color: GatiMitraMerchant.error, fontWeight: "700", marginTop: 2 },
   treeInStockSubtext: { fontSize: 11, color: GatiMitraMerchant.success, fontWeight: "700", marginTop: 2 },

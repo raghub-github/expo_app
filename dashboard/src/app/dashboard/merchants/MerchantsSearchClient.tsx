@@ -3,7 +3,7 @@
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState, useMemo } from "react";
 import { useAppSearchParams } from "@/hooks/useAppSearchParams";
 import { useRouter } from "next/navigation";
-import { Store, ChevronRight, CheckCircle, Clock, XCircle, Sparkles, Ban, Pencil } from "lucide-react";
+import { Store, ChevronRight, CheckCircle, Clock, XCircle, Sparkles, Ban, Pencil, Building2 } from "lucide-react";
 import { StoreDashboardSkeleton } from "./stores/[id]/StoreDashboardSkeleton";
 import { MerchantParentSkeleton } from "./MerchantParentSkeleton";
 import { useMerchantsSearch } from "@/context/MerchantsSearchContext";
@@ -28,6 +28,7 @@ type StoreStats = {
   drafted: number;
   new: number;
   resubmitted: number;
+  partners: number;
 };
 
 type ChildRow = {
@@ -327,7 +328,7 @@ function ChildStoreRow({
   );
 }
 
-type CategoryKey = "total" | "verified" | "pending" | "rejected" | "drafted" | "new" | "resubmitted";
+type CategoryKey = "total" | "verified" | "pending" | "rejected" | "drafted" | "new" | "resubmitted" | "partners";
 
 interface StatCardConfig {
   key: CategoryKey;
@@ -456,6 +457,7 @@ export function MerchantsSearchClient({
           drafted: (statsQuery.data as unknown as StoreStats).drafted ?? 0,
           new: (statsQuery.data as unknown as StoreStats).new ?? 0,
           resubmitted: (statsQuery.data as unknown as StoreStats & { resubmitted?: number }).resubmitted ?? 0,
+          partners: (statsQuery.data as unknown as StoreStats).partners ?? 0,
         }
       : null;
   const statsLoading = statsQuery.isLoading;
@@ -470,13 +472,16 @@ export function MerchantsSearchClient({
     [searchParams]
   );
 
-  const category = useMemo(
-    () => searchParams.get("category") as CategoryKey | null,
-    [searchParams]
-  );
+  const category = useMemo(() => {
+    if (searchParams.get("parent") === "true") return "partners" as CategoryKey;
+    return searchParams.get("category") as CategoryKey | null;
+  }, [searchParams]);
 
   const hasSearchParams = searchQuery.length > 0;
-  const hasCategory = category != null && ["verified", "pending", "rejected", "drafted", "new", "total", "resubmitted"].includes(category);
+  const hasCategory =
+    category != null &&
+    category !== "partners" &&
+    ["verified", "pending", "rejected", "drafted", "new", "total", "resubmitted"].includes(category);
 
   const lastSearchTrigger = merchantsSearch?.lastSearchTrigger ?? 0;
   const triggeredSearch = merchantsSearch?.triggeredSearch ?? null;
@@ -485,7 +490,10 @@ export function MerchantsSearchClient({
   const effectiveSearch = triggeredSearch ? triggeredSearch.value : searchQuery;
   const effectiveFilter = triggeredSearch ? triggeredSearch.filter : filter;
   const hasEffectiveSearchParams = effectiveSearch.length > 0;
-  const shouldFetchList = hasEffectiveSearchParams || (hasCategory && effectiveFilter === "child");
+  const shouldFetchList =
+    hasEffectiveSearchParams ||
+    (hasCategory && effectiveFilter === "child") ||
+    effectiveFilter === "parent";
 
   /** When user clicks Search (same or new value), reset immediately so we never show stale result or fake "Not Found". Skeleton shows on next paint. */
   useLayoutEffect(() => {
@@ -510,7 +518,8 @@ export function MerchantsSearchClient({
   });
 
   const isExpiredResubmittedView = category === "resubmitted";
-  const showAdminHome = portal === "admin" && !hasSearchParams && !hasCategory;
+  const showAdminHome =
+    portal === "admin" && !hasSearchParams && !hasCategory && filter !== "parent";
 
   const buildAdminStoreUrl = (store: AdminStoreRow) =>
     buildChildStoreTargetUrl({
@@ -526,7 +535,10 @@ export function MerchantsSearchClient({
   }, [searchParams]);
 
   /** When merchant portal has an active list search, show skeleton until API completes or redirect finishes. */
-  const hasActiveListSearch = hasEffectiveSearchParams || (hasCategory && effectiveFilter === "child");
+  const hasActiveListSearch =
+    hasEffectiveSearchParams ||
+    (hasCategory && effectiveFilter === "child") ||
+    effectiveFilter === "parent";
   const showSkeleton = Boolean(
     portal === "merchant" &&
       hasActiveListSearch &&
@@ -706,6 +718,13 @@ export function MerchantsSearchClient({
 
   const handleCategoryClick = (key: CategoryKey) => {
     const next = new URLSearchParams(searchParams.toString());
+    if (key === "partners") {
+      next.delete("category");
+      next.set("parent", "true");
+      router.push(`/dashboard/merchants?${next.toString()}`);
+      return;
+    }
+    next.delete("parent");
     next.set("category", key);
     router.push(`/dashboard/merchants?${next.toString()}`);
   };
@@ -786,6 +805,14 @@ export function MerchantsSearchClient({
               icon: <Ban className="h-4 w-4 text-red-600" />,
               bg: "bg-red-50",
               border: "border-red-200 hover:border-red-300",
+            },
+            {
+              key: "partners",
+              label: "Partners",
+              count: stats.partners,
+              icon: <Building2 className="h-4 w-4 text-violet-600" />,
+              bg: "bg-violet-50",
+              border: "border-violet-200 hover:border-violet-300",
             },
           ]
         : [],
@@ -885,8 +912,8 @@ export function MerchantsSearchClient({
           {/* Stats cards row - below the filter */}
           <>
             {statsLoading ? (
-              <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5">
-                {[1, 2, 3, 4, 5].map((i) => (
+              <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
+                {[1, 2, 3, 4, 5, 6].map((i) => (
                   <div
                     key={i}
                     className={`animate-pulse rounded-lg border border-gray-200 bg-gray-100 ${CARD_MIN_HEIGHT}`}
@@ -964,7 +991,7 @@ export function MerchantsSearchClient({
             ) : null}
           </div>
         )
-      ) : !hasSearchParams ? (
+      ) : !hasSearchParams && filter !== "parent" ? (
         <div className="rounded-lg border border-gray-200 bg-gray-50/80 p-4 text-center">
           <Store className="mx-auto h-8 w-8 text-gray-400" />
         </div>

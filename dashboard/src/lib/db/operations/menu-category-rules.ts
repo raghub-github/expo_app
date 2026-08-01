@@ -376,10 +376,22 @@ export async function createCustomCuisine(opts: {
   const slug = slugifyCuisine(name);
   let masterId: number | null = null;
 
-  const [bySlug] = await sql<{ id: number }[]>`
-    SELECT id FROM cuisine_master WHERE slug = ${slug} LIMIT 1
+  // Already linked under a store custom_name (e.g. "Chines" → master Chinese).
+  const [byCustom] = await sql<{ cuisine_id: number }[]>`
+    SELECT cuisine_id
+    FROM merchant_store_cuisines
+    WHERE store_id = ${opts.storeIdNum}
+      AND lower(trim(COALESCE(custom_name, ''))) = lower(trim(${name}))
+    LIMIT 1
   `;
-  if (bySlug) masterId = Number(bySlug.id);
+  if (byCustom) masterId = Number(byCustom.cuisine_id);
+
+  if (masterId == null) {
+    const [bySlug] = await sql<{ id: number }[]>`
+      SELECT id FROM cuisine_master WHERE slug = ${slug} LIMIT 1
+    `;
+    if (bySlug) masterId = Number(bySlug.id);
+  }
 
   if (masterId == null) {
     const [byName] = await sql<{ id: number }[]>`
@@ -388,10 +400,26 @@ export async function createCustomCuisine(opts: {
     if (byName) masterId = Number(byName.id);
   }
 
+  // Prefix / close match: "Chines" → "Chinese", "North" → "North Indian"
+  if (masterId == null && name.length >= 3) {
+    const [byPrefix] = await sql<{ id: number }[]>`
+      SELECT id
+      FROM cuisine_master
+      WHERE is_active = TRUE
+        AND (
+          lower(trim(name)) LIKE lower(trim(${name})) || '%'
+          OR lower(trim(${name})) LIKE lower(trim(name)) || '%'
+        )
+      ORDER BY length(trim(name)) ASC
+      LIMIT 1
+    `;
+    if (byPrefix) masterId = Number(byPrefix.id);
+  }
+
   if (masterId == null) {
     throw new CategoryRuleError(
       "cuisine_not_found",
-      "Cuisine is not in the master list. Pick from the catalog below or ask an admin to add it to cuisine_master.",
+      "Cuisine is not in the master list. Pick from the store cuisine list or ask an admin to add it to cuisine_master.",
       400
     );
   }

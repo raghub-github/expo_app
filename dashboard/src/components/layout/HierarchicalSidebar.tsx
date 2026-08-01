@@ -4,8 +4,6 @@ import { useAppPathname } from "@/hooks/useAppSearchParams";
 import { useState, useMemo, useEffect, useCallback } from "react";
 import Link from "next/link";
 import Image from "next/image";
-import { Poppins } from "next/font/google";
-
 import { useQueryClient } from "@tanstack/react-query";
 import { prefetchDashboardSection } from "@/lib/dashboard-prefetch";
 import { ChevronLeft, LogOut, X } from "lucide-react";
@@ -29,12 +27,7 @@ import {
   cleanDashboardHref,
   isDashboardNavAlreadyAtTarget,
 } from "@/lib/navigation/dashboard-nav-transition";
-
-const sidebarFont = Poppins({
-  subsets: ["latin"],
-  weight: ["400", "500", "600", "700"],
-  display: "swap",
-});
+import { poppinsUi as sidebarFont } from "@/lib/fonts/tickets-fonts";
 
 /** Premium dark sidebar chrome — charcoal black */
 const SIDEBAR_BG = "#121212";

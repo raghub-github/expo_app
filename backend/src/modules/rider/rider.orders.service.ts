@@ -4525,6 +4525,7 @@ async function markReachedFoodPickupForRider(
             f.id::text AS food_id,
             f.formatted_order_id,
             f.merchant_store_id,
+            f.pickup_otp,
             c.formatted_order_id AS core_formatted
           FROM orders_core c
           INNER JOIN orders_food f ON f.order_id = c.id
@@ -4536,6 +4537,7 @@ async function markReachedFoodPickupForRider(
               food_id?: string;
               formatted_order_id?: string | null;
               merchant_store_id?: number;
+              pickup_otp?: string | null;
               core_formatted?: string | null;
             }
           | undefined;
@@ -4558,6 +4560,7 @@ async function markReachedFoodPickupForRider(
           displayOrderId,
           riderName,
           foodOrderId,
+          pickupOtp: meta?.pickup_otp ?? null,
         });
         void notifyCustomerFoodLifecycle({
           orderIdText,

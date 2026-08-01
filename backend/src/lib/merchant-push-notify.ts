@@ -56,6 +56,31 @@ export async function insertMerchantStoreNotification(
     actionUrl?: string | null;
   }
 ): Promise<void> {
+  // Idempotent for order-linked rows — placement + webhook retries must not
+  // create twin "New order!" inbox entries on the same device.
+  if (args.orderId != null && Number.isFinite(args.orderId) && args.orderId > 0) {
+    await sql`
+      INSERT INTO merchant_store_notifications (store_id, type, title, body, read, order_id, action_url)
+      SELECT
+        ${args.storeId},
+        ${args.type},
+        ${args.title},
+        ${args.body},
+        FALSE,
+        ${args.orderId},
+        ${args.actionUrl ?? null}
+      WHERE NOT EXISTS (
+        SELECT 1
+        FROM merchant_store_notifications n
+        WHERE n.store_id = ${args.storeId}
+          AND n.order_id = ${args.orderId}
+          AND n.title = ${args.title}
+          AND n.created_at > now() - interval '6 hours'
+      )
+    `;
+    return;
+  }
+
   await sql`
     INSERT INTO merchant_store_notifications (store_id, type, title, body, read, order_id, action_url)
     VALUES (
@@ -81,9 +106,13 @@ async function notifyMerchantStore(
     actionUrl?: string | null;
     pushData?: Record<string, unknown>;
     channelId?: string;
+    /** Skip merchant_store_notifications inbox (push-only). */
+    skipInbox?: boolean;
   }
 ): Promise<void> {
-  await insertMerchantStoreNotification(sql, args);
+  if (!args.skipInbox) {
+    await insertMerchantStoreNotification(sql, args);
+  }
   const tokens = await getMerchantStorePushTokens(sql, args.storeId);
   await sendMerchantExpoPush(tokens, {
     title: args.title,
@@ -146,11 +175,22 @@ export async function notifyMerchantRiderReachedPickup(
     displayOrderId: string;
     riderName: string;
     foodOrderId: number | null;
+    pickupOtp?: string | null;
+    freeWaitSeconds?: number | null;
   }
 ): Promise<void> {
+  const { FOOD_RIDER_FREE_WAIT_SECONDS } = await import("./food-rider-free-wait.js");
+  const breakdown = await countActiveOrdersBreakdownForStore(sql, args.storeId);
   const rider = args.riderName.trim() || "Rider";
+  const freeWait =
+    args.freeWaitSeconds != null && Number.isFinite(args.freeWaitSeconds)
+      ? Math.max(0, Math.floor(args.freeWaitSeconds))
+      : FOOD_RIDER_FREE_WAIT_SECONDS;
+  const otp = (args.pickupOtp ?? "").trim();
   const title = `Order ID: ${args.displayOrderId}, hand over asap!`;
-  const body = `${rider} has reached nearby for pickup. Click to view details.`;
+  const body = otp
+    ? `${rider} has reached for pickup. OTP ${otp}. Free wait ${Math.round(freeWait / 60)} min.`
+    : `${rider} has reached nearby for pickup. Click to view details.`;
   const actionUrl = args.foodOrderId != null ? `/order/${args.foodOrderId}` : "/(tabs)/orders";
   await notifyMerchantStore(sql, {
     storeId: args.storeId,
@@ -159,11 +199,241 @@ export async function notifyMerchantRiderReachedPickup(
     body,
     orderId: args.foodOrderId,
     actionUrl,
+    channelId: "merchant_order_lifecycle",
     pushData: {
       type: "merchant_rider_pickup",
+      refreshLiveOrders: true,
+      activeOrdersCount: breakdown.active_orders,
+      preparing: breakdown.preparing,
+      ready: breakdown.ready,
+      outForDelivery: breakdown.out_for_delivery,
+      pendingAccept: breakdown.pending_accept,
+      stickySubtitle: `${rider} at store — hand over asap`,
+      freeWaitSeconds: freeWait,
+      pickupOtp: otp || undefined,
       orderId: args.displayOrderId,
       foodOrderId: args.foodOrderId,
       url: actionUrl,
+      screen: "orders",
+    },
+  });
+}
+
+/**
+ * Free-wait window ended while rider is still at store — PRIORITY push.
+ * Idempotent via notification service key MERCHANT_RIDER_FREE_WAIT:{foodOrderId}.
+ */
+export async function notifyMerchantRiderFreeWaitExceeded(
+  sql: Sql,
+  args: {
+    storeId: number;
+    displayOrderId: string;
+    riderName: string;
+    foodOrderId: number;
+    waitSeconds: number;
+    pickupOtp?: string | null;
+  }
+): Promise<void> {
+  if (!Number.isInteger(args.foodOrderId) || args.foodOrderId < 1) return;
+  const breakdown = await countActiveOrdersBreakdownForStore(sql, args.storeId);
+  const rider = args.riderName.trim() || "Rider";
+  const mins = Math.max(1, Math.round(args.waitSeconds / 60));
+  const otp = (args.pickupOtp ?? "").trim();
+  const title = `PRIORITY: Order ${args.displayOrderId}`;
+  const body = otp
+    ? `${rider} waiting ${mins}+ min. Hand over now · OTP ${otp}`
+    : `${rider} has been waiting ${mins}+ min. Hand over the order now.`;
+  const actionUrl = `/order/${args.foodOrderId}`;
+  await notifyMerchantStore(sql, {
+    storeId: args.storeId,
+    type: "order",
+    title,
+    body,
+    orderId: args.foodOrderId,
+    actionUrl,
+    channelId: "merchant_order_lifecycle",
+    pushData: {
+      type: "merchant_rider_wait_priority",
+      refreshLiveOrders: true,
+      activeOrdersCount: breakdown.active_orders,
+      preparing: breakdown.preparing,
+      ready: breakdown.ready,
+      outForDelivery: breakdown.out_for_delivery,
+      pendingAccept: breakdown.pending_accept,
+      stickySubtitle: `PRIORITY · ${rider} waiting`,
+      waitSeconds: args.waitSeconds,
+      pickupOtp: otp || undefined,
+      orderId: args.displayOrderId,
+      foodOrderId: args.foodOrderId,
+      url: actionUrl,
+      screen: "orders",
+      idempotencyKey: `MERCHANT_RIDER_FREE_WAIT:${args.foodOrderId}`,
+    },
+  });
+}
+
+const LIFECYCLE_STAGES = new Set([
+  "PREPARING",
+  "ACCEPTED",
+  "READY",
+  "READY_FOR_PICKUP",
+  "OUT_FOR_DELIVERY",
+  "PICKED_UP",
+  "IN_TRANSIT",
+  "DISPATCHED",
+  "CANCELLED",
+  "DELIVERED",
+]);
+
+function lifecycleCopy(
+  stage: string,
+  displayOrderId: string,
+  reason?: string | null
+): { title: string; body: string; subtitle: string } {
+  const id = displayOrderId.startsWith("#") ? displayOrderId : `#${displayOrderId}`;
+  const s = stage.toUpperCase();
+  if (s === "CANCELLED") {
+    const why = (reason ?? "").trim();
+    return {
+      title: `Order ${id} cancelled`,
+      body: why ? why : "Order was cancelled. Tap to manage live orders.",
+      subtitle: `Order ${id} cancelled`,
+    };
+  }
+  if (s === "DELIVERED") {
+    return {
+      title: `Order ${id} delivered`,
+      body: "Tap to manage your live orders",
+      subtitle: `Order ${id} delivered`,
+    };
+  }
+  if (s === "READY" || s === "READY_FOR_PICKUP") {
+    return {
+      title: `Order ${id} is ready`,
+      body: "Ready for pickup — tap to manage live orders",
+      subtitle: `Order ${id} is ready`,
+    };
+  }
+  if (s === "OUT_FOR_DELIVERY" || s === "PICKED_UP" || s === "IN_TRANSIT" || s === "DISPATCHED") {
+    return {
+      title: `Order ${id} out for delivery`,
+      body: "On the way to customer — tap to manage live orders",
+      subtitle: `Order ${id} out for delivery`,
+    };
+  }
+  // PREPARING / ACCEPTED
+  return {
+    title: `Order ${id} is preparing`,
+    body: "Kitchen started — tap to manage live orders",
+    subtitle: `Order ${id} is preparing`,
+  };
+}
+
+async function countActiveOrdersBreakdownForStore(
+  sql: Sql,
+  storeId: number
+): Promise<{
+  active_orders: number;
+  pending_accept: number;
+  preparing: number;
+  ready: number;
+  out_for_delivery: number;
+}> {
+  const rows = await sql`
+    SELECT
+      COUNT(*) FILTER (
+        WHERE upper(COALESCE(f.order_status, '')) IN (
+          'CREATED', 'NEW', 'PLACED',
+          'ACCEPTED', 'PREPARING',
+          'READY_FOR_PICKUP', 'READY',
+          'OUT_FOR_DELIVERY', 'PICKED_UP', 'IN_TRANSIT', 'DISPATCHED'
+        )
+      )::int AS active_orders,
+      COUNT(*) FILTER (
+        WHERE upper(COALESCE(f.order_status, '')) IN ('CREATED', 'NEW', 'PLACED')
+      )::int AS pending_accept,
+      COUNT(*) FILTER (
+        WHERE upper(COALESCE(f.order_status, '')) IN ('ACCEPTED', 'PREPARING')
+      )::int AS preparing,
+      COUNT(*) FILTER (
+        WHERE upper(COALESCE(f.order_status, '')) IN ('READY_FOR_PICKUP', 'READY')
+      )::int AS ready,
+      COUNT(*) FILTER (
+        WHERE upper(COALESCE(f.order_status, '')) IN (
+          'OUT_FOR_DELIVERY', 'PICKED_UP', 'IN_TRANSIT', 'DISPATCHED'
+        )
+      )::int AS out_for_delivery
+    FROM orders_food f
+    WHERE f.merchant_store_id = ${storeId}
+  `;
+  const r = rows[0] as Record<string, number> | undefined;
+  const n = (v: unknown) => {
+    const x = Number(v ?? 0);
+    return Number.isFinite(x) && x > 0 ? Math.floor(x) : 0;
+  };
+  return {
+    active_orders: n(r?.active_orders),
+    pending_accept: n(r?.pending_accept),
+    preparing: n(r?.preparing),
+    ready: n(r?.ready),
+    out_for_delivery: n(r?.out_for_delivery),
+  };
+}
+
+async function countActiveOrdersForStore(sql: Sql, storeId: number): Promise<number> {
+  const b = await countActiveOrdersBreakdownForStore(sql, storeId);
+  return b.active_orders;
+}
+
+/**
+ * Stage / cancel push to merchant *store* tokens (works in background/killed).
+ * Includes activeOrdersCount + stage breakdown so the sticky tray can update
+ * without an API call (Zomato-style preparing/ready line).
+ */
+export async function notifyMerchantOrderLifecycle(
+  sql: Sql,
+  args: {
+    storeId: number;
+    foodOrderId: number | null;
+    displayOrderId: string;
+    stage: string;
+    reason?: string | null;
+  }
+): Promise<void> {
+  const stage = String(args.stage ?? "").trim().toUpperCase();
+  if (!LIFECYCLE_STAGES.has(stage)) return;
+  if (!Number.isInteger(args.storeId) || args.storeId < 1) return;
+
+  const breakdown = await countActiveOrdersBreakdownForStore(sql, args.storeId);
+  const activeOrdersCount = breakdown.active_orders;
+  const copy = lifecycleCopy(stage, args.displayOrderId, args.reason);
+  const actionUrl =
+    args.foodOrderId != null ? `/order/${args.foodOrderId}` : "/(tabs)/orders?tab=active";
+
+  await notifyMerchantStore(sql, {
+    storeId: args.storeId,
+    type: "order",
+    title: copy.title,
+    body: copy.body,
+    orderId: args.foodOrderId,
+    actionUrl,
+    channelId: "merchant_order_lifecycle",
+    // Cancel/delivered keep an inbox row; prep/ready/OFD are push + sticky only.
+    skipInbox:
+      stage !== "CANCELLED" && stage !== "DELIVERED",
+    pushData: {
+      type: "merchant_order_lifecycle",
+      stage,
+      refreshLiveOrders: true,
+      activeOrdersCount,
+      preparing: breakdown.preparing,
+      ready: breakdown.ready,
+      outForDelivery: breakdown.out_for_delivery,
+      pendingAccept: breakdown.pending_accept,
+      stickySubtitle: copy.subtitle,
+      orderId: args.displayOrderId,
+      foodOrderId: args.foodOrderId,
+      url: "/(tabs)/orders?tab=active",
       screen: "orders",
     },
   });

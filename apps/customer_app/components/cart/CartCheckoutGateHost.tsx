@@ -11,6 +11,7 @@ import {
 import { CheckoutAddressSelectSheet } from "@/components/checkout/CheckoutAddressSelectSheet";
 import { applySelectedDeliveryAddress } from "@/lib/applySelectedDeliveryAddress";
 import { evaluateCartCheckoutEligibility } from "@/lib/cartCheckoutGate";
+import { captureCartDeliveryAnchor } from "@/lib/cartDeliveryAnchor";
 import { useMealsUnderPriceCartUiStore } from "@/store/mealsUnderPriceCartUiStore";
 import { merchantService } from "@/services/merchant.service";
 import type { Address } from "@/services/address.service";
@@ -65,6 +66,7 @@ export function CartCheckoutGateHost() {
   }, []);
 
   const handleChangeAddress = useCallback(() => {
+    // Keep Outside Delivery Range mounted underneath the address sheet.
     useCartCheckoutGateStore.getState().openAddressSheet();
   }, []);
 
@@ -93,13 +95,25 @@ export function CartCheckoutGateHost() {
   const handleAddressSelected = useCallback(
     async (addr: Address) => {
       await applySelectedDeliveryAddress(addr, queryClient);
+
+      // User explicitly chose this pin for the cart store — re-anchor so the
+      // city-mismatch gate does not block a freshly verified serviceable address.
+      const anchor = captureCartDeliveryAnchor();
+      if (anchor) {
+        useCartStore.setState({ deliveryAnchor: anchor });
+      }
+
+      // Re-check store delivery for the newly selected location.
       const eligibility = await evaluateCartCheckoutEligibility(queryClient);
       useCartCheckoutGateStore.getState().closeAddressSheet();
+
       if (eligibility.allowed) {
         hideGate();
         router.push("/checkout" as never);
         return;
       }
+
+      // Still out of range / unserviceable — stay on Outside Delivery Range.
       useCartCheckoutGateStore.getState().show();
     },
     [hideGate, queryClient, router]
@@ -108,11 +122,12 @@ export function CartCheckoutGateHost() {
   return (
     <>
       <CartOutsideDeliveryRangeScreen
-        visible={outsideRangeVisible && !addressSheetVisible}
+        visible={outsideRangeVisible}
         merchant={merchant}
         onChangeAddress={handleChangeAddress}
         onClearCart={handleClearCart}
         onClose={hideGate}
+        hardwareBackEnabled={!addressSheetVisible}
       />
       <CheckoutAddressSelectSheet
         visible={addressSheetVisible}

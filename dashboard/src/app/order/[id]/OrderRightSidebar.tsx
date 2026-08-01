@@ -70,7 +70,7 @@ interface OrderRightSidebarProps {
     deliveryInstructions?: string | null;
     riderInstructionsList?: string[];
     merchantInstructionsList?: string[];
-    /** First ETA (expected delivery) when order accepted. */
+    /** First ETA (expected delivery) frozen at order placement. */
     firstEtaAt?: string | null;
     estimatedDeliveryTime?: string | null;
     etaSeconds?: number | null;
@@ -1762,7 +1762,7 @@ export default function OrderRightSidebar({
             <dd className="min-w-0 font-medium text-slate-700 text-right orders-num">
               {formatFirstEtaAt(
                 order.firstEtaAt ??
-                  order.estimatedDeliveryTime ??
+                  // Never fall back to estimated_delivery_time — that is the live/current ETA.
                   (order.etaSeconds != null &&
                   order.createdAt &&
                   Number.isFinite(order.etaSeconds)

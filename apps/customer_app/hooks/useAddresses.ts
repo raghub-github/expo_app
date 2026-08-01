@@ -4,7 +4,7 @@ import { useAuthStore } from "@/store/authStore";
 
 export const ADDRESSES_QUERY_KEY = ["addresses"] as const;
 
-const STALE_MS = 15 * 60 * 1000;
+const STALE_MS = 30 * 1000;
 const GC_MS = 60 * 60 * 1000;
 
 export function addressesQueryOptions() {

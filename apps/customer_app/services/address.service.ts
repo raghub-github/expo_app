@@ -22,13 +22,37 @@ export type Address = {
   deliveryInstructionsList?: string[];
   isDefault: boolean;
   isLastUsed: boolean;
+  /** Backend MRU timestamp (ISO). List order is already MRU — do not client-sort. */
+  lastUsedAt?: string | null;
+  /** Backend: this row is the bound active delivery address. */
+  isSelected?: boolean;
 };
 
 export type ActiveLocation = {
   latitude: number | null;
   longitude: number | null;
   address: string | null;
+  /** Bound saved address when user selected Saved / Add New; null for live GPS. */
+  addressId: number | null;
   lockedForOrder: boolean;
+};
+
+export type ReconcileActiveLocationResult = ActiveLocation & {
+  source: "selected" | "current";
+  switchedToCurrent: boolean;
+  reason?: "kept_nearby" | "switched_far" | "no_bound_address" | "bound_missing";
+  distanceM: number | null;
+  retentionRadiusM: number;
+  savedAddress: {
+    id: number;
+    label: string | null;
+    fullAddress: string;
+    city: string | null;
+    state: string | null;
+    pincode: string | null;
+    latitude: number;
+    longitude: number;
+  } | null;
 };
 
 const ADDRESSES_REQ_TIMEOUT_MS = 18_000;
@@ -112,16 +136,57 @@ export const addressService = {
     const { data } = await api.get<ActiveLocation>("/v1/me/active-location", {
       timeout: ADDRESSES_REQ_TIMEOUT_MS,
     });
-    return data ?? { latitude: null, longitude: null, address: null, lockedForOrder: false };
+    return (
+      data ?? {
+        latitude: null,
+        longitude: null,
+        address: null,
+        addressId: null,
+        lockedForOrder: false,
+      }
+    );
   },
 
   async setActiveLocation(params: {
     latitude: number;
     longitude: number;
     address?: string | null;
+    /** Pass an id for Saved/Add New; pass null to clear when using live GPS. */
+    addressId?: number | null;
   }): Promise<{ ok: boolean }> {
     const { data } = await api.put<{ ok: boolean }>("/v1/me/active-location", params);
     return data ?? { ok: true };
+  },
+
+  /**
+   * Backend decides whether to keep the bound saved address or switch to Current Location
+   * based on live GPS vs ACTIVE_SAVED_ADDRESS_RETENTION_RADIUS_M (default 500m).
+   */
+  async reconcileActiveLocation(params: {
+    latitude: number;
+    longitude: number;
+    address?: string | null;
+  }): Promise<ReconcileActiveLocationResult> {
+    const { data } = await api.post<ReconcileActiveLocationResult>(
+      "/v1/me/active-location/reconcile",
+      params,
+      { timeout: ADDRESSES_REQ_TIMEOUT_MS }
+    );
+    return (
+      data ?? {
+        latitude: params.latitude,
+        longitude: params.longitude,
+        address: params.address ?? null,
+        addressId: null,
+        lockedForOrder: false,
+        source: "current",
+        switchedToCurrent: false,
+        reason: "no_bound_address",
+        distanceM: null,
+        retentionRadiusM: 500,
+        savedAddress: null,
+      }
+    );
   },
 
   /** Local fallback: popular_locations + saved addresses (for hybrid location search). */

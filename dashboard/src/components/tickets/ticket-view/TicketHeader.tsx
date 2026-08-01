@@ -1,14 +1,9 @@
 "use client";
 
-import { Lora } from "next/font/google";
 import { useEffect, useState } from "react";
 import { Ban, Globe, RefreshCw } from "lucide-react";
 import type { TicketDetail } from "@/hooks/tickets/useTicketDetail";
-
-const lora = Lora({
-  subsets: ["latin"],
-  weight: ["600", "700"],
-});
+import { loraDisplay as lora } from "@/lib/fonts/tickets-fonts";
 
 function formatSnoozeCountdown(snoozedUntil: string): { label: string; tone: "violet" | "amber" | "red" } | null {
   const endMs = new Date(snoozedUntil).getTime();

@@ -19,6 +19,7 @@ export default function ProfileLayout() {
       <Stack.Screen name="index" options={{ headerShown: false }} />
       <Stack.Screen name="subscription" options={{ headerShown: false }} />
       <Stack.Screen name="referrals" options={{ title: "Rewards & Referrals" }} />
+      <Stack.Screen name="referral-details/[filter]" options={{ title: "Referrals" }} />
       <Stack.Screen name="addresses" options={{ title: "Saved addresses" }} />
       <Stack.Screen name="collections" options={{ headerShown: false }} />
       <Stack.Screen name="edit" options={{ title: "Edit profile" }} />

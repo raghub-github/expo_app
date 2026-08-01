@@ -51,6 +51,8 @@ export type CustomerEtaView = {
 export type OrderEtaResponse = {
   ok: true;
   orderIdText: string;
+  /** Immutable First ETA (first_eta_at → promised_delivery_at). */
+  firstEtaAt?: string | null;
   promise: EtaPromise;
   live: EtaLive | null;
   prep?: OrderEtaPrep;

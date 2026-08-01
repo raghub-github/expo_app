@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Image, type ImageStyle } from "expo-image";
-import type { StyleProp } from "react-native";
+import { View, type StyleProp, type ViewStyle } from "react-native";
 import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
 import { getAppAssetUrl } from "@/store/appAssetsStore";
 import { CX } from "@/lib/appAssetKeys";
@@ -16,6 +16,11 @@ type Props = {
   contentFit?: "contain" | "cover";
   /** Stable key helps expo-image reuse cached bitmaps across list remounts. */
   cacheKey?: string;
+  /**
+   * - `soft` (default for home chips): gray circle while loading / on error — never "No Data Found"
+   * - `ndf`: legacy CMS default image (merchant/dish empty states)
+   */
+  fallback?: "soft" | "ndf";
 };
 
 export function UserAppCategoryImage({
@@ -23,6 +28,7 @@ export function UserAppCategoryImage({
   style,
   contentFit = "contain",
   cacheKey,
+  fallback = "soft",
 }: Props) {
   const [failed, setFailed] = useState(false);
   const uri = useMemo(
@@ -49,16 +55,20 @@ export function UserAppCategoryImage({
     );
   }
 
-  const fallback = defaultCategorySource();
-  if (!fallback) return null;
+  if (fallback === "ndf") {
+    const ndf = defaultCategorySource();
+    if (!ndf) return null;
+    return (
+      <Image
+        source={ndf}
+        style={style}
+        contentFit={contentFit}
+        cachePolicy="memory-disk"
+        transition={0}
+      />
+    );
+  }
 
-  return (
-    <Image
-      source={fallback}
-      style={style}
-      contentFit={contentFit}
-      cachePolicy="memory-disk"
-      transition={0}
-    />
-  );
+  // Soft placeholder — keeps chip layout stable without flashing "No Data Found".
+  return <View style={[style as StyleProp<ViewStyle>, { backgroundColor: "#EEF2F6" }]} />;
 }

@@ -34,6 +34,10 @@ import {
 import { getConfig } from "@/config/env";
 import { STORAGE_KEYS } from "@/constants";
 import { getItem } from "@/utils/storage";
+import {
+  addDismissedNotificationIds,
+  readDismissedNotificationIds,
+} from "@/lib/dismissedNotifications";
 import { AndroidBackHandler } from "@/components/AndroidBackHandler";
 import { NotificationsEmptyMailboxArt } from "@/components/NotificationsEmptyMailboxArt";
 import { GatiMitraColors } from "@/constants/gatimitra";
@@ -279,8 +283,13 @@ export default function NotificationsScreen() {
 
   const load = useCallback(async () => {
     try {
-      const page = await loadInbox(apiConfig, { limit: 100 });
-      setItems(page.items.filter((n) => !dismissedIds.current.has(n.notification_id)));
+      const [page, dismissed] = await Promise.all([
+        loadInbox(apiConfig, { limit: 100 }),
+        readDismissedNotificationIds(),
+      ]);
+      for (const id of dismissedIds.current) dismissed.add(id);
+      dismissedIds.current = dismissed;
+      setItems(page.items.filter((n) => !dismissed.has(n.notification_id)));
     } catch {
       // Keep previous list on soft failure.
     } finally {
@@ -389,6 +398,7 @@ export default function NotificationsScreen() {
     if (selected?.notification_id === id) setSelected(null);
     setPendingDelete(null);
     setItems((prev) => prev.filter((n) => n.notification_id !== id));
+    void addDismissedNotificationIds([id]);
     showToast("Notification deleted");
   };
 

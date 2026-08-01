@@ -1,19 +1,36 @@
-import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
+import React, {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import { AppState, type AppStateStatus } from "react-native";
 import { useAuth } from "@/context/AuthContext";
 import { useSelectedStore } from "@/context/SelectedStoreContext";
 import {
   getStoreNotifications,
   markStoreNotificationRead,
-  markAllStoreNotificationsRead,
   deleteStoreNotification,
+  deleteAllStoreNotifications,
 } from "@/services/storeNotificationsApi";
 import type { StoreNotificationRow } from "@/services/storeNotificationsApi";
 import { getSupabaseAuth } from "@/lib/supabaseClient";
-import { loadInbox, markAllReadRemote, markReadRemote, type InboxItem } from "@gatimitra/expo-push-kit";
+import { loadInbox, markReadRemote, type InboxItem } from "@gatimitra/expo-push-kit";
 import { getConfig } from "@/config/env";
 import { readMerchantAccessToken } from "@/lib/merchantSessionStorage";
+import {
+  addDismissedCampaignId,
+  addDismissedCampaignIds,
+  readDismissedCampaignIds,
+} from "@/lib/dismissedCampaignNotifications";
 
 export type NotificationType = "order" | "store" | "system" | "earning";
+
+/** Foreground cadence for the campaign inbox (no postgres realtime for it). */
+const CAMPAIGN_POLL_MS = 10_000;
 
 export interface MerchantNotification {
   id: string;
@@ -149,9 +166,43 @@ function mapCampaignInboxItem(item: InboxItem): MerchantNotification {
     body: item.body?.trim() || "",
     timeAgo: formatTimeAgo(item.queued_at),
     dateTime: formatDateTime(item.queued_at),
-    read: Boolean(item.clicked_at) || item.status === "clicked" || item.status === "delivered",
+    // Match backend inbox unread (`clicked_at IS NULL`). "delivered" only means
+    // the push/in-app row was written — it must still count as unread.
+    read: Boolean(item.clicked_at) || item.status === "clicked",
     actionUrl: item.deep_link ?? undefined,
   };
+}
+
+/**
+ * Collapse twin rows from the same event (store table + campaign inbox, or
+ * duplicate in_app logs from multi-token fan-out) so the bell badge and list
+ * show a single notification per event.
+ */
+function mergeNotificationFeed(rows: MerchantNotification[]): MerchantNotification[] {
+  const byId = new Map<string, MerchantNotification>();
+  for (const n of rows) byId.set(n.id, n);
+
+  const fingerprintKey = (n: MerchantNotification) => {
+    const title = n.title.trim().toLowerCase();
+    const body = n.body.trim().toLowerCase().slice(0, 120);
+    const order = n.orderId ? `o:${n.orderId}` : "";
+    return `${order}|${title}|${body}`;
+  };
+
+  const bestByFp = new Map<string, MerchantNotification>();
+  for (const n of byId.values()) {
+    const fp = fingerprintKey(n);
+    const prev = bestByFp.get(fp);
+    if (!prev) {
+      bestByFp.set(fp, n);
+      continue;
+    }
+    // Prefer unread + campaign/system rows that carry a deep link.
+    const score = (x: MerchantNotification) =>
+      (x.read ? 0 : 4) + (x.id.startsWith("campaign:") ? 2 : 0) + (x.actionUrl ? 1 : 0);
+    if (score(n) > score(prev)) bestByFp.set(fp, n);
+  }
+  return [...bestByFp.values()];
 }
 
 async function fetchCampaignInbox(): Promise<MerchantNotification[]> {
@@ -172,14 +223,32 @@ async function fetchCampaignInbox(): Promise<MerchantNotification[]> {
   }
 }
 
+/** Minimal shape lifted off an incoming push so the badge can move instantly. */
+export type IncomingPushNotice = {
+  notificationId?: string | null;
+  title?: string | null;
+  body?: string | null;
+  deepLink?: string | null;
+  templateCode?: string | null;
+  orderId?: string | null;
+};
+
 interface NotificationContextValue {
   notifications: MerchantNotification[];
   unreadCount: number;
   loading: boolean;
-  markAllAsRead: () => Promise<void>;
+  /** Mark one notification read (clears green unread dot / unread feed). */
   markAsRead: (id: string) => void;
+  /** Delete one notification (store row or local campaign dismiss). */
   removeNotification: (id: string) => Promise<void>;
+  /** Delete every notification for the selected store (and dismiss campaign rows). */
+  clearAllNotifications: () => Promise<void>;
   refresh: () => void;
+  /**
+   * Paint an arriving push into the feed right away, then reconcile with the
+   * server. Without this the bell badge only moves after the next fetch lands.
+   */
+  applyIncomingPush: (notice: IncomingPushNotice) => void;
 }
 
 const NotificationContext = createContext<NotificationContextValue | null>(null);
@@ -189,6 +258,7 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
   const { selectedStore } = useSelectedStore();
   const [notifications, setNotifications] = useState<MerchantNotification[]>([]);
   const [loading, setLoading] = useState(true);
+  const dismissedCampaignIdsRef = useRef<Set<string>>(new Set());
 
   const storeId = selectedStore?.id ?? null;
 
@@ -203,15 +273,17 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
     // Realtime + WaitingForOrderNotifier poll via silent refresh — no spinner loop.
     if (!silent) setLoading(true);
     try {
-      const [{ notifications: list }, campaign] = await Promise.all([
+      const [{ notifications: list }, campaign, dismissedCampaignIds] = await Promise.all([
         getStoreNotifications(storeId, token),
         fetchCampaignInbox(),
+        readDismissedCampaignIds(),
       ]);
+      dismissedCampaignIdsRef.current = dismissedCampaignIds;
       const storeRows = list.map(mapRowToNotification);
+      // Campaign rows have no server-side delete, so honour local dismissals.
+      const visibleCampaign = campaign.filter((n) => !dismissedCampaignIds.has(n.id));
       // Campaign / announcement rows first, then live store notifications.
-      const byId = new Map<string, MerchantNotification>();
-      for (const n of [...campaign, ...storeRows]) byId.set(n.id, n);
-      setNotifications([...byId.values()]);
+      setNotifications(mergeNotificationFeed([...visibleCampaign, ...storeRows]));
     } catch {
       if (!silent) setNotifications([]);
     } finally {
@@ -222,6 +294,77 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
   useEffect(() => {
     void fetchNotifications({ silent: false });
   }, [fetchNotifications]);
+
+  /**
+   * Optimistic badge bump. Campaign / announcement pushes have no postgres
+   * realtime channel, so waiting for the next inbox fetch made the bell look
+   * frozen right when the notification landed.
+   */
+  const applyIncomingPush = useCallback(
+    (notice: IncomingPushNotice) => {
+      const title = String(notice.title ?? "").trim();
+      const body = String(notice.body ?? "").trim();
+      if (!title && !body) {
+        void fetchNotifications({ silent: true });
+        return;
+      }
+      const nid = String(notice.notificationId ?? "").trim();
+      const id = nid ? `campaign:${nid}` : `push:${title}|${body}`.slice(0, 160);
+      if (dismissedCampaignIdsRef.current.has(id)) return;
+
+      const code = String(notice.templateCode ?? "").toUpperCase();
+      const type: NotificationType =
+        code.includes("EARNING") || code.includes("SETTLEMENT") || code.includes("WALLET")
+          ? "earning"
+          : code.includes("ORDER")
+            ? "order"
+            : code.includes("STORE")
+              ? "store"
+              : "system";
+      const nowIso = new Date().toISOString();
+      const provisional: MerchantNotification = {
+        id,
+        type,
+        title: title || "Notification",
+        body,
+        timeAgo: "Just now",
+        dateTime: formatDateTime(nowIso),
+        read: false,
+        orderId: notice.orderId ? String(notice.orderId) : undefined,
+        actionUrl: notice.deepLink ?? undefined,
+      };
+
+      setNotifications((prev) => {
+        if (prev.some((n) => n.id === id)) return prev;
+        return mergeNotificationFeed([provisional, ...prev]);
+      });
+      // Reconcile (real ids, read state, server-side dedupe) right after.
+      void fetchNotifications({ silent: true });
+    },
+    [fetchNotifications]
+  );
+
+  // Refresh inbox when the app returns to foreground so campaign unread
+  // counts update even without store-table realtime events.
+  useEffect(() => {
+    const onChange = (state: AppStateStatus) => {
+      if (state !== "active") return;
+      void fetchNotifications({ silent: true });
+    };
+    const sub = AppState.addEventListener("change", onChange);
+    return () => sub.remove();
+  }, [fetchNotifications]);
+
+  // Campaign inbox has no realtime channel — poll it while the app is in the
+  // foreground so an admin announcement reaches the badge on its own.
+  useEffect(() => {
+    if (!token || !storeId) return;
+    const id = setInterval(() => {
+      if (AppState.currentState !== "active") return;
+      void fetchNotifications({ silent: true });
+    }, CAMPAIGN_POLL_MS);
+    return () => clearInterval(id);
+  }, [token, storeId, fetchNotifications]);
 
   // When backend auto-clears "New order!" on deliver/cancel, drop the row without waiting for poll.
   useEffect(() => {
@@ -253,26 +396,6 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
     [notifications]
   );
 
-  const markAllAsRead = useCallback(async () => {
-    setNotifications((prev) => prev.map((n) => ({ ...n, read: true })));
-    if (token && storeId) {
-      try {
-        await Promise.all([
-          markAllStoreNotificationsRead(storeId, token),
-          markAllReadRemote({
-            baseUrl: getConfig().apiBaseUrl,
-            getAuthHeader: async () => {
-              const t = await readMerchantAccessToken();
-              return t ? `Bearer ${t}` : null;
-            },
-          }).catch(() => undefined),
-        ]);
-      } catch {
-        void fetchNotifications({ silent: true });
-      }
-    }
-  }, [token, storeId, fetchNotifications]);
-
   const markAsRead = useCallback(
     async (id: string) => {
       setNotifications((prev) =>
@@ -281,6 +404,7 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
       if (id.startsWith("campaign:")) {
         const nid = id.slice("campaign:".length);
         try {
+          // Backend unread feed keys off clicked_at — markRead now sets that.
           await markReadRemote(
             {
               baseUrl: getConfig().apiBaseUrl,
@@ -311,7 +435,10 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
     async (id: string) => {
       setNotifications((prev) => prev.filter((n) => n.id !== id));
       if (id.startsWith("campaign:")) {
-        // Campaign inbox rows are audit logs — local dismiss only.
+        // Campaign inbox rows are audit logs — persist the dismissal so the
+        // next inbox fetch does not bring the row back.
+        dismissedCampaignIdsRef.current.add(id);
+        await addDismissedCampaignId(id);
         return;
       }
       if (token && storeId) {
@@ -325,6 +452,23 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
     [token, storeId, fetchNotifications]
   );
 
+  const clearAllNotifications = useCallback(async () => {
+    const campaignIds = notifications
+      .filter((n) => n.id.startsWith("campaign:"))
+      .map((n) => n.id);
+    setNotifications([]);
+    for (const id of campaignIds) dismissedCampaignIdsRef.current.add(id);
+    await addDismissedCampaignIds(campaignIds);
+
+    if (token && storeId) {
+      try {
+        await deleteAllStoreNotifications(storeId, token);
+      } catch {
+        void fetchNotifications({ silent: true });
+      }
+    }
+  }, [notifications, token, storeId, fetchNotifications]);
+
   const refreshSilent = useCallback(() => {
     void fetchNotifications({ silent: true });
   }, [fetchNotifications]);
@@ -334,19 +478,21 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
       notifications,
       unreadCount,
       loading,
-      markAllAsRead,
       markAsRead,
       removeNotification,
+      clearAllNotifications,
       refresh: refreshSilent,
+      applyIncomingPush,
     }),
     [
       notifications,
       unreadCount,
       loading,
-      markAllAsRead,
       markAsRead,
       removeNotification,
+      clearAllNotifications,
       refreshSilent,
+      applyIncomingPush,
     ]
   );
 

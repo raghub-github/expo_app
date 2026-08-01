@@ -7,10 +7,12 @@ import {
 import { refundFieldsFromEngineResult } from "@gatimitra/financial-rules";
 import { appendCancellationTimeline } from "@/lib/orderCancellationTimeline";
 import { recordOrderCancellation } from "@/lib/record-order-cancellation";
+import { triggerOrderAutoRefund } from "@/lib/triggerOrderAutoRefund";
 import { supabaseAdmin } from "@/lib/supabase/server";
 
 const AUTO_CANCEL_REASON = "MERCHANT_ACCEPT_TIMEOUT";
 const AUTO_CANCEL_LABEL = "Auto Cancelled";
+const AUTO_CANCEL_REFUND_REASON = `${AUTO_CANCEL_LABEL} — ${AUTO_CANCEL_REASON}`;
 
 type Sql = ReturnType<typeof postgres>;
 type TimeoutLog = {
@@ -159,6 +161,7 @@ async function finalizeCancelledRows(
           orderCorePk: coreId,
           cancelledBy: "SYSTEM",
           displayReason: AUTO_CANCEL_REASON,
+          reasonCode: AUTO_CANCEL_REASON,
           cancelledByType: "system",
           cancelledByLabel: AUTO_CANCEL_LABEL,
           actionSource: "system",
@@ -167,9 +170,23 @@ async function finalizeCancelledRows(
           grandTotal: row.grand_total,
           refundStatus: refund.refundStatus,
           refundAmount: refund.refundAmount,
-          metadata: engineResult.raw ? { financial_rule_engine: engineResult.raw } : undefined,
+          metadata: {
+            reason_code: AUTO_CANCEL_REASON,
+            rejected_reason: AUTO_CANCEL_REASON,
+            ...(engineResult.raw ? { financial_rule_engine: engineResult.raw } : {}),
+          },
         });
       }
+      // Move money (GatiCash / Razorpay) — previously missing on dashboard sync path.
+      await triggerOrderAutoRefund({
+        orderCorePk: coreId,
+        reason: AUTO_CANCEL_REFUND_REASON,
+        actorRole: "system",
+        amount:
+          refund.refundAmount != null && Number(refund.refundAmount) > 0
+            ? Number(refund.refundAmount)
+            : null,
+      });
     } catch (tlErr) {
       log.error({ err: tlErr, coreId }, "order_acceptance_timeout_timeline_failed");
     }

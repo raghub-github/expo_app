@@ -1,7 +1,6 @@
 "use client";
 
 import { useState } from "react";
-import { QueryClientProvider } from "@tanstack/react-query";
 import { PersistQueryClientProvider } from "@tanstack/react-query-persist-client";
 import { getQueryClient, persister } from "@/lib/react-query";
 
@@ -15,22 +14,23 @@ interface QueryProviderProps {
  *   import { ReactQueryDevtools } from "@tanstack/react-query-devtools";
  *   <ReactQueryDevtools initialIsOpen={false} />
  * inside the provider (dev only).
+ *
+ * Use PersistQueryClientProvider alone (it already wraps QueryClientProvider).
+ * Nesting both caused intermittent "No QueryClient set" during Fast Refresh / SSR.
  */
 export function QueryProvider({ children }: QueryProviderProps) {
   const [queryClient] = useState(() => getQueryClient());
 
   return (
-    <QueryClientProvider client={queryClient}>
-      <PersistQueryClientProvider
-        client={queryClient}
-        persistOptions={{
-          persister,
-          maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
-          buster: "", // Cache version buster (increment to invalidate all cache)
-        }}
-      >
-        {children}
-      </PersistQueryClientProvider>
-    </QueryClientProvider>
+    <PersistQueryClientProvider
+      client={queryClient}
+      persistOptions={{
+        persister,
+        maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
+        buster: "", // Cache version buster (increment to invalidate all cache)
+      }}
+    >
+      {children}
+    </PersistQueryClientProvider>
   );
 }

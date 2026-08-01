@@ -7,7 +7,7 @@ import {
 import { prefetchUserAppCategories } from "@/lib/userAppCategoryCache";
 import { useLocationStore } from "@/store/locationStore";
 import { useDietaryPreferenceStore } from "@/store/dietaryPreferenceStore";
-import { prefetchMerchantsList, readSyncMerchantsList } from "@/lib/merchantsListCache";
+import { prefetchMerchantsList, readSyncMerchantsList, merchantsGeoBucket } from "@/lib/merchantsListCache";
 import { extractCustomerGeoHints } from "@/lib/customer-geo-hints";
 import { prefetchGridFirstHeroMedia } from "@/lib/prefetchGridFirstHeroMedia";
 import { prefetchMealsUnder250HeroMedia } from "@/lib/prefetchMealsUnder250HeroMedia";
@@ -30,6 +30,10 @@ export function FoodHomeLayoutPrefetch() {
   const coords = useLocationStore((s) => s.coords);
   const address = useLocationStore((s) => s.address);
   const vegOnly = useDietaryPreferenceStore((s) => s.vegOnly);
+  const merchantsGeoKey =
+    coords?.latitude != null && coords?.longitude != null
+      ? merchantsGeoBucket(coords.latitude, coords.longitude)
+      : null;
 
   useEffect(() => {
     if (!locationHydrated) return;
@@ -78,7 +82,7 @@ export function FoodHomeLayoutPrefetch() {
     return () => {
       cancelled = true;
     };
-  }, [locationHydrated, coords?.latitude, coords?.longitude, vegOnly, queryClient]);
+  }, [locationHydrated, merchantsGeoKey, vegOnly, queryClient]);
 
   return null;
 }

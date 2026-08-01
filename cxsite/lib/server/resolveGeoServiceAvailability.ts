@@ -145,31 +145,47 @@ export async function resolveGeoServiceAvailabilityFromDb(args: {
   const lat = args.lat != null && Number.isFinite(args.lat) ? args.lat : null
   const lng = args.lng != null && Number.isFinite(args.lng) ? args.lng : null
 
+  let base: GeoServiceAvailabilityPayload | null = null
+
   if (pincode) {
     const fromPincode = await resolveFromPincodeRpc({
       pincode,
       lat,
       lng,
     })
-    if (fromPincode) return fromPincode
+    if (fromPincode) base = fromPincode
   }
 
-  if (state) {
+  if (!base && state) {
     const fromState = await resolveFromStateName(state)
-    if (fromState) return fromState
+    if (fromState) base = fromState
   }
 
   // Truncated display names (e.g. "Hisua Nawada Bi...") may miss the state token —
   // fall back to nearest pincode → state when coords are present.
-  if (lat != null && lng != null) {
+  if (!base && lat != null && lng != null) {
     const inferred = await resolveStateNameFromCoords(lat, lng)
     if (inferred) {
       const fromCoords = await resolveFromStateName(inferred)
-      if (fromCoords) return fromCoords
+      if (fromCoords) base = fromCoords
     }
   }
 
-  return null
+  if (!base) return null
+
+  try {
+    const { applyPreventToGeoFlags } = await import('./preventServices')
+    const merged = await applyPreventToGeoFlags({
+      food: base.food,
+      parcel: base.parcel,
+      ride: base.ride,
+      lat,
+      lng,
+    })
+    return { ...base, ...merged }
+  } catch {
+    return base
+  }
 }
 
 export const GEO_SERVICES_OPEN_FALLBACK: GeoServiceAvailabilityPayload = {

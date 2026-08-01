@@ -98,6 +98,11 @@ export type PayoutCycleCard = {
   net_payout: number;
   estimated_payout: number;
   order_count: number;
+  /** Withdrawal principal returned in this cycle — reported, never payout value. */
+  withdrawal_returned?: number;
+  withdrawal_amount?: number;
+  /** Admin rejection reason / bank failure reason for the closing withdrawal. */
+  close_note?: string | null;
   settlement: Record<string, unknown> | null;
 };
 

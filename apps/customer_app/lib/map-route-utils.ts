@@ -67,6 +67,12 @@ export function buildPickupDropPreviewArc(
   to: MapLatLng,
   segments = 32
 ): MapLatLng[] {
+  const spanKm = haversineKm(from.latitude, from.longitude, to.latitude, to.longitude);
+  // Guard against bad snapshots (e.g. India-centroid vs real pin) drawing a
+  // continent-scale curve. Local food hops should stay under ~100km.
+  if (!Number.isFinite(spanKm) || spanKm > 100) {
+    return [from, to];
+  }
   const mid: MapLatLng = {
     latitude: (from.latitude + to.latitude) / 2,
     longitude: (from.longitude + to.longitude) / 2,

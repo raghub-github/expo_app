@@ -1,6 +1,14 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState, useSyncExternalStore } from "react";
 import { AppText as Text } from "@/components/AppText";
-import { Modal, View, Pressable, StyleSheet, Animated, Easing, LayoutChangeEvent } from "react-native";
+import {
+  Modal,
+  View,
+  Pressable,
+  StyleSheet,
+  Animated,
+  Easing,
+  LayoutChangeEvent,
+} from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { GatiMitraMerchant } from "@/constants/theme";
 
@@ -8,6 +16,39 @@ export const STORE_CLOSED_ACTIVE_TITLE = "Store is closed for new orders";
 export const STORE_CLOSED_ACTIVE_BODY =
   "You still have active orders to complete. Finish preparing and dispatching them below.";
 export const STORE_CLOSED_ACTIVE_MARQUEE = `${STORE_CLOSED_ACTIVE_TITLE} · ${STORE_CLOSED_ACTIVE_BODY}`;
+
+/**
+ * Shared across Home + Orders (both tabs stay mounted with lazy:false).
+ * Without a single session flag + bus, Okay on one Modal leaves the other open.
+ */
+let dismissedForSession = false;
+const dismissListeners = new Set<() => void>();
+
+function getDismissedSnapshot(): boolean {
+  return dismissedForSession;
+}
+
+function subscribeDismissed(onStoreChange: () => void): () => void {
+  dismissListeners.add(onStoreChange);
+  return () => {
+    dismissListeners.delete(onStoreChange);
+  };
+}
+
+function dismissStoreClosedActiveModalForSession(): void {
+  if (dismissedForSession) return;
+  dismissedForSession = true;
+  for (const listener of [...dismissListeners]) {
+    try {
+      listener();
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
+/** Only one RN Modal host may paint — avoids stacked invisible blockers. */
+let modalHostClaim: string | null = null;
 
 function StoreClosedActiveOrdersModal({
   open,
@@ -17,8 +58,20 @@ function StoreClosedActiveOrdersModal({
   onClose: () => void;
 }) {
   return (
-    <Modal visible={open} transparent animationType="fade" onRequestClose={onClose}>
+    <Modal
+      visible={open}
+      transparent
+      animationType="fade"
+      onRequestClose={onClose}
+      statusBarTranslucent
+    >
       <View style={styles.modalOverlay}>
+        <Pressable
+          style={StyleSheet.absoluteFillObject}
+          onPress={onClose}
+          accessibilityRole="button"
+          accessibilityLabel="Dismiss"
+        />
         <View style={styles.modalCard}>
           <View style={styles.modalIconWrap}>
             <Ionicons name="storefront-outline" size={26} color="#B45309" />
@@ -27,6 +80,9 @@ function StoreClosedActiveOrdersModal({
           <Text style={styles.modalBody}>{STORE_CLOSED_ACTIVE_BODY}</Text>
           <Pressable
             onPress={onClose}
+            hitSlop={12}
+            accessibilityRole="button"
+            accessibilityLabel="Okay"
             style={({ pressed }) => [styles.modalBtn, pressed && styles.pressed]}
           >
             <Text style={styles.modalBtnText}>Okay</Text>
@@ -79,20 +135,46 @@ function StoreClosedActiveOrdersMarquee() {
   );
 }
 
-/** Popup when store is closed but active orders exist; marquee after dismiss until orders finish. */
+/**
+ * Popup when store is closed but active orders exist.
+ * Okay dismisses for the whole JS session (until force-stop / cold start).
+ * Marquee stays on screens that still have active closed-store work.
+ */
 export function StoreClosedActiveOrdersNotice({ visible }: { visible: boolean }) {
-  const [dismissed, setDismissed] = useState(false);
+  const hostId = useId();
+  const dismissed = useSyncExternalStore(
+    subscribeDismissed,
+    getDismissedSnapshot,
+    getDismissedSnapshot
+  );
+  const [ownsModal, setOwnsModal] = useState(false);
 
   useEffect(() => {
-    if (!visible) setDismissed(false);
-  }, [visible]);
+    if (!visible || dismissed) {
+      if (modalHostClaim === hostId) modalHostClaim = null;
+      setOwnsModal(false);
+      return;
+    }
+    if (modalHostClaim == null) {
+      modalHostClaim = hostId;
+      setOwnsModal(true);
+      return;
+    }
+    setOwnsModal(modalHostClaim === hostId);
+    return () => {
+      if (modalHostClaim === hostId) modalHostClaim = null;
+    };
+  }, [visible, dismissed, hostId]);
 
-  const showModal = visible && !dismissed;
+  const showModal = visible && !dismissed && ownsModal;
   const showMarquee = visible && dismissed;
 
   return (
     <>
-      <StoreClosedActiveOrdersModal open={showModal} onClose={() => setDismissed(true)} />
+      <StoreClosedActiveOrdersModal
+        open={showModal}
+        onClose={dismissStoreClosedActiveModalForSession}
+      />
       {showMarquee ? <StoreClosedActiveOrdersMarquee /> : null}
     </>
   );
@@ -117,6 +199,7 @@ const styles = StyleSheet.create({
     paddingTop: 24,
     paddingBottom: 16,
     alignItems: "center",
+    zIndex: 1,
   },
   modalIconWrap: {
     width: 48,

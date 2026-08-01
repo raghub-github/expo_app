@@ -27,6 +27,7 @@ import {
   clearMerchantStoreOrderNotificationsByOrderRef,
   shouldClearOrderNotifications,
 } from "../../lib/clear-merchant-order-notifications.js";
+import { resolveCustomerOrderCancelledTemplateCode } from "../../lib/order-cancel-notification.js";
 
 // ---------------------------------------------------------------------------
 // Event catalog
@@ -46,6 +47,10 @@ export type DomainEventMap = {
     riderUserId?: string | null;
     riderName?: string | null;
     reason?: string;                 // for cancellations
+    /** Explicit cancel refund decision from the cancel path (preferred). */
+    refundEligible?: boolean | null;
+    refundStatus?: string | null;
+    refundAmount?: number | null;
   };
 
   // Rider assigned to an order (after dispatch accept).
@@ -154,6 +159,16 @@ export type DomainEventMap = {
     event: "RENEWED" | "EXPIRING" | "EXPIRED";
     expiresOn?: string;
   };
+
+  // Referral reward credited (GatiCash or rider wallet).
+  "referral.reward_credited": {
+    userId: string;
+    role: "customer" | "rider";
+    amount: number;
+    title: string;
+    body: string;
+    party: "referrer" | "referred";
+  };
 };
 
 type EventName = keyof DomainEventMap;
@@ -207,7 +222,8 @@ const STATUS_TO_TEMPLATE: Record<string, { customer?: string; merchant?: string;
   OUT_FOR_DELIVERY:  { customer: "ORDER_OUT_FOR_DELIVERY" },
   REACHED_CUSTOMER:  { customer: "ORDER_RIDER_ARRIVING" },
   DELIVERED:         { customer: "ORDER_DELIVERED" },
-  CANCELLED:         { customer: "ORDER_CANCELLED", merchant: "MERCHANT_ORDER_CANCELLED", rider: "RIDER_ORDER_CANCELLED" },
+  // Customer cancel templates are chosen dynamically (refund eligible vs none).
+  CANCELLED:         { merchant: "MERCHANT_ORDER_CANCELLED", rider: "RIDER_ORDER_CANCELLED" },
 };
 
 /** Live-progress metadata for food shade updates (customer app). */
@@ -283,13 +299,53 @@ export function registerDomainEventHandlers(): void {
       riderName: e.riderName ?? "Your rider",
       etaMinutes: 25,
     };
-    if (map.customer && e.customerId) {
+
+    const toStatus = e.toStatus.toUpperCase();
+    let customerTemplate = map.customer;
+    if (toStatus === "CANCELLED" && e.customerId) {
+      let refundEligible = e.refundEligible;
+      let refundStatus = e.refundStatus ?? null;
+      let refundAmount = e.refundAmount ?? null;
+      // Fallback: read latest cancellation row when emitters omit refund fields.
+      if (refundEligible == null && refundStatus == null && refundAmount == null) {
+        try {
+          const rows = (await getSql()`
+            SELECT refund_status, refund_amount
+            FROM public.order_cancellation_reasons
+            WHERE order_id = (
+              SELECT id FROM public.orders_core
+              WHERE order_id = ${e.orderId} OR formatted_order_id = ${e.orderId}
+              LIMIT 1
+            )
+            ORDER BY cancelled_at DESC NULLS LAST, id DESC
+            LIMIT 1
+          `) as unknown as Array<{ refund_status?: string | null; refund_amount?: unknown }>;
+          const row = rows[0];
+          if (row) {
+            refundStatus = row.refund_status ?? null;
+            refundAmount =
+              row.refund_amount != null && Number.isFinite(Number(row.refund_amount))
+                ? Number(row.refund_amount)
+                : null;
+          }
+        } catch {
+          /* best-effort */
+        }
+      }
+      customerTemplate = resolveCustomerOrderCancelledTemplateCode({
+        refundEligible,
+        refundStatus,
+        refundAmount,
+      });
+    }
+
+    if (customerTemplate && e.customerId) {
       await sendNotification({
-        templateCode: map.customer,
+        templateCode: customerTemplate,
         variables: vars,
         target: { user_id: e.customerId },
-        idempotencyKey: `${map.customer}:${e.orderId}:${e.toStatus}`,
-        metadata: foodLiveMetadata(map.customer, e.orderId, {
+        idempotencyKey: `${customerTemplate}:${e.orderId}:${e.toStatus}`,
+        metadata: foodLiveMetadata(customerTemplate, e.orderId, {
           merchantName: e.merchantName,
           riderName: e.riderName,
         }),
@@ -312,6 +368,42 @@ export function registerDomainEventHandlers(): void {
         idempotencyKey: `${map.rider}:${e.orderId}:${e.toStatus}`,
         metadata: { orderId: e.orderId, gmType: map.rider },
       });
+    }
+
+    // Store-token lifecycle push (preparing / ready / OFD / cancel / delivered)
+    // so the merchant sticky "active orders" tray updates while backgrounded.
+    if (e.merchantStoreId != null && e.merchantStoreId > 0) {
+      const stage = e.toStatus.toUpperCase();
+      if (
+        stage === "PREPARING" ||
+        stage === "ACCEPTED" ||
+        stage === "READY" ||
+        stage === "READY_FOR_PICKUP" ||
+        stage === "OUT_FOR_DELIVERY" ||
+        stage === "PICKED_UP" ||
+        stage === "CANCELLED" ||
+        stage === "DELIVERED"
+      ) {
+        try {
+          const { notifyMerchantOrderLifecycle } = await import(
+            "../../lib/merchant-push-notify.js"
+          );
+          const foodIdRaw = Number(e.orderId);
+          await notifyMerchantOrderLifecycle(getSql(), {
+            storeId: e.merchantStoreId,
+            foodOrderId:
+              Number.isInteger(foodIdRaw) && foodIdRaw > 0 ? foodIdRaw : null,
+            displayOrderId: e.orderShortId ?? e.orderId,
+            stage,
+            reason: e.reason ?? null,
+          });
+        } catch (err) {
+          console.warn(
+            "[eventBus] merchant lifecycle push failed:",
+            (err as Error)?.message ?? err
+          );
+        }
+      }
     }
   });
 
@@ -501,6 +593,23 @@ export function registerDomainEventHandlers(): void {
       },
       target: { user_id: e.merchantUserId },
       idempotencyKey: `${template}:${e.merchantUserId}:${e.period ?? "any"}:${Math.round(e.amount * 100)}`,
+    });
+  });
+
+  on("referral.reward_credited", async (e) => {
+    const template =
+      e.role === "customer" ? "REFERRAL_REWARD_CUSTOMER" : "REFERRAL_REWARD_RIDER";
+    await sendNotification({
+      templateCode: template,
+      variables: {
+        amount: e.amount.toFixed(2),
+        title: e.title,
+        body: e.body,
+      },
+      overrides: { title: e.title, body: e.body },
+      target: { user_id: e.userId },
+      idempotencyKey: `${template}:${e.userId}:${e.party}:${Math.round(e.amount * 100)}:${Date.now()}`,
+      metadata: { category: "referral", party: e.party },
     });
   });
 

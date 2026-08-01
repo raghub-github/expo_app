@@ -1,13 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AppText as Text } from "@/components/AppText";
-import { View, StyleSheet, ActivityIndicator, Pressable } from "react-native";
+import { View, StyleSheet, ActivityIndicator, Pressable, Platform } from "react-native";
 import { WebView } from "react-native-webview";
 import { Ionicons } from "@expo/vector-icons";
 import type { OrderRecord } from "@/hooks/useOrders";
 import type { MerchantRiderLiveEnrichment } from "@/hooks/useMerchantRiderLiveEnrichment";
 import { useMerchantRiderLiveTracking } from "@/hooks/useMerchantRiderLiveTracking";
 import { MerchantBottomSheetShell } from "@/components/order/MerchantBottomSheetShell";
-import { getConfig } from "@/config/env";
+import { getConfig, resolveUrlForDevice } from "@/config/env";
 import {
   buildMapUpdateScript,
   buildMerchantRiderTrackingMapHtml,
@@ -20,6 +20,9 @@ import {
 } from "@/lib/riderMerchantArrivalDisplay";
 import { callRider } from "@/lib/orderCardActions";
 import { mapbikeMarkerUri } from "@/lib/merchant-map-assets";
+import { MX } from "@/lib/appAssetKeys";
+import { useAppAssetUrl } from "@/store/appAssetsStore";
+import { resolveImageUrl } from "@/services/outletApi";
 import { RiderSelfieAvatar } from "@/components/order/RiderSelfieAvatar";
 import { RiderSelfieViewerModal } from "@/components/order/RiderSelfieViewerModal";
 import { GatiMitraMerchant } from "@/constants/theme";
@@ -102,23 +105,78 @@ export function MerchantRiderTrackingSheet({
     [variant, riderName, arrivalSubtitle]
   );
 
-  const mapbikeUri = useMemo(() => mapbikeMarkerUri(), []);
+  const mapbikeFromStore = useAppAssetUrl(MX.map.bike);
+  const mapbikeUri = useMemo(() => {
+    if (mapbikeFromStore?.trim()) {
+      return resolveImageUrl(mapbikeFromStore) ?? resolveUrlForDevice(mapbikeFromStore.trim());
+    }
+    return mapbikeMarkerUri();
+  }, [mapbikeFromStore]);
 
-  // Build HTML once — subsequent GPS updates use injectJavaScript (smooth marker lerp).
+  const injectMapResize = () => {
+    webRef.current?.injectJavaScript(
+      `(function(){try{if(window.resizeRiderTrackingMap){window.resizeRiderTrackingMap();}else if(window.map&&window.map.resize){window.map.resize();}}catch(e){} true;})();`
+    );
+  };
+
+  const injectBikeIcon = (uri: string) => {
+    if (!uri.trim()) return;
+    webRef.current?.injectJavaScript(
+      `(function(){try{if(window.setRiderBikeIcon){window.setRiderBikeIcon(${JSON.stringify(uri)});} }catch(e){} true;})();`
+    );
+  };
+
+  // Build HTML once tracking data arrives; inject Super Admin bike when URL resolves.
   const [mapHtml, setMapHtml] = useState<string | null>(null);
+  const builtWithBikeRef = useRef("");
   useEffect(() => {
     if (!visible) {
       setMapHtml(null);
+      builtWithBikeRef.current = "";
       return;
     }
-    if (!mapboxToken || !data || mapHtml) return;
-    setMapHtml(buildMerchantRiderTrackingMapHtml(mapboxToken, data, mapbikeUri));
+    if (!mapboxToken || !data) return;
+
+    const bikeReady = mapbikeUri.trim();
+
+    if (!mapHtml) {
+      // Wait briefly for merchant.map.bike (map.bike) so the marker uses Super Admin asset.
+      if (!bikeReady) {
+        const t = setTimeout(() => {
+          const lateBike = mapbikeMarkerUri();
+          setMapHtml(buildMerchantRiderTrackingMapHtml(mapboxToken, data, lateBike));
+          builtWithBikeRef.current = lateBike;
+        }, 500);
+        return () => clearTimeout(t);
+      }
+      setMapHtml(buildMerchantRiderTrackingMapHtml(mapboxToken, data, bikeReady));
+      builtWithBikeRef.current = bikeReady;
+      return;
+    }
+
+    if (bikeReady && bikeReady !== builtWithBikeRef.current) {
+      builtWithBikeRef.current = bikeReady;
+      injectBikeIcon(bikeReady);
+    }
   }, [visible, mapboxToken, data, mapHtml, mapbikeUri]);
 
   useEffect(() => {
     if (!data || !mapHtml) return;
     webRef.current?.injectJavaScript(buildMapUpdateScript(data));
   }, [data, mapHtml]);
+
+  // Sheet animation / Android layout often leaves Mapbox at 0×0; re-fit after open.
+  useEffect(() => {
+    if (!visible || !mapHtml) return;
+    const t1 = setTimeout(injectMapResize, 100);
+    const t2 = setTimeout(injectMapResize, 400);
+    const t3 = setTimeout(injectMapResize, 900);
+    return () => {
+      clearTimeout(t1);
+      clearTimeout(t2);
+      clearTimeout(t3);
+    };
+  }, [visible, mapHtml]);
 
   const mapHint =
     !data?.location && data?.store
@@ -138,7 +196,13 @@ export function MerchantRiderTrackingSheet({
         </Text>
       </View>
 
-      <View style={styles.mapWrap}>
+      <View
+        style={styles.mapWrap}
+        collapsable={false}
+        onLayout={() => {
+          if (mapHtml) injectMapResize();
+        }}
+      >
         {loading && !data ? (
           <View style={styles.loader}>
             <ActivityIndicator size="large" color={GatiMitraMerchant.primary} />
@@ -150,12 +214,29 @@ export function MerchantRiderTrackingSheet({
         ) : mapHtml ? (
           <WebView
             ref={webRef}
+            // No baseUrl — matches customer tracking maps; api.mapbox.com baseUrl can block style tiles.
             source={{ html: mapHtml }}
             style={styles.map}
             scrollEnabled={false}
+            nestedScrollEnabled={Platform.OS === "android"}
+            overScrollMode="never"
+            androidLayerType="hardware"
             originWhitelist={["*"]}
             javaScriptEnabled
             domStorageEnabled
+            allowFileAccess
+            allowUniversalAccessFromFileURLs
+            mixedContentMode="always"
+            setSupportMultipleWindows={false}
+            onLoadEnd={() => {
+              injectMapResize();
+              if (data) {
+                webRef.current?.injectJavaScript(buildMapUpdateScript(data));
+              }
+            }}
+            onMessage={() => {
+              injectMapResize();
+            }}
           />
         ) : (
           <View style={styles.loader}>
@@ -246,6 +327,8 @@ const styles = StyleSheet.create({
   },
   map: {
     flex: 1,
+    width: "100%",
+    height: "100%",
     backgroundColor: GatiMitraMerchant.surfaceSubtle,
   },
   loader: {

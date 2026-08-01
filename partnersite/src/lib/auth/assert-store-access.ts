@@ -4,6 +4,7 @@
  */
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { validateMerchantFromSession } from '@/lib/auth/validate-merchant'
+import { isNetworkOrTransientError } from '@/lib/auth/session-errors'
 import { isValidPartnerStoreId } from '@/lib/partner-store-id-shared'
 import { createClient, type SupabaseClient } from '@supabase/supabase-js'
 import { client as pgClient } from '@/lib/drizzle'
@@ -111,20 +112,34 @@ export async function assertStoreAccess(storeIdParam: string | null): Promise<As
     return { ok: false, error: 'Invalid storeId', status: 400 }
   }
 
-  const supabaseServer = await createServerSupabaseClient()
-  let { data: { user }, error: userError } = await supabaseServer.auth.getUser()
-  if (userError || !user) {
-    // Cookie session can lag after OTP/set-cookie — refresh once then retry.
-    try {
-      await supabaseServer.auth.getSession()
-    } catch {
-      /* ignore */
+  let user: { id: string; email?: string | null; phone?: string | null } | null = null
+  try {
+    const supabaseServer = await createServerSupabaseClient()
+    let { data: { user: sessionUser }, error: userError } = await supabaseServer.auth.getUser()
+    if (userError || !sessionUser) {
+      // Cookie session can lag after OTP/set-cookie — refresh once then retry.
+      try {
+        await supabaseServer.auth.getSession()
+      } catch {
+        /* ignore */
+      }
+      const retry = await supabaseServer.auth.getUser()
+      sessionUser = retry.data.user
+      userError = retry.error
     }
-    const retry = await supabaseServer.auth.getUser()
-    user = retry.data.user
-    userError = retry.error
+    if (userError || !sessionUser) {
+      return { ok: false, error: 'Not authenticated', status: 401 }
+    }
+    user = sessionUser
+  } catch (e) {
+    // DNS blips / connect timeouts to Supabase throw TypeError: fetch failed
+    // instead of returning an AuthError — surface a clean status, don't crash the route.
+    if (isNetworkOrTransientError(e)) {
+      return { ok: false, error: 'Auth service unavailable', status: 503 }
+    }
+    throw e
   }
-  if (userError || !user) {
+  if (!user) {
     return { ok: false, error: 'Not authenticated', status: 401 }
   }
 

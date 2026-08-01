@@ -70,3 +70,67 @@ export function hydrateCartLine(item: CartItem): CartItem {
     specialInstructions,
   };
 }
+
+/** True when a cart line belongs to the given menu catalog item (base / composite id). */
+export function cartLineMatchesMenuItem(
+  line: CartLineIdentityInput,
+  menuItemId: string,
+  menuItemNumericId?: number | null
+): boolean {
+  const base = cartItemBaseId(line.menuItemId);
+  const ids = new Set<string>([String(menuItemId)]);
+  if (menuItemNumericId != null && Number.isFinite(menuItemNumericId)) {
+    ids.add(String(menuItemNumericId));
+  }
+  if (ids.has(base) || ids.has(line.menuItemId)) return true;
+  for (const id of ids) {
+    if (line.menuItemId.startsWith(`${id}_`)) return true;
+  }
+  return false;
+}
+
+/**
+ * Prefill cooking request / qty when reopening an item sheet for something already
+ * in the cart. Prefers the newest line that has a note; returns total qty across
+ * matching lines so an edit can consolidate duplicates into one line.
+ */
+export function findCartLinePrefillForMenuItem(args: {
+  cartItems: CartItem[];
+  menuItemId: string;
+  menuItemNumericId?: number | null;
+}): {
+  lineId: string | null;
+  siblingLineIds: string[];
+  specialInstructions: string | null;
+  quantity: number;
+  variantId?: string | null;
+  variantName?: string | null;
+  addons?: Array<{ addonId: string }>;
+} | null {
+  const matches = args.cartItems.filter((line) =>
+    cartLineMatchesMenuItem(line, args.menuItemId, args.menuItemNumericId)
+  );
+  if (matches.length === 0) return null;
+
+  const withNote = [...matches]
+    .reverse()
+    .find((line) => normalizeOrderItemSpecialInstructions(line.specialInstructions));
+  const line = withNote ?? matches[matches.length - 1]!;
+  const note = normalizeOrderItemSpecialInstructions(line.specialInstructions);
+  const primaryId = line.lineId?.trim() || null;
+  const siblingLineIds = matches
+    .map((m) => m.lineId?.trim() || "")
+    .filter((id) => id && id !== primaryId);
+
+  return {
+    lineId: primaryId,
+    siblingLineIds,
+    specialInstructions: note,
+    quantity: matches.reduce((sum, m) => sum + Math.max(1, m.quantity || 1), 0),
+    variantId: line.variantId ?? null,
+    variantName: line.variantName ?? null,
+    addons: (line.addons ?? [])
+      .map((a) => ({ addonId: String(a.addonId).trim() }))
+      .filter((a) => a.addonId),
+  };
+}

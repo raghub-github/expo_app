@@ -1,7 +1,9 @@
-'use client';
+﻿'use client';
 
 import { createPortal } from 'react-dom';
-import { Bike, X } from 'lucide-react';
+import { AlertTriangle, Bike, Phone, X } from 'lucide-react';
+import { RiderAssignmentHorizontalTimeline } from '@/components/orders/RiderAssignmentHorizontalTimeline';
+import { isInactiveRiderLogEntry } from '@/lib/ridersLogCache';
 
 /** Partner / dashboard shell top bar height (matches fixed h-14 headers). */
 export const ORDER_SHELL_HEADER_OFFSET = '3.5rem';
@@ -20,6 +22,7 @@ export type RiderLogEntry = {
   delivered_at: string | null;
   cancelled_at: string | null;
   unassigned_at?: string | null;
+  is_active?: boolean | null;
 };
 
 export type OrderRidersHistorySidesheetProps = {
@@ -33,20 +36,6 @@ export type OrderRidersHistorySidesheetProps = {
   topOffset?: string;
 };
 
-function fmtTime(s: string | null) {
-  return s
-    ? new Date(s).toLocaleString('en-IN', { dateStyle: 'short', timeStyle: 'short' })
-    : '—';
-}
-
-function resolveAssignedAt(r: RiderLogEntry): string | null {
-  return r.assigned_at ?? r.accepted_at ?? null;
-}
-
-function resolveCancelledAt(r: RiderLogEntry): string | null {
-  return r.cancelled_at ?? r.unassigned_at ?? r.rejected_at ?? null;
-}
-
 export function OrderRidersHistorySidesheet({
   open,
   orderLabel,
@@ -57,6 +46,8 @@ export function OrderRidersHistorySidesheet({
   topOffset = ORDER_SHELL_HEADER_OFFSET,
 }: OrderRidersHistorySidesheetProps) {
   if (!open || typeof document === 'undefined') return null;
+
+  const showLoading = loading && riders.length === 0;
 
   return createPortal(
     <div
@@ -84,12 +75,17 @@ export function OrderRidersHistorySidesheet({
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex shrink-0 items-center justify-between gap-3 border-b border-gray-200 px-4 py-4">
-          <h3 id="riders-history-title" className="pr-2 font-semibold text-gray-900">
-            Past riders
-            {orderLabel ? (
-              <span className="ml-1.5 font-medium text-gray-500">({orderLabel})</span>
-            ) : null}
-          </h3>
+          <div className="min-w-0 pr-2">
+            <h3 id="riders-history-title" className="text-lg font-extrabold text-gray-900">
+              Old rider&apos;s log
+              {orderLabel ? (
+                <span className="ml-1.5 text-sm font-medium text-gray-500">({orderLabel})</span>
+              ) : null}
+            </h3>
+            <p className="mt-1 text-xs font-medium leading-snug text-gray-600">
+              Previously assigned partners for this order (current assignee excluded)
+            </p>
+          </div>
           <button
             type="button"
             onClick={onClose}
@@ -100,63 +96,76 @@ export function OrderRidersHistorySidesheet({
           </button>
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto p-4 hide-scrollbar">
-          {loading ? (
+          {showLoading ? (
             <p className="text-sm text-gray-500">Loading rider history…</p>
           ) : riders.length === 0 ? (
-            <p className="text-sm text-gray-500">No riders have been assigned to this order yet.</p>
+            <div className="flex flex-col items-center gap-2 py-10 text-center">
+              <Bike size={36} className="text-gray-300" aria-hidden />
+              <p className="text-sm font-semibold text-gray-500">
+                No previous rider assignments yet
+              </p>
+            </div>
           ) : (
             <ul className="space-y-3">
-              {riders.map((r, idx) => (
-                <li
-                  key={`${r.rider_id}-${idx}`}
-                  className="rounded-xl border border-gray-200 bg-gray-50/60 p-3"
-                >
-                  <div className="flex items-start gap-3">
-                    {r.selfie_url ? (
-                      <button
-                        type="button"
-                        onClick={() => onRiderPhotoClick?.(r.selfie_url!)}
-                        className="h-11 w-11 shrink-0 overflow-hidden rounded-full border-2 border-purple-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-purple-400"
-                      >
-                        <img
-                          src={r.selfie_url}
-                          alt={r.rider_name || 'Rider'}
-                          className="h-full w-full object-cover"
-                        />
-                      </button>
-                    ) : (
-                      <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-purple-100">
-                        <Bike size={20} className="text-purple-600" />
+              {riders.map((r, idx) => {
+                const inactive = isInactiveRiderLogEntry(r);
+                const name = (r.rider_name ?? '').trim() || `Rider #${r.rider_id}`;
+                return (
+                  <li
+                    key={`${r.rider_id}-${r.assigned_at ?? r.cancelled_at ?? idx}`}
+                    className={`rounded-xl border p-3 ${
+                      inactive
+                        ? 'border-red-200 bg-gray-50/80'
+                        : 'border-gray-200 bg-white'
+                    }`}
+                  >
+                    <div className="flex items-center gap-3">
+                      {r.selfie_url ? (
+                        <button
+                          type="button"
+                          onClick={() => onRiderPhotoClick?.(r.selfie_url!)}
+                          className="h-11 w-11 shrink-0 overflow-hidden rounded-full border-2 border-purple-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-purple-400"
+                        >
+                          <img
+                            src={r.selfie_url}
+                            alt={name}
+                            className="h-full w-full object-cover"
+                          />
+                        </button>
+                      ) : (
+                        <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-purple-100">
+                          <Bike size={20} className="text-purple-600" />
+                        </div>
+                      )}
+                      <div className="min-w-0 flex-1 text-center">
+                        <p className="truncate text-sm font-bold text-gray-900">{name}</p>
                       </div>
-                    )}
-                    <div className="min-w-0 flex-1 text-sm">
-                      <p className="font-semibold text-gray-900">
-                        {r.rider_name || `Rider #${r.rider_id}`}
-                      </p>
                       {r.rider_mobile ? (
                         <a
                           href={`tel:${r.rider_mobile}`}
-                          className="text-purple-600 hover:underline"
+                          className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-violet-600 text-white hover:bg-violet-700"
+                          aria-label={`Call ${name}`}
                         >
-                          {r.rider_mobile}
+                          <Phone size={16} aria-hidden />
                         </a>
-                      ) : null}
-                      <div className="mt-2.5 space-y-1 text-xs text-gray-600">
-                        <p>
-                          <span className="font-medium text-gray-700">Assigned at:</span>{' '}
-                          {fmtTime(resolveAssignedAt(r))}
-                        </p>
-                        {resolveCancelledAt(r) ? (
-                          <p>
-                            <span className="font-medium text-gray-700">Cancelled at:</span>{' '}
-                            {fmtTime(resolveCancelledAt(r))}
-                          </p>
-                        ) : null}
-                      </div>
+                      ) : (
+                        <span className="h-10 w-10 shrink-0" aria-hidden />
+                      )}
                     </div>
-                  </div>
-                </li>
-              ))}
+
+                    <RiderAssignmentHorizontalTimeline rider={r} />
+
+                    {inactive ? (
+                      <div className="mt-2.5 flex items-center justify-center gap-1.5 rounded-lg bg-red-50 px-2.5 py-2 text-center">
+                        <AlertTriangle size={14} className="shrink-0 text-red-800" aria-hidden />
+                        <p className="text-xs font-semibold leading-snug text-red-800">
+                          Do not hand over this order to this rider.
+                        </p>
+                      </div>
+                    ) : null}
+                  </li>
+                );
+              })}
             </ul>
           )}
         </div>

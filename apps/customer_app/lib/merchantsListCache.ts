@@ -36,8 +36,9 @@ export function merchantsListCacheKey(lat: number, lng: number, vegOnly: boolean
   return `${merchantsGeoBucket(lat, lng)}:veg=${vegOnly ? 1 : 0}`;
 }
 
+/** Bucketed query key so GPS jitter does not cancel in-flight listing fetches. */
 export function merchantsQueryKey(lat: number, lng: number, vegOnly: boolean) {
-  return ["merchants", lat, lng, vegOnly] as const;
+  return ["merchants", merchantsGeoBucket(lat, lng), vegOnly] as const;
 }
 
 function parseBlob(raw: string | null | undefined): MerchantsListCacheBlob {
@@ -135,10 +136,11 @@ export function seedMerchantsListQueryIfCached(
 ): boolean {
   const queryKey = merchantsQueryKey(lat, lng, vegOnly);
   const existing = queryClient.getQueryData<MerchantSummary[]>(queryKey);
-  if (existing != null) return true;
+  if (existing != null && existing.length > 0) return true;
 
+  // Never seed an empty bucket — that falsely paints "We're not serving here yet".
   const cached = readSyncMerchantsList(lat, lng, vegOnly);
-  if (cached == null) return false;
+  if (cached == null || cached.length === 0) return false;
 
   queryClient.setQueryData(queryKey, cached);
   return true;
@@ -149,12 +151,14 @@ export async function fetchAndCacheMerchantsList(
   lng: number,
   vegOnly: boolean
 ): Promise<MerchantSummary[]> {
+  // Air distance first = instant nearby list; road sort is optional polish.
+  // Avoids Mapbox enrich latency blocking home when stores are already in range.
   const items = await merchantService.getMerchants({
     limit: 20,
     lat,
     lng,
     vegOnly,
-    distanceMode: "road",
+    distanceMode: "air",
   });
   void writeCachedMerchantsList(lat, lng, vegOnly, items);
   return items;

@@ -2,14 +2,14 @@
  * Location global state - permission, coords, reverse-geocoded address.
  *
  * Priority for nearby merchants / home discovery:
- * 1. Live GPS ("current") — default on cold start and app resume
- * 2. Explicit user-selected pin ("selected") — only after the user picks a saved
- *    address / map pin this session
- * 3. Saved / server active-location — checkout convenience only; never drives
- *    merchant listing by itself
+ * 1. Live GPS ("current") — default when no bound saved address, or after backend
+ *    reconcile switches away from a saved address the user has traveled far from
+ * 2. Explicit / backend-kept saved address ("selected") — after user picks Saved/Add New,
+ *    or when POST /active-location/reconcile keeps the bound address (GPS still nearby)
+ * 3. Server active-location — single source of truth; client applies reconcile responses
  *
- * Persisted "last selected" pins are NOT restored as selected on cold start so a
- * previous city (e.g. Bihar) cannot keep showing after the user travels (e.g. Delhi).
+ * Cold start clears local AsyncStorage selection; backend reconcile may restore a
+ * still-nearby saved address from customer_active_location.address_id.
  */
 
 import { create } from "zustand";
@@ -99,6 +99,12 @@ async function geocodeOrFallback(longitude: number, latitude: number): Promise<R
 export type LocationSource = "selected" | "current";
 
 /**
+ * nearby = GPS was within retention at select time (resume may auto-switch if user travels).
+ * remote = intentional "order for someone else" (resume must keep until cold start).
+ */
+export type SessionSelectionKind = "nearby" | "remote";
+
+/**
  * Monotonic token for live-GPS fetches. getDeviceCoords()+reverseGeocode() is async, so two
  * overlapping fetches can finish out of order; a fetch only commits its coords/address if its
  * token is still the latest — an older (slower) reverse-geocode can never overwrite a newer GPS fix.
@@ -113,6 +119,13 @@ type LocationState = {
   address: ReverseGeocodeResult | null;
   /** null until first fetch; then reflects last explicit source (GPS vs user selection). */
   locationSource: LocationSource | null;
+  /**
+   * In-session classification of the last Saved Address pick.
+   * Cleared on cold start hydrate and when switching to Current Location.
+   */
+  sessionSelectionKind: SessionSelectionKind | null;
+  /** Bound saved address id for this session selection (for remote restore after resume). */
+  sessionBoundAddressId: number | null;
   /** True after initial in-memory bootstrap attempt (success or empty). */
   locationHydrated: boolean;
   showPermissionModal: boolean;
@@ -122,13 +135,24 @@ type LocationState = {
   clearPersistedSelection: () => Promise<void>;
   requestPermissionAndFetch: (options?: { forceDevice?: boolean }) => Promise<void>;
   setShowPermissionModal: (show: boolean) => void;
-  /** Show location sheet on launch until app permission + device location are both on. */
-  promptLocationPermissionIfNeeded: (options?: { force?: boolean }) => Promise<void>;
+  /**
+   * Show location sheet on launch until app permission + device location are both on.
+   * `skipDeviceFetch`: only ensure permission / sheet state — do not push GPS into the
+   * store (cold-start / resume reconcile owns that decision).
+   */
+  promptLocationPermissionIfNeeded: (options?: {
+    force?: boolean;
+    skipDeviceFetch?: boolean;
+  }) => Promise<void>;
   setAddress: (address: ReverseGeocodeResult | null) => void;
   setAddressAndCoords: (
     address: ReverseGeocodeResult,
     coords: { latitude: number; longitude: number },
-    meta?: { source?: LocationSource }
+    meta?: {
+      source?: LocationSource;
+      selectionKind?: SessionSelectionKind | null;
+      boundAddressId?: number | null;
+    }
   ) => void;
   refetchLocation: (options?: { forceDevice?: boolean }) => Promise<void>;
 };
@@ -140,6 +164,8 @@ export const useLocationStore = create<LocationState>((set, get) => ({
   coords: null,
   address: null,
   locationSource: null,
+  sessionSelectionKind: null,
+  sessionBoundAddressId: null,
   locationHydrated: false,
   showPermissionModal: false,
   locationSheetDismissedSession: false,
@@ -149,7 +175,11 @@ export const useLocationStore = create<LocationState>((set, get) => ({
     // Clear any previously persisted selected pin so cold start cannot lock onto an old city.
     // Explicit selections are session-scoped; live GPS is the default for discovery.
     AsyncStorage.removeItem(STORAGE_KEY).catch(() => {});
-    set({ locationHydrated: true });
+    set({
+      locationHydrated: true,
+      sessionSelectionKind: null,
+      sessionBoundAddressId: null,
+    });
   },
 
   clearPersistedSelection: async () => {
@@ -175,6 +205,9 @@ export const useLocationStore = create<LocationState>((set, get) => ({
           showPermissionModal: false,
           locationSheetDismissedSession: false,
         });
+        if (options?.skipDeviceFetch) {
+          return;
+        }
         const { locationSource, coords, address } = get();
         // Keep an explicit in-session selection; otherwise always refresh live GPS.
         if (locationSource === "selected" && coords && address) {
@@ -202,6 +235,16 @@ export const useLocationStore = create<LocationState>((set, get) => ({
   setAddressAndCoords: (address, coords, meta) => {
     const source: LocationSource = meta?.source ?? "selected";
     const prev = get();
+    const selectionKind =
+      source === "selected"
+        ? (meta?.selectionKind ?? prev.sessionSelectionKind ?? "nearby")
+        : null;
+    const boundAddressId =
+      source === "selected"
+        ? (meta?.boundAddressId !== undefined
+            ? meta.boundAddressId
+            : prev.sessionBoundAddressId)
+        : null;
     const sameCoords =
       prev.coords != null &&
       Math.abs(prev.coords.latitude - coords.latitude) < 1e-6 &&
@@ -213,10 +256,22 @@ export const useLocationStore = create<LocationState>((set, get) => ({
       prev.address?.city === address.city &&
       prev.address?.state === address.state &&
       prev.address?.pincode === address.pincode;
-    if (sameCoords && sameAddress && prev.locationSource === source) {
+    if (
+      sameCoords &&
+      sameAddress &&
+      prev.locationSource === source &&
+      prev.sessionSelectionKind === selectionKind &&
+      prev.sessionBoundAddressId === boundAddressId
+    ) {
       return;
     }
-    set({ address, coords, locationSource: source });
+    set({
+      address,
+      coords,
+      locationSource: source,
+      sessionSelectionKind: selectionKind,
+      sessionBoundAddressId: boundAddressId,
+    });
     if (source === "selected") {
       const payload: PersistedSelectedLocation = {
         coords,
@@ -258,6 +313,8 @@ export const useLocationStore = create<LocationState>((set, get) => ({
           address,
           loading: false,
           locationSource: "current",
+          sessionSelectionKind: null,
+          sessionBoundAddressId: null,
         });
         return;
       }
@@ -314,6 +371,8 @@ export const useLocationStore = create<LocationState>((set, get) => ({
         address,
         loading: false,
         locationSource: "current",
+        sessionSelectionKind: null,
+        sessionBoundAddressId: null,
       });
     } catch (e) {
       const message = e instanceof Error ? e.message : "Location error";

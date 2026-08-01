@@ -81,12 +81,13 @@ export default function Footer() {
     { icon: <FileText size={12} />, text: "Refund Policy", href: "/refund-policy" },
   ];
 
+  // Same official channels as rider.gatimitra.com footer.
   const socials = [
-    { icon: <Facebook size={16} />, href: "https://facebook.com/gatimitra", label: "Facebook" },
+    { icon: <Facebook size={16} />, href: "https://www.facebook.com/pratapsons10", label: "Facebook" },
+    { icon: <Linkedin size={16} />, href: "https://www.linkedin.com/in/pratapandsons/", label: "LinkedIn" },
+    { icon: <Instagram size={16} />, href: "https://www.instagram.com/gatimitra_on_demand/", label: "Instagram" },
+    { icon: <Youtube size={16} />, href: "https://youtube.com/@gatimitrano1?si=RpBFq5tmSjVnOHH3", label: "YouTube" },
     { icon: <Twitter size={16} />, href: "https://twitter.com/gatimitra", label: "Twitter" },
-    { icon: <Instagram size={16} />, href: "https://instagram.com/gatimitra", label: "Instagram" },
-    { icon: <Linkedin size={16} />, href: "https://linkedin.com/company/gatimitra", label: "LinkedIn" },
-    { icon: <Youtube size={16} />, href: "https://youtube.com/@gatimitra", label: "YouTube" },
   ];
 
   return (

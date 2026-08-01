@@ -57,6 +57,9 @@ export function MarkAsReadyCountdownButton({
       onPress={onPress}
       disabled={disabled}
       onLayout={onLayout}
+      hitSlop={6}
+      accessibilityRole="button"
+      accessibilityLabel={label}
       style={({ pressed }) => [
         styles.btn,
         isDark ? styles.btnDark : styles.btnLight,

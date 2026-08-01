@@ -307,8 +307,8 @@ export default function OrderPartnerChatScreen() {
       <AndroidBackHandler />
       <StatusBar style="dark" />
       <Root style={shellStyle} {...rootProps}>
-        {/* Root stack already reserves status-bar height — avoid double top inset */}
-        <View style={styles.header}>
+        {/* Orders stack uses translucent status bar (no global spacer) — pad header with insets.top. */}
+        <View style={[styles.header, { paddingTop: Math.max(insets.top, 0) + 10 }]}>
           <TouchableOpacity onPress={() => router.back()} hitSlop={12} style={styles.headerSide}>
             <Ionicons name="arrow-back" size={22} color={TEXT} />
           </TouchableOpacity>
@@ -459,7 +459,6 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     paddingHorizontal: 12,
-    paddingTop: 10,
     paddingBottom: 10,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: GatiMitraColors.border,

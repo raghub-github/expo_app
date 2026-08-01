@@ -35,6 +35,7 @@ import {
   isInsufficientMerchantWalletError,
 } from "../../lib/merchant-subscription-wallet.js";
 import { getWalletSummary } from "../../lib/merchant-wallet-engine.js";
+import { buildPlanPurchaseSnapshot } from "../../lib/plan-purchase-snapshot.js";
 
 // ─── Config ───────────────────────────────────────────────────────────────────
 
@@ -310,9 +311,11 @@ type DueSubRow = {
   next_billing_date: string | null;
   billing_end_at: string | null;
   plan_name: string;
+  plan_code: string;
   price: number;
   gst_percent: number;
   billing_cycle: string;
+  benefits_json: unknown | null;
 };
 
 function gstBreakdown(amount: number, gstPercent: number) {
@@ -338,7 +341,7 @@ async function runAutoRenewals(): Promise<{ processed: number; renewed: number; 
     SELECT
       ms.id, ms.merchant_id, ms.store_id, ms.plan_id, ms.auto_renew,
       ms.expiry_date, ms.next_billing_date, ms.billing_end_at,
-      p.plan_name, p.price, p.gst_percent, p.billing_cycle
+      p.plan_name, p.plan_code, p.price, p.gst_percent, p.billing_cycle, p.benefits_json
     FROM merchant_subscriptions ms
     JOIN merchant_plans p ON p.id = ms.plan_id
     WHERE ms.subscription_status = 'ACTIVE'
@@ -498,6 +501,17 @@ async function runAutoRenewals(): Promise<{ processed: number; renewed: number; 
     const renewedFrom = billingEnd.getTime() <= Date.now() ? billingEnd : new Date();
     const newExpiry = computeNextEnd(renewedFrom, sub.billing_cycle);
     const now = new Date();
+    const snap = buildPlanPurchaseSnapshot({
+      plan_name: sub.plan_name,
+      plan_code: sub.plan_code,
+      billing_cycle: sub.billing_cycle,
+      price: sub.price,
+      benefits_json: sub.benefits_json,
+    });
+    const benefitsJson =
+      snap.plan_benefits_snapshot != null
+        ? JSON.stringify(snap.plan_benefits_snapshot)
+        : null;
 
     await sql`
       UPDATE merchant_subscriptions SET
@@ -513,6 +527,11 @@ async function runAutoRenewals(): Promise<{ processed: number; renewed: number; 
         next_auto_pay_date = ${newExpiry.toISOString()},
         auto_pay_failure_count = 0,
         last_auto_pay_attempt = ${now.toISOString()},
+        plan_name_snapshot = ${snap.plan_name_snapshot},
+        plan_code_snapshot = ${snap.plan_code_snapshot},
+        billing_cycle_snapshot = ${snap.billing_cycle_snapshot},
+        plan_list_price_paise = ${snap.plan_list_price_paise},
+        plan_benefits_snapshot = ${benefitsJson}::jsonb,
         updated_at = NOW()
       WHERE id = ${sub.id}
     `;
@@ -525,14 +544,18 @@ async function runAutoRenewals(): Promise<{ processed: number; renewed: number; 
           merchant_id, store_id, subscription_id, plan_id, amount,
           subtotal_paise, gst_percent_applied, gst_amount_paise, total_paise,
           payment_gateway, payment_gateway_id, payment_gateway_response,
-          payment_status, payment_date, billing_period_start, billing_period_end, notes
+          payment_status, payment_date, billing_period_start, billing_period_end, notes,
+          plan_name_snapshot, plan_code_snapshot, billing_cycle_snapshot,
+          plan_list_price_paise, plan_benefits_snapshot
         ) VALUES (
           ${sub.merchant_id}, ${sub.store_id}, ${sub.id}, ${sub.plan_id}, ${totalAmount},
           ${subtotalPaise}, ${gstPercent}, ${gstAmountPaise}, ${totalPaise},
           'WALLET', ${`wallet_renew_${sub.id}_${billingEndKey}`},
           ${JSON.stringify({ auto_renew: true, ledger_id: newLedgerId })}::jsonb,
           'PAID', ${now.toISOString()}, ${renewedFrom.toISOString()}, ${newExpiry.toISOString()},
-          ${`Auto-renew from wallet — ${sub.plan_name}`}
+          ${`Auto-renew from wallet — ${sub.plan_name}`},
+          ${snap.plan_name_snapshot}, ${snap.plan_code_snapshot}, ${snap.billing_cycle_snapshot},
+          ${snap.plan_list_price_paise}, ${benefitsJson}::jsonb
         )
         RETURNING id
       `;

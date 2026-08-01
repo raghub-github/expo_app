@@ -10,21 +10,26 @@ import {
 import { reverseGeocode } from "@/services/location.service";
 import { invalidateFoodHomeLocationQueries } from "@/lib/invalidateFoodHomeLocationQueries";
 import { syncActiveLocationFromStore } from "@/lib/syncActiveLocationFromStore";
+import { useActiveLocationReconcileReady } from "@/hooks/useActiveLocationReconcileReady";
 
 /**
  * Keep live GPS updated while the app is foregrounded (when not on an explicit
  * selected pin). Debounces merchant refresh to significant moves (~350m).
+ *
+ * Does not clear backend addressId — only updates coords after cold-start reconcile.
  */
 export function LocationWatchSync() {
   const queryClient = useQueryClient();
   const locationSource = useLocationStore((s) => s.locationSource);
   const permissionStatus = useLocationStore((s) => s.permissionStatus);
+  const reconcileReady = useActiveLocationReconcileReady();
   const lastAppliedRef = useRef<{ latitude: number; longitude: number } | null>(null);
   const geocodeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     if (permissionStatus !== "granted") return;
     if (locationSource === "selected") return;
+    if (!reconcileReady) return;
 
     let subscription: Location.LocationSubscription | null = null;
     let cancelled = false;
@@ -81,7 +86,7 @@ export function LocationWatchSync() {
       subscription?.remove();
       if (geocodeTimerRef.current) clearTimeout(geocodeTimerRef.current);
     };
-  }, [permissionStatus, locationSource, queryClient]);
+  }, [permissionStatus, locationSource, reconcileReady, queryClient]);
 
   return null;
 }

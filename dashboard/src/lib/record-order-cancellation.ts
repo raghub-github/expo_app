@@ -93,6 +93,9 @@ export async function recordOrderCancellation(
     await db
       .from("order_cancellation_reasons")
       .update({
+        reason_code:
+          (input.reasonCode ?? "").trim() ||
+          slugReasonCode(input.displayReason || input.reasonText || "CANCELLED"),
         action_source: input.actionSource ?? undefined,
         cancel_mode: input.cancelMode ?? undefined,
         cancelled_by_type: input.cancelledByType,

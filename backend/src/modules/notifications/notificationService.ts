@@ -414,6 +414,10 @@ async function sendImpl(intent: SendIntent): Promise<SendResult> {
   // 5. Build log rows (audit-first), filtering by channel preference + rate cap
   const logRows: CreateLogRow[] = [];
   let skipped = 0;
+  /** One in-app inbox row per user — multi-token fan-out must not multiply the badge. */
+  const inAppEmittedForUser = new Set<string>();
+  /** One push per user for standard campaigns — Expo+FCM on the same phone must not double-fire. */
+  const pushEmittedForUser = new Set<string>();
   for (const r of realRecipients) {
     if (rateSkipped.has(r.userId)) {
       skipped++;
@@ -430,6 +434,15 @@ async function sendImpl(intent: SendIntent): Promise<SendResult> {
     }
     // For each allowed channel, one log row.
     for (const channel of allowed) {
+      if (channel === "in_app") {
+        if (inAppEmittedForUser.has(r.userId)) continue;
+        inAppEmittedForUser.add(r.userId);
+      }
+      if (channel === "push" && effectivePriority !== "critical") {
+        // Critical (e.g. new order) still fans out to every registered device token.
+        if (pushEmittedForUser.has(r.userId)) continue;
+        pushEmittedForUser.add(r.userId);
+      }
       logRows.push({
         notificationId: randomUUID(),
         campaignId: intent.campaignId ?? null,

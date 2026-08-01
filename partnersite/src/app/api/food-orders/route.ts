@@ -655,6 +655,9 @@ export async function GET(req: NextRequest) {
             core.eta_seconds != null && core.eta_seconds !== ''
               ? Number(core.eta_seconds)
               : null,
+          first_eta_at: (core.first_eta_at as string | null) ?? null,
+          promised_delivery_at: (core.promised_delivery_at as string | null) ?? null,
+          estimated_delivery_time: (core.estimated_delivery_time as string | null) ?? null,
           formatted_order_id: (core.formatted_order_id as string) ?? (food?.formatted_order_id as string) ?? null,
           tax_invoice_number: (core as Record<string, unknown>).tax_invoice_number as string | null ?? null,
           is_bulk_order: Boolean((core as Record<string, unknown>).is_bulk_order),

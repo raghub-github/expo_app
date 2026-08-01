@@ -1112,5 +1112,22 @@ export const riderApi = {
       }
     );
   },
+
+  /** Authenticated referral profile (code, history, stats). */
+  async getReferralMe() {
+    const client = createApiClient();
+    return client.request<{
+      ok: boolean;
+      referralCode: string | null;
+      shareUrl: string | null;
+      history: Array<Record<string, unknown>>;
+      stats?: {
+        totalReferrals: number;
+        totalActive: number;
+        totalEarned: number;
+      };
+      config?: Record<string, unknown>;
+    }>("/v1/referral/me", { method: "GET" });
+  },
 };
 

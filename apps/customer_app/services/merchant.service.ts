@@ -535,25 +535,22 @@ export const merchantService = {
     /** air = straight-line, road = backend routing engine (Mapbox/OSRM). */
     distanceMode?: "air" | "road";
   }): Promise<MerchantSummary[]> {
-    try {
-      const { data } = await api.get<{ items: MerchantSummary[] }>(MERCHANTS_PREFIX, {
-        params: {
-          ...(params?.lat != null && params?.lng != null
-            ? { lat: params.lat, lng: params.lng }
-            : {}),
-          limit: params?.limit ?? 20,
-          offset: params?.offset ?? 0,
-          distanceMode: params?.distanceMode,
-          veg: params?.vegOnly === true ? "true" : undefined,
-        },
-      });
-      const list = Array.isArray(data?.items) ? data.items : [];
-      return list.map((item) =>
-        normalizeMerchantListItem(item as MerchantSummary & Record<string, unknown>)
-      );
-    } catch {
-      return [];
-    }
+    // Propagate errors so callers/React Query do not cache a false empty area.
+    const { data } = await api.get<{ items: MerchantSummary[] }>(MERCHANTS_PREFIX, {
+      params: {
+        ...(params?.lat != null && params?.lng != null
+          ? { lat: params.lat, lng: params.lng }
+          : {}),
+        limit: params?.limit ?? 20,
+        offset: params?.offset ?? 0,
+        distanceMode: params?.distanceMode,
+        veg: params?.vegOnly === true ? "true" : undefined,
+      },
+    });
+    const list = Array.isArray(data?.items) ? data.items : [];
+    return list.map((item) =>
+      normalizeMerchantListItem(item as MerchantSummary & Record<string, unknown>)
+    );
   },
 
   async getNearbyStores(params: {

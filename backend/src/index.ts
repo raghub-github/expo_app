@@ -34,6 +34,7 @@ import { addressRoutes } from "./modules/addresses/address.routes.js";
 import { locationSearchRoutes } from "./modules/location-search/location-search.routes.js";
 import { distanceRoutes, distanceModule } from "./modules/distance/distance.routes.js";
 import { geoRoutes } from "./modules/geo/geo.routes.js";
+import { preventServicesRoutes } from "./modules/prevent-services/index.js";
 import { deliveryRateCardModule } from "./modules/delivery-rate-card/deliveryRateCard.routes.js";
 import { plansRoutes } from "./modules/plans/plans.routes.js";
 import { merchantPartnerRoutes } from "./modules/merchant-partner/merchant-partner.routes.js";
@@ -377,11 +378,13 @@ app.post<{
 //   • system / auto-cancel            → full refund
 //   • merchant (store) cancel/reject  → full refund
 //   • rider-caused cancel             → full refund (fault only decides who is debited)
-//   • customer cancel                 → NEVER auto-refunded (rejected below)
+//   • customer cancel                 → full refund only pre-accept (food.order-cancel.service);
+//                                       this internal hop still rejects actorRole=customer
 //   • agent/admin                     → dashboard engine flow, not this route
 //
-// Idempotent: autoRefundOnCancellation no-ops when a non-failed refund already
-// exists for the order, so retries / double webhooks can't double-pay.
+// Idempotent: autoRefundOnCancellation reclaims hollow Completed/NOOP rows
+// (no wallet/gateway movement) then re-executes; otherwise no-ops when a real
+// non-failed refund already exists — retries / double webhooks can't double-pay.
 //
 // Auth: X-Internal-Secret == INTERNAL_API_TOKEN (or BACKEND_SCHEDULE_TICK_SECRET).
 app.post<{
@@ -539,6 +542,11 @@ const { addressShareMeRoutes, addressSharePublicRoutes } = await import(
 );
 await app.register(addressShareMeRoutes, { prefix: "/v1/me" });
 await app.register(addressSharePublicRoutes, { prefix: "/v1/public" });
+const { referralRoutes, referralPublicLandingRoutes } = await import(
+  "./modules/referral/referral.routes.js"
+);
+await app.register(referralRoutes, { prefix: "/v1/referral" });
+await app.register(referralPublicLandingRoutes, { prefix: "" });
 const { renderAddressShareLandingPage } = await import("./modules/addresses/address-share-page.js");
 const { sendAddressShareOgLogo } = await import("./modules/addresses/address-share-og-asset.js");
 
@@ -617,6 +625,7 @@ await app.register(appAssetsRoutes, { prefix: "/v1/app-assets" });
 void distanceRoutes;
 await app.register((await import("./modules/rider-payout/riderPayout.routes.js")).riderPayoutRoutes, { prefix: "/v1/rider-payout" });
 await app.register(geoRoutes, { prefix: "/v1" });
+await app.register(preventServicesRoutes, { prefix: "/v1" });
 await app.register(deliveryRateCardModule, { prefix: "/v1/delivery-fee" });
 await app.register(pushRoutes, { prefix: "/v1/push" });
 await app.register(notificationRoutes);
@@ -920,6 +929,70 @@ try {
       .catch((err) => app.log.error({ err }, "ride_search_timeout_tick"));
   setTimeout(() => { void runRideSearchTickLocked(); }, 3_000);
   rideSearchTimeoutInterval = setInterval(() => { void runRideSearchTickLocked(); }, rideSearchTimeoutIntervalMs);
+
+  // Referral reward queue poller (every 30s) + daily reconciliation (every 6h)
+  const runReferralQueueTickLocked = () =>
+    withLock("tick:referral-reward-queue", 25_000, async () => {
+      const { processReferralRewardJobs } = await import("./modules/referral/referral.queue.js");
+      return processReferralRewardJobs({ limit: 25 });
+    })
+      .then((result) => {
+        incrCounter(
+          "tick_runs_total",
+          "Polling tick outcomes by lock state",
+          1,
+          { tick: "referral_reward_queue", outcome: result === null ? "skipped" : "ran" },
+        );
+      })
+      .catch((err) => app.log.error({ err }, "referral_reward_queue_tick"));
+  setTimeout(() => { void runReferralQueueTickLocked(); }, 8_000);
+  setInterval(() => { void runReferralQueueTickLocked(); }, 30_000);
+
+  const runReferralReconcileTickLocked = () =>
+    withLock("tick:referral-reconcile", 120_000, async () => {
+      const { runReferralReconciliation } = await import("./modules/referral/referral.queue.js");
+      return runReferralReconciliation();
+    })
+      .then((result) => {
+        incrCounter(
+          "tick_runs_total",
+          "Polling tick outcomes by lock state",
+          1,
+          { tick: "referral_reconcile", outcome: result === null ? "skipped" : "ran" },
+        );
+      })
+      .catch((err) => app.log.error({ err }, "referral_reconcile_tick"));
+  setTimeout(() => { void runReferralReconcileTickLocked(); }, 60_000);
+  setInterval(() => { void runReferralReconcileTickLocked(); }, 6 * 60 * 60 * 1000);
+
+  // Prevent Services expiry — flips a rule whose `ends_at` has passed to
+  // 'expired'. The runtime check is already time-correct without this, but the
+  // status write bumps prevent_service_signals, which is what pushes the apps
+  // to refetch instantly instead of waiting for their polling interval.
+  const preventServicesExpiryIntervalMs = 20_000;
+  const runPreventServicesExpiryTickLocked = () =>
+    withLock("tick:prevent-services-expiry", 30_000, async () => {
+      const { expireDuePreventServiceRules } = await import(
+        "./modules/prevent-services/index.js"
+      );
+      return expireDuePreventServiceRules();
+    })
+      .then((result) => {
+        incrCounter(
+          "tick_runs_total",
+          "Polling tick outcomes by lock state",
+          1,
+          { tick: "prevent_services_expiry", outcome: result === null ? "skipped" : "ran" },
+        );
+        if (result != null && result > 0) {
+          app.log.info({ expired: result }, "prevent_services_expiry_tick");
+        }
+      })
+      .catch((err) => app.log.error({ err }, "prevent_services_expiry_tick"));
+  setTimeout(() => { void runPreventServicesExpiryTickLocked(); }, 6_000);
+  setInterval(() => {
+    void runPreventServicesExpiryTickLocked();
+  }, preventServicesExpiryIntervalMs);
 
   const orderDispatchWaveIntervalMs = 10_000;
   const runDispatchWaveTickLocked = () =>

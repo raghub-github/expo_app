@@ -352,6 +352,26 @@ export async function approveMenuReviewRequest(
     return { ok: false, error: "approve_failed" };
   }
 
+  // Send an in-app notification to the merchant so they know the item went live.
+  try {
+    const itemName = String(
+      (menuItemId != null
+        ? await sql`SELECT item_name FROM merchant_menu_items WHERE id = ${menuItemId} LIMIT 1`
+            .then((rows: unknown[]) => (rows[0] as Record<string, unknown>)?.item_name ?? "")
+        : "") ?? ""
+    );
+    const notifTitle = "Menu item approved ✓";
+    const notifBody = itemName
+      ? `"${itemName}" has been approved and is now live on the customer app.`
+      : "Your menu item has been approved and is now live on the customer app.";
+    await sql`
+      INSERT INTO merchant_store_notifications (store_id, type, title, body, read, action_url)
+      VALUES (${r.store_id}, 'menu', ${notifTitle}, ${notifBody}, FALSE, '/partners/menu')
+    `;
+  } catch {
+    // notification failure must not break the approval
+  }
+
   return { ok: true, menu_item_id: menuItemId };
 }
 
@@ -421,6 +441,28 @@ export async function rejectMenuReviewRequest(
   } catch (e) {
     console.error("[rejectMenuReviewRequest]", e);
     return { ok: false, error: "reject_failed" };
+  }
+
+  // Notify the merchant so they can see the rejection reason and resubmit.
+  try {
+    const menuItemId = r.menu_item_id != null ? Number(r.menu_item_id) : null;
+    const itemName = String(
+      (menuItemId != null
+        ? await sql`SELECT item_name FROM merchant_menu_items WHERE id = ${menuItemId} LIMIT 1`
+            .then((rows: unknown[]) => (rows[0] as Record<string, unknown>)?.item_name ?? "")
+        : "") ?? ""
+    );
+    const notifTitle = "Menu item rejected";
+    const reason = rejectionReason ? ` Reason: ${rejectionReason}` : "";
+    const notifBody = itemName
+      ? `"${itemName}" was not approved.${reason} You can edit and resubmit it.`
+      : `A menu item was not approved.${reason} You can edit and resubmit it.`;
+    await sql`
+      INSERT INTO merchant_store_notifications (store_id, type, title, body, read, action_url)
+      VALUES (${Number(r.store_id)}, 'menu', ${notifTitle}, ${notifBody}, FALSE, '/partners/menu')
+    `;
+  } catch {
+    // notification failure must not break the rejection
   }
 
   return { ok: true };

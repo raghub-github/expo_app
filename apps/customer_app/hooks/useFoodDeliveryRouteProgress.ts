@@ -25,11 +25,6 @@ export function useFoodDeliveryRouteProgress(args: {
 }) {
   const { phase, rider, pickup, drop, orderId, riderArrived, riderHeading, hasRider = true } = args;
 
-  const preRiderArcRoute = useMemo(
-    () => (!hasRider ? buildPickupDropPreviewArc(pickup, drop) : null),
-    [hasRider, pickup, drop]
-  );
-
   const { coordinates: fullRoute, distanceM, isRefreshing } = useFoodDeliveryLiveRoute({
     phase,
     rider,
@@ -39,6 +34,12 @@ export function useFoodDeliveryRouteProgress(args: {
     enabled: hasRider,
     riderHeading,
   });
+
+  /** Store↔customer dashed preview until a partner is assigned. */
+  const preRiderArcRoute = useMemo(() => {
+    if (hasRider) return null;
+    return buildPickupDropPreviewArc(pickup, drop);
+  }, [hasRider, pickup, drop]);
 
   const progress = useMemo(() => {
     if (!hasRider) {

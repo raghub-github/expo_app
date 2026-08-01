@@ -1,5 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { supabase } from '@/lib/supabase'
+import { checkPreventServicesFromDb } from '@/lib/server/preventServices'
+
+function parseCoord(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value)) return value
+  if (typeof value === 'string' && value.trim() !== '') {
+    const n = Number(value)
+    return Number.isFinite(n) ? n : null
+  }
+  return null
+}
 
 // POST - Create a new parcel order
 export async function POST(request: NextRequest) {
@@ -51,6 +61,53 @@ export async function POST(request: NextRequest) {
         { error: 'Missing required fields' },
         { status: 400 }
       )
+    }
+
+    const pickLat =
+      parseCoord(pickupAddress?.latitude) ?? parseCoord(pickupAddress?.lat)
+    const pickLng =
+      parseCoord(pickupAddress?.longitude) ?? parseCoord(pickupAddress?.lng)
+    const dropLat =
+      parseCoord(deliveryAddress?.latitude) ?? parseCoord(deliveryAddress?.lat)
+    const dropLng =
+      parseCoord(deliveryAddress?.longitude) ?? parseCoord(deliveryAddress?.lng)
+
+    if (
+      pickLat == null ||
+      pickLng == null ||
+      dropLat == null ||
+      dropLng == null
+    ) {
+      return NextResponse.json(
+        {
+          error: 'missing_delivery_coordinates',
+          code: 'missing_delivery_coordinates',
+          message: 'Pickup and delivery coordinates are required to place this order.',
+        },
+        { status: 400 }
+      )
+    }
+
+    for (const point of [
+      { lat: pickLat, lng: pickLng },
+      { lat: dropLat, lng: dropLng },
+    ]) {
+      const prevent = await checkPreventServicesFromDb({
+        lat: point.lat,
+        lng: point.lng,
+        service: 'parcel',
+      })
+      if (prevent.blocked) {
+        return NextResponse.json(
+          {
+            error: prevent.code,
+            code: prevent.code,
+            title: prevent.title,
+            message: prevent.message,
+          },
+          { status: 403 }
+        )
+      }
     }
 
     // Generate delivery OTP (4 digit code for delivery confirmation)

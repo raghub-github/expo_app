@@ -15,13 +15,14 @@ import {
   merchantItemCatalogAndNet,
   merchantItemLineParts,
   merchantLineTotalForItem,
+  orderItemCookingNote,
   orderItemCustomizationRows,
   orderItemDisplayName,
   orderItemHasBreakdown,
 } from '@/lib/merchant-order-item-display';
 import { computeOrderItemQuantityCount } from '@/lib/merchantOrderFoodActions';
 
-const AMOUNT_COL = 'w-[5.5rem] shrink-0 text-right tabular-nums';
+const AMOUNT_COL = 'w-full min-w-0 shrink-0 overflow-hidden text-right tabular-nums';
 
 function VegMark({ vegNonveg }: { vegNonveg?: string | null }) {
   const t = (vegNonveg ?? '').toLowerCase();
@@ -74,25 +75,33 @@ function SummaryRow({
   );
 }
 
-function ItemRows({ items }: { items: NormalizedOrderLineItem[] }) {
+function ItemRows({
+  items,
+  headerLabel,
+}: {
+  items: NormalizedOrderLineItem[];
+  headerLabel: string;
+}) {
   if (items.length === 0) {
     return <p className="text-sm text-gray-500 py-2">No line items</p>;
   }
-  return (
-    <ul className="space-y-2">
+
+  const list = (
+    <ul>
       {items.map((item, idx) => {
         const qty = Math.max(1, item.quantity || 1);
         const { catalog, net, showStrike, offerBadge, offerKind } = merchantItemCatalogAndNet(item);
         const displayName = orderItemDisplayName(item);
         const parts = merchantItemLineParts(item);
         const custRows = orderItemCustomizationRows(item);
+        const cookingNote = orderItemCookingNote(item);
         const showValueSplit = orderItemHasBreakdown(item) && parts.hasCustomizations;
         return (
           <li
             key={idx}
-            className="border-b border-gray-100 pb-2 text-sm last:border-0 last:pb-0"
+            className={`px-2.5 py-2 text-sm ${idx < items.length - 1 ? 'border-b border-stone-100' : ''}`}
           >
-            <div className="grid grid-cols-[minmax(0,1fr)_5.5rem] gap-x-2">
+            <div className="grid grid-cols-[minmax(0,1fr)_48px_96px] items-center gap-x-2">
               <div className="flex min-w-0 items-start gap-2">
                 <VegMark vegNonveg={item.vegNonveg} />
                 <div className="min-w-0">
@@ -108,17 +117,27 @@ function ItemRows({ items }: { items: NormalizedOrderLineItem[] }) {
                     </span>
                   ) : null}
                   <span className="block min-w-0 font-bold leading-snug text-gray-900">
-                    {qty} × {displayName}
+                    {displayName}
                   </span>
+                  {cookingNote ? (
+                    <p className="mt-1 text-[11px] font-semibold leading-snug text-amber-800">
+                      Cooking: {cookingNote}
+                    </p>
+                  ) : null}
                 </div>
               </div>
-              <AmountCell className="font-bold text-gray-900">
+              <div className="relative z-10 flex min-w-0 justify-center">
+                <span className="incoming-num inline-flex h-7 min-w-8 items-center justify-center rounded border border-stone-300 bg-white px-1.5 text-[13px] font-semibold text-stone-900">
+                  {qty}
+                </span>
+              </div>
+              <AmountCell className="justify-self-end font-bold text-gray-900">
                 {showStrike ? (
-                  <span className="block">
-                    <span className="mr-1 text-[11px] font-medium text-gray-400 line-through">
+                  <span className="flex min-w-0 flex-col items-end leading-tight">
+                    <span className="block max-w-full truncate text-[11px] font-medium text-gray-400 line-through">
                       {formatOrderRs(catalog, 2)}
                     </span>
-                    {formatOrderRs(net, 2)}
+                    <span className="block max-w-full truncate">{formatOrderRs(net, 2)}</span>
                   </span>
                 ) : (
                   formatOrderRs(net, 2)
@@ -128,10 +147,12 @@ function ItemRows({ items }: { items: NormalizedOrderLineItem[] }) {
               {showValueSplit ? (
                 <>
                   <span className="pl-5 text-[11px] text-gray-600">Item value</span>
+                  <span aria-hidden />
                   <AmountCell className="text-[11px] font-medium text-gray-800">
                     {formatOrderRs(parts.base, 2)}
                   </AmountCell>
                   <span className="pl-5 text-[11px] text-gray-600">Customization value</span>
+                  <span aria-hidden />
                   <AmountCell className="text-[11px] font-medium text-teal-800">
                     {formatOrderRs(parts.customizations, 2)}
                   </AmountCell>
@@ -143,6 +164,7 @@ function ItemRows({ items }: { items: NormalizedOrderLineItem[] }) {
                   <span className="min-w-0 pl-5 text-[11px] leading-snug text-gray-600">
                     <span className="border-l border-teal-200 pl-2">↳ {row.label}</span>
                   </span>
+                  <span aria-hidden />
                   {row.amount != null ? (
                     <AmountCell className="text-[11px] text-gray-700">
                       {formatOrderRs(row.amount, 2)}
@@ -157,6 +179,17 @@ function ItemRows({ items }: { items: NormalizedOrderLineItem[] }) {
         );
       })}
     </ul>
+  );
+
+  return (
+    <div className="overflow-hidden rounded-xl border border-gray-200 bg-white">
+      <div className="grid grid-cols-[minmax(0,1fr)_48px_96px] items-center gap-x-2 border-b border-stone-200 bg-stone-50 px-2.5 py-2 text-[10px] font-semibold text-stone-600">
+        <span>{headerLabel}</span>
+        <span className="text-center">QTY</span>
+        <span className="text-right">Amount</span>
+      </div>
+      {list}
+    </div>
   );
 }
 
@@ -225,7 +258,10 @@ export function OrderBillSidesheet({
             <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-500">
               Items ({itemQtyCount > 0 ? itemQtyCount : items.length})
             </p>
-            <ItemRows items={items} />
+            <ItemRows
+              items={items}
+              headerLabel={allItemsOnly ? 'Items to be packed' : 'Item'}
+            />
           </section>
 
           {!allItemsOnly ? (

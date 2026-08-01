@@ -38,6 +38,7 @@ export function mapboxFoodDeliveryScript(bikeUri: string): string {
         mapPhase: 'rider_to_pickup',
         initialFitDone: false,
         mapPadding: { top: 48, bottom: 40, left: 28, right: 28 },
+        wasPreRider: false,
       };
 
       function toRad(d) { return d * Math.PI / 180; }
@@ -57,11 +58,11 @@ export function mapboxFoodDeliveryScript(bikeUri: string): string {
         if (kind === 'pickup') {
           return (
             '<div style="display:flex;flex-direction:column;align-items:center;">' +
-            '<div style="width:34px;height:34px;border-radius:17px;background:#E23744;display:flex;align-items:center;justify-content:center;box-shadow:0 2px 8px rgba(226,55,68,0.45);border:2.5px solid #fff;">' +
+            '<div style="width:34px;height:34px;border-radius:17px;background:#059669;display:flex;align-items:center;justify-content:center;box-shadow:0 2px 8px rgba(5,150,105,0.45);border:2.5px solid #fff;">' +
             '<div style="width:22px;height:22px;border-radius:11px;background:#1C1C1C;display:flex;align-items:center;justify-content:center;">' +
             '<svg width="13" height="13" viewBox="0 0 24 24" fill="#fff"><path d="M11 9H9V2H7v7H5V2H3v7c0 2.12 1.66 3.84 3.75 3.97V22h2.5v-9.03C11.34 12.84 13 11.12 13 9V2h-2v7zm5-3v8h2.5v8H21V2h-2v4z"/></svg>' +
             '</div></div>' +
-            '<div style="width:0;height:0;border-left:7px solid transparent;border-right:7px solid transparent;border-top:9px solid #E23744;margin-top:-1px;"></div>' +
+            '<div style="width:0;height:0;border-left:7px solid transparent;border-right:7px solid transparent;border-top:9px solid #059669;margin-top:-1px;"></div>' +
             '</div>'
           );
         }
@@ -353,6 +354,8 @@ export function mapboxFoodDeliveryScript(bikeUri: string): string {
           padding: pad,
           duration: state.refitCamera ? 650 : 900,
           maxZoom: 16.2,
+          bearing: 0,
+          pitch: 0,
           linear: false,
           essential: true
         });
@@ -363,31 +366,104 @@ export function mapboxFoodDeliveryScript(bikeUri: string): string {
       window.isGeofenceCameraActive = function() { return !!geofenceCameraActive; };
       window.clearGeofenceCamera = function() { geofenceCameraActive = false; };
 
+      /** Geographic bearing (deg) from A → B, 0 = north. */
+      function geoBearingDeg(lng1, lat1, lng2, lat2) {
+        var φ1 = lat1 * Math.PI / 180;
+        var φ2 = lat2 * Math.PI / 180;
+        var Δλ = (lng2 - lng1) * Math.PI / 180;
+        var y = Math.sin(Δλ) * Math.cos(φ2);
+        var x = Math.cos(φ1) * Math.sin(φ2) - Math.sin(φ1) * Math.cos(φ2) * Math.cos(Δλ);
+        return (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
+      }
+
+      /**
+       * Pre-rider: rotate camera so store → home runs left → right on screen
+       * (horizontal dashed arc), regardless of real-world north alignment.
+       */
+      function preRiderHorizontalBearing(data) {
+        if (data.pickupLat == null || data.pickupLng == null || data.dropLat == null || data.dropLng == null) {
+          return 0;
+        }
+        var θ = geoBearingDeg(data.pickupLng, data.pickupLat, data.dropLng, data.dropLat);
+        return ((θ - 90) + 360) % 360;
+      }
+
+      function easeToFitBounds(bounds, pad, duration, bearingDeg) {
+        var bearing = bearingDeg || 0;
+        var opts = { padding: pad, bearing: bearing, pitch: 0, maxZoom: 16 };
+        try {
+          var cam = map.cameraForBounds(bounds, opts);
+          if (cam) {
+            map.easeTo({
+              center: cam.center,
+              zoom: cam.zoom,
+              bearing: bearing,
+              pitch: 0,
+              duration: duration,
+              essential: true
+            });
+            return;
+          }
+        } catch (e) {}
+        map.fitBounds(bounds, {
+          padding: pad,
+          duration: duration,
+          maxZoom: 16,
+          bearing: bearing,
+          pitch: 0,
+          essential: true
+        });
+      }
+
       function fitMapToContent(data) {
         var pts = [];
         function push(lat, lng) {
           if (lat != null && lng != null) pts.push([lng, lat]);
         }
-        if (data.preRiderArcRoute && data.preRiderArcRoute.length >= 2) {
+        var isPreRider = !!(data.preRiderArcRoute && data.preRiderArcRoute.length >= 2);
+        if (isPreRider) {
           data.preRiderArcRoute.forEach(function(c) { push(c.latitude, c.longitude); });
+          push(data.pickupLat, data.pickupLng);
+          push(data.dropLat, data.dropLng);
         } else if (data.remainingRoute && data.remainingRoute.length) {
           data.remainingRoute.forEach(function(c) { push(c.latitude, c.longitude); });
+          push(data.riderLat, data.riderLng);
+          if (state.mapPhase === 'rider_to_drop') {
+            push(data.dropLat, data.dropLng);
+          } else {
+            push(data.pickupLat, data.pickupLng);
+          }
         } else if (data.fullRoute && data.fullRoute.length) {
           data.fullRoute.forEach(function(c) { push(c.latitude, c.longitude); });
+          push(data.riderLat, data.riderLng);
+          if (state.mapPhase === 'rider_to_drop') {
+            push(data.dropLat, data.dropLng);
+          } else {
+            push(data.pickupLat, data.pickupLng);
+          }
+        } else {
+          push(data.riderLat, data.riderLng);
+          if (state.mapPhase === 'rider_to_drop') {
+            push(data.dropLat, data.dropLng);
+          } else {
+            push(data.pickupLat, data.pickupLng);
+          }
         }
-        push(data.riderLat, data.riderLng);
-        if (state.mapPhase !== 'rider_to_drop') {
-          push(data.pickupLat, data.pickupLng);
-        }
-        push(data.dropLat, data.dropLng);
         if (pts.length < 1) return;
         var bounds = pts.reduce(function(b, c) { return b.extend(c); }, new mapboxgl.LngLatBounds(pts[0], pts[0]));
         var pad = state.mapPadding || { top: 48, bottom: 40, left: 28, right: 28 };
-        map.fitBounds(bounds, {
-          padding: pad,
-          duration: state.refitCamera ? 650 : 900,
-          maxZoom: 16
-        });
+        if (isPreRider) {
+          // Extra side padding so the horizontal arc + pins breathe like Zomato preview.
+          pad = {
+            top: Math.max(pad.top || 48, 56),
+            bottom: Math.max(pad.bottom || 40, 48),
+            left: Math.max(pad.left || 28, 44),
+            right: Math.max(pad.right || 28, 44)
+          };
+        }
+        var duration = state.refitCamera ? 650 : 900;
+        var bearing = isPreRider ? preRiderHorizontalBearing(data) : 0;
+        easeToFitBounds(bounds, pad, duration, bearing);
         state.initialFitDone = true;
         state.refitCamera = false;
       }
@@ -424,16 +500,31 @@ export function mapboxFoodDeliveryScript(bikeUri: string): string {
         updateZone('drop-zone', 'drop-zone-fill', 'drop-zone-stroke', state.dropLat, state.dropLng, showDrop, state.geofenceRadiusM);
         if (showPickup || showDrop) startPulse();
 
-        if (state.mapPhase === 'rider_to_drop') {
-          setPin('pickup', null, null, 'pickup');
+        // Marker visibility by phase:
+        // - Pre-rider: store + customer (dashed preview)
+        // - Rider → store: store + rider (hide customer)
+        // - Rider → customer (picked up): rider + customer (hide store)
+        var preRiderArc = data.preRiderArcRoute && data.preRiderArcRoute.length >= 2 ? data.preRiderArcRoute : null;
+        var isPreRider = !!preRiderArc;
+        var showPickupPin = data.showPickupMarker !== false;
+        var showDropPin = data.showDropMarker !== false;
+        if (isPreRider) {
+          showPickupPin = true;
+          showDropPin = true;
+        } else if (state.mapPhase === 'rider_to_drop') {
+          showPickupPin = false;
+          showDropPin = true;
         } else {
-          setPin('pickup', data.pickupLat, data.pickupLng, 'pickup');
+          showPickupPin = true;
+          showDropPin = false;
         }
-        setPin('drop', data.dropLat, data.dropLng, 'drop');
+        setPin('pickup', showPickupPin ? data.pickupLat : null, showPickupPin ? data.pickupLng : null, 'pickup');
+        setPin('drop', showDropPin ? data.dropLat : null, showDropPin ? data.dropLng : null, 'drop');
         setRiderMarker(data.riderLat, data.riderLng, data.riderHeading);
 
         var hideRoute = state.hideRouteLine || state.riderArrived;
-        var preRiderArc = data.preRiderArcRoute && data.preRiderArcRoute.length >= 2 ? data.preRiderArcRoute : null;
+        var preRiderModeChanged = state.wasPreRider !== isPreRider;
+        state.wasPreRider = isPreRider;
         if (preRiderArc) {
           setLineData('route-pre-rider', preRiderArc, ['route-pre-rider-line']);
           setLineData('route-remaining', [], ['route-remaining-casing', 'route-remaining-line']);
@@ -454,7 +545,7 @@ export function mapboxFoodDeliveryScript(bikeUri: string): string {
           setJoinDot(data.routeJoinLat, data.routeJoinLng, !!(data.routeJoinLat != null && data.connectorRoute && data.connectorRoute.length >= 2));
         }
 
-        if (state.refitCamera || !state.initialFitDone) {
+        if (state.refitCamera || !state.initialFitDone || preRiderModeChanged) {
           if (showDrop) {
             fitMapToZoneCenter(state.dropLat, state.dropLng, state.geofenceRadiusM);
           } else if (showPickup) {

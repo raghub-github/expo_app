@@ -43,6 +43,7 @@ function resolveDeliveryDrop(
   const activeLocation = queryClient.getQueryData<{
     latitude: number | null;
     longitude: number | null;
+    addressId?: number | null;
   } | null>(ACTIVE_LOCATION_QUERY_KEY);
 
   const resolved = resolveCheckoutDeliveryAddress(
@@ -169,24 +170,41 @@ function openCheckoutOrGate(allowed: boolean, router: Router): boolean {
   return false;
 }
 
+/** Prevents stacked /checkout screens when Continue is tapped repeatedly. */
+const CHECKOUT_NAV_COOLDOWN_MS = 1_200;
+let checkoutNavInFlight = false;
+let checkoutNavLockedUntil = 0;
+
 /**
  * View Cart → one correct destination only.
  * Never flash Outside Delivery Range while waiting for a quote when the store is serviceable.
+ * Multi-tap safe: one in-flight open + short cooldown after a successful push.
  */
 export async function tryNavigateToFoodCheckout(
   router: Router,
   queryClient: QueryClient
 ): Promise<boolean> {
+  const now = Date.now();
+  if (checkoutNavInFlight || now < checkoutNavLockedUntil) return false;
+
   const { items } = useCartStore.getState();
   if (items.length === 0) return false;
 
-  const sync = tryEvaluateCartCheckoutEligibilitySync(queryClient);
-  if (sync != null) {
-    return openCheckoutOrGate(sync.allowed, router);
+  checkoutNavInFlight = true;
+  try {
+    const sync = tryEvaluateCartCheckoutEligibilitySync(queryClient);
+    const allowed =
+      sync != null
+        ? sync.allowed
+        : (await evaluateCartCheckoutEligibility(queryClient)).allowed;
+    const navigated = openCheckoutOrGate(allowed, router);
+    if (navigated) {
+      checkoutNavLockedUntil = Date.now() + CHECKOUT_NAV_COOLDOWN_MS;
+    }
+    return navigated;
+  } finally {
+    checkoutNavInFlight = false;
   }
-
-  const eligibility = await evaluateCartCheckoutEligibility(queryClient);
-  return openCheckoutOrGate(eligibility.allowed, router);
 }
 
 export async function tryOpenFoodCheckoutSheet(

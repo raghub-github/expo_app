@@ -30,7 +30,9 @@ export function resolveMerchantCancellationActor(
     type === "system" ||
     source === "system" ||
     /auto cancel/i.test(label) ||
-    /^auto cancel/i.test(reason)
+    /^auto cancel/i.test(reason) ||
+    /merchant_accept_timeout/i.test(reason) ||
+    /merchant_accept_timeout/i.test(label)
   ) {
     return { kind: "auto" };
   }

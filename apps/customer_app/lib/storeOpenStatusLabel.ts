@@ -1,20 +1,31 @@
 import {
   OPEN_SOON_WINDOW_MS,
   CLOSING_SOON_WINDOW_MS,
-  countdownString,
+  countdownMmSs,
+  formatClockHHMM,
   formatNextOpenTime,
   toTimestamp,
 } from "./storeScheduleUi";
 
 export type StoreOpenStatusLabel = {
+  /** Full badge text, e.g. "Open", "Opens at 22:30", "Opens in 15:45", "Closes in 10:20". */
   label: string;
   isGreen: boolean;
+  /** @deprecated Prefer `label` — kept for callers that still read sub. */
   sub: string | null;
-  /** Open store — live countdown in last 30 min before close (red badge). */
+  /** Open store — live countdown in the last 15 min before close (red badge). */
   isClosingSoon?: boolean;
+  /** Closed store — live countdown in the last 20 min before open. */
+  isOpeningSoon?: boolean;
 };
 
-/** Badge copy for list cards and merchant header when open/closed. */
+/**
+ * Simple list-card / header status:
+ * - Closed, >20 min to open  → "Opens at HH:MM"
+ * - Closed, ≤20 min to open  → "Opens in MM:SS" (live)
+ * - Open                     → "Open"
+ * - Open, ≤15 min to close   → "Closes in MM:SS" (live)
+ */
 export function buildStoreOpenStatusLabel(params: {
   isOpen: boolean;
   nextCloseAt?: string | number | null;
@@ -29,21 +40,19 @@ export function buildStoreOpenStatusLabel(params: {
     if (nextCloseTs != null) {
       const msLeft = nextCloseTs - nowMs;
       if (msLeft <= 0) {
-        /**
-         * When countdown crosses zero, badge must immediately leave OPEN state.
-         * This avoids showing stale "Open" until the next backend refresh arrives.
-         */
+        // Countdown crossed zero — treat as closed until realtime catches up.
         if (nextOpenTs != null && nextOpenTs > nowMs) {
-          return { label: "Closed", isGreen: false, sub: formatNextOpenTime(nextOpenTs) };
+          return closedLabel(nextOpenTs, nowMs);
         }
         return { label: "Closed", isGreen: false, sub: null };
       }
       if (msLeft <= CLOSING_SOON_WINDOW_MS) {
+        const mmss = countdownMmSs(msLeft);
         return {
-          label: "Closes soon",
+          label: `Closes in ${mmss}`,
           isGreen: false,
           isClosingSoon: true,
-          sub: countdownString(msLeft),
+          sub: mmss,
         };
       }
       return { label: "Open", isGreen: true, sub: null };
@@ -52,37 +61,39 @@ export function buildStoreOpenStatusLabel(params: {
   }
 
   if (nextOpenTs != null) {
-    const msLeft = nextOpenTs - nowMs;
-    if (msLeft <= 0) {
-      return { label: "Closed", isGreen: false, sub: formatNextOpenTime(nextOpenTs) };
-    }
-    if (msLeft <= OPEN_SOON_WINDOW_MS) {
-      return {
-        label: "Open soon",
-        isGreen: true,
-        sub: countdownString(msLeft),
-      };
-    }
-    return {
-      label: "Closed",
-      isGreen: false,
-      sub: formatNextOpenTime(nextOpenTs),
-    };
+    return closedLabel(nextOpenTs, nowMs);
   }
 
   return { label: "Closed", isGreen: false, sub: null };
 }
 
+function closedLabel(nextOpenTs: number, nowMs: number): StoreOpenStatusLabel {
+  const msLeft = nextOpenTs - nowMs;
+  if (msLeft <= 0) {
+    // Past open time — show clock until OPEN flip arrives.
+    return {
+      label: `Opens at ${formatClockHHMM(nextOpenTs)}`,
+      isGreen: false,
+      sub: formatNextOpenTime(nextOpenTs),
+    };
+  }
+  if (msLeft <= OPEN_SOON_WINDOW_MS) {
+    const mmss = countdownMmSs(msLeft);
+    return {
+      label: `Opens in ${mmss}`,
+      isGreen: true,
+      isOpeningSoon: true,
+      sub: mmss,
+    };
+  }
+  return {
+    label: `Opens at ${formatClockHHMM(nextOpenTs)}`,
+    isGreen: false,
+    sub: formatNextOpenTime(nextOpenTs),
+  };
+}
+
+/** Badge text for list cards — `label` is already the full string. */
 export function formatOpenStatusTagText(openStatus: StoreOpenStatusLabel): string {
-  if (openStatus.isClosingSoon && openStatus.sub) {
-    return `Closes in ${openStatus.sub}`;
-  }
-  if (!openStatus.sub) return openStatus.label;
-  if (openStatus.label === "Open soon") {
-    return `${openStatus.label} · ${openStatus.sub}`;
-  }
-  if (openStatus.label === "Closed" && openStatus.sub.startsWith("Opens")) {
-    return `Closed · ${openStatus.sub}`;
-  }
-  return `${openStatus.label} · ${openStatus.sub}`;
+  return openStatus.label;
 }

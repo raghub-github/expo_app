@@ -70,23 +70,48 @@ export async function updateStoreSettings(
   };
 }
 
+export type ActiveOrdersBreakdown = {
+  active_orders: number;
+  pending_accept: number;
+  preparing: number;
+  ready: number;
+  out_for_delivery: number;
+};
+
 export async function getActiveOrdersCount(
   storeId: number,
   token: string
 ): Promise<number> {
-  return fetchActiveOrdersCountDeduped(storeId, token);
+  const b = await getActiveOrdersBreakdown(storeId, token);
+  return b.active_orders;
+}
+
+export async function getActiveOrdersBreakdown(
+  storeId: number,
+  token: string
+): Promise<ActiveOrdersBreakdown> {
+  return fetchActiveOrdersBreakdownDeduped(storeId, token);
+}
+
+/** Drop the short in-flight cache so KPI cards can reload right after an order action. */
+export function invalidateActiveOrdersCountCache(storeId?: number): void {
+  if (storeId != null) {
+    activeCountInflight.delete(storeId);
+    return;
+  }
+  activeCountInflight.clear();
 }
 
 const ACTIVE_COUNT_CACHE_MS = 4_000;
 const activeCountInflight = new Map<
   number,
-  { at: number; promise: Promise<number> }
+  { at: number; promise: Promise<ActiveOrdersBreakdown> }
 >();
 
-async function fetchActiveOrdersCountDeduped(
+async function fetchActiveOrdersBreakdownDeduped(
   storeId: number,
   token: string
-): Promise<number> {
+): Promise<ActiveOrdersBreakdown> {
   const now = Date.now();
   const cached = activeCountInflight.get(storeId);
   if (cached && now - cached.at < ACTIVE_COUNT_CACHE_MS) {
@@ -102,9 +127,21 @@ async function fetchActiveOrdersCountDeduped(
       const err = await res.json().catch(() => ({}));
       throw new Error((err as any).error || res.statusText || "Failed to load active orders count");
     }
-    const data = (await res.json()) as { active_orders?: number };
-    const n = Number(data.active_orders ?? 0);
-    return Number.isFinite(n) && n >= 0 ? n : 0;
+    const data = (await res.json()) as Partial<ActiveOrdersBreakdown> & {
+      active_orders?: number;
+    };
+    const n = (v: unknown) => {
+      const x = Number(v ?? 0);
+      return Number.isFinite(x) && x > 0 ? Math.floor(x) : 0;
+    };
+    const active = n(data.active_orders);
+    return {
+      active_orders: active,
+      pending_accept: n(data.pending_accept),
+      preparing: n(data.preparing),
+      ready: n(data.ready),
+      out_for_delivery: n(data.out_for_delivery),
+    };
   })();
 
   activeCountInflight.set(storeId, { at: now, promise });

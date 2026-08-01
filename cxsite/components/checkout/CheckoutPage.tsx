@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation'
 import { useCart } from '@/lib/hooks/useCart'
 import { useAppSelector } from '@/lib/hooks'
 
-// Dummy addresses for demo
+// Dummy addresses for demo — include lat/lng so Prevent Services can gate placement.
 const savedAddresses = [
   {
     id: '1',
@@ -14,6 +14,8 @@ const savedAddresses = [
     address: '123 Main Street, Apartment 4B',
     city: 'Mumbai',
     pincode: '400001',
+    latitude: 18.9388,
+    longitude: 72.8354,
     isDefault: true,
   },
   {
@@ -23,6 +25,8 @@ const savedAddresses = [
     address: '456 Business Park, Floor 7',
     city: 'Mumbai',
     pincode: '400051',
+    latitude: 19.0596,
+    longitude: 72.8295,
     isDefault: false,
   },
 ]
@@ -93,6 +97,10 @@ export default function CheckoutPage() {
         city: selectedAddressData.city,
         pincode: selectedAddressData.pincode,
         type: selectedAddressData.type,
+        latitude: selectedAddressData.latitude,
+        longitude: selectedAddressData.longitude,
+        lat: selectedAddressData.latitude,
+        lng: selectedAddressData.longitude,
       } : null,
       subtotal: checkoutTotal,
       deliveryFee: totalDeliveryFee,

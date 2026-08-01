@@ -572,31 +572,92 @@ export function buildMerchantVisibleTimeline(
 }
 
 export function formatTimelineDate(s: string | null | undefined): string {
-  if (!s) return "";
-  const d = new Date(s);
-  if (Number.isNaN(d.getTime())) return "";
-  return d.toLocaleDateString("en-IN", {
-    day: "numeric",
-    month: "short",
-    year: "numeric",
-  });
+  const d = parseTimelineDate(s);
+  if (!d) return "";
+  try {
+    return new Intl.DateTimeFormat("en-IN", {
+      day: "numeric",
+      month: "short",
+      year: "numeric",
+      timeZone: "Asia/Kolkata",
+    }).format(d);
+  } catch {
+    return d.toLocaleDateString("en-IN", {
+      day: "numeric",
+      month: "short",
+      year: "numeric",
+    });
+  }
+}
+
+function parseTimelineDate(value: unknown): Date | null {
+  if (value == null || value === "") return null;
+  if (value instanceof Date) {
+    return Number.isFinite(value.getTime()) ? value : null;
+  }
+  if (typeof value === "number") {
+    const d = new Date(value);
+    return Number.isFinite(d.getTime()) ? d : null;
+  }
+  const raw = String(value).trim();
+  if (!raw) return null;
+  // Postgres often returns "YYYY-MM-DD HH:mm:ss+05:30" — Hermes needs a T.
+  const normalized = raw.includes("T")
+    ? raw
+    : raw.replace(/^(\d{4}-\d{2}-\d{2})\s+/, "$1T");
+  const d = new Date(normalized);
+  if (Number.isFinite(d.getTime())) return d;
+  const fallback = new Date(raw);
+  return Number.isFinite(fallback.getTime()) ? fallback : null;
 }
 
 export function formatTimelineClock(s: string | null | undefined): string {
-  if (!s) return "";
-  const d = new Date(s);
-  if (Number.isNaN(d.getTime())) return "";
-  return d.toLocaleTimeString("en-IN", {
-    hour: "numeric",
-    minute: "2-digit",
-    hour12: true,
-  });
+  const d = parseTimelineDate(s);
+  if (!d) return "";
+  try {
+    return new Intl.DateTimeFormat("en-IN", {
+      hour: "numeric",
+      minute: "2-digit",
+      hour12: true,
+      timeZone: "Asia/Kolkata",
+    }).format(d);
+  } catch {
+    return d.toLocaleTimeString("en-IN", {
+      hour: "numeric",
+      minute: "2-digit",
+      hour12: true,
+    });
+  }
 }
 
-/** Short source label for expanded row (reference: Source: Android). */
+/** Short source label for expanded timeline row (Merchant App / Partner Site / GatiMitra Team). */
 export function timelineSourceShort(source: string): string {
-  if (source === "Merchant App") return "Android";
-  if (source === "Partner Site") return "Website";
-  if (source === "Dashboard") return "Dashboard";
-  return source;
+  const s = String(source ?? "").trim();
+  const lower = s.toLowerCase();
+  if (
+    s === "Merchant App" ||
+    lower === "android" ||
+    lower === "ios" ||
+    lower === "app" ||
+    lower === "merchant app" ||
+    lower === "merchant_app"
+  ) {
+    return "Merchant App";
+  }
+  if (
+    s === "Partner Site" ||
+    lower === "website" ||
+    lower === "partner site" ||
+    lower === "partnersite"
+  ) {
+    return "Partner Site";
+  }
+  if (
+    s === "Dashboard" ||
+    lower === "admin" ||
+    lower.includes("gatimitra")
+  ) {
+    return "GatiMitra Team";
+  }
+  return s;
 }

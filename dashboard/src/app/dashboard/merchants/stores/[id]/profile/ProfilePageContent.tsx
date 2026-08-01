@@ -433,6 +433,15 @@ export function ProfilePageContent(props: ProfilePageContentProps) {
                             "typeKey" in cfg && cfg.typeKey && doc[cfg.typeKey]
                               ? String(doc[cfg.typeKey])
                               : cfg.label;
+                          const flagRaw = doc[cfg.verifiedKey];
+                          const flagVerified =
+                            flagRaw === true ||
+                            flagRaw === "t" ||
+                            flagRaw === "true" ||
+                            flagRaw === 1;
+                          // Approved/active stores already passed documents verification —
+                          // don't show Pending/Verify for docs that are present on profile.
+                          const docVerified = flagVerified || isVerified;
                           return (
                             <ProfileLegalDocumentCard
                               key={cfg.prefix}
@@ -445,9 +454,9 @@ export function ProfilePageContent(props: ProfilePageContentProps) {
                               }
                               expiryDate={(doc[cfg.expiryKey] as string | null) ?? null}
                               documentUrl={(doc[cfg.urlKey] as string | null) ?? null}
-                              isVerified={doc[cfg.verifiedKey] as boolean | null}
+                              isVerified={docVerified}
                               onVerify={openDocumentsVerification}
-                              canVerify={canStoreVerify}
+                              canVerify={canStoreVerify && !isVerified}
                             />
                           );
                         })}
@@ -523,6 +532,12 @@ export function ProfilePageContent(props: ProfilePageContentProps) {
                         initialAccounts={bankAccounts}
                         onVerify={openBankVerification}
                         canStoreVerify={canStoreVerify}
+                        storeName={
+                          (displayStore.store_display_name as string | undefined) ||
+                          (displayStore.store_name as string | undefined) ||
+                          (displayStore.owner_full_name as string | undefined) ||
+                          null
+                        }
                       />
                     </div>
                   </div>

@@ -3,6 +3,7 @@ import { createClient } from '@supabase/supabase-js';
 import { cookies } from 'next/headers';
 import { normalizeWallTimeToHHMM } from '@/lib/wallTimeHHMM';
 import { syncStoreStatusAfterOperatingHoursChange } from '@/lib/storeScheduleSync';
+import { triggerStoreScheduleTick } from '@/lib/triggerStoreScheduleTick';
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder.supabase.co";
 const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "placeholder-service-role-key";
@@ -229,10 +230,14 @@ export async function POST(req: NextRequest) {
     .single();
   const storeTz = (storeTzRow as { timezone?: string } | null)?.timezone || 'Asia/Kolkata';
 
-  // Re-evaluate store status in background so save response stays fast
+  // Re-evaluate store status in background so save response stays fast.
+  // Local sync flips OPEN/CLOSED; backend schedule-tick rewrites next_open_at /
+  // next_close_at / live_schedule_phase so customer app + cxsite realtime pick
+  // up the new "opens at / closes at" without a force refresh.
   void syncStoreStatusAfterOperatingHoursChange(supabase, storeData.id as number, storeTz).catch(
     (syncErr) => console.error('[outlet-timings] schedule sync after save failed:', syncErr)
   );
+  void triggerStoreScheduleTick(storeData.id as number);
 
   return NextResponse.json({
     success: true,

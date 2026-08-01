@@ -15,6 +15,10 @@ interface CheckoutData {
     city: string
     pincode: string
     type: string
+    latitude?: number
+    longitude?: number
+    lat?: number
+    lng?: number
   } | null
   subtotal?: number
   deliveryFee?: number

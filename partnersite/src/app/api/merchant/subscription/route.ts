@@ -3,6 +3,10 @@ import { createClient } from '@supabase/supabase-js'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { validateMerchantFromSession } from '@/lib/auth/validate-merchant'
 import { enforcePlanLimitsForStoreNumericId } from '@/lib/plan-enforce'
+import {
+  buildPlanPurchaseSnapshot,
+  expiryFromBillingCycle,
+} from '@/lib/plan-purchase-snapshot'
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder.supabase.co"
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "placeholder-service-role-key"
@@ -201,8 +205,8 @@ export async function POST(req: NextRequest) {
     }
 
     const now = new Date()
-    const expiryDate = new Date(now)
-    expiryDate.setMonth(expiryDate.getMonth() + 1) // Default 1 month
+    const expiryDate = expiryFromBillingCycle(now, plan.billing_cycle)
+    const planSnap = buildPlanPurchaseSnapshot(plan)
 
     // Create or update subscription
     const { data: existingSubscription } = await supabase
@@ -228,6 +232,7 @@ export async function POST(req: NextRequest) {
           last_payment_date: paymentGatewayId ? now.toISOString() : null,
           next_billing_date: expiryDate.toISOString(),
           updated_at: now.toISOString(),
+          ...planSnap,
         })
         .eq('id', existingSubscription.id)
         .select('id')
@@ -253,6 +258,7 @@ export async function POST(req: NextRequest) {
           auto_renew: false, // Default to false
           last_payment_date: paymentGatewayId ? now.toISOString() : null,
           next_billing_date: expiryDate.toISOString(),
+          ...planSnap,
         })
         .select('id')
         .single()
@@ -278,6 +284,7 @@ export async function POST(req: NextRequest) {
         payment_date: now.toISOString(),
         billing_period_start: now.toISOString(),
         billing_period_end: expiryDate.toISOString(),
+        ...planSnap,
       })
     }
 

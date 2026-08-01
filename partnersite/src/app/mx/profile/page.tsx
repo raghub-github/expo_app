@@ -264,6 +264,7 @@ export default function ProfilePage() {
     maxAttemptsPerDay: number;
   } | null>(null);
   const [bankVerifying, setBankVerifying] = useState(false);
+  const [bankAccountVerifyingId, setBankAccountVerifyingId] = useState<number | null>(null);
   const [operatingHours, setOperatingHours] = useState<any[]>([]);
   const [storeDocuments, setStoreDocuments] = useState<any>(null);
   const [licenseModalOpen, setLicenseModalOpen] = useState(false);
@@ -709,7 +710,7 @@ export default function ProfilePage() {
       });
       const data = await res.json();
       if (data.success) {
-        toast.success(data.message || "We sent ₹1 to verify your account. Check back in a few minutes.");
+        toast.success(data.message || "Bank account verified with Cashfree.");
         setTimeout(() => {
           fetch(`/api/merchant/bank-account/verify/status?storeId=${encodeURIComponent(storeId)}`, {
             credentials: "include",
@@ -741,6 +742,60 @@ export default function ProfilePage() {
       setBankVerifying(false);
     }
   }, [storeId, editData, bankVerification, bankVerifying]);
+
+  const verifyBankAccountWithCashfree = useCallback(async (bank: any) => {
+    if (!storeId || !bank?.id) return;
+    if (bank.is_verified) {
+      toast.success("Account already verified");
+      return;
+    }
+    if (String(bank.payout_method || "bank").toLowerCase() === "upi") {
+      toast.error("UPI add/verify is temporarily disabled. Please use a bank account.");
+      return;
+    }
+    const accountNumber = String(bank.account_number || "").replace(/\D/g, "");
+    if (!accountNumber || !bank.ifsc_code || !bank.bank_name || !bank.account_holder_name) {
+      toast.error("Bank details incomplete. Add/update the account on Payments, then retry.");
+      return;
+    }
+    setBankAccountVerifyingId(bank.id);
+    try {
+      const res = await fetch("/api/merchant/bank-account/verify", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({
+          storeId,
+          bankAccountId: bank.id,
+          bank: {
+            account_holder_name: bank.account_holder_name,
+            account_number: accountNumber,
+            ifsc_code: bank.ifsc_code,
+            bank_name: bank.bank_name,
+            branch_name: bank.branch_name || undefined,
+          },
+        }),
+      });
+      const data = await res.json();
+      if (data.success && data.verified) {
+        toast.success(data.message || "Bank account verified with Cashfree");
+        setBankAccounts((prev) =>
+          prev.map((b) => (b.id === bank.id ? { ...b, is_verified: true, verification_status: "verified" } : b))
+        );
+        setBankVerification((prev) =>
+          prev ? { ...prev, verified: true } : { verified: true, canTryVerify: true, attemptsToday: 0, maxAttemptsPerDay: 3 }
+        );
+      } else if (data.success) {
+        toast.success(data.message || "Saved for manual verification");
+      } else {
+        toast.error(data.error || "Verification failed");
+      }
+    } catch {
+      toast.error("Verification request failed");
+    } finally {
+      setBankAccountVerifyingId(null);
+    }
+  }, [storeId]);
 
   const persistProfileField = async (field: string) => {
     if (!storeId || !editData) return;
@@ -1704,7 +1759,7 @@ export default function ProfilePage() {
 
                         {/* Bank Details Card - Dynamically show UI data or bank_accounts table data */}
                         <div className="bg-gray-50 rounded-lg p-2 border border-gray-200">
-                          <div className="flex items-center justify-between mb-2">
+                          <div className="flex items-center justify-between mb-2 gap-2 flex-wrap">
                             <h3 className="text-sm font-semibold text-gray-900 flex items-center gap-2">
                               <Banknote size={16} className="text-blue-600" />
                               Bank Details
@@ -1725,7 +1780,8 @@ export default function ProfilePage() {
                                 </span>
                               )}
                             </h3>
-                            <button
+                            <div className="flex items-center gap-1">
+                              <button
                               onClick={async () => {
                                 if (!store?.id) return;
                                 try {
@@ -1748,6 +1804,7 @@ export default function ProfilePage() {
                             >
                               🔄 Refresh
                             </button>
+                            </div>
                           </div>
                           {/* Priority: Show bank_accounts table data if available, otherwise show UI (store table) data */}
                           {bankAccounts && Array.isArray(bankAccounts) && bankAccounts.length > 0 ? (
@@ -1755,9 +1812,26 @@ export default function ProfilePage() {
                             <div className="space-y-2">
                               {(showAllBankAccounts ? bankAccounts : bankAccounts.slice(0, 1)).map((bank, idx) => (
                                 <div key={bank.id || idx} className="bg-white rounded p-2 border border-gray-200">
+                                  <div className="flex items-center gap-1.5 flex-wrap mb-1.5">
                                   {bank.is_primary && (
-                                    <span className="text-xs font-medium text-blue-700 bg-blue-100 px-2 py-0.5 rounded mb-1 inline-block">Primary</span>
+                                    <span className="text-xs font-medium text-blue-700 bg-blue-100 px-2 py-0.5 rounded inline-block">Primary</span>
                                   )}
+                                  {bank.is_verified ? (
+                                    <span className="text-xs font-medium text-green-700 bg-green-100 px-2 py-0.5 rounded">Verified</span>
+                                  ) : (
+                                    <span className="text-xs font-medium text-amber-700 bg-amber-100 px-2 py-0.5 rounded">Pending</span>
+                                  )}
+                                  {!bank.is_verified && String(bank.payout_method || "bank").toLowerCase() !== "upi" && (
+                                    <button
+                                      type="button"
+                                      onClick={() => verifyBankAccountWithCashfree(bank)}
+                                      disabled={bankAccountVerifyingId === bank.id}
+                                      className="text-xs font-semibold text-indigo-600 hover:text-indigo-800 disabled:opacity-50"
+                                    >
+                                      {bankAccountVerifyingId === bank.id ? "Verifying…" : "Verify with Cashfree"}
+                                    </button>
+                                  )}
+                                  </div>
                                   <div className="space-y-1 text-xs">
                                     <div className="flex justify-between">
                                       <span className="text-gray-600">Account Holder:</span>
@@ -1765,7 +1839,7 @@ export default function ProfilePage() {
                                     </div>
                                     <div className="flex justify-between">
                                       <span className="text-gray-600">Account Number:</span>
-                                      <span className="font-semibold text-gray-900">{bank.account_number ? `****${bank.account_number.slice(-4)}` : '—'}</span>
+                                      <span className="font-semibold text-gray-900">{bank.account_number ? `****${String(bank.account_number).slice(-4)}` : '—'}</span>
                                     </div>
                                     <div className="flex justify-between">
                                       <span className="text-gray-600">IFSC:</span>
@@ -1787,12 +1861,6 @@ export default function ProfilePage() {
                                         <span className="font-semibold text-gray-900">{bank.account_type}</span>
                                       </div>
                                     )}
-                                    <div className="flex justify-between">
-                                      <span className="text-gray-600">Verified:</span>
-                                      <span className={`font-semibold ${bank.is_verified ? 'text-green-600' : 'text-red-600'}`}>
-                                        {bank.is_verified ? 'Yes' : 'No'}
-                                      </span>
-                                    </div>
                                     {bank.upi_id && (
                                       <div className="flex justify-between">
                                         <span className="text-gray-600">UPI ID:</span>
@@ -1879,7 +1947,7 @@ export default function ProfilePage() {
                               ) : (
                                 <div className="space-y-1 text-sm">
                                   <p className="text-xs text-gray-500 mb-1">
-                                    Account holder name must match store or owner name. We will send ₹1 to verify (max 3 attempts per day).
+                                    Account holder name must match store or owner name. Cashfree verifies instantly (max 3 attempts per day).
                                   </p>
                                   <CompactEditableRow
                                     label="Account Holder"
@@ -1934,8 +2002,11 @@ export default function ProfilePage() {
                               )
                             ) : (
                               <div className="space-y-1 text-sm">
+                                <p className="text-xs text-gray-500 mb-2">
+                                  No bank account on file yet. Add one from Payments to receive payouts.
+                                </p>
                                 <p className="text-xs text-gray-500 mb-1">
-                                  Account holder name must match store or owner name. We will send ₹1 to verify (max 3 attempts per day).
+                                  Or enter bank details below. Account holder name must match store or owner name. Cashfree verifies instantly (max 3 attempts per day).
                                 </p>
                                 <CompactEditableRow
                                   label="Account Holder"

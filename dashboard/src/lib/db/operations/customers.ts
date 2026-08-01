@@ -190,6 +190,42 @@ export async function getCustomerReferralInstallCount(
   return Number(row?.cnt ?? 0);
 }
 
+/** Active (or latest) GMitra Plus subscription window for a customer. */
+export async function getCustomerGmitraPlusSubscription(
+  customerDbId: number
+): Promise<{
+  startsAt: string | null;
+  expiresAt: string | null;
+  status: string | null;
+} | null> {
+  const sqlClient = getSql();
+  try {
+    const rows = await sqlClient`
+      SELECT
+        starts_at,
+        expires_at,
+        status::text AS status
+      FROM customer_subscriptions
+      WHERE customer_id = ${customerDbId}
+      ORDER BY
+        CASE WHEN status = 'active' AND expires_at > NOW() THEN 0 ELSE 1 END,
+        expires_at DESC NULLS LAST
+      LIMIT 1
+    `;
+    const row = rows[0] as
+      | { starts_at?: Date | string | null; expires_at?: Date | string | null; status?: string | null }
+      | undefined;
+    if (!row) return null;
+    return {
+      startsAt: row.starts_at != null ? new Date(row.starts_at).toISOString() : null,
+      expiresAt: row.expires_at != null ? new Date(row.expires_at).toISOString() : null,
+      status: row.status != null ? String(row.status) : null,
+    };
+  } catch {
+    return null;
+  }
+}
+
 /** GatiCash wallet row from customer_wallet (source of truth for balance). */
 export async function getCustomerWallet(
   customerDbId: number
@@ -598,16 +634,21 @@ export async function getCustomerById(id: number) {
     .limit(1);
 
   if (!customer) return null;
-  const [referralInstallCount, addresses, wallet] = await Promise.all([
-    getCustomerReferralInstallCount(id),
-    getCustomerAddresses(id),
-    getCustomerWallet(id),
-  ]);
+  const [referralInstallCount, addresses, wallet, gmitraPlusSubscription] =
+    await Promise.all([
+      getCustomerReferralInstallCount(id),
+      getCustomerAddresses(id),
+      getCustomerWallet(id),
+      getCustomerGmitraPlusSubscription(id),
+    ]);
   return attachCustomerFraudMeta({
     ...customer,
     referralInstallCount,
     addresses,
     wallet,
+    gmitraPlusActivatedAt: gmitraPlusSubscription?.startsAt ?? null,
+    gmitraPlusExpiresAt: gmitraPlusSubscription?.expiresAt ?? null,
+    gmitraPlusSubscriptionStatus: gmitraPlusSubscription?.status ?? null,
   });
 }
 
@@ -623,15 +664,20 @@ export async function getCustomerByCustomerId(customerId: string) {
     .limit(1);
 
   if (!customer) return null;
-  const [referralInstallCount, addresses, wallet] = await Promise.all([
-    getCustomerReferralInstallCount(customer.id),
-    getCustomerAddresses(customer.id),
-    getCustomerWallet(customer.id),
-  ]);
+  const [referralInstallCount, addresses, wallet, gmitraPlusSubscription] =
+    await Promise.all([
+      getCustomerReferralInstallCount(customer.id),
+      getCustomerAddresses(customer.id),
+      getCustomerWallet(customer.id),
+      getCustomerGmitraPlusSubscription(customer.id),
+    ]);
   return attachCustomerFraudMeta({
     ...customer,
     referralInstallCount,
     addresses,
     wallet,
+    gmitraPlusActivatedAt: gmitraPlusSubscription?.startsAt ?? null,
+    gmitraPlusExpiresAt: gmitraPlusSubscription?.expiresAt ?? null,
+    gmitraPlusSubscriptionStatus: gmitraPlusSubscription?.status ?? null,
   });
 }

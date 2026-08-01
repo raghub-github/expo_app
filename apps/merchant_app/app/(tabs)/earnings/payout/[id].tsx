@@ -383,6 +383,9 @@ export default function PayoutDetailScreen() {
     isCurrentCycle?: string;
     pgTransactionId: string;
     cycleId?: string;
+    withdrawalReturned?: string;
+    withdrawalAmount?: string;
+    closeNote?: string;
   }>();
 
   const { selectedStore } = useSelectedStore();
@@ -405,6 +408,7 @@ export default function PayoutDetailScreen() {
   const payoutDate = parseParamDate(params.payoutDate);
   const netPayout = Number(params.netPayout ?? 0);
   const status = (params.status ?? "PAID") as PayoutStatus;
+  const closeNote = String(params.closeNote ?? "").trim();
   const isCurrentCycle = params.isCurrentCycle === "1" || params.id === "current-cycle";
   const cycleIdNum = Number(params.cycleId);
   const cycleId =
@@ -474,6 +478,11 @@ export default function PayoutDetailScreen() {
   const displayHeroPayout = isCurrentCycle
     ? Math.max(0, settlement.estimatedPayout)
     : Math.max(0, netPayout);
+
+  // Prefer the per-cycle figure passed in from the card: the ledger window sum can also
+  // contain a neighbouring cycle's reversal.
+  const withdrawalReturned =
+    Number(params.withdrawalReturned ?? 0) || settlement.withdrawalReversalCredits || 0;
 
   const settlementSections = buildSettlementDetailSections(settlement);
 
@@ -647,7 +656,20 @@ export default function PayoutDetailScreen() {
                 bold
                 green
               />
+              {withdrawalReturned > 0 ? (
+                <SettlementRow
+                  label="Withdrawal returned (not payout)"
+                  amount={withdrawalReturned}
+                />
+              ) : null}
             </View>
+
+            {closeNote ? (
+              <View style={s.closeNoteCard}>
+                <Ionicons name="information-circle-outline" size={16} color="#B45309" />
+                <Text style={s.closeNoteText}>{closeNote}</Text>
+              </View>
+            ) : null}
 
             <Text style={[s.sectionTitle, { marginTop: 20 }]}>Transaction details</Text>
             <View style={s.txCard}>
@@ -812,6 +834,18 @@ const s = StyleSheet.create({
   settleAmtGreen: { color: "#16A34A", fontSize: 16 },
   settleAmtBold: { fontWeight: "800" },
   settleDivider: { height: 1, backgroundColor: "#EEEEEE", marginVertical: 4 },
+  closeNoteCard: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 8,
+    marginTop: 12,
+    padding: 12,
+    borderRadius: 12,
+    backgroundColor: "#FFFBEB",
+    borderWidth: 1,
+    borderColor: "#FDE68A",
+  },
+  closeNoteText: { flex: 1, fontSize: 12, lineHeight: 18, color: "#92400E" },
   settleSubBlock: {
     marginLeft: 8,
     paddingLeft: 12,

@@ -7,6 +7,9 @@
  * history rows only. This way support / disputes can always answer
  * "what did we promise" by reading orders_core directly.
  *
+ * Also freezes `first_eta_at` (dashboard First ETA / SLA) from the same
+ * promisedDeliveryAt — COALESCE so accept/dispatch/live recalc never replace it.
+ *
  * The repository writes BOTH the v1 columns (eta_min_minutes, etc.) AND the
  * v2 columns (eta_food_prep_minutes, eta_kitchen_load_buffer_minutes, etc.).
  * v1 audit queries that already point at `eta_*` keep working; new analytics
@@ -65,46 +68,53 @@ export async function writeEtaPromiseToOrder(
   await sql`
     UPDATE orders_core
     SET
-      -- v1 promise columns (kept for backwards-compat audit queries)
-      eta_min_minutes               = ${snap.etaMinMinutes},
-      eta_max_minutes               = ${snap.etaMaxMinutes},
-      promised_delivery_at          = ${snap.promisedDeliveryAt},
-      eta_generated_at              = ${snap.generatedAt},
-      eta_buffer_minutes            = ${snap.breakdown.uncertaintyMarginMinutes},
-      eta_prep_minutes              = ${snap.breakdown.foodPrepMinutes},
-      eta_rider_assignment_minutes  = ${snap.breakdown.riderAssignmentMinutes},
-      eta_rider_to_store_minutes    = ${snap.breakdown.riderToStoreMinutes},
-      eta_store_to_customer_minutes = ${snap.breakdown.travelMinutes},
-      eta_traffic_delay_minutes     = ${trafficDelay},
-      eta_weather_delay_minutes     = ${weatherDelay},
-      eta_congestion_delay_minutes  = ${congestionDelay},
-      eta_route_distance_km         = ${snap.routeKm.toFixed(2)},
-      eta_confidence_score          = ${snap.confidenceScore.toFixed(2)},
-      eta_version                   = 2,
-      eta_mapbox_route_id           = ${metadata?.mapboxRouteId ?? null},
-      eta_route_snapshot            = ${JSON.stringify(metadata?.routeSnapshot ?? {})}::jsonb,
-      eta_metadata                  = ${JSON.stringify({ engineVersion: snap.engineVersion, ...snap.context })}::jsonb,
+      -- v1 promise columns — COALESCE so a second freeze (client + webhook) never
+      -- replaces the original customer promise.
+      eta_min_minutes               = COALESCE(eta_min_minutes, ${snap.etaMinMinutes}),
+      eta_max_minutes               = COALESCE(eta_max_minutes, ${snap.etaMaxMinutes}),
+      promised_delivery_at          = COALESCE(promised_delivery_at, ${snap.promisedDeliveryAt}::timestamptz),
+      eta_generated_at              = COALESCE(eta_generated_at, ${snap.generatedAt}::timestamptz),
+      eta_buffer_minutes            = COALESCE(eta_buffer_minutes, ${snap.breakdown.uncertaintyMarginMinutes}),
+      eta_prep_minutes              = COALESCE(eta_prep_minutes, ${snap.breakdown.foodPrepMinutes}),
+      eta_rider_assignment_minutes  = COALESCE(eta_rider_assignment_minutes, ${snap.breakdown.riderAssignmentMinutes}),
+      eta_rider_to_store_minutes    = COALESCE(eta_rider_to_store_minutes, ${snap.breakdown.riderToStoreMinutes}),
+      eta_store_to_customer_minutes = COALESCE(eta_store_to_customer_minutes, ${snap.breakdown.travelMinutes}),
+      eta_traffic_delay_minutes     = COALESCE(eta_traffic_delay_minutes, ${trafficDelay}),
+      eta_weather_delay_minutes     = COALESCE(eta_weather_delay_minutes, ${weatherDelay}),
+      eta_congestion_delay_minutes  = COALESCE(eta_congestion_delay_minutes, ${congestionDelay}),
+      eta_route_distance_km         = COALESCE(eta_route_distance_km, ${snap.routeKm.toFixed(2)}),
+      eta_confidence_score          = COALESCE(eta_confidence_score, ${snap.confidenceScore.toFixed(2)}),
+      eta_version                   = COALESCE(eta_version, 2),
+      eta_mapbox_route_id           = COALESCE(eta_mapbox_route_id, ${metadata?.mapboxRouteId ?? null}),
+      eta_route_snapshot            = COALESCE(eta_route_snapshot, ${JSON.stringify(metadata?.routeSnapshot ?? {})}::jsonb),
+      eta_metadata                  = COALESCE(eta_metadata, ${JSON.stringify({ engineVersion: snap.engineVersion, ...snap.context })}::jsonb),
 
-      -- v2 critical-path breakdown
-      eta_food_prep_minutes          = ${snap.breakdown.foodPrepMinutes},
-      eta_kitchen_load_buffer_minutes = ${snap.breakdown.kitchenLoadBufferMinutes},
-      eta_pickup_buffer_minutes      = ${snap.breakdown.pickupBufferMinutes},
-      eta_apartment_buffer_minutes   = ${snap.breakdown.apartmentBufferMinutes},
-      eta_rider_arrival_minutes      = ${snap.breakdown.riderArrivalMinutes},
-      eta_critical_path_minutes      = ${snap.breakdown.criticalPathMinutes},
-      eta_traffic_multiplier         = ${snap.multipliers.traffic.toFixed(3)},
-      eta_weather_multiplier         = ${snap.multipliers.weather.toFixed(3)},
-      eta_peak_hour_multiplier       = ${snap.multipliers.peakHour.toFixed(3)},
-      eta_weather_state              = ${snap.context.weather},
-      eta_peak_window                = ${snap.context.peakWindow},
-      eta_drop_context               = ${snap.context.dropContext},
-      eta_engine_version             = ${snap.engineVersion},
-      eta_v2_metadata                = ${JSON.stringify(snap)}::jsonb,
+      -- v2 critical-path breakdown (immutable after first freeze)
+      eta_food_prep_minutes          = COALESCE(eta_food_prep_minutes, ${snap.breakdown.foodPrepMinutes}),
+      eta_kitchen_load_buffer_minutes = COALESCE(eta_kitchen_load_buffer_minutes, ${snap.breakdown.kitchenLoadBufferMinutes}),
+      eta_pickup_buffer_minutes      = COALESCE(eta_pickup_buffer_minutes, ${snap.breakdown.pickupBufferMinutes}),
+      eta_apartment_buffer_minutes   = COALESCE(eta_apartment_buffer_minutes, ${snap.breakdown.apartmentBufferMinutes}),
+      eta_rider_arrival_minutes      = COALESCE(eta_rider_arrival_minutes, ${snap.breakdown.riderArrivalMinutes}),
+      eta_critical_path_minutes      = COALESCE(eta_critical_path_minutes, ${snap.breakdown.criticalPathMinutes}),
+      eta_traffic_multiplier         = COALESCE(eta_traffic_multiplier, ${snap.multipliers.traffic.toFixed(3)}),
+      eta_weather_multiplier         = COALESCE(eta_weather_multiplier, ${snap.multipliers.weather.toFixed(3)}),
+      eta_peak_hour_multiplier       = COALESCE(eta_peak_hour_multiplier, ${snap.multipliers.peakHour.toFixed(3)}),
+      eta_weather_state              = COALESCE(eta_weather_state, ${snap.context.weather}),
+      eta_peak_window                = COALESCE(eta_peak_window, ${snap.context.peakWindow}),
+      eta_drop_context               = COALESCE(eta_drop_context, ${snap.context.dropContext}),
+      eta_engine_version             = COALESCE(eta_engine_version, ${snap.engineVersion}),
+      eta_v2_metadata                = COALESCE(eta_v2_metadata, ${JSON.stringify(snap)}::jsonb),
 
-      promised_eta_minutes           = ${snap.etaMaxMinutes},
-      current_eta_minutes            = ${snap.etaMaxMinutes},
-      live_promised_delivery_at      = ${snap.promisedDeliveryAt}::timestamptz,
-      live_eta_updated_at            = NOW()
+      promised_eta_minutes           = COALESCE(promised_eta_minutes, ${snap.etaMaxMinutes}),
+      -- Seed current ETA once; live engine owns later revisions.
+      current_eta_minutes            = COALESCE(current_eta_minutes, ${snap.etaMaxMinutes}),
+      live_promised_delivery_at      = COALESCE(live_promised_delivery_at, ${snap.promisedDeliveryAt}::timestamptz),
+      live_eta_updated_at            = COALESCE(live_eta_updated_at, NOW()),
+
+      -- Immutable First ETA snapshot at placement (never overwrite if already set).
+      first_eta_at                   = COALESCE(first_eta_at, ${snap.promisedDeliveryAt}::timestamptz),
+      -- Seed current/revised ETA clock once; accept/live paths may revise later.
+      estimated_delivery_time        = COALESCE(estimated_delivery_time, ${snap.promisedDeliveryAt}::timestamptz)
     WHERE order_id = ${orderIdText}
   `;
 }
@@ -192,6 +202,8 @@ export async function appendEtaRecalc(args: {
 export type OrderEtaView = {
   orderIdText: string;
   engineVersion: string;
+  /** Immutable First ETA (first_eta_at → promised_delivery_at). Same across all apps. */
+  firstEtaAt: string | null;
   promise: {
     minMinutes: number | null;
     maxMinutes: number | null;
@@ -246,6 +258,7 @@ type EtaOrderRow = {
   eta_min_minutes: number | null;
   eta_max_minutes: number | null;
   promised_delivery_at: Date | string | null;
+  first_eta_at: Date | string | null;
   eta_generated_at: Date | string | null;
   eta_buffer_minutes: number | null;
   eta_route_distance_km: string | null;
@@ -285,7 +298,7 @@ async function loadEtaOrderRow(orderIdText: string): Promise<EtaOrderRow[]> {
   try {
     return await sql<EtaOrderRow[]>`
       SELECT
-        eta_min_minutes, eta_max_minutes, promised_delivery_at, eta_generated_at,
+        eta_min_minutes, eta_max_minutes, promised_delivery_at, first_eta_at, eta_generated_at,
         eta_buffer_minutes, eta_route_distance_km, eta_confidence_score,
         eta_food_prep_minutes, eta_kitchen_load_buffer_minutes,
         eta_pickup_buffer_minutes, eta_apartment_buffer_minutes,
@@ -308,12 +321,13 @@ async function loadEtaOrderRow(orderIdText: string): Promise<EtaOrderRow[]> {
     `;
   } catch (err) {
     const msg = String(err);
-    if (!/reached_store_at|actual_ready_at|current_eta_minutes|live_promised_delivery_at|does not exist|42703/i.test(msg)) {
+    if (!/reached_store_at|actual_ready_at|current_eta_minutes|live_promised_delivery_at|first_eta_at|does not exist|42703/i.test(msg)) {
       throw err;
     }
     return await sql<EtaOrderRow[]>`
       SELECT
-        oc.eta_min_minutes, oc.eta_max_minutes, oc.promised_delivery_at, oc.eta_generated_at,
+        oc.eta_min_minutes, oc.eta_max_minutes, oc.promised_delivery_at,
+        oc.promised_delivery_at AS first_eta_at, oc.eta_generated_at,
         oc.eta_buffer_minutes, oc.eta_route_distance_km, oc.eta_confidence_score,
         oc.eta_food_prep_minutes, oc.eta_kitchen_load_buffer_minutes,
         oc.eta_pickup_buffer_minutes, oc.eta_apartment_buffer_minutes,
@@ -385,13 +399,18 @@ export async function getEtaForOrder(orderIdText: string): Promise<OrderEtaView 
       orderStatus === "PICKED_UP",
   });
 
+  const firstEtaAt =
+    toIsoOrNull(r.first_eta_at) ?? toIsoOrNull(r.promised_delivery_at);
+
   return {
     orderIdText,
     engineVersion: r.eta_engine_version ?? ETA_ENGINE_VERSION,
+    firstEtaAt,
     promise: {
       minMinutes: r.eta_min_minutes,
       maxMinutes: r.eta_max_minutes,
-      promisedDeliveryAt: toIsoOrNull(r.promised_delivery_at),
+      // Immutable original promise — prefer first_eta_at for all app surfaces.
+      promisedDeliveryAt: firstEtaAt,
       generatedAt: toIsoOrNull(r.eta_generated_at),
       bufferMinutes: r.eta_buffer_minutes,
       routeKm: r.eta_route_distance_km == null ? null : Number(r.eta_route_distance_km),

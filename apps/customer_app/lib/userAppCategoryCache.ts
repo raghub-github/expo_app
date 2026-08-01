@@ -29,7 +29,66 @@ type CachedUserAppCategoriesEntry = {
 type UserAppCategoriesCacheBlob = Record<string, CachedUserAppCategoriesEntry>;
 
 const memoryByStoreType = new Map<string, CachedUserAppCategoriesEntry>();
+/** URIs that successfully landed in expo-image memory/disk cache. */
 const prefetchedImageUris = new Set<string>();
+/** In-flight prefetch promises so callers can await without double-fetch. */
+const prefetchInFlight = new Map<string, Promise<boolean>>();
+
+const PREFETCH_CONCURRENCY = 8;
+/** First screen of grid-first tabs (under + all + ~4 categories). */
+export const VISIBLE_CATEGORY_IMAGE_PREFETCH_COUNT = 8;
+
+async function prefetchOneUri(uri: string): Promise<boolean> {
+  if (prefetchedImageUris.has(uri)) return true;
+  const existing = prefetchInFlight.get(uri);
+  if (existing) return existing;
+
+  const task = Image.prefetch(uri, { cachePolicy: "memory-disk" })
+    .then(() => {
+      prefetchedImageUris.add(uri);
+      prefetchInFlight.delete(uri);
+      return true;
+    })
+    .catch(() => {
+      prefetchInFlight.delete(uri);
+      return false;
+    });
+  prefetchInFlight.set(uri, task);
+  return task;
+}
+
+function collectCategoryImageUris(
+  categories: UserAppCategoryItem[],
+  allTabImageUrl?: string | null,
+  limit?: number
+): string[] {
+  const uris: string[] = [];
+  const push = (raw: string | null | undefined) => {
+    if (!raw?.trim()) return;
+    const uri = toAbsoluteImageUrl(raw) ?? raw;
+    if (!uri || uris.includes(uri)) return;
+    uris.push(uri);
+  };
+  push(allTabImageUrl);
+  for (const cat of categories) {
+    push(cat.imageUrl);
+    if (limit != null && uris.length >= limit) break;
+  }
+  return uris;
+}
+
+async function prefetchUrisWithConcurrency(uris: string[]): Promise<void> {
+  const pending = uris.filter((u) => !prefetchedImageUris.has(u));
+  if (pending.length === 0) return;
+  let cursor = 0;
+  const workers = Array.from({ length: Math.min(PREFETCH_CONCURRENCY, pending.length) }, async () => {
+    while (cursor < pending.length) {
+      const i = cursor++;
+      await prefetchOneUri(pending[i]!);
+    }
+  });
+  await Promise.all(workers);
+}
 
 export function userAppCategoriesQueryKey(storeType: string) {
   return [USER_APP_CATEGORIES_QUERY_ROOT, storeType] as const;
@@ -69,7 +128,10 @@ export async function hydrateUserAppCategoriesMemoryFromStorage(): Promise<void>
   for (const [storeType, entry] of Object.entries(blob)) {
     if (entry?.response?.items?.length || entry?.response?.allTab) {
       memoryByStoreType.set(storeType, entry);
-      prefetchUserAppCategoryImages(entry.response.items, entry.response.allTab?.imageUrl);
+      void prefetchUserAppCategoryImagesAwait(
+        entry.response.items,
+        entry.response.allTab?.imageUrl
+      );
     }
   }
 }
@@ -98,7 +160,7 @@ export function seedUserAppCategoriesQueryIfCached(
   if (!cached) return false;
 
   queryClient.setQueryData(queryKey, cached);
-  prefetchUserAppCategoryImages(cached.items, cached.allTab?.imageUrl);
+  void prefetchUserAppCategoryImagesAwait(cached.items, cached.allTab?.imageUrl);
   return true;
 }
 
@@ -120,7 +182,7 @@ export async function hydrateUserAppCategoriesQuery(
   if (!entry?.response) return undefined;
 
   memoryByStoreType.set(storeType, entry);
-  prefetchUserAppCategoryImages(entry.response.items, entry.response.allTab?.imageUrl);
+  void prefetchUserAppCategoryImagesAwait(entry.response.items, entry.response.allTab?.imageUrl);
   queryClient.setQueryData(userAppCategoriesQueryKey(storeType), entry.response);
   return entry.response;
 }
@@ -130,7 +192,9 @@ export async function fetchUserAppCategoriesWithCache(
 ): Promise<UserAppCategoriesResponse> {
   const response = await fetchUserAppCategories({ storeType });
   await writeCachedUserAppCategories(storeType, response);
-  void prefetchUserAppCategoryImagesAwait(response.items, response.allTab?.imageUrl);
+  await prefetchUserAppCategoryImagesAwait(response.items, response.allTab?.imageUrl, {
+    visibleFirst: VISIBLE_CATEGORY_IMAGE_PREFETCH_COUNT,
+  });
   return response;
 }
 
@@ -150,45 +214,21 @@ export function prefetchUserAppCategoryImages(
   categories: UserAppCategoryItem[],
   allTabImageUrl?: string | null
 ) {
-  if (allTabImageUrl?.trim()) {
-    const allUri = toAbsoluteImageUrl(allTabImageUrl) ?? allTabImageUrl;
-    if (!prefetchedImageUris.has(allUri)) {
-      prefetchedImageUris.add(allUri);
-      void Image.prefetch(allUri, { cachePolicy: "memory-disk" });
-    }
-  }
-  for (const cat of categories) {
-    if (!cat.imageUrl?.trim()) continue;
-    const uri = toAbsoluteImageUrl(cat.imageUrl) ?? cat.imageUrl;
-    if (prefetchedImageUris.has(uri)) continue;
-    prefetchedImageUris.add(uri);
-    void Image.prefetch(uri, { cachePolicy: "memory-disk" });
-  }
+  const uris = collectCategoryImageUris(categories, allTabImageUrl);
+  void prefetchUrisWithConcurrency(uris);
 }
 
+/** Prefer this on home: warm the first visible chips before the rest. */
 export async function prefetchUserAppCategoryImagesAwait(
   categories: UserAppCategoryItem[],
-  allTabImageUrl?: string | null
+  allTabImageUrl?: string | null,
+  options?: { visibleFirst?: number }
 ): Promise<void> {
-  const uris: string[] = [];
-  if (allTabImageUrl?.trim()) {
-    const allUri = toAbsoluteImageUrl(allTabImageUrl) ?? allTabImageUrl;
-    if (!prefetchedImageUris.has(allUri)) {
-      prefetchedImageUris.add(allUri);
-      uris.push(allUri);
-    }
-  }
-  for (const cat of categories) {
-    if (!cat.imageUrl?.trim()) continue;
-    const uri = toAbsoluteImageUrl(cat.imageUrl) ?? cat.imageUrl;
-    if (prefetchedImageUris.has(uri)) continue;
-    prefetchedImageUris.add(uri);
-    uris.push(uri);
-  }
-  if (uris.length === 0) return;
-  await Promise.all(
-    uris.map((uri) =>
-      Image.prefetch(uri, { cachePolicy: "memory-disk" }).catch(() => undefined)
-    )
+  const visibleFirst = options?.visibleFirst ?? VISIBLE_CATEGORY_IMAGE_PREFETCH_COUNT;
+  const visible = collectCategoryImageUris(categories, allTabImageUrl, visibleFirst);
+  await prefetchUrisWithConcurrency(visible);
+  const rest = collectCategoryImageUris(categories, allTabImageUrl).filter(
+    (u) => !visible.includes(u)
   );
+  void prefetchUrisWithConcurrency(rest);
 }

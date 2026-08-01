@@ -11,6 +11,7 @@ import { resolveBlendedStorePrepMinutes } from "./eta.merchant-prep-stats.js";
 import { appendEtaRecalc, type EtaRecalcReason } from "./eta.repository.js";
 import { resolveCustomerEtaContext, MIN_ACTIVE_ETA } from "./eta.customer-view.js";
 import { processRiderWaitEscalations } from "./eta.rider-wait-escalation.js";
+import { processRiderFreeWaitPriority } from "./eta.rider-free-wait-priority.js";
 import { getActiveOrdersForStore } from "./restaurantLoad.js";
 
 export type LiveOrderEtaContext = {
@@ -365,6 +366,8 @@ export async function runLiveEtaForOrder(
       current_eta_minutes = ${liveMinutes},
       live_promised_delivery_at = ${livePromisedAt}::timestamptz,
       live_eta_updated_at = ${now.toISOString()}::timestamptz,
+      -- Current / revised ETA clock (First ETA first_eta_at is never touched here).
+      estimated_delivery_time = ${livePromisedAt}::timestamptz,
       merchant_delayed = ${delay.delayed},
       merchant_delay_minutes = ${delay.delayMinutes},
       merchant_delay_reason = ${delay.reason},
@@ -392,6 +395,19 @@ export async function runLiveEtaForOrder(
       merchantStoreId: ctx.merchantStoreId,
       riderId: ctx.riderId,
       riderWaitMinutes,
+    });
+  }
+
+  // Free-wait PRIORITY push — works even when order is already READY (handover delay).
+  if (ctx.riderReachedPickupAt && !isPickedUp(ctx)) {
+    void processRiderFreeWaitPriority({
+      orderCoreId: ctx.orderCoreId,
+      orderIdText,
+      merchantStoreId: ctx.merchantStoreId,
+      riderId: ctx.riderId,
+      riderReachedPickupAt: ctx.riderReachedPickupAt,
+      pickedUpAt: ctx.pickedUpAt,
+      now,
     });
   }
 

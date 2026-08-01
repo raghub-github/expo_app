@@ -2,6 +2,10 @@ import { useEffect, useRef, useCallback } from "react";
 import { AppText as Text } from "@/components/AppText";
 import { View, StyleSheet, Animated, PanResponder, Vibration } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
+import {
+  claimHorizontalGesture,
+  releaseHorizontalGesture,
+} from "@/lib/horizontalGestureLock";
 
 const SLIDER_STAGE_COLORS: Record<
   "created" | "preparing" | "ready" | "picked_up",
@@ -57,6 +61,24 @@ export function SlideToConfirm({
     return () => loop.stop();
   }, [disabled, pulseOpacity]);
 
+  const claimedRef = useRef(false);
+
+  const claimGesture = useCallback(() => {
+    if (claimedRef.current) return;
+    claimedRef.current = true;
+    claimHorizontalGesture();
+  }, []);
+
+  const releaseGesture = useCallback(() => {
+    if (!claimedRef.current) return;
+    claimedRef.current = false;
+    releaseHorizontalGesture();
+  }, []);
+
+  // Confirming removes this card from the board, so the release event can never
+  // arrive — without this the claim leaks and stage swiping stays dead.
+  useEffect(() => releaseGesture, [releaseGesture]);
+
   const reset = useCallback(() => {
     confirmedRef.current = false;
     Animated.timing(translateX, {
@@ -79,6 +101,11 @@ export function SlideToConfirm({
       onStartShouldSetPanResponder: () => !disabled,
       onMoveShouldSetPanResponder: (_, gesture) =>
         !disabled && Math.abs(gesture.dx) > 6,
+      // Hold the slider's drag so the orders board does not read it as a
+      // stage swipe and pull the card out from under the user's finger.
+      onPanResponderGrant: () => {
+        claimGesture();
+      },
       onPanResponderMove: (_, gesture) => {
         if (disabled) return;
         const max = Math.max(0, trackWidth.current - 46);
@@ -86,6 +113,7 @@ export function SlideToConfirm({
         translateX.setValue(next);
       },
       onPanResponderRelease: (_, gesture) => {
+        releaseGesture();
         if (disabled) {
           reset();
           return;
@@ -103,6 +131,7 @@ export function SlideToConfirm({
         }
       },
       onPanResponderTerminate: () => {
+        releaseGesture();
         reset();
       },
     })

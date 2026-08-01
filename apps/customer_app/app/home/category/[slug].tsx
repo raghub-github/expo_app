@@ -36,7 +36,7 @@ import { BrandingFooter } from "@/components/BrandingFooter";
 import {
   fetchUserAppCategoriesWithCache,
   getUserAppCategoriesCachedAt,
-  prefetchUserAppCategoryImages,
+  prefetchUserAppCategoryImagesAwait,
   readSyncUserAppCategories,
   USER_APP_CATEGORIES_QUERY_OPTIONS,
   userAppCategoriesQueryKey,
@@ -312,7 +312,7 @@ export default function CategoryBrowseScreen() {
 
   useEffect(() => {
     if (apiSheetCategories.length > 0 || sheetCategoryAllTab.imageUrl) {
-      prefetchUserAppCategoryImages(apiSheetCategories, sheetCategoryAllTab.imageUrl);
+      void prefetchUserAppCategoryImagesAwait(apiSheetCategories, sheetCategoryAllTab.imageUrl);
     }
   }, [apiSheetCategories, sheetCategoryAllTab.imageUrl]);
 

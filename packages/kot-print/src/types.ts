@@ -42,7 +42,7 @@ export type KotPrintPayload = {
   pickupToken: string | null;
   pickupOtp: string | null;
   items: KotLineItem[];
-  /** Order-level cooking / special instructions. */
+  /** Order-level restaurant notes from checkout (printed as `Note for restaurant : - …`; empty → omitted). */
   specialInstructions?: string[] | null;
   packagingInstructions?: string | null;
   /** Thermal roll width — 80 default, 58 fallback. */
@@ -71,7 +71,9 @@ export function resolveKotPrintSpec(
     printableMm,
     cssWidth: `${printableMm}mm`,
     cssWidthPx,
-    qrModuleScale: paper === 58 ? 2 : 3,
+    // Render the QR at least as large as the printed box (108px / 132px) so the
+    // thermal rasteriser never has to upscale — upscaled modules smear and fail scans.
+    qrModuleScale: paper === 58 ? 3 : 4,
     barcodeBarWidth: paper === 58 ? 1 : 2,
     barcodeHeight: paper === 58 ? 40 : 52,
   };

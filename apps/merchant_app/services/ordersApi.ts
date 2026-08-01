@@ -14,6 +14,7 @@ export type ApiFoodOrderItem = {
   name: string;
   price: number;
   menu_item_id?: number | null;
+  item_image_url?: string | null;
   veg_nonveg?: string | null;
   customizations?: string[];
   variant_tag?: string | null;
@@ -84,6 +85,8 @@ export type ApiFoodOrder = {
   pickup_wait_seconds?: number | null;
   rider_store_wait_live?: boolean;
   rider_store_wait_anchor_at?: string | null;
+  rider_free_wait_seconds?: number | null;
+  rider_wait_priority?: boolean;
   grand_total: number;
   food_items_total_value?: number | null;
   /** Frozen merchant CTM from orders_core.total_ctm (payout / Partner Site SSOT). */
@@ -159,7 +162,7 @@ export async function fetchFoodOrders(
   const q = new URLSearchParams();
   if (opts?.limit) q.set("limit", String(opts.limit));
   const qs = q.toString();
-  const HARD_TIMEOUT_MS = 20_000;
+  const HARD_TIMEOUT_MS = 12_000;
   const res = await Promise.race([
     authFetch(
       `${getBase()}/v1/merchant-partner/stores/${storeId}/food-orders${qs ? `?${qs}` : ""}`,
@@ -207,13 +210,24 @@ export async function fetchFoodOrder(
   ordersFoodId: number,
   token: string
 ): Promise<ApiFoodOrder> {
-  const res = await authFetch(
-    `${getBase()}/v1/merchant-partner/stores/${storeId}/food-orders/${ordersFoodId}`,
-    token
-  );
+  const HARD_TIMEOUT_MS = 12_000;
+  const res = await Promise.race([
+    authFetch(
+      `${getBase()}/v1/merchant-partner/stores/${storeId}/food-orders/${ordersFoodId}`,
+      token,
+      { timeoutMs: HARD_TIMEOUT_MS }
+    ),
+    new Promise<never>((_, reject) => {
+      setTimeout(() => reject(new Error("Request timed out. Pull to refresh and try again.")), HARD_TIMEOUT_MS);
+    }),
+  ]);
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
-    throw new Error((err as { error?: string }).error || "Failed to load order");
+    const code = (err as { error?: string }).error;
+    if (code === "orders_load_timeout") {
+      throw new Error("Order details took too long to load. Pull to refresh and try again.");
+    }
+    throw new Error(code || "Failed to load order");
   }
   const data = (await res.json()) as { order?: ApiFoodOrder };
   if (!data.order) throw new Error("Order not found");
@@ -231,22 +245,33 @@ export async function fetchNearbyDispatchRiders(
   ordersFoodId: number,
   token: string
 ): Promise<{ summary: NearbyDispatchRiderSummary | null; riderAssigned: boolean }> {
-  const res = await authFetch(
-    `${getBase()}/v1/merchant-partner/stores/${storeId}/food-orders/${ordersFoodId}/nearby-dispatch-riders`,
-    token
-  );
-  if (!res.ok) {
+  const HARD_TIMEOUT_MS = 4_000;
+  try {
+    const res = await Promise.race([
+      authFetch(
+        `${getBase()}/v1/merchant-partner/stores/${storeId}/food-orders/${ordersFoodId}/nearby-dispatch-riders`,
+        token,
+        { timeoutMs: HARD_TIMEOUT_MS }
+      ),
+      new Promise<never>((_, reject) => {
+        setTimeout(() => reject(new Error("nearby_timeout")), HARD_TIMEOUT_MS);
+      }),
+    ]);
+    if (!res.ok) {
+      return { summary: null, riderAssigned: false };
+    }
+    const data = (await res.json()) as {
+      ok?: boolean;
+      summary?: NearbyDispatchRiderSummary | null;
+      riderAssigned?: boolean;
+    };
+    return {
+      summary: data.summary ?? null,
+      riderAssigned: Boolean(data.riderAssigned),
+    };
+  } catch {
     return { summary: null, riderAssigned: false };
   }
-  const data = (await res.json()) as {
-    ok?: boolean;
-    summary?: NearbyDispatchRiderSummary | null;
-    riderAssigned?: boolean;
-  };
-  return {
-    summary: data.summary ?? null,
-    riderAssigned: Boolean(data.riderAssigned),
-  };
 }
 
 export type FoodOrderRiderLogEntry = {
@@ -322,7 +347,36 @@ export async function fetchFoodOrderRidersLog(
   );
   if (!res.ok) return [];
   const data = (await res.json()) as { riders?: FoodOrderRiderLogEntry[] };
-  return Array.isArray(data.riders) ? data.riders : [];
+  const riders = Array.isArray(data.riders) ? data.riders : [];
+  return riders.map((r) => ({
+    ...r,
+    assigned_at: coerceRiderTs(r.assigned_at),
+    accepted_at: coerceRiderTs(r.accepted_at),
+    rejected_at: coerceRiderTs(r.rejected_at),
+    reached_merchant_at: coerceRiderTs(r.reached_merchant_at),
+    picked_up_at: coerceRiderTs(r.picked_up_at),
+    delivered_at: coerceRiderTs(r.delivered_at),
+    cancelled_at: coerceRiderTs(r.cancelled_at),
+  }));
+}
+
+function coerceRiderTs(value: unknown): string | null {
+  if (value == null || value === "") return null;
+  if (typeof value === "string") {
+    const t = value.trim();
+    if (!t) return null;
+    // Normalize postgres-style timestamps for Hermes Date parsing.
+    if (!t.includes("T") && /^\d{4}-\d{2}-\d{2}\s+/.test(t)) {
+      return t.replace(/^(\d{4}-\d{2}-\d{2})\s+/, "$1T");
+    }
+    return t;
+  }
+  try {
+    const d = new Date(value as string | number | Date);
+    return Number.isFinite(d.getTime()) ? d.toISOString() : null;
+  } catch {
+    return null;
+  }
 }
 
 export async function patchFoodOrderStatus(

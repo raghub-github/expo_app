@@ -86,6 +86,13 @@ import {
 } from '@/components/orders/GatiMitraOrderPrintBill';
 import { printOrderKot } from '@/components/orders/GatiMitraOrderPrintKOT';
 import { prefetchMerchantOrderTimelineBundle } from '@/lib/merchantTimelineEnrichmentCache';
+import {
+  fetchRidersLogCached,
+  getCachedRidersLog,
+  pastRidersFromLog,
+  prefetchRidersLog,
+} from '@/lib/ridersLogCache';
+import type { RiderLogEntry } from '@/components/orders/OrderRidersHistorySidesheet';
 import { OrderCustomerSidesheet } from '@/components/orders/OrderCustomerSidesheet';
 import { OrderTimelineModal } from '@/components/orders/OrderTimelineModal';
 import { OrderRiderTrackingModal } from '@/components/orders/OrderRiderTrackingModal';
@@ -260,7 +267,7 @@ function OrdersPageContent() {
   const [rtoModalOrder, setRtoModalOrder] = useState<OrdersFoodRow | null>(null);
   const [ridersLogModalOrderId, setRidersLogModalOrderId] = useState<number | null>(null);
   const [ridersLogModalOrderLabel, setRidersLogModalOrderLabel] = useState<string | null>(null);
-  const [ridersLogList, setRidersLogList] = useState<Array<{ rider_id: number; rider_name: string | null; rider_mobile: string | null; selfie_url: string | null; assignment_status: string; assigned_at: string | null; accepted_at: string | null; rejected_at: string | null; reached_merchant_at: string | null; picked_up_at: string | null; delivered_at: string | null; cancelled_at: string | null }>>([]);
+  const [ridersLogList, setRidersLogList] = useState<RiderLogEntry[]>([]);
   const [ridersLogLoading, setRidersLogLoading] = useState(false);
   const [acceptanceSettings, setAcceptanceSettings] = useState<{
     acceptance_window_minutes: number;
@@ -285,14 +292,29 @@ function OrdersPageContent() {
   useEffect(() => {
     if (!ridersLogModalOrderId) {
       setRidersLogList([]);
+      setRidersLogLoading(false);
       return;
     }
+    const cached = getCachedRidersLog(ridersLogModalOrderId);
+    if (cached) {
+      setRidersLogList(pastRidersFromLog(cached.riders));
+      setRidersLogLoading(false);
+      // Soft refresh — keep showing cached rows (no loading flash).
+      void fetchRidersLogCached(ridersLogModalOrderId, { force: true }).then((data) => {
+        setRidersLogList(pastRidersFromLog(data.riders));
+      });
+      return;
+    }
+    let cancelled = false;
     setRidersLogLoading(true);
-    fetch(`/api/food-orders/${ridersLogModalOrderId}/riders-log`)
-      .then((res) => res.ok ? res.json() : { riders: [] })
-      .then((data) => { setRidersLogList(data.riders || []); })
-      .catch(() => setRidersLogList([]))
-      .finally(() => setRidersLogLoading(false));
+    void fetchRidersLogCached(ridersLogModalOrderId).then((data) => {
+      if (cancelled) return;
+      setRidersLogList(pastRidersFromLog(data.riders));
+      setRidersLogLoading(false);
+    });
+    return () => {
+      cancelled = true;
+    };
   }, [ridersLogModalOrderId]);
 
   useEffect(() => {
@@ -423,10 +445,14 @@ function OrdersPageContent() {
     setRightPanelOpen(true);
     updateUrlParams({ orderId: String(order.order_id || order.id) });
     prefetchMerchantOrderTimelineBundle(order.id, storeId);
+    prefetchRidersLog(order.id);
   }, [updateUrlParams, storeId]);
 
   useEffect(() => {
-    if (selectedOrder?.id) prefetchMerchantOrderTimelineBundle(selectedOrder.id, storeId);
+    if (selectedOrder?.id) {
+      prefetchMerchantOrderTimelineBundle(selectedOrder.id, storeId);
+      prefetchRidersLog(selectedOrder.id);
+    }
   }, [selectedOrder?.id, storeId]);
 
   const closeOrderPanel = useCallback(() => {
@@ -718,10 +744,21 @@ function OrdersPageContent() {
 
   useEffect(() => {
     if (!storeId) return;
-    void fetch(
-      `/api/merchant/sync-acceptance-timeout?store_id=${encodeURIComponent(storeId)}`,
-      { method: 'POST', credentials: 'include', cache: 'no-store' }
-    ).catch(() => {});
+    const syncKey = `partner-acceptance-sync:${storeId.trim()}`;
+    if (typeof window !== 'undefined' && !sessionStorage.getItem(syncKey)) {
+      void fetch(
+        `/api/merchant/sync-acceptance-timeout?store_id=${encodeURIComponent(storeId)}`,
+        { method: 'POST', credentials: 'include', cache: 'no-store' }
+      )
+        .then(() => {
+          try {
+            sessionStorage.setItem(syncKey, String(Date.now()));
+          } catch {
+            /* ignore */
+          }
+        })
+        .catch(() => {});
+    }
     void fetchOrders();
     void fetchStats();
   }, [fetchOrders, fetchStats, storeId, managedStoreIds.join(',')]);
@@ -1898,6 +1935,9 @@ function OrdersPageContent() {
                           onPrintKot={handlePrintKot}
                           onClose={closeOrderPanel}
                           onViewPastRiders={() => {
+                            prefetchRidersLog(selectedOrder.id);
+                            const hit = getCachedRidersLog(selectedOrder.id);
+                            if (hit) setRidersLogList(pastRidersFromLog(hit.riders));
                             setRidersLogModalOrderId(selectedOrder.id);
                             setRidersLogModalOrderLabel(
                               selectedOrder.formatted_order_id || `#${selectedOrder.order_id}`
@@ -1973,6 +2013,7 @@ function OrdersPageContent() {
                           acceptDisabled={acceptCountdownFor(order).disabled}
                           nowMs={nowTick}
                           hideDetails
+                          showOutletLabel={managedStoreIds.length > 1}
                         />
                       ))}
                       </div>
@@ -2005,7 +2046,13 @@ function OrdersPageContent() {
                       setRtoModalOrder(selectedOrder);
                     }}
                     actionLoading={actionLoading === selectedOrder.id}
-                    onOpenRidersLog={() => { setRidersLogModalOrderId(selectedOrder.id); setRidersLogModalOrderLabel(selectedOrder.formatted_order_id || `#${selectedOrder.order_id}`); }}
+                    onOpenRidersLog={() => {
+                      prefetchRidersLog(selectedOrder.id);
+                      const hit = getCachedRidersLog(selectedOrder.id);
+                      if (hit) setRidersLogList(pastRidersFromLog(hit.riders));
+                      setRidersLogModalOrderId(selectedOrder.id);
+                      setRidersLogModalOrderLabel(selectedOrder.formatted_order_id || `#${selectedOrder.order_id}`);
+                    }}
                     onOpenRiderImage={(url) => setRiderImageModalUrl(url)}
                     acceptLabel={acceptCountdown.label}
                     acceptDisabled={acceptCountdown.disabled}
@@ -2064,6 +2111,7 @@ function OrdersPageContent() {
                         acceptLabel={acceptCountdownFor(order).label}
                         acceptDisabled={acceptCountdownFor(order).disabled}
                         nowMs={nowTick}
+                        showOutletLabel={managedStoreIds.length > 1}
                       />
                     ))}
                   </div>
@@ -3139,6 +3187,7 @@ function OrderDetailMobile({
             showUtensilsBanner={false}
             maxItems={ORDER_ITEMS_PREVIEW_MAX}
             compact
+            showQuantityColumn
           />
           {moreItemsCount > 0 && onOpenAllItems ? (
             <button
@@ -3257,6 +3306,7 @@ function OrderCard({
   acceptDisabled,
   nowMs,
   hideDetails,
+  showOutletLabel,
 }: {
   order: OrdersFoodRow;
   selected: boolean;
@@ -3280,6 +3330,8 @@ function OrderCard({
   nowMs?: number;
   /** Hide the "Details" CTA (used in right slider list) */
   hideDetails?: boolean;
+  /** Multi-outlet board: show which restaurant this order belongs to. */
+  showOutletLabel?: boolean;
 }) {
   const status = order.order_status || 'CREATED';
   const isNew = status === 'CREATED' || status === 'NEW';
@@ -3337,6 +3389,11 @@ function OrderCard({
             size="sm"
           />
       <p className="text-xs text-gray-600 truncate">{order.customer_name || '—'}</p>
+          {showOutletLabel && order.restaurant_name ? (
+            <p className="mt-0.5 truncate text-[11px] font-medium text-sky-700" title={order.restaurant_name}>
+              {order.restaurant_name}
+            </p>
+          ) : null}
         </div>
         <span
           className={`shrink-0 px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wide ${

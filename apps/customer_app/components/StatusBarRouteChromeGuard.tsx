@@ -42,6 +42,8 @@ function routeAllowsImmersiveStatusBar(segments: readonly string[]): boolean {
   if (root === "home" && (leaf === "" || leaf === "index")) return true;
   // Meals-under-price uses the same immersive hero chrome
   if (root === "home" && leaf === "meals-under-price") return true;
+  // Payment success — green hero must paint under the status bar (never force white).
+  if (root === "checkout" && leaf === "success") return true;
 
   return false;
 }
@@ -66,9 +68,24 @@ export function StatusBarRouteChromeGuard() {
   useEffect(() => {
     if (bootstrapActive) {
       assertSplashStatusBar();
+    } else if (routeAllowsImmersiveStatusBar(segments)) {
+      const chrome = useScreenChromeStore.getState();
+      NativeStatusBar.setHidden(false, "none");
+      if (Platform.OS === "android") {
+        NativeStatusBar.setTranslucent(true);
+        const bg =
+          chrome.statusBarBackground === "transparent"
+            ? "transparent"
+            : chrome.statusBarBackground;
+        NativeStatusBar.setBackgroundColor(bg, true);
+        NativeStatusBar.setBarStyle(
+          chrome.statusBarStyle === "light" ? "light-content" : "dark-content",
+          true
+        );
+      }
     } else {
       assertStatusBarVisible({
-        solidWhite: !routeAllowsImmersiveStatusBar(segments),
+        solidWhite: true,
       });
     }
 
@@ -78,8 +95,25 @@ export function StatusBarRouteChromeGuard() {
         assertSplashStatusBar();
         return;
       }
+      if (routeAllowsImmersiveStatusBar(segments)) {
+        const chrome = useScreenChromeStore.getState();
+        NativeStatusBar.setHidden(false, "none");
+        if (Platform.OS === "android") {
+          NativeStatusBar.setTranslucent(true);
+          const bg =
+            chrome.statusBarBackground === "transparent"
+              ? "transparent"
+              : chrome.statusBarBackground;
+          NativeStatusBar.setBackgroundColor(bg, true);
+          NativeStatusBar.setBarStyle(
+            chrome.statusBarStyle === "light" ? "light-content" : "dark-content",
+            true
+          );
+        }
+        return;
+      }
       assertStatusBarVisible({
-        solidWhite: !routeAllowsImmersiveStatusBar(segments),
+        solidWhite: true,
       });
     };
     const subscription = AppState.addEventListener("change", onAppStateChange);
@@ -93,7 +127,21 @@ export function StatusBarRouteChromeGuard() {
     }
     if (routeAllowsImmersiveStatusBar(segments)) {
       // Immersive is allowed — still never leave the bar hidden.
-      assertStatusBarVisible();
+      // Honor screen chrome (e.g. payment success green + light icons).
+      const chrome = useScreenChromeStore.getState();
+      NativeStatusBar.setHidden(false, "none");
+      if (Platform.OS === "android") {
+        NativeStatusBar.setTranslucent(true);
+        const bg =
+          chrome.statusBarBackground === "transparent"
+            ? "transparent"
+            : chrome.statusBarBackground;
+        NativeStatusBar.setBackgroundColor(bg, true);
+        NativeStatusBar.setBarStyle(
+          chrome.statusBarStyle === "light" ? "light-content" : "dark-content",
+          true
+        );
+      }
       return;
     }
     // EVERY non-immersive route (store, profile, checkout, orders, legal, tabs home, …)

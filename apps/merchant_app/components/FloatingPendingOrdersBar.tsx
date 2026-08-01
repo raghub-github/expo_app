@@ -1,154 +1,263 @@
-import { useMemo } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AppText as Text } from "@/components/AppText";
-import { View, Pressable, StyleSheet, Platform } from "react-native";
-import { useRouter, useSegments } from "expo-router";
+import {
+  View,
+  StyleSheet,
+  Platform,
+  PanResponder,
+  useWindowDimensions,
+  Animated,
+} from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import * as SecureStore from "expo-secure-store";
 import {
   GatiMitraMerchant,
   TAB_BAR_HEIGHT,
   TAB_BAR_FLOATING_GAP,
   H_PADDING,
+  HEADER_HEIGHT,
 } from "@/constants/theme";
 import { useOrders } from "@/hooks/useOrders";
 import { useStoreSettings } from "@/context/StoreSettingsContext";
-import { useActiveTab } from "@/context/ActiveTabContext";
+import { useIncomingOrderSheetOptional } from "@/context/IncomingOrderSheetContext";
+import { useSelectedStore } from "@/context/SelectedStoreContext";
+
+const FAB_SIZE = 56;
+const DRAG_THRESHOLD = 6;
+const POS_KEY_PREFIX = "merchant_pending_orders_fab_pos_v1_";
+
+type FabPos = { x: number; y: number };
+
+async function loadFabPos(storeId: number | null): Promise<FabPos | null> {
+  if (storeId == null) return null;
+  try {
+    const raw = await SecureStore.getItemAsync(`${POS_KEY_PREFIX}${storeId}`);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as FabPos;
+    if (!Number.isFinite(parsed?.x) || !Number.isFinite(parsed?.y)) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+async function saveFabPos(storeId: number | null, pos: FabPos): Promise<void> {
+  if (storeId == null) return;
+  try {
+    await SecureStore.setItemAsync(`${POS_KEY_PREFIX}${storeId}`, JSON.stringify(pos));
+  } catch {
+    /* ignore */
+  }
+}
 
 /**
- * In-app floating pill for new (CREATED) orders — mirrors partnersite PartnerPendingNewOrdersBar.
- * Respects store setting show_floating_orders (default on).
+ * Draggable notification FAB for pending CREATED orders.
+ * Tap → reopen incoming accept sheet. Drag anywhere on screen to reposition (persisted per store).
  */
 export function FloatingPendingOrdersBar() {
-  const router = useRouter();
-  const segments = useSegments();
   const insets = useSafeAreaInsets();
+  const { width: screenW, height: screenH } = useWindowDimensions();
   const { orders } = useOrders();
   const { settings } = useStoreSettings();
-  const { activeTab } = useActiveTab();
+  const sheet = useIncomingOrderSheetOptional();
+  const { selectedStore } = useSelectedStore();
+  const storeId = selectedStore?.id ?? null;
 
   const pending = useMemo(
     () => orders.filter((o) => o.status === "created").length,
     [orders]
   );
 
-  const onOrdersTab = activeTab === "orders" || segments.includes("orders");
-  const show =
-    settings.show_floating_orders && pending > 0 && !onOrdersTab;
+  const sheetOpen = sheet?.sheetOpen === true;
+  const show = settings.show_floating_orders && pending > 0 && !sheetOpen;
 
-  if (!show) return null;
+  const minBottom = TAB_BAR_HEIGHT + TAB_BAR_FLOATING_GAP + insets.bottom + 8;
+  const defaultPos = useMemo(
+    () => ({
+      x: screenW - H_PADDING - FAB_SIZE,
+      y: screenH - minBottom - FAB_SIZE - 64,
+    }),
+    [screenW, screenH, minBottom]
+  );
+
+  const clampPos = useCallback(
+    (p: FabPos): FabPos => ({
+      x: Math.max(H_PADDING, Math.min(screenW - H_PADDING - FAB_SIZE, p.x)),
+      y: Math.max(
+        insets.top + HEADER_HEIGHT * 0.35,
+        Math.min(screenH - minBottom - FAB_SIZE, p.y)
+      ),
+    }),
+    [screenW, screenH, minBottom, insets.top]
+  );
+
+  const posRef = useRef<FabPos>(defaultPos);
+  const dragRef = useRef({ moved: false, originX: 0, originY: 0 });
+  const [pos, setPos] = useState<FabPos | null>(null);
+  const scale = useRef(new Animated.Value(1)).current;
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      const saved = await loadFabPos(storeId);
+      if (cancelled) return;
+      const next = clampPos(saved ?? defaultPos);
+      posRef.current = next;
+      setPos(next);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [storeId, defaultPos, clampPos]);
+
+  useEffect(() => {
+    if (pos == null) return;
+    const next = clampPos(pos);
+    if (next.x !== pos.x || next.y !== pos.y) {
+      posRef.current = next;
+      setPos(next);
+    }
+  }, [screenW, screenH, minBottom, clampPos, pos]);
+
+  const openIncoming = useCallback(() => {
+    sheet?.reopenParkedIncomingOrders();
+  }, [sheet]);
+
+  const panResponder = useMemo(
+    () =>
+      PanResponder.create({
+        onStartShouldSetPanResponder: () => true,
+        onMoveShouldSetPanResponder: (_, g) =>
+          Math.abs(g.dx) > DRAG_THRESHOLD || Math.abs(g.dy) > DRAG_THRESHOLD,
+        onPanResponderGrant: () => {
+          dragRef.current = {
+            moved: false,
+            originX: posRef.current.x,
+            originY: posRef.current.y,
+          };
+          Animated.spring(scale, {
+            toValue: 1.08,
+            useNativeDriver: true,
+            friction: 6,
+          }).start();
+        },
+        onPanResponderMove: (_, g) => {
+          if (Math.abs(g.dx) > DRAG_THRESHOLD || Math.abs(g.dy) > DRAG_THRESHOLD) {
+            dragRef.current.moved = true;
+          }
+          const next = clampPos({
+            x: dragRef.current.originX + g.dx,
+            y: dragRef.current.originY + g.dy,
+          });
+          posRef.current = next;
+          setPos(next);
+        },
+        onPanResponderRelease: () => {
+          Animated.spring(scale, {
+            toValue: 1,
+            useNativeDriver: true,
+            friction: 6,
+          }).start();
+          if (!dragRef.current.moved) {
+            openIncoming();
+            return;
+          }
+          void saveFabPos(storeId, posRef.current);
+        },
+        onPanResponderTerminate: () => {
+          Animated.spring(scale, {
+            toValue: 1,
+            useNativeDriver: true,
+            friction: 6,
+          }).start();
+          if (dragRef.current.moved) {
+            void saveFabPos(storeId, posRef.current);
+          }
+        },
+      }),
+    [clampPos, openIncoming, scale, storeId]
+  );
+
+  if (!show || pos == null) return null;
 
   const label =
     pending === 1
       ? "1 new order — tap to accept"
       : `${pending} new orders — tap to accept`;
 
-  const bottom =
-    TAB_BAR_HEIGHT + TAB_BAR_FLOATING_GAP + insets.bottom + 12;
-
   return (
-    <View
-      pointerEvents="box-none"
-      style={[styles.host, { bottom }]}
+    <Animated.View
+      {...panResponder.panHandlers}
+      style={[
+        styles.fab,
+        {
+          left: pos.x,
+          top: pos.y,
+          transform: [{ scale }],
+        },
+      ]}
+      accessibilityRole="button"
+      accessibilityLabel={label}
     >
-      <Pressable
-        onPress={() => router.push("/(tabs)/")}
-        style={({ pressed }) => [
-          styles.pill,
-          pressed && styles.pillPressed,
-          GatiMitraMerchant.cursorPointer,
-        ]}
-        accessibilityRole="button"
-        accessibilityLabel={label}
-      >
-        <View style={styles.iconWrap}>
-          <Ionicons name="notifications" size={22} color={GatiMitraMerchant.primary} />
-          <View style={styles.badge}>
-            <Text style={styles.badgeText}>
-              {pending > 99 ? "99+" : pending}
-            </Text>
-          </View>
-        </View>
-        <Text style={styles.label} numberOfLines={2}>
-          {label}
-        </Text>
-        <Ionicons
-          name="chevron-up"
-          size={20}
-          color="#FFFFFF"
-          style={styles.chevron}
-        />
-      </Pressable>
-    </View>
+      <View style={styles.iconInner}>
+        <Ionicons name="notifications" size={26} color={GatiMitraMerchant.primary} />
+      </View>
+      <View style={styles.badge}>
+        <Text style={styles.badgeText}>{pending > 99 ? "99+" : pending}</Text>
+      </View>
+    </Animated.View>
   );
 }
 
 const styles = StyleSheet.create({
-  host: {
+  fab: {
     position: "absolute",
-    left: 0,
-    right: 0,
+    width: FAB_SIZE,
+    height: FAB_SIZE,
+    borderRadius: FAB_SIZE / 2,
+    backgroundColor: GatiMitraMerchant.primary,
     alignItems: "center",
-    paddingHorizontal: H_PADDING,
+    justifyContent: "center",
     zIndex: 100,
+    borderWidth: 2,
+    borderColor: "rgba(255,255,255,0.35)",
     ...Platform.select({
       ios: {
         shadowColor: "#000",
         shadowOffset: { width: 0, height: 4 },
-        shadowOpacity: 0.15,
+        shadowOpacity: 0.22,
         shadowRadius: 8,
       },
-      android: { elevation: 8 },
+      android: { elevation: 10 },
       default: {},
     }),
   },
-  pill: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 12,
-    maxWidth: 420,
-    width: "100%",
-    backgroundColor: GatiMitraMerchant.primary,
-    borderRadius: 999,
-    paddingVertical: 14,
-    paddingHorizontal: 18,
-    borderWidth: 2,
-    borderColor: "rgba(255,255,255,0.25)",
-  },
-  pillPressed: {
-    opacity: 0.92,
-    transform: [{ scale: 0.98 }],
-  },
-  iconWrap: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
+  iconInner: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
     backgroundColor: "#FFFFFF",
     alignItems: "center",
     justifyContent: "center",
   },
   badge: {
     position: "absolute",
-    top: -4,
-    right: -6,
-    minWidth: 20,
-    height: 20,
-    borderRadius: 10,
+    top: -2,
+    right: -2,
+    minWidth: 22,
+    height: 22,
+    borderRadius: 11,
     backgroundColor: "#EF4444",
     alignItems: "center",
     justifyContent: "center",
-    paddingHorizontal: 4,
+    paddingHorizontal: 5,
+    borderWidth: 2,
+    borderColor: "#FFFFFF",
   },
   badgeText: {
-    fontSize: 10,
+    fontSize: 11,
     fontWeight: "800",
     color: "#FFFFFF",
   },
-  label: {
-    flex: 1,
-    fontSize: 14,
-    fontWeight: "700",
-    color: "#FFFFFF",
-    lineHeight: 18,
-  },
-  chevron: { opacity: 0.9 },
 });

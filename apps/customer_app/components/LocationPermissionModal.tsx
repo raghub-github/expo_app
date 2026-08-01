@@ -12,8 +12,8 @@ import { useRouter } from "expo-router";
 import { useQueryClient } from "@tanstack/react-query";
 import * as Location from "expo-location";
 import { useLocationStore, getDeviceLocationReadiness } from "@/store/locationStore";
-import { useAddresses, ADDRESSES_QUERY_KEY, ACTIVE_LOCATION_QUERY_KEY } from "@/hooks/useAddresses";
-import { addressService, type Address } from "@/services/address.service";
+import { useAddresses } from "@/hooks/useAddresses";
+import type { Address } from "@/services/address.service";
 import { GatiMitraColors } from "@/constants/gatimitra";
 
 const BRAND = GatiMitraColors.splashMint;
@@ -43,7 +43,6 @@ export function LocationPermissionModal({ visible, onDismiss }: Props) {
   const queryClient = useQueryClient();
   const requestPermissionAndFetch = useLocationStore((s) => s.requestPermissionAndFetch);
   const promptLocationPermissionIfNeeded = useLocationStore((s) => s.promptLocationPermissionIfNeeded);
-  const setAddressAndCoords = useLocationStore((s) => s.setAddressAndCoords);
   const { data: addresses = [], isPending: addressesPending } = useAddresses();
   const [enabling, setEnabling] = useState(false);
   const [selectingId, setSelectingId] = useState<number | null>(null);
@@ -56,33 +55,35 @@ export function LocationPermissionModal({ visible, onDismiss }: Props) {
 
   useEffect(() => {
     if (!visible) return;
+    let cancelled = false;
     const syncIfReady = async () => {
+      if (selectingId != null) return;
       const readiness = await getDeviceLocationReadiness();
-      if (!readiness.isReady) return;
-      await requestPermissionAndFetch({ forceDevice: true });
-      const { coords, address } = useLocationStore.getState();
-      if (coords) {
-        try {
-          await addressService.setActiveLocation({
-            latitude: coords.latitude,
-            longitude: coords.longitude,
-            address: address?.fullAddress ?? address?.primary ?? "Current location",
+      if (!readiness.isReady || cancelled) return;
+      const { reconcileActiveLocationFromGps } = await import(
+        "@/lib/reconcileActiveLocationFromGps"
+      );
+      const { runExclusiveActiveLocationReconcile } = await import(
+        "@/lib/activeLocationReconcileGate"
+      );
+      const { useAuthStore } = await import("@/store/authStore");
+      await runExclusiveActiveLocationReconcile(async () => {
+        if (useAuthStore.getState().session) {
+          await reconcileActiveLocationFromGps(queryClient, {
+            allowRemoteSessionPreserve: true,
           });
-        } catch {
-          // Non-blocking
+        } else {
+          await requestPermissionAndFetch({ forceDevice: true });
         }
-        await queryClient.invalidateQueries({ queryKey: ACTIVE_LOCATION_QUERY_KEY });
-        const { invalidateFoodHomeLocationQueries } = await import(
-          "@/lib/invalidateFoodHomeLocationQueries"
-        );
-        void invalidateFoodHomeLocationQueries(queryClient);
-      }
-      handleDismiss();
+        return "done";
+      });
+      if (!cancelled) handleDismiss();
     };
     void syncIfReady();
-    const interval = setInterval(() => void syncIfReady(), 2000);
-    return () => clearInterval(interval);
-  }, [visible, requestPermissionAndFetch, handleDismiss, queryClient]);
+    return () => {
+      cancelled = true;
+    };
+  }, [visible, selectingId, requestPermissionAndFetch, handleDismiss, queryClient]);
 
   const openLocationPage = useCallback(
     (focusSearch: boolean) => {
@@ -117,7 +118,7 @@ export function LocationPermissionModal({ visible, onDismiss }: Props) {
         } else {
           await Linking.openURL("app-settings:");
         }
-        await promptLocationPermissionIfNeeded();
+        await promptLocationPermissionIfNeeded({ skipDeviceFetch: true });
         const stillVisible = useLocationStore.getState().showPermissionModal;
         if (!stillVisible) handleDismiss();
         return;
@@ -126,24 +127,23 @@ export function LocationPermissionModal({ visible, onDismiss }: Props) {
       if (status === "granted") {
         const after = await getDeviceLocationReadiness();
         if (after.isReady) {
-          await requestPermissionAndFetch({ forceDevice: true });
-          const { coords, address } = useLocationStore.getState();
-          if (coords) {
-            try {
-              await addressService.setActiveLocation({
-                latitude: coords.latitude,
-                longitude: coords.longitude,
-                address: address?.fullAddress ?? address?.primary ?? "Current location",
+          const { reconcileActiveLocationFromGps } = await import(
+            "@/lib/reconcileActiveLocationFromGps"
+          );
+          const { runExclusiveActiveLocationReconcile } = await import(
+            "@/lib/activeLocationReconcileGate"
+          );
+          const { useAuthStore } = await import("@/store/authStore");
+          await runExclusiveActiveLocationReconcile(async () => {
+            if (useAuthStore.getState().session) {
+              await reconcileActiveLocationFromGps(queryClient, {
+                allowRemoteSessionPreserve: true,
               });
-            } catch {
-              // Non-blocking
+            } else {
+              await requestPermissionAndFetch({ forceDevice: true });
             }
-            await queryClient.invalidateQueries({ queryKey: ACTIVE_LOCATION_QUERY_KEY });
-            const { invalidateFoodHomeLocationQueries } = await import(
-              "@/lib/invalidateFoodHomeLocationQueries"
-            );
-            void invalidateFoodHomeLocationQueries(queryClient);
-          }
+            return "done";
+          });
           handleDismiss();
         } else if (Platform.OS === "android") {
           try {
@@ -151,7 +151,7 @@ export function LocationPermissionModal({ visible, onDismiss }: Props) {
           } catch {
             // ignore
           }
-          await promptLocationPermissionIfNeeded();
+          await promptLocationPermissionIfNeeded({ skipDeviceFetch: true });
         }
         return;
       }
@@ -169,22 +169,10 @@ export function LocationPermissionModal({ visible, onDismiss }: Props) {
     async (addr: Address) => {
       setSelectingId(addr.id);
       try {
-        await Promise.all([
-          addressService.setActiveLocation({
-            latitude: addr.latitude,
-            longitude: addr.longitude,
-            address: addr.fullAddress,
-          }),
-          addressService.setAddressDefault(addr.id).catch(() => {}),
-        ]);
-        const primary = addr.label ?? "Address";
-        setAddressAndCoords(
-          { primary, secondary: addr.fullAddress.slice(0, 80), fullAddress: addr.fullAddress },
-          { latitude: addr.latitude, longitude: addr.longitude },
-          { source: "selected" }
+        const { applySelectedDeliveryAddress } = await import(
+          "@/lib/applySelectedDeliveryAddress"
         );
-        await queryClient.invalidateQueries({ queryKey: ADDRESSES_QUERY_KEY });
-        await queryClient.invalidateQueries({ queryKey: ACTIVE_LOCATION_QUERY_KEY });
+        await applySelectedDeliveryAddress(addr, queryClient);
         handleDismiss();
       } catch {
         // Keep sheet open so user can retry or search manually.
@@ -192,7 +180,7 @@ export function LocationPermissionModal({ visible, onDismiss }: Props) {
         setSelectingId(null);
       }
     },
-    [handleDismiss, queryClient, setAddressAndCoords]
+    [handleDismiss, queryClient]
   );
 
   return (

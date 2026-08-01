@@ -319,7 +319,7 @@ export default function ProfileScreen() {
       <View style={styles.section}>
         <Text style={styles.sectionTitle}>Settings</Text>
         <View style={[styles.tileGrid, { gap: TILE_GAP }]}>
-          <GridCard icon="settings-outline" label="Preferences" onPress={navigate("notifications")} tileWidth={settingsTileWidth} active={isActive("notifications")} />
+          <GridCard icon="settings-outline" label="Preferences" onPress={navigate("preferences")} tileWidth={settingsTileWidth} active={isActive("preferences")} />
           <GridCard icon="notifications-outline" label="Manage communication" onPress={navigate("communications")} tileWidth={settingsTileWidth} active={isActive("communications")} />
           <GridCard icon="storefront-outline" label="Delivery settings" onPress={navigate("address")} tileWidth={settingsTileWidth} active={isActive("address")} />
           <GridCard icon="flash-outline" label="Rush hour" onPress={navigate("preparation-time")} badge={rushBadge} tileWidth={settingsTileWidth} active={isActive("preparation-time")} />

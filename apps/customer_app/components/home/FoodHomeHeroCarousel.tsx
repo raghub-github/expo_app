@@ -257,6 +257,8 @@ type Props = {
   topInset?: number;
   /** Fires when total sky/hero height changes (immersive parent should resize). */
   onHeroHeightChange?: (totalHeight: number) => void;
+  /** Lets the parent keep compact chrome until the first hero is decoded. */
+  onHeroReadyChange?: (ready: boolean) => void;
 };
 
 function HeroMediaSlide({
@@ -268,6 +270,7 @@ function HeroMediaSlide({
   isActive,
   onPress,
   onAspectRatio,
+  onMediaReady,
 }: {
   slide: Slide;
   slideWidth: number;
@@ -277,6 +280,7 @@ function HeroMediaSlide({
   isActive: boolean;
   onPress: () => void;
   onAspectRatio?: (ratio: number) => void;
+  onMediaReady?: () => void;
 }) {
   const hasMedia = !!slide.mediaUrl && !imageFailed;
   const hasCta = !!slide.cta?.trim();
@@ -303,10 +307,11 @@ function HeroMediaSlide({
   const onImageLoad = useCallback(
     (e: ImageLoadEventData) => {
       setImageReady(true);
+      onMediaReady?.();
       const src = e.source;
       if (src?.width && src?.height) reportAspect(src.width, src.height);
     },
-    [reportAspect]
+    [onMediaReady, reportAspect]
   );
 
   const content = (
@@ -323,6 +328,7 @@ function HeroMediaSlide({
           isMuted
           useNativeControls={false}
           onReadyForDisplay={(ev) => {
+            onMediaReady?.();
             const nat = ev.naturalSize;
             if (nat?.width && nat?.height) {
               reportAspect(nat.width, nat.height);
@@ -374,6 +380,7 @@ export function FoodHomeHeroCarousel({
   immersive = false,
   topInset = 0,
   onHeroHeightChange,
+  onHeroReadyChange,
 }: Props) {
   const router = useRouter();
   const queryClient = useQueryClient();
@@ -480,10 +487,12 @@ export function FoodHomeHeroCarousel({
   }, []);
 
   const backdropUri = slides[0]?.kind === "image" ? slides[0].mediaUrl : null;
+  const firstSlide = slides[0];
 
   useEffect(() => {
     setBackdropReady(false);
-  }, [backdropUri]);
+    onHeroReadyChange?.(false);
+  }, [backdropUri, firstSlide?.id, onHeroReadyChange]);
 
   if (slides.length === 0) {
     if (!immersive) return null;
@@ -515,7 +524,10 @@ export function FoodHomeHeroCarousel({
               priority="high"
               transition={0}
               recyclingKey={`backdrop-${backdropUri}`}
-              onLoad={() => setBackdropReady(true)}
+              onLoad={() => {
+                setBackdropReady(true);
+                onHeroReadyChange?.(true);
+              }}
             />
           ) : null}
         </>
@@ -548,6 +560,9 @@ export function FoodHomeHeroCarousel({
               slide.aspectRatio
                 ? undefined
                 : (ratio) => onSlideAspect(slide.id, ratio)
+            }
+            onMediaReady={
+              index === 0 ? () => onHeroReadyChange?.(true) : undefined
             }
           />
         ))}

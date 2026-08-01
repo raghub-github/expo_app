@@ -172,7 +172,9 @@ export function PartnersAllStoresPage() {
     } catch {
       /* ignore */
     }
-    window.location.href = "/partners/dashboard";
+    // Replace so Back from dashboard does not re-land on the store picker
+    // immediately after a fresh login → all-stores → auto-enter chain.
+    window.location.replace("/partners/dashboard");
   };
 
   const goToOnboarding = (storeId?: string) => {

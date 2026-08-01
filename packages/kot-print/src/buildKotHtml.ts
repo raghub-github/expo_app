@@ -81,13 +81,42 @@ function itemAddons(item: KotLineItem): Array<{ label: string; qty?: number }> {
     .filter((a) => a.label);
 }
 
+/** Cutlery / packaging prefs belong under Packaging — never as order Note. */
+function isCutleryInstruction(text: string): boolean {
+  return /cutlery|utensil/i.test(text);
+}
+
+/** Order-level restaurant notes from checkout (empty → nothing on KOT). */
+function orderRestaurantNotes(payload: KotPrintPayload): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const raw of payload.specialInstructions ?? []) {
+    const line = String(raw ?? "").trim();
+    if (!line || isCutleryInstruction(line)) continue;
+    const key = line.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(line);
+  }
+  return out;
+}
+
 function itemNotes(item: KotLineItem): string[] {
-  const fromLines = (item.customizationLines ?? [])
-    .filter((l) => l.kind === "note")
-    .map((l) => l.name?.trim())
-    .filter((n): n is string => !!n);
-  const special = (item.specialInstructions ?? "").trim();
-  return special ? [...fromLines, special] : fromLines;
+  const seen = new Set<string>();
+  const out: string[] = [];
+  const push = (raw: string | null | undefined) => {
+    const line = String(raw ?? "").trim();
+    if (!line) return;
+    const key = line.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push(line);
+  };
+  push(item.specialInstructions);
+  for (const l of item.customizationLines ?? []) {
+    if (l.kind === "note") push(l.name);
+  }
+  return out;
 }
 
 function buildKotItemBlock(item: KotLineItem, index: number, total: number): string {
@@ -98,7 +127,7 @@ function buildKotItemBlock(item: KotLineItem, index: number, total: number): str
   const details: string[] = [];
 
   for (const n of notes) {
-    details.push(`<div class="detail">Note : ( ${escapeHtml(n)} )</div>`);
+    details.push(`<div class="detail">Cooking : - ${escapeHtml(n)}</div>`);
   }
   for (const v of variants) {
     details.push(`<div class="detail">Specialty : ${escapeHtml(v)}</div>`);
@@ -134,9 +163,7 @@ export function buildKotHtml(payload: KotPrintPayload): string {
   const orderType = formatOrderType(payload.orderType);
   const paymentMode = formatPaymentMode(payload.paymentMode);
   const packaging = (payload.packagingInstructions ?? "").trim();
-  const orderNotes = (payload.specialInstructions ?? [])
-    .map((s) => String(s ?? "").trim())
-    .filter(Boolean);
+  const orderNotes = orderRestaurantNotes(payload);
 
   const address = (payload.restaurantAddress ?? "").trim();
   const customerName = (payload.customerName ?? "").trim();
@@ -166,10 +193,10 @@ export function buildKotHtml(payload: KotPrintPayload): string {
     .filter(Boolean)
     .join("");
 
-  const cookingBlock =
+  const noteBlock =
     orderNotes.length > 0
       ? `<div class="pack-block">${orderNotes
-          .map((n) => `<div class="detail">Cooking : ${escapeHtml(n)}</div>`)
+          .map((n) => `<div class="detail">Note for restaurant : - ${escapeHtml(n)}</div>`)
           .join("")}</div>`
       : "";
 
@@ -400,9 +427,9 @@ export function buildKotHtml(payload: KotPrintPayload): string {
   <div class="items-title">ITEMS (${lineCount})</div>
   ${itemBlocks}
   <hr class="rule" />
-  ${cookingBlock}
+  ${noteBlock}
   ${packaging ? `<div class="pack-line">Packaging : ${escapeHtml(packaging)}</div>` : ""}
-  ${packaging || cookingBlock ? `<hr class="rule" />` : ""}
+  ${packaging || noteBlock ? `<hr class="rule" />` : ""}
   <div class="total-line">Items Ordered: ${lineCount} | Total Units: ${totalQty}</div>
   <hr class="rule-double" />
   <div class="verify-block">
@@ -422,9 +449,8 @@ export function buildKotHtml(payload: KotPrintPayload): string {
     <div class="qr-wrap"><img src="${qrSrc}" alt="Pickup QR" width="${spec.paperMm === 58 ? 108 : 132}" height="${spec.paperMm === 58 ? 108 : 132}" /></div>
     <div class="scan-caption">Scan QR to verify pickup</div>
   </div>`
-        : otp
-          ? ""
-          : `<div class="scan-caption">Pickup QR unavailable</div>`
+        : // A KOT without its QR is never silent — staff must know to reprint.
+          `<div class="scan-caption">Pickup QR unavailable — reprint this KOT</div>`
     }
   </div>
   <hr class="rule" />

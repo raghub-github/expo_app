@@ -60,13 +60,16 @@ function titleForTransaction(
   if (referenceType === "missed_offer_compensation") {
     return "Unlocked offer Credit";
   }
+  const t = dbType.toUpperCase();
+  // Always use a clean customer-facing label for order refund credits.
+  if (t === "REFUND" || referenceType === "order_refund") {
+    return "GatiCash Refunded - Credit Wallet";
+  }
   const desc = description?.trim();
   if (desc) return desc;
-  const t = dbType.toUpperCase();
   if (t === "CREDIT") return "Credit balance added";
   if (t === "TOPUP") return "GatiCash top-up";
   if (t === "DEBIT") return "Order debit";
-  if (t === "REFUND") return "Refund";
   if (t === "BONUS") return "Bonus credited";
   if (t === "CASHBACK") return "Cashback";
   if (t === "REVERSAL") return "Reversal";

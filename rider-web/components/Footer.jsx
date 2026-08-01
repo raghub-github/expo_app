@@ -111,7 +111,7 @@ export default function Footer() {
     { 
       platform: "Instagram", 
       icon: "fab fa-instagram", 
-      href: "https://www.instagram.com/pratap_sons10/",
+      href: "https://www.instagram.com/gatimitra_on_demand/",
       color: "bg-gradient-to-br from-pink-500 to-red-500 hover:shadow-pink-400/50"
     },
     { 

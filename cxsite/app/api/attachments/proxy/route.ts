@@ -22,7 +22,7 @@ export async function GET(request: NextRequest) {
         status: 200,
         headers: {
           'Content-Type': fromR2.contentType,
-          'Cache-Control': 'public, max-age=86400, s-maxage=86400',
+          'Cache-Control': 'public, max-age=31536000, immutable',
         },
       })
     }
@@ -47,7 +47,7 @@ export async function GET(request: NextRequest) {
           status: upstream.status,
           headers: {
             'Content-Type': contentType || 'application/octet-stream',
-            'Cache-Control': 'public, max-age=86400, s-maxage=86400',
+            'Cache-Control': 'public, max-age=31536000, immutable',
           },
         })
       } catch {

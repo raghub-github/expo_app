@@ -42,7 +42,13 @@ import { OrderTimelineModal } from '@/components/orders/OrderTimelineModal';
 import { OrderRiderTrackingModal } from '@/components/orders/OrderRiderTrackingModal';
 import { orderHasAssignedRider } from '@/lib/order-has-assigned-rider';
 import { RiderPhotoModal } from '@/components/orders/RiderPhotoModal';
-import { OrderRidersHistorySidesheet } from '@/components/orders/OrderRidersHistorySidesheet';
+import { OrderRidersHistorySidesheet, type RiderLogEntry } from '@/components/orders/OrderRidersHistorySidesheet';
+import {
+  fetchRidersLogCached,
+  getCachedRidersLog,
+  pastRidersFromLog,
+  prefetchRidersLog,
+} from '@/lib/ridersLogCache';
 import { resolveOrderOtps } from '@/lib/orderOtps';
 import { computeOrderItemQuantityCount } from '@/lib/merchantOrderFoodActions';
 import { splitRejectionMessage } from '@/lib/orderRejectionDisplay';
@@ -246,22 +252,7 @@ function OrderHistoryInner() {
   const [riderImageModalUrl, setRiderImageModalUrl] = useState<string | null>(null);
   const [ridersLogModalOrderId, setRidersLogModalOrderId] = useState<number | null>(null);
   const [ridersLogModalOrderLabel, setRidersLogModalOrderLabel] = useState<string | null>(null);
-  const [ridersLogList, setRidersLogList] = useState<
-    Array<{
-      rider_id: number;
-      rider_name: string | null;
-      rider_mobile: string | null;
-      selfie_url: string | null;
-      assignment_status: string;
-      assigned_at: string | null;
-      accepted_at: string | null;
-      rejected_at: string | null;
-      reached_merchant_at: string | null;
-      picked_up_at: string | null;
-      delivered_at: string | null;
-      cancelled_at: string | null;
-    }>
-  >([]);
+  const [ridersLogList, setRidersLogList] = useState<RiderLogEntry[]>([]);
   const [ridersLogLoading, setRidersLogLoading] = useState(false);
 
   useEffect(() => {
@@ -474,7 +465,10 @@ function OrderHistoryInner() {
   }, [selected, selectedOrderPricing, store]);
 
   useEffect(() => {
-    if (selected?.id) prefetchMerchantOrderTimelineBundle(selected.id, storeId);
+    if (selected?.id) {
+      prefetchMerchantOrderTimelineBundle(selected.id, storeId);
+      prefetchRidersLog(selected.id);
+    }
   }, [selected?.id, storeId]);
 
   useEffect(() => {
@@ -488,22 +482,25 @@ function OrderHistoryInner() {
   useEffect(() => {
     if (!ridersLogModalOrderId) {
       setRidersLogList([]);
+      setRidersLogLoading(false);
+      return;
+    }
+    const cached = getCachedRidersLog(ridersLogModalOrderId);
+    if (cached) {
+      setRidersLogList(pastRidersFromLog(cached.riders));
+      setRidersLogLoading(false);
+      void fetchRidersLogCached(ridersLogModalOrderId, { force: true }).then((data) => {
+        setRidersLogList(pastRidersFromLog(data.riders));
+      });
       return;
     }
     let cancelled = false;
     setRidersLogLoading(true);
-    fetch(`/api/food-orders/${ridersLogModalOrderId}/riders-log`)
-      .then((res) => res.json())
-      .then((data) => {
-        if (cancelled) return;
-        setRidersLogList(Array.isArray(data.riders) ? data.riders : []);
-      })
-      .catch(() => {
-        if (!cancelled) setRidersLogList([]);
-      })
-      .finally(() => {
-        if (!cancelled) setRidersLogLoading(false);
-      });
+    void fetchRidersLogCached(ridersLogModalOrderId).then((data) => {
+      if (cancelled) return;
+      setRidersLogList(pastRidersFromLog(data.riders));
+      setRidersLogLoading(false);
+    });
     return () => {
       cancelled = true;
     };
@@ -958,6 +955,9 @@ function OrderHistoryInner() {
                 onPrintBill={handlePrintBill}
                 onPrintKot={handlePrintKot}
                 onViewPastRiders={() => {
+                  prefetchRidersLog(selected.id);
+                  const hit = getCachedRidersLog(selected.id);
+                  if (hit) setRidersLogList(pastRidersFromLog(hit.riders));
                   setRidersLogModalOrderId(selected.id);
                   setRidersLogModalOrderLabel(
                     selected.formatted_order_id || `#${selected.order_id}`

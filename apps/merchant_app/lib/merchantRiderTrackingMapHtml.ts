@@ -7,7 +7,9 @@ function escapeJson(value: unknown): string {
 const MARKER_CSS = `
 .gm-location-marker{display:flex;flex-direction:column;align-items:center;pointer-events:auto;filter:drop-shadow(0 4px 10px rgba(15,23,42,0.22))}
 .gm-location-marker--store{z-index:3}
+.gm-location-marker--drop{z-index:4}
 .gm-location-marker--rider{z-index:5}
+.gm-location-marker--drop .gm-teardrop-pin__shape{fill:#2563eb}
 .gm-location-marker__chip{display:none;flex-direction:column;align-items:stretch;gap:2px;max-width:168px;margin-bottom:6px;padding:6px 8px;padding-top:4px;border-radius:10px;border:1px solid rgba(255,255,255,0.9);background:rgba(255,255,255,0.97);text-align:center;box-shadow:0 2px 8px rgba(15,23,42,0.12);position:relative;pointer-events:auto}
 .gm-location-marker--label-open .gm-location-marker__chip{display:flex}
 .gm-location-marker__chip-header{display:flex;align-items:center;justify-content:center;gap:6px;width:100%}
@@ -36,6 +38,9 @@ export function buildMerchantRiderTrackingMapHtml(
   const dataJson = escapeJson({
     store,
     storeName: payload.store_name,
+    pickup: payload.pickup,
+    drop: payload.drop,
+    variant: payload.rider_display_variant,
     rider,
     trail: payload.trail ?? [],
   });
@@ -49,7 +54,7 @@ export function buildMerchantRiderTrackingMapHtml(
   <link href="https://api.mapbox.com/mapbox-gl-js/v3.8.0/mapbox-gl.css" rel="stylesheet" />
   <script src="https://api.mapbox.com/mapbox-gl-js/v3.8.0/mapbox-gl.js"><\/script>
   <style>
-    html, body, #map { margin:0; padding:0; width:100%; height:100%; background:#f1f5f9; }
+    html, body, #map { margin:0; padding:0; width:100%; height:100%; background:#e8eef5; }
     ${MARKER_CSS}
   </style>
 </head>
@@ -62,21 +67,27 @@ export function buildMerchantRiderTrackingMapHtml(
     var routeCoords = null;
     var routeInflight = false;
     var lastRouteFrom = null;
+    var lastRouteToKey = null;
     var ROUTE_REFRESH_METERS = 45;
     var OFF_ROUTE_REROUTE_M = 45;
     var CONNECTOR_MIN_METERS = 6;
     var SAME_POINT_METERS = 18;
+    var markersReady = false;
 
     var map = new mapboxgl.Map({
       container: 'map',
       style: 'mapbox://styles/mapbox/streets-v12',
       center: [${center.longitude}, ${center.latitude}],
       zoom: ${zoom},
-      attributionControl: false
+      attributionControl: false,
+      failIfMajorPerformanceCaveat: false,
+      preserveDrawingBuffer: true
     });
+    window.map = map;
     map.addControl(new mapboxgl.NavigationControl({ showCompass: false }), 'top-right');
 
     var storeMarker = null;
+    var dropMarker = null;
     var riderMarker = null;
     var storeLabelOpen = false;
     var riderAnimFrame = null;
@@ -85,6 +96,9 @@ export function buildMerchantRiderTrackingMapHtml(
 
     var TEARDROP_PIN_SVG = '<svg class="gm-teardrop-pin__shape" viewBox="0 0 32 42" aria-hidden="true"><path d="M16 0C8.82 0 3 5.58 3 12.46c0 8.12 11.11 20.9 12.28 22.22a1.2 1.2 0 0 0 1.44 0C17.89 33.36 29 20.58 29 12.46 29 5.58 23.18 0 16 0z"/></svg>';
     var STORE_BUILDING_SVG = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M9 22V12h6v10"/></svg>';
+    function riderIconSrc() {
+      return (MAPBIKE_SRC && String(MAPBIKE_SRC).trim()) ? MAPBIKE_SRC : '';
+    }
 
     function haversineM(a, b) {
       var R = 6371000;
@@ -101,13 +115,34 @@ export function buildMerchantRiderTrackingMapHtml(
       return haversineM(a, b) < SAME_POINT_METERS;
     }
 
+    function pinLngLat(pin) {
+      if (!pin || pin.latitude == null || pin.longitude == null) return null;
+      var lat = Number(pin.latitude);
+      var lng = Number(pin.longitude);
+      if (!isFinite(lat) || !isFinite(lng)) return null;
+      return [lng, lat];
+    }
+
+    /** Rider → store while approaching; rider → customer after pickup. */
+    function routeDestination() {
+      var variant = mapData.variant || 'on_the_way';
+      if (variant === 'picked_up' || variant === 'delivered' || variant === 'rto') {
+        return pinLngLat(mapData.drop) || pinLngLat(mapData.store) || pinLngLat(mapData.pickup);
+      }
+      return pinLngLat(mapData.store) || pinLngLat(mapData.pickup) || pinLngLat(mapData.drop);
+    }
+
     function fitBounds() {
       var coords = [];
       if (routeCoords && routeCoords.length >= 2) {
         routeCoords.forEach(function(c) { coords.push(c); });
       } else {
-        if (mapData.store) coords.push([mapData.store.longitude, mapData.store.latitude]);
-        if (mapData.rider) coords.push([mapData.rider.longitude, mapData.rider.latitude]);
+        var storeLL = pinLngLat(mapData.store) || pinLngLat(mapData.pickup);
+        var dropLL = pinLngLat(mapData.drop);
+        var riderLL = pinLngLat(mapData.rider);
+        if (storeLL) coords.push(storeLL);
+        if (dropLL) coords.push(dropLL);
+        if (riderLL) coords.push(riderLL);
       }
       if (coords.length === 0) return;
       if (coords.length === 1) {
@@ -116,6 +151,13 @@ export function buildMerchantRiderTrackingMapHtml(
       }
       var bounds = coords.reduce(function(b, c) { return b.extend(c); }, new mapboxgl.LngLatBounds(coords[0], coords[0]));
       map.fitBounds(bounds, { padding: 56, maxZoom: 16, duration: 700 });
+    }
+
+    function scheduleResize() {
+      try { map.resize(); } catch (e) {}
+      setTimeout(function() { try { map.resize(); } catch (e2) {} }, 80);
+      setTimeout(function() { try { map.resize(); fitBounds(); } catch (e3) {} }, 280);
+      setTimeout(function() { try { map.resize(); } catch (e4) {} }, 600);
     }
 
     function ensureRouteLayers() {
@@ -176,21 +218,21 @@ export function buildMerchantRiderTrackingMapHtml(
       src.setData({ type: 'Feature', geometry: { type: 'LineString', coordinates: coords } });
     }
 
-    function applyConnectorLines(routeCoords, riderLngLat, storeLngLat) {
+    function applyConnectorLines(routeCoordsArg, riderLngLat, destLngLat) {
       var src = map.getSource('route-connectors');
       if (!src) return;
-      if (!routeCoords || routeCoords.length < 2) {
+      if (!routeCoordsArg || routeCoordsArg.length < 2) {
         src.setData({ type: 'FeatureCollection', features: [] });
         return;
       }
-      var routeStart = routeCoords[0];
-      var routeEnd = routeCoords[routeCoords.length - 1];
+      var routeStart = routeCoordsArg[0];
+      var routeEnd = routeCoordsArg[routeCoordsArg.length - 1];
       var segments = [];
       function pushSegment(from, to) {
         if (haversineM(from, to) < CONNECTOR_MIN_METERS) return;
         segments.push({ from: from, to: to });
       }
-      if (storeLngLat) pushSegment(routeEnd, storeLngLat);
+      if (destLngLat) pushSegment(routeEnd, destLngLat);
       if (riderLngLat) pushSegment(riderLngLat, routeStart);
       src.setData({
         type: 'FeatureCollection',
@@ -258,11 +300,30 @@ export function buildMerchantRiderTrackingMapHtml(
       return root;
     }
 
+    function createDropMarkerElement() {
+      var root = document.createElement('div');
+      root.className = 'gm-location-marker gm-location-marker--drop';
+      var pin = document.createElement('div');
+      pin.className = 'gm-location-marker__pin gm-location-marker__pin--teardrop';
+      var wrap = document.createElement('div');
+      wrap.className = 'gm-teardrop-pin';
+      wrap.innerHTML = TEARDROP_PIN_SVG;
+      var icon = document.createElement('div');
+      icon.className = 'gm-teardrop-pin__icon';
+      icon.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>';
+      wrap.appendChild(icon);
+      pin.appendChild(wrap);
+      root.appendChild(pin);
+      return root;
+    }
+
     function createRiderMarkerElement(headingDeg) {
       var root = document.createElement('div');
       root.className = 'gm-location-marker gm-location-marker--rider';
       var img = document.createElement('img');
-      img.src = MAPBIKE_SRC;
+      img.id = 'gm-rider-bike-img';
+      var src = riderIconSrc();
+      if (src) img.src = src;
       img.alt = 'Rider';
       img.className = 'gm-location-marker__bike';
       img.draggable = false;
@@ -352,20 +413,17 @@ export function buildMerchantRiderTrackingMapHtml(
 
     function fetchDrivingRoute(from, to) {
       if (routeInflight || samePoint(from, to)) return;
-      if (routeCoords && routeCoords.length >= 2) {
+      var toKey = to[0].toFixed(5) + ',' + to[1].toFixed(5);
+      if (routeCoords && routeCoords.length >= 2 && lastRouteToKey === toKey) {
         var offM = closestDistToRouteM(routeCoords, from);
         if (offM <= OFF_ROUTE_REROUTE_M) {
-          var riderLngLat = mapData.rider ? [mapData.rider.longitude, mapData.rider.latitude] : null;
-          var storeLngLat = mapData.store ? [mapData.store.longitude, mapData.store.latitude] : null;
-          applyConnectorLines(routeCoords, riderLngLat, storeLngLat);
+          applyConnectorLines(routeCoords, from, to);
           return;
         }
       }
       var moved = lastRouteFrom ? haversineM(lastRouteFrom, from) : Infinity;
-      if (moved < ROUTE_REFRESH_METERS && routeCoords && routeCoords.length >= 2) {
-        var riderLngLatKeep = mapData.rider ? [mapData.rider.longitude, mapData.rider.latitude] : null;
-        var storeLngLatKeep = mapData.store ? [mapData.store.longitude, mapData.store.latitude] : null;
-        applyConnectorLines(routeCoords, riderLngLatKeep, storeLngLatKeep);
+      if (moved < ROUTE_REFRESH_METERS && routeCoords && routeCoords.length >= 2 && lastRouteToKey === toKey) {
+        applyConnectorLines(routeCoords, from, to);
         return;
       }
       routeInflight = true;
@@ -377,44 +435,80 @@ export function buildMerchantRiderTrackingMapHtml(
         if (coords && coords.length >= 2) {
           routeCoords = coords;
           lastRouteFrom = from;
+          lastRouteToKey = toKey;
           applyRouteGeometry(coords);
-          var riderLngLat = mapData.rider ? [mapData.rider.longitude, mapData.rider.latitude] : null;
-          var storeLngLat = mapData.store ? [mapData.store.longitude, mapData.store.latitude] : null;
-          applyConnectorLines(coords, riderLngLat, storeLngLat);
+          applyConnectorLines(coords, from, to);
+          fitBounds();
+        } else {
+          // Fallback straight line so merchant still sees path when Directions fails.
+          routeCoords = [from, to];
+          lastRouteFrom = from;
+          lastRouteToKey = toKey;
+          applyRouteGeometry(routeCoords);
+          applyConnectorLines([], null, null);
           fitBounds();
         }
-      }).catch(function() {}).finally(function() { routeInflight = false; });
+      }).catch(function() {
+        routeCoords = [from, to];
+        lastRouteFrom = from;
+        lastRouteToKey = toKey;
+        applyRouteGeometry(routeCoords);
+        applyConnectorLines([], null, null);
+        fitBounds();
+      }).finally(function() { routeInflight = false; });
     }
 
     function renderMarkers() {
-      if (mapData.store) {
-        var storeLngLat = [mapData.store.longitude, mapData.store.latitude];
+      var storeLL = pinLngLat(mapData.store) || pinLngLat(mapData.pickup);
+      if (storeLL) {
         if (!storeMarker) {
           storeMarker = new mapboxgl.Marker({
             element: createStoreMarkerElement(mapData.storeName),
             anchor: 'bottom'
           })
-            .setLngLat(storeLngLat)
+            .setLngLat(storeLL)
             .addTo(map);
         } else {
-          storeMarker.setLngLat(storeLngLat);
+          storeMarker.setLngLat(storeLL);
         }
       }
 
-      if (mapData.rider) {
-        var riderLngLat = [mapData.rider.longitude, mapData.rider.latitude];
-        var heading = mapData.rider.heading_degrees;
+      var dropLL = pinLngLat(mapData.drop);
+      var showDrop = !!dropLL && (
+        mapData.variant === 'picked_up' ||
+        mapData.variant === 'delivered' ||
+        mapData.variant === 'rto'
+      );
+      if (showDrop && dropLL) {
+        if (!dropMarker) {
+          dropMarker = new mapboxgl.Marker({
+            element: createDropMarkerElement(),
+            anchor: 'bottom'
+          })
+            .setLngLat(dropLL)
+            .addTo(map);
+        } else {
+          dropMarker.setLngLat(dropLL);
+        }
+      } else if (dropMarker) {
+        try { dropMarker.remove(); } catch (e) {}
+        dropMarker = null;
+      }
+
+      var riderLL = pinLngLat(mapData.rider);
+      if (riderLL) {
+        var heading = mapData.rider && mapData.rider.heading_degrees;
         if (!riderMarker) {
           if (riderAnimFrame) { cancelAnimationFrame(riderAnimFrame); riderAnimFrame = null; }
           riderMarker = new mapboxgl.Marker({
             element: createRiderMarkerElement(heading),
             anchor: 'center'
           })
-            .setLngLat(riderLngLat)
+            .setLngLat(riderLL)
             .addTo(map);
           if (heading != null && isFinite(heading)) currentHeading = heading;
         } else {
-          animateRiderTo(riderLngLat[1], riderLngLat[0], heading);
+          animateRiderTo(riderLL[1], riderLL[0], heading);
         }
       } else if (riderMarker) {
         if (riderAnimFrame) { cancelAnimationFrame(riderAnimFrame); riderAnimFrame = null; }
@@ -422,10 +516,9 @@ export function buildMerchantRiderTrackingMapHtml(
         riderMarker = null;
       }
 
-      if (mapData.rider && mapData.store) {
-        var from = [mapData.rider.longitude, mapData.rider.latitude];
-        var to = [mapData.store.longitude, mapData.store.latitude];
-        fetchDrivingRoute(from, to);
+      var dest = routeDestination();
+      if (riderLL && dest) {
+        fetchDrivingRoute(riderLL, dest);
       } else {
         applyRouteGeometry([]);
         applyConnectorLines([], null, null);
@@ -436,17 +529,64 @@ export function buildMerchantRiderTrackingMapHtml(
       }
     }
 
-    map.on('load', function() {
+    function bootMapLayers() {
+      if (markersReady) {
+        scheduleResize();
+        ensureRouteLayers();
+        renderMarkers();
+        return;
+      }
+      markersReady = true;
+      scheduleResize();
+      ensureRouteLayers();
+      renderMarkers();
+      if (window.ReactNativeWebView) {
+        window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'ready' }));
+      }
+    }
+
+    map.on('load', bootMapLayers);
+    map.on('style.load', function() {
+      scheduleResize();
       ensureRouteLayers();
       renderMarkers();
     });
+    map.on('idle', function() {
+      try { map.resize(); } catch (e) {}
+    });
+
+    map.on('error', function(e) {
+      scheduleResize();
+      // Style URL / token failures leave a blank canvas with logo only — retry once with streets.
+      try {
+        var err = e && e.error ? String(e.error.message || e.error) : '';
+        if (/style|Unauthorized|401|403|Not Found/i.test(err) && !window.__gmStyleRetried) {
+          window.__gmStyleRetried = true;
+          map.setStyle('mapbox://styles/mapbox/streets-v12');
+        }
+      } catch (err2) {}
+    });
+
+    window.setRiderBikeIcon = function(nextUri) {
+      if (!nextUri) return;
+      MAPBIKE_SRC = nextUri;
+      var img = document.getElementById('gm-rider-bike-img');
+      if (img) img.src = nextUri;
+    };
 
     window.updateRiderTrackingMap = function(next) {
       mapData = next || mapData;
+      scheduleResize();
       if (map.isStyleLoaded()) {
         ensureRouteLayers();
         renderMarkers();
+      } else {
+        map.once('load', bootMapLayers);
       }
+    };
+
+    window.resizeRiderTrackingMap = function() {
+      scheduleResize();
     };
   </script>
 </body>
@@ -457,8 +597,11 @@ export function buildMapUpdateScript(payload: MerchantRiderTrackingPayload): str
   const dataJson = JSON.stringify({
     store: payload.store,
     storeName: payload.store_name,
+    pickup: payload.pickup,
+    drop: payload.drop,
+    variant: payload.rider_display_variant,
     rider: payload.location,
     trail: payload.trail ?? [],
   }).replace(/</g, "\\u003c");
-  return `window.updateRiderTrackingMap && window.updateRiderTrackingMap(${dataJson}); true;`;
+  return `(function(){try{window.updateRiderTrackingMap&&window.updateRiderTrackingMap(${dataJson});window.resizeRiderTrackingMap&&window.resizeRiderTrackingMap();}catch(e){} true;})();`;
 }

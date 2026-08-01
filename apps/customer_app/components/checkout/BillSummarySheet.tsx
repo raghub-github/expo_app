@@ -27,6 +27,7 @@ import {
   formatDeliverySlabExplainSubtext,
 } from "@/lib/deliverySlabBreakdown";
 import { computeCheckoutToPayAmount } from "@/lib/checkoutToPayAmount";
+import { formatCheckoutSavingsRupees } from "@/lib/checkoutAppliedSavings";
 
 const GM = GatiMitraColors;
 const BILL_DISCOUNT_COLOR = "#2563EB";
@@ -56,8 +57,9 @@ function BillSavingsBanner({
   subscriptionWaived: number;
   planName: string;
 }) {
-  const total = Math.round(totalSaved);
-  const subWaived = Math.round(subscriptionWaived);
+  const total = formatCheckoutSavingsRupees(totalSaved);
+  const subWaivedNum = Math.round(subscriptionWaived * 100) / 100;
+  const subWaived = formatCheckoutSavingsRupees(subscriptionWaived);
 
   return (
     <View style={styles.savingsBannerOuter}>
@@ -65,7 +67,7 @@ function BillSavingsBanner({
       <View style={styles.savingsBanner}>
         <CheckoutText style={styles.savingsText}>
           🥳 You saved ₹{total}
-          {subWaived > 0 ? (
+          {subWaivedNum > 0.005 ? (
             <>
               , including ₹{subWaived} with{" "}
               <CheckoutText style={styles.savingsBrand}>{planName}</CheckoutText>
@@ -410,17 +412,42 @@ export function BillSummarySheet({
     [visibleDiscounts]
   );
 
+  /** Prefer live gratitude UI values so sheet updates before billing refetch settles. */
+  const tipLineAmount = useMemo(() => {
+    if (tipValue > 0.005) return Math.round(tipValue * 100) / 100;
+    const fromBill = serverBill?.tipAmount ?? 0;
+    return fromBill > 0.005 ? Math.round(fromBill * 100) / 100 : 0;
+  }, [tipValue, serverBill?.tipAmount]);
+
+  const donationLineAmount = useMemo(() => {
+    let live = 0;
+    if (donationEnabled) {
+      if (donationPreset != null && donationPreset !== "custom") live = Number(donationPreset);
+      else if (donationPreset === "custom") {
+        const n = parseFloat(String(donationAmount).replace(/[^\d.]/g, ""));
+        live = Number.isFinite(n) ? Math.max(0, n) : 0;
+      }
+    }
+    if (live > 0.005) return Math.round(live * 100) / 100;
+    const fromBill = serverBill?.donationAmount ?? 0;
+    return fromBill > 0.005 ? Math.round(fromBill * 100) / 100 : 0;
+  }, [donationEnabled, donationPreset, donationAmount, serverBill?.donationAmount]);
+
+  /**
+   * Pre-discount food + fees + tip + Feeding India donation.
+   * Tip/donation are subtracted out of `finalAmount` first (server may lag), then live
+   * gratitude amounts are added so Grand Total always matches the selected tip/donation.
+   */
   const grandTotalBeforeDiscounts = useMemo(() => {
     if (!serverBill) return 0;
-    return (
+    const foodAndFeesPreDiscount =
       serverBill.finalAmount -
-      serverBill.tipAmount -
-      serverBill.donationAmount +
+      (serverBill.tipAmount ?? 0) -
+      (serverBill.donationAmount ?? 0) +
       serverBill.discountTotal -
-      // BOGO is folded into the Item Total (item-level price), never a row below Grand Total.
-      bogoDiscountTotal
-    );
-  }, [serverBill, bogoDiscountTotal]);
+      bogoDiscountTotal;
+    return Math.round((foodAndFeesPreDiscount + tipLineAmount + donationLineAmount) * 100) / 100;
+  }, [serverBill, bogoDiscountTotal, tipLineAmount, donationLineAmount]);
 
   const discountRows = useMemo(() => {
     if (!serverBill) return [];
@@ -486,6 +513,7 @@ export function BillSummarySheet({
             missedOfferWalletPendingAmount: pendingWalletCredit,
           })
         : 0;
+  const fullyPaidByGatiCash = toPayDisplay <= 0.005 && walletDeduction > 0.005;
 
   return (
     <>
@@ -603,6 +631,20 @@ export function BillSummarySheet({
                     />
                   ) : null}
 
+                  {tipLineAmount > 0.005 ? (
+                    <BillLineRow
+                      label="Delivery tip"
+                      valueNode={<AnimatedBillValue value={tipLineAmount} />}
+                    />
+                  ) : null}
+
+                  {donationLineAmount > 0.005 ? (
+                    <BillLineRow
+                      label="Feeding India"
+                      valueNode={<AnimatedBillValue value={donationLineAmount} />}
+                    />
+                  ) : null}
+
                   <View style={styles.sectionDivider} />
                   <BillLineRow
                     label="Grand Total"
@@ -673,7 +715,12 @@ export function BillSummarySheet({
                   ) : null}
 
                   <View style={styles.toPayRow}>
-                    <CheckoutText style={styles.toPayLabel}>To pay</CheckoutText>
+                    <View style={styles.toPayLabelCol}>
+                      <CheckoutText style={styles.toPayLabel}>To pay</CheckoutText>
+                      {fullyPaidByGatiCash ? (
+                        <CheckoutText style={styles.toPayGatiCashHint}>100% GatiCash used</CheckoutText>
+                      ) : null}
+                    </View>
                     <AnimatedBillValue value={toPayDisplay} style={styles.toPayValue} />
                   </View>
 
@@ -815,7 +862,14 @@ const styles = StyleSheet.create({
     paddingTop: 8,
     paddingBottom: 4,
   },
+  toPayLabelCol: { flexShrink: 1, paddingRight: 12 },
   toPayLabel: { fontSize: 17, fontWeight: "800", color: "#111827" },
+  toPayGatiCashHint: {
+    marginTop: 2,
+    fontSize: 12,
+    fontWeight: "600",
+    color: GM.splashMint,
+  },
   toPayValue: { fontSize: 20, fontWeight: "800", color: "#111827" },
   savingsBannerOuter: { marginTop: 16, marginHorizontal: -18 },
   scallopRow: {

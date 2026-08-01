@@ -900,6 +900,10 @@ export const customerActiveLocation = pgTable("customer_active_location", {
   latitude: numeric("latitude", { precision: 10, scale: 7 }),
   longitude: numeric("longitude", { precision: 10, scale: 7 }),
   address: text("address"),
+  /** Explicit saved-address selection; null when browsing on live GPS / map pin only. */
+  addressId: bigint("address_id", { mode: "number" }).references(() => customerAddresses.id, {
+    onDelete: "set null",
+  }),
   lockedForOrder: boolean("locked_for_order").default(false),
   orderId: bigint("order_id", { mode: "number" }),
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),

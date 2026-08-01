@@ -329,7 +329,17 @@ export function UserInsightsOrderDetailsSidesheet({
                   </p>
                   <DetailRow label="Restaurant" value={order.restaurant_name} />
                   <DetailRow label="Order type" value={order.order_type} />
-                  {order.eta_seconds != null ? (
+                  {order.first_eta_at || order.promised_delivery_at ? (
+                    <DetailRow
+                      label="First ETA"
+                      value={new Date(
+                        order.first_eta_at || order.promised_delivery_at!
+                      ).toLocaleString(undefined, {
+                        dateStyle: 'medium',
+                        timeStyle: 'short',
+                      })}
+                    />
+                  ) : order.eta_seconds != null ? (
                     <DetailRow
                       label="ETA"
                       value={`${Math.round(order.eta_seconds / 60)} min`}

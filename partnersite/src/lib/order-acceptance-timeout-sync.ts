@@ -192,6 +192,7 @@ async function autoCancelOneFoodOrder(
       orderCorePk: coreId,
       cancelledBy: 'SYSTEM',
       displayReason: AUTO_CANCEL_REASON,
+      reasonCode: AUTO_CANCEL_REASON,
       cancelledByType: 'system',
       cancelledByLabel: AUTO_CANCEL_REASON_LABEL,
       actionSource: 'system',
@@ -203,6 +204,7 @@ async function autoCancelOneFoodOrder(
       refundAmount: refund.refundAmount,
       metadata: {
         reason_code: AUTO_CANCEL_REASON,
+        rejected_reason: AUTO_CANCEL_REASON,
         ...(engineResult.raw ? { financial_rule_engine: engineResult.raw } : {}),
       },
     });
@@ -210,7 +212,7 @@ async function autoCancelOneFoodOrder(
     // recordOrderCancellation only stamps intent; this moves the money.
     await triggerOrderAutoRefund({
       orderCorePk: coreId,
-      reason: AUTO_CANCEL_REASON,
+      reason: `${AUTO_CANCEL_REASON_LABEL} — ${AUTO_CANCEL_REASON}`,
       actorRole: 'system',
     });
   } catch {

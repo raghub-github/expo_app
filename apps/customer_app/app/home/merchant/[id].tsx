@@ -46,6 +46,7 @@ import { addressService, type Address } from "@/services/address.service";
 import { resolveCheckoutDeliveryAddress } from "@/lib/deliveryDropResolution";
 import { useCartStore } from "@/store/cartStore";
 import { useLocationStore } from "@/store/locationStore";
+import { useAuthStore } from "@/store/authStore";
 import { useStoreStatusStore } from "@/store/storeStatusStore";
 import { useMerchantScrollStore } from "@/store/merchantScrollStore";
 import { MerchantMenuLoadingSkeleton } from "@/components/merchant/MerchantMenuLoadingSkeleton";
@@ -106,6 +107,7 @@ import {
 import {
   attachListRowKeys,
   buildMenuSections,
+  buildSortedMenuSection,
   lowestAvailableMenuPrice,
 } from "@/features/merchant-detail/lib/menuSections";
 import {
@@ -121,6 +123,7 @@ import {
 import { resolveStoreContinueBarHeight } from "@/components/store/MerchantMenuCartSheet";
 import { MerchantCartDock } from "@/components/store/MerchantCartDock";
 import { merchantCartMatchesRoute } from "@/lib/merchantRouteId";
+import { findCartLinePrefillForMenuItem } from "@/lib/cart-line-identity";
 import { useRenderCount } from "@/hooks/useRenderCount";
 import {
   MENU_FAB_HEIGHT,
@@ -234,7 +237,22 @@ export default function MerchantDetailScreen() {
   const [reportSubmitting, setReportSubmitting] = useState(false);
   const [customizationSheetVisible, setCustomizationSheetVisible] = useState(false);
   const [customizationItem, setCustomizationItem] = useState<MenuItem | null>(null);
+  const [customizationInitialSelection, setCustomizationInitialSelection] = useState<{
+    variantId?: string | null;
+    variantName?: string | null;
+    addons?: Array<{ addonId: string }>;
+    specialInstructions?: string | null;
+    quantity?: number;
+  } | null>(null);
+  const [customizationEditLineId, setCustomizationEditLineId] = useState<string | null>(null);
+  const [customizationSiblingLineIds, setCustomizationSiblingLineIds] = useState<string[]>([]);
   const [detailItem, setDetailItem] = useState<MenuItem | null>(null);
+  const [detailInitialSelection, setDetailInitialSelection] = useState<{
+    specialInstructions?: string | null;
+    quantity?: number;
+  } | null>(null);
+  const [detailEditLineId, setDetailEditLineId] = useState<string | null>(null);
+  const [detailSiblingLineIds, setDetailSiblingLineIds] = useState<string[]>([]);
   const focusItemHandledRef = useRef<string | null>(null);
   const pendingMenuNavRef = useRef<{
     scrollTarget: MenuSheetScrollTarget;
@@ -664,6 +682,20 @@ export default function MerchantDetailScreen() {
   const coords = useLocationStore((s) => s.coords);
   const locationSource = useLocationStore((s) => s.locationSource);
   const locationAddress = useLocationStore((s) => s.address);
+
+  // Deep link / cold open: validate backend active location before quotes.
+  useEffect(() => {
+    if (!useAuthStore.getState().session) return;
+    void (async () => {
+      const { ensureActiveLocationValidated } = await import(
+        "@/lib/ensureActiveLocationValidated"
+      );
+      await ensureActiveLocationValidated(queryClient, {
+        allowRemoteSessionPreserve: true,
+      });
+    })();
+  }, [queryClient, merchantId]);
+
   const { data: activeLocation } = useQuery({
     queryKey: ["active-location"],
     queryFn: () => addressService.getActiveLocation(),
@@ -1005,14 +1037,41 @@ export default function MerchantDetailScreen() {
     (f: StoreMenuFilterState) =>
       filterMenuItems(merchant?.menu ?? [], {
         searchQuery: debouncedMenuSearchQuery,
+        // Applying the sheet's diet pills clears the quick chip, so the preview count has
+        // to be computed against that same post-apply state or Apply(N) lies.
+        quickFilter: f.veg || f.egg || f.nonveg ? "all" : filter,
         highlyReorderedIds,
         advanced: f,
       }).length,
-    [merchant?.menu, debouncedMenuSearchQuery, highlyReorderedIds]
+    [merchant?.menu, debouncedMenuSearchQuery, highlyReorderedIds, filter]
   );
 
+  /**
+   * The quick chips and the filter sheet's pills are two controls for one preference, and
+   * they were ANDed together — chip "Non-veg" + sheet "Veg" could only ever match nothing.
+   * Setting one now clears the other.
+   */
   const handleFilterChange = useCallback((id: StoreFilterId) => {
     setFilter((prev) => (prev === id ? "all" : id));
+    if (id === "veg" || id === "egg" || id === "nonveg") {
+      setAdvancedFilters((prev) =>
+        prev.veg || prev.egg || prev.nonveg
+          ? { ...prev, veg: false, egg: false, nonveg: false }
+          : prev
+      );
+    } else if (id === "highlyreordered") {
+      setAdvancedFilters((prev) =>
+        prev.highlyReordered ? { ...prev, highlyReordered: false } : prev
+      );
+    }
+  }, []);
+
+  const handleApplyAdvancedFilters = useCallback((next: StoreMenuFilterState) => {
+    setAdvancedFilters(next);
+    if (next.veg || next.egg || next.nonveg) setFilter("all");
+    if (next.highlyReordered) {
+      setFilter((prev) => (prev === "highlyreordered" ? "all" : prev));
+    }
   }, []);
 
   const merchantLogoUri = useMemo(() => {
@@ -1048,6 +1107,8 @@ export default function MerchantDetailScreen() {
     [storeQuote]
   );
   const addItem = useCartStore((s) => s.addItem);
+  const replaceLine = useCartStore((s) => s.replaceLine);
+  const removeItem = useCartStore((s) => s.removeItem);
   const updateQuantity = useCartStore((s) => s.updateQuantity);
   /**
    * Do NOT subscribe to cart line count / merchantId here. First-add used to flip
@@ -1069,6 +1130,48 @@ export default function MerchantDetailScreen() {
     [merchantId]
   );
 
+  const resolveCartPrefillForItem = useCallback(
+    (item: MenuItem) => {
+      const { items, merchantId: mid } = useCartStore.getState();
+      if (!merchantCartMatchesRoute(mid, merchantId)) return null;
+      return findCartLinePrefillForMenuItem({
+        cartItems: items,
+        menuItemId: String(item.id),
+        menuItemNumericId: item.menuItemId ?? null,
+      });
+    },
+    [merchantId]
+  );
+
+  const openCustomizationSheet = useCallback(
+    (item: MenuItem) => {
+      const prefill = resolveCartPrefillForItem(item);
+      setCustomizationEditLineId(prefill?.lineId ?? null);
+      setCustomizationSiblingLineIds(prefill?.siblingLineIds ?? []);
+      setCustomizationInitialSelection(
+        prefill
+          ? {
+              variantId: prefill.variantId,
+              variantName: prefill.variantName,
+              addons: prefill.addons,
+              specialInstructions: prefill.specialInstructions,
+              quantity: prefill.quantity,
+            }
+          : null
+      );
+      setCustomizationItem(item);
+      setCustomizationSheetVisible(true);
+      if (merchantId) {
+        void prefetchMenuItemFullConfig(
+          queryClient,
+          merchantId,
+          resolveFullConfigItemId(item)
+        );
+      }
+    },
+    [merchantId, queryClient, resolveCartPrefillForItem]
+  );
+
   const handleAddItem = useCallback(
     (item: MenuItem, quantity = 1, specialInstructions?: string | null) => {
       // Never no-op after optimistic UI — menu rows only render when we have an id.
@@ -1076,13 +1179,7 @@ export default function MerchantDetailScreen() {
       if (!merchantId) return;
       const needsCustomization = !!(item.hasVariants || item.hasAddons || item.hasCustomizations);
       if (needsCustomization) {
-        setCustomizationItem(item);
-        setCustomizationSheetVisible(true);
-        void prefetchMenuItemFullConfig(
-          queryClient,
-          merchantId,
-          resolveFullConfigItemId(item)
-        );
+        openCustomizationSheet(item);
         return;
       }
       // Minimal sync cart write — eligibility / pairing deferred so UI stays snappy.
@@ -1117,7 +1214,14 @@ export default function MerchantDetailScreen() {
         });
       }, 1400);
     },
-    [merchantId, merchant?.name, addItem, cartMerchantBannerUrl, queryClient, itemOfferById]
+    [
+      merchantId,
+      merchant?.name,
+      addItem,
+      cartMerchantBannerUrl,
+      itemOfferById,
+      openCustomizationSheet,
+    ]
   );
 
   const handleAddCombo = useCallback(
@@ -1213,7 +1317,7 @@ export default function MerchantDetailScreen() {
           ? itemOfferById.get(String(customizationItem.menuItemId))
           : null) ??
         null;
-      addItem(merchantId, merchant.name, {
+      const lineInput = {
         menuItemId: params.menuItemId,
         name: params.name,
         price: params.price,
@@ -1227,11 +1331,38 @@ export default function MerchantDetailScreen() {
         imageUrl: params.imageUrl ?? customizationItem?.imageUrl ?? null,
         specialInstructions: params.specialInstructions ?? null,
         isDiscountEligible: computeIsDiscountEligible(customizationItem, offer),
-      }, params.quantity, cartMerchantBannerUrl);
+      };
+      const qty = Math.max(1, params.quantity);
+      const editLineId = customizationEditLineId;
+      const siblings = customizationSiblingLineIds;
+      // Editing an existing cart line: replace note/options on the SAME line and
+      // drop duplicate siblings — never create a second row just because the note changed.
+      if (editLineId) {
+        for (const sid of siblings) {
+          if (sid) removeItem(sid);
+        }
+        replaceLine(editLineId, lineInput, qty);
+      } else {
+        addItem(merchantId, merchant.name, lineInput, qty, cartMerchantBannerUrl);
+      }
       setCustomizationSheetVisible(false);
       setCustomizationItem(null);
+      setCustomizationInitialSelection(null);
+      setCustomizationEditLineId(null);
+      setCustomizationSiblingLineIds([]);
     },
-    [merchantId, merchant, addItem, customizationItem, cartMerchantBannerUrl, itemOfferById]
+    [
+      merchantId,
+      merchant,
+      addItem,
+      replaceLine,
+      removeItem,
+      customizationItem,
+      customizationEditLineId,
+      customizationSiblingLineIds,
+      cartMerchantBannerUrl,
+      itemOfferById,
+    ]
   );
   const getCartLineIdForItem = useCallback(
     (itemId: string, menuItemId?: number): string | null => {
@@ -1309,25 +1440,30 @@ export default function MerchantDetailScreen() {
         item.hasCustomizations
       );
       if (needsCustomization) {
-        // Open customization sheet immediately — no prefetch wait.
-        setCustomizationItem(item);
-        setCustomizationSheetVisible(true);
-        if (merchantId) {
-          void prefetchMenuItemFullConfig(
-            queryClient,
-            merchantId,
-            resolveFullConfigItemId(item)
-          );
-        }
+        openCustomizationSheet(item);
         return;
       }
+      const prefill = resolveCartPrefillForItem(item);
+      setDetailEditLineId(prefill?.lineId ?? null);
+      setDetailSiblingLineIds(prefill?.siblingLineIds ?? []);
+      setDetailInitialSelection(
+        prefill
+          ? {
+              specialInstructions: prefill.specialInstructions,
+              quantity: prefill.quantity,
+            }
+          : null
+      );
       setDetailItem(item);
     },
-    [merchantId, queryClient]
+    [openCustomizationSheet, resolveCartPrefillForItem]
   );
 
   const handleCloseItemDetails = useCallback(() => {
     setDetailItem(null);
+    setDetailInitialSelection(null);
+    setDetailEditLineId(null);
+    setDetailSiblingLineIds([]);
   }, []);
 
   const handleAddFromItemDetails = useCallback(
@@ -1337,14 +1473,40 @@ export default function MerchantDetailScreen() {
         item.hasAddons ||
         item.hasCustomizations
       );
+      const editLineId = detailEditLineId;
+      const siblings = detailSiblingLineIds;
       setDetailItem(null);
+      setDetailInitialSelection(null);
+      setDetailEditLineId(null);
+      setDetailSiblingLineIds([]);
       if (needsCustomization) {
         setTimeout(() => handleAddItem(item), 180);
         return;
       }
+      // Editing cooking note on an existing simple item: update that line in place
+      // (replace note, keep qty unless the user changed the stepper). Do not add a
+      // second cart row when the note text changes.
+      if (editLineId) {
+        for (const sid of siblings) {
+          if (sid) removeItem(sid);
+        }
+        replaceLine(
+          editLineId,
+          {
+            menuItemId: String(item.menuItemId != null ? item.menuItemId : item.id),
+            name: item.name,
+            price: item.price,
+            isVeg: item.isVeg,
+            imageUrl: item.imageUrl ?? null,
+            specialInstructions: specialInstructions ?? null,
+          },
+          Math.max(1, quantity)
+        );
+        return;
+      }
       handleAddItem(item, quantity, specialInstructions);
     },
-    [handleAddItem]
+    [handleAddItem, detailEditLineId, detailSiblingLineIds, replaceLine, removeItem]
   );
 
   const sections = useMemo(() => {
@@ -1356,6 +1518,11 @@ export default function MerchantDetailScreen() {
       advanced: advancedFilters,
       highlyReorderedIds,
     });
+    if (advancedFilters.sortBy !== "default") {
+      const title =
+        advancedFilters.sortBy === "price_asc" ? "Price: low to high" : "Price: high to low";
+      return attachListRowKeys(buildSortedMenuSection(list, title));
+    }
     return attachListRowKeys(buildMenuSections(list));
   }, [merchant?.menu, filter, debouncedMenuSearchQuery, advancedFilters, highlyReorderedIds]);
 
@@ -1422,16 +1589,16 @@ export default function MerchantDetailScreen() {
   const isStoreClosedForStatus =
     merchant != null && effectiveLiveStatus === "CLOSED";
 
-  /** Always reserve Continue-bar height so first-add never flips list padding / remounts rows. */
-  const listContentContainerStyle = useMemo(
-    () => {
-      const continueBarHeight = resolveStoreContinueBarHeight(true, cartDockBottomInset);
-      return {
-        paddingBottom: continueBarHeight + MENU_FAB_HEIGHT + 16,
-      };
-    },
-    [cartDockBottomInset]
-  );
+  /** Clearance for Menu FAB / Continue bar — painted inside gray footer, not as white list pad. */
+  const footerBottomPadding = useMemo(() => {
+    const fabClearance = MENU_FAB_HEIGHT + 12;
+    if (!hasMerchantCartItems) {
+      return fabClearance + cartDockBottomInset;
+    }
+    return resolveStoreContinueBarHeight(true, cartDockBottomInset) + fabClearance;
+  }, [cartDockBottomInset, hasMerchantCartItems]);
+
+  const listContentContainerStyle = useMemo(() => ({ paddingBottom: 0 }), []);
 
   /** FAB sits above the reserved Continue dock slot (dock self-hides when cart empty). */
   const floatingFabBottom = useMemo(
@@ -1980,6 +2147,7 @@ export default function MerchantDetailScreen() {
         onAddCombo={handleAddCombo}
         onCouponPress={openOffersSheet}
         similarMerchants={filteredSimilarMerchants}
+        footerBottomPadding={footerBottomPadding}
         highlightedMenuItemKey={highlightedMenuItemKey}
         highlightedOfferId={selectedMenuOfferNumericId}
         highlyReorderedIds={highlyReorderedIds}
@@ -2005,7 +2173,7 @@ export default function MerchantDetailScreen() {
         visible={filtersSheetVisible}
         onClose={handleCloseFiltersSheet}
         filters={advancedFilters}
-        onApply={setAdvancedFilters}
+        onApply={handleApplyAdvancedFilters}
         offerPriceTiers={offerPriceTiers}
         countForFilters={countForFilters}
         showHighlyReordered={showHighlyReorderedChip}
@@ -2098,6 +2266,7 @@ export default function MerchantDetailScreen() {
       <StoreMenuItemDetailSheet
         visible={detailItem != null}
         item={detailItem}
+        initialSelection={detailInitialSelection}
         isStoreClosed={isStoreClosedForStatus}
         isBookmarked={
           detailItem != null &&
@@ -2124,13 +2293,20 @@ export default function MerchantDetailScreen() {
       {customizationItem && (
         <ItemCustomizationSheet
           visible={customizationSheetVisible}
-          onClose={() => { setCustomizationSheetVisible(false); setCustomizationItem(null); }}
+          onClose={() => {
+            setCustomizationSheetVisible(false);
+            setCustomizationItem(null);
+            setCustomizationInitialSelection(null);
+            setCustomizationEditLineId(null);
+            setCustomizationSiblingLineIds([]);
+          }}
           storeId={merchantId}
           item={customizationItem}
           merchantName={merchant?.name ?? ""}
           isStoreClosed={isStoreClosedForStatus}
           storeMenu={merchant?.menu ?? []}
           onAddCompanionItem={handleAddItem}
+          initialSelection={customizationInitialSelection}
           itemOffer={
             itemOfferById.get(customizationItem.id) ??
             (customizationItem.menuItemId != null

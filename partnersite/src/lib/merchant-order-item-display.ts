@@ -16,8 +16,24 @@ export function orderItemHasBreakdown(item: NormalizedOrderLineItem): boolean {
   return Boolean(
     item.hasCustomizations ||
       (item.customizationLines && item.customizationLines.length > 0) ||
-      (item.customizations && item.customizations.length > 0)
+      (item.customizations && item.customizations.length > 0) ||
+      orderItemCookingNote(item)
   );
+}
+
+/** Per-line cooking request — matches bill / KOT "Cooking: …" copy. */
+export function orderItemCookingNote(item: NormalizedOrderLineItem): string | null {
+  const direct = String(
+    item.specialInstructions ??
+      (item as { special_instructions?: string | null }).special_instructions ??
+      ""
+  ).trim();
+  if (direct) return direct;
+  const fromLines = (item.customizationLines ?? [])
+    .filter((l) => l.kind === "note")
+    .map((l) => String(l.name ?? "").trim())
+    .filter((t) => t && !t.toLowerCase().startsWith("category:"));
+  return fromLines[0] ?? null;
 }
 
 function normLabel(s: string): string {

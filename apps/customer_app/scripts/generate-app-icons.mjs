@@ -5,8 +5,8 @@
  * - adaptive-icon.png: 1024×1024 transparent foreground (logo only, safe-zone sized)
  * - splash-logo.png: logo-only for splash (transparent background)
  *
- * Logo occupies ~56% of canvas (~14% smaller than the prior 65% mark) for
- * better whitespace inside circle/squircle/teardrop masks.
+ * Logo occupies ~40% of canvas for clear safe-zone padding inside
+ * circle / squircle / teardrop launcher masks (avoids edge overlap).
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -17,12 +17,13 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, "..");
 
 const CANVAS = 1024;
-/** ~14% smaller than prior 0.65 scale for balanced launcher whitespace. */
-const LOGO_SCALE = 0.56;
+/** ~28% smaller than prior 0.56 for clear safe-zone padding inside circle/squircle masks. */
+const LOGO_SCALE = 0.40;
 const BRAND_BG = "#000000";
 const LOGO_CANDIDATES = [
+  path.join(projectRoot, "assets/images/app-icon-source.png"),
   path.join(projectRoot, "public/img/fav.png"),
-  path.join(projectRoot, "assets/images/splash-logo.png"),
+  // Prefer adaptive only if no dedicated source (avoid reusing generated splash).
   path.join(projectRoot, "assets/adaptive-icon.png"),
 ];
 const ICON_OUT = path.join(projectRoot, "assets/icon.png");

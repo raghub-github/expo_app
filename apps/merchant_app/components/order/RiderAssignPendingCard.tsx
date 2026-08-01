@@ -12,6 +12,8 @@ export type NearbyDispatchRiderSummary = {
 type Props = {
   summary: NearbyDispatchRiderSummary | null;
   statusSubtitle?: string | null;
+  /** Inside a bordered card — skip the top hairline divider. */
+  embedded?: boolean;
 };
 
 export function formatPendingRiderHeadline(nearbyCount: number, message?: string): string {
@@ -21,24 +23,30 @@ export function formatPendingRiderHeadline(nearbyCount: number, message?: string
   return `${nearbyCount} riders nearby, assigning one soon`;
 }
 
-export function RiderAssignPendingCard({ summary, statusSubtitle }: Props) {
+export function RiderAssignPendingCard({
+  summary,
+  statusSubtitle,
+  embedded = false,
+}: Props) {
   const nearbyCount = summary?.nearbyCount ?? 0;
   const headline = formatPendingRiderHeadline(nearbyCount, summary?.assignSoonMessage);
 
   return (
-    <View style={styles.row}>
-      <View style={styles.iconWrap}>
-        <Ionicons name="bicycle" size={18} color="#888888" />
-      </View>
-      <View style={styles.body}>
-        <Text style={styles.headline} numberOfLines={2}>
-          {headline}
-        </Text>
-        {statusSubtitle ? (
-          <Text style={styles.subtitle} numberOfLines={2}>
-            {statusSubtitle}
+    <View style={[styles.row, embedded ? styles.rowEmbedded : null]}>
+      <View style={styles.cluster}>
+        <View style={styles.iconWrap}>
+          <Ionicons name="bicycle" size={18} color="#888888" />
+        </View>
+        <View style={styles.body}>
+          <Text style={styles.headline} numberOfLines={2}>
+            {headline}
           </Text>
-        ) : null}
+          {statusSubtitle ? (
+            <Text style={styles.subtitle} numberOfLines={2}>
+              {statusSubtitle}
+            </Text>
+          ) : null}
+        </View>
       </View>
     </View>
   );
@@ -46,13 +54,22 @@ export function RiderAssignPendingCard({ summary, statusSubtitle }: Props) {
 
 const styles = StyleSheet.create({
   row: {
-    flexDirection: "row",
-    alignItems: "flex-start",
-    gap: 10,
     paddingHorizontal: 14,
-    paddingVertical: 10,
+    paddingVertical: 12,
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: GatiMitraMerchant.border,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  rowEmbedded: {
+    borderTopWidth: 0,
+  },
+  cluster: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 10,
+    maxWidth: "100%",
   },
   iconWrap: {
     width: 32,
@@ -61,23 +78,26 @@ const styles = StyleSheet.create({
     backgroundColor: "#E8E8E8",
     alignItems: "center",
     justifyContent: "center",
-    marginTop: 1,
+    flexShrink: 0,
   },
   body: {
-    flex: 1,
+    flexShrink: 1,
     minWidth: 0,
     gap: 2,
+    alignItems: "center",
   },
   headline: {
     fontSize: 13,
     fontWeight: "700",
     color: GatiMitraMerchant.textPrimary,
     lineHeight: 18,
+    textAlign: "center",
   },
   subtitle: {
     fontSize: 12,
     fontWeight: "500",
     color: GatiMitraMerchant.textSecondary,
     lineHeight: 16,
+    textAlign: "center",
   },
 });

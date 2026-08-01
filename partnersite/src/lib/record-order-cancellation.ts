@@ -56,15 +56,18 @@ export async function recordOrderCancellation(
 ): Promise<number | null> {
   const { data: foodLink } = await db
     .from('orders_food')
-    .select('cancellation_reason_id')
+    .select('cancellation_reason_id, accepted_at, order_status')
     .eq('order_id', input.orderCorePk)
     .maybeSingle();
-  const linked = Number(foodLink?.cancellation_reason_id);
-  if (Number.isFinite(linked) && linked > 0) {
-    await syncMerchantCancellationLedger(input);
-    return linked;
-  }
 
+  const refund =
+    input.refundStatus != null
+      ? { refundStatus: input.refundStatus, refundAmount: input.refundAmount ?? null }
+      : resolveOrderCancellationRefund({
+          engineResult: (input.metadata?.financial_rule_engine as Record<string, unknown>) ?? undefined,
+        });
+
+  const linked = Number(foodLink?.cancellation_reason_id);
   const { data: latest } = await db
     .from('order_cancellation_reasons')
     .select('id')
@@ -73,23 +76,58 @@ export async function recordOrderCancellation(
     .limit(1)
     .maybeSingle();
   const latestId = Number(latest?.id);
-  if (Number.isFinite(latestId) && latestId > 0) {
-    await db
-      .from('orders_core')
-      .update({ cancellation_reason_id: latestId })
-      .eq('id', input.orderCorePk);
-    await db
-      .from('orders_food')
-      .update({ cancellation_reason_id: latestId })
-      .eq('order_id', input.orderCorePk);
-    await syncMerchantCancellationLedger(input);
-    return latestId;
-  }
+  const existingReasonId =
+    Number.isFinite(linked) && linked > 0
+      ? linked
+      : Number.isFinite(latestId) && latestId > 0
+        ? latestId
+        : null;
 
   const reasonCode =
     (input.reasonCode ?? '').trim() ||
     slugReasonCode(input.displayReason || input.reasonText || 'CANCELLED');
   const displayReason = (input.displayReason ?? input.reasonText ?? '').trim();
+
+  if (existingReasonId != null) {
+    await db
+      .from('order_cancellation_reasons')
+      .update({
+        reason_code: reasonCode,
+        action_source: input.actionSource ?? undefined,
+        cancel_mode: input.cancelMode ?? undefined,
+        cancelled_by_type: input.cancelledByType,
+        cancelled_by_label: input.cancelledByLabel,
+        display_reason: input.displayReason,
+        refund_status: refund.refundStatus,
+        refund_amount: refund.refundAmount,
+      })
+      .eq('id', existingReasonId);
+    const details = input.cancellationDetails ?? {
+      version: 1,
+      source: input.cancelledByType,
+      cancelled_by_label: input.cancelledByLabel,
+      rejected_reason: input.displayReason,
+      action_source: input.actionSource,
+      cancel_mode: input.cancelMode,
+    };
+    await db
+      .from('orders_core')
+      .update({ cancellation_reason_id: existingReasonId, cancellation_details: details })
+      .eq('id', input.orderCorePk);
+    await db
+      .from('orders_food')
+      .update({
+        cancellation_reason_id: existingReasonId,
+        cancelled_by_type: input.cancelledByType,
+        cancellation_details: details,
+        rejected_reason: displayReason || null,
+        cancelled_by_label: input.cancelledByLabel,
+      })
+      .eq('order_id', input.orderCorePk);
+    await syncMerchantCancellationLedger(input);
+    return existingReasonId;
+  }
+
   const meta = {
     ...(input.metadata ?? {}),
     source: input.cancelledByType,
@@ -106,13 +144,6 @@ export async function recordOrderCancellation(
     action_source: input.actionSource ?? null,
     cancel_mode: input.cancelMode ?? null,
   };
-
-  const refund =
-    input.refundStatus != null
-      ? { refundStatus: input.refundStatus, refundAmount: input.refundAmount ?? null }
-      : resolveOrderCancellationRefund({
-          engineResult: (input.metadata?.financial_rule_engine as Record<string, unknown>) ?? undefined,
-        });
 
   const row: Record<string, unknown> = {
     order_id: input.orderCorePk,

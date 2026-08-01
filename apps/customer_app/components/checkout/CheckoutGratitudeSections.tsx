@@ -73,7 +73,10 @@ export function CheckoutGratitudeSections({
     donationEnabled && donationPreset != null && donationPreset !== "custom"
       ? donationPreset
       : donationEnabled && donationPreset === "custom"
-        ? parseFloat(donationAmount) || 0
+        ? (() => {
+            const n = parseFloat(String(donationAmount).replace(/[^\d.]/g, ""));
+            return Number.isFinite(n) ? Math.max(0, n) : 0;
+          })()
         : 0;
 
   const scopeLabel = formatDonationScopeLabel(donationScope);

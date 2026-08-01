@@ -10,6 +10,7 @@ import {
   formatKotRestaurantAddress,
   getUtensilsCustomerLabel,
   normalizeThermalPrinterWidthMm,
+  resolveKotPrintSpec,
   type KotLineItem,
   type KotPrintPayload,
   type ThermalPrinterWidthMm,
@@ -182,13 +183,40 @@ function auditKotPrint(args: {
   });
 }
 
-/** Refresh order from API when KOT number or pickup QR token is missing. */
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * The backend mints the pickup token and KOT number on read, so one retry is
+ * enough to cover a first call that raced that write or dropped on the network.
+ * Every KOT must carry both.
+ */
+async function fetchFoodOrderForPrint(
+  storeId: number,
+  foodId: number,
+  token: string
+): Promise<ApiFoodOrder | null> {
+  let last: ApiFoodOrder | null = null;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const fresh = await fetchFoodOrder(storeId, foodId, token);
+      last = fresh ?? last;
+      if (fresh?.pickup_token?.trim() && fresh?.kot_number?.trim()) return fresh;
+    } catch {
+      /* retried below */
+    }
+    if (attempt === 0) await delay(400);
+  }
+  return last;
+}
+
+/** Refresh order from API so KOT number + pickup QR always match Partner Site. */
 export async function ensureOrderKotPrintFields(
   order: OrderRecord,
   ctx?: KotPrintContext | null
 ): Promise<OrderRecord> {
-  if (order.kotNumber?.trim() && order.pickupToken?.trim()) return order;
-  const storeId = Number(ctx?.storeId);
+  const storeId = Number(ctx?.storeId ?? order.merchantStoreId);
   const token = ctx?.authToken?.trim();
   const foodId = Number.parseInt(String(order.id), 10);
   if (!token || !Number.isFinite(storeId) || storeId < 1 || !Number.isFinite(foodId) || foodId < 1) {
@@ -196,8 +224,21 @@ export async function ensureOrderKotPrintFields(
   }
   if (String(order.id).startsWith("core-")) return order;
   try {
-    const fresh = await fetchFoodOrder(storeId, foodId, token);
-    return mapApiOrder(fresh);
+    const fresh = await fetchFoodOrderForPrint(storeId, foodId, token);
+    if (!fresh) return order;
+    const mapped = mapApiOrder(fresh, {
+      storeId,
+      storeName: order.merchantStoreName ?? ctx?.storeName ?? null,
+      storeLocality: order.merchantStoreLocality ?? null,
+    });
+    return {
+      ...order,
+      ...mapped,
+      // Prefer freshly minted values; keep any prior token if refresh omits them.
+      kotNumber: mapped.kotNumber?.trim() || order.kotNumber?.trim() || null,
+      pickupToken: mapped.pickupToken?.trim() || order.pickupToken?.trim() || null,
+      pickupOtp: mapped.pickupOtp?.trim() || order.pickupOtp?.trim() || undefined,
+    };
   } catch {
     return order;
   }
@@ -207,7 +248,6 @@ export async function ensureApiOrderKotPrintFields(
   order: ApiFoodOrder,
   ctx?: KotPrintContext | null
 ): Promise<ApiFoodOrder> {
-  if (order.kot_number?.trim() && order.pickup_token?.trim()) return order;
   const storeId = Number(ctx?.storeId);
   const token = ctx?.authToken?.trim();
   const foodId = Number(order.orders_food_id);
@@ -215,7 +255,15 @@ export async function ensureApiOrderKotPrintFields(
     return order;
   }
   try {
-    return await fetchFoodOrder(storeId, foodId, token);
+    const fresh = await fetchFoodOrderForPrint(storeId, foodId, token);
+    if (!fresh) return order;
+    return {
+      ...order,
+      ...fresh,
+      kot_number: fresh.kot_number?.trim() || order.kot_number?.trim() || null,
+      pickup_token: fresh.pickup_token?.trim() || order.pickup_token?.trim() || null,
+      pickup_otp: fresh.pickup_otp?.trim() || order.pickup_otp?.trim() || null,
+    };
   } catch {
     return order;
   }
@@ -235,7 +283,9 @@ export async function printKot(
     orderCoreId: ready.orders_core_id,
     kotNumber: payload.kotNumber,
   });
-  await printHtml(buildSharedKotHtml(payload));
+  await printHtml(buildSharedKotHtml(payload), {
+    pageWidthMm: resolveKotPrintSpec(payload.printerWidthMm).paperMm,
+  });
 }
 
 export async function printKotFromRecord(
@@ -251,5 +301,7 @@ export async function printKotFromRecord(
     orderCoreId: ready.ordersCoreId,
     kotNumber: payload.kotNumber,
   });
-  await printHtml(buildSharedKotHtml(payload));
+  await printHtml(buildSharedKotHtml(payload), {
+    pageWidthMm: resolveKotPrintSpec(payload.printerWidthMm).paperMm,
+  });
 }

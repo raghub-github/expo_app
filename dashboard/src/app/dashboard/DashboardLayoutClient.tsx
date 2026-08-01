@@ -55,6 +55,7 @@ function pathHasRightSidebar(pathname: string): boolean {
   const clean = cleanDashboardHref(pathname);
   if (clean.startsWith("/dashboard/customers")) return false;
   if (isOrdersSectionPath(clean)) return false;
+  if (clean.startsWith("/dashboard/super-admin/notifications")) return true;
   if (clean === "/dashboard/riders" || clean.startsWith("/dashboard/riders/")) return true;
   const dashboard = getCurrentDashboard(clean);
   const isInSpecificDashboard = Boolean(dashboard && clean !== "/dashboard");
@@ -481,6 +482,8 @@ function DashboardLayoutContent({
   }, [cleanPathname]);
   const isOrdersSectionPage =
     cleanPathname.startsWith("/dashboard/orders") || isOrderDetailPage;
+  const isNotificationsModule =
+    cleanPathname.startsWith("/dashboard/super-admin/notifications");
   /** Tickets list / queue / detail: fill space below header without main scroll (inner panes scroll). */
   const isTicketsFullBleedLayout =
     cleanPathname.startsWith("/dashboard/tickets") && !isTicketsHubGreyPage;
@@ -686,6 +689,12 @@ function DashboardLayoutContent({
     isStoreVerificationDetail &&
     parseStoreVerificationStepParam(searchParams.get("step")) != null;
 
+  /** Store overview / menu / settings / etc. — flush shell (no main white padding). */
+  const isMerchantStorePath = useMemo(
+    () => /^\/dashboard\/merchants\/stores\/\d+(\/|$)/.test(cleanPathname),
+    [cleanPathname]
+  );
+
   /** Ticket detail mounts the properties rail via RightSidebar; list/hub pages use filters/sub-nav instead.
    * Keep the rail mounted when merely collapsed so the expand chevron stays available. */
   const shouldRenderRightSidebar =
@@ -760,10 +769,14 @@ function DashboardLayoutContent({
                         ? "overflow-hidden bg-white px-2 pb-3 pt-2 sm:px-3 sm:pb-4 sm:pt-2.5"
                         : isStoreOrdersPath
                           ? "overflow-hidden bg-white p-0 sm:p-0"
+                        : isMerchantStorePath
+                          ? "overflow-hidden bg-[#f8fafc] p-0 sm:p-0"
                         : isTicketsHubGreyPage
                           ? "overflow-y-auto bg-[#f4f5f7] p-4 sm:p-6"
                           : isOrdersSectionPage
                             ? "overflow-y-auto bg-[#f3f5f7] p-3 sm:p-4"
+                          : isNotificationsModule
+                            ? "overflow-hidden bg-slate-50 p-0"
                           : isCustomerDetailProfilePage
                             ? "overflow-y-auto bg-white px-3 pb-3 pt-0 sm:px-4 sm:pb-4 sm:pt-0"
                           : isStoreVerificationStepView

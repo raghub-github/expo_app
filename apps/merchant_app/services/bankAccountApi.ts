@@ -113,6 +113,41 @@ export async function setAccountDisabled(
   }
 }
 
+export type VerifyBankAccountResult = {
+  success: boolean;
+  verified: boolean;
+  status: string;
+  message?: string;
+  error?: string;
+  name_at_bank?: string | null;
+};
+
+/** Cashfree pennyless bank verification for an existing account. */
+export async function verifyBankAccount(
+  storeId: number,
+  accountId: number,
+  token: string
+): Promise<VerifyBankAccountResult> {
+  const res = await authFetch(
+    `${getBase()}/v1/merchant-partner/stores/${storeId}/bank-accounts/${accountId}/verify`,
+    token,
+    { method: "POST" }
+  );
+  const data = (await res.json().catch(() => ({}))) as VerifyBankAccountResult & { message?: string };
+  if (!res.ok) {
+    throw new Error(
+      data.error || data.message || (data as { error?: string }).error || "Verification failed"
+    );
+  }
+  return {
+    success: data.success !== false,
+    verified: !!data.verified,
+    status: data.status || (data.verified ? "verified" : "processing"),
+    message: data.message,
+    name_at_bank: data.name_at_bank ?? null,
+  };
+}
+
 /** @deprecated Use listBankAccounts instead. Kept for backward compatibility. */
 export async function getBankAccount(
   storeId: number,

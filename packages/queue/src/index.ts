@@ -12,4 +12,4 @@
  */
 export { enqueue, scheduleRepeating, closeAllQueues, QUEUE_NAMES } from "./producer.js";
 export { runWorker, gracefulShutdownAllWorkers, attachLifecycleHandlers } from "./worker.js";
-export type { QueueName, JobShape, PushSendJob, PaymentReconcileJob, PaymentWebhookRetryJob, EtaRecalcJob } from "./topics.js";
+export type { QueueName, JobShape, PushSendJob, PaymentReconcileJob, PaymentWebhookRetryJob, EtaRecalcJob, ReferralRewardJob, ReferralReconcileJob } from "./topics.js";

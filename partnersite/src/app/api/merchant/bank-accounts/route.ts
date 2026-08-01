@@ -97,8 +97,14 @@ export async function POST(req: NextRequest) {
     }
 
     const payoutMethod = String(body.payout_method || 'bank').toLowerCase().trim();
-    if (payoutMethod !== 'bank' && payoutMethod !== 'upi') {
-      return NextResponse.json({ error: 'payout_method must be bank or upi' }, { status: 400 });
+    if (payoutMethod === 'upi') {
+      return NextResponse.json(
+        { error: 'Adding UPI is temporarily disabled. Please add a bank account.' },
+        { status: 400 },
+      );
+    }
+    if (payoutMethod !== 'bank') {
+      return NextResponse.json({ error: 'payout_method must be bank' }, { status: 400 });
     }
 
     const rawHolder = (body.account_holder_name ?? '').trim();
@@ -106,38 +112,23 @@ export async function POST(req: NextRequest) {
     const ifscCode = body.ifsc_code ? String(body.ifsc_code).trim() : '';
     const bankName = body.bank_name ? String(body.bank_name).trim() : '';
 
-    // Validation rules mirror AM dashboard:
-    // - For bank: holder + account + IFSC + bank name are mandatory.
-    // - For UPI: only upi_id is mandatory; holder/account are optional.
-    if (payoutMethod === 'bank') {
-      if (!rawHolder || !rawAccount) {
-        return NextResponse.json(
-          { error: 'account_holder_name and account_number are required for bank' },
-          { status: 400 },
-        );
-      }
-      if (!ifscCode || !bankName) {
-        return NextResponse.json(
-          { error: 'ifsc_code and bank_name required for bank' },
-          { status: 400 },
-        );
-      }
+    // Bank only on partnersite / merchant self-serve (UPI remains on admin portal).
+    if (!rawHolder || !rawAccount) {
+      return NextResponse.json(
+        { error: 'account_holder_name and account_number are required for bank' },
+        { status: 400 },
+      );
+    }
+    if (!ifscCode || !bankName) {
+      return NextResponse.json(
+        { error: 'ifsc_code and bank_name required for bank' },
+        { status: 400 },
+      );
     }
 
-    const upiId = payoutMethod === 'upi' ? String(body.upi_id ?? '').trim() : '';
-    if (payoutMethod === 'upi' && !upiId) {
-      return NextResponse.json({ error: 'upi_id required for upi' }, { status: 400 });
-    }
-
-    const accountHolderName =
-      payoutMethod === 'bank'
-        ? rawHolder || null
-        : rawHolder || null; // optional for upi
-
-    const accountNumber =
-      payoutMethod === 'bank'
-        ? rawAccount || null
-        : rawAccount || null; // do NOT copy upi_id into account_number
+    const upiId = '';
+    const accountHolderName = rawHolder || null;
+    const accountNumber = rawAccount || null;
 
     const db = getDb();
     const storeInternalId = await resolveStoreInternalId(db, storeId.trim());

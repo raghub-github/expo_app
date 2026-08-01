@@ -282,6 +282,8 @@ export function useOrderRealtime() {
                 lastAcceptedMsRef.current
               );
               void queryClient.invalidateQueries({ queryKey: ["my-orders"] });
+              const { refreshCustomerWallet } = await import("@/lib/refreshCustomerWallet");
+              void refreshCustomerWallet(queryClient);
               return;
             }
             const etaMins = resolveLiveEtaMinutes(eta);

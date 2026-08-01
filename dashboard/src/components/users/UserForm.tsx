@@ -11,6 +11,7 @@ import { SubroleSelector } from "./SubroleSelector";
 import { ReportsToSelector } from "./ReportsToSelector";
 import { hasSubroles } from "@/lib/roles/subrole-mapping";
 import { useToast } from "@/context/ToastContext";
+import { buildDashboardAccessPayload } from "@/lib/permissions/access-level";
 
 interface UserFormProps {
   userId?: number;
@@ -265,10 +266,10 @@ export function UserForm({ userId, mode, onSuccess, onCancel, isSuperAdmin = fal
           "MERCHANT_ADMIN_MERCHANT_ACCESS"
         );
         (payload as any).can_toggle_portal = hasAdminMerchantAccess;
-        (payload as any).dashboardAccess = selectedDashboards.map(dashboardType => ({
-          dashboardType,
-          accessLevel: "FULL_ACCESS", // Default to full access, can be customized later
-        }));
+        (payload as any).dashboardAccess = buildDashboardAccessPayload(
+          selectedDashboards,
+          selectedAccessPoints
+        );
         // Helper function to extract service type from access point group
         const getServiceType = (accessPointGroup: string): string | null => {
           // Service-specific access points end with _FOOD, _PARCEL, or _PERSON_RIDE

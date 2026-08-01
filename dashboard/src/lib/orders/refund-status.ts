@@ -14,25 +14,48 @@
 export interface RefundStatusLike {
   refundStatus?: string | null;
   executionStatus?: string | null;
+  /** When present, hollow NOOP/COMPLETED without money is not treated as settled. */
+  refundAmount?: string | number | null;
+  customerWalletLedgerId?: number | null;
+  razorpayRefundId?: string | null;
 }
 
 export type RefundOutcome = "settled" | "pending" | "failed";
 
 const FAILED_REFUND_STATUSES = new Set(["failed", "cancelled", "rejected"]);
 
+function hasMoneyMovement(r: RefundStatusLike): boolean {
+  const ledger = r.customerWalletLedgerId != null && Number(r.customerWalletLedgerId) > 0;
+  const gateway = Boolean(String(r.razorpayRefundId ?? "").trim());
+  return ledger || gateway;
+}
+
 /**
  * Classify one refund row.
- *  - "settled" → money is committed (COMPLETED / PROCESSING / NOOP)
+ *  - "settled" → money is committed (COMPLETED / PROCESSING with real movement)
  *  - "failed"  → gateway or executor rejected it; no money moved
- *  - "pending" → recorded but not yet executed (INITIATED / unknown)
+ *  - "pending" → recorded but not yet executed (INITIATED / hollow NOOP / unknown)
  */
 export function classifyRefund(r: RefundStatusLike): RefundOutcome {
   const exec = String(r.executionStatus ?? "").trim().toUpperCase();
   const status = String(r.refundStatus ?? "").trim().toLowerCase();
+  const amount = Number(r.refundAmount ?? 0);
 
   if (exec === "FAILED" || FAILED_REFUND_STATUSES.has(status)) return "failed";
+
+  // Hollow COD_NOOP / Completed-without-ledger must not look "refunded" in admin UI.
+  if (
+    (exec === "NOOP" || exec === "COMPLETED") &&
+    amount > 0.005 &&
+    !hasMoneyMovement(r)
+  ) {
+    return "pending";
+  }
+
   if (exec === "COMPLETED" || exec === "PROCESSING" || exec === "NOOP") return "settled";
   if (status === "completed" || status === "processing" || status === "refunded") {
+    // Hollow "completed" with no ledger/gateway must not count as settled.
+    if (amount > 0.005 && !hasMoneyMovement(r)) return "pending";
     return "settled";
   }
   return "pending";

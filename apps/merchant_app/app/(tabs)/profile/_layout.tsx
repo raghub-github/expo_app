@@ -17,8 +17,12 @@ export default function ProfileLayout() {
     useCallback(() => {
       if (!openProfileRootOnNextFocus) return;
       setOpenProfileRootOnNextFocus(false);
+      // replace once — never push, so Profile root cannot stack.
+      if (router.canDismiss?.()) {
+        router.dismissAll();
+      }
       router.replace("/(tabs)/profile");
-    }, [openProfileRootOnNextFocus, setOpenProfileRootOnNextFocus])
+    }, [openProfileRootOnNextFocus, setOpenProfileRootOnNextFocus, router])
   );
 
   return (

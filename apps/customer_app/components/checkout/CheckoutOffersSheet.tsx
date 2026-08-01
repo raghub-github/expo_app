@@ -18,11 +18,13 @@ import type { CheckoutOffersResponse } from "@/services/billing.service";
 import {
   isOfferGatiCashUnlockable,
   isMerchantOfferGatiCashUnlockable,
+  isFairGatiCashUnlock,
   missedOfferKeyForCandidate,
   liveUnlockGapInr,
   formatAddMoreToUnlock,
   parseUnlockGapInr,
 } from "@/lib/checkout-missed-offer-wallet";
+import { formatCheckoutSavingsRupees } from "@/lib/checkoutAppliedSavings";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import { StoreBottomSheetShell } from "@/components/store/StoreBottomSheetShell";
 
@@ -634,7 +636,9 @@ export function CheckoutOffersSheet({
                         Add more to cart or tap GATICASH
                       </CheckoutText>
                       {livePlatformLocked.map((o) => {
-                        const unlockable = isOfferGatiCashUnlockable(o.reason);
+                        const unlockable =
+                          isOfferGatiCashUnlockable(o.reason) &&
+                          isFairGatiCashUnlock(o.liveGap, o.estimatedSavingsInr ?? 0);
                         const offerKey =
                           merchantId != null
                             ? missedOfferKeyForCandidate({ source: "platform", id: o.id }, merchantId)
@@ -648,7 +652,7 @@ export function CheckoutOffersSheet({
                             <OfferRow
                               key={`pf-lock-${o.id}`}
                               title={`${displayPlatformOfferTitle(o.name, o.offerKind)} unlocked`}
-                              subtitle={`Saving ₹${Math.round(unlockedMissedOffer.offerSavingsInr)} on this order · ₹${Math.round(unlockedMissedOffer.walletAddInr)} credited after order`}
+                              subtitle={`Saving ₹${formatCheckoutSavingsRupees(unlockedMissedOffer.offerSavingsInr)} on this order · ₹${formatCheckoutSavingsRupees(unlockedMissedOffer.walletAddInr)} credited after order`}
                               applied
                               onRemove={onRemoveMissedOfferWallet}
                             />
@@ -701,7 +705,12 @@ export function CheckoutOffersSheet({
                                     ...o,
                                     reason: formatAddMoreToUnlock(liveRelockGap),
                                     lockReason: formatAddMoreToUnlock(liveRelockGap),
-                                  }) && onUnlockWithGatiCash
+                                  }) &&
+                                  isFairGatiCashUnlock(
+                                    liveRelockGap,
+                                    o.estimatedSavingsInr ?? 0
+                                  ) &&
+                                  onUnlockWithGatiCash
                                     ? () => onUnlockWithGatiCash("merchant", o.id)
                                     : undefined
                                 }
@@ -781,7 +790,9 @@ export function CheckoutOffersSheet({
                         Add eligible items or tap GATICASH
                       </CheckoutText>
                       {liveMerchantLocked.map((o) => {
-                        const unlockable = isMerchantOfferGatiCashUnlockable(o);
+                        const unlockable =
+                          isMerchantOfferGatiCashUnlockable(o) &&
+                          isFairGatiCashUnlock(o.liveGap, o.estimatedSavingsInr ?? 0);
                         const offerKey =
                           merchantId != null
                             ? missedOfferKeyForCandidate({ source: "merchant", id: o.id }, merchantId)
@@ -795,7 +806,7 @@ export function CheckoutOffersSheet({
                             <OfferRow
                               key={`mo-lock-${o.id}`}
                               title={`${o.title} unlocked`}
-                              subtitle={`Saving ₹${Math.round(unlockedMissedOffer.offerSavingsInr)} on this order · ₹${Math.round(unlockedMissedOffer.walletAddInr)} credited after order`}
+                              subtitle={`Saving ₹${formatCheckoutSavingsRupees(unlockedMissedOffer.offerSavingsInr)} on this order · ₹${formatCheckoutSavingsRupees(unlockedMissedOffer.walletAddInr)} credited after order`}
                               applied
                               onRemove={onRemoveMissedOfferWallet}
                             />

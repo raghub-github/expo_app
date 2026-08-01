@@ -314,8 +314,11 @@ async function fetchBankAccounts(storeId: string): Promise<BankAccount[]> {
 }
 
 export async function fetchStoreOperations(storeId: string): Promise<StoreOperationsData> {
-  const res = await fetch(`/api/store-operations?store_id=${encodeURIComponent(storeId)}`, {
+  // Cache-bust + no-store: countdown→open must not reuse a stale GET from before the slot start.
+  const url = `/api/store-operations?store_id=${encodeURIComponent(storeId)}&_=${Date.now()}`;
+  const res = await fetch(url, {
     credentials: 'include',
+    cache: 'no-store',
   });
   let data: StoreOperationsData & { error?: string };
   try {
@@ -482,10 +485,11 @@ export function useStoreOperations(
     queryKey: merchantKeys.storeOperations(storeId ?? ''),
     queryFn: () => fetchStoreOperations(storeId!),
     enabled,
-    staleTime: 3 * 60 * 1000,
+    // Live open/close must pick up schedule boundaries within seconds, not minutes.
+    staleTime: 15 * 1000,
     gcTime: 20 * 60 * 1000,
     placeholderData: cached ?? keepPreviousData,
-    refetchOnMount: false,
+    refetchOnMount: 'always',
     refetchInterval: options?.refetchInterval ?? false,
   });
 }
