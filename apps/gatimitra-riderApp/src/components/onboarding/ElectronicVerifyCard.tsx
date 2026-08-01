@@ -179,7 +179,7 @@ function buildVerifiedRows(details: Record<string, unknown>): Array<{ label: str
 
   for (const [label, keys] of Object.entries(DETAIL_PRIORITY)) {
     for (const key of keys) {
-      const value = scalarValue(key, enriched[key]);
+      const value = scalarValue(key, (enriched as Record<string, unknown>)[key]);
       if (!value) continue;
       rows.push({ label, value });
       keys.forEach((k) => usedKeys.add(k));

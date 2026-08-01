@@ -85,7 +85,7 @@ async function pingFromBackground(fix: {
       accuracyM: fix.accuracyM,
       speedMps: fix.speedMps,
       headingDeg: fix.headingDeg,
-      provider: "background",
+      provider: "unknown",
     });
   } catch {
     /* kit may be unavailable in isolated task context on some devices */

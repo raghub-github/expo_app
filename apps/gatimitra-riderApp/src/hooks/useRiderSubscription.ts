@@ -121,7 +121,7 @@ export function useRiderSubscriptionPlans() {
 
 export function useRiderSubscriptionStatus() {
   const session = useSessionStore((s) => s.session);
-  const cached = getCachedRiderSubscriptionStatus();
+  const cached = getCachedRiderSubscriptionStatus() as RiderSubscriptionStatus | null;
 
   return useQuery({
     queryKey: ["rider", "subscription", "status"],

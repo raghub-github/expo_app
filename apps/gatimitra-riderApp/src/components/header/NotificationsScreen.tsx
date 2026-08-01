@@ -8,7 +8,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { LinearGradient } from "expo-linear-gradient";
 import { InboxScreen, type InboxItem, type NotificationApiConfig } from "@gatimitra/expo-push-kit";
 import { router } from "expo-router";
-import { getConfig } from "@/src/config/env";
+import { getRiderAppConfig } from "@/src/config/env";
 import { useSessionStore } from "@/src/stores/sessionStore";
 import { colors } from "@/src/theme";
 
@@ -17,7 +17,7 @@ const BG_GRADIENT = ["#E6F7F4", "#F5FBFF", "#FFF5F7"] as const;
 export function NotificationsScreen() {
   const apiConfig = useMemo<NotificationApiConfig>(
     () => ({
-      baseUrl: getConfig().apiBaseUrl,
+      baseUrl: getRiderAppConfig().apiBaseUrl,
       getAuthHeader: async () => {
         const token = useSessionStore.getState().session?.accessToken;
         return token ? `Bearer ${token}` : null;

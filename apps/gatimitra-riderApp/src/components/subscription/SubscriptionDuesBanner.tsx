@@ -233,7 +233,6 @@ export function SubscriptionDuesBanner({ embedded = false }: { embedded?: boolea
             onPress={() => void handlePay()}
             disabled={paying}
             hitSlop={12}
-            delayPressIn={0}
           >
             {paying ? (
               <ActivityIndicator size="small" color="#111827" />
