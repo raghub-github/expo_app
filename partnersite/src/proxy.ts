@@ -16,6 +16,10 @@ import {
   replaceSessionForDevice,
 } from "@/lib/auth/merchant-session-db";
 import { deviceIdCookie } from "@/lib/auth/auth-cookie-names";
+import {
+  isFatalRefreshTokenError,
+  isRefreshTokenAlreadyUsed,
+} from "@/lib/auth/session-errors";
 
 /** Build path + search for redirect param, stripping OAuth code/state so login URL stays clean. */
 function redirectPathWithoutOAuthParams(pathname: string, search: string): string {
@@ -145,24 +149,25 @@ export async function proxy(request: NextRequest) {
       if (sessionError.code === "TIMEOUT" || sessionError.code === "NETWORK_ERROR") {
         return response;
       }
-      if (sessionError.message !== 'Auth session missing!') {
-        console.log('[proxy] Session error:', sessionError);
+      // Concurrent refresh race: another request already rotated the token.
+      // Do not clear cookies — the winning response will have set the new ones.
+      if (isRefreshTokenAlreadyUsed(sessionError)) {
+        console.log("[proxy] Refresh token already used (race) — fail open");
+        return response;
       }
-      const isInvalid =
-        sessionError.code === "refresh_token_not_found" ||
-        sessionError.code === "refresh_token_already_used" ||
-        sessionError.code === "invalid_refresh_token" ||
-        (sessionError.message ?? "").toLowerCase().includes("invalid refresh token") ||
-        (sessionError.message ?? "").toLowerCase().includes("refresh token not found");
+      if (sessionError.message !== "Auth session missing!") {
+        console.log("[proxy] Session error:", sessionError);
+      }
 
-      if (isInvalid) {
-        console.log('[proxy] Invalid refresh token detected, clearing session');
-        try {
-          await supabase.auth.signOut();
-        } catch (signOutError) {
-          console.log('[proxy] Error signing out:', signOutError);
-        }
+      if (isFatalRefreshTokenError(sessionError)) {
+        console.log("[proxy] Fatal refresh token error — clearing this browser cookies only");
+        // Do NOT call supabase.auth.signOut() — it can revoke refresh for other tabs/devices.
         clearSupabaseCookies();
+        expireSession({
+          set: (name, value, options) => {
+            response.cookies.set(name, value, options as Parameters<typeof response.cookies.set>[2]);
+          },
+        });
 
         if (pathname.startsWith("/api/")) {
           return NextResponse.json(
@@ -245,7 +250,10 @@ export async function proxy(request: NextRequest) {
           // Self-heal: if missing (new device / cleared DB row), create it instead of bouncing back to login.
           if (!deviceSessionValid) {
             try {
-              await replaceSessionForDevice(deviceId, validation.merchantParentId);
+              await replaceSessionForDevice(deviceId, validation.merchantParentId, {
+                loginMethod: "self_heal",
+                deviceLabel: "Restored session",
+              });
               deviceSessionValid = true;
             } catch {
               // Transient insert failure (e.g. read-lag on the unique-violation
@@ -277,12 +285,13 @@ export async function proxy(request: NextRequest) {
         });
       }
       if (!deviceSessionValid) {
-        try {
-          await supabase.auth.signOut();
-        } catch {
-          // ignore
-        }
+        // Account blocked / device row revoked — clear this browser only (no global signOut).
         clearSupabaseCookies();
+        expireSession({
+          set: (name, value, options) => {
+            response.cookies.set(name, value, options as Parameters<typeof response.cookies.set>[2]);
+          },
+        });
         if (pathname.startsWith("/api/")) {
           return NextResponse.json(
             { success: false, error: "Session expired or invalid for this device.", code: "DEVICE_SESSION_INVALID" },
@@ -299,44 +308,35 @@ export async function proxy(request: NextRequest) {
       const cookieWrapper = { get: (name: string) => request.cookies.get(name) };
       let metadata = getSessionMetadata(cookieWrapper);
 
+      const cookieSetter = {
+        set: (
+          name: string,
+          value: string,
+          options: { maxAge: number; path: string; httpOnly?: boolean; sameSite?: string; secure?: boolean }
+        ) => {
+          response.cookies.set(name, value, options as Parameters<typeof response.cookies.set>[2]);
+        },
+      };
+
       if (!metadata) {
-        const cookieSetter = {
-          set: (name: string, value: string, options: { maxAge: number; path: string; httpOnly?: boolean; sameSite?: string; secure?: boolean }) => {
-            response.cookies.set(name, value, options as any);
-          },
-        };
+        // Supabase session is valid — restore partner_* cookies instead of bouncing to login.
         metadata = initializeSession(cookieSetter);
-      }
-
-      const validity = checkSessionValidity(metadata);
-
-      if (!validity.isValid) {
-        const cookieSetter = {
-          set: (name: string, value: string, options: Record<string, unknown>) => {
-            response.cookies.set(name, value, options as any);
-          },
-        };
-        expireSession(cookieSetter);
-        await supabase.auth.signOut();
-        clearSupabaseCookies();
-        if (pathname.startsWith("/api/")) {
-          return NextResponse.json(
-            { success: false, error: "Session expired", code: "SESSION_EXPIRED" },
-            { status: 401 }
-          );
+      } else {
+        const validity = checkSessionValidity(metadata);
+        if (!validity.isValid) {
+          // Soft partner_* expiry while Supabase refresh is still valid: re-init, do not logout.
+          metadata = initializeSession(cookieSetter);
         }
-        const redirectUrl = request.nextUrl.clone();
-        redirectUrl.pathname = "/auth/login";
-        redirectUrl.searchParams.set("expired", validity.reason || "unknown");
-        const fullPath = redirectPathWithoutOAuthParams(pathname, request.nextUrl.search || "");
-        redirectUrl.searchParams.set("redirect", fullPath);
-        return NextResponse.redirect(redirectUrl);
       }
 
       const cookieManager = {
         get: (name: string) => request.cookies.get(name),
-        set: (name: string, value: string, options: Record<string, unknown>) => {
-          response.cookies.set(name, value, options as any);
+        set: (
+          name: string,
+          value: string,
+          options: { maxAge: number; path: string; httpOnly?: boolean; sameSite?: string; secure?: boolean }
+        ) => {
+          response.cookies.set(name, value, options as Parameters<typeof response.cookies.set>[2]);
         },
       };
       updateActivity(cookieManager);

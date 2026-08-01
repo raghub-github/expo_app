@@ -2,6 +2,10 @@
 
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import { clearPartnerStoreSelection } from "@/lib/partner-selected-store";
+import {
+  PARTNER_CROSS_TAB_LOGOUT_KEY,
+  partnerLogoutLocal,
+} from "@/lib/auth/partner-logout";
 
 interface MerchantSessionUser {
   id: string;
@@ -42,6 +46,8 @@ export interface MerchantSessionContextValue {
 
 const MerchantSessionContext = createContext<MerchantSessionContextValue | null>(null);
 
+const FATAL_SESSION_CODES = new Set(["SESSION_INVALID", "DEVICE_SESSION_INVALID"]);
+
 export function MerchantSessionProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<MerchantSessionUser | null>(null);
   const [sessionStatus, setSessionStatus] = useState<MerchantSessionStatus | null>(null);
@@ -50,17 +56,30 @@ export function MerchantSessionProvider({ children }: { children: React.ReactNod
 
   const fetchSession = useCallback(async () => {
     try {
-      // Fetch sequentially to avoid two requests using the same Supabase refresh token.
-      // Supabase refresh tokens are single-use; parallel calls can cause "Refresh Token Not Found".
+      // Single bootstrap call — avoids parallel getUser()/refresh-token races.
       const sessionRes = await fetch("/api/merchant-auth/merchant-session", {
         credentials: "include",
       });
       const sessionData = await sessionRes.json().catch(() => ({}));
-      const statusRes = await fetch("/api/merchant-auth/merchant-session-status", {
-        credentials: "include",
-      });
-      const statusData = await statusRes.json().catch(() => ({}));
+
+      if (sessionRes.status === 503 || sessionData.code === "SERVICE_UNAVAILABLE") {
+        // Transient — keep prior state if any; do not treat as logged out.
+        return;
+      }
+
+      if (sessionRes.status === 401 && FATAL_SESSION_CODES.has(String(sessionData.code || ""))) {
+        setUser(null);
+        setParent(null);
+        setSessionStatus({ authenticated: false, expired: true });
+        return;
+      }
+
       if (sessionData.success && sessionData.data?.user) {
+        try {
+          localStorage.removeItem(PARTNER_CROSS_TAB_LOGOUT_KEY);
+        } catch {
+          /* ignore */
+        }
         setUser({
           id: sessionData.data.user.id,
           email: sessionData.data.user.email ?? null,
@@ -69,23 +88,21 @@ export function MerchantSessionProvider({ children }: { children: React.ReactNod
           avatar_url: sessionData.data.user.avatar_url ?? null,
         });
         setParent(sessionData.data.parent ?? null);
+        setSessionStatus({
+          authenticated: sessionData.authenticated !== false,
+          expired: false,
+          timeRemainingFormatted: sessionData.session?.timeRemainingFormatted,
+        });
       } else {
         setUser(null);
         setParent(null);
-      }
-      if (statusData.success) {
         setSessionStatus({
-          authenticated: !!statusData.authenticated,
-          expired: statusData.expired,
-          timeRemainingFormatted: statusData.session?.timeRemainingFormatted,
+          authenticated: false,
+          expired: !!sessionData.expired,
         });
-      } else {
-        setSessionStatus(null);
       }
     } catch {
-      setUser(null);
-      setParent(null);
-      setSessionStatus(null);
+      // Network blip — do not clear an existing session.
     } finally {
       setIsLoading(false);
     }
@@ -95,13 +112,27 @@ export function MerchantSessionProvider({ children }: { children: React.ReactNod
     fetchSession();
   }, [fetchSession]);
 
+  // Synchronize logout across tabs (storage event fires in other tabs only).
+  useEffect(() => {
+    const onStorage = (e: StorageEvent) => {
+      if (e.key !== PARTNER_CROSS_TAB_LOGOUT_KEY || e.newValue == null) return;
+      clearPartnerStoreSelection();
+      setUser(null);
+      setSessionStatus(null);
+      setParent(null);
+      if (!window.location.pathname.startsWith("/auth/login")) {
+        window.location.href = "/auth/login";
+      }
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, []);
+
   const logout = useCallback(async () => {
-    clearPartnerStoreSelection();
-    await fetch("/api/auth/logout", { method: "POST" });
+    await partnerLogoutLocal({ redirectToLogin: true, clearStoreSelection: true });
     setUser(null);
     setSessionStatus(null);
     setParent(null);
-    window.location.href = "/auth/login";
   }, []);
 
   const value = useMemo(
@@ -110,7 +141,8 @@ export function MerchantSessionProvider({ children }: { children: React.ReactNod
       sessionStatus,
       parent,
       isLoading,
-      isAuthenticated: !!sessionStatus?.authenticated && !!user,
+      // Prefer user presence; sessionStatus.authenticated is soft partner_* metadata.
+      isAuthenticated: !!user && sessionStatus?.authenticated !== false,
       logout,
       refetch: fetchSession,
     }),
@@ -118,9 +150,7 @@ export function MerchantSessionProvider({ children }: { children: React.ReactNod
   );
 
   return (
-    <MerchantSessionContext.Provider value={value}>
-      {children}
-    </MerchantSessionContext.Provider>
+    <MerchantSessionContext.Provider value={value}>{children}</MerchantSessionContext.Provider>
   );
 }
 

@@ -2,7 +2,7 @@
  * Bounded fetch for Supabase auth calls so slow networks fail fast instead of
  * hanging until the reverse proxy returns 502.
  */
-export const AUTH_FETCH_TIMEOUT_MS = 15_000;
+export const AUTH_FETCH_TIMEOUT_MS = 8_000;
 
 export function fetchWithTimeout(
   input: RequestInfo | URL,

@@ -147,7 +147,7 @@ function VerificationSheetPanel({
         </div>
       </header>
 
-      <div className="min-h-0 flex-1 overflow-y-auto bg-slate-50/90 p-4 sm:p-5">
+      <div className="verification-typo min-h-0 flex-1 overflow-y-auto bg-slate-50/90 p-4 sm:p-5">
         <StoreVerificationInner
           key={`${storeId}-${initialStep ?? "all"}`}
           storeId={storeId}

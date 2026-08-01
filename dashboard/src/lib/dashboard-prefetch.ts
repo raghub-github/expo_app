@@ -6,20 +6,11 @@
 import type { QueryClient } from "@tanstack/react-query";
 import { queryKeys } from "@/lib/queryKeys";
 import { fetchCustomers } from "@/hooks/queries/useCustomersQuery";
-import { fetchTickets, type TicketFilters } from "@/hooks/tickets/useTickets";
+import { fetchTickets, DEFAULT_TICKETS_LIST_FILTERS, compactTicketFilters } from "@/hooks/tickets/useTickets";
 import { prefetchTicketDetail } from "@/hooks/tickets/useTicketDetail";
 import { fetchFoodOrders, type OrdersFilters } from "@/app/dashboard/orders/food/FoodOrdersClient";
 import { fetchTicketsReferenceData } from "@/hooks/tickets/useTicketsReferenceDataQuery";
 import { fetchTicketsAgents } from "@/hooks/tickets/useTicketsAgentsQuery";
-
-const defaultTicketFilters: TicketFilters = {
-  ticketSection: "all",
-  ticketCategory: "all",
-  sortBy: "created_at",
-  sortOrder: "desc",
-  limit: 30,
-  offset: 0,
-};
 
 const defaultFoodOrdersFilters: OrdersFilters = {
   orderType: "food",
@@ -84,11 +75,11 @@ export function prefetchDashboardSection(queryClient: QueryClient, href: string)
   }
 
   if (path === "/dashboard/tickets" || path.startsWith("/dashboard/tickets")) {
+    const filters = compactTicketFilters(DEFAULT_TICKETS_LIST_FILTERS);
     void queryClient.prefetchQuery({
-      queryKey: queryKeys.tickets.list(
-        defaultTicketFilters as unknown as Record<string, unknown>
-      ),
-      queryFn: () => fetchTickets(defaultTicketFilters),
+      queryKey: queryKeys.tickets.list(filters),
+      queryFn: () => fetchTickets(DEFAULT_TICKETS_LIST_FILTERS),
+      staleTime: 90_000,
     });
     void queryClient.prefetchQuery({
       queryKey: queryKeys.tickets.referenceData(),

@@ -29,6 +29,7 @@ interface MapComponentProps {
 }
 
 const PERSISTENT_MAP_CONTAINER_ID = "gm-persistent-mapbox-container";
+const MAP_OWNER_ATTR = "data-gm-owner";
 
 function getOrCreatePersistentMapContainer(): HTMLDivElement {
   let el = document.getElementById(PERSISTENT_MAP_CONTAINER_ID) as HTMLDivElement | null;
@@ -44,6 +45,15 @@ function getOrCreatePersistentMapContainer(): HTMLDivElement {
 
 function getMapStashEl(): HTMLElement | null {
   return document.getElementById("gm-map-stash");
+}
+
+function claimPersistentMap(host: HTMLElement, ownerId: string): HTMLDivElement {
+  const persistent = getOrCreatePersistentMapContainer();
+  persistent.setAttribute(MAP_OWNER_ATTR, ownerId);
+  if (persistent.parentElement !== host) {
+    host.replaceChildren(persistent);
+  }
+  return persistent;
 }
 
 function MapComponentInner({
@@ -64,11 +74,9 @@ function MapComponentInner({
   const hostContainerRef = useRef<HTMLDivElement>(null);
   const mapContainer = useRef<HTMLDivElement>(null);
   const mapRef = useRef<any>(null);
-  const [isLoaded, setIsLoaded] = useState(() => {
-    if (typeof window === "undefined") return false;
-    const cached = mapCache.getCachedMap(mapboxToken);
-    return Boolean(cached && typeof cached.loaded === "function" && cached.loaded());
-  });
+  const ownerIdRef = useRef(`map-owner-${Math.random().toString(36).slice(2)}`);
+  const [isLoaded, setIsLoaded] = useState(false);
+  const [isAttached, setIsAttached] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const markersRef = useRef<any[]>([]);
   const popupRef = useRef<any>(null);
@@ -82,25 +90,104 @@ function MapComponentInner({
     zoom: 3.45, // Better zoom level to show all of India
   });
 
-  // Callback ref to detect when container is mounted
-  const containerRefCallback = (node: HTMLDivElement | null) => {
-    
+  const forceMapResize = useCallback(() => {
+    const host = hostContainerRef.current;
+    // Avoid locking Mapbox to a 0×0 canvas during layout transitions.
+    if (host) {
+      const { width, height } = host.getBoundingClientRect();
+      if (width < 2 || height < 2) return;
+    }
+    const map = mapRef.current ?? mapCache.getCachedMap(mapboxToken);
+    if (!map) return;
+    try {
+      map.resize();
+      map.triggerRepaint?.();
+    } catch {
+      // ignore
+    }
+  }, [mapboxToken]);
+
+  /** Sidebar margin animates ~300ms — keep resizing through the whole transition. */
+  const scheduleMapResizeBurst = useCallback(() => {
+    const delays = [0, 50, 120, 220, 320, 450];
+    delays.forEach((ms) => {
+      window.setTimeout(() => {
+        requestAnimationFrame(() => {
+          forceMapResize();
+          requestAnimationFrame(forceMapResize);
+        });
+      }, ms);
+    });
+  }, [forceMapResize]);
+
+  // Stable callback ref — avoid null/node churn every render.
+  const containerRefCallback = useCallback((node: HTMLDivElement | null) => {
     if (node) {
       hostContainerRef.current = node;
-      // Mount / re-mount the persistent map container into this host so Mapbox never
-      // loses its container across route navigations.
-      const persistent = getOrCreatePersistentMapContainer();
-      if (persistent.parentElement !== node) {
-        node.replaceChildren(persistent);
-      }
+      const persistent = claimPersistentMap(node, ownerIdRef.current);
       mapContainer.current = persistent;
+      setIsAttached(true);
       setContainerReady(true);
+      // Cached map may already exist — keep canvas sized once host is visible.
+      scheduleMapResizeBurst();
     } else {
       hostContainerRef.current = null;
       mapContainer.current = null;
+      setIsAttached(false);
       setContainerReady(false);
     }
-  };
+  }, [scheduleMapResizeBurst]);
+
+  // Permanent visibility guard: if this host is mounted, the map canvas must live here — never left in stash.
+  useEffect(() => {
+    if (!containerReady || !hostContainerRef.current) return;
+    const host = hostContainerRef.current;
+    const persistent = claimPersistentMap(host, ownerIdRef.current);
+    mapContainer.current = persistent;
+    setIsAttached(true);
+
+    const cached = mapCache.getCachedMap(mapboxToken);
+    if (cached) {
+      mapRef.current = cached;
+      if (cached.loaded()) {
+        setIsLoaded(true);
+        forceMapResize();
+      }
+    }
+
+    const keepVisible = () => {
+      if (!hostContainerRef.current) return;
+      const el = document.getElementById(PERSISTENT_MAP_CONTAINER_ID);
+      if (el && el.parentElement !== hostContainerRef.current) {
+        claimPersistentMap(hostContainerRef.current, ownerIdRef.current);
+        mapContainer.current = el as HTMLDivElement;
+      }
+      forceMapResize();
+    };
+
+    const stash = getMapStashEl();
+    const mo =
+      typeof MutationObserver !== "undefined"
+        ? new MutationObserver(() => keepVisible())
+        : null;
+    if (stash) mo?.observe(stash, { childList: true });
+    mo?.observe(host, { childList: true });
+
+    const onVis = () => {
+      if (document.visibilityState === "visible") keepVisible();
+    };
+    document.addEventListener("visibilitychange", onVis);
+    window.addEventListener("focus", keepVisible);
+    const t1 = window.setTimeout(keepVisible, 0);
+    const t2 = window.setTimeout(keepVisible, 150);
+    return () => {
+      mo?.disconnect();
+      document.removeEventListener("visibilitychange", onVis);
+      window.removeEventListener("focus", keepVisible);
+      window.clearTimeout(t1);
+      window.clearTimeout(t2);
+    };
+  }, [containerReady, mapboxToken, forceMapResize]);
 
   useEffect(() => {
 
@@ -156,33 +243,36 @@ function MapComponentInner({
         // Check for cached map first
         const cachedMap = mapCache.getCachedMap(mapboxToken);
         if (cachedMap) {
-          // Reuse cached map
-          mapRef.current = cachedMap;
-          // Update container reference if it changed
-          if (cachedMap.getContainer() !== mapContainer.current) {
-            // Map container changed, need to recreate
-            // But for now, just update the reference
-            mapRef.current = cachedMap;
+          // Ensure persistent Mapbox canvas is inside our host before reusing.
+          if (hostContainerRef.current) {
+            const persistent = claimPersistentMap(hostContainerRef.current, ownerIdRef.current);
+            mapContainer.current = persistent;
           }
-          
-          // If map is already loaded, update markers immediately
-          if (cachedMap.loaded()) {
+          mapRef.current = cachedMap;
+
+          const syncCachedMap = () => {
+            try {
+              cachedMap.resize();
+            } catch {
+              // ignore resize failures
+            }
             setIsLoaded(true);
-            // Re-attached cached map can render at stale size; force layout sync (hosting / first dashboard paint).
-            requestAnimationFrame(() => {
+            setIsAttached(true);
+            setError(null);
+            updateMarkers();
+            window.setTimeout(() => {
               try {
                 cachedMap.resize();
               } catch {
-                // ignore resize failures
+                // ignore
               }
-            });
-            updateMarkers();
+            }, 100);
+          };
+
+          if (cachedMap.loaded()) {
+            requestAnimationFrame(syncCachedMap);
           } else {
-            // Wait for map to load
-            cachedMap.once('load', () => {
-              setIsLoaded(true);
-              updateMarkers();
-            });
+            cachedMap.once("load", syncCachedMap);
           }
           return;
         }
@@ -214,6 +304,11 @@ function MapComponentInner({
           setIsLoaded(true);
           // Clear any previous errors when map loads successfully
           setError(null);
+          try {
+            map.resize();
+          } catch {
+            // ignore
+          }
           updateMarkers();
         });
 
@@ -332,12 +427,17 @@ function MapComponentInner({
       
       if (timer) clearTimeout(timer);
 
+      // Allow re-init when this host remounts / containerReady flips again.
+      initAttemptedRef.current = false;
+
       // Keep the Mapbox map + container alive across navigations.
-      // Move the persistent container back into the dashboard stash so it stays mounted.
+      // Only stash if THIS instance still owns the container — never steal from a newer Home mount.
       try {
         const stash = getMapStashEl();
         const persistent = document.getElementById(PERSISTENT_MAP_CONTAINER_ID);
-        if (stash && persistent && persistent.parentElement !== stash) {
+        const stillOwns =
+          persistent?.getAttribute(MAP_OWNER_ATTR) === ownerIdRef.current;
+        if (stash && persistent && stillOwns && persistent.parentElement !== stash) {
           stash.replaceChildren(persistent);
         }
       } catch {
@@ -350,6 +450,69 @@ function MapComponentInner({
       mapRef.current = null;
     };
   }, [mapboxToken, containerReady]);
+
+  // Keep Mapbox canvas sized correctly when host layout settles / sidebar toggles.
+  useEffect(() => {
+    const host = hostContainerRef.current;
+    if (!host || !containerReady) return;
+
+    let raf = 0;
+    let debounceTimer = 0;
+    const resizeSoon = () => {
+      if (raf) cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(() => {
+        raf = 0;
+        forceMapResize();
+      });
+      window.clearTimeout(debounceTimer);
+      // Final pass after CSS margin transition (0.3s) finishes.
+      debounceTimer = window.setTimeout(() => {
+        forceMapResize();
+        requestAnimationFrame(forceMapResize);
+      }, 320);
+    };
+
+    forceMapResize();
+    const ro =
+      typeof ResizeObserver !== "undefined"
+        ? new ResizeObserver(() => resizeSoon())
+        : null;
+    ro?.observe(host);
+    // Also watch the outer main column — sidebar toggle changes its margin, not always host alone mid-frame.
+    const mainShell = host.closest("main") ?? host.parentElement;
+    if (mainShell && mainShell !== host) ro?.observe(mainShell);
+
+    const onWindowResize = () => scheduleMapResizeBurst();
+    const onLayoutEvent = () => scheduleMapResizeBurst();
+    const onTransitionEnd = (e: TransitionEvent) => {
+      const prop = e.propertyName || "";
+      if (
+        prop.includes("margin") ||
+        prop.includes("width") ||
+        prop.includes("padding") ||
+        prop.includes("flex")
+      ) {
+        scheduleMapResizeBurst();
+      }
+    };
+
+    window.addEventListener("resize", onWindowResize);
+    window.addEventListener("gm-dashboard-layout", onLayoutEvent);
+    document.addEventListener("transitionend", onTransitionEnd, true);
+
+    const t1 = window.setTimeout(forceMapResize, 50);
+    const t2 = window.setTimeout(forceMapResize, 300);
+    return () => {
+      ro?.disconnect();
+      window.removeEventListener("resize", onWindowResize);
+      window.removeEventListener("gm-dashboard-layout", onLayoutEvent);
+      document.removeEventListener("transitionend", onTransitionEnd, true);
+      window.clearTimeout(t1);
+      window.clearTimeout(t2);
+      window.clearTimeout(debounceTimer);
+      if (raf) cancelAnimationFrame(raf);
+    };
+  }, [isLoaded, isAttached, containerReady, forceMapResize, scheduleMapResizeBurst]);
 
   // Update markers when service points change
   useEffect(() => {
@@ -513,27 +676,34 @@ function MapComponentInner({
   }, [selectedPoint, isSuperAdmin, onDeletePoint, onClosePopup, deletingPointId, deleteElapsed, deleteStartTime]);
 
   return (
-    <div className={`relative rounded-lg border border-gray-200 bg-white overflow-hidden shadow-sm ${className}`} style={{ height: '100%', width: '100%', maxHeight: '500px', maxWidth: '500px' }}>
+    <div
+      className={`relative h-full w-full overflow-hidden rounded-2xl border border-[#121212]/10 bg-white shadow-sm ${className}`}
+      style={{ minHeight: 280 }}
+    >
       {/* Host remains mounted; persistent Mapbox container is attached inside it */}
-      <div ref={containerRefCallback} style={{ width: '100%', height: '100%', position: 'relative' }} />
+      <div
+        ref={containerRefCallback}
+        className="absolute inset-0"
+        style={{ width: "100%", height: "100%" }}
+      />
       
       {/* Show loading overlay */}
       {!isLoaded && !error && (
-        <div className="absolute inset-0 flex items-center justify-center bg-gray-100 bg-opacity-90 z-10">
+        <div className="absolute inset-0 z-10 flex items-center justify-center bg-gray-100/90">
           <div className="text-center">
             <p className="text-gray-500">Loading map...</p>
-            <p className="text-gray-400 text-xs mt-2">Initializing Mapbox</p>
+            <p className="mt-2 text-xs text-gray-400">Initializing Mapbox</p>
           </div>
         </div>
       )}
       
       {/* Show error overlay */}
       {error && (
-        <div className="absolute inset-0 flex items-center justify-center bg-red-50 bg-opacity-90 z-10">
-          <div className="text-center p-4">
-            <p className="text-red-600 font-semibold">Error: {error}</p>
-            <p className="text-red-500 text-sm mt-2">
-              {mapboxToken ? 'Mapbox token is configured' : 'Mapbox token not configured'}
+        <div className="absolute inset-0 z-10 flex items-center justify-center bg-red-50/90">
+          <div className="p-4 text-center">
+            <p className="font-semibold text-red-600">Error: {error}</p>
+            <p className="mt-2 text-sm text-red-500">
+              {mapboxToken ? "Mapbox token is configured" : "Mapbox token not configured"}
             </p>
           </div>
         </div>

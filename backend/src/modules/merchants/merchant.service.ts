@@ -1098,6 +1098,16 @@ export async function getMenuVersion(
          WHERE store_id = ${storePk}),
         0::bigint
       ),
+      -- Image approvals/rejections change the visible menu without touching
+      -- parent merchant_menu_items.updated_at; include them in the version
+      -- fingerprint so delta sync and version checks detect image-only changes.
+      COALESCE(
+        (SELECT MAX(EXTRACT(EPOCH FROM img.updated_at) * 1000)::bigint
+         FROM merchant_menu_item_images img
+         INNER JOIN merchant_menu_items mi ON mi.id = img.menu_item_id
+         WHERE mi.store_id = ${storePk}),
+        0::bigint
+      ),
       COALESCE(
         (EXTRACT(EPOCH FROM updated_at) * 1000)::bigint,
         0::bigint

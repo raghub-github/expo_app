@@ -100,7 +100,7 @@ function layoutEmail(args: {
                     <table width="100%" cellpadding="0" cellspacing="0" style="border-top:1px solid #e5e7eb; padding-top:16px;">
                       <tr>
                         <td>
-                          <p style="margin:0 0 4px 0; font-size:13px; color:#4b5563; line-height:1.7;">If you have any questions or need assistance, feel free to reply to this email—we’re here to help.</p>
+                          <p style="margin:0 0 4px 0; font-size:13px; color:#4b5563; line-height:1.7;">If you have any questions or need assistance, please feel free to contact our support team.</p>
                           <p style="margin:0; font-size:13px; color:#4b5563; line-height:1.7;">
                             You can also reach us at <a href="mailto:support@gatimitra.com" style="color:#2563eb;">support@gatimitra.com</a>.
                           </p>
@@ -111,7 +111,7 @@ function layoutEmail(args: {
                     <table width="100%" cellpadding="0" cellspacing="0" style="margin-top:18px;">
                       <tr>
                         <td>
-                          <p style="margin:0; font-size:13px; color:#111827; line-height:1.7;">Best regards,<br /><strong>Team GatiMitra</strong></p>
+                          <p style="margin:0; font-size:13px; color:#111827; line-height:1.7;">Regards,<br /><strong>Team GatiMitra</strong></p>
                         </td>
                       </tr>
                     </table>
@@ -141,9 +141,16 @@ export function buildStoreApprovedEmail(args: {
   storeName: string;
   storePublicId: string;
   dashboardUrl: string;
+  /** Admin remark from final approve (recommended or custom) — included in the email body. */
+  message?: string | null;
 }): { subject: string; text: string; html: string } {
   const safeName = escapeHtml(args.storeName.trim() || "your store");
   const safeId = escapeHtml(args.storePublicId.trim());
+  const message = (args.message ?? "").trim();
+  const safeMessage = escapeHtml(message);
+  const goLiveDefault =
+    "You can now make your store live at your convenience and start receiving orders. Please ensure you are fully prepared to manage incoming orders smoothly.";
+  const messageBlock = message || goLiveDefault;
 
   const textLines = [
     "Dear Partner,",
@@ -152,13 +159,16 @@ export function buildStoreApprovedEmail(args: {
     "",
     `Your store ${args.storeName.trim() || "your store"} (Store ID: ${args.storePublicId}) has been successfully verified by the GatiMitra team.`,
     "",
-    "You can now make your store live at your convenience and start receiving orders. Please ensure you are fully prepared to manage incoming orders smoothly.",
+    message ? "Message from GatiMitra" : "You’re cleared to go live",
+    messageBlock,
     "",
     `View Dashboard: ${args.dashboardUrl}`,
     "",
-    "If you have any questions or need assistance, feel free to reply to this email—we’re here to help.",
+    "If you have any questions or need assistance, please feel free to contact our support team.",
     "",
-    "Best regards,",
+    "You can also reach us at support@gatimitra.com.",
+    "",
+    "Regards,",
     "Team GatiMitra",
   ];
 
@@ -183,10 +193,12 @@ export function buildStoreApprovedEmail(args: {
                     </p>
                     <table width="100%" cellpadding="0" cellspacing="0" style="background:#ecfdf3; border-radius:12px; border:1px solid #bbf7d0; margin-bottom:18px;">
                       <tr><td style="padding:14px 16px;">
-                        <p style="margin:0; font-size:14px; font-weight:600; color:#166534;">You’re cleared to go live</p>
-                        <p style="margin:8px 0 0 0; font-size:13px; color:#166534; line-height:1.65;">
-                          You can now make your store live at your convenience and start receiving orders. Please ensure you are fully prepared to manage incoming orders smoothly.
-                        </p>
+                        <p style="margin:0; font-size:14px; font-weight:600; color:#166534;">${
+                          message ? "Message from GatiMitra" : "You’re cleared to go live"
+                        }</p>
+                        <p style="margin:8px 0 0 0; font-size:13px; color:#166534; line-height:1.65; white-space:pre-wrap;">${
+                          message ? safeMessage : escapeHtml(goLiveDefault)
+                        }</p>
                       </td></tr>
                     </table>`,
     ctaLabel: "View Dashboard",
@@ -267,21 +279,28 @@ export function buildStoreRejectedEmail(args: {
   const safeId = escapeHtml(args.storePublicId.trim());
   const reason = args.reason.trim();
   const safeReason = escapeHtml(reason);
-
   const displayName = args.storeName.trim() || "your store";
   const displayId = args.storePublicId.trim();
-  const mainMessage = `We have reviewed your onboarding for ${displayName} (Store ID: ${displayId}). Kindly review your submitted details and update them from the partner dashboard, or you may share the corrected information by replying to this email so we can proceed with the verification process.`;
 
   const textLines = [
     "Dear Partner,",
     "",
-    mainMessage,
+    `We have reviewed the information and documents submitted for ${displayName} (Store ID: ${displayId}) as part of your onboarding process.`,
     "",
-    `Reason for rejection:\n${reason}`,
+    "Some of the submitted information requires correction before we can continue with the verification process.",
     "",
-    `Partner dashboard: ${args.dashboardUrl}`,
+    "Reason for Rejection",
+    reason,
     "",
-    "Best regards,",
+    "Kindly review and update the requested information from your Partner Dashboard. Alternatively, you may reply to this email with the corrected details, and our team will assist you in completing the verification process.",
+    "",
+    "Once the required changes have been submitted, we will review your application again as soon as possible.",
+    "",
+    `Partner Dashboard: ${args.dashboardUrl}`,
+    "",
+    "If you have any questions or need assistance, please feel free to contact our support team.",
+    "",
+    "Regards,",
     "Team GatiMitra",
   ];
 
@@ -298,17 +317,27 @@ export function buildStoreRejectedEmail(args: {
                     <p class="body" style="margin:0 0 12px 0; font-size:14px; color:#111827; line-height:1.7;">
                       Dear Partner,
                     </p>
+                    <p class="body" style="margin:0 0 14px 0; font-size:14px; color:#4b5563; line-height:1.7;">
+                      We have reviewed the information and documents submitted for <strong>${safeName}</strong> (Store ID: <strong>${safeId}</strong>) as part of your onboarding process.
+                    </p>
                     <p class="body" style="margin:0 0 18px 0; font-size:14px; color:#4b5563; line-height:1.7;">
-                      We have reviewed your onboarding for <strong>${safeName}</strong> (Store ID: <strong>${safeId}</strong>). Kindly review your submitted details and update them from the partner dashboard, or you may share the corrected information by replying to this email so we can proceed with the verification process.
+                      Some of the submitted information requires correction before we can continue with the verification process.
                     </p>
                     <table width="100%" cellpadding="0" cellspacing="0" style="background:#fef2f2; border-radius:12px; border:1px solid #fecaca; margin-bottom:18px;">
                       <tr><td style="padding:14px 16px;">
-                        <p style="margin:0 0 6px 0; font-size:12px; font-weight:700; color:#991b1b;">Reason for rejection</p>
+                        <p style="margin:0 0 6px 0; font-size:12px; font-weight:700; color:#991b1b;">Reason for Rejection</p>
                         <p style="margin:0; font-size:13px; color:#7f1d1d; line-height:1.65; white-space:pre-wrap;">${safeReason}</p>
                       </td></tr>
-                    </table>`,
-    ctaLabel: "View Dashboard",
+                    </table>
+                    <p class="body" style="margin:0 0 14px 0; font-size:14px; color:#4b5563; line-height:1.7;">
+                      Kindly review and update the requested information from your Partner Dashboard. Alternatively, you may reply to this email with the corrected details, and our team will assist you in completing the verification process.
+                    </p>
+                    <p class="body" style="margin:0 0 18px 0; font-size:14px; color:#4b5563; line-height:1.7;">
+                      Once the required changes have been submitted, we will review your application again as soon as possible.
+                    </p>`,
+    ctaLabel: "Open Partner Dashboard",
     ctaUrl: args.dashboardUrl,
+    footerExtraHtml: "",
   });
 
   return {
@@ -326,28 +355,139 @@ export function buildVerificationStepRejectedEmail(args: {
   stepNumber: number;
   stepLabel: string;
   reason: string;
+  /** Human-readable field names from admin checkboxes (e.g. Banner image, Store name). */
+  rejectedFieldLabels?: string[];
 }): { subject: string; text: string; html: string } {
   const safeName = escapeHtml(args.storeName.trim() || "your store");
   const safeId = escapeHtml(args.storePublicId.trim());
-  const safeStep = escapeHtml(args.stepLabel.trim() || `Step ${args.stepNumber}`);
   const reason = args.reason.trim();
   const safeReason = escapeHtml(reason);
-
   const displayName = args.storeName.trim() || "your store";
   const displayId = args.storePublicId.trim();
-  const stepLine = `${args.stepLabel.trim() || `Step ${args.stepNumber}`} (step ${args.stepNumber} of 7)`;
-  const mainMessage = `We have reviewed your onboarding for ${displayName} (Store ID: ${displayId}), including ${stepLine}. Kindly review your submitted details and update them from the partner dashboard, or you may share the corrected information by replying to this email so we can proceed with the verification process.`;
+  const fieldLabels = (args.rejectedFieldLabels ?? [])
+    .map((l) => String(l || "").trim())
+    .filter(Boolean);
+  const safeFieldListHtml = fieldLabels
+    .map((l) => `<li style="margin:0 0 4px 0;">${escapeHtml(l)}</li>`)
+    .join("");
+  const fieldListTextLines =
+    fieldLabels.length > 0
+      ? ["What needs to be fixed:", ...fieldLabels.map((l) => `• ${l}`), ""]
+      : [];
 
   const textLines = [
     "Dear Partner,",
     "",
-    mainMessage,
+    `We have reviewed the information and documents submitted for ${displayName} (Store ID: ${displayId}) as part of your onboarding process.`,
     "",
-    `Reason for rejection:\n${reason}`,
+    "Some of the submitted information requires correction before we can continue with the verification process.",
     "",
-    `Partner dashboard: ${args.dashboardUrl}`,
+    ...fieldListTextLines,
+    "Reason for Rejection / Remarks",
+    reason,
     "",
-    "Best regards,",
+    "Kindly review and update the requested information from your Partner Dashboard. Alternatively, you may reply to this email with the corrected details, and our team will assist you in completing the verification process.",
+    "",
+    "Once the required changes have been submitted, we will review your application again as soon as possible.",
+    "",
+    `Partner Dashboard: ${args.dashboardUrl}`,
+    "",
+    "If you have any questions or need assistance, please feel free to contact our support team.",
+    "",
+    "Regards,",
+    "Team GatiMitra",
+  ];
+
+  const fieldsBlockHtml =
+    fieldLabels.length > 0
+      ? `
+                        <p style="margin:0 0 6px 0; font-size:12px; font-weight:700; color:#991b1b;">What needs to be fixed</p>
+                        <ul style="margin:0 0 12px 0; padding-left:18px; font-size:13px; color:#7f1d1d; line-height:1.65;">
+                          ${safeFieldListHtml}
+                        </ul>`
+      : "";
+
+  const html = layoutEmail({
+    pageTitle: "Please review and update your details",
+    headerBadgeHtml: `
+          <div style="margin-top:8px; display:inline-block; background:rgba(15,23,42,0.10); border-radius:999px; padding:4px 10px; font-size:11px; font-weight:600; color:#0f172a; border:1px solid rgba(15,23,42,0.08);">
+            Store ID&nbsp;<span style="color:#022c22;">#${safeId}</span>
+          </div>`,
+    headerTitle: "Please review and update your details",
+    headerSubtitle: `${safeName} — we need a quick update from you.`,
+    headerRibbonHtml: `<div style="display:inline-block; background:rgba(180,83,9,0.45); border:1px solid rgba(254,215,170,0.6); border-radius:999px; padding:7px 10px; color:#ffffff; font-size:11px; font-weight:700;">Action needed</div>`,
+    bodyInnerHtml: `
+                    <p class="body" style="margin:0 0 12px 0; font-size:14px; color:#111827; line-height:1.7;">
+                      Dear Partner,
+                    </p>
+                    <p class="body" style="margin:0 0 14px 0; font-size:14px; color:#4b5563; line-height:1.7;">
+                      We have reviewed the information and documents submitted for <strong>${safeName}</strong> (Store ID: <strong>${safeId}</strong>) as part of your onboarding process.
+                    </p>
+                    <p class="body" style="margin:0 0 18px 0; font-size:14px; color:#4b5563; line-height:1.7;">
+                      Some of the submitted information requires correction before we can continue with the verification process.
+                    </p>
+                    <table width="100%" cellpadding="0" cellspacing="0" style="background:#fef2f2; border-radius:12px; border:1px solid #fecaca; margin-bottom:18px;">
+                      <tr><td style="padding:14px 16px;">
+                        ${fieldsBlockHtml}
+                        <p style="margin:0 0 6px 0; font-size:12px; font-weight:700; color:#991b1b;">Reason for Rejection / Remarks</p>
+                        <p style="margin:0; font-size:13px; color:#7f1d1d; line-height:1.65; white-space:pre-wrap;">${safeReason}</p>
+                      </td></tr>
+                    </table>
+                    <p class="body" style="margin:0 0 14px 0; font-size:14px; color:#4b5563; line-height:1.7;">
+                      Kindly review and update the requested information from your Partner Dashboard. Alternatively, you may reply to this email with the corrected details, and our team will assist you in completing the verification process.
+                    </p>
+                    <p class="body" style="margin:0 0 18px 0; font-size:14px; color:#4b5563; line-height:1.7;">
+                      Once the required changes have been submitted, we will review your application again as soon as possible.
+                    </p>`,
+    ctaLabel: "Open Partner Dashboard",
+    ctaUrl: args.dashboardUrl,
+  });
+
+  return {
+    subject: "Please Review and Update Your Details – GatiMitra",
+    text: textLines.join("\n"),
+    html,
+  };
+}
+
+/** Email when a single restaurant document (PAN / GST / FSSAI / …) is rejected. */
+export function buildVerificationDocumentRejectedEmail(args: {
+  storeName: string;
+  storePublicId: string;
+  dashboardUrl: string;
+  documentLabel: string;
+  reason: string;
+}): { subject: string; text: string; html: string } {
+  const safeName = escapeHtml(args.storeName.trim() || "your store");
+  const safeId = escapeHtml(args.storePublicId.trim());
+  const docLabel = args.documentLabel.trim() || "document";
+  const safeDoc = escapeHtml(docLabel);
+  const reason = args.reason.trim();
+  const safeReason = escapeHtml(reason);
+  const displayName = args.storeName.trim() || "your store";
+  const displayId = args.storePublicId.trim();
+
+  const textLines = [
+    "Dear Partner,",
+    "",
+    `We have reviewed the information and documents submitted for ${displayName} (Store ID: ${displayId}) as part of your onboarding process.`,
+    "",
+    "Some of the submitted information requires correction before we can continue with the verification process.",
+    "",
+    `Document: ${docLabel}`,
+    "",
+    "Reason for Rejection",
+    reason,
+    "",
+    "Kindly review and update the requested information from your Partner Dashboard. Alternatively, you may reply to this email with the corrected details, and our team will assist you in completing the verification process.",
+    "",
+    "Once the required changes have been submitted, we will review your application again as soon as possible.",
+    "",
+    `Partner Dashboard: ${args.dashboardUrl}`,
+    "",
+    "If you have any questions or need assistance, please feel free to contact our support team.",
+    "",
+    "Regards,",
     "Team GatiMitra",
   ];
 
@@ -358,22 +498,33 @@ export function buildVerificationStepRejectedEmail(args: {
             Store ID&nbsp;<span style="color:#022c22;">#${safeId}</span>
           </div>`,
     headerTitle: "Please review and update your details",
-    headerSubtitle: `${safeName} — ${safeStep}`,
+    headerSubtitle: `${safeName} — ${safeDoc}`,
     headerRibbonHtml: `<div style="display:inline-block; background:rgba(180,83,9,0.45); border:1px solid rgba(254,215,170,0.6); border-radius:999px; padding:7px 10px; color:#ffffff; font-size:11px; font-weight:700;">Action needed</div>`,
     bodyInnerHtml: `
                     <p class="body" style="margin:0 0 12px 0; font-size:14px; color:#111827; line-height:1.7;">
                       Dear Partner,
                     </p>
+                    <p class="body" style="margin:0 0 14px 0; font-size:14px; color:#4b5563; line-height:1.7;">
+                      We have reviewed the information and documents submitted for <strong>${safeName}</strong> (Store ID: <strong>${safeId}</strong>) as part of your onboarding process.
+                    </p>
                     <p class="body" style="margin:0 0 18px 0; font-size:14px; color:#4b5563; line-height:1.7;">
-                      We have reviewed your onboarding for <strong>${safeName}</strong> (Store ID: <strong>${safeId}</strong>), including <strong>${safeStep}</strong> (step ${args.stepNumber} of 7). Kindly review your submitted details and update them from the partner dashboard, or you may share the corrected information by replying to this email so we can proceed with the verification process.
+                      Some of the submitted information requires correction before we can continue with the verification process.
                     </p>
                     <table width="100%" cellpadding="0" cellspacing="0" style="background:#fef2f2; border-radius:12px; border:1px solid #fecaca; margin-bottom:18px;">
                       <tr><td style="padding:14px 16px;">
-                        <p style="margin:0 0 6px 0; font-size:12px; font-weight:700; color:#991b1b;">Reason for rejection</p>
+                        <p style="margin:0 0 6px 0; font-size:12px; font-weight:700; color:#991b1b;">Document</p>
+                        <p style="margin:0 0 12px 0; font-size:13px; color:#7f1d1d; line-height:1.65;">${safeDoc}</p>
+                        <p style="margin:0 0 6px 0; font-size:12px; font-weight:700; color:#991b1b;">Reason for Rejection</p>
                         <p style="margin:0; font-size:13px; color:#7f1d1d; line-height:1.65; white-space:pre-wrap;">${safeReason}</p>
                       </td></tr>
-                    </table>`,
-    ctaLabel: "View Dashboard",
+                    </table>
+                    <p class="body" style="margin:0 0 14px 0; font-size:14px; color:#4b5563; line-height:1.7;">
+                      Kindly review and update the requested information from your Partner Dashboard. Alternatively, you may reply to this email with the corrected details, and our team will assist you in completing the verification process.
+                    </p>
+                    <p class="body" style="margin:0 0 18px 0; font-size:14px; color:#4b5563; line-height:1.7;">
+                      Once the required changes have been submitted, we will review your application again as soon as possible.
+                    </p>`,
+    ctaLabel: "Open Partner Dashboard",
     ctaUrl: args.dashboardUrl,
   });
 

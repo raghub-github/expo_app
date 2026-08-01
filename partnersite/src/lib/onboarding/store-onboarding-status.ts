@@ -16,6 +16,9 @@ export function isStoreOnboardingSubmitted(store: StoreOnboardingSnapshot): bool
 export function storeHasOpenVerificationFix(store: StoreOnboardingSnapshot): boolean {
   const rejections = store.verification_step_rejections;
   if (!Array.isArray(rejections) || rejections.length === 0) return false;
+  // Open only while at least one rejected step still needs merchant resubmit.
+  // Once every rejection has merchant_resubmitted_at, hide Fix CTA / Action needed
+  // (admin still sees Verify again until they clear the rows).
   return rejections.some((r) => !r.merchant_resubmitted_at);
 }
 
@@ -23,15 +26,19 @@ export function storeHasOpenVerificationFix(store: StoreOnboardingSnapshot): boo
 export function storeNeedsOnboardingAction(store: StoreOnboardingSnapshot): boolean {
   const status = String(store.approval_status || "").toUpperCase();
   if (status === "APPROVED") return false;
-  if (isStoreOnboardingSubmitted(store)) return false;
+  // Open agent rejection (e.g. FSSAI) must unlock Fix / resubmit even when already SUBMITTED.
   if (storeHasOpenVerificationFix(store)) return true;
-  if (status === "REJECTED") return storeHasOpenVerificationFix(store);
+  if (isStoreOnboardingSubmitted(store)) return false;
+  if (status === "REJECTED") return false;
   if (status === "DRAFT") return true;
   const step = store.current_onboarding_step;
   return typeof step === "number" && step < 9;
 }
 
 export function getStoreOnboardingBadge(store: StoreOnboardingSnapshot): { label: string; className: string } {
+  if (storeHasOpenVerificationFix(store)) {
+    return { label: "Action needed", className: "bg-red-500 text-white" };
+  }
   if (storeNeedsOnboardingAction(store)) {
     return { label: "Pending", className: "bg-emerald-500 text-white" };
   }

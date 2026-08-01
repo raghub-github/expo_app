@@ -3,7 +3,7 @@ import { createServerClient } from "@supabase/ssr";
 import { validateMerchantFromSession } from "@/lib/auth/validate-merchant";
 import { initializeSession } from "@/lib/auth/session-manager";
 import { deviceIdCookie } from "@/lib/auth/auth-cookie-names";
-import { generateDeviceId, replaceSessionForDevice } from "@/lib/auth/merchant-session-db";
+import { generateDeviceId, replaceSessionForDevice, clientIpFromRequest, deviceLabelFromUserAgent } from "@/lib/auth/merchant-session-db";
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder.supabase.co";
 const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "placeholder-anon-key";
@@ -109,7 +109,13 @@ export async function GET(request: NextRequest) {
     const deviceId = existingDeviceId || generateDeviceId();
 
     if (validation.merchantParentId != null) {
-      await replaceSessionForDevice(deviceId, validation.merchantParentId);
+      const ua = request.headers.get("user-agent");
+      await replaceSessionForDevice(deviceId, validation.merchantParentId, {
+        userAgent: ua,
+        ipAddress: clientIpFromRequest(request.headers),
+        deviceLabel: deviceLabelFromUserAgent(ua),
+        loginMethod: "google",
+      });
     }
 
     // Persist device id for future requests (httpOnly, lax).

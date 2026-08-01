@@ -327,6 +327,8 @@ type StoreOpRow = {
   schedulePhase?: string | null;
   /** From GET — today is a scheduled closed day or has no valid slots while "open" in DB. */
   todayScheduledClosed?: boolean | null;
+  /** Merchant store approval — online/offline locked until APPROVED. */
+  approvalStatus?: string | null;
 };
 
 
@@ -850,6 +852,8 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
           is_today_scheduled_closed: todayClosed,
         });
         const autoOpenEnabled = data.auto_open_from_schedule !== false;
+        const approvalStatus =
+          typeof data.approval_status === 'string' ? data.approval_status : null;
         setStoreOpen(surfOnline);
         setAutoOpenFromSchedule(autoOpenEnabled);
         setManualLock(data.block_auto_open === true);
@@ -862,6 +866,7 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
             withinOperatingHours: withinH,
             schedulePhase,
             todayScheduledClosed: todayClosed,
+            approvalStatus,
           },
         }));
       } else {
@@ -905,6 +910,8 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
           withinOperatingHours: withinH,
           schedulePhase,
           todayScheduledClosed: todayClosed,
+          approvalStatus:
+            typeof data.approval_status === 'string' ? data.approval_status : null,
         };
         setStoreOpsById((prev) => ({ ...prev, [storeId]: row }));
         if (storeId === resolvedStoreId) {
@@ -1284,6 +1291,11 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
         credentials: 'include',
       });
       clearPartnerLocalStorage();
+      try {
+        localStorage.setItem('partner_auth_logged_out_at', String(Date.now()));
+      } catch {
+        /* ignore */
+      }
       if (res.ok) {
         toast.success('Signed out from all devices');
         router.push('/auth/login');
@@ -1655,6 +1667,8 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
               ? 'Offline · Outside hours'
               : 'Offline';
   const onlineGreen = storeOpen === true;
+  const resolvedApproval = String(resolvedOpsRow?.approvalStatus || '').toUpperCase();
+  const storeOpsLockedUntilVerified = !!resolvedApproval && resolvedApproval !== 'APPROVED';
 
   const q = resolvedStoreId ? `?storeId=${encodeURIComponent(resolvedStoreId)}` : '';
   const settingsHref = `/partners/store-settings${q}`;
@@ -2481,9 +2495,20 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
                                 />
                                 <CompactSwitch
                                   on={isOn === true}
-                                  disabled={isOn === null}
+                                  disabled={
+                                    isOn === null ||
+                                    (row?.approvalStatus != null &&
+                                      String(row.approvalStatus).toUpperCase() !== 'APPROVED')
+                                  }
                                   ariaLabel={`${isOn === true ? 'Turn off' : 'Turn on'} ${s.store_name}`}
                                   onToggle={() => {
+                                    if (
+                                      row?.approvalStatus != null &&
+                                      String(row.approvalStatus).toUpperCase() !== 'APPROVED'
+                                    ) {
+                                      toast.error('Store status is locked until your store is verified.');
+                                      return;
+                                    }
                                     if (isOn === true) {
                                       setOperationalCloseModal({
                                         storeId: s.store_id,
@@ -2896,13 +2921,26 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
 
           <button
             type="button"
-            onClick={() => setSheet((s) => (s === 'status' ? null : 'status'))}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-2 py-1.5 text-xs font-medium text-gray-800 hover:bg-gray-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-gray-300 sm:gap-2 sm:px-2.5 sm:text-sm"
+            onClick={() => {
+              if (storeOpsLockedUntilVerified) {
+                toast.error('Store status is locked until your store is verified.');
+                return;
+              }
+              setSheet((s) => (s === 'status' ? null : 'status'));
+            }}
+            disabled={storeOpsLockedUntilVerified}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-2 py-1.5 text-xs font-medium text-gray-800 hover:bg-gray-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-gray-300 sm:gap-2 sm:px-2.5 sm:text-sm disabled:cursor-not-allowed disabled:opacity-50"
             aria-expanded={sheet === 'status'}
-            title={onlineLabel}
+            title={
+              storeOpsLockedUntilVerified
+                ? 'Available after store is verified'
+                : onlineLabel
+            }
           >
             <span className={`h-2 w-2 rounded-full ${onlineGreen ? 'bg-emerald-500' : storeOpen === false ? 'bg-red-500' : 'bg-gray-400'}`} />
-            <span className="hidden sm:inline">{onlineLabel}</span>
+            <span className="hidden sm:inline">
+              {storeOpsLockedUntilVerified ? 'Under review' : onlineLabel}
+            </span>
             <ChevronDown size={14} className="text-gray-500 sm:w-4" />
           </button>
 

@@ -64,6 +64,10 @@ interface StoreItem {
   totalSteps?: number | null;
   pendingChildStoreInternalId?: number | null;
   pendingChildOnboardingStep?: number | null;
+  hasOpenVerificationFix?: boolean;
+  openVerificationFixStep?: number | null;
+  /** All open rejected steps already have pending resubmit payloads. */
+  verificationFixResubmitted?: boolean;
 }
 
 export function AreaManagerStoresClient() {
@@ -540,6 +544,30 @@ export function AreaManagerStoresClient() {
                           <td className="whitespace-nowrap px-3 py-1.5 text-xs text-gray-500">{s.city ?? s.localityCode ?? "-"}</td>
                           <td className="whitespace-nowrap px-3 py-1.5 text-sm">
                             {(() => {
+                              if (s.hasOpenVerificationFix) {
+                                if (s.verificationFixResubmitted) {
+                                  return (
+                                    <span className="inline-flex items-center rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-semibold uppercase tracking-wide text-emerald-700 ring-1 ring-emerald-200">
+                                      Resubmitted
+                                    </span>
+                                  );
+                                }
+                                const fixStep = s.openVerificationFixStep ?? 4;
+                                return (
+                                  <a
+                                    href={`/dashboard/area-managers/stores/resubmit-onboarding?storeInternalId=${encodeURIComponent(
+                                      String(s.id)
+                                    )}&parentId=${encodeURIComponent(
+                                      String(s.parentStoreId ?? selectedParentId ?? "")
+                                    )}&verification_fix_step=${encodeURIComponent(String(fixStep))}&returnTo=${encodeURIComponent(
+                                      "/dashboard/area-managers/stores"
+                                    )}`}
+                                    className="inline-flex items-center justify-center rounded-lg bg-orange-600 px-3 py-1.5 text-sm font-medium text-white shadow-sm hover:bg-orange-700 focus:outline-none focus:ring-2 focus:ring-orange-500 focus:ring-offset-1"
+                                  >
+                                    Fix onboarding details
+                                  </a>
+                                );
+                              }
                               // Prefer backend truth: show button only when onboarding isn't completed.
                               // If backend value is missing, fall back to step math.
                               if (s.onboardingCompleted === false) {
@@ -698,6 +726,31 @@ export function AreaManagerStoresClient() {
                           )
                         ) : (
                           (() => {
+                            if (s.hasOpenVerificationFix) {
+                              if (s.verificationFixResubmitted) {
+                                return (
+                                  <span className="inline-flex items-center rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-semibold uppercase tracking-wide text-emerald-700 ring-1 ring-emerald-200">
+                                    Resubmitted
+                                  </span>
+                                );
+                              }
+                              const fixStep = s.openVerificationFixStep ?? 4;
+                              return (
+                                <a
+                                  href={`/dashboard/area-managers/stores/resubmit-onboarding?storeInternalId=${encodeURIComponent(
+                                    String(s.id)
+                                  )}&parentId=${encodeURIComponent(
+                                    String(s.parentStoreId ?? selectedParentId ?? "")
+                                  )}&verification_fix_step=${encodeURIComponent(String(fixStep))}&returnTo=${encodeURIComponent(
+                                    "/dashboard/area-managers/stores"
+                                  )}`}
+                                  className="inline-flex items-center justify-center rounded-lg bg-orange-600 px-3 py-1.5 text-sm font-medium text-white shadow-sm hover:bg-orange-700 focus:outline-none focus:ring-2 focus:ring-orange-500 focus:ring-offset-1"
+                                >
+                                  Fix onboarding details
+                                </a>
+                              );
+                            }
+
                             if (s.onboardingCompleted === false) {
                               return (
                                 <a

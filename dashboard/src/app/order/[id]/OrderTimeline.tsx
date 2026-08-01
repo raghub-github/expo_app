@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { resolveEtaBreachTimelineIndex } from "@/lib/orders/eta-breach";
 import { filterOrderProgressTimelineEntries } from "@/lib/orders/order-timeline-rider-filter";
+import { OrderMixedText, OrderNum } from "@/components/orders/orders-typography";
 
 export interface OrderTimelineEntry {
   id: number;
@@ -373,14 +374,16 @@ export default function OrderTimeline({
             <>
               {etaBreached && minsElapsedPastEta != null && (
                 <span className="px-2.5 py-1 rounded-full text-[9px] font-semibold text-white bg-red-500 border border-red-600 shadow-sm whitespace-nowrap">
-                  {breachedEntry
-                    ? `Breached at ${breachedEntry.status.replace(/_/g, " ")} · ${formatMinsAsYMoDHM(minsElapsedPastEta)} past`
-                    : `ETA breached · ${formatMinsAsYMoDHM(minsElapsedPastEta)} past`}
+                  <OrderMixedText>
+                    {breachedEntry
+                      ? `Breached at ${breachedEntry.status.replace(/_/g, " ")} · ${formatMinsAsYMoDHM(minsElapsedPastEta)} past`
+                      : `ETA breached · ${formatMinsAsYMoDHM(minsElapsedPastEta)} past`}
+                  </OrderMixedText>
                 </span>
               )}
               {minsLeftTillEta != null && minsLeftTillEta >= 0 && !etaBreached && (
                 <span className="px-2.5 py-1 rounded-full text-[9px] font-semibold text-white bg-emerald-500 border border-emerald-600 shadow-sm whitespace-nowrap">
-                  {minsLeftTillEta}m left till ETA
+                  <OrderMixedText>{`${minsLeftTillEta}m left till ETA`}</OrderMixedText>
                 </span>
               )}
             </>
@@ -395,13 +398,17 @@ export default function OrderTimeline({
                     : "text-slate-700 bg-slate-100 border-slate-200"
               }`}
             >
-              {deliveredOrCancelledEntry?.occurredAt
-                ? isDelivered
-                  ? `Was Delivered ${formatAfterBeforeEta(new Date(deliveredOrCancelledEntry.occurredAt), etaAt)}`
-                  : `Was Cancelled ${formatAfterBeforeEta(new Date(deliveredOrCancelledEntry.occurredAt), etaAt)}`
-                : isDelivered
-                  ? "Delivered"
-                  : "Cancelled"}
+              {deliveredOrCancelledEntry?.occurredAt ? (
+                <OrderMixedText>
+                  {isDelivered
+                    ? `Was Delivered ${formatAfterBeforeEta(new Date(deliveredOrCancelledEntry.occurredAt), etaAt)}`
+                    : `Was Cancelled ${formatAfterBeforeEta(new Date(deliveredOrCancelledEntry.occurredAt), etaAt)}`}
+                </OrderMixedText>
+              ) : isDelivered ? (
+                "Delivered"
+              ) : (
+                "Cancelled"
+              )}
             </span>
           )}
         </div>
@@ -519,12 +526,12 @@ export default function OrderTimeline({
                       className={`absolute top-[20px] text-[8px] sm:text-[9px] font-normal leading-tight whitespace-nowrap ${colors.text}`}
                     >
                       {occurredAt && !isNaN(occurredAt.getTime())
-                        ? formatTimeShort(occurredAt)
+                        ? <OrderNum>{formatTimeShort(occurredAt)}</OrderNum>
                         : "—"}
                     </div>
                     {durationMinutes > 0 && (
                       <div className={`absolute top-[32px] text-[8px] sm:text-[9px] font-normal px-0.5 py-px rounded leading-tight ${durationBadgeClass}`}>
-                        {formatMinsAsDaysHours(durationMinutes)}
+                        <OrderNum>{formatMinsAsDaysHours(durationMinutes)}</OrderNum>
                       </div>
                     )}
                   </div>

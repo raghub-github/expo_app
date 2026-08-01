@@ -1,6 +1,6 @@
 'use client'
 
-import React, { useState, useEffect, useMemo } from 'react'
+import React, { useState, useEffect, useMemo, useRef } from 'react'
 import { Dialog } from '@headlessui/react'
 import Link from 'next/link'
 import { useRouter, useSearchParams, usePathname } from 'next/navigation'
@@ -37,6 +37,7 @@ import {
   Download,
   Funnel,
   CalendarClock,
+  Lock,
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { Suspense } from 'react'
@@ -63,6 +64,25 @@ import {
 } from '@/lib/applyStoreOperationsResponse';
 
 export const dynamic = 'force-dynamic'
+
+function VerificationLockedCardOverlay({ locked }: { locked: boolean }) {
+  if (!locked) return null
+  return (
+    <div
+      className="absolute inset-0 z-20 flex flex-col items-center justify-center rounded-[10px] bg-white/60 backdrop-blur-[3px] ring-1 ring-inset ring-slate-200/60"
+      role="presentation"
+      aria-hidden
+    >
+      <div className="flex h-11 w-11 items-center justify-center rounded-full bg-slate-900/85 text-white shadow-lg">
+        <Lock className="h-5 w-5" strokeWidth={2.25} aria-hidden />
+      </div>
+      <p className="mt-2 text-xs font-bold uppercase tracking-wide text-slate-900">Locked</p>
+      <p className="mt-0.5 max-w-[11rem] px-2 text-center text-[10px] leading-snug text-slate-600">
+        Unlocks after store verification
+      </p>
+    </div>
+  )
+}
 
 /** Show time with hours, minutes, seconds (no 00:00); HH:MM becomes HH:MM:00 */
 function formatTimeHMS(t: string): string {
@@ -429,6 +449,9 @@ function DashboardContent() {
   const [toggleOnLoading, setToggleOnLoading] = useState(false)
   const [showStatusModal, setShowStatusModal] = useState(false)
   const [modalStatus, setModalStatus] = useState<{ status: string; reason?: string }>({ status: '', reason: '' })
+  /** After status modal is dismissed, show under-verification marquee until store is approved. */
+  const [statusNoticeDismissed, setStatusNoticeDismissed] = useState(false)
+  const statusNoticeDismissedRef = useRef(false)
   // Manual close: reason is mandatory
   const [closeReason, setCloseReason] = useState<string>('')
   const [closeReasonOther, setCloseReasonOther] = useState<string>('')
@@ -618,13 +641,25 @@ function DashboardContent() {
     }
 
     setStore(storeRecord)
-    if (storeRecord.approval_status !== 'APPROVED') {
-      setModalStatus({
-        status: storeRecord.approval_status ?? '',
-        reason: storeRecord.approval_reason ?? '',
-      })
-      setShowStatusModal(true)
+    const approval = String(storeRecord.approval_status || '').toUpperCase()
+    if (approval === 'APPROVED') {
+      setShowStatusModal(false)
+      setStatusNoticeDismissed(false)
+      statusNoticeDismissedRef.current = false
+      return
     }
+    if (!approval) return
+    setModalStatus({
+      status: storeRecord.approval_status ?? '',
+      reason: storeRecord.approval_reason ?? '',
+    })
+    // Do not re-open modal / wipe dismissed flag on every storeRecord refresh.
+    if (statusNoticeDismissedRef.current) {
+      setShowStatusModal(false)
+      setStatusNoticeDismissed(true)
+      return
+    }
+    setShowStatusModal(true)
   }, [storeRecord])
 
   // Instant paint from last-known local status while network fetch runs.
@@ -873,6 +908,16 @@ function DashboardContent() {
   }, [storeId, isStoreOpen])
 
   // Status Modal Component
+  const dismissStatusModal = () => {
+    statusNoticeDismissedRef.current = true
+    setShowStatusModal(false)
+    setStatusNoticeDismissed(true)
+  }
+
+  const approvalStatusUpper = String(store?.approval_status || modalStatus.status || '').toUpperCase()
+  const opsCardsLockedUntilVerified =
+    !!approvalStatusUpper && approvalStatusUpper !== 'APPROVED' && approvalStatusUpper !== 'DRAFT'
+
   const StatusModal = () => {
     if (!showStatusModal) return null
     
@@ -890,14 +935,22 @@ function DashboardContent() {
     return (
       <Dialog 
         open={showStatusModal} 
-        onClose={() => {}} 
+        onClose={dismissStatusModal} 
         className="relative z-50"
       >
         <div className="fixed inset-0 bg-black/30 backdrop-blur-sm" aria-hidden="true" />
         <div className="fixed inset-0 flex items-center justify-center p-4">
-          <Dialog.Panel className="mx-auto max-w-md rounded-2xl bg-white/95 backdrop-blur-md p-8 shadow-2xl border border-gray-200">
+          <Dialog.Panel className="relative mx-auto max-w-md rounded-2xl bg-white/95 backdrop-blur-md p-8 shadow-2xl border border-gray-200">
+            <button
+              type="button"
+              onClick={dismissStatusModal}
+              className="absolute right-3 top-3 rounded-lg p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-gray-300"
+              aria-label="Close"
+            >
+              <X size={18} strokeWidth={2} />
+            </button>
             {/* Store Status Title with Color */}
-            <Dialog.Title className={`text-2xl font-bold mb-4 ${getStatusColor()}`}>
+            <Dialog.Title className={`text-2xl font-bold mb-4 pr-8 ${getStatusColor()}`}>
               Store Status
             </Dialog.Title>
             
@@ -946,13 +999,11 @@ function DashboardContent() {
             </div>
             
             <button
-              onClick={() => {
-                setShowStatusModal(false)
-                router.push('/auth/search')
-              }}
+              type="button"
+              onClick={dismissStatusModal}
               className="w-full px-4 py-3 bg-gradient-to-r from-blue-600 to-blue-700 text-white rounded-xl font-semibold hover:from-blue-700 hover:to-blue-800 transition-all shadow-md hover:shadow-lg"
             >
-              Back to Home
+              Got It
             </button>
           </Dialog.Panel>
         </div>
@@ -961,6 +1012,11 @@ function DashboardContent() {
   }
 
   const handleStoreToggle = () => {
+    const approval = String(store?.approval_status || '').toUpperCase()
+    if (approval !== 'APPROVED') {
+      toast.error('Store status is locked until your store is verified.')
+      return
+    }
     if (!isStoreOpen && isTodayScheduledClosed) {
       toast.error('Today is scheduled closed. Update Outlet Timings to open on this day.')
       return
@@ -1326,6 +1382,39 @@ function DashboardContent() {
         restaurantId={storeId || ''}
       >
         <PartnerPageHeader title="Dashboard" subtitle="GatiMitra · Operations command center" />
+        {(() => {
+          const approval = String(store?.approval_status || modalStatus.status || '').toUpperCase()
+          const showMarquee =
+            statusNoticeDismissed &&
+            !showStatusModal &&
+            approval !== 'APPROVED' &&
+            approval !== '' &&
+            approval !== 'DRAFT'
+          if (!showMarquee) return null
+          const marqueeText =
+            approval === 'REJECTED'
+              ? 'Store registration rejected — online/offline controls stay locked until you fix and get verified.'
+              : 'Under verification — our team is reviewing your store. Online/offline controls stay locked until verified.'
+          return (
+            <div
+              className="shrink-0 overflow-hidden border-b border-amber-200 bg-amber-50 py-2"
+              role="status"
+              aria-live="polite"
+            >
+              <div className="flex w-max animate-store-closed-marquee">
+                {[0, 1].map((copy) => (
+                  <span
+                    key={copy}
+                    className="shrink-0 px-6 text-xs sm:text-sm font-semibold text-amber-950 whitespace-nowrap"
+                    aria-hidden={copy === 1}
+                  >
+                    {marqueeText} · {marqueeText} ·{' '}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )
+        })()}
         <MerchantWeatherBanner storeId={storeId} />
         <div className="flex-1 flex flex-col min-h-0 bg-[#f8fafc] overflow-hidden w-full">
           <div className="dashboard-scroll hide-scrollbar flex-1 min-h-0 overflow-y-auto overflow-x-hidden px-3 sm:px-5 lg:px-8 py-3 sm:py-4">
@@ -1334,7 +1423,8 @@ function DashboardContent() {
               <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 items-stretch pb-1">
                 {/* Wallet & Earnings */}
                 <section className="min-w-0 flex flex-col h-full">
-                  <div className="flex flex-1 flex-col min-h-[240px] sm:min-h-[252px] rounded-xl border-2 border-teal-500 bg-white/40 p-3 sm:p-3.5">
+                  <div className="relative flex flex-1 flex-col min-h-[240px] sm:min-h-[252px] overflow-hidden rounded-xl border-2 border-teal-500 bg-white/40 p-3 sm:p-3.5">
+                    <VerificationLockedCardOverlay locked={opsCardsLockedUntilVerified} />
                     <div className="flex items-start gap-2 mb-3 shrink-0">
                       <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-emerald-500/[0.08] text-emerald-600 ring-1 ring-emerald-500/15">
                         <Wallet className="h-4 w-4" strokeWidth={2} />
@@ -1386,7 +1476,7 @@ function DashboardContent() {
                 {/* Store status — full border; color reflects state when closed */}
                 <section className="min-w-0 flex flex-col h-full">
                   <div
-                    className={`flex flex-1 flex-col min-h-[240px] sm:min-h-[252px] rounded-xl border-2 bg-white/40 p-3 sm:p-3.5 ${
+                    className={`relative flex flex-1 flex-col min-h-[240px] sm:min-h-[252px] overflow-hidden rounded-xl border-2 bg-white/40 p-3 sm:p-3.5 ${
                       isStoreOpen
                         ? 'border-teal-500'
                         : restrictionType === 'MANUAL_HOLD'
@@ -1394,6 +1484,7 @@ function DashboardContent() {
                           : 'border-red-500'
                     }`}
                   >
+                    <VerificationLockedCardOverlay locked={opsCardsLockedUntilVerified} />
                     {!storeOpsReady && storeOpsFetching ? (
                       <div className="flex flex-1 flex-col gap-3 animate-pulse min-h-[200px]">
                         <div className="flex items-start justify-between gap-2">
@@ -1466,7 +1557,13 @@ function DashboardContent() {
                       <button
                         type="button"
                         onClick={handleStoreToggle}
-                        className={`shrink-0 flex h-10 w-10 items-center justify-center rounded-full text-white shadow-sm transition-transform hover:scale-105 active:scale-95 focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 ${
+                        disabled={String(store?.approval_status || '').toUpperCase() !== 'APPROVED'}
+                        title={
+                          String(store?.approval_status || '').toUpperCase() !== 'APPROVED'
+                            ? 'Available after store is verified'
+                            : undefined
+                        }
+                        className={`shrink-0 flex h-10 w-10 items-center justify-center rounded-full text-white shadow-sm transition-transform hover:scale-105 active:scale-95 focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-45 disabled:hover:scale-100 ${
                           isStoreOpen
                             ? 'bg-emerald-500 hover:bg-emerald-600 focus-visible:ring-emerald-500'
                             : restrictionType === 'MANUAL_HOLD'
@@ -1652,7 +1749,8 @@ function DashboardContent() {
 
                 {/* Delivery */}
                 <section className="min-w-0 flex flex-col h-full">
-                  <div className="flex flex-1 flex-col min-h-[240px] sm:min-h-[252px] rounded-xl border-2 border-teal-500 bg-white/40 p-3 sm:p-3.5">
+                  <div className="relative flex flex-1 flex-col min-h-[240px] sm:min-h-[252px] overflow-hidden rounded-xl border-2 border-teal-500 bg-white/40 p-3 sm:p-3.5">
+                    <VerificationLockedCardOverlay locked={opsCardsLockedUntilVerified} />
                     <div className="flex items-start gap-2 mb-2 shrink-0">
                       <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-orange-500/[0.08] text-orange-600 ring-1 ring-orange-500/15">
                         <Truck className="h-4 w-4" strokeWidth={2} />

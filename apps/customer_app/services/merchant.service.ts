@@ -176,6 +176,8 @@ export type MerchantDetail = MerchantSummary & {
   operationalStatus?: string | null;
   avgPreparationTimeMinutes?: number | null;
   city?: string | null;
+  /** Numeric PK from merchant_stores.id — used for store-scoped Supabase realtime filters. */
+  storeNumericId?: number | null;
 };
 
 export type NearbyStore = {
@@ -444,6 +446,12 @@ function normalizeMerchantDetail(data: MerchantDetail): MerchantDetail {
         ? Number(data.menuVersion)
         : undefined,
     etag: typeof data.etag === "string" ? data.etag : undefined,
+    storeNumericId: (() => {
+      // Backend sends the numeric merchant_stores.id as `id` on the detail response.
+      const raw = (r as Record<string, unknown>).storeNumericId ?? (r as Record<string, unknown>).id;
+      const n = raw != null ? Number(raw) : NaN;
+      return Number.isFinite(n) && n > 0 ? n : (data.storeNumericId ?? null);
+    })(),
   };
 }
 

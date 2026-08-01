@@ -49,6 +49,18 @@ interface RiderRouteMapProps {
   dropLon: number | null | undefined;
   initialTracking?: OrderRiderTrackingPayload | null;
   className?: string;
+  /** Legend label for pickup/store pin. Defaults to "Restaurant" (food). */
+  pickupLegendLabel?: string;
+  /** Legend label for drop/customer pin. Defaults to "Customer (after pickup)". */
+  dropLegendLabel?: string;
+  /** Badge text before pickup. Defaults to "Rider → restaurant". */
+  prePickupMovementLabel?: string;
+  /** Badge text after pickup. Defaults to "Rider → customer". */
+  postPickupMovementLabel?: string;
+  /** When true, always show the drop pin (person ride). Food keeps post-pickup-only. */
+  alwaysShowDropMarker?: boolean;
+  /** Pickup teardrop icon. Food = building; person ride = person. */
+  pickupPinStyle?: "building" | "person";
 }
 
 const RIDER_MAP_BIKE_SRC = "/mapbike.png";
@@ -359,8 +371,13 @@ function resolveLiveRouteEndpoints(
   return null;
 }
 
-function movementPhaseLabel(phaseArgs: PostPickupPhaseArgs): string {
-  return isPostPickupPhase(phaseArgs) ? "Rider → customer" : "Rider → restaurant";
+function movementPhaseLabel(
+  phaseArgs: PostPickupPhaseArgs,
+  labels?: { pre?: string; post?: string }
+): string {
+  return isPostPickupPhase(phaseArgs)
+    ? labels?.post ?? "Rider → customer"
+    : labels?.pre ?? "Rider → restaurant";
 }
 
 async function fetchMapboxDrivingGeometry(
@@ -399,6 +416,9 @@ const TEARDROP_PIN_SVG = `<svg class="gm-teardrop-pin__shape" viewBox="0 0 32 42
 
 const STORE_BUILDING_SVG = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M9 22V12h6v10"/></svg>`;
 
+/** Person-ride pickup — person silhouette instead of store/building. */
+const PICKUP_PERSON_SVG = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="8" r="3.5"/><path d="M5.5 20c1.2-3.5 3.6-5 6.5-5s5.3 1.5 6.5 5"/></svg>`;
+
 function markerInitials(name: string | null | undefined): string {
   const parts = (name ?? "")
     .trim()
@@ -412,7 +432,8 @@ function markerInitials(name: string | null | undefined): string {
 function appendTeardropPin(
   pin: HTMLDivElement,
   variant: "store" | "customer",
-  displayName?: string | null
+  displayName?: string | null,
+  storeIconStyle: "building" | "person" = "building"
 ) {
   pin.classList.add("gm-location-marker__pin--teardrop");
   const wrap = document.createElement("div");
@@ -422,7 +443,7 @@ function appendTeardropPin(
   const icon = document.createElement("div");
   icon.className = `gm-teardrop-pin__icon gm-teardrop-pin__icon--${variant}`;
   if (variant === "store") {
-    icon.innerHTML = STORE_BUILDING_SVG;
+    icon.innerHTML = storeIconStyle === "person" ? PICKUP_PERSON_SVG : STORE_BUILDING_SVG;
   } else {
     icon.textContent = markerInitials(displayName);
   }
@@ -441,8 +462,17 @@ function createLocationMarkerElement(config: {
   name?: string | null;
   labelOpen?: boolean;
   headingDeg?: number | null;
+  /** Food keeps building; person-ride uses person silhouette on pickup pin. */
+  storeIconStyle?: "building" | "person";
 }): HTMLDivElement {
-  const { variant, label, name, labelOpen = false, headingDeg } = config;
+  const {
+    variant,
+    label,
+    name,
+    labelOpen = false,
+    headingDeg,
+    storeIconStyle = "building",
+  } = config;
   const displayName = name?.trim();
 
   const root = document.createElement("div");
@@ -511,7 +541,7 @@ function createLocationMarkerElement(config: {
     }
     pin.appendChild(img);
   } else {
-    appendTeardropPin(pin, variant, displayName);
+    appendTeardropPin(pin, variant, displayName, storeIconStyle);
   }
 
   root.append(chip, pin);
@@ -541,6 +571,12 @@ export default function RiderRouteMap({
   dropLon,
   initialTracking = null,
   className = "",
+  pickupLegendLabel = "Restaurant",
+  dropLegendLabel = "Customer (after pickup)",
+  prePickupMovementLabel = "Rider → restaurant",
+  postPickupMovementLabel = "Rider → customer",
+  alwaysShowDropMarker = false,
+  pickupPinStyle = "building",
 }: RiderRouteMapProps) {
   const storePoint = useMemo(
     () =>
@@ -638,12 +674,24 @@ export default function RiderRouteMap({
   const dropRef = useRef(effectiveDrop);
   const storeNameRef = useRef(storeName);
   const customerNameRef = useRef(customerName);
+  const alwaysShowDropMarkerRef = useRef(alwaysShowDropMarker);
+  const pickupPinStyleRef = useRef(pickupPinStyle);
+  const movementLabelsRef = useRef({
+    pre: prePickupMovementLabel,
+    post: postPickupMovementLabel,
+  });
   const initStartedRef = useRef(false);
 
   storeRef.current = storePoint;
   dropRef.current = effectiveDrop;
   storeNameRef.current = storeName;
   customerNameRef.current = customerName;
+  alwaysShowDropMarkerRef.current = alwaysShowDropMarker;
+  pickupPinStyleRef.current = pickupPinStyle;
+  movementLabelsRef.current = {
+    pre: prePickupMovementLabel,
+    post: postPickupMovementLabel,
+  };
 
   const [containerReady, setContainerReady] = useState(false);
 
@@ -1078,7 +1126,9 @@ export default function RiderRouteMap({
 
     const pointEntries = [
       ...(pickupPoint ? [{ id: "store" as const, point: pickupPoint }] : []),
-      ...(postPickup && dropPoint ? [{ id: "customer" as const, point: dropPoint }] : []),
+      ...((postPickup || alwaysShowDropMarkerRef.current) && dropPoint
+        ? [{ id: "customer" as const, point: dropPoint }]
+        : []),
       ...(riderRouteAnchor ? [{ id: "rider" as const, point: riderRouteAnchor }] : []),
     ];
     const offsets = overlapMarkerOffsets(pointEntries);
@@ -1100,6 +1150,7 @@ export default function RiderRouteMap({
         label,
         name,
         labelOpen: labelWasOpen,
+        storeIconStyle: kind === "store" ? pickupPinStyleRef.current : "building",
       });
       markersRef.current[kind] = new mapboxgl.Marker({
         element: el,
@@ -1111,14 +1162,24 @@ export default function RiderRouteMap({
     };
 
     if (pickupPoint) {
-      placeMarker("store", pickupPoint, "Store Location", storeNameRef.current);
+      placeMarker(
+        "store",
+        pickupPoint,
+        alwaysShowDropMarkerRef.current ? "Pickup" : "Store Location",
+        storeNameRef.current
+      );
     } else if (markersRef.current.store) {
       markersRef.current.store.remove();
       markersRef.current.store = undefined;
     }
 
-    if (postPickup && dropPoint) {
-      placeMarker("customer", dropPoint, "Customer", customerNameRef.current);
+    if ((postPickup || alwaysShowDropMarkerRef.current) && dropPoint) {
+      placeMarker(
+        "customer",
+        dropPoint,
+        alwaysShowDropMarkerRef.current ? "Drop" : "Customer",
+        customerNameRef.current
+      );
     } else if (markersRef.current.customer) {
       markersRef.current.customer.remove();
       markersRef.current.customer = undefined;
@@ -1145,7 +1206,10 @@ export default function RiderRouteMap({
       const assignmentStatus = json.rider?.assignment_status;
       setMovementLabel(
         json.location
-          ? `${routeStatusLabel(json, riderId)} · ${movementPhaseLabel(buildPhaseArgs(assignmentStatus))}`
+          ? `${routeStatusLabel(json, riderId)} · ${movementPhaseLabel(
+              buildPhaseArgs(assignmentStatus),
+              movementLabelsRef.current
+            )}`
           : routeStatusLabel(json, riderId)
       );
     } catch {
@@ -1385,7 +1449,9 @@ export default function RiderRouteMap({
       const postPickup = isPostPickupPhase(buildPhaseArgs(assignmentStatus));
       const offsets = overlapMarkerOffsets([
         ...(pickupPoint ? [{ id: "store", point: pickupPoint }] : []),
-        ...(postPickup && dropPoint ? [{ id: "customer", point: dropPoint }] : []),
+        ...((postPickup || alwaysShowDropMarkerRef.current) && dropPoint
+          ? [{ id: "customer", point: dropPoint }]
+          : []),
         { id: "rider", point: riderRouteAnchor },
       ]);
       const riderOffset = offsets.get("rider") ?? [0, 0];
@@ -1719,14 +1785,14 @@ export default function RiderRouteMap({
               <path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7z" />
             </svg>
           </span>
-          Restaurant
+          {pickupLegendLabel}
         </span>
-        {mapPostPickup ? (
+        {mapPostPickup || alwaysShowDropMarker ? (
           <span className="inline-flex items-center gap-1">
             <span className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-violet-600 text-[7px] font-bold text-white">
               CX
             </span>
-            Customer (after pickup)
+            {dropLegendLabel}
           </span>
         ) : null}
         <span className="inline-flex items-center gap-1">

@@ -113,6 +113,8 @@ export function useCustomersQuery(params: CustomersQueryParams = {}) {
     queryFn: ({ signal }) => fetchCustomers(queryParams, signal),
     enabled,
     ...getCacheConfig(CacheTier.MEDIUM), // Customers list is medium frequency
+    // Never reuse previous search rows as placeholder — auto-redirect would open the wrong customer.
+    placeholderData: undefined,
   });
 
   return {

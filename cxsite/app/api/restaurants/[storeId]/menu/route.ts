@@ -216,9 +216,13 @@ export async function GET(
       })
       .filter((row): row is NonNullable<typeof row> => row != null)
 
-    return NextResponse.json({ items, categories })
+    const response = NextResponse.json({ items, categories })
+    response.headers.set('Cache-Control', 'no-store, no-cache, must-revalidate')
+    return response
   } catch (err) {
     console.error('[GET /api/restaurants/[storeId]/menu]', err)
-    return NextResponse.json({ error: 'Internal server error', items: [], categories: [] }, { status: 500 })
+    const errResponse = NextResponse.json({ error: 'Internal server error', items: [], categories: [] }, { status: 500 })
+    errResponse.headers.set('Cache-Control', 'no-store, no-cache, must-revalidate')
+    return errResponse
   }
 }

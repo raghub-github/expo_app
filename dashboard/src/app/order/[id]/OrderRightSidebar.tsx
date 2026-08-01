@@ -43,6 +43,7 @@ import {
 import {
   fetchRiderActivityLogCached,
 } from "@/lib/riderActivityLogCache";
+import { OrderMixedText, OrderNum } from "@/components/orders/orders-typography";
 
 interface OrderRightSidebarProps {
   order: {
@@ -1617,7 +1618,7 @@ export default function OrderRightSidebar({
           <div className="flex items-center justify-between gap-2">
             <dt className="shrink-0">Items:</dt>
             <dd className="flex min-w-0 items-center justify-end gap-1.5 font-medium text-slate-700">
-              <span>({displayItemCount ?? "—"})</span>
+              <OrderNum>({displayItemCount ?? "—"})</OrderNum>
               <span
                 role="button"
                 tabIndex={0}
@@ -1641,7 +1642,11 @@ export default function OrderRightSidebar({
           <div className="flex items-center justify-between gap-2">
             <dt className="shrink-0">Distance:</dt>
             <dd className="font-medium text-slate-700">
-              {order.distanceKm != null ? `${Number(order.distanceKm).toFixed(2)} km` : "—"}
+              {order.distanceKm != null ? (
+                <OrderMixedText>{`${Number(order.distanceKm).toFixed(2)} km`}</OrderMixedText>
+              ) : (
+                "—"
+              )}
             </dd>
           </div>
           <div className="flex items-center justify-between gap-2">
@@ -1683,7 +1688,7 @@ export default function OrderRightSidebar({
           <div className="flex items-center justify-between gap-2">
             <dt className="shrink-0">System KPT:</dt>
             <dd
-              className={`font-medium ${
+              className={`font-medium orders-num ${
                 showMerchantKpt
                   ? "text-slate-400 line-through decoration-slate-400"
                   : "text-slate-700"
@@ -1695,7 +1700,7 @@ export default function OrderRightSidebar({
           {showMerchantKpt ? (
             <div className="flex items-center justify-between gap-2">
               <dt className="shrink-0">Merchant updated KPT:</dt>
-              <dd className="font-medium text-slate-700">
+              <dd className="font-medium text-slate-700 orders-num">
                 {formatKptMinutes(order.merchantUpdatedKptMinutes)}
               </dd>
             </div>
@@ -1706,7 +1711,7 @@ export default function OrderRightSidebar({
               Kitchen Delay Buffer (MX):
               </dt>
               <dd>
-                <span className="inline-flex items-center rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-semibold text-amber-800 ring-1 ring-amber-200">
+                <span className="inline-flex items-center rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-semibold text-amber-800 ring-1 ring-amber-200 orders-num">
                   {formatMerchantExtraPrepMinutes(merchantExtraPrepMinutes)}
                 </span>
               </dd>
@@ -1721,7 +1726,7 @@ export default function OrderRightSidebar({
                 Mx preparation Delay
               </dt>
               <dd>
-                <span className="inline-flex items-center rounded-full bg-red-50 px-2 py-0.5 text-[10px] font-semibold text-red-800 ring-1 ring-red-200">
+                <span className="inline-flex items-center rounded-full bg-red-50 px-2 py-0.5 text-[10px] font-semibold text-red-800 ring-1 ring-red-200 orders-num">
                   {formatDurationSecondsLabel(storePrepDelayDisplaySeconds, {
                     live: storePrepDelayLive,
                     onTimeLabel: "0:00:00",
@@ -1748,13 +1753,13 @@ export default function OrderRightSidebar({
           </div>
           <div className="flex items-center justify-between gap-2">
             <dt className="shrink-0">Order ID:</dt>
-            <dd className="min-w-0 truncate font-medium text-slate-700 text-right">
+            <dd className="min-w-0 truncate font-medium text-slate-700 text-right orders-num">
               {displayOrderId}
             </dd>
           </div>
           <div className="flex items-center justify-between gap-2">
             <dt className="shrink-0">First ETA:</dt>
-            <dd className="min-w-0 font-medium text-slate-700 text-right">
+            <dd className="min-w-0 font-medium text-slate-700 text-right orders-num">
               {formatFirstEtaAt(
                 order.firstEtaAt ??
                   order.estimatedDeliveryTime ??
@@ -1847,7 +1852,7 @@ export default function OrderRightSidebar({
             }}
           >
             <i className="bi bi-list-check" />
-            See all ({remarksCountDisplay})
+            <OrderMixedText>{`See all (${remarksCountDisplay})`}</OrderMixedText>
           </button>
         </div>
         <div className="space-y-2">
@@ -1919,7 +1924,7 @@ export default function OrderRightSidebar({
             onClick={() => setShowNotificationsModal(true)}
           >
             <i className="bi bi-list-check" />
-            See all ({notificationsCountDisplay})
+            <OrderMixedText>{`See all (${notificationsCountDisplay})`}</OrderMixedText>
           </button>
         </div>
         {notifications[0] ? (
@@ -1970,7 +1975,7 @@ export default function OrderRightSidebar({
             className="text-xs text-emerald-700 hover:text-emerald-800 cursor-pointer underline-offset-2 hover:underline"
             onClick={() => setShowReconsModal(true)}
           >
-            See all ({reconsCountDisplay})
+            <OrderMixedText>{`See all (${reconsCountDisplay})`}</OrderMixedText>
           </button>
         </div>
         <div className="space-y-2">
@@ -2169,7 +2174,8 @@ export default function OrderRightSidebar({
                 ) : null}
                 <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-slate-600">
                   <span>
-                    <span className="font-medium text-slate-600">Rejected at:</span> {entry.at}
+                    <span className="font-medium text-slate-600">Rejected at:</span>{" "}
+                    <OrderNum>{entry.at}</OrderNum>
                   </span>
                   {entry.by ? (
                     <span>
@@ -2179,7 +2185,7 @@ export default function OrderRightSidebar({
                 </div>
                 {entry.amount ? (
                   <p className="text-[11px] text-slate-500 pt-0.5">
-                    Refund amount: ₹{entry.amount}
+                    <OrderMixedText>{`Refund amount: ₹${entry.amount}`}</OrderMixedText>
                   </p>
                 ) : null}
               </div>
@@ -2291,13 +2297,13 @@ export default function OrderRightSidebar({
                             )}
                             {r.editedTimeLabel && (
                               <div className="mt-0.5 text-[10px] text-slate-400">
-                                Edited {r.editedTimeLabel}
+                                <OrderMixedText>{`Edited ${r.editedTimeLabel}`}</OrderMixedText>
                               </div>
                             )}
                           </div>
                         </div>
                         <div className="text-[11px] text-slate-500 whitespace-nowrap">
-                          {r.time}
+                          <OrderNum>{r.time}</OrderNum>
                         </div>
                       </div>
 
@@ -2497,7 +2503,7 @@ export default function OrderRightSidebar({
                           </div>
                         </div>
                         <div className="text-[11px] text-slate-500 whitespace-nowrap shrink-0">
-                          {n.time}
+                          <OrderNum>{n.time}</OrderNum>
                         </div>
                       </div>
                     </div>
@@ -2581,7 +2587,7 @@ export default function OrderRightSidebar({
                                 layout="inline"
                               />
                             </td>
-                            <td className="px-3 py-2 align-top whitespace-nowrap text-[11px] text-gray-900 border-r border-gray-100">
+                            <td className="px-3 py-2 align-top whitespace-nowrap text-[11px] text-gray-900 border-r border-gray-100 orders-num">
                               {r.time}
                             </td>
                             <td className="px-3 py-2 align-top text-[11px] text-gray-900 border-r border-gray-100 min-w-[9rem]">

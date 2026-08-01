@@ -5071,6 +5071,9 @@ const StoreRegistrationForm = () => {
               key={`step-4-docs-${selectedStorePublicId || draftStorePublicId || 'new'}`}
               initialDocuments={documents}
               verificationBankRejectionReason={verificationBankRejectionReason}
+              verificationDocFixActive={
+                verificationLock != null && verificationLock.partnerStep === 4
+              }
               onDocumentComplete={(docs, savedPatch) =>
                 void handleDocumentUploadComplete(docs as unknown as DocumentData, savedPatch)
               }

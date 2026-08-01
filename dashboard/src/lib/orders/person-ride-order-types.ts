@@ -18,4 +18,6 @@ export type PersonRideOrderDetail = {
   parkingCharges: number | null;
   pickupDistanceFromBookerKm: number | null;
   intermediateStopsCount: number;
+  /** ISO timestamp when admin cleared rider payment-wait hold; null if not cleared. */
+  adminRiderPaymentClearedAt: string | null;
 };

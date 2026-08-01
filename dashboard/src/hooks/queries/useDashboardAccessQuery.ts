@@ -150,12 +150,14 @@ export function useHasAccessPoint(
  * Backward compatibility hook - returns the same interface as the old useDashboardAccess
  */
 export function useDashboardAccess() {
-  const { data, isLoading, error } = useDashboardAccessQuery();
+  const { data, isLoading, isPending, isFetching, error } = useDashboardAccessQuery();
 
   return {
     dashboards: data?.dashboards ?? [],
     accessPoints: data?.accessPoints ?? [],
-    loading: isLoading,
+    // Only treat as loading when we have no cached answer yet — never flash sidebar on remount.
+    loading: (isLoading || isPending) && data === undefined && !error,
     error: error ? (error instanceof Error ? error.message : "Unknown error") : null,
+    isFetching,
   };
 }

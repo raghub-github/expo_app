@@ -9,10 +9,18 @@ import {
 
 type ResolvePayload = {
   success?: boolean;
+  code?: string;
   parentId?: number;
   stores?: Array<{ store_id: string }>;
   onboardingProgress?: { parent_id?: number } | null;
 };
+
+const FATAL_AUTH_CODES = new Set([
+  'SESSION_INVALID',
+  'DEVICE_SESSION_INVALID',
+  'SESSION_REQUIRED',
+  'MERCHANT_NOT_FOUND',
+]);
 
 /**
  * Blocks /partners/* (except all-stores) until the parent owns ≥1 child store.
@@ -21,7 +29,7 @@ type ResolvePayload = {
 export function PartnerStoreAccessGate({ children }: { children: React.ReactNode }) {
   const pathname = usePathname() ?? '';
   const router = useRouter();
-  const [allowed, setAllowed] = useState(false);
+  const [allowed, setAllowed] = useState<boolean | null>(null);
 
   const isAllStores = pathname === '/partners/all-stores' || pathname.startsWith('/partners/all-stores/');
 
@@ -37,19 +45,35 @@ export function PartnerStoreAccessGate({ children }: { children: React.ReactNode
 
       try {
         const res = await fetch('/api/merchant-auth/resolve-session', { credentials: 'include' });
-        if (!res.ok) {
-          if (!cancelled) {
-            clearPartnerStoreSelection();
-            window.location.href = '/auth/login';
-          }
+        const data = (await res.json().catch(() => ({}))) as ResolvePayload;
+
+        // Transient / unavailable — do not bounce to login (middleware already authenticated the page).
+        if (res.status === 503 || data.code === 'SERVICE_UNAVAILABLE') {
+          if (!cancelled) setAllowed(true);
           return;
         }
-        const data = (await res.json()) as ResolvePayload;
-        if (!data?.success) {
-          if (!cancelled) {
-            clearPartnerStoreSelection();
-            window.location.href = '/auth/login';
+
+        const fatal =
+          res.status === 401 ||
+          (res.ok === false && FATAL_AUTH_CODES.has(String(data.code || ''))) ||
+          (!data?.success && FATAL_AUTH_CODES.has(String(data.code || '')));
+
+        if (fatal || (!res.ok && res.status !== 503)) {
+          // Only hard-redirect on authentic auth failures — never on ambiguous 5xx.
+          if (res.status === 401 || FATAL_AUTH_CODES.has(String(data.code || ''))) {
+            if (!cancelled) {
+              clearPartnerStoreSelection();
+              window.location.href = '/auth/login';
+            }
+            return;
           }
+          if (!cancelled) setAllowed(true);
+          return;
+        }
+
+        if (!data?.success) {
+          // Ambiguous failure with 200 — fail open so refresh does not force re-login.
+          if (!cancelled) setAllowed(true);
           return;
         }
 
@@ -89,12 +113,9 @@ export function PartnerStoreAccessGate({ children }: { children: React.ReactNode
     };
   }, [isAllStores, pathname, router]);
 
-  if (!allowed) {
-    return (
-      <div className="flex min-h-[40vh] items-center justify-center text-sm text-slate-500">
-        Checking store access…
-      </div>
-    );
+  // null = check pending (suppress any flash); false = redirect in progress
+  if (allowed !== true) {
+    return null;
   }
 
   return <>{children}</>;

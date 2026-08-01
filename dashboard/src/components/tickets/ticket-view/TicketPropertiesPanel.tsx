@@ -9,6 +9,7 @@ import { useTicketsReferenceDataQuery } from "@/hooks/tickets/useTicketsReferenc
 import { useToast } from "@/context/ToastContext";
 import { useRightSidebar } from "@/context/RightSidebarContext";
 import type { TicketOtherAgentViewer } from "@/lib/tickets/ticket-presence";
+import { TicketNum } from "@/components/tickets/tickets-typography";
 
 const PRIORITY_DOT: Record<string, string> = {
   low: "bg-gray-400",
@@ -388,17 +389,19 @@ export function TicketPropertiesPanel({ ticketId }: { ticketId: number | string 
     .replace(/_/g, " ")
     .replace(/\b\w/g, (c) => c.toUpperCase());
   const inputCls =
-    "w-full rounded-lg border border-gray-300 bg-white px-2.5 py-2 text-xs text-gray-900 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 focus:outline-none appearance-none cursor-pointer";
-  const labelCls = "mb-1 block text-xs font-medium text-gray-600";
+    "w-full rounded-lg border border-gray-300 bg-white px-2.5 py-1.5 text-xs text-gray-900 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 focus:outline-none appearance-none cursor-pointer";
+  const labelCls = "mb-0.5 block text-[11px] font-medium text-gray-600";
   const igmActionOptions = ["REFUND", "NO-ACTION", "REPLACEMENT", "CANCEL"];
 
   return (
-    <div className="flex h-full flex-col overflow-hidden bg-[#f3f5f7]">
-      <div className="border-b border-gray-200 bg-gradient-to-b from-white to-[#f3f5f7] px-4 pb-3 pt-3">
+    <div className="tickets-typo flex h-full flex-col overflow-hidden bg-[#f3f5f7]">
+      <div className="shrink-0 bg-gradient-to-b from-white to-[#f3f5f7] px-3 pb-2 pt-2.5">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0 flex-1">
-            <p className="text-[20px] font-semibold leading-tight tracking-tight text-[#1f3553]">{statusLabel}</p>
-            <p className="mt-1 text-xs font-medium text-[#4b647f]">on {formatStatusTime(statusTime)}</p>
+            <p className="text-[17px] font-semibold leading-tight tracking-tight text-[#1f3553]">{statusLabel}</p>
+            <p className="mt-0.5 text-[11px] font-medium text-[#4b647f]">
+              on <TicketNum>{formatStatusTime(statusTime)}</TicketNum>
+            </p>
           </div>
           {ticketOtherAgentViewers.length > 0 || ticketCopresenceLive ? (
             <div className="flex shrink-0 items-center gap-2 pt-0.5">
@@ -409,16 +412,16 @@ export function TicketPropertiesPanel({ ticketId }: { ticketId: number | string 
         </div>
       </div>
 
-      <div className="flex-1 space-y-4 overflow-y-auto px-3 py-3">
-        <h2 className="text-xs font-semibold uppercase tracking-wide text-gray-500">Properties</h2>
-        <div className="rounded-lg border border-gray-200 bg-white px-2.5 py-2">
+      <div className="min-h-0 flex-1 space-y-2.5 overflow-y-auto px-3 pb-2 pt-2">
+        <h2 className="text-[10px] font-semibold uppercase tracking-wide text-gray-500">Properties</h2>
+        <div className="rounded-lg border border-gray-200 bg-white px-2.5 py-1.5">
           <div className="flex items-center justify-between">
-            <p className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">Mark FRT</p>
+            <p className="text-[10px] font-semibold uppercase tracking-wide text-gray-500">Mark FRT</p>
             <button
               type="button"
               onClick={handleMarkFrt}
               disabled={frtMarked || updateTicket.isPending}
-              className={`rounded-md border px-2 py-1 text-[10px] font-semibold transition-colors ${
+              className={`rounded-md border px-2 py-0.5 text-[10px] font-semibold transition-colors ${
                 frtMarked
                   ? "cursor-not-allowed border-emerald-300 bg-emerald-50 text-emerald-700"
                   : "cursor-pointer border-gray-300 bg-gray-50 text-gray-700 hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-60"
@@ -429,12 +432,18 @@ export function TicketPropertiesPanel({ ticketId }: { ticketId: number | string 
           </div>
           {!frtMarked && (
             <p className="mt-1 text-xs text-gray-700">
-              First response time: <span className="font-semibold text-[#1f3553]">{frtText}</span>
+              First response time:{" "}
+              <span className="font-semibold text-[#1f3553]">
+                <TicketNum>{frtText}</TicketNum>
+              </span>
             </p>
           )}
           {frtMarked && frtMarkedAtText && (
             <p className="mt-1 text-[11px] text-emerald-700">
-              Marked at: <span className="font-semibold">{frtMarkedAtText}</span>
+              Marked at:{" "}
+              <span className="font-semibold">
+                <TicketNum>{frtMarkedAtText}</TicketNum>
+              </span>
             </p>
           )}
         </div>
@@ -478,7 +487,7 @@ export function TicketPropertiesPanel({ ticketId }: { ticketId: number | string 
 
         <div>
           <label className={labelCls}>GatiMitra Queue</label>
-          <div className="flex h-10 items-center gap-2 rounded-lg border border-gray-300 bg-white px-2.5">
+          <div className="flex h-9 items-center gap-2 rounded-lg border border-gray-300 bg-white px-2.5">
             <span
               className={`min-w-0 flex-1 truncate text-xs font-medium ${
                 isHelpdeskOpenEnabled ? "text-blue-700" : "text-gray-400"
@@ -492,7 +501,7 @@ export function TicketPropertiesPanel({ ticketId }: { ticketId: number | string 
                 href={helpdeskOrderUrl ?? undefined}
                 target="_blank"
                 rel="noreferrer"
-                className="inline-flex h-7 cursor-pointer items-center rounded-md border border-gray-300 bg-gray-50 px-2.5 text-[11px] font-semibold text-gray-700 hover:bg-gray-100"
+                className="inline-flex h-6 cursor-pointer items-center rounded-md border border-gray-300 bg-gray-50 px-2 text-[10px] font-semibold text-gray-700 hover:bg-gray-100"
               >
                 Open
               </a>
@@ -500,7 +509,7 @@ export function TicketPropertiesPanel({ ticketId }: { ticketId: number | string 
               <button
                 type="button"
                 disabled
-                className="inline-flex h-7 cursor-not-allowed items-center rounded-md border border-gray-200 bg-gray-100 px-2.5 text-[11px] font-semibold text-gray-400"
+                className="inline-flex h-6 cursor-not-allowed items-center rounded-md border border-gray-200 bg-gray-100 px-2 text-[10px] font-semibold text-gray-400"
               >
                 Open
               </button>
@@ -510,7 +519,7 @@ export function TicketPropertiesPanel({ ticketId }: { ticketId: number | string 
 
         <div>
           <label className={labelCls}>Customer Dashboard</label>
-          <div className="flex h-10 items-center gap-2 rounded-lg border border-gray-300 bg-white px-2.5">
+          <div className="flex h-9 items-center gap-2 rounded-lg border border-gray-300 bg-white px-2.5">
             <a
               href={customerDashboardUrl}
               target="_blank"
@@ -524,7 +533,7 @@ export function TicketPropertiesPanel({ ticketId }: { ticketId: number | string 
               href={customerDashboardUrl}
               target="_blank"
               rel="noreferrer"
-              className="inline-flex h-7 cursor-pointer items-center rounded-md border border-gray-300 bg-gray-50 px-2.5 text-[11px] font-semibold text-gray-700 hover:bg-gray-100"
+              className="inline-flex h-6 cursor-pointer items-center rounded-md border border-gray-300 bg-gray-50 px-2 text-[10px] font-semibold text-gray-700 hover:bg-gray-100"
             >
               Open
             </a>
@@ -543,7 +552,7 @@ export function TicketPropertiesPanel({ ticketId }: { ticketId: number | string 
         </div>
 
         {/* Group */}
-        <div>
+        <div className="pb-1">
           <label className={labelCls}>Group</label>
           <GroupSingleSelect
             placeholder="Unassigned"
@@ -552,7 +561,7 @@ export function TicketPropertiesPanel({ ticketId }: { ticketId: number | string 
             onChange={setGroupId}
           />
           {ticket.automationLastRun ? (
-            <p className="mt-1.5 text-[11px] leading-snug text-gray-500">
+            <p className="mt-1 text-[10px] leading-snug text-gray-500">
               Automation:{" "}
               <span className="font-medium text-gray-700">{ticket.automationLastRun.ruleName}</span>
               {ticket.automationLastRun.ruleCode ? (
@@ -700,62 +709,14 @@ export function TicketPropertiesPanel({ ticketId }: { ticketId: number | string 
             placeholder="GRO Details"
           />
         </div>
-
-        {/* Custom Fields / Private Info — from DB + metadata */}
-        <div>
-          <label className={labelCls}>Private Info / Custom Fields</label>
-          <div className="rounded-md border border-gray-300 bg-gray-50 px-2.5 py-2 text-xs text-gray-700 space-y-1.5">
-            {(() => {
-              const md = (ticket.metadata || {}) as Record<string, unknown>;
-              const frtMarkedRaw = md.frt_marked;
-              const frtMarkedValue =
-                typeof frtMarkedRaw === "boolean" ? (frtMarkedRaw ? "TRUE" : "FALSE") : "";
-              const frtMarkedAtValue = md.frt_marked_at != null ? formatMarkedTime(String(md.frt_marked_at)) : "";
-              const frtMarkedByRaw = md.frt_marked_by != null ? String(md.frt_marked_by) : "";
-              const frtMarkedByValue =
-                frtMarkedByRaw.includes("@")
-                  ? frtMarkedByRaw
-                  : agentEmailById.get(frtMarkedByRaw) || frtMarkedByRaw;
-              const metadataRows = Object.entries(md)
-                .filter(([k]) => !["frt_marked", "frt_marked_at", "frt_marked_by"].includes(k))
-                .map(([k, v]) => ({
-                  label: k.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase()),
-                  value: v != null ? String(v) : "",
-                }));
-              return [
-                { label: "Agent Name", value: ticket.assignee?.name ?? "" },
-                { label: "Agent Email", value: ticket.assignee?.email ?? "" },
-                { label: "Status", value: ticket.status ?? "" },
-                { label: "Category", value: ticket.ticketCategory ?? "" },
-                { label: "Transaction ID", value: ticket.orderId != null ? String(ticket.orderId) : "" },
-                { label: "Frt Marked", value: frtMarkedValue },
-                { label: "Frt Marked At", value: frtMarkedAtValue },
-                { label: "Frt Marked By", value: frtMarkedByValue },
-                ...metadataRows,
-              ]
-                .filter((row) => row.value !== "" && row.value != null)
-                .map((row, i) => (
-                  <p key={i} className="flex justify-between gap-2">
-                    <span className="text-gray-500 shrink-0">{row.label}:</span>
-                    <span className="text-gray-900 truncate text-right">{row.value}</span>
-                  </p>
-                ));
-            })()}
-            {(!ticket.metadata || Object.keys(ticket.metadata).length === 0) &&
-              ticket.assignee?.name == null &&
-              ticket.orderId == null && (
-                <p className="text-gray-400">No custom fields.</p>
-              )}
-          </div>
-        </div>
       </div>
 
-      <div className="sticky bottom-0 left-0 right-0 z-10 shrink-0 border-t border-gray-200/90 bg-white px-2.5 py-2.5">
+      <div className="relative z-10 shrink-0 bg-[#f3f5f7] px-3 pb-2.5 pt-2.5">
         <button
           type="button"
           onClick={handleUpdate}
           disabled={updateTicket.isPending}
-          className="flex w-full cursor-pointer items-center justify-center gap-2 rounded border border-blue-600 bg-blue-600 px-3 py-2 text-[12px] font-semibold text-white shadow-none transition-colors disabled:cursor-not-allowed disabled:opacity-80 enabled:hover:bg-blue-700"
+          className="flex w-full cursor-pointer items-center justify-center gap-2 rounded-[10px] bg-[#121212] px-3 py-2 text-[12px] font-semibold text-white transition-colors disabled:cursor-not-allowed disabled:opacity-80 enabled:hover:bg-black"
         >
           {updateTicket.isPending ? "Updating…" : "Update"}
         </button>
@@ -812,7 +773,7 @@ function TagMultiSelect({
     <div ref={ref} className="relative">
       <div
         onClick={() => setOpen(true)}
-        className="flex min-h-[40px] cursor-pointer items-start gap-1 rounded-lg border border-gray-300 bg-white px-2.5 py-1.5"
+        className="flex min-h-[34px] cursor-pointer items-start gap-1 rounded-lg border border-gray-300 bg-white px-2.5 py-1"
       >
         <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1">
           {selectedOptions.map((opt) => (
@@ -934,7 +895,7 @@ function GroupSingleSelect({
     <div ref={ref} className="relative">
       <div
         onClick={() => setOpen((v) => !v)}
-        className="flex min-h-[40px] cursor-pointer items-start gap-1 rounded-lg border border-gray-300 bg-white px-2.5 py-1.5"
+        className="flex min-h-[34px] cursor-pointer items-start gap-1 rounded-lg border border-gray-300 bg-white px-2.5 py-1"
       >
         <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1">
           {selected ? (

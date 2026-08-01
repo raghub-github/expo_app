@@ -591,16 +591,8 @@ export type Step5Supabase = {
     select: (columns: string) => {
       eq: (col: string, val: unknown) => { maybeSingle: () => Promise<{ data: unknown; error: unknown }> };
     };
-    update: (row: Record<string, unknown>) => {
-      eq: (col: string, val: unknown) => {
-        select: (columns: string) => {
-          maybeSingle: () => Promise<{
-            data: unknown;
-            error: { message?: string; code?: string } | null;
-          }>;
-        };
-      };
-    };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    update: (row: Record<string, unknown>) => any;
   };
 };
 

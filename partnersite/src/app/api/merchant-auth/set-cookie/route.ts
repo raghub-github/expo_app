@@ -6,6 +6,8 @@ import { validateMerchantFromSession } from "@/lib/auth/validate-merchant";
 import {
   replaceSessionForDevice,
   generateDeviceId,
+  clientIpFromRequest,
+  deviceLabelFromUserAgent,
 } from "@/lib/auth/merchant-session-db";
 import { deviceIdCookie } from "@/lib/auth/auth-cookie-names";
 
@@ -55,7 +57,12 @@ export async function POST(request: NextRequest) {
         );
       }
 
-      let body: { access_token?: string; refresh_token?: string; device_id?: string };
+      let body: {
+        access_token?: string;
+        refresh_token?: string;
+        device_id?: string;
+        login_method?: string;
+      };
       try {
         body = await request.json();
       } catch {
@@ -64,7 +71,12 @@ export async function POST(request: NextRequest) {
           { status: 400 }
         );
       }
-      const { access_token, refresh_token, device_id: bodyDeviceId } = body ?? {};
+      const {
+        access_token,
+        refresh_token,
+        device_id: bodyDeviceId,
+        login_method: bodyLoginMethod,
+      } = body ?? {};
       if (!access_token || !refresh_token) {
         return NextResponse.json(
           { success: false, error: "Missing tokens", code: "MISSING_TOKENS" },
@@ -122,7 +134,13 @@ export async function POST(request: NextRequest) {
       const deviceId = (bodyDeviceId && String(bodyDeviceId).trim()) || cookieDeviceId || generateDeviceId();
 
       try {
-        await replaceSessionForDevice(deviceId.trim(), merchantId);
+        const ua = request.headers.get("user-agent");
+        await replaceSessionForDevice(deviceId.trim(), merchantId, {
+          userAgent: ua,
+          ipAddress: clientIpFromRequest(request.headers),
+          deviceLabel: deviceLabelFromUserAgent(ua),
+          loginMethod: bodyLoginMethod?.trim() || "unknown",
+        });
       } catch (sessionDbErr) {
         console.error("[merchant-auth/set-cookie] merchant_sessions error:", sessionDbErr);
       }

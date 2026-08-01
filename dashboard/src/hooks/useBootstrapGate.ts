@@ -57,125 +57,117 @@ export function useBootstrapGate(queryClient: QueryClient): boolean {
     }
 
     let cancelled = false;
+    // Never leave order/dashboard pages waiting forever on a hung sync/bootstrap.
+    const safetyTimer = window.setTimeout(() => {
+      if (cancelled || window.__gatiBootstrapDone) return;
+      window.__gatiBootstrapDone = true;
+      setAuthReady(true);
+    }, 8_000);
+
+    const markReady = () => {
+      if (cancelled) return;
+      window.__gatiBootstrapDone = true;
+      setAuthReady(true);
+    };
 
     const run = async () => {
-      const forceRefresh = consumeForceBootstrapRefresh();
+      try {
+        const forceRefresh = consumeForceBootstrapRefresh();
 
-      const stored = forceRefresh
-        ? null
-        : loadBootstrapFromStorage<{
-            session: { user: Record<string, unknown> };
-            permissions: unknown;
-            dashboardAccess: unknown;
-            systemUser?: { id: number; systemUserId: string; fullName: string; email: string } | null;
-          }>(BOOTSTRAP_MAX_AGE_MS);
+        const stored = forceRefresh
+          ? null
+          : loadBootstrapFromStorage<{
+              session: { user: Record<string, unknown> };
+              permissions: unknown;
+              dashboardAccess: unknown;
+              systemUser?: { id: number; systemUserId: string; fullName: string; email: string } | null;
+            }>(BOOTSTRAP_MAX_AGE_MS);
 
-      const bootstrapAgeMs = stored ? Date.now() - stored.storedAt : Number.POSITIVE_INFINITY;
-      const bootstrapFresh = !forceRefresh && bootstrapAgeMs < BOOTSTRAP_REVALIDATE_MIN_AGE_MS;
+        const bootstrapAgeMs = stored ? Date.now() - stored.storedAt : Number.POSITIVE_INFINITY;
+        const bootstrapFresh = !forceRefresh && bootstrapAgeMs < BOOTSTRAP_REVALIDATE_MIN_AGE_MS;
 
-      const cached = forceRefresh ? null : queryClient.getQueryData<{
-        session?: unknown;
-        permissions?: unknown;
-        systemUser?: { systemUserId?: string } | null;
-      }>(["auth", "session"]);
-      const cachedHasSystemUserId = Boolean(cached?.systemUser?.systemUserId?.trim());
-      if (cached != null && cachedHasSystemUserId) {
-        if (!cancelled) {
-          window.__gatiBootstrapDone = true;
-          setAuthReady(true);
-        }
-        return;
-      }
-
-      if (stored?.data) {
-        const { session, permissions, dashboardAccess, systemUser } = stored.data;
-        queryClient.setQueryData(["auth", "session"], {
-          session,
-          permissions,
-          systemUser: systemUser ?? null,
-        });
-        queryClient.setQueryData(queryKeys.permissions(), permissions as unknown);
-        queryClient.setQueryData(queryKeys.dashboardAccess(), dashboardAccess as unknown);
-
-        const storedHasSystemUserId = Boolean(systemUser?.systemUserId?.trim());
-        if (
-          storedHasSystemUserId &&
-          (bootstrapFresh || (isStandaloneOrderRoute && bootstrapAgeMs < BOOTSTRAP_MAX_AGE_MS))
-        ) {
-          if (!cancelled) {
-            window.__gatiBootstrapDone = true;
-            setAuthReady(true);
-          }
-          // Soft revalidate in background if cache is aging out of the fresh window.
-          if (!bootstrapFresh) {
-            scheduleBootstrapRevalidate(queryClient);
-          }
+        const cached = forceRefresh ? null : queryClient.getQueryData<{
+          session?: unknown;
+          permissions?: unknown;
+          systemUser?: { systemUserId?: string } | null;
+        }>(["auth", "session"]);
+        const cachedHasSystemUserId = Boolean(cached?.systemUser?.systemUserId?.trim());
+        if (cached != null && cachedHasSystemUserId) {
+          markReady();
           return;
         }
-      }
 
-      // Order page: ensure httpOnly cookies exist before client API calls.
-      // If systemUserId is missing from cache, still fetch bootstrap so header stays correct.
-      if (isStandaloneOrderRoute && stored?.data?.systemUser?.systemUserId) {
-        await syncServerSessionCookies();
-        if (!cancelled) {
-          window.__gatiBootstrapDone = true;
-          setAuthReady(true);
-        }
-        scheduleBootstrapRevalidate(queryClient);
-        return;
-      }
+        if (stored?.data) {
+          const { session, permissions, dashboardAccess, systemUser } = stored.data;
+          queryClient.setQueryData(["auth", "session"], {
+            session,
+            permissions,
+            systemUser: systemUser ?? null,
+          });
+          queryClient.setQueryData(queryKeys.permissions(), permissions as unknown);
+          queryClient.setQueryData(queryKeys.dashboardAccess(), dashboardAccess as unknown);
 
-      // Fresh login already POSTed tokens to set-cookie; re-sync would replay stale
-      // localStorage refresh tokens and trigger refresh_token_not_found errors.
-      if (!bootstrapFresh && !forceRefresh) {
-        await syncServerSessionCookies();
-        void hydrateBrowserSupabaseFromCookies();
-      }
-
-      if (stored?.data) {
-        scheduleBootstrapRevalidate(queryClient);
-        void (bootstrapInFlight ?? Promise.resolve()).finally(() => {
-          if (!cancelled) {
-            window.__gatiBootstrapDone = true;
-            setAuthReady(true);
+          const storedHasSystemUserId = Boolean(systemUser?.systemUserId?.trim());
+          if (
+            storedHasSystemUserId &&
+            (bootstrapFresh || (isStandaloneOrderRoute && bootstrapAgeMs < BOOTSTRAP_MAX_AGE_MS))
+          ) {
+            markReady();
+            // Soft revalidate in background if cache is aging out of the fresh window.
+            if (!bootstrapFresh) {
+              scheduleBootstrapRevalidate(queryClient);
+            }
+            return;
           }
-        });
-        return;
-      }
+        }
 
-      if (!stored?.data) {
-        if (isStandaloneOrderRoute) {
+        // Order page: ensure httpOnly cookies exist before client API calls.
+        // If systemUserId is missing from cache, still fetch bootstrap so header stays correct.
+        if (isStandaloneOrderRoute && stored?.data?.systemUser?.systemUserId) {
+          await syncServerSessionCookies();
+          markReady();
+          scheduleBootstrapRevalidate(queryClient);
+          return;
+        }
+
+        // Fresh login already POSTed tokens to set-cookie; re-sync would replay stale
+        // localStorage refresh tokens and trigger refresh_token_not_found errors.
+        if (!bootstrapFresh && !forceRefresh) {
           await syncServerSessionCookies();
           void hydrateBrowserSupabaseFromCookies();
-          if (!bootstrapInFlight) {
-            scheduleBootstrapRevalidate(queryClient);
-          }
-          // Wait for bootstrap so OrderHeader always gets systemUserId (not empty "U").
-          void (bootstrapInFlight ?? Promise.resolve()).finally(() => {
-            if (!cancelled) {
-              window.__gatiBootstrapDone = true;
-              setAuthReady(true);
-            }
-          });
+        }
+
+        if (stored?.data) {
+          scheduleBootstrapRevalidate(queryClient);
+          void (bootstrapInFlight ?? Promise.resolve()).finally(markReady);
           return;
         }
 
-        if (!bootstrapInFlight) {
-          bootstrapInFlight = fetchBootstrapAndSeedCache(queryClient)
-            .catch(() => false)
-            .then(() => undefined)
-            .finally(() => {
-              bootstrapInFlight = null;
-            });
-        }
-        void bootstrapInFlight.finally(() => {
-          if (!cancelled) {
-            window.__gatiBootstrapDone = true;
-            setAuthReady(true);
+        if (!stored?.data) {
+          if (isStandaloneOrderRoute) {
+            await syncServerSessionCookies();
+            void hydrateBrowserSupabaseFromCookies();
+            if (!bootstrapInFlight) {
+              scheduleBootstrapRevalidate(queryClient);
+            }
+            // Wait for bootstrap so OrderHeader always gets systemUserId (not empty "U").
+            void (bootstrapInFlight ?? Promise.resolve()).finally(markReady);
+            return;
           }
-        });
-        return;
+
+          if (!bootstrapInFlight) {
+            bootstrapInFlight = fetchBootstrapAndSeedCache(queryClient)
+              .catch(() => false)
+              .then(() => undefined)
+              .finally(() => {
+                bootstrapInFlight = null;
+              });
+          }
+          void bootstrapInFlight.finally(markReady);
+          return;
+        }
+      } catch {
+        markReady();
       }
     };
 
@@ -183,6 +175,7 @@ export function useBootstrapGate(queryClient: QueryClient): boolean {
 
     return () => {
       cancelled = true;
+      window.clearTimeout(safetyTimer);
     };
   }, [queryClient, isStandaloneOrderRoute]);
 

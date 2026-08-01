@@ -12,6 +12,83 @@
   --font-mono: var(--font-geist-mono);
 }
 
+/* Tickets dashboard typography: Lora for copy, Poppins for digits/IDs */
+.tickets-typo {
+  font-family: var(--font-tickets-text), Georgia, "Times New Roman", serif;
+  font-optical-sizing: auto;
+  font-size: 13px;
+  line-height: 1.4;
+  letter-spacing: 0.005em;
+}
+
+.tickets-typo .tickets-num,
+.tickets-num {
+  font-family: var(--font-tickets-num), ui-sans-serif, system-ui, sans-serif;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.01em;
+  font-optical-sizing: auto;
+}
+
+/* Orders dashboard — same Lora / Poppins pairing as tickets */
+.orders-typo {
+  font-family: var(--font-tickets-text), Georgia, "Times New Roman", serif;
+  font-optical-sizing: auto;
+  font-size: 13px;
+  line-height: 1.4;
+  letter-spacing: 0.005em;
+  color: #121212;
+}
+
+.orders-typo .orders-num,
+.orders-num,
+/* Food order detail: existing numeric surfaces already use these utilities */
+.orders-typo .tabular-nums,
+.orders-typo .font-mono {
+  font-family: var(--font-tickets-num), ui-sans-serif, system-ui, sans-serif;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.01em;
+  font-optical-sizing: auto;
+}
+
+/* Merchant store verification flow — Lora copy, Poppins for IDs/digits */
+.verification-typo {
+  font-family: var(--font-tickets-text), Georgia, "Times New Roman", serif;
+  font-optical-sizing: auto;
+  font-size: 13px;
+  line-height: 1.45;
+  letter-spacing: 0.005em;
+  color: #121212;
+}
+
+.verification-typo .verification-num,
+.verification-num,
+.verification-typo .tabular-nums,
+.verification-typo .font-mono {
+  font-family: var(--font-tickets-num), ui-sans-serif, system-ui, sans-serif;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.01em;
+  font-optical-sizing: auto;
+}
+
+/* Person ride order detail — Lora headings / Poppins body (isolated from food) */
+.person-ride-typo {
+  font-family: var(--font-tickets-num), ui-sans-serif, system-ui, sans-serif;
+  font-optical-sizing: auto;
+  color: #121212;
+}
+
+.person-ride-typo .pr-heading {
+  font-family: var(--font-tickets-text), Georgia, "Times New Roman", serif;
+  font-optical-sizing: auto;
+}
+
+.person-ride-typo .pr-body,
+.person-ride-typo .pr-num {
+  font-family: var(--font-tickets-num), ui-sans-serif, system-ui, sans-serif;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.01em;
+}
+
 @media (prefers-color-scheme: dark) {
   :root {
     /* Dashboard UI is light-only; avoid black overscroll gaps on Windows dark mode. */

@@ -126,16 +126,19 @@ export default function StoreListPage() {
     const hasStepRejections =
       Array.isArray(store.verification_step_rejections) &&
       store.verification_step_rejections.length > 0;
-    const anyResubmitted =
+    const allResubmitted =
       hasStepRejections &&
-      (store.verification_step_rejections ?? []).some((r) => r.merchant_resubmitted_at);
+      (store.verification_step_rejections ?? []).every((r) => r.merchant_resubmitted_at);
+    const hasOpenFix =
+      hasStepRejections &&
+      (store.verification_step_rejections ?? []).some((r) => !r.merchant_resubmitted_at);
     if (
       status === "DRAFT" ||
       status === "REJECTED" ||
-      hasStepRejections ||
+      hasOpenFix ||
       (store.current_onboarding_step && store.current_onboarding_step < 9)
     ) {
-      if (hasStepRejections && anyResubmitted) {
+      if (hasStepRejections && allResubmitted) {
         return {
           label: "Resubmitted",
           onClick: () => {},
@@ -143,15 +146,22 @@ export default function StoreListPage() {
         };
       }
       return {
-        label: hasStepRejections ? "Review & fix steps" : "Continue onboarding",
+        label: hasOpenFix ? "Review & fix steps" : "Continue onboarding",
         onClick: () => goToOnboarding(store.store_id),
         disabled: false,
       };
     }
+    if (hasStepRejections && allResubmitted) {
+      return {
+        label: "Open dashboard",
+        onClick: () => goToDashboard(store.store_id),
+        disabled: false,
+      };
+    }
     return {
-      label: "Awaiting verification",
-      onClick: () => {},
-      disabled: true,
+      label: "Open dashboard",
+      onClick: () => goToDashboard(store.store_id),
+      disabled: false,
     };
   };
 

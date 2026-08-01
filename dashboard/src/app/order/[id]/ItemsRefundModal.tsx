@@ -37,6 +37,7 @@ import {
   type EnginePreviewDisplay,
 } from '@gatimitra/financial-rules';
 import { resolveMerchantOfferBadge } from '@/lib/merchant-offer-display';
+import { OrderMixedText, OrderNum } from '@/components/orders/orders-typography';
 
 type RiderPenaltyPreviewRider = {
   riderId: number;
@@ -390,7 +391,7 @@ function RefundCustomerPreviewPanel({
         )}
         {isFullCancelRefund && ctcTotal > 0 && refundAmount > ctcTotal ? (
           <p className="mt-1 text-[10px] text-amber-700">
-            Exceeds CTC (₹{ctcTotal.toFixed(2)}). Adjust before submit.
+            <OrderMixedText>{`Exceeds CTC (₹${ctcTotal.toFixed(2)}). Adjust before submit.`}</OrderMixedText>
           </p>
         ) : null}
       </div>
@@ -1717,7 +1718,7 @@ export default function ItemsRefundModal({
                   ) : null}
                   {enginePreview.amounts && typeof enginePreview.amounts.refund === 'number' ? (
                     <p className="mt-1">
-                      Engine refund: ₹{Number(enginePreview.amounts.refund).toFixed(2)}
+                      <OrderMixedText>{`Engine refund: ₹${Number(enginePreview.amounts.refund).toFixed(2)}`}</OrderMixedText>
                     </p>
                   ) : null}
                   {enginePreview.execution_status === 'APPROVAL_REQUIRED' && (
@@ -1958,7 +1959,7 @@ export default function ItemsRefundModal({
                         fallback={item.customisation}
                       />
                     </td>
-                    <td className="px-2 py-1.5 border border-slate-200 text-center text-slate-600">{isDeliveryFeeRow(item) ? '-' : item.quantity}</td>
+                    <td className="px-2 py-1.5 border border-slate-200 text-center text-slate-600 orders-num">{isDeliveryFeeRow(item) ? '-' : item.quantity}</td>
                     <td className="px-2 py-1.5 border border-slate-200 text-center text-slate-600 tabular-nums">{isDeliveryFeeRow(item) ? item.amountPerQuantity.toFixed(2) : item.amountPerQuantity}</td>
                     <td className="px-2 py-1.5 border border-slate-200 text-center text-slate-600 tabular-nums">{item.taxPerQuantity.toFixed(2)}</td>
                     <td className="px-2 py-1.5 border border-slate-200 text-center text-slate-600 tabular-nums">{item.chargesPerQuantity.toFixed(2)}</td>
@@ -2105,16 +2106,16 @@ export default function ItemsRefundModal({
                                     {generateQuantityOptionsFrom1(item.quantity).map((qty) => <option key={qty} value={qty}>{qty}</option>)}
                                   </select>
                                 </td>
-                                <td className="px-1.5 py-1 border border-slate-200 text-center text-slate-600">{item.amountPerQuantity}</td>
+                                <td className="px-1.5 py-1 border border-slate-200 text-center text-slate-600 orders-num">{item.amountPerQuantity}</td>
                                 <td className="px-1.5 py-1 border border-slate-200 text-center">
                                   <select value={item.refundPercentage} onChange={(e) => handlePercentageChange(item.id, parseInt(e.target.value, 10))} className="w-full h-6 px-1 border border-slate-200 rounded text-[10px] bg-white focus:outline-none focus:ring-1 focus:ring-emerald-500 appearance-none cursor-pointer">
                                     {generatePercentageOptions().map((pct) => <option key={pct} value={pct}>{pct}%</option>)}
                                   </select>
                                 </td>
                                 <td className="px-1.5 py-1 border border-slate-200 text-center">
-                                  <span className={item.refundPercentage > 0 ? 'font-semibold text-green-600' : 'text-slate-400'}>
+                                  <OrderNum className={item.refundPercentage > 0 ? 'font-semibold text-green-600' : 'text-slate-400'}>
                                     {item.refundPercentage > 0 ? `₹${calculatePercentageRefundAmount(item).toFixed(2)}` : '0'}
-                                  </span>
+                                  </OrderNum>
                                 </td>
                               </tr>
                             ))}
@@ -2123,17 +2124,19 @@ export default function ItemsRefundModal({
                         <div className="mt-2 flex flex-col items-end gap-1">
                           <div className={`px-3 py-1.5 rounded border text-xs ${calculateTotalPercentageRefundAmount() > 0 ? 'bg-green-50 border-green-200' : 'bg-slate-50 border-slate-200'}`}>
                             <span className="font-medium text-slate-700">Items selected: </span>
-                            <span className={calculateTotalPercentageRefundAmount() > 0 ? 'font-bold text-green-600' : 'text-slate-400'}>₹{calculateTotalPercentageRefundAmount().toFixed(2)}</span>
+                            <OrderNum className={calculateTotalPercentageRefundAmount() > 0 ? 'font-bold text-green-600' : 'text-slate-400'}>
+                              ₹{calculateTotalPercentageRefundAmount().toFixed(2)}
+                            </OrderNum>
                           </div>
                           {calculateCustomerPayableRefund() > 0 ? (
                             <div className="px-3 py-1.5 rounded border border-emerald-300 bg-emerald-50 text-xs">
                               <span className="font-medium text-slate-700">Customer refund: </span>
-                              <span className="font-bold text-emerald-700">
+                              <OrderNum className="font-bold text-emerald-700">
                                 ₹{calculateCustomerPayableRefund().toFixed(2)}
-                              </span>
-                              <span className="ml-1 text-[10px] text-slate-500">
-                                (same % of ₹{customerCtcTotal.toFixed(2)} paid)
-                              </span>
+                              </OrderNum>
+                              <OrderMixedText className="ml-1 text-[10px] text-slate-500">
+                                {`(same % of ₹${customerCtcTotal.toFixed(2)} paid)`}
+                              </OrderMixedText>
                             </div>
                           ) : null}
                         </div>

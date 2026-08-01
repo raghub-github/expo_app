@@ -94,6 +94,20 @@ ENV NEXT_PUBLIC_DISABLE_CURRENT_LOCATION=${NEXT_PUBLIC_DISABLE_CURRENT_LOCATION}
 ENV NEXT_PUBLIC_ENABLE_PHONE_OTP_LOGIN=${NEXT_PUBLIC_ENABLE_PHONE_OTP_LOGIN}
 ENV NEXT_PUBLIC_ENABLE_PHONE_OTP_REGISTER=${NEXT_PUBLIC_ENABLE_PHONE_OTP_REGISTER}
 
+# @gatimitra/bill-print is source-only; its own `build` script is a no-op echo.
+# But its package.json `node` export condition points at ./dist/index.js, and
+# Next's webpack SERVER build matches that `node` condition — so the dist MUST
+# exist before `next build`, or gmmportal fails with
+#   Module not found: Can't resolve '@gatimitra/bill-print'
+# Bundle it self-contained here, like backend/Dockerfile does for its node
+# runtime. NOTE: unlike the backend image, the partnersite deps stage does not
+# copy backend/package.json, so esbuild is NOT installed (no tsx). Fetch the
+# pinned esbuild on demand via npx. kot-print / print-utils have no `node`
+# condition, so they resolve to src (transpilePackages) and need no dist.
+RUN npx --yes esbuild@0.25.12 packages/bill-print/src/index.ts \
+      --bundle --format=esm --platform=node \
+      --outfile=packages/bill-print/dist/index.js
+
 # Targeted workspace build. The `build` script in partnersite/package.json
 # is `next build --webpack` — webpack on Linux Docker correctly finalizes
 # the standalone output (Turbopack standalone-finalize is the buggy combo).

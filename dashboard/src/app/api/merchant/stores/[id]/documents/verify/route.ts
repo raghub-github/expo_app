@@ -3,6 +3,7 @@
  * Mark a single document type as verified or rejected. Updates merchant_store_documents.
  * For already-approved stores, per-document verify is sufficient (no final store approval).
  * During onboarding, step 4 may still use "Mark as verified" when all required docs pass.
+ * Each document reject emails the merchant and clears step-4 agent verification so they can resubmit.
  */
 import { NextRequest, NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
@@ -18,6 +19,15 @@ import {
   rejectionDetailForDocType,
   rejectionRequiresNewFileUpload,
 } from "@/lib/merchant-store-document-rejection";
+import { sendEmail } from "@/lib/email/send";
+import { buildVerificationDocumentRejectedEmail } from "@/lib/email/store-verification-templates";
+import { resolveVerificationRecipientEmail } from "@/lib/email/resolve-verification-recipient";
+import {
+  deleteStoreVerificationStep,
+  getStoreVerificationStepsApiRows,
+  upsertStoreVerificationStepRejection,
+} from "@/lib/db/operations/store-verification-steps";
+import { applyPendingDocumentResubmissions } from "@/lib/db/operations/onboarding-resubmissions";
 
 export const runtime = "nodejs";
 
@@ -38,6 +48,21 @@ const DOC_TYPES = [
 ] as const;
 
 type DocType = (typeof DOC_TYPES)[number];
+
+const DOC_TYPE_LABELS: Record<DocType, string> = {
+  pan: "PAN",
+  gst: "GST",
+  aadhaar: "Aadhaar",
+  fssai: "FSSAI",
+  drug_license: "Drug license",
+  trade_license: "Trade license",
+  shop_establishment: "Shop establishment",
+  udyam: "Udyam",
+  pharmacist_certificate: "Pharmacist certificate",
+  pharmacy_council_registration: "Pharmacy council registration",
+  bank_proof: "Bank proof",
+  other: "Other document",
+};
 
 function isDocType(s: string): s is DocType {
   return (DOC_TYPES as readonly string[]).includes(s);
@@ -176,18 +201,36 @@ export async function POST(
         const v = (rawFlags as Record<string, unknown>)[pf];
         resubmitted = v === true || v === "true";
       }
+      // Also unlock verify when a pending staging resubmission exists for this doc.
+      if (!resubmitted && !override) {
+        try {
+          const pend = await sql`
+            SELECT 1
+            FROM merchant_store_onboarding_resubmissions
+            WHERE store_id = ${storeId}
+              AND status = 'pending'
+              AND field_key = ${pf}
+            LIMIT 1
+          `;
+          if (Array.isArray(pend) && pend.length > 0) resubmitted = true;
+        } catch {
+          /* table may not exist yet before migration */
+        }
+      }
       const rdRoot =
         chk0 && typeof chk0 === "object" && chk0 !== null && "rd" in chk0
           ? (chk0 as { rd: unknown }).rd
           : null;
       const detail = rejectionDetailForDocType(rdRoot, pf);
       const needsNewFile = rejectionRequiresNewFileUpload(detail);
-      if (!override && rr && !resubmitted && needsNewFile) {
+      // Block verify while still rejected until partner resubmits (file or details), unless admin override.
+      if (!override && rr && !resubmitted) {
         return NextResponse.json(
           {
             success: false,
-            error:
-              "This document is still marked rejected for the uploaded file. Ask the store to upload a new document image on the partner portal, then verify again.",
+            error: needsNewFile
+              ? "This document is still marked rejected for the uploaded file. Ask the store to upload a new document image on the partner portal, then verify again."
+              : "This document is still marked rejected. Ask the store to update the document details on the partner portal, then verify again.",
           },
           { status: 409 }
         );
@@ -211,14 +254,81 @@ export async function POST(
         WHERE store_id = $3`,
         [rejectionReason, detailPayload, storeId]
       );
+
+      // Clear agent step-4 verification so overview shows action required until docs are fixed.
+      await deleteStoreVerificationStep(storeId, 4);
+
+      type EmailNotify = {
+        attempted: boolean;
+        sent: boolean;
+        skippedReason?: "NO_RECIPIENT" | "NOT_CONFIGURED" | "SMTP_AUTH_FAILED" | "SMTP_ERROR" | "RESEND_ERROR";
+      };
+      const emailNotify: EmailNotify = { attempted: true, sent: false };
+      const documentLabel = DOC_TYPE_LABELS[docType];
+      const reasonText = rejectionReason || `${documentLabel} rejected`;
+      const recipientEmail = await resolveVerificationRecipientEmail(storeId, store.store_email);
+      const dashboardUrl =
+        process.env.PARTNER_DASHBOARD_URL?.trim() || "https://partner.gatimitra.com/auth/post-login";
+
+      if (recipientEmail) {
+        const { subject, text, html } = buildVerificationDocumentRejectedEmail({
+          storeName: store.store_name,
+          storePublicId: store.store_id,
+          dashboardUrl,
+          documentLabel,
+          reason: reasonText,
+        });
+        const outcome = await sendEmail({ to: recipientEmail, subject, text, html });
+        emailNotify.sent = outcome.ok;
+        if (!outcome.ok) emailNotify.skippedReason = outcome.code;
+        if (outcome.ok) {
+          console.log("[POST documents/verify] Document rejection email sent to", recipientEmail, {
+            storeId,
+            docType,
+          });
+        }
+      } else {
+        emailNotify.skippedReason = "NO_RECIPIENT";
+        console.warn("[POST documents/verify] No recipient email for document rejection", {
+          storeId,
+          docType,
+        });
+      }
+
+      const rejectedByName =
+        (typeof systemUser?.full_name === "string" && systemUser.full_name.trim()
+          ? systemUser.full_name.trim()
+          : null) ?? user.email ?? null;
+
+      await upsertStoreVerificationStepRejection({
+        storeId,
+        stepNumber: 4,
+        reason: `${documentLabel}: ${reasonText}`,
+        stepLabel: "Restaurant documents",
+        rejectedBy: verifiedBy,
+        rejectedByName,
+        emailSent: emailNotify.sent,
+        emailSkipReason: emailNotify.sent ? null : emailNotify.skippedReason ?? "UNKNOWN",
+      });
+
+      const steps = await getStoreVerificationStepsApiRows(storeId);
+
       return NextResponse.json({
         success: true,
         docType,
         action: "reject",
         rejection_reason: rejectionReason,
-        message: "Document marked as rejected.",
+        message: "Document marked as rejected. Merchant notified to resubmit.",
+        email: emailNotify,
+        steps,
       });
     }
+
+    await applyPendingDocumentResubmissions({
+      storeId,
+      docType: pf,
+      appliedBySystemUserId: verifiedBy,
+    });
 
     await sql.unsafe(
       `UPDATE merchant_store_documents SET

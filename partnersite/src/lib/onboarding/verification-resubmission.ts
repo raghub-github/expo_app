@@ -65,3 +65,13 @@ export async function markMerchantResubmittedForRejectedSteps(
     console.warn("[verification-resubmission] markMerchantResubmittedForRejectedSteps:", e);
   }
 }
+
+/**
+ * True while this rejection still needs merchant (or AM) resubmit.
+ * After merchant_resubmitted_at is set, partner Fix CTA is hidden; admin shows Verify again.
+ */
+export function rejectionNeedsPartnerOrAmFix(r: {
+  merchant_resubmitted_at?: string | null;
+}): boolean {
+  return !r.merchant_resubmitted_at;
+}

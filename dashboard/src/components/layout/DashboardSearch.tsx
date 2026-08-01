@@ -59,7 +59,10 @@ function DashboardSearchInner({ compact = false }: DashboardSearchProps) {
       }
       return;
     }
-    if (dashboardType === "CUSTOMER" && /^\/dashboard\/customers\/\d+$/.test(pathOnly)) {
+    // On customer detail page (/dashboard/customers/[id]) without ?search= in URL,
+    // restore last search from session storage so the search bar stays filled.
+    // But only when there's no ?search= param — avoid overwriting a fresh empty state.
+    if (dashboardType === "CUSTOMER" && /^\/dashboard\/customers\/(GM\d+|\d+)(\/.*)?$/i.test(pathOnly)) {
       try {
         const stored = sessionStorage.getItem("customerDashboardLastSearch");
         if (stored) setLocalSearchValue(stored);
@@ -175,7 +178,7 @@ function DashboardSearchInner({ compact = false }: DashboardSearchProps) {
             <select
               value={merchantType}
               onChange={(e) => setMerchantType(e.target.value as "child" | "parent")}
-              className={`border border-gray-300 rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white text-gray-900 transition-all duration-200 ${
+              className={`border border-[#121212]/10 rounded-[10px] shadow-sm focus:outline-none focus:ring-2 focus:ring-[#121212]/15 focus:border-[#121212]/25 bg-white text-[#121212] transition-colors duration-200 ${
                 compact ? "px-3 py-1.5 text-sm h-9" : "px-4 py-2"
               }`}
               style={{ color: '#111827' }}
@@ -195,7 +198,7 @@ function DashboardSearchInner({ compact = false }: DashboardSearchProps) {
               }}
               onKeyDown={handleKeyDown}
               placeholder={placeholder}
-              className={`flex-1 border border-gray-300 rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white text-gray-900 placeholder:text-gray-400 transition-all duration-200 uppercase ${
+              className={`flex-1 border border-[#121212]/10 rounded-[10px] shadow-sm focus:outline-none focus:ring-2 focus:ring-[#121212]/15 focus:border-[#121212]/25 bg-white text-[#121212] placeholder:text-[#121212]/40 transition-colors duration-200 uppercase ${
                 compact ? "px-3 py-1.5 text-sm h-9" : "px-4 py-2"
               }`}
             />
@@ -203,7 +206,7 @@ function DashboardSearchInner({ compact = false }: DashboardSearchProps) {
           <button
             type="submit"
             disabled={searchButtonLoading}
-            className={`cursor-pointer rounded-lg font-medium bg-blue-500 text-white hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 ${
+            className={`cursor-pointer rounded-[10px] font-medium bg-[#121212] text-white hover:bg-black disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 transition-colors ${
               compact ? "px-3 py-1.5 text-sm h-9" : "px-4 py-2"
             }`}
           >
@@ -223,16 +226,6 @@ function DashboardSearchInner({ compact = false }: DashboardSearchProps) {
       </div>
     );
   }
-
-  // Helper function to detect if search is Customer ID or mobile number
-  const isCustomerIdOrMobile = (searchTerm: string): boolean => {
-    const trimmed = searchTerm.trim();
-    // Check if it's a Customer ID (GM followed by numbers, case insensitive)
-    const isCustomerId = /^GM\d+$/i.test(trimmed);
-    // Check if it's a mobile number (10+ digits, optionally with +91 or 91 prefix)
-    const isMobile = /^(\+?91)?\d{10,}$/.test(trimmed);
-    return isCustomerId || isMobile;
-  };
 
   // Render standard search for other dashboards
   return (
@@ -257,7 +250,15 @@ function DashboardSearchInner({ compact = false }: DashboardSearchProps) {
 
         let targetPath: string;
         if (dashboardType === "CUSTOMER") {
-          // Global customer search — always use one route (no food/parcel/ride segments in URL).
+          const compact = value.replace(/\s/g, "");
+          // Exact GM… id → open detail in one hop (skip /all list loading → redirect).
+          if (/^GM\d+$/i.test(compact)) {
+            router.push(
+              `/dashboard/customers/${encodeURIComponent(compact)}?search=${encodeURIComponent(value)}`
+            );
+            return;
+          }
+          // Phone / name search still needs the list API on /all.
           targetPath = "/dashboard/customers/all";
         } else if (dashboardType === "AREA_MANAGER" && pathname.includes("/stores")) {
           targetPath = pathname;
@@ -280,14 +281,14 @@ function DashboardSearchInner({ compact = false }: DashboardSearchProps) {
           }}
           onKeyDown={handleKeyDown}
           placeholder={placeholder}
-          className={`flex-1 border border-gray-300 rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white text-gray-900 placeholder:text-gray-400 transition-all duration-200 ${
+          className={`flex-1 border border-[#121212]/10 rounded-[10px] shadow-sm focus:outline-none focus:ring-2 focus:ring-[#121212]/15 focus:border-[#121212]/25 bg-white text-[#121212] placeholder:text-[#121212]/40 transition-colors duration-200 ${
             compact ? "px-3 py-1.5 text-sm h-9" : "px-4 py-2"
           }`}
         />
         <button
           type="submit"
           disabled={loading}
-          className={`cursor-pointer rounded-lg font-medium bg-blue-500 text-white hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 shadow-sm hover:shadow-md transition-all duration-200 ${
+          className={`cursor-pointer rounded-[10px] font-medium bg-[#121212] text-white hover:bg-black disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 shadow-sm transition-colors duration-200 ${
             compact ? "px-3 py-1.5 text-sm h-9" : "px-4 py-2"
           }`}
         >

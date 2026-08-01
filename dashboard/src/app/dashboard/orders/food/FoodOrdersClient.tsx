@@ -11,22 +11,24 @@ import { type CSSProperties } from "react";
 import { loadClientSnapshot, saveClientSnapshot } from "@/lib/client-route-snapshot";
 import { queryKeys } from "@/lib/queryKeys";
 import { FoodOrdersTableRowsSkeleton } from "@/components/skeletons/FoodOrdersPageSkeleton";
+import { OrderMixedText, OrderNum } from "@/components/orders/orders-typography";
 import {
   fetchOrderCorePayload,
   orderDetailQueryKey,
 } from "@/hooks/queries/useOrderDetailQuery";
-// Exact color codes from reference image
-const MINT_GREEN = "#4EE5C1"; // Active buttons and elements
-/** BULK tab active — light yellow so it stands out from mint status tabs. */
+// Dashboard UI tokens (aligned with tickets / home rails — charcoal primary, not mint)
+const ACCENT = "#121212"; // Primary CTA / active tab
+const ACCENT_TEXT = "#FFFFFF";
+/** BULK tab active — light yellow so it stands out from charcoal status tabs. */
 const BULK_ACTIVE_BG = "#FDE68A";
 const BULK_ACTIVE_BORDER = "#F59E0B";
-const PAGE_BG = "#F4F6F9"; // Page background
-const CONTENT_BG = "#FFFFFF"; // White content background
-const INACTIVE_BG = "#F0F2F5"; // Inactive button background
-const INACTIVE_TEXT = "#1E3A8A"; // Dark blue text color
-const BORDER_COLOR = "#D5DBDE"; // Border color
-const DARK_TEXT = "#000000"; // Black text for headers
-const TABLE_TEXT = "#000000"; // Black table data text
+const PAGE_BG = "#f3f5f7"; // Page background (tickets / dashboard rail)
+const CONTENT_BG = "#FFFFFF"; // White content cards
+const INACTIVE_BG = "#eef1f4"; // Inactive button background
+const INACTIVE_TEXT = "#121212"; // Charcoal text
+const BORDER_COLOR = "rgba(18,18,18,0.12)"; // Soft charcoal border
+const DARK_TEXT = "#121212"; // Charcoal headers
+const TABLE_TEXT = "#121212"; // Table data text
 const CHECKMARK_COLOR = "#2F8F6F"; // Checkmark icon color
 const ORDER_TAG_BG = "#ECF8F3"; // Order ID tag background
 const ORDER_TAG_TEXT = "#2F8F6F"; // Order ID tag text
@@ -387,7 +389,8 @@ export default function FoodOrdersClient() {
   const orders = ordersData?.orders ?? cachedListData?.orders ?? initialSnapshot?.orders ?? [];
   const total = ordersData?.total ?? cachedListData?.total ?? initialSnapshot?.total ?? 0;
   const showTableLoading = hasMounted && isPending && orders.length === 0;
-  const isRefreshing = hasMounted && isFetching && orders.length > 0;
+  const [manualRefreshing, setManualRefreshing] = useState(false);
+  const isRefreshing = manualRefreshing || (hasMounted && isFetching && orders.length > 0);
   const hasActiveSearch = Boolean(debouncedSearch.trim());
   // Close dropdowns when clicking outside
   useEffect(() => {
@@ -508,7 +511,10 @@ export default function FoodOrdersClient() {
   }, [router, searchParams]);
 
   const refreshData = useCallback(() => {
-    void refetchOrders();
+    setManualRefreshing(true);
+    void Promise.resolve(refetchOrders()).finally(() => {
+      setManualRefreshing(false);
+    });
   }, [refetchOrders]);
   const orderCount = total;
 
@@ -547,7 +553,7 @@ export default function FoodOrdersClient() {
       return (
         <tr
           key={row.id}
-          className="hover:bg-gray-50"
+          className="border-b border-gray-200 hover:bg-gray-50"
           style={style}
         >
           <td className="px-2 py-1.5 whitespace-nowrap" style={{ color: TABLE_TEXT }}>
@@ -564,7 +570,7 @@ export default function FoodOrdersClient() {
                   staleTime: 3 * 60 * 1000,
                 });
               }}
-              className="inline-flex items-center px-2 py-0.5 rounded font-medium cursor-pointer hover:underline text-[11px]"
+              className="orders-num inline-flex items-center px-2 py-0.5 rounded font-medium cursor-pointer hover:underline text-[11px]"
               style={{ backgroundColor: ORDER_TAG_BG, color: ORDER_TAG_TEXT }}
             >
               #{publicId}
@@ -577,26 +583,32 @@ export default function FoodOrdersClient() {
           >
             {stageInstructionText ? (
               <span className="text-[11px] font-medium" style={{ color: CHECKMARK_COLOR }}>
-                {stageInstructionText}
+                <OrderMixedText>{stageInstructionText}</OrderMixedText>
               </span>
             ) : (
               <span>—</span>
             )}
           </td>
           <td className="px-2 py-1.5 truncate max-w-[160px]" style={{ color: TABLE_TEXT }}>
-            {routedTo}
+            {routedTo || "—"}
           </td>
           <td className="px-2 py-1.5 whitespace-nowrap" style={{ color: TABLE_TEXT }}>
-            {row.createdAt ? new Date(row.createdAt).toLocaleString() : "—"}
+            <OrderNum>
+              {row.createdAt ? new Date(row.createdAt).toLocaleString() : "—"}
+            </OrderNum>
           </td>
           <td className="px-2 py-1.5" style={{ color: TABLE_TEXT }}>
             {row.customerName ?? "—"}
           </td>
           <td className="px-2 py-1.5 whitespace-nowrap" style={{ color: TABLE_TEXT }}>
-            {row.customerMobile ?? "—"}
+            <OrderNum>{row.customerMobile ?? "—"}</OrderNum>
           </td>
           <td className="px-2 py-1.5 whitespace-nowrap" style={{ color: TABLE_TEXT }}>
-            {merchantIdDisplay != null ? merchantIdDisplay : "—"}
+            {merchantIdDisplay != null ? (
+              <OrderNum>{merchantIdDisplay}</OrderNum>
+            ) : (
+              "—"
+            )}
           </td>
           <td
             className="px-2 py-1.5 max-w-[140px] truncate"
@@ -621,9 +633,9 @@ export default function FoodOrdersClient() {
   const getButtonStyles = (isActive: boolean) => {
     if (isActive) {
       return {
-        backgroundColor: MINT_GREEN,
-        color: DARK_TEXT,
-        borderColor: BORDER_COLOR,
+        backgroundColor: ACCENT,
+        color: ACCENT_TEXT,
+        borderColor: ACCENT,
       };
     }
     return {
@@ -651,9 +663,9 @@ export default function FoodOrdersClient() {
   const getDropdownButtonStyles = (isActive: boolean) => {
     if (isActive) {
       return {
-        backgroundColor: MINT_GREEN,
-        color: DARK_TEXT,
-        borderColor: BORDER_COLOR,
+        backgroundColor: ACCENT,
+        color: ACCENT_TEXT,
+        borderColor: ACCENT,
       };
     }
     return {
@@ -665,9 +677,15 @@ export default function FoodOrdersClient() {
 
   return (
     <>
-    <div className="space-y-2 w-full max-w-full overflow-x-hidden" style={{ backgroundColor: PAGE_BG }}>
+    <div
+      className="orders-typo space-y-2 w-full max-w-full min-h-full overflow-x-hidden"
+      style={{ backgroundColor: PAGE_BG }}
+    >
       {/* Filter Section - No border */}
-      <div className="p-2" style={{ backgroundColor: CONTENT_BG }}>
+      <div
+        className="rounded-xl border p-2 shadow-[0_1px_3px_rgba(18,18,18,0.04)]"
+        style={{ backgroundColor: CONTENT_BG, borderColor: BORDER_COLOR }}
+      >
         <div className="flex flex-wrap items-center gap-2">
           {/* Delivery Dropdown */}
           <div ref={deliveryRef} className="relative">
@@ -788,7 +806,7 @@ export default function FoodOrdersClient() {
             type="button"
             onClick={applyFilters}
             className="ml-auto px-3 py-1.5 rounded-md text-xs font-medium uppercase border cursor-pointer"
-            style={{ backgroundColor: MINT_GREEN, color: DARK_TEXT, borderColor: BORDER_COLOR }}
+            style={{ backgroundColor: ACCENT, color: ACCENT_TEXT, borderColor: ACCENT }}
           >
             Apply Filter
           </button>
@@ -819,7 +837,10 @@ export default function FoodOrdersClient() {
       </div>
 
       {/* Status Buttons Section - No border, full width */}
-      <div className="p-2 mt-3" style={{ backgroundColor: CONTENT_BG }}>
+      <div
+        className="rounded-xl border p-2 mt-3 shadow-[0_1px_3px_rgba(18,18,18,0.04)]"
+        style={{ backgroundColor: CONTENT_BG, borderColor: BORDER_COLOR }}
+      >
         <div className="flex items-center gap-2 w-full">
           <button
             onClick={() => setStatusFilter("PAYMENT DONE")}
@@ -865,17 +886,21 @@ export default function FoodOrdersClient() {
             style={getBulkButtonStyles(selectedStatus === "BULK")}
             title={`${bulkPendingCount} bulk order(s) pending`}
           >
-            BULK ({bulkPendingCount})
+            BULK (<OrderNum>{bulkPendingCount}</OrderNum>)
           </button>
         </div>
       </div>
 
       {/* Summary and Action Bar - No border */}
-      <div className="flex items-center justify-between p-2" style={{ backgroundColor: CONTENT_BG }}>
+      <div
+        className="flex items-center justify-between rounded-xl border p-2 shadow-[0_1px_3px_rgba(18,18,18,0.04)]"
+        style={{ backgroundColor: CONTENT_BG, borderColor: BORDER_COLOR }}
+      >
         <div className="flex items-center gap-1.5">
           <CheckCircle2 className="h-4 w-4" style={{ color: CHECKMARK_COLOR }} />
           <span className="text-xs font-medium" style={{ color: DARK_TEXT }}>
-            {selectedStatus ? selectedStatus.substring(0, 3).toUpperCase() : "PAY"} - {orderCount} / Out Of {orderCount}
+            {selectedStatus ? selectedStatus.substring(0, 3).toUpperCase() : "PAY"} -{" "}
+            <OrderNum>{orderCount}</OrderNum> / Out Of <OrderNum>{orderCount}</OrderNum>
           </span>
         </div>
         <div className="flex items-center gap-2">
@@ -884,7 +909,7 @@ export default function FoodOrdersClient() {
             onClick={refreshData}
             disabled={isFetching && orders.length === 0}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium border cursor-pointer disabled:opacity-60"
-            style={{ backgroundColor: MINT_GREEN, color: DARK_TEXT, borderColor: BORDER_COLOR }}
+            style={{ backgroundColor: ACCENT, color: ACCENT_TEXT, borderColor: ACCENT }}
           >
             <RefreshCw className={`h-3.5 w-3.5 ${isRefreshing ? "animate-spin" : ""}`} />
             Refresh Data
@@ -900,7 +925,7 @@ export default function FoodOrdersClient() {
         </div>
       </div>
 
-      {/* Orders Table - compact layout */}
+      {/* Orders Table — previous compact list rows (header + gray hover) */}
       <div
         className="overflow-x-auto"
         style={{ backgroundColor: CONTENT_BG, maxHeight: 400, overflowY: "auto" }}
@@ -941,13 +966,13 @@ export default function FoodOrdersClient() {
             {showTableLoading ? (
               <FoodOrdersTableRowsSkeleton rows={8} />
             ) : orders.length === 0 ? (
-              <tr>
-                <td colSpan={9} className="px-2 py-4 text-center text-xs" style={{ color: TABLE_TEXT }}>
-                  {hasActiveSearch
-                    ? "We couldn't find any data for this ID."
-                    : "No orders found."}
-                </td>
-              </tr>
+              hasActiveSearch ? (
+                <tr>
+                  <td colSpan={9} className="px-2 py-4 text-center text-xs" style={{ color: TABLE_TEXT }}>
+                    We couldn&apos;t find any data for this ID.
+                  </td>
+                </tr>
+              ) : null
             ) : (
               <>
                 {orders.map((r, i) => (

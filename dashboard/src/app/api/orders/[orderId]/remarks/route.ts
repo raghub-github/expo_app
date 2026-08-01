@@ -35,7 +35,8 @@ export async function GET(
 
     const allowed =
       (await isSuperAdmin(user.id, user.email ?? "")) ||
-      (await hasDashboardAccessByAuth(user.id, user.email ?? "", "ORDER_FOOD"));
+      (await hasDashboardAccessByAuth(user.id, user.email ?? "", "ORDER_FOOD")) ||
+      (await hasDashboardAccessByAuth(user.id, user.email ?? "", "ORDER_PERSON_RIDE"));
 
     if (!allowed) {
       return NextResponse.json(
@@ -87,7 +88,8 @@ export async function POST(
 
     const allowed =
       (await isSuperAdmin(user.id, user.email ?? "")) ||
-      (await hasDashboardAccessByAuth(user.id, user.email ?? "", "ORDER_FOOD"));
+      (await hasDashboardAccessByAuth(user.id, user.email ?? "", "ORDER_FOOD")) ||
+      (await hasDashboardAccessByAuth(user.id, user.email ?? "", "ORDER_PERSON_RIDE"));
 
     if (!allowed) {
       return NextResponse.json(
@@ -122,7 +124,7 @@ export async function POST(
 
     const systemUser = await getSystemUserByEmail(user.email);
     const actorId = systemUser?.id ?? null;
-    const actorName = systemUser?.full_name ?? user.email ?? null;
+    const actorName = systemUser?.full_name?.trim() || user.email || null;
     const actorType = systemUser?.primary_role ?? "AGENT";
 
     const created = await createOrderRemark({
@@ -156,6 +158,8 @@ export async function POST(
     return NextResponse.json({
       success: true,
       data: created,
+      routedToEmail: user.email ?? null,
+      routedToName: actorName,
     });
   } catch (error) {
     console.error("[POST /api/orders/[orderId]/remarks] Error:", error);

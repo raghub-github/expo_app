@@ -7,6 +7,7 @@ import {
   S3Client,
   PutObjectCommand,
   GetObjectCommand,
+  HeadObjectCommand,
   DeleteObjectCommand,
   ListObjectsV2Command,
 } from "@aws-sdk/client-s3";
@@ -144,6 +145,37 @@ export async function getObjectByKey(
     return {
       buffer,
       contentType: response.ContentType ?? undefined,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/** True when the object exists in R2 (HEAD). Missing/invalid keys → false. */
+export async function r2ObjectExists(r2Key: string | null | undefined): Promise<boolean> {
+  if (!r2Key || typeof r2Key !== "string" || !r2Key.trim()) return false;
+  try {
+    const meta = await headObjectByKey(r2Key);
+    return !!meta;
+  } catch {
+    return false;
+  }
+}
+
+/** HEAD metadata for an R2 object (content type / size). */
+export async function headObjectByKey(
+  r2Key: string
+): Promise<{ contentType?: string; contentLength?: number } | null> {
+  try {
+    const client = getR2Client();
+    const bucket = getBucketName();
+    const { normalizeR2ObjectKey } = await import("@/lib/r2-proxy-url");
+    const key = normalizeR2ObjectKey(r2Key.trim());
+    if (!key) return null;
+    const response = await client.send(new HeadObjectCommand({ Bucket: bucket, Key: key }));
+    return {
+      contentType: response.ContentType ?? undefined,
+      contentLength: typeof response.ContentLength === "number" ? response.ContentLength : undefined,
     };
   } catch {
     return null;

@@ -9,6 +9,7 @@ import { Ticket } from "@/hooks/tickets/useTickets";
 import { prefetchTicketDetail } from "@/hooks/tickets/useTicketDetail";
 import { buildTicketDetailHref } from "@/lib/tickets/ticket-path-utils";
 import { InlineSearchableSelect, type Option } from "./InlineSearchableSelect";
+import { TicketMixedText, TicketNum } from "./tickets-typography";
 
 // Reference card: Ticket ID = purple-blue pill (white text), Status = light blue, Priority = light green,
 // Model tags (source/group) = light purple bg + purple text, Age = bright orange pill (white text)
@@ -315,7 +316,7 @@ export function TicketGridCard({
             aria-label={`Select ${ticket.ticketNumber}`}
           />
           <div className="flex items-center gap-0.5 shrink-0">
-            <span className="inline-flex items-center rounded-full bg-indigo-600 px-1.5 py-0.5 text-[10px] font-medium text-white">
+            <span className="tickets-num inline-flex items-center rounded-full bg-indigo-600 px-1.5 py-0.5 text-[10px] font-medium text-white">
               #{ticket.ticketNumber || ticket.id}
             </span>
             <button type="button" onClick={(e) => { e.preventDefault(); e.stopPropagation(); copyId(); }} className="p-0.5 rounded text-gray-400 hover:text-gray-600 hover:bg-gray-100" aria-label="Copy ticket ID">
@@ -335,7 +336,7 @@ export function TicketGridCard({
                     : "bg-violet-50 text-violet-700"
               }`}
             >
-              Resumes in {snoozeCountdown.label}
+              Resumes in <TicketNum>{snoozeCountdown.label}</TicketNum>
             </span>
           </div>
         ) : null}
@@ -364,7 +365,7 @@ export function TicketGridCard({
           scroll={false}
           className="font-bold text-gray-900 text-[13px] line-clamp-2 leading-tight hover:text-blue-600 hover:underline -mx-0.5 px-0.5"
         >
-          {ticket.subject || "No subject"}
+          <TicketMixedText>{ticket.subject || "No subject"}</TicketMixedText>
         </Link>
 
         {/* Source tag only (no Group below subject) */}

@@ -1,11 +1,37 @@
 /**
- * GET /api/attachments/proxy?key=<r2_key>
+ * GET/HEAD /api/attachments/proxy?key=<r2_key>
  * Serves file from R2 by key. Used as public_url for menu/media files.
  */
 import { NextRequest, NextResponse } from "next/server";
-import { getObjectByKey } from "@/lib/services/r2";
+import { getObjectByKey, headObjectByKey } from "@/lib/services/r2";
 
 export const runtime = "nodejs";
+
+export async function HEAD(request: NextRequest) {
+  const key = request.nextUrl.searchParams.get("key");
+  if (!key || typeof key !== "string") {
+    return new NextResponse(null, { status: 400 });
+  }
+
+  try {
+    const meta = await headObjectByKey(key);
+    if (!meta) {
+      return new NextResponse(null, { status: 404 });
+    }
+    const contentType = meta.contentType || "application/octet-stream";
+    const headers: Record<string, string> = {
+      "Content-Type": contentType,
+      "Cache-Control": "private, max-age=3600",
+    };
+    if (typeof meta.contentLength === "number") {
+      headers["Content-Length"] = String(meta.contentLength);
+    }
+    return new NextResponse(null, { status: 200, headers });
+  } catch (e) {
+    console.error("[HEAD /api/attachments/proxy]", e);
+    return new NextResponse(null, { status: 500 });
+  }
+}
 
 export async function GET(request: NextRequest) {
   const key = request.nextUrl.searchParams.get("key");

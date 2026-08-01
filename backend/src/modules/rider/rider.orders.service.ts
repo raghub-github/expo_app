@@ -2776,6 +2776,12 @@ async function acceptRideOrderForRider(
     throw Object.assign(new Error("Order already taken"), { statusCode: 409 });
   }
 
+  const [riderProfile] = await db
+    .select({ name: riders.name, mobile: riders.mobile })
+    .from(riders)
+    .where(eq(riders.id, riderId))
+    .limit(1);
+
   const accepted = await db.transaction(async (tx) => {
     const [existing] = await tx
       .select({ id: ordersCore.id })
@@ -2846,6 +2852,8 @@ async function acceptRideOrderForRider(
         orderIdText,
         riderId,
         occurredAt: now,
+        riderName: riderProfile?.name ?? null,
+        riderMobile: riderProfile?.mobile ?? null,
       });
     }
 

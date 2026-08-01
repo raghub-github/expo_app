@@ -52,7 +52,7 @@ export function TicketsWorkspaceClient() {
   const showDetail = rawSegment !== "";
 
   return (
-    <div className="flex h-full min-h-0 flex-1 flex-col overflow-hidden">
+    <div className="flex h-full min-h-0 flex-1 flex-col overflow-hidden tickets-typo">
       <div className={showDetail ? "hidden" : "flex min-h-0 flex-1 flex-col"} aria-hidden={showDetail}>
         <TicketDashboardClient />
       </div>

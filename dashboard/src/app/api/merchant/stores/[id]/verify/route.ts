@@ -241,6 +241,7 @@ export async function POST(
           storeName: store.store_name,
           storePublicId: store.store_id,
           dashboardUrl,
+          message: messageField || null,
         });
         const outcome = await sendEmail({ to: recipientEmail, subject, text, html });
         emailNotify.sent = outcome.ok;

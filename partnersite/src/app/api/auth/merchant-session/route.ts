@@ -1,13 +1,17 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
-import { isInvalidRefreshToken, isNetworkOrTransientError } from "@/lib/auth/session-errors";
+import {
+  isFatalRefreshTokenError,
+  isNetworkOrTransientError,
+  isRefreshTokenAlreadyUsed,
+} from "@/lib/auth/session-errors";
 import { validateMerchantFromSession } from "@/lib/auth/validate-merchant";
 
 const maxGetUserAttempts = 3;
 const retryDelaysMs = [800, 1600];
 
-/** GET /api/auth/merchant-session — Supabase-based merchant session (does not conflict with NextAuth /api/auth/session). */
-export async function GET(request: NextRequest) {
+/** GET /api/auth/merchant-session — legacy path; prefer /api/merchant-auth/merchant-session */
+export async function GET(_request: NextRequest) {
   try {
     const supabase = await createServerSupabaseClient();
     let user: { id: string; email?: string; phone?: string } | null = null;
@@ -24,14 +28,19 @@ export async function GET(request: NextRequest) {
         : null;
       userError = result.error ?? null;
       if (!userError && user) break;
-      if (userError && isInvalidRefreshToken(userError)) break;
-      // Fail fast on network/connect timeout — no point retrying when Supabase is unreachable
+      if (userError && isRefreshTokenAlreadyUsed(userError)) {
+        if (attempt < maxGetUserAttempts) {
+          await new Promise((r) => setTimeout(r, retryDelaysMs[attempt - 1] ?? 1000));
+          continue;
+        }
+        break;
+      }
+      if (userError && isFatalRefreshTokenError(userError)) break;
       if (userError && isNetworkOrTransientError(userError)) break;
       if (userError && attempt < maxGetUserAttempts) {
         await new Promise((r) => setTimeout(r, retryDelaysMs[attempt - 1] ?? 1000));
         continue;
       }
-      // After redirect/callback, cookies may not be applied yet; retry once after short delay
       if (!user && !userError && attempt < maxGetUserAttempts) {
         await new Promise((r) => setTimeout(r, 400));
         continue;
@@ -40,8 +49,13 @@ export async function GET(request: NextRequest) {
     }
 
     if (userError || !user) {
-      if (userError && isInvalidRefreshToken(userError)) {
-        await supabase.auth.signOut();
+      if (userError && isRefreshTokenAlreadyUsed(userError)) {
+        return NextResponse.json(
+          { success: false, error: "Service temporarily unavailable", code: "SERVICE_UNAVAILABLE" },
+          { status: 503 }
+        );
+      }
+      if (userError && isFatalRefreshTokenError(userError)) {
         return NextResponse.json(
           { success: false, error: "Session invalid", code: "SESSION_INVALID" },
           { status: 401 }
@@ -53,29 +67,12 @@ export async function GET(request: NextRequest) {
           { status: 503 }
         );
       }
-      // Not logged in: return 200 so console doesn't show 401 (client checks success flag)
       return NextResponse.json(
         { success: false, error: "Not authenticated", code: "SESSION_REQUIRED" },
         { status: 200 }
       );
     }
 
-    const { data: { session }, error: sessionError } = await supabase.auth.getSession();
-    if (sessionError && isInvalidRefreshToken(sessionError)) {
-      await supabase.auth.signOut();
-      return NextResponse.json(
-        { success: false, error: "Session invalid", code: "SESSION_INVALID" },
-        { status: 401 }
-      );
-    }
-    if (!session) {
-      return NextResponse.json(
-        { success: false, error: "No active session", code: "SESSION_REQUIRED" },
-        { status: 200 }
-      );
-    }
-
-    // Load parent so UI can show blocked/suspended and disable child registration
     const validation = await validateMerchantFromSession({
       id: user.id,
       email: user.email ?? null,
@@ -102,8 +99,8 @@ export async function GET(request: NextRequest) {
 
     return NextResponse.json({
       success: true,
+      authenticated: true,
       data: {
-        session,
         user: { id: user.id, email: user.email, phone: user.phone },
         parent: validation.merchantParentId != null ? parent : null,
       },

@@ -45,10 +45,10 @@ export function shouldShowDashboardNavOverlay(fromPath: string, toHref: string):
   ) {
     return false;
   }
-  // Orders list uses its own skeleton + cached React Query data within orders.
+  // Orders list + standalone order detail share chrome; keep sidebars stable.
   if (
-    cleanPath.startsWith("/dashboard/orders") &&
-    cleanTarget.startsWith("/dashboard/orders")
+    (cleanPath.startsWith("/dashboard/orders") || cleanPath.startsWith("/order")) &&
+    (cleanTarget.startsWith("/dashboard/orders") || cleanTarget.startsWith("/order"))
   ) {
     return false;
   }

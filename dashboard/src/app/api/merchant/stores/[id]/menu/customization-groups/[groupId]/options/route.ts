@@ -67,6 +67,16 @@ export async function POST(
       )
       RETURNING id
     `;
+    // Bump parent menu item so version fingerprint changes and customers see the new option.
+    await sql`
+      UPDATE merchant_menu_items mi
+      SET updated_at = NOW()
+      FROM merchant_menu_item_customizations c
+      WHERE c.menu_item_id = mi.id
+        AND c.id = ${gId}
+        AND mi.store_id = ${storeId}
+    `.catch(() => { /* non-fatal */ });
+
     try {
       await logStoreActivity({ storeId, section: "addon", action: "create", summary: `Agent added addon option to group #${groupId}`, actorType: "agent", source: "dashboard" });
     } catch (_) {}

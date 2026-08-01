@@ -9,6 +9,8 @@ interface VerificationLocationMapProps {
   onCoordinatesChange: (lat: number, lng: number) => void;
   onReverseGeocode?: (address: { place_name?: string | null; city?: string | null; state?: string | null; postal_code?: string | null; country?: string | null }) => void;
   className?: string;
+  /** When true, pin cannot be dragged and map clicks do not move it (Old/New compare). */
+  readOnly?: boolean;
 }
 
 const DEFAULT_CENTER: [number, number] = [78.0, 22.0]; // India
@@ -20,12 +22,17 @@ export function VerificationLocationMap({
   onCoordinatesChange,
   onReverseGeocode,
   className = "",
+  readOnly = false,
 }: VerificationLocationMapProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<any>(null);
   const markerRef = useRef<any>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const readOnlyRef = useRef(readOnly);
+  const onCoordinatesChangeRef = useRef(onCoordinatesChange);
+  readOnlyRef.current = readOnly;
+  onCoordinatesChangeRef.current = onCoordinatesChange;
 
   useEffect(() => {
     const container = containerRef.current;
@@ -68,20 +75,22 @@ export function VerificationLocationMap({
 
         map.on("load", () => {
           if (cancelled) return;
-          const marker = new mapboxgl.Marker({ draggable: true })
+          const marker = new mapboxgl.Marker({ draggable: !readOnlyRef.current })
             .setLngLat(center)
             .addTo(map);
           markerRef.current = marker;
 
           marker.on("dragend", () => {
+            if (readOnlyRef.current) return;
             const lngLat = marker.getLngLat();
-            onCoordinatesChange(lngLat.lat, lngLat.lng);
+            onCoordinatesChangeRef.current(lngLat.lat, lngLat.lng);
           });
 
           map.on("click", (e: { lngLat: { lat: number; lng: number } }) => {
+            if (readOnlyRef.current) return;
             const { lng, lat } = e.lngLat;
             marker.setLngLat([lng, lat]);
-            onCoordinatesChange(lat, lng);
+            onCoordinatesChangeRef.current(lat, lng);
           });
 
           setLoading(false);
@@ -106,6 +115,15 @@ export function VerificationLocationMap({
     };
   }, []);
 
+  useEffect(() => {
+    const marker = markerRef.current;
+    if (!marker || typeof marker.setDraggable !== "function") return;
+    try {
+      marker.setDraggable(!readOnly);
+    } catch {
+      /* ignore */
+    }
+  }, [readOnly]);
   // Update marker position when latitude/longitude change from parent (e.g. manual input)
   useEffect(() => {
     const map = mapRef.current;
@@ -134,8 +152,12 @@ export function VerificationLocationMap({
         </div>
       )}
       <div ref={containerRef} className="h-[220px] w-full rounded border border-gray-200" style={{ minHeight: 220 }} />
-      <p className="mt-1 text-[10px] text-gray-500">Click the map or drag the marker to set store location. Coordinates update automatically.</p>
-      {onReverseGeocode && latitude != null && longitude != null && Number.isFinite(latitude) && Number.isFinite(longitude) && (
+      {!readOnly ? (
+        <p className="mt-1 text-[10px] text-gray-500">Click the map or drag the marker to set store location. Coordinates update automatically.</p>
+      ) : (
+        <p className="mt-1 text-[10px] text-gray-500">Read-only map preview for verification compare.</p>
+      )}
+      {!readOnly && onReverseGeocode && latitude != null && longitude != null && Number.isFinite(latitude) && Number.isFinite(longitude) && (
         <button
           type="button"
           onClick={async () => {

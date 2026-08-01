@@ -198,7 +198,64 @@ export async function GET(request: NextRequest) {
       onboardingCompleted: s.onboarding_completed,
       onboardingCompletedAt: s.onboarding_completed_at,
       totalSteps: 9 as number | null,
+      hasOpenVerificationFix: false,
+      openVerificationFixStep: null as number | null,
+      verificationFixResubmitted: false,
     }));
+
+    // Attach open verification rejections so AM can Fix onboarding like partner portal.
+    try {
+      const storeIds = mappedItems.map((s) => s.id).filter((id) => Number.isFinite(id));
+      if (storeIds.length > 0) {
+        const sql = getSql() as { unsafe: (q: string, v?: unknown[]) => Promise<unknown[]> };
+        const inList = storeIds.map(Number).filter(Number.isFinite).join(",");
+        if (inList) {
+          const rows = (await sql.unsafe(
+            `
+            SELECT store_id, step_number
+            FROM store_verification_step_rejections
+            WHERE store_id IN (${inList})
+            `
+          )) as { store_id: number; step_number: number }[];
+          const rejectedByStore = new Map<number, Set<number>>();
+          for (const r of rows || []) {
+            const sid = Number(r.store_id);
+            const step = Number(r.step_number);
+            if (!Number.isFinite(sid) || !Number.isFinite(step)) continue;
+            if (!rejectedByStore.has(sid)) rejectedByStore.set(sid, new Set());
+            rejectedByStore.get(sid)!.add(step);
+          }
+
+          const pendingRows = (await sql.unsafe(
+            `
+            SELECT DISTINCT store_id, verification_step
+            FROM merchant_store_onboarding_resubmissions
+            WHERE store_id IN (${inList})
+              AND status = 'pending'
+            `
+          )) as { store_id: number; verification_step: number }[];
+          const pendingByStore = new Map<number, Set<number>>();
+          for (const r of pendingRows || []) {
+            const sid = Number(r.store_id);
+            const step = Number(r.verification_step);
+            if (!Number.isFinite(sid) || !Number.isFinite(step)) continue;
+            if (!pendingByStore.has(sid)) pendingByStore.set(sid, new Set());
+            pendingByStore.get(sid)!.add(step);
+          }
+
+          for (const s of mappedItems) {
+            const rejected = rejectedByStore.get(s.id);
+            if (!rejected || rejected.size === 0) continue;
+            s.hasOpenVerificationFix = true;
+            s.openVerificationFixStep = Math.min(...rejected);
+            const pending = pendingByStore.get(s.id) ?? new Set<number>();
+            s.verificationFixResubmitted = [...rejected].every((step) => pending.has(step));
+          }
+        }
+      }
+    } catch (e) {
+      console.warn("[GET /api/area-manager/stores] open verification fix lookup failed:", e);
+    }
 
     return NextResponse.json({
       success: true,

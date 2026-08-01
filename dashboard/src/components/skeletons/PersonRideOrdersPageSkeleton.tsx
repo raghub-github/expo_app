@@ -1,13 +1,12 @@
 "use client";
 
-const PAGE_BG = "#F4F6F9";
+const PAGE_BG = "#f3f5f7";
 const CONTENT_BG = "#FFFFFF";
-const MINT_GREEN = "#4EE5C1";
 
 /** Skeleton for Person Ride orders list (matches food orders hub layout). */
 export function PersonRideOrdersPageSkeleton() {
   return (
-    <div className="space-y-2 w-full max-w-full overflow-x-hidden animate-in fade-in duration-150" style={{ backgroundColor: PAGE_BG }}>
+    <div className="orders-typo space-y-2 w-full max-w-full overflow-x-hidden animate-in fade-in duration-150" style={{ backgroundColor: PAGE_BG }}>
       <div className="p-2" style={{ backgroundColor: CONTENT_BG }}>
         <div className="flex flex-wrap items-center gap-2">
           {[1, 2, 3].map((i) => (

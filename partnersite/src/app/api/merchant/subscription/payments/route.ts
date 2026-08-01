@@ -40,8 +40,8 @@ export type PlanHistoryEntry = {
     failed_at: string | null
     failure_reason: string | null
     last_sync_at: string | null
-    /** ISO instant settlement guidance stops showing (10 working days after
-     * completion, IST). null unless the refund is COMPLETED. */
+    /** ISO instant settlement guidance stops showing (5 calendar days after
+     * completion: 4 days message 1 + 1 day message 2). null unless COMPLETED. */
     settlement_note_until: string | null
     /** Whether that settlement note should show right now (server-evaluated). */
     settlement_note_visible: boolean
@@ -145,8 +145,8 @@ export async function GET(req: NextRequest) {
       const status = r.status != null ? String(r.status) : null
       const completedAt = toIso(r.completed_at)
       // Settlement guidance only for a gateway-CONFIRMED refund (COMPLETED).
-      // The 10-working-day window is computed server-side so every surface
-      // hides the guidance at exactly the same instant.
+      // The 5-calendar-day window (4 + 1) is computed server-side so every
+      // surface hides the guidance at exactly the same instant.
       const isCompleted = String(status ?? '').toUpperCase() === 'COMPLETED'
       const settlementUntil = isCompleted ? settlementNoteVisibleUntil(completedAt) : null
       refundByPaymentId.set(String(r.payment_id), {

@@ -137,6 +137,7 @@ export interface StoreOperationsData {
   schedule_end_prompt_active?: boolean;
   schedule_end_prompt_expires_at?: string | null;
   next_schedule_transition_at?: string | null;
+  approval_status?: string | null;
   scheduled_time_offs?: Array<{
     id: number;
     reason: string | null;

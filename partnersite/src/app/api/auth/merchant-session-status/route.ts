@@ -4,21 +4,43 @@ import {
   getSessionMetadata,
   checkSessionValidity,
   formatTimeRemaining,
+  initializeSession,
 } from "@/lib/auth/session-manager";
-import { isInvalidRefreshToken } from "@/lib/auth/session-errors";
+import {
+  isFatalRefreshTokenError,
+  isRefreshTokenAlreadyUsed,
+} from "@/lib/auth/session-errors";
 import { cookies } from "next/headers";
 
-/** GET /api/auth/merchant-session-status — Supabase-based merchant session status (does not conflict with NextAuth). */
-export async function GET(request: NextRequest) {
+/** GET /api/auth/merchant-session-status — legacy path; prefer /api/merchant-auth/merchant-session-status */
+export async function GET(_request: NextRequest) {
   try {
     const supabase = await createServerSupabaseClient();
-    const { data: { user }, error: userError } = await supabase.auth.getUser();
+    const {
+      data: { user },
+      error: userError,
+    } = await supabase.auth.getUser();
 
     if (userError) {
-      if (isInvalidRefreshToken(userError)) {
-        await supabase.auth.signOut();
+      if (isRefreshTokenAlreadyUsed(userError)) {
         return NextResponse.json(
-          { success: false, authenticated: false, error: "Session invalid", code: "SESSION_INVALID" },
+          {
+            success: false,
+            authenticated: false,
+            error: "Service temporarily unavailable",
+            code: "SERVICE_UNAVAILABLE",
+          },
+          { status: 503 }
+        );
+      }
+      if (isFatalRefreshTokenError(userError)) {
+        return NextResponse.json(
+          {
+            success: false,
+            authenticated: false,
+            error: "Session invalid",
+            code: "SESSION_INVALID",
+          },
           { status: 401 }
         );
       }
@@ -36,18 +58,22 @@ export async function GET(request: NextRequest) {
     }
 
     const cookieStore = await cookies();
-    const metadata = getSessionMetadata({
+    let metadata = getSessionMetadata({
       get: (name: string) => cookieStore.get(name),
     });
-    const validity = checkSessionValidity(metadata);
+    let validity = checkSessionValidity(metadata);
 
-    if (!validity.isValid) {
-      return NextResponse.json({
-        success: true,
-        authenticated: false,
-        expired: true,
-        reason: validity.reason,
+    if (!metadata || !validity.isValid) {
+      metadata = initializeSession({
+        set: (name, value, options) => {
+          try {
+            cookieStore.set(name, value, options as Parameters<typeof cookieStore.set>[2]);
+          } catch {
+            /* ignore */
+          }
+        },
       });
+      validity = checkSessionValidity(metadata);
     }
 
     return NextResponse.json({

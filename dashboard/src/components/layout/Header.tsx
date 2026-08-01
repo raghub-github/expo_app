@@ -27,6 +27,12 @@ import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
 import { useLogout } from "@/hooks/queries/useAuthQuery";
 import { Logo } from "@/components/brand/Logo";
 import { getUserAvatarUrl, getUserInitials } from "@/lib/user-avatar";
+import {
+  buildStoreVerificationHeaderBackHref,
+  isStoreVerificationDetailPath,
+  parseStoreVerificationStepParam,
+  storeVerificationStepLabel,
+} from "@/lib/merchants/store-verification-path";
 import { getCurrentPageName, getCurrentDashboard, getCurrentDashboardSubRoutes, orderDashboardRoutes } from "@/lib/navigation/dashboard-routes";
 import { DashboardSearch } from "./DashboardSearch";
 import { GlobalSearch } from "@/components/search/GlobalSearch";
@@ -65,8 +71,10 @@ import {
   PERSON_RIDE_SEARCH_TYPES,
   normalizePersonRideSearchType,
 } from "@/lib/orders/person-ride-search";
+import { resolveOrderTypeFromPublicId } from "@/lib/orders/resolve-order-type-from-public-id";
 
-const ORDER_HUB_MINT = "#4EE5C1";
+const ORDER_HUB_ACCENT = "#121212";
+const ORDER_HUB_ACCENT_TEXT = "#FFFFFF";
 
 // Order type switcher — replaces the orders right sidebar (Food / Parcel / Person Ride)
 function OrderTypeDropdown() {
@@ -94,13 +102,33 @@ function OrderTypeDropdown() {
 
   const cleanPath = useMemo(() => pathname.split("?")[0].split("#")[0], [pathname]);
 
-  const currentRoute = useMemo(
-    () =>
+  const currentRoute = useMemo(() => {
+    if (cleanPath === "/order" || cleanPath.startsWith("/order/")) {
+      const id = cleanPath.split("/")[2] ?? "";
+      const orderType = resolveOrderTypeFromPublicId(id);
+      if (orderType === "person_ride") {
+        return (
+          orderDashboardRoutes.find((r) => r.href.includes("person-ride")) ??
+          orderDashboardRoutes[0]
+        );
+      }
+      if (orderType === "parcel") {
+        return (
+          orderDashboardRoutes.find((r) => r.href.includes("parcel")) ??
+          orderDashboardRoutes[0]
+        );
+      }
+      return (
+        orderDashboardRoutes.find((r) => r.href.includes("/food")) ??
+        orderDashboardRoutes[0]
+      );
+    }
+    return (
       orderDashboardRoutes.find(
         (route) => cleanPath === route.href || cleanPath.startsWith(`${route.href}/`)
-      ) ?? orderDashboardRoutes[0],
-    [cleanPath]
-  );
+      ) ?? orderDashboardRoutes[0]
+    );
+  }, [cleanPath]);
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -168,7 +196,7 @@ function OrderTypeDropdown() {
                 }`}
                 style={
                   isActive
-                    ? { backgroundColor: ORDER_HUB_MINT, color: "#000000" }
+                    ? { backgroundColor: ORDER_HUB_ACCENT, color: ORDER_HUB_ACCENT_TEXT }
                     : { color: "#000000" }
                 }
               >
@@ -285,7 +313,9 @@ function OrderSearchBar() {
                 }}
                 className="w-full px-3 py-1.5 text-left text-xs text-gray-900 transition-colors hover:bg-gray-100 cursor-pointer"
                 style={
-                  item === searchType ? { backgroundColor: ORDER_HUB_MINT } : undefined
+                  item === searchType
+                    ? { backgroundColor: ORDER_HUB_ACCENT, color: ORDER_HUB_ACCENT_TEXT }
+                    : undefined
                 }
               >
                 {item}
@@ -310,11 +340,12 @@ function OrderSearchBar() {
       <button
         type="button"
         onClick={handleSearch}
-        className="flex h-full shrink-0 items-center justify-center rounded-r-lg px-3.5 cursor-pointer"
-        style={{ backgroundColor: ORDER_HUB_MINT }}
+        className="flex h-full shrink-0 items-center justify-center gap-1.5 rounded-r-lg px-3 cursor-pointer"
+        style={{ backgroundColor: ORDER_HUB_ACCENT }}
         aria-label="Search orders"
       >
-        <Search className="h-4 w-4 text-gray-900" />
+        <Search className="h-4 w-4 text-white" aria-hidden />
+        <span className="text-xs font-semibold tracking-wide text-white">Search</span>
       </button>
     </div>
   );
@@ -392,6 +423,11 @@ function HeaderComponent() {
 
   const pageName = useMemo(() => {
     const clean = effectivePathname.split("?")[0].split("#")[0];
+    if (isStoreVerificationDetailPath(clean, searchParams)) {
+      const step = parseStoreVerificationStepParam(searchParams.get("step"));
+      if (step != null) return storeVerificationStepLabel(step);
+      return "Verifications";
+    }
     if (clean.startsWith("/dashboard/tickets/queue")) {
       return resolveTicketsQueueHeaderTitle(clean, searchParams.get("section"));
     }
@@ -403,6 +439,17 @@ function HeaderComponent() {
     if (GEO_DETAIL_ROUTE_RE.test(clean)) return "Geo & coverage";
     return getCurrentPageName(clean);
   }, [effectivePathname, searchParams]);
+  const isStoreVerificationDetail = useMemo(
+    () => isStoreVerificationDetailPath(pathnameClean, searchParams),
+    [pathnameClean, searchParams]
+  );
+  const storeVerificationBackHref = useMemo(
+    () =>
+      isStoreVerificationDetail
+        ? buildStoreVerificationHeaderBackHref(searchParams)
+        : "/dashboard/merchants/verifications",
+    [isStoreVerificationDetail, searchParams]
+  );
   const isMerchantsAreaForDisplay = effectivePathname.startsWith("/dashboard/merchants");
   /** Actual URL only — portal sync must not run while pathname is still on Orders/etc. */
   const isMerchantsArea = pathnameClean.startsWith("/dashboard/merchants");
@@ -438,6 +485,8 @@ function HeaderComponent() {
   const isGeoRiderAvailabilityPage =
     cleanPathname === "/dashboard/area-managers/availability" ||
     cleanPathname.startsWith("/dashboard/area-managers/availability/");
+  const isAmOnboardingFailedPage =
+    cleanPathname.startsWith("/dashboard/area-managers/stores/onboarding-failed");
   const isSuperAdminSubRoute = useMemo(
     () =>
       cleanPathname.startsWith(`${SUPER_ADMIN_HUB_PATH}/`) &&
@@ -456,7 +505,8 @@ function HeaderComponent() {
       cleanPathname !== "/dashboard" &&
       currentSubRoutes.length > 0 &&
       !cleanPathname.startsWith("/dashboard/customers") &&
-      !cleanPathname.startsWith("/dashboard/orders")
+      !cleanPathname.startsWith("/dashboard/orders") &&
+      !(cleanPathname === "/order" || cleanPathname.startsWith("/order/"))
   );
   const { canTogglePortal = false, isSuperAdmin = false } = usePermissions();
   const { data: dashboardAccessData } = useDashboardAccessQuery();
@@ -526,6 +576,17 @@ function HeaderComponent() {
       router.replace(qs ? `${pathname}?${qs}` : pathname);
       return;
     }
+    // Stay on deep merchants routes (e.g. verifications?storeId=&step=) — only swap portal.
+    if (
+      pathnameClean.startsWith("/dashboard/merchants/") &&
+      pathnameClean !== "/dashboard/merchants"
+    ) {
+      const next = new URLSearchParams(searchParams.toString());
+      next.set("portal", value);
+      const qs = next.toString();
+      router.replace(qs ? `${pathname}?${qs}` : pathname);
+      return;
+    }
     router.replace(
       value === "admin"
         ? "/dashboard/merchants?portal=admin"
@@ -534,12 +595,22 @@ function HeaderComponent() {
   };
 
   // Force merchant portal unless explicit portal toggle access is granted.
+  // Never navigate away from the current merchants page (preserve storeId/step on reload).
   useEffect(() => {
     if (!isMerchantsArea) return;
     if (canTogglePortal) return;
     if (portal === "merchant") return;
-    setPortal("merchant");
-  }, [isMerchantsArea, canTogglePortal, portal]);
+    writeStoredMerchantsPortal("merchant");
+    const next = new URLSearchParams(searchParams.toString());
+    if (next.get("portal") === "merchant") {
+      setPendingPortal(null);
+      return;
+    }
+    next.set("portal", "merchant");
+    const qs = next.toString();
+    setPendingPortal("merchant");
+    router.replace(qs ? `${pathname}?${qs}` : `${pathname}?portal=merchant`);
+  }, [isMerchantsArea, canTogglePortal, portal, pathname, router, searchParams]);
   const handleOpenRightPanel = () => {
     leftSidebarMobile?.setMobileMenuOpen(false);
     rightSidebar?.onToggle();
@@ -897,8 +968,41 @@ function HeaderComponent() {
             </Link>
             <h2 className="min-w-0 truncate text-base font-semibold text-gray-900 sm:text-lg">{pageName}</h2>
           </div>
+        ) : isStoreVerificationDetail ? (
+          <div className="verification-typo flex min-w-0 items-center gap-2 sm:gap-2.5">
+            <Link
+              href={storeVerificationBackHref}
+              className="shrink-0 cursor-pointer rounded-md p-1.5 text-gray-600 transition hover:bg-gray-100"
+              aria-label="Back"
+              title="Back"
+            >
+              <ArrowLeft className="h-4 w-4" />
+            </Link>
+            <h2 className="min-w-0 truncate text-base font-semibold text-gray-900 sm:text-lg">
+              {pageName}
+            </h2>
+          </div>
+        ) : isAmOnboardingFailedPage ? (
+          <div className="min-w-0 flex-shrink">
+            <h2 className="min-w-0 truncate text-base font-semibold text-[#121212] sm:text-lg">
+              Onboarding failed
+            </h2>
+            <p className="mt-0.5 hidden max-w-xl truncate text-xs text-gray-500 sm:block">
+              Child stores with rejected verification steps. Fix and resubmit for admin review.
+            </p>
+          </div>
         ) : isGeoRiderAvailabilityPage ? null : (
-          <h2 className="min-w-0 truncate text-base font-semibold text-gray-900 sm:text-lg flex-shrink">{pageName}</h2>
+          <h2
+            className={`min-w-0 truncate text-base font-semibold text-[#121212] sm:text-lg flex-shrink ${
+              cleanPathname.startsWith("/dashboard/orders") ||
+              cleanPathname === "/order" ||
+              cleanPathname.startsWith("/order/")
+                ? "orders-typo"
+                : ""
+            }`}
+          >
+            {pageName}
+          </h2>
         )}
         {/* Queue (new tab) + helpdesk gear — ticket list & related; status lives on Queue pages */}
         {effectivePathname.startsWith("/dashboard/tickets") &&
@@ -929,9 +1033,14 @@ function HeaderComponent() {
       {effectivePathname.startsWith("/dashboard/orders") ? (
         <div className="hidden lg:flex min-w-0 flex-1 items-center justify-center gap-3 px-4">
           <OrderTypeDropdown />
-          <div className="min-w-0 flex-1 max-w-lg">
+          <div className="min-w-0 w-full max-w-[26rem]">
             <OrderSearchBar />
           </div>
+        </div>
+      ) : effectivePathname === "/order" ||
+        effectivePathname.startsWith("/order/") ? (
+        <div className="hidden lg:flex min-w-0 flex-1 items-center justify-center gap-3 px-4">
+          <OrderTypeDropdown />
         </div>
       ) : effectivePathname.startsWith("/dashboard/tickets") && !isTicketsQueueWorkspace ? (
         <div
@@ -1011,6 +1120,7 @@ function HeaderComponent() {
       ) : !effectivePathname.startsWith("/dashboard/tickets") &&
         effectivePathname !== "/dashboard/area-managers" &&
         !isGeoRiderAvailabilityPage &&
+        !isAmOnboardingFailedPage &&
         !effectivePathname.startsWith("/dashboard/merchants/verifications") ? (
         <div className="hidden lg:flex items-center justify-center flex-1 max-w-xl mx-4 min-w-0">
           <DashboardSearch compact={true} />
@@ -1019,12 +1129,15 @@ function HeaderComponent() {
 
       <div className="flex items-center gap-1 sm:gap-2 flex-shrink-0 min-w-0">
         {/* Admin | Merchant portal toggle: shown only for explicit portal-toggle access */}
-        {isMerchantsAreaForDisplay && portalToggleMounted && canTogglePortal && (
-          <div className="flex rounded-md border border-gray-200 bg-white p-0.5 shadow-sm" role="tablist" aria-label="Admin or Merchant portal">
+        {isMerchantsAreaForDisplay &&
+          portalToggleMounted &&
+          canTogglePortal &&
+          !isStoreVerificationDetail && (
+          <div className="flex rounded-[10px] border border-[#121212]/10 bg-white p-0.5 shadow-sm" role="tablist" aria-label="Admin or Merchant portal">
             <button
               type="button"
               onClick={() => setPortal("admin")}
-              className={`cursor-pointer rounded px-2 py-1.5 text-xs font-medium transition ${portal === "admin" ? "bg-indigo-600 text-white" : "text-gray-600 hover:bg-gray-100"}`}
+              className={`cursor-pointer rounded-[10px] px-2 py-1.5 text-xs font-medium transition ${portal === "admin" ? "bg-[#121212] text-white" : "text-[#121212]/70 hover:bg-[#F3F7FA]"}`}
               aria-pressed={portal === "admin"}
             >
               Admin
@@ -1032,7 +1145,7 @@ function HeaderComponent() {
             <button
               type="button"
               onClick={() => setPortal("merchant")}
-              className={`cursor-pointer rounded px-2 py-1.5 text-xs font-medium transition ${portal === "merchant" ? "bg-orange-500 text-white" : "text-gray-600 hover:bg-gray-100"}`}
+              className={`cursor-pointer rounded-[10px] px-2 py-1.5 text-xs font-medium transition ${portal === "merchant" ? "bg-[#121212] text-white" : "text-[#121212]/70 hover:bg-[#F3F7FA]"}`}
               aria-pressed={portal === "merchant"}
             >
               Merchant
@@ -1096,7 +1209,7 @@ function HeaderComponent() {
                     onError={handleAvatarImgError}
                   />
                 ) : (
-                  <div className="h-8 w-8 flex-shrink-0 rounded-full bg-gradient-to-br from-blue-400 to-blue-600 flex items-center justify-center text-white text-xs font-semibold shadow-sm">
+                  <div className="h-8 w-8 flex-shrink-0 rounded-full bg-[#121212] flex items-center justify-center text-white text-xs font-semibold shadow-sm">
                     {getUserInitials(userName ?? null, userEmail ?? null)}
                   </div>
                 )}

@@ -4,6 +4,7 @@
 
 import { createClient } from '@/lib/supabase/client';
 import { clearAllAuthData } from './clear-auth-storage';
+import { partnerLogoutLocal } from './partner-logout';
 
 export interface ClientAuthError {
   code?: string;
@@ -17,10 +18,17 @@ export function isAuthError(error: any): error is ClientAuthError {
 export function shouldSignOut(error: ClientAuthError): boolean {
   const errorCode = error.code?.toLowerCase() || '';
   const errorMessage = error.message?.toLowerCase() || '';
-  
+
+  // Concurrent refresh race — another tab/request already rotated the token. Do not sign out.
+  if (
+    errorCode === 'refresh_token_already_used' ||
+    errorMessage.includes('already used')
+  ) {
+    return false;
+  }
+
   return (
     errorCode === 'refresh_token_not_found' ||
-    errorCode === 'refresh_token_already_used' ||
     errorCode === 'invalid_refresh_token' ||
     errorCode === 'session_invalid' ||
     errorMessage.includes('invalid refresh token') ||
@@ -31,26 +39,11 @@ export function shouldSignOut(error: ClientAuthError): boolean {
 
 export async function handleAuthError(error: ClientAuthError, context?: string) {
   console.error(`[client-auth] ${context || 'Auth error'}:`, error);
-  
+
   if (shouldSignOut(error)) {
-    console.log('[client-auth] Signing out due to auth error');
-    try {
-      const supabase = createClient();
-      await supabase.auth.signOut();
-    } catch (signOutError) {
-      console.error('[client-auth] Error signing out:', signOutError);
-    }
-    
-    // Clear all auth-related storage
+    console.log('[client-auth] Clearing local auth after fatal session error');
     clearAllAuthData();
-    
-    // Redirect to login
-    const currentPath = typeof window !== 'undefined' ? window.location.pathname : '';
-    const redirectUrl = `/auth/login?reason=session_invalid${currentPath ? `&redirect=${encodeURIComponent(currentPath)}` : ''}`;
-    
-    if (typeof window !== 'undefined') {
-      window.location.href = redirectUrl;
-    }
+    await partnerLogoutLocal({ redirectToLogin: true, clearStoreSelection: true });
   }
 }
 

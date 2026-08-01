@@ -8,7 +8,6 @@ import {
   sessionStartCookie,
   lastActivityCookie,
   sessionIdCookie,
-  deviceIdCookie,
 } from '@/lib/auth/auth-cookie-names';
 
 /**
@@ -17,7 +16,7 @@ import {
  */
 export async function POST() {
   const cookieStore = await cookies();
-  const response = NextResponse.json({ success: true });
+  let deactivatedCount = 0;
 
   try {
     const supabase = await createServerSupabaseClient();
@@ -36,11 +35,16 @@ export async function POST() {
     if (!validation.isValid || validation.merchantParentId == null) {
       return NextResponse.json({ success: false, error: validation.error ?? 'Forbidden' }, { status: 403 });
     }
-    await deactivateAllSessionsForMerchant(validation.merchantParentId);
+    deactivatedCount = await deactivateAllSessionsForMerchant(validation.merchantParentId);
   } catch (e) {
     console.error('[merchant-auth/logout-all]', e);
     return NextResponse.json({ success: false, error: 'Failed' }, { status: 500 });
   }
+
+  const response = NextResponse.json({
+    success: true,
+    deactivatedCount,
+  });
 
   const cookieManager = {
     set: (name: string, value: string, options: Record<string, unknown>) => {
@@ -52,7 +56,8 @@ export async function POST() {
 
   const allCookies = cookieStore.getAll();
   const authCookieNames = allCookies.filter((c) => c.name.startsWith('sb-')).map((c) => c.name);
-  const sessionNames = [sessionStartCookie(), lastActivityCookie(), sessionIdCookie(), deviceIdCookie()];
+  // Keep device_id stable across logins (same as /api/auth/logout).
+  const sessionNames = [sessionStartCookie(), lastActivityCookie(), sessionIdCookie()];
   const expireOpts = { maxAge: 0, expires: new Date(0), path: '/', sameSite: 'lax' as const };
   [...authCookieNames, ...sessionNames].forEach((name) => {
     const isSupabase = name.startsWith('sb-');

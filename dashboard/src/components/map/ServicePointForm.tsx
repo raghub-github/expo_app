@@ -101,11 +101,11 @@ export function ServicePointForm({ onSuccess }: ServicePointFormProps) {
     return (
       <button
         onClick={() => setIsOpen(true)}
-        className="fixed bottom-6 right-6 z-50 bg-blue-600 text-white p-4 rounded-full shadow-lg hover:bg-blue-700 transition-colors flex items-center gap-2"
+        className="fixed bottom-6 right-6 z-50 flex items-center gap-2 rounded-[10px] bg-[#121212] px-4 py-3.5 text-white shadow-[0_8px_24px_rgba(18,18,18,0.28)] transition-all duration-200 hover:bg-black hover:shadow-[0_10px_28px_rgba(18,18,18,0.35)]"
         title="Add Service Point"
       >
-        <Plus className="h-5 w-5" />
-        <span className="hidden sm:inline">Add Service Point</span>
+        <Plus className="h-5 w-5" strokeWidth={1.75} />
+        <span className="hidden text-sm font-medium tracking-wide sm:inline">Add Service Point</span>
       </button>
     );
   }

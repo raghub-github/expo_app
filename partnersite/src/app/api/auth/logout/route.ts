@@ -37,12 +37,8 @@ export async function POST(request: NextRequest) {
   const authCookieNames = allCookies
     .filter((c) => c.name.startsWith("sb-"))
     .map((c) => c.name);
-  const sessionNames = [
-    sessionStartCookie(),
-    lastActivityCookie(),
-    sessionIdCookie(),
-    deviceIdCookie(),
-  ];
+  // Keep device_id so the same browser reuses the same device row on next login.
+  const sessionNames = [sessionStartCookie(), lastActivityCookie(), sessionIdCookie()];
   const expireOpts = { maxAge: 0, expires: new Date(0), path: "/", sameSite: "lax" as const };
   [...authCookieNames, ...sessionNames].forEach((name) => {
     const isSupabase = name.startsWith("sb-");

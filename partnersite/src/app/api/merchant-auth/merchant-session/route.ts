@@ -1,9 +1,16 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
-import { isInvalidRefreshToken, isNetworkOrTransientError } from "@/lib/auth/session-errors";
+import { isFatalRefreshTokenError, isNetworkOrTransientError, isRefreshTokenAlreadyUsed } from "@/lib/auth/session-errors";
 import { validateMerchantFromSession } from "@/lib/auth/validate-merchant";
 import { toStoredDocumentUrl } from "@/lib/r2";
+import {
+  getSessionMetadata,
+  checkSessionValidity,
+  formatTimeRemaining,
+  initializeSession,
+} from "@/lib/auth/session-manager";
+import { cookies } from "next/headers";
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder.supabase.co";
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "placeholder-service-role-key";
@@ -48,7 +55,15 @@ export async function GET() {
         : null;
       userError = result.error ?? null;
       if (!userError && user) break;
-      if (userError && isInvalidRefreshToken(userError)) break;
+      if (userError && isRefreshTokenAlreadyUsed(userError)) {
+        // Race: wait briefly and retry once so we can pick up rotated cookies if available.
+        if (attempt < maxGetUserAttempts) {
+          await new Promise((r) => setTimeout(r, retryDelaysMs[attempt - 1] ?? 1000));
+          continue;
+        }
+        break;
+      }
+      if (userError && isFatalRefreshTokenError(userError)) break;
       if (userError && isNetworkOrTransientError(userError)) break;
       if (userError && attempt < maxGetUserAttempts) {
         await new Promise((r) => setTimeout(r, retryDelaysMs[attempt - 1] ?? 1000));
@@ -62,8 +77,14 @@ export async function GET() {
     }
 
     if (userError || !user) {
-      if (userError && isInvalidRefreshToken(userError)) {
-        await supabase.auth.signOut();
+      if (userError && isRefreshTokenAlreadyUsed(userError)) {
+        return NextResponse.json(
+          { success: false, error: "Service temporarily unavailable", code: "SERVICE_UNAVAILABLE" },
+          { status: 503 }
+        );
+      }
+      if (userError && isFatalRefreshTokenError(userError)) {
+        // Clear cookies only via client logout path — do not revoke refresh globally here.
         return NextResponse.json(
           { success: false, error: "Session invalid", code: "SESSION_INVALID" },
           { status: 401 }
@@ -81,20 +102,7 @@ export async function GET() {
       );
     }
 
-    const { data: { session }, error: sessionError } = await supabase.auth.getSession();
-    if (sessionError && isInvalidRefreshToken(sessionError)) {
-      await supabase.auth.signOut();
-      return NextResponse.json(
-        { success: false, error: "Session invalid", code: "SESSION_INVALID" },
-        { status: 401 }
-      );
-    }
-    if (!session) {
-      return NextResponse.json(
-        { success: false, error: "No active session", code: "SESSION_REQUIRED" },
-        { status: 200 }
-      );
-    }
+    // getUser() already validates/refreshes — do not call getSession() (second refresh race).
 
     const validation = await validateMerchantFromSession({
       id: user.id,
@@ -153,10 +161,29 @@ export async function GET() {
           store_logo: parentStoreLogo,
         };
 
+    // Partner_* sliding cookies: restore if missing/stale while Supabase session is valid.
+    const cookieStore = await cookies();
+    const cookieReader = { get: (name: string) => cookieStore.get(name) };
+    let metadata = getSessionMetadata(cookieReader);
+    const validity = checkSessionValidity(metadata);
+    if (!metadata || !validity.isValid) {
+      metadata = initializeSession({
+        set: (name, value, options) => {
+          try {
+            cookieStore.set(name, value, options as Parameters<typeof cookieStore.set>[2]);
+          } catch {
+            /* ignore — middleware will re-init on next navigation */
+          }
+        },
+      });
+    }
+    const freshValidity = checkSessionValidity(metadata);
+
     return NextResponse.json({
       success: true,
+      authenticated: true,
+      expired: false,
       data: {
-        session,
         user: {
           id: user.id,
           email: user.email,
@@ -165,6 +192,18 @@ export async function GET() {
           avatar_url: user.avatar_url,
         },
         parent: validation.merchantParentId != null ? parent : null,
+      },
+      session: {
+        email: user.email,
+        userId: user.id,
+        sessionId: metadata?.sessionId,
+        timeRemaining: freshValidity.timeRemaining,
+        timeRemainingFormatted: freshValidity.timeRemaining
+          ? formatTimeRemaining(freshValidity.timeRemaining)
+          : "Expired",
+        daysRemaining: freshValidity.daysRemaining,
+        sessionStartTime: metadata?.sessionStartTime,
+        lastActivityTime: metadata?.lastActivityTime,
       },
     });
   } catch (error) {

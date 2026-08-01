@@ -27,10 +27,27 @@ import {
 import { buildMenuReferenceRejectionDetailSnapshot } from "@/lib/store-verification-menu-rejection-detail";
 import { sendEmail } from "@/lib/email/send";
 import { buildStepApprovedEmail, buildVerificationStepRejectedEmail } from "@/lib/email/store-verification-templates";
+import { labelsForRejectedFields } from "@/lib/merchants/step-rejection-fields";
 import { resolveVerificationRecipientEmail } from "@/lib/email/resolve-verification-recipient";
 import { logStoreActivity } from "@/lib/db/operations/store-activity-feed";
+import { applyPendingStepResubmissions } from "@/lib/db/operations/onboarding-resubmissions";
 
 export const runtime = "nodejs";
+
+/** Safe body parse — empty/invalid JSON must not crash the route (Next can throw SyntaxError). */
+async function readJsonBody(request: NextRequest): Promise<Record<string, unknown>> {
+  try {
+    const text = await request.text();
+    if (!text || !text.trim()) return {};
+    const parsed: unknown = JSON.parse(text);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>;
+    }
+    return {};
+  } catch {
+    return {};
+  }
+}
 
 type StoreAccessDenied = { allowed: false; status: number; error: string };
 type StoreAccessGranted = {
@@ -142,7 +159,7 @@ export async function POST(
         { status: access.status }
       );
     }
-    const body = await request.json().catch(() => ({}));
+    const body = await readJsonBody(request);
     const step = typeof body.step === "number" ? Math.floor(body.step) : undefined;
     if (step == null || step < 1 || step > 8) {
       return NextResponse.json(
@@ -164,6 +181,40 @@ export async function POST(
       8: "Sign & submit",
     };
     const verifiedByName = access.systemUserName || access.user.email || "agent";
+    let hadRejectionBefore = false;
+    if (adminOverride) {
+      try {
+        const sql = getSql();
+        const rejRows = await sql`
+          SELECT 1
+          FROM store_verification_step_rejections
+          WHERE store_id = ${storeId} AND step_number = ${step}
+          LIMIT 1
+        `;
+        hadRejectionBefore = Array.isArray(rejRows) && rejRows.length > 0;
+      } catch {
+        hadRejectionBefore = false;
+      }
+    }
+    // Promote staged New → live tables (+ delete replaced R2) before marking verified.
+    let pendingApplied = 0;
+    try {
+      pendingApplied = await applyPendingStepResubmissions({
+        storeId,
+        verificationStep: step,
+        appliedBySystemUserId: access.systemUserId ?? null,
+      });
+    } catch (e) {
+      console.warn("[verification-steps] applyPendingStepResubmissions:", e);
+      return NextResponse.json(
+        {
+          success: false,
+          error:
+            "Failed to apply resubmitted values to the store. Fix storage/data and try Verify again.",
+        },
+        { status: 500 }
+      );
+    }
     const ok = await upsertStoreVerificationStep({
       storeId,
       stepNumber: step,
@@ -180,21 +231,6 @@ export async function POST(
         },
         { status: 500 }
       );
-    }
-    let hadRejectionBefore = false;
-    if (adminOverride) {
-      try {
-        const sql = getSql();
-        const rejRows = await sql`
-          SELECT 1
-          FROM store_verification_step_rejections
-          WHERE store_id = ${storeId} AND step_number = ${step}
-          LIMIT 1
-        `;
-        hadRejectionBefore = Array.isArray(rejRows) && rejRows.length > 0;
-      } catch {
-        hadRejectionBefore = false;
-      }
     }
     await clearStoreVerificationStepRejection(storeId, step);
     // When menu step (3) is verified, mark all MENU_REFERENCE media files as VERIFIED
@@ -334,7 +370,12 @@ export async function POST(
     for (const e of edits) {
       if (editsByStep[e.step_number]) editsByStep[e.step_number].push({ field_key: e.field_key, old_value: e.old_value, new_value: e.new_value, edited_by: e.edited_by, edited_by_name: e.edited_by_name, edited_at: e.edited_at });
     }
-    return NextResponse.json({ success: true, steps: byStep, edits: editsByStep });
+    return NextResponse.json({
+      success: true,
+      steps: byStep,
+      edits: editsByStep,
+      pendingApplied,
+    });
   } catch (e) {
     const err = e instanceof Error ? e.message : "Internal error";
     console.error("[POST /api/merchant/stores/[id]/verification-steps]", e);
@@ -370,7 +411,7 @@ export async function DELETE(
         { status: access.status }
       );
     }
-    const body = await request.json().catch(() => ({}));
+    const body = await readJsonBody(request);
     const step = typeof body.step === "number" ? Math.floor(body.step) : undefined;
     if (step == null || step < 1 || step > 8) {
       return NextResponse.json(
@@ -378,6 +419,37 @@ export async function DELETE(
         { status: 400 }
       );
     }
+
+    // Captured onboarding payment auto-verifies commission plan — do not allow reject/unverify.
+    if (step === 7) {
+      try {
+        const sql = getSql();
+        const payRows = await sql`
+          SELECT id
+          FROM merchant_onboarding_payments
+          WHERE merchant_store_id = ${storeId}
+            AND (
+              LOWER(COALESCE(status, '')) = 'captured'
+              OR LOWER(COALESCE(razorpay_status, '')) = 'captured'
+            )
+          LIMIT 1
+        `;
+        const hasCaptured = Array.isArray(payRows) ? payRows.length > 0 : !!payRows;
+        if (hasCaptured) {
+          return NextResponse.json(
+            {
+              success: false,
+              error:
+                "Commission plan is auto-verified because onboarding payment was captured. Reject is not allowed.",
+            },
+            { status: 409 }
+          );
+        }
+      } catch (e) {
+        console.warn("[DELETE verification-steps] payment capture check failed:", e);
+      }
+    }
+
     const rejectionReason =
       typeof body.rejection_reason === "string" ? body.rejection_reason.trim() : "";
     if (rejectionReason.length > 0 && rejectionReason.length < 3) {
@@ -385,6 +457,24 @@ export async function DELETE(
         { success: false, error: "Rejection reason must be at least a few characters" },
         { status: 400 }
       );
+    }
+    const rejectedFieldsRaw: string[] = Array.isArray(body.rejected_fields)
+      ? body.rejected_fields.filter((x: unknown): x is string => typeof x === "string" && !!String(x).trim())
+      : [];
+    const clientStepDetail =
+      body.step_rejection_detail &&
+      typeof body.step_rejection_detail === "object" &&
+      !Array.isArray(body.step_rejection_detail)
+        ? (body.step_rejection_detail as Record<string, unknown>)
+        : null;
+    if (
+      rejectedFieldsRaw.length === 0 &&
+      clientStepDetail &&
+      Array.isArray(clientStepDetail.rejected_fields)
+    ) {
+      for (const x of clientStepDetail.rejected_fields) {
+        if (typeof x === "string" && x.trim()) rejectedFieldsRaw.push(x.trim());
+      }
     }
     const ok = await deleteStoreVerificationStep(storeId, step);
     if (!ok) {
@@ -437,6 +527,7 @@ export async function DELETE(
       const dashboardUrl =
         process.env.PARTNER_DASHBOARD_URL?.trim() || "https://partner.gatimitra.com/auth/post-login";
       if (recipientEmail) {
+        const rejectedFieldLabels = labelsForRejectedFields(step, rejectedFieldsRaw);
         const { subject, text, html } = buildVerificationStepRejectedEmail({
           storeName: access.store.store_name,
           storePublicId: access.store.store_id,
@@ -444,6 +535,7 @@ export async function DELETE(
           stepNumber: step,
           stepLabel,
           reason: rejectionReason,
+          rejectedFieldLabels,
         });
         const outcome = await sendEmail({ to: recipientEmail, subject, text, html });
         emailNotify.sent = outcome.ok;
@@ -462,6 +554,43 @@ export async function DELETE(
       let stepRejectionDetail: unknown = null;
       if (step === 3) {
         stepRejectionDetail = await buildMenuReferenceRejectionDetailSnapshot(storeId);
+      } else if (rejectedFieldsRaw.length > 0 || clientStepDetail) {
+        const clientVersion = Number(clientStepDetail?.version ?? 0);
+        const clientFields = Array.isArray(clientStepDetail?.fields)
+          ? clientStepDetail!.fields
+          : null;
+        if (clientVersion >= 2 && clientFields && clientFields.length > 0) {
+          // Prefer full v2 metadata from admin (per-field reasons + previousValue).
+          stepRejectionDetail = {
+            ...clientStepDetail,
+            version: 2,
+            fields: clientFields,
+            rejected_fields:
+              rejectedFieldsRaw.length > 0
+                ? rejectedFieldsRaw
+                : Array.isArray(clientStepDetail?.rejected_fields)
+                  ? clientStepDetail!.rejected_fields
+                  : [],
+          };
+        } else {
+          const fields =
+            rejectedFieldsRaw.length > 0
+              ? rejectedFieldsRaw
+              : Array.isArray(clientStepDetail?.rejected_fields)
+                ? (clientStepDetail!.rejected_fields as unknown[]).filter(
+                    (x): x is string => typeof x === "string" && !!x.trim()
+                  )
+                : [];
+          if (fields.length > 0) {
+            stepRejectionDetail = {
+              version: 1,
+              rejected_fields: fields,
+              ...(typeof clientStepDetail?.note === "string" && clientStepDetail.note.trim()
+                ? { note: String(clientStepDetail.note).trim() }
+                : {}),
+            };
+          }
+        }
       }
       await upsertStoreVerificationStepRejection({
         storeId,
