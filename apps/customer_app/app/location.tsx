@@ -377,6 +377,11 @@ export default function SelectLocationScreen() {
   const [listRefreshing, setListRefreshing] = useState(false);
 
   const activeAddressId = useMemo(() => {
+    if (activeLocation?.addressId != null && savedAddresses.some((a) => a.id === activeLocation.addressId)) {
+      return activeLocation.addressId;
+    }
+    const selected = savedAddresses.find((a) => a.isSelected);
+    if (selected) return selected.id;
     if (
       !activeLocation ||
       activeLocation.latitude == null ||
@@ -393,50 +398,36 @@ export default function SelectLocationScreen() {
         best = { id: addr.id, distance: d };
       }
     }
-    // Only treat as \"selected\" if within 50m of active_location
     if (best && best.distance <= 50) return best.id;
     return null;
   }, [activeLocation, savedAddresses]);
 
-  /** SELECTED pill on a saved row: only when user intent is a saved/map pin, and coords match that row (or legacy API match). */
+  /** SELECTED pill: prefer backend-bound addressId / isSelected; never while on live GPS. */
   const matchedSavedIdForPill = useMemo(() => {
     if (locationSource === "current") return null;
-
-    if (locationSource === "selected") {
-      if (!coords || savedAddresses.length === 0) return null;
+    if (activeLocation?.addressId != null) return activeLocation.addressId;
+    const selected = savedAddresses.find((a) => a.isSelected);
+    if (selected) return selected.id;
+    if (locationSource === "selected" && coords && savedAddresses.length > 0) {
       let best: { id: number; distance: number } | null = null;
       for (const addr of savedAddresses) {
         const d = distanceMeters(coords.latitude, coords.longitude, addr.latitude, addr.longitude);
         if (!best || d < best.distance) best = { id: addr.id, distance: d };
       }
       if (best && best.distance <= 50) return best.id;
-      return null;
     }
-
-    // locationSource null (e.g. first paint): keep API-based match
     return activeAddressId;
-  }, [locationSource, coords, savedAddresses, activeAddressId]);
+  }, [locationSource, coords, savedAddresses, activeAddressId, activeLocation?.addressId]);
 
-  // One entry per location (rounded to 4 decimals ~11m); Current location first, then default, then last used
+  // Preserve backend MRU order; only dedupe identical pins.
   const dedupedAndSortedAddresses = useMemo(() => {
     const round4 = (n: number) => Math.round(n * 10000) / 10000;
     const seen = new Set<string>();
-    const deduped = savedAddresses.filter((a) => {
+    return savedAddresses.filter((a) => {
       const key = `${round4(a.latitude)}_${round4(a.longitude)}`;
       if (seen.has(key)) return false;
       seen.add(key);
       return true;
-    });
-    return deduped.sort((a, b) => {
-      const aCurrent = (a.label ?? "").toLowerCase() === "current location";
-      const bCurrent = (b.label ?? "").toLowerCase() === "current location";
-      if (aCurrent && !bCurrent) return -1;
-      if (!aCurrent && bCurrent) return 1;
-      if (a.isDefault && !b.isDefault) return -1;
-      if (!a.isDefault && b.isDefault) return 1;
-      if (a.isLastUsed && !b.isLastUsed) return -1;
-      if (!a.isLastUsed && b.isLastUsed) return 1;
-      return a.id - b.id;
     });
   }, [savedAddresses]);
 
@@ -716,6 +707,7 @@ export default function SelectLocationScreen() {
           latitude: latestCoords.latitude,
           longitude: latestCoords.longitude,
           address: latestAddress?.fullAddress ?? latestAddress?.primary ?? "Current location",
+          addressId: null,
         }),
         profileService
           .updateProfile({
@@ -845,6 +837,8 @@ export default function SelectLocationScreen() {
         latitude: resolved.latitude,
         longitude: resolved.longitude,
         address: fullAddress,
+        // Map/search pin is not a saved address row — clear any prior binding.
+        addressId: null,
       });
       setAddressAndCoords(
         {
@@ -871,37 +865,16 @@ export default function SelectLocationScreen() {
   const applySavedAddress = async (addr: Address) => {
     setSavedAddressLoading(addr.id);
     try {
-      // Three things must happen atomically (from the user's POV) when they
-      // pick a saved address from the home picker:
-      //  1. The active GPS-style pin updates so the home header shows it.
-      //  2. The customer's `is_default` flag flips on the server so checkout,
-      //     re-opens, and other screens see the same choice.
-      //  3. The local addresses cache is invalidated so the next read returns
-      //     the new `isDefault` value (otherwise checkout still picks the old
-      //     default and the user has to re-pick).
-      await Promise.all([
-        addressService.setActiveLocation({
-          latitude: addr.latitude,
-          longitude: addr.longitude,
-          address: addr.fullAddress,
-        }),
-        // setAddressDefault is idempotent and cheap; safe to fire on every pick.
-        addressService.setAddressDefault(addr.id).catch(() => {
-          // Non-fatal: the local store still updates so the home header is
-          // correct. Checkout will fall back to the old default but the user
-          // can re-pick in the address sheet.
-        }),
-      ]);
-      const primary = addr.label ?? "Address";
-      setAddressAndCoords(
-        { primary, secondary: addr.fullAddress.slice(0, 80), fullAddress: addr.fullAddress },
-        { latitude: addr.latitude, longitude: addr.longitude },
-        { source: "selected" }
+      const { applySelectedDeliveryAddress } = await import(
+        "@/lib/applySelectedDeliveryAddress"
       );
-      void invalidateFoodHomeLocationQueries(queryClient);
+      await applySelectedDeliveryAddress(addr, queryClient);
       safeBack();
     } catch {
-      safeBack();
+      Alert.alert(
+        "Could not select address",
+        "Please check your connection and try again."
+      );
     } finally {
       setSavedAddressLoading(null);
     }
@@ -931,6 +904,7 @@ export default function SelectLocationScreen() {
         latitude: place.latitude,
         longitude: place.longitude,
         address: place.fullAddress ?? place.primary,
+        addressId: null,
       });
       setAddressAndCoords(
         {
@@ -1459,6 +1433,14 @@ export default function SelectLocationScreen() {
                   await addressService.deleteAddress(saved.id);
                   await queryClient.invalidateQueries({ queryKey: ["addresses"] });
                   await queryClient.invalidateQueries({ queryKey: ["active-location"] });
+                  const { applyActiveLocationFromBackend } = await import(
+                    "@/lib/applyActiveLocationFromBackend"
+                  );
+                  await applyActiveLocationFromBackend(queryClient);
+                  const { promptCartIfLocationBrokeServiceability } = await import(
+                    "@/lib/promptCartIfLocationBrokeServiceability"
+                  );
+                  void promptCartIfLocationBrokeServiceability(queryClient);
                 } catch {
                   Alert.alert("Could not delete", "Please try again.");
                 }

@@ -2,9 +2,45 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 
 const STILL_NEW = new Set(['CREATED', 'NEW', 'ORDER_PLACED', 'PENDING', '']);
 
+/** Order finished / cancelled — clear every linked store inbox row. */
+const TERMINAL = new Set([
+  'DELIVERED',
+  'COMPLETED',
+  'COMPLETE',
+  'CANCELLED',
+  'CANCELED',
+  'REJECTED',
+  'FAILED',
+  'EXPIRED',
+  'RTO_DELIVERED',
+  'RTO_COMPLETED',
+]);
+
+function isNewOrderTitle(title: string | null | undefined): boolean {
+  return String(title ?? '')
+    .trim()
+    .toLowerCase()
+    .includes('new order');
+}
+
+function shouldPurgeOrderNotification(
+  title: string | null | undefined,
+  orderStatus: string | null | undefined
+): boolean {
+  const status = String(orderStatus ?? '')
+    .trim()
+    .toUpperCase();
+  // Missing food row → stale; drop it.
+  if (!status) return true;
+  if (TERMINAL.has(status)) return true;
+  // "New order!" only belongs in the accept pipeline.
+  if (isNewOrderTitle(title) && !STILL_NEW.has(status)) return true;
+  return false;
+}
+
 /**
- * Drop leftover "New order!" inbox rows whose food order is already accepted /
- * cancelled / delivered (heals rows missed by older cancel/timeout paths).
+ * Auto-clear order inbox rows when the linked food order is done (or "New order!"
+ * after accept/cancel). Manual Clear all / dismiss still work independently.
  */
 export async function purgeStaleNewOrderNotifications(
   db: SupabaseClient,
@@ -19,8 +55,6 @@ export async function purgeStaleNewOrderNotifications(
   const removed = new Set<string>();
   const candidates = rows.filter((r) => {
     if (String(r.type ?? '').toLowerCase() !== 'order') return false;
-    const title = String(r.title ?? '').toLowerCase();
-    if (!title.includes('new order')) return false;
     const oid = Number(r.order_id);
     return Number.isFinite(oid) && oid > 0;
   });
@@ -51,13 +85,11 @@ export async function purgeStaleNewOrderNotifications(
   const staleIds: number[] = [];
   for (const c of candidates) {
     const oid = Number(c.order_id);
-    const status = statusById.get(oid);
-    // Missing food row OR left accept pipeline → purge.
-    if (status == null || !STILL_NEW.has(status)) {
-      const nid = Number(c.id);
-      if (Number.isFinite(nid)) staleIds.push(nid);
-      removed.add(String(c.id));
-    }
+    const status = statusById.get(oid) ?? null;
+    if (!shouldPurgeOrderNotification(c.title, status)) continue;
+    const nid = Number(c.id);
+    if (Number.isFinite(nid)) staleIds.push(nid);
+    removed.add(String(c.id));
   }
 
   if (staleIds.length > 0) {
@@ -74,3 +106,8 @@ export async function purgeStaleNewOrderNotifications(
 
   return removed;
 }
+
+/** Shared status helpers for backend merchant-partner list purge. */
+export const ORDER_NOTIFICATION_STILL_NEW = STILL_NEW;
+export const ORDER_NOTIFICATION_TERMINAL = TERMINAL;
+export { shouldPurgeOrderNotification };

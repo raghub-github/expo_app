@@ -25,6 +25,7 @@
 import { getEnv } from "../config/env.js";
 
 const DEFAULT_PACKAGE = "com.gatimitra.customer";
+const DEFAULT_RIDER_PACKAGE = "com.raghubhunia.gatimitrariderapp";
 
 /** Normalise a fingerprint to the colon-separated uppercase hex Google expects. */
 function normalizeFingerprint(raw: string): string | null {
@@ -33,13 +34,20 @@ function normalizeFingerprint(raw: string): string | null {
   return (hex.match(/.{2}/g) ?? []).join(":");
 }
 
-export function getAppLinkFingerprints(): string[] {
-  const env = getEnv();
-  const raw = env.ANDROID_APP_LINK_SHA256 ?? "";
-  return raw
+function parseFingerprints(raw: string | undefined): string[] {
+  return (raw ?? "")
     .split(",")
     .map((f) => normalizeFingerprint(f))
     .filter((f): f is string => Boolean(f));
+}
+
+export function getAppLinkFingerprints(): string[] {
+  return parseFingerprints(getEnv().ANDROID_APP_LINK_SHA256);
+}
+
+/** Rider App fingerprints (referral invites on /rider-ref). */
+export function getRiderAppLinkFingerprints(): string[] {
+  return parseFingerprints(getEnv().ANDROID_RIDER_APP_LINK_SHA256);
 }
 
 /**
@@ -49,19 +57,34 @@ export function getAppLinkFingerprints(): string[] {
  */
 export function buildAssetLinksJson(): unknown[] | null {
   const fingerprints = getAppLinkFingerprints();
-  if (fingerprints.length === 0) return null;
+  const riderFingerprints = getRiderAppLinkFingerprints();
+  if (fingerprints.length === 0 && riderFingerprints.length === 0) return null;
 
   const env = getEnv();
-  const packageName = env.ANDROID_APP_PACKAGE?.trim() || DEFAULT_PACKAGE;
+  const statements: unknown[] = [];
 
-  return [
-    {
+  if (fingerprints.length > 0) {
+    statements.push({
       relation: ["delegate_permission/common.handle_all_urls"],
       target: {
         namespace: "android_app",
-        package_name: packageName,
+        package_name: env.ANDROID_APP_PACKAGE?.trim() || DEFAULT_PACKAGE,
         sha256_cert_fingerprints: fingerprints,
       },
-    },
-  ];
+    });
+  }
+
+  // Rider App claims /rider-ref only; both apps can verify the same domain.
+  if (riderFingerprints.length > 0) {
+    statements.push({
+      relation: ["delegate_permission/common.handle_all_urls"],
+      target: {
+        namespace: "android_app",
+        package_name: env.ANDROID_RIDER_APP_PACKAGE?.trim() || DEFAULT_RIDER_PACKAGE,
+        sha256_cert_fingerprints: riderFingerprints,
+      },
+    });
+  }
+
+  return statements;
 }

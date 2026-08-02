@@ -30,6 +30,14 @@ export function resolvePaymentCancellationMilestone(input) {
     if (prev === "ACCEPTED") {
         return { orderMilestone: "ORDER_ACCEPTED", cancelledBy };
     }
+    // Pre-accept (restaurant has not accepted yet) — distinct from generic pre-pickup.
+    if (prev === "CREATED" ||
+        prev === "NEW" ||
+        prev === "PLACED" ||
+        prev === "ORDER_PLACED" ||
+        prev === "ORDER_RECEIVED") {
+        return { orderMilestone: "ORDER_CREATED", cancelledBy };
+    }
     return { orderMilestone: "PRE_PICKUP_CANCELLED", cancelledBy };
 }
 export function scenarioForOrderStatus(status) {

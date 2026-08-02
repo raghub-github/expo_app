@@ -981,7 +981,13 @@ export type DashboardType =
   | "SYSTEM"
   | "ANALYTICS";
 
-export type AccessLevel = "VIEW_ONLY" | "FULL_ACCESS" | "RESTRICTED";
+export type AccessLevel =
+  | "VIEW_ONLY"
+  | "FULL_ACCESS"
+  | "PARTIAL_ACCESS"
+  | "RESTRICTED"
+  | "OWN_RECORD"
+  | "OVERALL_RECORD";
 
 export type AccessPointGroup =
   | "RIDER_VIEW"
@@ -1024,7 +1030,9 @@ export type AccessPointGroup =
   | "OFFER_MERCHANT"
   | "AREA_MANAGER_MERCHANT"
   | "AREA_MANAGER_RIDER"
-  | "PAYMENT_MANAGEMENT";
+  | "PAYMENT_MANAGEMENT"
+  | "ANALYTICS_OWN"
+  | "ANALYTICS_OVERALL";
 
 export type ActionType =
   | "VIEW"
@@ -2224,7 +2232,7 @@ export const ordersCore = pgTable(
       .defaultNow(),
     estimatedPickupTime: timestamp("estimated_pickup_time", { withTimezone: true }),
     estimatedDeliveryTime: timestamp("estimated_delivery_time", { withTimezone: true }),
-    /** First ETA (expected delivery) set when order accepted / first estimated; for sidebar "First ETA". */
+    /** First ETA (expected delivery) frozen at order placement; never overwritten on accept. */
     firstEtaAt: timestamp("first_eta_at", { withTimezone: true }),
     /** When ETA was first breached (now > expected delivery); used for ETA breached tag. */
     etaBreachedAt: timestamp("eta_breached_at", { withTimezone: true }),

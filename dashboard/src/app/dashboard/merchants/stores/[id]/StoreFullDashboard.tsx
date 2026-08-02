@@ -349,8 +349,8 @@ export function StoreFullDashboard({ storeId }: { storeId: string }) {
         handleCancelClosePopup={handleCancelClosePopup}
       />
 
-      <div className="flex-1 flex flex-col min-h-0 bg-[#f8fafc] overflow-hidden w-full">
-        <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden px-4 sm:px-6 lg:px-8 py-5">
+      <div className="flex flex-1 flex-col min-h-0 w-full overflow-hidden bg-[#f8fafc]">
+        <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden overscroll-y-contain px-4 sm:px-6 lg:px-8 pt-5 pb-4">
           <div className="max-w-[1600px] mx-auto space-y-5">
             {/* Wallet | Store | Delivery — partnersite-style */}
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 items-stretch pb-1">

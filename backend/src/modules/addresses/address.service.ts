@@ -7,9 +7,11 @@
 import { randomUUID } from "crypto";
 import { getDb } from "../../db/client.js";
 import { customerAddresses, customerActiveLocation } from "../../db/schema.js";
-import { eq, and, desc, isNull, ne, sql } from "drizzle-orm";
+import { eq, and, isNull, ne, sql } from "drizzle-orm";
 import { forwardGeocodeAddress, reverseGeocodeCoords } from "../../services/mapbox/geocoding.js";
 import { attachmentsProxyUrlFromKeyForApi } from "../../utils/attachments-proxy-url.js";
+import { getEnv } from "../../config/env.js";
+import { haversineMeters } from "../distance/distance.service.js";
 
 /** Treat em-dash, dashes, and "no value" tokens as missing so they're not persisted as state/city/pincode. */
 
@@ -67,6 +69,9 @@ export type AddressRow = {
   deliveryInstructionsList: string[];
   isDefault: boolean | null;
   isLastUsed: boolean | null;
+  lastUsedAt: Date | null;
+  /** True when this row is the bound active delivery address. */
+  isSelected: boolean;
   createdAt: Date | null;
   updatedAt: Date | null;
 };
@@ -76,6 +81,7 @@ export type ActiveLocationRow = {
   latitude: string | null;
   longitude: string | null;
   address: string | null;
+  addressId: number | null;
   lockedForOrder: boolean | null;
   orderId: number | null;
   updatedAt: Date | null;
@@ -88,7 +94,10 @@ function parseInstructionsList(raw: unknown): string[] {
     .filter((s) => s.length > 0);
 }
 
-function rowToAddressRow(r: typeof customerAddresses.$inferSelect): AddressRow {
+function rowToAddressRow(
+  r: typeof customerAddresses.$inferSelect,
+  selectedAddressId: number | null = null
+): AddressRow {
   const fullAddress = [r.addressLine1, r.addressLine2].filter(Boolean).join(", ") || r.addressLine1;
   const label = r.customLabel ?? r.label ?? null;
   return {
@@ -109,13 +118,26 @@ function rowToAddressRow(r: typeof customerAddresses.$inferSelect): AddressRow {
     deliveryInstructionsList: parseInstructionsList(r.deliveryInstructionsList),
     isDefault: r.isDefault ?? false,
     isLastUsed: r.isLastUsed ?? false,
+    lastUsedAt: r.lastUsedAt ?? null,
+    isSelected: selectedAddressId != null && r.id === selectedAddressId,
     createdAt: r.createdAt,
     updatedAt: r.updatedAt,
   };
 }
 
+/** Coerce last_used_at / created_at whether the driver returns Date or ISO string. */
+function lastUsedMs(value: Date | string | null | undefined): number {
+  if (value == null) return 0;
+  if (value instanceof Date) return value.getTime();
+  const t = new Date(value).getTime();
+  return Number.isFinite(t) ? t : 0;
+}
+
 export async function listAddresses(customerId: number): Promise<AddressRow[]> {
   const db = getDb();
+  const active = await getActiveLocation(customerId);
+  const selectedAddressId = active?.addressId ?? null;
+
   const rows = await db
     .select()
     .from(customerAddresses)
@@ -125,9 +147,26 @@ export async function listAddresses(customerId: number): Promise<AddressRow[]> {
         eq(customerAddresses.isActive, true),
         isNull(customerAddresses.deletedAt)
       )
-    )
-    .orderBy(desc(customerAddresses.isDefault), desc(customerAddresses.isLastUsed), customerAddresses.createdAt);
-  return rows.map(rowToAddressRow);
+    );
+
+  // MRU: active selected first, then last_used_at desc (most recently selected/used),
+  // preserving relative order among older picks. Frontend must not re-sort.
+  const mapped = rows.map((r) => rowToAddressRow(r, selectedAddressId));
+  mapped.sort((a, b) => {
+    if (a.isSelected !== b.isSelected) return a.isSelected ? -1 : 1;
+    const ta = lastUsedMs(a.lastUsedAt);
+    const tb = lastUsedMs(b.lastUsedAt);
+    if (ta !== tb) return tb - ta;
+    if ((a.isLastUsed ? 1 : 0) !== (b.isLastUsed ? 1 : 0)) {
+      return (b.isLastUsed ? 1 : 0) - (a.isLastUsed ? 1 : 0);
+    }
+    // Stable tie-breakers only — isDefault must NOT drive MRU (default ≠ last used).
+    const ca = lastUsedMs(a.createdAt);
+    const cb = lastUsedMs(b.createdAt);
+    if (ca !== cb) return cb - ca;
+    return b.id - a.id;
+  });
+  return mapped;
 }
 
 /** Map API label to address_type enum. "Current location" / custom -> OTHER + custom_label. */
@@ -385,7 +424,32 @@ export async function updateAddress(
     .set(set)
     .where(and(eq(customerAddresses.id, addressId), eq(customerAddresses.customerId, customerId)))
     .returning();
-  return row ? rowToAddressRow(row) : null;
+  if (!row) return null;
+  const updated = rowToAddressRow(row);
+
+  // Keep browsing/checkout pin in sync when the bound Saved Address is edited.
+  const active = await getActiveLocation(customerId);
+  if (active?.addressId === addressId) {
+    const lat = updated.latitude;
+    const lng = updated.longitude;
+    await db
+      .update(customerActiveLocation)
+      .set({
+        latitude: lat,
+        longitude: lng,
+        address: updated.fullAddress,
+        updatedAt: new Date(),
+      })
+      .where(eq(customerActiveLocation.customerId, customerId));
+    console.info("[active-location] synced_after_address_edit", {
+      customerId,
+      addressId,
+      latitude: lat,
+      longitude: lng,
+    });
+  }
+
+  return updated;
 }
 
 export async function deleteAddress(customerId: number, addressId: number): Promise<boolean> {
@@ -395,7 +459,56 @@ export async function deleteAddress(customerId: number, addressId: number): Prom
     .set({ deletedAt: new Date(), isActive: false, updatedAt: new Date() })
     .where(and(eq(customerAddresses.id, addressId), eq(customerAddresses.customerId, customerId)))
     .returning({ id: customerAddresses.id });
-  return result.length > 0;
+  if (result.length === 0) return false;
+
+  const active = await getActiveLocation(customerId);
+  if (active?.addressId !== addressId) return true;
+
+  // Soft-delete does not fire FK ON DELETE SET NULL — pick next valid Saved Address (MRU),
+  // otherwise clear the binding so the client falls back to Current Location / reconcile.
+  const remaining = (await listAddresses(customerId)).filter((a) => a.id !== addressId);
+  const next = remaining[0] ?? null;
+  if (next) {
+    const lat = parseFloat(next.latitude) || 0;
+    const lng = parseFloat(next.longitude) || 0;
+    await db
+      .insert(customerActiveLocation)
+      .values({
+        customerId,
+        latitude: String(lat),
+        longitude: String(lng),
+        address: next.fullAddress,
+        addressId: next.id,
+        lockedForOrder: false,
+        orderId: null,
+      })
+      .onConflictDoUpdate({
+        target: customerActiveLocation.customerId,
+        set: {
+          latitude: String(lat),
+          longitude: String(lng),
+          address: next.fullAddress,
+          addressId: next.id,
+          updatedAt: new Date(),
+        },
+      });
+    await setAddressLastUsed(customerId, next.id).catch(() => {});
+    console.info("[active-location] rebound_after_delete", {
+      customerId,
+      deletedAddressId: addressId,
+      nextAddressId: next.id,
+    });
+  } else {
+    await db
+      .update(customerActiveLocation)
+      .set({ addressId: null, updatedAt: new Date() })
+      .where(eq(customerActiveLocation.customerId, customerId));
+    console.info("[active-location] cleared_binding_after_delete_no_fallback", {
+      customerId,
+      deletedAddressId: addressId,
+    });
+  }
+  return true;
 }
 
 export async function setAddressDefault(customerId: number, addressId: number): Promise<boolean> {
@@ -409,14 +522,42 @@ export async function setAddressDefault(customerId: number, addressId: number): 
   return result.length > 0;
 }
 
-/** Set is_last_used = true for this address, false for others. Call when order is placed. */
+/**
+ * Mark address as most-recently selected/used (MRU).
+ * Preserves other rows' last_used_at so relative MRU order stays stable.
+ * Call on: user select, order place, and backend auto-restore (kept_nearby).
+ */
 export async function setAddressLastUsed(customerId: number, addressId: number): Promise<void> {
   const db = getDb();
-  await db.update(customerAddresses).set({ isLastUsed: false }).where(eq(customerAddresses.customerId, customerId));
+  const now = new Date();
   await db
     .update(customerAddresses)
-    .set({ isLastUsed: true })
-    .where(and(eq(customerAddresses.id, addressId), eq(customerAddresses.customerId, customerId)));
+    .set({ isLastUsed: false })
+    .where(
+      and(
+        eq(customerAddresses.customerId, customerId),
+        eq(customerAddresses.isActive, true),
+        isNull(customerAddresses.deletedAt)
+      )
+    );
+  const updated = await db
+    .update(customerAddresses)
+    .set({ isLastUsed: true, lastUsedAt: now, updatedAt: now })
+    .where(
+      and(
+        eq(customerAddresses.id, addressId),
+        eq(customerAddresses.customerId, customerId),
+        eq(customerAddresses.isActive, true),
+        isNull(customerAddresses.deletedAt)
+      )
+    )
+    .returning({ id: customerAddresses.id });
+  if (updated.length === 0) {
+    console.warn("[active-location] setAddressLastUsed: address not found", {
+      customerId,
+      addressId,
+    });
+  }
 }
 
 // --- Active location ---
@@ -434,11 +575,54 @@ export async function getActiveLocation(customerId: number): Promise<ActiveLocat
 /** Set active location (fails if locked_for_order). Returns true if set. */
 export async function setActiveLocation(
   customerId: number,
-  data: { latitude: number; longitude: number; address?: string | null }
+  data: {
+    latitude: number;
+    longitude: number;
+    address?: string | null;
+    /** When set, binds checkout to this saved address. Pass null to clear (e.g. live GPS). */
+    addressId?: number | null;
+  }
 ): Promise<boolean> {
   const db = getDb();
   const existing = await getActiveLocation(customerId);
   if (existing?.lockedForOrder) return false;
+
+  let addressId: number | null | undefined = data.addressId;
+  if (addressId != null) {
+    const owned = await db
+      .select({ id: customerAddresses.id })
+      .from(customerAddresses)
+      .where(
+        and(
+          eq(customerAddresses.id, addressId),
+          eq(customerAddresses.customerId, customerId),
+          eq(customerAddresses.isActive, true),
+          isNull(customerAddresses.deletedAt)
+        )
+      )
+      .limit(1);
+    if (owned.length === 0) {
+      throw new Error("Address not found");
+    }
+  }
+
+  // Omit addressId from the update when the client did not send it (legacy callers /
+  // GPS coord sync). Only an explicit null clears the bound saved address.
+  const patchAddressId = addressId !== undefined;
+  const addressIdBefore = existing?.addressId ?? null;
+
+  console.info("[active-location] setActiveLocation", {
+    customerId,
+    path: "PUT /v1/me/active-location",
+    gpsLatitude: data.latitude,
+    gpsLongitude: data.longitude,
+    addressIdBefore,
+    addressIdInRequest: addressId === undefined ? "(omit — preserve)" : addressId,
+    willPatchAddressId: patchAddressId,
+    addressIdAfter:
+      patchAddressId ? (addressId ?? null) : addressIdBefore,
+  });
+
   await db
     .insert(customerActiveLocation)
     .values({
@@ -446,6 +630,8 @@ export async function setActiveLocation(
       latitude: String(data.latitude),
       longitude: String(data.longitude),
       address: data.address ?? null,
+      // On first insert use provided id or null; on conflict we preserve when omitted.
+      addressId: addressId !== undefined ? addressId : addressIdBefore,
       lockedForOrder: false,
       orderId: null,
     })
@@ -455,10 +641,263 @@ export async function setActiveLocation(
         latitude: String(data.latitude),
         longitude: String(data.longitude),
         address: data.address ?? null,
+        ...(patchAddressId ? { addressId: addressId ?? null } : {}),
         updatedAt: new Date(),
       },
     });
+
+  // Explicit bind of a Saved Address always bumps MRU — including re-select of the
+  // same id. GPS-only PUTs omit addressId (no bump). Clearing to Current (null) does not bump.
+  if (patchAddressId && addressId != null) {
+    try {
+      await setAddressLastUsed(customerId, addressId);
+    } catch (err) {
+      console.warn("[active-location] setAddressLastUsed failed after bind", {
+        customerId,
+        addressId,
+        err: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
   return true;
+}
+
+export type ReconcileActiveLocationResult = {
+  latitude: number | null;
+  longitude: number | null;
+  address: string | null;
+  addressId: number | null;
+  lockedForOrder: boolean;
+  /** Backend decision for the client session pin. */
+  source: "selected" | "current";
+  /** True when a prior saved address was cleared because GPS left the retention radius. */
+  switchedToCurrent: boolean;
+  /**
+   * Why this decision was made:
+   * - kept_nearby: GPS still within retention of bound saved address
+   * - switched_far: temporary/remote saved address cleared after relaunch
+   * - no_bound_address: already on / switched to current (no addressId)
+   * - bound_missing: addressId pointed at a deleted row
+   */
+  reason: "kept_nearby" | "switched_far" | "no_bound_address" | "bound_missing";
+  /** Haversine distance from live GPS to the bound saved address (meters). */
+  distanceM: number | null;
+  /** Configured retention radius in meters (env or default 500). */
+  retentionRadiusM: number;
+  savedAddress: {
+    id: number;
+    label: string | null;
+    fullAddress: string;
+    city: string | null;
+    state: string | null;
+    pincode: string | null;
+    latitude: number;
+    longitude: number;
+  } | null;
+};
+
+/** Force browsing pin to live GPS and clear saved-address binding (bypasses order lock). */
+async function forceActiveLocationToCurrentGps(
+  customerId: number,
+  gps: { latitude: number; longitude: number; address?: string | null }
+): Promise<void> {
+  console.info("[active-location] force_current_gps", {
+    customerId,
+    path: "forceActiveLocationToCurrentGps",
+    gpsLatitude: gps.latitude,
+    gpsLongitude: gps.longitude,
+    note: "clears addressId",
+  });
+  const db = getDb();
+  await db
+    .insert(customerActiveLocation)
+    .values({
+      customerId,
+      latitude: String(gps.latitude),
+      longitude: String(gps.longitude),
+      address: gps.address ?? "Current location",
+      addressId: null,
+      lockedForOrder: false,
+      orderId: null,
+    })
+    .onConflictDoUpdate({
+      target: customerActiveLocation.customerId,
+      set: {
+        latitude: String(gps.latitude),
+        longitude: String(gps.longitude),
+        address: gps.address ?? "Current location",
+        addressId: null,
+        lockedForOrder: false,
+        orderId: null,
+        updatedAt: new Date(),
+      },
+    });
+}
+
+/**
+ * Single source of truth: given live GPS, decide whether to keep the bound saved
+ * address or switch the session to Current Location when the user has moved away
+ * (including temporary remote / "order for someone else" addresses after force-close).
+ *
+ * Order delivery stays on the order row; this only controls the browsing/session pin.
+ */
+export async function reconcileActiveLocationWithGps(
+  customerId: number,
+  gps: { latitude: number; longitude: number; address?: string | null }
+): Promise<ReconcileActiveLocationResult> {
+  const retentionRadiusM = getEnv().ACTIVE_SAVED_ADDRESS_RETENTION_RADIUS_M;
+  const existing = await getActiveLocation(customerId);
+  const boundId = existing?.addressId ?? null;
+
+  const logDecision = (payload: Record<string, unknown>) => {
+    console.info("[active-location] reconcile", {
+      customerId,
+      path: "POST /v1/me/active-location/reconcile",
+      gpsLatitude: gps.latitude,
+      gpsLongitude: gps.longitude,
+      addressIdBefore: boundId,
+      retentionRadiusM,
+      ...payload,
+    });
+  };
+
+  const asCurrent = (
+    opts: { switchedToCurrent: boolean; reason: ReconcileActiveLocationResult["reason"]; distanceM: number | null }
+  ): ReconcileActiveLocationResult => ({
+    latitude: gps.latitude,
+    longitude: gps.longitude,
+    address: gps.address ?? "Current location",
+    addressId: null,
+    lockedForOrder: false,
+    source: "current",
+    switchedToCurrent: opts.switchedToCurrent,
+    reason: opts.reason,
+    distanceM: opts.distanceM,
+    retentionRadiusM,
+    savedAddress: null,
+  });
+
+  if (boundId == null) {
+    await forceActiveLocationToCurrentGps(customerId, gps);
+    logDecision({
+      addressIdAfter: null,
+      distanceM: null,
+      savedLatitude: null,
+      savedLongitude: null,
+      reason: "no_bound_address",
+      decision: "switch_to_current",
+    });
+    return asCurrent({ switchedToCurrent: false, reason: "no_bound_address", distanceM: null });
+  }
+
+  const rows = await listAddresses(customerId);
+  const bound = rows.find((a) => a.id === boundId);
+  if (!bound) {
+    await forceActiveLocationToCurrentGps(customerId, gps);
+    logDecision({
+      addressIdAfter: null,
+      distanceM: null,
+      savedLatitude: null,
+      savedLongitude: null,
+      reason: "bound_missing",
+      decision: "switch_to_current",
+    });
+    return asCurrent({ switchedToCurrent: true, reason: "bound_missing", distanceM: null });
+  }
+
+  const aLat = parseFloat(bound.latitude) || 0;
+  const aLng = parseFloat(bound.longitude) || 0;
+  const distanceM = Math.round(
+    haversineMeters(
+      { lat: gps.latitude, lng: gps.longitude },
+      { lat: aLat, lng: aLng }
+    )
+  );
+
+  const savedAddress: ReconcileActiveLocationResult["savedAddress"] = {
+    id: bound.id,
+    label: bound.label,
+    fullAddress: bound.fullAddress,
+    city: bound.city,
+    state: bound.state,
+    pincode: bound.pincode,
+    latitude: aLat,
+    longitude: aLng,
+  };
+
+  // Near the bound saved address → keep it (same city / same locality).
+  if (distanceM <= retentionRadiusM) {
+    // Refresh pin coords to the saved address; clear stale order lock if GPS is local again.
+    const db = getDb();
+    await db
+      .insert(customerActiveLocation)
+      .values({
+        customerId,
+        latitude: String(aLat),
+        longitude: String(aLng),
+        address: bound.fullAddress,
+        addressId: bound.id,
+        lockedForOrder: false,
+        orderId: null,
+      })
+      .onConflictDoUpdate({
+        target: customerActiveLocation.customerId,
+        set: {
+          latitude: String(aLat),
+          longitude: String(aLng),
+          address: bound.fullAddress,
+          addressId: bound.id,
+          lockedForOrder: false,
+          orderId: null,
+          updatedAt: new Date(),
+        },
+      });
+    // Auto-restore of the active Saved Address updates MRU (persists across devices).
+    try {
+      await setAddressLastUsed(customerId, bound.id);
+    } catch (err) {
+      console.warn("[active-location] setAddressLastUsed failed on kept_nearby", {
+        customerId,
+        addressId: bound.id,
+        err: err instanceof Error ? err.message : String(err),
+      });
+    }
+    logDecision({
+      addressIdAfter: bound.id,
+      distanceM,
+      savedLatitude: aLat,
+      savedLongitude: aLng,
+      reason: "kept_nearby",
+      decision: "retain_saved_address",
+    });
+    return {
+      latitude: aLat,
+      longitude: aLng,
+      address: bound.fullAddress,
+      addressId: bound.id,
+      lockedForOrder: false,
+      source: "selected",
+      switchedToCurrent: false,
+      reason: "kept_nearby",
+      distanceM,
+      retentionRadiusM,
+      savedAddress,
+    };
+  }
+
+  // Far from bound saved address (e.g. ordered for family in another city, then relaunched at home).
+  // Clear binding even if previously locked — the order already stores its delivery address.
+  await forceActiveLocationToCurrentGps(customerId, gps);
+  logDecision({
+    addressIdAfter: null,
+    distanceM,
+    savedLatitude: aLat,
+    savedLongitude: aLng,
+    reason: "switched_far",
+    decision: "switch_to_current",
+  });
+  return asCurrent({ switchedToCurrent: true, reason: "switched_far", distanceM });
 }
 
 /** Lock active location for order (call when order placed). Snapshot coords to order. */
@@ -466,6 +905,9 @@ export async function lockActiveLocationForOrder(
   customerId: number,
   orderId: number
 ): Promise<{ latitude: number; longitude: number; address: string | null } | null> {
+  // NOTE: This locks the browsing pin only. Order drop/pickup coords must come from
+  // orders_core snapshots written at placement (address row + store row) — never from
+  // customer_active_location.latitude/longitude, which may be live GPS.
   const db = getDb();
   const row = await getActiveLocation(customerId);
   if (!row || row.lockedForOrder) return null;

@@ -49,7 +49,7 @@ export default function CategoriesScreen() {
   const debouncedName = useDebouncedValue(name, 280);
   const saving = createCat.isPending || updateCat.isPending;
 
-  const params = useLocalSearchParams<{ addSubcategory?: string }>();
+  const params = useLocalSearchParams<{ addSubcategory?: string; add?: string }>();
   const parentCategories = categories
     .filter((c) => !c.parent_category_id)
     .sort((a, b) => (a.display_order ?? 0) - (b.display_order ?? 0));
@@ -76,6 +76,7 @@ export default function CategoriesScreen() {
   };
 
   const didOpenParentPicker = useRef(false);
+  const didOpenAddFromQuery = useRef(false);
   useEffect(() => {
     if (params.addSubcategory === "1" && parentCategories.length > 0 && !didOpenParentPicker.current) {
       didOpenParentPicker.current = true;
@@ -178,6 +179,13 @@ export default function CategoriesScreen() {
     setParentCategoryId(null);
     setModalOpen(true);
   };
+
+  useEffect(() => {
+    if (params.add === "1" && !didOpenAddFromQuery.current && !loading) {
+      didOpenAddFromQuery.current = true;
+      openAdd();
+    }
+  }, [params.add, loading, categories.length]);
 
   const openAddSubcategory = (parent: MenuCategory) => {
     setEditingCategory(null);

@@ -1,6 +1,6 @@
 import type { OrderSummary } from "@/services/order.service";
 import { normalizeCustomerOrderStatus } from "@/lib/customer-order-status-display";
-import { isPersonRideOrderSummary } from "@/lib/person-ride-orders";
+import { isPersonRideOrderSummary } from "@/lib/person-ride-order-kind";
 
 export function isRideFarePaymentPending(paymentStatus?: string | null): boolean {
   const ps = String(paymentStatus ?? "").trim().toLowerCase();

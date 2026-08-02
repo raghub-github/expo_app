@@ -14,6 +14,10 @@ import {
   isInsufficientMerchantWalletError,
 } from "../../lib/merchant-subscription-wallet.js";
 import { getWalletSummary } from "../../lib/merchant-wallet-engine.js";
+import {
+  buildPlanPurchaseSnapshot,
+  type PlanPurchaseSnapshot,
+} from "../../lib/plan-purchase-snapshot.js";
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 const DEFAULT_BILLING_DAYS = 30;
@@ -27,6 +31,7 @@ type PlanRow = {
   price: number;
   gst_percent: number;
   billing_cycle: string;
+  benefits_json: unknown | null;
 };
 
 async function loadStore(sql: ReturnType<typeof getSql>, storeId: number, parentId: number): Promise<StoreRow | null> {
@@ -50,7 +55,7 @@ async function loadStore(sql: ReturnType<typeof getSql>, storeId: number, parent
 
 async function loadPlan(sql: ReturnType<typeof getSql>, planId: number): Promise<PlanRow | null> {
   const rows = await sql`
-    SELECT id, plan_name, plan_code, price, gst_percent, billing_cycle
+    SELECT id, plan_name, plan_code, price, gst_percent, billing_cycle, benefits_json
     FROM merchant_plans
     WHERE id = ${planId} AND is_active = true AND plan_type = 'MERCHANT'::public.subscription_plan_type
     LIMIT 1
@@ -64,7 +69,18 @@ async function loadPlan(sql: ReturnType<typeof getSql>, planId: number): Promise
     price: Number(r.price ?? 0),
     gst_percent: r.gst_percent != null ? Number(r.gst_percent) : 0,
     billing_cycle: String(r.billing_cycle ?? "MONTHLY"),
+    benefits_json: r.benefits_json ?? null,
   };
+}
+
+function planSnap(plan: PlanRow): PlanPurchaseSnapshot {
+  return buildPlanPurchaseSnapshot(plan);
+}
+
+function snapBenefitsJson(snap: PlanPurchaseSnapshot): string | null {
+  return snap.plan_benefits_snapshot != null
+    ? JSON.stringify(snap.plan_benefits_snapshot)
+    : null;
 }
 
 type ActiveSub = {
@@ -263,8 +279,9 @@ export async function activateFreeMerchantPlan(args: {
   }
 
   const now = new Date();
-  const expiry = new Date(now);
-  expiry.setMonth(expiry.getMonth() + 1);
+  const expiry = computeNextBillingEnd(now, plan.billing_cycle);
+  const snap = planSnap(plan);
+  const benefitsJson = snapBenefitsJson(snap);
 
   const existing = await sql`
     SELECT id FROM merchant_subscriptions
@@ -283,6 +300,11 @@ export async function activateFreeMerchantPlan(args: {
         start_date = ${now.toISOString()},
         expiry_date = ${expiry.toISOString()},
         is_active = true,
+        plan_name_snapshot = ${snap.plan_name_snapshot},
+        plan_code_snapshot = ${snap.plan_code_snapshot},
+        billing_cycle_snapshot = ${snap.billing_cycle_snapshot},
+        plan_list_price_paise = ${snap.plan_list_price_paise},
+        plan_benefits_snapshot = ${benefitsJson}::jsonb,
         updated_at = NOW()
       WHERE id = ${existingId}
     `;
@@ -292,10 +314,14 @@ export async function activateFreeMerchantPlan(args: {
   const inserted = await sql`
     INSERT INTO merchant_subscriptions (
       merchant_id, store_id, plan_id, subscription_status, payment_status,
-      start_date, expiry_date, is_active, auto_renew
+      start_date, expiry_date, is_active, auto_renew,
+      plan_name_snapshot, plan_code_snapshot, billing_cycle_snapshot,
+      plan_list_price_paise, plan_benefits_snapshot
     ) VALUES (
       ${store.parent_id}, ${store.id}, ${plan.id}, 'ACTIVE', 'PAID',
-      ${now.toISOString()}, ${expiry.toISOString()}, true, false
+      ${now.toISOString()}, ${expiry.toISOString()}, true, false,
+      ${snap.plan_name_snapshot}, ${snap.plan_code_snapshot}, ${snap.billing_cycle_snapshot},
+      ${snap.plan_list_price_paise}, ${benefitsJson}::jsonb
     )
     RETURNING id
   `;
@@ -343,8 +369,9 @@ export async function verifyMerchantSubscriptionPayment(args: {
   }
 
   const now = new Date();
-  const expiry = new Date(now);
-  expiry.setMonth(expiry.getMonth() + 1);
+  const expiry = computeNextBillingEnd(now, plan.billing_cycle);
+  const snap = planSnap(plan);
+  const benefitsJson = snapBenefitsJson(snap);
   const { gstPercent, subtotalPaise, gstAmountPaise, totalPaise } = gstBreakdown(
     plan.price,
     plan.gst_percent
@@ -365,7 +392,13 @@ export async function verifyMerchantSubscriptionPayment(args: {
         plan_id = ${plan.id}, subscription_status = 'ACTIVE', payment_status = 'PAID',
         start_date = ${now.toISOString()}, expiry_date = ${expiry.toISOString()},
         is_active = true, last_payment_date = ${now.toISOString()},
-        next_billing_date = ${expiry.toISOString()}, updated_at = NOW()
+        next_billing_date = ${expiry.toISOString()},
+        plan_name_snapshot = ${snap.plan_name_snapshot},
+        plan_code_snapshot = ${snap.plan_code_snapshot},
+        billing_cycle_snapshot = ${snap.billing_cycle_snapshot},
+        plan_list_price_paise = ${snap.plan_list_price_paise},
+        plan_benefits_snapshot = ${benefitsJson}::jsonb,
+        updated_at = NOW()
       WHERE id = ${existingId}
     `;
     subscriptionId = existingId;
@@ -373,11 +406,15 @@ export async function verifyMerchantSubscriptionPayment(args: {
     const ins = await sql`
       INSERT INTO merchant_subscriptions (
         merchant_id, store_id, plan_id, subscription_status, payment_status,
-        start_date, expiry_date, is_active, auto_renew, last_payment_date, next_billing_date
+        start_date, expiry_date, is_active, auto_renew, last_payment_date, next_billing_date,
+        plan_name_snapshot, plan_code_snapshot, billing_cycle_snapshot,
+        plan_list_price_paise, plan_benefits_snapshot
       ) VALUES (
         ${store.parent_id}, ${store.id}, ${plan.id}, 'ACTIVE', 'PAID',
         ${now.toISOString()}, ${expiry.toISOString()}, true, false,
-        ${now.toISOString()}, ${expiry.toISOString()}
+        ${now.toISOString()}, ${expiry.toISOString()},
+        ${snap.plan_name_snapshot}, ${snap.plan_code_snapshot}, ${snap.billing_cycle_snapshot},
+        ${snap.plan_list_price_paise}, ${benefitsJson}::jsonb
       )
       RETURNING id
     `;
@@ -400,6 +437,7 @@ export async function verifyMerchantSubscriptionPayment(args: {
     gatewayId: args.razorpayPaymentId,
     now,
     expiry,
+    planSnapshot: snap,
   });
 
   return { ok: true as const, subscriptionId, message: "Subscription activated" };
@@ -466,8 +504,9 @@ export async function upgradeMerchantSubscription(args: {
   );
 
   const now = new Date();
-  const newExpiry = new Date(now);
-  newExpiry.setDate(newExpiry.getDate() + DEFAULT_BILLING_DAYS);
+  const newExpiry = computeNextBillingEnd(now, newPlan.billing_cycle);
+  const snap = planSnap(newPlan);
+  const benefitsJson = snapBenefitsJson(snap);
 
   if (activeSub) {
     await sql`
@@ -481,13 +520,17 @@ export async function upgradeMerchantSubscription(args: {
     INSERT INTO merchant_subscriptions (
       merchant_id, store_id, plan_id, subscription_status, payment_status,
       start_date, expiry_date, is_active, auto_renew, upgraded_from, credit_applied,
-      billing_start_at, billing_end_at, last_payment_date, next_billing_date
+      billing_start_at, billing_end_at, last_payment_date, next_billing_date,
+      plan_name_snapshot, plan_code_snapshot, billing_cycle_snapshot,
+      plan_list_price_paise, plan_benefits_snapshot
     ) VALUES (
       ${store.parent_id}, ${store.id}, ${newPlan.id}, 'ACTIVE', 'PAID',
       ${now.toISOString()}, ${newExpiry.toISOString()}, true, false,
       ${activeSub?.id ?? null}, ${creditApplied},
       ${now.toISOString()}, ${newExpiry.toISOString()},
-      ${now.toISOString()}, ${newExpiry.toISOString()}
+      ${now.toISOString()}, ${newExpiry.toISOString()},
+      ${snap.plan_name_snapshot}, ${snap.plan_code_snapshot}, ${snap.billing_cycle_snapshot},
+      ${snap.plan_list_price_paise}, ${benefitsJson}::jsonb
     )
     RETURNING id
   `;
@@ -512,6 +555,7 @@ export async function upgradeMerchantSubscription(args: {
     notes: creditApplied > 0 ? `Upgrade: ₹${creditApplied} credit applied` : "Plan upgrade",
     now,
     expiry: newExpiry,
+    planSnapshot: snap,
   });
 
   return {
@@ -649,6 +693,8 @@ export async function payMerchantSubscriptionFromWallet(args: {
 
   const now = new Date();
   const expiry = computeNextBillingEnd(now, plan.billing_cycle);
+  const snap = planSnap(plan);
+  const benefitsJson = snapBenefitsJson(snap);
 
   // Write the subscription row (new-purchase upsert OR upgrade insert).
   let subscriptionId: number;
@@ -662,13 +708,17 @@ export async function payMerchantSubscriptionFromWallet(args: {
       INSERT INTO merchant_subscriptions (
         merchant_id, store_id, plan_id, subscription_status, payment_status,
         start_date, expiry_date, is_active, auto_renew, upgraded_from, credit_applied,
-        billing_start_at, billing_end_at, last_payment_date, next_billing_date
+        billing_start_at, billing_end_at, last_payment_date, next_billing_date,
+        plan_name_snapshot, plan_code_snapshot, billing_cycle_snapshot,
+        plan_list_price_paise, plan_benefits_snapshot
       ) VALUES (
         ${store.parent_id}, ${store.id}, ${plan.id}, 'ACTIVE', 'PAID',
         ${now.toISOString()}, ${expiry.toISOString()}, true, false,
         ${activeSub.id}, ${creditApplied},
         ${now.toISOString()}, ${expiry.toISOString()},
-        ${now.toISOString()}, ${expiry.toISOString()}
+        ${now.toISOString()}, ${expiry.toISOString()},
+        ${snap.plan_name_snapshot}, ${snap.plan_code_snapshot}, ${snap.billing_cycle_snapshot},
+        ${snap.plan_list_price_paise}, ${benefitsJson}::jsonb
       )
       RETURNING id
     `;
@@ -687,7 +737,13 @@ export async function payMerchantSubscriptionFromWallet(args: {
           plan_id = ${plan.id}, subscription_status = 'ACTIVE', payment_status = 'PAID',
           start_date = ${now.toISOString()}, expiry_date = ${expiry.toISOString()},
           is_active = true, last_payment_date = ${now.toISOString()},
-          next_billing_date = ${expiry.toISOString()}, updated_at = NOW()
+          next_billing_date = ${expiry.toISOString()},
+          plan_name_snapshot = ${snap.plan_name_snapshot},
+          plan_code_snapshot = ${snap.plan_code_snapshot},
+          billing_cycle_snapshot = ${snap.billing_cycle_snapshot},
+          plan_list_price_paise = ${snap.plan_list_price_paise},
+          plan_benefits_snapshot = ${benefitsJson}::jsonb,
+          updated_at = NOW()
         WHERE id = ${existingId}
       `;
       subscriptionId = existingId;
@@ -695,11 +751,15 @@ export async function payMerchantSubscriptionFromWallet(args: {
       const ins = await sql`
         INSERT INTO merchant_subscriptions (
           merchant_id, store_id, plan_id, subscription_status, payment_status,
-          start_date, expiry_date, is_active, auto_renew, last_payment_date, next_billing_date
+          start_date, expiry_date, is_active, auto_renew, last_payment_date, next_billing_date,
+          plan_name_snapshot, plan_code_snapshot, billing_cycle_snapshot,
+          plan_list_price_paise, plan_benefits_snapshot
         ) VALUES (
           ${store.parent_id}, ${store.id}, ${plan.id}, 'ACTIVE', 'PAID',
           ${now.toISOString()}, ${expiry.toISOString()}, true, false,
-          ${now.toISOString()}, ${expiry.toISOString()}
+          ${now.toISOString()}, ${expiry.toISOString()},
+          ${snap.plan_name_snapshot}, ${snap.plan_code_snapshot}, ${snap.billing_cycle_snapshot},
+          ${snap.plan_list_price_paise}, ${benefitsJson}::jsonb
         )
         RETURNING id
       `;
@@ -782,6 +842,7 @@ export async function payMerchantSubscriptionFromWallet(args: {
       : "Wallet payment",
     now,
     expiry,
+    planSnapshot: snap,
   });
 
   return {
@@ -1481,10 +1542,11 @@ export async function listMerchantSubscriptionRefunds(args: {
       r.*,
       s.store_id  AS store_public_id,
       s.store_name,
-      p.plan_name,
-      p.plan_code
+      COALESCE(sp.plan_name_snapshot, p.plan_name) AS plan_name,
+      COALESCE(sp.plan_code_snapshot, p.plan_code) AS plan_code
     FROM merchant_subscription_refunds r
     LEFT JOIN merchant_stores s ON s.id = r.store_id
+    LEFT JOIN subscription_payments sp ON sp.id = r.payment_id
     LEFT JOIN merchant_plans  p ON p.id = r.plan_id
     WHERE 1 = 1
       ${args.storeId != null ? sql`AND r.store_id = ${args.storeId}` : sql``}
@@ -1625,7 +1687,8 @@ export async function listMerchantSubscriptionHistory(args: {
         sp.billing_period_start,
         sp.billing_period_end,
         sp.notes,
-        p.plan_name, p.plan_code
+        COALESCE(sp.plan_name_snapshot, p.plan_name) AS plan_name,
+        COALESCE(sp.plan_code_snapshot, p.plan_code) AS plan_code
       FROM subscription_payments sp
       LEFT JOIN merchant_plans p ON p.id = sp.plan_id
       WHERE sp.store_id = ${args.storeId}
@@ -1641,8 +1704,10 @@ export async function listMerchantSubscriptionHistory(args: {
         r.actor_subject_id, r.actor_system_user_id, r.actor_email, r.actor_name, r.actor_role,
         r.initiated_at AS event_at,
         r.initiated_at, r.completed_at, r.failed_at, r.failure_reason,
-        p.plan_name, p.plan_code
+        COALESCE(sp.plan_name_snapshot, p.plan_name) AS plan_name,
+        COALESCE(sp.plan_code_snapshot, p.plan_code) AS plan_code
       FROM merchant_subscription_refunds r
+      LEFT JOIN subscription_payments sp ON sp.id = r.payment_id
       LEFT JOIN merchant_plans p ON p.id = r.plan_id
       WHERE r.store_id = ${args.storeId}
         ${args.merchantId != null ? sql`AND r.merchant_id = ${args.merchantId}` : sql``}
@@ -1809,9 +1874,12 @@ async function insertSubscriptionPayment(
     notes?: string;
     now: Date;
     expiry: Date;
+    planSnapshot?: PlanPurchaseSnapshot | null;
   }
 ) {
   try {
+    const snap = p.planSnapshot ?? null;
+    const benefitsJson = snap ? snapBenefitsJson(snap) : null;
     // Idempotent on the gateway payment id: the SAME Razorpay/wallet payment can reach
     // this path more than once (payment-verify + webhook, or a legacy insert that stored
     // only `amount` without the GST breakdown). NEVER create a duplicate — if a row for
@@ -1834,6 +1902,11 @@ async function insertSubscriptionPayment(
             payment_gateway = ${p.gateway}, payment_status = 'PAID',
             billing_period_start = ${p.now.toISOString()},
             billing_period_end = ${p.expiry.toISOString()},
+            plan_name_snapshot = COALESCE(plan_name_snapshot, ${snap?.plan_name_snapshot ?? null}),
+            plan_code_snapshot = COALESCE(plan_code_snapshot, ${snap?.plan_code_snapshot ?? null}),
+            billing_cycle_snapshot = COALESCE(billing_cycle_snapshot, ${snap?.billing_cycle_snapshot ?? null}),
+            plan_list_price_paise = COALESCE(plan_list_price_paise, ${snap?.plan_list_price_paise ?? null}),
+            plan_benefits_snapshot = COALESCE(plan_benefits_snapshot, ${benefitsJson}::jsonb),
             updated_at = NOW()
           WHERE id = ${existing[0]!.id}
         `;
@@ -1845,7 +1918,9 @@ async function insertSubscriptionPayment(
         merchant_id, store_id, subscription_id, plan_id, amount,
         subtotal_paise, gst_percent_applied, gst_amount_paise, total_paise,
         payment_gateway, payment_gateway_id, payment_gateway_response,
-        payment_status, payment_date, billing_period_start, billing_period_end, notes
+        payment_status, payment_date, billing_period_start, billing_period_end, notes,
+        plan_name_snapshot, plan_code_snapshot, billing_cycle_snapshot,
+        plan_list_price_paise, plan_benefits_snapshot
       ) VALUES (
         ${p.merchantId}, ${p.storeId}, ${p.subscriptionId}, ${p.planId},
         ${Math.round(p.totalPaise) / 100},
@@ -1857,7 +1932,12 @@ async function insertSubscriptionPayment(
           razorpay_signature: p.razorpaySignature,
         })}::jsonb,
         'PAID', ${p.now.toISOString()}, ${p.now.toISOString()}, ${p.expiry.toISOString()},
-        ${p.notes ?? null}
+        ${p.notes ?? null},
+        ${snap?.plan_name_snapshot ?? null},
+        ${snap?.plan_code_snapshot ?? null},
+        ${snap?.billing_cycle_snapshot ?? null},
+        ${snap?.plan_list_price_paise ?? null},
+        ${benefitsJson}::jsonb
       )
     `;
   } catch {
@@ -1897,9 +1977,11 @@ type MerchantSubRow = {
   next_billing_date: string | null;
   billing_end_at: string | null;
   plan_name: string;
+  plan_code: string;
   price: number;
   gst_percent: number;
   billing_cycle: string;
+  benefits_json: unknown | null;
 };
 
 async function loadDueAutoRenewSubscriptions(
@@ -1919,9 +2001,11 @@ async function loadDueAutoRenewSubscriptions(
             ms.next_billing_date,
             ms.billing_end_at,
             p.plan_name,
+            p.plan_code,
             p.price,
             p.gst_percent,
-            p.billing_cycle
+            p.billing_cycle,
+            p.benefits_json
           FROM merchant_subscriptions ms
           JOIN merchant_plans p ON p.id = ms.plan_id
           WHERE ms.subscription_status = 'ACTIVE'
@@ -1942,9 +2026,11 @@ async function loadDueAutoRenewSubscriptions(
             ms.next_billing_date,
             ms.billing_end_at,
             p.plan_name,
+            p.plan_code,
             p.price,
             p.gst_percent,
-            p.billing_cycle
+            p.billing_cycle,
+            p.benefits_json
           FROM merchant_subscriptions ms
           JOIN merchant_plans p ON p.id = ms.plan_id
           WHERE ms.subscription_status = 'ACTIVE'
@@ -1965,9 +2051,11 @@ async function loadDueAutoRenewSubscriptions(
       next_billing_date: r.next_billing_date != null ? String(r.next_billing_date) : null,
       billing_end_at: r.billing_end_at != null ? String(r.billing_end_at) : null,
       plan_name: String(r.plan_name ?? "Subscription"),
+      plan_code: String(r.plan_code ?? ""),
       price: Number(r.price ?? 0),
       gst_percent: r.gst_percent != null ? Number(r.gst_percent) : 0,
       billing_cycle: String(r.billing_cycle ?? "MONTHLY"),
+      benefits_json: r.benefits_json ?? null,
     };
   });
 }
@@ -2169,6 +2257,14 @@ async function processMerchantSubscriptionRenewalsOnce(
       const renewedFrom = billingEnd.getTime() <= Date.now() ? billingEnd : new Date();
       const newExpiry = computeNextBillingEnd(renewedFrom, sub.billing_cycle);
       const now = new Date();
+      const snap = buildPlanPurchaseSnapshot({
+        plan_name: sub.plan_name,
+        plan_code: sub.plan_code,
+        billing_cycle: sub.billing_cycle,
+        price: sub.price,
+        benefits_json: sub.benefits_json,
+      });
+      const benefitsJson = snapBenefitsJson(snap);
 
       await sql`
         UPDATE merchant_subscriptions SET
@@ -2184,6 +2280,11 @@ async function processMerchantSubscriptionRenewalsOnce(
           next_auto_pay_date = ${newExpiry.toISOString()},
           auto_pay_failure_count = 0,
           last_auto_pay_attempt = ${now.toISOString()},
+          plan_name_snapshot = ${snap.plan_name_snapshot},
+          plan_code_snapshot = ${snap.plan_code_snapshot},
+          billing_cycle_snapshot = ${snap.billing_cycle_snapshot},
+          plan_list_price_paise = ${snap.plan_list_price_paise},
+          plan_benefits_snapshot = ${benefitsJson}::jsonb,
           updated_at = NOW()
         WHERE id = ${sub.id}
       `;
@@ -2202,6 +2303,7 @@ async function processMerchantSubscriptionRenewalsOnce(
         notes: `Auto-renew from wallet — ${sub.plan_name}`,
         now,
         expiry: newExpiry,
+        planSnapshot: snap,
       });
 
       renewed += 1;

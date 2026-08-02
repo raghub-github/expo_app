@@ -484,10 +484,12 @@ export async function rideRoutes(app: FastifyInstance) {
           });
           return result;
         } catch (e) {
-          const err = e as Error & { statusCode?: number };
+          const err = e as Error & { statusCode?: number; code?: string };
           const status = err.statusCode ?? 500;
           return reply.status(status as 400).send({
-            error: err.message || "Failed to place ride order",
+            error: err.code || err.message || "Failed to place ride order",
+            message: err.message || "Failed to place ride order",
+            code: err.code,
           });
         }
       }

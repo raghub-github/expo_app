@@ -6,7 +6,7 @@
 import { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { AppText } from "@/components/AppText";
 
-import { View, ScrollView, TouchableOpacity, StyleSheet, Switch, Modal, Pressable } from "react-native";
+import { View, ScrollView, TouchableOpacity, StyleSheet, Switch, Modal, Pressable, ActivityIndicator } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
 import { StatusBar } from "expo-status-bar";
@@ -75,6 +75,8 @@ export default function SettingsScreen() {
   const session = useAuthStore((s) => s.session);
   const hydrated = useAuthStore((s) => s.hydrated);
   const [logoutModalVisible, setLogoutModalVisible] = useState(false);
+  /** Which option is signing out — keeps spinner until session is cleared. */
+  const [loggingOut, setLoggingOut] = useState<"this" | "all" | null>(null);
   const [backendPushEnabled, setBackendPushEnabled] = useState(true);
 
   const { language, hydrate } = useLanguageStore();
@@ -158,25 +160,41 @@ export default function SettingsScreen() {
   );
 
   const handleSignOutThisDevice = async () => {
-    setLogoutModalVisible(false);
+    if (loggingOut) return;
+    setLoggingOut("this");
     try {
-      await controller.unregisterCurrent();
+      // Best-effort push unregister — never block logout on a hung network call.
+      await Promise.race([
+        controller.unregisterCurrent().catch(() => undefined),
+        new Promise<void>((resolve) => setTimeout(resolve, 2000)),
+      ]);
+      await logout();
+      setLogoutModalVisible(false);
+      router.replace("/");
     } catch {
-      // best-effort
+      setLoggingOut(null);
     }
-    await logout();
-    router.replace("/");
   };
 
   const handleSignOutAllDevices = async () => {
-    setLogoutModalVisible(false);
+    if (loggingOut) return;
+    setLoggingOut("all");
     try {
-      await controller.unregisterCurrent();
+      await Promise.race([
+        controller.unregisterCurrent().catch(() => undefined),
+        new Promise<void>((resolve) => setTimeout(resolve, 2000)),
+      ]);
+      await logoutAllDevices();
+      setLogoutModalVisible(false);
+      router.replace("/");
     } catch {
-      // best-effort
+      setLoggingOut(null);
     }
-    await logoutAllDevices();
-    router.replace("/");
+  };
+
+  const closeLogoutModal = () => {
+    if (loggingOut) return;
+    setLogoutModalVisible(false);
   };
 
   return (
@@ -338,7 +356,10 @@ export default function SettingsScreen() {
 
         <SectionTitle title={t("settings.accountActions")} />
         <TouchableOpacity
-          onPress={() => setLogoutModalVisible(true)}
+          onPress={() => {
+            setLoggingOut(null);
+            setLogoutModalVisible(true);
+          }}
           style={styles.logoutBtn}
           activeOpacity={0.85}
         >
@@ -347,25 +368,57 @@ export default function SettingsScreen() {
         </TouchableOpacity>
       </ScrollView>
 
-      <Modal visible={logoutModalVisible} transparent animationType="fade" onRequestClose={() => setLogoutModalVisible(false)}>
-        <Pressable style={styles.modalOverlay} onPress={() => setLogoutModalVisible(false)}>
+      <Modal
+        visible={logoutModalVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={closeLogoutModal}
+      >
+        <Pressable
+          style={styles.modalOverlay}
+          onPress={closeLogoutModal}
+          disabled={loggingOut != null}
+        >
           <Pressable style={styles.modalCard} onPress={(e) => e.stopPropagation()}>
             <View style={styles.modalIconWrap}>
               <Ionicons name="log-out-outline" size={32} color="#fff" />
             </View>
             <AppText style={styles.modalTitle}>{t("settings.signOutModalTitle")}</AppText>
             <AppText style={styles.modalMessage}>{t("settings.signOutModalMessage")}</AppText>
-            <TouchableOpacity style={styles.modalOptionBtn} onPress={handleSignOutThisDevice} activeOpacity={0.85}>
+            <TouchableOpacity
+              style={[styles.modalOptionBtn, loggingOut === "this" && styles.modalOptionBtnActive]}
+              onPress={() => void handleSignOutThisDevice()}
+              activeOpacity={0.85}
+              disabled={loggingOut != null}
+            >
               <Ionicons name="phone-portrait-outline" size={20} color={GREEN_DARK} />
               <AppText style={styles.modalOptionText}>{t("settings.thisDevice")}</AppText>
-              <Ionicons name="chevron-forward" size={18} color={MUTED} />
+              {loggingOut === "this" ? (
+                <ActivityIndicator size="small" color={GREEN_DARK} />
+              ) : (
+                <Ionicons name="chevron-forward" size={18} color={MUTED} />
+              )}
             </TouchableOpacity>
-            <TouchableOpacity style={styles.modalOptionBtn} onPress={handleSignOutAllDevices} activeOpacity={0.85}>
+            <TouchableOpacity
+              style={[styles.modalOptionBtn, loggingOut === "all" && styles.modalOptionBtnActive]}
+              onPress={() => void handleSignOutAllDevices()}
+              activeOpacity={0.85}
+              disabled={loggingOut != null}
+            >
               <Ionicons name="phone-portrait-outline" size={20} color={GREEN_DARK} />
               <AppText style={styles.modalOptionText}>{t("settings.allDevices")}</AppText>
-              <Ionicons name="chevron-forward" size={18} color={MUTED} />
+              {loggingOut === "all" ? (
+                <ActivityIndicator size="small" color={GREEN_DARK} />
+              ) : (
+                <Ionicons name="chevron-forward" size={18} color={MUTED} />
+              )}
             </TouchableOpacity>
-            <TouchableOpacity style={styles.modalCancelBtn} onPress={() => setLogoutModalVisible(false)} activeOpacity={0.8}>
+            <TouchableOpacity
+              style={[styles.modalCancelBtn, loggingOut != null && styles.modalCancelBtnDisabled]}
+              onPress={closeLogoutModal}
+              activeOpacity={0.8}
+              disabled={loggingOut != null}
+            >
               <AppText style={styles.modalCancelText}>{t("common.cancel")}</AppText>
             </TouchableOpacity>
           </Pressable>
@@ -473,6 +526,10 @@ const styles = StyleSheet.create({
     borderColor: BORDER,
     gap: 10,
   },
+  modalOptionBtnActive: {
+    borderColor: GREEN,
+    backgroundColor: "#ECFDF5",
+  },
   modalOptionText: { flex: 1, fontSize: 15, fontWeight: "600", color: TEXT },
   modalCancelBtn: {
     width: "100%",
@@ -482,5 +539,6 @@ const styles = StyleSheet.create({
     alignItems: "center",
     marginTop: 4,
   },
+  modalCancelBtnDisabled: { opacity: 0.5 },
   modalCancelText: { fontSize: 15, fontWeight: "700", color: TEXT },
 });

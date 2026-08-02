@@ -78,6 +78,7 @@ export function buildFlashListData(input: BuildFlashListInput): BuildFlashListRe
 
   const data: MerchantFlashListItem[] = [];
   const sectionByTitle = new Map<string, number>();
+  const sectionByCategoryId = new Map<string, number>();
   const menuItemByKey = new Map<string, number>();
   let pastOrders: number | null = null;
   let startingAt: number | null = null;
@@ -129,7 +130,13 @@ export function buildFlashListData(input: BuildFlashListInput): BuildFlashListRe
           title: sec.title,
           sectionIndex,
         });
-        sectionByTitle.set(sec.title.trim().toLowerCase(), headerIdx);
+        if (!sectionByTitle.has(sec.title.trim().toLowerCase())) {
+          sectionByTitle.set(sec.title.trim().toLowerCase(), headerIdx);
+        }
+        const sectionCategoryId = sec.isSmart ? null : sec.data[0]?.categoryId ?? null;
+        if (sectionCategoryId != null && !sectionByCategoryId.has(String(sectionCategoryId))) {
+          sectionByCategoryId.set(String(sectionCategoryId), headerIdx);
+        }
 
         sec.data.forEach((item, itemIndex) => {
           const isPairingAnchor =
@@ -172,6 +179,7 @@ export function buildFlashListData(input: BuildFlashListInput): BuildFlashListRe
       pastOrders,
       startingAt,
       sectionByTitle,
+      sectionByCategoryId,
       menuItemByKey,
     },
   };
@@ -191,6 +199,11 @@ export function findFlatIndexForScrollTarget(
       return indexMap.sectionByTitle.get(want) ?? null;
     }
     case "category": {
+      // Prefer the id — two categories can share a display name, and a store can rename one.
+      if (target.categoryId != null) {
+        const byId = indexMap.sectionByCategoryId.get(String(target.categoryId));
+        if (byId != null) return byId;
+      }
       const normName = target.categoryName?.trim().toLowerCase();
       if (normName) {
         const hit = indexMap.sectionByTitle.get(normName);

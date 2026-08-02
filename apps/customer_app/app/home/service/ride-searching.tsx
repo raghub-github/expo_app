@@ -990,10 +990,13 @@ export default function RideSearchingScreen() {
       })
       .catch((err: unknown) => {
         if (cancelled) return;
+        const data = (err as { response?: { data?: { error?: string; message?: string; code?: string } } })
+          ?.response?.data;
         const message =
-          (err as { response?: { data?: { error?: string } } })?.response?.data?.error ??
-          (err as Error)?.message ??
-          "Could not place ride order.";
+          data?.code === "SERVICE_BLOCKED_IN_LOCATION" || data?.error === "SERVICE_BLOCKED_IN_LOCATION"
+            ? data?.message ||
+              "This service is temporarily unavailable in your current location. Please try again later or choose another nearby location."
+            : data?.error ?? data?.message ?? (err as Error)?.message ?? "Could not place ride order.";
         setPlacementError(message);
         setPhase("error");
       });

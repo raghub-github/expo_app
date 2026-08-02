@@ -62,6 +62,7 @@ export async function GET(_req: NextRequest) {
       systemUserId: systemUser.systemUserId,
       fullName: systemUser.fullName,
       email: systemUser.email,
+      primaryRole: systemUser.primaryRole,
       avatarUrl,
       status,
       sessionId: work?.id ?? null,

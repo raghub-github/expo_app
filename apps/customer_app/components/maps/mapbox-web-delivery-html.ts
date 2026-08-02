@@ -76,6 +76,10 @@ export type DeliveryMapPayload = {
   riderArrived?: boolean;
   refitCamera?: boolean;
   mapPhase?: "rider_to_pickup" | "rider_to_drop";
+  /** When false, hide store pin (post-pickup). Default true. */
+  showPickupMarker?: boolean;
+  /** When false, hide customer/home pin (rider → store). Default true. */
+  showDropMarker?: boolean;
   mapPadding?: DeliveryMapPadding;
   /** @deprecated use remainingRoute */
   route?: { latitude: number; longitude: number }[];

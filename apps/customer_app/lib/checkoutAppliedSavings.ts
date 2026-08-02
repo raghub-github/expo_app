@@ -11,6 +11,17 @@ export function roundSavingsMoney(n: number): number {
 }
 
 /**
+ * Format applied savings for banners / headlines.
+ * Never round ₹0.35 → "0" (Math.round / toFixed(0) did that and contradicted the bill).
+ */
+export function formatCheckoutSavingsRupees(amount: number): string {
+  const n = roundSavingsMoney(amount);
+  if (n < 0.005) return "0";
+  if (Math.abs(n - Math.round(n)) < 0.005) return String(Math.round(n));
+  return n.toFixed(2);
+}
+
+/**
  * Applied savings for banners / Total Bill strike / Bill Summary.
  * `billVisibleDiscounts` must already exclude item-surface Boost/BOGO rows that are
  * folded into Item total (those are passed via `itemDealSavings`).

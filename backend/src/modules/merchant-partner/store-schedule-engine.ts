@@ -713,6 +713,12 @@ export function getNextOpenIso(
     const firstStart = slots[0].startMin;
 
     if (dayOffset === 0) {
+      // Already inside a slot → caller must not jump to tomorrow's first open.
+      const withinNow = slots.some(
+        (s) => minutesSinceMidnight >= s.startMin && minutesSinceMidnight < s.endMin
+      );
+      if (withinNow) return null;
+
       const hasLaterSlotToday = slots.some((s) => s.startMin > minutesSinceMidnight);
       if (hasLaterSlotToday) {
         const slot = slots.find((s) => s.startMin > minutesSinceMidnight)!;
@@ -1023,7 +1029,7 @@ async function evaluateAndPersistStoreScheduleState(
   const now = ctx.now;
   const { dayOfWeek, minutesSinceMidnight } = nowInStoreTz(normalizeTz((store as any).timezone));
   const hoursRow = ctx.hoursRow;
-  const autoOpen = store.auto_open_from_schedule === true;
+  const autoOpen = store.auto_open_from_schedule !== false;
   const blockAutoOpen = store.block_auto_open === true;
   const manualCloseUntilMs = parseManualCloseUntilMs(store.manual_close_until);
   const nowMs = now.getTime();

@@ -9,7 +9,7 @@ import {
 import { enrichRawOrderItemFromCoreRow } from '@/lib/order-item-customisation';
 
 const CORE_ITEM_SELECT =
-  'id, order_id, menu_item_id, item_name, variant_name, category_name, quantity, base_price, addon_price, total_price, veg_nonveg, item_snapshot';
+  'id, order_id, menu_item_id, item_name, variant_name, category_name, quantity, base_price, addon_price, total_price, veg_nonveg, item_snapshot, special_instructions';
 
 type CoreItemRow = Parameters<typeof mapCoreDbItemsToRaw>[0][number];
 type CoreAddonRow = {
@@ -266,6 +266,7 @@ export function resolvePartnerOrderItems(
           isItemPromo: dbLine.isItemPromo || it.isItemPromo,
           appliedOfferType: dbLine.appliedOfferType ?? it.appliedOfferType,
           ctmFromSnapshot: dbLine.ctmFromSnapshot || it.ctmFromSnapshot,
+          specialInstructions: dbLine.specialInstructions ?? it.specialInstructions ?? null,
         };
       });
       if (enriched.length > items.length) items = enriched;

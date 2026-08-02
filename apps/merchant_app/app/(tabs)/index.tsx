@@ -36,11 +36,13 @@ import { RejectFollowUpHost, useRejectFollowUp } from "@/components/order/Reject
 import type { MerchantCancellationReason } from "@/lib/merchantCancellationReasons";
 import { rejectReasonNeedsFollowUp } from "@/lib/merchantCancellationReasons";
 import { fetchWalletSummary } from "@/services/walletApi";
-import { getActiveOrdersCount } from "@/services/storeSettingsApi";
+import { getActiveOrdersCount, invalidateActiveOrdersCountCache } from "@/services/storeSettingsApi";
 import { StoreClosedActiveOrdersNotice } from "@/components/order/StoreClosedActiveOrdersNotice";
+import { openOrderDetailOnce } from "@/lib/openOrderDetailOnce";
 import { isActiveMerchantOrderStage } from "@/lib/merchantActiveOrders";
 import { formatCurrency } from "@/lib/merchantPayoutUtils";
 import { resolveWalletDisplayBalance } from "@gatimitra/merchant-payout";
+import { subscribeMerchantDashboardStatsRefresh } from "@/lib/merchantDashboardStatsBus";
 
 const { width } = Dimensions.get("window");
 const CARD_WIDTH = (width - H_PADDING * 2 - CARD_GAP) / 2;
@@ -126,7 +128,7 @@ function formatScheduledOffDateAndTime(value: string | null | undefined): string
 export default function DashboardScreen() {
   const router = useRouter();
   const { token } = useAuth();
-  const { selectedStore } = useSelectedStore();
+  const { selectedStore, managedStores } = useSelectedStore();
   const storeId = selectedStore?.id ?? null;
   const { orders, refetch: refetchOrders, transitionOrder, extendPrepDelay, acceptanceWindowMinutes } = useOrders();
   const {
@@ -157,6 +159,7 @@ export default function DashboardScreen() {
   const loadDashboardStats = useCallback(async () => {
     if (!token || !storeId) return;
     try {
+      invalidateActiveOrdersCountCache(storeId);
       const [wallet, active] = await Promise.all([
         fetchWalletSummary(storeId, token),
         getActiveOrdersCount(storeId, token),
@@ -174,6 +177,24 @@ export default function DashboardScreen() {
   useEffect(() => {
     void loadDashboardStats();
   }, [loadDashboardStats]);
+
+  useEffect(() => {
+    return subscribeMerchantDashboardStatsRefresh(() => {
+      void loadDashboardStats();
+    });
+  }, [loadDashboardStats]);
+
+  /** Instant pending card from live board — API refresh follows for wallet/earnings. */
+  const livePendingCount = useMemo(
+    () =>
+      orders.filter(
+        (o) =>
+          o.status === "preparing" ||
+          o.status === "ready" ||
+          o.status === "picked_up"
+      ).length,
+    [orders]
+  );
 
   useEffect(() => {
     const id = setInterval(() => setNowMs(Date.now()), 1000);
@@ -241,7 +262,13 @@ export default function DashboardScreen() {
   const recentOrders = useMemo(() => {
     let list = orders;
     if (orderTab === "New") {
-      list = list.filter((o) => o.status === "created");
+      // Delayed / oldest first — longest-waiting CREATED orders at the top.
+      list = list
+        .filter((o) => o.status === "created")
+        .slice()
+        .sort(
+          (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+        );
     } else {
       list = list.filter(
         (o) =>
@@ -292,18 +319,24 @@ export default function DashboardScreen() {
 
   const handleAdvance = useCallback(
     (order: OrderRecord) => {
-      switch (order.status) {
-        case "preparing":
-          transitionOrder(order.id, "ready");
-          break;
-        case "ready":
-          transitionOrder(order.id, "picked_up");
-          break;
-        case "picked_up":
-          transitionOrder(order.id, "delivered");
-          break;
-        default:
-          break;
+      const pipeline = (order.pipelineStatus ?? "").toUpperCase();
+      // Preparing card also shows for ACCEPTED — always mark ready from kitchen stage.
+      if (
+        order.status === "preparing" ||
+        pipeline === "ACCEPTED" ||
+        pipeline === "PREPARING"
+      ) {
+        void transitionOrder(order.id, "ready").catch(() => {
+          /* error surfaced via OrdersContext */
+        });
+        return;
+      }
+      if (order.status === "ready" || pipeline === "READY_FOR_PICKUP") {
+        void transitionOrder(order.id, "picked_up").catch(() => {});
+        return;
+      }
+      if (order.status === "picked_up" || pipeline === "OUT_FOR_DELIVERY") {
+        void transitionOrder(order.id, "delivered").catch(() => {});
       }
     },
     [transitionOrder]
@@ -389,7 +422,7 @@ export default function DashboardScreen() {
         <View style={styles.kpiRow}>
           <KpiCard
             title="Pending deliveries"
-            value={String(pendingCount)}
+            value={String(livePendingCount)}
             icon="time-outline"
             accent="primary"
             onPress={() => router.push("/(tabs)/orders?tab=active" as any)}
@@ -446,12 +479,18 @@ export default function DashboardScreen() {
                 order={order}
                 nowMs={nowMs}
                 acceptanceWindowMinutes={acceptanceWindowMinutes}
-                storeName={selectedStore?.store_name}
+                storeName={
+                  order.merchantStoreName?.trim() ||
+                  (order.merchantStoreId != null
+                    ? managedStores.find((s) => s.id === order.merchantStoreId)?.store_name
+                    : null) ||
+                  selectedStore?.store_name
+                }
                 onAccept={() => handleAccept(order)}
                 onReject={() => handleReject(order)}
                 onAdvance={() => handleAdvance(order)}
                 onNeedMoreTime={() => setPrepDelayOrder(order)}
-                onViewDetail={() => router.push(`/order/${order.id}`)}
+                onViewDetail={() => openOrderDetailOnce(router, order.id)}
               />
             ))
           )}

@@ -13,7 +13,13 @@ import {
   deleteFromR2,
   deleteFromR2ByPrefix,
   signedPublicUrlForMenuR2Key,
+  extractR2KeyFromUrl,
 } from "@/lib/r2";
+import {
+  parseMenuReferenceImageUrls,
+  collectMenuReferenceRowUrlsForR2Purge,
+  entriesFromImageMediaRows,
+} from "@/lib/menu-reference-image-bundle";
 import { randomUUID } from "crypto";
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder.supabase.co";
@@ -119,13 +125,14 @@ export async function POST(req: NextRequest) {
     if (isImage) {
       const { data: existingImages } = await db
         .from("merchant_store_media_files")
-        .select("id")
+        .select("id, menu_reference_image_urls, menu_url, public_url, r2_key, original_file_name")
         .eq("store_id", store.id)
         .eq("media_scope", "MENU_REFERENCE")
         .eq("source_entity", "ONBOARDING_MENU_IMAGE")
         .eq("is_active", true);
 
-      const currentCount = existingImages?.length ?? 0;
+      // Count individual images, not rows — onboarding bundles several images into one row.
+      const currentCount = entriesFromImageMediaRows(existingImages ?? []).length;
       if (currentCount + files.length > MAX_MENU_IMAGES) {
         return NextResponse.json(
           { error: `Maximum ${MAX_MENU_IMAGES} menu images allowed. You have ${currentCount}, trying to add ${files.length}.` },
@@ -346,14 +353,30 @@ export async function POST(req: NextRequest) {
   }
 }
 
+/** Stored menu URLs may be full signed URLs or bare keys — normalise before deleting from R2. */
+async function deleteStoredMenuUrlFromR2(storedUrlOrKey: string | null | undefined): Promise<void> {
+  if (!storedUrlOrKey) return;
+  const key =
+    extractR2KeyFromUrl(storedUrlOrKey) ||
+    (storedUrlOrKey.includes("://") ? null : storedUrlOrKey.replace(/^\/+/, ""));
+  if (!key) return;
+  try {
+    await deleteFromR2(key);
+  } catch (e) {
+    console.warn("[menu-upload DELETE] R2 delete failed:", key, e);
+  }
+}
+
 /**
- * DELETE /api/merchant/menu-upload?storeId=GMMC1015&fileId=123
- * Remove a single menu file from R2 and DB.
+ * DELETE /api/merchant/menu-upload?storeId=GMMC1015&fileId=123[&entryId=abc]
+ * Remove a menu file from R2 and DB. Onboarding stores several images in one row's
+ * `menu_reference_image_urls` bundle, so `entryId` removes just that image and keeps the rest.
  */
 export async function DELETE(req: NextRequest) {
   try {
     const storeId = req.nextUrl.searchParams.get("storeId");
     const fileId = req.nextUrl.searchParams.get("fileId");
+    const entryId = req.nextUrl.searchParams.get("entryId");
 
     if (!storeId || !fileId) {
       return NextResponse.json({ error: "storeId and fileId are required." }, { status: 400 });
@@ -365,7 +388,7 @@ export async function DELETE(req: NextRequest) {
 
     const { data: row } = await db
       .from("merchant_store_media_files")
-      .select("id, r2_key, source_entity, original_file_name")
+      .select("id, r2_key, public_url, menu_url, source_entity, original_file_name, menu_reference_image_urls")
       .eq("id", Number(fileId))
       .eq("store_id", store.id)
       .eq("media_scope", "MENU_REFERENCE")
@@ -375,10 +398,57 @@ export async function DELETE(req: NextRequest) {
       return NextResponse.json({ error: "File not found." }, { status: 404 });
     }
 
-    if (row.r2_key) {
-      try { await deleteFromR2(row.r2_key); } catch (e) {
-        console.warn("[menu-upload DELETE] R2 delete failed:", row.r2_key, e);
+    const bundle = parseMenuReferenceImageUrls(row.menu_reference_image_urls);
+
+    // Remove one image out of a multi-image bundle — keep the row and its siblings.
+    if (entryId && bundle.length > 1) {
+      const target = bundle.find((e) => e.id === entryId);
+      if (!target) {
+        return NextResponse.json({ error: "Image not found." }, { status: 404 });
       }
+      const remaining = bundle.filter((e) => e.id !== entryId);
+
+      await deleteStoredMenuUrlFromR2(target.url);
+
+      const first = remaining[0];
+      const { error: updateError } = await db
+        .from("merchant_store_media_files")
+        .update({
+          menu_reference_image_urls: remaining,
+          r2_key: first.url,
+          public_url: first.url,
+          menu_url: first.url,
+          original_file_name: remaining
+            .map((e) => e.file_name)
+            .filter(Boolean)
+            .join(", ") || row.original_file_name,
+        })
+        .eq("id", row.id);
+
+      if (updateError) {
+        console.error("[menu-upload DELETE] bundle update failed:", updateError);
+        return NextResponse.json({ error: updateError.message || "Delete failed" }, { status: 500 });
+      }
+
+      await db.from("merchant_store_activity_log").insert({
+        store_id: store.id,
+        activity_type: "MENU_FILE_DELETED",
+        activity_reason: `Menu image removed: ${target.file_name || "unknown"}`,
+        activity_reason_code: "MENU_FILE_DELETE",
+        activity_notes: JSON.stringify({ fileId: row.id, entryId, remaining: remaining.length }),
+        actioned_by: "MERCHANT",
+        actioned_by_id: null,
+        actioned_by_name: user.email?.split("@")[0] ?? user.user_metadata?.name ?? "Merchant",
+        actioned_by_email: user.email ?? null,
+      });
+
+      return NextResponse.json({ success: true });
+    }
+
+    // Whole row: purge every object it references (bundle entries or the single URL columns).
+    const urlsToPurge = collectMenuReferenceRowUrlsForR2Purge(row);
+    for (const url of urlsToPurge) {
+      await deleteStoredMenuUrlFromR2(url);
     }
 
     await db

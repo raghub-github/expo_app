@@ -209,6 +209,11 @@ export function getNextOpenIso(
     const firstStart = slots[0].startMin;
 
     if (dayOffset === 0) {
+      const withinNow = slots.some(
+        (s) => minutesSinceMidnight >= s.startMin && minutesSinceMidnight < s.endMin
+      );
+      if (withinNow) return null;
+
       const hasLaterSlotToday = slots.some((s) => s.startMin > minutesSinceMidnight);
       if (hasLaterSlotToday) {
         const slot = slots.find((s) => s.startMin > minutesSinceMidnight)!;

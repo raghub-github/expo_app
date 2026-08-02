@@ -14,3 +14,17 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
   }
   return NextResponse.json(body ?? {}, { status: 200 });
 }
+
+/** Hard-delete campaign + its dispatch log rows from the database. */
+export async function DELETE(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const gate = await requireSuperAdminApi();
+  if (!gate.ok) return gate.response;
+  const { id } = await params;
+  const { status, body } = await backendFetch(`/v1/notifications/campaigns/${id}`, {
+    method: "DELETE",
+  });
+  if (status >= 400) {
+    return NextResponse.json(body ?? { error: "delete_failed" }, { status });
+  }
+  return NextResponse.json(body ?? { ok: true }, { status: 200 });
+}

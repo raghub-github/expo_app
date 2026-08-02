@@ -290,6 +290,29 @@ export async function placeRideOrder(input: PlaceRideOrderInput): Promise<PlaceR
     throw Object.assign(new Error("Invalid pickup or drop coordinates"), { statusCode: 400 });
   }
 
+  // Emergency Prevent Services — pickup OR drop inside a blocked radius denies booking.
+  try {
+    const { assertServiceNotPreventedAtAnyPoint } = await import(
+      "../prevent-services/preventServices.engine.js"
+    );
+    const blocked = await assertServiceNotPreventedAtAnyPoint({
+      service: "ride",
+      points: [
+        { lat: input.pickupLat, lng: input.pickupLng, label: "pickup" },
+        { lat: input.dropLat, lng: input.dropLng, label: "drop" },
+      ],
+    });
+    if (!blocked.ok) {
+      throw Object.assign(new Error(blocked.message), {
+        statusCode: 403,
+        code: blocked.code,
+      });
+    }
+  } catch (err) {
+    if (err && typeof err === "object" && "code" in err) throw err;
+    /* schema missing — continue */
+  }
+
   const outstandingFare = await findCustomerOutstandingRideFare(input.customerPk);
   if (outstandingFare) {
     throw Object.assign(

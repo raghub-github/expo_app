@@ -69,7 +69,15 @@ export async function GET(
       .where(and(eq(dashboardAccessPoints.systemUserId, userId), eq(dashboardAccessPoints.isActive, true)));
 
     const { DASHBOARD_DEFINITIONS } = await import("@/components/users/DashboardAccessSelector");
+    const { computeEffectiveAccessLevel } = await import("@/lib/permissions/access-level");
     const allAccessPointDefs = Object.values(DASHBOARD_DEFINITIONS).flatMap((d) => d.accessPoints);
+
+    const pointsByDashboard = allAccessPoints.reduce<Record<string, string[]>>((acc, ap) => {
+      const dt = String(ap.dashboardType);
+      if (!acc[dt]) acc[dt] = [];
+      acc[dt].push(String(ap.accessPointGroup));
+      return acc;
+    }, {});
 
     return NextResponse.json({
       success: true,
@@ -78,7 +86,11 @@ export async function GET(
         dashboards: dashboards.map(d => ({
           id: d.id,
           dashboardType: d.dashboardType,
-          accessLevel: d.accessLevel,
+          accessLevel: computeEffectiveAccessLevel(
+            d.dashboardType,
+            pointsByDashboard[d.dashboardType] || []
+          ),
+          storedAccessLevel: d.accessLevel,
           isActive: d.isActive,
           grantedBy: d.grantedBy,
           grantedByName: d.grantedByName,

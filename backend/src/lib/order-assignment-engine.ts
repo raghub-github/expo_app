@@ -744,6 +744,34 @@ export async function listEligibleRidersForDispatchOrder(
   const { isOrderDispatchManualHold } = await import("./order-dispatch-manual-hold.js");
   if (await isOrderDispatchManualHold(target.orderCoreId)) return [];
 
+  // Area-level Prevent Services: if this order's points are blocked, offer it
+  // to nobody. Riders stay on duty; only this order is withheld.
+  const { isDispatchOrderBlockedByPrevent } = await import(
+    "../modules/prevent-services/preventServices.engine.js"
+  );
+  const db = getDb();
+  const [coords] = await db
+    .select({
+      dropLat: ordersCore.dropLat,
+      dropLon: ordersCore.dropLon,
+    })
+    .from(ordersCore)
+    .where(eq(ordersCore.id, target.orderCoreId))
+    .limit(1);
+  if (
+    await isDispatchOrderBlockedByPrevent({
+      serviceType: target.serviceType,
+      pickupLat: target.pickup.latitude,
+      pickupLng: target.pickup.longitude,
+      dropLat: coords?.dropLat != null ? parseCoord(coords.dropLat) : null,
+      dropLng: coords?.dropLon != null ? parseCoord(coords.dropLon) : null,
+      audit: true,
+      orderId: target.orderId,
+    })
+  ) {
+    return [];
+  }
+
   const candidateIds = await loadOnDutyRiderIds(target.serviceType);
   const { fetchExcludedRiderIdsForOrder } = await import("./rider-dispatch-order-exclusion.js");
   const excludedRiderIds = await fetchExcludedRiderIdsForOrder(target.orderCoreId);
@@ -865,6 +893,9 @@ export type DispatchPoolOrderRow = {
   formattedOrderId: string | null;
   pickupLat: number;
   pickupLng: number;
+  /** Customer / drop coordinates — used for area-level Prevent Services filtering. */
+  dropLat: number | null;
+  dropLng: number | null;
   createdAt: Date;
   higherDispatchPriority: boolean;
   customerTipAmount: number;
@@ -924,6 +955,8 @@ async function fetchPersonRidePoolRows(): Promise<DispatchPoolOrderRow[]> {
       formattedOrderId: ordersCore.formattedOrderId,
       pickupLat: ordersCore.pickupLat,
       pickupLon: ordersCore.pickupLon,
+      dropLat: ordersCore.dropLat,
+      dropLon: ordersCore.dropLon,
       createdAt: ordersCore.createdAt,
       higherDispatchPriority: ordersRide.higherDispatchPriority,
       customerTipAmount: ordersRide.customerTipAmount,
@@ -956,6 +989,8 @@ async function fetchPersonRidePoolRows(): Promise<DispatchPoolOrderRow[]> {
       formattedOrderId: r.formattedOrderId,
       pickupLat: parseCoord(r.pickupLat),
       pickupLng: parseCoord(r.pickupLon),
+      dropLat: r.dropLat != null ? parseCoord(r.dropLat) : null,
+      dropLng: r.dropLon != null ? parseCoord(r.dropLon) : null,
       createdAt: r.createdAt,
       higherDispatchPriority: r.higherDispatchPriority === true,
       customerTipAmount: Number(r.customerTipAmount ?? 0) || 0,
@@ -972,6 +1007,8 @@ async function fetchFoodPoolRows(): Promise<DispatchPoolOrderRow[]> {
       formattedOrderId: ordersCore.formattedOrderId,
       pickupLat: ordersCore.pickupLat,
       pickupLon: ordersCore.pickupLon,
+      dropLat: ordersCore.dropLat,
+      dropLon: ordersCore.dropLon,
       createdAt: ordersCore.createdAt,
     })
     .from(ordersCore)
@@ -997,6 +1034,8 @@ async function fetchFoodPoolRows(): Promise<DispatchPoolOrderRow[]> {
       formattedOrderId: r.formattedOrderId,
       pickupLat: parseCoord(r.pickupLat),
       pickupLng: parseCoord(r.pickupLon),
+      dropLat: r.dropLat != null ? parseCoord(r.dropLat) : null,
+      dropLng: r.dropLon != null ? parseCoord(r.dropLon) : null,
       createdAt: r.createdAt,
       higherDispatchPriority: false,
       customerTipAmount: 0,
@@ -1012,6 +1051,8 @@ async function fetchParcelPoolRows(): Promise<DispatchPoolOrderRow[]> {
       formattedOrderId: ordersCore.formattedOrderId,
       pickupLat: ordersCore.pickupLat,
       pickupLon: ordersCore.pickupLon,
+      dropLat: ordersCore.dropLat,
+      dropLon: ordersCore.dropLon,
       createdAt: ordersCore.createdAt,
     })
     .from(ordersCore)
@@ -1036,6 +1077,8 @@ async function fetchParcelPoolRows(): Promise<DispatchPoolOrderRow[]> {
       formattedOrderId: r.formattedOrderId,
       pickupLat: parseCoord(r.pickupLat),
       pickupLng: parseCoord(r.pickupLon),
+      dropLat: r.dropLat != null ? parseCoord(r.dropLat) : null,
+      dropLng: r.dropLon != null ? parseCoord(r.dropLon) : null,
       createdAt: r.createdAt,
       higherDispatchPriority: false,
       customerTipAmount: 0,
@@ -1082,9 +1125,26 @@ export async function listDispatchPoolOrdersForRider(
 
   const withinRadius: DispatchPoolOrderRow[] = [];
   const { isOrderDispatchManualHold } = await import("./order-dispatch-manual-hold.js");
+  const { isDispatchOrderBlockedByPrevent } = await import(
+    "../modules/prevent-services/preventServices.engine.js"
+  );
   for (const order of candidates) {
     if (excludedCoreIds.has(order.orderCoreId)) continue;
     if (await isOrderDispatchManualHold(order.orderCoreId)) continue;
+
+    // Area-level Prevent Services: only hide orders whose pickup/drop sits
+    // inside an active block. Never removes the rider from duty.
+    if (
+      await isDispatchOrderBlockedByPrevent({
+        serviceType: order.serviceType,
+        pickupLat: order.pickupLat,
+        pickupLng: order.pickupLng,
+        dropLat: order.dropLat,
+        dropLng: order.dropLng,
+      })
+    ) {
+      continue;
+    }
 
     const session = sessionMap.get(order.orderCoreId);
     const wave = session?.currentWave ?? 1;
@@ -1166,6 +1226,82 @@ export async function validateRiderAcceptance(
     const excluded = await isRiderExcludedFromOrderDispatch(riderId, options.orderCoreId);
     if (excluded) {
       throw new RiderDispatchIneligibleError("This order is no longer available to you", 409);
+    }
+
+    // Area-level Prevent Services — same gate as pool/wave. Blocks accept when
+    // the order's pickup/drop sits inside an active block (does not change duty).
+    const {
+      isDispatchOrderBlockedByPrevent,
+      logPreventRuntimeEvent,
+      checkPreventServicesAtPointCached,
+      preventCodesForDispatchService,
+    } = await import("../modules/prevent-services/preventServices.engine.js");
+    const [coords] = await getDb()
+      .select({
+        dropLat: ordersCore.dropLat,
+        dropLon: ordersCore.dropLon,
+      })
+      .from(ordersCore)
+      .where(eq(ordersCore.id, options.orderCoreId))
+      .limit(1);
+    const dropLat = coords?.dropLat != null ? parseCoord(coords.dropLat) : null;
+    const dropLng = coords?.dropLon != null ? parseCoord(coords.dropLon) : null;
+    if (
+      await isDispatchOrderBlockedByPrevent({
+        serviceType,
+        pickupLat: pickup.latitude,
+        pickupLng: pickup.longitude,
+        dropLat,
+        dropLng,
+        audit: false,
+      })
+    ) {
+      let ruleId: string | null = null;
+      try {
+        const codes = preventCodesForDispatchService(serviceType);
+        const points = [
+          { lat: pickup.latitude, lng: pickup.longitude },
+          ...(dropLat != null && dropLng != null ? [{ lat: dropLat, lng: dropLng }] : []),
+        ];
+        for (const code of codes) {
+          for (const p of points) {
+            const hit = await checkPreventServicesAtPointCached({
+              lat: p.lat,
+              lng: p.lng,
+              service: code,
+            });
+            if (hit.blocked) {
+              ruleId = hit.nearest?.ruleId ?? null;
+              break;
+            }
+          }
+          if (ruleId) break;
+        }
+      } catch {
+        /* ignore */
+      }
+      void logPreventRuntimeEvent({
+        action: "acceptance_blocked",
+        ruleId,
+        reason: `rider=${riderId};service=${serviceType};orderCoreId=${options.orderCoreId}`,
+        snapshot: {
+          riderId,
+          serviceType,
+          orderCoreId: options.orderCoreId,
+        },
+      });
+      if (ruleId) {
+        void logPreventRuntimeEvent({
+          action: "trigger_fired",
+          ruleId,
+          reason: `acceptance_blocked;rider=${riderId}`,
+          snapshot: { riderId, serviceType, orderCoreId: options.orderCoreId },
+        });
+      }
+      throw new RiderDispatchIneligibleError(
+        "This service is temporarily unavailable in this location",
+        403
+      );
     }
   }
 

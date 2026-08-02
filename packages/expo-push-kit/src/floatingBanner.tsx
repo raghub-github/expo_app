@@ -41,6 +41,9 @@ const queue: InAppBannerItem[] = [];
 let current: InAppBannerItem | null = null;
 const listeners = new Set<Listener>();
 let seq = 0;
+/** Recently shown notification_ids — stops Expo+FCM double delivery from stacking banners. */
+const recentlyShownBannerIds = new Map<string, number>();
+const BANNER_DEDUPE_MS = 15_000;
 
 function emit(): void {
   listeners.forEach((fn) => {
@@ -96,9 +99,33 @@ export function enqueueInAppBannerFromPush(payload: PushNotificationOpenPayload)
     (typeof data.screen === "string" && data.screen) ||
     null;
 
+  const notificationId =
+    (typeof data.notification_id === "string" && data.notification_id.trim()) ||
+    (typeof data.notificationId === "string" && data.notificationId.trim()) ||
+    null;
+
+  const titleText = title || body || "Update";
+  const bodyText = title ? body : null;
+  // Same push can arrive via Expo + FCM on one device — only show one banner.
+  // Prefer notification_id; fall back to title+body fingerprint for twin payloads.
+  const dedupeKey =
+    notificationId ||
+    `t:${titleText.trim().toLowerCase()}|${String(bodyText ?? "").trim().toLowerCase().slice(0, 80)}`;
+  {
+    if (current?.id === dedupeKey) return;
+    if (queue.some((item) => item.id === dedupeKey)) return;
+    const now = Date.now();
+    for (const [k, at] of recentlyShownBannerIds) {
+      if (now - at > BANNER_DEDUPE_MS) recentlyShownBannerIds.delete(k);
+    }
+    if (recentlyShownBannerIds.has(dedupeKey)) return;
+    recentlyShownBannerIds.set(dedupeKey, now);
+  }
+
   enqueueInAppBanner({
-    title: title || body || "Update",
-    body: title ? body : null,
+    id: dedupeKey,
+    title: titleText,
+    body: bodyText,
     deepLink,
     templateCode: typeof data.template_code === "string" ? data.template_code : gmType || null,
     data,

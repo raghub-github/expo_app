@@ -36,6 +36,27 @@ function isAddrPath(path: string): boolean {
   return /(^|\/\/|\/)addr(\/|\?|$)/.test(path);
 }
 
+function isReferralPath(path: string): boolean {
+  return /(^|\/\/|\/)(ref|invite)(\/|\?|$)/.test(path) || /referral(\?|$)/.test(path);
+}
+
+function extractReferralCode(path: string): { code: string; click?: string } | null {
+  try {
+    const normalized = path.includes("://")
+      ? path.replace(/^gatimitra:\/\//, "https://gatimitra.local/")
+      : `https://gatimitra.local${path.startsWith("/") ? path : `/${path}`}`;
+    const u = new URL(normalized);
+    const click = u.searchParams.get("click") || undefined;
+    const fromQuery = u.searchParams.get("code") || u.searchParams.get("ref");
+    const m = u.pathname.match(/\/(?:ref|invite)\/([A-Za-z0-9_-]+)/i);
+    const code = (fromQuery || m?.[1] || "").trim().toUpperCase();
+    if (!code) return null;
+    return { code, click };
+  } catch {
+    return null;
+  }
+}
+
 export function redirectSystemPath({
   path,
   initial,
@@ -52,6 +73,15 @@ export function redirectSystemPath({
       // No token → still route to the save screen so it can show "Invalid link"
       // rather than the unmatched-route screen.
       return `/address/save`;
+    }
+    if (isReferralPath(path)) {
+      const parsed = extractReferralCode(path);
+      if (parsed?.code) {
+        const q = new URLSearchParams();
+        q.set("code", parsed.code);
+        if (parsed.click) q.set("click", parsed.click);
+        return `/profile/referrals?${q.toString()}&autoApply=1`;
+      }
     }
   } catch {
     // Never let a malformed deep link crash cold-start routing.

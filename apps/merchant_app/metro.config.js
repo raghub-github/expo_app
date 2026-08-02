@@ -50,6 +50,40 @@ config.resolver.extraNodeModules = {
       path.resolve(packagesFolder, pkg),
     ]),
   ),
+  // Deep path used by @gatimitra/kot-print — avoid resolving to the Node-only
+  // package root (PNG/SVG renderers require `fs` and crash Hermes).
+  "qrcode/lib/core/qrcode.js": path.resolve(
+    workspaceRoot,
+    "node_modules/qrcode/lib/core/qrcode.js",
+  ),
+  "qrcode/lib/core/qrcode": path.resolve(
+    workspaceRoot,
+    "node_modules/qrcode/lib/core/qrcode.js",
+  ),
+};
+
+const upstreamResolveRequest = config.resolver.resolveRequest;
+config.resolver.resolveRequest = (context, moduleName, platform) => {
+  if (
+    moduleName === "qrcode/lib/core/qrcode.js" ||
+    moduleName === "qrcode/lib/core/qrcode"
+  ) {
+    return {
+      type: "sourceFile",
+      filePath: path.resolve(workspaceRoot, "node_modules/qrcode/lib/core/qrcode.js"),
+    };
+  }
+  // Never let Metro load the Node entry (fs / pngjs) for accidental bare imports.
+  if (moduleName === "qrcode") {
+    return {
+      type: "sourceFile",
+      filePath: path.resolve(workspaceRoot, "node_modules/qrcode/lib/core/qrcode.js"),
+    };
+  }
+  if (typeof upstreamResolveRequest === "function") {
+    return upstreamResolveRequest(context, moduleName, platform);
+  }
+  return context.resolveRequest(context, moduleName, platform);
 };
 
 const { withExpoPlatformFallback } = require("./metro.expo-platform-fallback");

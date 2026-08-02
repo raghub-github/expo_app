@@ -230,7 +230,7 @@ export function resolveCancellationMessageParts(args: {
           ? `${resolvedBrandPrefix}:`
           : resolvedBrandPrefix,
         cancelReason: detail || null,
-        policySentence: split.policySentence,
+        policySentence: actor.kind === "auto" ? null : split.policySentence,
       };
     }
   }
@@ -248,7 +248,12 @@ export function resolveCancellationMessageParts(args: {
         ? `${resolvedBrandPrefix}:`
         : resolvedBrandPrefix,
       cancelReason: detail || null,
-      policySentence: eligible ? splitCancellationEligibleMessage(eligible).policySentence : null,
+      policySentence:
+        actor.kind === "auto"
+          ? null
+          : eligible
+            ? splitCancellationEligibleMessage(eligible).policySentence
+            : null,
     };
   }
 

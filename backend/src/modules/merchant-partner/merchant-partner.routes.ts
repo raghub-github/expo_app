@@ -2595,23 +2595,25 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
 
         const body = (req.body || {}) as Record<string, unknown>;
         const payoutMethod = String(body.payout_method || "bank").toLowerCase();
-        if (payoutMethod !== "bank" && payoutMethod !== "upi") {
-          return reply.code(400).send({ error: "payout_method must be bank or upi" });
+        // Merchant app / partner self-serve: bank only (UPI add remains on admin portal).
+        if (payoutMethod === "upi") {
+          return reply.code(400).send({
+            error: "upi_add_disabled",
+            message: "Adding UPI is temporarily disabled. Please add a bank account.",
+          });
+        }
+        if (payoutMethod !== "bank") {
+          return reply.code(400).send({ error: "payout_method must be bank" });
         }
         const holderName = String(body.account_holder_name || "").trim();
         const accNum = String(body.account_number || "").trim();
         if (!holderName || !accNum) {
           return reply.code(400).send({ error: "account_holder_name and account_number are required" });
         }
-        if (payoutMethod === "bank") {
-          const ifsc = String(body.ifsc_code || "").trim();
-          const bankName = String(body.bank_name || "").trim();
-          if (!ifsc || !bankName) {
-            return reply.code(400).send({ error: "ifsc_code and bank_name required for bank" });
-          }
-        }
-        if (payoutMethod === "upi" && !String(body.upi_id || "").trim()) {
-          return reply.code(400).send({ error: "upi_id required for upi" });
+        const ifsc = String(body.ifsc_code || "").trim();
+        const bankName = String(body.bank_name || "").trim();
+        if (!ifsc || !bankName) {
+          return reply.code(400).send({ error: "ifsc_code and bank_name required for bank" });
         }
 
         const countRows = await sql`
@@ -2627,11 +2629,11 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
             is_primary, is_active, is_disabled, verification_status
           ) VALUES (
             ${storeId}, ${payoutMethod}, ${holderName}, ${accNum},
-            ${payoutMethod === "bank" ? String(body.ifsc_code || "").trim().toUpperCase() : "N/A"},
-            ${payoutMethod === "bank" ? String(body.bank_name || "").trim() : "UPI"},
+            ${ifsc.toUpperCase()},
+            ${bankName},
             ${body.branch_name ? String(body.branch_name).trim() : null},
             ${body.account_type ? String(body.account_type).trim() : null},
-            ${payoutMethod === "upi" ? String(body.upi_id || "").trim() : null},
+            ${null},
             ${body.beneficiary_name ? String(body.beneficiary_name).trim() : holderName},
             ${isFirst}, true, false, 'pending'
           ) RETURNING id, account_holder_name, is_primary, payout_method, created_at
@@ -2640,12 +2642,167 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
           storeId, section: "bank_account", action: "create",
           entityId: (row as any)?.id ?? null,
           entityName: holderName,
-          summary: `Added ${payoutMethod.toUpperCase()} account "${holderName}"`,
+          summary: `Added BANK account "${holderName}"`,
           diff: { payout_method: payoutMethod, is_primary: isFirst },
           actorType: "merchant", source: "merchant_app",
         });
         return reply.code(201).send({ success: true, account: row });
       });
+
+      /**
+       * POST /merchant-partner/stores/:storeId/bank-accounts/:accountId/verify
+       * Cashfree pennyless bank account verification (BAV). Marks the row verified on success.
+       */
+      protectedApp.post<{ Params: { storeId: string; accountId: string } }>(
+        "/stores/:storeId/bank-accounts/:accountId/verify",
+        async (req, reply) => {
+          if (req.auth?.role !== "merchant" || !req.auth?.sub) {
+            return reply.code(401).send({ error: "merchant_required" });
+          }
+          const storeId = Number(req.params.storeId);
+          const accountId = Number(req.params.accountId);
+          if (!Number.isInteger(storeId) || storeId < 1 || !Number.isInteger(accountId) || accountId < 1) {
+            return reply.code(400).send({ error: "invalid_id" });
+          }
+          const sql = getSql();
+          const parentId = await getPartnerParentId(sql, req.auth.sub);
+          if (parentId == null) return reply.code(404).send({ error: "partner_not_found" });
+          const storeRows = await sql`
+            SELECT id, store_phones FROM merchant_stores
+            WHERE id = ${storeId} AND parent_id = ${parentId} AND deleted_at IS NULL LIMIT 1
+          `;
+          if (storeRows.length === 0) return reply.code(404).send({ error: "store_not_found" });
+
+          const accRows = await sql`
+            SELECT id, store_id, account_holder_name, account_number, ifsc_code, bank_name,
+                   payout_method, upi_id, is_verified, verification_status
+            FROM merchant_store_bank_accounts
+            WHERE id = ${accountId} AND store_id = ${storeId}
+            LIMIT 1
+          `;
+          if (accRows.length === 0) return reply.code(404).send({ error: "account_not_found" });
+          const acc = accRows[0] as {
+            id: number;
+            account_holder_name: string;
+            account_number: string;
+            ifsc_code: string;
+            bank_name: string;
+            payout_method: string | null;
+            upi_id: string | null;
+            is_verified: boolean;
+          };
+
+          if (acc.is_verified) {
+            return reply.send({
+              success: true,
+              verified: true,
+              status: "verified",
+              message: "Account is already verified.",
+            });
+          }
+
+          const method = String(acc.payout_method || "bank").toLowerCase();
+          if (method === "upi") {
+            return reply.code(400).send({
+              error: "upi_verify_disabled",
+              message: "UPI verification is not available here. Please use a bank account.",
+            });
+          }
+
+          const bankAccount = String(acc.account_number || "").replace(/\D/g, "");
+          const ifsc = String(acc.ifsc_code || "").trim().toUpperCase();
+          if (!/^\d{6,20}$/.test(bankAccount) || !/^[A-Z]{4}0[A-Z0-9]{6}$/.test(ifsc)) {
+            return reply.code(400).send({
+              error: "invalid_bank_details",
+              message: "Account number or IFSC is incomplete. Update the account and try again.",
+            });
+          }
+
+          const storePhones = (storeRows[0] as { store_phones?: unknown })?.store_phones;
+          const phone =
+            (Array.isArray(storePhones) ? String(storePhones[0] || "") : typeof storePhones === "string" ? storePhones : "")
+              .replace(/\D/g, "")
+              .slice(-10) || undefined;
+
+          try {
+            const { submitBankAccount } = await import("../verification/service.js");
+            const outcome = await submitBankAccount({
+              subjectType: "merchant_store",
+              subjectId: storeId,
+              bankAccount,
+              ifsc,
+              name: String(acc.account_holder_name || "").trim() || undefined,
+              phone,
+            });
+
+            if (outcome.kind === "manual") {
+              await sql`
+                UPDATE merchant_store_bank_accounts
+                SET verification_status = 'pending', updated_at = NOW()
+                WHERE id = ${accountId}
+              `;
+              return reply.send({
+                success: true,
+                verified: false,
+                status: "processing",
+                message:
+                  "We could not verify instantly. Your details are saved and our team will verify them manually.",
+              });
+            }
+
+            const status = String(outcome.result.status || "").toLowerCase();
+            if (status === "verified") {
+              const nameAtBank =
+                typeof outcome.result.verifiedData?.name_at_bank === "string"
+                  ? outcome.result.verifiedData.name_at_bank
+                  : typeof outcome.result.verifiedData?.account_name === "string"
+                    ? outcome.result.verifiedData.account_name
+                    : null;
+              await sql`
+                UPDATE merchant_store_bank_accounts SET
+                  is_verified = true,
+                  verified_at = NOW(),
+                  verification_method = 'CASHFREE_BAV',
+                  verification_status = 'verified',
+                  beneficiary_name = COALESCE(${nameAtBank}, beneficiary_name, account_holder_name),
+                  updated_at = NOW()
+                WHERE id = ${accountId}
+              `;
+              await logStoreActivity({
+                storeId,
+                section: "bank_account",
+                action: "verify",
+                entityId: accountId,
+                summary: `Cashfree verified bank account #${accountId}`,
+                actorType: "merchant",
+                source: "merchant_app",
+              });
+              return reply.send({
+                success: true,
+                verified: true,
+                status: "verified",
+                message: "Bank account verified successfully with Cashfree.",
+                name_at_bank: nameAtBank,
+              });
+            }
+
+            await sql`
+              UPDATE merchant_store_bank_accounts
+              SET verification_status = 'failed', updated_at = NOW()
+              WHERE id = ${accountId}
+            `;
+            return reply.code(400).send({
+              success: false,
+              verified: false,
+              status: "failed",
+              error: outcome.result.statusReason || "Account could not be verified. Check the details and try again.",
+            });
+          } catch (e) {
+            const msg = e instanceof Error ? e.message : "Verification failed";
+            return reply.code(500).send({ success: false, error: msg });
+          }
+        }
+      );
 
       /** PATCH /merchant-partner/stores/:storeId/bank-accounts/:accountId — set default, disable, or enable. */
       protectedApp.patch<{
@@ -5645,18 +5802,18 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
             created_at: Date | string;
           }>;
 
-          // Heal leftover "New order!" rows after cancel/deliver (older paths missed deletes).
+          // Heal leftover order inbox rows after accept / deliver / cancel.
           try {
             const candidates = typedRows.filter(
               (r) =>
                 String(r.type).toLowerCase() === "order" &&
-                String(r.title ?? "")
-                  .toLowerCase()
-                  .includes("new order") &&
                 r.order_id != null &&
                 Number(r.order_id) > 0
             );
             if (candidates.length > 0) {
+              const { shouldPurgeOrderNotificationOnList } = await import(
+                "../../lib/clear-merchant-order-notifications.js"
+              );
               const foodIds = [
                 ...new Set(candidates.map((r) => Number(r.order_id)).filter((n) => n > 0)),
               ];
@@ -5666,12 +5823,13 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
               const statusById = new Map(
                 foodRows.map((f) => [Number(f.id), String(f.order_status ?? "").trim().toUpperCase()])
               );
-              const stillNew = new Set(["CREATED", "NEW", "ORDER_PLACED", "PENDING", ""]);
               const staleIds = candidates
-                .filter((c) => {
-                  const st = statusById.get(Number(c.order_id));
-                  return st == null || !stillNew.has(st);
-                })
+                .filter((c) =>
+                  shouldPurgeOrderNotificationOnList(
+                    c.title,
+                    statusById.get(Number(c.order_id)) ?? null
+                  )
+                )
                 .map((c) => Number(c.id));
               if (staleIds.length > 0) {
                 await sql`
@@ -5755,34 +5913,40 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
             });
           }
 
+          // Race-safe insert — concurrent ensure polls must not create twin rows.
           const ins = await sql`
             INSERT INTO merchant_store_notifications (store_id, type, title, body, read, action_url)
-            VALUES (
+            SELECT
               ${storeId},
               'system',
               ${WAITING_FOR_ORDER_TITLE},
               ${WAITING_FOR_ORDER_BODY},
               FALSE,
               '/(tabs)/'
+            WHERE NOT EXISTS (
+              SELECT 1 FROM merchant_store_notifications
+              WHERE store_id = ${storeId} AND title = ${WAITING_FOR_ORDER_TITLE}
             )
             RETURNING id
           `;
           const row = ins[0] as { id?: unknown } | undefined;
-          const id = row?.id != null ? String(row.id) : null;
-          if (!id) return reply.code(500).send({ error: "insert_failed" });
-          const tokenRows = await sql`
-            SELECT token FROM merchant_store_push_tokens WHERE store_id = ${storeId}
-          `;
-          const tokens = (tokenRows as unknown as Array<{ token: string }>).map((t) => t.token).filter(Boolean);
-          // Reply immediately — do not hold the HTTP request (or a DB slot) through push I/O.
-          if (tokens.length > 0) {
-            void sendNotification({
-              templateCode: "MERCHANT_WAITING_FOR_ORDER",
-              target: { device_tokens: tokens },
-              idempotencyKey: `WAITING_FOR_ORDER:${storeId}:${id}`,
-              metadata: { type: "store_online", screen: "notifications" },
-            }).catch(() => undefined);
+          if (!row?.id) {
+            const again = await sql`
+              SELECT id FROM merchant_store_notifications
+              WHERE store_id = ${storeId} AND title = ${WAITING_FOR_ORDER_TITLE}
+              ORDER BY created_at DESC
+              LIMIT 1
+            `;
+            const againId = (again[0] as { id?: unknown } | undefined)?.id;
+            return reply.send({
+              id: againId != null ? String(againId) : null,
+              created: false,
+            });
           }
+          const id = String(row.id);
+          // No remote push here — StoreOnlineStatusNotifier owns the single sticky
+          // tray notification. Pushing MERCHANT_WAITING_FOR_ORDER stacked a second
+          // OS notification on the same device for the same idle event.
           return reply.send({ id, created: true });
         }
       );
@@ -5953,6 +6117,35 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
             WHERE store_id = ${storeId}
           `;
           return reply.send({ ok: true });
+        }
+      );
+
+      /** DELETE /merchant-partner/stores/:storeId/notifications — clear every in-app notification for this store. */
+      protectedApp.delete<{ Params: { storeId: string } }>(
+        "/stores/:storeId/notifications",
+        async (req, reply) => {
+          if (req.auth?.role !== "merchant" || !req.auth?.sub) {
+            return reply.code(401).send({ error: "merchant_required" });
+          }
+          const storeId = Number(req.params.storeId);
+          if (!Number.isInteger(storeId) || storeId < 1) {
+            return reply.code(400).send({ error: "invalid_store_id" });
+          }
+          const sql = getSql();
+          const parentId = await getPartnerParentId(sql, req.auth.sub);
+          if (parentId == null) return reply.code(404).send({ error: "partner_not_found" });
+          const storeRows = await sql`
+            SELECT id FROM merchant_stores
+            WHERE id = ${storeId} AND parent_id = ${parentId} AND deleted_at IS NULL
+            LIMIT 1
+          `;
+          if (storeRows.length === 0) return reply.code(404).send({ error: "store_not_found" });
+          const deleted = await sql`
+            DELETE FROM merchant_store_notifications
+            WHERE store_id = ${storeId}
+            RETURNING id
+          `;
+          return reply.send({ ok: true, deleted: deleted.length });
         }
       );
 
@@ -7724,11 +7917,13 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
           `;
           if (storeRows.length === 0) return reply.code(404).send({ error: "store_not_found" });
 
-          const limitRaw = parseInt(String(req.query?.limit ?? "200"), 10);
-          const limit = Number.isFinite(limitRaw) ? limitRaw : 200;
+          const limitRaw = parseInt(String(req.query?.limit ?? "50"), 10);
+          // Merchant board does not need a deep history dump — keep the hot path small.
+          const limit = Math.min(Math.max(Number.isFinite(limitRaw) ? limitRaw : 50, 1), 60);
           try {
             const { loadMerchantFoodOrders } = await import("./merchant-food-orders.service.js");
-            const FOOD_ORDERS_DEADLINE_MS = 12_000;
+            const FOOD_ORDERS_DEADLINE_MS = 7_000;
+            const started = Date.now();
             const orders = await Promise.race([
               loadMerchantFoodOrders(sql, storeId, { limit }),
               new Promise<never>((_, reject) => {
@@ -7738,6 +7933,10 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
                 );
               }),
             ]);
+            const ms = Date.now() - started;
+            if (ms > 2_000) {
+              req.log.warn({ storeId, ms, count: orders.length }, "[food-orders GET] slow");
+            }
             return reply.send({ orders });
           } catch (e) {
             req.log.error({ err: e, storeId }, "[food-orders GET] failed");
@@ -7843,7 +8042,23 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
           if (storeRows.length === 0) return reply.code(404).send({ error: "store_not_found" });
 
           const { loadMerchantFoodOrders } = await import("./merchant-food-orders.service.js");
-          const orders = await loadMerchantFoodOrders(sql, storeId, { ordersFoodId, limit: 1 });
+          const DETAIL_DEADLINE_MS = 10_000;
+          let orders;
+          try {
+            orders = await Promise.race([
+              loadMerchantFoodOrders(sql, storeId, { ordersFoodId, limit: 1 }),
+              new Promise<never>((_, reject) => {
+                setTimeout(() => reject(new Error("food_order_detail_timeout")), DETAIL_DEADLINE_MS);
+              }),
+            ]);
+          } catch (e) {
+            const msg = e instanceof Error ? e.message : "load_failed";
+            req.log.error({ err: e, storeId, ordersFoodId }, "[food-order GET] failed");
+            if (msg === "food_order_detail_timeout") {
+              return reply.code(504).send({ error: "orders_load_timeout" });
+            }
+            return reply.code(500).send({ error: msg });
+          }
           const order = orders[0];
           if (!order) return reply.code(404).send({ error: "order_not_found" });
           return reply.send({ order });
@@ -7870,24 +8085,60 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
           `;
           if (storeRows.length === 0) return reply.code(404).send({ error: "store_not_found" });
 
-          const { loadMerchantFoodOrders } = await import("./merchant-food-orders.service.js");
-          const orders = await loadMerchantFoodOrders(sql, storeId, { ordersFoodId, limit: 1 });
-          const order = orders[0];
-          if (!order) return reply.code(404).send({ error: "order_not_found" });
-
-          const ordersCoreId = Number(order.orders_core_id);
-          if (!Number.isFinite(ordersCoreId) || ordersCoreId < 1) {
-            return reply.code(400).send({ error: "invalid_orders_core_id" });
+          // Lite lookup only — never call loadMerchantFoodOrders (detail enrich was 10s+).
+          type LiteRow = {
+            food_id: number;
+            core_id: number | null;
+            rider_id: number | null;
+          };
+          let lite: LiteRow | null = null;
+          try {
+            const rows = await sql`
+              SELECT
+                of.id AS food_id,
+                oc.id AS core_id,
+                oc.rider_id AS rider_id
+              FROM orders_food of
+              LEFT JOIN orders_core oc
+                ON oc.id = of.order_id
+                OR (of.core_order_id IS NOT NULL AND oc.order_id = of.core_order_id)
+              WHERE of.id = ${ordersFoodId}
+                AND (
+                  of.merchant_store_id = ${storeId}
+                  OR oc.merchant_store_id = ${storeId}
+                )
+              LIMIT 1
+            `;
+            lite = (rows[0] as LiteRow | undefined) ?? null;
+          } catch (err) {
+            req.log.warn({ err, storeId, ordersFoodId }, "[nearby-dispatch] lite lookup failed");
+            return reply.send({ ok: true, summary: null, riderAssigned: false });
           }
-          if (order.rider_id != null) {
+          if (!lite) return reply.code(404).send({ error: "order_not_found" });
+
+          const ordersCoreId = Number(lite.core_id);
+          if (!Number.isFinite(ordersCoreId) || ordersCoreId < 1) {
+            return reply.send({ ok: true, summary: null, riderAssigned: false });
+          }
+          if (lite.rider_id != null) {
             return reply.send({ ok: true, summary: null, riderAssigned: true });
           }
 
           const { getNearbyDispatchRiderSummaryForOrderCoreId } = await import(
             "../../lib/merchant-nearby-dispatch-riders.js"
           );
-          const summary = await getNearbyDispatchRiderSummaryForOrderCoreId(ordersCoreId);
-          return reply.send({ ok: true, summary, riderAssigned: false });
+          try {
+            const summary = await Promise.race([
+              getNearbyDispatchRiderSummaryForOrderCoreId(ordersCoreId),
+              new Promise<null>((resolve) => {
+                setTimeout(() => resolve(null), 2_500);
+              }),
+            ]);
+            return reply.send({ ok: true, summary, riderAssigned: false });
+          } catch (err) {
+            req.log.warn({ err, ordersCoreId }, "[nearby-dispatch] summary failed");
+            return reply.send({ ok: true, summary: null, riderAssigned: false });
+          }
         }
       );
 
@@ -8178,22 +8429,56 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
           // status='assigned' while still CREATED for the merchant — that inflated
           // the KPI while New/Active food boards stayed empty when the list path failed.
           const rows = await sql`
-            SELECT COUNT(*)::int AS c
+            SELECT
+              COUNT(*) FILTER (
+                WHERE upper(COALESCE(f.order_status, '')) IN (
+                  'CREATED', 'NEW', 'PLACED',
+                  'ACCEPTED', 'PREPARING',
+                  'READY_FOR_PICKUP', 'READY',
+                  'OUT_FOR_DELIVERY', 'PICKED_UP', 'IN_TRANSIT', 'DISPATCHED'
+                )
+              )::int AS active_orders,
+              COUNT(*) FILTER (
+                WHERE upper(COALESCE(f.order_status, '')) IN ('CREATED', 'NEW', 'PLACED')
+              )::int AS pending_accept,
+              COUNT(*) FILTER (
+                WHERE upper(COALESCE(f.order_status, '')) IN ('ACCEPTED', 'PREPARING')
+              )::int AS preparing,
+              COUNT(*) FILTER (
+                WHERE upper(COALESCE(f.order_status, '')) IN ('READY_FOR_PICKUP', 'READY')
+              )::int AS ready,
+              COUNT(*) FILTER (
+                WHERE upper(COALESCE(f.order_status, '')) IN (
+                  'OUT_FOR_DELIVERY', 'PICKED_UP', 'IN_TRANSIT', 'DISPATCHED'
+                )
+              )::int AS out_for_delivery
             FROM orders_food f
             WHERE f.merchant_store_id = ${storeId}
-              AND upper(COALESCE(f.order_status, '')) IN (
-                'CREATED', 'NEW', 'PLACED',
-                'ACCEPTED', 'PREPARING',
-                'READY_FOR_PICKUP', 'READY',
-                'OUT_FOR_DELIVERY', 'PICKED_UP', 'IN_TRANSIT', 'DISPATCHED'
-              )
           `;
-          const countRow = rows[0] as { c?: number } | undefined;
-          const active = countRow?.c != null ? Number(countRow.c) : 0;
+          const countRow = rows[0] as {
+            active_orders?: number;
+            pending_accept?: number;
+            preparing?: number;
+            ready?: number;
+            out_for_delivery?: number;
+          } | undefined;
+          const n = (v: unknown) => {
+            const x = Number(v ?? 0);
+            return Number.isFinite(x) && x > 0 ? Math.floor(x) : 0;
+          };
+          const active = n(countRow?.active_orders);
+          const pendingAccept = n(countRow?.pending_accept);
+          const preparing = n(countRow?.preparing);
+          const ready = n(countRow?.ready);
+          const outForDelivery = n(countRow?.out_for_delivery);
 
           return reply.send({
             store_id: storeId,
             active_orders: active,
+            pending_accept: pendingAccept,
+            preparing,
+            ready,
+            out_for_delivery: outForDelivery,
           });
         }
       );

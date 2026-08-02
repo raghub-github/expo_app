@@ -677,6 +677,7 @@ export default function LocationAddressScreen() {
                 latitude: savedWithin500m.latitude,
                 longitude: savedWithin500m.longitude,
                 address: savedWithin500m.fullAddress,
+                addressId: savedWithin500m.id,
               });
               const primary = savedWithin500m.label ?? "Address";
               addressSavedRef.current = true;
@@ -791,6 +792,38 @@ export default function LocationAddressScreen() {
           contactMobile: contactMobile.trim() || null,
         });
         await uploadPendingDoorImage(editAddressId);
+        const activeLoc = await addressService.getActiveLocation().catch(() => null);
+        const isEditingActive =
+          activeLoc?.addressId === editAddressId ||
+          useLocationStore.getState().sessionBoundAddressId === editAddressId;
+        if (isEditingActive) {
+          await addressService.setActiveLocation({
+            latitude: selectedLat,
+            longitude: selectedLon,
+            address: fullAddress,
+            addressId: editAddressId,
+          });
+          useLocationStore.getState().setAddressAndCoords(
+            {
+              primary: finalLabel,
+              secondary: fullAddress.slice(0, 80),
+              fullAddress,
+              city: cityVal === "—" ? null : cityVal,
+              state: stateVal === "—" ? null : stateVal,
+              pincode: pincodeVal === "—" ? null : pincodeVal,
+            },
+            { latitude: selectedLat, longitude: selectedLon },
+            {
+              source: "selected",
+              boundAddressId: editAddressId,
+            }
+          );
+          void invalidateFoodHomeLocationQueries(queryClient);
+          const { promptCartIfLocationBrokeServiceability } = await import(
+            "@/lib/promptCartIfLocationBrokeServiceability"
+          );
+          void promptCartIfLocationBrokeServiceability(queryClient);
+        }
         // Update the address cache synchronously before checkout regains focus.
         queryClient.setQueryData<Address[]>(["addresses"], (current = []) => {
           const next: Address = {
@@ -829,7 +862,9 @@ export default function LocationAddressScreen() {
         await queryClient.invalidateQueries({ queryKey: ["billing-calculate"] });
         await queryClient.invalidateQueries({ queryKey: ["billing-checkout-offers"] });
         await queryClient.invalidateQueries({ queryKey: ["checkout-route-distance"] });
-        void invalidateFoodHomeLocationQueries(queryClient);
+        if (isEditingActive) {
+          void invalidateFoodHomeLocationQueries(queryClient);
+        }
         addressSavedRef.current = true;
         if (returnToCheckout) {
           finishAddressFlow();
@@ -862,6 +897,7 @@ export default function LocationAddressScreen() {
         latitude: selectedLat,
         longitude: selectedLon,
         address: fullAddress,
+        addressId: created.id,
       });
       const reverseResult: ReverseGeocodeResult = {
         primary: line1.trim(),

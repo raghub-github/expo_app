@@ -286,6 +286,22 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
   const initialAddAddonIdsRef = useRef<Record<number, number[]>>({});
 
   const openAddItemModal = useCallback(() => {
+    // No categories yet → open Add Category first so mx/admin can add items after.
+    if (categories.length === 0) {
+      setCategoryModalMode("add");
+      setCategoryForm({
+        category_name: "",
+        category_description: "",
+        display_order: 0,
+        is_active: true,
+        cuisine_id: undefined,
+      });
+      setParentCategoryIdInForm(null);
+      setEditingCategoryId(null);
+      setCategoryCuisineInput("");
+      setShowCategoryModal(true);
+      return;
+    }
     setAddCreatedItemId(null);
     initialAddVariantsRef.current = [];
     initialAddCustRef.current = [];
@@ -302,7 +318,7 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
     setAddImageValidating(false);
     addImagePendingFileRef.current = null;
     setShowAddModal(true);
-  }, [storeMenuDefaults]);
+  }, [storeMenuDefaults, categories.length]);
   const refreshMenu = useCallback(async () => {
     const url = `/api/merchant/stores/${storeId}/menu?_=${Date.now()}`;
     await queryClient.fetchQuery({
@@ -688,24 +704,29 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
     if (cid == null || Number.isNaN(Number(cid))) return null;
     return cuisineOptions.find((c) => c.id === Number(cid)) ?? null;
   }, [categoryForm.cuisine_id, cuisineOptions]);
-  const cuisineChipLabel = selectedCuisineForCategory?.name ?? (categoryCuisineInput.trim() || null);
-  const commitTypedCuisineSelection = useCallback(() => {
-    const typed = categoryCuisineInput.trim();
-    if (!typed) {
-      setCategoryForm((prev) => ({ ...prev, cuisine_id: undefined }));
-      return;
-    }
-    const matched = cuisineOptions.find(
-      (c) => c.name.trim().toLowerCase() === typed.toLowerCase()
-    );
-    if (matched) {
-      setCategoryCuisineInput(matched.name);
-      setCategoryForm((prev) => ({ ...prev, cuisine_id: Number(matched.id) }));
-      return;
-    }
-    setCategoryCuisineInput(typed);
-    setCategoryForm((prev) => ({ ...prev, cuisine_id: undefined }));
-  }, [categoryCuisineInput, cuisineOptions]);
+  const cuisineChipLabel = selectedCuisineForCategory?.name ?? null;
+
+  const resolveCuisineIdFromPicker = useCallback(
+    (typedRaw: string, currentId?: number | null): number | undefined => {
+      if (currentId != null && !Number.isNaN(Number(currentId)) && Number(currentId) > 0) {
+        const stillLinked = cuisineOptions.some((c) => c.id === Number(currentId));
+        if (stillLinked) return Number(currentId);
+        // Keep existing category cuisine even if temporarily missing from options.
+        if (categoryModalMode === "edit") return Number(currentId);
+      }
+      const typed = typedRaw.trim().toLowerCase();
+      if (!typed) return undefined;
+      const exact = cuisineOptions.find((c) => c.name.trim().toLowerCase() === typed);
+      if (exact) return Number(exact.id);
+      const prefix = cuisineOptions.find((c) => {
+        const n = c.name.trim().toLowerCase();
+        return n.startsWith(typed) || typed.startsWith(n);
+      });
+      if (prefix) return Number(prefix.id);
+      return undefined;
+    },
+    [cuisineOptions, categoryModalMode]
+  );
 
   const parentCategories = useMemo(
     () => categories.filter((c) => !c.parent_category_id).sort((a, b) => (a.display_order ?? 0) - (b.display_order ?? 0)),
@@ -1922,36 +1943,29 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
     setCategoryLoading(true);
     try {
       let resolvedCuisineId: number | undefined =
-        showCuisinePicker && categoryForm.cuisine_id != null && !Number.isNaN(Number(categoryForm.cuisine_id))
-          ? Number(categoryForm.cuisine_id)
+        showCuisinePicker
+          ? resolveCuisineIdFromPicker(categoryCuisineInput, categoryForm.cuisine_id)
           : undefined;
-      const typedCuisineName = categoryCuisineInput.trim();
-      if (showCuisinePicker && !resolvedCuisineId && typedCuisineName) {
-        const existingByName = cuisineOptions.find(
-          (c) => c.name.trim().toLowerCase() === typedCuisineName.toLowerCase()
-        );
-        if (existingByName) {
-          resolvedCuisineId = Number(existingByName.id);
-        } else {
-          const createCuisineRes = await fetch(`/api/merchant/stores/${storeId}/menu/cuisines`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ name: typedCuisineName }),
-          });
-          const created = await createCuisineRes.json().catch(() => ({}));
-          if (!createCuisineRes.ok || created?.success === false || !created?.id) {
-            throw new Error(
-              (typeof created?.message === "string" && created.message) ||
-                (typeof created?.error === "string" && created.error) ||
-                "Failed to add cuisine"
-            );
-          }
-          resolvedCuisineId = Number(created.id);
-          await loadStoreCuisines();
+      if (showCuisinePicker && !resolvedCuisineId && categoryCuisineInput.trim()) {
+        // Last resort: resolve / link via API (custom_name + master prefix match).
+        const createCuisineRes = await fetch(`/api/merchant/stores/${storeId}/menu/cuisines`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name: categoryCuisineInput.trim() }),
+        });
+        const created = await createCuisineRes.json().catch(() => ({}));
+        if (!createCuisineRes.ok || created?.success === false || !created?.id) {
+          throw new Error(
+            (typeof created?.message === "string" && created.message) ||
+              (typeof created?.error === "string" && created.error) ||
+              "Pick a cuisine from the list linked to this store"
+          );
         }
+        resolvedCuisineId = Number(created.id);
+        await loadStoreCuisines();
       }
       if (showCuisinePicker && categoryUiConfig?.cuisine_field.required_for_root && !resolvedCuisineId) {
-        setCategoryError("Select a cuisine or type one to add");
+        setCategoryError("Select a cuisine from the list");
         return;
       }
 
@@ -2354,7 +2368,16 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
                       : "Add your first menu item to get started"}
               </p>
               {contentScope === "item" && menuItems.length === 0 && categories.length === 0 && (
-                <p className="text-sm text-gray-400 mt-2">You need to create a category first</p>
+                <div className="mt-4 flex flex-col items-center gap-2">
+                  <p className="text-sm text-gray-400">You need to create a category first</p>
+                  <button
+                    type="button"
+                    onClick={() => openAddCategory()}
+                    className="px-4 py-2 text-sm font-semibold rounded-lg bg-orange-600 text-white hover:bg-orange-700"
+                  >
+                    Add Category
+                  </button>
+                </div>
               )}
             </div>
           ) : contentScope === "cust" ? (
@@ -3723,37 +3746,46 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
                         cuisines on the store profile — use <span className="italic">Edit cuisine list</span> below when
                         it applies.
                       </p>
-                      <input
-                        list="category-cuisine-options"
-                        value={categoryCuisineInput}
+                      <select
+                        value={
+                          categoryForm.cuisine_id != null && !Number.isNaN(Number(categoryForm.cuisine_id))
+                            ? String(categoryForm.cuisine_id)
+                            : ""
+                        }
                         onChange={(e) => {
-                          const typed = e.target.value;
-                          setCategoryCuisineInput(typed);
-                          const matched = cuisineOptions.find(
-                            (c) => c.name.trim().toLowerCase() === typed.trim().toLowerCase()
-                          );
-                          setCategoryForm((prev) => ({
-                            ...prev,
-                            cuisine_id: matched ? Number(matched.id) : undefined,
-                          }));
-                        }}
-                        onBlur={() => commitTypedCuisineSelection()}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter") {
-                            e.preventDefault();
-                            commitTypedCuisineSelection();
+                          const raw = e.target.value;
+                          if (!raw) {
+                            setCategoryCuisineInput("");
+                            setCategoryForm((prev) => ({ ...prev, cuisine_id: undefined }));
+                            return;
                           }
+                          const id = Number(raw);
+                          const opt = cuisineOptions.find((c) => c.id === id);
+                          setCategoryCuisineInput(opt?.name ?? "");
+                          setCategoryForm((prev) => ({ ...prev, cuisine_id: id }));
                         }}
-                        placeholder="Type or select cuisine..."
-                        className="w-full px-3 py-2 border border-gray-300 rounded-lg text-gray-900 placeholder-gray-400 focus:border-orange-400 focus:ring-1 focus:ring-orange-100"
-                      />
-                      <datalist id="category-cuisine-options">
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg text-gray-900 focus:border-orange-400 focus:ring-1 focus:ring-orange-100 bg-white"
+                        aria-label="Cuisine"
+                      >
+                        <option value="">
+                          {categoryUiConfig?.cuisine_field.required_for_root
+                            ? "Select cuisine..."
+                            : "None (optional)"}
+                        </option>
                         {cuisineOptions.map((c) => (
-                          <option key={`cuisine-name-${c.id}`} value={c.name} />
+                          <option key={`cuisine-${c.id}`} value={String(c.id)}>
+                            {c.name}
+                          </option>
                         ))}
-                      </datalist>
+                        {categoryForm.cuisine_id != null &&
+                          !cuisineOptions.some((c) => c.id === Number(categoryForm.cuisine_id)) && (
+                            <option value={String(categoryForm.cuisine_id)}>
+                              {categoryCuisineInput.trim() || `Cuisine #${categoryForm.cuisine_id}`}
+                            </option>
+                          )}
+                      </select>
                       {categoryUiConfig?.cuisine_field.required_for_root && cuisineOptions.length === 0 && (
-                        <div className="mb-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] text-amber-950">
+                        <div className="mt-2 mb-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] text-amber-950">
                           No cuisines linked to this store yet. Open{" "}
                           <Link
                             href={`/dashboard/merchants/stores/${storeId}/profile`}

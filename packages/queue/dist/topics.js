@@ -17,5 +17,7 @@ export const QUEUE_NAMES = {
     PAYMENT_WEBHOOK_RETRY: "q.payment.webhook-retry",
     ETA_RECALC: "q.eta.recalc",
     FINANCIAL_RULE_APPROVAL_NOTIFY: "q.financial-rule.approval-notify",
+    REFERRAL_REWARD: "q.referral.reward",
+    REFERRAL_RECONCILE: "q.referral.reconcile",
 };
 //# sourceMappingURL=topics.js.map

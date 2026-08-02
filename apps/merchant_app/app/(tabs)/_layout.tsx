@@ -46,6 +46,12 @@ export default function TabsLayout() {
       screenOptions={{
         /** Custom FloatingTabBar honors this — hides bar while typing so inputs stay above the keyboard. */
         tabBarHideOnKeyboard: true,
+        /** Keep main tabs mounted so Catalog / Orders open on the first tap with no mount delay. */
+        lazy: false,
+        freezeOnBlur: false,
+        animation: "none",
+        /** Never swipe between Home / Orders / Catalog — Orders owns its own stage swipe. */
+        gestureEnabled: false,
         tabBarActiveTintColor: GatiMitraMerchant.tabActive,
         tabBarInactiveTintColor: GatiMitraMerchant.tabInactive,
         tabBarLabelStyle: {

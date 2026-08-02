@@ -25,6 +25,7 @@ import {
   formatPeriodRange,
   formatShortDate,
   payoutCardToParams,
+  payoutReturnedDisplayAmount,
   resolveLedgerDisplayAmount,
   resolveLedgerDisplayDescription,
   resolveLedgerCategoryLabel,
@@ -148,6 +149,15 @@ export default function EarningsScreen() {
   const pastPayoutCards = useMemo(
     () => payoutCards.filter((c) => !c.isCurrentCycle),
     [payoutCards],
+  );
+  /** Cycles that only mark a withdrawal boundary — no orders, nothing paid out. */
+  const settledPayoutCards = useMemo(
+    () => pastPayoutCards.filter((c) => !c.isZeroActivity),
+    [pastPayoutCards],
+  );
+  const returnedOnlyCards = useMemo(
+    () => pastPayoutCards.filter((c) => c.isZeroActivity),
+    [pastPayoutCards],
   );
 
   useEffect(() => {
@@ -409,8 +419,10 @@ export default function EarningsScreen() {
               <Text style={s.emptyText}>Withdrawals and past cycles will appear here.</Text>
             </View>
           ) : (
+            <>
+            {settledPayoutCards.length > 0 ? (
             <View style={s.payoutList}>
-              {pastPayoutCards.map((card, idx) => {
+              {settledPayoutCards.map((card, idx) => {
                 const badge = statusBadgeStyle(card.status);
                 const periodLabel = formatPeriodRange(card.periodStart, card.periodEnd);
                 return (
@@ -419,9 +431,12 @@ export default function EarningsScreen() {
                       <View style={s.payoutCol}>
                         <Text style={s.payoutFieldLabel}>Net payout</Text>
                         <Text style={s.payoutAmount}>{formatCurrency(card.netPayout)}</Text>
-                        <Text style={s.payoutOrders}>
-                          {card.orderCount} {card.orderCount === 1 ? "order" : "orders"}
-                        </Text>
+                        {payoutReturnedDisplayAmount(card) > 0 ? (
+                          <Text style={s.payoutRejectedLine}>
+                            {formatCurrency(payoutReturnedDisplayAmount(card))} rejected ·
+                            returned to wallet
+                          </Text>
+                        ) : null}
                       </View>
                       <View style={[s.payoutCol, s.payoutColRight]}>
                         <Text style={s.payoutFieldLabel}>Status</Text>
@@ -444,6 +459,11 @@ export default function EarningsScreen() {
                         </Text>
                       </View>
                     </View>
+                    {card.closeNote ? (
+                      <Text style={s.payoutNoteLine} numberOfLines={3}>
+                        Reason: {card.closeNote}
+                      </Text>
+                    ) : null}
                     <Pressable
                       onPress={() => {
                         const detailCard =
@@ -464,6 +484,49 @@ export default function EarningsScreen() {
                 );
               })}
             </View>
+            ) : null}
+
+            {returnedOnlyCards.length > 0 ? (
+              <View style={s.returnedGroup}>
+                <Text style={s.returnedGroupTitle}>Returned withdrawals</Text>
+                <Text style={s.returnedGroupHint}>
+                  No orders settled in these cycles — the withdrawal came back to your wallet.
+                </Text>
+                {returnedOnlyCards.map((card, idx) => (
+                  <Pressable
+                    key={card.id}
+                    onPress={() => router.push({
+                      pathname: "/(tabs)/earnings/payout/[id]",
+                      params: payoutCardToParams(card),
+                    })}
+                    style={({ pressed }) => [
+                      s.returnedRow,
+                      idx > 0 && s.returnedRowBorder,
+                      pressed && s.pressed,
+                    ]}
+                  >
+                    <View style={s.returnedRowIcon}>
+                      <Ionicons name="return-down-back" size={16} color="#B45309" />
+                    </View>
+                    <View style={s.returnedRowMain}>
+                      <Text style={s.returnedRowTitle}>
+                        {formatCurrency(payoutReturnedDisplayAmount(card))} returned
+                      </Text>
+                      <Text style={s.returnedRowMeta}>
+                        {card.payoutDate ? formatShortDate(card.payoutDate) : "—"}
+                        {card.closeNote ? ` · ${card.closeNote}` : ""}
+                      </Text>
+                    </View>
+                    <Ionicons
+                      name="chevron-forward"
+                      size={16}
+                      color={GatiMitraMerchant.textTertiary}
+                    />
+                  </Pressable>
+                ))}
+              </View>
+            ) : null}
+            </>
           )}
         </ScrollView>
       ) : (
@@ -677,6 +740,50 @@ const s = StyleSheet.create({
   payoutFieldLabel: { fontSize: 11, color: GatiMitraMerchant.textTertiary, marginBottom: 2 },
   payoutAmount: { fontSize: 26, fontWeight: "700", color: GatiMitraMerchant.textPrimary, letterSpacing: -0.5 },
   payoutOrders: { fontSize: 12, color: GatiMitraMerchant.textTertiary, marginTop: 2 },
+  payoutNoteLine: {
+    fontSize: 12,
+    color: GatiMitraMerchant.textSecondary,
+    lineHeight: 17,
+    marginBottom: 2,
+  },
+  payoutRejectedLine: {
+    fontSize: 12,
+    fontWeight: "600",
+    color: "#B45309",
+    lineHeight: 17,
+    marginTop: 3,
+  },
+  returnedGroup: {
+    marginTop: 12,
+    backgroundColor: "#fff",
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#EEEEEE",
+    paddingHorizontal: 16,
+    paddingTop: 14,
+    paddingBottom: 4,
+  },
+  returnedGroupTitle: { fontSize: 14, fontWeight: "700", color: GatiMitraMerchant.textPrimary },
+  returnedGroupHint: {
+    fontSize: 12,
+    color: GatiMitraMerchant.textTertiary,
+    lineHeight: 17,
+    marginTop: 2,
+    marginBottom: 6,
+  },
+  returnedRow: { flexDirection: "row", alignItems: "center", gap: 10, paddingVertical: 12 },
+  returnedRowBorder: { borderTopWidth: 1, borderTopColor: "#F0F0F0" },
+  returnedRowIcon: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#FEF3C7",
+  },
+  returnedRowMain: { flex: 1 },
+  returnedRowTitle: { fontSize: 14, fontWeight: "600", color: GatiMitraMerchant.textPrimary },
+  returnedRowMeta: { fontSize: 12, color: GatiMitraMerchant.textTertiary, marginTop: 1 },
   payoutDateValue: { fontSize: 14, fontWeight: "600", color: GatiMitraMerchant.textPrimary, marginTop: 2 },
   cardWithdrawBtn: {
     flexDirection: "row",

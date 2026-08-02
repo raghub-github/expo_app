@@ -118,6 +118,11 @@ const VerificationSetupIcon = dynamic(async () => {
   return (props: { className?: string }) => <ShieldCheck {...props} />;
 });
 
+const ReferralRewardsIcon = dynamic(async () => {
+  const { Gift } = await import("lucide-react");
+  return (props: { className?: string }) => <Gift {...props} />;
+});
+
 const adminOptions: AdminOption[] = [
   {
     name: "Users",
@@ -257,6 +262,14 @@ const adminOptions: AdminOption[] = [
     description: "Manage offers and coupon codes",
     color: "text-fuchsia-700",
     bgColor: "bg-fuchsia-50 hover:bg-fuchsia-100",
+  },
+  {
+    name: "Referral & Rewards",
+    href: "/dashboard/super-admin/referral-rewards",
+    Icon: ReferralRewardsIcon,
+    description: "Customer GatiCash + rider wallet milestones, caps, fraud & live config",
+    color: "text-teal-700",
+    bgColor: "bg-teal-50 hover:bg-teal-100",
   },
   {
     name: "Geo & pincodes",

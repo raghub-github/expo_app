@@ -22,6 +22,7 @@ export declare function sumMechanismFeeFromLedger(entries: LedgerEntry[]): numbe
  * Est. payout = A (ORDER_EARNING credits) + cancellation compensation + other credits − C
  * Store offer discounts (B) are informational only — never subtracted from Est. payout.
  * Mechanism fee is informational when A is already post-fee net (default).
+ * Withdrawal reversal credits (returned principal) are reported but excluded from Est. payout.
  */
 export declare function buildSummaryFromParts(parts: SettlementPartsInput): MerchantPayoutSettlementSummary;
 /** Non-zero deduction rows for Order level deductions (C). */

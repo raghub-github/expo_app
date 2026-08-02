@@ -7,6 +7,7 @@ import { MerchantBottomSheetShell } from "@/components/order/MerchantBottomSheet
 import {
   foodOrderAddonRows,
   foodOrderVariantLabel,
+  resolveLineItemCookingNote,
 } from "@/lib/merchant-order-food-item-display";
 import { merchantFoodItemCatalogAndNet, formatMerchantRs } from "@/lib/merchant-line-total";
 import { GatiMitraMerchant, H_PADDING, CARD_RADIUS } from "@/constants/theme";
@@ -32,6 +33,8 @@ function lineItemToApiItem(item: LineItem): ApiFoodOrderItem {
     offer_label: item.offer_label,
     is_item_promo: item.is_item_promo,
     applied_offer_type: item.applied_offer_type,
+    special_instructions: item.specialInstructions ?? item.special_instructions ?? null,
+    specialInstructions: item.specialInstructions ?? item.special_instructions ?? null,
   };
 }
 
@@ -54,6 +57,7 @@ export function IncomingOrderCustomizationSheet({
   const qty = Math.max(1, item.qty || 1);
   const variantLabel = foodOrderVariantLabel(apiItem);
   const addonRows = foodOrderAddonRows(apiItem);
+  const cookingNote = resolveLineItemCookingNote(item);
   const { catalog, net, showStrike, offerBadge } = merchantFoodItemCatalogAndNet(apiItem);
   const custTotal =
     apiItem.customizations_total ??
@@ -101,6 +105,15 @@ export function IncomingOrderCustomizationSheet({
           </View>
         ) : null}
 
+        {cookingNote ? (
+          <View style={styles.noteBlock}>
+            <Text style={styles.sectionLabel}>Cooking request</Text>
+            <View style={styles.noteCard}>
+              <Text style={styles.noteText}>Cooking: {cookingNote}</Text>
+            </View>
+          </View>
+        ) : null}
+
         {addonRows.length > 0 ? (
           <View style={styles.addonBlock}>
             <Text style={styles.sectionLabel}>Add-ons & extras</Text>
@@ -118,7 +131,7 @@ export function IncomingOrderCustomizationSheet({
               ))}
             </View>
           </View>
-        ) : variantLabel ? null : (
+        ) : variantLabel || cookingNote ? null : (
           <Text style={styles.empty}>No extra add-ons for this item.</Text>
         )}
 
@@ -242,6 +255,23 @@ const styles = StyleSheet.create({
     color: GatiMitraMerchant.textSecondary,
     marginTop: 8,
     lineHeight: 17,
+  },
+  noteBlock: {
+    marginBottom: 14,
+  },
+  noteCard: {
+    borderWidth: 1,
+    borderColor: "#FCD34D",
+    borderRadius: CARD_RADIUS,
+    backgroundColor: "#FFFBEB",
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+  },
+  noteText: {
+    fontSize: 14,
+    fontWeight: "600",
+    color: "#B45309",
+    lineHeight: 20,
   },
   addonBlock: {
     marginBottom: 4,

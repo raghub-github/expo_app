@@ -83,10 +83,33 @@ export async function loadOrderRefundGuardState(
       COALESCE(agg.refunded, 0)         AS already_refunded,
       COALESCE(agg.cnt, 0)              AS active_refund_count,
       pay.amount                        AS captured_amount,
-      LOWER(COALESCE(pay.payment_gateway::text, '')) AS payment_gateway
+      LOWER(COALESCE(pay.payment_gateway::text, '')) AS payment_gateway,
+      COALESCE(
+        NULLIF(
+          CASE
+            WHEN pay.gateway_response ? 'breakdown'
+              AND (pay.gateway_response->'breakdown'->>'gatiCashUsed') ~ '^[0-9]+(\\.[0-9]+)?$'
+            THEN (pay.gateway_response->'breakdown'->>'gatiCashUsed')::numeric
+            ELSE NULL
+          END,
+          0
+        ),
+        NULLIF(po.gati_cash_applied, 0),
+        NULLIF(
+          CASE
+            WHEN (c.billing_snapshot->'checkoutAdjustments'->>'gatiCashApplied') ~ '^[0-9]+(\\.[0-9]+)?$'
+            THEN (c.billing_snapshot->'checkoutAdjustments'->>'gatiCashApplied')::numeric
+            ELSE NULL
+          END,
+          0
+        ),
+        0
+      )                                 AS gati_cash_used
     FROM orders_core c
+    LEFT JOIN pending_orders po ON po.finalized_order_id = c.order_id
+       OR (c.id IS NOT NULL AND po.finalized_order_id = c.id::text)
     LEFT JOIN LATERAL (
-      SELECT op.amount, op.payment_gateway
+      SELECT op.amount, op.payment_gateway, op.gateway_response
       FROM orders_core_payments op
       WHERE op.order_id = c.order_id
         AND UPPER(COALESCE(op.payment_status, '')) IN ('PAID','CAPTURED','SUCCESS','COMPLETED')
@@ -130,13 +153,16 @@ export async function loadOrderRefundGuardState(
     status === "canceled" ||
     currentStatus.includes("cancel");
 
-  const grandTotal = toNum(r.grand_total);
+  const netPayable = toNum(r.grand_total);
+  const gatiCashUsed = Math.max(0, toNum(r.gati_cash_used));
+  // CTC = Cashin (post-wallet grand_total) + GatiCash — never let full-wallet orders cap at ₹0.
+  const grandTotal = Math.max(netPayable + gatiCashUsed, toNum(r.captured_amount), 0);
   const alreadyRefunded = toNum(r.already_refunded);
   const remainingRefundable = Math.max(grandTotal - alreadyRefunded, 0);
   const fullyRefunded =
     grandTotal > 0 && alreadyRefunded >= grandTotal - MONEY_EPSILON;
 
-  const capturedAmount = toNum(r.captured_amount);
+  const capturedAmount = Math.max(toNum(r.captured_amount), gatiCashUsed);
 
   return {
     orderId,

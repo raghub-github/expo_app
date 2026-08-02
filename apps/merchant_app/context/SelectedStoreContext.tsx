@@ -20,10 +20,19 @@ import {
 
 type SelectedStoreContextValue = {
   selectedStore: ChildStore | null;
+  /** Switch active outlet and collapse to single-store order board. */
   setSelectedStore: (store: ChildStore | null) => void;
-  /** Stores included in "manage orders from" (multi-select). Orders from all of these land on one board. */
+  /**
+   * Switch the active outlet for this device without collapsing a multi-store
+   * (Manage All Stores) board. Dashboard / menu / settings follow the new outlet.
+   */
+  switchActiveOutlet: (store: ChildStore) => void;
+  /** Stores included on the unified incoming-orders board. */
   managedStores: ChildStore[];
   setManagedStores: (stores: ChildStore[]) => void;
+  /** True when this device consolidates every approved linked outlet. */
+  manageAllStores: boolean;
+  setManageAllStores: (enabled: boolean) => void;
   /** False until we've tried restoring the last store from SecureStore. */
   isStoreReady: boolean;
 };
@@ -32,6 +41,11 @@ const SelectedStoreContext = createContext<SelectedStoreContextValue | null>(nul
 
 function isApprovedStore(store: ChildStore): boolean {
   return String(store.approval_status || "").toUpperCase() === "APPROVED";
+}
+
+function approvedStoresOf(partner: PartnerData | null): ChildStore[] {
+  if (!partner) return [];
+  return partner.childStores.filter(isApprovedStore);
 }
 
 function findStoreInPartner(
@@ -70,6 +84,15 @@ export function SelectedStoreProvider({ children }: { children: ReactNode }) {
   const [selectedStore, setSelectedStoreState] = useState<ChildStore | null>(null);
   const [managedStores, setManagedStoresState] = useState<ChildStore[]>([]);
   const [isStoreReady, setIsStoreReady] = useState(false);
+
+  const approvedStores = useMemo(() => approvedStoresOf(partner), [partner]);
+
+  const manageAllStores = useMemo(() => {
+    if (approvedStores.length <= 1) return false;
+    if (managedStores.length < approvedStores.length) return false;
+    const managedIds = new Set(managedStores.map((s) => s.id));
+    return approvedStores.every((s) => managedIds.has(s.id));
+  }, [approvedStores, managedStores]);
 
   useEffect(() => {
     if (authLoading) return;
@@ -177,6 +200,54 @@ export function SelectedStoreProvider({ children }: { children: ReactNode }) {
     [partner],
   );
 
+  const switchActiveOutlet = useCallback(
+    (store: ChildStore) => {
+      if (!isApprovedStore(store)) return;
+      setSelectedStoreState(store);
+
+      setManagedStoresState((prev) => {
+        // Keep the current multi-outlet board; only change the active outlet.
+        // If the new outlet wasn't on the board yet, add it so its orders still arrive.
+        let nextManaged: ChildStore[];
+        if (prev.length === 0) {
+          nextManaged = [store];
+        } else if (prev.some((s) => s.id === store.id)) {
+          nextManaged = prev;
+        } else {
+          nextManaged = [...prev, store];
+        }
+
+        if (partner) persistSelection(partner, store, nextManaged);
+        return nextManaged;
+      });
+    },
+    [partner],
+  );
+
+  const setManageAllStores = useCallback(
+    (enabled: boolean) => {
+      const all = approvedStoresOf(partner);
+      if (all.length === 0) return;
+
+      if (enabled) {
+        const primary =
+          selectedStore && all.some((s) => s.id === selectedStore.id)
+            ? selectedStore
+            : all[0]!;
+        setSelectedStoreState(primary);
+        setManagedStoresState(all);
+        if (partner) persistSelection(partner, primary, all);
+        return;
+      }
+
+      const primary = selectedStore && isApprovedStore(selectedStore) ? selectedStore : all[0]!;
+      setSelectedStoreState(primary);
+      setManagedStoresState([primary]);
+      if (partner) persistSelection(partner, primary, [primary]);
+    },
+    [partner, selectedStore],
+  );
+
   useEffect(() => {
     if (selectedStore && managedStores.length === 0) {
       setManagedStoresState([selectedStore]);
@@ -187,11 +258,23 @@ export function SelectedStoreProvider({ children }: { children: ReactNode }) {
     () => ({
       selectedStore,
       setSelectedStore,
+      switchActiveOutlet,
       managedStores,
       setManagedStores,
+      manageAllStores,
+      setManageAllStores,
       isStoreReady,
     }),
-    [selectedStore, setSelectedStore, managedStores, setManagedStores, isStoreReady],
+    [
+      selectedStore,
+      setSelectedStore,
+      switchActiveOutlet,
+      managedStores,
+      setManagedStores,
+      manageAllStores,
+      setManageAllStores,
+      isStoreReady,
+    ],
   );
 
   return (

@@ -18,6 +18,7 @@ import { useOnboardingStore } from "@/src/stores/onboardingStore";
 import { useRiderStatus } from "@/src/hooks/useOnboarding";
 import { ProfileSubscriptionCard } from "@/src/components/profile/ProfileSubscriptionCard";
 import { ProfileInstagramCard } from "@/src/components/profile/ProfileInstagramCard";
+import { ProfileCommunityCards } from "@/src/components/profile/ProfileCommunityCards";
 import { ProfileReferralCard } from "@/src/components/profile/ProfileReferralCard";
 import { ProfileLogoutRow } from "@/src/components/profile/ProfileLogoutRow";
 import { useLogoutSheetStore } from "@/src/stores/logoutSheetStore";
@@ -216,6 +217,8 @@ export function ProfilePage() {
           <ProfileSubscriptionCard />
           <View style={styles.stackSpacer} />
           <ProfileInstagramCard />
+          <View style={styles.stackSpacer} />
+          <ProfileCommunityCards />
           <View style={styles.stackSpacer} />
           <ProfileReferralCard referralCode={referralCode} riderName={riderName} />
           <View style={styles.stackSpacer} />

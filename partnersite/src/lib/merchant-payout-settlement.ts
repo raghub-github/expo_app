@@ -480,6 +480,12 @@ export type MerchantPayoutCycleDto = {
   net_payout: number;
   estimated_payout: number;
   order_count: number;
+  /** Withdrawal returned because this cycle's withdrawal was rejected/failed — never part of net_payout. */
+  withdrawal_returned: number;
+  /** Amount the merchant had requested on the withdrawal that closed this cycle. */
+  withdrawal_amount: number;
+  /** Admin rejection / bank failure reason for the closing withdrawal. */
+  close_note: string | null;
   settlement: MerchantPayoutSettlementSummary | null;
 };
 
@@ -506,9 +512,15 @@ export async function listPayoutCycles(
         s.free_delivery_offer_discount, s.order_deductions,
         s.payment_mechanism_fee AS mechanism_fee, s.customer_compensation,
         s.cancellation_compensation, s.other_credits, s.penalties, s.refund_adjustments,
-        s.manual_debit_adjustments, s.chargebacks
+        s.manual_debit_adjustments, s.chargebacks,
+        -- Read through to_jsonb so an un-migrated DB (no 0481) degrades to 0
+        -- instead of erroring out the whole payout list.
+        COALESCE((to_jsonb(s) ->> 'withdrawal_reversal_credits')::numeric, 0)
+          AS withdrawal_reversal_credits,
+        pr.amount AS request_amount, pr.rejection_reason, pr.failure_reason
       FROM merchant_payout_cycles c
       LEFT JOIN merchant_payout_summaries s ON s.id = c.summary_id
+      LEFT JOIN merchant_payout_requests pr ON pr.id = c.payout_request_id
       WHERE c.wallet_id = ${walletId}
       ORDER BY
         CASE WHEN c.status = 'OPEN' THEN 0 ELSE 1 END,
@@ -530,10 +542,14 @@ export async function listPayoutCycles(
         );
       }
 
+      const closeReason = row.close_reason != null ? String(row.close_reason) : null;
+      const closedAsReturn =
+        closeReason === "WITHDRAWAL_REJECTED" || closeReason === "WITHDRAWAL_FAILED";
+
       out.push({
         id: Number(row.id),
         status,
-        close_reason: row.close_reason != null ? String(row.close_reason) : null,
+        close_reason: closeReason,
         period_start: new Date(row.period_start as string).toISOString(),
         period_end: row.period_end ? new Date(row.period_end as string).toISOString() : null,
         payout_request_id: row.payout_request_id != null ? Number(row.payout_request_id) : null,
@@ -544,6 +560,22 @@ export async function listPayoutCycles(
         order_count: settlement
           ? settlement.order_count
           : n(row.delivered_orders) + n(row.rejected_orders),
+        // The money returned *for this cycle* is the withdrawal that closed it. The ledger
+        // window sum can hold a neighbouring cycle's reversal too, so it is not per-cycle.
+        withdrawal_returned: roundMoney(
+          closedAsReturn && n(row.request_amount) > 0
+            ? n(row.request_amount)
+            : status === "CLOSED"
+              ? n(row.withdrawal_reversal_credits)
+              : n(settlement?.withdrawal_reversal_credits),
+        ),
+        withdrawal_amount: roundMoney(n(row.request_amount)),
+        close_note:
+          row.rejection_reason != null && String(row.rejection_reason).trim() !== ""
+            ? String(row.rejection_reason).trim()
+            : row.failure_reason != null && String(row.failure_reason).trim() !== ""
+              ? String(row.failure_reason).trim()
+              : null,
         settlement,
       });
     }

@@ -90,7 +90,7 @@ export async function GET(req: NextRequest) {
 
     const emptyResponse = {
       success: true,
-      files: [] as { id: number; url: string; fileName: string; type: "image" | "pdf" | "csv"; verificationStatus: string }[],
+      files: [] as { id: number; entryId: string | null; url: string; fileName: string; type: "image" | "pdf" | "csv"; verificationStatus: string }[],
       menuSpreadsheetUrl: null as string | null,
       menuImageUrls: [] as string[],
       menuImageItems: [] as {
@@ -146,13 +146,65 @@ export async function GET(req: NextRequest) {
       };
     });
 
-    const files = (menuMedia as MediaRow[]).map((r) => ({
-      id: r.id,
-      url: toProxyUrl(r.menu_url || r.public_url || r.r2_key || null) ?? "",
-      fileName: r.original_file_name ?? "File",
-      type: (r.source_entity === "ONBOARDING_MENU_IMAGE" ? "image" : r.source_entity === "ONBOARDING_MENU_PDF" ? "pdf" : "csv") as "image" | "pdf" | "csv",
-      verificationStatus: r.verification_status ?? "PENDING",
-    })).filter((f) => f.url);
+    // Build the `files` array that the Menu Files drawer consumes.
+    // For ONBOARDING_MENU_IMAGE rows we expand the JSONB bundle so every individual image
+    // uploaded during onboarding appears as its own entry — not just the first/only URL stored
+    // in `r2_key` / `public_url`. Non-image rows (PDF, CSV) stay one-entry-per-row as before.
+    // `id` is the DB row; `entryId` identifies one image inside a JSONB bundle row, so the UI can
+    // key rows uniquely and delete a single image without dropping its siblings.
+    const fileEntries: Array<{
+      id: number;
+      entryId: string | null;
+      url: string;
+      fileName: string;
+      type: "image" | "pdf" | "csv";
+      verificationStatus: string;
+    }> = [];
+
+    for (const r of menuMedia as (MediaRow & { menu_reference_image_urls?: unknown })[]) {
+      if (r.source_entity === "ONBOARDING_MENU_IMAGE") {
+        // Expand every individual image from the JSONB bundle
+        const expanded = menuImageItems.filter((e) => e.rowId === r.id);
+        for (const entry of expanded) {
+          fileEntries.push({
+            id: r.id,
+            entryId: entry.entryId,
+            url: entry.url,
+            fileName: entry.fileName,
+            type: "image",
+            verificationStatus: r.verification_status ?? "PENDING",
+          });
+        }
+        // Fallback: row has no JSONB bundle (legacy one-row-per-image) — use its own single URL
+        if (expanded.length === 0) {
+          const url = toProxyUrl(r.menu_url || r.public_url || r.r2_key || null) ?? "";
+          if (url) {
+            fileEntries.push({
+              id: r.id,
+              entryId: null,
+              url,
+              fileName: r.original_file_name ?? "Menu image",
+              type: "image",
+              verificationStatus: r.verification_status ?? "PENDING",
+            });
+          }
+        }
+      } else {
+        // PDF / CSV — one entry per row
+        const url = toProxyUrl(r.menu_url || r.public_url || r.r2_key || null) ?? "";
+        if (url) {
+          fileEntries.push({
+            id: r.id,
+            entryId: null,
+            url,
+            fileName: r.original_file_name ?? "File",
+            type: r.source_entity === "ONBOARDING_MENU_PDF" ? "pdf" : "csv",
+            verificationStatus: r.verification_status ?? "PENDING",
+          });
+        }
+      }
+    }
+    const files = fileEntries;
 
     return NextResponse.json({
       success: true,

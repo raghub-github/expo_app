@@ -1,12 +1,7 @@
 "use client";
 
-import { Lora } from "next/font/google";
 import { OrderMixedText } from "@/components/orders/orders-typography";
-
-const lora = Lora({
-  subsets: ["latin"],
-  weight: ["600", "700"],
-});
+import { loraDisplay as lora } from "@/lib/fonts/tickets-fonts";
 
 export default function OrderActionBanner({ message }: { message: string }) {
   return (

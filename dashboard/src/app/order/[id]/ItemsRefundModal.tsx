@@ -9,6 +9,8 @@ import type { DashboardType } from '@/lib/db/schema';
 import { Package, X, Image, Truck, RotateCcw, CheckCircle, AlertTriangle, Loader2, Shield, User, ChevronDown, Info, FileText, ShieldCheck, IndianRupee } from 'lucide-react';
 
 import { DELIVERY_FEE_ITEM_ID } from '@/lib/foodOrderItems';
+import { CustomerCtcIconSplit } from '@/components/orders/CustomerCtcIconSplit';
+import { formatInrWithGap } from '@/lib/format-inr';
 import {
   fetchOrderItemsCached,
   getCachedOrderItems,
@@ -125,17 +127,27 @@ function PricingBreakdownPanel({
   lines,
   totalLabel,
   totalAmount,
+  cashinAmount,
+  gatiCashUsed,
   accent = 'emerald',
 }: {
   title: string;
   lines: OrderPricingLine[];
   totalLabel: string;
   totalAmount: number;
+  cashinAmount?: number;
+  gatiCashUsed?: number;
   accent?: 'emerald' | 'blue';
 }) {
   const totalClass = accent === 'blue' ? 'text-blue-600' : 'text-emerald-600';
   const borderClass = accent === 'blue' ? 'border-blue-100' : 'border-slate-200';
   const bgClass = accent === 'blue' ? 'bg-blue-50/60' : 'bg-slate-50';
+  const gati = Number(gatiCashUsed ?? 0) || 0;
+  const cashin =
+    cashinAmount != null && Number.isFinite(cashinAmount)
+      ? Number(cashinAmount)
+      : Math.max(0, totalAmount - Math.max(0, gati));
+  const showSplit = accent === 'blue' && gati > 0.005;
 
   return (
     <div className={`rounded-md border ${borderClass} ${bgClass} p-3`}>
@@ -161,9 +173,20 @@ function PricingBreakdownPanel({
             </span>
           </div>
         ))}
-        <div className="flex justify-between items-center pt-1.5 mt-1 border-t border-slate-200 font-semibold text-slate-800 text-xs">
+        <div className="flex justify-between items-start gap-2 pt-1.5 mt-1 border-t border-slate-200 font-semibold text-slate-800 text-xs">
           <span>{totalLabel}</span>
-          <span className={`tabular-nums ${totalClass}`}>₹{totalAmount.toFixed(2)}</span>
+          <span className={`tabular-nums text-right ${totalClass}`}>
+            ₹{totalAmount.toFixed(2)}
+            {showSplit ? (
+              <span className="block mt-1 font-medium">
+                <CustomerCtcIconSplit
+                  cashin={cashin}
+                  gatiCashUsed={gati}
+                  formatCurrency={(n) => `₹${Number(n ?? 0).toFixed(2)}`}
+                />
+              </span>
+            ) : null}
+          </span>
         </div>
       </div>
     </div>
@@ -264,6 +287,8 @@ function BillBreakdownSwitcher({
           lines: customerBill.lines,
           totalLabel: 'Total amount (CTC)',
           totalAmount: customerBill.totalOrderAmount,
+          cashinAmount: customerBill.cashinAmount,
+          gatiCashUsed: customerBill.gatiCashUsed,
           accent: 'blue' as const,
         };
 
@@ -289,6 +314,8 @@ function BillBreakdownSwitcher({
         lines={active.lines?.length ? active.lines : []}
         totalLabel={active.totalLabel}
         totalAmount={active.totalAmount}
+        cashinAmount={'cashinAmount' in active ? active.cashinAmount : undefined}
+        gatiCashUsed={'gatiCashUsed' in active ? active.gatiCashUsed : undefined}
         accent={active.accent}
       />
     </div>
@@ -309,6 +336,8 @@ function RefundCustomerPreviewPanel({
   itemRefundTotal,
   onPercentChange,
   onAmountChange,
+  selectedItemCount,
+  totalItemCount,
 }: {
   refundType: string;
   ctcTotal: number;
@@ -317,10 +346,14 @@ function RefundCustomerPreviewPanel({
   itemRefundTotal: number;
   onPercentChange: (pct: number) => void;
   onAmountChange: (amount: number) => void;
+  selectedItemCount: number;
+  totalItemCount: number;
 }) {
   const isCancelWithoutRefund = refundType === 'cancel_without_refund';
   const isFullCancelRefund = refundType === 'refund_with_cancellation';
   const isPartialRefund = refundType === 'refund_without_cancellation';
+  const allItemsSelected =
+    totalItemCount > 0 && selectedItemCount >= totalItemCount;
 
   const displayAmount = isPartialRefund
     ? itemRefundTotal
@@ -338,29 +371,35 @@ function RefundCustomerPreviewPanel({
           ? 'No amount will be refunded to the customer.'
           : isPartialRefund
             ? 'Based on selected item refund percentages.'
-            : 'Based on customer bill total (CTC).'}
+            : allItemsSelected
+              ? 'Based on customer bill total (CTC).'
+              : 'Based on selected items’ share of customer bill (CTC).'}
       </p>
 
-      {isFullCancelRefund && ctcTotal > 0 ? (
+      {isFullCancelRefund ? (
         <div className="mt-2 space-y-2">
-          <div className="flex items-center justify-between gap-2 text-[11px]">
-            <span className="text-slate-600">Order total (CTC)</span>
-            <span className="font-semibold tabular-nums text-slate-800">₹{ctcTotal.toFixed(2)}</span>
+          <div className="flex flex-nowrap items-center justify-between gap-2 text-[11px] whitespace-nowrap min-w-0">
+            <span className="text-slate-600 shrink-0">Order total (CTC)</span>
+            <span className="font-semibold tabular-nums text-slate-800 orders-num shrink-0">
+              {formatInrWithGap(ctcTotal)}
+            </span>
           </div>
-          <div>
-            <label className="block text-[11px] font-medium text-slate-600 mb-1">Refund %</label>
-            <select
-              value={refundPercent}
-              onChange={(e) => onPercentChange(Number(e.target.value))}
-              className="h-8 w-full rounded border border-slate-200 bg-white px-2 text-xs text-slate-800 focus:outline-none focus:ring-1 focus:ring-emerald-500 cursor-pointer"
-            >
-              {refundPercentOptions().map((pct) => (
-                <option key={pct} value={pct}>
-                  {pct}%
-                </option>
-              ))}
-            </select>
-          </div>
+          {ctcTotal > 0 ? (
+            <div>
+              <label className="block text-[11px] font-medium text-slate-600 mb-1">Refund %</label>
+              <select
+                value={refundPercent}
+                onChange={(e) => onPercentChange(Number(e.target.value))}
+                className="h-8 w-full rounded border border-slate-200 bg-white px-2 text-xs text-slate-800 focus:outline-none focus:ring-1 focus:ring-emerald-500 cursor-pointer"
+              >
+                {refundPercentOptions().map((pct) => (
+                  <option key={pct} value={pct}>
+                    {pct}%
+                  </option>
+                ))}
+              </select>
+            </div>
+          ) : null}
         </div>
       ) : null}
 
@@ -382,16 +421,21 @@ function RefundCustomerPreviewPanel({
           </div>
         ) : (
           <p
-            className={`text-lg font-bold tabular-nums ${
+            className={`text-lg font-bold tabular-nums orders-num ${
               displayAmount > 0 ? 'text-blue-700' : 'text-slate-400'
             }`}
           >
-            ₹{displayAmount.toFixed(2)}
+            {formatInrWithGap(displayAmount)}
           </p>
         )}
         {isFullCancelRefund && ctcTotal > 0 && refundAmount > ctcTotal ? (
           <p className="mt-1 text-[10px] text-amber-700">
-            <OrderMixedText>{`Exceeds CTC (₹${ctcTotal.toFixed(2)}). Adjust before submit.`}</OrderMixedText>
+            <OrderMixedText>{`Exceeds CTC (${formatInrWithGap(ctcTotal)}). Adjust before submit.`}</OrderMixedText>
+          </p>
+        ) : null}
+        {isFullCancelRefund && selectedItemCount === 0 ? (
+          <p className="mt-1 text-[10px] text-amber-700">
+            Select at least one item to calculate CTC.
           </p>
         ) : null}
       </div>
@@ -506,6 +550,53 @@ function preserveRefundItemUserState(prev: RefundItem[], next: RefundItem[]): Re
 
 function isDeliveryFeeRow(item: { id: number; isDeliveryFee?: boolean }): boolean {
   return item.isDeliveryFee === true || item.id === DELIVERY_FEE_ITEM_ID;
+}
+
+function customerItemLineTotal(row: OrderItemApiRow): number {
+  const amounts = lineAmountsForView(row, 'customer');
+  const qty = isDeliveryFeeRow({ id: row.id }) ? 1 : row.quantity;
+  return roundMoney(amounts.totalPerQuantity * qty);
+}
+
+/**
+ * Customer CTC for currently selected items — item share of customer lines scaled to
+ * full order CTC (fees, tax, discounts, rounding allocated proportionally).
+ */
+function calculateSelectedCustomerCtcTotal(
+  refundItems: RefundItem[],
+  itemSource: OrderItemApiRow[],
+  fullCustomerCtc: number
+): number {
+  if (fullCustomerCtc <= 0 || refundItems.length === 0) return 0;
+
+  const selectedIds = new Set(
+    refundItems.filter((item) => item.isSelected).map((item) => item.id)
+  );
+  if (selectedIds.size === 0) return 0;
+
+  const rows =
+    itemSource.length > 0
+      ? itemSource
+      : refundItems.map((item) => ({
+          id: item.id,
+          quantity: item.quantity,
+          amountPerQuantity: item.amountPerQuantity,
+          taxPerQuantity: item.taxPerQuantity,
+          chargesPerQuantity: item.chargesPerQuantity,
+          totalPerQuantity: item.totalPerQuantity,
+        })) as OrderItemApiRow[];
+
+  let selectedTotal = 0;
+  let fullTotal = 0;
+  for (const row of rows) {
+    const lineTotal = customerItemLineTotal(row);
+    fullTotal += lineTotal;
+    if (selectedIds.has(row.id)) selectedTotal += lineTotal;
+  }
+
+  if (fullTotal <= 0) return 0;
+  if (selectedTotal >= fullTotal - 0.009) return roundMoney(fullCustomerCtc);
+  return roundMoney((selectedTotal / fullTotal) * fullCustomerCtc);
 }
 
 function roundMoney(n: number): number {
@@ -832,6 +923,21 @@ export default function ItemsRefundModal({
     return roundMoney(Math.max(0, customerBill?.totalOrderAmount ?? 0));
   }, [pricing]);
 
+  const selectedCustomerCtcTotal = useMemo(
+    () =>
+      calculateSelectedCustomerCtcTotal(
+        refundItems,
+        itemsSourceRef.current,
+        customerCtcTotal
+      ),
+    [refundItems, customerCtcTotal, itemsFetchSettled]
+  );
+
+  const selectedRefundItemCount = useMemo(
+    () => refundItems.filter((item) => item.isSelected).length,
+    [refundItems]
+  );
+
   const applyCancelWithoutRefundCatalogReason = useCallback(() => {
     const row = findCancelledWithoutRefundReason(catalogGrouped);
     if (!row) return;
@@ -841,9 +947,15 @@ export default function ItemsRefundModal({
   }, [catalogGrouped]);
 
   useEffect(() => {
-    if (refundType !== 'refund_with_cancellation' || customerCtcTotal <= 0) return;
-    setCustomerRefundAmount(roundMoney((customerCtcTotal * customerRefundPercent) / 100));
-  }, [customerCtcTotal, customerRefundPercent, refundType]);
+    if (refundType !== 'refund_with_cancellation') return;
+    if (selectedCustomerCtcTotal <= 0) {
+      setCustomerRefundAmount(0);
+      return;
+    }
+    setCustomerRefundAmount(
+      roundMoney((selectedCustomerCtcTotal * customerRefundPercent) / 100)
+    );
+  }, [selectedCustomerCtcTotal, customerRefundPercent, refundType]);
 
   useEffect(() => {
     if (!showRefundType || refundType) return;
@@ -883,16 +995,16 @@ export default function ItemsRefundModal({
   const handleCustomerRefundPercentChange = (pct: number) => {
     const next = Math.min(100, Math.max(10, pct));
     setCustomerRefundPercent(next);
-    if (customerCtcTotal > 0) {
-      setCustomerRefundAmount(roundMoney((customerCtcTotal * next) / 100));
+    if (selectedCustomerCtcTotal > 0) {
+      setCustomerRefundAmount(roundMoney((selectedCustomerCtcTotal * next) / 100));
     }
   };
 
   const handleCustomerRefundAmountChange = (amount: number) => {
     const next = roundMoney(Math.max(0, amount));
     setCustomerRefundAmount(next);
-    if (customerCtcTotal > 0) {
-      const pct = Math.round((next / customerCtcTotal) * 100);
+    if (selectedCustomerCtcTotal > 0) {
+      const pct = Math.round((next / selectedCustomerCtcTotal) * 100);
       const snapped = Math.min(100, Math.max(10, Math.round(pct / 10) * 10));
       setCustomerRefundPercent(snapped);
     }
@@ -974,9 +1086,9 @@ export default function ItemsRefundModal({
       setShowSubmit(false);
       setFault('');
       setMerchantDebit('');
-      if (value === 'refund_with_cancellation' && customerCtcTotal > 0) {
+      if (value === 'refund_with_cancellation' && selectedCustomerCtcTotal > 0) {
         setCustomerRefundPercent(100);
-        setCustomerRefundAmount(customerCtcTotal);
+        setCustomerRefundAmount(selectedCustomerCtcTotal);
       }
     }
     if (value === 'refund_without_cancellation') {
@@ -1275,7 +1387,7 @@ export default function ItemsRefundModal({
                   : refundType === 'refund_with_cancellation'
                     ? {
                         refundPercentage: customerRefundPercent,
-                        ctcTotal: customerCtcTotal,
+                        ctcTotal: selectedCustomerCtcTotal,
                         customerRefundAmount: customerRefundAmount,
                       }
                     : undefined,
@@ -2182,12 +2294,14 @@ export default function ItemsRefundModal({
                   <div className="w-full lg:w-[300px] shrink-0 lg:sticky lg:top-20">
                     <RefundCustomerPreviewPanel
                       refundType={refundType}
-                      ctcTotal={customerCtcTotal}
+                      ctcTotal={selectedCustomerCtcTotal}
                       refundPercent={customerRefundPercent}
                       refundAmount={customerRefundAmount}
                       itemRefundTotal={calculateTotalPercentageRefundAmount()}
                       onPercentChange={handleCustomerRefundPercentChange}
                       onAmountChange={handleCustomerRefundAmountChange}
+                      selectedItemCount={selectedRefundItemCount}
+                      totalItemCount={refundItems.length}
                     />
                   </div>
                 ) : null}

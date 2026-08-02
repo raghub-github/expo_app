@@ -257,6 +257,8 @@ export function buildMerchantInstructionsFromCheckout(
 export function resolveFirstEtaAtIso(input: {
   firstEtaAt?: Date | string | null;
   firstEtaLegacy?: Date | string | null;
+  /** Placement promise from ETA engine — same semantic as First ETA when first_eta_at is null (legacy). */
+  promisedDeliveryAt?: Date | string | null;
   estimatedDeliveryTime?: Date | string | null;
   etaSeconds?: number | null;
   placedAt?: Date | string | null;
@@ -267,6 +269,8 @@ export function resolveFirstEtaAtIso(input: {
   for (const c of [
     input.firstEtaAt,
     input.firstEtaLegacy,
+    input.promisedDeliveryAt,
+    // estimated_delivery_time / timeline can change after placement; only used as last resort.
     input.estimatedDeliveryTime,
     input.timelineExpectedByAt,
   ]) {

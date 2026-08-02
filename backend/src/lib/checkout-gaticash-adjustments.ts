@@ -97,8 +97,11 @@ export function parseCheckoutGatiCashAdjustments(
   const missedOfferDiscount = missedOfferCompensation?.discountInr ?? 0;
   const missedOfferWalletAdd = missedOfferCompensation?.amountInr ?? 0;
 
+  // Floors at 0, not 0.01: when GatiCash covers the whole bill the payable really is ₹0 and
+  // the order settles off the wallet ledger. A 1-paise floor used to force a gateway charge
+  // the customer never agreed to, and the UI (which floors at 0) disagreed with the backend.
   const adjustedGrandTotal = roundInr(
-    Math.max(0.01, baseGrandTotal - gatiCashApplied - missedOfferDiscount + missedOfferWalletAdd)
+    Math.max(0, baseGrandTotal - gatiCashApplied - missedOfferDiscount + missedOfferWalletAdd)
   );
 
   return {

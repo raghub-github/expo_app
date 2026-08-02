@@ -35,6 +35,7 @@ import { useScheduleTick } from "@/hooks/useScheduleTick";
 
 import { GatiMitraColors } from "@/constants/gatimitra";
 import { AppText } from "@/components/AppText";
+import { usePreventServicesAtPin } from "@/hooks/usePreventServicesAtPin";
 
 const { width } = Dimensions.get("window");
 const PAGE_PAD = 16;
@@ -56,44 +57,20 @@ export type GMRestaurantCardV2Props = {
 
 function StoreOpenStatusBadge({
   isOpen,
-  statusMessage,
-  statusChip,
   nextOpenAt,
   nextCloseAt,
 }: {
   isOpen: boolean;
-  statusMessage?: string | null;
-  statusChip?: string | null;
   nextOpenAt?: string | number | null;
   nextCloseAt?: string | number | null;
 }) {
-  // Preferred path: render the backend (shared-engine) label VERBATIM — the exact same
-  // string the merchant dashboard shows. No client-side schedule/date math.
-  const backendMsg = statusMessage?.trim();
-  // Hooks must run unconditionally (Rules of Hooks) — call the tick before any early
-  // return; it's inert (needsTick=false) when we're rendering the backend message.
+  // Always derive a short client label from nextOpenAt / nextCloseAt so the card
+  // never shows the long backend banner ("Closed by merchant · schedule…").
+  // Realtime patches to nextOpenAt recalculate this on the next tick.
   const needsTick =
-    !backendMsg && (toTimestamp(nextOpenAt) != null || toTimestamp(nextCloseAt) != null);
+    toTimestamp(nextOpenAt) != null || toTimestamp(nextCloseAt) != null;
   const now = useScheduleTick(needsTick);
 
-  if (backendMsg) {
-    // Colour follows the realtime open/closed signal (isOpen from the live subscription),
-    // so the badge flips instantly; the message text refreshes when the list refetches.
-    const green = isOpen;
-    return (
-      <View
-        pointerEvents="none"
-        style={[styles.openClosedTag, green ? styles.openClosedTagGreen : styles.openClosedTagRed]}
-      >
-        <AppText
-          style={[styles.openClosedTagText, !green && styles.openClosedTagTextRed]}
-          numberOfLines={2}
-        >
-          {backendMsg}
-        </AppText>
-      </View>
-    );
-  }
   const openStatus = buildStoreOpenStatusLabel({
     isOpen,
     nextOpenAt,
@@ -101,8 +78,8 @@ function StoreOpenStatusBadge({
     nowMs: now,
   });
 
-  const isOpenSoon = !isOpen && openStatus.label === "Open soon";
-  const isClosingSoon = isOpen && openStatus.isClosingSoon;
+  const isOpeningSoon = !isOpen && openStatus.isOpeningSoon === true;
+  const isClosingSoon = isOpen && openStatus.isClosingSoon === true;
 
   return (
     <View
@@ -111,7 +88,7 @@ function StoreOpenStatusBadge({
         styles.openClosedTag,
         isClosingSoon
           ? styles.openClosedTagRed
-          : isOpenSoon
+          : isOpeningSoon
             ? styles.openClosedTagOpenSoon
             : openStatus.isGreen
               ? styles.openClosedTagGreen
@@ -123,7 +100,7 @@ function StoreOpenStatusBadge({
           styles.openClosedTagText,
           (isClosingSoon || !openStatus.isGreen) && styles.openClosedTagTextRed,
         ]}
-        numberOfLines={2}
+        numberOfLines={1}
       >
         {formatOpenStatusTagText(openStatus)}
       </AppText>
@@ -140,6 +117,7 @@ function GMRestaurantCardV2Inner({
   const router = useRouter();
   const queryClient = useQueryClient();
   const { syncBookmark } = useStoreBookmarkMutations();
+  const { foodLocked } = usePreventServicesAtPin();
   const [saved, setSaved] = useState(initialSaved);
   const [savedLoading, setSavedLoading] = useState(false);
   const [ratingSheetOpen, setRatingSheetOpen] = useState(false);
@@ -148,6 +126,7 @@ function GMRestaurantCardV2Inner({
 
   const liveStatus = useMerchantLiveStatus(merchant);
   const isOpen = liveStatus === "OPEN";
+  const listingBlocked = foodLocked;
 
   const userHasRatedStore = merchant.userHasRatedStore === true;
   const forYouRating =
@@ -195,12 +174,14 @@ function GMRestaurantCardV2Inner({
   );
 
   const openMerchant = useCallback(() => {
+    if (listingBlocked) return;
     navigateToMerchant(router, queryClient, merchant.id, merchant);
-  }, [merchant, queryClient, router]);
+  }, [listingBlocked, merchant, queryClient, router]);
 
   // Shutter is shown inside navigateToMerchant on committed press only.
   const cardPress = useScrollSafePress(openMerchant, {
     onPressIn: () => {
+      if (listingBlocked) return;
       warmMerchantHeroImage(merchant.id, bannerUri);
     },
   });
@@ -217,11 +198,13 @@ function GMRestaurantCardV2Inner({
   return (
     <>
     <Pressable
-      style={[styles.card, { marginBottom: bottomSpacing }]}
+      style={[styles.card, { marginBottom: bottomSpacing }, listingBlocked && styles.cardBlocked]}
       onPress={cardPress.onPress}
       onPressIn={cardPress.onPressIn}
       onPressOut={cardPress.onPressOut}
       onTouchMove={cardPress.onTouchMove}
+      disabled={listingBlocked}
+      accessibilityState={{ disabled: listingBlocked }}
     >
       <View style={styles.imageWrap} collapsable={false}>
         <StoreBannerCarousel
@@ -232,15 +215,27 @@ function GMRestaurantCardV2Inner({
           borderRadius={CARD_RADIUS}
           holdMs={LIST_CARD_CAROUSEL_HOLD_MS}
           slideMs={LIST_CARD_CAROUSEL_SLIDE_MS}
-          dimmed={!isOpen}
-          showDots={galleryUris.length > 0}
+          dimmed={!isOpen || listingBlocked}
+          showDots={galleryUris.length > 0 && !listingBlocked}
           hidePlaceholderIcon
-          enableSwipe
+          enableSwipe={!listingBlocked}
           deferTapToParent
           onSwipeGesture={onCarouselSwipe}
           onGestureComplete={onCarouselGestureComplete}
         />
-          {!isOpen ? <View style={styles.closedOverlay} pointerEvents="none" /> : null}
+          {!isOpen && !listingBlocked ? (
+            <View style={styles.closedOverlay} pointerEvents="none" />
+          ) : null}
+          {listingBlocked ? (
+            <View style={styles.preventOverlay} pointerEvents="none">
+              <View style={styles.preventBadge}>
+                <Ionicons name="lock-closed" size={14} color="#fff" />
+                <AppText style={styles.preventBadgeText}>Blocked</AppText>
+              </View>
+              <AppText style={styles.preventHint}>Unavailable in this area</AppText>
+            </View>
+          ) : null}
+          {!listingBlocked ? (
           <TouchableOpacity
             onPress={() => {
               cardPress.blockPress();
@@ -260,16 +255,23 @@ function GMRestaurantCardV2Inner({
               />
             )}
           </TouchableOpacity>
+          ) : null}
+          {!listingBlocked ? (
           <StoreOpenStatusBadge
             isOpen={isOpen}
-            statusMessage={merchant.statusMessage}
-            statusChip={merchant.statusChip}
             nextOpenAt={merchant.nextOpenAt}
             nextCloseAt={merchant.nextCloseAt}
           />
+          ) : null}
       </View>
 
-      <View style={[styles.content, !isOpen && styles.contentClosed]} pointerEvents="box-none">
+      <View
+        style={[
+          styles.content,
+          (!isOpen || listingBlocked) && styles.contentClosed,
+        ]}
+        pointerEvents="box-none"
+      >
           <View style={styles.mainCol}>
             <AppText style={styles.name} numberOfLines={1}>
               {merchant.name}
@@ -352,6 +354,9 @@ const styles = StyleSheet.create({
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: "rgba(0,0,0,0.06)",
   },
+  cardBlocked: {
+    opacity: 0.78,
+  },
   cardPress: {
     width: "100%",
   },
@@ -362,6 +367,35 @@ const styles = StyleSheet.create({
     overflow: "hidden",
     borderTopLeftRadius: CARD_RADIUS,
     borderTopRightRadius: CARD_RADIUS,
+  },
+  preventOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(15, 23, 42, 0.55)",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    zIndex: 8,
+  },
+  preventBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    backgroundColor: "#DC2626",
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 999,
+  },
+  preventBadgeText: {
+    color: "#fff",
+    fontSize: 12,
+    fontWeight: "800",
+    letterSpacing: 0.3,
+    textTransform: "uppercase",
+  },
+  preventHint: {
+    color: "#F8FAFC",
+    fontSize: 13,
+    fontWeight: "600",
   },
   image: {
     width: "100%",
@@ -393,10 +427,10 @@ const styles = StyleSheet.create({
     position: "absolute",
     top: 12,
     left: 12,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 10,
-    maxWidth: "75%",
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 8,
+    maxWidth: "70%",
     zIndex: 4,
   },
   openClosedTagGreen: {
@@ -428,9 +462,10 @@ const styles = StyleSheet.create({
     opacity: 0.82,
   },
   openClosedTagText: {
-    fontSize: 12,
+    fontSize: 11,
     color: "#fff",
-    fontWeight: "600",
+    fontWeight: "700",
+    letterSpacing: 0.2,
   },
   content: {
     flexDirection: "row",

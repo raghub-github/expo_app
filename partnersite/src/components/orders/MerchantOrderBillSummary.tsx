@@ -160,7 +160,7 @@ function CompactTotal({
         <span
           className={
             clickable
-              ? 'text-sm font-semibold text-stone-900 underline decoration-dashed decoration-stone-300 underline-offset-2'
+              ? 'text-sm font-semibold text-stone-900 underline decoration-dashed decoration-emerald-500 underline-offset-2 group-hover:decoration-emerald-700'
               : 'text-sm font-semibold text-stone-900'
           }
         >

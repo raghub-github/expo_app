@@ -15,6 +15,7 @@ import * as Clipboard from "expo-clipboard";
 import { MapboxWebDeliveryMap } from "@/components/maps/MapboxWebDeliveryMap";
 import type { DeliveryMapPayload } from "@/components/maps/mapbox-web-delivery-html";
 import { orderService } from "@/services/order.service";
+import { merchantService } from "@/services/merchant.service";
 import { etaService } from "@/services/eta.service";
 import { useLocationWeather } from "@/hooks/useLocationWeather";
 import { WeatherStatusChip } from "@/components/weather";
@@ -34,7 +35,9 @@ import { AndroidBackHandler } from "@/components/AndroidBackHandler";
 import { LegalFooter } from "@/components/LegalLinks";
 import { DietIndicator } from "@/components/store/DietIndicator";
 import { parseOrderBillFromSnapshot } from "@/lib/orderBillBreakdown";
+import { OrderRefundCard } from "@/components/OrderRefundCard";
 import { getOrderDetailInitialData } from "@/lib/orderDetailCache";
+import { resolveOrderTrackingMapSnapshots } from "@/lib/orderTrackingMapSnapshots";
 import { resolveOrderItemDiet } from "@/lib/reorderFromOrder";
 import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
 import { OrderItemCustomizationModal } from "@/components/orders/OrderItemCustomizationModal";
@@ -42,6 +45,7 @@ import { OrderDeliveryRatingSheet } from "@/components/orders/OrderDeliveryRatin
 import {
   getCustomerOrderStatusBannerText,
   getPersonRideStatusBannerText,
+  isCustomerOrderRefundCompleted,
   isPersonRideInProgressStatus,
   isPersonRideOrder,
   isPersonRideSearchingStatus,
@@ -81,9 +85,6 @@ const CARD = "#FFFFFF";
 const BORDER = "#EBEBEB";
 const TEXT = "#1C1C1C";
 const MUTED = "#828282";
-
-const DEFAULT_LAT = 20.5937;
-const DEFAULT_LNG = 78.9629;
 
 function getCompactAddressLine(address: string | null | undefined) {
   const raw = (address ?? "").trim();
@@ -283,10 +284,25 @@ export default function OrderDetailsScreen() {
     staleTime: liveLocationWsConnected ? 30_000 : 0,
   });
 
-  const deliveryLat = order?.deliveryLat != null ? order.deliveryLat : DEFAULT_LAT + 0.008;
-  const deliveryLng = order?.deliveryLng != null ? order.deliveryLng : DEFAULT_LNG + 0.008;
-  const pickupLat = order?.pickupLat != null ? order.pickupLat : DEFAULT_LAT - 0.006;
-  const pickupLng = order?.pickupLng != null ? order.pickupLng : DEFAULT_LNG - 0.006;
+  // Immutable order snapshots + store fallback when pickup was stored as 0/null.
+  const storeIdForMap =
+    order?.merchantPublicStoreId?.trim() ||
+    (order?.merchantStoreId != null ? String(order.merchantStoreId) : null);
+  const { data: mapStore } = useQuery({
+    queryKey: ["merchant", storeIdForMap, "tracking-map"],
+    queryFn: () => merchantService.getMerchantById(storeIdForMap!),
+    enabled: Boolean(storeIdForMap),
+    staleTime: 5 * 60 * 1000,
+  });
+  const { deliveryLat, deliveryLng, pickupLat, pickupLng } = resolveOrderTrackingMapSnapshots({
+    deliveryLat: order?.deliveryLat,
+    deliveryLng: order?.deliveryLng,
+    pickupLat: order?.pickupLat,
+    pickupLng: order?.pickupLng,
+    storeLat: mapStore?.latitude ?? null,
+    storeLng: mapStore?.longitude ?? null,
+    distanceKm: order?.distanceKm ?? null,
+  });
 
   const [routeCoordinates, setRouteCoordinates] = useState<{ latitude: number; longitude: number }[]>([]);
   useEffect(() => {
@@ -665,6 +681,9 @@ export default function OrderDetailsScreen() {
           }}
           onOrderCancelled={() => {
             void queryClient.invalidateQueries({ queryKey: ["order", orderId] });
+            void import("@/lib/refreshCustomerWallet").then(({ refreshCustomerWallet }) =>
+              refreshCustomerWallet(queryClient)
+            );
           }}
         />
       </>
@@ -729,7 +748,7 @@ export default function OrderDetailsScreen() {
       <AndroidBackHandler />
       <StatusBar style="dark" backgroundColor="#fff" />
       <View style={styles.screen}>
-        <View style={[styles.header, { paddingTop: Math.max(insets.top - 8, 0) }]}>
+        <View style={[styles.header, { paddingTop: insets.top + 6 }]}>
           <TouchableOpacity onPress={handleBack} style={styles.headerSide} hitSlop={12}>
             <Ionicons name="arrow-back" size={22} color={TEXT} />
           </TouchableOpacity>
@@ -995,6 +1014,15 @@ export default function OrderDetailsScreen() {
             </View>
           ) : null}
 
+          {order.refund &&
+          ((order.refund.amount != null && order.refund.amount > 0) ||
+            isCustomerOrderRefundCompleted({
+              paymentStatus: order.paymentStatus,
+              refundStatus: order.refund.status ?? order.refundStatus,
+            })) ? (
+            <OrderRefundCard refund={order.refund} />
+          ) : null}
+
           <View style={styles.card}>
             <View style={styles.billHeader}>
               <View style={styles.billHeaderLeft}>
@@ -1135,7 +1163,12 @@ export default function OrderDetailsScreen() {
 
             <View style={[styles.billRow, styles.billPaidRow]}>
               <AppText style={styles.paidLabel}>{isCancelled || isFailed ? "Amount" : "Paid"}</AppText>
-              <AppText style={styles.paidValue}>{formatMoney(bill.paid)}</AppText>
+              <View style={{ alignItems: "flex-end" }}>
+                <AppText style={styles.paidValue}>{formatMoney(bill.paid)}</AppText>
+                {order.fullyGatiCashUsed === true ? (
+                  <AppText style={styles.gatiCashPaidHint}>100% GatiCash used</AppText>
+                ) : null}
+              </View>
             </View>
 
             {bill.totalSavings > 0.005 && (
@@ -1507,6 +1540,12 @@ const styles = StyleSheet.create({
   couponValue: { fontSize: 13, fontWeight: "700", color: LINK_BLUE },
   paidLabel: { fontSize: 15, fontWeight: "700", color: TEXT },
   paidValue: { fontSize: 15, fontWeight: "800", color: TEXT },
+  gatiCashPaidHint: {
+    marginTop: 2,
+    fontSize: 10,
+    fontWeight: "600",
+    color: GREEN,
+  },
   savingsBanner: {
     marginTop: 10,
     backgroundColor: "#EBF5FF",

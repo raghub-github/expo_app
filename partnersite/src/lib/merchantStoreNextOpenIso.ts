@@ -223,6 +223,13 @@ export function getNextOpenIso(
     if (slots.length === 0) continue;
 
     if (dayOffset === 0) {
+      // Already inside a slot → no future "next open" today. Returning tomorrow
+      // was the bug that showed "Opens Sat 09:30" while still within Fri hours.
+      const withinNow = slots.some(
+        (s) => minutesSinceMidnight >= s.startMin && minutesSinceMidnight < s.endMin
+      );
+      if (withinNow) return null;
+
       const hasLaterSlotToday = slots.some((s) => s.startMin > minutesSinceMidnight);
       if (hasLaterSlotToday) {
         const slot = slots.find((s) => s.startMin > minutesSinceMidnight)!;

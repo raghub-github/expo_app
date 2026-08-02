@@ -182,7 +182,8 @@ export function CheckoutAddressSelectSheet({
                   router,
                   closeAddressSheet: onClose,
                   hideCheckoutDrawer: true,
-                  hideCartGate: true,
+                  // Keep Outside Delivery Range behind when adding from the cart gate.
+                  hideCartGate: false,
                 });
               }}
               android_ripple={{ color: "rgba(45, 181, 160, 0.12)" }}

@@ -22,6 +22,13 @@ void _supabaseAdmin;
  * Partnersite validates merchant session, then delegates to the Fastify backend
  * via X-Internal-Secret so the acceptance-timeout logic stays server-side.
  */
+export async function GET() {
+  return NextResponse.json(
+    { error: 'method_not_allowed', hint: 'Use POST' },
+    { status: 405, headers: { Allow: 'POST' } }
+  );
+}
+
 export async function POST(req: NextRequest) {
   try {
     const storeId = new URL(req.url).searchParams.get('store_id');

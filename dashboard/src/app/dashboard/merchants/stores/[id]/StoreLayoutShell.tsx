@@ -82,8 +82,8 @@ function StoreLayoutFallback({
             isFullHeightScrollPage
               ? undefined
               : {
-                  paddingBottom:
-                    "max(5.5rem, calc(env(safe-area-inset-bottom, 0px) + 5.5rem))",
+                  // Small safe-area only — scroll lives in the page body (StoreFullDashboard).
+                  paddingBottom: "max(0.5rem, env(safe-area-inset-bottom, 0px))",
                 }
           }
         >
@@ -222,8 +222,8 @@ export function StoreLayoutShell({
             isFullHeightScrollPage
               ? undefined
               : {
-                  paddingBottom:
-                    "max(5.5rem, calc(env(safe-area-inset-bottom, 0px) + 5.5rem))",
+                  // Small safe-area only — scroll lives in the page body (StoreFullDashboard).
+                  paddingBottom: "max(0.5rem, env(safe-area-inset-bottom, 0px))",
                 }
           }
         >

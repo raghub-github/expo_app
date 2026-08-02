@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import { ArrowLeft, Save, Loader2 } from "lucide-react";
 import { DashboardAccessSelector } from "@/components/users/DashboardAccessSelector";
 import { usePermissions } from "@/hooks/usePermissions";
+import { buildDashboardAccessPayload } from "@/lib/permissions/access-level";
 
 export default function UserAccessPage() {
   const params = useAppParams();
@@ -107,10 +108,10 @@ export default function UserAccessPage() {
           can_toggle_portal: (selectedAccessPoints.MERCHANT || []).includes(
             "MERCHANT_ADMIN_MERCHANT_ACCESS"
           ),
-          dashboardAccess: selectedDashboards.map(dashboardType => ({
-            dashboardType,
-            accessLevel: "FULL_ACCESS",
-          })),
+          dashboardAccess: buildDashboardAccessPayload(
+            selectedDashboards,
+            selectedAccessPoints
+          ),
           accessPoints: Object.entries(selectedAccessPoints).flatMap(
             ([dashboardType, accessPointGroups]) =>
               accessPointGroups.map(accessPointGroup => ({

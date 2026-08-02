@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, type ReactNode } from 'react';
-import { Bike, Clock, MapPin, Phone } from 'lucide-react';
+import { Bike, Clock, History, MapPin, Phone } from 'lucide-react';
 import { useLiveElapsedSeconds } from '@/hooks/useLiveElapsedSeconds';
 import { formatRiderStoreWaitLabel } from '@/lib/rider-store-wait-display';
 
@@ -27,6 +27,13 @@ export type RiderDeliveryPartnerCardProps = {
   storeWaitAnchorAt?: string | null;
   storeWaitLive?: boolean;
   storeWaitFinalizedSeconds?: number | null;
+  /** Opens OrderRidersHistorySidesheet (merchant “View Old Rider's Log”). */
+  onViewOldRidersLog?: () => void;
+  /**
+   * When true (default if `onViewOldRidersLog` is set), show a full-width
+   * “View Old Rider's Log” button under Track live / Call.
+   */
+  showOldRidersLog?: boolean;
   showHeader?: boolean;
   className?: string;
 };
@@ -125,6 +132,8 @@ export function RiderDeliveryPartnerCard({
   storeWaitAnchorAt,
   storeWaitLive = false,
   storeWaitFinalizedSeconds,
+  onViewOldRidersLog,
+  showOldRidersLog,
   showHeader = true,
   className = '',
 }: RiderDeliveryPartnerCardProps) {
@@ -193,13 +202,17 @@ export function RiderDeliveryPartnerCard({
 
   const showTrackLive = Boolean(onTrackRider) && !isTerminalVariant && variant !== 'picked_up';
   const showActions = Boolean(showTrackLive || riderPhone);
+  // Prefer explicit flag; otherwise show whenever a handler is wired.
+  const showLogControl = Boolean(
+    onViewOldRidersLog && (showOldRidersLog ?? true)
+  );
 
   return (
     <div
       className={`flex flex-col overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm ${className}`}
     >
       {showHeader ? (
-        <div className="border-b border-gray-100 bg-gradient-to-r from-slate-50 to-white px-3 py-1.5">
+        <div className="flex items-center justify-between gap-2 border-b border-gray-100 bg-gradient-to-r from-slate-50 to-white px-3 py-1.5">
           <p className="text-[10px] font-bold uppercase tracking-wider text-gray-500">
             Delivery partner
           </p>
@@ -259,32 +272,47 @@ export function RiderDeliveryPartnerCard({
         </div>
       </div>
 
-      {showActions ? (
-        <div className="flex gap-2 border-t border-gray-100 px-3 py-2.5">
-          {showTrackLive ? (
+      {showActions || showLogControl ? (
+        <div className="flex flex-col gap-2 border-t border-gray-100 px-3 py-2.5">
+          {showActions ? (
+            <div className="flex gap-2">
+              {showTrackLive ? (
+                <button
+                  type="button"
+                  onClick={onTrackRider}
+                  className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-xs font-bold text-blue-700 hover:bg-blue-100"
+                >
+                  <MapPin size={14} aria-hidden />
+                  Track live
+                </button>
+              ) : null}
+              {riderPhone ? (
+                <a
+                  href={`tel:${riderPhone}`}
+                  onClick={(e) => {
+                    if (onCallRider) {
+                      e.preventDefault();
+                      onCallRider();
+                    }
+                  }}
+                  className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-lg border border-gray-200 bg-white px-3 py-2 text-xs font-bold text-gray-800 hover:bg-gray-50"
+                >
+                  <Phone size={14} aria-hidden />
+                  Call
+                </a>
+              ) : null}
+            </div>
+          ) : null}
+          {showLogControl ? (
             <button
               type="button"
-              onClick={onTrackRider}
-              className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-xs font-bold text-blue-700 hover:bg-blue-100"
+              onClick={onViewOldRidersLog}
+              className="inline-flex w-full items-center justify-center gap-1.5 rounded-lg border border-teal-200 bg-teal-50 px-3 py-2 text-xs font-bold text-teal-800 hover:bg-teal-100"
+              aria-label="View old rider's log"
             >
-              <MapPin size={14} aria-hidden />
-              Track live
+              <History size={14} aria-hidden />
+              View Old Rider&apos;s Log
             </button>
-          ) : null}
-          {riderPhone ? (
-            <a
-              href={`tel:${riderPhone}`}
-              onClick={(e) => {
-                if (onCallRider) {
-                  e.preventDefault();
-                  onCallRider();
-                }
-              }}
-              className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-lg border border-gray-200 bg-white px-3 py-2 text-xs font-bold text-gray-800 hover:bg-gray-50"
-            >
-              <Phone size={14} aria-hidden />
-              Call
-            </a>
           ) : null}
         </div>
       ) : null}

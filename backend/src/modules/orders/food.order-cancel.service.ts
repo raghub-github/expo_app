@@ -15,6 +15,7 @@ import {
 import { refundFieldsFromEngineResult } from "../../lib/order-cancellation-refund.js";
 import { applyPaymentCancellationPayment } from "../../lib/apply-cancellation-payment.js";
 import { applyMerchantOrderCancellationLedger } from "../../lib/apply-merchant-cancellation-ledger.js";
+import { autoRefundOnCancellation } from "../../lib/auto-refund-on-cancellation.js";
 import { completeOrderDispatch } from "../../lib/order-dispatch.service.js";
 import { clearMerchantStoreOrderNotifications } from "../../lib/clear-merchant-order-notifications.js";
 import { emitEvent } from "../notifications/eventBus.js";
@@ -33,6 +34,21 @@ function normalizeFoodStatus(raw: string | null | undefined): string {
   let s = String(raw ?? "CREATED").trim().toUpperCase().replace("NEW", "CREATED");
   if (s === "PLACED" || s === "ORDER_RECEIVED" || s === "ORDER_PLACED") s = "CREATED";
   return s;
+}
+
+/** Restaurant has not accepted yet — customer cancel gets a full refund. */
+function isPreMerchantAccept(
+  foodStatus: string,
+  acceptedAt: Date | string | null | undefined
+): boolean {
+  if (acceptedAt != null) return false;
+  return (
+    foodStatus === "CREATED" ||
+    foodStatus === "NEW" ||
+    foodStatus === "PLACED" ||
+    foodStatus === "ORDER_PLACED" ||
+    foodStatus === "ORDER_RECEIVED"
+  );
 }
 
 function num(value: unknown): number {
@@ -195,6 +211,21 @@ export async function cancelFoodOrderForCustomer(
     sql
   );
   const refund = refundFieldsFromEngineResult(engineResult.raw);
+  const preAccept = isPreMerchantAccept(previousStatus, row.foodAcceptedAt);
+  // Pre-accept customer cancel: always full refund of what was paid (policy),
+  // even if the rule engine returned no_refund / 0.
+  const refundStatus = preAccept
+    ? refund.refundAmount != null && refund.refundAmount > 0.005
+      ? refund.refundStatus === "no_refund"
+        ? "pending"
+        : refund.refundStatus
+      : "pending"
+    : refund.refundStatus;
+  const refundAmount = preAccept
+    ? refund.refundAmount != null && refund.refundAmount > 0.005
+      ? refund.refundAmount
+      : num(row.grandTotal ?? orderCtx.grandTotal)
+    : refund.refundAmount;
 
   await recordOrderCancellation(sql, {
     orderCorePk: row.coreId,
@@ -212,8 +243,8 @@ export async function cancelFoodOrderForCustomer(
     previousStatus,
     acceptedAt: row.foodAcceptedAt?.toISOString?.() ?? null,
     grandTotal: row.grandTotal ?? 0,
-    refundStatus: refund.refundStatus,
-    refundAmount: refund.refundAmount,
+    refundStatus,
+    refundAmount,
     metadata: engineResult.raw ? { financial_rule_engine: engineResult.raw } : undefined,
     cancellationDetails: {
       version: 1,
@@ -223,6 +254,7 @@ export async function cancelFoodOrderForCustomer(
       reason_code: reasonCode,
       action_source: "customer_app",
       cancel_mode: "manual",
+      pre_merchant_accept: preAccept,
     },
   });
 
@@ -252,6 +284,27 @@ export async function cancelFoodOrderForCustomer(
       });
     } catch {
       /* non-fatal */
+    }
+  }
+
+  // Move money: before restaurant accept, customer cancel = full auto-refund.
+  if (preAccept) {
+    try {
+      const engineAmount = Number(refundAmount);
+      await autoRefundOnCancellation(
+        {
+          orderCoreId: row.coreId,
+          reason: displayReason || "Cancelled by customer before restaurant accepted",
+          actorRole: "customer",
+          amount: Number.isFinite(engineAmount) && engineAmount > 0 ? engineAmount : null,
+        },
+        sql
+      );
+    } catch (refundErr) {
+      console.warn(
+        "[cancelFoodOrderForCustomer] pre-accept auto-refund failed:",
+        refundErr
+      );
     }
   }
 
@@ -285,6 +338,9 @@ export async function cancelFoodOrderForCustomer(
       customerId: customerRows[0]?.customer_id ?? null,
       merchantStoreId: orderCtx.merchantStoreId ?? row.merchantStoreId ?? null,
       reason: reasonText || "Cancelled by customer",
+      refundEligible: preAccept || (Number(refundAmount) > 0.005),
+      refundStatus,
+      refundAmount,
     });
   } catch { /* tolerated */ }
 

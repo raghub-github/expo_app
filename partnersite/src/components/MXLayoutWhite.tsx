@@ -1,7 +1,12 @@
 'use client'
 
-import React, { useState, useSyncExternalStore, Suspense, useEffect } from 'react'
+import React, { useState, useSyncExternalStore, Suspense, useMemo } from 'react'
 import { PartnerShellHeaderProvider } from '@/context/PartnerShellHeaderContext'
+import {
+  useIsomorphicLayoutEffect,
+  usePartnerShellFrame,
+  type PartnerShellRegistration,
+} from '@/context/PartnerShellFrameContext'
 import { MXSidebarWhite } from './MXSidebarWhite'
 import { MXPartnerTopBar } from './MXPartnerTopBar'
 import { ParentBlockedBanner } from './ParentBlockedBanner'
@@ -23,7 +28,58 @@ interface MXLayoutWhiteProps {
   headerTitle?: string
 }
 
-export const MXLayoutWhite: React.FC<MXLayoutWhiteProps> = ({
+/**
+ * Under /partners/* the chrome is owned by the persistent <PartnerShellFrame>, so this only
+ * forwards the page's shell props upward and renders the page into the existing main slot —
+ * the sidebar and top bar stay mounted across navigation. Elsewhere it renders the chrome itself.
+ */
+export const MXLayoutWhite: React.FC<MXLayoutWhiteProps> = (props) => {
+  const frame = usePartnerShellFrame()
+  if (frame) return <MXLayoutWhiteInFrame {...props} />
+  return <MXLayoutWhiteStandalone {...props} />
+}
+
+const MXLayoutWhiteInFrame: React.FC<MXLayoutWhiteProps> = ({
+  children,
+  restaurantName,
+  restaurantId,
+  sidebarPosition,
+  leftSidebarCollapsed,
+  mobileMenuExtra,
+  sidebarFilters,
+  hideHelpBadge,
+  headerTitle,
+}) => {
+  const frame = usePartnerShellFrame()
+  const token = useMemo(() => Symbol('mx-layout-white'), [])
+  const register = frame?.registerPartnerShell
+  const unregister = frame?.unregisterPartnerShell
+
+  const registration: PartnerShellRegistration = {
+    restaurantName,
+    restaurantId,
+    sidebarPosition,
+    leftSidebarCollapsed,
+    mobileMenuExtra,
+    sidebarFilters,
+    hideHelpBadge,
+    headerTitle,
+  }
+
+  // Runs after every render (the frame ignores unchanged registrations) so the shell picks up
+  // new titles and filters before paint.
+  useIsomorphicLayoutEffect(() => {
+    register?.(token, registration)
+  })
+
+  useIsomorphicLayoutEffect(() => {
+    return () => unregister?.(token)
+  }, [token, unregister])
+
+  return <>{children}</>
+}
+
+const MXLayoutWhiteStandalone: React.FC<MXLayoutWhiteProps> = ({
   children,
   restaurantName,
   restaurantId,
@@ -45,11 +101,8 @@ export const MXLayoutWhite: React.FC<MXLayoutWhiteProps> = ({
     () => (typeof window !== 'undefined' ? window.matchMedia('(max-width: 767px)').matches : false),
     () => false
   );
+  // Starts expanded; user's collapse toggle is the only thing that changes it.
   const [effectiveCollapsed, setEffectiveCollapsed] = useState(leftSidebarCollapsed);
-  // Keep desktop sidebar expanded after reload — never start icon-only on refresh.
-  useEffect(() => {
-    if (!isSmallScreen) setEffectiveCollapsed(false);
-  }, [isSmallScreen]);
   const collapsed = isSmallScreen ? true : effectiveCollapsed;
   return (
     <PartnerShellHeaderProvider>

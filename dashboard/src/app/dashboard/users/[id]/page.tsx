@@ -9,6 +9,10 @@ import { LoadingButton } from "@/components/ui/LoadingButton";
 import Link from "next/link";
 import { usePermissions } from "@/hooks/usePermissions";
 import { DASHBOARD_DEFINITIONS } from "@/components/users/DashboardAccessSelector";
+import {
+  computeEffectiveAccessLevel,
+  formatAccessLevelLabel,
+} from "@/lib/permissions/access-level";
 
 interface ReportsToUser {
   id: number;
@@ -663,21 +667,57 @@ export default function UserDetailsPage() {
                       DASHBOARD_DEFINITIONS[
                         dashboard.dashboardType as keyof typeof DASHBOARD_DEFINITIONS
                       ]?.label || dashboard.dashboardType;
+                    const selectedGroups = accessData.accessPoints
+                      .filter(
+                        (ap) =>
+                          ap.isActive &&
+                          ap.dashboardType === dashboard.dashboardType
+                      )
+                      .map((ap) => ap.accessPointGroup);
+                    const effectiveLevel = computeEffectiveAccessLevel(
+                      dashboard.dashboardType,
+                      selectedGroups
+                    );
+                    const levelLabel = formatAccessLevelLabel(effectiveLevel);
+                    const isFull = effectiveLevel === "FULL_ACCESS";
+                    const isPartial =
+                      effectiveLevel === "PARTIAL_ACCESS" ||
+                      effectiveLevel === "VIEW_ONLY" ||
+                      effectiveLevel === "OWN_RECORD" ||
+                      effectiveLevel === "RESTRICTED";
                     return (
                       <div
                         key={dashboard.id}
                         className={`rounded-xl p-4 border-2 transition-all hover:shadow-md ${
                           dashboard.isActive
-                            ? "bg-gradient-to-br from-green-50 to-green-100 border-green-300"
+                            ? isFull
+                              ? "bg-gradient-to-br from-green-50 to-green-100 border-green-300"
+                              : isPartial
+                                ? "bg-gradient-to-br from-amber-50 to-amber-100 border-amber-300"
+                                : "bg-gradient-to-br from-blue-50 to-blue-100 border-blue-300"
                             : "bg-gradient-to-br from-gray-50 to-gray-100 border-gray-300"
                         }`}
                       >
                         <div className="flex items-start justify-between mb-3">
                           <div className="flex-1">
                             <div className="text-sm font-bold text-gray-900 mb-1">{label}</div>
-                            <div className="text-xs font-medium text-gray-600 mb-2">
-                              {dashboard.accessLevel.replace(/_/g, " ")}
+                            <div
+                              className={`text-xs font-semibold mb-2 ${
+                                isFull
+                                  ? "text-green-700"
+                                  : isPartial
+                                    ? "text-amber-700"
+                                    : "text-blue-700"
+                              }`}
+                            >
+                              {levelLabel}
                             </div>
+                            {selectedGroups.length > 0 && (
+                              <div className="text-[10px] text-gray-500">
+                                {selectedGroups.length} access point
+                                {selectedGroups.length === 1 ? "" : "s"} granted
+                              </div>
+                            )}
                           </div>
                           <span
                             className={`text-xs font-semibold px-2.5 py-1 rounded-full ${
@@ -698,7 +738,8 @@ export default function UserDetailsPage() {
                             )}
                             {dashboard.grantedAt && (
                               <div className="text-xs text-gray-600">
-                                <span className="font-medium">Date:</span> {new Date(dashboard.grantedAt).toLocaleDateString()}
+                                <span className="font-medium">Date:</span>{" "}
+                                {new Date(dashboard.grantedAt).toLocaleDateString()}
                               </div>
                             )}
                           </div>

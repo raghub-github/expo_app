@@ -1,5 +1,6 @@
 import type { MerchantOrderActionForTimeline } from '@/lib/merchantVisibleTimeline';
 import { prefetchOrderTimeline } from '@/lib/orderTimelineCache';
+import { setCachedRidersLog, type RidersLogPayload } from '@/lib/ridersLogCache';
 
 export type MerchantTimelineEnrichment = {
   riderReachedAt: string | null;
@@ -33,6 +34,18 @@ function parseRidersLog(data: {
   };
 }
 
+function warmRidersLogCache(orderFoodId: number, ridersData: unknown): void {
+  const d = (ridersData ?? {}) as RidersLogPayload;
+  const riders = Array.isArray(d.riders) ? d.riders : [];
+  setCachedRidersLog(orderFoodId, {
+    riders,
+    summary: d.summary ?? {
+      total_assignments: riders.length,
+      distinct_riders: new Set(riders.map((r) => r.rider_id)).size,
+    },
+  });
+}
+
 export function getCachedMerchantTimelineEnrichment(
   orderFoodId: number
 ): MerchantTimelineEnrichment | undefined {
@@ -61,6 +74,7 @@ export function prefetchMerchantTimelineEnrichment(
 
   const p = Promise.all([ridersP, activityP])
     .then(([ridersData, activityData]) => {
+      warmRidersLogCache(orderFoodId, ridersData);
       const enrichment: MerchantTimelineEnrichment = {
         ...parseRidersLog(ridersData),
         actions: (activityData as { actions?: MerchantOrderActionForTimeline[] }).actions ?? [],

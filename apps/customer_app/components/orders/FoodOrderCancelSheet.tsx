@@ -2,7 +2,7 @@
  * GatiMitra-style order cancellation bottom sheet with charge breakdown.
  */
 
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { AppText } from "@/components/AppText";
 
 import { View, TouchableOpacity, StyleSheet, ScrollView, Alert } from "react-native";
@@ -10,15 +10,18 @@ import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { StoreBottomSheetShell } from "@/components/store/StoreBottomSheetShell";
 import { FoodCancelReasonSheet } from "@/components/orders/FoodCancelReasonSheet";
+import { FoodOrderCancelledAckSheet } from "@/components/orders/FoodOrderCancelledAckSheet";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import type { OrderDetail } from "@/services/order.service";
 import { orderService } from "@/services/order.service";
-import { parseOrderBillFromSnapshot } from "@/lib/orderBillBreakdown";
+import { resolveOrderCustomerPaidAmount } from "@/lib/orderBillBreakdown";
 import type { FoodCancelReason } from "@/lib/food-cancel-reasons";
 import {
   isCustomerOrderOnTheWayStatus,
   normalizeCustomerOrderStatus,
 } from "@/lib/customer-order-status-display";
+import { useQueryClient } from "@tanstack/react-query";
+import { refreshCustomerWallet } from "@/lib/refreshCustomerWallet";
 
 const MINT = GatiMitraColors.primaryMint;
 const TEXT = GatiMitraColors.textPrimaryNew;
@@ -32,35 +35,61 @@ type FoodOrderCancelSheetProps = {
   onOpenHelp: () => void;
   onOpenChat: () => void;
   onCancelled?: () => void;
+  /** When false, "Chat with delivery partner" is disabled (no rider assigned yet). */
+  chatEnabled?: boolean;
 };
 
 function formatMoney(value: number) {
   return `₹${value.toFixed(2)}`;
 }
 
-function resolveCancelBreakdown(order: OrderDetail) {
-  const bill = parseOrderBillFromSnapshot(
-    order.billingSnapshot,
-    order.totalAmount ?? null,
-    order.tipAmount ?? null
+/** True until the restaurant has accepted — customer cancel gets a full refund. */
+function isPreMerchantAcceptStatus(status: string): boolean {
+  const s = normalizeCustomerOrderStatus(status);
+  return (
+    s === "ORDER_PLACED" ||
+    s === "CREATED" ||
+    s === "PLACED" ||
+    s === "NEW" ||
+    s === "ORDER_RECEIVED"
   );
-  const orderAmount = bill.paid || bill.grandTotal || order.totalAmount || 0;
+}
+
+function resolveCancelBreakdown(order: OrderDetail) {
+  /** Cashin + GatiCash only — never reconstructed pre-discount bill. */
+  const orderAmount = resolveOrderCustomerPaidAmount(order);
   const status = normalizeCustomerOrderStatus(order.status);
+  const preAccept = isPreMerchantAcceptStatus(status);
   const prepStarted =
-    status === "PREPARING" ||
-    status === "READY" ||
-    status === "READY_FOR_PICKUP" ||
-    isCustomerOrderOnTheWayStatus(status) ||
-    status === "RIDER_ASSIGNED" ||
-    status === "ASSIGNED" ||
-    status === "REACHED_STORE";
+    !preAccept &&
+    (status === "PREPARING" ||
+      status === "READY" ||
+      status === "READY_FOR_PICKUP" ||
+      isCustomerOrderOnTheWayStatus(status) ||
+      status === "RIDER_ASSIGNED" ||
+      status === "ASSIGNED" ||
+      status === "REACHED_STORE" ||
+      status === "ACCEPTED");
+
+  if (preAccept) {
+    return {
+      orderAmount,
+      cancelCharge: 0,
+      chargePct: 0,
+      refund: orderAmount,
+      prepStarted: false,
+      preAccept: true,
+    };
+  }
+
   const chargePct = 100;
   const cancelCharge = orderAmount;
   const refund = 0;
-  return { orderAmount, cancelCharge, chargePct, refund, prepStarted };
+  return { orderAmount, cancelCharge, chargePct, refund, prepStarted, preAccept: false };
 }
 
-function resolveCancelTitle(prepStarted: boolean): string {
+function resolveCancelTitle(prepStarted: boolean, preAccept: boolean): string {
+  if (preAccept) return "Cancel this order?";
   return prepStarted ? "Food under preparation" : "Cancel this order?";
 }
 
@@ -71,12 +100,24 @@ export function FoodOrderCancelSheet({
   onOpenHelp,
   onOpenChat,
   onCancelled,
+  chatEnabled = false,
 }: FoodOrderCancelSheetProps) {
   const insets = useSafeAreaInsets();
-  const { orderAmount, cancelCharge, chargePct, refund, prepStarted } = resolveCancelBreakdown(order);
-  const title = resolveCancelTitle(prepStarted);
+  const queryClient = useQueryClient();
+  const { orderAmount, cancelCharge, chargePct, refund, prepStarted, preAccept } =
+    resolveCancelBreakdown(order);
+  const title = resolveCancelTitle(prepStarted, preAccept);
   const [reasonSheetVisible, setReasonSheetVisible] = useState(false);
   const [cancelling, setCancelling] = useState(false);
+  const [ackVisible, setAckVisible] = useState(false);
+  const [ackMessage, setAckMessage] = useState("");
+
+  const riderAssigned = useMemo(() => {
+    if (chatEnabled) return true;
+    const rider = order.rider;
+    if (!rider) return false;
+    return Boolean(rider.name?.trim() || rider.phone?.trim());
+  }, [chatEnabled, order.rider]);
 
   const handleReasonSelected = async (reason: FoodCancelReason) => {
     setCancelling(true);
@@ -88,7 +129,14 @@ export function FoodOrderCancelSheet({
       setReasonSheetVisible(false);
       onClose();
       onCancelled?.();
-      Alert.alert("Order cancelled", "Your order has been cancelled successfully.");
+      // Refund credit is applied server-side before cancel returns — refresh now.
+      void refreshCustomerWallet(queryClient);
+      setAckMessage(
+        preAccept
+          ? "Your order has been cancelled. A full refund will be processed."
+          : "Your order has been cancelled successfully."
+      );
+      setAckVisible(true);
     } catch (err: unknown) {
       const message =
         err instanceof Error && err.message.trim()
@@ -116,9 +164,11 @@ export function FoodOrderCancelSheet({
 
         <AppText style={styles.title}>{title}</AppText>
         <AppText style={styles.subtitle}>
-          {prepStarted
-            ? `${chargePct}% cancellation charges apply after food preparation has started. No refund will be issued.`
-            : "You can cancel this order, but no refund will be issued once the order is placed."}
+          {preAccept
+            ? "The restaurant hasn’t accepted yet. Cancel now and you’ll get a full refund."
+            : prepStarted
+              ? `${chargePct}% cancellation charges apply after the restaurant has accepted. No refund will be issued.`
+              : "The restaurant has accepted this order. Cancellation charges apply and no refund will be issued."}
         </AppText>
 
         <View style={styles.quickRow}>
@@ -141,13 +191,25 @@ export function FoodOrderCancelSheet({
           </View>
           <View style={styles.breakdownRow}>
             <AppText style={styles.breakdownLabel}>Cancellation charges ({chargePct}%)</AppText>
-            <AppText style={[styles.breakdownValue, styles.chargeValue]}>
+            <AppText
+              style={[
+                styles.breakdownValue,
+                cancelCharge > 0.005 ? styles.chargeValue : null,
+              ]}
+            >
               {formatMoney(cancelCharge)}
             </AppText>
           </View>
           <View style={[styles.breakdownRow, styles.refundRow]}>
             <AppText style={styles.refundLabel}>Your refund</AppText>
-            <AppText style={[styles.refundValue, styles.noRefundValue]}>{formatMoney(refund)}</AppText>
+            <AppText
+              style={[
+                styles.refundValue,
+                refund > 0.005 ? styles.fullRefundValue : styles.noRefundValue,
+              ]}
+            >
+              {formatMoney(refund)}
+            </AppText>
           </View>
         </View>
 
@@ -157,18 +219,29 @@ export function FoodOrderCancelSheet({
           onPress={() => setReasonSheetVisible(true)}
           disabled={cancelling}
         >
-          <AppText style={styles.cancelBtnText}>Cancel order · No refund</AppText>
+          <AppText style={styles.cancelBtnText}>
+            {preAccept ? "Cancel order · Full refund" : "Cancel order · No refund"}
+          </AppText>
         </TouchableOpacity>
 
         <TouchableOpacity
           style={styles.chatLink}
-          activeOpacity={0.85}
+          activeOpacity={riderAssigned ? 0.85 : 1}
+          disabled={!riderAssigned}
           onPress={() => {
+            if (!riderAssigned) return;
             onClose();
             onOpenChat();
           }}
         >
-          <AppText style={styles.chatLinkText}>Chat with delivery partner</AppText>
+          <AppText
+            style={[styles.chatLinkText, !riderAssigned && styles.chatLinkTextDisabled]}
+          >
+            Chat with delivery partner
+          </AppText>
+          {!riderAssigned ? (
+            <AppText style={styles.chatLinkHint}>Available once a partner is assigned</AppText>
+          ) : null}
         </TouchableOpacity>
       </ScrollView>
     </StoreBottomSheetShell>
@@ -182,6 +255,12 @@ export function FoodOrderCancelSheet({
       onSelectReason={(reason) => {
         void handleReasonSelected(reason);
       }}
+    />
+
+    <FoodOrderCancelledAckSheet
+      visible={ackVisible}
+      message={ackMessage}
+      onDismiss={() => setAckVisible(false)}
     />
     </>
   );
@@ -269,6 +348,7 @@ const styles = StyleSheet.create({
   refundLabel: { fontSize: 15, fontWeight: "700", color: TEXT },
   refundValue: { fontSize: 16, fontWeight: "800", color: TEXT },
   noRefundValue: { color: MUTED },
+  fullRefundValue: { color: MINT },
   cancelBtn: {
     marginHorizontal: 16,
     backgroundColor: DESTRUCTIVE,
@@ -289,5 +369,14 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: "700",
     color: MINT,
+  },
+  chatLinkTextDisabled: {
+    color: MUTED,
+    fontWeight: "600",
+  },
+  chatLinkHint: {
+    fontSize: 12,
+    color: MUTED,
+    marginTop: 4,
   },
 });

@@ -81,6 +81,24 @@ export async function deleteStoreNotification(
   }
 }
 
+/** Delete every in-app store notification for this store. */
+export async function deleteAllStoreNotifications(
+  storeId: number,
+  token: string
+): Promise<number> {
+  const res = await authFetch(
+    `${getBase()}/v1/merchant-partner/stores/${storeId}/notifications`,
+    token,
+    { method: "DELETE" }
+  );
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error((err as { error?: string }).error || res.statusText || "Failed to clear notifications");
+  }
+  const data = (await res.json().catch(() => ({}))) as { deleted?: number };
+  return Number(data.deleted ?? 0);
+}
+
 /** In-app title for idle pipeline reminder — must match backend `WAITING_FOR_ORDER_TITLE`. */
 export const WAITING_FOR_ORDER_TITLE = "🟢 Your restaurant is online";
 

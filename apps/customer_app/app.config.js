@@ -4,7 +4,7 @@
  */
 const appJson = require("./app.json");
 
-// Launcher icons: logo-only mark on pure black, ~56% safe zone — see scripts/generate-app-icons.mjs
+// Launcher icons: logo-only mark on pure black, ~40% safe zone — see scripts/generate-app-icons.mjs
 const APP_ICON = "./assets/icon.png";
 const APP_ADAPTIVE_FOREGROUND = "./assets/adaptive-icon.png";
 const APP_ICON_BG = "#000000";
@@ -65,7 +65,10 @@ module.exports = {
           autoVerify: true,
           data: [
             { scheme: "https", host: "gatimitra.com", pathPrefix: "/addr" },
+            { scheme: "https", host: "gatimitra.com", pathPrefix: "/ref" },
+            { scheme: "https", host: "gatimitra.com", pathPrefix: "/invite" },
             { scheme: "gatimitra", host: "address" },
+            { scheme: "gatimitra", host: "referral" },
           ],
           category: ["BROWSABLE", "DEFAULT"],
         },

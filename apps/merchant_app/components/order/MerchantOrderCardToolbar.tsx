@@ -55,7 +55,7 @@ type ToolbarProps = {
   speakingActive?: boolean;
 };
 
-/** Printer · Speak · ⋮ — live + last-24h completed cards. */
+/** Speak · ⋮ — completed cards (no KOT print after deliver/cancel). Live cards pass onPrint. */
 export function MerchantOrderCardToolbar({
   onPrint,
   onSpeak,

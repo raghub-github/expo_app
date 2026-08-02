@@ -44,24 +44,48 @@ export function useGeoServiceAvailability(args: {
       return result.availability;
     },
     enabled: canQuery,
-    staleTime: 60_000,
+    // Emergency blocks must surface without a manual refresh. usePreventServicesRealtime
+    // pushes an invalidation within ~1s of an admin change; these settings are the
+    // safety net when Realtime is unavailable and for schedule-based expiry.
+    staleTime: 10_000,
+    refetchInterval: 20_000,
     refetchOnWindowFocus: true,
+    refetchOnMount: "always",
   });
 
   const enabledServices: GeoEnabledServices = (() => {
     if (!canQuery) return ALL_DISABLED;
     if (query.isLoading && !query.data) return DEFAULT_WHILE_LOADING;
     if (query.isError || !query.data) return ALL_DISABLED;
-    return {
-      food: query.data.food,
-      ride: query.data.ride,
-      parcels: query.data.parcel,
-    };
+    // Main home / tab bar: use coverage* so Prevent Services does not grey out
+    // tiles — user can enter the inner page, where ServiceBlockedGateHost runs.
+    const food = query.data.coverageFood ?? query.data.food;
+    const ride = query.data.coverageRide ?? query.data.ride;
+    const parcels = query.data.coverageParcel ?? query.data.parcel;
+    return { food, ride, parcels };
   })();
+
+  /**
+   * Services turned off right now by an emergency Prevent Services rule.
+   * Empty when the location is simply outside coverage, so callers can show the
+   * "Service Temporarily Unavailable" copy only when it is actually accurate.
+   */
+  const preventBlocked: string[] = query.data?.preventBlocked ?? [];
+  const preventReason: string | null = query.data?.preventReason ?? null;
+  const preventLocationName: string | null = query.data?.preventLocationName ?? null;
+  const preventRuleId: string | null = query.data?.preventRuleId ?? null;
+  const preventStartsAt: string | null = query.data?.preventStartsAt ?? null;
+  const preventEndsAt: string | null = query.data?.preventEndsAt ?? null;
 
   return {
     ...query,
     enabledServices,
+    preventBlocked,
+    preventReason,
+    preventLocationName,
+    preventRuleId,
+    preventStartsAt,
+    preventEndsAt,
     canQuery,
   };
 }

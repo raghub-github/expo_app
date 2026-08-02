@@ -10,8 +10,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { useAuth } from "@/context/AuthContext";
 import { useSelectedStore } from "@/context/SelectedStoreContext";
-import { printKot } from "@/lib/printKot";
-import { buildKotPrintContext } from "@/lib/printContext";
+import { printOrderBill } from "@/lib/orderCardActions";
 import { useMerchantPrintContext } from "@/hooks/useMerchantPrintContext";
 import {
   fetchFoodOrder,
@@ -25,21 +24,39 @@ import {
   type MerchantOrderActionForTimeline,
 } from "@/services/ordersApi";
 import { apiFoodOrderToTimelineOrder } from "@/lib/merchantVisibleTimeline";
+import { getCachedFoodOrder, setCachedFoodOrder } from "@/lib/foodOrderCache";
+import {
+  getCachedOrderTimeline,
+  setCachedOrderTimeline,
+} from "@/lib/orderTimelineCache";
+import { requestMerchantDashboardStatsRefresh } from "@/lib/merchantDashboardStatsBus";
 import { MerchantOrderVerticalTimeline } from "@/components/order/MerchantOrderVerticalTimeline";
 import { OrderItemDetails } from "@/components/order/OrderItemDetails";
 import { OrderBillDetails } from "@/components/order/OrderBillDetails";
 import { OrderDetailCustomerCard } from "@/components/order/OrderDetailCustomerCard";
 import { OrderDetailCustomerSection } from "@/components/order/OrderDetailCustomerSection";
+import { OrderDetailInstructionsSection } from "@/components/order/OrderDetailInstructionsSection";
 import { OrderDetailRiderCard } from "@/components/order/OrderDetailRiderCard";
 import { OrderDetailSkeleton } from "@/components/order/OrderDetailSkeleton";
-import { LiveOrderSupportSheet } from "@/components/order/LiveOrderSupportSheet";
 import { fetchOrderEta, minutesUntil, prepDeadlineIso, type OrderEtaResponse } from "@/services/etaApi";
-import { apiStatusToStage, mapApiOrder, type OrderStage } from "@/hooks/useOrders";
-import { apiFoodOrderToRiderLog } from "@/lib/orderAssignedRider";
+import {
+  apiStatusToStage,
+  mapApiOrder,
+  orderRecordToApiFoodOrder,
+  type OrderStage,
+} from "@/hooks/useOrders";
+import { useOrdersContext } from "@/context/OrdersContext";
+import {
+  apiFoodOrderToRiderLog,
+  isInactiveRiderAssignment,
+  resolveActiveRiderFromLog,
+  resolveCancelledRidersFromLog,
+} from "@/lib/orderAssignedRider";
 import {
   isPostPickupCancellation,
   resolvePostPickupRider,
 } from "@/lib/postPickupCancellation";
+import { useNearbyDispatchRiders } from "@/hooks/useNearbyDispatchRiders";
 import { formatOrderIdDisplay } from "@/components/order/orderFormatters";
 import {
   GatiMitraMerchant,
@@ -107,16 +124,36 @@ export default function OrderDetailScreen() {
   const insets = useSafeAreaInsets();
   const { token } = useAuth();
   const { selectedStore } = useSelectedStore();
+  const { orders: boardOrders } = useOrdersContext();
   const printContext = useMerchantPrintContext();
 
   const routeId = id ?? "";
   const ordersFoodId = parseOrdersFoodId(routeId);
-  const storeId = selectedStore?.id ?? null;
+  const selectedStoreId = selectedStore?.id ?? null;
+  const cachedSeed =
+    ordersFoodId != null
+      ? getCachedFoodOrder(ordersFoodId, selectedStoreId)
+      : undefined;
+  const boardSeed = useMemo(() => {
+    if (ordersFoodId == null) return null;
+    const rec = boardOrders.find((o) => o.id === String(ordersFoodId));
+    return rec ? orderRecordToApiFoodOrder(rec) : null;
+  }, [boardOrders, ordersFoodId]);
+  const storeId =
+    cachedSeed?.storeId ??
+    (boardSeed && boardOrders.find((o) => o.id === String(ordersFoodId))?.merchantStoreId) ??
+    selectedStoreId;
 
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(!cachedSeed && !boardSeed);
   const [error, setError] = useState<string | null>(null);
-  const [order, setOrder] = useState<ApiFoodOrder | null>(null);
-  const [timeline, setTimeline] = useState<FoodOrderTimelineEntry[]>([]);
+  const [order, setOrder] = useState<ApiFoodOrder | null>(
+    () => cachedSeed?.order ?? boardSeed ?? null
+  );
+  const [timeline, setTimeline] = useState<FoodOrderTimelineEntry[]>(() =>
+    storeId != null && ordersFoodId != null
+      ? getCachedOrderTimeline(storeId, ordersFoodId) ?? []
+      : []
+  );
   const [actions, setActions] = useState<MerchantOrderActionForTimeline[]>([]);
   const [riderReachedAt, setRiderReachedAt] = useState<string | null>(null);
   const [ridersLog, setRidersLog] = useState<FoodOrderRiderLogEntry[]>([]);
@@ -124,7 +161,15 @@ export default function OrderDetailScreen() {
   const [actionLoading, setActionLoading] = useState(false);
   const markReadyInFlightRef = useRef(false);
   const [eta, setEta] = useState<OrderEtaResponse | null>(null);
-  const [supportOpen, setSupportOpen] = useState(false);
+
+  // Late board arrival (poll finished after mount) — paint immediately, never blank.
+  useEffect(() => {
+    if (order || !boardSeed || ordersFoodId == null) return;
+    setOrder(boardSeed);
+    setLoading(false);
+    setError(null);
+    if (storeId != null) setCachedFoodOrder(storeId, ordersFoodId, boardSeed);
+  }, [boardSeed, order, ordersFoodId, storeId]);
 
   const load = useCallback(async () => {
     if (!token || !storeId || ordersFoodId == null) {
@@ -137,50 +182,100 @@ export default function OrderDetailScreen() {
       return;
     }
 
-    setLoading(true);
+    const seed = getCachedFoodOrder(ordersFoodId, storeId)?.order ?? boardSeed;
+    const hasSeed = Boolean(seed);
+    if (seed) {
+      setOrder((prev) => prev ?? seed);
+      setCachedFoodOrder(storeId, ordersFoodId, seed);
+    }
+    if (!hasSeed) setLoading(true);
     setError(null);
+
+    const soft = async <T,>(p: Promise<T>, fallback: T): Promise<T> => {
+      try {
+        return await p;
+      } catch {
+        return fallback;
+      }
+    };
+
     try {
-      const [o, tl, act, riders] = await Promise.all([
+      // Primary order + riders log in parallel so history is ready for the sheet.
+      const [o, ridersEarly] = await Promise.all([
         fetchFoodOrder(storeId, ordersFoodId, token),
-        fetchFoodOrderTimeline(storeId, ordersFoodId, token),
-        fetchFoodOrderActions(storeId, ordersFoodId, token),
-        fetchFoodOrderRidersLog(storeId, ordersFoodId, token),
+        soft(fetchFoodOrderRidersLog(storeId, ordersFoodId, token), [] as FoodOrderRiderLogEntry[]),
       ]);
+      setCachedFoodOrder(storeId, ordersFoodId, o);
       setOrder(o);
+      if (ridersEarly.length > 0) {
+        setRidersLog(ridersEarly);
+        setRiderReachedAt(
+          ridersEarly.find((r) => r.reached_merchant_at)?.reached_merchant_at ?? null
+        );
+        setActiveRider(
+          [...ridersEarly]
+            .reverse()
+            .find((r) => {
+              const st = (r.assignment_status ?? "").toUpperCase();
+              return st !== "CANCELLED" && st !== "REJECTED" && st !== "UNASSIGNED";
+            }) ?? null
+        );
+      }
+      setLoading(false);
+
+      const [tl, act, riders] = await Promise.all([
+        soft(
+          fetchFoodOrderTimeline(storeId, ordersFoodId, token),
+          getCachedOrderTimeline(storeId, ordersFoodId) ?? []
+        ),
+        soft(fetchFoodOrderActions(storeId, ordersFoodId, token), [] as MerchantOrderActionForTimeline[]),
+        soft(fetchFoodOrderRidersLog(storeId, ordersFoodId, token), ridersEarly),
+      ]);
+      setCachedOrderTimeline(storeId, ordersFoodId, tl);
       setTimeline(tl);
       setActions(act);
-      setRidersLog(riders);
+      if (riders.length > 0 || ridersEarly.length === 0) {
+        setRidersLog(riders);
+      }
       const active =
         [...riders]
           .reverse()
           .find((r) => {
             const st = (r.assignment_status ?? "").toUpperCase();
-            return st !== "CANCELLED" && st !== "REJECTED";
+            return st !== "CANCELLED" && st !== "REJECTED" && st !== "UNASSIGNED";
           }) ?? null;
       setActiveRider(active);
-      const reached =
-        riders.find((r) => r.reached_merchant_at)?.reached_merchant_at ?? null;
-      setRiderReachedAt(reached);
+      setRiderReachedAt(
+        riders.find((r) => r.reached_merchant_at)?.reached_merchant_at ?? null
+      );
 
       const idText = (o.formatted_order_id ?? "").trim();
       if (idText && /^GM\d+/i.test(idText)) {
-        const etaRes = await fetchOrderEta(idText);
+        const etaRes = await soft(fetchOrderEta(idText), null);
         setEta(etaRes);
       } else {
         setEta(null);
       }
     } catch (e) {
-      setOrder(null);
-      setTimeline([]);
-      setActions([]);
-      setRidersLog([]);
-      setRiderReachedAt(null);
-      setActiveRider(null);
-      setError(e instanceof Error ? e.message : "Failed to load order");
+      // Never blank the page if anything already painted (cache / board / prior paint).
+      let painted = false;
+      setOrder((prev) => {
+        const next = prev ?? seed ?? null;
+        painted = next != null;
+        return next;
+      });
+      if (!painted) {
+        setTimeline([]);
+        setActions([]);
+        setRidersLog([]);
+        setRiderReachedAt(null);
+        setActiveRider(null);
+        setError(e instanceof Error ? e.message : "Failed to load order");
+      }
     } finally {
       setLoading(false);
     }
-  }, [token, storeId, ordersFoodId, routeId]);
+  }, [token, storeId, ordersFoodId, routeId, boardSeed]);
 
   useEffect(() => {
     void load();
@@ -203,17 +298,69 @@ export default function OrderDetailScreen() {
 
   const prepByIso = prepDeadlineIso(eta);
   const prepMinsLeft = minutesUntil(prepByIso);
+
+  const cancelledRiders = useMemo(
+    () => resolveCancelledRidersFromLog(ridersLog),
+    [ridersLog]
+  );
+
   const displayRider = useMemo(() => {
-    if (order && isPostPickupCancellation(order, ridersLog)) {
+    if (!order) return null;
+    if (isPostPickupCancellation(order, ridersLog)) {
       return resolvePostPickupRider(ridersLog, order) ?? apiFoodOrderToRiderLog(order);
     }
-    return activeRider ?? (order ? apiFoodOrderToRiderLog(order) : null);
-  }, [activeRider, order, ridersLog]);
+    const fromLog = resolveActiveRiderFromLog(ridersLog);
+    if (fromLog) return fromLog;
+    if (activeRider) return activeRider;
+    const fromOrder = apiFoodOrderToRiderLog(order);
+    if (fromOrder && !isInactiveRiderAssignment(fromOrder.assignment_status, fromOrder.cancelled_at, fromOrder.rejected_at)) {
+      return fromOrder;
+    }
+    // No active rider — if only cancelled history exists, surface the latest cancelled as primary.
+    if (cancelledRiders[0]) return cancelledRiders[0];
+    return fromOrder;
+  }, [activeRider, cancelledRiders, order, ridersLog]);
+
   const displayRiderReachedAt = riderReachedAt ?? order?.rider_reached_at ?? null;
-  const showDeliveryPartner = useMemo(
-    () => Boolean(order && isPostPickupCancellation(order, ridersLog)),
-    [order, ridersLog]
+
+  const isGatiMitraDelivery =
+    String(order?.delivery_type ?? "").toUpperCase() === "GATIMITRA_RIDER";
+
+  const hasActiveDisplayRider = Boolean(
+    displayRider &&
+      !isInactiveRiderAssignment(
+        displayRider.assignment_status,
+        displayRider.cancelled_at,
+        displayRider.rejected_at
+      )
   );
+
+  const showPendingAssign =
+    isGatiMitraDelivery &&
+    !hasActiveDisplayRider &&
+    (stage === "preparing" || stage === "ready" || stage === "picked_up");
+
+  const { summary: nearbyRiderSummary } = useNearbyDispatchRiders(
+    ordersFoodId,
+    showPendingAssign
+  );
+
+  const showDeliveryPartner = useMemo(() => {
+    if (!order || !isGatiMitraDelivery) return false;
+    if (hasActiveDisplayRider) return true;
+    if (cancelledRiders.length > 0) return true;
+    if (showPendingAssign) return true;
+    if (isPostPickupCancellation(order, ridersLog)) return true;
+    return false;
+  }, [
+    cancelledRiders.length,
+    hasActiveDisplayRider,
+    isGatiMitraDelivery,
+    order,
+    ridersLog,
+    showPendingAssign,
+  ]);
+
   const headerSubtitle = useMemo(() => {
     if (!order) return "";
     const id =
@@ -222,7 +369,64 @@ export default function OrderDetailScreen() {
     const store = (selectedStore?.store_name ?? "").trim();
     return store ? `ID: ${id}, ${store}` : `ID: ${id}`;
   }, [order, selectedStore?.store_name]);
-  const supportOrder = useMemo(() => (order ? mapApiOrder(order) : null), [order]);
+  const printOrderRecord = useMemo(() => (order ? mapApiOrder(order) : null), [order]);
+
+  const riderOrderRecord = useMemo(() => {
+    if (!order) return null;
+    const base = mapApiOrder(order, {
+      storeId: selectedStore?.id ?? null,
+      storeName: selectedStore?.store_name ?? null,
+    });
+    // Prefer board seed rider fields when detail DTO is missing assignee info.
+    const boardRec =
+      ordersFoodId != null
+        ? boardOrders.find((o) => o.id === String(ordersFoodId))
+        : undefined;
+    const withBoard = boardRec
+      ? {
+          ...base,
+          riderId: base.riderId ?? boardRec.riderId,
+          riderName: base.riderName ?? boardRec.riderName,
+          riderMobile: base.riderMobile ?? boardRec.riderMobile,
+          riderSelfieUrl: base.riderSelfieUrl ?? boardRec.riderSelfieUrl,
+          riderAssignmentStatus: base.riderAssignmentStatus ?? boardRec.riderAssignmentStatus,
+          riderReachedAt: base.riderReachedAt ?? boardRec.riderReachedAt,
+          reachedMerchantAt: base.reachedMerchantAt ?? boardRec.reachedMerchantAt,
+          riderPickedUpAt: base.riderPickedUpAt ?? boardRec.riderPickedUpAt,
+          riderDisplayVariant: base.riderDisplayVariant ?? boardRec.riderDisplayVariant,
+        }
+      : base;
+    const active =
+      displayRider &&
+      !isInactiveRiderAssignment(
+        displayRider.assignment_status,
+        displayRider.cancelled_at,
+        displayRider.rejected_at
+      )
+        ? displayRider
+        : null;
+    if (!active) return withBoard;
+    return {
+      ...withBoard,
+      riderId: active.rider_id || withBoard.riderId,
+      riderName: (active.rider_name ?? "").trim() || withBoard.riderName,
+      riderMobile: (active.rider_mobile ?? "").trim() || withBoard.riderMobile,
+      riderSelfieUrl: active.selfie_url ?? withBoard.riderSelfieUrl,
+      riderAssignmentStatus: active.assignment_status || withBoard.riderAssignmentStatus,
+      riderReachedAt:
+        active.reached_merchant_at ?? displayRiderReachedAt ?? withBoard.riderReachedAt,
+      reachedMerchantAt: active.reached_merchant_at ?? withBoard.reachedMerchantAt,
+      riderPickedUpAt: active.picked_up_at ?? withBoard.riderPickedUpAt,
+    };
+  }, [
+    boardOrders,
+    displayRider,
+    displayRiderReachedAt,
+    order,
+    ordersFoodId,
+    selectedStore?.id,
+    selectedStore?.store_name,
+  ]);
 
   const runAction = async (nextApiStatus: string) => {
     if (!token || !storeId || ordersFoodId == null || !order) return;
@@ -233,6 +437,7 @@ export default function OrderDetailScreen() {
         accept_mode: "manual",
       });
       setOrder(updated);
+      requestMerchantDashboardStatsRefresh();
       const [tl, act, riders] = await Promise.all([
         fetchFoodOrderTimeline(storeId, ordersFoodId, token),
         fetchFoodOrderActions(storeId, ordersFoodId, token),
@@ -307,29 +512,24 @@ export default function OrderDetailScreen() {
         </Pressable>
         <View style={styles.headerTitles}>
           <Text style={styles.headerTitle}>Order details</Text>
-          {order && !loading && headerSubtitle ? (
+          {order && headerSubtitle ? (
             <Text style={styles.headerSubtitle} numberOfLines={1}>
               {headerSubtitle}
             </Text>
           ) : null}
         </View>
-        {order && !loading ? (
+        {order ? (
           <View style={styles.headerActions}>
             <Pressable
-              onPress={() => void printKot(order, buildKotPrintContext(printContext))}
+              onPress={() => {
+                if (!printOrderRecord) return;
+                void printOrderBill(printOrderRecord, printContext);
+              }}
               style={({ pressed }) => [styles.iconBtn, pressed && { opacity: 0.7 }, GatiMitraMerchant.cursorPointer]}
               accessibilityRole="button"
-              accessibilityLabel="Print kitchen order ticket"
+              accessibilityLabel="Print order bill"
             >
               <Ionicons name="print-outline" size={22} color={GatiMitraMerchant.textPrimary} />
-            </Pressable>
-            <Pressable
-              onPress={() => setSupportOpen(true)}
-              style={({ pressed }) => [styles.iconBtn, pressed && { opacity: 0.7 }, GatiMitraMerchant.cursorPointer]}
-              accessibilityRole="button"
-              accessibilityLabel="Order support chat"
-            >
-              <Ionicons name="chatbubble-ellipses-outline" size={22} color={GatiMitraMerchant.textPrimary} />
             </Pressable>
           </View>
         ) : null}
@@ -340,9 +540,9 @@ export default function OrderDetailScreen() {
         contentContainerStyle={[styles.scrollContent, { paddingBottom: insets.bottom + 24 }]}
         showsVerticalScrollIndicator={false}
       >
-        {loading ? (
+        {loading && !order ? (
           <OrderDetailSkeleton />
-        ) : error ? (
+        ) : error && !order ? (
           <View style={styles.card}>
             <Text style={styles.errorTitle}>Could not load order</Text>
             <Text style={styles.errorBody}>{error}</Text>
@@ -375,10 +575,12 @@ export default function OrderDetailScreen() {
                               : ` · ${prepMinsLeft} min left`
                             : ""}
                         </Text>
-                        {eta?.promise.promisedDeliveryAt ? (
+                        {(eta?.firstEtaAt || eta?.promise.promisedDeliveryAt) ? (
                           <Text style={styles.prepBannerSub}>
                             Customer promised by{" "}
-                            {new Date(eta.promise.promisedDeliveryAt).toLocaleTimeString(undefined, {
+                            {new Date(
+                              eta.firstEtaAt || eta.promise.promisedDeliveryAt!
+                            ).toLocaleTimeString(undefined, {
                               hour: "2-digit",
                               minute: "2-digit",
                             })}
@@ -391,28 +593,36 @@ export default function OrderDetailScreen() {
               />
             </View>
 
+            {showDeliveryPartner ? (
+              <View style={{ marginHorizontal: H_PADDING, marginTop: 18 }}>
+                <OrderDetailRiderCard
+                  rider={displayRider}
+                  ridersLog={ridersLog}
+                  orderRecord={riderOrderRecord}
+                  deliveryType={order.delivery_type}
+                  riderReachedAt={displayRiderReachedAt}
+                  orderStage={stage}
+                  showPendingAssign={showPendingAssign}
+                  nearbySummary={nearbyRiderSummary}
+                />
+              </View>
+            ) : null}
+
             <View style={styles.detailSection}>
               <OrderDetailCustomerSection order={order} />
             </View>
 
             <View style={styles.detailSection}>
               <OrderItemDetails order={order} />
+              <OrderDetailInstructionsSection
+                merchantInstructionsList={order.merchant_instructions_list}
+                requiresUtensils={order.requires_utensils}
+              />
             </View>
 
             <View style={styles.detailSection}>
               <OrderBillDetails order={order} />
             </View>
-
-            {showDeliveryPartner ? (
-              <View style={{ marginHorizontal: H_PADDING, marginTop: 18 }}>
-                <OrderDetailRiderCard
-                  rider={displayRider}
-                  deliveryType={order.delivery_type}
-                  riderReachedAt={displayRiderReachedAt}
-                  orderStage={stage}
-                />
-              </View>
-            ) : null}
 
             <View style={styles.timelineSection}>
               <Text style={styles.timelineSectionTitle}>Order timeline</Text>
@@ -471,6 +681,7 @@ export default function OrderDetailScreen() {
                         { action_source: "app" }
                       );
                       setOrder(updated);
+                      requestMerchantDashboardStatsRefresh();
                       await refreshTimeline();
                       setError(null);
                     } catch (e) {
@@ -514,14 +725,6 @@ export default function OrderDetailScreen() {
           </>
         ) : null}
       </ScrollView>
-
-      {supportOrder ? (
-        <LiveOrderSupportSheet
-          visible={supportOpen}
-          order={supportOrder}
-          onClose={() => setSupportOpen(false)}
-        />
-      ) : null}
     </View>
   );
 }
@@ -576,7 +779,6 @@ const styles = StyleSheet.create({
     borderRadius: CARD_RADIUS,
     borderWidth: 1,
     borderColor: "#E5E7EB",
-    ...GatiMitraMerchant.shadowSm,
   },
   prepBanner: {
     marginTop: 12,
@@ -613,7 +815,6 @@ const styles = StyleSheet.create({
     borderColor: "#E5E7EB",
     paddingHorizontal: 12,
     paddingVertical: 10,
-    ...GatiMitraMerchant.shadowSm,
   },
   actions: { marginHorizontal: H_PADDING, marginTop: 4, gap: 10 },
   actionBtn: {

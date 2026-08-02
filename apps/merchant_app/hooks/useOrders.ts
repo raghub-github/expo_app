@@ -17,6 +17,7 @@ export {
   apiStatusToStage,
   stageTransitionToApi,
   mapApiOrder,
+  orderRecordToApiFoodOrder,
 } from "@/lib/orderRecord";
 
 export { useOrdersContext as useOrders } from "@/context/OrdersContext";

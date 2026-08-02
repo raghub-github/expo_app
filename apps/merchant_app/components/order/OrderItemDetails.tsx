@@ -14,8 +14,8 @@ import { GatiMitraMerchant, CARD_PADDING, CARD_RADIUS, FONT_LABEL } from "@/cons
 import { merchantLineTotalForFoodItem, formatMerchantRs } from "@/lib/merchant-line-total";
 import {
   foodOrderAddonRows,
-  foodOrderHasCustomizations,
   foodOrderVariantLabel,
+  resolveLineItemCookingNote,
 } from "@/lib/merchant-order-food-item-display";
 
 type Props = {
@@ -48,88 +48,96 @@ export function OrderItemDetails({ order }: Props) {
         {items.length === 0 ? (
           <Text style={styles.empty}>No items listed.</Text>
         ) : (
-          items.map((item, i) => {
-            const qty = Math.max(1, item.qty || 1);
-            const clickable = itemHasBreakdown(item);
-            const variantLabel = foodOrderVariantLabel(item);
-            const custRows = foodOrderAddonRows(item);
-            const showCust = custRows.length > 0;
-            const hasCustomizations = foodOrderHasCustomizations(item);
+          <>
+            <View style={styles.columnsHeader}>
+              <Text style={styles.itemNameHeader}>Items to be packed</Text>
+              <Text style={styles.qtyHeader}>QTY</Text>
+              <Text style={styles.amountHeader}>Amount</Text>
+            </View>
+            {items.map((item, i) => {
+              const qty = Math.max(1, item.qty || 1);
+              const clickable = itemHasBreakdown(item);
+              const variantLabel = foodOrderVariantLabel(item);
+              const custRows = foodOrderAddonRows(item);
+              const cookingNote = resolveLineItemCookingNote(item);
+              const showCust = custRows.length > 0 || Boolean(cookingNote);
+              const lineAmount = merchantLineTotalForFoodItem(item);
 
-            return (
-              <View
-                key={`${item.name}-${i}`}
-                style={[styles.itemCard, i < items.length - 1 && styles.itemCardBorder]}
-              >
-                <Pressable
-                  onPress={() => setDetailsItem(foodItemToLineItem(item))}
-                  style={({ pressed }) => [styles.itemHeader, pressed && styles.itemHeaderPressed]}
+              return (
+                <View
+                  key={`${item.name}-${i}`}
+                  style={[styles.itemCard, i < items.length - 1 && styles.itemCardBorder]}
                 >
-                  <ItemVegMark
-                    vegNonveg={item.veg_nonveg ?? order.veg_non_veg}
-                    name={item.name}
-                    size={16}
-                  />
-                  <View style={styles.itemTitleWrap}>
-                    <Text style={styles.itemName} numberOfLines={2}>
-                      {qty} x {item.name}
-                    </Text>
-                    <View style={styles.tagRow}>
+                  <Pressable
+                    onPress={() => setDetailsItem(foodItemToLineItem(item))}
+                    style={({ pressed }) => [styles.itemHeader, pressed && styles.itemHeaderPressed]}
+                  >
+                    <ItemVegMark
+                      vegNonveg={item.veg_nonveg ?? order.veg_non_veg}
+                      name={item.name}
+                      size={16}
+                    />
+                    <View style={styles.itemTitleWrap}>
+                      <Text style={styles.itemName} numberOfLines={2}>
+                        {item.name}
+                      </Text>
                       {variantLabel ? (
-                        <View style={styles.variantBadge}>
-                          <Text style={styles.variantBadgeText}>{variantLabel}</Text>
-                        </View>
-                      ) : null}
-                      {hasCustomizations ? (
-                        <View style={styles.customizedTag}>
-                          <Text style={styles.customizedTagText}>Customized</Text>
+                        <View style={styles.tagRow}>
+                          <View style={styles.variantBadge}>
+                            <Text style={styles.variantBadgeText}>{variantLabel}</Text>
+                          </View>
                         </View>
                       ) : null}
                     </View>
-                  </View>
-                  {clickable ? (
-                    <Pressable
-                      onPress={() => setBreakdownItem(item)}
-                      style={({ pressed }) => [
-                        styles.pricePressable,
-                        pressed && styles.pricePressed,
-                      ]}
-                      accessibilityRole="button"
-                      accessibilityLabel={`View price breakdown for ${item.name}`}
-                    >
-                      <Text style={styles.itemPriceClickable}>
-                        {formatMerchantRs(merchantLineTotalForFoodItem(item))}
-                      </Text>
-                      <Ionicons name="chevron-down" size={14} color="#2563EB" />
-                    </Pressable>
-                  ) : (
-                    <Text style={styles.itemPrice}>
-                      {formatMerchantRs(merchantLineTotalForFoodItem(item))}
-                    </Text>
-                  )}
-                </Pressable>
-
-                {showCust ? (
-                  <View style={styles.custSection}>
-                    <Text style={styles.custHeading}>Customizations</Text>
-                    {custRows.map((row, j) => (
-                      <View key={j} style={styles.custRow}>
-                        <Text style={styles.custBullet}>•</Text>
-                        <Text style={styles.custLabel} numberOfLines={2}>
-                          {row.label}
-                        </Text>
-                        {row.amount != null ? (
-                          <Text style={styles.custAmount}>{formatMerchantRs(row.amount)}</Text>
-                        ) : (
-                          <Text style={styles.custDash}>—</Text>
-                        )}
+                    <View style={styles.qtyCol}>
+                      <View style={styles.qtyCell}>
+                        <Text style={styles.qtyText}>{qty}</Text>
                       </View>
-                    ))}
-                  </View>
-                ) : null}
-              </View>
-            );
-          })
+                    </View>
+                    {clickable ? (
+                      <Pressable
+                        onPress={() => setBreakdownItem(item)}
+                        style={({ pressed }) => [
+                          styles.pricePressable,
+                          pressed && styles.pricePressed,
+                        ]}
+                        accessibilityRole="button"
+                        accessibilityLabel={`View price breakdown for ${item.name}`}
+                      >
+                        <Text style={styles.itemPriceClickable}>{formatMerchantRs(lineAmount)}</Text>
+                        <Ionicons name="chevron-down" size={14} color={GatiMitraMerchant.textSecondary} />
+                      </Pressable>
+                    ) : (
+                      <Text style={styles.itemPrice}>{formatMerchantRs(lineAmount)}</Text>
+                    )}
+                  </Pressable>
+
+                  {showCust ? (
+                    <View style={styles.custSection}>
+                      {cookingNote ? (
+                        <Text style={styles.cookingNote} numberOfLines={3}>
+                          {cookingNote}
+                        </Text>
+                      ) : null}
+                      {custRows.map((row, j) => (
+                        <View key={j} style={styles.custRow}>
+                          <Text style={styles.custBullet}>•</Text>
+                          <Text style={styles.custLabel} numberOfLines={2}>
+                            {row.label}
+                          </Text>
+                          {row.amount != null ? (
+                            <Text style={styles.custAmount}>{formatMerchantRs(row.amount)}</Text>
+                          ) : (
+                            <Text style={styles.custDash}>—</Text>
+                          )}
+                        </View>
+                      ))}
+                    </View>
+                  ) : null}
+                </View>
+              );
+            })}
+          </>
         )}
       </View>
 
@@ -164,7 +172,36 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "#E5E7EB",
     overflow: "hidden",
-    ...GatiMitraMerchant.shadowSm,
+  },
+  columnsHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: CARD_PADDING,
+    paddingVertical: 8,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: GatiMitraMerchant.divider,
+    backgroundColor: "#F8FAFC",
+  },
+  itemNameHeader: {
+    flex: 1,
+    minWidth: 0,
+    fontSize: 10,
+    fontWeight: "700",
+    color: GatiMitraMerchant.textSecondary,
+  },
+  qtyHeader: {
+    width: 46,
+    textAlign: "center",
+    fontSize: 10,
+    fontWeight: "700",
+    color: GatiMitraMerchant.textSecondary,
+  },
+  amountHeader: {
+    width: 72,
+    textAlign: "right",
+    fontSize: 10,
+    fontWeight: "700",
+    color: GatiMitraMerchant.textSecondary,
   },
   empty: {
     fontSize: 13,
@@ -180,8 +217,8 @@ const styles = StyleSheet.create({
   },
   itemHeader: {
     flexDirection: "row",
-    alignItems: "flex-start",
-    gap: 10,
+    alignItems: "center",
+    gap: 8,
   },
   itemHeaderPressed: {
     opacity: 0.85,
@@ -196,22 +233,6 @@ const styles = StyleSheet.create({
     flexWrap: "wrap",
     alignItems: "center",
     gap: 6,
-  },
-  customizedTag: {
-    alignSelf: "flex-start",
-    backgroundColor: "#CCFBF1",
-    borderWidth: 1,
-    borderColor: "#99F6E4",
-    paddingHorizontal: 8,
-    paddingVertical: 2,
-    borderRadius: 6,
-  },
-  customizedTagText: {
-    fontSize: 10,
-    fontWeight: "700",
-    color: "#0F766E",
-    letterSpacing: 0.3,
-    textTransform: "uppercase",
   },
   itemName: {
     fontSize: FONT_LABEL,
@@ -231,20 +252,43 @@ const styles = StyleSheet.create({
     fontWeight: "600",
     color: "#047857",
   },
+  qtyCol: {
+    width: 38,
+    flexShrink: 0,
+    alignItems: "center",
+  },
+  qtyCell: {
+    minWidth: 30,
+    height: 28,
+    paddingHorizontal: 6,
+    borderWidth: 1,
+    borderColor: "#D7DCE2",
+    borderRadius: 4,
+    backgroundColor: "#FFFFFF",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  qtyText: {
+    fontSize: 13,
+    fontWeight: "600",
+    color: GatiMitraMerchant.textPrimary,
+    fontVariant: ["tabular-nums"],
+  },
   itemPrice: {
+    width: 65,
+    textAlign: "right",
     fontSize: FONT_LABEL,
     fontWeight: "700",
     color: GatiMitraMerchant.textPrimary,
     fontVariant: ["tabular-nums"],
   },
   pricePressable: {
+    width: 65,
     flexDirection: "row",
     alignItems: "center",
+    justifyContent: "flex-end",
     gap: 2,
     paddingVertical: 2,
-    paddingLeft: 6,
-    borderBottomWidth: 1.5,
-    borderBottomColor: "#2563EB",
   },
   pricePressed: {
     opacity: 0.7,
@@ -252,7 +296,7 @@ const styles = StyleSheet.create({
   itemPriceClickable: {
     fontSize: FONT_LABEL,
     fontWeight: "700",
-    color: "#2563EB",
+    color: GatiMitraMerchant.textPrimary,
     fontVariant: ["tabular-nums"],
   },
   custSection: {
@@ -260,13 +304,15 @@ const styles = StyleSheet.create({
     marginLeft: 26,
     paddingLeft: 10,
     borderLeftWidth: 2,
-    borderLeftColor: "#5EEAD4",
+    borderLeftColor: "#E5E7EB",
   },
-  custHeading: {
+  cookingNote: {
     fontSize: 12,
-    fontWeight: "700",
-    color: "#0D9488",
+    fontWeight: "500",
+    color: GatiMitraMerchant.textSecondary,
+    lineHeight: 18,
     marginBottom: 6,
+    fontStyle: "italic",
   },
   custRow: {
     flexDirection: "row",

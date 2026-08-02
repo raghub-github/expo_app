@@ -170,20 +170,37 @@ export async function fetchFoodOrders(
 ): Promise<{ orders: OrdersCoreRow[]; total: number; page: number; limit: number }> {
   const params = new URLSearchParams();
   params.set("orderType", filters.orderType);
-  if (filters.statusFilter) params.set("statusFilter", filters.statusFilter);
+  const isDirectOrderIdLookup =
+    Boolean(filters.search?.trim()) &&
+    (filters.searchType === "Order Id" ||
+      filters.searchType === "Internal Order Id" ||
+      !filters.searchType);
+  // Direct ID lookup must ignore stage tabs (cancelled/delivered still resolve).
+  if (filters.statusFilter && !isDirectOrderIdLookup) {
+    params.set("statusFilter", filters.statusFilter);
+  }
   if (filters.search) params.set("search", filters.search);
   if (filters.searchType) params.set("searchType", filters.searchType);
   params.set("page", String(filters.page));
   params.set("limit", String(filters.limit));
+  if (isDirectOrderIdLookup) {
+    params.set("skipCache", "1");
+  }
   if (filters.foodFilters) {
     params.set("foodFilters", encodeURIComponent(JSON.stringify(filters.foodFilters)));
   }
 
-  const res = await fetch(`/api/orders/core?${params.toString()}`, { credentials: "include", signal });
+  const res = await fetch(`/api/orders/core?${params.toString()}`, {
+    credentials: "include",
+    signal,
+  });
   const body: OrdersApiResponse = await res.json().catch(() => ({ success: false }));
 
   if (!res.ok || !body.success || !Array.isArray(body.data)) {
-    return { orders: [], total: 0, page: filters.page, limit: filters.limit };
+    const message =
+      (body as { error?: string }).error ||
+      `Orders fetch failed (${res.status || "network"})`;
+    throw new Error(message);
   }
 
   return {
@@ -192,6 +209,23 @@ export async function fetchFoodOrders(
     page: body.pagination?.page ?? filters.page,
     limit: body.pagination?.limit ?? filters.limit,
   };
+}
+
+/** Order time column: `7-30-2026, 4:20:53 PM` (dashes, no zero-padded month/day/hour). */
+function formatFoodOrderListTime(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "—";
+  const month = d.getMonth() + 1;
+  const day = d.getDate();
+  const year = d.getFullYear();
+  let hours = d.getHours();
+  const minutes = d.getMinutes();
+  const seconds = d.getSeconds();
+  const ampm = hours >= 12 ? "PM" : "AM";
+  hours = hours % 12;
+  if (hours === 0) hours = 12;
+  const pad2 = (n: number) => String(n).padStart(2, "0");
+  return `${month}-${day}-${year}, ${hours}:${pad2(minutes)}:${pad2(seconds)} ${ampm}`;
 }
 
 function useFoodOrdersQuery(
@@ -594,7 +628,7 @@ export default function FoodOrdersClient() {
           </td>
           <td className="px-2 py-1.5 whitespace-nowrap" style={{ color: TABLE_TEXT }}>
             <OrderNum>
-              {row.createdAt ? new Date(row.createdAt).toLocaleString() : "—"}
+              {row.createdAt ? formatFoodOrderListTime(row.createdAt) : "—"}
             </OrderNum>
           </td>
           <td className="px-2 py-1.5" style={{ color: TABLE_TEXT }}>

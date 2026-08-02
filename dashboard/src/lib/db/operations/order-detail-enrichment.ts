@@ -642,6 +642,20 @@ async function fetchEtaFields(orderId: number): Promise<Record<string, unknown>>
       SELECT
         first_eta_at,
         first_eta,
+        promised_delivery_at,
+        promised_eta_minutes,
+        estimated_delivery_time,
+        eta_seconds,
+        placed_at,
+        created_at
+      FROM orders_core
+      WHERE id = ${orderId}
+      LIMIT 1
+    `,
+    sql`
+      SELECT
+        first_eta_at,
+        first_eta,
         estimated_delivery_time,
         eta_seconds,
         placed_at,
@@ -1045,6 +1059,11 @@ export async function getOrderDetailEnrichment(
     const firstEtaAtIso = resolveFirstEtaAtIso({
       firstEtaAt: etaFields.first_eta_at as Date | string | null | undefined,
       firstEtaLegacy: etaFields.first_eta as Date | string | null | undefined,
+      promisedDeliveryAt: etaFields.promised_delivery_at as
+        | Date
+        | string
+        | null
+        | undefined,
       estimatedDeliveryTime: etaFields.estimated_delivery_time as
         | Date
         | string

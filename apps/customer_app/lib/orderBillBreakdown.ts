@@ -344,3 +344,36 @@ export function parseOrderBillFromSnapshot(
     totalSavings,
   };
 }
+
+/**
+ * Amount the customer actually paid (Cashin + GatiCash).
+ *
+ * `orders_core.grand_total` / billing `final_amount` are post-wallet Cashin.
+ * GatiCash is a payment instrument — never use reconstructed `grandTotal`
+ * (pre-discount bill) for refunds; that inflates the amount when Cashin is ₹0.
+ */
+export function resolveOrderCustomerPaidAmount(order: {
+  totalAmount?: number | null;
+  gatiCashUsed?: number | null;
+  billingSnapshot?: Record<string, unknown> | null;
+  tipAmount?: number | null;
+}): number {
+  const bill = parseOrderBillFromSnapshot(
+    order.billingSnapshot,
+    order.totalAmount ?? null,
+    order.tipAmount ?? null
+  );
+  const fromApi = num(order.gatiCashUsed);
+  const gati =
+    fromApi > 0.005 ? roundBill(fromApi) : bill.gatiCashApplied > 0.005 ? bill.gatiCashApplied : 0;
+  const netRaw = order.totalAmount;
+  const net =
+    netRaw != null && Number.isFinite(Number(netRaw))
+      ? roundBill(Math.max(0, Number(netRaw)))
+      : roundBill(Math.max(0, bill.paid));
+
+  let ctc = roundBill(net + gati);
+  if (ctc <= 0.005 && gati > 0.005) return gati;
+  if (ctc <= 0.005 && bill.paid > 0.005) return bill.paid;
+  return ctc;
+}

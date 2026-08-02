@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import { useRouter } from "expo-router";
 import { AppText as Text } from "@/components/AppText";
 import { View, StyleSheet, ScrollView, Pressable, ActivityIndicator, Modal, Platform, ToastAndroid, Alert, Animated, PanResponder, RefreshControl } from "react-native";
@@ -20,6 +20,8 @@ import { useIncomingOrderSheet } from "@/context/IncomingOrderSheetContext";
 import { useAuth } from "@/context/AuthContext";
 import { useSelectedStore } from "@/context/SelectedStoreContext";
 import { fetchFoodOrder } from "@/services/ordersApi";
+import { isNotificationsInboxUrl } from "@/lib/isNotificationsInboxUrl";
+import { openOrderDetailOnce } from "@/lib/openOrderDetailOnce";
 
 const LORA = "Lora_400Regular";
 const LORA_BOLD = "Lora_700Bold";
@@ -237,25 +239,15 @@ export default function NotificationsScreen() {
   const { token } = useAuth();
   const { selectedStore } = useSelectedStore();
   const storeId = selectedStore?.id ?? null;
-  const { notifications, markAllAsRead, markAsRead, removeNotification, loading, refresh } =
+  const { notifications, markAsRead, removeNotification, clearAllNotifications, loading, refresh } =
     useNotifications();
   const { orders, upsertOrder } = useOrders();
   const { openIncomingOrderSheet } = useIncomingOrderSheet();
-  const [selected, setSelected] = useState<MerchantNotification | null>(null);
-  const modalVisible = selected != null;
   const [pendingDelete, setPendingDelete] = useState<MerchantNotification | null>(null);
+  const [confirmClearAll, setConfirmClearAll] = useState(false);
+  const [clearingAll, setClearingAll] = useState(false);
   const confirmVisible = pendingDelete != null;
   const [refreshing, setRefreshing] = useState(false);
-
-  const canOpenSelected = useMemo(() => {
-    if (!selected) return false;
-    return Boolean(selected.actionUrl || selected.orderId);
-  }, [selected]);
-
-  const selectedDisplayBody = useMemo(
-    () => (selected ? merchantNotificationDisplayBody(selected, orders) : ""),
-    [selected, orders]
-  );
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
@@ -269,7 +261,7 @@ export default function NotificationsScreen() {
   const handleItemPress = async (item: MerchantNotification) => {
     markAsRead(item.id);
 
-    // Waiting-for-orders → Orders tab (not detail modal).
+    // Waiting-for-orders → Orders tab (not detail page).
     if (isWaitingForOrdersNotification(item)) {
       router.replace("/(tabs)/orders" as never);
       return;
@@ -293,37 +285,26 @@ export default function NotificationsScreen() {
           return;
         }
         if (order) {
-          router.push(`/order/${order.id}` as never);
+          openOrderDetailOnce(router as never, order.id);
           return;
         }
         if (item.orderId) {
-          router.push(`/order/${item.orderId}` as never);
+          openOrderDetailOnce(router as never, String(item.orderId));
           return;
         }
       } catch {
-        if (item.orderId) router.push(`/order/${item.orderId}` as never);
+        if (item.orderId) openOrderDetailOnce(router as never, String(item.orderId));
       }
     }
 
-    if (item.actionUrl) {
+    // Real deep links that leave the inbox (never /notifications — that loops).
+    if (item.actionUrl && !isNotificationsInboxUrl(item.actionUrl)) {
       router.push(item.actionUrl as never);
       return;
     }
 
-    setSelected(item);
-  };
-
-  const handleOpenSelected = () => {
-    if (!selected) return;
-    const { actionUrl, orderId } = selected;
-    setSelected(null);
-    if (actionUrl) {
-      router.push(actionUrl as never);
-      return;
-    }
-    if (orderId) {
-      router.push(`/order/${orderId}`);
-    }
+    // Default: open the inner detail page (Close + Delete CTAs).
+    router.push(`/notifications/${encodeURIComponent(item.id)}` as never);
   };
 
   const showToast = (message: string) => {
@@ -341,13 +322,23 @@ export default function NotificationsScreen() {
   const confirmDelete = async () => {
     if (!pendingDelete) return;
     const id = pendingDelete.id;
-    if (selected?.id === id) setSelected(null);
     setPendingDelete(null);
     await removeNotification(id);
     showToast("Notification deleted");
   };
 
-  const hasUnread = notifications.some((n) => !n.read);
+  const runClearAll = async () => {
+    setClearingAll(true);
+    try {
+      await clearAllNotifications();
+      setConfirmClearAll(false);
+      showToast("All notifications cleared");
+    } finally {
+      setClearingAll(false);
+    }
+  };
+
+  const hasNotifications = notifications.length > 0;
 
   return (
     <View style={styles.root}>
@@ -378,28 +369,40 @@ export default function NotificationsScreen() {
         </Pressable>
       </Modal>
 
-      <Modal visible={modalVisible} transparent animationType="fade" onRequestClose={() => setSelected(null)}>
-        <Pressable style={styles.modalBackdrop} onPress={() => setSelected(null)}>
-          <Pressable style={styles.modalCard} onPress={() => null}>
-            <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle} numberOfLines={2}>
-                {selected?.title ?? ""}
-              </Text>
-              <Pressable onPress={() => setSelected(null)} hitSlop={12} style={({ pressed }) => pressed && styles.pressed}>
-                <Ionicons name="close" size={22} color={GatiMitraMerchant.textSecondary} />
+      <Modal
+        visible={confirmClearAll}
+        transparent
+        animationType="fade"
+        onRequestClose={() => (!clearingAll ? setConfirmClearAll(false) : undefined)}
+      >
+        <Pressable
+          style={styles.modalBackdrop}
+          onPress={() => (!clearingAll ? setConfirmClearAll(false) : undefined)}
+        >
+          <Pressable style={styles.confirmCard} onPress={() => null}>
+            <Text style={styles.confirmTitle}>Clear all notifications?</Text>
+            <Text style={styles.confirmBody}>
+              This deletes every notification for this store. You can't undo this.
+            </Text>
+            <View style={styles.confirmActions}>
+              <Pressable
+                onPress={() => setConfirmClearAll(false)}
+                style={({ pressed }) => [styles.modalBtn, pressed && styles.pressed]}
+                disabled={clearingAll}
+              >
+                <Text style={styles.modalBtnText}>Cancel</Text>
               </Pressable>
-            </View>
-            {!!selected?.dateTime && <Text style={styles.modalTime}>{selected.dateTime}</Text>}
-            <Text style={styles.modalBody}>{selectedDisplayBody}</Text>
-            <View style={styles.modalActions}>
-              {canOpenSelected && (
-                <Pressable
-                  onPress={handleOpenSelected}
-                  style={({ pressed }) => [styles.modalBtn, styles.modalBtnPrimary, pressed && styles.pressed]}
-                >
-                  <Text style={[styles.modalBtnText, styles.modalBtnPrimaryText]}>Open</Text>
-                </Pressable>
-              )}
+              <Pressable
+                onPress={() => void runClearAll()}
+                style={({ pressed }) => [styles.modalBtn, styles.confirmDeleteBtn, pressed && styles.pressed]}
+                disabled={clearingAll}
+              >
+                {clearingAll ? (
+                  <ActivityIndicator color="#FFFFFF" size="small" />
+                ) : (
+                  <Text style={[styles.modalBtnText, styles.modalBtnPrimaryText]}>Clear all</Text>
+                )}
+              </Pressable>
             </View>
           </Pressable>
         </Pressable>
@@ -414,12 +417,12 @@ export default function NotificationsScreen() {
           <Ionicons name="arrow-back" size={24} color={GatiMitraMerchant.textPrimary} />
         </Pressable>
         <Text style={styles.headerTitle}>Notifications</Text>
-        {hasUnread ? (
+        {hasNotifications ? (
           <Pressable
-            onPress={() => void markAllAsRead()}
+            onPress={() => setConfirmClearAll(true)}
             style={({ pressed }) => [styles.markReadBtn, pressed && styles.pressed]}
           >
-            <Text style={styles.markReadText}>Mark all read</Text>
+            <Text style={styles.markReadText}>Clear all</Text>
           </Pressable>
         ) : (
           <View style={styles.headerSpacer} />
@@ -618,14 +621,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     justifyContent: "center",
   },
-  modalCard: {
-    backgroundColor: GatiMitraMerchant.cardBg,
-    borderRadius: 16,
-    padding: 16,
-    borderWidth: 1,
-    borderColor: GatiMitraMerchant.border,
-    maxHeight: "80%",
-  },
   confirmCard: {
     backgroundColor: GatiMitraMerchant.cardBg,
     borderRadius: 16,
@@ -654,37 +649,8 @@ const styles = StyleSheet.create({
   confirmDeleteBtn: {
     backgroundColor: GatiMitraMerchant.error,
     borderColor: GatiMitraMerchant.error,
-  },
-  modalHeader: {
-    flexDirection: "row",
-    alignItems: "flex-start",
-    justifyContent: "space-between",
-    gap: 12,
-  },
-  modalTitle: {
-    flex: 1,
-    fontSize: 16,
-    fontFamily: LORA_BOLD,
-    color: GatiMitraMerchant.textPrimary,
-  },
-  modalTime: {
-    marginTop: 6,
-    fontSize: 12,
-    fontFamily: LORA,
-    color: GatiMitraMerchant.textTertiary,
-  },
-  modalBody: {
-    marginTop: 10,
-    fontSize: 14,
-    lineHeight: 20,
-    fontFamily: LORA,
-    color: GatiMitraMerchant.textSecondary,
-  },
-  modalActions: {
-    flexDirection: "row",
-    justifyContent: "flex-end",
-    gap: 10,
-    marginTop: 16,
+    minWidth: 96,
+    alignItems: "center",
   },
   modalBtn: {
     paddingVertical: 10,
@@ -698,10 +664,6 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontFamily: LORA_BOLD,
     color: GatiMitraMerchant.textPrimary,
-  },
-  modalBtnPrimary: {
-    backgroundColor: GatiMitraMerchant.primary,
-    borderColor: GatiMitraMerchant.primary,
   },
   modalBtnPrimaryText: {
     color: "#FFFFFF",

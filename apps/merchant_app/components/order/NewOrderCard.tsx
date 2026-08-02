@@ -5,8 +5,6 @@ import { Ionicons } from "@expo/vector-icons";
 import { GatiMitraMerchant } from "@/constants/theme";
 import type { OrderRecord, LineItem } from "@/hooks/useOrders";
 import { useOrderSpeech } from "@/hooks/useOrderSpeech";
-import { useMerchantPrintContext } from "@/hooks/useMerchantPrintContext";
-import { printOrderKot } from "@/lib/orderCardActions";
 import { MerchantOrderCardLayout } from "@/components/order/MerchantOrderCardLayout";
 import { MerchantOrderActionsSheet } from "@/components/order/MerchantOrderActionsSheet";
 import { OrderCustomerBottomSheet } from "@/components/order/OrderCustomerBottomSheet";
@@ -60,7 +58,6 @@ export function NewOrderCard({
   const [timelineOpen, setTimelineOpen] = useState(false);
   const [customerOpen, setCustomerOpen] = useState(false);
   const { speaking, speak } = useOrderSpeech();
-  const printContext = useMerchantPrintContext();
 
   const timeSince = formatTimeSince(order.createdAt, nowMs);
   const acceptSecondsRemaining =
@@ -100,7 +97,6 @@ export function NewOrderCard({
         onCustomerPress={() => setCustomerOpen(true)}
         speakingActive={speaking}
         onSpeak={() => void speak(order)}
-        onPrint={() => void printOrderKot(order, printContext)}
         onMenu={() => setMenuOpen(true)}
         showRider={false}
         outerBanner={
@@ -159,7 +155,6 @@ export function NewOrderCard({
       <MerchantOrderActionsSheet
         visible={menuOpen}
         order={order}
-        printContext={printContext}
         onClose={() => setMenuOpen(false)}
         onOpenTimeline={() => setTimelineOpen(true)}
         onOpenCustomer={() => setCustomerOpen(true)}

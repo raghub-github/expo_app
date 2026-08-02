@@ -83,5 +83,7 @@ export type MerchantScrollIndexMap = {
   pastOrders: number | null;
   startingAt: number | null;
   sectionByTitle: Map<string, number>;
+  /** Category id → section header index. Survives duplicate / renamed category titles. */
+  sectionByCategoryId: Map<string, number>;
   menuItemByKey: Map<string, number>;
 };

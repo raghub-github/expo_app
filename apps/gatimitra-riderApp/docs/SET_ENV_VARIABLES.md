@@ -27,8 +27,8 @@ eas env:create --scope project --name RNMAPBOX__MAPS_DOWNLOAD_TOKEN --value "YOU
 ## Example with Real Token
 
 ```bash
-# Your token (from the terminal output)
-TOKEN="pk.eyJ1IjoicmFnaHViaHVuaWEiLCJhIjoiY21qcHc2d2tlM291YzNnczU4eHpvNjcxdiJ9.ozfZWJvnP8f2DJekeHBELw"
+# Replace with your Mapbox public token (starts with pk.)
+TOKEN="YOUR_MAPBOX_PUBLIC_TOKEN"
 
 # Set for development
 eas env:create --scope project --name EXPO_PUBLIC_MAPBOX_PUBLIC_TOKEN --value "$TOKEN" --environment development

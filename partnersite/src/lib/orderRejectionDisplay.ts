@@ -1,8 +1,11 @@
 import {
+  AUTO_CANCELLED_LABEL,
   cancellationReasonsAreDuplicate,
   GATIMITRA_TEAM_REJECTION_LABEL,
+  humanizeMerchantCancellationReason,
   isCatalogCancellationReason,
   isGatiMitraTeamCancellationLabel,
+  isMerchantAcceptTimeoutReason,
   merchantFacingCancelledByLabel,
 } from '@/lib/merchant-cancellation-display';
 
@@ -19,8 +22,14 @@ export function splitRejectionMessage(
   cancelledByType?: string | null
 ): { prefix: string; detail: string } {
   const label = merchantFacingCancelledByLabel(cancelledByLabel, cancelledByType);
-  const r = (reason ?? '').trim();
+  const raw = (reason ?? '').trim();
+  const r = humanizeMerchantCancellationReason(raw);
   const source = (cancelledByType ?? '').trim().toLowerCase();
+
+  // Accept-window timeout: show only "Auto Cancelled" (never the machine code).
+  if (isMerchantAcceptTimeoutReason(raw) || (source === 'system' && /^auto\s*cancell?ed$/i.test(r))) {
+    return { prefix: AUTO_CANCELLED_LABEL, detail: '' };
+  }
 
   if (label) {
     if (isGatiMitraTeamCancellationLabel(label)) {
@@ -36,7 +45,7 @@ export function splitRejectionMessage(
   }
 
   if (/^auto cancelled/i.test(r)) {
-    return { prefix: 'Auto Cancelled', detail: r.replace(/^auto cancelled:\s*/i, '').trim() };
+    return { prefix: AUTO_CANCELLED_LABEL, detail: '' };
   }
   if (source === 'admin' || isCatalogCancellationReason(r)) {
     if (!r || GENERIC_CANCEL_REASONS.has(r.toLowerCase())) {

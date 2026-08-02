@@ -11,6 +11,7 @@ import { StatusBar } from "expo-status-bar";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { resolveCustomerBottomNavHeight } from "@/constants/layout";
 import { useLocationStore } from "@/store/locationStore";
+import { useActiveLocationReconcileReady } from "@/hooks/useActiveLocationReconcileReady";
 import { HomeLocationHeader, HomeWeatherBanner } from "@/components/home/HomeScreenHeader";
 import { HomePromoCarousel } from "@/components/home/HomePromoCarousel";
 import { HomeServicesRow } from "@/components/home/HomeServicesRow";
@@ -41,6 +42,7 @@ export default function HomeScreen() {
   const locationSource = useLocationStore((s) => s.locationSource);
   const coords = useLocationStore((s) => s.coords);
   const { address, requestPermissionAndFetch, refetchLocation } = useLocationStore();
+  const reconcileReady = useActiveLocationReconcileReady();
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
@@ -64,10 +66,11 @@ export default function HomeScreen() {
 
   useEffect(() => {
     if (!locationHydrated) return;
+    if (!reconcileReady) return;
     if (locationSource === "selected" && coords) return;
     if (locationSource === "current" && coords) return;
     requestPermissionAndFetch();
-  }, [locationHydrated, locationSource, coords, requestPermissionAndFetch]);
+  }, [locationHydrated, reconcileReady, locationSource, coords, requestPermissionAndFetch]);
 
   useEffect(() => {
     void prefetchAddresses(queryClient);

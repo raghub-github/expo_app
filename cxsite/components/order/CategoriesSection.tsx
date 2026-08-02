@@ -99,7 +99,7 @@ function TopPickCategoryCard({
                 alt=""
                 loading={priority ? 'eager' : 'lazy'}
                 fetchPriority={priority ? 'high' : 'auto'}
-                decoding="async"
+                decoding={priority ? 'sync' : 'async'}
                 onError={() => setImgBroken(true)}
               />
             </div>
@@ -128,7 +128,7 @@ function TopPickCategoryCard({
               alt=""
               loading={priority ? 'eager' : 'lazy'}
               fetchPriority={priority ? 'high' : 'auto'}
-              decoding="async"
+              decoding={priority ? 'sync' : 'async'}
               onError={() => setImgBroken(true)}
             />
           </div>
@@ -660,6 +660,14 @@ export default function CategoriesSection({
         sessionStorage.setItem(FOOD_CATEGORIES_CACHE_KEY, JSON.stringify(seeded))
       } catch {
         // ignore
+      }
+      // Decode first page of icons ASAP (same-origin attachment proxy).
+      for (const c of seeded.slice(0, TOP_PICKS_PER_PAGE)) {
+        const src = c.img ? resolveAppAssetUrl(c.img) : null
+        if (!src || typeof window === 'undefined') continue
+        const img = new window.Image()
+        img.decoding = 'async'
+        img.src = src
       }
     } else {
       try {

@@ -1,8 +1,10 @@
 import {
   cancellationReasonsAreDuplicate,
   GATIMITRA_TEAM_REJECTION_LABEL,
+  humanizeMerchantCancellationReason,
   isCatalogCancellationReason,
   isGatiMitraTeamCancellationLabel,
+  isMerchantAcceptTimeoutReason,
   merchantFacingCancelledByLabel,
   GATIMITRA_CANCELLED_LABEL,
   AUTO_CANCELED_LABEL,
@@ -66,10 +68,16 @@ export function splitRejectionMessage(
   }
 
   if (actor.kind === "auto") {
-    if (!r || /^auto cancel/i.test(r)) {
+    if (!r || /^auto cancel/i.test(r) || isMerchantAcceptTimeoutReason(r)) {
       return { prefix: AUTO_CANCELED_LABEL, detail: "" };
     }
-    return { prefix: AUTO_CANCELED_LABEL, detail: r.replace(/^auto cancelled?:?\s*/i, "").trim() };
+    const cleaned = humanizeMerchantCancellationReason(
+      r.replace(/^auto cancelled?:?\s*/i, "").trim()
+    );
+    if (!cleaned || cleaned === AUTO_CANCELED_LABEL || isMerchantAcceptTimeoutReason(cleaned)) {
+      return { prefix: AUTO_CANCELED_LABEL, detail: "" };
+    }
+    return { prefix: AUTO_CANCELED_LABEL, detail: cleaned };
   }
 
   if (actor.kind === "actor" && actor.label === "GatiMitra") {
@@ -105,8 +113,8 @@ export function splitRejectionMessage(
     }
     return { prefix: label, detail: r };
   }
-  if (/^auto cancelled/i.test(r)) {
-    return { prefix: AUTO_CANCELED_LABEL, detail: r.replace(/^auto cancelled:\s*/i, "").trim() };
+  if (/^auto cancelled/i.test(r) || isMerchantAcceptTimeoutReason(r)) {
+    return { prefix: AUTO_CANCELED_LABEL, detail: "" };
   }
   if (source === "admin" || isCatalogCancellationReason(r)) {
     if (!r || GENERIC_CANCEL_REASONS.has(r.toLowerCase())) {

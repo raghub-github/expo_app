@@ -28,6 +28,8 @@ import { RiderFonts } from "@/src/theme/fonts";
 import { RiderPushSetup } from "@/src/components/RiderPushSetup";
 import { RiderDispatchRealtime } from "@/src/components/RiderDispatchRealtime";
 import { RiderDispatchKeepAlive } from "@/src/components/RiderDispatchKeepAlive";
+import { PreventServicesRealtime } from "@/src/components/PreventServicesRealtime";
+import { ServiceRestrictedSheet } from "@/src/components/ServiceRestrictedSheet";
 import { RiderDutyLocationPing } from "@/src/components/RiderDutyLocationPing";
 import { isRiderWsEnabled } from "@/src/config/env";
 import { IncomingRideOrderHost } from "@/src/components/orders/IncomingRideOrderHost";
@@ -140,6 +142,8 @@ function RootLayoutNav() {
           <RiderDutyLocationPing />
           <ActiveOrderResumeBootstrap />
           <RiderDispatchKeepAlive />
+          <PreventServicesRealtime />
+          <ServiceRestrictedSheet />
           {isRiderWsEnabled() ? <RiderDispatchRealtime /> : null}
 
           <Stack
@@ -156,6 +160,8 @@ function RootLayoutNav() {
             <Stack.Screen name="view-profile" />
             <Stack.Screen name="view-documents" />
             <Stack.Screen name="view-vehicle" />
+            <Stack.Screen name="referrals" />
+            <Stack.Screen name="referral-details/[filter]" />
 
             <Stack.Screen name="payment-details" />
 

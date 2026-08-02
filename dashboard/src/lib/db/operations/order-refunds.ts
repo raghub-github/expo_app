@@ -3,9 +3,14 @@
  * Inserts refund records (refund_type enum: full, partial, item, delivery_fee, tip, penalty).
  */
 
+import { randomUUID } from "crypto";
 import { getSql } from "../client";
 
 export type RefundTypeDb = "full" | "partial" | "item" | "delivery_fee" | "tip" | "penalty";
+
+function mintRefundRrn(): string {
+  return `RRN-${randomUUID().toUpperCase()}`;
+}
 
 export interface CreateOrderRefundInput {
   orderId: number;
@@ -48,6 +53,73 @@ export async function createOrderRefund(
   const sql = getSql();
 
   const metadataJson = JSON.stringify(input.refundMetadata ?? {});
+  const refundRrn = mintRefundRrn();
+
+  try {
+    const [row] = await sql`
+      INSERT INTO order_refunds (
+        order_id,
+        order_payment_id,
+        refund_type,
+        refund_reason,
+        refund_description,
+        refund_amount,
+        refund_fee,
+        net_refund_amount,
+        product_type,
+        mx_debit_amount,
+        mx_debit_reason,
+        refund_status,
+        refund_initiated_by,
+        refund_initiated_by_id,
+        refund_metadata,
+        refund_reference
+      )
+      VALUES (
+        ${input.orderId},
+        ${input.orderPaymentId ?? null},
+        ${input.refundType}::refund_type,
+        ${input.refundReason},
+        ${input.refundDescription ?? null},
+        ${input.refundAmount},
+        ${input.refundFee ?? 0},
+        ${input.netRefundAmount ?? input.refundAmount},
+        ${input.productType ?? "order"},
+        ${input.mxDebitAmount ?? 0},
+        ${input.mxDebitReason ?? null},
+        'pending',
+        ${input.refundInitiatedBy ?? "agent"},
+        ${input.refundInitiatedById ?? null},
+        CAST(${metadataJson} AS jsonb),
+        ${refundRrn}
+      )
+      RETURNING
+        id,
+        order_id AS "orderId",
+        order_payment_id AS "orderPaymentId",
+        refund_type AS "refundType",
+        refund_reason AS "refundReason",
+        refund_description AS "refundDescription",
+        refund_amount AS "refundAmount",
+        refund_fee AS "refundFee",
+        net_refund_amount AS "netRefundAmount",
+        refund_status AS "refundStatus",
+        refund_initiated_by AS "refundInitiatedBy",
+        refund_initiated_by_id AS "refundInitiatedById",
+        mx_debit_amount AS "mxDebitAmount",
+        mx_debit_reason AS "mxDebitReason",
+        created_at AS "createdAt"
+    `;
+
+    if (!row) {
+      throw new Error("Failed to create order refund");
+    }
+
+    return row as unknown as OrderRefundRecord;
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    if (!/refund_reference|42703/i.test(msg)) throw e;
+  }
 
   const [row] = await sql`
     INSERT INTO order_refunds (
@@ -121,10 +193,20 @@ export interface OrderRefundListItem {
   executionStatus: string | null;
   executionRoute: string | null;
   failureReason: string | null;
+  /** Customer-facing unique RRN (RRN-{UUID}). */
+  refundReference: string | null;
+  /** Original GatiCash payment transaction id (GC-{UUID}). */
+  originalGatiCashTxnId: string | null;
   /** Razorpay refund id (rfnd_…) when the PG refund succeeded. */
   razorpayRefundId: string | null;
   /** Legacy PG refund id column (fallback). */
   pgRefundId: string | null;
+  /** Wallet credit ledger id for GatiCash / wallet refunds. */
+  customerWalletLedgerId: number | null;
+  /** Source-wise amounts restored (₹). */
+  splitWalletAmount: number | null;
+  splitRazorpayAmount: number | null;
+  customerWalletAmount: number | null;
   refundInitiatedBy: string | null;
   refundInitiatedById: number | null;
   initiatedByEmail: string | null;
@@ -148,8 +230,14 @@ export async function listOrderRefunds(orderId: number): Promise<OrderRefundList
         r.execution_status::text AS "executionStatus",
         r.execution_route::text AS "executionRoute",
         r.failure_reason AS "failureReason",
+        r.refund_reference AS "refundReference",
+        r.original_gati_cash_txn_id AS "originalGatiCashTxnId",
         r.razorpay_refund_id AS "razorpayRefundId",
         r.pg_refund_id AS "pgRefundId",
+        r.customer_wallet_ledger_id AS "customerWalletLedgerId",
+        r.split_wallet_amount AS "splitWalletAmount",
+        r.split_razorpay_amount AS "splitRazorpayAmount",
+        r.customer_wallet_amount AS "customerWalletAmount",
         r.refund_initiated_by AS "refundInitiatedBy",
         r.refund_initiated_by_id AS "refundInitiatedById",
         u.email AS "initiatedByEmail",
@@ -161,11 +249,31 @@ export async function listOrderRefunds(orderId: number): Promise<OrderRefundList
       WHERE r.order_id = ${orderId}
       ORDER BY r.created_at DESC
     `;
-    return rows as unknown as OrderRefundListItem[];
+    return (rows as Record<string, unknown>[]).map((row) => ({
+      ...(row as unknown as OrderRefundListItem),
+      splitWalletAmount:
+        row.splitWalletAmount != null && Number.isFinite(Number(row.splitWalletAmount))
+          ? Number(row.splitWalletAmount)
+          : null,
+      splitRazorpayAmount:
+        row.splitRazorpayAmount != null && Number.isFinite(Number(row.splitRazorpayAmount))
+          ? Number(row.splitRazorpayAmount)
+          : null,
+      customerWalletAmount:
+        row.customerWalletAmount != null && Number.isFinite(Number(row.customerWalletAmount))
+          ? Number(row.customerWalletAmount)
+          : null,
+    }));
   } catch (e) {
-    // Older DBs may lack razorpay_refund_id — fall back to pg_refund_id only.
+    // Older DBs may lack razorpay_refund_id / wallet ledger / RRN columns — fall back.
     const msg = e instanceof Error ? e.message : String(e);
-    if (!/razorpay_refund_id|42703/i.test(msg)) throw e;
+    if (
+      !/razorpay_refund_id|customer_wallet_ledger_id|split_wallet|refund_reference|original_gati_cash_txn|42703/i.test(
+        msg
+      )
+    ) {
+      throw e;
+    }
     const rows = await sql`
       SELECT
         r.id,
@@ -178,8 +286,14 @@ export async function listOrderRefunds(orderId: number): Promise<OrderRefundList
         r.execution_status::text AS "executionStatus",
         r.execution_route::text AS "executionRoute",
         r.failure_reason AS "failureReason",
+        NULL::text AS "refundReference",
+        NULL::text AS "originalGatiCashTxnId",
         NULL::text AS "razorpayRefundId",
         r.pg_refund_id AS "pgRefundId",
+        NULL::bigint AS "customerWalletLedgerId",
+        NULL::numeric AS "splitWalletAmount",
+        NULL::numeric AS "splitRazorpayAmount",
+        NULL::numeric AS "customerWalletAmount",
         r.refund_initiated_by AS "refundInitiatedBy",
         r.refund_initiated_by_id AS "refundInitiatedById",
         u.email AS "initiatedByEmail",
@@ -191,6 +305,13 @@ export async function listOrderRefunds(orderId: number): Promise<OrderRefundList
       WHERE r.order_id = ${orderId}
       ORDER BY r.created_at DESC
     `;
-    return rows as unknown as OrderRefundListItem[];
+    return (rows as unknown as OrderRefundListItem[]).map((row) => ({
+      ...row,
+      refundReference: null,
+      originalGatiCashTxnId: null,
+      splitWalletAmount: null,
+      splitRazorpayAmount: null,
+      customerWalletAmount: null,
+    }));
   }
 }

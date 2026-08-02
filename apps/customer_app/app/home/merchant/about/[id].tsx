@@ -234,7 +234,7 @@ export default function MerchantAboutScreen() {
                   ) : null}
                 </>
               ) : (
-                <AppText style={styles.hoursMuted}>{openStatus.sub ?? openStatus.label}</AppText>
+                <AppText style={styles.hoursMuted}>{openStatus.label}</AppText>
               )}
             </AppText>
             <Ionicons

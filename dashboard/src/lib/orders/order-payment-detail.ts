@@ -22,6 +22,7 @@ import {
   formatPaymentModeOnlineOrCash,
 } from "@/lib/orders/order-payment-display";
 import type { OrderPaymentDetail, OrderPaymentRecord } from "@/lib/orders/order-payment-types";
+import { resolveCustomerCtcPaidAmount } from "@/lib/orders/customer-ctc";
 
 export type { OrderPaymentDetail, OrderPaymentRecord } from "@/lib/orders/order-payment-types";
 export {
@@ -39,7 +40,35 @@ function round2(n: number): number {
   return Math.round(n * 100) / 100;
 }
 
+/** Real Razorpay payment capture id only — never GatiCash / legacy wallet keys. */
+function asRazorpayPaymentId(v: unknown): string | null {
+  if (typeof v !== "string") return null;
+  const t = v.trim();
+  if (!t) return null;
+  if (/^(gaticash_|order_gaticash_|ride_gaticash_|GC-)/i.test(t)) return null;
+  return /^pay_[A-Za-z0-9]+$/.test(t) ? t : null;
+}
+
+function asRazorpayOrderId(v: unknown): string | null {
+  if (typeof v !== "string") return null;
+  const t = v.trim();
+  if (!t) return null;
+  return /^order_[A-Za-z0-9]+$/.test(t) ? t : null;
+}
+
 /** Normalize drizzle / postgres-js execute results to a plain row array. */
+/**
+ * Run a read whose table/columns are optional on older envs. Never throws —
+ * mirrors the per-query try/catch these reads used when they ran serially.
+ */
+async function safeRows(query: PromiseLike<unknown>): Promise<Record<string, unknown>[]> {
+  try {
+    return rowsOf(await query);
+  } catch {
+    return [];
+  }
+}
+
 function rowsOf(result: unknown): Record<string, unknown>[] {
   if (Array.isArray(result)) return result as Record<string, unknown>[];
   if (result && typeof result === "object") {
@@ -366,19 +395,16 @@ async function fetchCapturedPayments(
       const fromRef =
         r.transaction_reference != null ? String(r.transaction_reference).trim() : "";
       const razorpayPaymentId =
-        (typeof raw.razorpayPaymentId === "string" && raw.razorpayPaymentId) ||
-        (typeof raw.razorpay_payment_id === "string" && raw.razorpay_payment_id) ||
-        (typeof raw.id === "string" && String(raw.id).startsWith("pay_") ? String(raw.id) : null) ||
-        (fromRef.startsWith("pay_") || fromRef.length > 0 ? fromRef : null);
+        asRazorpayPaymentId(raw.razorpayPaymentId) ||
+        asRazorpayPaymentId(raw.razorpay_payment_id) ||
+        asRazorpayPaymentId(raw.id) ||
+        asRazorpayPaymentId(fromRef);
       const razorpayOrderId =
-        (typeof raw.razorpayOrderId === "string" && raw.razorpayOrderId) ||
-        (typeof raw.razorpay_order_id === "string" && raw.razorpay_order_id) ||
-        (typeof intentMeta.razorpayOrderId === "string" && intentMeta.razorpayOrderId) ||
-        (typeof intentMeta.razorpay_order_id === "string" && intentMeta.razorpay_order_id) ||
-        (typeof intentMeta.order_id === "string" &&
-        String(intentMeta.order_id).startsWith("order_")
-          ? String(intentMeta.order_id)
-          : null) ||
+        asRazorpayOrderId(raw.razorpayOrderId) ||
+        asRazorpayOrderId(raw.razorpay_order_id) ||
+        asRazorpayOrderId(intentMeta.razorpayOrderId) ||
+        asRazorpayOrderId(intentMeta.razorpay_order_id) ||
+        asRazorpayOrderId(intentMeta.order_id) ||
         null;
       return {
         transactionId: Number(r.transaction_id) || 0,
@@ -564,10 +590,34 @@ export async function fetchOrderPaymentDetail(input: {
     input.orderIdText?.trim() ||
     input.displayId;
 
-  let core: Record<string, unknown> = {};
-  try {
-    const rows = rowsOf(
-      await db.execute(sql`
+  const orderIdCandidates = collectOrderIdCandidates({
+    orderCoreId,
+    orderIdText: input.orderIdText,
+    formattedOrderId: input.formattedOrderId,
+    displayId: input.displayId,
+  });
+  const candidateIdList =
+    orderIdCandidates.length > 0
+      ? sql.join(
+          orderIdCandidates.map((id) => sql`${id}`),
+          sql`, `
+        )
+      : null;
+
+  // None of these reads depends on another — precedence is decided purely by the
+  // merge order below — so they go out as one batch. Serially this was seven
+  // round-trips and made the payment card land well after the rest of the page.
+  const [
+    coreRows,
+    settlementRows,
+    capturedPayments,
+    corePaymentRows,
+    pendingRows,
+    paymentEventRows,
+    timelineRows,
+  ] = await Promise.all([
+    safeRows(
+      db.execute(sql`
       SELECT
         grand_total,
         item_total,
@@ -587,57 +637,38 @@ export async function fetchOrderPaymentDetail(input: {
       WHERE id = ${orderCoreId}
       LIMIT 1
     `)
-    );
-    core = rows[0] ?? {};
-  } catch {
-    core = {};
-  }
-
-  let billing = readRecord(core.billing_snapshot ?? core.billingSnapshot);
-
-  let settlementDelivery: number | null = null;
-  try {
-    const sb = rowsOf(
-      await db.execute(sql`
+    ),
+    safeRows(
+      db.execute(sql`
       SELECT delivery_fee
       FROM order_settlement_breakdown
       WHERE order_id = ${orderCoreId}
       LIMIT 1
     `)
-    );
-    const row = sb[0];
-    if (row) {
-      settlementDelivery = asNum(row.delivery_fee);
-    }
-  } catch {
-    /* table may not exist */
-  }
-
-  let razorpayOrderId: string | null = null;
-  let razorpayPaymentId: string | null = null;
-  let pgName: string | null = null;
-  let instrumentRaw: string | null = null;
-  let gatiCashUsed: number | null = null;
-
-  const orderIdCandidates = collectOrderIdCandidates({
-    orderCoreId,
-    orderIdText: input.orderIdText,
-    formattedOrderId: input.formattedOrderId,
-    displayId: input.displayId,
-  });
-  const capturedPayments = await fetchCapturedPayments(orderIdCandidates);
-  const primaryCapture = capturedPayments[0] ?? null;
-  if (primaryCapture) {
-    razorpayPaymentId = primaryCapture.razorpayPaymentId;
-    razorpayOrderId = primaryCapture.razorpayOrderId;
-    if (primaryCapture.gateway) pgName = primaryCapture.gateway;
-    if (primaryCapture.paymentMode) instrumentRaw = primaryCapture.paymentMode;
-  }
-
-  if (orderIdCandidates.length > 0) {
-    try {
-      const pending = rowsOf(
-        await db.execute(sql`
+    ),
+    fetchCapturedPayments(orderIdCandidates),
+    candidateIdList
+      ? safeRows(
+          db.execute(sql`
+        SELECT
+          payment_gateway,
+          payment_method,
+          transaction_id,
+          amount::text AS amount,
+          gateway_response
+        FROM orders_core_payments
+        WHERE order_id IN (${candidateIdList})
+          AND COALESCE(UPPER(payment_status), '') IN (
+            'PAID', 'CAPTURED', 'SUCCESS', 'COMPLETED'
+          )
+        ORDER BY paid_at DESC NULLS LAST, id DESC
+        LIMIT 1
+      `)
+        )
+      : Promise.resolve([] as Record<string, unknown>[]),
+    candidateIdList
+      ? safeRows(
+          db.execute(sql`
         SELECT
           razorpay_order_id,
           razorpay_payment_id,
@@ -645,26 +676,118 @@ export async function fetchOrderPaymentDetail(input: {
           billing_snapshot,
           gati_cash_applied::text AS gati_cash_applied
         FROM pending_orders
-        WHERE finalized_order_id IN (${sql.join(
-          orderIdCandidates.map((id) => sql`${id}`),
-          sql`, `
-        )})
+        WHERE finalized_order_id IN (${candidateIdList})
         ORDER BY updated_at DESC
         LIMIT 1
       `)
-      );
-      const p = pending[0];
+        )
+      : Promise.resolve([] as Record<string, unknown>[]),
+    candidateIdList
+      ? safeRows(
+          db.execute(sql`
+        SELECT razorpay_order_id, razorpay_payment_id, payload, source
+        FROM payment_events
+        WHERE order_id IN (${candidateIdList})
+          AND razorpay_payment_id IS NOT NULL
+        ORDER BY created_at DESC
+        LIMIT 1
+      `)
+        )
+      : Promise.resolve([] as Record<string, unknown>[]),
+    safeRows(
+      db.execute(sql`
+      SELECT metadata
+      FROM order_timelines
+      WHERE order_id = ${orderCoreId}
+        AND metadata IS NOT NULL
+      ORDER BY occurred_at DESC
+      LIMIT 5
+    `)
+    ),
+  ]);
+
+  const core: Record<string, unknown> = coreRows[0] ?? {};
+
+  let billing = readRecord(core.billing_snapshot ?? core.billingSnapshot);
+
+  const settlementRow = settlementRows[0];
+  const settlementDelivery: number | null = settlementRow
+    ? asNum(settlementRow.delivery_fee)
+    : null;
+
+  let razorpayOrderId: string | null = null;
+  let razorpayPaymentId: string | null = null;
+  let pgName: string | null = null;
+  let instrumentRaw: string | null = null;
+  let gatiCashUsed: number | null = null;
+  let gatiCashTxnId: string | null = null;
+  let legacyGatiCashTxnId: string | null = null;
+  const primaryCapture = capturedPayments[0] ?? null;
+  if (primaryCapture) {
+    razorpayPaymentId = asRazorpayPaymentId(primaryCapture.razorpayPaymentId);
+    razorpayOrderId = asRazorpayOrderId(primaryCapture.razorpayOrderId);
+    if (primaryCapture.gateway) pgName = primaryCapture.gateway;
+    if (primaryCapture.paymentMode) instrumentRaw = primaryCapture.paymentMode;
+  }
+
+  // Prefer orders_core_payments for GatiCash / mixed settlement refs (GC-{UUID}).
+  if (orderIdCandidates.length > 0) {
+    try {
+      const cp = corePaymentRows[0];
+      if (cp) {
+        const gw =
+          cp.payment_gateway != null ? String(cp.payment_gateway).toLowerCase() : "";
+        if (gw) pgName = pgName ?? gw;
+        if (cp.payment_method != null) {
+          instrumentRaw = instrumentRaw ?? String(cp.payment_method);
+        }
+        const resp = readRecord(cp.gateway_response) ?? {};
+        const breakdown = readRecord(resp.breakdown) ?? {};
+        const fromResp =
+          (typeof resp.gatiCashTxnId === "string" && resp.gatiCashTxnId.trim()) ||
+          (typeof resp.gati_cash_txn_id === "string" && resp.gati_cash_txn_id.trim()) ||
+          (typeof breakdown.gatiCashTxnId === "string" && breakdown.gatiCashTxnId.trim()) ||
+          null;
+        const txn =
+          cp.transaction_id != null ? String(cp.transaction_id).trim() : "";
+        if (fromResp && /^GC-/i.test(fromResp)) {
+          gatiCashTxnId = fromResp.toUpperCase();
+        } else if (txn && /^GC-/i.test(txn)) {
+          gatiCashTxnId = txn.toUpperCase();
+        } else if (txn && /^gaticash_/i.test(txn)) {
+          legacyGatiCashTxnId = txn;
+        }
+        if (
+          typeof resp.legacyGatiCashTxnId === "string" &&
+          resp.legacyGatiCashTxnId.trim()
+        ) {
+          legacyGatiCashTxnId = resp.legacyGatiCashTxnId.trim();
+        }
+        const gatiFromBreakdown = asNum(breakdown.gatiCashUsed);
+        if (gatiFromBreakdown != null && gatiFromBreakdown > 0) {
+          gatiCashUsed = round2(gatiFromBreakdown);
+        }
+        if (!razorpayPaymentId) {
+          razorpayPaymentId = asRazorpayPaymentId(txn);
+        }
+      }
+    } catch {
+      /* orders_core_payments optional on older envs */
+    }
+  }
+
+  if (orderIdCandidates.length > 0) {
+    try {
+      const p = pendingRows[0];
       if (p) {
         if (!billing || discountTotalFromBilling(billing) <= 0) {
           const pendingBilling = readRecord(p.billing_snapshot ?? p.billingSnapshot);
           if (pendingBilling) billing = pendingBilling;
         }
         razorpayOrderId =
-          razorpayOrderId ??
-          (p.razorpay_order_id != null ? String(p.razorpay_order_id) : null);
+          razorpayOrderId ?? asRazorpayOrderId(p.razorpay_order_id);
         razorpayPaymentId =
-          razorpayPaymentId ??
-          (p.razorpay_payment_id != null ? String(p.razorpay_payment_id) : null);
+          razorpayPaymentId ?? asRazorpayPaymentId(p.razorpay_payment_id);
         if (p.payment_method != null) {
           instrumentRaw = instrumentRaw ?? String(p.payment_method);
           if (!pgName) pgName = String(p.payment_method);
@@ -677,27 +800,12 @@ export async function fetchOrderPaymentDetail(input: {
     }
 
     try {
-      const pe = rowsOf(
-        await db.execute(sql`
-        SELECT razorpay_order_id, razorpay_payment_id, payload, source
-        FROM payment_events
-        WHERE order_id IN (${sql.join(
-          orderIdCandidates.map((id) => sql`${id}`),
-          sql`, `
-        )})
-          AND razorpay_payment_id IS NOT NULL
-        ORDER BY created_at DESC
-        LIMIT 1
-      `)
-      );
-      const e = pe[0];
+      const e = paymentEventRows[0];
       if (e) {
         razorpayOrderId =
-          razorpayOrderId ??
-          (e.razorpay_order_id != null ? String(e.razorpay_order_id) : null);
+          razorpayOrderId ?? asRazorpayOrderId(e.razorpay_order_id);
         razorpayPaymentId =
-          razorpayPaymentId ??
-          (e.razorpay_payment_id != null ? String(e.razorpay_payment_id) : null);
+          razorpayPaymentId ?? asRazorpayPaymentId(e.razorpay_payment_id);
         const payload = readRecord(e.payload);
         const method =
           payload?.method ??
@@ -718,25 +826,13 @@ export async function fetchOrderPaymentDetail(input: {
   }
 
   try {
-    const tl = rowsOf(
-      await db.execute(sql`
-      SELECT metadata
-      FROM order_timelines
-      WHERE order_id = ${orderCoreId}
-        AND metadata IS NOT NULL
-      ORDER BY occurred_at DESC
-      LIMIT 5
-    `)
-    );
-    for (const row of tl) {
+    for (const row of timelineRows) {
       const meta = readRecord(row.metadata);
       if (!meta) continue;
       razorpayOrderId =
-        razorpayOrderId ??
-        (typeof meta.razorpay_order_id === "string" ? meta.razorpay_order_id : null);
+        razorpayOrderId ?? asRazorpayOrderId(meta.razorpay_order_id);
       razorpayPaymentId =
-        razorpayPaymentId ??
-        (typeof meta.razorpay_payment_id === "string" ? meta.razorpay_payment_id : null);
+        razorpayPaymentId ?? asRazorpayPaymentId(meta.razorpay_payment_id);
       if (razorpayOrderId && razorpayPaymentId) break;
     }
   } catch {
@@ -752,12 +848,19 @@ export async function fetchOrderPaymentDetail(input: {
   const deliveryResolved = resolveDeliveryFee(billing, core, settlementDelivery);
   const deliveryFee = deliveryResolved.fee;
 
-  const totalCtm = await resolveTotalCtm(
-    input.merchantStoreId,
-    core,
-    billing,
-    orderCoreId
-  );
+  // CTM and the discount fallback both only need `core` / `billing`, which are
+  // already resolved — run them together rather than back to back.
+  const billingDiscountSummary = orderDiscountGrantedSummaryFromBilling(billing);
+  const [totalCtm, discountFromOrderTables] = await Promise.all([
+    resolveTotalCtm(input.merchantStoreId, core, billing, orderCoreId),
+    billingDiscountSummary.amount == null
+      ? fetchDiscountFromOrderTables({
+          orderCoreId,
+          orderIdText: input.orderIdText,
+          formattedOrderId: input.formattedOrderId,
+        })
+      : Promise.resolve(null),
+  ]);
 
   const totalRefunded =
     asNum(core.total_refunded) ?? null;
@@ -791,43 +894,52 @@ export async function fetchOrderPaymentDetail(input: {
     paymentStatus.toLowerCase().includes("refund") ||
     (totalRefunded != null && totalRefunded > 0);
 
+  const cashbackEarned = cashbackFromBilling(billing);
+  const discountSummary = discountFromOrderTables ?? billingDiscountSummary;
+
+  // CTC = Cashin + GatiCash. grand_total alone is post-wallet to-pay (₹0 on full wallet).
+  const { ctc, cashin, gatiCashUsed: gatiResolved } = resolveCustomerCtcPaidAmount({
+    netPayable: totalAmount,
+    gatiCashUsed: gatiCashUsed,
+    capturedAmount: primaryCapture?.amount ?? null,
+  });
+  const gati = gatiResolved > 0.005 ? gatiResolved : null;
+
   const partialRefunded =
     isRefunded &&
     totalRefunded != null &&
-    totalAmount != null &&
+    ctc > 0 &&
     totalRefunded > 0 &&
-    totalRefunded < totalAmount - 0.01;
+    totalRefunded < ctc - 0.01;
 
-  const cashbackEarned = cashbackFromBilling(billing);
-  let discountSummary = orderDiscountGrantedSummaryFromBilling(billing);
-  if (discountSummary.amount == null) {
-    discountSummary = await fetchDiscountFromOrderTables({
-      orderCoreId,
-      orderIdText: input.orderIdText,
-      formattedOrderId: input.formattedOrderId,
-    });
-  }
+  // Sanitize once more — never leak wallet keys into PG columns.
+  razorpayPaymentId = asRazorpayPaymentId(razorpayPaymentId);
+  razorpayOrderId = asRazorpayOrderId(razorpayOrderId);
 
-  const ctc =
-    totalAmount != null && totalAmount > 0
-      ? round2(totalAmount)
-      : primaryCapture?.amount != null && primaryCapture.amount > 0
-        ? round2(primaryCapture.amount)
-        : null;
-  const gati = gatiCashUsed != null && gatiCashUsed > 0 ? round2(gatiCashUsed) : null;
-  const online = paymentModeDisplay !== "Cash";
-  const cashin =
-    ctc != null
-      ? round2(Math.max(0, ctc - (gati ?? 0)))
-      : online && primaryCapture?.amount != null
-        ? round2(primaryCapture.amount)
-        : null;
-
-  // One capture row — CTM uses the same SSOT as the summary card (no fee-line guesswork).
+  // Prefer modern GC-{UUID} for Transaction Id / PG Transaction Id on wallet rows.
+  const gatiCashTxnFromCapture =
+    gatiCashTxnId ||
+    (primaryCapture?.transactionReference &&
+    /^GC-/i.test(primaryCapture.transactionReference)
+      ? primaryCapture.transactionReference
+      : null);
+  const displayTxnId =
+    (gatiCashTxnId ? gatiCashTxnId.toUpperCase() : null) ||
+    (gatiCashTxnFromCapture ? gatiCashTxnFromCapture.toUpperCase() : null) ||
+    razorpayPaymentId ||
+    null;
+  const isWalletSettled = Boolean(
+    displayTxnId?.startsWith("GC-") ||
+      (gati != null && gati > 0 && !razorpayPaymentId) ||
+      legacyGatiCashTxnId
+  );
+  // Transaction Id + PG Transaction Id both surface the settlement capture ref:
+  //   • Razorpay → pay_*
+  //   • GatiCash  → GC-{UUID} (never legacy gaticash_*)
   const records: OrderPaymentRecord[] = [
     {
       paymentId: paymentIdLabel,
-      transactionId: razorpayPaymentId ?? primaryCapture?.transactionReference ?? null,
+      transactionId: displayTxnId,
       mpTransactionId: razorpayOrderId,
       paymentStatus: primaryCapture?.status?.trim() || paymentStatus,
       paymentMode: paymentModeDisplay,
@@ -836,19 +948,19 @@ export async function fetchOrderPaymentDetail(input: {
       partialRefunded,
       partiallyRefundedAmount:
         totalRefunded != null && totalRefunded > 0 ? round2(totalRefunded) : null,
-      amount: ctc,
+      amount: ctc > 0 ? ctc : null,
       deliveryFee,
-      ctc,
-      cashin: online ? cashin : cashin,
+      ctc: ctc > 0 ? ctc : null,
+      cashin: cashin >= 0 ? cashin : null,
       gatiCashUsed: gati,
       ctm: totalCtm,
-      pgName: razorpayPaymentId ? "razorpay" : pgName,
-      pgTransactionId: razorpayPaymentId ?? primaryCapture?.transactionReference ?? null,
+      pgName: razorpayPaymentId ? "razorpay" : isWalletSettled ? "gati_cash" : pgName,
+      pgTransactionId: razorpayPaymentId ?? displayTxnId,
     },
   ];
 
   return {
-    totalAmount: ctc,
+    totalAmount: ctc > 0 ? ctc : null,
     totalCtm,
     totalCashbackEarned: cashbackEarned,
     gatiCashUsed: gati,
@@ -865,4 +977,60 @@ export async function fetchOrderPaymentDetail(input: {
     totalPaid: totalPaid != null ? round2(totalPaid) : null,
     records,
   };
+}
+
+/**
+ * Resolve the orders_core header for `orderCoreId`, then build the payment
+ * payload. Shared by GET /api/orders/[orderId]/payment-detail and the
+ * single-order enrichment on GET /api/orders/core so the card is identical
+ * whether it arrives embedded with the page or via the standalone fetch.
+ * Returns null when the order does not exist.
+ */
+export async function fetchOrderPaymentDetailByCoreId(
+  orderCoreId: number
+): Promise<OrderPaymentDetail | null> {
+  const db = getDb();
+  const rows = rowsOf(
+    await db.execute(sql`
+      SELECT
+        order_id,
+        formatted_order_id,
+        merchant_store_id,
+        order_type,
+        order_source,
+        payment_status,
+        payment_method,
+        grand_total,
+        item_total,
+        addon_total,
+        tip_amount
+      FROM orders_core
+      WHERE id = ${orderCoreId}
+      LIMIT 1
+    `)
+  );
+  const row = rows[0];
+  if (!row) return null;
+
+  return fetchOrderPaymentDetail({
+    orderCoreId,
+    orderIdText: row.order_id != null ? String(row.order_id) : null,
+    formattedOrderId:
+      row.formatted_order_id != null ? String(row.formatted_order_id) : null,
+    displayId:
+      (typeof row.formatted_order_id === "string" && row.formatted_order_id.trim()) ||
+      (row.order_id ? String(row.order_id) : `ORDER-${orderCoreId}`),
+    merchantStoreId:
+      row.merchant_store_id != null && Number.isFinite(Number(row.merchant_store_id))
+        ? Number(row.merchant_store_id)
+        : null,
+    orderType: row.order_type != null ? String(row.order_type) : "food",
+    orderSource: row.order_source != null ? String(row.order_source) : null,
+    paymentStatus: row.payment_status != null ? String(row.payment_status) : null,
+    paymentMethod: row.payment_method != null ? String(row.payment_method) : null,
+    grandTotal: row.grand_total != null ? Number(row.grand_total) : null,
+    itemTotal: row.item_total != null ? Number(row.item_total) : null,
+    addonTotal: row.addon_total != null ? Number(row.addon_total) : null,
+    tipAmount: row.tip_amount != null ? Number(row.tip_amount) : null,
+  });
 }

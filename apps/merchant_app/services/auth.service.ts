@@ -118,10 +118,20 @@ export const merchantAuthService = {
       throw new Error("Invalid response from server while requesting OTP.");
     }
     if (!res.ok) {
+      const code =
+        typeof dataJson?.error === "string" && dataJson.error.trim()
+          ? String(dataJson.error).trim()
+          : "";
       const msg =
         (typeof dataJson?.message === "string" && dataJson.message) ||
-        (typeof dataJson?.error === "string" && dataJson.error) ||
+        code ||
         `Could not send OTP (HTTP ${res.status}).`;
+      if (
+        code === "not_registered" ||
+        /isn't registered|not registered as a gatimitra partner/i.test(msg)
+      ) {
+        throw new MerchantAuthError("not_registered", msg);
+      }
       throw new Error(msg);
     }
 

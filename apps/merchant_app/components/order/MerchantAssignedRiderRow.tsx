@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { AppText as Text } from "@/components/AppText";
 import { View, Pressable, StyleSheet } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
@@ -9,11 +9,17 @@ import {
   orderHasAssignedRider,
 } from "@/lib/orderAssignedRider";
 import {
-  formatRiderStoreWaitLabel,
   resolveRiderCardVariant,
   riderStatusHeadline,
   riderStatusSubline,
 } from "@/lib/riderMerchantArrivalDisplay";
+import {
+  FOOD_RIDER_FREE_WAIT_SECONDS,
+  formatMmSs,
+  freeWaitProgress,
+  freeWaitRemainingSeconds,
+  resolveRiderFreeWaitPhase,
+} from "@/lib/riderFreeWait";
 import { useLiveElapsedSeconds } from "@/hooks/useLiveElapsedSeconds";
 import { useMerchantRiderLiveEnrichment } from "@/hooks/useMerchantRiderLiveEnrichment";
 import { MerchantRiderTrackingSheet } from "@/components/order/MerchantRiderTrackingSheet";
@@ -27,12 +33,15 @@ type Props = {
   order: OrderRecord;
   showCall?: boolean;
   showTrack?: boolean;
+  /** Inside a bordered detail card — skip top hairline divider. */
+  embedded?: boolean;
 };
 
 export function MerchantAssignedRiderRow({
   order,
   showCall = true,
   showTrack = true,
+  embedded = false,
 }: Props) {
   const { token } = useAuth();
   const { selectedStore } = useSelectedStore();
@@ -43,37 +52,67 @@ export function MerchantAssignedRiderRow({
   const hasRider = orderHasAssignedRider(order);
   const enrichment = useMerchantRiderLiveEnrichment(order, storeId, token, hasRider);
   const variant = hasRider ? resolveRiderCardVariant(order) : "on_the_way";
+  const freeWaitSeconds =
+    order.riderFreeWaitSeconds != null && Number.isFinite(order.riderFreeWaitSeconds)
+      ? Math.max(0, Math.floor(order.riderFreeWaitSeconds))
+      : FOOD_RIDER_FREE_WAIT_SECONDS;
   const waitSeconds = useLiveElapsedSeconds(
     order.riderStoreWaitAnchorAt ?? order.reachedMerchantAt ?? order.riderReachedAt,
     hasRider && variant === "arrived" && order.riderStoreWaitLive === true
   );
+  const elapsedForWait =
+    variant === "arrived"
+      ? order.riderStoreWaitLive
+        ? waitSeconds
+        : order.pickupWaitSeconds ?? waitSeconds
+      : null;
+  const waitPhase = resolveRiderFreeWaitPhase({
+    arrived: variant === "arrived",
+    live: order.riderStoreWaitLive === true,
+    elapsedSeconds: elapsedForWait,
+    freeWaitSeconds,
+  });
+
+  const remaining = freeWaitRemainingSeconds(elapsedForWait, freeWaitSeconds);
+  const progress = freeWaitProgress(elapsedForWait, freeWaitSeconds);
+  const pickupOtp = (order.pickupOtp ?? "").trim() || null;
 
   if (!hasRider) return null;
 
   const riderName = enrichment.riderName;
-  const storeWaitLabel =
-    variant === "arrived"
-      ? formatRiderStoreWaitLabel(
-          order.riderStoreWaitLive ? waitSeconds : order.pickupWaitSeconds,
-          { live: order.riderStoreWaitLive === true }
-        )
-      : null;
   const headline = riderStatusHeadline(variant, riderName);
-  const subline = riderStatusSubline(
-    variant,
-    riderName,
-    enrichment.arrivalSubtitle,
-    storeWaitLabel
-  );
+  const subline =
+    variant === "arrived"
+      ? waitPhase === "countdown"
+        ? "Free wait time — hand over before it ends"
+        : waitPhase === "waiting"
+          ? "Rider waiting beyond free time"
+          : "Waiting at your store for pickup"
+      : riderStatusSubline(variant, riderName, enrichment.arrivalSubtitle, null);
   const mobile = (enrichment.riderMobile ?? order.riderMobile ?? "").trim() || null;
   const isOutForDelivery = variant === "picked_up";
   const trackEnabled = showTrack && canTrackAssignedRider(order);
   const showCallBtn = showCall && !!mobile;
-  const showActions = !isOutForDelivery && (trackEnabled || showCallBtn);
+  const showArrivedMeta = variant === "arrived" && !isOutForDelivery;
+  const showActions = !isOutForDelivery && !showArrivedMeta && (trackEnabled || showCallBtn);
+
+  const timerLabel = useMemo(() => {
+    if (waitPhase === "countdown") return formatMmSs(remaining);
+    if (waitPhase === "waiting" && elapsedForWait != null) {
+      return formatMmSs(Math.max(0, elapsedForWait - freeWaitSeconds));
+    }
+    return null;
+  }, [waitPhase, remaining, elapsedForWait, freeWaitSeconds]);
 
   return (
     <>
-      <View style={[styles.wrap, isOutForDelivery && styles.wrapCompact]}>
+      <View
+        style={[
+          styles.wrap,
+          isOutForDelivery && styles.wrapCompact,
+          embedded && styles.wrapEmbedded,
+        ]}
+      >
         <View style={[styles.headerRow, isOutForDelivery && styles.headerRowCompact]}>
           <RiderSelfieAvatar
             selfieUrl={enrichment.riderSelfieUrl}
@@ -83,7 +122,7 @@ export function MerchantAssignedRiderRow({
           />
 
           <View style={[styles.body, isOutForDelivery && styles.bodyCompact]}>
-            {!isOutForDelivery ? (
+            {!isOutForDelivery && !embedded ? (
               <Text style={styles.sectionLabel}>Delivery partner</Text>
             ) : null}
             <Text
@@ -93,11 +132,73 @@ export function MerchantAssignedRiderRow({
               {headline}
             </Text>
             {!isOutForDelivery && subline ? (
-              <Text style={styles.subline} numberOfLines={2}>
+              <Text
+                style={[
+                  styles.subline,
+                  waitPhase === "waiting" && styles.sublineUrgent,
+                ]}
+                numberOfLines={2}
+              >
                 {subline}
               </Text>
             ) : null}
+
+            {showArrivedMeta ? (
+              <View style={styles.metaRow}>
+                {timerLabel ? (
+                  <View
+                    style={[
+                      styles.timerPill,
+                      waitPhase === "waiting" && styles.timerPillUrgent,
+                    ]}
+                  >
+                    <Ionicons
+                      name="stopwatch-outline"
+                      size={13}
+                      color={waitPhase === "waiting" ? "#C2410C" : "#9A3412"}
+                    />
+                    <Text
+                      style={[
+                        styles.timerText,
+                        waitPhase === "waiting" && styles.timerTextUrgent,
+                      ]}
+                    >
+                      {timerLabel}
+                    </Text>
+                    {waitPhase === "countdown" ? (
+                      <View style={styles.timerTrack}>
+                        <View
+                          style={[
+                            styles.timerFill,
+                            { width: `${Math.round(progress * 100)}%` },
+                          ]}
+                        />
+                      </View>
+                    ) : null}
+                  </View>
+                ) : null}
+                {pickupOtp ? (
+                  <View style={styles.otpPill}>
+                    <Text style={styles.otpLabel}>OTP</Text>
+                    <Text style={styles.otpCode}>{pickupOtp}</Text>
+                  </View>
+                ) : null}
+              </View>
+            ) : null}
           </View>
+
+          {showArrivedMeta && showCallBtn ? (
+            <Pressable
+              onPress={() => {
+                if (mobile) void callRider(mobile);
+              }}
+              style={({ pressed }) => [styles.callIconBtn, pressed && styles.pressed]}
+              accessibilityRole="button"
+              accessibilityLabel={`Call ${riderName}`}
+            >
+              <Ionicons name="call" size={18} color={GatiMitraMerchant.textPrimary} />
+            </Pressable>
+          ) : null}
 
           {isOutForDelivery && showCallBtn ? (
             <Pressable
@@ -146,6 +247,18 @@ export function MerchantAssignedRiderRow({
             ) : null}
           </View>
         ) : null}
+
+        {showArrivedMeta && trackEnabled ? (
+          <Pressable
+            onPress={() => setTrackingOpen(true)}
+            style={({ pressed }) => [styles.trackBtn, pressed && styles.pressed]}
+            accessibilityRole="button"
+            accessibilityLabel={`Track ${riderName}`}
+          >
+            <Ionicons name="location-outline" size={15} color={GatiMitraMerchant.navy} />
+            <Text style={styles.trackText}>Track live</Text>
+          </Pressable>
+        ) : null}
       </View>
 
       {trackEnabled && token && storeId && !order.id.startsWith("core-") ? (
@@ -176,6 +289,11 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     paddingVertical: 12,
     gap: 10,
+  },
+  wrapEmbedded: {
+    borderTopWidth: 0,
+    paddingHorizontal: 0,
+    paddingVertical: 0,
   },
   wrapCompact: {
     paddingVertical: 10,
@@ -222,6 +340,78 @@ const styles = StyleSheet.create({
     fontWeight: "600",
     color: GatiMitraMerchant.primaryDark,
     lineHeight: 17,
+  },
+  sublineUrgent: {
+    color: "#C2410C",
+  },
+  metaRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    alignItems: "center",
+    gap: 8,
+    marginTop: 8,
+  },
+  timerPill: {
+    position: "relative",
+    overflow: "hidden",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 999,
+    backgroundColor: "#FFF7ED",
+    borderWidth: 1,
+    borderColor: "#FDBA74",
+  },
+  timerPillUrgent: {
+    backgroundColor: "#FFEDD5",
+    borderColor: "#FB923C",
+  },
+  timerText: {
+    fontSize: 13,
+    fontWeight: "800",
+    color: "#9A3412",
+    fontVariant: ["tabular-nums"],
+  },
+  timerTextUrgent: {
+    color: "#C2410C",
+  },
+  timerTrack: {
+    position: "absolute",
+    left: 0,
+    right: 0,
+    bottom: 0,
+    height: 3,
+    backgroundColor: "rgba(251,146,60,0.25)",
+  },
+  timerFill: {
+    height: "100%",
+    backgroundColor: "#F97316",
+  },
+  otpPill: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 999,
+    backgroundColor: "#F3F4F6",
+    borderWidth: 1,
+    borderColor: "#E5E7EB",
+  },
+  otpLabel: {
+    fontSize: 10,
+    fontWeight: "800",
+    color: GatiMitraMerchant.textTertiary,
+    letterSpacing: 0.4,
+  },
+  otpCode: {
+    fontSize: 13,
+    fontWeight: "800",
+    color: GatiMitraMerchant.textPrimary,
+    fontVariant: ["tabular-nums"],
+    letterSpacing: 1,
   },
   actionsRow: {
     flexDirection: "row",

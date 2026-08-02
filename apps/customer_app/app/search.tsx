@@ -40,7 +40,7 @@ import { UserAppCategoryImage } from "@/components/category/UserAppCategoryImage
 import {
   fetchUserAppCategoriesWithCache,
   getUserAppCategoriesCachedAt,
-  prefetchUserAppCategoryImages,
+  prefetchUserAppCategoryImagesAwait,
   readSyncUserAppCategories,
   USER_APP_CATEGORIES_QUERY_OPTIONS,
   userAppCategoriesQueryKey,
@@ -196,7 +196,7 @@ export default function SearchScreen() {
 
   React.useEffect(() => {
     if (apiMindCategories.length > 0 || mindCategoriesResponse?.allTab?.imageUrl) {
-      prefetchUserAppCategoryImages(apiMindCategories, mindCategoriesResponse?.allTab?.imageUrl);
+      void prefetchUserAppCategoryImagesAwait(apiMindCategories, mindCategoriesResponse?.allTab?.imageUrl);
     }
   }, [apiMindCategories, mindCategoriesResponse?.allTab?.imageUrl]);
 

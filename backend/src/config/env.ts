@@ -228,6 +228,13 @@ const EnvSchema = z.object({
   ANDROID_APP_LINK_SHA256: z.preprocess(emptyToUndefined, z.string().optional()),
   /** Customer App package name for assetlinks.json (defaults to com.gatimitra.customer). */
   ANDROID_APP_PACKAGE: z.preprocess(emptyToUndefined, z.string().optional()),
+  /**
+   * Rider App App-Links verification (referral invites on /rider-ref). Separate
+   * signing keys from the customer app, so it needs its own fingerprint list.
+   */
+  ANDROID_RIDER_APP_LINK_SHA256: z.preprocess(emptyToUndefined, z.string().optional()),
+  /** Rider App package name for assetlinks.json. */
+  ANDROID_RIDER_APP_PACKAGE: z.preprocess(emptyToUndefined, z.string().optional()),
   REDIS_URL: z.preprocess(emptyToUndefined, z.string().min(10).optional()),
 
   /** Open-Meteo — no API key (see weather.constants.ts). */
@@ -257,6 +264,16 @@ const EnvSchema = z.object({
    * Used by the canonical `/v1/distance/store-quote` engine and billing to decide `serviceable`.
    */
   SERVICE_RADIUS_KM_DEFAULT: z.preprocess(emptyToUndefined, z.coerce.number().positive().max(200)).default(15),
+
+  /**
+   * When a customer has an active saved delivery address, keep it if live GPS is still
+   * within this radius (meters). Beyond it, reconcile switches to Current Location.
+   * Default 500m when unset; set e.g. 300 in .env to override.
+   */
+  ACTIVE_SAVED_ADDRESS_RETENTION_RADIUS_M: z.preprocess(
+    emptyToUndefined,
+    z.coerce.number().positive().max(50_000)
+  ).default(500),
 
   /** Enable progressive slab-based delivery pricing (geo-inherited) when a billing rule selects it. */
   DELIVERY_SLABS_V2_ENABLED: z.preprocess(

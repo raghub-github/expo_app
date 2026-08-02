@@ -1,6 +1,7 @@
 'use client';
 
 import React from 'react';
+import { usePathname } from 'next/navigation';
 
 /** Base skeleton bar - matches Profile page style (bg-gray-200/100, animate-pulse, rounded) */
 export function SkeletonBar({ className = '' }: { className?: string }) {
@@ -126,6 +127,26 @@ export function PageSkeletonDashboard() {
       </div>
     </div>
   );
+}
+
+/**
+ * Skeleton for the partner main content area while the route is still gated.
+ * Picks the same skeleton the destination page shows for its own loading state, so the
+ * transition into the page is seamless. Never covers the sidebar or top bar.
+ */
+export function PartnerContentSkeleton() {
+  const pathname = usePathname() ?? '';
+  if (
+    pathname.startsWith('/partners/orders') ||
+    pathname.startsWith('/partners/food-orders') ||
+    pathname.startsWith('/partners/order-history')
+  ) {
+    return <PageSkeletonOrders />;
+  }
+  if (pathname.startsWith('/partners/menu')) return <MenuPageSkeleton />;
+  if (pathname.startsWith('/partners/profile')) return <PageSkeletonProfile />;
+  if (pathname.startsWith('/partners/dashboard')) return <PageSkeletonDashboard />;
+  return <PageSkeletonGeneric />;
 }
 
 /** Skeleton row for lists (reviews, etc.) - Profile style */

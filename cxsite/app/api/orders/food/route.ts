@@ -1,5 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { supabase } from '@/lib/supabase'
+import { checkPreventServicesFromDb } from '@/lib/server/preventServices'
+
+function parseCoord(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value)) return value
+  if (typeof value === 'string' && value.trim() !== '') {
+    const n = Number(value)
+    return Number.isFinite(n) ? n : null
+  }
+  return null
+}
 
 // POST - Create a new food order
 export async function POST(request: NextRequest) {
@@ -32,6 +42,43 @@ export async function POST(request: NextRequest) {
       return NextResponse.json(
         { error: 'Missing required fields' },
         { status: 400 }
+      )
+    }
+
+    const dropLat =
+      parseCoord(deliveryAddress?.latitude) ??
+      parseCoord(deliveryAddress?.lat)
+    const dropLng =
+      parseCoord(deliveryAddress?.longitude) ??
+      parseCoord(deliveryAddress?.lng)
+
+    // Without coordinates the prevent check cannot run — refuse placement so
+    // clients cannot bypass emergency blocks by omitting lat/lng.
+    if (dropLat == null || dropLng == null) {
+      return NextResponse.json(
+        {
+          error: 'missing_delivery_coordinates',
+          code: 'missing_delivery_coordinates',
+          message: 'Delivery location coordinates are required to place this order.',
+        },
+        { status: 400 }
+      )
+    }
+
+    const prevent = await checkPreventServicesFromDb({
+      lat: dropLat,
+      lng: dropLng,
+      service: 'food',
+    })
+    if (prevent.blocked) {
+      return NextResponse.json(
+        {
+          error: prevent.code,
+          code: prevent.code,
+          title: prevent.title,
+          message: prevent.message,
+        },
+        { status: 403 }
       )
     }
 

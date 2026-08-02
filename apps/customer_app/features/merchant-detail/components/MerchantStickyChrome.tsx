@@ -84,7 +84,14 @@ export const MerchantStickyChrome = React.memo(function MerchantStickyChrome({
 
       >
 
-        <Animated.View style={[StyleSheet.absoluteFill, styles.searchBg, stickySearchBgStyle]} />
+        {/* Background only — without pointerEvents="none" this absolute fill swallowed every
+            tap inside the sticky band once it activated, so the Filters chip sitting under it
+            never opened the sheet. */}
+
+        <Animated.View
+          pointerEvents="none"
+          style={[StyleSheet.absoluteFill, styles.searchBg, stickySearchBgStyle]}
+        />
 
         <View style={styles.searchRowInner} pointerEvents="box-none">
 

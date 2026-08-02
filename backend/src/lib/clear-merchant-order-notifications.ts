@@ -1,7 +1,21 @@
 /**
- * Remove in-app "New order!" notifications once the order is acted on or completed.
+ * Remove in-app order notifications once the order is acted on or completed.
  */
 import type { Sql } from "postgres";
+
+/** Order finished / cancelled — clear every linked store inbox row. */
+export const ORDER_NOTIFICATION_TERMINAL = new Set([
+  "DELIVERED",
+  "COMPLETED",
+  "COMPLETE",
+  "CANCELLED",
+  "CANCELED",
+  "REJECTED",
+  "FAILED",
+  "EXPIRED",
+  "RTO_DELIVERED",
+  "RTO_COMPLETED",
+]);
 
 export async function clearMerchantStoreOrderNotifications(
   sql: Sql,
@@ -116,4 +130,38 @@ export function shouldClearOrderNotifications(newStatus: string): boolean {
     s !== "ORDER_PLACED" &&
     s !== "PENDING"
   );
+}
+
+export function isTerminalOrderStatus(status: string | null | undefined): boolean {
+  const s = String(status ?? "").trim().toUpperCase();
+  return ORDER_NOTIFICATION_TERMINAL.has(s);
+}
+
+/**
+ * Heal inbox on list: drop "New order!" after accept, and drop any order row
+ * once the food order is terminal (delivered / cancelled / completed).
+ */
+export function shouldPurgeOrderNotificationOnList(
+  title: string | null | undefined,
+  orderStatus: string | null | undefined
+): boolean {
+  const status = String(orderStatus ?? "")
+    .trim()
+    .toUpperCase();
+  if (!status) return true;
+  if (isTerminalOrderStatus(status)) return true;
+  const isNewOrder = String(title ?? "")
+    .trim()
+    .toLowerCase()
+    .includes("new order");
+  if (
+    isNewOrder &&
+    status !== "CREATED" &&
+    status !== "NEW" &&
+    status !== "ORDER_PLACED" &&
+    status !== "PENDING"
+  ) {
+    return true;
+  }
+  return false;
 }

@@ -229,7 +229,7 @@ export function LivePreviewInsightsPanel({
 
   return (
     <>
-      <div className="mb-10">
+      <div className="mb-5">
         <div className="flex flex-wrap items-center gap-2 gap-y-1 pb-3 border-b border-slate-200/80">
           <BarChart3 className="text-emerald-600 shrink-0" size={18} strokeWidth={2} aria-hidden />
           <h2 className="text-sm font-bold text-slate-900 tracking-tight">Sales overview</h2>
@@ -249,7 +249,7 @@ export function LivePreviewInsightsPanel({
         </div>
       </div>
 
-      <div className="mb-10 flex flex-col lg:flex-row gap-4 lg:gap-6 items-stretch lg:min-h-[420px]">
+      <div className="mb-5 flex flex-col lg:flex-row gap-4 lg:gap-6 items-stretch">
         <div className="w-full lg:w-[60%] min-w-0 flex flex-col">
           <div className="flex flex-wrap items-center gap-2 gap-y-1 pb-3 border-b border-slate-200/80">
             <Star className="text-amber-500 shrink-0" size={18} strokeWidth={2} aria-hidden />
@@ -298,7 +298,7 @@ export function LivePreviewInsightsPanel({
         ) : null}
       </div>
 
-      <div className="pb-4">
+      <div className="pb-1">
         <div className="flex flex-wrap items-center gap-2 gap-y-1 pb-3 border-b border-slate-200/80">
           <Funnel className="text-violet-600 shrink-0" size={18} strokeWidth={2} aria-hidden />
           <h2 className="text-sm font-bold text-slate-900 tracking-tight">Customer funnel</h2>

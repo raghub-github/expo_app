@@ -4,7 +4,8 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom';
 import { usePathname, useRouter } from 'next/navigation';
 import { Lora, Poppins } from 'next/font/google';
-import { X, Volume2, VolumeX, Clock, Minus, Plus, UtensilsCrossed, ChevronLeft, ChevronRight, MapPin } from 'lucide-react';
+import { X, Volume2, VolumeX, Clock, Minus, Plus, ChevronLeft, ChevronRight, MapPin, StickyNote } from 'lucide-react';
+import { Dialog } from '@headlessui/react';
 import { toast } from 'sonner';
 import type { OrdersFoodRow } from '@/hooks/useFoodOrders';
 import { fetchStoreById } from '@/lib/database';
@@ -19,6 +20,7 @@ import {
   setPartnerIncomingModalSuppressed,
   usePartnerSelectedStore,
 } from '@/lib/partner-selected-store';
+import { dispatchPartnerNotificationsChanged } from '@/lib/clear-store-order-notifications';
 import {
   readPartnerDeviceOrderAlerts,
   resolveAlertUrlFromSlots,
@@ -37,7 +39,7 @@ import { OrderBillSidesheet } from '@/components/orders/OrderBillSidesheet';
 import { MerchantOrderItemsList } from '@/components/orders/MerchantOrderItemsList';
 import { MerchantOrderBillSummary } from '@/components/orders/MerchantOrderBillSummary';
 import { merchantBillPartsFromItems } from '@/lib/merchant-order-item-display';
-import { getUtensilsCustomerLabel } from '@/lib/orderUtensilsLabel';
+import { parseMerchantInstructionsList } from '@/lib/merchant-order-instructions';
 import type { NormalizedOrderLineItem, OrderPricingBreakdown } from '@/lib/orderLineItems';
 import { rejectReasonNeedsFollowUp } from '@/lib/merchantCancellationReasons';
 import type { MerchantCancellationReason } from '@/lib/merchantCancellationReasons';
@@ -53,6 +55,15 @@ import {
   subscribeIncomingOrderAlert,
 } from '@/lib/partner-incoming-order-broadcast';
 import { partnerPreparingOrdersHref } from '@/lib/partner-orders-routes';
+import {
+  clearBlockedChime,
+  installAlertAudioUnlock,
+  isAlertAudioBlocked,
+  playFallbackBeep,
+  queueBlockedChime,
+  subscribeAlertAudioBlocked,
+  unlockAlertAudioNow,
+} from '@/lib/partner-alert-audio';
 
 const incomingLora = Lora({
   subsets: ['latin'],
@@ -102,6 +113,33 @@ function isInvalidOrderTransitionError(message: string): boolean {
   return /invalid transition/i.test(message);
 }
 
+/**
+ * "37th" for the customer's Nth order at this store. Prefers the per-order
+ * ordinal and falls back to their lifetime store count (identical for a fresh
+ * order, and the only value the board list carries).
+ */
+function formatCustomerOrderOrdinal(
+  ordinal: number | null | undefined,
+  storeOrdersTotal: number | null | undefined
+): string | null {
+  const raw = [ordinal, storeOrdersTotal]
+    .map((v) => Math.floor(Number(v)))
+    .find((v) => Number.isFinite(v) && v > 0);
+  if (raw == null) return null;
+  const mod100 = raw % 100;
+  if (mod100 >= 11 && mod100 <= 13) return `${raw}th`;
+  switch (raw % 10) {
+    case 1:
+      return `${raw}st`;
+    case 2:
+      return `${raw}nd`;
+    case 3:
+      return `${raw}rd`;
+    default:
+      return `${raw}th`;
+  }
+}
+
 type AcceptanceSettings = {
   store_type?: string;
   acceptance_window_minutes: number;
@@ -136,61 +174,87 @@ function sortOrdersFifo(orders: OrdersFoodRow[]): OrdersFoodRow[] {
   });
 }
 
+type ChimeOpts = {
+  volume01: number;
+  /** Best-effort hint for mobile browsers (cannot override hardware silent switch). */
+  ringInSilent: boolean;
+  /** Unique token for this run; if it changes, playback stops. */
+  getRunId: () => number;
+  runId: number;
+  /** For stopping current audio when cancelled/closed. */
+  setAudioRef: (a: HTMLAudioElement | null) => void;
+  /** Called when the browser's autoplay gate refused playback. */
+  onBlocked?: () => void;
+};
+
+type ChimeOutcome = 'played' | 'error' | 'blocked' | 'cancelled';
+
+async function playChimeOnce(src: string, opts: ChimeOpts): Promise<ChimeOutcome> {
+  if (opts.getRunId() !== opts.runId) return 'cancelled';
+  const audio = new Audio(src);
+  audio.loop = false;
+  audio.setAttribute('playsinline', '');
+  audio.preload = 'auto';
+  audio.volume = Math.min(1, Math.max(0, opts.volume01));
+  if (opts.ringInSilent) {
+    try {
+      audio.muted = false;
+    } catch {
+      /* ignore */
+    }
+  }
+  opts.setAudioRef(audio);
+
+  // Attach listeners BEFORE calling play() so we never miss 'ended'.
+  const done = new Promise<boolean>((resolve) => {
+    audio.addEventListener('ended', () => resolve(true), { once: true });
+    audio.addEventListener('error', () => resolve(false), { once: true });
+  });
+
+  try {
+    if (opts.getRunId() !== opts.runId) return 'cancelled';
+    await audio.play();
+  } catch (err) {
+    const name = (err as DOMException | undefined)?.name;
+    return name === 'NotAllowedError' ? 'blocked' : 'error';
+  }
+
+  return (await done) ? 'played' : 'error';
+}
+
 async function playChimeSequential(
   url: string | null | undefined,
   repeatCount: number,
-  opts: {
-    volume01: number;
-    /** Best-effort hint for mobile browsers (cannot override hardware silent switch). */
-    ringInSilent: boolean;
-    /** Unique token for this run; if it changes, playback stops. */
-    getRunId: () => number;
-    runId: number;
-    /** For stopping current audio when cancelled/closed. */
-    setAudioRef: (a: HTMLAudioElement | null) => void;
-  }
+  opts: ChimeOpts
 ) {
   if (typeof window === 'undefined') return;
-  const src = (url || '').trim() || DEFAULT_ALERT_SOUND;
-  if (!src) return;
+  const configured = (url || '').trim();
+  // Bundled tone, then an oscillator chirp, back the configured sound up: a
+  // broken custom URL must never leave a new order silent.
+  const sources = configured && configured !== DEFAULT_ALERT_SOUND
+    ? [configured, DEFAULT_ALERT_SOUND]
+    : [DEFAULT_ALERT_SOUND];
 
   const safeRepeats = Math.max(1, Math.min(25, Math.floor(repeatCount || 1)));
+  let sourceIndex = 0;
   try {
     for (let i = 0; i < safeRepeats; i += 1) {
       if (isIncomingSoundMuted()) break;
-      // Cancel if a newer run started or modal closed.
       if (opts.getRunId() !== opts.runId) break;
-      const audio = new Audio(src);
-      audio.loop = false;
-      audio.setAttribute('playsinline', '');
-      audio.preload = 'auto';
-      audio.volume = Math.min(1, Math.max(0, opts.volume01));
-      if (opts.ringInSilent) {
-        try {
-          audio.muted = false;
-        } catch {
-          /* ignore */
-        }
-      }
-      opts.setAudioRef(audio);
 
-      // Attach listeners BEFORE calling play() so we never miss 'ended'.
-      const done = new Promise<void>((resolve) => {
-        const finish = () => resolve();
-        audio.addEventListener('ended', finish, { once: true });
-        audio.addEventListener('error', finish, { once: true });
-      });
-
-      try {
-        // If cancelled right before play, don't start.
-        if (opts.getRunId() !== opts.runId) break;
-        await audio.play();
-      } catch {
-        // Autoplay blocked / invalid URL — stop looping.
+      const outcome = await playChimeOnce(sources[sourceIndex]!, opts);
+      if (outcome === 'played') continue;
+      if (outcome === 'cancelled') break;
+      if (outcome === 'blocked') {
+        opts.onBlocked?.();
         break;
       }
-
-      await done;
+      if (sourceIndex < sources.length - 1) {
+        sourceIndex += 1;
+        i -= 1;
+        continue;
+      }
+      if (!(await playFallbackBeep(opts.volume01))) break;
     }
   } catch {
     /* ignore */
@@ -248,15 +312,24 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
     metaByInternalId,
   } = usePartnerSelectedStore(restaurantId);
   const [muted, setMuted] = useState(false);
+  /** True when the browser refused the chime until the merchant interacts. */
+  const [soundBlocked, setSoundBlocked] = useState(false);
   /** FIFO queue: oldest pending order is index 0. The merchant can page through with the pager. */
   const [queue, setQueue] = useState<OrdersFoodRow[]>([]);
   /** Which queued order the merchant is currently viewing / acting on. */
   const [viewIndex, setViewIndex] = useState(0);
   const viewIndexRef = useRef(0);
+  /** Body slide direction: 1 = next (from right), -1 = prev (from left). Pager stays fixed. */
+  const [slideDir, setSlideDir] = useState<1 | -1>(1);
+  const [slideNonce, setSlideNonce] = useState(0);
   const [rejectOpen, setRejectOpen] = useState(false);
   const [itemsSheetOpen, setItemsSheetOpen] = useState(false);
+  const [billSheetOpen, setBillSheetOpen] = useState(false);
+  const [kitchenNoteOpen, setKitchenNoteOpen] = useState(false);
+  /** Headless UI Dialog focus sentinels differ SSR vs client — mount only after hydration. */
+  const [dialogsReady, setDialogsReady] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
-  const [nowTick, setNowTick] = useState(() => Date.now());
+  const [nowTick, setNowTick] = useState(0);
   const [settings, setSettings] = useState<AcceptanceSettings>(DEFAULT_SETTINGS);
   /** Dedupe by orders_core.id */
   const shownInsertIds = useRef<Set<string>>(new Set());
@@ -273,7 +346,10 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
   const storeDefaultPrepRef = useRef(PLATFORM_DEFAULT_PREP_MINUTES);
   const queueRef = useRef<OrdersFoodRow[]>([]);
   const modalOrderRef = useRef<OrdersFoodRow | null>(null);
-  const closeModalRef = useRef<() => void>(() => {});
+  /** Stable late-bound hooks so early queue helpers can call them safely. */
+  const scanForNewOrdersRef = useRef<() => void>(() => {});
+  const stopChimeRef = useRef<() => void>(() => {});
+  const removeOrderFromQueueByIdRef = useRef<(orderId: number) => void>(() => {});
   const { followUp, beginFollowUp, dismissFollowUp, setFollowUp } = useRejectFollowUp();
 
   const pendingCount = queue.length;
@@ -314,6 +390,7 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
   const removeOrderFromQueueById = useCallback((orderId: number) => {
     const prev = queueRef.current;
     const viewedId = prev[clampIndex(prev.length, viewIndexRef.current)]?.order_id;
+    const removedWasViewed = Number(viewedId) === Number(orderId);
     const next = prev.filter((o) => Number(o.order_id) !== Number(orderId));
     if (next.length === prev.length) return;
     // Preserve the viewed order when it wasn't the one removed.
@@ -324,15 +401,45 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
     modalOrderRef.current = next[i] ?? null;
     setQueue(next);
     setViewIndex(i);
-    if (next.length === 0 && typeof window !== 'undefined') {
+    if (removedWasViewed) {
+      setRejectOpen(false);
+      setItemsSheetOpen(false);
+      setBillSheetOpen(false);
+      setKitchenNoteOpen(false);
+    }
+    if (typeof window !== 'undefined') {
       invalidatePartnerPendingCountCache();
-      window.dispatchEvent(new CustomEvent(PARTNER_INCOMING_MODAL_CLOSED));
       window.dispatchEvent(new CustomEvent(PARTNER_PENDING_ORDERS_REFRESH));
+      dispatchPartnerNotificationsChanged();
+    }
+    // Modal stays open while other pending cards remain.
+    if (next.length === 0) {
+      stopChimeRef.current();
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent(PARTNER_INCOMING_MODAL_CLOSED));
+      }
+      queueMicrotask(() => void scanForNewOrdersRef.current());
     }
   }, []);
+  removeOrderFromQueueByIdRef.current = removeOrderFromQueueById;
 
   const goToOrder = useCallback((delta: number) => {
-    setViewIndex((i) => clampIndex(queueRef.current.length, i + delta));
+    const len = queueRef.current.length;
+    if (len <= 1 || delta === 0) return;
+    setSlideDir(delta > 0 ? 1 : -1);
+    setSlideNonce((n) => n + 1);
+    setViewIndex((i) => clampIndex(len, i + delta));
+  }, []);
+
+  const goToOrderAt = useCallback((index: number) => {
+    const len = queueRef.current.length;
+    if (len <= 1) return;
+    const cur = clampIndex(len, viewIndexRef.current);
+    const next = clampIndex(len, index);
+    if (next === cur) return;
+    setSlideDir(next > cur ? 1 : -1);
+    setSlideNonce((n) => n + 1);
+    setViewIndex(next);
   }, []);
 
   const getDismissed = () => {
@@ -390,6 +497,12 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
     }
   }, []);
 
+  useEffect(() => {
+    installAlertAudioUnlock();
+    setSoundBlocked(isAlertAudioBlocked());
+    return subscribeAlertAudioBlocked(setSoundBlocked);
+  }, []);
+
   const reloadAcceptanceSettings = useCallback(async () => {
     if (!storeId) return;
     try {
@@ -407,6 +520,11 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
   useEffect(() => {
     void reloadAcceptanceSettings();
   }, [reloadAcceptanceSettings]);
+
+  useEffect(() => {
+    setDialogsReady(true);
+    setNowTick(Date.now());
+  }, []);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -505,14 +623,15 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
     [metaByInternalId, storeId]
   );
 
-  const orderLocality = useMemo(() => {
+  const orderStoreAddress = useMemo(() => {
     if (!modalOrder) return '';
     const internal = Number(modalOrder.merchant_store_id);
-    if (Number.isFinite(internal) && metaByInternalId.has(internal)) {
-      return metaByInternalId.get(internal)!.locality;
-    }
-    return '';
-  }, [modalOrder, metaByInternalId]);
+    if (!Number.isFinite(internal) || !metaByInternalId.has(internal)) return '';
+    const meta = metaByInternalId.get(internal)!;
+    // Same logged-in / active outlet — no need to show address in header.
+    if (storeId && meta.storeId === storeId) return '';
+    return String(meta.fullAddress ?? '').trim();
+  }, [modalOrder, metaByInternalId, storeId]);
 
   useEffect(() => {
     // Ensure modal has customer name + items + bulk flag by re-fetching full order (DB-backed)
@@ -567,17 +686,22 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
         resolveAlertUrlFromSlots(slots, device.alertSoundSlot) ??
         settings.alert_sound_url ??
         DEFAULT_ALERT_SOUND;
-      chimeRunIdRef.current += 1;
-      const myRun = chimeRunIdRef.current;
-      void playChimeSequential(chimeUrl, settings.alert_sound_repeat_count, {
-        volume01: volumeStepTo01(device.volumeStep),
-        ringInSilent: device.ringInSilent,
-        runId: myRun,
-        getRunId: () => chimeRunIdRef.current,
-        setAudioRef: (a) => {
-          chimeAudioRef.current = a;
-        },
-      });
+      const ring = () => {
+        chimeRunIdRef.current += 1;
+        const myRun = chimeRunIdRef.current;
+        void playChimeSequential(chimeUrl, settings.alert_sound_repeat_count, {
+          volume01: volumeStepTo01(device.volumeStep),
+          ringInSilent: device.ringInSilent,
+          runId: myRun,
+          getRunId: () => chimeRunIdRef.current,
+          setAudioRef: (a) => {
+            chimeAudioRef.current = a;
+          },
+          // Autoplay-blocked tab: ring as soon as the merchant touches the page.
+          onBlocked: () => queueBlockedChime(ring),
+        });
+      };
+      ring();
     },
     [
       storeId,
@@ -700,7 +824,6 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
     }
   }, [managedStoreIds, storeId, storeReady, openIfNew, isOrderDismissed]);
 
-  const scanForNewOrdersRef = useRef(scanForNewOrders);
   scanForNewOrdersRef.current = scanForNewOrders;
   const openIfNewRef = useRef(openIfNew);
   openIfNewRef.current = openIfNew;
@@ -944,10 +1067,37 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
     };
   }, [modalOrder, incomingOrderLineSum]);
   const moreItemsCount = Math.max(0, orderItems.length - MAX_PREVIEW_ITEMS);
+  /** Free-text checkout note for the kitchen — cutlery already has its own pill. */
+  const kitchenNotes = useMemo(
+    () =>
+      parseMerchantInstructionsList(modalOrder?.merchant_instructions_list).filter(
+        (line) => !/cutlery|utensil/i.test(line)
+      ),
+    [modalOrder?.merchant_instructions_list]
+  );
 
   useEffect(() => {
     setItemsSheetOpen(false);
+    setBillSheetOpen(false);
+    setKitchenNoteOpen(false);
   }, [modalOrder?.order_id]);
+
+  const orderPlacedLabel = useMemo(() => {
+    if (!modalOrder?.created_at) return '';
+    try {
+      return new Date(modalOrder.created_at).toLocaleString('en-IN', {
+        day: 'numeric',
+        month: 'short',
+        year: 'numeric',
+        hour: 'numeric',
+        minute: '2-digit',
+        hour12: true,
+        timeZone: 'Asia/Kolkata',
+      });
+    } catch {
+      return '';
+    }
+  }, [modalOrder?.created_at]);
 
   const persistMute = (v: boolean) => {
     setMuted(v);
@@ -957,6 +1107,7 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
       /* ignore */
     }
     if (v) {
+      clearBlockedChime();
       chimeRunIdRef.current += 1;
       try {
         if (chimeAudioRef.current) {
@@ -982,6 +1133,7 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
     }
     chimeAudioRef.current = null;
   };
+  stopChimeRef.current = stopChime;
 
   /** Close the whole stack (X / suppress). */
   const finishModal = (opts?: { userDismissed?: boolean }) => {
@@ -1002,6 +1154,7 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
     setQueue([]);
     setRejectOpen(false);
     setItemsSheetOpen(false);
+    setBillSheetOpen(false);
     if (typeof window !== 'undefined') {
       invalidatePartnerPendingCountCache();
       window.dispatchEvent(new CustomEvent(PARTNER_INCOMING_MODAL_CLOSED));
@@ -1012,7 +1165,7 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
     }
   };
 
-  /** After accept/reject (or dismiss): drop the VIEWED card, show a neighbour, or close if empty. */
+  /** After accept/reject (or dismiss): drop ONLY the viewed card; keep the rest open. */
   const advanceOrClose = (opts?: { markDismissed?: boolean }) => {
     const markDismissed = opts?.markDismissed !== false;
     const prev = queueRef.current;
@@ -1026,6 +1179,7 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
     const next = current
       ? prev.filter((o) => Number(o.order_id) !== Number(current.order_id))
       : prev.slice(1);
+    // Stay on the same slot index (next order slides into place); clamp if at end.
     const newIdx = clampIndex(next.length, idx);
     queueRef.current = next;
     viewIndexRef.current = newIdx;
@@ -1034,10 +1188,14 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
     setViewIndex(newIdx);
     setRejectOpen(false);
     setItemsSheetOpen(false);
+    setBillSheetOpen(false);
+    setKitchenNoteOpen(false);
     if (typeof window !== 'undefined') {
       invalidatePartnerPendingCountCache();
       window.dispatchEvent(new CustomEvent(PARTNER_PENDING_ORDERS_REFRESH));
+      dispatchPartnerNotificationsChanged();
     }
+    // Only tear down the modal when no other pending cards remain.
     if (next.length === 0) {
       if (typeof window !== 'undefined') {
         window.dispatchEvent(new CustomEvent(PARTNER_INCOMING_MODAL_CLOSED));
@@ -1045,11 +1203,13 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
       queueMicrotask(() => void scanForNewOrdersRef.current());
       return;
     }
-    // Keep modal open for the next oldest order.
+    // Keep modal open — merchant pages remaining orders with Prev/Next.
   };
 
-  const close = () => advanceOrClose({ markDismissed: true });
-  /** X: dismiss only the front card; show next if more are queued. */
+  /**
+   * X: close only the front card. Remaining queued orders stay open.
+   * Park/suppress the whole modal only when this was the last card.
+   */
   const dismissByUser = () => {
     if (queueRef.current.length > 1) {
       advanceOrClose({ markDismissed: false });
@@ -1058,13 +1218,29 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
     finishModal({ userDismissed: true });
   };
 
-  closeModalRef.current = close;
+  /**
+   * Drop ONE specific order by core id — never the "currently viewed" card by accident.
+   * Used by async sync / auto-cancel so accepting A cannot wipe B after the pager advances.
+   */
+  const dropOrderFromQueue = useCallback(
+    (orderId: number, opts?: { markDismissed?: boolean }) => {
+      const id = Number(orderId);
+      if (!Number.isFinite(id) || id <= 0) return;
+      if (opts?.markDismissed !== false) addDismissed(id);
+      else shownInsertIds.current.delete(`o:${id}`);
+      removeOrderFromQueueByIdRef.current(id);
+    },
+    []
+  );
 
   const syncOpenModalOrder = useCallback(async () => {
     const open = modalOrderRef.current;
     if (!storeId || !open) return;
-    if (isOrderDismissed(open.order_id)) {
-      closeModalRef.current();
+    const syncCoreId = Number(open.order_id);
+    if (!Number.isFinite(syncCoreId)) return;
+
+    if (isOrderDismissed(syncCoreId)) {
+      dropOrderFromQueue(syncCoreId, { markDismissed: false });
       return;
     }
     try {
@@ -1084,25 +1260,29 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
         }
       }
 
-      const full = await fetchByCoreId(open.order_id);
-      // Close ONLY on a definitive state: the order was fetched and is no longer
-      // pending (accepted / rejected / cancelled). A transient null (network blip,
-      // slow API) must NOT close the modal — the next sync tick retries. This
-      // mirrors the Merchant App, which also never closes on transient absence.
+      const full = await fetchByCoreId(syncCoreId);
+      // Still only act on THIS order id — if the merchant already advanced to another
+      // card, do not call close() (that would drop the newly viewed order).
       if (full && !isPartnerIncomingPending(full)) {
-        closeModalRef.current();
+        dropOrderFromQueue(syncCoreId, { markDismissed: true });
         return;
       }
       if (!full) return;
-      if (isOrderDismissed(open.order_id)) {
-        closeModalRef.current();
+      if (isOrderDismissed(syncCoreId)) {
+        dropOrderFromQueue(syncCoreId, { markDismissed: false });
         return;
       }
-      upsertOrderInQueue(full);
+      // Only upsert if this order is still in the queue (or was the sync target).
+      if (
+        queueRef.current.some((o) => Number(o.order_id) === syncCoreId) ||
+        Number(modalOrderRef.current?.order_id) === syncCoreId
+      ) {
+        upsertOrderInQueue(full);
+      }
     } catch {
       /* ignore */
     }
-  }, [storeId, fetchByCoreId, isOrderDismissed, upsertOrderInQueue, acceptWindowMs]);
+  }, [storeId, fetchByCoreId, isOrderDismissed, upsertOrderInQueue, acceptWindowMs, dropOrderFromQueue]);
 
   const fuseExpired = Boolean(modalOrder) && secondsLeft <= 0;
 
@@ -1144,14 +1324,16 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
     opts?: { closeAfter?: boolean }
   ) => {
     if (!storeId || !modalOrder) return;
-    const orderIdForToast = modalOrder.order_id;
+    const actedOrder = modalOrder;
+    const orderIdForToast = actedOrder.order_id;
+    const actedCoreId = Number(actedOrder.order_id);
     const closeAfter = opts?.closeAfter !== false;
-    const patchStoreId = resolvePublicStoreIdForOrder(modalOrder) || storeId;
+    const patchStoreId = resolvePublicStoreIdForOrder(actedOrder) || storeId;
     setActionLoading(true);
     try {
-      const url = modalOrder.core_only
-        ? `/api/merchant/orders-core/${modalOrder.order_id}`
-        : `/api/food-orders/${modalOrder.id}`;
+      const url = actedOrder.core_only
+        ? `/api/merchant/orders-core/${actedOrder.order_id}`
+        : `/api/food-orders/${actedOrder.id}`;
       const payload = {
         store_id: patchStoreId,
         status,
@@ -1163,9 +1345,9 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
       console.debug('[partner-incoming-modal] PATCH start', {
         url,
         payload,
-        order_id: modalOrder.order_id,
-        orders_food_id: modalOrder.id,
-        core_only: modalOrder.core_only,
+        order_id: actedOrder.order_id,
+        orders_food_id: actedOrder.id,
+        core_only: actedOrder.core_only,
       });
       const res = await fetch(url, {
         method: 'PATCH',
@@ -1182,7 +1364,8 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
           payload,
         });
         if (closeAfter && isInvalidOrderTransitionError(errMsg)) {
-          close();
+          // Already accepted/cancelled elsewhere — drop THIS order only.
+          dropOrderFromQueue(actedCoreId, { markDismissed: true });
           return;
         }
         throw new Error(errMsg);
@@ -1190,9 +1373,13 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
       console.debug('[partner-incoming-modal] PATCH ok', { url, httpStatus: res.status });
       showOrderActionToast(status === 'ACCEPTED' ? 'accepted' : 'rejected', orderIdForToast);
       window.dispatchEvent(new CustomEvent(PARTNER_PENDING_ORDERS_REFRESH));
+      dispatchPartnerNotificationsChanged();
       if (closeAfter) {
-        const moreWaiting = queueRef.current.length > 1;
-        close();
+        const moreWaiting = queueRef.current.some(
+          (o) => Number(o.order_id) !== actedCoreId
+        );
+        // Always remove by acted id so an async sync cannot race and wipe the next card.
+        dropOrderFromQueue(actedCoreId, { markDismissed: true });
         if (status === 'ACCEPTED' && !moreWaiting) {
           router.push(partnerPreparingOrdersHref(pathname, patchStoreId));
         }
@@ -1202,12 +1389,13 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
       console.debug('[partner-incoming-modal] PATCH exception', {
         message: msg,
         status,
+        order_id: actedOrder.order_id,
       });
       if (closeAfter && isInvalidOrderTransitionError(msg)) {
-        close();
+        dropOrderFromQueue(actedCoreId, { markDismissed: true });
         return;
       }
-      toast.error(msg || 'Could not update order');
+      toast.error(msg || 'Update failed');
     } finally {
       setActionLoading(false);
     }
@@ -1227,24 +1415,8 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
               aria-modal="true"
               aria-labelledby="partner-incoming-title"
             >
-              <div
-                className={`relative w-full max-w-2xl ${
-                  pendingCount > 2 ? 'pb-[8%]' : pendingCount > 1 ? 'pb-[5%]' : ''
-                }`}
-              >
-                {pendingCount > 2 ? (
-                  <div
-                    aria-hidden
-                    className="pointer-events-none absolute inset-x-3 bottom-0 top-3 z-0 rounded-2xl bg-white/70 shadow-md ring-1 ring-stone-900/10"
-                  />
-                ) : null}
-                {pendingCount > 1 ? (
-                  <div
-                    aria-hidden
-                    className="pointer-events-none absolute inset-x-1.5 bottom-0 top-1.5 z-[1] rounded-2xl bg-white shadow-lg ring-1 ring-stone-900/10"
-                  />
-                ) : null}
-                <div className="relative z-10 flex max-h-[min(88dvh,calc(100dvh-5rem))] w-full min-h-0 flex-col overflow-hidden rounded-t-[1.25rem] bg-[#fafaf9] shadow-[0_24px_64px_rgba(28,25,23,0.28)] ring-1 ring-stone-900/10 sm:max-h-[min(85dvh,calc(100dvh-6rem))] sm:rounded-[1.25rem]">
+              <div className="relative w-full max-w-2xl">
+                <div className="relative flex max-h-[min(88dvh,calc(100dvh-5rem))] w-full min-h-0 flex-col overflow-hidden rounded-t-[1.25rem] bg-[#fafaf9] shadow-[0_24px_64px_rgba(28,25,23,0.28)] ring-1 ring-stone-900/10 sm:max-h-[min(85dvh,calc(100dvh-6rem))] sm:rounded-[1.25rem]">
                   {/* Header */}
                   <div className="flex shrink-0 items-center justify-between gap-2 border-b border-stone-200/80 bg-white px-4 py-2.5 sm:px-5">
                     <div className="min-w-0">
@@ -1260,37 +1432,54 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
                           ? ` · ${String(modalOrder.order_type).replace(/_/g, ' ')}`
                           : ''}
                       </p>
-                      {orderLocality ? (
-                        <p className="mt-1 flex items-center gap-1 text-[11px] font-semibold text-sky-800">
-                          <MapPin size={12} className="shrink-0" aria-hidden />
-                          <span className="truncate">{orderLocality}</span>
+                      {orderStoreAddress ? (
+                        <p className="mt-1 flex items-start gap-1 text-[11px] font-semibold leading-snug text-sky-800">
+                          <MapPin size={12} className="mt-0.5 shrink-0" aria-hidden />
+                          <span className="min-w-0 break-words">{orderStoreAddress}</span>
                         </p>
                       ) : null}
                     </div>
-                    <div className="flex items-center gap-0.5">
-                      <button
-                        type="button"
-                        className="inline-flex items-center gap-1 rounded-lg px-2 py-1.5 text-[11px] font-semibold text-stone-600 hover:bg-stone-100"
-                        onClick={() => persistMute(!muted)}
-                        aria-label={muted ? 'Unmute' : 'Mute'}
-                      >
-                        {muted ? <VolumeX size={15} /> : <Volume2 size={15} />}
-                        {muted ? 'Unmute' : 'Mute'}
-                      </button>
-                      <button
-                        type="button"
-                        className="rounded-lg p-1.5 text-stone-500 hover:bg-stone-100"
-                        aria-label="Close"
-                        onClick={dismissByUser}
-                      >
-                        <X size={18} />
-                      </button>
+                    <div className="flex shrink-0 flex-col items-end gap-1">
+                      <div className="flex items-center gap-0.5">
+                        {soundBlocked && !muted ? (
+                          <button
+                            type="button"
+                            className="inline-flex items-center gap-1 rounded-lg bg-amber-50 px-2 py-1.5 text-[11px] font-semibold text-amber-800 ring-1 ring-amber-200 hover:bg-amber-100"
+                            onClick={() => unlockAlertAudioNow()}
+                          >
+                            <Volume2 size={15} />
+                            Enable sound
+                          </button>
+                        ) : null}
+                        <button
+                          type="button"
+                          className="inline-flex items-center gap-1 rounded-lg px-2 py-1.5 text-[11px] font-semibold text-stone-600 hover:bg-stone-100"
+                          onClick={() => persistMute(!muted)}
+                          aria-label={muted ? 'Unmute' : 'Mute'}
+                        >
+                          {muted ? <VolumeX size={15} /> : <Volume2 size={15} />}
+                          {muted ? 'Unmute' : 'Mute'}
+                        </button>
+                        <button
+                          type="button"
+                          className="rounded-lg p-1.5 text-stone-500 hover:bg-stone-100"
+                          aria-label="Close"
+                          onClick={dismissByUser}
+                        >
+                          <X size={18} />
+                        </button>
+                      </div>
+                      {orderPlacedLabel ? (
+                        <p className="incoming-num max-w-[11rem] text-right text-[10px] font-semibold leading-snug text-stone-500">
+                          {orderPlacedLabel}
+                        </p>
+                      ) : null}
                     </div>
                   </div>
 
                   {/* Pager: move between multiple pending orders and act on the one shown. */}
                   {pendingCount > 1 ? (
-                    <div className="flex shrink-0 items-center justify-between gap-2 border-b border-stone-200/80 bg-stone-50/80 px-2.5 py-1.5 sm:px-4">
+                    <div className="mx-2.5 mt-1.5 mb-0.5 flex shrink-0 items-center justify-between gap-2 rounded-xl border border-stone-200 bg-stone-50 px-1.5 py-1 sm:mx-4">
                       <button
                         type="button"
                         onClick={() => goToOrder(-1)}
@@ -1312,7 +1501,7 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
                               type="button"
                               aria-label={`Go to order ${i + 1}`}
                               aria-current={i === activeIndex}
-                              onClick={() => setViewIndex(i)}
+                              onClick={() => goToOrderAt(i)}
                               className={`h-1.5 rounded-full transition-all ${
                                 i === activeIndex
                                   ? 'w-4 bg-emerald-600'
@@ -1335,116 +1524,92 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
                     </div>
                   ) : null}
 
-                  {/* Body grows with content; scrolls only when over max-h — no empty flex gap */}
-                  <div className="min-h-0 overflow-y-auto overscroll-contain px-4 pt-2.5 sm:px-5">
-                    <div className="flex items-baseline justify-between gap-2">
-                      <MiniOrderId
-                        formattedOrderId={modalOrder.formatted_order_id}
-                        fallbackOrderId={modalOrder.order_id}
-                      />
-                      <span className="incoming-num shrink-0 text-[11px] font-semibold text-stone-500">
-                        {new Date(modalOrder.created_at).toLocaleTimeString('en-IN', {
-                          hour: 'numeric',
-                          minute: '2-digit',
-                        })}
-                      </span>
-                    </div>
-
-                    <p className="mt-1 text-[13px] leading-snug text-stone-700">
-                      {modalOrder.customer_name ? (
-                        <span className="font-medium text-stone-900">
-                          {(() => {
-                            const n = Number((modalOrder as any).customer_order_count ?? 0);
-                            if (Number.isFinite(n) && n > 0) {
-                              return `${n === 1 ? '1st' : n === 2 ? '2nd' : n === 3 ? '3rd' : `${n}th`} order by ${modalOrder.customer_name}`;
-                            }
-                            return `Order by ${modalOrder.customer_name}`;
-                          })()}
-                        </span>
-                      ) : (
-                        <span className="font-medium text-stone-900">New customer order</span>
-                      )}
-                    </p>
-
-                    {(() => {
-                      const utensilsLabel = getUtensilsCustomerLabel(modalOrder);
-                      const sendCutlery =
-                        modalOrder.requires_utensils === true ||
-                        (utensilsLabel != null && !/don'?t send/i.test(utensilsLabel));
-                      return (
-                        <div className="mt-2 flex items-center gap-2">
-                          <div
-                            className={`flex min-w-0 flex-1 items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[11px] font-medium leading-tight ${
-                              sendCutlery
-                                ? 'bg-emerald-50 text-emerald-900 ring-1 ring-emerald-200/80'
-                                : 'bg-stone-100 text-stone-600 ring-1 ring-stone-200/80'
-                            }`}
+                  {/* Body slides on Prev/Next; pager + footer stay fixed */}
+                  <div className="min-h-0 overflow-y-auto overflow-x-hidden overscroll-contain px-4 pt-2.5 sm:px-5">
+                    <div
+                      key={`incoming-slide-${slideNonce}-${modalOrder.order_id}`}
+                      className={
+                        slideNonce > 0
+                          ? slideDir > 0
+                            ? 'incoming-order-slide-next'
+                            : 'incoming-order-slide-prev'
+                          : undefined
+                      }
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <MiniOrderId
+                          formattedOrderId={modalOrder.formatted_order_id}
+                          fallbackOrderId={modalOrder.order_id}
+                        />
+                        {kitchenNotes.length > 0 ? (
+                          <button
+                            type="button"
+                            onClick={() => setKitchenNoteOpen(true)}
+                            className="incoming-note-blink inline-flex shrink-0 items-center gap-1 rounded-full bg-violet-50 px-2.5 py-1 text-[11px] font-bold text-violet-800 ring-1 ring-violet-300 hover:bg-violet-100"
                           >
-                            <UtensilsCrossed
-                              size={13}
-                              className={`shrink-0 ${sendCutlery ? 'text-emerald-600' : 'text-stone-500'}`}
-                              aria-hidden
-                            />
-                            <span className="min-w-0 truncate">
-                              {utensilsLabel ??
-                                (sendCutlery ? 'Send cutlery & utensils' : "Don't send cutlery")}
-                            </span>
-                          </div>
-                          <div className="flex shrink-0 items-center gap-1.5 rounded-lg bg-white px-2.5 py-1.5 text-[11px] text-stone-700 ring-1 ring-stone-200/80">
-                            <span className="incoming-num font-semibold">
-                              {itemCount} item{itemCount === 1 ? '' : 's'}
-                            </span>
-                            {orderItems.length > 0 ? (
-                              <button
-                                type="button"
-                                onClick={() => setItemsSheetOpen(true)}
-                                className="font-semibold text-emerald-700 hover:underline"
-                              >
-                                View all
-                              </button>
-                            ) : null}
-                          </div>
-                        </div>
-                      );
-                    })()}
-
-                    {isBig ? (
-                      <div className="mt-2 flex gap-2 rounded-lg bg-amber-50 px-2.5 py-1.5 ring-1 ring-amber-200/80">
-                        <Clock className="mt-0.5 h-4 w-4 shrink-0 text-amber-700" aria-hidden />
-                        <div>
-                          <p className="text-[12px] font-semibold text-amber-950">Big order</p>
-                          <p className="text-[11px] leading-snug text-amber-900/85">
-                            Allow extra prep time before you accept.
-                          </p>
-                        </div>
+                            <StickyNote size={12} aria-hidden />
+                            <span className="incoming-num">{kitchenNotes.length}</span>
+                            <span>Customer note added</span>
+                          </button>
+                        ) : null}
                       </div>
-                    ) : null}
 
-                    <div className="incoming-items mt-2 pb-2">
-                      <MerchantOrderItemsList
-                        items={orderItems as NormalizedOrderLineItem[]}
-                        totalItemCount={itemCount}
-                        totalLineCount={orderItems.length}
-                        requiresUtensils={false}
-                        maxItems={MAX_PREVIEW_ITEMS}
-                        compact
-                        hideMoreHint
-                        showUtensilsBanner={false}
-                        className="!border-0"
-                      />
+                      <p className="mt-1 text-[13px] leading-snug text-stone-700">
+                        {modalOrder.customer_name ? (
+                          <span className="font-medium text-stone-900">
+                            {(() => {
+                              const ordinal = formatCustomerOrderOrdinal(
+                                modalOrder.customer_store_order_ordinal,
+                                (modalOrder as { customer_order_count?: number | null }).customer_order_count
+                              );
+                              return ordinal
+                                ? `${ordinal} order by ${modalOrder.customer_name}`
+                                : `Order by ${modalOrder.customer_name}`;
+                            })()}
+                          </span>
+                        ) : (
+                          <span className="font-medium text-stone-900">New customer order</span>
+                        )}
+                      </p>
+
+                      {isBig ? (
+                        <div className="mt-2 flex gap-2 rounded-lg bg-amber-50 px-2.5 py-1.5 ring-1 ring-amber-200/80">
+                          <Clock className="mt-0.5 h-4 w-4 shrink-0 text-amber-700" aria-hidden />
+                          <div>
+                            <p className="text-[12px] font-semibold text-amber-950">Big order</p>
+                            <p className="text-[11px] leading-snug text-amber-900/85">
+                              Allow extra prep time before you accept.
+                            </p>
+                          </div>
+                        </div>
+                      ) : null}
+
+                      <div className="mt-2 mb-2 pb-1">
+                        <MerchantOrderItemsList
+                          items={orderItems as NormalizedOrderLineItem[]}
+                          totalItemCount={itemCount}
+                          totalLineCount={orderItems.length}
+                          requiresUtensils={false}
+                          maxItems={MAX_PREVIEW_ITEMS}
+                          compact
+                          hideMoreHint
+                          showUtensilsBanner={false}
+                          showQuantityColumn
+                          showOrderItemsHeader
+                          onViewMore={
+                            moreItemsCount > 0
+                              ? () => {
+                                  setBillSheetOpen(false);
+                                  setItemsSheetOpen(true);
+                                }
+                              : undefined
+                          }
+                        />
+                      </div>
                     </div>
-                    {moreItemsCount > 0 ? (
-                      <button
-                        type="button"
-                        className="mb-2 w-full text-center text-[11px] font-semibold text-emerald-700 hover:underline"
-                        onClick={() => setItemsSheetOpen(true)}
-                      >
-                        +{moreItemsCount} more — View all
-                      </button>
-                    ) : null}
                   </div>
 
-                  {/* Fixed footer: bill → prep → actions */}
+                  {/* Fixed footer: bill → view all + prep → actions */}
                   <div className="shrink-0 border-t border-stone-200/80 bg-white">
                     <div className="space-y-2 px-4 pt-2.5 sm:px-5">
                       <MerchantOrderBillSummary
@@ -1452,39 +1617,60 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
                         items={orderItems as NormalizedOrderLineItem[]}
                         pricing={incomingOrderPricing}
                         discountLabel="Merchant Precision Discount"
+                        onTotalClick={() => {
+                          setItemsSheetOpen(false);
+                          setBillSheetOpen(true);
+                        }}
                       />
 
-                      <div className="flex items-center gap-3 rounded-xl bg-stone-50 px-3 py-2 ring-1 ring-stone-200/80">
-                        <div className="min-w-0 flex-1">
-                          <p className="text-[12px] font-semibold leading-tight text-stone-900">
-                            Preparation time
-                          </p>
-                          <p className="incoming-num mt-0.5 text-[10px] font-medium leading-tight text-stone-500">
-                            {PREP_TIME_MIN}–{maxPrepMinutes} min · customer sees this
-                          </p>
-                        </div>
-                        <div className="flex shrink-0 items-stretch overflow-hidden rounded-lg bg-white ring-1 ring-stone-200">
-                          <button
-                            type="button"
-                            className="flex h-9 w-9 items-center justify-center border-r border-stone-200 text-stone-700 hover:bg-stone-50 disabled:opacity-40"
-                            disabled={prepMinutes <= PREP_TIME_MIN || actionLoading}
-                            onClick={() => stepPrep(-PREP_STEP_MINUTES)}
-                            aria-label="Decrease preparation time"
-                          >
-                            <Minus size={15} />
-                          </button>
-                          <div className="incoming-num flex h-9 min-w-[3.5rem] items-center justify-center px-2 text-center text-[13px] font-bold tabular-nums text-stone-900">
-                            {prepMinutes}m
+                      <div className="flex items-stretch gap-2">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setBillSheetOpen(false);
+                            setItemsSheetOpen(true);
+                          }}
+                          disabled={orderItems.length === 0}
+                          className="flex w-1/2 items-center justify-center rounded-xl bg-blue-50 px-2 py-2 text-center text-[12px] font-bold leading-tight text-blue-700 ring-1 ring-blue-200 hover:bg-blue-100 disabled:opacity-40"
+                        >
+                          View all items
+                          {itemCount > 0 ? (
+                            <span className="incoming-num ml-1 font-extrabold">({itemCount})</span>
+                          ) : null}
+                        </button>
+
+                        <div className="flex w-1/2 items-center gap-2 rounded-xl bg-stone-50 px-2.5 py-2 ring-1 ring-stone-200/80">
+                          <div className="min-w-0 flex-1">
+                            <p className="text-[11px] font-semibold leading-tight text-stone-900">
+                              Preparation time
+                            </p>
+                            <p className="incoming-num mt-0.5 text-[9px] font-medium leading-tight text-stone-500">
+                              {PREP_TIME_MIN}–{maxPrepMinutes} min
+                            </p>
                           </div>
-                          <button
-                            type="button"
-                            className="flex h-9 w-9 items-center justify-center border-l border-stone-200 text-stone-700 hover:bg-stone-50 disabled:opacity-40"
-                            disabled={prepMinutes >= maxPrepMinutes || actionLoading}
-                            onClick={() => stepPrep(PREP_STEP_MINUTES)}
-                            aria-label="Increase preparation time"
-                          >
-                            <Plus size={15} />
-                          </button>
+                          <div className="flex shrink-0 items-stretch overflow-hidden rounded-lg bg-white ring-1 ring-stone-200">
+                            <button
+                              type="button"
+                              className="flex h-8 w-7 items-center justify-center border-r border-stone-200 text-stone-700 hover:bg-stone-50 disabled:opacity-40"
+                              disabled={prepMinutes <= PREP_TIME_MIN || actionLoading}
+                              onClick={() => stepPrep(-PREP_STEP_MINUTES)}
+                              aria-label="Decrease preparation time"
+                            >
+                              <Minus size={14} />
+                            </button>
+                            <div className="incoming-num flex h-8 min-w-[2.75rem] items-center justify-center px-1.5 text-center text-[12px] font-bold tabular-nums text-stone-900">
+                              {prepMinutes}m
+                            </div>
+                            <button
+                              type="button"
+                              className="flex h-8 w-7 items-center justify-center border-l border-stone-200 text-stone-700 hover:bg-stone-50 disabled:opacity-40"
+                              disabled={prepMinutes >= maxPrepMinutes || actionLoading}
+                              onClick={() => stepPrep(PREP_STEP_MINUTES)}
+                              aria-label="Increase preparation time"
+                            >
+                              <Plus size={14} />
+                            </button>
+                          </div>
                         </div>
                       </div>
                     </div>
@@ -1541,13 +1727,72 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
         : null}
 
       <OrderBillSidesheet
-        open={!!modalOrder && itemsSheetOpen && !rejectOpen}
+        open={!!modalOrder && itemsSheetOpen && !rejectOpen && !billSheetOpen}
         onClose={() => setItemsSheetOpen(false)}
         order={modalOrder}
         pricing={incomingOrderPricing}
         lineSum={incomingOrderLineSum}
         allItemsOnly
       />
+
+      <OrderBillSidesheet
+        open={!!modalOrder && billSheetOpen && !rejectOpen && !itemsSheetOpen}
+        onClose={() => setBillSheetOpen(false)}
+        order={modalOrder}
+        pricing={incomingOrderPricing}
+        lineSum={incomingOrderLineSum}
+        allItemsOnly={false}
+      />
+
+      {dialogsReady && kitchenNoteOpen && kitchenNotes.length > 0 ? (
+        <Dialog open onClose={() => setKitchenNoteOpen(false)} className="relative z-[120]">
+          <div className="fixed inset-0 bg-stone-950/45 backdrop-blur-[1px]" aria-hidden />
+          <div className="fixed inset-0 flex items-center justify-center p-3">
+            <Dialog.Panel
+              className={`${incomingLora.variable} ${incomingPoppins.variable} partner-incoming-modal w-full max-w-[22rem] overflow-hidden rounded-xl bg-white shadow-xl ring-1 ring-violet-200/80`}
+            >
+              <div className="flex items-center justify-between gap-2 border-b border-violet-100 bg-violet-50/80 px-3 py-2">
+                <div className="flex min-w-0 items-center gap-1.5">
+                  <StickyNote size={14} className="shrink-0 text-violet-700" aria-hidden />
+                  <Dialog.Title className="truncate text-[12px] font-bold text-violet-900">
+                    Kitchen note
+                    {kitchenNotes.length > 1 ? (
+                      <span className="incoming-num ml-1 text-violet-700">({kitchenNotes.length})</span>
+                    ) : null}
+                  </Dialog.Title>
+                </div>
+                <button
+                  type="button"
+                  className="rounded-md p-1 text-stone-500 hover:bg-violet-100 hover:text-stone-800"
+                  aria-label="Close note"
+                  onClick={() => setKitchenNoteOpen(false)}
+                >
+                  <X size={15} />
+                </button>
+              </div>
+              <div className="space-y-1.5 px-3 py-2.5">
+                {kitchenNotes.map((line) => (
+                  <p
+                    key={line}
+                    className="rounded-lg bg-violet-50/70 px-2.5 py-2 text-[13px] font-medium leading-snug text-stone-800 ring-1 ring-violet-100"
+                  >
+                    {line}
+                  </p>
+                ))}
+              </div>
+              <div className="border-t border-stone-100 px-3 py-2">
+                <button
+                  type="button"
+                  className="w-full rounded-lg bg-violet-700 py-2 text-[12px] font-semibold text-white hover:bg-violet-800"
+                  onClick={() => setKitchenNoteOpen(false)}
+                >
+                  Got it
+                </button>
+              </div>
+            </Dialog.Panel>
+          </div>
+        </Dialog>
+      ) : null}
 
       <RejectOrderSidesheet
         open={!!modalOrder && rejectOpen}

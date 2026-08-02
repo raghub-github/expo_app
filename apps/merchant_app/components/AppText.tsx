@@ -12,10 +12,14 @@ import {
   splitMixedTypography,
 } from "@/lib/mixedTypography";
 import { getTextHost } from "@/lib/textHost";
+import { useTypographyVariant } from "@/lib/typographyVariant";
+import { MerchantFonts } from "@/constants/typography";
 
 type Props = TextProps & {
   /** Override bold detection from style.fontWeight */
   bold?: boolean;
+  /** Force Poppins for letters (incoming sheet). Overrides context when set. */
+  variant?: "brand" | "sans";
 };
 
 function hasComplexChildren(children: React.ReactNode): boolean {
@@ -35,9 +39,11 @@ function childrenToPlainText(children: React.ReactNode): string {
   return "";
 }
 
-/** Lora for letters, Poppins for digits / ₹ / %. */
-export function AppText({ style, bold, children, ...rest }: Props) {
+/** Lora for letters, Poppins for digits / ₹ / % — or all-Poppins when variant=sans. */
+export function AppText({ style, bold, variant: variantProp, children, ...rest }: Props) {
   const Host = getTextHost();
+  const ctxVariant = useTypographyVariant();
+  const variant = variantProp ?? ctxVariant;
   const flat = StyleSheet.flatten(style) ?? {};
   const existingFamily = (flat as TextStyle).fontFamily;
 
@@ -55,12 +61,17 @@ export function AppText({ style, bold, children, ...rest }: Props) {
   // always pick the concrete face and strip fontWeight.
   const { fontWeight: _fw, fontFamily: _ff, fontStyle: _fs, ...segmentBase } = flat as TextStyle;
 
+  const alphaFamily =
+    variant === "sans"
+      ? isBold
+        ? MerchantFonts.poppinsBold
+        : MerchantFonts.poppinsSemiBold
+      : segmentFontFamily("alpha", isBold);
+  const numericFamily = segmentFontFamily("numeric", isBold);
+
   if (hasComplexChildren(children)) {
     return (
-      <Host
-        style={[segmentBase, { fontFamily: segmentFontFamily("alpha", isBold) }]}
-        {...rest}
-      >
+      <Host style={[segmentBase, { fontFamily: alphaFamily }]} {...rest}>
         {children}
       </Host>
     );
@@ -76,10 +87,7 @@ export function AppText({ style, bold, children, ...rest }: Props) {
     !plain.includes("₹")
   ) {
     return (
-      <Host
-        style={[segmentBase, { fontFamily: segmentFontFamily("alpha", isBold) }]}
-        {...rest}
-      >
+      <Host style={[segmentBase, { fontFamily: alphaFamily }]} {...rest}>
         {plain}
       </Host>
     );
@@ -87,10 +95,7 @@ export function AppText({ style, bold, children, ...rest }: Props) {
 
   if (segments.length <= 1 && segments[0]?.kind === "numeric") {
     return (
-      <Host
-        style={[segmentBase, { fontFamily: segmentFontFamily("numeric", isBold) }]}
-        {...rest}
-      >
+      <Host style={[segmentBase, { fontFamily: numericFamily }]} {...rest}>
         {plain}
       </Host>
     );
@@ -103,7 +108,9 @@ export function AppText({ style, bold, children, ...rest }: Props) {
         <Host
           key={`${index}-${seg.value.slice(0, 8)}`}
           style={[
-            { fontFamily: segmentFontFamily(seg.kind, isBold) },
+            {
+              fontFamily: seg.kind === "numeric" ? numericFamily : alphaFamily,
+            },
             inheritedColor != null ? { color: inheritedColor } : null,
           ]}
         >

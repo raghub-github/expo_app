@@ -37,8 +37,8 @@ export async function pickCatalogPhoto(
     mediaTypes:
       (ImagePicker as { MediaTypeOptions?: { Images: string } }).MediaTypeOptions?.Images ??
       "images",
-    allowsEditing: true,
-    aspect: [1, 1] as [number, number],
+    // Crop UI crashes on many Android OEM builds — skip editing.
+    allowsEditing: false,
     quality: 0.85,
   } as unknown as Parameters<typeof ImagePicker.launchImageLibraryAsync>[0];
 

@@ -31,6 +31,8 @@ export type EtaLive = {
 export type OrderEtaResponse = {
   ok: true;
   orderIdText: string;
+  /** Immutable First ETA (first_eta_at → promised_delivery_at). */
+  firstEtaAt?: string | null;
   promise: EtaPromise;
   live: EtaLive | null;
 };
@@ -62,7 +64,7 @@ export function minutesUntil(iso: string | null | undefined, now: Date = new Dat
  */
 export function pickupDeadlineIso(eta: OrderEtaResponse | null): string | null {
   if (!eta) return null;
-  const promiseIso = eta.live?.promisedDeliveryAt || eta.promise.promisedDeliveryAt;
+  const promiseIso = eta.firstEtaAt || eta.promise.promisedDeliveryAt;
   if (!promiseIso) return null;
   const t = new Date(promiseIso).getTime();
   if (!Number.isFinite(t)) return null;

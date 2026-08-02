@@ -1,6 +1,5 @@
 import type { Metadata } from "next";
 import { Suspense } from "react";
-import { Geist, Geist_Mono } from "next/font/google";
 import "bootstrap-icons/font/bootstrap-icons.css";
 import "./globals.css";
 import { ReduxProvider } from "@/store/Provider";
@@ -9,17 +8,8 @@ import { GlobalErrorHandler } from "@/components/GlobalErrorHandler";
 import { ToastProvider } from "@/context/ToastContext";
 import { ChunkLoadErrorBoundary } from "@/components/ChunkLoadErrorBoundary";
 import ControlAppShell from "@/providers/ControlAppShell";
+import { geistMono, geistSans } from "@/lib/fonts/app-fonts";
 import { ticketsNumFont, ticketsTextFont } from "@/lib/fonts/tickets-fonts";
-
-const geistSans = Geist({
-  variable: "--font-geist-sans",
-  subsets: ["latin"],
-});
-
-const geistMono = Geist_Mono({
-  variable: "--font-geist-mono",
-  subsets: ["latin"],
-});
 
 export const metadata: Metadata = {
   title: "GatiMitra Control Dashboard",

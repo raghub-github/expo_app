@@ -47,7 +47,7 @@ const styles = StyleSheet.create({
     elevation: 24,
   },
   pressable: {
-    borderRadius: 24,
+    borderRadius: 8,
   },
   fab: {
     flexDirection: "row",
@@ -55,7 +55,7 @@ const styles = StyleSheet.create({
     backgroundColor: StoreTheme.fabBg,
     paddingVertical: 11,
     paddingHorizontal: 16,
-    borderRadius: 24,
+    borderRadius: 8,
     gap: 8,
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: "rgba(255,255,255,0.18)",

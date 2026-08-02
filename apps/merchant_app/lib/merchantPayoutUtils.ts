@@ -33,7 +33,14 @@ export {
 /** @deprecated Prefer LEDGER_CATEGORY_LABELS from @gatimitra/merchant-payout */
 export const CAT_LABELS = LEDGER_CATEGORY_LABELS;
 
-export type PayoutStatus = "PAID" | "PENDING" | "PROCESSING" | "FAILED" | "ACCRUING";
+/** RETURNED = admin rejected the withdrawal and the money came back; FAILED = bank transfer failed. */
+export type PayoutStatus =
+  | "PAID"
+  | "PENDING"
+  | "PROCESSING"
+  | "FAILED"
+  | "RETURNED"
+  | "ACCRUING";
 
 export type PayoutCard = {
   id: string;
@@ -51,6 +58,17 @@ export type PayoutCard = {
   closeReason?: string | null;
   /** Active merchant_payout_requests.id when this card is a live withdrawal. */
   payoutRequestId?: number | null;
+  /** Withdrawal principal returned to the wallet in this cycle — never payout value. */
+  withdrawalReturned?: number;
+  /** Amount the merchant had asked to withdraw when this cycle closed. */
+  withdrawalAmount?: number;
+  /** Admin rejection reason / bank failure reason for the closing withdrawal. */
+  closeNote?: string | null;
+  /**
+   * Closed cycle with no orders and nothing paid out — a withdrawal boundary only.
+   * Rendered as a single collapsed row instead of a full payout card.
+   */
+  isZeroActivity?: boolean;
 };
 
 const IST_OFFSET_MS = (5 * 60 + 30) * 60 * 1000;
@@ -628,12 +646,9 @@ export function buildSettlementDetailSections(settlement: SettlementSummary): {
     });
   }
 
+  // Withdrawal reversals are returned principal, not earnings: they are shown as a
+  // separate reported row, never inside the credits that build Est. payout.
   const otherCreditItems: SettlementBreakdownLine[] = [
-    {
-      label: "Withdrawal returned (rejected / failed)",
-      amount: settlement.withdrawalReversalCredits ?? 0,
-      green: true,
-    },
     { label: "Manual credit", amount: settlement.manualCredits ?? 0, green: true },
     { label: "Adjustment credit", amount: settlement.adjustmentCredits ?? 0, green: true },
     { label: "GST credit", amount: settlement.gstCredits ?? 0, green: true },
@@ -847,6 +862,8 @@ export function statusBadgeStyle(status: PayoutStatus) {
       return { bg: "#FFF3E0", text: "#E65100" };
     case "FAILED":
       return { bg: "#FFEBEE", text: "#C62828" };
+    case "RETURNED":
+      return { bg: "#FEF3C7", text: "#B45309" };
     default:
       return { bg: "#FFF3E0", text: "#E65100" };
   }
@@ -862,6 +879,8 @@ export function statusLabel(status: PayoutStatus): string {
       return "IN PROCESS";
     case "FAILED":
       return "FAILED";
+    case "RETURNED":
+      return "RETURNED";
     default:
       return "TO BE PAID";
   }
@@ -881,6 +900,8 @@ export function orderSettlementBadge(
       return { label: "IN PROCESS", variant: "processing" };
     case "FAILED":
       return { label: "FAILED", variant: "failed" };
+    case "RETURNED":
+      return { label: "RETURNED", variant: "failed" };
     default:
       return { label: "TO BE PAID", variant: "to_be_paid" };
   }
@@ -899,6 +920,9 @@ export function payoutCardToParams(card: PayoutCard): Record<string, string> {
     ledgerEntryId: card.sourceEntry?.id != null ? String(card.sourceEntry.id) : "",
     pgTransactionId: card.sourceEntry?.pg_transaction_id ?? "",
     cycleId: card.cycleId != null ? String(card.cycleId) : "",
+    withdrawalReturned: String(card.withdrawalReturned ?? 0),
+    withdrawalAmount: String(card.withdrawalAmount ?? 0),
+    closeNote: card.closeNote ?? "",
   };
 }
 
@@ -913,6 +937,9 @@ export function buildPayoutCardsFromCycles(
     net_payout: number;
     estimated_payout: number;
     order_count: number;
+    withdrawal_returned?: number;
+    withdrawal_amount?: number;
+    close_note?: string | null;
   }>,
 ): PayoutCard[] {
   return cycles.map((c) => {
@@ -921,13 +948,16 @@ export function buildPayoutCardsFromCycles(
     if (!isOpen) {
       if (c.close_reason === "WITHDRAWAL_COMPLETED") status = "PAID";
       else if (c.close_reason === "WITHDRAWAL_FAILED") status = "FAILED";
-      else status = "FAILED"; // rejected / returned
+      else status = "RETURNED"; // admin rejected the withdrawal — money came back
     }
     const periodStart = parsePgTimestamp(c.period_start);
     const periodEnd = c.period_end ? parsePgTimestamp(c.period_end) : endOfIstDay(new Date());
+    const netPayout = isOpen ? Math.max(0, c.estimated_payout) : Math.max(0, c.net_payout);
+    const withdrawalReturned = Math.max(0, Number(c.withdrawal_returned ?? 0));
+    const withdrawalAmount = Math.max(0, Number(c.withdrawal_amount ?? 0));
     return {
       id: isOpen ? "current-cycle" : `cycle-${c.id}`,
-      netPayout: isOpen ? Math.max(0, c.estimated_payout) : Math.max(0, c.net_payout),
+      netPayout,
       orderCount: c.order_count,
       periodStart,
       periodEnd,
@@ -936,8 +966,23 @@ export function buildPayoutCardsFromCycles(
       isCurrentCycle: isOpen,
       cycleId: c.id,
       closeReason: c.close_reason,
+      withdrawalReturned,
+      withdrawalAmount,
+      closeNote: c.close_note ?? null,
+      isZeroActivity: !isOpen && c.order_count === 0 && netPayout === 0,
     };
   });
+}
+
+/**
+ * Amount to show as "returned" on a card. The ledger sum for a cycle window can
+ * include a reversal that drifted in from a neighbouring withdrawal, so prefer the
+ * amount the merchant actually asked to withdraw when it is known.
+ */
+export function payoutReturnedDisplayAmount(card: PayoutCard): number {
+  const returned = card.withdrawalReturned ?? 0;
+  if (returned <= 0) return 0;
+  return (card.withdrawalAmount ?? 0) > 0 ? (card.withdrawalAmount ?? 0) : returned;
 }
 
 export type ActivePayoutRequestSource = {

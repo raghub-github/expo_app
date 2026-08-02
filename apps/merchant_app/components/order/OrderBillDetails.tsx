@@ -15,17 +15,6 @@ function isPaidOrder(order: ApiFoodOrder): boolean {
   return true;
 }
 
-function paymentModeLabel(method: string | null | undefined): string {
-  const m = (method ?? "").trim();
-  if (!m) return "—";
-  const lower = m.toLowerCase();
-  if (lower === "cod" || lower === "cash") return "COD";
-  if (lower === "online" || lower === "prepaid") return "Online";
-  if (lower === "upi") return "UPI";
-  if (lower === "card") return "Card";
-  return m.replace(/_/g, " ");
-}
-
 type Props = {
   order: ApiFoodOrder;
 };
@@ -42,7 +31,6 @@ export function OrderBillDetails({ order }: Props) {
     merchantPrecisionDiscount: Math.max(0, Number(order.merchant_precision_discount) || 0),
   });
   const showPaid = isPaidOrder(order);
-  const paymentMode = paymentModeLabel(order.payment_method);
 
   return (
     <View style={styles.section}>
@@ -72,11 +60,6 @@ export function OrderBillDetails({ order }: Props) {
         <View style={styles.row}>
           <Text style={[styles.label, styles.taxesLabel]}>Taxes</Text>
           <Text style={styles.value}>{formatMerchantRs(bill.taxes)}</Text>
-        </View>
-
-        <View style={styles.row}>
-          <Text style={styles.label}>Payment</Text>
-          <Text style={styles.value}>{paymentMode}</Text>
         </View>
 
         <View style={styles.divider} />
@@ -119,7 +102,6 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "#E5E7EB",
     padding: CARD_PADDING,
-    ...GatiMitraMerchant.shadowSm,
   },
   cardPressed: {
     opacity: 0.92,
@@ -161,6 +143,8 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
+    paddingVertical: 6,
+    minHeight: 44,
   },
   totalLeft: {
     flexDirection: "row",

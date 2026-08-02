@@ -11,6 +11,7 @@ import {
   useWindowDimensions,
 } from "react-native";
 import { CheckoutText } from "@/components/checkout/CheckoutText";
+import { formatCheckoutSavingsRupees } from "@/lib/checkoutAppliedSavings";
 import Animated, {
   useAnimatedStyle,
   useSharedValue,
@@ -118,7 +119,9 @@ export function CouponApplyCelebration({
   onDismiss,
 }: CouponApplyCelebrationProps) {
   const savedLabel =
-    savedAmount > 0.005 ? `You saved ₹${Math.round(savedAmount)}` : "Coupon applied!";
+    savedAmount > 0.005
+      ? `You saved ₹${formatCheckoutSavingsRupees(savedAmount)}`
+      : "Coupon applied!";
 
   const onDismissRef = useRef(onDismiss);
   onDismissRef.current = onDismiss;

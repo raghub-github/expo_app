@@ -1,34 +1,9 @@
 /**
- * Merchant notification centre — powered by the shared InboxScreen from
- * @gatimitra/expo-push-kit.
+ * Legacy profile path — Preferences used to wrongly open this as an inbox.
+ * Always send users to the full-screen notification centre (no tab bar / Flow).
  */
-import { useRouter } from "expo-router";
-import { SafeAreaView } from "react-native-safe-area-context";
-import { InboxScreen, type NotificationApiConfig } from "@gatimitra/expo-push-kit";
-import { getConfig } from "@/config/env";
-import { readMerchantAccessToken } from "@/lib/merchantSessionStorage";
+import { Redirect } from "expo-router";
 
-const apiConfig: NotificationApiConfig = {
-  baseUrl: getConfig().apiBaseUrl,
-  getAuthHeader: async () => {
-    const token = await readMerchantAccessToken();
-    return token ? `Bearer ${token}` : null;
-  },
-};
-
-export default function MerchantNotificationsScreen() {
-  const router = useRouter();
-  return (
-    <SafeAreaView style={{ flex: 1, backgroundColor: "#fff" }}>
-      <InboxScreen
-        apiConfig={apiConfig}
-        onOpenDeepLink={(deepLink: string) => {
-          try {
-            if (deepLink.startsWith("http")) return;
-            router.push(deepLink as never);
-          } catch {/* ignore */}
-        }}
-      />
-    </SafeAreaView>
-  );
+export default function ProfileNotificationsRedirect() {
+  return <Redirect href="/notifications" />;
 }

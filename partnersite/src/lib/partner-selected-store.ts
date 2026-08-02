@@ -146,6 +146,32 @@ export function persistPartnerManagedStoreIds(storeIds: string[]): void {
   notifyPartnerManagedStoresChanged(ids);
 }
 
+/**
+ * Make `storeId` the active outlet on this browser without collapsing the
+ * multi-outlet orders board (merchant-app `switchActiveOutlet` parity).
+ * Adds the new outlet to the managed set when it was not already included.
+ */
+export function switchPartnerActiveOutlet(
+  storeId: string,
+  options?: { managedStoreIds?: string[] }
+): string[] {
+  const nextPrimary = storeId.trim();
+  if (!isValidPartnerStoreId(nextPrimary)) return readPartnerManagedStoreIds();
+  const currentManaged =
+    options?.managedStoreIds?.length
+      ? options.managedStoreIds.filter((id) => isValidPartnerStoreId(id))
+      : readPartnerManagedStoreIds(nextPrimary);
+  const nextManaged =
+    currentManaged.length === 0
+      ? [nextPrimary]
+      : currentManaged.includes(nextPrimary)
+        ? currentManaged
+        : [...currentManaged, nextPrimary];
+  persistPartnerSelectedStoreId(nextPrimary);
+  persistPartnerManagedStoreIds(nextManaged);
+  return nextManaged;
+}
+
 export function clearPartnerManagedStoreIds(): void {
   if (typeof window === 'undefined') return;
   try {
@@ -171,7 +197,10 @@ export type PartnerStoreMeta = {
   storeId: string;
   internalId: number;
   name: string;
+  /** Derived short area label (city/area) — not the full street address. */
   locality: string;
+  /** Exact `merchant_stores.full_address` from DB. */
+  fullAddress: string;
 };
 
 export type PartnerSelectedStore = {
@@ -210,25 +239,28 @@ export function usePartnerSelectedStore(restaurantIdProp?: string): PartnerSelec
         full_address?: string | null;
       }>(merchantKeys.storeRecord(raw));
       if (cached?.id != null) {
+        const fullAddress = String(cached.full_address ?? '').trim();
         return {
           storeId: String(cached.store_id ?? raw),
           internalId: Number(cached.id),
           name: String(cached.store_name ?? raw),
-          locality: shortLocalityFromAddress(cached.full_address),
+          locality: shortLocalityFromAddress(fullAddress),
+          fullAddress,
         };
       }
       const s = await fetchStoreById(raw);
       if (!s) return null;
       queryClient.setQueryData(merchantKeys.storeRecord(String(s.store_id ?? raw)), s);
+      const fullAddress =
+        typeof (s as { full_address?: string }).full_address === 'string'
+          ? String((s as { full_address?: string }).full_address).trim()
+          : '';
       return {
         storeId: String(s.store_id ?? raw),
         internalId: Number(s.id),
         name: String(s.store_name ?? raw),
-        locality: shortLocalityFromAddress(
-          typeof (s as { full_address?: string }).full_address === 'string'
-            ? (s as { full_address?: string }).full_address
-            : ''
-        ),
+        locality: shortLocalityFromAddress(fullAddress),
+        fullAddress,
       };
     },
     [queryClient]

@@ -42,6 +42,9 @@ type OrderRefundListItem = {
   refundType?: string | null;
   refundReason?: string | null;
   executionStatus?: string | null;
+  razorpayRefundId?: string | null;
+  pgRefundId?: string | null;
+  customerWalletLedgerId?: number | null;
   createdAt?: string | Date | null;
   initiatedByEmail?: string | null;
 };
@@ -430,7 +433,7 @@ export default function PersonRideOrderDetailClient({
       void loadRatings(mapped.id, mapped.riderId, mapped.customerId);
       void loadRefunds(mapped.id);
       void loadWallet(mapped.customerId);
-      void loadPaymentFallback(mapped.id);
+      if (!body.paymentDetail) void loadPaymentFallback(mapped.id);
       if (!body.timeline) void loadTimelineFallback(mapped.id, mapped);
     },
     [

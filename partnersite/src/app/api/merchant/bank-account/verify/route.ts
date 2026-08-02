@@ -355,6 +355,8 @@ export async function POST(request: NextRequest) {
       verificationId: insertRow.id,
       status: status === "success" ? "verified" : "processing",
       verified: status === "success",
+      name_at_bank: nameAtBank,
+      bank_name: hasBank ? (bank!.bank_name || null) : null,
       message:
         status === "success"
           ? (hasBank

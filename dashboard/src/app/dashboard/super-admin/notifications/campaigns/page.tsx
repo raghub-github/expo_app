@@ -1,16 +1,20 @@
 "use client";
 
 import useSWR from "swr";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import Link from "next/link";
 import {
   CalendarClock,
+  ChevronDown,
   CircleX,
   Eye,
+  EyeOff,
   Plus,
   RotateCw,
+  Search,
   Send,
+  Trash2,
   Users,
   User,
   Store,
@@ -19,8 +23,10 @@ import {
   X,
   AlertCircle,
   CheckCircle2,
+  MapPin,
 } from "lucide-react";
 import { ConfirmModal } from "@/components/ui/ConfirmModal";
+import { toast } from "sonner";
 
 type Campaign = {
   id: number;
@@ -52,6 +58,12 @@ const fetcher = (url: string) => fetch(url).then((r) => r.json());
 function campaignCount(value: unknown): number {
   const n = typeof value === "number" ? value : Number(value);
   return Number.isFinite(n) ? n : 0;
+}
+
+function apiErrorMessage(body: { message?: unknown; error?: unknown }, fallback: string): string {
+  if (typeof body?.message === "string" && body.message) return body.message;
+  if (typeof body?.error === "string" && body.error) return body.error;
+  return fallback;
 }
 
 const STATUS_STYLES: Record<string, { label: string; classes: string }> = {
@@ -98,17 +110,82 @@ export default function CampaignsPage() {
   );
   const [creating, setCreating] = useState(false);
   const [detail, setDetail] = useState<Campaign | null>(null);
-  const [cancelError, setCancelError] = useState<string | null>(null);
   const [cancelTarget, setCancelTarget] = useState<Campaign | null>(null);
   const [cancelBusy, setCancelBusy] = useState(false);
   const [resendBusyId, setResendBusyId] = useState<number | null>(null);
-  const [resendError, setResendError] = useState<string | null>(null);
-  const [resendWarning, setResendWarning] = useState<string | null>(null);
+  const [revokeTarget, setRevokeTarget] = useState<Campaign | null>(null);
+  const [revokeBusy, setRevokeBusy] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<Campaign | null>(null);
+  const [deleteBusy, setDeleteBusy] = useState(false);
+
+  /** Block = hide an already-delivered campaign from every recipient's inbox. */
+  const runRevokeConfirmed = async () => {
+    if (!revokeTarget) return;
+    setRevokeBusy(true);
+    const toastId = toast.loading(`Blocking “${revokeTarget.name}”…`);
+    try {
+      const res = await fetch(`/api/super-admin/notifications/campaigns/${revokeTarget.id}/revoke`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+      });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        toast.error(apiErrorMessage(j, `Block failed (HTTP ${res.status})`), { id: toastId });
+        return;
+      }
+      const revoked = Number(j.revoked ?? 0);
+      toast.success(
+        revoked > 0
+          ? `Blocked — removed from ${revoked} inbox row${revoked === 1 ? "" : "s"}.`
+          : "Nothing left to block for this campaign.",
+        { id: toastId },
+      );
+      setRevokeTarget(null);
+      if (detail?.id === revokeTarget.id) setDetail(null);
+      mutate();
+    } catch (e) {
+      toast.error(`Block failed — ${(e as Error).message}`, { id: toastId });
+    } finally {
+      setRevokeBusy(false);
+    }
+  };
+
+  /** Delete = permanently remove campaign + its dispatch log rows from the DB. */
+  const runDeleteConfirmed = async () => {
+    if (!deleteTarget) return;
+    setDeleteBusy(true);
+    const toastId = toast.loading(`Deleting “${deleteTarget.name}”…`);
+    try {
+      const res = await fetch(`/api/super-admin/notifications/campaigns/${deleteTarget.id}`, {
+        method: "DELETE",
+      });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        toast.error(apiErrorMessage(j, `Delete failed (HTTP ${res.status})`), { id: toastId });
+        return;
+      }
+      const deletedLogs = Number(j.deletedLogs ?? 0);
+      toast.success(
+        deletedLogs > 0
+          ? `Deleted “${deleteTarget.name}” and ${deletedLogs} inbox row${deletedLogs === 1 ? "" : "s"}.`
+          : `Deleted “${deleteTarget.name}”.`,
+        { id: toastId },
+      );
+      setDeleteTarget(null);
+      if (detail?.id === deleteTarget.id) setDetail(null);
+      mutate();
+    } catch (e) {
+      toast.error(`Delete failed — ${(e as Error).message}`, { id: toastId });
+    } finally {
+      setDeleteBusy(false);
+    }
+  };
 
   const runCancelConfirmed = async () => {
     if (!cancelTarget) return;
     setCancelBusy(true);
-    setCancelError(null);
+    const toastId = toast.loading(`Cancelling “${cancelTarget.name}”…`);
     try {
       const res = await fetch(`/api/super-admin/notifications/campaigns/${cancelTarget.id}/cancel`, {
         method: "POST",
@@ -117,18 +194,15 @@ export default function CampaignsPage() {
       });
       const j = await res.json().catch(() => ({}));
       if (!res.ok) {
-        const msg =
-          typeof j.message === "string"
-            ? j.message
-            : typeof j.error === "string"
-              ? j.error
-              : `Cancel failed (HTTP ${res.status})`;
-        setCancelError(msg);
+        toast.error(apiErrorMessage(j, `Cancel failed (HTTP ${res.status})`), { id: toastId });
         return;
       }
+      toast.success(`Cancelled “${cancelTarget.name}”.`, { id: toastId });
       setCancelTarget(null);
       if (detail?.id === cancelTarget.id) setDetail(null);
       mutate();
+    } catch (e) {
+      toast.error(`Cancel failed — ${(e as Error).message}`, { id: toastId });
     } finally {
       setCancelBusy(false);
     }
@@ -136,8 +210,9 @@ export default function CampaignsPage() {
 
   const runResend = async (campaign: Campaign) => {
     setResendBusyId(campaign.id);
-    setResendError(null);
-    setResendWarning(null);
+    // Fan-out can take 10s+, so acknowledge the click immediately and swap this
+    // toast in place for the outcome.
+    const toastId = toast.loading(`Resending “${campaign.name}”…`);
     try {
       const res = await fetch(`/api/super-admin/notifications/campaigns/${campaign.id}/resend`, {
         method: "POST",
@@ -146,25 +221,24 @@ export default function CampaignsPage() {
       });
       const j = await res.json().catch(() => ({}));
       if (!res.ok) {
-        const msg =
-          typeof j.message === "string"
-            ? j.message
-            : typeof j.error === "string"
-              ? j.error
-              : `Resend failed (HTTP ${res.status})`;
-        setResendError(msg);
+        toast.error(apiErrorMessage(j, `Resend failed (HTTP ${res.status})`), { id: toastId });
         return;
       }
       const queued = typeof j.queued === "number" ? j.queued : Number(j.queued);
       if (!Number.isFinite(queued) || queued <= 0) {
         // Soft outcome — not an API failure (Expo Go / no registered devices).
-        setResendWarning(
+        toast.warning(
           typeof j.warning === "string"
             ? j.warning
             : "Push token unavailable. Skipping notification — no registered devices for this target (common in Expo Go). Campaign recorded.",
+          { id: toastId },
         );
+      } else {
+        toast.success(`Resent “${campaign.name}” — ${queued} queued.`, { id: toastId });
       }
       mutate();
+    } catch (e) {
+      toast.error(`Resend failed — ${(e as Error).message}`, { id: toastId });
     } finally {
       setResendBusyId(null);
     }
@@ -186,15 +260,11 @@ export default function CampaignsPage() {
   }, [items]);
 
   return (
-    <div className="min-h-screen bg-slate-50 p-6">
-      <div className="mx-auto max-w-7xl">
-        <div className="flex flex-wrap items-end justify-between gap-4">
-          <div>
-            <div className="inline-flex items-center gap-1.5 rounded-full bg-teal-50 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide text-teal-700">
-              <Bell className="h-3 w-3" /> Notifications
-            </div>
-            <h1 className="mt-2 text-2xl font-semibold text-slate-900">Campaigns</h1>
-            <p className="mt-1 max-w-xl text-sm text-slate-500">
+    <div className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden bg-slate-50 px-3 pb-3 pt-1 sm:px-5 sm:pt-2 xl:px-6">
+      <div className="mx-auto flex h-full min-h-0 w-full min-w-0 max-w-7xl flex-col">
+        <div className="shrink-0 flex flex-wrap items-center justify-between gap-3">
+          <div className="min-w-0">
+            <p className="max-w-2xl text-sm text-slate-500">
               Broadcast to a role or a single store. Save as a draft, schedule for later,
               or send right now — with a live preview of the rendered message.
             </p>
@@ -208,46 +278,27 @@ export default function CampaignsPage() {
         </div>
 
         {/* KPI strip */}
-        <div className="mt-6 grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <div className="mt-3 grid shrink-0 grid-cols-2 gap-3 sm:grid-cols-4">
           <Kpi label="Sent"      value={totals.sent}      accent="text-slate-900" />
           <Kpi label="Delivered" value={totals.delivered} accent="text-teal-700" />
           <Kpi label="Clicked"   value={totals.clicked}   accent="text-amber-700" />
           <Kpi label="Failed"    value={totals.failed}    accent="text-rose-600" />
         </div>
 
-        {cancelError ? (
-          <div className="mt-4 flex items-start gap-2 rounded-md border border-rose-200 bg-rose-50 p-3 text-sm text-rose-800">
-            <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
-            <div>{cancelError}</div>
-          </div>
-        ) : null}
-        {resendError ? (
-          <div className="mt-4 flex items-start gap-2 rounded-md border border-rose-200 bg-rose-50 p-3 text-sm text-rose-800">
-            <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
-            <div>{resendError}</div>
-          </div>
-        ) : null}
-        {resendWarning ? (
-          <div className="mt-4 flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
-            <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
-            <div>{resendWarning}</div>
-          </div>
-        ) : null}
-
         {/* Table */}
-        <div className="mt-6 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
-          <table className="min-w-full divide-y divide-slate-200 text-sm">
-            <thead className="bg-slate-50 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+        <div className="mt-4 min-h-0 max-w-full flex-1 overflow-auto rounded-xl border border-slate-200 bg-white shadow-sm">
+          <table className="w-full min-w-[760px] table-fixed divide-y divide-slate-200 text-sm">
+            <thead className="sticky top-0 z-10 bg-slate-50 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-500 shadow-[0_1px_0_0_#e2e8f0]">
               <tr>
-                <th className="px-4 py-3">Campaign</th>
-                <th className="px-4 py-3">Template</th>
-                <th className="px-4 py-3">Status</th>
-                <th className="px-4 py-3 text-right">Sent</th>
-                <th className="px-4 py-3 text-right">Delivered</th>
-                <th className="px-4 py-3 text-right">Clicked</th>
-                <th className="px-4 py-3 text-right">Failed</th>
-                <th className="px-4 py-3">When</th>
-                <th className="px-4 py-3"></th>
+                <th className="w-36 px-3 py-3 sm:px-4">Campaign</th>
+                <th className="w-40 px-3 py-3">Template</th>
+                <th className="w-20 px-3 py-3">Status</th>
+                <th className="w-14 px-2 py-3 text-right">Sent</th>
+                <th className="w-20 px-2 py-3 text-right">Delivered</th>
+                <th className="hidden w-[9%] px-2 py-3 text-right 2xl:table-cell">Clicked</th>
+                <th className="hidden w-[9%] px-2 py-3 text-right 2xl:table-cell">Failed</th>
+                <th className="w-32 px-3 py-3">When</th>
+                <th className="w-40 px-3 py-3 text-right">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
@@ -270,56 +321,83 @@ export default function CampaignsPage() {
                       onClick={() => setDetail(c)}
                       className="cursor-pointer transition hover:bg-teal-50/40"
                     >
-                      <td className="px-4 py-3">
+                      <td className="px-3 py-3 sm:px-4">
                         <div className="font-medium text-slate-900">{c.name}</div>
                         {c.description ? (
                           <div className="text-xs text-slate-500 line-clamp-1">{c.description}</div>
                         ) : null}
                       </td>
-                      <td className="px-4 py-3 font-mono text-[11px] text-slate-700">{c.template_code ?? "—"}</td>
-                      <td className="px-4 py-3">
+                      <td className="truncate px-3 py-3 font-mono text-[11px] text-slate-700">{c.template_code ?? "—"}</td>
+                      <td className="px-3 py-3">
                         <span className={"inline-flex rounded-md border px-2 py-0.5 text-[11px] font-medium " + s.classes}>
                           {s.label}
                         </span>
                       </td>
-                      <td className="px-4 py-3 text-right tabular-nums">{campaignCount(c.sent_count).toLocaleString()}</td>
-                      <td className="px-4 py-3 text-right tabular-nums text-teal-700">{campaignCount(c.delivered_count).toLocaleString()}</td>
-                      <td className="px-4 py-3 text-right tabular-nums text-amber-700">{campaignCount(c.clicked_count).toLocaleString()}</td>
-                      <td className="px-4 py-3 text-right tabular-nums text-rose-600">{campaignCount(c.failed_count).toLocaleString()}</td>
-                      <td className="px-4 py-3 text-xs text-slate-500">
+                      <td className="px-2 py-3 text-right tabular-nums">{campaignCount(c.sent_count).toLocaleString()}</td>
+                      <td className="px-2 py-3 text-right tabular-nums text-teal-700">{campaignCount(c.delivered_count).toLocaleString()}</td>
+                      <td className="hidden px-2 py-3 text-right tabular-nums text-amber-700 2xl:table-cell">{campaignCount(c.clicked_count).toLocaleString()}</td>
+                      <td className="hidden px-2 py-3 text-right tabular-nums text-rose-600 2xl:table-cell">{campaignCount(c.failed_count).toLocaleString()}</td>
+                      <td className="px-3 py-3 text-[11px] leading-4 text-slate-500">
                         {c.scheduled_at
                           ? new Date(c.scheduled_at).toLocaleString()
                           : new Date(c.created_at).toLocaleString()}
                       </td>
-                      <td className="px-4 py-3 text-right" onClick={(e) => e.stopPropagation()}>
-                        <div className="flex items-center justify-end gap-1.5">
+                      <td className="px-3 py-3 text-right" onClick={(e) => e.stopPropagation()}>
+                        <div className="flex items-center justify-end gap-1">
+                          <button
+                            type="button"
+                            onClick={() => setDetail(c)}
+                            title="View campaign"
+                            aria-label="View campaign"
+                            className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
+                          >
+                            <Eye className="h-3.5 w-3.5" aria-hidden />
+                          </button>
                           {c.status !== "scheduled" && c.status !== "running" ? (
                             <button
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                setResendError(null);
+                              type="button"
+                              onClick={() => {
                                 void runResend(c);
                               }}
                               disabled={resendBusyId === c.id}
-                              className="inline-flex items-center gap-1 rounded-md border border-teal-200 px-2 py-1 text-xs text-teal-700 hover:bg-teal-50 disabled:opacity-50"
+                              title="Resend campaign"
+                              aria-label="Resend campaign"
+                              className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-teal-200 bg-white text-teal-700 hover:bg-teal-50 disabled:opacity-50"
                             >
                               <RotateCw
-                                className={"h-3 w-3 " + (resendBusyId === c.id ? "animate-spin" : "")}
+                                className={`h-3.5 w-3.5 ${resendBusyId === c.id ? "animate-spin" : ""}`}
                                 aria-hidden
                               />
-                              {resendBusyId === c.id ? "Sending…" : "Resend"}
                             </button>
-                          ) : null}
-                          {c.status === "scheduled" || c.status === "running" ? (
+                          ) : (
                             <button
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                setCancelError(null);
-                                setCancelTarget(c);
-                              }}
-                              className="inline-flex items-center gap-1 rounded-md border border-rose-200 px-2 py-1 text-xs text-rose-700 hover:bg-rose-50"
+                              type="button"
+                              onClick={() => setCancelTarget(c)}
+                              title="Cancel campaign"
+                              aria-label="Cancel campaign"
+                              className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-rose-200 bg-white text-rose-700 hover:bg-rose-50"
                             >
-                              <CircleX className="h-3 w-3" aria-hidden /> Cancel
+                              <CircleX className="h-3.5 w-3.5" aria-hidden />
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => setRevokeTarget(c)}
+                            title="Block from recipient inboxes"
+                            aria-label="Block from recipient inboxes"
+                            className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
+                          >
+                            <EyeOff className="h-3.5 w-3.5" aria-hidden />
+                          </button>
+                          {c.status !== "running" ? (
+                            <button
+                              type="button"
+                              onClick={() => setDeleteTarget(c)}
+                              title="Delete permanently"
+                              aria-label="Delete permanently"
+                              className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-rose-200 bg-white text-rose-700 hover:bg-rose-50"
+                            >
+                              <Trash2 className="h-3.5 w-3.5" aria-hidden />
                             </button>
                           ) : null}
                         </div>
@@ -332,7 +410,7 @@ export default function CampaignsPage() {
           </table>
         </div>
 
-        <p className="mt-4 text-xs text-slate-500">
+        <p className="mt-2 shrink-0 text-xs text-slate-500">
           Tip: <Link href="/dashboard/super-admin/notifications/templates" className="text-teal-700 underline">edit templates</Link>
           {" "}to change wording, images or deep links without a code deploy.
         </p>
@@ -348,12 +426,10 @@ export default function CampaignsPage() {
         <CampaignDetail
           campaign={detail}
           onClose={() => setDetail(null)}
-          onRequestCancel={() => {
-            setCancelError(null);
-            setCancelTarget(detail);
-          }}
+          onRequestCancel={() => setCancelTarget(detail)}
+          onRequestDelete={() => setDeleteTarget(detail)}
+          onRequestRevoke={() => setRevokeTarget(detail)}
           onResend={() => {
-            setResendError(null);
             void runResend(detail);
           }}
           resendBusy={resendBusyId === detail.id}
@@ -380,6 +456,50 @@ export default function CampaignsPage() {
         }}
         onConfirm={runCancelConfirmed}
       />
+
+      <ConfirmModal
+        open={revokeTarget != null}
+        title="Block this notification?"
+        description={
+          revokeTarget ? (
+            <p>
+              Remove <strong>{revokeTarget.name}</strong> from every recipient&apos;s in-app inbox.
+              Already-shown OS notifications stay on the device, but the message disappears from the
+              app&apos;s notification list and unread count. Delivery history is kept for audit.
+            </p>
+          ) : null
+        }
+        confirmLabel="Block everywhere"
+        cancelLabel="Keep it"
+        variant="danger"
+        confirmBusy={revokeBusy}
+        onClose={() => {
+          if (!revokeBusy) setRevokeTarget(null);
+        }}
+        onConfirm={runRevokeConfirmed}
+      />
+
+      <ConfirmModal
+        open={deleteTarget != null}
+        title="Delete campaign from database?"
+        description={
+          deleteTarget ? (
+            <p>
+              Permanently delete <strong>{deleteTarget.name}</strong> and every related inbox /
+              delivery row. This cannot be undone — recipients will no longer see it in the app, and
+              analytics for this campaign will be gone.
+            </p>
+          ) : null
+        }
+        confirmLabel="Delete forever"
+        cancelLabel="Keep it"
+        variant="danger"
+        confirmBusy={deleteBusy}
+        onClose={() => {
+          if (!deleteBusy) setDeleteTarget(null);
+        }}
+        onConfirm={runDeleteConfirmed}
+      />
     </div>
   );
 }
@@ -392,12 +512,16 @@ function CampaignDetail({
   campaign,
   onClose,
   onRequestCancel,
+  onRequestDelete,
+  onRequestRevoke,
   onResend,
   resendBusy,
 }: {
   campaign: Campaign;
   onClose: () => void;
   onRequestCancel: () => void;
+  onRequestDelete: () => void;
+  onRequestRevoke: () => void;
   onResend: () => void;
   resendBusy: boolean;
 }) {
@@ -545,12 +669,18 @@ function CampaignDetail({
           </div>
         </div>
 
-        <div className="flex items-center justify-between border-t border-slate-200 px-6 py-4">
-          <div className="text-[11px] text-slate-500">
+        <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 px-4 py-4 sm:px-6">
+          <div className="min-w-0 flex-1 text-[11px] text-slate-500">
             Recipients on iOS / Android receive via FCM. Web-push is delivered via the browser push protocol.
           </div>
-          <div className="flex gap-2">
+          <div className="flex flex-wrap justify-end gap-2">
             <button onClick={onClose} className="rounded-md px-3 py-2 text-sm text-slate-600 hover:bg-slate-50">Close</button>
+            <button
+              onClick={onRequestRevoke}
+              className="inline-flex items-center gap-1 rounded-md border border-slate-200 px-3 py-2 text-sm text-slate-700 hover:bg-slate-50"
+            >
+              <EyeOff className="h-3.5 w-3.5" aria-hidden /> Block
+            </button>
             {campaign.status !== "scheduled" && campaign.status !== "running" ? (
               <button
                 onClick={onResend}
@@ -567,6 +697,14 @@ function CampaignDetail({
                 className="inline-flex items-center gap-1 rounded-md border border-rose-200 px-3 py-2 text-sm text-rose-700 hover:bg-rose-50"
               >
                 <CircleX className="h-3.5 w-3.5" aria-hidden /> Cancel campaign
+              </button>
+            ) : null}
+            {campaign.status !== "running" ? (
+              <button
+                onClick={onRequestDelete}
+                className="inline-flex items-center gap-1 rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700 hover:bg-rose-100"
+              >
+                <Trash2 className="h-3.5 w-3.5" aria-hidden /> Delete
               </button>
             ) : null}
           </div>
@@ -610,24 +748,33 @@ function Kpi({ label, value, accent }: { label: string; value: number; accent: s
 
 type TargetMode =
   | "role"
-  | "user_id"
   | "user_ids"
+  | "rider_ids"
   | "all_customers"
   | "all_merchants"
   | "all_riders"
   | "topic"
-  | "store_id";
+  | "store_ids"
+  | "city";
 
 const TARGET_OPTIONS: Array<{ mode: TargetMode; label: string; sub: string; Icon: typeof Users }> = [
   { mode: "all_customers", label: "All customers", sub: "Every customer with an active app", Icon: Users },
   { mode: "all_merchants", label: "All merchants", sub: "Every merchant with an active app", Icon: Store },
   { mode: "all_riders",    label: "All riders",    sub: "Every rider with an active app",    Icon: Users },
   { mode: "role",          label: "By role",       sub: "Pick a single role bucket",         Icon: Users },
-  { mode: "store_id",      label: "Single store",  sub: "GMMC code or number (e.g. 1025)",   Icon: Store },
-  { mode: "user_id",       label: "Single user",   sub: "GM code or number (e.g. 100001)",  Icon: User },
-  { mode: "user_ids",      label: "Many users",    sub: "Comma-separated list of user_ids",  Icon: Users },
+  { mode: "store_ids",     label: "Store(s)",      sub: "One or more GMMC codes (e.g. 1025 or 1025, 1026)", Icon: Store },
+  { mode: "user_ids",      label: "User(s)",       sub: "One or more GM / GMMP ids (comma-separated)",     Icon: User },
+  { mode: "rider_ids",     label: "Rider(s)",      sub: "One or more GMR ids (e.g. GMR12 or GMR12, 45)", Icon: Users },
+  { mode: "city",          label: "By city / location", sub: "Optional city name and/or lat & lng", Icon: MapPin },
   { mode: "topic",         label: "FCM topic",     sub: "Anyone subscribed to a topic name", Icon: Bell },
 ];
+
+function splitCsvTokens(raw: string): string[] {
+  return raw
+    .split(/[,;\n]+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
 
 function CreateCampaign({ onClose, onSaved }: { onClose: () => void; onSaved: () => void }) {
   const [portalReady, setPortalReady] = useState(false);
@@ -640,7 +787,7 @@ function CreateCampaign({ onClose, onSaved }: { onClose: () => void; onSaved: ()
     };
   }, []);
 
-  const { data: tpls } = useSWR<{ items: Template[] }>(
+  const { data: tpls, error: tplsError } = useSWR<{ items: Template[] }>(
     "/api/super-admin/notifications/templates",
     fetcher,
   );
@@ -651,17 +798,37 @@ function CreateCampaign({ onClose, onSaved }: { onClose: () => void; onSaved: ()
   const [templateCode, setTemplateCode] = useState("");
   const [targetMode, setTargetMode] = useState<TargetMode | null>(null);
   const [targetRole, setTargetRole] = useState("customer");
-  const [targetUserId, setTargetUserId] = useState("");
-  const [resolvedUserId, setResolvedUserId] = useState<string | null>(null);
   const [targetUserIds, setTargetUserIds] = useState("");
+  const [targetRiderIds, setTargetRiderIds] = useState("");
+  const [resolvedUserIds, setResolvedUserIds] = useState<string[]>([]);
   const [targetTopic, setTargetTopic] = useState("");
-  const [targetStoreId, setTargetStoreId] = useState("");
-  const [resolvedStoreInternalId, setResolvedStoreInternalId] = useState<number | null>(null);
+  const [targetStoreIds, setTargetStoreIds] = useState("");
+  const [resolvedStoreInternalIds, setResolvedStoreInternalIds] = useState<number[]>([]);
+  const [targetCity, setTargetCity] = useState("");
+  const [targetLat, setTargetLat] = useState("");
+  const [targetLng, setTargetLng] = useState("");
+  const [targetRadiusKm, setTargetRadiusKm] = useState("25");
+  const [targetGeoRole, setTargetGeoRole] = useState<"all" | "customer" | "merchant" | "rider">("all");
+  const [cityHits, setCityHits] = useState<
+    Array<{
+      city: string | null;
+      place_name: string | null;
+      text: string | null;
+      state: string | null;
+      latitude: number;
+      longitude: number;
+    }>
+  >([]);
+  const [citySearching, setCitySearching] = useState(false);
+  const [cityMenuOpen, setCityMenuOpen] = useState(false);
+  const cityBoxRef = useRef<HTMLDivElement>(null);
+  const skipCitySearchRef = useRef(false);
   const [targetLookup, setTargetLookup] = useState<{
     name: string;
     subtitle: string | null;
     role?: string;
   } | null>(null);
+  const [multiLookupSummary, setMultiLookupSummary] = useState<string | null>(null);
   const [targetLookupLoading, setTargetLookupLoading] = useState(false);
   const [targetLookupError, setTargetLookupError] = useState<string | null>(null);
 
@@ -680,32 +847,151 @@ function CreateCampaign({ onClose, onSaved }: { onClose: () => void; onSaved: ()
     setVarValues({});
   }, [templateCode]);
 
+  useEffect(() => {
+    if (targetMode !== "city") {
+      setCityHits([]);
+      setCityMenuOpen(false);
+      return;
+    }
+    if (skipCitySearchRef.current) {
+      skipCitySearchRef.current = false;
+      return;
+    }
+    const q = targetCity.trim();
+    if (q.length < 2) {
+      setCityHits([]);
+      setCitySearching(false);
+      return;
+    }
+    const t = setTimeout(async () => {
+      setCitySearching(true);
+      try {
+        const res = await fetch("/api/merchant/geocode", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ q, types: "place,locality,district", limit: 8 }),
+        });
+        const data = await res.json().catch(() => null);
+        const results = Array.isArray(data?.results) ? data.results : [];
+        setCityHits(results);
+        setCityMenuOpen(results.length > 0);
+      } catch {
+        setCityHits([]);
+      } finally {
+        setCitySearching(false);
+      }
+    }, 320);
+    return () => clearTimeout(t);
+  }, [targetCity, targetMode]);
+
+  useEffect(() => {
+    if (!cityMenuOpen) return;
+    const onDoc = (e: MouseEvent) => {
+      if (!cityBoxRef.current?.contains(e.target as Node)) {
+        setCityMenuOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
+  }, [cityMenuOpen]);
+
+  const pickCitySuggestion = (hit: {
+    city: string | null;
+    place_name: string | null;
+    text: string | null;
+    latitude: number;
+    longitude: number;
+  }) => {
+    const label =
+      (hit.city && hit.city.trim()) ||
+      (hit.text && hit.text.trim()) ||
+      (hit.place_name ? hit.place_name.split(",")[0]?.trim() : "") ||
+      "";
+    skipCitySearchRef.current = true;
+    setTargetCity(label);
+    setTargetLat(String(hit.latitude));
+    setTargetLng(String(hit.longitude));
+    setCityHits([]);
+    setCityMenuOpen(false);
+  };
+
   const [when, setWhen] = useState<"now" | "later">("now");
   const [scheduledAt, setScheduledAt] = useState("");
   const [preview, setPreview] = useState<{ title: string; body: string } | null>(null);
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [success, setSuccess] = useState<string | null>(null);
 
   const target = useMemo(() => {
     if (!targetMode) return null;
     switch (targetMode) {
-      case "role":           return { role: targetRole };
-      case "user_id":
-        return resolvedUserId != null
-          ? { user_id: resolvedUserId }
-          : { user_id: targetUserId.trim() };
-      case "user_ids":       return { user_ids: targetUserIds.split(",").map((s) => s.trim()).filter(Boolean) };
-      case "all_customers":  return { all_customers: true };
-      case "all_merchants":  return { all_merchants: true };
-      case "all_riders":     return { all_riders: true };
-      case "topic":          return { topic: targetTopic.trim() };
-      case "store_id":
-        return resolvedStoreInternalId != null
-          ? { store_id: resolvedStoreInternalId }
-          : { store_id: 0 };
+      case "role":
+        return { role: targetRole };
+      case "user_ids":
+        return {
+          user_ids:
+            resolvedUserIds.length > 0
+              ? resolvedUserIds
+              : splitCsvTokens(targetUserIds),
+        };
+      case "rider_ids":
+        return {
+          user_ids:
+            resolvedUserIds.length > 0
+              ? resolvedUserIds
+              : splitCsvTokens(targetRiderIds),
+        };
+      case "all_customers":
+        return { all_customers: true };
+      case "all_merchants":
+        return { all_merchants: true };
+      case "all_riders":
+        return { all_riders: true };
+      case "topic":
+        return { topic: targetTopic.trim() };
+      case "store_ids": {
+        const ids =
+          resolvedStoreInternalIds.length > 0
+            ? resolvedStoreInternalIds
+            : [];
+        if (ids.length === 1) return { store_id: ids[0]! };
+        return { store_ids: ids };
+      }
+      case "city": {
+        const city = targetCity.trim();
+        const lat = Number(targetLat);
+        const lng = Number(targetLng);
+        const radius = Number(targetRadiusKm);
+        const hasCity = city.length > 0;
+        const hasCoords = Number.isFinite(lat) && Number.isFinite(lng);
+        if (!hasCity && !hasCoords) return { geo: true as const };
+        return {
+          geo: true as const,
+          ...(hasCity ? { city } : {}),
+          ...(hasCoords
+            ? {
+                lat,
+                lng,
+                radius_km:
+                  Number.isFinite(radius) && radius > 0 ? radius : 25,
+              }
+            : {}),
+          ...(targetGeoRole !== "all" ? { role: targetGeoRole } : {}),
+        };
+      }
     }
-  }, [targetMode, targetRole, targetUserId, targetUserIds, targetTopic, resolvedStoreInternalId, resolvedUserId]);
+  }, [
+    targetMode,
+    targetRole,
+    targetUserIds,
+    targetRiderIds,
+    resolvedUserIds,
+    targetTopic,
+    resolvedStoreInternalIds,
+    targetCity,
+    targetLat,
+    targetLng,
+    targetRadiusKm,
+    targetGeoRole,
+  ]);
 
   const varsPayload = useMemo(() => {
     const out: Record<string, string | number> = {};
@@ -721,113 +1007,233 @@ function CreateCampaign({ onClose, onSaved }: { onClose: () => void; onSaved: ()
   const targetValid = useMemo(() => {
     if (!targetMode) return false;
     switch (targetMode) {
-      case "user_id":
+      case "user_ids":
         return (
-          targetUserId.trim() !== "" &&
-          resolvedUserId != null &&
-          !targetLookupLoading &&
-          !targetLookupError
+          splitCsvTokens(targetUserIds).length > 0 &&
+          resolvedUserIds.length > 0 &&
+          !targetLookupLoading
         );
-      case "user_ids": return targetUserIds.split(",").map((s) => s.trim()).filter(Boolean).length > 0;
-      case "topic":    return targetTopic.trim().length > 0;
-      case "store_id":
+      case "rider_ids":
         return (
-          targetStoreId.trim() !== "" &&
-          resolvedStoreInternalId != null &&
-          !targetLookupLoading &&
-          !targetLookupError
+          splitCsvTokens(targetRiderIds).length > 0 &&
+          resolvedUserIds.length > 0 &&
+          !targetLookupLoading
         );
-      default:         return true;
+      case "topic":
+        return targetTopic.trim().length > 0;
+      case "store_ids":
+        // 1 store is enough — multi is optional. Don't gate on a stale lookup error
+        // once we already have resolved internal id(s).
+        return (
+          splitCsvTokens(targetStoreIds).length > 0 &&
+          resolvedStoreInternalIds.length > 0 &&
+          !targetLookupLoading
+        );
+      case "city": {
+        const city = targetCity.trim();
+        const lat = Number(targetLat);
+        const lng = Number(targetLng);
+        const hasCity = city.length > 0;
+        const hasLat = targetLat.trim() !== "";
+        const hasLng = targetLng.trim() !== "";
+        if (!hasCity && !hasLat && !hasLng) return false;
+        if (hasLat !== hasLng) return false;
+        if (hasLat && (!Number.isFinite(lat) || !Number.isFinite(lng))) return false;
+        if (hasLat && (lat < -90 || lat > 90 || lng < -180 || lng > 180)) return false;
+        return true;
+      }
+      default:
+        return true;
     }
   }, [
     targetMode,
-    targetUserId,
-    resolvedUserId,
     targetUserIds,
+    targetRiderIds,
+    resolvedUserIds,
     targetTopic,
-    targetStoreId,
-    resolvedStoreInternalId,
+    targetStoreIds,
+    resolvedStoreInternalIds,
     targetLookupLoading,
-    targetLookupError,
+    targetCity,
+    targetLat,
+    targetLng,
   ]);
 
   useEffect(() => {
-    if (targetMode !== "store_id" && targetMode !== "user_id") {
+    if (
+      targetMode !== "store_ids" &&
+      targetMode !== "user_ids" &&
+      targetMode !== "rider_ids"
+    ) {
       setTargetLookup(null);
-      setResolvedStoreInternalId(null);
-      setResolvedUserId(null);
+      setMultiLookupSummary(null);
+      setResolvedStoreInternalIds([]);
+      setResolvedUserIds([]);
       setTargetLookupLoading(false);
       setTargetLookupError(null);
       return;
     }
 
     const raw =
-      targetMode === "store_id" ? targetStoreId.trim() : targetUserId.trim();
-    if (!raw) {
+      targetMode === "store_ids"
+        ? targetStoreIds.trim()
+        : targetMode === "rider_ids"
+          ? targetRiderIds.trim()
+          : targetUserIds.trim();
+    const tokens = splitCsvTokens(raw);
+    if (tokens.length === 0) {
       setTargetLookup(null);
-      setResolvedStoreInternalId(null);
-      setResolvedUserId(null);
+      setMultiLookupSummary(null);
+      setResolvedStoreInternalIds([]);
+      setResolvedUserIds([]);
       setTargetLookupLoading(false);
       setTargetLookupError(null);
       return;
     }
 
+    let cancelled = false;
+    const controller = new AbortController();
     setTargetLookupLoading(true);
     setTargetLookupError(null);
-    setResolvedStoreInternalId(null);
-    setResolvedUserId(null);
+    setResolvedStoreInternalIds([]);
+    setResolvedUserIds([]);
+    setTargetLookup(null);
+    setMultiLookupSummary(null);
 
     const timer = setTimeout(() => {
       const qs =
-        targetMode === "store_id"
-          ? `store_id=${encodeURIComponent(raw)}`
-          : `user_id=${encodeURIComponent(raw)}`;
-      void fetch(`/api/super-admin/notifications/resolve-target?${qs}`)
+        targetMode === "store_ids"
+          ? `store_ids=${encodeURIComponent(tokens.join(","))}`
+          : `user_ids=${encodeURIComponent(tokens.join(","))}`;
+      void fetch(`/api/super-admin/notifications/resolve-target?${qs}`, {
+        signal: controller.signal,
+      })
         .then(async (res) => {
+          if (cancelled) return;
           const j = await res.json().catch(() => ({}));
-          if (!res.ok || !j.found || !j.resolved) {
+          if (cancelled) return;
+          const list = Array.isArray(j.resolved)
+            ? (j.resolved as Array<{
+                kind?: string;
+                id?: number | string;
+                userId?: string;
+                name?: string;
+                subtitle?: string | null;
+                role?: string;
+              }>)
+            : j.resolved
+              ? [j.resolved]
+              : [];
+          const missing: string[] = Array.isArray(j.missing) ? j.missing : [];
+
+          if (!res.ok || list.length === 0) {
             setTargetLookup(null);
-            setResolvedStoreInternalId(null);
-            setResolvedUserId(null);
+            setMultiLookupSummary(null);
+            setResolvedStoreInternalIds([]);
+            setResolvedUserIds([]);
             setTargetLookupError(
-              targetMode === "store_id" ? "Store not found" : "User not found",
+              targetMode === "store_ids"
+                ? "No matching stores found"
+                : targetMode === "rider_ids"
+                  ? "No matching riders found"
+                  : "No matching users found",
             );
             return;
           }
-          const resolved = j.resolved as {
-            id?: number;
-            userId?: string;
-            name?: string;
-            subtitle?: string | null;
-            role?: string;
-          };
-          setTargetLookup({
-            name: resolved.name ?? raw,
-            subtitle: resolved.subtitle ?? null,
-            role: resolved.role,
-          });
-          if (targetMode === "store_id" && typeof resolved.id === "number") {
-            setResolvedStoreInternalId(resolved.id);
+
+          if (targetMode === "store_ids") {
+            const ids: number[] = [];
+            for (const item of list) {
+              const internalId = Number(item.id);
+              if (Number.isFinite(internalId) && internalId > 0) ids.push(internalId);
+            }
+            if (ids.length === 0) {
+              setTargetLookup(null);
+              setResolvedStoreInternalIds([]);
+              setTargetLookupError("Stores found but ids could not be read");
+              return;
+            }
+            setResolvedStoreInternalIds(ids);
+            setTargetLookupError(null);
+            if (list.length === 1) {
+              setTargetLookup({
+                name: list[0]!.name ?? tokens[0]!,
+                subtitle: list[0]!.subtitle ?? null,
+              });
+              setMultiLookupSummary(null);
+            } else {
+              setTargetLookup(null);
+              setMultiLookupSummary(
+                `${ids.length} stores resolved` +
+                  (missing.length ? ` · ${missing.length} not found` : ""),
+              );
+            }
+          } else {
+            // Rider mode: keep only rider-role hits when the resolver tagged them.
+            const filtered =
+              targetMode === "rider_ids"
+                ? list.filter((item) => !item.role || item.role === "rider")
+                : list;
+            const finalIds = filtered
+              .map((item) => item.userId)
+              .filter((id): id is string => typeof id === "string" && id.length > 0);
+            if (finalIds.length === 0) {
+              setTargetLookup(null);
+              setResolvedUserIds([]);
+              setTargetLookupError(
+                targetMode === "rider_ids"
+                  ? "No riders matched those ids"
+                  : "No users matched those ids",
+              );
+              return;
+            }
+            setResolvedUserIds(finalIds);
+            setTargetLookupError(null);
+            if (filtered.length === 1) {
+              setTargetLookup({
+                name: filtered[0]!.name ?? tokens[0]!,
+                subtitle: filtered[0]!.subtitle ?? null,
+                role: filtered[0]!.role,
+              });
+              setMultiLookupSummary(null);
+            } else {
+              setTargetLookup(null);
+              setMultiLookupSummary(
+                `${finalIds.length} accounts resolved` +
+                  (missing.length ? ` · ${missing.length} not found` : ""),
+              );
+            }
           }
-          if (targetMode === "user_id" && typeof resolved.userId === "string") {
-            setResolvedUserId(resolved.userId);
+
+          if (missing.length && list.length > 0) {
+            // Soft warning — still allow send with the resolved subset.
+            setMultiLookupSummary((prev) =>
+              (prev ? `${prev} · ` : "") +
+                `skipped ${missing.slice(0, 5).join(", ")}${missing.length > 5 ? "…" : ""}`,
+            );
           }
-          setTargetLookupError(null);
         })
-        .catch(() => {
+        .catch((err: unknown) => {
+          if (cancelled || (err instanceof DOMException && err.name === "AbortError")) return;
           setTargetLookup(null);
-          setResolvedStoreInternalId(null);
-          setResolvedUserId(null);
-          setTargetLookupError("Could not look up target");
+          setMultiLookupSummary(null);
+          setResolvedStoreInternalIds([]);
+          setResolvedUserIds([]);
+          setTargetLookupError("Could not look up targets");
         })
-        .finally(() => setTargetLookupLoading(false));
+        .finally(() => {
+          if (!cancelled) setTargetLookupLoading(false);
+        });
     }, 350);
 
-    return () => clearTimeout(timer);
-  }, [targetMode, targetStoreId, targetUserId]);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+      controller.abort();
+    };
+  }, [targetMode, targetStoreIds, targetUserIds, targetRiderIds]);
 
   const doPreview = async () => {
-    setError(null);
     try {
       const res = await fetch("/api/super-admin/notifications/preview", {
         method: "POST",
@@ -837,8 +1243,9 @@ function CreateCampaign({ onClose, onSaved }: { onClose: () => void; onSaved: ()
       if (!res.ok) throw new Error("preview failed");
       const j = await res.json();
       setPreview({ title: j.rendered.title, body: j.rendered.body });
-    } catch (e) {
-      setError((e as Error).message);
+    } catch {
+      // Preview is best-effort — don't block the form.
+      setPreview(null);
     }
   };
 
@@ -852,8 +1259,6 @@ function CreateCampaign({ onClose, onSaved }: { onClose: () => void; onSaved: ()
 
   const save = async (status: "draft" | "running" | "scheduled") => {
     setBusy(true);
-    setError(null);
-    setSuccess(null);
     try {
       const res = await fetch("/api/super-admin/notifications/campaigns", {
         method: "POST",
@@ -877,19 +1282,67 @@ function CreateCampaign({ onClose, onSaved }: { onClose: () => void; onSaved: ()
         );
       }
       onSaved();
-      if (status === "running" || status === "scheduled") {
+      if (status === "running") {
+        toast.success(`Campaign “${name}” is sending.`);
         onClose();
         return;
       }
-      setSuccess("Saved as draft.");
+      if (status === "scheduled") {
+        toast.success(`Campaign “${name}” scheduled.`);
+        onClose();
+        return;
+      }
+      toast.success("Saved as draft.");
+      onClose();
     } catch (e) {
-      setError((e as Error).message);
+      toast.error((e as Error).message);
     } finally {
       setBusy(false);
     }
   };
 
   const canSubmit = !!name && !!templateCode && targetValid && !busy;
+
+  /** Why the submit buttons are disabled — otherwise a valid-looking form looks broken. */
+  const blockedReason = useMemo(() => {
+    if (busy) return null;
+    if (!name.trim()) return "Enter a campaign name under Basics.";
+    if (!templateCode) return "Choose a template.";
+    if (!targetMode) return "Pick who receives this notification.";
+    if (targetLookupLoading) return "Looking up the target…";
+    // Only surface lookup errors when nothing resolved yet (1 id is enough to send).
+    if (targetLookupError && !targetValid) return targetLookupError;
+    if (!targetValid) {
+      if (targetMode === "store_ids") return "Enter at least one store that resolves (e.g. 1025).";
+      if (targetMode === "user_ids") return "Enter at least one user id that resolves.";
+      if (targetMode === "rider_ids") return "Enter at least one rider id (GMR…) that resolves.";
+      if (targetMode === "city") {
+        if (
+          (targetLat.trim() !== "" && targetLng.trim() === "") ||
+          (targetLat.trim() === "" && targetLng.trim() !== "")
+        ) {
+          return "Provide both latitude and longitude, or leave both empty.";
+        }
+        return "Enter a city name and/or a latitude & longitude pair.";
+      }
+      if (targetMode === "topic") return "Enter an FCM topic name.";
+      return "Complete the target details.";
+    }
+    if (when === "later" && !scheduledAt) return "Pick a date and time to schedule.";
+    return null;
+  }, [
+    busy,
+    name,
+    templateCode,
+    targetMode,
+    targetValid,
+    targetLookupLoading,
+    targetLookupError,
+    when,
+    scheduledAt,
+    targetLat,
+    targetLng,
+  ]);
 
   if (!portalReady) return null;
 
@@ -954,19 +1407,25 @@ function CreateCampaign({ onClose, onSaved }: { onClose: () => void; onSaved: ()
 
           {/* Template */}
           <Section title="Template" desc="Choose any notification template from the full list.">
+            {tplsError || (tpls && templates.length === 0) ? (
+              <div className="mb-3 flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800">
+                <AlertCircle className="mt-0.5 h-3.5 w-3.5" />
+                <div>
+                  Templates could not be loaded, so this list is empty. Check that the notification
+                  backend is running, then reopen this form.
+                </div>
+              </div>
+            ) : null}
             <Field label="Template" required>
-              <select
-                className="w-full rounded-md border border-slate-200 px-3 py-2 text-sm outline-none focus:border-teal-600 focus:ring-1 focus:ring-teal-600"
+              <SearchableSelect
                 value={templateCode}
-                onChange={(e) => setTemplateCode(e.target.value)}
-              >
-                <option value="">Choose a template…</option>
-                {templates.map((t) => (
-                  <option key={t.code} value={t.code}>
-                    {t.code} · {t.role} · {t.category}
-                  </option>
-                ))}
-              </select>
+                onChange={setTemplateCode}
+                placeholder="Search or choose a template…"
+                options={templates.map((t) => ({
+                  value: t.code,
+                  label: `${t.code} · ${t.role} · ${t.category}`,
+                }))}
+              />
             </Field>
 
             {selectedTemplate ? (
@@ -1083,32 +1542,39 @@ function CreateCampaign({ onClose, onSaved }: { onClose: () => void; onSaved: ()
                   ))}
                 </select>
               )}
-              {targetMode === "user_id" && (
+              {targetMode === "user_ids" && (
                 <>
-                  <input
+                  <textarea
+                    rows={3}
                     className="w-full rounded-md border border-slate-200 px-3 py-2 text-sm outline-none focus:border-teal-600 focus:ring-1 focus:ring-teal-600"
-                    value={targetUserId}
-                    onChange={(e) => setTargetUserId(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") e.preventDefault();
-                    }}
-                    placeholder="e.g. GM100001 or 100001"
+                    value={targetUserIds}
+                    onChange={(e) => setTargetUserIds(e.target.value)}
+                    placeholder="GM100001, GMMP55, 100002"
                   />
                   <TargetLookupHint
                     loading={targetLookupLoading}
                     lookup={targetLookup}
+                    summary={multiLookupSummary}
                     error={targetLookupError}
                   />
                 </>
               )}
-              {targetMode === "user_ids" && (
-                <textarea
-                  rows={3}
-                  className="w-full rounded-md border border-slate-200 px-3 py-2 text-sm outline-none focus:border-teal-600 focus:ring-1 focus:ring-teal-600"
-                  value={targetUserIds}
-                  onChange={(e) => setTargetUserIds(e.target.value)}
-                  placeholder="GMC-1, GMC-2, GMC-3"
-                />
+              {targetMode === "rider_ids" && (
+                <>
+                  <textarea
+                    rows={3}
+                    className="w-full rounded-md border border-slate-200 px-3 py-2 text-sm outline-none focus:border-teal-600 focus:ring-1 focus:ring-teal-600"
+                    value={targetRiderIds}
+                    onChange={(e) => setTargetRiderIds(e.target.value)}
+                    placeholder="GMR12, GMR45, 88"
+                  />
+                  <TargetLookupHint
+                    loading={targetLookupLoading}
+                    lookup={targetLookup}
+                    summary={multiLookupSummary}
+                    error={targetLookupError}
+                  />
+                </>
               )}
               {targetMode === "topic" && (
                 <input
@@ -1118,23 +1584,133 @@ function CreateCampaign({ onClose, onSaved }: { onClose: () => void; onSaved: ()
                   placeholder="e.g. promo_kolkata"
                 />
               )}
-              {targetMode === "store_id" && (
+              {targetMode === "store_ids" && (
                 <>
-                  <input
+                  <textarea
+                    rows={3}
                     className="w-full rounded-md border border-slate-200 px-3 py-2 text-sm outline-none focus:border-teal-600 focus:ring-1 focus:ring-teal-600"
-                    value={targetStoreId}
-                    onChange={(e) => setTargetStoreId(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") e.preventDefault();
-                    }}
-                    placeholder="e.g. GMMC1025 or 1025"
+                    value={targetStoreIds}
+                    onChange={(e) => setTargetStoreIds(e.target.value)}
+                    placeholder="GMMC1025, 1026, GMMC1030"
                   />
                   <TargetLookupHint
                     loading={targetLookupLoading}
                     lookup={targetLookup}
+                    summary={multiLookupSummary}
                     error={targetLookupError}
                   />
                 </>
+              )}
+              {targetMode === "city" && (
+                <div className="space-y-3 rounded-lg border border-slate-200 bg-slate-50/60 p-3">
+                  <p className="text-[11px] text-slate-500">
+                    Optional geo filter — pick a city suggestion to auto-fill latitude &amp; longitude,
+                    or enter coordinates manually.
+                  </p>
+                  <Field label="City name">
+                    <div ref={cityBoxRef} className="relative">
+                      <input
+                        className="w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:border-teal-600 focus:ring-1 focus:ring-teal-600"
+                        value={targetCity}
+                        onChange={(e) => {
+                          setTargetCity(e.target.value);
+                          // Typing a new city invalidates previous auto-filled coords.
+                          setTargetLat("");
+                          setTargetLng("");
+                          setCityMenuOpen(true);
+                        }}
+                        onFocus={() => {
+                          if (cityHits.length > 0) setCityMenuOpen(true);
+                        }}
+                        placeholder="Start typing a city…"
+                        autoComplete="off"
+                      />
+                      {citySearching && (
+                        <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[11px] text-slate-400">
+                          Searching…
+                        </span>
+                      )}
+                      {cityMenuOpen && cityHits.length > 0 && (
+                        <ul className="absolute z-20 mt-1 max-h-56 w-full overflow-auto rounded-md border border-slate-200 bg-white py-1 shadow-lg">
+                          {cityHits.map((hit, idx) => {
+                            const title =
+                              (hit.city && hit.city.trim()) ||
+                              (hit.text && hit.text.trim()) ||
+                              (hit.place_name ? hit.place_name.split(",")[0]?.trim() : "") ||
+                              "Unknown";
+                            const subtitle = hit.place_name || [hit.state].filter(Boolean).join(", ");
+                            return (
+                              <li key={`${hit.latitude}-${hit.longitude}-${idx}`}>
+                                <button
+                                  type="button"
+                                  className="flex w-full flex-col items-start gap-0.5 px-3 py-2 text-left hover:bg-teal-50"
+                                  onMouseDown={(e) => e.preventDefault()}
+                                  onClick={() => pickCitySuggestion(hit)}
+                                >
+                                  <span className="text-sm font-medium text-slate-800">{title}</span>
+                                  {subtitle ? (
+                                    <span className="text-[11px] text-slate-500">{subtitle}</span>
+                                  ) : null}
+                                </button>
+                              </li>
+                            );
+                          })}
+                        </ul>
+                      )}
+                    </div>
+                  </Field>
+                  <div className="grid grid-cols-2 gap-3">
+                    <Field label="Latitude">
+                      <input
+                        type="number"
+                        step="any"
+                        className="w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:border-teal-600 focus:ring-1 focus:ring-teal-600"
+                        value={targetLat}
+                        onChange={(e) => setTargetLat(e.target.value)}
+                        placeholder="Auto from city"
+                      />
+                    </Field>
+                    <Field label="Longitude">
+                      <input
+                        type="number"
+                        step="any"
+                        className="w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:border-teal-600 focus:ring-1 focus:ring-teal-600"
+                        value={targetLng}
+                        onChange={(e) => setTargetLng(e.target.value)}
+                        placeholder="Auto from city"
+                      />
+                    </Field>
+                  </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <Field label="Radius (km)">
+                      <input
+                        type="number"
+                        min={1}
+                        step="1"
+                        className="w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:border-teal-600 focus:ring-1 focus:ring-teal-600"
+                        value={targetRadiusKm}
+                        onChange={(e) => setTargetRadiusKm(e.target.value)}
+                        placeholder="25"
+                      />
+                    </Field>
+                    <Field label="Audience role">
+                      <select
+                        className="w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:border-teal-600 focus:ring-1 focus:ring-teal-600"
+                        value={targetGeoRole}
+                        onChange={(e) =>
+                          setTargetGeoRole(
+                            e.target.value as "all" | "customer" | "merchant" | "rider",
+                          )
+                        }
+                      >
+                        <option value="all">All roles</option>
+                        <option value="customer">Customers</option>
+                        <option value="merchant">Merchants</option>
+                        <option value="rider">Riders</option>
+                      </select>
+                    </Field>
+                  </div>
+                </div>
               )}
             </div>
           </Section>
@@ -1161,22 +1737,16 @@ function CreateCampaign({ onClose, onSaved }: { onClose: () => void; onSaved: ()
             </div>
           </Section>
 
-          {error ? (
-            <div className="flex items-start gap-2 rounded-md border border-rose-200 bg-rose-50 p-3 text-sm text-rose-800">
-              <AlertCircle className="mt-0.5 h-4 w-4" />
-              <div>{error}</div>
-            </div>
-          ) : null}
-          {success ? (
-            <div className="flex items-start gap-2 rounded-md border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-800">
-              <CheckCircle2 className="mt-0.5 h-4 w-4" />
-              <div>{success}</div>
-            </div>
-          ) : null}
         </div>
 
         {/* Footer actions */}
         <div className="flex items-center justify-end gap-2 border-t border-slate-200 bg-white px-6 py-4">
+          {blockedReason ? (
+            <div className="mr-auto flex items-center gap-1.5 text-xs text-slate-500">
+              <Info className="h-3.5 w-3.5" />
+              <span>{blockedReason}</span>
+            </div>
+          ) : null}
           <button
             type="button"
             onClick={onClose}
@@ -1224,9 +1794,25 @@ function formatTargetFilter(target: Record<string, unknown> | undefined): string
   if (target.all_merchants === true) return "All merchants";
   if (target.all_customers === true) return "All customers";
   if (target.all_riders === true) return "All riders";
-  if (typeof target.role === "string") return `Role: ${target.role}`;
+  if (typeof target.role === "string" && !target.geo) return `Role: ${target.role}`;
+  if (Array.isArray(target.store_ids)) {
+    return `Stores (${target.store_ids.length})`;
+  }
   if (typeof target.store_id === "number") return `Store #${target.store_id}`;
+  if (Array.isArray(target.user_ids)) {
+    return `Users (${target.user_ids.length})`;
+  }
   if (typeof target.user_id === "string") return `User ${target.user_id}`;
+  if (target.geo === true) {
+    const parts: string[] = [];
+    if (typeof target.city === "string" && target.city.trim()) parts.push(target.city.trim());
+    if (typeof target.lat === "number" && typeof target.lng === "number") {
+      parts.push(`${target.lat}, ${target.lng}`);
+      if (typeof target.radius_km === "number") parts.push(`${target.radius_km} km`);
+    }
+    if (typeof target.role === "string") parts.push(target.role);
+    return parts.length ? `Geo: ${parts.join(" · ")}` : "Geo target";
+  }
   if (typeof target.topic === "string") return `Topic ${target.topic}`;
   return JSON.stringify(target);
 }
@@ -1234,10 +1820,12 @@ function formatTargetFilter(target: Record<string, unknown> | undefined): string
 function TargetLookupHint({
   loading,
   lookup,
+  summary,
   error,
 }: {
   loading: boolean;
   lookup: { name: string; subtitle: string | null; role?: string } | null;
+  summary?: string | null;
   error: string | null;
 }) {
   if (loading) {
@@ -1260,10 +1848,131 @@ function TargetLookupHint({
       </div>
     );
   }
+  if (summary) {
+    return (
+      <div className="mt-1.5 flex items-center gap-1.5 rounded-md border border-teal-200 bg-teal-50/70 px-2.5 py-2 text-sm text-teal-900">
+        <CheckCircle2 className="h-3.5 w-3.5 shrink-0" />
+        <span className="font-medium">{summary}</span>
+      </div>
+    );
+  }
   if (error) {
     return <p className="mt-1.5 text-xs text-amber-700">{error}</p>;
   }
   return null;
+}
+
+function SearchableSelect({
+  value,
+  onChange,
+  options,
+  placeholder = "Search…",
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  options: Array<{ value: string; label: string }>;
+  placeholder?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const boxRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  const selected = options.find((o) => o.value === value) ?? null;
+
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return options;
+    return options.filter(
+      (o) => o.label.toLowerCase().includes(q) || o.value.toLowerCase().includes(q),
+    );
+  }, [options, query]);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDoc = (e: MouseEvent) => {
+      if (!boxRef.current?.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
+  }, [open]);
+
+  useEffect(() => {
+    if (open) {
+      setQuery("");
+      requestAnimationFrame(() => inputRef.current?.focus());
+    }
+  }, [open]);
+
+  return (
+    <div ref={boxRef} className="relative">
+      <button
+        type="button"
+        className="flex w-full items-center gap-2 rounded-md border border-slate-200 bg-white px-3 py-2 text-left text-sm outline-none hover:border-slate-300 focus:border-teal-600 focus:ring-1 focus:ring-teal-600"
+        onClick={() => setOpen((o) => !o)}
+        aria-expanded={open}
+      >
+        <span className={`min-w-0 flex-1 truncate ${selected ? "text-slate-800" : "text-slate-400"}`}>
+          {selected ? selected.label : placeholder}
+        </span>
+        <ChevronDown
+          className={`h-4 w-4 shrink-0 text-slate-400 transition-transform ${open ? "rotate-180" : ""}`}
+        />
+      </button>
+
+      {open ? (
+        <div className="absolute z-30 mt-1 w-full overflow-hidden rounded-md border border-slate-200 bg-white shadow-lg">
+          <div className="border-b border-slate-100 bg-slate-50/80 p-2">
+            <div className="relative">
+              <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
+              <input
+                ref={inputRef}
+                type="text"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="Type to search…"
+                className="w-full rounded-md border border-slate-200 bg-white py-2 pl-8 pr-2.5 text-sm outline-none focus:border-teal-600 focus:ring-1 focus:ring-teal-600"
+                onKeyDown={(e) => {
+                  if (e.key === "Escape") setOpen(false);
+                  if (e.key === "Enter" && filtered[0]) {
+                    e.preventDefault();
+                    onChange(filtered[0].value);
+                    setOpen(false);
+                  }
+                }}
+              />
+            </div>
+          </div>
+          <ul className="max-h-56 overflow-auto py-1">
+            {filtered.length === 0 ? (
+              <li className="px-3 py-2.5 text-center text-sm text-slate-500">No templates found</li>
+            ) : (
+              filtered.map((opt) => {
+                const active = opt.value === value;
+                return (
+                  <li key={opt.value}>
+                    <button
+                      type="button"
+                      className={`flex w-full px-3 py-2 text-left text-sm hover:bg-teal-50 ${
+                        active ? "bg-teal-50 font-medium text-teal-900" : "text-slate-800"
+                      }`}
+                      onMouseDown={(e) => e.preventDefault()}
+                      onClick={() => {
+                        onChange(opt.value);
+                        setOpen(false);
+                      }}
+                    >
+                      <span className="truncate">{opt.label}</span>
+                    </button>
+                  </li>
+                );
+              })
+            )}
+          </ul>
+        </div>
+      ) : null}
+    </div>
+  );
 }
 
 function Section({

@@ -5,7 +5,85 @@
  * Uses PNG (not SVG): expo-print WebViews often drop SVG data-URI images.
  */
 
-import QRCode from "qrcode";
+/// <reference path="./qrcode-core.d.ts" />
+import * as QrCodeCore from "qrcode/lib/core/qrcode.js";
+
+type QrModules = { modules: { size: number; get: (row: number, col: number) => boolean | number } };
+
+type QrByteSegment = { data: Uint8Array; mode: "byte" };
+
+type QrFactory = {
+  create: (
+    value: string | QrByteSegment[],
+    options: { errorCorrectionLevel: "M" }
+  ) => QrModules;
+};
+
+/** UTF-8 bytes without TextEncoder, which React Native / Hermes does not ship. */
+function encodeUtf8(value: string): Uint8Array {
+  const out: number[] = [];
+  for (let i = 0; i < value.length; i++) {
+    let code = value.charCodeAt(i);
+    // Combine surrogate pairs into a single code point.
+    if (code >= 0xd800 && code <= 0xdbff && i + 1 < value.length) {
+      const next = value.charCodeAt(i + 1);
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        code = ((code - 0xd800) << 10) + (next - 0xdc00) + 0x10000;
+        i++;
+      }
+    }
+    if (code < 0x80) {
+      out.push(code);
+    } else if (code < 0x800) {
+      out.push(0xc0 | (code >> 6), 0x80 | (code & 0x3f));
+    } else if (code < 0x10000) {
+      out.push(0xe0 | (code >> 12), 0x80 | ((code >> 6) & 0x3f), 0x80 | (code & 0x3f));
+    } else {
+      out.push(
+        0xf0 | (code >> 18),
+        0x80 | ((code >> 12) & 0x3f),
+        0x80 | ((code >> 6) & 0x3f),
+        0x80 | (code & 0x3f)
+      );
+    }
+  }
+  return new Uint8Array(out);
+}
+
+/**
+ * `qrcode` encodes byte-mode data with `TextEncoder`, which does not exist in
+ * the app runtimes. Handing it pre-encoded bytes keeps every token — lowercase,
+ * hyphenated, anything — on a path that never touches that global.
+ */
+function createQrSymbol(factory: QrFactory, value: string): QrModules {
+  try {
+    return factory.create([{ data: encodeUtf8(value), mode: "byte" }], {
+      errorCorrectionLevel: "M",
+    });
+  } catch {
+    // Older `qrcode` builds only accept a plain string.
+    return factory.create(value, { errorCorrectionLevel: "M" });
+  }
+}
+
+/**
+ * Webpack exposes qrcode as a namespace while Metro can nest the same
+ * CommonJS package under one or more `default` wrappers. Walk a few layers.
+ */
+function resolveQrFactory(): QrFactory | null {
+  let current: unknown = QrCodeCore;
+  for (let depth = 0; depth < 4 && current; depth++) {
+    const candidate = current as {
+      create?: QrFactory["create"];
+      default?: unknown;
+    };
+    if (typeof candidate.create === "function") {
+      return { create: candidate.create };
+    }
+    current = candidate.default;
+  }
+  return null;
+}
 
 const CRC_TABLE = (() => {
   const table = new Uint32Array(256);
@@ -116,16 +194,20 @@ function matrixToPngDataUri(
   modulePx: number
 ): string {
   const size = modules.size;
-  const dim = size * modulePx;
+  // ISO/IEC 18004 requires a 4-module quiet zone around a QR symbol.
+  const quietModules = 4;
+  const matrixWithQuietZone = size + quietModules * 2;
+  const dim = matrixWithQuietZone * modulePx;
   // Greyscale PNG: each scanline = filter(0) + width bytes
   const raw = new Uint8Array((dim + 1) * dim);
   for (let y = 0; y < dim; y++) {
-    const row = Math.floor(y / modulePx);
+    const row = Math.floor(y / modulePx) - quietModules;
     const rowStart = y * (dim + 1);
     raw[rowStart] = 0; // filter none
     for (let x = 0; x < dim; x++) {
-      const col = Math.floor(x / modulePx);
-      const dark = modules.get(row, col);
+      const col = Math.floor(x / modulePx) - quietModules;
+      const inside = row >= 0 && row < size && col >= 0 && col < size;
+      const dark = inside && modules.get(row, col);
       raw[rowStart + 1 + x] = dark ? 0x00 : 0xff;
     }
   }
@@ -156,7 +238,9 @@ export function pickupTokenToQrDataUri(
   const value = String(token ?? "").trim();
   if (!value) return "";
   try {
-    const qr = QRCode.create(value, { errorCorrectionLevel: "M" });
+    const factory = resolveQrFactory();
+    if (!factory) return "";
+    const qr = createQrSymbol(factory, value);
     const size = qr.modules.size;
     const get = (row: number, col: number) => Boolean(qr.modules.get(row, col));
     return matrixToPngDataUri({ size, get }, Math.max(2, Math.floor(moduleScale)));

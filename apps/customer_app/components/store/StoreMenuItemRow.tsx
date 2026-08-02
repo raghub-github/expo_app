@@ -183,6 +183,7 @@ export const StoreMenuItemRow = React.memo(function StoreMenuItemRow({
   const showRemoteImage = !!imageUri && !imageFailed;
   const diet = getItemDiet(item);
   const spicy = isItemSpicy(item);
+  const displayName = item.name.replace(/\s+/g, " ").trim();
   const descriptionText = formatRowDescription(item.description);
 
   return (
@@ -215,10 +216,23 @@ export const StoreMenuItemRow = React.memo(function StoreMenuItemRow({
                 </View>
               ) : null}
             </View>
-            <AppText style={styles.name} numberOfLines={2} ellipsizeMode="tail">
-              {item.name}
+            <AppText
+              style={styles.name}
+              numberOfLines={2}
+              ellipsizeMode="tail"
+            >
+              {displayName}
             </AppText>
           </View>
+
+          {isHighlyReordered ? (
+            <View style={styles.reorderRow}>
+              <View style={styles.reorderBarTrack}>
+                <View style={styles.reorderBarFill} />
+              </View>
+              <AppText style={styles.reorderText}>Highly reordered</AppText>
+            </View>
+          ) : null}
 
           {itemOffer?.kind === "bogo" ? (
             <View style={styles.offerBadgeSlot}>
@@ -231,15 +245,6 @@ export const StoreMenuItemRow = React.memo(function StoreMenuItemRow({
               <View style={styles.boostBadge}>
                 <AppText style={styles.boostBadgeText}>{itemOffer.label}</AppText>
               </View>
-            </View>
-          ) : null}
-
-          {isHighlyReordered ? (
-            <View style={styles.reorderRow}>
-              <View style={styles.reorderBarTrack}>
-                <View style={styles.reorderBarFill} />
-              </View>
-              <AppText style={styles.reorderText}>Highly reordered</AppText>
             </View>
           ) : null}
 
@@ -341,6 +346,17 @@ export const StoreMenuItemRow = React.memo(function StoreMenuItemRow({
                   <AppText style={styles.customisableOnImageText}>customisable</AppText>
                 </View>
               ) : null}
+              {item.isRecommended ? (
+                <View style={styles.imageBadgeStack} pointerEvents="none">
+                  {item.isRecommended ? (
+                    <View style={styles.imageRecommendedBadge}>
+                      <AppText style={styles.imageRecommendedBadgeText} numberOfLines={1}>
+                        Recommended
+                      </AppText>
+                    </View>
+                  ) : null}
+                </View>
+              ) : null}
             </View>
           </Pressable>
           <View style={styles.addSlot} collapsable={false}>
@@ -421,11 +437,13 @@ const styles = StyleSheet.create({
   name: {
     flex: 1,
     minWidth: 0,
+    maxWidth: "100%",
+    flexShrink: 1,
     fontFamily: StoreFonts.loraBold,
     fontWeight: "700",
-    fontSize: 17,
+    fontSize: 15,
     color: StoreTheme.textPrimary,
-    lineHeight: 23,
+    lineHeight: 20,
     letterSpacing: -0.2,
   },
   reorderRow: {
@@ -435,6 +453,24 @@ const styles = StyleSheet.create({
     gap: 6,
     marginBottom: 6,
     width: "100%",
+  },
+  reorderBarTrack: {
+    width: 28,
+    height: 3,
+    borderRadius: 2,
+    backgroundColor: "#E5E7EB",
+    overflow: "hidden",
+  },
+  reorderBarFill: {
+    width: "75%",
+    height: "100%",
+    backgroundColor: StoreTheme.reorderBar,
+    borderRadius: 2,
+  },
+  reorderText: {
+    fontSize: 11,
+    color: StoreTheme.reorderGreen,
+    fontWeight: "700",
   },
   offerBadgeSlot: {
     flexDirection: "row",
@@ -468,24 +504,6 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: "700",
     color: "#1D4ED8",
-  },
-  reorderBarTrack: {
-    width: 28,
-    height: 3,
-    borderRadius: 2,
-    backgroundColor: "#E5E7EB",
-    overflow: "hidden",
-  },
-  reorderBarFill: {
-    width: "75%",
-    height: "100%",
-    backgroundColor: StoreTheme.reorderBar,
-    borderRadius: 2,
-  },
-  reorderText: {
-    fontSize: 11,
-    color: StoreTheme.reorderGreen,
-    fontWeight: "700",
   },
   priceBlock: {
     marginBottom: 6,
@@ -614,6 +632,28 @@ const styles = StyleSheet.create({
     paddingHorizontal: 6,
     paddingVertical: 2,
     borderRadius: 3,
+  },
+  imageBadgeStack: {
+    position: "absolute",
+    left: 6,
+    right: 6,
+    bottom: 6,
+    alignItems: "flex-start",
+    gap: 3,
+  },
+  imageRecommendedBadge: {
+    maxWidth: "100%",
+    borderRadius: 4,
+    backgroundColor: "rgba(255, 247, 237, 0.95)",
+    paddingHorizontal: 5,
+    paddingVertical: 2,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "#FDBA74",
+  },
+  imageRecommendedBadgeText: {
+    color: "#C2410C",
+    fontSize: 9,
+    fontWeight: "800",
   },
   addSlot: {
     width: IMAGE_SIZE,

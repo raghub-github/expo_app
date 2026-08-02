@@ -91,6 +91,8 @@ export type MerchantDetailFlashListProps = {
   onAddCombo: (combo: ComboPair) => void;
   onCouponPress: () => void;
   similarMerchants: MerchantSummary[];
+  /** FAB / cart dock clearance applied inside footer (gray), not as white list padding. */
+  footerBottomPadding?: number;
   highlightedMenuItemKey: string | null;
   highlightedOfferId?: number | null;
   highlyReorderedIds: Set<string>;
@@ -150,6 +152,7 @@ const MerchantDetailFlashListInner = forwardRef<
     onAddCombo,
     onCouponPress,
     similarMerchants,
+    footerBottomPadding = 0,
     highlightedMenuItemKey,
     highlightedOfferId = null,
     highlyReorderedIds,
@@ -173,19 +176,34 @@ const MerchantDetailFlashListInner = forwardRef<
 
   const dataLayoutKey = useMemo(() => data.map((row) => row.key).join("\0"), [data]);
 
-  useEffect(() => {
-    rowHeightsRef.current.clear();
-    rowOffsetsRef.current.clear();
-  }, [dataLayoutKey]);
-
   const rebuildRowOffsets = useCallback(() => {
     rebuildScheduledRef.current = false;
+    rowOffsetsRef.current.clear();
     let offset = 0;
     for (const row of data) {
       rowOffsetsRef.current.set(row.key, offset);
-      offset += rowHeightsRef.current.get(row.key) ?? 0;
+      const height = rowHeightsRef.current.get(row.key);
+      // Stop at the first unmeasured row: every offset past it would be wrong, and an
+      // absent offset is what tells scrollToIndex to wait for layout instead of
+      // scrolling to a bogus position.
+      if (height == null) break;
+      offset += height;
     }
   }, [data]);
+
+  /**
+   * Drop heights for rows that left the list, but KEEP the ones that stayed. Clearing every
+   * height on any data change (filter reset, pairing strip, banner toggle) lost the
+   * measurements of rows that did not remount — and since those rows never fire onLayout
+   * again, offsets were never rebuilt and scroll-to-category silently did nothing.
+   */
+  useEffect(() => {
+    const liveKeys = new Set(data.map((row) => row.key));
+    for (const key of Array.from(rowHeightsRef.current.keys())) {
+      if (!liveKeys.has(key)) rowHeightsRef.current.delete(key);
+    }
+    rebuildRowOffsets();
+  }, [dataLayoutKey, data, rebuildRowOffsets]);
 
   const scheduleRebuildRowOffsets = useCallback(() => {
     if (rebuildScheduledRef.current) return;
@@ -211,7 +229,12 @@ const MerchantDetailFlashListInner = forwardRef<
           if (generation !== scrollGenerationRef.current) return;
           const row = data[index];
           if (!row) return;
-          const y = rowOffsetsRef.current.get(row.key);
+          let y = rowOffsetsRef.current.get(row.key);
+          if (y == null) {
+            // Rows below may have measured since the last rebuild.
+            rebuildRowOffsets();
+            y = rowOffsetsRef.current.get(row.key);
+          }
           if (y != null) {
             scrollRef.current?.scrollTo({ y: Math.max(0, y - viewOffset), animated });
             return;
@@ -220,10 +243,10 @@ const MerchantDetailFlashListInner = forwardRef<
             requestAnimationFrame(() => attempt(retriesLeft - 1));
           }
         };
-        attempt(8);
+        attempt(20);
       },
     }),
-    [cancelPendingScroll, data]
+    [cancelPendingScroll, data, rebuildRowOffsets]
   );
 
   const recordRowLayout = useCallback(
@@ -407,7 +430,12 @@ const MerchantDetailFlashListInner = forwardRef<
         );
 
       case "footer":
-        return <StoreFooterSection similarMerchants={similarMerchants} />;
+        return (
+          <StoreFooterSection
+            similarMerchants={similarMerchants}
+            bottomPadding={footerBottomPadding}
+          />
+        );
 
       case "empty_menu":
         return (

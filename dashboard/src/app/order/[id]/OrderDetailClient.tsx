@@ -199,7 +199,7 @@ interface OrderDetail {
   etaSeconds?: number | null;
   /** Expected delivery timestamp (for timeline ETA labels). */
   estimatedDeliveryTime?: string | null;
-  /** First ETA when order accepted (sidebar "First ETA"). */
+  /** First ETA frozen at order placement (sidebar "First ETA"). */
   firstEtaAt?: string | null;
   /** When ETA was first breached (from DB). */
   etaBreachedAt?: string | null;
@@ -285,9 +285,17 @@ export interface OrderRefundListItem {
   executionStatus: string | null;
   executionRoute: string | null;
   failureReason: string | null;
+  /** Customer-facing unique RRN (RRN-{UUID}). */
+  refundReference?: string | null;
+  /** Original GatiCash payment transaction id (GC-{UUID}). */
+  originalGatiCashTxnId?: string | null;
   /** Razorpay refund id (rfnd_…) when available. */
   razorpayRefundId?: string | null;
   pgRefundId?: string | null;
+  /** Wallet credit ledger id for GatiCash / wallet refunds. */
+  customerWalletLedgerId?: number | null;
+  splitWalletAmount?: number | null;
+  splitRazorpayAmount?: number | null;
   refundInitiatedBy: string | null;
   refundInitiatedById: number | null;
   initiatedByEmail: string | null;
@@ -621,6 +629,11 @@ export default function OrderDetailClient({
     OrderRiderTrackingPayload | null | undefined
   >(undefined);
   const [paymentDetail, setPaymentDetail] = useState<OrderPaymentDetail | null>(null);
+  /**
+   * Core order id whose payment card arrived embedded in /api/orders/core.
+   * Null means the core response had none, so the standalone fetch fills in.
+   */
+  const [paymentDetailFromCoreFor, setPaymentDetailFromCoreFor] = useState<number | null>(null);
   const [copiedOrderId, setCopiedOrderId] = useState(false);
   const copyOrderIdResetRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [feedbackSheetTarget, setFeedbackSheetTarget] = useState<FeedbackSheetTarget | null>(
@@ -672,11 +685,15 @@ export default function OrderDetailClient({
   /** Used to pause background refresh only — never gate the initial order load. */
   const pageVisible = usePageVisible();
 
-  /** Payment detail loads after first paint so /api/orders/core stays fast. */
+  /**
+   * Fallback only: /api/orders/core embeds the payment card so it paints with
+   * the rest of the page. This fires just for responses that lacked it.
+   */
   useEffect(() => {
     const orderId = order?.id;
     if (orderId == null || !Number.isFinite(orderId)) return;
     if (!auth?.authReady) return;
+    if (paymentDetailFromCoreFor === orderId) return;
 
     let cancelled = false;
     void fetch(`/api/orders/${orderId}/payment-detail`, { credentials: "include" })
@@ -692,7 +709,7 @@ export default function OrderDetailClient({
     return () => {
       cancelled = true;
     };
-  }, [order?.id, refetchTrigger, auth?.authReady]);
+  }, [order?.id, refetchTrigger, auth?.authReady, paymentDetailFromCoreFor]);
 
   /** Rider map tracking when not embedded in core response. */
   useEffect(() => {
@@ -968,6 +985,9 @@ export default function OrderDetailClient({
             (row.paymentDetail as OrderPaymentDetail | undefined);
           if (paymentFromApi != null) {
             setPaymentDetail(paymentFromApi);
+            setPaymentDetailFromCoreFor(coreOrderId);
+          } else {
+            setPaymentDetailFromCoreFor(null);
           }
 
           setTimelineEntries(timeline.length > 0 ? mapTimelineEntries(timeline) : []);
@@ -1180,8 +1200,17 @@ export default function OrderDetailClient({
 
   // Mirror of the server-side money-safety guard (order-refund-guard.ts) so
   // the UI can pre-disable dead-end actions. The server remains authoritative.
+  // CTC = Cashin + GatiCash (never post-wallet grand_total alone).
   const refundLock = useMemo(() => {
-    const grandTotal = Number(order?.grandTotal ?? order?.totalAmount ?? 0) || 0;
+    const netPayable = Number(order?.grandTotal ?? order?.totalAmount ?? 0) || 0;
+    const gati =
+      Number(paymentDetail?.gatiCashUsed ?? 0) ||
+      Number(
+        (paymentDetail?.records ?? []).reduce((s, r) => s + (r.gatiCashUsed ?? 0), 0)
+      ) ||
+      0;
+    const fromPaymentCtc = Number(paymentDetail?.totalAmount ?? 0) || 0;
+    const grandTotal = Math.max(netPayable + Math.max(gati, 0), fromPaymentCtc, 0);
     const alreadyRefunded = (orderRefunds ?? []).reduce((sum, r) => {
       const status = String(r.refundStatus ?? "").toLowerCase();
       if (status === "failed" || status === "cancelled" || status === "rejected") {
@@ -1201,7 +1230,15 @@ export default function OrderDetailClient({
       // Nothing further can be done: order is cancelled AND fully refunded.
       noActionsLeft: orderCancelledOnTimeline && fullyRefunded,
     };
-  }, [order?.grandTotal, order?.totalAmount, orderRefunds, orderCancelledOnTimeline]);
+  }, [
+    order?.grandTotal,
+    order?.totalAmount,
+    orderRefunds,
+    orderCancelledOnTimeline,
+    paymentDetail?.gatiCashUsed,
+    paymentDetail?.totalAmount,
+    paymentDetail?.records,
+  ]);
 
   const openStatusModal = useCallback(() => {
     if (!order) return;
@@ -1847,18 +1884,10 @@ export default function OrderDetailClient({
             currentStatus={statusLabel || undefined}
             orderCreatedAt={order.createdAt ? new Date(order.createdAt) : undefined}
             etaAt={(() => {
+              // Breach / First ETA marker — never use live estimated_delivery_time.
               if (order.firstEtaAt) return new Date(order.firstEtaAt);
-              if (order.estimatedDeliveryTime)
-                return new Date(order.estimatedDeliveryTime);
               if (order.etaSeconds != null && order.createdAt)
                 return new Date(new Date(order.createdAt).getTime() + Number(order.etaSeconds) * 1000);
-              const entries = timelineEntries ?? [];
-              const withEta = entries.filter((e) => e.expectedByAt);
-              if (withEta.length > 0) {
-                const latest = withEta[withEta.length - 1];
-                const t = latest.expectedByAt;
-                if (t) return new Date(t);
-              }
               return undefined;
             })()}
           />

@@ -66,6 +66,8 @@ type Props = {
   /** Fade in-flow search when staged sticky search takes over. */
   stickyScrollY?: SharedValue<number>;
   searchStickAt?: SharedValue<number>;
+  /** Compact pre-hero state uses dark text on a white background. */
+  heroReady?: boolean;
 };
 
 export function FoodHomeGridFirstHeader({
@@ -80,6 +82,7 @@ export function FoodHomeGridFirstHeader({
   highlightSearchPill = false,
   stickyScrollY,
   searchStickAt,
+  heroReady = true,
 }: Props) {
   const router = useRouter();
   const session = useAuthStore((s) => s.session);
@@ -153,12 +156,22 @@ export function FoodHomeGridFirstHeader({
           onPress={onLocationPress}
         >
           <View style={styles.locationTitleRow}>
-            <AppText style={styles.locationPrimary} numberOfLines={1}>
+            <AppText
+              style={[styles.locationPrimary, !heroReady && styles.locationPrimaryCompact]}
+              numberOfLines={1}
+            >
               {locationPrimary}
             </AppText>
-            <Ionicons name="chevron-down" size={16} color="#FFFFFF" />
+            <Ionicons
+              name="chevron-down"
+              size={16}
+              color={heroReady ? "#FFFFFF" : "#334155"}
+            />
           </View>
-          <AppText style={styles.locationSecondary} numberOfLines={1}>
+          <AppText
+            style={[styles.locationSecondary, !heroReady && styles.locationSecondaryCompact]}
+            numberOfLines={1}
+          >
             {locationSecondary}
           </AppText>
         </TouchableOpacity>
@@ -199,7 +212,10 @@ export function FoodHomeGridFirstHeader({
       <Animated.View style={inFlowSearchFadeStyle}>
       <View style={styles.searchRow}>
         <TouchableOpacity
-          style={[styles.searchPill, highlightSearchPill && styles.searchPillSticky]}
+          style={[
+            styles.searchPill,
+            (highlightSearchPill || !heroReady) && styles.searchPillSticky,
+          ]}
           activeOpacity={0.92}
           onPress={onSearchPress}
         >
@@ -272,6 +288,16 @@ const styles = StyleSheet.create({
     color: "rgba(255, 255, 255, 0.94)",
     lineHeight: 16,
     ...HERO_OVERLAY_TEXT_SHADOW,
+  },
+  locationPrimaryCompact: {
+    color: "#0F172A",
+    textShadowColor: "transparent",
+    textShadowRadius: 0,
+  },
+  locationSecondaryCompact: {
+    color: "#64748B",
+    textShadowColor: "transparent",
+    textShadowRadius: 0,
   },
   topActions: {
     flexDirection: "row",

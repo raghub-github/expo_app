@@ -32,6 +32,8 @@ export type LineItem = {
   name: string;
   price: number;
   menuItemId?: number | null;
+  /** Live menu image from order payload — empty means show Add photo. */
+  itemImageUrl?: string | null;
   vegNonveg?: string | null;
   customizations?: string[];
   variant_tag?: string | null;
@@ -94,6 +96,10 @@ export type OrderRecord = {
   pickupWaitSeconds?: number | null;
   riderStoreWaitLive?: boolean;
   riderStoreWaitAnchorAt?: string | null;
+  /** Free wait seconds after rider arrives (backend SSOT, default 180). */
+  riderFreeWaitSeconds?: number | null;
+  /** True when free wait has elapsed and rider is still waiting. */
+  riderWaitPriority?: boolean;
   pickupOtp?: string;
   /** Secure QR pickup token (order_pickup_tokens.token). */
   pickupToken?: string | null;
@@ -105,6 +111,7 @@ export type OrderRecord = {
   /** Short locality for incoming modal / cards (e.g. Tiruporur). */
   merchantStoreLocality?: string | null;
   paymentMethod?: string | null;
+  paymentStatus?: string | null;
   rtoOtp?: string;
   rejectedReason?: string | null;
   acceptedByLabel?: string | null;
@@ -240,6 +247,10 @@ export function mapApiOrder(
         it.menu_item_id != null && Number.isFinite(Number(it.menu_item_id))
           ? Number(it.menu_item_id)
           : null,
+      itemImageUrl:
+        typeof it.item_image_url === "string" && it.item_image_url.trim()
+          ? it.item_image_url.trim()
+          : null,
       vegNonveg: it.veg_nonveg ?? null,
       customizations: it.customizations,
       variant_tag: it.variant_tag ?? null,
@@ -323,6 +334,11 @@ export function mapApiOrder(
         : null,
     riderStoreWaitLive: o.rider_store_wait_live === true,
     riderStoreWaitAnchorAt: coerceTimestamp(o.rider_store_wait_anchor_at),
+    riderFreeWaitSeconds:
+      o.rider_free_wait_seconds != null && Number.isFinite(Number(o.rider_free_wait_seconds))
+        ? Math.max(0, Math.floor(Number(o.rider_free_wait_seconds)))
+        : null,
+    riderWaitPriority: o.rider_wait_priority === true,
     pickupOtp: o.pickup_otp ?? undefined,
     pickupToken: o.pickup_token?.trim() || null,
     kotNumber: o.kot_number?.trim() || null,
@@ -333,6 +349,7 @@ export function mapApiOrder(
     merchantStoreName: storeCtx?.storeName?.trim() || null,
     merchantStoreLocality: storeCtx?.storeLocality?.trim() || null,
     paymentMethod: o.payment_method?.trim() || null,
+    paymentStatus: o.payment_status?.trim() || null,
     rtoOtp: o.rto_otp ?? undefined,
     rejectedReason: o.rejected_reason ?? null,
     acceptedByLabel: o.accepted_by_label ?? null,
@@ -378,6 +395,118 @@ export function mapApiOrder(
       Number.isFinite(Number(o.merchant_response_timeout_seconds))
         ? Math.max(0, Math.floor(Number(o.merchant_response_timeout_seconds)))
         : null,
+  };
+}
+
+/** Minimal ApiFoodOrder from a board OrderRecord — paints detail while GET refreshes. */
+export function orderRecordToApiFoodOrder(r: OrderRecord): ApiFoodOrder | null {
+  if (r.id.startsWith("core-")) return null;
+  const foodId = parseInt(r.id, 10);
+  if (!Number.isFinite(foodId) || foodId <= 0) return null;
+  return {
+    orders_food_id: foodId,
+    orders_core_id: r.ordersCoreId,
+    formatted_order_id: r.formattedOrderId,
+    tax_invoice_number: r.taxInvoiceNumber ?? null,
+    order_status: r.pipelineStatus || "CREATED",
+    customer_name: r.customerName || null,
+    customer_phone: r.customerPhone ?? null,
+    customer_email: r.customerEmail ?? null,
+    drop_address: r.dropAddress ?? null,
+    distance_km: r.distanceKm ?? null,
+    customer_store_order_ordinal: r.customerStoreOrderOrdinal ?? null,
+    customer_store_orders_total: r.customerStoreOrdersTotal ?? null,
+    customer_platform_orders_total: r.customerPlatformOrdersTotal ?? null,
+    is_bulk_order: r.isBulkOrder,
+    veg_non_veg: r.vegNonVeg ?? null,
+    created_at: r.createdAt,
+    delivery_type: r.deliveryType,
+    rider_id: r.riderId ?? null,
+    rider_name: r.riderName ?? null,
+    rider_mobile: r.riderMobile ?? null,
+    rider_selfie_url: r.riderSelfieUrl ?? null,
+    rider_assignment_status: r.riderAssignmentStatus ?? null,
+    rider_reached_at: r.riderReachedAt ?? null,
+    rider_display_variant: r.riderDisplayVariant ?? null,
+    core_status: r.coreStatus ?? null,
+    current_status: r.currentStatus ?? null,
+    reached_merchant_at: r.reachedMerchantAt ?? null,
+    rider_reached_pickup_at: r.riderReachedPickupAt ?? null,
+    pickup_wait_seconds: r.pickupWaitSeconds ?? null,
+    rider_store_wait_live: r.riderStoreWaitLive,
+    rider_store_wait_anchor_at: r.riderStoreWaitAnchorAt ?? null,
+    rider_free_wait_seconds: r.riderFreeWaitSeconds ?? null,
+    rider_wait_priority: r.riderWaitPriority,
+    grand_total: r.total,
+    food_items_total_value: r.total,
+    total_ctm: r.totalCtm ?? null,
+    merchant_precision_discount: r.merchantPrecisionDiscount,
+    pricing: r.pricing
+      ? {
+          subtotal: r.pricing.subtotal,
+          packaging: r.pricing.packaging,
+          taxes: r.pricing.taxes,
+          discount: r.pricing.discount,
+          total: r.pricing.total,
+        }
+      : null,
+    billing_snapshot: r.billingSnapshot ?? null,
+    payment_status: r.paymentStatus ?? null,
+    items: r.lineItems.map((it) => ({
+      qty: it.qty,
+      name: it.name,
+      price: it.price,
+      menu_item_id: it.menuItemId ?? null,
+      item_image_url: it.itemImageUrl ?? null,
+      veg_nonveg: it.vegNonveg ?? null,
+      customizations: it.customizations,
+      variant_tag: it.variant_tag ?? null,
+      customization_lines: it.customization_lines,
+      base_amount: it.base_amount,
+      customizations_total: it.customizations_total,
+      captured_base_amount: it.captured_base_amount,
+      captured_addon_amount: it.captured_addon_amount,
+      has_customizations: it.has_customizations,
+      catalog_line_total: it.catalog_line_total,
+      net_line_total: it.net_line_total,
+      offer_discount: it.offer_discount,
+      offer_label: it.offer_label ?? null,
+      is_item_promo: it.is_item_promo,
+      applied_offer_type: it.applied_offer_type ?? null,
+      ctm_from_snapshot: it.ctm_from_snapshot,
+      special_instructions: it.specialInstructions ?? it.special_instructions ?? null,
+    })),
+    pickup_otp: r.pickupOtp ?? null,
+    pickup_token: r.pickupToken ?? null,
+    kot_number: r.kotNumber ?? null,
+    rto_otp: r.rtoOtp ?? null,
+    requires_utensils: r.requiresUtensils ?? null,
+    delivery_instructions: r.deliveryInstructions ?? null,
+    merchant_instructions_list: r.merchantInstructionsList,
+    payment_method: r.paymentMethod ?? null,
+    accepted_at: r.acceptedAt ?? null,
+    preparing_at: r.preparingAt ?? null,
+    prepared_at: r.preparedAt ?? null,
+    dispatched_at: r.dispatchedAt ?? null,
+    preparation_time_minutes: r.preparationTimeMinutes ?? null,
+    prep_ready_by_at: r.prepReadyByAt ?? null,
+    expected_ready_at: r.expectedReadyAt ?? null,
+    prep_delay_minutes: r.prepDelayMinutes ?? null,
+    prep_delay_use_count: r.prepDelayUseCount ?? null,
+    last_prep_delay_minutes_added: r.lastPrepDelayMinutesAdded ?? null,
+    prepared_late_minutes: r.preparedLateMinutes ?? null,
+    handed_over_to_rider_at: r.handedOverToRiderAt ?? null,
+    rider_picked_up_at: r.riderPickedUpAt ?? null,
+    delivered_at: r.deliveredAt ?? null,
+    cancelled_at: r.cancelledAt ?? null,
+    rejected_reason: r.rejectedReason ?? null,
+    accepted_by_label: r.acceptedByLabel ?? null,
+    cancelled_by_label: r.cancelledByLabel ?? null,
+    cancelled_by_type: r.cancelledByType ?? null,
+    is_scheduled_order: r.isScheduledOrder,
+    scheduled_delivery_summary: r.scheduledDeliverySummary ?? null,
+    merchant_response_deadline_at: r.merchantResponseDeadlineAt ?? null,
+    merchant_response_timeout_seconds: r.merchantResponseTimeoutSeconds ?? null,
   };
 }
 

@@ -206,7 +206,6 @@ export function OrderPanel({
   hideHeaderOrderId = false,
 }: OrderPanelProps) {
   const items = order.items ?? [];
-  const previewItems = items.slice(0, ITEMS_PREVIEW_MAX);
   const hasMoreItems = items.length > ITEMS_PREVIEW_MAX;
   const totalItemCount = computeOrderItemQuantityCount(order);
   const [showPhone, setShowPhone] = useState(false);
@@ -265,7 +264,6 @@ export function OrderPanel({
       : otps;
   const merchantInstructions = resolveMerchantInstructionsForDisplay(order);
   const rtoDisplay = formatRtoOtpDisplay(status, displayOtps.rto);
-  const showPastRidersButton = usePastRidersEligibility(order.id, !!onViewPastRiders);
   const hadPastRiderAssign = usePastRidersEligibility(order.id, showPendingRiderAssign);
   const isHistory = panelMode === 'history';
   const historyHasRider = isHistory && orderHasAssignedRider(order);
@@ -314,6 +312,8 @@ export function OrderPanel({
     storeWaitLive: showStoreWait ? storeWait.live : undefined,
     storeWaitFinalizedSeconds:
       showStoreWait && !storeWait.live ? storeWait.finalizedSeconds : undefined,
+    showOldRidersLog: Boolean(onViewPastRiders),
+    onViewOldRidersLog: onViewPastRiders,
   };
 
   const viewRiderButton =
@@ -455,6 +455,7 @@ export function OrderPanel({
               totalLineCount={items.length}
               showUtensilsBanner={false}
               compact
+              showQuantityColumn
               onItemClick={(item) => setSelectedItem(item as OrderLineItem)}
             />
           </div>
@@ -482,13 +483,13 @@ export function OrderPanel({
           ) : null}
 
           <div className="flex flex-col gap-2.5 pt-1">
-            {showPastRidersButton && onViewPastRiders ? (
+            {showPendingRiderAssign && onViewPastRiders ? (
               <button
                 type="button"
                 onClick={onViewPastRiders}
                 className="w-full inline-flex items-center justify-center gap-2 rounded-lg border border-gray-200 bg-white px-3 py-2.5 text-xs font-semibold text-gray-800 hover:bg-gray-50"
               >
-                View past riders
+                View Old Rider&apos;s Log
               </button>
             ) : null}
             <button
@@ -653,23 +654,18 @@ export function OrderPanel({
 
         <div className="flex flex-col p-4 flex-1 min-w-0 min-h-0 w-full">
           <MerchantOrderItemsList
-            items={previewItems}
+            items={items}
             totalItemCount={totalItemCount}
             totalLineCount={items.length}
             showUtensilsBanner={false}
             headerRight={viewRiderButton}
             className="w-full"
+            showQuantityColumn
+            maxItems={ITEMS_PREVIEW_MAX}
+            hideMoreHint
+            onViewMore={hasMoreItems ? onOpenAllItems : undefined}
             onItemClick={(item) => setSelectedItem(item as OrderLineItem)}
           />
-          {hasMoreItems ? (
-            <button
-              type="button"
-              onClick={onOpenAllItems}
-              className="mt-2 w-full rounded-lg border border-blue-200 bg-blue-50 py-2.5 text-sm font-bold text-blue-700 hover:bg-blue-100"
-            >
-              +{items.length - ITEMS_PREVIEW_MAX} more items — view all
-            </button>
-          ) : null}
 
           <MerchantOrderBillSummary
             className="mt-4 shrink-0 w-full"
@@ -680,13 +676,13 @@ export function OrderPanel({
 
           {isHistory ? (
             <div className="mt-auto shrink-0 flex flex-col gap-2.5 pt-5 w-full">
-              {showPastRidersButton && onViewPastRiders ? (
+              {onViewPastRiders ? (
                 <button
                   type="button"
                   onClick={onViewPastRiders}
                   className="w-full inline-flex items-center justify-center gap-2 rounded-lg border border-gray-200 bg-white px-3 py-2.5 text-xs font-semibold text-gray-800 hover:bg-gray-50"
                 >
-                  View past riders
+                  View Old Rider&apos;s Log
                 </button>
               ) : null}
               <button
@@ -737,13 +733,13 @@ export function OrderPanel({
             ) : null}
 
             <div className="mt-auto shrink-0 flex flex-col gap-2.5 pt-5 w-full">
-              {showPastRidersButton && onViewPastRiders ? (
+              {showPendingRiderAssign && onViewPastRiders ? (
                 <button
                   type="button"
                   onClick={onViewPastRiders}
                   className="w-full inline-flex items-center justify-center gap-2 rounded-lg border border-gray-200 bg-white px-3 py-2.5 text-xs font-semibold text-gray-800 hover:bg-gray-50"
                 >
-                  View past riders
+                  View Old Rider&apos;s Log
                 </button>
               ) : null}
               <button

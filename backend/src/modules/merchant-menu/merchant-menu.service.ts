@@ -875,7 +875,24 @@ export async function listItems(
            merchant_menu_items.item_id,
            merchant_menu_items.item_name,
            merchant_menu_items.item_description,
-           merchant_menu_items.item_image_url,
+           COALESCE(
+             NULLIF(TRIM(merchant_menu_items.item_image_url), ''),
+             (
+               SELECT img.image_url
+               FROM merchant_menu_item_images img
+               WHERE img.menu_item_id = merchant_menu_items.id
+                 AND img.is_primary = true
+               ORDER BY img.id ASC
+               LIMIT 1
+             ),
+             (
+               SELECT img.image_url
+               FROM merchant_menu_item_images img
+               WHERE img.menu_item_id = merchant_menu_items.id
+               ORDER BY img.display_order ASC NULLS LAST, img.id ASC
+               LIMIT 1
+             )
+           ) AS item_image_url,
            merchant_menu_items.category_id,
            merchant_menu_items.food_type,
            merchant_menu_items.spice_level,

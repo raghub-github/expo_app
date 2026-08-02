@@ -28,6 +28,9 @@ export const merchantOrderCardLayoutStyles = StyleSheet.create({
     paddingTop: 14,
     paddingBottom: 6,
   },
+  headerRowAfterBadge: {
+    paddingTop: 6,
+  },
   headerLeft: { flex: 1, minWidth: 0, gap: 4 },
   storeName: { fontSize: 12, fontWeight: "500", color: "#666666" },
   customerRow: {
@@ -58,6 +61,14 @@ export const merchantOrderCardLayoutStyles = StyleSheet.create({
     gap: 8,
     paddingHorizontal: 14,
     paddingVertical: 10,
+  },
+  billSectionHead: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    paddingHorizontal: 14,
+    paddingVertical: 14,
+    minHeight: 48,
   },
   sectionTitle: {
     flex: 1,
@@ -108,11 +119,19 @@ export const merchantOrderCardLayoutStyles = StyleSheet.create({
   statusBadgeRow: {
     paddingHorizontal: 14,
     paddingTop: 12,
-    paddingBottom: 4,
+    paddingBottom: 2,
     flexDirection: "row",
     alignItems: "center",
+    justifyContent: "space-between",
     gap: 8,
+  },
+  statusBadgeLeft: {
+    flex: 1,
+    minWidth: 0,
+    flexDirection: "row",
+    alignItems: "center",
     flexWrap: "wrap",
+    gap: 8,
   },
   terminalFooterStatus: {
     flexDirection: "row",

@@ -3,6 +3,7 @@ import { AppText as Text } from "@/components/AppText";
 import { View, StyleSheet, Pressable } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { merchantCancellationDisplay } from "@/lib/merchant-cancellation-display";
+import { resolveMerchantCancellationActor } from "@/lib/merchant-cancellation-ledger-brand";
 import {
   resolveCancellationMessageParts,
   formatAppliedPayoutPolicy,
@@ -46,12 +47,20 @@ export function OrderCancellationBanner({
   const [policyOpen, setPolicyOpen] = useState(false);
   const status = (orderStatus ?? "").toUpperCase();
   const isCompact = variant === "compact";
+  const isAutoCancel =
+    resolveMerchantCancellationActor(
+      cancelledByType,
+      cancelledByLabel,
+      null,
+      rejectedReason ?? cancellationCompensation?.reason_detail
+    ).kind === "auto";
 
   useEffect(() => {
+    if (isAutoCancel || isCompact) return;
     if (storeId != null && storeId > 0 && authToken) {
       prefetchCompensationPolicy(storeId, authToken);
     }
-  }, [storeId, authToken]);
+  }, [storeId, authToken, isAutoCancel, isCompact]);
 
   if (
     !rejectedReason?.trim() &&
@@ -103,14 +112,16 @@ export function OrderCancellationBanner({
   const showPolicyLink =
     !isCompact &&
     !isAdminOverride &&
+    !isAutoCancel &&
     Boolean(cancellationCompensation?.show_policy_link) &&
     storeId != null &&
     storeId > 0 &&
     Boolean(authToken);
 
-  const appliedPayoutPolicy = !isCompact
-    ? formatAppliedPayoutPolicy(cancellationCompensation)
-    : null;
+  const appliedPayoutPolicy =
+    !isCompact && !isAutoCancel
+      ? formatAppliedPayoutPolicy(cancellationCompensation)
+      : null;
 
   const hasEngineParts = Boolean(parts.brandPrefix || parts.cancelReason);
 
@@ -132,7 +143,7 @@ export function OrderCancellationBanner({
         </>
       )}
 
-      {!isCompact && parts.policySentence && !isAdminOverride ? (
+      {!isCompact && !isAutoCancel && parts.policySentence && !isAdminOverride ? (
         <Text style={styles.policySentence}>{parts.policySentence}</Text>
       ) : null}
 

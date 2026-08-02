@@ -455,8 +455,11 @@ export async function paymentRoutes(app: FastifyInstance) {
     "/create-order",
     {
       schema: {
+        // nonnegative, not positive: a fully GatiCash-covered order legitimately has 0 to
+        // charge. Zod rejecting it produced an opaque `internal_error` at checkout, so the
+        // handler now answers with an actionable code instead.
         body: z.object({
-          amount: z.number().int().positive(), // in paise (₹100 = 10000)
+          amount: z.number().int().nonnegative(), // in paise (₹100 = 10000)
           currency: z.string().max(4).optional().default("INR"),
           receipt: z.string().max(64).optional(),
           pendingId: z.string().max(100).optional(),
@@ -468,10 +471,11 @@ export async function paymentRoutes(app: FastifyInstance) {
             amount: z.number(),
             currency: z.string(),
           }),
+          400: z.object({ error: z.string(), message: z.string() }),
         },
       },
     },
-    async (req) => {
+    async (req, reply) => {
       const { amount, currency, receipt, pendingId } = req.body as {
         amount: number;
         currency?: string;
@@ -479,6 +483,16 @@ export async function paymentRoutes(app: FastifyInstance) {
         pendingId?: string;
       };
       const env = getEnv();
+
+      // Nothing to charge — there is no gateway order to mint. The client should place this
+      // order through POST /v1/orders/finalize-wallet, which settles it off the wallet ledger.
+      if (amount <= 0) {
+        return reply.status(400).send({
+          error: "ZERO_PAYABLE_NO_GATEWAY_ORDER",
+          message:
+            "Nothing left to pay on this order. It settles from your GatiCash balance — no online payment needed.",
+        });
+      }
 
       // Dummy mode: bypass Razorpay entirely. Returns synthetic order/key IDs
       // that the customer app recognizes (keyId starting with "dummy_") and

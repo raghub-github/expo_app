@@ -13,7 +13,6 @@ import { Ionicons } from "@expo/vector-icons";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { addressService, type Address } from "@/services/address.service";
 import { shareAddressViaLink } from "@/services/addressShare.service";
-import { useLocationStore } from "@/store/locationStore";
 import { DeliveryAddressText } from "@/components/address/DeliveryAddressText";
 
 const TEAL = "#14b8a6";
@@ -71,7 +70,19 @@ export default function AddressesScreen() {
 
   const deleteMutation = useMutation({
     mutationFn: (id: number) => addressService.deleteAddress(id),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["addresses"] }),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["addresses"] });
+      await queryClient.invalidateQueries({ queryKey: ["active-location"] });
+      // Backend may have rebound to the next MRU Saved Address — apply SoT locally.
+      const { applyActiveLocationFromBackend } = await import(
+        "@/lib/applyActiveLocationFromBackend"
+      );
+      await applyActiveLocationFromBackend(queryClient);
+      const { promptCartIfLocationBrokeServiceability } = await import(
+        "@/lib/promptCartIfLocationBrokeServiceability"
+      );
+      void promptCartIfLocationBrokeServiceability(queryClient);
+    },
   });
 
   const setDefaultMutation = useMutation({
@@ -82,23 +93,10 @@ export default function AddressesScreen() {
   const handleSetDefault = async (addr: Address) => {
     try {
       await setDefaultMutation.mutateAsync(addr.id);
-      // Make "Default" also become the active location shown on home header across restarts.
-      await addressService.setActiveLocation({
-        latitude: addr.latitude,
-        longitude: addr.longitude,
-        address: addr.fullAddress,
-      });
-      const primary = addr.label ?? t("addresses.other", "Other");
-      useLocationStore.getState().setAddressAndCoords(
-        {
-          primary,
-          secondary: addr.fullAddress.slice(0, 80),
-          fullAddress: addr.fullAddress,
-        },
-        { latitude: addr.latitude, longitude: addr.longitude },
-        { source: "selected" }
+      const { applySelectedDeliveryAddress } = await import(
+        "@/lib/applySelectedDeliveryAddress"
       );
-      await queryClient.invalidateQueries({ queryKey: ["active-location"] });
+      await applySelectedDeliveryAddress(addr, queryClient);
     } catch {
       Alert.alert(t("addresses.defaultErrorTitle", "Could not set default"), t("addresses.defaultErrorBody", "Please try again."));
     }
@@ -126,23 +124,10 @@ export default function AddressesScreen() {
     if (selectingAddressId != null) return;
     setSelectingAddressId(addr.id);
     try {
-      await addressService.setActiveLocation({
-        latitude: addr.latitude,
-        longitude: addr.longitude,
-        address: addr.fullAddress,
-      });
-      const primary = addr.label ?? t("addresses.other", "Other");
-      useLocationStore.getState().setAddressAndCoords(
-        {
-          primary,
-          secondary: addr.fullAddress.slice(0, 80),
-          fullAddress: addr.fullAddress,
-        },
-        { latitude: addr.latitude, longitude: addr.longitude },
-        { source: "selected" }
+      const { applySelectedDeliveryAddress } = await import(
+        "@/lib/applySelectedDeliveryAddress"
       );
-      await queryClient.invalidateQueries({ queryKey: ["addresses"] });
-      await queryClient.invalidateQueries({ queryKey: ["active-location"] });
+      await applySelectedDeliveryAddress(addr, queryClient);
       router.back();
     } catch {
       Alert.alert(

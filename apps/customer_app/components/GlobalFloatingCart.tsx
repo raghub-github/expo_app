@@ -41,6 +41,7 @@ import { useAuthStore } from "@/store/authStore";
 import { useCheckoutSheetStore } from "@/store/checkoutSheetStore";
 import { useCartCheckoutGateStore } from "@/store/cartCheckoutGateStore";
 import { useMealsUnderPriceCartUiStore } from "@/store/mealsUnderPriceCartUiStore";
+import { tryNavigateToFoodCheckout } from "@/lib/cartCheckoutGate";
 
 /** Shown instead of multi-cart checkout until the feature exists. */
 const CHECKOUT_ALL_COMING_SOON = "Checkout all functionality coming soon";
@@ -159,9 +160,11 @@ function useIsInsideCartRestaurant(): boolean {
 function FloatingOrderTrackingPillWithUnread({
   order,
   onPress,
+  emphasis = "primary",
 }: {
   order: ActiveOrder;
   onPress: () => void;
+  emphasis?: "primary" | "secondary";
 }) {
   const { data: chatUnread } = usePartnerChatUnread(order.orderId, true);
   return (
@@ -169,6 +172,7 @@ function FloatingOrderTrackingPillWithUnread({
       order={order}
       onPress={onPress}
       chatUnreadCount={chatUnread?.unreadCount ?? 0}
+      emphasis={emphasis}
     />
   );
 }
@@ -315,16 +319,22 @@ export function GlobalFloatingCart() {
   /** Paged dock when tracking + (cart on food page or multiple orders). */
   const showScrollDock =
     showActiveOrderTracking &&
-    ((hasCart && isFoodServicePage) || trackingOrders.length > 1);
+    (showFloatingFoodCart || trackingOrders.length > 1);
+  const trackingEmphasis: "primary" | "secondary" = showFloatingFoodCart
+    ? "secondary"
+    : "primary";
   const { width: windowWidth } = useWindowDimensions();
   const dockSideInset = 16;
   const dockPageWidth = Math.max(280, windowWidth - dockSideInset);
   const dockPageCount = trackingOrders.length + (showFloatingFoodCart ? 1 : 0);
   const [dockPageIndex, setDockPageIndex] = useState(0);
+  const dockScrollRef = useRef<ScrollView>(null);
 
   useEffect(() => {
+    // Cart first when present; tracking is the next swipe page(s).
     setDockPageIndex(0);
-  }, [dockPageCount, merchantId, trackingOrders.map((o) => o.orderId).join(",")]);
+    dockScrollRef.current?.scrollTo({ x: 0, animated: false });
+  }, [dockPageCount, merchantId, trackingOrders.map((o) => o.orderId).join(","), showFloatingFoodCart]);
 
   const cartSlotCount = useMemo(() => {
     const stashedSlots = Object.values(stashedCarts).filter((c) => c.items.length > 0).length;
@@ -366,18 +376,24 @@ export function GlobalFloatingCart() {
     const currentPath = typeof pathname === "string" ? pathname : "";
     if (currentPath.startsWith("/checkout")) return;
 
-    // Checkout owns authoritative address/serviceability validation. Navigate
-    // immediately on the first tap instead of waiting on a pre-navigation quote.
+    // Gate Outside Delivery Range only on explicit View Cart — never on app entry.
     checkoutNavLockRef.current = true;
-    setHideForCheckoutNav(true);
-    useCartCheckoutGateStore.getState().hide();
     void prefetchSubscriptionPlans(queryClient);
-    try {
-      router.navigate("/checkout" as never);
-    } catch {
-      checkoutNavLockRef.current = false;
-      setHideForCheckoutNav(false);
-    }
+    void (async () => {
+      try {
+        const navigated = await tryNavigateToFoodCheckout(router, queryClient);
+        if (navigated) {
+          setHideForCheckoutNav(true);
+          return;
+        }
+        // Unserviceable → gate shown; keep floating cart after user dismisses.
+        checkoutNavLockRef.current = false;
+        setHideForCheckoutNav(false);
+      } catch {
+        checkoutNavLockRef.current = false;
+        setHideForCheckoutNav(false);
+      }
+    })();
   };
 
   /** Store inner page (merchant menu). */
@@ -438,7 +454,7 @@ export function GlobalFloatingCart() {
         </Pressable>
       ) : null}
 
-      <View style={[styles.gmBar, compact && styles.gmBarCompact]}>
+      <View style={[styles.gmBar, compact && styles.gmBarCompact, styles.dockPillHeight]}>
         <Pressable
           style={styles.gmLeftPress}
           onPress={handleViewMenuPress}
@@ -562,6 +578,7 @@ export function GlobalFloatingCart() {
         >
           <View style={styles.dockContainer}>
             <ScrollView
+              ref={dockScrollRef}
               horizontal
               pagingEnabled
               showsHorizontalScrollIndicator={false}
@@ -574,19 +591,20 @@ export function GlobalFloatingCart() {
               style={[styles.dockScroll, { width: dockPageWidth }]}
               contentContainerStyle={styles.dockContentPaged}
             >
-              {trackingOrders.map((ord) => (
-                <View key={ord.orderId} style={[styles.dockPage, { width: dockPageWidth }]}>
-                  <FloatingOrderTrackingPillWithUnread
-                    order={ord}
-                    onPress={() => router.push(`/orders/${ord.orderId}` as const)}
-                  />
-                </View>
-              ))}
               {showFloatingFoodCart ? (
                 <View style={[styles.dockPage, { width: dockPageWidth }]}>
                   {cartContentNode}
                 </View>
               ) : null}
+              {trackingOrders.map((ord) => (
+                <View key={ord.orderId} style={[styles.dockPage, { width: dockPageWidth }]}>
+                  <FloatingOrderTrackingPillWithUnread
+                    order={ord}
+                    emphasis={trackingEmphasis}
+                    onPress={() => router.push(`/orders/${ord.orderId}` as const)}
+                  />
+                </View>
+              ))}
             </ScrollView>
             {dockPageCount > 1 ? (
               <View style={styles.dockDots} pointerEvents="none">
@@ -630,7 +648,7 @@ export function GlobalFloatingCart() {
     );
   }
 
-  if (showActiveOrderTracking && activeOrder && !hasCart) {
+  if (showActiveOrderTracking && activeOrder && !showFloatingFoodCart) {
     return (
       <Animated.View
         entering={slideUpEntering}
@@ -639,6 +657,7 @@ export function GlobalFloatingCart() {
       >
         <FloatingOrderTrackingPillWithUnread
           order={activeOrder}
+          emphasis="primary"
           onPress={() => router.push(`/orders/${activeOrder.orderId}` as const)}
         />
       </Animated.View>
@@ -861,6 +880,9 @@ const styles = StyleSheet.create({
   trackingWrap: {
     left: 12,
     right: 12,
+  },
+  dockPillHeight: {
+    minHeight: 60,
   },
   gmShell: {
     width: "100%",

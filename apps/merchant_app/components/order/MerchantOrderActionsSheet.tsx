@@ -65,6 +65,11 @@ const COMPACT_MENU: {
   { id: "print_order", label: "Print order", icon: "print-outline" },
 ];
 
+/** Give the modal window time to close before a native dialog takes over. */
+function afterSheetDismissed(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 350));
+}
+
 export function MerchantOrderActionsSheet({
   visible,
   order,
@@ -85,7 +90,19 @@ export function MerchantOrderActionsSheet({
       ? { ...defaultPrintContext, storeName: storeName.trim() }
       : defaultPrintContext);
 
-  const menu = variant === "compact" ? COMPACT_MENU : FULL_MENU;
+  // Cancellations land as `rejected` / `rto` on the merchant order record.
+  const isTerminal =
+    order?.status === "delivered" || order?.status === "rejected" || order?.status === "rto";
+
+  const menu = (variant === "compact" ? COMPACT_MENU : FULL_MENU).filter((item) => {
+    // After delivery / cancel, kitchen ticket is closed — bill only.
+    if (isTerminal && item.id === "print_kot") return false;
+    // New (unaccepted) orders — no print KOT / bill from the card menu.
+    if (order?.status === "created" && (item.id === "print_kot" || item.id === "print_order")) {
+      return false;
+    }
+    return true;
+  });
 
   useEffect(() => {
     if (!visible) setLiveSupportOpen(false);
@@ -116,10 +133,14 @@ export function MerchantOrderActionsSheet({
         break;
       case "print_kot":
         onClose();
+        // Opening the system print dialog while this modal's window is still
+        // being torn down crashes the print job on Android.
+        await afterSheetDismissed();
         await printOrderKot(order, ctx);
         break;
       case "print_order":
         onClose();
+        await afterSheetDismissed();
         await printOrderBill(order, ctx);
         break;
       default:

@@ -39,9 +39,9 @@ export function orderSummaryToDetail(summary: OrderSummary): OrderDetail {
   return {
     ...summary,
     billingSnapshot: null,
-    deliveryAddress: undefined,
-    deliveryLat: null,
-    deliveryLng: null,
+    deliveryAddress: summary.deliveryAddress,
+    deliveryLat: summary.deliveryLat ?? null,
+    deliveryLng: summary.deliveryLng ?? null,
     pickupLat: summary.pickupLat ?? null,
     pickupLng: summary.pickupLng ?? null,
     deliveryOtp: null,

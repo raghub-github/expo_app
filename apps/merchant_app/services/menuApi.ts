@@ -5,6 +5,7 @@
 
 import { getApiBaseUrl } from "./api";
 import { authFetch } from "@/services/authFetch";
+import { resolveImageUrl } from "@/services/outletApi";
 
 export type MenuCategory = {
   id: number;
@@ -668,8 +669,11 @@ function normalizeMenuCategoryRow(category: MenuCategory): MenuCategory {
 }
 
 function normalizeMenuItemRow(item: MenuItemRow): MenuItemRow {
+  const rawImage = item.item_image_url?.trim() || null;
   return {
     ...item,
+    // Absolute / device-ready URL so catalog cards paint without a second resolve pass.
+    item_image_url: rawImage ? resolveImageUrl(rawImage) ?? rawImage : null,
     out_of_stock_until: toIsoTimestamptzOrNull(item.out_of_stock_until),
     out_of_stock_updated_at: toIsoTimestamptzOrNull(item.out_of_stock_updated_at),
     category_out_of_stock_until: toIsoTimestamptzOrNull(item.category_out_of_stock_until),

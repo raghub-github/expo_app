@@ -331,7 +331,8 @@ export async function listNearbyStoresByRoadDistance(params: {
   if (roughCandidates.length === 0) {
     if (!params.bypassCache) {
       evictResultCacheIfFull();
-      nearbyResultCache.set(cacheKey, { items: [], expiresAt: Date.now() + RESULT_CACHE_TTL_MS });
+      // Short TTL for empty so newly activated stores appear quickly.
+      nearbyResultCache.set(cacheKey, { items: [], expiresAt: Date.now() + 5_000 });
     }
     return { items: [], mapboxFailures: 0, cacheHit: false };
   }
@@ -513,9 +514,10 @@ export async function listStoresNearby(params: {
       let storesQuery = supabase
         .from("merchant_stores")
         .select(
-          "id, store_id, store_name, store_display_name, store_description, full_address, postal_code, banner_url, gallery_images, cuisine_types, city, latitude, longitude, operational_status, avg_preparation_time_minutes, is_active, is_available, is_accepting_orders, status, parent_id, is_pure_veg"
+          "id, store_id, store_name, store_display_name, store_description, full_address, postal_code, banner_url, gallery_images, cuisine_types, city, latitude, longitude, operational_status, avg_preparation_time_minutes, is_active, is_available, is_accepting_orders, status, parent_id, is_pure_veg, has_customer_visible_menu"
         )
         .eq("status", "ACTIVE")
+        .eq("has_customer_visible_menu", true)
         .not("latitude", "is", null)
         .not("longitude", "is", null);
       if (veg_mode) storesQuery = storesQuery.eq("is_pure_veg", true);
@@ -657,11 +659,34 @@ export async function getStoreByStoreId(storeId: string): Promise<MerchantStoreR
   const supabase = getSupabase();
   const { data, error } = await supabase
     .from("merchant_stores")
-    .select("id, store_id, store_name, store_display_name, store_description, full_address, postal_code, banner_url, gallery_images, cuisine_types, city, latitude, longitude, operational_status, avg_preparation_time_minutes, is_active, is_available, is_accepting_orders, status, created_at, parent_id, packaging_charge_amount, delivery_charge_per_km, delivery_radius_km, store_phones")
+    .select("id, store_id, store_name, store_display_name, store_description, full_address, postal_code, banner_url, gallery_images, cuisine_types, city, latitude, longitude, operational_status, avg_preparation_time_minutes, is_active, is_available, is_accepting_orders, status, created_at, parent_id, packaging_charge_amount, delivery_charge_per_km, delivery_radius_km, store_phones, has_customer_visible_menu")
     .eq("store_id", storeId)
     .single();
   if (error || !data) return null;
   return data as MerchantStoreRow;
+}
+
+/**
+ * Customer-facing store gate: hide catalogs with zero sellable items
+ * (locked / rejected / deleted / OOS only). Uses denormalized flag when present.
+ */
+export async function assertStoreHasCustomerVisibleMenu(
+  store: MerchantStoreRow | null | undefined,
+): Promise<boolean> {
+  if (!store?.id) return false;
+  const flagged = (store as { has_customer_visible_menu?: boolean | null })
+    .has_customer_visible_menu;
+  if (typeof flagged === "boolean") return flagged;
+  try {
+    const pg = getSql();
+    const [row] = await pg<Array<{ ok: boolean }>>`
+      SELECT public.store_has_customer_visible_menu(${Number(store.id)}::bigint) AS ok
+    `;
+    return Boolean(row?.ok);
+  } catch {
+    // Pre-migration environments: do not block listings until 0473 is applied.
+    return true;
+  }
 }
 
 /** Customer About page payload — store info + verified document numbers when available. */
@@ -2257,16 +2282,38 @@ export async function search(params: {
       preparation_time_minutes: null,
     }));
 
-    if (!vegMode) return { dishes: items, stores };
+    if (!vegMode) {
+      const ids = stores
+        .map((s) => Number(s.id))
+        .filter((id) => Number.isFinite(id) && id > 0);
+      if (ids.length === 0) return { dishes: items, stores };
+      const { data: visRows } = await supabase
+        .from("merchant_stores")
+        .select("id, has_customer_visible_menu")
+        .in("id", ids)
+        .eq("has_customer_visible_menu", true);
+      const visibleIds = new Set(
+        ((visRows ?? []) as Array<{ id: number }>).map((r) => Number(r.id)),
+      );
+      // If column missing / query failed empty unexpectedly, fall through unfiltered.
+      if ((visRows ?? []).length > 0 || ids.length > 0) {
+        return {
+          stores: stores.filter((s) => visibleIds.has(Number(s.id))),
+          dishes: items.filter((d) => visibleIds.has(Number(d.store_id))),
+        };
+      }
+      return { dishes: items, stores };
+    }
     const storeIds = stores
       .map((s) => Number(s.id))
       .filter((id) => Number.isFinite(id) && id > 0);
     if (storeIds.length === 0) return { dishes: [], stores: [] };
     const { data: pureRows, error: pureErr } = await supabase
       .from("merchant_stores")
-      .select("id, is_pure_veg")
+      .select("id, is_pure_veg, has_customer_visible_menu")
       .in("id", storeIds)
-      .eq("is_pure_veg", true);
+      .eq("is_pure_veg", true)
+      .eq("has_customer_visible_menu", true);
     if (pureErr) throw pureErr;
     const pureStoreIds = new Set(
       ((pureRows ?? []) as Array<{ id: number; is_pure_veg?: boolean | null }>)
@@ -2309,14 +2356,16 @@ export async function search(params: {
 
   let storesQuery = supabase
     .from("merchant_stores")
-    .select("id, store_id, store_name, store_display_name, store_description, banner_url, cuisine_types, city, is_active, is_accepting_orders, status")
+    .select("id, store_id, store_name, store_display_name, store_description, banner_url, cuisine_types, city, is_active, is_accepting_orders, status, has_customer_visible_menu")
     .in("id", storeIds)
-    .eq("is_active", true);
+    .eq("is_active", true)
+    .eq("has_customer_visible_menu", true);
   if (vegMode) storesQuery = storesQuery.eq("is_pure_veg", true);
   const { data: storeRows, error: storeError } = await storesQuery;
 
   if (storeError) throw storeError;
-  const stores = (storeRows ?? []) as MerchantStoreRow[];
+  // Narrower projection than MerchantStoreRow (no geo/prep-time columns needed here).
+  const stores = (storeRows ?? []) as unknown as MerchantStoreRow[];
   if (!vegMode) return { dishes: items, stores };
   const pureStoreIdSet = new Set(stores.map((s) => Number(s.id)));
   return {

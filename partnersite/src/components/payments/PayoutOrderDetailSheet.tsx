@@ -15,6 +15,12 @@ import { OrderRidersHistorySidesheet, type RiderLogEntry } from '@/components/or
 import { orderHasAssignedRider } from '@/lib/order-has-assigned-rider';
 import { resolveMerchantCtm } from '@/lib/merchant-order-ctm';
 import { prefetchMerchantOrderTimelineBundle } from '@/lib/merchantTimelineEnrichmentCache';
+import {
+  fetchRidersLogCached,
+  getCachedRidersLog,
+  pastRidersFromLog,
+  prefetchRidersLog,
+} from '@/lib/ridersLogCache';
 import type { MerchantStore } from '@/lib/merchantStore';
 
 type PayoutOrderDetailSheetProps = {
@@ -94,6 +100,7 @@ export function PayoutOrderDetailSheet({
       const row = data.orders[0] as OrdersFoodRow;
       setOrder(row);
       prefetchMerchantOrderTimelineBundle(row.id, storeId);
+      prefetchRidersLog(row.id);
     } catch {
       setError('Could not load order details.');
       setOrder(null);
@@ -129,22 +136,25 @@ export function PayoutOrderDetailSheet({
   useEffect(() => {
     if (ridersLogModalOrderId == null) {
       setRidersLogList([]);
+      setRidersLogLoading(false);
+      return;
+    }
+    const cached = getCachedRidersLog(ridersLogModalOrderId);
+    if (cached) {
+      setRidersLogList(pastRidersFromLog(cached.riders));
+      setRidersLogLoading(false);
+      void fetchRidersLogCached(ridersLogModalOrderId, { force: true }).then((data) => {
+        setRidersLogList(pastRidersFromLog(data.riders));
+      });
       return;
     }
     let cancelled = false;
     setRidersLogLoading(true);
-    void fetch(`/api/food-orders/${ridersLogModalOrderId}/riders-log`)
-      .then((r) => r.json())
-      .then((data) => {
-        if (cancelled) return;
-        setRidersLogList(Array.isArray(data.riders) ? data.riders : []);
-      })
-      .catch(() => {
-        if (!cancelled) setRidersLogList([]);
-      })
-      .finally(() => {
-        if (!cancelled) setRidersLogLoading(false);
-      });
+    void fetchRidersLogCached(ridersLogModalOrderId).then((data) => {
+      if (cancelled) return;
+      setRidersLogList(pastRidersFromLog(data.riders));
+      setRidersLogLoading(false);
+    });
     return () => {
       cancelled = true;
     };
@@ -241,6 +251,9 @@ export function PayoutOrderDetailSheet({
                 }}
                 onPrintBill={() => setPrintBillOpen(true)}
                 onViewPastRiders={() => {
+                  prefetchRidersLog(order.id);
+                  const hit = getCachedRidersLog(order.id);
+                  if (hit) setRidersLogList(pastRidersFromLog(hit.riders));
                   setRidersLogModalOrderId(order.id);
                   setRidersLogModalOrderLabel(
                     order.formatted_order_id || `#${order.order_id}`,

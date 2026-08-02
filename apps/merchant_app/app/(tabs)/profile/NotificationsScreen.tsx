@@ -299,6 +299,7 @@ export default function NotificationsScreen() {
         contentContainerStyle={styles.content}
         showsVerticalScrollIndicator={false}
       >
+        <Text style={styles.pageTitle}>Preferences</Text>
         <View style={styles.card}>
           <View style={styles.cardHeaderRow}>
             <View style={styles.iconCircle}>
@@ -534,6 +535,13 @@ const styles = StyleSheet.create({
     paddingTop: 8,
     paddingBottom: 32,
     gap: 16,
+  },
+  pageTitle: {
+    fontSize: 22,
+    fontWeight: "700",
+    fontFamily: "Lora_700Bold",
+    color: GatiMitraMerchant.textPrimary,
+    marginBottom: 4,
   },
   sectionLabel: {
     fontSize: 13,

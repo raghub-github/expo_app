@@ -25,6 +25,8 @@ import {
   type OrderRiderAssignmentSnapshot,
 } from "@/lib/db/operations/order-rider-dispatch-ui";
 import { listOrderRoutedToHistory } from "@/lib/orders/stamp-order-routed-to";
+import { fetchOrderPaymentDetailByCoreId } from "@/lib/orders/order-payment-detail";
+import type { OrderPaymentDetail } from "@/lib/orders/order-payment-types";
 
 /** Row returned to the client: list shape + `storeId`, optional enrichments for single-order fetch */
 type OrderCoreApiListItem = Omit<OrdersCoreRow, "estimatedDeliveryTime"> & {
@@ -102,6 +104,7 @@ type SingleOrderEnrichment = {
   timeline: ReturnType<typeof serializeTimelineEntries>;
   riderDispatchUi: OrderRiderAssignmentSnapshot | null;
   routedToHistory: Awaited<ReturnType<typeof listOrderRoutedToHistory>>;
+  paymentDetail: OrderPaymentDetail | null;
 };
 
 /** Detail-page enrichments for first paint (timeline + merchant + dispatch). */
@@ -122,6 +125,7 @@ async function enrichSingleOrderDetail(
   let timeline: ReturnType<typeof serializeTimelineEntries> = [];
   let riderDispatchUi: OrderRiderAssignmentSnapshot | null = null;
   let routedToHistory: Awaited<ReturnType<typeof listOrderRoutedToHistory>> = [];
+  let paymentDetail: OrderPaymentDetail | null = null;
 
   if (orderId != null && Number.isFinite(orderId)) {
     const firstRow = first as {
@@ -137,7 +141,8 @@ async function enrichSingleOrderDetail(
 
     const storeIdNum = storeId != null && Number.isFinite(storeId) ? storeId : null;
 
-    // First-paint enrichments only. Payment, sidebar, rider map/chat load client-side.
+    // First-paint enrichments, payment card included. Sidebar, rider map/chat
+    // still load client-side.
     const [
       summary,
       deliveryInstructions,
@@ -146,6 +151,7 @@ async function enrichSingleOrderDetail(
       foodOrderMetaResult,
       riderDispatchUiResult,
       routedToHistoryResult,
+      paymentDetailResult,
     ] = await Promise.all([
       storeIdNum != null ? getMerchantStoreSummaryByStoreId(storeIdNum) : Promise.resolve(null),
       first?.orderType === "food"
@@ -175,12 +181,19 @@ async function enrichSingleOrderDetail(
         console.error("[GET /api/orders/core] routed-to history fetch failed", err);
         return [] as Awaited<ReturnType<typeof listOrderRoutedToHistory>>;
       }),
+      // Embedded so the payment card paints with the rest of the page instead of
+      // arriving on a second round-trip. Never cached — this runs on every request.
+      fetchOrderPaymentDetailByCoreId(orderId).catch((err) => {
+        console.error("[GET /api/orders/core] payment detail fetch failed", err);
+        return null;
+      }),
     ]);
 
     merchantSummary = summary;
     timeline = serializeTimelineEntries(timelineEntries);
     riderDispatchUi = riderDispatchUiResult;
     routedToHistory = routedToHistoryResult;
+    paymentDetail = paymentDetailResult;
 
     let enrichedData = data;
     if (deliveryInstructions !== undefined) {
@@ -302,6 +315,7 @@ async function enrichSingleOrderDetail(
     timeline,
     riderDispatchUi,
     routedToHistory,
+    paymentDetail,
   };
 }
 
@@ -314,6 +328,7 @@ function buildSingleOrderResponseExtras(
     timeline: enrichment.timeline,
     riderDispatchUi: enrichment.riderDispatchUi,
     routedToHistory: enrichment.routedToHistory,
+    ...(enrichment.paymentDetail != null && { paymentDetail: enrichment.paymentDetail }),
   };
 }
 

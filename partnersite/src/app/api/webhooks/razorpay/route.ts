@@ -4,6 +4,10 @@ import {
   verifyRazorpayWebhookSignature,
   getRazorpayWebhookSignature,
 } from "@/lib/razorpay-webhook";
+import {
+  buildPlanPurchaseSnapshot,
+  expiryFromBillingCycle,
+} from "@/lib/plan-purchase-snapshot";
 
 const webhookSecret = process.env.RAZORPAY_WEBHOOK_SECRET;
 const razorpayKeyId = process.env.RAZORPAY_KEY_ID;
@@ -128,11 +132,15 @@ export async function POST(request: NextRequest) {
               .eq("store_id", storeIdPublic)
               .single();
             if (store?.id && store?.parent_id) {
-              const { data: plan } = await db.from("merchant_plans").select("id, price, gst_percent").eq("id", planId).single();
+              const { data: plan } = await db
+                .from("merchant_plans")
+                .select("id, price, gst_percent, plan_name, plan_code, billing_cycle, benefits_json")
+                .eq("id", planId)
+                .single();
               if (plan) {
                 const now = new Date();
-                const expiryDate = new Date(now);
-                expiryDate.setMonth(expiryDate.getMonth() + 1);
+                const expiryDate = expiryFromBillingCycle(now, plan.billing_cycle);
+                const planSnap = buildPlanPurchaseSnapshot(plan);
                 // Capture the AUTHORITATIVE charged amount + full GST breakdown so the
                 // record is complete (Refund/admin UIs read total_paise). The truth is
                 // what Razorpay actually charged = the order amount (paise); fall back to
@@ -167,6 +175,7 @@ export async function POST(request: NextRequest) {
                       last_payment_date: now.toISOString(),
                       next_billing_date: expiryDate.toISOString(),
                       updated_at: now.toISOString(),
+                      ...planSnap,
                     })
                     .eq("id", existingSub.id);
                   subscriptionId = existingSub.id;
@@ -185,6 +194,7 @@ export async function POST(request: NextRequest) {
                       auto_renew: false,
                       last_payment_date: now.toISOString(),
                       next_billing_date: expiryDate.toISOString(),
+                      ...planSnap,
                     })
                     .select("id")
                     .single();
@@ -209,6 +219,7 @@ export async function POST(request: NextRequest) {
                   payment_date: now.toISOString(),
                   billing_period_start: now.toISOString(),
                   billing_period_end: expiryDate.toISOString(),
+                  ...planSnap,
                 });
               }
             }

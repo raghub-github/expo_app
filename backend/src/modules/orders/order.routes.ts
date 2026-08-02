@@ -59,7 +59,7 @@ import {
   invoicePdfFilename,
 } from "../../lib/customer-order-tax-invoice-pdf.js";
 import { buildCustomerOrderSummaryReceiptHtml } from "../../lib/customer-order-summary-receipt.js";
-import { loadOrderRefundStatusByCorePks } from "../../lib/order-refund-status.js";
+import { loadOrderRefundSummariesByCorePks, loadOrderPaymentSettlementsByCorePks } from "../../lib/order-refund-status.js";
 import {
   loadCustomerPostDeliveryFeedback,
   saveCustomerPostDeliveryFeedback,
@@ -286,6 +286,34 @@ const orderDetailResponseSchema = z.object({
     })
     .optional()
     .nullable(),
+  refundStatus: z.string().optional().nullable(),
+  refundAmount: z.number().optional().nullable(),
+  fullyGatiCashUsed: z.boolean().optional().nullable(),
+  gatiCashUsed: z.number().optional().nullable(),
+  refund: z
+    .object({
+      status: z.string().nullable(),
+      amount: z.number().nullable(),
+      reference: z.string().nullable(),
+      walletReference: z.string().nullable().optional(),
+      gatewayReference: z.string().nullable().optional(),
+      originalGatiCashTxnId: z.string().nullable().optional(),
+      route: z.string().nullable(),
+      walletAmount: z.number().nullable(),
+      gatewayAmount: z.number().nullable(),
+      initiatedAt: z.string().nullable(),
+      processedAt: z.string().nullable(),
+      completedAt: z.string().nullable(),
+      timeline: z.array(
+        z.object({
+          key: z.string(),
+          label: z.string(),
+          at: z.string().nullable(),
+        })
+      ),
+    })
+    .optional()
+    .nullable(),
 });
 
 const orderSummarySchema = z.object({
@@ -304,6 +332,9 @@ const orderSummarySchema = z.object({
   pickupOtp: z.string().optional().nullable(),
   pickupLat: z.number().optional().nullable(),
   pickupLng: z.number().optional().nullable(),
+  /** Immutable order drop snapshot — tracking must use these, never live GPS. */
+  deliveryLat: z.number().optional().nullable(),
+  deliveryLng: z.number().optional().nullable(),
   vegNonVeg: z.string().optional().nullable(),
   avgRating: z.number().optional().nullable(),
   totalReviews: z.number().int().optional().nullable(),
@@ -317,6 +348,9 @@ const orderSummarySchema = z.object({
   cancellationReason: z.string().optional().nullable(),
   cancelledByLabel: z.string().optional().nullable(),
   refundStatus: z.string().optional().nullable(),
+  refundAmount: z.number().optional().nullable(),
+  fullyGatiCashUsed: z.boolean().optional().nullable(),
+  gatiCashUsed: z.number().optional().nullable(),
   items: z.array(z.object({
     name: z.string(),
     quantity: z.number(),
@@ -534,6 +568,8 @@ export async function orderRoutes(app: FastifyInstance) {
           pickupOtp: ordersCore.pickupOtp,
           pickupLat: ordersCore.pickupLat,
           pickupLon: ordersCore.pickupLon,
+          dropLat: ordersCore.dropLat,
+          dropLon: ordersCore.dropLon,
           status: ordersCore.status,
           currentStatus: ordersCore.currentStatus,
           riderId: ordersCore.riderId,
@@ -562,10 +598,15 @@ export async function orderRoutes(app: FastifyInstance) {
 
       const pageOrderPks = pageRows.map((r) => r.id);
       const foodSummaryByCorePk = await loadOrdersFoodSummariesByCoreRows(db, pageRows);
-      const refundStatusByCorePk = await loadOrderRefundStatusByCorePks(
-        getSql(),
-        pageOrderPks
-      );
+      const sqlClient = getSql();
+      const [refundSummaryByCorePk, paymentSettlementByCorePk] = await Promise.all([
+        loadOrderRefundSummariesByCorePks(sqlClient, pageOrderPks),
+        loadOrderPaymentSettlementsByCorePks(sqlClient, pageOrderPks),
+      ]);
+      const refundStatusByCorePk = new Map<number, string | null>();
+      for (const [pk, summary] of refundSummaryByCorePk) {
+        refundStatusByCorePk.set(pk, summary.status);
+      }
       const customerOrderRatings =
         pageOrderPks.length > 0
           ? await db
@@ -801,6 +842,8 @@ export async function orderRoutes(app: FastifyInstance) {
             pickupOtp: row.pickupOtp ?? null,
             pickupLat: row.pickupLat != null ? Number(row.pickupLat) : null,
             pickupLng: row.pickupLon != null ? Number(row.pickupLon) : null,
+            deliveryLat: row.dropLat != null ? Number(row.dropLat) : null,
+            deliveryLng: row.dropLon != null ? Number(row.dropLon) : null,
             vegNonVeg: foodRow?.vegNonVeg ?? null,
             avgRating: row.merchantStoreId != null ? storeRatingCache.get(Number(row.merchantStoreId))?.avgRating ?? null : null,
             totalReviews: row.merchantStoreId != null ? storeRatingCache.get(Number(row.merchantStoreId))?.totalReviews ?? null : null,
@@ -818,6 +861,9 @@ export async function orderRoutes(app: FastifyInstance) {
             cancellationReason: foodRow?.rejectedReason?.trim() || null,
             cancelledByLabel: foodRow?.cancelledByLabel?.trim() || null,
             refundStatus: refundStatusByCorePk.get(row.id) ?? null,
+            refundAmount: refundSummaryByCorePk.get(row.id)?.amount ?? null,
+            fullyGatiCashUsed: paymentSettlementByCorePk.get(row.id)?.fullyGatiCash ?? false,
+            gatiCashUsed: paymentSettlementByCorePk.get(row.id)?.gatiCashUsed ?? null,
           };
         });
       return summaries;
@@ -915,7 +961,16 @@ export async function orderRoutes(app: FastifyInstance) {
         idempotencyKey,
       });
       if (!result.ok) {
-        return reply.status(400).send({ error: result.code, message: result.message });
+        const status = result.code === "SERVICE_BLOCKED_IN_LOCATION" ? 403 : 400;
+        return reply.status(status).send({
+          error: result.code,
+          code: result.code,
+          message: result.message,
+          title:
+            result.code === "SERVICE_BLOCKED_IN_LOCATION"
+              ? "Service Temporarily Unavailable"
+              : undefined,
+        });
       }
       return reply.send({ pendingId: result.pendingId, amount: result.amount, currency: result.currency });
     }
@@ -998,6 +1053,90 @@ export async function orderRoutes(app: FastifyInstance) {
         orderId: result.orderId,
         order_id: result.orderId,
         formattedOrderId: finalizedRow?.formattedOrderId ?? (result as { formattedOrderId?: string | null }).formattedOrderId ?? null,
+        status: result.status,
+        totalAmount: result.totalAmount,
+        createdAt: result.createdAt,
+      });
+    }
+  );
+
+  /**
+   * Finalize a pending order that GatiCash covered in full — payable is ₹0, so no Razorpay
+   * order was ever minted and there is no signature to verify. The wallet debit inside
+   * `finalizeOrder` is the payment. Idempotent: replays return the same order id.
+   *
+   * Kept separate from `/finalize` so the gateway path keeps requiring all three Razorpay
+   * tokens; a zero-payable order can never slip through the signature check.
+   */
+  app.post(
+    "/finalize-wallet",
+    {
+      schema: {
+        body: z.object({ pendingId: z.string().min(1) }),
+        response: {
+          200: z.object({
+            success: z.boolean().optional(),
+            orderId: z.string(),
+            order_id: z.string().optional(),
+            formattedOrderId: z.string().optional().nullable(),
+            status: z.string(),
+            totalAmount: z.number(),
+            createdAt: z.string(),
+          }),
+          400: z.object({ error: z.string(), message: z.string() }),
+          403: z.object({ error: z.string(), message: z.string() }),
+          500: z.object({ error: z.string(), message: z.string() }),
+        },
+      },
+    },
+    async (req, reply) => {
+      const sub = req.auth?.sub;
+      if (!sub || req.auth?.role !== "customer") {
+        return reply.status(403).send({ error: "FORBIDDEN", message: "Customer only" });
+      }
+      const db = getDb();
+      const [customerRow] = await db
+        .select({ id: customers.id })
+        .from(customers)
+        .where(eq(customers.customerId, sub))
+        .limit(1);
+      const customerPk = customerRow?.id ?? null;
+      if (customerPk === null) {
+        return reply.status(403).send({ error: "FORBIDDEN", message: "Customer not found" });
+      }
+
+      const { pendingId } = req.body as { pendingId: string };
+      const result = await finalizeOrder(db, { pendingId, customerId: customerPk });
+      if (!result.ok) {
+        const status =
+          result.code === "PENDING_ORDER_NOT_FOUND" ||
+          result.code === "PENDING_ORDER_EXPIRED" ||
+          result.code === "INSUFFICIENT_GATICASH" ||
+          result.code === "ZERO_PAYABLE_WITHOUT_WALLET" ||
+          result.code === "WALLET_DEBIT_FAILED" ||
+          result.code === "PAYMENT_NOT_VERIFIED" ||
+          result.code === "INVALID_ADDRESS_DATA" ||
+          result.code === "INVALID_CART_DATA"
+            ? 400
+            : 500;
+        return reply.status(status).send({ error: result.code, message: result.message });
+      }
+      if (!result.orderId) {
+        return reply.status(500).send({
+          error: "ORDER_CREATION_FAILED",
+          message: "Order was created but confirmation failed. Check My Orders.",
+        });
+      }
+      const [finalizedRow] = await db
+        .select({ formattedOrderId: ordersCore.formattedOrderId })
+        .from(ordersCore)
+        .where(eq(ordersCore.orderId, result.orderId))
+        .limit(1);
+      return reply.send({
+        success: true,
+        orderId: result.orderId,
+        order_id: result.orderId,
+        formattedOrderId: finalizedRow?.formattedOrderId ?? null,
         status: result.status,
         totalAmount: result.totalAmount,
         createdAt: result.createdAt,
@@ -1633,6 +1772,14 @@ export async function orderRoutes(app: FastifyInstance) {
         }
       }
 
+      const detailSql = getSql();
+      const [refundMap, settlementMap] = await Promise.all([
+        loadOrderRefundSummariesByCorePks(detailSql, [coreRow.id]),
+        loadOrderPaymentSettlementsByCorePks(detailSql, [coreRow.id]),
+      ]);
+      const refundSummary = refundMap.get(coreRow.id) ?? null;
+      const settlement = settlementMap.get(coreRow.id) ?? null;
+
       return {
         orderId: orderIdDisplay,
         coreOrderId: coreRow.id,
@@ -1649,6 +1796,27 @@ export async function orderRoutes(app: FastifyInstance) {
         createdAt: (createdAt instanceof Date ? createdAt : new Date(createdAt)).toISOString(),
         paymentMethod: coreRow.paymentMethod ?? null,
         paymentStatus: coreRow.paymentStatus ?? null,
+        refundStatus: refundSummary?.status ?? null,
+        refundAmount: refundSummary?.amount ?? null,
+        fullyGatiCashUsed: settlement?.fullyGatiCash ?? false,
+        gatiCashUsed: settlement?.gatiCashUsed ?? null,
+        refund: refundSummary
+          ? {
+              status: refundSummary.status,
+              amount: refundSummary.amount,
+              reference: refundSummary.reference,
+              walletReference: refundSummary.walletReference,
+              gatewayReference: refundSummary.gatewayReference,
+              originalGatiCashTxnId: refundSummary.originalGatiCashTxnId,
+              route: refundSummary.route,
+              walletAmount: refundSummary.walletAmount,
+              gatewayAmount: refundSummary.gatewayAmount,
+              initiatedAt: refundSummary.initiatedAt,
+              processedAt: refundSummary.processedAt,
+              completedAt: refundSummary.completedAt,
+              timeline: refundSummary.timeline,
+            }
+          : null,
         deliveryAddress: coreRow.deliveryAddress ?? null,
         deliveryAddressLabel: deliveryDetails.deliveryAddressLabel,
         deliveryContactName: deliveryDetails.deliveryContactName,
@@ -1667,8 +1835,27 @@ export async function orderRoutes(app: FastifyInstance) {
         merchantPhone: foodRow?.restaurantPhone?.trim() || null,
         deliveryLat: coreRow.dropLat != null ? Number(coreRow.dropLat) : null,
         deliveryLng: coreRow.dropLon != null ? Number(coreRow.dropLon) : null,
-        pickupLat: coreRow.pickupLat != null ? Number(coreRow.pickupLat) : null,
-        pickupLng: coreRow.pickupLon != null ? Number(coreRow.pickupLon) : null,
+        ...(() => {
+          const orderLat = coreRow.pickupLat != null ? Number(coreRow.pickupLat) : null;
+          const orderLng = coreRow.pickupLon != null ? Number(coreRow.pickupLon) : null;
+          const storeLat = store?.latitude != null ? Number(store.latitude) : null;
+          const storeLng = store?.longitude != null ? Number(store.longitude) : null;
+          const usable = (lat: number | null, lng: number | null) =>
+            lat != null &&
+            lng != null &&
+            Number.isFinite(lat) &&
+            Number.isFinite(lng) &&
+            !(Math.abs(lat) < 1e-6 && Math.abs(lng) < 1e-6);
+          // Prefer immutable order pickup; hydrate from merchant_stores when 0/null
+          // so tracking maps never fall back to India-centroid placeholders.
+          if (usable(orderLat, orderLng)) {
+            return { pickupLat: orderLat, pickupLng: orderLng };
+          }
+          if (usable(storeLat, storeLng)) {
+            return { pickupLat: storeLat, pickupLng: storeLng };
+          }
+          return { pickupLat: orderLat, pickupLng: orderLng };
+        })(),
         deliveryOtp: coreRow.deliveryOtp ?? null,
         pickupOtp: coreRow.pickupOtp ?? null,
         orderType: coreRow.orderType ?? null,
@@ -1856,8 +2043,8 @@ export async function orderRoutes(app: FastifyInstance) {
       const deliveryLon = dropLon;
 
       const pickupRaw = pickupAddressRaw ?? dropAddressRaw;
-      const pLat = pickupLat ?? dropLat;
-      const pLon = pickupLon ?? dropLon;
+      const pLat = pickupLat != null && Number.isFinite(pickupLat) ? pickupLat : null;
+      const pLon = pickupLon != null && Number.isFinite(pickupLon) ? pickupLon : null;
 
       if (razorpayOrderId || razorpayPaymentId || razorpaySignature) {
         if (!razorpayOrderId || !razorpayPaymentId || !razorpaySignature) {
@@ -1921,8 +2108,15 @@ export async function orderRoutes(app: FastifyInstance) {
         });
       }
 
-      const pickupLatNum = storeForOrder?.latitude != null ? storeForOrder.latitude! : pLat;
-      const pickupLonNum = storeForOrder?.longitude != null ? storeForOrder.longitude! : pLon;
+      // Immutable store snapshot at place time — never fall back pickup → drop.
+      const pickupLatNum =
+        storeForOrder?.latitude != null && Number.isFinite(storeForOrder.latitude)
+          ? Number(storeForOrder.latitude)
+          : pLat ?? 0;
+      const pickupLonNum =
+        storeForOrder?.longitude != null && Number.isFinite(storeForOrder.longitude)
+          ? Number(storeForOrder.longitude)
+          : pLon ?? 0;
       const pickupAddressNormalized = sanitizeOptional((storeForOrder?.fullAddress ?? pickupRaw).trim() || "") ?? null;
       const pickupAddressGeocoded =
         storeForOrder?.latitude != null && storeForOrder?.longitude != null

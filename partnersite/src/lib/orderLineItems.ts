@@ -37,6 +37,8 @@ export type NormalizedOrderLineItem = {
   appliedOfferType?: string | null;
   /** Frozen from merchant_ctm_pricing_snapshot. */
   ctmFromSnapshot?: boolean;
+  /** Per-line customer cooking / special instructions (merchant-facing). */
+  specialInstructions?: string | null;
 };
 
 export type OrderPricingBreakdown = {
@@ -163,6 +165,19 @@ export function normalizeOrderItems(rawItems: unknown): NormalizedOrderLineItem[
     const customizationsTotal =
       row.customizations_total != null ? Number(row.customizations_total) : undefined;
 
+    const specialRaw =
+      row.special_instructions ??
+      row.specialInstructions ??
+      row.item_instructions ??
+      snap?.special_instructions ??
+      snap?.specialInstructions ??
+      snap?.item_instructions ??
+      null;
+    const specialInstructions =
+      specialRaw != null && String(specialRaw).trim()
+        ? String(specialRaw).trim().slice(0, 100)
+        : null;
+
     return {
       name,
       quantity: qty,
@@ -220,6 +235,7 @@ export function normalizeOrderItems(rawItems: unknown): NormalizedOrderLineItem[
         (row.appliedOfferType as string | null | undefined) ??
         null,
       ctmFromSnapshot: Boolean(row.ctm_from_snapshot ?? row.ctmFromSnapshot),
+      specialInstructions,
     };
   });
 }
@@ -237,6 +253,7 @@ type CoreItemRow = {
   total_price: string | number;
   veg_nonveg?: string | null;
   item_snapshot?: Record<string, unknown> | null;
+  special_instructions?: string | null;
 };
 
 function imageUrlFromSnapshot(snap: Record<string, unknown> | null | undefined): string | null {
@@ -275,6 +292,17 @@ export function mapCoreDbItemsToRaw(
     const snap = row.item_snapshot ?? null;
     const imageUrl = imageUrlFromSnapshot(snap);
     const addonUnit = Number(row.addon_price) || 0;
+    const specialFromSnap =
+      snap && typeof snap === 'object'
+        ? String(
+            (snap as Record<string, unknown>).special_instructions ??
+              (snap as Record<string, unknown>).specialInstructions ??
+              (snap as Record<string, unknown>).item_instructions ??
+              ''
+          ).trim()
+        : '';
+    const specialFromRow = String(row.special_instructions ?? '').trim();
+    const specialInstructions = (specialFromRow || specialFromSnap || null)?.slice(0, 100) || null;
     return {
       name: variant ? `${baseName} (${variant})` : baseName,
       item_name: row.item_name,
@@ -292,6 +320,8 @@ export function mapCoreDbItemsToRaw(
       customizations: customizations.length ? customizations : undefined,
       item_image_url: imageUrl,
       imageUrl,
+      special_instructions: specialInstructions,
+      specialInstructions,
     };
   });
 }

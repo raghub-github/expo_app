@@ -19,9 +19,11 @@ import {
 } from "@/services/ordersApi";
 import { prefetchMenuItemsForOrders } from "@/lib/menuItemCache";
 import { prefetchOrderTimeline } from "@/lib/orderTimelineCache";
-import { prefetchMerchantTimelineEnrichment } from "@/lib/merchantTimelineEnrichmentCache";
+import { cacheFoodOrders, setCachedFoodOrder } from "@/lib/foodOrderCache";
 import { useOrderAcceptanceSettings } from "@/hooks/useOrderAcceptanceSettings";
 import { useMerchantOrdersRealtime } from "@/hooks/useMerchantOrdersRealtime";
+import { requestMerchantDashboardStatsRefresh } from "@/lib/merchantDashboardStatsBus";
+import { refreshLiveOrdersOngoingNotification } from "@/lib/liveOrdersOngoingNotification";
 import {
   mapApiOrder,
   stageTransitionToApi,
@@ -32,8 +34,9 @@ import {
 import { isActiveMerchantOrderStage } from "@/lib/merchantActiveOrders";
 import { shortLocalityFromAddress } from "@/lib/selectedStoreStorage";
 
-const POLL_FAST_MS = 3_000;
-const POLL_NORMAL_MS = 5_000;
+const POLL_FAST_MS = 15_000;
+const POLL_NORMAL_MS = 25_000;
+const POLL_BACKOFF_MS = 45_000;
 
 type OrdersContextValue = {
   orders: OrderRecord[];
@@ -110,11 +113,18 @@ export function OrdersProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [orderNowMs, setOrderNowMs] = useState(() => Date.now());
+  const ordersCountRef = useRef(0);
+  ordersCountRef.current = orders.length;
   const refetchInFlightRef = useRef<Promise<void> | null>(null);
   const transitionInFlightRef = useRef<Set<string>>(new Set());
   const fastFetchInFlightRef = useRef<Set<number>>(new Set());
+  /** Consecutive food-orders failures — slow the poll so we don't stampede a recovering API. */
+  const fetchFailStreakRef = useRef(0);
+  const [pollFailStreak, setPollFailStreak] = useState(0);
   /** Orders inserted optimistically from realtime, kept alive across a stale full refetch. */
   const pendingOptimisticRef = useRef<Map<number, { order: OrderRecord; at: number }>>(new Map());
+  const ordersRef = useRef<OrderRecord[]>([]);
+  ordersRef.current = orders;
 
   const mapWithStore = useCallback(
     (api: Parameters<typeof mapApiOrder>[0], storeId: number) => {
@@ -170,7 +180,8 @@ export function OrdersProvider({ children }: { children: ReactNode }) {
         }
         const batches = await Promise.all(
           orderStoreIds.map(async (sid) => {
-            const list = await fetchFoodOrders(sid, token, { limit: 80 });
+            const list = await fetchFoodOrders(sid, token, { limit: 40 });
+            cacheFoodOrders(sid, list);
             return list.map((row) => mapWithStore(row, sid));
           })
         );
@@ -182,7 +193,21 @@ export function OrdersProvider({ children }: { children: ReactNode }) {
         if (__DEV__) {
           console.log(`[orders] food-orders ok count=${merged.length}`);
         }
-        setOrders(mergePendingOptimistic(merged));
+        fetchFailStreakRef.current = 0;
+        setPollFailStreak(0);
+        setOrders((current) => {
+          const next = mergePendingOptimistic(merged);
+          if (transitionInFlightRef.current.size === 0) return next;
+          // Keep local optimistic status while a mark-ready / accept PATCH is in flight
+          // so a concurrent poll can't snap the card back to Preparing.
+          return next.map((serverRow) => {
+            if (!transitionInFlightRef.current.has(serverRow.id)) return serverRow;
+            const local = current.find(
+              (o) => o.id === serverRow.id || o.ordersCoreId === serverRow.ordersCoreId
+            );
+            return local ?? serverRow;
+          });
+        });
         for (const sid of orderStoreIds) {
           const slice = merged.filter((o) => o.merchantStoreId === sid);
           prefetchMenuItemsForOrders(
@@ -190,14 +215,21 @@ export function OrdersProvider({ children }: { children: ReactNode }) {
             token,
             slice.flatMap((o) => o.lineItems)
           );
-          for (const row of slice) {
-            if (row.id.startsWith("core-")) continue;
+          // Prefetch at most a few live timelines — skip enrichment (riders-log +
+          // actions) on poll; that was starving the DB pool and timing out food-orders.
+          const liveForPrefetch = slice
+            .filter(
+              (o) =>
+                !o.id.startsWith("core-") &&
+                o.status !== "delivered" &&
+                o.status !== "rejected" &&
+                o.status !== "rto"
+            )
+            .slice(0, 2);
+          for (const row of liveForPrefetch) {
             const foodId = parseInt(row.id, 10);
             if (Number.isFinite(foodId)) {
               prefetchOrderTimeline(sid, foodId, token);
-              if (row.status !== "delivered" && row.status !== "rejected" && row.status !== "rto") {
-                prefetchMerchantTimelineEnrichment(sid, foodId, token);
-              }
             }
           }
         }
@@ -206,7 +238,10 @@ export function OrdersProvider({ children }: { children: ReactNode }) {
         if (__DEV__) {
           console.warn(`[orders] food-orders failed:`, msg);
         }
-        setError(msg);
+        fetchFailStreakRef.current += 1;
+        setPollFailStreak(fetchFailStreakRef.current);
+        // Keep last good board on timeout/network blips; only show error when empty.
+        if (ordersCountRef.current === 0) setError(msg);
       } finally {
         setLoading(false);
       }
@@ -240,6 +275,7 @@ export function OrdersProvider({ children }: { children: ReactNode }) {
         for (const sid of tryIds) {
           try {
             const updated = await fetchFoodOrder(sid, foodId, token);
+            setCachedFoodOrder(sid, foodId, updated);
             mapped = mapWithStore(updated, sid);
             break;
           } catch {
@@ -305,7 +341,11 @@ export function OrdersProvider({ children }: { children: ReactNode }) {
   );
 
   const pollIntervalMs =
-    hasPendingAccept || hasActivePipeline ? POLL_FAST_MS : POLL_NORMAL_MS;
+    pollFailStreak >= 2
+      ? POLL_BACKOFF_MS
+      : hasPendingAccept || hasActivePipeline
+        ? POLL_FAST_MS
+        : POLL_NORMAL_MS;
 
   useMerchantOrdersRealtime({
     storeIds: orderStoreIds,
@@ -363,14 +403,34 @@ export function OrdersProvider({ children }: { children: ReactNode }) {
         setError("Order is still syncing; refresh in a moment or use Partner Site.");
         return;
       }
-      const order = orders.find((o) => o.id === orderId);
+      const order = ordersRef.current.find((o) => o.id === orderId);
       if (!order || !canTransition(order, nextStatus)) return;
       const storeId = resolveOrderStoreId(order);
       if (!storeId) return;
 
-      const apiStatus = stageTransitionToApi(order.status, nextStatus);
+      // Kitchen "Order Ready" can fire while pipeline is still ACCEPTED (accepted
+      // but not yet PREPARING). Always resolve to READY_FOR_PICKUP from either.
+      let fromStage = order.status;
       const pipeline = order.pipelineStatus.toUpperCase();
-      if (pipeline === apiStatus) return;
+      if (
+        nextStatus === "ready" &&
+        (pipeline === "ACCEPTED" || pipeline === "PREPARING" || fromStage === "preparing")
+      ) {
+        fromStage = "preparing";
+      }
+
+      const apiStatus = stageTransitionToApi(fromStage, nextStatus);
+      if (pipeline === apiStatus) {
+        // Already at target on server/pipeline — refresh mapping so UI leaves preparing card.
+        if (order.status !== nextStatus) {
+          setOrders((list) =>
+            list.map((o) =>
+              o.id === orderId ? { ...o, status: nextStatus, pipelineStatus: apiStatus } : o
+            )
+          );
+        }
+        return;
+      }
       if (transitionInFlightRef.current.has(orderId)) return;
 
       const rejectedReason =
@@ -380,7 +440,7 @@ export function OrdersProvider({ children }: { children: ReactNode }) {
         return;
       }
 
-      const prev = orders;
+      const prev = ordersRef.current;
       transitionInFlightRef.current.add(orderId);
       setOrders((list) =>
         list.map((o) =>
@@ -395,22 +455,8 @@ export function OrdersProvider({ children }: { children: ReactNode }) {
       };
 
       try {
-        if (apiStatus === "READY_FOR_PICKUP" && pipeline === "ACCEPTED") {
-          try {
-            await patchFoodOrderStatus(
-              storeId,
-              Number(orderId),
-              token,
-              "PREPARING",
-              undefined,
-              patchOpts
-            );
-          } catch (prepErr) {
-            const msg = prepErr instanceof Error ? prepErr.message : "";
-            if (!/invalid transition/i.test(msg)) throw prepErr;
-          }
-        }
-
+        // Backend allows ACCEPTED → READY_FOR_PICKUP directly; skip the PREPARING hop
+        // so one tap marks ready without an extra round-trip that polls can race.
         const updated = await patchFoodOrderStatus(
           storeId,
           Number(orderId),
@@ -419,10 +465,18 @@ export function OrdersProvider({ children }: { children: ReactNode }) {
           rejectedReason,
           patchOpts
         );
+        setCachedFoodOrder(storeId, Number(orderId), updated);
         setOrders((list) =>
           list.map((o) => (o.id === orderId ? mapWithStore(updated, storeId) : o))
         );
         setError(null);
+        requestMerchantDashboardStatsRefresh();
+        void refreshLiveOrdersOngoingNotification({
+          storeId,
+          token,
+          storeName: selectedStore?.store_name ?? undefined,
+          force: true,
+        });
       } catch (e) {
         const msg = e instanceof Error ? e.message : "";
         const alreadyAtTarget =
@@ -431,10 +485,12 @@ export function OrdersProvider({ children }: { children: ReactNode }) {
         if (alreadyAtTarget) {
           try {
             const updated = await fetchFoodOrder(storeId, Number(orderId), token);
+            setCachedFoodOrder(storeId, Number(orderId), updated);
             setOrders((list) =>
               list.map((o) => (o.id === orderId ? mapWithStore(updated, storeId) : o))
             );
             setError(null);
+            requestMerchantDashboardStatsRefresh();
             return;
           } catch {
             // fall through to rollback
@@ -447,7 +503,7 @@ export function OrdersProvider({ children }: { children: ReactNode }) {
         transitionInFlightRef.current.delete(orderId);
       }
     },
-    [token, orderStoreIds, orders, resolveOrderStoreId, mapWithStore]
+    [token, orderStoreIds, resolveOrderStoreId, mapWithStore, selectedStore?.store_name]
   );
 
   const extendPrepDelay = useCallback(
@@ -470,6 +526,7 @@ export function OrdersProvider({ children }: { children: ReactNode }) {
           token,
           additionalMinutes
         );
+        setCachedFoodOrder(storeId, foodId, updated);
         setOrders((list) =>
           list.map((o) => (o.id === orderId ? mapWithStore(updated, storeId) : o))
         );

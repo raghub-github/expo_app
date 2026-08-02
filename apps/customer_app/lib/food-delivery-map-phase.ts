@@ -21,7 +21,7 @@ function hasRiderMarkedFoodPickup(riderPickedUpAt?: string | null): boolean {
   return Number.isFinite(Date.parse(t));
 }
 
-/** Pre-pickup: rider → store. Post-pickup: rider → customer (requires rider pickup timestamp). */
+/** Pre-pickup: rider → store. Post-pickup: rider → customer. */
 export function getFoodDeliveryMapPhase(
   status: string,
   options?: { riderReachedPickupAt?: string | null; riderPickedUpAt?: string | null }
@@ -31,6 +31,8 @@ export function getFoodDeliveryMapPhase(
   }
   const s = normalizeCustomerOrderStatus(status);
   if (isRiderAtCustomerStatus(s)) return "rider_to_drop";
+  // PICKED_UP / OUT_FOR_DELIVERY / ON_THE_WAY → customer leg (hide store, show home).
+  if (isCustomerOrderOnTheWayStatus(s)) return "rider_to_drop";
   return "rider_to_pickup";
 }
 
@@ -63,11 +65,17 @@ export function shouldHighlightFoodDropZone(args: {
   dropLng: number;
 }): boolean {
   const s = normalizeCustomerOrderStatus(args.status);
-  if (!hasRiderMarkedFoodPickup(args.riderPickedUpAt) && !isRiderAtCustomerStatus(s)) {
+  if (
+    !hasRiderMarkedFoodPickup(args.riderPickedUpAt) &&
+    !isRiderAtCustomerStatus(s) &&
+    !isCustomerOrderOnTheWayStatus(s)
+  ) {
     return false;
   }
   if (isRiderAtCustomerStatus(s)) return true;
-  if (!isCustomerOrderOnTheWayStatus(s)) return false;
+  if (!isCustomerOrderOnTheWayStatus(s) && !hasRiderMarkedFoodPickup(args.riderPickedUpAt)) {
+    return false;
+  }
   if (args.riderLat == null || args.riderLng == null) return false;
   return (
     haversineMeters(args.riderLat, args.riderLng, args.dropLat, args.dropLng) <=
