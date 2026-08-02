@@ -10,6 +10,29 @@ import {
   loadRiderGps,
   type DispatchServiceType,
 } from "./order-assignment-engine.js";
+import { recordTrackingEvent, type TrackingEventType } from "./tracking-event.service.js";
+
+/** Map a milestone to the timeline event recorded when it is geo-verified. */
+function verifiedEventTypeForMilestone(milestoneKey: StatusMilestoneKey): TrackingEventType {
+  switch (milestoneKey) {
+    case "reach_store":
+    case "reach_pickup":
+      return "reached_pickup";
+    case "mark_picked_up":
+    case "pickup_confirmation":
+    case "start_ride":
+      return "pickup_verified";
+    case "reach_customer":
+    case "reach_drop":
+    case "reach_destination":
+      return "reached_drop";
+    case "mark_delivered":
+    case "delivery_confirmation":
+    case "complete_ride":
+    default:
+      return "drop_verified";
+  }
+}
 
 export type StatusMilestoneKey =
   | "reach_store"
@@ -35,6 +58,7 @@ export type MilestoneGeoEvaluation = {
   riderLatitude: number;
   riderLongitude: number;
   blockedMessage: string | null;
+  orderId: string;
 };
 
 export class RiderGeoFenceBlockedError extends Error {
@@ -141,10 +165,11 @@ export async function fetchStatusRadiusMeters(
 async function resolveOrderTargetForMilestone(
   orderCorePk: number,
   milestoneKey: StatusMilestoneKey
-): Promise<{ latitude: number; longitude: number; label: string }> {
+): Promise<{ latitude: number; longitude: number; label: string; orderId: string }> {
   const db = getDb();
   const [row] = await db
     .select({
+      orderId: ordersCore.orderId,
       pickupLat: ordersCore.pickupLat,
       pickupLon: ordersCore.pickupLon,
       dropLat: ordersCore.dropLat,
@@ -177,7 +202,7 @@ async function resolveOrderTargetForMilestone(
       ? "customer location"
       : "drop location";
 
-  return { latitude: lat, longitude: lng, label };
+  return { latitude: lat, longitude: lng, label, orderId: (row.orderId ?? "").trim() };
 }
 
 export type RiderGpsInput = { lat?: number; lng?: number };
@@ -229,6 +254,7 @@ export async function evaluateMilestoneGeoFence(input: {
     blockedMessage: withinRadius
       ? null
       : formatBlockedMessage(radiusMeters, target.label),
+    orderId: target.orderId,
   };
 }
 
@@ -241,6 +267,21 @@ export async function assertRiderMilestoneGeoFence(input: {
 }): Promise<MilestoneGeoEvaluation> {
   const evaluation = await evaluateMilestoneGeoFence(input);
   if (!evaluation.withinRadius) {
+    // Record the blocked attempt (violation) on the tracking timeline before
+    // rejecting. Fire-and-forget — never affects the enforcement decision.
+    void recordTrackingEvent({
+      orderId: evaluation.orderId,
+      riderId: input.riderId,
+      serviceType: input.serviceType,
+      eventType: "geofence_blocked",
+      milestoneKey: input.milestoneKey,
+      severity: "violation",
+      latitude: evaluation.riderLatitude,
+      longitude: evaluation.riderLongitude,
+      distanceM: evaluation.distanceMeters,
+      radiusM: evaluation.radiusMeters,
+      message: evaluation.blockedMessage,
+    });
     throw new RiderGeoFenceBlockedError(
       evaluation.blockedMessage ??
         formatBlockedMessage(evaluation.radiusMeters, "target location"),
@@ -248,6 +289,20 @@ export async function assertRiderMilestoneGeoFence(input: {
       evaluation.radiusMeters
     );
   }
+  // Record the geo-verified milestone (reached_pickup / pickup_verified /
+  // reached_drop / drop_verified) for the timeline + activity log.
+  void recordTrackingEvent({
+    orderId: evaluation.orderId,
+    riderId: input.riderId,
+    serviceType: input.serviceType,
+    eventType: verifiedEventTypeForMilestone(input.milestoneKey),
+    milestoneKey: input.milestoneKey,
+    severity: "info",
+    latitude: evaluation.riderLatitude,
+    longitude: evaluation.riderLongitude,
+    distanceM: evaluation.distanceMeters,
+    radiusM: evaluation.radiusMeters,
+  });
   return evaluation;
 }
 

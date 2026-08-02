@@ -2449,10 +2449,151 @@ export const orderRiderTracking = pgTable(
     headingDegrees: numeric("heading_degrees", { precision: 5, scale: 2 }),
     speedKmh: numeric("speed_kmh", { precision: 5, scale: 2 }),
     accuracyMeters: numeric("accuracy_meters", { precision: 6, scale: 2 }),
+    // Phase-1 tracking foundation (migration 0471) — link each coordinate to an
+    // independent per-assignment tracking session. Nullable/defaulted so the
+    // existing insert path is unaffected.
+    sessionId: bigint("session_id", { mode: "number" }),
+    assignmentId: bigint("assignment_id", { mode: "number" }),
+    serviceType: text("service_type"),
+    sequenceNumber: integer("sequence_number"),
+    source: text("source").notNull().default("gps"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
     orderIdCreatedIdx: index("order_rider_tracking_order_id_created_idx").on(table.orderId, table.createdAt),
+    sessionSeqIdx: index("order_rider_tracking_session_seq_idx").on(table.sessionId, table.sequenceNumber),
+  })
+);
+
+/**
+ * tracking_config — single global row (id=1) of Super Admin tunables for the
+ * real-time tracking + geo-scoping engine (migration 0471). Distances in
+ * meters, durations in seconds.
+ */
+export const trackingConfig = pgTable("tracking_config", {
+  id: smallint("id").primaryKey().default(1),
+  trackingIntervalSeconds: integer("tracking_interval_seconds").notNull().default(60),
+  gpsAccuracyThresholdM: integer("gps_accuracy_threshold_m").notNull().default(50),
+  speedThresholdKmh: integer("speed_threshold_kmh").notNull().default(120),
+  etaRefreshSeconds: integer("eta_refresh_seconds").notNull().default(60),
+  // Geofence radii/enforcement are owned by platform_rider_status_radius_rules
+  // (per-milestone) — deliberately not duplicated here.
+  movementThresholdM: integer("movement_threshold_m").notNull().default(30),
+  stationaryTimeoutSeconds: integer("stationary_timeout_seconds").notNull().default(600),
+  deviationDistanceM: integer("deviation_distance_m").notNull().default(300),
+  wrongDirectionThresholdM: integer("wrong_direction_threshold_m").notNull().default(200),
+  enableStationaryRule: boolean("enable_stationary_rule").notNull().default(true),
+  enableDeviationRule: boolean("enable_deviation_rule").notNull().default(true),
+  enableWrongDirectionRule: boolean("enable_wrong_direction_rule").notNull().default(true),
+  updatedBy: text("updated_by"),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+/**
+ * tracking_sessions — one INDEPENDENT session per rider↔order assignment
+ * (migration 0471). Reassigning an order opens a new session; prior sessions
+ * and their coordinates are never overwritten (permanent, auditable history).
+ */
+export const trackingSessions = pgTable(
+  "tracking_sessions",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    orderId: text("order_id").notNull(),
+    orderSource: text("order_source").notNull().default("orders_core"),
+    riderId: integer("rider_id").notNull(),
+    assignmentId: bigint("assignment_id", { mode: "number" }),
+    serviceType: text("service_type").notNull().default("food"),
+    status: text("status").notNull().default("active"),
+    stopReason: text("stop_reason"),
+    startedAt: timestamp("started_at", { withTimezone: true }).notNull().defaultNow(),
+    endedAt: timestamp("ended_at", { withTimezone: true }),
+    lastSeq: integer("last_seq").notNull().default(0),
+    coordinateCount: integer("coordinate_count").notNull().default(0),
+    lastLatitude: numeric("last_latitude", { precision: 10, scale: 7 }),
+    lastLongitude: numeric("last_longitude", { precision: 10, scale: 7 }),
+    lastRecordedAt: timestamp("last_recorded_at", { withTimezone: true }),
+    // Geo-engine running state (migration 0473): last-moved point, closest
+    // approach to the current target, and per-signal dedup/escalation counters.
+    geoState: jsonb("geo_state").notNull().default({}),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    orderStartedIdx: index("tracking_sessions_order_started_idx").on(table.orderId, table.startedAt),
+    riderStatusIdx: index("tracking_sessions_rider_status_idx").on(table.riderId, table.status),
+    assignmentIdx: index("tracking_sessions_assignment_idx").on(table.assignmentId),
+  })
+);
+
+/**
+ * tracking_events — immutable event log for the tracking + geo-scoping engine
+ * (migration 0472). Geofence verified/blocked, session start/stop, milestones,
+ * and (Phase 3) geo-engine signals. Linked to tracking_sessions for per-
+ * assignment replay + permanent audit.
+ */
+export const trackingEvents = pgTable(
+  "tracking_events",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    orderId: text("order_id").notNull(),
+    orderSource: text("order_source").notNull().default("orders_core"),
+    riderId: integer("rider_id"),
+    sessionId: bigint("session_id", { mode: "number" }),
+    assignmentId: bigint("assignment_id", { mode: "number" }),
+    serviceType: text("service_type"),
+    eventType: text("event_type").notNull(),
+    milestoneKey: text("milestone_key"),
+    severity: text("severity").notNull().default("info"),
+    latitude: numeric("latitude", { precision: 10, scale: 7 }),
+    longitude: numeric("longitude", { precision: 10, scale: 7 }),
+    distanceM: integer("distance_m"),
+    radiusM: integer("radius_m"),
+    message: text("message"),
+    metadata: jsonb("metadata").notNull().default({}),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    orderCreatedIdx: index("tracking_events_order_created_idx").on(table.orderId, table.createdAt),
+    sessionCreatedIdx: index("tracking_events_session_created_idx").on(table.sessionId, table.createdAt),
+    riderCreatedIdx: index("tracking_events_rider_created_idx").on(table.riderId, table.createdAt),
+    typeIdx: index("tracking_events_type_idx").on(table.eventType),
+  })
+);
+
+/**
+ * tracking_violations — geo-engine violations (long stop / route deviation /
+ * opposite direction) (migration 0473). Generated by the backend geo engine,
+ * never auto-penalized — the penalty engine / admin review consumes them.
+ */
+export const trackingViolations = pgTable(
+  "tracking_violations",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    orderId: text("order_id").notNull(),
+    orderSource: text("order_source").notNull().default("orders_core"),
+    riderId: integer("rider_id"),
+    sessionId: bigint("session_id", { mode: "number" }),
+    assignmentId: bigint("assignment_id", { mode: "number" }),
+    serviceType: text("service_type"),
+    violationType: text("violation_type").notNull(),
+    level: integer("level").notNull().default(1),
+    status: text("status").notNull().default("open"),
+    distanceM: integer("distance_m"),
+    durationSeconds: integer("duration_seconds"),
+    latitude: numeric("latitude", { precision: 10, scale: 7 }),
+    longitude: numeric("longitude", { precision: 10, scale: 7 }),
+    message: text("message"),
+    eventId: bigint("event_id", { mode: "number" }),
+    metadata: jsonb("metadata").notNull().default({}),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    orderCreatedIdx: index("tracking_violations_order_created_idx").on(table.orderId, table.createdAt),
+    riderStatusIdx: index("tracking_violations_rider_status_idx").on(table.riderId, table.status, table.createdAt),
+    sessionIdx: index("tracking_violations_session_idx").on(table.sessionId),
+    typeIdx: index("tracking_violations_type_idx").on(table.violationType),
+    statusIdx: index("tracking_violations_status_idx").on(table.status),
   })
 );
 

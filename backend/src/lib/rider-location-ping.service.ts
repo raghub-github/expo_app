@@ -3,6 +3,11 @@ import { ulid } from "ulid";
 import { incrCounter } from "@gatimitra/logger";
 import { getDb } from "../db/client.js";
 import { ordersCore, orderRiderTracking, riderLocationEvents } from "../db/schema.js";
+import {
+  recordCoordinateForActiveOrder,
+  stopInactiveSessionsForRider,
+} from "./tracking-session.service.js";
+import { evaluateGeoSignals } from "./tracking-geo-engine.service.js";
 import { getEnv } from "../config/env.js";
 import {
   rememberRiderLocationPing,
@@ -289,6 +294,16 @@ export async function handleRiderLocationPing(
       accuracyM: input.accuracyM ?? null,
     });
 
+    // Safety-net: close any tracking session whose order has left the rider's
+    // active set (delivered/cancelled/unassigned/expired). Fire-and-forget so a
+    // failure never affects the ping response or the coordinate insert.
+    void stopInactiveSessionsForRider({
+      riderId,
+      activeOrderIds: activeOrdersForRider
+        .map((r) => r.orderId?.trim())
+        .filter((id): id is string => Boolean(id)),
+    }).catch(() => {});
+
     const channelIds = new Set<string>();
     for (const row of activeOrdersForRider) {
       const oid = row.orderId?.trim();
@@ -314,19 +329,52 @@ export async function handleRiderLocationPing(
         )
       );
       if (trailOrderIds.length > 0) {
-        await db.insert(orderRiderTracking).values(
-          trailOrderIds.map((activeOrderId) => ({
-            orderId: activeOrderId,
-            orderSource: "orders_core" as const,
-            riderId,
-            latitude: String(input.lat),
-            longitude: String(input.lng),
-            headingDegrees: input.headingDeg != null ? String(input.headingDeg) : null,
-            speedKmh: input.speedMps != null ? String(speedMpsToKmh(input.speedMps)) : null,
-            accuracyMeters: input.accuracyM != null ? String(input.accuracyM) : null,
-            createdAt: now,
-          }))
+        const rows = await Promise.all(
+          trailOrderIds.map(async (activeOrderId) => {
+            // Lazy-start / attach the INDEPENDENT per-assignment tracking session
+            // and claim a gap-free sequence, so every coordinate is linkable for
+            // immutable history + future replay (Phase 1). Never blocks the
+            // coordinate insert — a resolve failure just leaves the link null.
+            const session = await recordCoordinateForActiveOrder({
+              orderId: activeOrderId,
+              riderId,
+              latitude: input.lat,
+              longitude: input.lng,
+              recordedAt: now,
+            }).catch(() => null);
+            if (session) {
+              // Backend geo engine: no-movement / opposite-direction / route-
+              // deviation → events + violations. Fire-and-forget; never blocks.
+              void evaluateGeoSignals({
+                orderId: activeOrderId,
+                riderId,
+                sessionId: session.sessionId,
+                assignmentId: session.assignmentId,
+                serviceType: session.serviceType,
+                latitude: input.lat,
+                longitude: input.lng,
+                recordedAt: now,
+              }).catch(() => {});
+            }
+            return {
+              orderId: activeOrderId,
+              orderSource: "orders_core" as const,
+              riderId,
+              latitude: String(input.lat),
+              longitude: String(input.lng),
+              headingDegrees: input.headingDeg != null ? String(input.headingDeg) : null,
+              speedKmh: input.speedMps != null ? String(speedMpsToKmh(input.speedMps)) : null,
+              accuracyMeters: input.accuracyM != null ? String(input.accuracyM) : null,
+              sessionId: session?.sessionId ?? null,
+              assignmentId: session?.assignmentId ?? null,
+              serviceType: session?.serviceType ?? null,
+              sequenceNumber: session?.sequenceNumber ?? null,
+              source: "gps" as const,
+              createdAt: now,
+            };
+          })
         );
+        await db.insert(orderRiderTracking).values(rows);
       }
 
       const locationEvent = {
