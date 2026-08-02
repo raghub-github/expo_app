@@ -669,6 +669,23 @@ await app.register(rideSettlementReportsRoutes, {
   prefix: "/v1/admin/ride-settlement-reports",
 });
 
+// Real-time tracking + geo-scoping engine config — Super Admin tunables
+// (interval, geofence radii, geo-engine thresholds, rule toggles). Read live by
+// the ingestion/enforcement path so changes apply without a deploy.
+const { trackingConfigAdminRoutes } = await import(
+  "./modules/tracking/tracking-config.admin.routes.js"
+);
+await app.register(trackingConfigAdminRoutes, {
+  prefix: "/v1/admin/tracking-config",
+});
+
+// Control Dashboard — tracking timeline (per order) + geo-engine violations
+// review queue (open → reviewed / penalized / dismissed).
+const { trackingAdminRoutes } = await import(
+  "./modules/tracking/tracking.admin.routes.js"
+);
+await app.register(trackingAdminRoutes, { prefix: "/v1/admin/tracking" });
+
 await app.register(offersRoutes, { prefix: "/v1/offers" });
 const { pricingRoutes } = await import("./modules/pricing/pricing.routes.js");
 await app.register(pricingRoutes, { prefix: "/v1/pricing" });

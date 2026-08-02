@@ -726,6 +726,8 @@ export function getCurrentPageName(pathname: string): string {
     "/dashboard/super-admin/rule-engine": "Financial Rule Engine",
     "/dashboard/super-admin/rule-engine/new": "Create rule",
     "/dashboard/super-admin/geo": "Geo & coverage",
+    "/dashboard/super-admin/tracking-config": "Real-time tracking & geo-scoping",
+    "/dashboard/super-admin/tracking-violations": "Geo-engine violations",
     "/dashboard/super-admin/rider-surge-management": "Rider surge management",
   };
   

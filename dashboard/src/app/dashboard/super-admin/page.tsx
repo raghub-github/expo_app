@@ -237,6 +237,24 @@ const adminOptions: AdminOption[] = [
     color: "text-indigo-700",
     bgColor: "bg-indigo-50 hover:bg-indigo-100",
   },
+  {
+    name: "Real-time tracking & geo-scoping",
+    href: "/dashboard/super-admin/tracking-config",
+    Icon: GeoIcon,
+    description:
+      "Tracking interval, geo-engine thresholds & rule toggles",
+    color: "text-teal-700",
+    bgColor: "bg-teal-50 hover:bg-teal-100",
+  },
+  {
+    name: "Geo-engine violations",
+    href: "/dashboard/super-admin/tracking-violations",
+    Icon: GeoIcon,
+    description:
+      "Review no-movement / route-deviation / wrong-direction violations (penalize / dismiss)",
+    color: "text-rose-700",
+    bgColor: "bg-rose-50 hover:bg-rose-100",
+  },
 
   // ✅ YOUR MODULES
   {
