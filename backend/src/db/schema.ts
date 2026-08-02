@@ -2869,6 +2869,10 @@ export const ordersRide = pgTable(
     cancellationReasonCode: text("cancellation_reason_code"),
     cancellationReasonText: text("cancellation_reason_text"),
     cancelMode: text("cancel_mode"),
+    // Ride Billing Architecture — populated by the cash settlement engine.
+    cashCollectedAt: timestamp("cash_collected_at", { withTimezone: true }),
+    cashCollectedByRiderId: integer("cash_collected_by_rider_id"),
+    settlementId: text("settlement_id"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -2887,6 +2891,8 @@ export const ordersRide = pgTable(
       table.farPickupPromptShown,
       table.farPickupAcknowledged
     ),
+    cashCollectedIdx: index("orders_ride_cash_collected_idx").on(table.cashCollectedAt),
+    settlementIdx: index("orders_ride_settlement_idx").on(table.settlementId),
   })
 );
 

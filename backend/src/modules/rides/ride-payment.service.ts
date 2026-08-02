@@ -11,6 +11,8 @@ import { verifyRazorpaySignature, verifyRazorpayPaymentDetails } from "../../ser
 import { isRideFarePaymentPending } from "../../lib/ride-rider-payout-snapshot.js";
 import { computeRideBillForCustomerOrder } from "./ride-bill.service.js";
 import { insertRideCustomerPaymentSnapshot } from "../../lib/persist-ride-customer-payment-snapshot.js";
+import { postOnlineRideSettlement } from "./settlement/rideSettlement.engine.js";
+import { rideBillingToSettlementComponents } from "./settlement/billingToComponents.js";
 
 function roundInr(value: number): number {
   return Math.round((Number(value) || 0) * 100) / 100;
@@ -227,7 +229,7 @@ export async function confirmRideFarePaymentForCustomer(input: {
     });
   });
 
-  void insertRideCustomerPaymentSnapshot(db, {
+  const snapshotId = await insertRideCustomerPaymentSnapshot(db, {
     orderCoreId: orderRow.id,
     orderIdText,
     customerId: customerPk,
@@ -259,7 +261,57 @@ export async function confirmRideFarePaymentForCustomer(input: {
   });
 
   const riderId = orderRow.riderId != null ? Number(orderRow.riderId) : null;
-  if (riderId != null && riderId > 0) {
+
+  // Ride Settlement Engine — single source of truth for person_ride wallet
+  // credit + immutable settlement. Do NOT also call credit-rider-order-on-delivered
+  // for rides once settlement posts (legacy path is gated when settlement_id set).
+  const pickupMeta =
+    typeof prevSnap === "object"
+      ? (prevSnap as Record<string, unknown>)
+      : {};
+  let settlementPosted = false;
+  try {
+    const settlement = await postOnlineRideSettlement({
+      orderCoreId: orderRow.id,
+      orderIdText,
+      riderId: riderId ?? null,
+      customerId: customerPk,
+      billing: {
+        customerBill: fareDue,
+        components: rideBillingToSettlementComponents(billRes.billing, billRes.snapshot),
+        billingSnapshotId: snapshotId,
+        billingSnapshot: {
+          ...(billRes.snapshot ?? {}),
+          final_amount: fareDue,
+        },
+        couponCode: input.couponCode,
+      },
+      geo: {
+        pickupLat: Number((pickupMeta as { pickupLat?: unknown }).pickupLat ?? 0),
+        pickupLng: Number((pickupMeta as { pickupLon?: unknown }).pickupLon ?? 0),
+        pickupPincode:
+          typeof (pickupMeta as { pickupPincode?: unknown }).pickupPincode === "string"
+            ? String((pickupMeta as { pickupPincode?: unknown }).pickupPincode)
+            : null,
+        pickupState:
+          typeof (pickupMeta as { pickupState?: unknown }).pickupState === "string"
+            ? String((pickupMeta as { pickupState?: unknown }).pickupState)
+            : null,
+      },
+      paymentSplit: {
+        gatiCashApplied,
+        razorpayAmount: razorpayDue,
+        razorpayOrderId: input.razorpayOrderId ?? null,
+        razorpayPaymentId: input.razorpayPaymentId ?? null,
+      },
+    });
+    settlementPosted = Boolean(settlement?.settlementId);
+  } catch (err) {
+    console.warn("[confirmRideFarePayment] settlement engine failed:", err);
+  }
+
+  // Fallback only when settlement failed to post — never double-credit.
+  if (!settlementPosted && riderId != null && riderId > 0) {
     void import("../../lib/credit-rider-order-on-delivered.js")
       .then(({ creditRiderOrderEarningOnDelivered }) =>
         creditRiderOrderEarningOnDelivered({

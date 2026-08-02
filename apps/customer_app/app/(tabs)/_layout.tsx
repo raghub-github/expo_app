@@ -12,9 +12,6 @@ export default function TabsLayout() {
           headerShown: true,
           headerStyle: { backgroundColor: "#fff" },
           headerShadowVisible: false,
-          statusBarHidden: false,
-          statusBarStyle: "dark",
-          statusBarBackgroundColor: "#FFFFFF",
         }}
       >
         <Tabs.Screen

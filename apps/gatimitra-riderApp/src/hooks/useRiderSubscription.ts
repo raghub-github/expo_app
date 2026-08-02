@@ -90,8 +90,9 @@ export type RiderSubscriptionStatus = {
     autoWalletDeduction: boolean;
     startDate: string;
     expiryDate: string;
-    nextRenewalDate?: string;
+    nextRenewalDate?: string | null;
     lastDeductionDate?: string;
+    renewalMode?: "on_first_accept" | "schedule";
   } | null;
   dues?: RiderSubscriptionDues;
 };
@@ -120,7 +121,7 @@ export function useRiderSubscriptionPlans() {
 
 export function useRiderSubscriptionStatus() {
   const session = useSessionStore((s) => s.session);
-  const cached = getCachedRiderSubscriptionStatus();
+  const cached = getCachedRiderSubscriptionStatus() as RiderSubscriptionStatus | null;
 
   return useQuery({
     queryKey: ["rider", "subscription", "status"],

@@ -52,6 +52,10 @@ export type ServicePayoutRuleRow = {
   platformPercentage: number;
   waitingChargePerMin: number | null;
   waitingFreeMinutes: number;
+  waitingMaxCharge: number | null;
+  waitingFundingMode: "CUSTOMER_100" | "COMPANY_100" | "SHARED";
+  waitingCustomerSharePct: number;
+  waitingCompanySharePct: number;
   priority: number;
   isActive: boolean;
   effectiveFrom: string | null;

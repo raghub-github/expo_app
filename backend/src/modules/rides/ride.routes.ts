@@ -16,6 +16,7 @@ import { getNearbyRideSupply } from "./ride.availability.service.js";
 import { quoteCustomerRideFare, quoteCustomerRideFareBatch } from "../ride-state-config/rideQuote.service.js";
 import { getDb } from "../../db/client.js";
 import { computeBillForRide, resolveRideBillingGeo } from "../billing/rideBilling.service.js";
+import { buildRideComponentBreakdown } from "./pricing/rideFareComponents.js";
 
 const rideStopSchema = z.object({
   sequence: z.number().int().min(1).max(2),
@@ -110,6 +111,13 @@ const rideQuoteBatchBodySchema = z.object({
   pickupState: z.string().optional().nullable(),
 });
 
+const rideQuoteComponentLineSchema = z.object({
+  subtype: z.string(),
+  label: z.string(),
+  amount: z.number(),
+  kind: z.enum(["charge", "discount"]),
+});
+
 const rideQuoteBillingSchema = z
   .object({
     finalAmount: z.number(),
@@ -121,6 +129,8 @@ const rideQuoteBillingSchema = z
     charges: z.array(z.any()).optional(),
     taxes: z.array(z.any()).optional(),
     breakdownSteps: z.array(z.any()).optional(),
+    /** Phase 2: typed fare component breakdown (waiting / night / peak / …) */
+    componentBreakdown: z.array(rideQuoteComponentLineSchema).optional(),
   })
   .nullable()
   .optional();
@@ -137,7 +147,17 @@ const rideQuoteOkFields = {
   distanceFare: z.number(),
   surgeTotal: z.number(),
   finalFare: z.number(),
-  appliedSurges: z.array(z.object({ name: z.string(), amount: z.number() })),
+  appliedSurges: z.array(
+    z.object({
+      name: z.string(),
+      amount: z.number(),
+      fundingMode: z.enum(["CUSTOMER_100", "COMPANY_100", "SHARED"]).optional(),
+      customerShareAmount: z.number().optional(),
+      companyShareAmount: z.number().optional(),
+    })
+  ),
+  surgeCustomerShare: z.number(),
+  surgeCompanyShare: z.number(),
   rateCardSummary: z.string().nullable(),
   waitingChargeNote: z.string().nullable(),
   billing: rideQuoteBillingSchema,
@@ -232,6 +252,7 @@ export async function rideRoutes(app: FastifyInstance) {
         charges?: unknown[];
         taxes?: unknown[];
         breakdownSteps?: unknown[];
+        componentBreakdown?: ReturnType<typeof buildRideComponentBreakdown>;
       } | null = null;
 
       if (result.eligible && result.finalFare > 0) {
@@ -258,6 +279,10 @@ export async function rideRoutes(app: FastifyInstance) {
             charges: billRes.billing.charges,
             taxes: billRes.billing.taxes,
             breakdownSteps: billRes.billing.breakdown_steps,
+            componentBreakdown: buildRideComponentBreakdown(
+              billRes.billing.charges,
+              billRes.billing.discounts
+            ),
           };
         }
       }
@@ -326,6 +351,7 @@ export async function rideRoutes(app: FastifyInstance) {
           charges?: unknown[];
           taxes?: unknown[];
           breakdownSteps?: unknown[];
+          componentBreakdown?: ReturnType<typeof buildRideComponentBreakdown>;
         } | null = null;
 
         if (result.eligible && result.finalFare > 0) {
@@ -352,6 +378,10 @@ export async function rideRoutes(app: FastifyInstance) {
               charges: billRes.billing.charges,
               taxes: billRes.billing.taxes,
               breakdownSteps: billRes.billing.breakdown_steps,
+              componentBreakdown: buildRideComponentBreakdown(
+                billRes.billing.charges,
+                billRes.billing.discounts
+              ),
             };
           }
         }

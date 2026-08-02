@@ -98,19 +98,16 @@ export default function EarningsScreen() {
                   label={t("earnings.foodOrders")}
                   data={display.breakdownDetail.food}
                   format={formatCurrency}
-                  t={t}
                 />
                 <ServiceBreakdownBlock
                   label={t("earnings.parcelOrders")}
                   data={display.breakdownDetail.parcel}
                   format={formatCurrency}
-                  t={t}
                 />
                 <ServiceBreakdownBlock
                   label={t("earnings.rideTrips")}
                   data={display.breakdownDetail.ride}
                   format={formatCurrency}
-                  t={t}
                 />
                 {display.breakdownDetail.common.subscriptionDebited > 0 ? (
                   <EarningItem
@@ -227,13 +224,12 @@ function ServiceBreakdownBlock({
   label,
   data,
   format,
-  t,
 }: {
   label: string;
   data: ServiceBreakdownData;
   format: (n: number) => string;
-  t: (key: string, fallback?: string) => string;
 }) {
+  const { t } = useTranslation();
   const subLines: Array<{ key: string; label: string; value: string; tone: "credit" | "debit" }> = [];
   if (data.earnings > 0)
     subLines.push({ key: "earn", label: t("earnings.svcEarnings", "Earnings"), value: `+ ${format(data.earnings)}`, tone: "credit" });

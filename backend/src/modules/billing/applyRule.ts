@@ -241,7 +241,7 @@ export function applyRule(
         label: (rule.name as string) || `SURGE #${rule.id}`,
         amount: clamp0(vn),
         bucket: "surge",
-        meta: { ruleId: rule.id },
+        meta: { ruleId: rule.id, chargeSubtype: rule.chargeSubtype },
       };
     }
     case "SMALL_ORDER_FEE":
@@ -271,7 +271,7 @@ export function applyRule(
         label: (rule.name as string) || fallbackLabel,
         amount: clamp0(vn),
         bucket: "misc",
-        meta: { ruleId: rule.id },
+        meta: { ruleId: rule.id, chargeSubtype: rule.chargeSubtype },
       };
     }
     case "OTHER": {
@@ -286,7 +286,7 @@ export function applyRule(
         label: (rule.name as string) || `Other charge #${rule.id}`,
         amount: clamp0(amt),
         bucket: "misc",
-        meta: { ruleId: rule.id },
+        meta: { ruleId: rule.id, chargeSubtype: rule.chargeSubtype },
       };
     }
     case "TAX":
@@ -436,6 +436,7 @@ export function applyDiscountRule(
       ruleId: rule.id,
       discountAppliesOn: appliesOn,
       eligibleBase: eligibleItems,
+      chargeSubtype: rule.chargeSubtype,
       ...(rule.type === "OFFER" ? { offerOwner: rule.offerOwner } : {}),
     },
   };

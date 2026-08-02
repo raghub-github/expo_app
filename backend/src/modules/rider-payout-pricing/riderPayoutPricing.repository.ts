@@ -8,6 +8,9 @@ import type {
 } from "./types.js";
 
 function mapRuleRow(r: Record<string, unknown>): ServicePayoutRuleRow {
+  const fundingRaw = String(r.waiting_funding_mode ?? "CUSTOMER_100").toUpperCase();
+  const fundingMode =
+    fundingRaw === "COMPANY_100" || fundingRaw === "SHARED" ? fundingRaw : "CUSTOMER_100";
   return {
     id: Number(r.id),
     serviceType: String(r.service_type) as RiderPayoutServiceType,
@@ -17,6 +20,10 @@ function mapRuleRow(r: Record<string, unknown>): ServicePayoutRuleRow {
     platformPercentage: Number(r.platform_percentage),
     waitingChargePerMin: r.waiting_charge_per_min == null ? null : Number(r.waiting_charge_per_min),
     waitingFreeMinutes: Number(r.waiting_free_minutes ?? 2),
+    waitingMaxCharge: r.waiting_max_charge == null ? null : Number(r.waiting_max_charge),
+    waitingFundingMode: fundingMode as ServicePayoutRuleRow["waitingFundingMode"],
+    waitingCustomerSharePct: Number(r.waiting_customer_share_pct ?? 100),
+    waitingCompanySharePct: Number(r.waiting_company_share_pct ?? 0),
     priority: Number(r.priority ?? 100),
     isActive: r.is_active === true,
     effectiveFrom: r.effective_from == null ? null : String(r.effective_from),

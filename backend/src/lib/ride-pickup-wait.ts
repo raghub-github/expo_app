@@ -96,11 +96,21 @@ export function computeCustomerPickupWaitingCharge(args: {
   pickupWaitSeconds: number;
   freeMinutes: number;
   chargePerMin: number;
+  maxCharge?: number | null;
+  fundingMode?: "CUSTOMER_100" | "COMPANY_100" | "SHARED" | null;
+  customerSharePct?: number | null;
+  companySharePct?: number | null;
 }): number {
+  // Lazy import avoided — keep sync path; funding shares applied at bill merge.
   const freeBudgetSec = Math.max(0, Math.round(args.freeMinutes * 60));
   const billableSec = Math.max(0, Math.round(args.pickupWaitSeconds) - freeBudgetSec);
   if (billableSec <= 0 || args.chargePerMin <= 0) return 0;
-  return Math.round(Math.ceil(billableSec / 60) * args.chargePerMin * 10) / 10;
+  let gross = Math.round(Math.ceil(billableSec / 60) * args.chargePerMin * 10) / 10;
+  const max = args.maxCharge != null ? Number(args.maxCharge) : null;
+  if (max != null && Number.isFinite(max) && max > 0) {
+    gross = Math.min(gross, max);
+  }
+  return gross;
 }
 
 /** Rider pickup waiting earning from payout slabs (ignores surge-wait-max gating). */

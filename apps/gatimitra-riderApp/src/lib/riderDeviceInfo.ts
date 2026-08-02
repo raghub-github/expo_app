@@ -17,13 +17,15 @@ export function getRiderLoginDeviceMeta(): RiderLoginDeviceMeta {
       ? Constants.manifest2.extra.expoClient.version
       : null);
 
+  const platformConstants = (Platform.constants ?? {}) as Record<string, unknown>;
+
   return {
     deviceType: "mobile",
     deviceModel:
-      typeof Platform.constants?.Model === "string"
-        ? Platform.constants.Model
-        : typeof Platform.constants?.model === "string"
-          ? Platform.constants.model
+      typeof platformConstants.Model === "string"
+        ? platformConstants.Model
+        : typeof platformConstants.model === "string"
+          ? platformConstants.model
           : null,
     os: Platform.OS,
     osVersion:

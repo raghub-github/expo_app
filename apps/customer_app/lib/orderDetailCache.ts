@@ -39,7 +39,7 @@ export function orderSummaryToDetail(summary: OrderSummary): OrderDetail {
   return {
     ...summary,
     billingSnapshot: null,
-    deliveryAddress: summary.deliveryAddress,
+    deliveryAddress: summary.deliveryAddress ?? undefined,
     deliveryLat: summary.deliveryLat ?? null,
     deliveryLng: summary.deliveryLng ?? null,
     pickupLat: summary.pickupLat ?? null,

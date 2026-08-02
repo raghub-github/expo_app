@@ -7,8 +7,11 @@ function isServerBusyError(error: unknown): boolean {
 }
 
 /** Slow polling when the API is saturated; normal interval otherwise. */
-export function pollIntervalWithBackoff<TData>(
-  query: Query<TData, Error, TData, readonly unknown[]>,
+export function pollIntervalWithBackoff<
+  TData,
+  TKey extends readonly unknown[] = readonly unknown[],
+>(
+  query: Query<TData, Error, TData, TKey>,
   normalMs: number,
   busyMs = 15_000
 ): number | false {

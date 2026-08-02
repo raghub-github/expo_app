@@ -649,6 +649,26 @@ await app.register(merchantSubscriptionAdminRoutes, {
   prefix: "/v1/admin/merchant-subscriptions",
 });
 
+// Ride Wallet & Settlement config — Super Admin controls the per-service
+// negative threshold, global block threshold, cash settlement toggle, and
+// auto-unblock behaviour without needing a deploy.
+const { rideWalletConfigAdminRoutes } = await import(
+  "./modules/rides/settlement/rideWalletConfig.admin.routes.js"
+);
+await app.register(rideWalletConfigAdminRoutes, {
+  prefix: "/v1/admin/ride-wallet-config",
+});
+
+// Ride Settlement Reports — Super Admin read-only aggregates over
+// ride_settlements (revenue, cash vs online, wallet recovery, negative wallet
+// watchlist). Phase 4 hardening of the Ride Billing Architecture.
+const { rideSettlementReportsRoutes } = await import(
+  "./modules/rides/settlement/rideSettlement.reports.routes.js"
+);
+await app.register(rideSettlementReportsRoutes, {
+  prefix: "/v1/admin/ride-settlement-reports",
+});
+
 await app.register(offersRoutes, { prefix: "/v1/offers" });
 const { pricingRoutes } = await import("./modules/pricing/pricing.routes.js");
 await app.register(pricingRoutes, { prefix: "/v1/pricing" });

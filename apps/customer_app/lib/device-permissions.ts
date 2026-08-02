@@ -18,7 +18,7 @@ export async function getSmsPermissionGranted(): Promise<boolean> {
 
 export async function requestSmsPermission(): Promise<"granted" | "denied"> {
   const result = await runSmsAllowPipeline();
-  return result.status;
+  return result.status === "granted" ? "granted" : "denied";
 }
 
 export async function requestSmsPermissionOrOpenSettings(options?: {

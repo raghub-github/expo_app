@@ -27,7 +27,7 @@ export function useRecordDeliverySuccessTipBaseline(
 
     void (async () => {
       const baseline = Math.max(0, Math.round(Number(initialTipAmount) || 0));
-      await recordOrderTipBaseline(id, baseline, [displayOrderId]);
+      await recordOrderTipBaseline(id, baseline, displayOrderId ? [displayOrderId] : []);
 
       if (baseline <= 0) return;
 

@@ -60,15 +60,27 @@ function formatMaxBadge(badgeText?: string | null): string {
 
 function resolveSubscriptionDates(
   activePlan: NonNullable<ReturnType<typeof useRiderSubscriptionStatus>["data"]>["plan"]
-): { expiryIso: string | null; renewalIso: string | null } {
-  if (!activePlan) return { expiryIso: null, renewalIso: null };
+): {
+  expiryIso: string | null;
+  renewalIso: string | null;
+  renewalMode: "on_first_accept" | "schedule";
+} {
+  if (!activePlan) {
+    return { expiryIso: null, renewalIso: null, renewalMode: "schedule" };
+  }
 
   const expiryIso = activePlan.expiryDate?.trim() || null;
   const renewalIso = activePlan.nextRenewalDate?.trim() || null;
+  const renewalMode =
+    activePlan.renewalMode === "on_first_accept" ||
+    (activePlan.billingCycle === "daily" && activePlan.autoWalletDeduction)
+      ? "on_first_accept"
+      : "schedule";
 
   return {
     expiryIso: expiryIso && !Number.isNaN(new Date(expiryIso).getTime()) ? expiryIso : null,
     renewalIso: renewalIso && !Number.isNaN(new Date(renewalIso).getTime()) ? renewalIso : null,
+    renewalMode,
   };
 }
 
@@ -111,7 +123,7 @@ export function YourSubscriptionScreen() {
   const planBrandName = activePlan?.planName || plan?.planName || "Gatimitra Max";
   const maxBadgeLabel = formatMaxBadge(plan?.badgeText);
 
-  const { expiryIso, renewalIso } = useMemo(
+  const { expiryIso, renewalIso, renewalMode } = useMemo(
     () => resolveSubscriptionDates(activePlan ?? null),
     [activePlan]
   );
@@ -238,11 +250,16 @@ export function YourSubscriptionScreen() {
 
                 <Text style={styles.walletNote}>
                   {isActive && autoRenewOn
-                    ? t("subscription.gatimitraWalletDeductActive", {
-                        amount: payPrice != null ? formatRupee(payPrice) : "—",
-                        cycle: cycleLower,
-                        defaultValue: `${payPrice != null ? formatRupee(payPrice) : "—"} will be deducted ${cycleLower} from your wallet`,
-                      })
+                    ? renewalMode === "on_first_accept"
+                      ? t("subscription.gatimitraWalletDeductActiveDailyAccept", {
+                          amount: payPrice != null ? formatRupee(payPrice) : "—",
+                          defaultValue: `${payPrice != null ? formatRupee(payPrice) : "—"} is deducted on your first order accept each day (only if you accept an order)`,
+                        })
+                      : t("subscription.gatimitraWalletDeductActive", {
+                          amount: payPrice != null ? formatRupee(payPrice) : "—",
+                          cycle: cycleLower,
+                          defaultValue: `${payPrice != null ? formatRupee(payPrice) : "—"} will be deducted ${cycleLower} from your wallet`,
+                        })
                     : t("subscription.gatimitraWalletDeductOffer", {
                         amount: payPrice != null ? formatRupee(payPrice) : "—",
                         cycle: cycleLower,
@@ -265,7 +282,12 @@ export function YourSubscriptionScreen() {
                         {t("subscription.nextRenewal", "Next renewal")}
                       </Text>
                       <Text style={[styles.dateInCardValue, { color: accent }]}>
-                        {formatDateTime(renewalIso)}
+                        {renewalMode === "on_first_accept"
+                          ? t(
+                              "subscription.nextRenewalOnFirstAccept",
+                              "On first order accept"
+                            )
+                          : formatDateTime(renewalIso)}
                       </Text>
                     </View>
                   </View>
@@ -294,14 +316,20 @@ export function YourSubscriptionScreen() {
                         </Text>
                         <Text style={styles.autoRenewSub}>
                           {autoRenewOn
-                            ? t(
-                                "subscription.gatimitraAutoRenewSub",
-                                "Your Gatimitra Max plan auto-renews {{cycle}}. The fee is deducted from your wallet balance.",
-                                { cycle: cycleLower }
-                              )
+                            ? renewalMode === "on_first_accept"
+                              ? t(
+                                  "subscription.gatimitraAutoRenewSubDailyAccept",
+                                  "Your daily fee is deducted from wallet on the first order you accept each day. No accept that day means no deduction.",
+                                  { cycle: cycleLower }
+                                )
+                              : t(
+                                  "subscription.gatimitraAutoRenewSub",
+                                  "Your Gatimitra Max plan auto-renews {{cycle}}. The fee is deducted from your wallet balance.",
+                                  { cycle: cycleLower }
+                                )
                             : t(
                                 "subscription.autoRenewOffSub",
-                                "Turn on to renew Gatimitra Max automatically from your wallet each billing cycle."
+                                "Turn on to renew Gatimitra Max automatically from your wallet. For daily plans, the fee is charged only when you accept an order."
                               )}
                         </Text>
                       </View>

@@ -16,12 +16,12 @@ const TERMS = [
   {
     key: "autoRenew",
     defaultValue:
-      "When auto-renewal is on, your plan renews automatically at the end of each billing cycle and the fee is deducted from your wallet.",
+      "When auto-renewal is on for a daily plan, the fee is deducted from your wallet only on the first order you accept each day. If you accept no orders that day, nothing is deducted. Turning auto-renew off stops further daily charges. Weekly or monthly plans renew on their billing schedule when auto-renew is on.",
   },
   {
     key: "wallet",
     defaultValue:
-      "Wallet deduction happens instantly on activation and on each renewal. If balance is low, renewal may continue and wallet can go negative up to ₹35 for subscription dues only.",
+      "Wallet deduction happens instantly on activation and on each daily first-accept renewal (or scheduled renewal for other cycles). If balance is low, renewal may continue and wallet can go negative up to ₹35 for subscription dues only.",
   },
   {
     key: "restrictions",

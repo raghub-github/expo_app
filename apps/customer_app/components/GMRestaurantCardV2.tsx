@@ -156,7 +156,7 @@ function GMRestaurantCardV2Inner({
   );
 
   const toggleBookmark = useCallback(
-    async (e: any) => {
+    async (e?: any) => {
       e?.stopPropagation?.();
       if (savedLoading) return;
       setSavedLoading(true);

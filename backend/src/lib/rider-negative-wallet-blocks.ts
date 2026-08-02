@@ -1,9 +1,41 @@
-import { eq, asc } from "drizzle-orm";
+import { and, asc, eq, inArray } from "drizzle-orm";
 import { getDb } from "../db/client.js";
 import { riderNegativeWalletBlocks, riderWallet } from "../db/schema.js";
+import { loadRideWalletPolicy } from "../modules/rides/settlement/rideSettlement.repository.js";
 
+/**
+ * Backwards-compatible default thresholds. The live values are sourced from
+ * ride_wallet_config (Super Admin configurable) via loadRideWalletPolicy —
+ * these constants are kept as the safety fallback whenever the policy row is
+ * missing or the config table has not been created yet.
+ */
 export const NEGATIVE_WALLET_THRESHOLD = 50;
 export const GLOBAL_BLOCK_THRESHOLD = -200;
+
+async function resolveThresholds(): Promise<{
+  serviceNegativeThreshold: number;
+  globalBlockThreshold: number;
+  autoUnblockOnZero: boolean;
+}> {
+  try {
+    const policy = await loadRideWalletPolicy();
+    return {
+      serviceNegativeThreshold: Number.isFinite(policy.serviceNegativeThreshold)
+        ? policy.serviceNegativeThreshold
+        : NEGATIVE_WALLET_THRESHOLD,
+      globalBlockThreshold: Number.isFinite(policy.globalBlockThreshold)
+        ? policy.globalBlockThreshold
+        : GLOBAL_BLOCK_THRESHOLD,
+      autoUnblockOnZero: policy.autoUnblockOnZero !== false,
+    };
+  } catch {
+    return {
+      serviceNegativeThreshold: NEGATIVE_WALLET_THRESHOLD,
+      globalBlockThreshold: GLOBAL_BLOCK_THRESHOLD,
+      autoUnblockOnZero: true,
+    };
+  }
+}
 
 const SERVICES = ["food", "parcel", "person_ride"] as const;
 
@@ -35,9 +67,16 @@ function getEffectiveNegative(wallet: WalletRow, service: ServiceType): number {
   return used - alloc;
 }
 
-/** Recompute rider_negative_wallet_blocks after wallet debits (penalties, etc.). */
+/**
+ * Recompute rider_negative_wallet_blocks after wallet debits (penalties, cash
+ * settlements, etc.). Only blocks with reasons owned by this policy engine —
+ * `negative_wallet` and `global_emergency` — are recomputed. Blocks written
+ * with any other reason (fraud, manual admin action, compliance, kyc, etc.)
+ * are preserved so they never auto-clear when the wallet is topped up.
+ */
 export async function syncNegativeWalletBlocks(riderId: number): Promise<void> {
   const db = getDb();
+  const thresholds = await resolveThresholds();
 
   const [wallet] = await db
     .select()
@@ -45,14 +84,26 @@ export async function syncNegativeWalletBlocks(riderId: number): Promise<void> {
     .where(eq(riderWallet.riderId, riderId))
     .limit(1);
 
-  await db.delete(riderNegativeWalletBlocks).where(eq(riderNegativeWalletBlocks.riderId, riderId));
+  // Only clear the blocks THIS policy engine owns. Foreign reasons (fraud etc.)
+  // must not be auto-cleared just because the wallet became positive.
+  await db
+    .delete(riderNegativeWalletBlocks)
+    .where(
+      and(
+        eq(riderNegativeWalletBlocks.riderId, riderId),
+        inArray(riderNegativeWalletBlocks.reason, [
+          "negative_wallet",
+          "global_emergency",
+        ])
+      )
+    );
 
   if (!wallet) return;
 
   const w = wallet as WalletRow;
   const totalBalance = Number(w.totalBalance ?? 0);
 
-  if (totalBalance > 0) {
+  if (totalBalance > 0 && thresholds.autoUnblockOnZero) {
     await db
       .update(riderWallet)
       .set({
@@ -70,13 +121,16 @@ export async function syncNegativeWalletBlocks(riderId: number): Promise<void> {
     return;
   }
 
-  if (totalBalance <= GLOBAL_BLOCK_THRESHOLD) {
+  if (totalBalance <= thresholds.globalBlockThreshold) {
     for (const service of SERVICES) {
-      await db.insert(riderNegativeWalletBlocks).values({
-        riderId,
-        serviceType: service,
-        reason: "global_emergency",
-      });
+      await db
+        .insert(riderNegativeWalletBlocks)
+        .values({
+          riderId,
+          serviceType: service,
+          reason: "global_emergency",
+        })
+        .onConflictDoNothing();
     }
     const { syncRiderDutyWithRestrictions } = await import("./rider-account-restrictions.js");
     await syncRiderDutyWithRestrictions(riderId);
@@ -84,12 +138,15 @@ export async function syncNegativeWalletBlocks(riderId: number): Promise<void> {
   }
 
   for (const service of SERVICES) {
-    if (getEffectiveNegative(w, service) > NEGATIVE_WALLET_THRESHOLD) {
-      await db.insert(riderNegativeWalletBlocks).values({
-        riderId,
-        serviceType: service,
-        reason: "negative_wallet",
-      });
+    if (getEffectiveNegative(w, service) > thresholds.serviceNegativeThreshold) {
+      await db
+        .insert(riderNegativeWalletBlocks)
+        .values({
+          riderId,
+          serviceType: service,
+          reason: "negative_wallet",
+        })
+        .onConflictDoNothing();
     }
   }
 
@@ -101,6 +158,7 @@ export async function syncNegativeWalletBlocks(riderId: number): Promise<void> {
 export async function applyFifoAllocation(riderId: number, amount: number): Promise<void> {
   if (amount <= 0) return;
   const db = getDb();
+  const thresholds = await resolveThresholds();
 
   const [wallet] = await db
     .select()
@@ -137,7 +195,7 @@ export async function applyFifoAllocation(riderId: number, amount: number): Prom
     const service = b.serviceType as ServiceType;
     if (!SERVICES.includes(service)) continue;
     const effectiveNeg = getEffectiveNeg(service);
-    const needToUnblock = Math.max(0, effectiveNeg - NEGATIVE_WALLET_THRESHOLD);
+    const needToUnblock = Math.max(0, effectiveNeg - thresholds.serviceNegativeThreshold);
     const alloc = Math.min(remaining, needToUnblock);
     if (alloc <= 0) continue;
     if (service === "food") allocFood += alloc;

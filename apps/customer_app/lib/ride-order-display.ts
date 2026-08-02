@@ -541,6 +541,19 @@ export function buildRideSummaryInvoice(
     lines.push({ label: "Surge pricing", amount: breakdown.surgeCharge });
   }
 
+  const nightCharge = billNum(snap.night_charge) || billNum(snap.night_charge_total);
+  if (nightCharge > 0.005) {
+    lines.push({ label: "Night charge", amount: nightCharge });
+  }
+  const tollCharge = billNum(snap.toll_charge) || billNum(snap.toll_charges);
+  if (tollCharge > 0.005) {
+    lines.push({ label: "Toll", amount: tollCharge });
+  }
+  const airportCharge = billNum(snap.airport_charge);
+  if (airportCharge > 0.005) {
+    lines.push({ label: "Airport charge", amount: airportCharge });
+  }
+
   const taxTotal = billNum(snap.tax_total);
   if (taxTotal > 0.005) {
     const snapTaxes = Array.isArray(snap.taxes) ? snap.taxes : [];

@@ -297,6 +297,15 @@ const adminOptions: AdminOption[] = [
     color: "text-violet-700",
     bgColor: "bg-violet-50 hover:bg-violet-100",
   },
+  {
+    name: "Ride billing & wallet",
+    href: "/dashboard/super-admin/ride-billing-wallet",
+    Icon: BillingIcon,
+    description:
+      "Ride settlement engine, cash toggle, negative-wallet thresholds & policy audit trail",
+    color: "text-amber-700",
+    bgColor: "bg-amber-50 hover:bg-amber-100",
+  },
 
   // Document verification (Cashfree auto + manual fallback + agent workflow).
   // Single entry-point into the verification hub — inside, the four sub-tools

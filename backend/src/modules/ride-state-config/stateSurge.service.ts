@@ -28,6 +28,10 @@ export type AppliedStateSurge = {
   surgeType: "fixed" | "percentage";
   amount: number;
   appliedAmount: number;
+  /** Phase 3 — who pays this surge amount. */
+  fundingMode: "CUSTOMER_100" | "COMPANY_100" | "SHARED";
+  customerShareAmount: number;
+  companyShareAmount: number;
 };
 
 export function resolveStateSurges(args: {
@@ -44,6 +48,10 @@ export function resolveStateSurges(args: {
 }): {
   appliedSurges: AppliedStateSurge[];
   surgeTotal: number;
+  /** Sum of customer-funded portions across all applied surges (Phase 3). */
+  customerShareTotal: number;
+  /** Sum of company-funded portions across all applied surges (Phase 3). */
+  companyShareTotal: number;
   surgeCapped: boolean;
   /** Active surges exist but rider is ineligible for all of them (e.g. max-only). */
   activeSurgesRequireMaxOnly: boolean;
@@ -56,6 +64,8 @@ export function resolveStateSurges(args: {
     return {
       appliedSurges: [],
       surgeTotal: 0,
+      customerShareTotal: 0,
+      companyShareTotal: 0,
       surgeCapped: false,
       activeSurgesRequireMaxOnly: true,
     };
@@ -109,26 +119,53 @@ export function resolveStateSurges(args: {
         : round2(Math.max(0, cfg.amount));
 
     if (appliedAmount <= 0) continue;
+    // Phase 3 — split each surge's amount by its configured funding mode. If
+    // the row predates migration 0465, mapSurge collapses to CUSTOMER_100 so
+    // customerShareAmount === appliedAmount.
+    const customerPct =
+      cfg.fundingMode === "CUSTOMER_100"
+        ? 100
+        : cfg.fundingMode === "COMPANY_100"
+          ? 0
+          : Math.max(0, Math.min(100, cfg.customerSharePct));
+    const customerShareAmount = round2((appliedAmount * customerPct) / 100);
+    const companyShareAmount = round2(appliedAmount - customerShareAmount);
     applied.push({
       surgeId: cfg.id,
       name: cfg.name,
       surgeType: cfg.surgeType,
       amount: cfg.amount,
       appliedAmount,
+      fundingMode: cfg.fundingMode,
+      customerShareAmount,
+      companyShareAmount,
     });
   }
 
   let surgeTotal = round2(applied.reduce((s, x) => s + x.appliedAmount, 0));
+  let customerShareTotal = round2(
+    applied.reduce((s, x) => s + x.customerShareAmount, 0)
+  );
+  let companyShareTotal = round2(
+    applied.reduce((s, x) => s + x.companyShareAmount, 0)
+  );
   let surgeCapped = false;
   const cap = args.maxTotalSurgeAmount;
   if (cap != null && cap >= 0 && surgeTotal > cap) {
+    // Cap applies to the total. Scale customer/company shares proportionally
+    // so their sum still equals the capped total.
+    const scale = surgeTotal > 0 ? cap / surgeTotal : 0;
     surgeTotal = round2(cap);
+    customerShareTotal = round2(customerShareTotal * scale);
+    companyShareTotal = round2(surgeTotal - customerShareTotal);
     surgeCapped = true;
   }
 
   return {
     appliedSurges: applied,
     surgeTotal,
+    customerShareTotal,
+    companyShareTotal,
     surgeCapped,
     activeSurgesRequireMaxOnly:
       activeSurgeCount > 0 && riderEligibleActiveSurgeCount === 0,

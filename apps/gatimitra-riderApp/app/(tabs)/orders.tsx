@@ -46,6 +46,7 @@ import {
   openRazorpayCheckout,
   isNativeRazorpayAvailable,
   extractRazorpayError,
+  isRazorpayUserCancel,
 } from "@/src/lib/razorpay-native";
 import { useRiderPenaltyPayment } from "@/src/hooks/useRiderPenaltyPayment";
 import { useRiderProfile } from "@/src/hooks/useRiderProfile";
@@ -180,7 +181,10 @@ export default function OrdersScreen() {
       if (!isNativeRazorpayAvailable()) {
         Alert.alert(
           t("home.penaltyPayFailedTitle", "Payment failed"),
-          t("home.penaltyPayNativeMissing", "Please update the app to complete this payment.")
+          t(
+            "home.penaltyPayNativeMissing",
+            "Native Razorpay is not available in this build. Please install the latest Play Store / APK build (not Expo Go)."
+          )
         );
         setPenaltyPaying(false);
         return;
@@ -206,14 +210,21 @@ export default function OrdersScreen() {
         );
       } catch (rzpErr) {
         const { code, description } = extractRazorpayError(rzpErr);
-        // User cancelled or gateway failed — record the attempt for audit.
         void penaltyPayment.recordAttempt
           .mutateAsync({
             razorpayOrderId: order.orderId,
-            status: "cancelled",
+            status: isRazorpayUserCancel(rzpErr) ? "cancelled" : "failed",
             reason: description || code || "cancelled",
           })
           .catch(() => undefined);
+        if (!isRazorpayUserCancel(rzpErr)) {
+          Alert.alert(
+            t("home.penaltyPayFailedTitle", "Payment failed"),
+            description ||
+              code ||
+              t("home.penaltyPayFailedMessage", "Could not start payment. Try again.")
+          );
+        }
         setPenaltyPaying(false);
       }
     } catch (err) {
@@ -423,12 +434,14 @@ export default function OrdersScreen() {
       try {
         const { status } = await Location.getForegroundPermissionsAsync();
         const enabled = await Location.hasServicesEnabledAsync();
-        if (status !== "granted" || !enabled) {
+        if (status !== "granted") {
+          // Permission problem — the native GPS dialog cannot grant permission,
+          // so guide the rider to Settings.
           if (!alertShown) {
             alertShown = true;
             Alert.alert(
               t("location.required"),
-              enabled ? t("location.permissionDenied") : t("location.servicesMessage"),
+              t("location.permissionDenied"),
               [
                 {
                   text: t("location.openSettings"),
@@ -441,6 +454,10 @@ export default function OrdersScreen() {
               { cancelable: false }
             );
           }
+        } else if (!enabled) {
+          // GPS off — handled by the "GPS Disabled" gate + auto-recovery (native
+          // turn-on dialog + poll). Skip the intrusive alert to avoid a double prompt.
+          alertShown = false;
         } else {
           alertShown = false;
           if (state.status !== "tracking") void tracker.start();
@@ -488,10 +505,71 @@ export default function OrdersScreen() {
     }
   }, []);
 
+  // Google-Maps-style: pop the native "Turn on location" system dialog IN-APP
+  // (Android) instead of dumping the rider on the Settings screen. On success the
+  // OS enables GPS and we immediately restart the watch. `enableNetworkProviderAsync`
+  // rejects if the rider declines — we swallow that and leave the fallback UI.
+  // iOS has no per-app GPS toggle, so fall back to app settings there.
+  const handleTurnOnGps = useCallback(async () => {
+    setCheckingLocation(true);
+    try {
+      if (Platform.OS === "android") {
+        await Location.enableNetworkProviderAsync();
+      } else {
+        await Linking.openURL("app-settings:");
+      }
+      await tracker.start();
+    } catch {
+      /* rider dismissed the dialog, or it is unavailable — keep the gate UI */
+    } finally {
+      setCheckingLocation(false);
+    }
+  }, [tracker]);
+
   const handleRecenter = useCallback(() => {
     mapRef.current?.recenter();
     if (state.status !== "tracking") void tracker.start();
   }, [state.status, tracker]);
+
+  // GPS-off recovery for the "GPS Disabled" gate. While it is showing:
+  //   (1) proactively pop the native turn-on dialog once (like Google Maps), and
+  //   (2) keep polling so that if the rider enables GPS by ANY means — the dialog,
+  //       the quick-settings shade, or Settings — the map recovers automatically.
+  // The engine only re-checks GPS when start() is called; off-duty nothing calls
+  // it unless the app is backgrounded+foregrounded, which is why the rider had to
+  // kill/reopen. This poll fixes that regardless of duty or AppState.
+  const gpsAutoPromptRef = useRef(false);
+  useEffect(() => {
+    if (state.status !== "services_disabled") {
+      gpsAutoPromptRef.current = false;
+      return;
+    }
+    let cancelled = false;
+
+    if (!gpsAutoPromptRef.current && Platform.OS === "android") {
+      gpsAutoPromptRef.current = true;
+      void handleTurnOnGps();
+    }
+
+    const recover = async () => {
+      try {
+        if (!cancelled && (await Location.hasServicesEnabledAsync())) {
+          void tracker.start();
+        }
+      } catch {
+        /* ignore transient errors */
+      }
+    };
+    const intervalId = setInterval(recover, 2500);
+    const sub = AppState.addEventListener("change", (s) => {
+      if (s === "active") void recover();
+    });
+    return () => {
+      cancelled = true;
+      clearInterval(intervalId);
+      sub.remove();
+    };
+  }, [state.status, tracker, handleTurnOnGps]);
 
   if (state.status === "permission_denied") {
     return (
@@ -513,8 +591,20 @@ export default function OrdersScreen() {
       <SafeAreaView style={styles.permissionScreen}>
         <Text style={styles.permissionTitle}>{t("location.gpsDisabled")}</Text>
         <Text style={styles.permissionSub}>{t("location.gpsDisabledMessage")}</Text>
-        <Button onPress={() => void tracker.start()} style={{ marginTop: 16 }}>
-          {t("location.turnedOn")}
+        <Button
+          onPress={() => void handleTurnOnGps()}
+          style={{ marginTop: 16 }}
+          disabled={checkingLocation}
+        >
+          {t("location.turnOnGps", "Turn On Location")}
+        </Button>
+        <Button
+          onPress={handleEnableLocation}
+          variant="outline"
+          style={{ marginTop: 12 }}
+          disabled={checkingLocation}
+        >
+          {t("location.openSettings")}
         </Button>
       </SafeAreaView>
     );

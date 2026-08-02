@@ -3,6 +3,7 @@
  * shared `@gatimitra/expo-push-kit` controller helpers (single source of truth).
  */
 
+import { Platform } from "react-native";
 import {
   readNotificationPermission,
   requestNotificationPermission,
@@ -11,6 +12,10 @@ import {
 import Constants from "expo-constants";
 
 function androidPackage(): string | undefined {
+  // Expo Go host owns notification permission toggles — open that package's settings.
+  if (Constants.appOwnership === "expo") {
+    return "host.exp.exponent";
+  }
   return (
     Constants.expoConfig?.android?.package ||
     (Constants.manifest as { android?: { package?: string } } | null)?.android?.package ||
@@ -61,5 +66,15 @@ export async function getNotificationPermissions() {
 }
 
 export async function openSharedNotificationSettings(): Promise<void> {
+  // Prefer rider androidIntents (Expo Go package-aware) when available.
+  if (Platform.OS === "android") {
+    try {
+      const { openNotificationPermissionSettings } = await import("./androidIntents");
+      await openNotificationPermissionSettings();
+      return;
+    } catch (error) {
+      console.warn("androidIntents notification settings failed, using push-kit:", error);
+    }
+  }
   await openNotificationSettings(androidPackage());
 }

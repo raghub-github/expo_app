@@ -58,6 +58,8 @@ export default function PermissionRequestScreen() {
   const [locationIssue, setLocationIssue] = useState<LocationBlockingReason | null>(null);
   const progressAnim = useRef(new Animated.Value(0)).current;
   const pendingSettingsReturnRef = useRef(false);
+  /** Prevents Allow + AppState recheck from advancing the same step twice. */
+  const advancingStepRef = useRef(false);
 
   useEffect(() => {
     if (!hasRequestedPermissions || !permissionHydrated) return;
@@ -99,6 +101,8 @@ export default function PermissionRequestScreen() {
   }, [session, setPermissions, setHasRequestedPermissions]);
 
   const handleNextStep = useCallback(() => {
+    advancingStepRef.current = false;
+    pendingSettingsReturnRef.current = false;
     if (currentStep < onboardingSteps.length - 1) {
       setCurrentStep((prev) => prev + 1);
     } else {
@@ -116,15 +120,20 @@ export default function PermissionRequestScreen() {
     ) {
       return;
     }
+    if (advancingStepRef.current) return;
     if (step) {
       setPermissionStepGranted(step.key, false);
     }
     pendingSettingsReturnRef.current = false;
+    advancingStepRef.current = true;
     handleNextStep();
   }, [currentStep, onboardingSteps, handleNextStep, setPermissionStepGranted]);
 
   const applyStepGranted = useCallback(
     (stepKey: PermissionStepKey) => {
+      if (advancingStepRef.current) return;
+      advancingStepRef.current = true;
+      pendingSettingsReturnRef.current = false;
       setPermissionStepGranted(stepKey, true);
       setTimeout(() => handleNextStep(), 400);
     },
@@ -166,7 +175,10 @@ export default function PermissionRequestScreen() {
       }
       setLocationIssue(null);
       if (advanceOnSuccess) {
-        setTimeout(() => handleNextStep(), 400);
+        if (!advancingStepRef.current) {
+          advancingStepRef.current = true;
+          setTimeout(() => handleNextStep(), 400);
+        }
       }
       return true;
     },
@@ -174,6 +186,7 @@ export default function PermissionRequestScreen() {
   );
 
   const recheckCurrentStep = useCallback(async (): Promise<boolean> => {
+    if (advancingStepRef.current) return false;
     const step = onboardingSteps[currentStep];
     if (!step) return false;
 
@@ -182,7 +195,19 @@ export default function PermissionRequestScreen() {
     }
 
     const check = await smartPermissionHandler.checkPermission(step.key);
+
+    // OEM / settings-gated steps: expo-battery (and soft overlay cache) can
+    // false-report granted. Only complete these after Allow sent the user to
+    // Settings (pendingSettingsReturnRef), never on a random AppState flicker.
+    const settingsGatedStep =
+      step.key === "battery_optimization" ||
+      step.key === "background_running" ||
+      step.key === "display_over_apps";
+
     if (check.status === "granted") {
+      if (settingsGatedStep && !pendingSettingsReturnRef.current) {
+        return false;
+      }
       // Only persist granted when OS actually reports granted (no fake undetermined).
       await smartPermissionHandler.markPermissionGranted(step.key);
       applyStepGranted(step.key);
@@ -203,16 +228,13 @@ export default function PermissionRequestScreen() {
       return true;
     }
 
-    if (
-      step.key === "notifications" &&
-      pendingSettingsReturnRef.current &&
-      check.status !== "denied"
-    ) {
-      // Re-read after settings; only advance if truly granted (handled above).
-      pendingSettingsReturnRef.current = false;
+    // Notifications / other steps: keep waiting until OS reports granted.
+    // Do not clear pendingSettingsReturnRef while the user may still be
+    // enabling the toggle — only clear when we complete or leave the step.
+    if (!settingsGatedStep && !pendingSettingsReturnRef.current) {
+      return false;
     }
 
-    pendingSettingsReturnRef.current = false;
     return false;
   }, [
     applyLocationStatus,
@@ -237,9 +259,12 @@ export default function PermissionRequestScreen() {
       await new Promise((resolve) => setTimeout(resolve, 200));
 
       if (pipeline.enabled && pipeline.fixAcquired) {
-        setPermissionStepGranted("location", true);
-        setLocationIssue(null);
-        setTimeout(() => handleNextStep(), 400);
+        if (!advancingStepRef.current) {
+          advancingStepRef.current = true;
+          setPermissionStepGranted("location", true);
+          setLocationIssue(null);
+          setTimeout(() => handleNextStep(), 400);
+        }
         return;
       }
 
@@ -266,6 +291,8 @@ export default function PermissionRequestScreen() {
       if (step.key === "location") {
         const ok = await smartPermissionHandler.isLocationFullyEnabled();
         if (cancelled || !ok.enabled) return;
+        if (advancingStepRef.current) return;
+        advancingStepRef.current = true;
         setPermissionStepGranted("location", true);
         setTimeout(() => {
           if (!cancelled) handleNextStep();
@@ -284,6 +311,8 @@ export default function PermissionRequestScreen() {
 
       const check = await smartPermissionHandler.checkPermission(step.key);
       if (cancelled || check.status !== "granted") return;
+      if (advancingStepRef.current) return;
+      advancingStepRef.current = true;
       setPermissionStepGranted(step.key, true);
       await smartPermissionHandler.markPermissionGranted(step.key);
       setTimeout(() => {
@@ -338,16 +367,21 @@ export default function PermissionRequestScreen() {
     }
 
     setLoading(true);
+    // Mark before awaiting Intents so AppState "active" after Settings can complete the step.
+    pendingSettingsReturnRef.current = true;
     try {
       const grantedNow = await smartPermissionHandler.handleAllow(step.key);
       if (grantedNow) {
         pendingSettingsReturnRef.current = false;
         applyStepGranted(step.key);
       } else {
+        // Stay on this step until OS reports granted (or overlay soft-accept).
         pendingSettingsReturnRef.current = true;
       }
     } catch (error) {
       console.warn("Error handling allow:", error);
+      // Still treat as settings-pending so a later return can re-check.
+      pendingSettingsReturnRef.current = true;
     } finally {
       setLoading(false);
     }

@@ -60,6 +60,8 @@ export class SmartPermissionHandler {
     }
   }
 
+  private displayOverAppsGuideAttempt = 0;
+
   async handleAllow(stepKey: PermissionStepKey): Promise<boolean> {
     if (stepKey === "location") {
       const result = await this.runLocationAllowPipeline();
@@ -76,6 +78,10 @@ export class SmartPermissionHandler {
 
     if (stepKey === "background_running") {
       return this.handleBackgroundSettingsAllowAction("background_running");
+    }
+
+    if (stepKey === "display_over_apps") {
+      return this.handleDisplayOverAppsAllowAction();
     }
 
     const check = await this.checkPermission(stepKey);
@@ -106,18 +112,39 @@ export class SmartPermissionHandler {
   }
 
   /**
+   * Overlay permission cannot be read via Expo APIs. Always open the exact
+   * MANAGE_OVERLAY_PERMISSION screen; completion is soft-accepted on AppState return.
+   */
+  async handleDisplayOverAppsAllowAction(): Promise<boolean> {
+    const check = await this.checkDisplayOverApps();
+    if (check.status === "granted" && this.displayOverAppsGuideAttempt > 0) {
+      return true;
+    }
+    this.displayOverAppsGuideAttempt += 1;
+    await openDisplayOverOtherAppsSettings();
+    return false;
+  }
+
+  /**
    * Battery Optimization Allow:
-   * 1) Read live PowerManager state (expo-battery)
-   * 2) If already unrestricted → complete
-   * 3) 1st Allow → ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS
-   * 4) Later Allows → OEM / ignore-list / app Battery settings
-   * 5) Re-read OS; only return true when unrestricted
+   * expo-battery / OEM PowerManager reads are unreliable (especially MIUI) and
+   * can false-report "unrestricted". Never skip opening the real system UI on
+   * the first Allow tap — only trust "granted" after we've opened settings at
+   * least once in this session.
+   *
+   * 1) 1st Allow → ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS (exact dialog)
+   * 2) Later Allows → ignore-list / OEM Battery / app details
+   * 3) Re-read OS; return true only when unrestricted after a settings visit
    */
   private batteryOptimizationGuideAttempt = 0;
+  private backgroundRunningGuideAttempt = 0;
 
   async handleBatteryOptimizationAllowAction(): Promise<boolean> {
     let check = await this.checkBatteryOptimization();
-    if (check.status === "granted") {
+
+    // Only trust a live "granted" after the user has been sent to the system UI
+    // at least once (avoids silent skip on false-positive unrestricted).
+    if (check.status === "granted" && this.batteryOptimizationGuideAttempt > 0) {
       this.batteryOptimizationGuideAttempt = 0;
       await this.markPermissionGranted("battery_optimization");
       return true;
@@ -133,60 +160,67 @@ export class SmartPermissionHandler {
       await this.markPermissionGranted("battery_optimization");
       return true;
     }
+    // Stay on step — AppState return will re-check after the user enables it.
     return false;
   }
 
   /**
    * Background Running:
-   * Always open the real system UI when not already granted; never fake success.
+   * Always open the real system UI. Do not trust a first-read "granted" from the
+   * shared battery signal (same OEM false-positive class as battery step).
    * AppState return path re-reads OS state via checkPermission.
    */
   async handleBackgroundSettingsAllowAction(
     stepKey: "battery_optimization" | "background_running"
   ): Promise<boolean> {
+    if (stepKey === "battery_optimization") {
+      return this.handleBatteryOptimizationAllowAction();
+    }
+
     let check = await this.checkPermission(stepKey);
-    if (check.status === "granted") {
+    if (check.status === "granted" && this.backgroundRunningGuideAttempt > 0) {
       await this.markPermissionGranted(stepKey);
+      this.backgroundRunningGuideAttempt = 0;
       return true;
     }
 
+    this.backgroundRunningGuideAttempt += 1;
     await this.openSettingsForStep(stepKey);
     // Give the OS a beat after the intent returns (some OEMs grant sync).
     await new Promise((r) => setTimeout(r, 400));
     check = await this.checkPermission(stepKey);
     if (check.status === "granted") {
       await this.markPermissionGranted(stepKey);
+      this.backgroundRunningGuideAttempt = 0;
       return true;
     }
     return false;
   }
 
+  /**
+   * Notifications Allow:
+   * 1) If already granted → complete
+   * 2) If OS can still show the runtime dialog → request it
+   * 3) If still not granted → always open the exact app notification settings
+   *    page (never a silent no-op — Expo Go / blocked / denied all escalate)
+   */
   async handleNotificationAllowAction(): Promise<boolean> {
     let check = await this.checkNotificationPermission();
     if (check.status === "granted") {
       return true;
     }
 
-    // First launch / still re-askable: show the OS runtime dialog and wait for
-    // the user's choice.
+    // Prefer the OS runtime dialog while it is still available.
     if (check.canAskAgain) {
       await this.requestPermission("notifications");
       check = await this.checkNotificationPermission();
       if (check.status === "granted") {
         return true;
       }
-      // The user dismissed/denied but the OS can still prompt again later — do
-      // NOT bounce them into system Settings now. On some OEMs (e.g. MIUI) that
-      // jump throws the "app wasn't found in the list of installed apps" toast,
-      // and it's confusing to leave the app right after the dialog. Stay on the
-      // step; the next Allow tap escalates once it's truly blocked.
-      if (check.canAskAgain) {
-        return false;
-      }
     }
 
-    // Notifications are blocked (cannot ask again) → open the app's notification
-    // settings so the user can enable them manually.
+    // Still not granted (denied, blocked, Expo Go unavailable, or dialog no-op):
+    // take the user to the exact notification settings screen for this app.
     await openSharedNotificationSettings();
     return false;
   }

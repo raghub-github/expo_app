@@ -862,6 +862,34 @@ export const riderApi = {
   },
 
   /**
+   * Confirm cash collected from customer for a delivered ride.
+   * Triggers the Ride Settlement Engine: rider wallet is debited by the
+   * company_receivable only (not the full fare); the rider keeps the earnings
+   * in cash. Idempotent server-side.
+   */
+  async confirmRideCashCollected(orderId: string) {
+    const client = createApiClient();
+    const responseSchema = z.object({
+      ok: z.literal(true),
+      alreadySettled: z.boolean(),
+      orderId: z.string(),
+      customerBill: z.number(),
+      companyReceivable: z.number(),
+      walletDebit: z.number(),
+      walletBalanceAfter: z.number().nullable(),
+      settlementId: z.string(),
+    });
+    return client.request<z.infer<typeof responseSchema>>(
+      `/v1/rider/orders/${orderId}/ride/confirm-cash-collected`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        responseSchema,
+      }
+    );
+  },
+
+  /**
    * Get earnings summary
    */
   async getEarningsSummary() {

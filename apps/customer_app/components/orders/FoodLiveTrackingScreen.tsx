@@ -248,7 +248,7 @@ export function FoodLiveTrackingScreen({
   const orderStatus = normalizeCustomerOrderStatus(order.status);
   /** Assigned delivery partner on the order — keep dashed store↔home map until then. */
   const hasRider = Boolean(
-    order.rider && (order.rider.id || order.rider.name || order.rider.phone)
+    order.rider && (order.rider.name || order.rider.phone)
   );
   const riderArrived = isRiderAtCustomerStatus(orderStatus);
   const showDeliveryOtpNow = shouldShowCustomerDeliveryOtp(orderStatus, order.deliveryOtp);
