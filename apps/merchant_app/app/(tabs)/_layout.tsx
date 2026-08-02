@@ -50,8 +50,6 @@ export default function TabsLayout() {
         lazy: false,
         freezeOnBlur: false,
         animation: "none",
-        /** Never swipe between Home / Orders / Catalog — Orders owns its own stage swipe. */
-        gestureEnabled: false,
         tabBarActiveTintColor: GatiMitraMerchant.tabActive,
         tabBarInactiveTintColor: GatiMitraMerchant.tabInactive,
         tabBarLabelStyle: {
