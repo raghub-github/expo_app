@@ -8,6 +8,7 @@ import { RIDER_AVAILABLE_ORDERS_QUERY_KEY } from "@/src/hooks/useOrders";
 import { showAcceptedByAnotherRiderToast } from "@/src/lib/riderDispatchTakenToast";
 import { riderDispatchLog, riderDispatchWarn } from "@/src/lib/rider-dispatch-log";
 import { useRiderWsStore } from "@/src/stores/riderWsStore";
+import { useRiderToastStore } from "@/src/stores/riderToastStore";
 
 const RECONNECT_BASE_MS = 3_000;
 const RECONNECT_MAX_MS = 60_000;
@@ -223,8 +224,16 @@ export function RiderDispatchRealtime() {
               reason?: string;
               estimatedEarning?: number;
               pricingEngine?: string;
+              message?: string;
             };
             if (payload.type === "pong") return;
+            // Tracking watchdog warning (location off / wrong direction / no
+            // movement). Backend re-emits at most every N min, so surface each
+            // one directly — it warns the rider their order may be auto-cancelled.
+            if (payload.type === "tracking.warning.v1" && payload.message) {
+              useRiderToastStore.getState().showToast(String(payload.message));
+              return;
+            }
             if (payload.type === "dispatch_offer" || payload.type === "incoming_order") {
               riderDispatchLog("dispatch event received", {
                 type: payload.type,
