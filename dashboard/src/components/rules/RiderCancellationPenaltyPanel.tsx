@@ -18,6 +18,7 @@ import {
   writeRiderPenaltyCache,
 } from "@/components/rules/rider-penalty-engine-cache";
 import { MerchantCancellationCompensationPanel } from "@/components/rules/MerchantCancellationCompensationPanel";
+import { RiderAutoCancelPanel } from "@/components/rules/RiderAutoCancelPanel";
 import type {
   PenaltyCatalogChannel,
   PenaltyPartyCode,
@@ -99,6 +100,9 @@ export function RiderCancellationPenaltyPanel({ party, onPartyChange, refreshKey
   const [pickupCollapsed, setPickupCollapsed] = useState(false);
   const [draft, setDraft] = useState<PenaltyDraft | null>(null);
   const [hydrated, setHydrated] = useState(false);
+  // "Auto-cancelled by engine" is a separate view (per-service geo-engine config),
+  // not a catalog channel — kept out of `channel` so reason-catalog logic is untouched.
+  const [engineActive, setEngineActive] = useState(false);
 
   const applyPayload = useCallback((next: RiderPenaltyEnginePayload) => {
     setMigrationRequired(Boolean(next.migrationRequired));
@@ -272,36 +276,94 @@ export function RiderCancellationPenaltyPanel({ party, onPartyChange, refreshKey
         </div>
       ) : null}
 
-      <div
-        className="flex items-start gap-3 rounded-lg border px-4 py-3 text-sm"
-        style={{ backgroundColor: re.accentSoft, borderColor: re.accentBorder, color: "#4338CA" }}
-      >
-        <Info className="mt-0.5 h-4 w-4 shrink-0 text-[#5D3FD3]" aria-hidden />
-        <p>
-          Enabled scenarios and checked reasons are live policy — no separate approval step.
-          Penalties apply only when the scenario is on and the cancellation reason is enabled below.
-          Use the <strong>App</strong> channel for rider-app cancel reasons; toggles sync across
-          matching web/app reason labels.
-        </p>
-      </div>
+      {!engineActive && (
+        <div
+          className="flex items-start gap-3 rounded-lg border px-4 py-3 text-sm"
+          style={{ backgroundColor: re.accentSoft, borderColor: re.accentBorder, color: "#4338CA" }}
+        >
+          <Info className="mt-0.5 h-4 w-4 shrink-0 text-[#5D3FD3]" aria-hidden />
+          <p>
+            Enabled scenarios and checked reasons are live policy — no separate approval step.
+            Penalties apply only when the scenario is on and the cancellation reason is enabled below.
+            Use the <strong>App</strong> channel for rider-app cancel reasons; toggles sync across
+            matching web/app reason labels.
+          </p>
+        </div>
+      )}
 
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex flex-wrap items-center gap-2">
-          <RiderChannelToggle channel={channel} onChange={setChannel} />
-          <RiderScenarioToggle scenario={activeScenario} onChange={setActiveScenario} />
+          <div
+            className="inline-flex rounded-lg border border-slate-200 bg-white p-1 shadow-sm"
+            role="tablist"
+            aria-label="Cancellation source"
+          >
+            <button
+              type="button"
+              role="tab"
+              aria-selected={!engineActive && channel === "web"}
+              onClick={() => {
+                setEngineActive(false);
+                setChannel("web");
+              }}
+              className={`rounded-md px-3.5 py-2 text-sm font-medium transition-colors ${
+                !engineActive && channel === "web"
+                  ? "bg-emerald-600 text-white shadow-sm"
+                  : "text-slate-600 hover:bg-slate-50 hover:text-slate-900"
+              }`}
+            >
+              Web Cancellation
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={!engineActive && channel === "app"}
+              onClick={() => {
+                setEngineActive(false);
+                setChannel("app");
+              }}
+              className={`rounded-md px-3.5 py-2 text-sm font-medium transition-colors ${
+                !engineActive && channel === "app"
+                  ? "bg-emerald-600 text-white shadow-sm"
+                  : "text-slate-600 hover:bg-slate-50 hover:text-slate-900"
+              }`}
+            >
+              App Cancellation
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={engineActive}
+              onClick={() => setEngineActive(true)}
+              className={`rounded-md px-3.5 py-2 text-sm font-medium transition-colors ${
+                engineActive
+                  ? "bg-[#5D3FD3] text-white shadow-sm"
+                  : "text-slate-600 hover:bg-slate-50 hover:text-slate-900"
+              }`}
+            >
+              Auto-cancelled by engine
+            </button>
+          </div>
+          {!engineActive && (
+            <RiderScenarioToggle scenario={activeScenario} onChange={setActiveScenario} />
+          )}
         </div>
-        <button
-          type="button"
-          onClick={() => void save()}
-          disabled={saving || migrationRequired}
-          className={re.btnPrimary}
-        >
-          {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
-          Save rider penalties
-        </button>
+        {!engineActive && (
+          <button
+            type="button"
+            onClick={() => void save()}
+            disabled={saving || migrationRequired}
+            className={re.btnPrimary}
+          >
+            {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+            Save rider penalties
+          </button>
+        )}
       </div>
 
-      {activeScenario === "AFTER_ACCEPT_DISPATCH" ? (
+      {engineActive ? (
+        <RiderAutoCancelPanel />
+      ) : activeScenario === "AFTER_ACCEPT_DISPATCH" ? (
         <section className={re.card}>
           <div className="px-5 py-4">
             <div className="flex items-center justify-between gap-4">

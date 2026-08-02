@@ -45,6 +45,7 @@ import { runStoreScheduleTick, runStoreScheduleTickForStore } from "./modules/me
 import { runOrderAcceptanceTimeoutTick } from "./services/order-acceptance-timeout.js";
 import { runOrderAutoAcceptTick } from "./services/order-auto-accept.js";
 import { runRideSearchTimeoutTick } from "./services/ride-search-timeout.js";
+import { runRiderTrackingWatchdogTick } from "./lib/rider-tracking-watchdog.service.js";
 import { runOrderDispatchWaveTick } from "./lib/order-dispatch-tick.js";
 import { withLock, closeRedis } from "@gatimitra/redis";
 import { incrCounter, renderPrometheus } from "@gatimitra/logger";
@@ -767,6 +768,7 @@ let etaLiveTickInterval: ReturnType<typeof setInterval> | null = null;
 let subscriptionRenewalInterval: ReturnType<typeof setInterval> | null = null;
 let merchantSubscriptionRenewalInterval: ReturnType<typeof setInterval> | null = null;
 let riderLocationMaintenanceInterval: ReturnType<typeof setInterval> | null = null;
+let riderTrackingWatchdogInterval: ReturnType<typeof setInterval> | null = null;
 let shuttingDown = false;
 let inFlightRequests = 0;
 
@@ -813,6 +815,7 @@ const gracefulShutdown = async (signal: string) => {
   if (subscriptionRenewalInterval) { clearInterval(subscriptionRenewalInterval); subscriptionRenewalInterval = null; }
   if (merchantSubscriptionRenewalInterval) { clearInterval(merchantSubscriptionRenewalInterval); merchantSubscriptionRenewalInterval = null; }
   if (riderLocationMaintenanceInterval) { clearInterval(riderLocationMaintenanceInterval); riderLocationMaintenanceInterval = null; }
+  if (riderTrackingWatchdogInterval) { clearInterval(riderTrackingWatchdogInterval); riderTrackingWatchdogInterval = null; }
 
   const drainStart = Date.now();
   while (inFlightRequests > 0 && Date.now() - drainStart < SHUTDOWN_DRAIN_TIMEOUT_MS) {
@@ -966,6 +969,25 @@ try {
       .catch((err) => app.log.error({ err }, "ride_search_timeout_tick"));
   setTimeout(() => { void runRideSearchTickLocked(); }, 3_000);
   rideSearchTimeoutInterval = setInterval(() => { void runRideSearchTickLocked(); }, rideSearchTimeoutIntervalMs);
+
+  // Rider tracking watchdog — sweeps active pre-pickup sessions for location-off /
+  // no-movement / opposite-direction and warns the rider every N min per the
+  // per-service auto-cancel config. Detection + warnings only (Phase B); the
+  // auto-cancel + penalty step ships in Phase C. Inert until a service is enabled.
+  const riderTrackingWatchdogIntervalMs = 60_000;
+  const runRiderTrackingWatchdogLocked = () =>
+    withLock("tick:rider-tracking-watchdog", 55_000, () => runRiderTrackingWatchdogTick(app.log))
+      .then((result) => {
+        incrCounter(
+          "tick_runs_total",
+          "Polling tick outcomes by lock state",
+          1,
+          { tick: "rider_tracking_watchdog", outcome: result === null ? "skipped" : "ran" },
+        );
+      })
+      .catch((err) => app.log.error({ err }, "rider_tracking_watchdog_tick"));
+  setTimeout(() => { void runRiderTrackingWatchdogLocked(); }, 8_000);
+  riderTrackingWatchdogInterval = setInterval(() => { void runRiderTrackingWatchdogLocked(); }, riderTrackingWatchdogIntervalMs);
 
   // Referral reward queue poller (every 30s) + daily reconciliation (every 6h)
   const runReferralQueueTickLocked = () =>
