@@ -197,7 +197,9 @@ export async function saveRiderAutoCancelConfig(args: {
     }
 
     if (sets.length === 0) continue;
-    push("updated_at", new Date());
+    // Use the SQL now() literal — passing a JS Date through sql.unsafe()'s
+    // parameter serializer throws ("Received an instance of Date").
+    sets.push("updated_at = now()");
     if (args.updatedBy) push("updated_by", args.updatedBy);
 
     vals.push(patch.serviceType);
