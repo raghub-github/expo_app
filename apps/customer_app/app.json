@@ -44,9 +44,11 @@
       "permissions": [
         "POST_NOTIFICATIONS",
         "VIBRATE",
-        "RECEIVE_BOOT_COMPLETED",
-        "READ_SMS",
-        "RECEIVE_SMS"
+        "RECEIVE_BOOT_COMPLETED"
+      ],
+      "blockedPermissions": [
+        "android.permission.READ_SMS",
+        "android.permission.RECEIVE_SMS"
       ]
     },
     "web": {

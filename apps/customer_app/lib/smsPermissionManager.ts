@@ -9,7 +9,6 @@
  */
 
 import { Platform, PermissionsAndroid, Linking, InteractionManager } from "react-native";
-import Constants from "expo-constants";
 
 export type SmsPermissionStatus = "granted" | "denied" | "undetermined" | "not_applicable";
 
@@ -21,15 +20,19 @@ export type SmsAllowPipelineResult = {
   notApplicable: boolean;
 };
 
-function isExpoGo(): boolean {
-  return Constants.appOwnership === "expo";
-}
-
-/** READ_SMS cannot be granted in Expo Go; OTP still works via Retriever / manual entry. */
+/**
+ * READ_SMS is intentionally NOT used any more.
+ *
+ * It is a Google "restricted" permission: Play Protect blocks sideloaded
+ * installs that declare it ("access to sensitive data / financial fraud"),
+ * and Play Store review rejects it unless the app is a default SMS handler.
+ * OTP autofill already works permission-free via the native SMS autofill
+ * (`autoComplete="sms-otp"` / `textContentType="oneTimeCode"`), so the whole
+ * READ_SMS pipeline is disabled here. Returning false makes every caller
+ * treat SMS as "not applicable" and auto-skips the onboarding SMS step.
+ */
 export function isSmsReadPermissionApplicable(): boolean {
-  if (Platform.OS !== "android") return false;
-  if (isExpoGo()) return false;
-  return true;
+  return false;
 }
 
 async function openAppSettings(): Promise<void> {

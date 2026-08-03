@@ -52,8 +52,6 @@ module.exports = {
       permissions: [
         ...new Set([
           ...((appJson.expo.android?.permissions || []) as string[]),
-          "READ_SMS",
-          "RECEIVE_SMS",
           "POST_NOTIFICATIONS",
           "VIBRATE",
           "RECEIVE_BOOT_COMPLETED",
