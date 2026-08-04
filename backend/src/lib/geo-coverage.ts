@@ -1,15 +1,18 @@
 /**
- * Dispatch Engine — Phase 1: Geo & Pincode Coverage resolver.
+ * Dispatch Engine — Geo dispatch-EXTENSION resolver.
  *
- * Given a service + location descriptor (pincode/city/state/country), resolves the
- * effective fulfillment config, matched most-specific-first (pincode > city > state >
- * country). NULL radius/strategy columns fall back to the Phase 0 global config.
+ * IMPORTANT — reuse boundary: this does NOT decide whether food/parcel/ride is
+ * *enabled* at a location. That authority already exists in the geo hierarchy
+ * (states/districts/.../pincodes.is_food/parcel/ride_enabled) and is resolved by
+ * modules/geo/geoServiceAvailability.service.ts `resolveGeoServiceAvailability`
+ * (+ Prevent Services). geo_coverage only supplies the NEW dispatch attributes that
+ * hierarchy lacks: self-pickup / delivery / internal-rider / 3PL toggles and
+ * per-location service_radius / dispatch_radius / retry / strategy OVERRIDES.
  *
- * Behavior-preserving: with no coverage rows, resolution returns "enabled everywhere,
- * self-pickup + delivery + internal rider on, 3PL off, global defaults" — i.e. exactly
- * how the platform behaves today (no placement gating until an admin adds rows).
- *
- * Fresh DB read (no cache), consistent with the rest of the dispatch config layer.
+ * Matched most-specific-first (pincode > city > state > country). NULL override
+ * columns fall back to the Phase 0 global config. Behavior-preserving: with no rows,
+ * returns "self-pickup + delivery + internal rider on, 3PL off, global defaults" — so
+ * nothing changes until an admin adds rows. Fresh DB read (no cache).
  */
 
 import { getSql } from "../db/client.js";
