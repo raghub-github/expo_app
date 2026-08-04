@@ -54,6 +54,7 @@ export type DispatchOfferPayload = {
   surgeEarning?: number;
   appliedSurges?: { name: string; amount: number }[];
   customerTipAmount?: number;
+  prePickupEarning?: number;
   totalEarning?: number;
   pickupDistanceKm?: number;
   tripDistanceKm?: number;
@@ -79,6 +80,7 @@ function attachEarnings(
     surgeEarning: earnings.surgeEarning,
     appliedSurges: earnings.appliedSurges,
     customerTipAmount: earnings.customerTipAmount,
+    prePickupEarning: earnings.prePickupEarning,
     totalEarning: earnings.totalEarning,
     pickupDistanceKm: earnings.pickupDistanceKm,
     tripDistanceKm: earnings.tripDistanceKm,

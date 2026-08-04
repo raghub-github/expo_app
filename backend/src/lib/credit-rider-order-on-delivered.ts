@@ -256,6 +256,7 @@ export async function creditRiderOrderEarningOnDelivered(
       c.formatted_order_id,
       c.order_type,
       c.rider_earning,
+      c.rider_pre_pickup_allowance,
       c.fare_amount,
       c.tip_amount,
       c.billing_snapshot,
@@ -279,6 +280,7 @@ export async function creditRiderOrderEarningOnDelivered(
     formatted_order_id?: string | null;
     order_type?: string | null;
     rider_earning?: unknown;
+    rider_pre_pickup_allowance?: unknown;
     fare_amount?: unknown;
     tip_amount?: unknown;
     billing_snapshot?: unknown;
@@ -373,6 +375,13 @@ export async function creditRiderOrderEarningOnDelivered(
   }
 
   deliveryFee = round2(Math.max(0, Number(deliveryFee ?? 0)));
+  // Phase 4b: pay the first-mile allowance snapshotted at accept (0 unless a pre-pickup
+  // rate was configured). Folded into the rider delivery credit so pickup + drop pay is
+  // one payout; the customer's price is never affected.
+  const prePickupAllowance = round2(Math.max(0, Number(row.rider_pre_pickup_allowance ?? 0)));
+  if (prePickupAllowance > 0) {
+    deliveryFee = round2(deliveryFee + prePickupAllowance);
+  }
   tipAmount = round2(Math.max(0, Number(tipAmount ?? 0)));
   displayId = displayId || orderIdText || String(coreId);
 

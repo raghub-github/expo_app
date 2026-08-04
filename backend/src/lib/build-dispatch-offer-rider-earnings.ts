@@ -16,6 +16,7 @@ import {
   resolveOrderRiderPayoutBreakdown,
   type OrderRiderPayoutService,
 } from "./resolve-order-rider-payout.js";
+import { computePrePickupAllowance } from "./pre-pickup-pay.js";
 import type { DispatchServiceType } from "./order-assignment-engine.js";
 
 export type DispatchOfferRiderEarnings = {
@@ -25,6 +26,8 @@ export type DispatchOfferRiderEarnings = {
   surgeEarning?: number;
   appliedSurges?: { name: string; amount: number }[];
   customerTipAmount?: number;
+  /** First-mile allowance estimate for this pickup distance (Phase 4b). Company-funded. */
+  prePickupEarning?: number;
   totalEarning: number;
   pickupDistanceKm: number;
   tripDistanceKm: number;
@@ -169,8 +172,17 @@ export async function buildDispatchOfferRiderEarnings(args: {
 
   if (payout == null || payout.finalAmount <= 0) return null;
 
+  // First-mile allowance estimate — SAME computation persisted at accept + paid on
+  // delivery, so the offer never promises more than the rider is paid. 0 unless a rate
+  // is configured.
+  const prePickup = await computePrePickupAllowance(
+    args.serviceType,
+    args.pickupDistanceMeters
+  ).catch(() => null);
+  const prePickupEarning = prePickup && prePickup.amount > 0 ? prePickup.amount : 0;
+
   const tripDistanceKm = Math.max(0, bookingTripKm ?? 0);
-  const total = payout.finalAmount + tip;
+  const total = payout.finalAmount + tip + prePickupEarning;
 
   return {
     estimatedEarning: total,
@@ -179,6 +191,7 @@ export async function buildDispatchOfferRiderEarnings(args: {
     surgeEarning: payout.surgeTotal > 0 ? payout.surgeTotal : undefined,
     appliedSurges: payout.appliedSurges.length > 0 ? payout.appliedSurges : undefined,
     customerTipAmount: tip > 0 ? tip : undefined,
+    prePickupEarning: prePickupEarning > 0 ? prePickupEarning : undefined,
     totalEarning: total,
     pickupDistanceKm,
     tripDistanceKm,
