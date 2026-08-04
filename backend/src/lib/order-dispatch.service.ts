@@ -424,7 +424,7 @@ export async function executeDispatchWave(sessionId: number): Promise<{
 export async function advanceDispatchWave(sessionId: number): Promise<boolean> {
   const sql = getSql();
   const sessions = (await sql`
-    SELECT id, order_core_id, service_type, current_wave, status
+    SELECT id, order_core_id, service_type, current_wave, status, created_at
     FROM order_dispatch_sessions
     WHERE id = ${sessionId}
     LIMIT 1
@@ -434,6 +434,7 @@ export async function advanceDispatchWave(sessionId: number): Promise<boolean> {
     service_type: string;
     current_wave: number;
     status: string;
+    created_at: string | Date;
   }>;
 
   const session = sessions[0];
@@ -455,11 +456,49 @@ export async function advanceDispatchWave(sessionId: number): Promise<boolean> {
   const currentWave = Math.max(1, Number(session.current_wave) || 1);
   const canExpand = await hasNextDispatchWave(serviceType, currentWave);
   if (!canExpand) {
+    // Phase 5: unified auto-retry. Food/parcel — once the last wave is exhausted with
+    // no accept, restart from wave 1 after retry_interval_seconds and keep re-offering
+    // until max_retry_duration_seconds elapses (from the dispatch session start), then
+    // stop. Non-destructive: it only re-offers (clears the per-session notification
+    // dedup so idle riders can be offered again). Ride keeps its own search-timeout /
+    // tip-boost flow and is never retried here.
+    if (serviceType !== "person_ride") {
+      const { fetchDispatchStrategyConfig } = await import("./dispatch-strategy-config.js");
+      const cfg = await fetchDispatchStrategyConfig(serviceType).catch(() => null);
+      const createdAtMs = session.created_at ? new Date(session.created_at).getTime() : Date.now();
+      const elapsedSec = Math.max(0, (Date.now() - createdAtMs) / 1000);
+      if (cfg && cfg.maxRetryDurationSeconds > 0 && elapsedSec < cfg.maxRetryDurationSeconds) {
+        const retryAt = toTimestamptzParam(Date.now() + cfg.retryIntervalSeconds * 1000);
+        await sql`
+          UPDATE order_dispatch_sessions
+          SET current_wave = 1, last_wave_at = NOW(), next_wave_at = ${retryAt}, updated_at = NOW()
+          WHERE id = ${sessionId}
+        `;
+        await sql`
+          DELETE FROM order_dispatch_rider_notifications WHERE session_id = ${sessionId}
+        `;
+        console.info(
+          "[dispatch] retry_cycle_scheduled",
+          JSON.stringify({
+            orderCoreId,
+            serviceType,
+            elapsedSec: Math.round(elapsedSec),
+            retryIntervalSeconds: cfg.retryIntervalSeconds,
+            maxRetryDurationSeconds: cfg.maxRetryDurationSeconds,
+          })
+        );
+        return true;
+      }
+    }
     await sql`
       UPDATE order_dispatch_sessions
       SET next_wave_at = NULL, updated_at = NOW()
       WHERE id = ${sessionId}
     `;
+    console.info(
+      "[dispatch] dispatch_exhausted",
+      JSON.stringify({ orderCoreId, serviceType })
+    );
     return false;
   }
 
