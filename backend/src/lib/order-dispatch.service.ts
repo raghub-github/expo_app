@@ -30,6 +30,7 @@ import {
   isOrderDispatchManualHold,
   setOrderDispatchManualHold,
 } from "./order-dispatch-manual-hold.js";
+import { recordDispatchEvent } from "./dispatch-events.js";
 
 export type DispatchSessionStatus = "active" | "accepted" | "expired" | "cancelled";
 
@@ -254,6 +255,12 @@ export async function completeOrderDispatch(
       AND status IN ('active', 'accepted')
   `;
 
+  void recordDispatchEvent({
+    orderCoreId,
+    eventType: "dispatch_completed",
+    metadata: { status },
+  });
+
   if (status === "expired" || status === "cancelled") {
     const { recordPendingDispatchOffersMissed } = await import(
       "./rider-dispatch-assignment-audit.js"
@@ -405,6 +412,15 @@ export async function executeDispatchWave(sessionId: number): Promise<{
     waveNumber,
     toNotify.map((r) => r.riderId)
   );
+  void recordDispatchEvent({
+    orderCoreId,
+    sessionId,
+    serviceType: target.serviceType,
+    eventType: "wave_dispatched",
+    waveNumber,
+    radiusMeters: target.effectiveRadiusMeters,
+    metadata: { newlyNotified: notified, eligibleWithinRadius: eligible.length },
+  });
   if (toNotify.length > 0) {
     await recordDispatchOffersSent({
       orderCoreId,
@@ -487,6 +503,16 @@ export async function advanceDispatchWave(sessionId: number): Promise<boolean> {
             maxRetryDurationSeconds: cfg.maxRetryDurationSeconds,
           })
         );
+        void recordDispatchEvent({
+          orderCoreId,
+          sessionId,
+          serviceType,
+          eventType: "retry_scheduled",
+          metadata: {
+            elapsedSec: Math.round(elapsedSec),
+            retryIntervalSeconds: cfg.retryIntervalSeconds,
+          },
+        });
         return true;
       }
     }
@@ -499,6 +525,13 @@ export async function advanceDispatchWave(sessionId: number): Promise<boolean> {
       "[dispatch] dispatch_exhausted",
       JSON.stringify({ orderCoreId, serviceType })
     );
+    void recordDispatchEvent({
+      orderCoreId,
+      sessionId,
+      serviceType,
+      eventType: "dispatch_exhausted",
+      waveNumber: currentWave,
+    });
     return false;
   }
 
@@ -534,6 +567,15 @@ export async function advanceDispatchWave(sessionId: number): Promise<boolean> {
       maxWaves: waveSettings.maxWaves,
     })
   );
+  void recordDispatchEvent({
+    orderCoreId,
+    sessionId,
+    serviceType,
+    eventType: "wave_expanded",
+    waveNumber: nextWave,
+    radiusMeters: nextRadius,
+    metadata: { fromWave: currentWave, toWave: nextWave, fromRadiusMeters: prevRadius },
+  });
 
   await executeDispatchWave(sessionId);
   return true;
