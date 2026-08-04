@@ -14,6 +14,7 @@ import { EditLocationModal } from "@/components/geo-admin/EditLocationModal";
 import { PlatformOfferMapModal } from "@/components/geo-admin/PlatformOfferMapModal";
 import { DeliveryFallbackPanel } from "@/components/geo-admin/DeliveryFallbackPanel";
 import { PreventServicesPanel } from "@/components/geo-admin/PreventServicesPanel";
+import { DispatchCoveragePanel } from "@/components/geo-admin/DispatchCoveragePanel";
 import { useGeoStatesQuery, useLazyGeoSearchQuery } from "@/store/api/geoAdminApi";
 import type { GeoChildRow, GeoSearchRow } from "@/lib/geo/geo-shared";
 import { GitBranch, LayoutList, MapPin, Plus, ShieldAlert, Truck } from "lucide-react";
@@ -22,10 +23,17 @@ import { Spinner } from "@/components/geo-admin/Loader";
 
 const GEO_VIEW_STORAGE_KEY = "geo_super_admin_view_tab";
 
-type GeoView = "tree" | "flat" | "fallback" | "prevent";
+type GeoView = "tree" | "flat" | "fallback" | "prevent" | "dispatch";
 
 function parseGeoView(value: string | null): GeoView | null {
-  if (value === "tree" || value === "flat" || value === "fallback" || value === "prevent") return value;
+  if (
+    value === "tree" ||
+    value === "flat" ||
+    value === "fallback" ||
+    value === "prevent" ||
+    value === "dispatch"
+  )
+    return value;
   return null;
 }
 
@@ -187,7 +195,9 @@ export default function GeoSuperAdminPage() {
             onClick={() => setAddOpen(true)}
             className={cn(
               "inline-flex w-full shrink-0 items-center justify-center gap-2 self-start rounded-lg border border-teal-600/20 bg-teal-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-teal-700 sm:w-auto sm:self-auto",
-              view === "fallback" || view === "prevent" ? "hidden" : null
+              view === "fallback" || view === "prevent" || view === "dispatch"
+                ? "hidden"
+                : null
             )}
           >
             <Plus className="h-4 w-4" aria-hidden />
@@ -197,7 +207,7 @@ export default function GeoSuperAdminPage() {
       </div>
 
       <div className="mx-auto flex w-full min-w-0 max-w-6xl flex-col gap-4 px-3 py-4 sm:px-4 sm:py-5">
-        {view !== "fallback" && view !== "prevent" ? (
+        {view === "tree" || view === "flat" ? (
           <FilterPanel
             states={states}
             stateId={stateId}
@@ -278,6 +288,21 @@ export default function GeoSuperAdminPage() {
               <ShieldAlert className="h-4 w-4 shrink-0" aria-hidden />
               <span className="truncate">Prevent Services</span>
             </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={view === "dispatch"}
+              onClick={() => setView("dispatch")}
+              className={cn(
+                "inline-flex min-h-[44px] min-w-0 flex-1 items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition sm:min-h-0 sm:flex-initial sm:px-3.5",
+                view === "dispatch"
+                  ? "bg-slate-900 text-white shadow-sm"
+                  : "text-slate-600 hover:bg-slate-50"
+              )}
+            >
+              <Truck className="h-4 w-4 shrink-0" aria-hidden />
+              <span className="truncate">Dispatch coverage</span>
+            </button>
           </div>
 
           {view === "flat" ? (
@@ -343,8 +368,10 @@ export default function GeoSuperAdminPage() {
           </div>
         ) : view === "fallback" ? (
           <DeliveryFallbackPanel />
-        ) : (
+        ) : view === "prevent" ? (
           <PreventServicesPanel />
+        ) : (
+          <DispatchCoveragePanel />
         )}
       </div>
 
