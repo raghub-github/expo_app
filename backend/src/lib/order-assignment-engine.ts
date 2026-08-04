@@ -737,6 +737,25 @@ export async function evaluateRiderDispatchEligibility(
   };
 }
 
+/** Active (non-terminal) order count per rider, normalized to a [0,1] workload score. */
+async function fetchRiderWorkloadScores(riderIds: number[]): Promise<Map<number, number>> {
+  const map = new Map<number, number>();
+  if (riderIds.length === 0) return map;
+  const sqlClient = getSql();
+  const rows = (await sqlClient`
+    SELECT rider_id, COUNT(*)::int AS cnt
+    FROM orders_core
+    WHERE rider_id = ANY(${riderIds}::int[])
+      AND status NOT IN ('delivered', 'cancelled', 'failed')
+    GROUP BY rider_id
+  `) as Array<{ rider_id: number; cnt: number }>;
+  for (const r of rows ?? []) {
+    const cnt = Number(r.cnt) || 0;
+    map.set(Number(r.rider_id), Math.min(1, cnt / 3));
+  }
+  return map;
+}
+
 /** Inverse of pool listing — eligible riders for one order at the current wave. */
 export async function listEligibleRidersForDispatchOrder(
   target: DispatchOrderTarget
@@ -784,6 +803,28 @@ export async function listEligibleRidersForDispatchOrder(
   }
 
   const sorted = eligible.sort((a, b) => a.distanceMeters - b.distanceMeters);
+
+  // Phase 3: optional weighted ordering. strategy 'nearest' (default) keeps pure
+  // distance; 'score'/'balanced'/'hybrid' re-rank by the configured weights. Only
+  // distance + current workload are gathered today; other signals stay neutral.
+  // Scoring never breaks dispatch — any failure falls back to nearest ordering.
+  let ordered: EligibleDispatchRider[] = sorted;
+  let strategyName = "nearest";
+  try {
+    const { fetchDispatchStrategyConfig } = await import("./dispatch-strategy-config.js");
+    const cfg = await fetchDispatchStrategyConfig(target.serviceType);
+    strategyName = cfg.strategy;
+    if (cfg.strategy !== "nearest" && sorted.length > 1) {
+      const { rankRidersByScore } = await import("./rider-dispatch-scoring.js");
+      const workload = await fetchRiderWorkloadScores(sorted.map((r) => r.riderId));
+      const scorable = sorted.map((r) => ({ ...r, workloadScore: workload.get(r.riderId) ?? 0 }));
+      ordered = rankRidersByScore(scorable, cfg.scoreWeights, target.effectiveRadiusMeters);
+    }
+  } catch (err) {
+    console.warn("[dispatch] scoring fallback to nearest", (err as Error).message);
+    ordered = sorted;
+  }
+
   // Always-on, low-volume (one line per order per wave): proves the wave radius
   // gate from Super Admin → Rider Assignment Controls is being applied live.
   console.info(
@@ -795,11 +836,12 @@ export async function listEligibleRidersForDispatchOrder(
       configuredRadiusMeters: target.effectiveRadiusMeters,
       onDutyCandidates: candidateIds.length,
       excluded: excludedRiderIds.size,
-      eligibleWithinRadius: sorted.length,
-      nearestMeters: sorted[0]?.distanceMeters != null ? Math.round(sorted[0].distanceMeters) : null,
+      eligibleWithinRadius: ordered.length,
+      strategy: strategyName,
+      nearestMeters: ordered[0]?.distanceMeters != null ? Math.round(ordered[0].distanceMeters) : null,
     })
   );
-  return sorted;
+  return ordered;
 }
 
 /**
