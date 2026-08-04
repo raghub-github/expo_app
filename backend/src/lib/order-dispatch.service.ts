@@ -515,7 +515,44 @@ export async function advanceDispatchWave(sessionId: number): Promise<boolean> {
         });
         return true;
       }
+
+      // Retry window exhausted (food/parcel).
+      await sql`
+        UPDATE order_dispatch_sessions
+        SET next_wave_at = NULL, updated_at = NOW()
+        WHERE id = ${sessionId}
+      `;
+      console.info(
+        "[dispatch] dispatch_exhausted",
+        JSON.stringify({ orderCoreId, serviceType })
+      );
+      void recordDispatchEvent({
+        orderCoreId,
+        sessionId,
+        serviceType,
+        eventType: "dispatch_exhausted",
+        waveNumber: currentWave,
+      });
+
+      // Phase 5b: optional auto-cancel + refund on exhaustion (food only; gated by
+      // auto_cancel_on_exhaustion, default OFF). Reuses the existing cancellation +
+      // refund + merchant-compensation engine (prepared food -> partial merchant credit).
+      if (cfg?.autoCancelOnExhaustion && serviceType === "food") {
+        const { cancelDispatchExhaustedOrder } = await import(
+          "./dispatch-exhausted-cancel.service.js"
+        );
+        await cancelDispatchExhaustedOrder(orderCoreId).catch((err) =>
+          console.error(
+            "[dispatch] exhausted auto-cancel failed",
+            orderCoreId,
+            (err as Error).message
+          )
+        );
+      }
+      return false;
     }
+
+    // Ride: stop; ride-search-timeout / tip-boost handles expiry + refund.
     await sql`
       UPDATE order_dispatch_sessions
       SET next_wave_at = NULL, updated_at = NOW()

@@ -37,6 +37,8 @@ export type DispatchStrategyConfig = {
   maxRetryDurationSeconds: number;
   prePickupRatePerKm: number;
   prePickupFunding: PrePickupFunding;
+  /** When true, auto-cancel + refund an order unfilled after maxRetryDurationSeconds. */
+  autoCancelOnExhaustion: boolean;
   enabled: boolean;
 };
 
@@ -57,6 +59,7 @@ const DEFAULT_STRATEGY_CONFIG: Omit<DispatchStrategyConfig, "serviceType"> = {
   maxRetryDurationSeconds: 1200,
   prePickupRatePerKm: 0,
   prePickupFunding: "company",
+  autoCancelOnExhaustion: false,
   enabled: true,
 };
 
@@ -177,6 +180,7 @@ export async function fetchDispatchStrategyConfig(
       max_retry_duration_seconds,
       pre_pickup_rate_per_km,
       pre_pickup_funding,
+      auto_cancel_on_exhaustion,
       enabled
     FROM platform_rider_dispatch_strategy_config
     WHERE service_type = ${serviceType}
@@ -189,6 +193,7 @@ export async function fetchDispatchStrategyConfig(
     max_retry_duration_seconds: number;
     pre_pickup_rate_per_km: string | number;
     pre_pickup_funding: string;
+    auto_cancel_on_exhaustion: boolean;
     enabled: boolean;
   }>;
 
@@ -216,6 +221,7 @@ export async function fetchDispatchStrategyConfig(
     prePickupRatePerKm:
       Number.isFinite(prePickupRate) && prePickupRate >= 0 ? prePickupRate : 0,
     prePickupFunding: normalizeFunding(row.pre_pickup_funding),
+    autoCancelOnExhaustion: row.auto_cancel_on_exhaustion === true,
     enabled: row.enabled !== false,
   };
 }

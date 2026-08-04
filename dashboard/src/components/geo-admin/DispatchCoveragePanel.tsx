@@ -40,6 +40,7 @@ type GlobalConfig = {
   max_retry_duration_seconds: number;
   pre_pickup_rate_per_km: number;
   pre_pickup_funding: Funding;
+  auto_cancel_on_exhaustion: boolean;
   enabled: boolean;
 };
 
@@ -160,6 +161,7 @@ export function DispatchCoveragePanel() {
           max_retry_duration_seconds: Number(sc?.max_retry_duration_seconds ?? 1200),
           pre_pickup_rate_per_km: Number(sc?.pre_pickup_rate_per_km ?? 0),
           pre_pickup_funding: (sc?.pre_pickup_funding as Funding) ?? "company",
+          auto_cancel_on_exhaustion: sc?.auto_cancel_on_exhaustion === true,
           enabled: sc?.enabled !== false,
         };
       });
@@ -199,6 +201,7 @@ export function DispatchCoveragePanel() {
           max_retry_duration_seconds: Math.round(g.max_retry_duration_seconds),
           pre_pickup_rate_per_km: g.pre_pickup_rate_per_km,
           pre_pickup_funding: g.pre_pickup_funding,
+          auto_cancel_on_exhaustion: g.auto_cancel_on_exhaustion,
           enabled: g.enabled,
         }),
       });
@@ -399,6 +402,17 @@ export function DispatchCoveragePanel() {
                     }
                   />
                 </label>
+              </div>
+              <div className="mt-2.5 rounded-lg border border-amber-200 bg-amber-50/50 px-2.5 py-2">
+                <Toggle
+                  checked={g.auto_cancel_on_exhaustion}
+                  onChange={(v) => updateGlobal(g.service_type, { auto_cancel_on_exhaustion: v })}
+                  label="Auto-cancel + refund on exhaustion"
+                />
+                <p className="mt-1 text-[10px] leading-snug text-amber-700">
+                  If no rider after the max-retry window, cancel + refund the customer
+                  {g.service_type === "food" ? " (merchant compensated only if food was prepared)." : "."}
+                </p>
               </div>
               <button
                 type="button"

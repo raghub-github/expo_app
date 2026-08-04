@@ -33,6 +33,7 @@ const bundleSchema = z.object({
   max_retry_duration_seconds: z.number().int().min(0).max(7200),
   pre_pickup_rate_per_km: z.number().min(0).max(1000),
   pre_pickup_funding: z.enum(["company", "customer", "shared"]),
+  auto_cancel_on_exhaustion: z.boolean().optional(),
   enabled: z.boolean(),
 });
 
@@ -52,7 +53,7 @@ export async function GET() {
       SELECT
         service_type, strategy, score_weights, retry_interval_seconds,
         max_retry_duration_seconds, pre_pickup_rate_per_km, pre_pickup_funding,
-        enabled, updated_at
+        auto_cancel_on_exhaustion, enabled, updated_at
       FROM platform_rider_dispatch_strategy_config
       ORDER BY service_type ASC
     `) as Array<Record<string, unknown>>;
@@ -75,6 +76,7 @@ export async function GET() {
         max_retry_duration_seconds: Number(r.max_retry_duration_seconds),
         pre_pickup_rate_per_km: Number(r.pre_pickup_rate_per_km),
         pre_pickup_funding: String(r.pre_pickup_funding),
+        auto_cancel_on_exhaustion: r.auto_cancel_on_exhaustion === true,
         enabled: r.enabled !== false,
         updated_at: r.updated_at,
       })),
@@ -116,7 +118,8 @@ export async function PUT(req: Request) {
     await sql`
       INSERT INTO platform_rider_dispatch_strategy_config (
         service_type, strategy, score_weights, retry_interval_seconds,
-        max_retry_duration_seconds, pre_pickup_rate_per_km, pre_pickup_funding, enabled
+        max_retry_duration_seconds, pre_pickup_rate_per_km, pre_pickup_funding,
+        auto_cancel_on_exhaustion, enabled
       )
       VALUES (
         ${d.service_type},
@@ -126,6 +129,7 @@ export async function PUT(req: Request) {
         ${d.max_retry_duration_seconds},
         ${d.pre_pickup_rate_per_km},
         ${d.pre_pickup_funding},
+        ${d.auto_cancel_on_exhaustion ?? false},
         ${d.enabled}
       )
       ON CONFLICT (service_type) DO UPDATE SET
@@ -135,6 +139,7 @@ export async function PUT(req: Request) {
         max_retry_duration_seconds = EXCLUDED.max_retry_duration_seconds,
         pre_pickup_rate_per_km = EXCLUDED.pre_pickup_rate_per_km,
         pre_pickup_funding = EXCLUDED.pre_pickup_funding,
+        auto_cancel_on_exhaustion = EXCLUDED.auto_cancel_on_exhaustion,
         enabled = EXCLUDED.enabled,
         updated_at = NOW()
     `;
