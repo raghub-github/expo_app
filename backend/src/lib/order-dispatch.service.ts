@@ -30,6 +30,7 @@ import {
   isOrderDispatchManualHold,
   setOrderDispatchManualHold,
 } from "./order-dispatch-manual-hold.js";
+import { recordDispatchEvent } from "./dispatch-events.js";
 
 export type DispatchSessionStatus = "active" | "accepted" | "expired" | "cancelled";
 
@@ -254,6 +255,12 @@ export async function completeOrderDispatch(
       AND status IN ('active', 'accepted')
   `;
 
+  void recordDispatchEvent({
+    orderCoreId,
+    eventType: "dispatch_completed",
+    metadata: { status },
+  });
+
   if (status === "expired" || status === "cancelled") {
     const { recordPendingDispatchOffersMissed } = await import(
       "./rider-dispatch-assignment-audit.js"
@@ -405,6 +412,15 @@ export async function executeDispatchWave(sessionId: number): Promise<{
     waveNumber,
     toNotify.map((r) => r.riderId)
   );
+  void recordDispatchEvent({
+    orderCoreId,
+    sessionId,
+    serviceType: target.serviceType,
+    eventType: "wave_dispatched",
+    waveNumber,
+    radiusMeters: target.effectiveRadiusMeters,
+    metadata: { newlyNotified: notified, eligibleWithinRadius: eligible.length },
+  });
   if (toNotify.length > 0) {
     await recordDispatchOffersSent({
       orderCoreId,
@@ -424,7 +440,7 @@ export async function executeDispatchWave(sessionId: number): Promise<{
 export async function advanceDispatchWave(sessionId: number): Promise<boolean> {
   const sql = getSql();
   const sessions = (await sql`
-    SELECT id, order_core_id, service_type, current_wave, status
+    SELECT id, order_core_id, service_type, current_wave, status, created_at
     FROM order_dispatch_sessions
     WHERE id = ${sessionId}
     LIMIT 1
@@ -434,6 +450,7 @@ export async function advanceDispatchWave(sessionId: number): Promise<boolean> {
     service_type: string;
     current_wave: number;
     status: string;
+    created_at: string | Date;
   }>;
 
   const session = sessions[0];
@@ -455,11 +472,103 @@ export async function advanceDispatchWave(sessionId: number): Promise<boolean> {
   const currentWave = Math.max(1, Number(session.current_wave) || 1);
   const canExpand = await hasNextDispatchWave(serviceType, currentWave);
   if (!canExpand) {
+    // Phase 5: unified auto-retry. Food/parcel — once the last wave is exhausted with
+    // no accept, restart from wave 1 after retry_interval_seconds and keep re-offering
+    // until max_retry_duration_seconds elapses (from the dispatch session start), then
+    // stop. Non-destructive: it only re-offers (clears the per-session notification
+    // dedup so idle riders can be offered again). Ride keeps its own search-timeout /
+    // tip-boost flow and is never retried here.
+    if (serviceType !== "person_ride") {
+      const { fetchDispatchStrategyConfig } = await import("./dispatch-strategy-config.js");
+      const cfg = await fetchDispatchStrategyConfig(serviceType).catch(() => null);
+      const createdAtMs = session.created_at ? new Date(session.created_at).getTime() : Date.now();
+      const elapsedSec = Math.max(0, (Date.now() - createdAtMs) / 1000);
+      if (cfg && cfg.maxRetryDurationSeconds > 0 && elapsedSec < cfg.maxRetryDurationSeconds) {
+        const retryAt = toTimestamptzParam(Date.now() + cfg.retryIntervalSeconds * 1000);
+        await sql`
+          UPDATE order_dispatch_sessions
+          SET current_wave = 1, last_wave_at = NOW(), next_wave_at = ${retryAt}, updated_at = NOW()
+          WHERE id = ${sessionId}
+        `;
+        await sql`
+          DELETE FROM order_dispatch_rider_notifications WHERE session_id = ${sessionId}
+        `;
+        console.info(
+          "[dispatch] retry_cycle_scheduled",
+          JSON.stringify({
+            orderCoreId,
+            serviceType,
+            elapsedSec: Math.round(elapsedSec),
+            retryIntervalSeconds: cfg.retryIntervalSeconds,
+            maxRetryDurationSeconds: cfg.maxRetryDurationSeconds,
+          })
+        );
+        void recordDispatchEvent({
+          orderCoreId,
+          sessionId,
+          serviceType,
+          eventType: "retry_scheduled",
+          metadata: {
+            elapsedSec: Math.round(elapsedSec),
+            retryIntervalSeconds: cfg.retryIntervalSeconds,
+          },
+        });
+        return true;
+      }
+
+      // Retry window exhausted (food/parcel).
+      await sql`
+        UPDATE order_dispatch_sessions
+        SET next_wave_at = NULL, updated_at = NOW()
+        WHERE id = ${sessionId}
+      `;
+      console.info(
+        "[dispatch] dispatch_exhausted",
+        JSON.stringify({ orderCoreId, serviceType })
+      );
+      void recordDispatchEvent({
+        orderCoreId,
+        sessionId,
+        serviceType,
+        eventType: "dispatch_exhausted",
+        waveNumber: currentWave,
+      });
+
+      // Phase 5b: optional auto-cancel + refund on exhaustion (food only; gated by
+      // auto_cancel_on_exhaustion, default OFF). Reuses the existing cancellation +
+      // refund + merchant-compensation engine (prepared food -> partial merchant credit).
+      if (cfg?.autoCancelOnExhaustion && serviceType === "food") {
+        const { cancelDispatchExhaustedOrder } = await import(
+          "./dispatch-exhausted-cancel.service.js"
+        );
+        await cancelDispatchExhaustedOrder(orderCoreId).catch((err) =>
+          console.error(
+            "[dispatch] exhausted auto-cancel failed",
+            orderCoreId,
+            (err as Error).message
+          )
+        );
+      }
+      return false;
+    }
+
+    // Ride: stop; ride-search-timeout / tip-boost handles expiry + refund.
     await sql`
       UPDATE order_dispatch_sessions
       SET next_wave_at = NULL, updated_at = NOW()
       WHERE id = ${sessionId}
     `;
+    console.info(
+      "[dispatch] dispatch_exhausted",
+      JSON.stringify({ orderCoreId, serviceType })
+    );
+    void recordDispatchEvent({
+      orderCoreId,
+      sessionId,
+      serviceType,
+      eventType: "dispatch_exhausted",
+      waveNumber: currentWave,
+    });
     return false;
   }
 
@@ -495,6 +604,15 @@ export async function advanceDispatchWave(sessionId: number): Promise<boolean> {
       maxWaves: waveSettings.maxWaves,
     })
   );
+  void recordDispatchEvent({
+    orderCoreId,
+    sessionId,
+    serviceType,
+    eventType: "wave_expanded",
+    waveNumber: nextWave,
+    radiusMeters: nextRadius,
+    metadata: { fromWave: currentWave, toWave: nextWave, fromRadiusMeters: prevRadius },
+  });
 
   await executeDispatchWave(sessionId);
   return true;

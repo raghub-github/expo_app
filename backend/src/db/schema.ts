@@ -1670,6 +1670,11 @@ export const ordersCore = pgTable(
     fareAmount: numeric("fare_amount", { precision: 10, scale: 2 }),
     commissionAmount: numeric("commission_amount", { precision: 10, scale: 2 }),
     riderEarning: numeric("rider_earning", { precision: 10, scale: 2 }),
+    /** First-mile allowance (rupees) snapshotted at accept; paid on delivery. 0 until rate configured. */
+    riderPrePickupAllowance: numeric("rider_pre_pickup_allowance", { precision: 10, scale: 2 })
+      .notNull()
+      .default("0"),
+    riderPickupDistanceMeters: integer("rider_pickup_distance_meters"),
     status: orderStatusTypeEnum("status").notNull().default("assigned"),
     currentStatus: text("current_status"),
     itemTotal: numeric("item_total", { precision: 12, scale: 2 }),
