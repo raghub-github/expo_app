@@ -13,10 +13,20 @@ import {
 } from "./assignment-strategies";
 import { getTicketAutoAssignmentGate } from "./assignment-eligibility";
 import { checkAgentOpenTicketCapacity, logAssignmentSkipped } from "@/lib/tickets/agent-open-ticket-capacity";
+import {
+  actionTargetField,
+  manualOverrideSkipReason,
+  type ManualOverrideMap,
+} from "@/lib/tickets/manual-update-guard";
 import type { ActionRow, AgentSnapshot, AutomationTriggerEvent, TicketSnapshot } from "./types";
 
 export type ApplyActionInvokeOptions = {
   triggerEvent?: AutomationTriggerEvent;
+  /**
+   * Fields an agent/admin has explicitly set on this ticket. Actions that would
+   * overwrite one of them are skipped instead of reverting the human's choice.
+   */
+  manualOverrides?: ManualOverrideMap;
 };
 
 type SqlClient = ReturnType<typeof getSql>;
@@ -73,8 +83,16 @@ async function loadTicket(sql: SqlClient, id: number): Promise<TicketSnapshot | 
 
 /**
  * After all rules run: if ticket still has no queue and settings define default_routing_group_id, set it.
+ *
+ * Skipped when an agent/admin deliberately cleared the group — otherwise a manual
+ * "no group" is silently replaced by the default routing group on the next update.
  */
-export async function applyFallbackRoutingGroupIfNeeded(sql: SqlClient, ticketId: number): Promise<void> {
+export async function applyFallbackRoutingGroupIfNeeded(
+  sql: SqlClient,
+  ticketId: number,
+  manualOverrides?: ManualOverrideMap
+): Promise<void> {
+  if (manualOverrides?.group) return;
   const t = await loadTicket(sql, ticketId);
   if (!t || t.group_id != null) return;
   let gid: number | null = null;
@@ -135,6 +153,19 @@ export async function applySingleAction(
 
   if (!ticket) {
     return { ok: false, detail: `Action ${type} requires a ticket context` };
+  }
+
+  /**
+   * A human owns this field — do not revert their edit. Reported as `ok` so the
+   * rule is not marked failed and does not burn its retries; the detail string
+   * lands in ticket_automation_logs / _executions so the skip is visible.
+   */
+  const targetField = actionTargetField(type);
+  if (targetField && invoke?.manualOverrides?.[targetField]) {
+    return {
+      ok: true,
+      detail: manualOverrideSkipReason(targetField, invoke.manualOverrides[targetField]),
+    };
   }
 
   if (type === "assign_round_robin") {
