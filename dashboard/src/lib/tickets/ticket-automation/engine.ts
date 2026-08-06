@@ -3,6 +3,7 @@ import { runQueueBalanceAutoAssign } from "@/lib/tickets/queue-balance-auto-assi
 import { applyActionListWithReload, applyFallbackRoutingGroupIfNeeded } from "./apply-actions";
 import { getTicketAutoAssignmentGate } from "./assignment-eligibility";
 import { evaluateConditions } from "./condition-eval";
+import { loadManualOverrides, type ManualOverrideMap } from "@/lib/tickets/manual-update-guard";
 import type {
   ActionRow,
   AgentSnapshot,
@@ -143,6 +144,12 @@ async function hasCompletedOnce(
 export type RunAutomationOptions = {
   dryRun?: boolean;
   workerLabel?: string;
+  /**
+   * Fields an agent/admin owns on this ticket. Omit to read them from the
+   * ticket row — queued jobs have no request context, so the persisted
+   * `metadata.manual_overrides` is the source of truth there.
+   */
+  manualOverrides?: ManualOverrideMap;
 };
 
 /**
@@ -163,6 +170,13 @@ export async function runTicketAutomation(
 
   let ticket = await loadTicketSnapshot(sql, ticketId);
   if (!ticket) return { ran, errors: ["ticket not found"] };
+
+  /**
+   * Manual edits win over the rules. Read the persisted overrides when the
+   * caller did not pass them (queued jobs, cron) so a rule can never revert a
+   * status / priority / group / assignee an agent or admin set by hand.
+   */
+  const manualOverrides = opts.manualOverrides ?? (await loadManualOverrides(sql, ticketId));
 
   let rules: AutomationRuleRow[];
   try {
@@ -213,7 +227,7 @@ export async function runTicketAutomation(
           ticket,
           null,
           Math.max(1, rule.max_action_retries ?? 2),
-          { triggerEvent: event }
+          { triggerEvent: event, manualOverrides }
         );
         executed = out.executed;
         failed = out.failed;
@@ -305,7 +319,7 @@ export async function runTicketAutomation(
 
   if (!opts.dryRun) {
     try {
-      await applyFallbackRoutingGroupIfNeeded(sql, ticketId);
+      await applyFallbackRoutingGroupIfNeeded(sql, ticketId, manualOverrides);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       errors.push(`default queue fallback: ${msg}`);
@@ -313,13 +327,18 @@ export async function runTicketAutomation(
     /**
      * Rules often run assign_least_loaded before `group_id` exists; fallback then sets default routing group.
      * Without this pass, the ticket stayed unassigned until agent_went_online ran queue balance (offline/online toggle).
+     *
+     * Skipped when a human owns the assignee: an explicit "Unassigned" must stay
+     * unassigned instead of being picked back up by the balancer on the same request.
      */
     try {
-      const t = await loadTicketSnapshot(sql, ticketId);
-      if (t && t.assigned_to_agent_id == null && t.group_id != null) {
-        const gate = await getTicketAutoAssignmentGate(sql, ticketId);
-        if (gate.ok) {
-          await runQueueBalanceAutoAssign(sql, { groupIds: [t.group_id] });
+      if (!manualOverrides.assignee) {
+        const t = await loadTicketSnapshot(sql, ticketId);
+        if (t && t.assigned_to_agent_id == null && t.group_id != null) {
+          const gate = await getTicketAutoAssignmentGate(sql, ticketId);
+          if (gate.ok) {
+            await runQueueBalanceAutoAssign(sql, { groupIds: [t.group_id] });
+          }
         }
       }
     } catch (e) {

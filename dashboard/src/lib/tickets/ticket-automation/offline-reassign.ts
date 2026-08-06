@@ -27,11 +27,16 @@ export async function releaseOpenTicketsForOfflineAgent(
   let jobEnqueued = 0;
   const cap = Math.min(500, Math.max(1, opts?.maxTickets ?? 200));
 
+  /**
+   * A ticket an agent/admin assigned by hand stays with that agent when they go
+   * offline — releasing it would quietly undo the manual assignment.
+   */
   const rows = (await sql`
     SELECT id
     FROM public.unified_tickets
     WHERE assigned_to_agent_id = ${agentUserId}
       AND NOT (status::text = ANY (${TERMINAL_STATUS_LIST}))
+      AND NOT COALESCE(jsonb_exists(metadata -> 'manual_overrides', 'assignee'), false)
     ORDER BY id ASC
     LIMIT ${cap}
   `) as { id?: unknown }[];

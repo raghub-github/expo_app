@@ -6,7 +6,7 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
-import { getSql } from "@/lib/db/client";
+import { getSql, withPgRetry } from "@/lib/db/client";
 import { getSystemUserByEmail } from "@/lib/db/operations/users";
 import { isSuperAdmin, hasDashboardAccessByAuth } from "@/lib/permissions/engine";
 import { isInvalidRefreshToken, signOutIfSessionDead } from "@/lib/auth/session-errors";
@@ -623,14 +623,24 @@ export async function GET(request: NextRequest) {
     let countResult: { count: number }[];
     let ticketRows: Record<string, unknown>[];
 
-    // Fast list path: parallel COUNT + page SELECT without per-row LATERAL
-    // (assigned group + metadata landed group cover the list UI).
-    try {
-      const countQuery = whereClause
+    /**
+     * COUNT and the page SELECT run sequentially, each built fresh.
+     *
+     * They used to run through `Promise.all`, and the fallback path then
+     * re-awaited the *same* `countQuery` object alongside a second page query.
+     * A postgres.js query is a one-shot thenable and a nested fragment
+     * (`whereClause`) is not safe to serialise into two queries executing at
+     * once, so this combination produced the 08P01 bind mismatch that dropped
+     * the list into its minimal-select fallback. Each builder below returns a
+     * brand-new query, and nothing is awaited twice.
+     */
+    const buildCountQuery = () =>
+      whereClause
         ? sqlClient`SELECT COUNT(*)::int as count FROM public.unified_tickets ut WHERE ${whereClause as never}`
         : sqlClient`SELECT COUNT(*)::int as count FROM public.unified_tickets ut`;
 
-      const pageQuery = whereClause
+    try {
+      const pageQuery = () => whereClause
         ? sqlClient`
             SELECT
               ut.id, ut.ticket_id, ut.ticket_type, ut.ticket_source, ut.service_type, ut.ticket_title, ut.ticket_category,
@@ -682,13 +692,18 @@ export async function GET(request: NextRequest) {
           `;
 
       try {
-        const [countRows, pageRows] = await Promise.all([countQuery, pageQuery]);
-        countResult = countRows as unknown as { count: number }[];
-        ticketRows = pageRows as unknown as Record<string, unknown>[];
+        ticketRows = (await withPgRetry(
+          () => pageQuery(),
+          "tickets list page"
+        )) as unknown as Record<string, unknown>[];
+        countResult = (await withPgRetry(
+          () => buildCountQuery(),
+          "tickets list count"
+        )) as unknown as { count: number }[];
       } catch (lightErr) {
         // Minimal fallback if metadata/group columns missing on older DBs.
         console.warn('[GET /api/tickets] light list query failed, using minimal select:', lightErr);
-        const minimalPage = whereClause
+        const minimalPage = () => whereClause
           ? sqlClient`
               SELECT
                 ut.id, ut.ticket_id, ut.ticket_type, ut.ticket_source, ut.service_type, ut.ticket_title, ut.ticket_category,
@@ -722,9 +737,14 @@ export async function GET(request: NextRequest) {
               LIMIT ${limit}
               OFFSET ${offset}
             `;
-        const [countRows, pageRows] = await Promise.all([countQuery, minimalPage]);
-        countResult = countRows as unknown as { count: number }[];
-        ticketRows = pageRows as unknown as Record<string, unknown>[];
+        ticketRows = (await withPgRetry(
+          () => minimalPage(),
+          "tickets list page (minimal)"
+        )) as unknown as Record<string, unknown>[];
+        countResult = (await withPgRetry(
+          () => buildCountQuery(),
+          "tickets list count (minimal)"
+        )) as unknown as { count: number }[];
       }
     } catch (listQueryErr) {
       console.error('[GET /api/tickets] list query failed:', listQueryErr);

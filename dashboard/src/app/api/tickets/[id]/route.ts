@@ -6,24 +6,16 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
-import { getSystemUserByEmail, getSystemUserById } from "@/lib/db/operations/users";
+import { getSystemUserByEmail } from "@/lib/db/operations/users";
 import { isSuperAdmin, hasDashboardAccessByAuth } from "@/lib/permissions/engine";
 import { getSql } from "@/lib/db/client";
 import { insertTicketActivityAudit } from "@/lib/db/operations/ticket-activity-audit";
 import { isInvalidRefreshToken, signOutIfSessionDead } from "@/lib/auth/session-errors";
-import { queueTicketAssignedNotification, queueTicketReopenedNotification } from "@/lib/tickets/ticket-notification-send";
-import { validateAssigneeForTicket } from "@/lib/tickets/assignee-eligibility";
-import { pickRoundRobinAssigneeForGroup } from "@/lib/tickets/round-robin-auto-assign";
 import { coerceSqlTextArray } from "@/lib/tickets/coerce-sql-text-array";
 import { parseTicketAttachmentItem } from "@/lib/tickets/parse-ticket-attachment";
+import { applyTicketUpdate } from "@/lib/tickets/apply-ticket-update";
 
 export const runtime = "nodejs";
-
-function normalizeTicketAssigneeId(value: unknown): number | null {
-  if (value == null || value === "") return null;
-  const n = typeof value === "number" ? value : Number(value);
-  return Number.isFinite(n) ? n : null;
-}
 
 /**
  * GET /api/tickets/[id]
@@ -882,266 +874,29 @@ export async function PATCH(
     const body = await request.json();
     const sqlClient = getSql();
 
-    const existingResult = await sqlClient`
-      SELECT id, status, priority, assigned_to_agent_id, assigned_to_agent_name, group_id, created_at, first_response_at, first_response_time_minutes, metadata
-      FROM public.unified_tickets WHERE id = ${ticketId} LIMIT 1
-    `;
+    /**
+     * All the work lives in applyTicketUpdate so a single edit and a bulk edit
+     * behave identically: same validation, same manual-override stamp (which is
+     * what stops `ticket_updated` rules from reverting the change), same audit
+     * trail with the acting user on every field that moved.
+     */
+    const result = await applyTicketUpdate(
+      sqlClient,
+      ticketId,
+      body,
+      {
+        id: systemUser.id,
+        name: systemUser.fullName ?? systemUser.email ?? "Agent",
+        email: systemUser.email ?? null,
+      },
+      { source: "manual_single" }
+    );
 
-    if (!existingResult || existingResult.length === 0) {
-      return NextResponse.json({ success: false, error: "Ticket not found" }, { status: 404 });
-    }
-
-    const existingRow0 = existingResult[0] as {
-      status?: unknown;
-      assigned_to_agent_id?: unknown;
-      group_id?: unknown;
-    };
-    const existingStatusUpper = String(existingRow0.status ?? "OPEN")
-      .toUpperCase()
-      .replace(/-/g, "_");
-
-    if (body.autoAssignRoundRobin === true) {
-      if (body.currentAssigneeUserId !== undefined) {
-        return NextResponse.json(
-          {
-            success: false,
-            error: "Cannot combine autoAssignRoundRobin with currentAssigneeUserId",
-          },
-          { status: 400 }
-        );
-      }
-      const curAssign = normalizeTicketAssigneeId(existingRow0.assigned_to_agent_id);
-      if (curAssign != null) {
-        return NextResponse.json({ success: false, error: "Ticket already assigned" }, { status: 400 });
-      }
-      const gid = existingRow0.group_id != null ? Number(existingRow0.group_id) : NaN;
-      if (!Number.isFinite(gid)) {
-        return NextResponse.json(
-          { success: false, error: "Ticket has no group for auto-assign" },
-          { status: 400 }
-        );
-      }
-      const picked = await pickRoundRobinAssigneeForGroup(sqlClient, gid);
-      if (picked == null) {
-        return NextResponse.json(
-          { success: false, error: "No eligible agent for auto-assign" },
-          { status: 400 }
-        );
-      }
-      body.currentAssigneeUserId = picked;
-    }
-
-    const updateFields: string[] = [];
-    const updateValues: unknown[] = [];
-    let shouldClearSnoozeAfterUpdate = false;
-
-    if (body.status !== undefined) {
-      const statusValue = String(body.status).toUpperCase().replace(/-/g, "_");
-      const terminalPrev = ["RESOLVED", "CLOSED"].includes(existingStatusUpper);
-      if (terminalPrev && ["OPEN", "REOPENED"].includes(statusValue)) {
-        updateFields.push(`reopen_count = COALESCE(reopen_count, 0) + 1`);
-      }
-      updateFields.push(`status = $${updateValues.length + 1}`);
-      updateValues.push(statusValue);
-      if (statusValue !== "SNOOZED") shouldClearSnoozeAfterUpdate = true;
-      if (statusValue === "RESOLVED") {
-        updateFields.push(`resolved_at = COALESCE(resolved_at, NOW())`);
-        updateFields.push(`resolved_by = $${updateValues.length + 1}`);
-        updateValues.push(systemUser.id);
-        updateFields.push(`resolved_by_name = $${updateValues.length + 1}`);
-        updateValues.push(systemUser.fullName ?? systemUser.email ?? "Agent");
-      } else if (statusValue === "CLOSED") {
-        updateFields.push(`closed_at = COALESCE(closed_at, NOW())`);
-        updateFields.push(`resolved_at = COALESCE(resolved_at, NOW())`);
-        updateFields.push(`resolved_by = COALESCE(resolved_by, $${updateValues.length + 1})`);
-        updateValues.push(systemUser.id);
-        updateFields.push(`resolved_by_name = COALESCE(resolved_by_name, $${updateValues.length + 1})`);
-        updateValues.push(systemUser.fullName ?? systemUser.email ?? "Agent");
-      } else {
-        updateFields.push(`resolved_at = NULL`);
-        updateFields.push(`resolved_by = NULL`);
-        updateFields.push(`resolved_by_name = NULL`);
-        updateFields.push(`closed_at = NULL`);
-      }
-    }
-    if (body.priority !== undefined) {
-      updateFields.push(`priority = $${updateValues.length + 1}`);
-      updateValues.push(String(body.priority).toUpperCase());
-    }
-    if (body.currentAssigneeUserId !== undefined) {
-      const rawAssignee = body.currentAssigneeUserId;
-      const assigneeId =
-        rawAssignee == null
-          ? null
-          : typeof rawAssignee === "number"
-            ? rawAssignee
-            : Number(rawAssignee);
-      const assigneeNum = assigneeId != null && Number.isFinite(assigneeId) ? assigneeId : null;
-
-      if (assigneeNum != null) {
-        const ticketGid = existingRow0.group_id != null ? Number(existingRow0.group_id) : null;
-        const ticketGroupId = ticketGid != null && Number.isFinite(ticketGid) ? ticketGid : null;
-        const check = await validateAssigneeForTicket(sqlClient, assigneeNum, ticketGroupId, {
-          enforceAvailability: false,
-        });
-        if (!check.ok) {
-          return NextResponse.json(
-            { success: false, error: check.message, code: check.code },
-            { status: 400 }
-          );
-        }
-      }
-
-      updateFields.push(`assigned_to_agent_id = $${updateValues.length + 1}`);
-      updateValues.push(assigneeNum);
-      let assigneeName: string | null = null;
-      if (assigneeNum != null) {
-        const assigneeUser = await getSystemUserById(assigneeNum);
-        assigneeName = assigneeUser?.fullName ?? assigneeUser?.email ?? null;
-      }
-      updateFields.push(`assigned_to_agent_name = $${updateValues.length + 1}`);
-      updateValues.push(assigneeName);
-    }
-    if (body.groupId !== undefined) {
-      updateFields.push(`group_id = $${updateValues.length + 1}`);
-      updateValues.push(body.groupId ?? null);
-    }
-    if (body.slaDueAt !== undefined) {
-      // Pass the ISO string straight through and let Postgres cast text →
-      // timestamptz. postgres.js is configured with `prepare: false` and the
-      // `unsafe(query, values)` path doesn't reliably serialize Date objects
-      // in simple-query mode (it falls into a Buffer.from() codepath that
-      // throws `ERR_INVALID_ARG_TYPE: Received an instance of Date`).
-      let isoOrNull: string | null = null;
-      if (body.slaDueAt) {
-        const raw = String(body.slaDueAt);
-        const parsed = new Date(raw);
-        if (!Number.isNaN(parsed.getTime())) {
-          isoOrNull = parsed.toISOString();
-        }
-      }
-      updateFields.push(`sla_due_at = $${updateValues.length + 1}::timestamptz`);
-      updateValues.push(isoOrNull);
-    }
-    if (body.tags !== undefined && Array.isArray(body.tags)) {
-      updateFields.push(`tags = $${updateValues.length + 1}`);
-      updateValues.push((body.tags as string[]).filter((t) => typeof t === "string" && t.trim() !== ""));
-    }
-    if (body.isSpam !== undefined) {
-      updateFields.push(`is_spam = $${updateValues.length + 1}`);
-      updateValues.push(Boolean(body.isSpam));
-    }
-    if (body.buyerNpName !== undefined) {
-      updateFields.push(`buyer_np_name = $${updateValues.length + 1}`);
-      updateValues.push(body.buyerNpName ? String(body.buyerNpName) : null);
-    }
-    if (body.sellerNpName !== undefined) {
-      updateFields.push(`seller_np_name = $${updateValues.length + 1}`);
-      updateValues.push(body.sellerNpName ? String(body.sellerNpName) : null);
-    }
-    if (body.logisticsNpName !== undefined) {
-      updateFields.push(`logistics_np_name = $${updateValues.length + 1}`);
-      updateValues.push(body.logisticsNpName ? String(body.logisticsNpName) : null);
-    }
-    if (body.igmActionTriggered !== undefined) {
-      updateFields.push(`igm_action_triggered = $${updateValues.length + 1}`);
-      updateValues.push(body.igmActionTriggered ? String(body.igmActionTriggered) : null);
-    }
-    if (body.igmShortResolution !== undefined) {
-      updateFields.push(`igm_short_resolution = $${updateValues.length + 1}`);
-      updateValues.push(body.igmShortResolution ? String(body.igmShortResolution) : null);
-    }
-    if (body.igmLongResolution !== undefined) {
-      updateFields.push(`igm_long_resolution = $${updateValues.length + 1}`);
-      updateValues.push(body.igmLongResolution ? String(body.igmLongResolution) : null);
-    }
-    if (body.igmRefundAmount !== undefined) {
-      updateFields.push(`igm_refund_amount = $${updateValues.length + 1}`);
-      const n = body.igmRefundAmount == null || String(body.igmRefundAmount).trim() === "" ? null : Number(body.igmRefundAmount);
-      updateValues.push(n != null && Number.isFinite(n) ? n : null);
-    }
-    if (body.groDetails !== undefined) {
-      updateFields.push(`gro_details = $${updateValues.length + 1}`);
-      updateValues.push(body.groDetails ? String(body.groDetails) : null);
-    }
-    if (body.markFrt !== undefined) {
-      if (body.markFrt !== true) {
-        return NextResponse.json({ success: false, error: "FRT can only be marked once" }, { status: 400 });
-      }
-      const ex = existingResult[0] as {
-        first_response_at?: string | null;
-        metadata?: Record<string, unknown> | null;
-      };
-      const alreadyMarkedByColumn = ex.first_response_at != null;
-      const alreadyMarkedByMeta = Boolean(ex?.metadata && typeof ex.metadata === "object" && (ex.metadata as Record<string, unknown>).frt_marked);
-      if (alreadyMarkedByColumn || alreadyMarkedByMeta) {
-        return NextResponse.json({ success: false, error: "FRT already marked and locked for this ticket" }, { status: 409 });
-      }
-      const existingCreatedAt = new Date(String((existingResult[0] as { created_at?: string }).created_at ?? new Date().toISOString()));
-      const frtMins = Math.max(0, Math.floor((Date.now() - existingCreatedAt.getTime()) / 60000));
-      updateFields.push(`first_response_at = NOW()`);
-      updateFields.push(`first_response_time_minutes = $${updateValues.length + 1}`);
-      updateValues.push(frtMins);
-      updateFields.push(
-        `metadata = jsonb_set(
-          jsonb_set(
-            jsonb_set(COALESCE(metadata, '{}'::jsonb), '{frt_marked}', 'true'::jsonb, true),
-            '{frt_marked_at}',
-            to_jsonb(NOW()::text),
-            true
-          ),
-          '{frt_marked_by}',
-          to_jsonb($${updateValues.length + 1}::text),
-          true
-        )`
+    if (!result.ok) {
+      return NextResponse.json(
+        { success: false, error: result.error, ...(result.code ? { code: result.code } : {}) },
+        { status: result.status }
       );
-      updateValues.push(String(systemUser.email ?? ""));
-    }
-
-    if (updateFields.length === 0) {
-      return NextResponse.json({ success: false, error: "No fields to update" }, { status: 400 });
-    }
-
-    updateFields.push(`updated_at = NOW()`);
-
-    const sql = sqlClient as import("@/lib/db/operations/ticket-activity-audit").TicketAuditSqlClient;
-    let updatedRows: unknown[];
-    try {
-      updatedRows = await sql.unsafe(
-        `UPDATE public.unified_tickets SET ${updateFields.join(", ")} WHERE id = $${updateValues.length + 1} RETURNING id, ticket_id, status, is_spam, priority, assigned_to_agent_id, assigned_to_agent_name, group_id, first_response_at, first_response_time_minutes, metadata, updated_at`,
-        [...updateValues, ticketId]
-      );
-    } catch (updateErr) {
-      const msg = updateErr instanceof Error ? updateErr.message : String(updateErr);
-      if (msg.includes("group_id") && body.groupId !== undefined) {
-        const idx = updateFields.findIndex((f) => f.startsWith("group_id"));
-        const withoutGroupFields = idx >= 0 ? updateFields.filter((_, i) => i !== idx) : updateFields;
-        const withoutGroupValues = idx >= 0 ? updateValues.filter((_, i) => i !== idx) : updateValues;
-        if (withoutGroupFields.length > 0) {
-          updatedRows = await sql.unsafe(
-            `UPDATE public.unified_tickets SET ${withoutGroupFields.join(", ")} WHERE id = $${withoutGroupValues.length + 1} RETURNING id, ticket_id, status, is_spam, priority, assigned_to_agent_id, assigned_to_agent_name, first_response_at, first_response_time_minutes, metadata, updated_at`,
-            [...withoutGroupValues, ticketId]
-          );
-        } else {
-          throw updateErr;
-        }
-      } else {
-        throw updateErr;
-      }
-    }
-    const updated = Array.isArray(updatedRows) ? updatedRows[0] : null;
-    if (shouldClearSnoozeAfterUpdate) {
-      try {
-        await sqlClient`
-          UPDATE public.unified_tickets
-          SET snoozed_until = NULL,
-              snooze_reason = NULL
-          WHERE id = ${ticketId}
-            AND status::text <> 'SNOOZED'
-        `;
-      } catch (snoozeClrErr) {
-        console.warn("[PATCH /api/tickets/[id]] clear snooze columns skipped:", snoozeClrErr);
-      }
     }
 
     // Keep SLA due/tag consistent whenever status/priority/edit happens.
@@ -1201,9 +956,8 @@ export async function PATCH(
       console.warn("[PATCH /api/tickets/[id]] SLA sync skipped:", slaSyncErr);
     }
 
-    if (body.autoAssignRoundRobin === true && updated) {
-      const u = updated as { assigned_to_agent_id?: number | null };
-      const aid = u.assigned_to_agent_id;
+    if (body.autoAssignRoundRobin === true && result.row) {
+      const aid = result.row.assigned_to_agent_id;
       if (aid != null && Number.isFinite(Number(aid))) {
         try {
           await sqlClient`
@@ -1216,227 +970,10 @@ export async function PATCH(
         }
       }
     }
-    const existing = existingResult[0] as { status?: string; priority?: string; assigned_to_agent_id?: number | null; assigned_to_agent_name?: string | null; group_id?: number | null };
-    const updatedRecord = updated as {
-      status?: string;
-      is_spam?: boolean;
-      priority?: string;
-      assigned_to_agent_id?: number | null;
-      assigned_to_agent_name?: string | null;
-      group_id?: number | null;
-    } | null;
-    const sqlUnsafe = sqlClient as import("@/lib/db/operations/ticket-activity-audit").TicketAuditSqlClient;
-    const actorId = systemUser.id;
-    const actorName = systemUser.fullName ?? systemUser.email ?? "Agent";
-    const actorEmail = systemUser.email ?? null;
-
-    if (updatedRecord && body.status !== undefined && String(existing?.status ?? "").toUpperCase() !== String(updatedRecord.status ?? "").toUpperCase()) {
-      const base = {
-        ticket_id: ticketId,
-        actor_user_id: actorId,
-        actor_name: actorName,
-        actor_email: actorEmail,
-        actor_type: "AGENT" as const,
-        old_status: existing?.status ?? null,
-        new_status: updatedRecord.status ?? null,
-      };
-      const newStatusUpper = String(updatedRecord.status ?? "").toUpperCase();
-      const spamRejected =
-        newStatusUpper === "REJECTED" &&
-        (Boolean(body.isSpam) || updatedRecord.is_spam === true);
-      const statusChangeDesc = spamRejected
-        ? `Status changed from ${existing?.status ?? "—"} to ${updatedRecord.status ?? "—"} (Spamed)`
-        : `Status changed from ${existing?.status ?? "—"} to ${updatedRecord.status ?? "—"}`;
-      await insertTicketActivityAudit(sqlUnsafe, {
-        ...base,
-        activity_type: "status_change",
-        activity_category: "status_change",
-        activity_description: statusChangeDesc,
-      });
-      const newStatus = newStatusUpper;
-      if (newStatus === "RESOLVED") {
-        await insertTicketActivityAudit(sqlUnsafe, {
-          ticket_id: ticketId,
-          activity_type: "resolved",
-          activity_category: "resolution",
-          activity_description: "Ticket resolved",
-          actor_user_id: actorId,
-          actor_name: actorName,
-          actor_email: actorEmail,
-          actor_type: "AGENT",
-          resolved_by_user_id: actorId,
-          new_status: updatedRecord.status ?? null,
-        });
-      } else if (newStatus === "CLOSED") {
-        await insertTicketActivityAudit(sqlUnsafe, {
-          ticket_id: ticketId,
-          activity_type: "closed",
-          activity_category: "closure",
-          activity_description: "Ticket closed",
-          actor_user_id: actorId,
-          actor_name: actorName,
-          actor_email: actorEmail,
-          actor_type: "AGENT",
-          new_status: updatedRecord.status ?? null,
-        });
-      } else if (newStatus === "REOPENED") {
-        await insertTicketActivityAudit(sqlUnsafe, {
-          ticket_id: ticketId,
-          activity_type: "reopened",
-          activity_category: "reopened",
-          activity_description: "Ticket reopened",
-          actor_user_id: actorId,
-          actor_name: actorName,
-          actor_email: actorEmail,
-          actor_type: "AGENT",
-          old_status: existing?.status ?? null,
-          new_status: updatedRecord.status ?? null,
-        });
-        void queueTicketReopenedNotification(sqlUnsafe, ticketId).catch((e) =>
-          console.error("[PATCH /api/tickets/[id]] reopen notification email:", e)
-        );
-      }
-    }
-    if (updatedRecord && body.priority !== undefined && String(existing?.priority ?? "").toUpperCase() !== String(updatedRecord.priority ?? "").toUpperCase()) {
-      await insertTicketActivityAudit(sqlUnsafe, {
-        ticket_id: ticketId,
-        activity_type: "priority_change",
-        activity_category: "priority_change",
-        activity_description: `Priority changed from ${existing?.priority ?? "—"} to ${updatedRecord.priority ?? "—"}`,
-        actor_user_id: actorId,
-        actor_name: actorName,
-        actor_email: actorEmail,
-        actor_type: "AGENT",
-        old_priority: existing?.priority ?? null,
-        new_priority: updatedRecord.priority ?? null,
-      });
-    }
-    if (updatedRecord && body.currentAssigneeUserId !== undefined) {
-      const oldId = normalizeTicketAssigneeId(existing?.assigned_to_agent_id);
-      const newId = normalizeTicketAssigneeId(updatedRecord.assigned_to_agent_id);
-      if (oldId !== newId) {
-        if (newId == null) {
-          await insertTicketActivityAudit(sqlUnsafe, {
-            ticket_id: ticketId,
-            activity_type: "unassignment",
-            activity_category: "unassignment",
-            activity_description: `Unassigned from ${existing?.assigned_to_agent_name ?? "agent"}`,
-            actor_user_id: actorId,
-            actor_name: actorName,
-            actor_email: actorEmail,
-            actor_type: "AGENT",
-            previous_assignee_user_id: oldId ?? undefined,
-            previous_assignee_name: existing?.assigned_to_agent_name ?? undefined,
-            unassigned_by_user_id: actorId,
-          });
-        } else {
-          await insertTicketActivityAudit(sqlUnsafe, {
-            ticket_id: ticketId,
-            activity_type: "assignment",
-            activity_category: "assignment",
-            activity_description: `Assigned to ${updatedRecord.assigned_to_agent_name ?? "agent"}`,
-            actor_user_id: actorId,
-            actor_name: actorName,
-            actor_email: actorEmail,
-            actor_type: "AGENT",
-            assigned_to_user_id: newId,
-            assigned_to_name: updatedRecord.assigned_to_agent_name ?? undefined,
-            assigned_by_type: "agent",
-            previous_assignee_user_id: oldId ?? undefined,
-            previous_assignee_name: existing?.assigned_to_agent_name ?? undefined,
-          });
-          void queueTicketAssignedNotification(sqlUnsafe, ticketId, newId).catch((e) =>
-            console.error("[PATCH /api/tickets/[id]] assign notification email:", e)
-          );
-        }
-      }
-    }
-    if (updatedRecord && body.groupId !== undefined && (existing?.group_id ?? null) !== (updatedRecord.group_id ?? null)) {
-      let oldGroupName = "—";
-      let newGroupName = "—";
-      try {
-        if (existing?.group_id != null) {
-          const oldGr = await sqlClient`SELECT group_name FROM public.ticket_groups WHERE id = ${existing.group_id} LIMIT 1`;
-          if (oldGr?.[0]) oldGroupName = (oldGr[0] as { group_name: string }).group_name ?? String(existing.group_id);
-        }
-        if (updatedRecord.group_id != null) {
-          const newGr = await sqlClient`SELECT group_name FROM public.ticket_groups WHERE id = ${updatedRecord.group_id} LIMIT 1`;
-          if (newGr?.[0]) newGroupName = (newGr[0] as { group_name: string }).group_name ?? String(updatedRecord.group_id);
-        }
-      } catch {
-        // fallback to IDs
-      }
-      await insertTicketActivityAudit(sqlUnsafe, {
-        ticket_id: ticketId,
-        activity_type: "group_change",
-        activity_category: "group_change",
-        activity_description: `Group changed from ${oldGroupName} to ${newGroupName}`,
-        actor_user_id: actorId,
-        actor_name: actorName,
-        actor_email: actorEmail,
-        actor_type: "AGENT",
-        old_group_id: existing?.group_id ?? null,
-        new_group_id: updatedRecord.group_id ?? null,
-      });
-    }
-    if (updatedRecord && body.markFrt === true) {
-      await insertTicketActivityAudit(sqlUnsafe, {
-        ticket_id: ticketId,
-        activity_type: "first_response_marked",
-        activity_category: "response",
-        activity_description: "FRT Updated",
-        actor_user_id: actorId,
-        actor_name: actorName,
-        actor_email: actorEmail,
-        actor_type: "AGENT",
-      });
-    }
-
-    try {
-      const { processPendingAutomationJobs } = await import("@/lib/tickets/ticket-automation/job-processor");
-      const { runTicketAutomation } = await import("@/lib/tickets/ticket-automation/engine");
-      await processPendingAutomationJobs(sqlClient, {
-        limit: 15,
-        workerId: `api-patch-ticket-${ticketId}`,
-      });
-      const newStatusForAutomation = String(updatedRecord?.status ?? "")
-        .toUpperCase()
-        .replace(/-/g, "_");
-      const terminalPriorAutomationReopen = new Set([
-        "RESOLVED",
-        "CLOSED",
-        "PROVISIONALLY_RESOLVED",
-        "REJECTED",
-        "CANCELLED",
-      ]);
-      const activeStatusAutomationReopenTargets = new Set([
-        "OPEN",
-        "REOPENED",
-        "IN_PROGRESS",
-        "PENDING",
-        "WAITING_FOR_USER",
-        "WAITING_FOR_MERCHANT",
-        "WAITING_FOR_RIDER",
-        "ESCALATED",
-      ]);
-      const fromTerminalForReopen = terminalPriorAutomationReopen.has(existingStatusUpper);
-      const isReopenAutomation =
-        !!updatedRecord &&
-        body.status !== undefined &&
-        fromTerminalForReopen &&
-        activeStatusAutomationReopenTargets.has(newStatusForAutomation);
-      const autoWorker = `api-patch-ticket-${ticketId}`;
-      if (isReopenAutomation) {
-        await runTicketAutomation(sqlClient, "ticket_reopened", ticketId, { workerLabel: autoWorker });
-      }
-      await runTicketAutomation(sqlClient, "ticket_updated", ticketId, { workerLabel: autoWorker });
-    } catch (autoErr) {
-      console.error("[PATCH /api/tickets/[id]] workflow automation:", autoErr);
-    }
 
     return NextResponse.json({
       success: true,
-      data: { ticket: updated },
+      data: { ticket: result.row },
     });
   } catch (error) {
     console.error("[PATCH /api/tickets/[id]] Error:", error);

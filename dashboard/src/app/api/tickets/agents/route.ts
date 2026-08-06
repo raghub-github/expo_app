@@ -104,20 +104,25 @@ export async function GET(request: NextRequest) {
       const userIdsFromAccessPoints = accessPointRows.map((r) => r.systemUserId);
       userIds = [...new Set([...userIdsFromAccess, ...userIdsFromAccessPoints])];
 
-      // Also include agents who are currently assigned to tickets. This
-      // enrichment is best-effort — if the `tickets` table isn't present
-      // in this environment (fresh dev DB, feature-flagged deploy) we log
-      // and continue with just the dashboard_access rows.
+      // Also include agents who are currently assigned to tickets.
+      //
+      // This used to read `tickets.current_assignee_user_id` — columns from the
+      // enterprise ticket schema (migrations 0055/0056/0061) that were never
+      // applied here. The query failed on every request ("column
+      // current_assignee_user_id does not exist"), so agents who hold tickets
+      // but have no dashboard_access row were silently missing from the picker.
+      // The live table is `unified_tickets.assigned_to_agent_id`.
       try {
         const assignedAgentsResult = (await sqlClient`
-        SELECT DISTINCT current_assignee_user_id
-        FROM tickets
-        WHERE current_assignee_user_id IS NOT NULL
-      `) as unknown as { current_assignee_user_id: unknown }[];
+          SELECT DISTINCT assigned_to_agent_id
+          FROM public.unified_tickets
+          WHERE assigned_to_agent_id IS NOT NULL
+        `) as unknown as { assigned_to_agent_id: unknown }[];
         const assignedAgentIds = assignedAgentsResult
-          .map((r) => r.current_assignee_user_id)
-          .filter((id): id is number => id != null && (typeof id === "number" || typeof id === "bigint"))
-          .map((id) => Number(id));
+          .map((r) => r.assigned_to_agent_id)
+          .filter((id): id is number | bigint => id != null && (typeof id === "number" || typeof id === "bigint"))
+          .map((id) => Number(id))
+          .filter((id) => Number.isFinite(id) && id > 0);
         userIds = [...new Set([...userIds, ...assignedAgentIds])];
       } catch (e) {
         console.warn("[tickets/agents] assigned-agents enrichment failed:", (e as Error).message);

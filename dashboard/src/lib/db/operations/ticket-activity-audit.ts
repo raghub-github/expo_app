@@ -38,18 +38,39 @@ type AuditPayload = {
   resolution_type?: string | null;
   old_value?: unknown;
   new_value?: unknown;
+  /** Columns this request touched (TEXT[]). */
+  changed_fields?: string[] | null;
+  /** Correlates every row written by one bulk action (migration 0462). */
+  batch_id?: string | null;
+  /** manual_single | manual_bulk | automation | queue_balance | system. */
+  update_source?: string | null;
+  /** True when a human explicitly set the value, overriding the workflow rules. */
+  is_manual_override?: boolean | null;
 };
+
+/** Columns added by migration 0462 — dropped automatically on older databases. */
+const OPTIONAL_COLUMNS = new Set(["batch_id", "update_source", "is_manual_override"]);
 
 export async function insertTicketActivityAudit(
   sqlClient: TicketAuditSqlClient,
   payload: AuditPayload
 ): Promise<void> {
-  const normalizeValue = (value: unknown): unknown => {
+  const normalizeValue = (key: string, value: unknown): unknown => {
     if (value == null) return value;
-    if (typeof value === "object") {
-      // `unsafe(query, values)` expects scalar values; encode structured payloads safely.
-      return JSON.stringify(value);
+    // changed_fields is a real TEXT[] — hand the array to the driver, don't JSON it.
+    if (key === "changed_fields") {
+      return Array.isArray(value) ? value.map((v) => String(v)) : [String(value)];
     }
+    /**
+     * old_value / new_value are JSONB columns. Pass the object through as-is.
+     *
+     * This used to JSON.stringify first, which double-encodes: Postgres reports
+     * the parameter as jsonb (inferred from the column), so postgres.js runs its
+     * own JSON serialiser over the string and the row lands as a jsonb *string*
+     * like "\"{\\\"tags\\\":[...]}\"" instead of an object — unqueryable with
+     * `->>` and misleading in the activity feed. Handing over the object lets the
+     * driver encode it exactly once.
+     */
     return value;
   };
   const cols = [
@@ -81,23 +102,53 @@ export async function insertTicketActivityAudit(
     "resolution_type",
     "old_value",
     "new_value",
+    "changed_fields",
+    "batch_id",
+    "update_source",
+    "is_manual_override",
   ];
-  const values: unknown[] = [];
-  const placeholders: string[] = [];
-  let idx = 0;
-  for (const key of cols) {
-    const v = payload[key as keyof AuditPayload];
-    if (v !== undefined) {
-      placeholders.push(`$${++idx}`);
-      values.push(normalizeValue(v));
+
+  const build = (skip: Set<string>) => {
+    const values: unknown[] = [];
+    const placeholders: string[] = [];
+    const used: string[] = [];
+    for (const key of cols) {
+      if (skip.has(key)) continue;
+      const v = payload[key as keyof AuditPayload];
+      if (v === undefined) continue;
+      placeholders.push(`$${placeholders.length + 1}`);
+      values.push(normalizeValue(key, v));
+      used.push(key);
     }
-  }
+    return { values, placeholders, used };
+  };
+
+  let { values, placeholders, used } = build(new Set());
   if (placeholders.length === 0) return;
-  const colList = cols.filter((c) => payload[c as keyof AuditPayload] !== undefined).join(", ");
-  const query = `INSERT INTO public.unified_ticket_activity_audit (${colList}) VALUES (${placeholders.join(", ")})`;
+
+  const run = async () =>
+    sqlClient.unsafe(
+      `INSERT INTO public.unified_ticket_activity_audit (${used.join(", ")}) VALUES (${placeholders.join(", ")})`,
+      values
+    );
+
   try {
-    await sqlClient.unsafe(query, values);
+    await run();
   } catch (e) {
-    console.warn("[ticket-activity-audit] Insert failed (table may not exist):", e);
+    // Pre-0462 database: retry without the columns that migration added rather
+    // than losing the audit row entirely.
+    const msg = e instanceof Error ? e.message : String(e);
+    const missingOptional = [...OPTIONAL_COLUMNS].some((c) => msg.includes(c));
+    if (!missingOptional) {
+      console.warn("[ticket-activity-audit] Insert failed (table may not exist):", e);
+      return;
+    }
+    ({ values, placeholders, used } = build(OPTIONAL_COLUMNS));
+    if (placeholders.length === 0) return;
+    try {
+      await run();
+    } catch (e2) {
+      console.warn("[ticket-activity-audit] Insert failed after column fallback:", e2);
+    }
   }
 }

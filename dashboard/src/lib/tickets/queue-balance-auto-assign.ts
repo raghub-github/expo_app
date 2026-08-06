@@ -21,6 +21,16 @@ const TERMINAL_STATUSES = [
 
 const TERMINAL_STATUS_LIST = [...TERMINAL_STATUSES] as string[];
 
+/**
+ * A ticket whose assignee an agent/admin set by hand is off-limits to the
+ * balancer — otherwise a manual assignment (or a deliberate "Unassigned") is
+ * undone the next time any agent goes online or a group is rebalanced. The
+ * predicate is spelled out inline below (postgres.js gives no clean way to
+ * interpolate a constant fragment without building another nested query), using
+ * `jsonb_exists(...)` rather than the `?` operator so the SQL carries no
+ * characters that drivers and poolers like to reinterpret.
+ */
+
 /** Global cap from singleton settings (minimum 1). Falls back if migration not applied yet. */
 export async function getMaxOpenTicketsPerAgent(sql: SqlClient): Promise<number> {
   try {
@@ -68,6 +78,7 @@ export async function redistributeOverCapacityTickets(
       WHERE ut.group_id = ANY(${groupIds}::bigint[])
         AND ut.assigned_to_agent_id IS NOT NULL
         AND NOT (ut.status::text = ANY(${TERMINAL_STATUS_LIST}))
+        AND NOT COALESCE(jsonb_exists(ut.metadata -> 'manual_overrides', 'assignee'), false)
         AND (
           SELECT COUNT(*)::int
           FROM public.unified_tickets x
@@ -224,6 +235,7 @@ export async function runQueueBalanceAutoAssign(
           WHERE ut.group_id = ${gid}
             AND ut.assigned_to_agent_id IS NULL
             AND ut.status::text IN ('OPEN', 'REOPENED')
+            AND NOT COALESCE(jsonb_exists(ut.metadata -> 'manual_overrides', 'assignee'), false)
           ORDER BY
             CASE ut.priority::text
               WHEN 'CRITICAL' THEN 0

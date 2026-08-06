@@ -15,6 +15,11 @@ import { TicketGridCard } from "./TicketGridCard";
 import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
 import { useTicketFilters } from "@/hooks/tickets/useTicketFilters";
 import { useTicketUpdate } from "@/hooks/tickets/useTicketUpdate";
+import {
+  useTicketBulkUpdate,
+  describeBulkOutcome,
+  type BulkTicketUpdates,
+} from "@/hooks/tickets/useTicketBulkUpdate";
 import { useRightSidebar } from "@/context/RightSidebarContext";
 import { useToast } from "@/context/ToastContext";
 import { queryKeys } from "@/lib/queryKeys";
@@ -108,6 +113,8 @@ export function TicketList({ hideExportAndSidebarToggle = false }: { hideExportA
   const sortDropdownRef = useRef<HTMLDivElement>(null);
   const assignDropdownRef = useRef<HTMLDivElement>(null);
   const updateTicket = useTicketUpdate();
+  /** Multi-ticket edits go to /api/tickets/bulk-update, not N parallel PATCHes. */
+  const bulkUpdate = useTicketBulkUpdate();
   const queryClient = useQueryClient();
 
   const { systemUser, permissions } = useAuth();
@@ -575,152 +582,116 @@ export function TicketList({ hideExportAndSidebarToggle = false }: { hideExportA
     [updateTicket, toast]
   );
 
+  /**
+   * Every bulk action goes through one request instead of one PATCH per ticket.
+   * The old fan-out ran the workflow engine N times in parallel and starved the
+   * connection pool, which is what surfaced as "Failed to refresh tickets".
+   *
+   * Rows are patched optimistically first so the table reacts immediately, then
+   * reconciled against what the server actually applied.
+   */
+  const runBulkUpdate = useCallback(
+    async (
+      updates: BulkTicketUpdates,
+      opts: {
+        verb: string;
+        /** Optimistic patch applied to each selected row before the request. */
+        patchRow?: (row: any) => any;
+      }
+    ) => {
+      const ids = Array.from(selectedIds);
+      if (ids.length === 0) return;
+      const selectedSet = new Set(ids);
+      const patchRow = opts.patchRow;
+
+      if (patchRow) {
+        queryClient.setQueriesData({ queryKey: queryKeys.tickets.all() }, (old: any) => {
+          if (!old || !Array.isArray(old.tickets)) return old;
+          return {
+            ...old,
+            tickets: old.tickets.map((t: any) => (selectedSet.has(t.id) ? patchRow(t) : t)),
+          };
+        });
+        ids.forEach((id) => {
+          queryClient.setQueryData(queryKeys.tickets.detail(id), (old: any) =>
+            old ? patchRow(old) : old
+          );
+        });
+      }
+
+      setSelectedIds(new Set());
+
+      try {
+        const outcome = await bulkUpdate(ids, updates);
+        toast(describeBulkOutcome(outcome, opts.verb), outcome.failed > 0 ? "error" : "success");
+      } catch (e) {
+        toast(e instanceof Error ? e.message : `Bulk ${opts.verb} failed`, "error");
+      } finally {
+        // Always reconcile: the server may have skipped tickets the optimistic
+        // patch already moved (assignee validation, terminal status, …).
+        await queryClient.invalidateQueries({
+          predicate: (q) => q.queryKey[0] === "tickets" && q.queryKey[1] === "list",
+        });
+        await queryClient.invalidateQueries({ queryKey: queryKeys.tickets.helpdeskDashboard() });
+        await refetch();
+      }
+    },
+    [selectedIds, queryClient, toast, refetch, bulkUpdate]
+  );
+
   const handleBulkAssign = useCallback(
     async (userId: number) => {
-      const ids = Array.from(selectedIds);
-      if (ids.length === 0) return;
-
       const assigneeName =
-        (currentUser && userId === currentUser.id ? currentUser.name : agents.find((a) => a.id === userId)?.name) ||
-        `Agent ${userId}`;
-      const selectedSet = new Set(ids);
-
-      queryClient.setQueriesData({ queryKey: queryKeys.tickets.all() }, (old: any) => {
-        if (!old || !Array.isArray(old.tickets)) return old;
-        return {
-          ...old,
-          tickets: old.tickets.map((t: any) =>
-            selectedSet.has(t.id)
-              ? {
-                  ...t,
-                  assignee: { ...(t.assignee ?? {}), id: userId, name: assigneeName, email: t.assignee?.email ?? "" },
-                }
-              : t
-          ),
-        };
-      });
-
-      ids.forEach((id) => {
-        queryClient.setQueryData(queryKeys.tickets.detail(id), (old: any) =>
-          old ? { ...old, assignee: { ...(old.assignee ?? {}), id: userId, name: assigneeName, email: old.assignee?.email ?? "" } } : old
-        );
-      });
-
-      setSelectedIds(new Set());
-      toast(`${ids.length} ticket${ids.length === 1 ? "" : "s"} assigned to ${assigneeName}`);
-
-      const results = await Promise.allSettled(
-        ids.map((id) =>
-          updateTicket.mutateAsync({ ticketId: id, currentAssigneeUserId: userId, currentAssigneeName: assigneeName })
-        )
+        (currentUser && userId === currentUser.id
+          ? currentUser.name
+          : agents.find((a) => a.id === userId)?.name) || `Agent ${userId}`;
+      await runBulkUpdate(
+        { currentAssigneeUserId: userId },
+        {
+          verb: `assigned to ${assigneeName}`,
+          patchRow: (t) => ({
+            ...t,
+            assignee: { ...(t.assignee ?? {}), id: userId, name: assigneeName, email: t.assignee?.email ?? "" },
+          }),
+        }
       );
-      const failed = results.filter((r) => r.status === "rejected").length;
-      if (failed > 0) {
-        const firstRej = results.find((r): r is PromiseRejectedResult => r.status === "rejected");
-        const reason =
-          firstRej?.reason instanceof Error ? firstRej.reason.message : `${failed} ticket(s) failed to assign`;
-        toast(reason, "error");
-        await refetch();
-      }
     },
-    [selectedIds, currentUser, agents, queryClient, toast, updateTicket, refetch]
+    [runBulkUpdate, currentUser, agents]
   );
-  const handleBulkUnassign = useCallback(async () => {
-    const ids = Array.from(selectedIds);
-    if (ids.length === 0) return;
-    const selectedSet = new Set(ids);
 
-    queryClient.setQueriesData({ queryKey: queryKeys.tickets.all() }, (old: any) => {
-      if (!old || !Array.isArray(old.tickets)) return old;
-      return {
-        ...old,
-        tickets: old.tickets.map((t: any) => (selectedSet.has(t.id) ? { ...t, assignee: null } : t)),
-      };
-    });
+  const handleBulkUnassign = useCallback(
+    () =>
+      runBulkUpdate(
+        { currentAssigneeUserId: null },
+        { verb: "unassigned", patchRow: (t) => ({ ...t, assignee: null }) }
+      ),
+    [runBulkUpdate]
+  );
 
-    ids.forEach((id) => {
-      queryClient.setQueryData(queryKeys.tickets.detail(id), (old: any) => (old ? { ...old, assignee: null } : old));
-    });
-
-    setSelectedIds(new Set());
-    toast(`${ids.length} ticket${ids.length === 1 ? "" : "s"} unassigned`);
-
-    const results = await Promise.allSettled(
-      ids.map((id) => updateTicket.mutateAsync({ ticketId: id, currentAssigneeUserId: null }))
-    );
-    const failed = results.filter((r) => r.status === "rejected").length;
-    if (failed > 0) {
-      toast(`${failed} ticket${failed === 1 ? "" : "s"} failed to unassign. Refreshing list.`, "error");
-      await refetch();
-    }
-  }, [selectedIds, queryClient, toast, updateTicket, refetch]);
   const handleBulkStatus = useCallback(
-    async (status: string) => {
-      const ids = Array.from(selectedIds);
-      if (ids.length === 0) return;
-      const selectedSet = new Set(ids);
+    (status: string) => {
       const statusLabel = status.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
-
-      queryClient.setQueriesData({ queryKey: queryKeys.tickets.all() }, (old: any) => {
-        if (!old || !Array.isArray(old.tickets)) return old;
-        return {
-          ...old,
-          tickets: old.tickets.map((t: any) => (selectedSet.has(t.id) ? { ...t, status } : t)),
-        };
-      });
-
-      ids.forEach((id) => {
-        queryClient.setQueryData(queryKeys.tickets.detail(id), (old: any) => (old ? { ...old, status } : old));
-      });
-
-      setSelectedIds(new Set());
-      toast(`${ids.length} ticket${ids.length === 1 ? "" : "s"} marked as ${statusLabel}`);
-
-      const results = await Promise.allSettled(
-        ids.map((id) => updateTicket.mutateAsync({ ticketId: id, status }))
+      return runBulkUpdate(
+        { status },
+        { verb: `marked as ${statusLabel}`, patchRow: (t) => ({ ...t, status }) }
       );
-      const failed = results.filter((r) => r.status === "rejected").length;
-      if (failed > 0) {
-        toast(`${failed} ticket${failed === 1 ? "" : "s"} failed to update status. Refreshing list.`, "error");
-        await refetch();
-      }
     },
-    [selectedIds, queryClient, toast, updateTicket, refetch]
+    [runBulkUpdate]
   );
+
   const handleBulkClose = useCallback(() => handleBulkStatus("closed"), [handleBulkStatus]);
-  const handleBulkSpam = useCallback(async () => {
-    const ids = Array.from(selectedIds);
-    if (ids.length === 0) return;
-    const selectedSet = new Set(ids);
 
-    queryClient.setQueriesData({ queryKey: queryKeys.tickets.all() }, (old: any) => {
-      if (!old || !Array.isArray(old.tickets)) return old;
-      return {
-        ...old,
-        tickets: old.tickets.map((t: any) =>
-          selectedSet.has(t.id) ? { ...t, status: "rejected", isSpam: true } : t
-        ),
-      };
-    });
-
-    ids.forEach((id) => {
-      queryClient.setQueryData(queryKeys.tickets.detail(id), (old: any) =>
-        old ? { ...old, status: "rejected", isSpam: true } : old
-      );
-    });
-
-    setSelectedIds(new Set());
-    toast(`${ids.length} ticket${ids.length === 1 ? "" : "s"} marked as spam`);
-
-    const results = await Promise.allSettled(
-      ids.map((id) => updateTicket.mutateAsync({ ticketId: id, isSpam: true, status: "rejected" }))
-    );
-    const failed = results.filter((r) => r.status === "rejected").length;
-    if (failed > 0) {
-      toast(`${failed} ticket${failed === 1 ? "" : "s"} failed to mark as spam. Refreshing list.`, "error");
-      await refetch();
-    }
-  }, [selectedIds, queryClient, toast, updateTicket, refetch]);
+  const handleBulkSpam = useCallback(
+    () =>
+      runBulkUpdate(
+        { isSpam: true, status: "rejected" },
+        {
+          verb: "marked as spam",
+          patchRow: (t) => ({ ...t, status: "rejected", isSpam: true }),
+        }
+      ),
+    [runBulkUpdate]
+  );
   const handleBulkMerge = useCallback(async () => {
     const ids = Array.from(selectedIds);
     if (ids.length < 2) {
@@ -782,37 +753,19 @@ export function TicketList({ hideExportAndSidebarToggle = false }: { hideExportA
       groupId?: number | null;
       assigneeId?: number | null;
     }) => {
-      const ids = Array.from(selectedIds);
-      if (ids.length === 0) return;
-
-      const results = await Promise.allSettled(ids.map(async (id) => {
-        const payload: Parameters<(typeof updateTicket)["mutate"]>[0] = { ticketId: id };
-        if (updates.priority !== undefined) payload.priority = updates.priority;
-        if (updates.status !== undefined) payload.status = updates.status;
-        if (updates.groupId !== undefined) payload.groupId = updates.groupId;
-        if (updates.assigneeId !== undefined)
-          payload.currentAssigneeUserId = updates.assigneeId ?? null;
-        await updateTicket.mutateAsync(payload);
-      }));
-
-      const failed = results.filter((r) => r.status === "rejected").length;
-      if (failed > 0) {
-        toast(`${failed} ticket${failed === 1 ? "" : "s"} failed during bulk update.`, "error");
-      } else {
-        toast(`${ids.length} ticket${ids.length === 1 ? "" : "s"} updated successfully.`, "success");
-      }
-
-      await queryClient.invalidateQueries({
-        predicate: (q) => q.queryKey[0] === "tickets" && q.queryKey[1] === "list",
-      });
-      await queryClient.invalidateQueries({ queryKey: queryKeys.tickets.helpdeskDashboard() });
-      setPage(1);
-      await refetch();
+      const payload: BulkTicketUpdates = {};
+      if (updates.priority !== undefined) payload.priority = updates.priority;
+      if (updates.status !== undefined) payload.status = updates.status;
+      if (updates.groupId !== undefined) payload.groupId = updates.groupId;
+      // `assigneeId: null` is a real instruction ("Unassigned"), not "no change" —
+      // the modal omits the key entirely when the agent picked "— No change —".
+      if (updates.assigneeId !== undefined) payload.currentAssigneeUserId = updates.assigneeId ?? null;
 
       setBulkUpdateOpen(false);
-      setSelectedIds(new Set());
+      setPage(1);
+      await runBulkUpdate(payload, { verb: "updated" });
     },
-    [selectedIds, updateTicket, toast, queryClient, refetch]
+    [runBulkUpdate]
   );
   const handleExportSelected = useCallback(() => {
     const selected = tickets.filter((t) => selectedIds.has(t.id));
