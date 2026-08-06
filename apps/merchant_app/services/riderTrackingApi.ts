@@ -25,7 +25,7 @@ export type MerchantMapPin = {
 export type MerchantRiderApproach = {
   remaining_distance_m: number;
   eta_minutes: number;
-  source: "straight_line" | "route";
+  source: "straight_line" | "route" | "server_eta";
 };
 
 export type MerchantRiderTrackingPayload = {
