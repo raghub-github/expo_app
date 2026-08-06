@@ -3,7 +3,7 @@
  * optional hint under pill ("For you" / "By X+"), clickable toggle.
  */
 
-import { useMemo } from "react";
+import { memo, useMemo } from "react";
 import { Pressable, View, StyleSheet } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { ratingBadgeColors, RATING_PILL_GREEN } from "@/lib/merchantOfferBadge";
@@ -39,7 +39,7 @@ function formatReviewCount(n: number): string {
   return `${n}+`;
 }
 
-export function MerchantRatingBadge({
+function MerchantRatingBadgeInner({
   rating,
   totalReviews,
   size = "md",
@@ -285,3 +285,10 @@ const styles = StyleSheet.create({
     width: "100%",
   },
 });
+
+/**
+ * Rendered once per list item. Memoised so a parent re-render (a filter
+ * toggle, a store-status tick, a bill recalculation) does not walk every
+ * mounted instance.
+ */
+export const MerchantRatingBadge = memo(MerchantRatingBadgeInner);

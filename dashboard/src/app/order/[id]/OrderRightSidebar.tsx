@@ -21,6 +21,11 @@ import {
   shouldShowMerchantUpdatedKpt,
 } from "@/lib/orders/order-detail-display";
 import { useLiveElapsedSeconds } from "@/hooks/useLiveElapsedSeconds";
+import { OrderEtaHistorySideSheet } from "./OrderEtaHistorySideSheet";
+import {
+  RejectionInfoEntryCard,
+  RejectionInfoSideSheet,
+} from "./RejectionInfoSideSheet";
 import { formatRtoOtpDisplay } from "@/lib/orderOtps";
 import {
   dashboardRejectionCancellationDisplay,
@@ -345,6 +350,7 @@ type RejectionInfoEntry = {
   source: string | null;
   by: string | null;
   at: string;
+  atIso?: string | null;
   rider: string | null;
   amount: string | null;
   status: string | null;
@@ -416,10 +422,14 @@ function shouldMergeRejectionPair(
 }
 
 function mergeRejectionPair(
-  cancellation: RejectionInfoEntry,
-  refund: RejectionInfoEntry
+  cancellation: RejectionInfoEntry & { atIso: string | null },
+  refund: RejectionInfoEntry & { atIso: string | null }
 ): RejectionInfoEntry {
   const reason = pickPrimaryRejectionReason(refund.reason, cancellation.reason, cancellation.detail);
+  const atIsoPrefer =
+    [cancellation.atIso, refund.atIso]
+      .filter(Boolean)
+      .sort((a, b) => Date.parse(String(b)) - Date.parse(String(a)))[0] ?? null;
   return {
     id: `merged-${refund.id}`,
     kind: "merged",
@@ -434,6 +444,7 @@ function mergeRejectionPair(
     source: cancellation.source ?? refund.source,
     by: pickRejectionActor(refund.by, cancellation.by),
     at: cancellation.at !== "—" ? cancellation.at : refund.at,
+    atIso: atIsoPrefer,
     rider: cancellation.rider ?? refund.rider,
     amount: cancellation.amount ?? refund.amount,
     status: pickPreferredRefundStatus(cancellation.status, refund.status),
@@ -701,6 +712,10 @@ export default function OrderRightSidebar({
   const displayOrderId =
     order.formattedOrderId?.trim() ||
     (order.orderId ? `#${order.orderId}` : `#${order.id}`);
+  const etaOrderIdText =
+    (order.orderId ? String(order.orderId).trim() : null) ||
+    order.formattedOrderId?.trim() ||
+    null;
   const deliveryTypeLabel = formatOrderDeliveryTypeLabel(order.deliveryType);
   const initiatedByLabel = formatOrderInitiatedByLabel(
     order.orderSource,
@@ -745,6 +760,8 @@ export default function OrderRightSidebar({
     order.merchantInstructionsList?.filter((s) => s?.trim()) ?? [];
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [showCxInstructions, setShowCxInstructions] = useState(false);
+  const [showEtaHistory, setShowEtaHistory] = useState(false);
+  const [showRejectionHistory, setShowRejectionHistory] = useState(false);
 
   const rejectionEntries = useMemo(() => {
     let cancellationEntry: (RejectionInfoEntry & { atIso: string | null }) | null = null;
@@ -820,10 +837,16 @@ export default function OrderRightSidebar({
       });
     }
 
-    return dedupeRejectionEntries(cancellationEntry, refundEntries);
+    return dedupeRejectionEntries(cancellationEntry, refundEntries).sort((a, b) => {
+      const aT = Date.parse(String(a.atIso ?? "")) || 0;
+      const bT = Date.parse(String(b.atIso ?? "")) || 0;
+      if (aT !== bT) return bT - aT;
+      return String(b.id).localeCompare(String(a.id));
+    });
   }, [order.cancellationInfo, orderRefunds]);
 
   const showRejectionInfo = rejectionEntries.length > 0;
+  const latestRejectionEntry = rejectionEntries[0] ?? null;
 
   // Auto-hide recon warning after 2 seconds
   useEffect(() => {
@@ -1759,19 +1782,27 @@ export default function OrderRightSidebar({
           </div>
           <div className="flex items-center justify-between gap-2">
             <dt className="shrink-0">First ETA:</dt>
-            <dd className="min-w-0 font-medium text-slate-700 text-right orders-num">
-              {formatFirstEtaAt(
-                order.firstEtaAt ??
-                  // Never fall back to estimated_delivery_time — that is the live/current ETA.
-                  (order.etaSeconds != null &&
-                  order.createdAt &&
-                  Number.isFinite(order.etaSeconds)
-                    ? new Date(
-                        new Date(order.createdAt).getTime() +
-                          Number(order.etaSeconds) * 1000
-                      ).toISOString()
-                    : null)
-              )}
+            <dd className="min-w-0 text-right orders-num">
+              <button
+                type="button"
+                onClick={() => setShowEtaHistory(true)}
+                disabled={!etaOrderIdText}
+                title="Open ETA audit history"
+                className="cursor-pointer font-medium text-slate-700 no-underline hover:text-emerald-700 hover:no-underline disabled:cursor-default disabled:opacity-60"
+              >
+                {formatFirstEtaAt(
+                  order.firstEtaAt ??
+                    // Never fall back to estimated_delivery_time — that is the live/current ETA.
+                    (order.etaSeconds != null &&
+                    order.createdAt &&
+                    Number.isFinite(order.etaSeconds)
+                      ? new Date(
+                          new Date(order.createdAt).getTime() +
+                            Number(order.etaSeconds) * 1000
+                        ).toISOString()
+                      : null)
+                )}
+              </button>
             </dd>
           </div>
           <div className="flex items-center justify-between gap-2">
@@ -2125,71 +2156,24 @@ export default function OrderRightSidebar({
           </button>
         </div>
 
-        {showRejectionInfo ? (
+        {showRejectionInfo && latestRejectionEntry ? (
         <div className="mt-3 rounded-xl border border-slate-200/90 bg-white shadow-sm overflow-hidden">
-          <div className="px-4 py-2.5 bg-slate-50 border-b border-slate-100">
+          <div className="flex items-center justify-between gap-2 px-4 py-2.5 bg-slate-50 border-b border-slate-100">
             <h3 className="text-[13px] font-semibold text-slate-800 tracking-tight">
               Rejection Info
             </h3>
+            {rejectionEntries.length > 1 ? (
+              <button
+                type="button"
+                onClick={() => setShowRejectionHistory(true)}
+                className="shrink-0 rounded-md border border-slate-200 bg-white px-2 py-0.5 text-[11px] font-semibold text-emerald-700 hover:bg-emerald-50 cursor-pointer"
+              >
+                view ({rejectionEntries.length})
+              </button>
+            ) : null}
           </div>
           <div className="p-3">
-            {rejectionEntries.map((entry) => (
-              <div
-                key={entry.id}
-                className="rounded-lg border border-slate-100 bg-slate-50/60 p-3 space-y-2"
-              >
-                <div className="flex flex-wrap items-center gap-2">
-                  <span
-                    className={`inline-flex rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${
-                      entry.kind === "refund"
-                        ? "bg-red-50 text-red-700 border border-red-100"
-                        : "bg-rose-50 text-rose-800 border border-rose-100"
-                    }`}
-                  >
-                    {entry.kind === "refund" ? "Refund / Cancel" : "Cancellation"}
-                  </span>
-                  {entry.status ? (
-                    <span className="text-[10px] font-medium text-slate-500 uppercase">
-                      {entry.status}
-                    </span>
-                  ) : null}
-                </div>
-                <p className="text-slate-800 text-[12px] leading-snug">
-                  <span className="font-medium text-slate-700">Reason:</span> {entry.reason}
-                </p>
-                {entry.detail ? (
-                  <p className="text-slate-600 text-[11px] leading-relaxed whitespace-pre-wrap">
-                    {entry.detail}
-                  </p>
-                ) : null}
-                {entry.source ? (
-                  <p className="text-[11px] text-slate-600">
-                    <span className="font-medium text-slate-600">Canceled by:</span> {entry.source}
-                  </p>
-                ) : null}
-                {entry.rider ? (
-                  <p className="text-[11px] text-slate-600">
-                    <span className="font-medium text-slate-600">Rider:</span> {entry.rider}
-                  </p>
-                ) : null}
-                <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-slate-600">
-                  <span>
-                    <span className="font-medium text-slate-600">Rejected at:</span>{" "}
-                    <OrderNum>{entry.at}</OrderNum>
-                  </span>
-                  {entry.by ? (
-                    <span>
-                      <span className="font-medium text-slate-600">Rejected by:</span> {entry.by}
-                    </span>
-                  ) : null}
-                </div>
-                {entry.amount ? (
-                  <p className="text-[11px] text-slate-500 pt-0.5">
-                    <OrderMixedText>{`Refund amount: ₹${entry.amount}`}</OrderMixedText>
-                  </p>
-                ) : null}
-              </div>
-            ))}
+            <RejectionInfoEntryCard entry={latestRejectionEntry} />
           </div>
         </div>
         ) : null}
@@ -2639,6 +2623,22 @@ export default function OrderRightSidebar({
       refundActionsDisabled={refundActionsDisabled}
       refundRemainingRefundable={refundRemainingRefundable}
       onRefundCreated={onRefundCreated}
+    />
+
+    <OrderEtaHistorySideSheet
+      open={showEtaHistory}
+      onClose={() => setShowEtaHistory(false)}
+      orderIdText={etaOrderIdText}
+    />
+
+    <RejectionInfoSideSheet
+      open={showRejectionHistory}
+      onClose={() => setShowRejectionHistory(false)}
+      orderIdText={
+        order.formattedOrderId?.trim() ||
+        (order.orderId ? String(order.orderId).trim() : null)
+      }
+      entries={rejectionEntries}
     />
 
     {showCxInstructions && (

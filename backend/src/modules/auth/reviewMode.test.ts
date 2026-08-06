@@ -6,6 +6,7 @@ import {
   createRiderReviewLoginService,
   createReviewBypasses,
   matchReviewBypass,
+  isReviewOtpOnForeignPhone,
   __test,
 } from "./reviewMode.js";
 import type { Env } from "../../config/env.js";
@@ -251,6 +252,44 @@ describe("internals", () => {
     assert.equal(__test.phonesEqual("7367878981", "7367878980"), false);
     assert.equal(__test.phonesEqual("878981", "878981"), false, "short values must not match");
     assert.equal(__test.phonesEqual("", "7367878981"), false);
+  });
+
+  it("otpsEqual is length-safe and constant-time for equal lengths", () => {
+    assert.equal(__test.otpsEqual("123456", "123456"), true);
+    assert.equal(__test.otpsEqual("123456", "123457"), false);
+    assert.equal(__test.otpsEqual("12345", "123456"), false);
+    assert.equal(__test.otpsEqual("", "123456"), false);
+  });
+});
+
+describe("isReviewOtpOnForeignPhone (defense-in-depth)", () => {
+  it("rejects customer review OTP on a normal phone when Google review mode is armed", () => {
+    const all = createReviewBypasses(
+      makeEnv({
+        GOOGLE_REVIEW_MODE: true,
+        GOOGLE_REVIEW_PHONE: "+919999999999",
+        GOOGLE_REVIEW_OTP: "123456",
+      } as Partial<Env>),
+    );
+    assert.equal(isReviewOtpOnForeignPhone(all, "+919876543210", "123456"), true);
+    assert.equal(isReviewOtpOnForeignPhone(all, "+918888888888", "123456"), true);
+    assert.equal(
+      isReviewOtpOnForeignPhone(all, "+919999999999", "123456"),
+      false,
+      "review phone itself must be allowed",
+    );
+    assert.equal(isReviewOtpOnForeignPhone(all, "+919876543210", "999999"), false);
+  });
+
+  it("does nothing when review mode is off", () => {
+    const all = createReviewBypasses(
+      makeEnv({
+        GOOGLE_REVIEW_MODE: false,
+        GOOGLE_REVIEW_PHONE: "+919999999999",
+        GOOGLE_REVIEW_OTP: "123456",
+      } as Partial<Env>),
+    );
+    assert.equal(isReviewOtpOnForeignPhone(all, "+919876543210", "123456"), false);
   });
 });
 

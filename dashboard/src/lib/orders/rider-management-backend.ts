@@ -188,3 +188,192 @@ export async function clearRiderPaymentHoldOnBackend(args: {
   }
   return { ok: true, credited: json.credited };
 }
+
+export type ForceAssignmentBackendState = {
+  orderCoreId: number;
+  orderId: string;
+  formattedOrderId: string | null;
+  oldRiderId: number | null;
+  oldRiderName: string | null;
+  newRiderId: number;
+  newRiderName: string | null;
+  reasonCode: string;
+  reasonText: string;
+  status: string;
+  offerExpiresAt: string;
+  startedAt: string;
+  offerSentAt: string;
+  endedAt?: string | null;
+};
+
+export type EligibleRiderBackendRow = {
+  riderId: number;
+  name: string | null;
+  mobile: string | null;
+  distanceKm: number | null;
+  distanceFromMxKm?: number | null;
+  distanceFromCxKm?: number | null;
+  etaMinutes: number | null;
+  onlineStatus: "ONLINE" | "BUSY" | "OFFLINE";
+  dutyLoadStatus?: "AVAILABLE" | "OCCUPIED";
+  activeOrderCount: number;
+  completedOrderCount?: number;
+  occupiedOrderId?: string | null;
+  vehicleType: string | null;
+  rating: number | null;
+  earningsToday: number | null;
+  acceptanceRate: number | null;
+  lat?: number | null;
+  lng?: number | null;
+};
+
+async function getInternal(
+  path: string
+): Promise<{ ok: true; json: Record<string, unknown> } | { ok: false; error: string; status: number }> {
+  const base = backendBaseUrl();
+  if (!base) {
+    return { ok: false, error: "Rider management service is not configured", status: 503 };
+  }
+  const token = internalToken();
+  if (!token) {
+    return { ok: false, error: "Rider management service is not configured", status: 503 };
+  }
+  let res: Response;
+  try {
+    res = await fetch(`${base}/v1/internal${path}`, {
+      method: "GET",
+      headers: { "x-internal-token": token },
+      cache: "no-store",
+    });
+  } catch {
+    return {
+      ok: false,
+      error: "Could not reach rider backend. Is Fastify running on port 3000?",
+      status: 502,
+    };
+  }
+  const json = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+  if (!res.ok || json.ok === false) {
+    return {
+      ok: false,
+      error: mapBackendFailure(res, json as { error?: string }),
+      status: res.status >= 400 ? res.status : 502,
+    };
+  }
+  return { ok: true, json };
+}
+
+export async function listEligibleRidersOnBackend(args: {
+  ordersCoreId: number;
+}): Promise<
+  | { ok: true; riders: EligibleRiderBackendRow[] }
+  | { ok: false; error: string; status: number }
+> {
+  const result = await getInternal(`/orders/eligible-riders?orders_core_id=${args.ordersCoreId}`);
+  if (!result.ok) return result;
+  const riders = Array.isArray(result.json.riders)
+    ? (result.json.riders as EligibleRiderBackendRow[])
+    : [];
+  return { ok: true, riders };
+}
+
+export async function getForceAssignmentOnBackend(args: {
+  ordersCoreId: number;
+}): Promise<
+  | { ok: true; forceAssignment: ForceAssignmentBackendState | null }
+  | { ok: false; error: string; status: number }
+> {
+  const result = await getInternal(`/orders/force-assignment?orders_core_id=${args.ordersCoreId}`);
+  if (!result.ok) return result;
+  return {
+    ok: true,
+    forceAssignment: (result.json.forceAssignment as ForceAssignmentBackendState | null) ?? null,
+  };
+}
+
+export async function startForceAssignmentOnBackend(args: {
+  ordersCoreId: number;
+  newRiderId: number;
+  reasonCode: string;
+  reasonText: string;
+  catalogReasonId?: number | null;
+  actorEmail?: string | null;
+  actorId?: string | null;
+}): Promise<
+  | { ok: true; forceAssignment: ForceAssignmentBackendState }
+  | { ok: false; error: string; status: number }
+> {
+  const base = backendBaseUrl();
+  if (!base) {
+    return { ok: false, error: "Rider management service is not configured", status: 503 };
+  }
+  const token = internalToken();
+  if (!token) {
+    return { ok: false, error: "Rider management service is not configured", status: 503 };
+  }
+  let res: Response;
+  try {
+    res = await fetch(`${base}/v1/internal/orders/force-assignment/start`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-internal-token": token,
+      },
+      body: JSON.stringify({
+        orders_core_id: args.ordersCoreId,
+        new_rider_id: args.newRiderId,
+        reason_code: args.reasonCode,
+        reason_text: args.reasonText,
+        catalog_reason_id: args.catalogReasonId ?? undefined,
+        actor_email: args.actorEmail ?? undefined,
+        actor_id: args.actorId ?? undefined,
+      }),
+      cache: "no-store",
+    });
+  } catch {
+    return {
+      ok: false,
+      error: "Could not reach rider backend. Is Fastify running on port 3000?",
+      status: 502,
+    };
+  }
+  const json = (await res.json().catch(() => ({}))) as {
+    ok?: boolean;
+    error?: string;
+    forceAssignment?: ForceAssignmentBackendState;
+  };
+  if (!res.ok || !json.ok || !json.forceAssignment) {
+    return {
+      ok: false,
+      error: mapBackendFailure(res, json),
+      status: res.status >= 400 ? res.status : 502,
+    };
+  }
+  return { ok: true, forceAssignment: json.forceAssignment };
+}
+
+export async function cancelForceAssignmentOnBackend(args: {
+  ordersCoreId: number;
+  actorEmail?: string | null;
+  actorId?: string | null;
+}): Promise<RiderManagementBackendResult> {
+  return postInternal("/orders/force-assignment/cancel", {
+    orders_core_id: args.ordersCoreId,
+    actor_email: args.actorEmail ?? undefined,
+    actor_id: args.actorId ?? undefined,
+  });
+}
+
+export async function hardAssignRiderOnBackend(args: {
+  ordersCoreId: number;
+  riderId: number;
+  actorEmail?: string | null;
+  actorId?: string | null;
+}): Promise<RiderManagementBackendResult> {
+  return postInternal("/orders/rider-hard-assign", {
+    orders_core_id: args.ordersCoreId,
+    rider_id: args.riderId,
+    actor_email: args.actorEmail ?? undefined,
+    actor_id: args.actorId ?? undefined,
+  });
+}

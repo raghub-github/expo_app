@@ -1,18 +1,17 @@
 /**
- * Placeholder for services: Parcels, Vouchers, Near Me (Ride/Ecom have own screens).
- * Shows "Coming Soon to You" modal for parcels and vouchers; same inline for others.
+ * Placeholder for services not yet built (vouchers, near-me, etc.).
+ * Parcel has its own screen at /home/service/parcels — never show Coming Soon for it.
  */
 
 import { useState, useEffect } from "react";
 import { View, TouchableOpacity, Modal, StyleSheet, Pressable } from "react-native";
 import { AppText } from "@/components/AppText";
-import { useLocalSearchParams, useRouter } from "expo-router";
+import { useLocalSearchParams, useRouter, Redirect } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { GatiMitraColors } from "@/constants/gatimitra";
 
 const SERVICE_TITLES: Record<string, string> = {
   ride: "Request a Ride",
-  parcels: "Send Parcels",
   ecom: "Elect and Ecom",
   vouchers: "Online Vouchers",
   "near-me": "Near Me",
@@ -25,11 +24,21 @@ const COMING_SOON_MODAL = {
   buttonLabel: "push me to GatiMitra",
 };
 
-const SHOW_MODAL_SLUGS = ["parcels", "vouchers"];
+/** Only vouchers (and similar) — parcels must never land here. */
+const SHOW_MODAL_SLUGS = ["vouchers"];
 
 export default function ServicePlaceholderScreen() {
   const { slug } = useLocalSearchParams<{ slug: string }>();
   const router = useRouter();
+  const slugNorm = String(slug ?? "")
+    .trim()
+    .toLowerCase();
+
+  // Hard redirect so Coming Soon can never appear for parcel.
+  if (slugNorm === "parcels" || slugNorm === "parcel") {
+    return <Redirect href="/home/service/parcels" />;
+  }
+
   const title = (slug && SERVICE_TITLES[slug]) || "Service";
   const showComingSoonModal = Boolean(slug && SHOW_MODAL_SLUGS.includes(slug));
   const [modalVisible, setModalVisible] = useState(false);

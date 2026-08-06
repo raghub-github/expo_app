@@ -10,7 +10,9 @@ export type OrderRoutedToAction =
   | "rider_cancel"
   | "rider_recon"
   | "cx_notification"
-  | "clear_rider_hold";
+  | "clear_rider_hold"
+  | "rider_manual_assign"
+  | "rider_force_assign";
 
 export const ORDER_ROUTED_TO_ACTION_LABELS: Record<OrderRoutedToAction, string> = {
   remark: "Added remark",
@@ -21,4 +23,6 @@ export const ORDER_ROUTED_TO_ACTION_LABELS: Record<OrderRoutedToAction, string> 
   rider_recon: "Rider recon",
   cx_notification: "Sent CX notification",
   clear_rider_hold: "Cleared rider payment hold",
+  rider_manual_assign: "Assign rider manually",
+  rider_force_assign: "Force Assignment",
 };

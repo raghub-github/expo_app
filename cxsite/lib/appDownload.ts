@@ -5,6 +5,8 @@ export const CUSTOMER_PLAY_STORE_URL =
 /** Static paths (copied from `img/` → `public/img/` by scripts/sync-public-img.mjs). */
 export const CUSTOMER_APP_SCREEN_IMG = '/img/dnscreen.png'
 export const RIDE_APP_SCREEN_IMG = '/img/ride.png'
+/** Parcel marketing hero — local fallback when CMS asset unavailable. */
+export const PARCEL_HERO_FALLBACK_IMG = '/img/parcel-van.jpg'
 
 /** Brand green used in marketing email header / CTAs (not red). */
 export const APP_LINK_EMAIL_BRAND = '#109D4C'

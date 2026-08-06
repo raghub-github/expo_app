@@ -39,6 +39,10 @@ export type PlaceRideOrderPayload = {
   customerTipAmount?: number;
   pickupPincode?: string;
   pickupState?: string;
+  /** Platform offer coupon — applied at placement (prepaid) and fare checkout (postpaid). */
+  couponCode?: string | null;
+  selectedPlatformOfferId?: number | null;
+  forceNoAutoOffer?: boolean;
 };
 
 export type PlaceRideOrderResponse = {

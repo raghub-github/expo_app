@@ -38,6 +38,9 @@ export type RideCustomerPricingRow = {
   isActive: boolean;
 };
 
+/** Same shape as ride — parcel customer vehicle slabs. */
+export type ParcelCustomerPricingRow = RideCustomerPricingRow;
+
 /**
  * Rider Fare Engine v3.0: percentage-of-customer-fare payout rule, geo-inherited.
  * Intentionally minimal — no guardrails. Pickup/drop split is always pure

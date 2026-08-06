@@ -54,15 +54,21 @@ export default function OtpScreen() {
   const inputRef = useRef<TextInput>(null);
   const digits = otp.split("").concat(Array(OTP_LENGTH).fill("")).slice(0, OTP_LENGTH);
 
+  const timerActive = resendSeconds > 0;
   useEffect(() => {
-    if (resendSeconds <= 0) return;
-    const id = setInterval(() => setResendSeconds((s) => (s > 0 ? s - 1 : 0)), 1000);
+    if (!timerActive) return;
+    const id = setInterval(() => {
+      setResendSeconds((s) => (s <= 1 ? 0 : s - 1));
+    }, 1000);
     return () => clearInterval(id);
-  }, [resendSeconds]);
+  }, [timerActive]);
 
   const goToLogin = () => router.replace("/(auth)/login");
 
   const setSession = useAuthStore((s) => s.setSession);
+  const verifyInFlightRef = useRef(false);
+  const otpRef = useRef(otp);
+  otpRef.current = otp;
 
   const handleResend = async () => {
     if (resendSeconds > 0 || resending) return;
@@ -80,11 +86,13 @@ export default function OtpScreen() {
   };
 
   const handleVerify = useCallback(async (otpArg?: string) => {
-    const otpToVerify = otpArg ?? otp;
+    const otpToVerify = otpArg ?? otpRef.current;
     if (otpToVerify.length !== OTP_LENGTH) {
       setError("Enter 6-digit OTP");
       return;
     }
+    if (verifyInFlightRef.current) return;
+    verifyInFlightRef.current = true;
     setError("");
     setLoading(true);
     try {
@@ -117,10 +125,11 @@ export default function OtpScreen() {
             ? (e as { response?: { data?: { message?: string } } }).response?.data?.message
             : null);
       setError(msg || "Invalid OTP. Try again.");
+      verifyInFlightRef.current = false;
     } finally {
       setLoading(false);
     }
-  }, [otp, phoneE164, router, setSession]);
+  }, [phoneE164, router, setSession]);
 
   /** Android SMS auto-fill via native module (dev build only). Expo Go skips safely. */
   useEffect(() => {
@@ -168,7 +177,7 @@ export default function OtpScreen() {
 
   return (
     <KeyboardAvoidingView
-      behavior={Platform.OS === "ios" ? "padding" : "height"}
+      behavior={Platform.OS === "ios" ? "padding" : undefined}
       style={[styles.container, { paddingBottom: insets.bottom }]}
     >
       {/* Back button – explicit replace to avoid GO_BACK not handled */}

@@ -5,6 +5,7 @@
  * Decorative only — pointerEvents none so card taps aren't stolen.
  */
 
+import { memo } from "react";
 import { StyleSheet, View } from "react-native";
 import Svg, { Path } from "react-native-svg";
 import { Ionicons } from "@expo/vector-icons";
@@ -67,7 +68,7 @@ export function GridCardImageRatingMask(_props?: {
   return null;
 }
 
-export function GridCardRatingCutout({
+function GridCardRatingCutoutInner({
   rating,
   pageBg = PAGE_BG,
 }: Props) {
@@ -144,3 +145,10 @@ const styles = StyleSheet.create({
     color: "#FFFFFF",
   },
 });
+
+/**
+ * Rendered once per list item. Memoised so a parent re-render (a filter
+ * toggle, a store-status tick, a bill recalculation) does not walk every
+ * mounted instance.
+ */
+export const GridCardRatingCutout = memo(GridCardRatingCutoutInner);

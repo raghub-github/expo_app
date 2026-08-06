@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback, useMemo } from "react";
 import { AppText as Text } from "@/components/AppText";
 import { View, StyleSheet, ScrollView, FlatList, Pressable, ActivityIndicator, Alert, TextInput, RefreshControl, Modal } from "react-native";
-import { useRouter } from "expo-router";
+import { useRouter, useFocusEffect } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import {
   GatiMitraMerchant,
@@ -137,6 +137,12 @@ export default function EarningsScreen() {
   }, [storeId, token, ledgerQuery]);
 
   useEffect(() => { load(); }, [load]);
+
+  useFocusEffect(
+    useCallback(() => {
+      void load(true);
+    }, [load])
+  );
 
   const payoutCards = useMemo(() => {
     const base = cycleCards && cycleCards.length > 0 ? cycleCards : buildPayoutCards(ledger);

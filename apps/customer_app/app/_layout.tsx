@@ -49,6 +49,7 @@ import { CartCheckoutGateHost } from "@/components/cart/CartCheckoutGateHost";
 import { CartUpdatedModal } from "@/components/cart/CartUpdatedModal";
 import { CustomerSystemChrome } from "@/components/CustomerSystemChrome";
 import { StatusBarRouteChromeGuard } from "@/components/StatusBarRouteChromeGuard";
+import { AuthNavigationGate } from "@/components/AuthNavigationGate";
 import { GatiMitraBootstrapScreen } from "@/components/GatiMitraBootstrapScreen";
 import { setOnSessionRevoked } from "@/services/api";
 import { PushNotificationBootstrap } from "@/components/PushNotificationBootstrap";
@@ -92,6 +93,13 @@ import { prefetchHomeScreenData } from "@/lib/prefetchHomeScreenData";
 import { useAppAssetsStore } from "@/store/appAssetsStore";
 import { resolveMapImageDataUri } from "@/lib/map-webview-image-uri";
 import { resolveNearbyRiderMarkerImage } from "@/features/ride/rideOptionAssets";
+import { AppErrorBoundary, AppErrorFallback } from "@/components/AppErrorBoundary";
+import { installGlobalErrorHandlers, reportHandledError } from "@/lib/crashReporting";
+import { installReleaseConsoleSilencer } from "@/lib/releaseConsole";
+
+// Installed at module scope so a throw in the very first render is already covered.
+installGlobalErrorHandlers();
+installReleaseConsoleSilencer();
 
 /** Storage key used by the in-app "Configure API URL" sheet on the login screen. */
 const API_URL_OVERRIDE_KEY = "dev.apiBaseUrl";
@@ -214,7 +222,8 @@ export default function RootLayout() {
   const promptLocationPermissionIfNeeded = useLocationStore((s) => s.promptLocationPermissionIfNeeded);
   const hydrateLocation = useLocationStore((s) => s.hydrate);
 
-  const criticalReady = hydrated && cartHydrated;
+  // Wait for fonts too — otherwise Login/AppText flash system → Lora/Poppins.
+  const criticalReady = hydrated && cartHydrated && fontsLoaded;
   // Auth + cart are local; exit splash as soon as both hydrate — no network gate.
   const appReady = criticalReady;
 
@@ -343,6 +352,7 @@ export default function RootLayout() {
 
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
+      <AppErrorBoundary source="app-root">
       <QueryClientProvider client={queryClient}>
         <SafeAreaProvider>
           <View
@@ -355,40 +365,53 @@ export default function RootLayout() {
             <UserAppCategoriesPrefetch />
             {criticalReady ? (
               <>
-                <ReactQueryFocusSync />
-                <StoreStatusRealtimeSync />
-                <PreventServicesRealtimeSync />
-                <OrderRealtimeSync />
-                <SessionRevokedHandler />
-                <CustomerPermissionsRealtimeSync />
-                <LocationPermissionResumeCheck />
-                <LocationWatchSync />
-                <LanguageSync />
+                {/* Headless syncs render null — if one throws, the navigator must
+                    survive it, so they get their own boundary with no fallback UI. */}
+                <AppErrorBoundary source="background-sync" fallback={() => null}>
+                  <ReactQueryFocusSync />
+                  <StoreStatusRealtimeSync />
+                  <PreventServicesRealtimeSync />
+                  <OrderRealtimeSync />
+                  <SessionRevokedHandler />
+                  <CustomerPermissionsRealtimeSync />
+                  <LocationPermissionResumeCheck />
+                  <LocationWatchSync />
+                  <LanguageSync />
+                </AppErrorBoundary>
+                <AuthNavigationGate />
                 <CustomerSystemChrome />
                 <StatusBarRouteChromeGuard />
-                <RootStack onLayoutRootView={onLayoutRootView} splashActive={!splashExited} />
-                <CheckoutBottomSheetHost />
-                <CartCheckoutGateHost />
-                <CartUpdatedModal />
-                <GlobalFloatingCart />
-                <CustomerPermissionSheetsHost />
-                <ServiceBlockedGateHost />
-                <PushNotificationBootstrap />
-                <LiveOrderProgressNotification />
-                <PlayInAppUpdateBootstrap />
-                <LegalConsentGate />
-                <AddressesPrefetch />
-                <FeaturedOffersPrefetch />
-                <WeatherPrefetch />
-                <WeatherRealtimeSync />
-                <PendingAddressShareResume />
-                <PendingReferralResume />
-                <FoodHomeLayoutPrefetch />
-                <ProfilePrefetch />
-                <WalletBalancePrefetch />
-                <SubscriptionPlansPrefetch />
-                {/* Absolute shutter over home — no Modal fade; drops when store page is ready */}
-                <MerchantNavTransitionShutter />
+                <AppErrorBoundary source="navigator">
+                  <RootStack onLayoutRootView={onLayoutRootView} splashActive={!splashExited} />
+                </AppErrorBoundary>
+                {/* Overlay hosts: a throw here must not blank the navigator behind them. */}
+                <AppErrorBoundary source="overlay-hosts" fallback={() => null}>
+                  <CheckoutBottomSheetHost />
+                  <CartCheckoutGateHost />
+                  <CartUpdatedModal />
+                  <GlobalFloatingCart />
+                  <CustomerPermissionSheetsHost />
+                  <ServiceBlockedGateHost />
+                  <LiveOrderProgressNotification />
+                  <LegalConsentGate />
+                  {/* Absolute shutter over home — no Modal fade; drops when store page is ready */}
+                  <MerchantNavTransitionShutter />
+                </AppErrorBoundary>
+                {/* Fire-and-forget prefetch/bootstrap — never user-visible. */}
+                <AppErrorBoundary source="prefetch" fallback={() => null}>
+                  <PushNotificationBootstrap />
+                  <PlayInAppUpdateBootstrap />
+                  <AddressesPrefetch />
+                  <FeaturedOffersPrefetch />
+                  <WeatherPrefetch />
+                  <WeatherRealtimeSync />
+                  <PendingAddressShareResume />
+                  <PendingReferralResume />
+                  <FoodHomeLayoutPrefetch />
+                  <ProfilePrefetch />
+                  <WalletBalancePrefetch />
+                  <SubscriptionPlansPrefetch />
+                </AppErrorBoundary>
               </>
             ) : null}
             {!splashExited ? (
@@ -403,8 +426,21 @@ export default function RootLayout() {
           </View>
         </SafeAreaProvider>
       </QueryClientProvider>
+      </AppErrorBoundary>
     </GestureHandlerRootView>
   );
+}
+
+/**
+ * Expo Router renders this for any route that throws under this layout — a
+ * per-screen net beneath the explicit boundaries above, so one bad screen shows
+ * a retry instead of taking the process down.
+ */
+export function ErrorBoundary({ error, retry }: { error: Error; retry: () => void }) {
+  useEffect(() => {
+    reportHandledError("expo-router-route", error);
+  }, [error]);
+  return <AppErrorFallback error={error} retry={retry} />;
 }
 
 function OrderRealtimeSync() {
@@ -593,18 +629,16 @@ function CustomerPermissionsRealtimeSync() {
     }
   }, [hydrated, session, promptSmsPermissionIfNeeded]);
 
+  // Device permissions only change via the OS settings screen, which always
+  // routes the app through background → active. The AppState listener therefore
+  // catches every real transition; the 15s interval that used to sit alongside
+  // it re-ran three native permission bridge calls forever for no added signal.
   useEffect(() => {
     void syncDevicePermissions();
     const sub = AppState.addEventListener("change", (nextState: AppStateStatus) => {
       if (nextState === "active") void syncDevicePermissions();
     });
-    const interval = setInterval(() => {
-      if (AppState.currentState === "active") void syncDevicePermissions();
-    }, 15000);
-    return () => {
-      sub.remove();
-      clearInterval(interval);
-    };
+    return () => sub.remove();
   }, [syncDevicePermissions]);
 
   return null;
@@ -694,24 +728,27 @@ function LocationPermissionResumeCheck() {
       if (nextState === "active") void syncOnForeground();
     });
 
-    const interval = setInterval(() => {
-      if (AppState.currentState !== "active") return;
-      if (useSmsPermissionStore.getState().blocksLocation) return;
-      if (useLocationStore.getState().showPermissionModal) {
-        void promptLocationPermissionIfNeeded({ skipDeviceFetch: true });
-      }
-    }, 2000);
+    return () => sub.remove();
+  }, [requestPermissionAndFetch, promptLocationPermissionIfNeeded, queryClient]);
 
-    return () => {
-      sub.remove();
-      clearInterval(interval);
-    };
-  }, [promptLocationPermissionIfNeeded, requestPermissionAndFetch, queryClient]);
-
+  // Re-prompt loop, but only while the modal is actually up. This used to be an
+  // unconditional 2s interval that ran for the entire app lifetime and did
+  // nothing on the overwhelming majority of ticks — now it exists only for the
+  // seconds the user is looking at the permission sheet.
   useEffect(() => {
     if (!showPermissionModal) return;
     if (useSmsPermissionStore.getState().blocksLocation) return;
+
     void promptLocationPermissionIfNeeded({ skipDeviceFetch: true });
+
+    const interval = setInterval(() => {
+      if (AppState.currentState !== "active") return;
+      if (useSmsPermissionStore.getState().blocksLocation) return;
+      if (!useLocationStore.getState().showPermissionModal) return;
+      void promptLocationPermissionIfNeeded({ skipDeviceFetch: true });
+    }, 2000);
+
+    return () => clearInterval(interval);
   }, [showPermissionModal, promptLocationPermissionIfNeeded]);
 
   return null;
@@ -751,6 +788,7 @@ function RootStack({
 }) {
   const insets = useSafeAreaInsets();
   const segments = useSegments();
+  const inAuthStack = segments[0] === "(auth)";
   const inProfileStack = segments[0] === "profile";
   const inLegalStack = segments[0] === "legal";
   const inCheckoutStack = segments[0] === "checkout";
@@ -770,9 +808,12 @@ function RootStack({
       : statusBarHeight;
   // Never pad the stack for Android/iOS system nav — that created a white gap row
   // above the nav bar on search and other non-home routes. Screens add insets themselves.
+  const AUTH_CHROME = "#F0F4F3";
   const resolvedStatusBarBackground = splashChromeActive
     ? SPLASH_CHROME_COLOR
-    : immersiveStatusBar && statusBarBackground === "transparent"
+    : inAuthStack
+      ? AUTH_CHROME
+      : immersiveStatusBar && statusBarBackground === "transparent"
       ? "transparent"
       : statusBarBackground === "transparent"
         ? "#FFFFFF"
@@ -839,9 +880,23 @@ function RootStack({
             contentStyle: {
               backgroundColor: splashChromeActive
                 ? SPLASH_CHROME_COLOR
-                : colors.background.light,
+                : inAuthStack
+                  ? "#F0F4F3"
+                  : colors.background.light,
             },
             animation: "slide_from_right",
+            /**
+             * Screens below the top of the stack stop re-rendering while blurred.
+             * Without this, navigating Home → Restaurant → Cart → Checkout left
+             * every earlier screen mounted AND re-rendering on every Zustand /
+             * React Query update — with Home's per-card image carousels and
+             * ticker animations still running underneath Checkout. Effects and
+             * subscriptions are unaffected, so live data is still current when a
+             * screen is popped back to; only the wasted render work stops.
+             * (`app/home/_layout.tsx` already did this — same pattern, applied
+             * to the root stack.)
+             */
+            freezeOnBlur: true,
           }}
         >
           <Stack.Screen name="index" />
@@ -865,7 +920,6 @@ function RootStack({
           <Stack.Screen name="profile" />
           <Stack.Screen name="legal" />
           <Stack.Screen name="wallet" />
-          <Stack.Screen name="notifications" />
           <Stack.Screen name="support" />
         </Stack>
       </View>

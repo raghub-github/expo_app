@@ -16,6 +16,9 @@ export type RideCancelReasonSheetProps = {
   visible: boolean;
   onClose: () => void;
   onSelectReason: (reason: RideCancelReason) => void;
+  reasons?: RideCancelReason[];
+  title?: string;
+  subtitle?: string;
 };
 
 function DashedDivider() {
@@ -26,6 +29,9 @@ export function RideCancelReasonSheet({
   visible,
   onClose,
   onSelectReason,
+  reasons = RIDE_SEARCH_CANCEL_REASONS,
+  title = "Why do you want to cancel?",
+  subtitle = "Please provide the reason for cancellation",
 }: RideCancelReasonSheetProps) {
   const insets = useSafeAreaInsets();
 
@@ -44,13 +50,13 @@ export function RideCancelReasonSheet({
         </Pressable>
 
         <View style={[styles.sheet, { paddingBottom: Math.max(insets.bottom, 16) }]}>
-          <AppText style={styles.title}>Why do you want to cancel?</AppText>
-          <AppText style={styles.subtitle}>Please provide the reason for cancellation</AppText>
+          <AppText style={styles.title}>{title}</AppText>
+          <AppText style={styles.subtitle}>{subtitle}</AppText>
 
           <DashedDivider />
 
           <ScrollView showsVerticalScrollIndicator={false} bounces={false}>
-            {RIDE_SEARCH_CANCEL_REASONS.map((reason, index) => (
+            {reasons.map((reason, index) => (
               <View key={reason.id}>
                 <TouchableOpacity
                   style={styles.reasonRow}
@@ -60,7 +66,7 @@ export function RideCancelReasonSheet({
                   <AppText style={styles.reasonText}>{reason.label}</AppText>
                   <Ionicons name="chevron-forward" size={18} color="#9CA3AF" />
                 </TouchableOpacity>
-                {index < RIDE_SEARCH_CANCEL_REASONS.length - 1 ? (
+                {index < reasons.length - 1 ? (
                   <View style={styles.rowDivider} />
                 ) : null}
               </View>

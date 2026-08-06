@@ -7,6 +7,8 @@ import { ArrowLeft, Save, Loader2 } from "lucide-react";
 import { DashboardAccessSelector } from "@/components/users/DashboardAccessSelector";
 import { usePermissions } from "@/hooks/usePermissions";
 import { buildDashboardAccessPayload } from "@/lib/permissions/access-level";
+import { DashboardErrorBanner } from "@/components/ui/DashboardErrorBanner";
+import { redirectIfUnauthenticatedError } from "@/lib/auth/redirect-to-login";
 
 export default function UserAccessPage() {
   const params = useAppParams();
@@ -43,6 +45,7 @@ export default function UserAccessPage() {
       const userResult = await userResponse.json();
 
       if (!userResult.success) {
+        if (redirectIfUnauthenticatedError(userResult.error)) return;
         setError(userResult.error || "Failed to fetch user");
         return;
       }
@@ -85,7 +88,9 @@ export default function UserAccessPage() {
       }
     } catch (err) {
       console.error("Error fetching user access:", err);
-      setError(err instanceof Error ? err.message : "Unknown error");
+      const msg = err instanceof Error ? err.message : "Unknown error";
+      if (redirectIfUnauthenticatedError(msg)) return;
+      setError(msg);
     } finally {
       setLoading(false);
     }
@@ -152,9 +157,7 @@ export default function UserAccessPage() {
   if (error && !user) {
     return (
       <div className="p-6">
-        <div className="bg-red-50 border border-red-200 text-red-800 px-4 py-3 rounded-lg">
-          {error}
-        </div>
+        <DashboardErrorBanner error={error} />
       </div>
     );
   }
@@ -174,11 +177,7 @@ export default function UserAccessPage() {
         </p>
       </div>
 
-      {error && (
-        <div className="bg-red-50 border border-red-200 text-red-800 px-4 py-3 rounded-lg mb-6">
-          {error}
-        </div>
-      )}
+      <DashboardErrorBanner error={error} className="bg-red-50 border border-red-200 text-red-800 px-4 py-3 rounded-lg mb-6" />
 
       <div className="bg-white rounded-lg shadow p-6">
         <DashboardAccessSelector

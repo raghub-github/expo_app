@@ -2277,6 +2277,28 @@ async function acceptFoodOrderForRider(
   riderId: number,
   orderRef: string
 ): Promise<RiderOrderSummary> {
+  const { acceptForceAssignmentForRider } = await import(
+    "../../lib/force-assignment.service.js"
+  );
+  const forceHandled = await acceptForceAssignmentForRider(riderId, orderRef);
+  if (forceHandled.handled) {
+    const ownedSummary = await loadOwnedFoodSummaryForRider(
+      riderId,
+      forceHandled.orderCoreId
+    );
+    if (ownedSummary) return { ...ownedSummary, status: "assigned" };
+    const actives = await getActiveOrdersForRider(riderId);
+    const hit = actives.find(
+      (o) =>
+        o.id === forceHandled.summaryOrderId ||
+        o.formattedOrderId?.trim() === orderRef.trim()
+    );
+    if (hit) return hit;
+    throw Object.assign(new Error("Force Assignment completed but order summary missing"), {
+      statusCode: 500,
+    });
+  }
+
   const db = getDb();
   const now = new Date();
 
@@ -2596,6 +2618,7 @@ async function acceptParcelOrderForRider(
       orderId: ordersCore.orderId,
       pickupLat: ordersCore.pickupLat,
       pickupLon: ordersCore.pickupLon,
+      currentStatus: ordersCore.currentStatus,
     })
     .from(ordersCore)
     .innerJoin(ordersParcel, eq(ordersParcel.orderId, ordersCore.id))
@@ -2604,7 +2627,12 @@ async function acceptParcelOrderForRider(
         orderRefWhere(orderRef),
         eq(ordersCore.orderType, "parcel"),
         isNull(ordersCore.riderId),
-        eq(ordersCore.currentStatus, "READY_FOR_PICKUP")
+        inArray(ordersCore.currentStatus, [
+          "SEARCHING_RIDER",
+          "PLACED",
+          "CREATED",
+          "READY_FOR_PICKUP",
+        ])
       )
     )
     .limit(1);
@@ -2628,6 +2656,7 @@ async function acceptParcelOrderForRider(
     throwDispatchError(error);
   }
 
+  const previousStatus = String(preCheck.currentStatus ?? "SEARCHING_RIDER");
   // First-mile allowance snapshot (Phase 4b): rate/km × rider→store distance at accept.
   const parcelPrePickup = parcelAcceptCtx
     ? await computePrePickupAllowanceForPickup(
@@ -2671,10 +2700,19 @@ async function acceptParcelOrderForRider(
       throw Object.assign(new Error("Order already taken"), { statusCode: 409 });
     }
 
+    await tx
+      .update(ordersParcel)
+      .set({
+        assignedRiderId: riderId,
+        riderAssignedAt: now,
+        updatedAt: now,
+      })
+      .where(eq(ordersParcel.orderId, updated.id));
+
     await appendOrderTimeline(tx, {
       orderCorePk: updated.id,
       status: "OUT_FOR_DELIVERY",
-      previousStatus: "READY_FOR_PICKUP",
+      previousStatus,
       actorType: "rider",
       actorId: riderId,
       statusMessage: "Rider accepted parcel delivery",
@@ -3140,6 +3178,15 @@ export async function rejectOrderForRider(
     metadata: { serviceType: row.orderType ?? "unknown", reasonCode, reasonText },
     occurredAt: now,
   });
+
+  try {
+    const { markForceAssignmentRejected } = await import(
+      "../../lib/force-assignment.service.js"
+    );
+    await markForceAssignmentRejected({ orderCoreId: row.id, riderId });
+  } catch {
+    /* non-fatal */
+  }
 
   return { ok: true };
 }

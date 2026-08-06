@@ -4,13 +4,30 @@ import { requireSuperAdminApi } from "@/lib/super-admin-api";
 import { platformOfferKindSchema } from "@/lib/billing/platformOfferKinds";
 import { validatePlatformOfferKindFieldsForApi } from "@/lib/billing/platformOfferKindUi";
 import { insertPlatformOffer, listPlatformOffers, formatPlatformOfferDbError } from "@/lib/db/operations/billing-advanced";
+import { auditPlatformOfferMutation } from "@/lib/audit/platform-offer-audit";
 
 export const runtime = "nodejs";
 
 const offerAudienceSchema = z.enum(["CUSTOMER", "MERCHANT", "RIDER"]);
 
+const optionalIsoDateTime = z
+  .union([z.string(), z.null()])
+  .optional()
+  .refine(
+    (v) => v === undefined || v === null || (typeof v === "string" && !Number.isNaN(Date.parse(v))),
+    { message: "Invalid date/time" }
+  );
+
 const postSchema = z.object({
   name: z.string().optional().nullable(),
+  coupon_code: z
+    .string()
+    .trim()
+    .min(3)
+    .max(32)
+    .regex(/^[A-Za-z0-9_-]+$/, "Coupon code may only use A–Z, 0–9, underscore, and hyphen")
+    .optional()
+    .nullable(),
   service_type: z.string().optional(),
   offer_kind: platformOfferKindSchema.optional(),
   offer_audience: offerAudienceSchema.optional(),
@@ -30,10 +47,17 @@ const postSchema = z.object({
   get_qty: z.number().int().nullable().optional(),
   is_stackable: z.boolean().optional(),
   exclusion_group: z.string().nullable().optional(),
-  starts_at: z.string().datetime().nullable().optional(),
-  ends_at: z.string().datetime().nullable().optional(),
+  starts_at: optionalIsoDateTime,
+  ends_at: optionalIsoDateTime,
   budget_total: z.number().nullable().optional(),
   budget_used: z.number().nullable().optional(),
+  max_uses_total: z.number().int().positive().nullable().optional(),
+  max_uses_per_user: z.number().int().positive().nullable().optional(),
+  max_uses_per_day: z.number().int().positive().nullable().optional(),
+  max_uses_per_month: z.number().int().positive().nullable().optional(),
+  consume_mode: z.enum(["ON_PLACED", "ON_DELIVERED"]).optional(),
+  restore_on_cancel: z.boolean().optional(),
+  restore_on_refund: z.boolean().optional(),
   discount_type: z.string().optional(),
   value_numeric: z.number().nullable().optional(),
   delivery_discount_type: z.string().optional().nullable(),
@@ -42,6 +66,7 @@ const postSchema = z.object({
   is_active: z.boolean().optional(),
   is_hidden: z.boolean().optional(),
   conditions: z.record(z.string(), z.unknown()).optional(),
+  promo_config: z.record(z.string(), z.unknown()).optional(),
   metadata: z.unknown().optional(),
 }).superRefine((d, ctx) => {
   const p = d.platform_share_pct ?? 100;
@@ -94,9 +119,31 @@ export async function POST(req: NextRequest) {
   }
   try {
     const offer = await insertPlatformOffer(parsed.data);
+    await auditPlatformOfferMutation(req, "CREATE", {
+      resourceType: "platform_offer",
+      resourceId: String(offer.id),
+      actionDetails: { action: "create_platform_offer" },
+      newValues: {
+        name: offer.name,
+        service_type: offer.service_type,
+        is_active: offer.is_active,
+        starts_at: offer.starts_at,
+        ends_at: offer.ends_at,
+        budget_total: offer.budget_total,
+        max_uses_per_user: offer.max_uses_per_user,
+        priority: offer.priority,
+      },
+    });
     return NextResponse.json({ offer });
   } catch (e) {
     const msg = formatPlatformOfferDbError(e);
+    await auditPlatformOfferMutation(req, "CREATE", {
+      resourceType: "platform_offer",
+      resourceId: "new",
+      failed: true,
+      errorMessage: msg,
+      actionDetails: { action: "create_platform_offer" },
+    });
     const status =
       msg.includes("date/time") ||
       msg.includes("must be on or after") ||

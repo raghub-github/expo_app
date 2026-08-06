@@ -110,7 +110,11 @@ export function QueueSupervisorAgentTicketsClient() {
       setSelectedAgentId(agentIdFromUrl);
       return;
     }
-    setSelectedAgentId("");
+    // Do not clear a local pick while the URL is still catching up after select.
+    // Only clear when the URL explicitly names an agent that is no longer in the list.
+    if (agentIdFromUrl && !agents.some((a) => String(a.id) === agentIdFromUrl)) {
+      setSelectedAgentId("");
+    }
   }, [agents, agentIdFromUrl]);
 
   const agentOptions = useMemo(

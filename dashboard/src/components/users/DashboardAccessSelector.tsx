@@ -269,7 +269,8 @@ export const DASHBOARD_DEFINITIONS: Record<
       {
         group: "TICKET_AGENT_STATUS_TOGGLE",
         label: "Agent Status Toggle",
-        description: "Allow agent to switch Online/Offline/Break/Busy status from queue header",
+        description:
+          "Allow agent to open Queue from Tickets and switch Online/Offline/Break/Busy on the queue header",
         allowedActions: ["UPDATE"],
       },
       {
@@ -625,13 +626,35 @@ export function DashboardAccessSelector({
                   selected ? "border-blue-500 bg-blue-50" : "border-gray-200 bg-white"
                 }`}
               >
-                <div className="p-3 flex items-center justify-between">
-                  <div className="flex items-center gap-3 flex-1">
+                <div
+                  className={`p-3 flex items-center justify-between gap-2 ${
+                    hasAccessPoints && !disabled ? "cursor-pointer" : ""
+                  }`}
+                  onClick={() => {
+                    if (!hasAccessPoints || disabled) return;
+                    toggleExpand(dashboardType);
+                  }}
+                  onKeyDown={(e) => {
+                    if (!hasAccessPoints || disabled) return;
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      toggleExpand(dashboardType);
+                    }
+                  }}
+                  role={hasAccessPoints ? "button" : undefined}
+                  tabIndex={hasAccessPoints && !disabled ? 0 : undefined}
+                  aria-expanded={hasAccessPoints ? expanded : undefined}
+                >
+                  <div className="flex items-center gap-3 flex-1 min-w-0">
                     <button
                       type="button"
-                      onClick={() => toggleDashboard(dashboardType)}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        toggleDashboard(dashboardType);
+                      }}
                       disabled={disabled}
-                      className={`w-5 h-5 rounded border-2 flex items-center justify-center transition-colors ${
+                      aria-label={selected ? `Remove ${config.label}` : `Add ${config.label}`}
+                      className={`w-5 h-5 shrink-0 rounded border-2 flex items-center justify-center transition-colors ${
                         selected
                           ? "bg-blue-500 border-blue-500"
                           : "border-gray-300 bg-white"
@@ -639,7 +662,7 @@ export function DashboardAccessSelector({
                     >
                       {selected && <Check className="h-3 w-3 text-white" />}
                     </button>
-                    <div className="flex-1">
+                    <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2">
                         <h4 className="text-sm font-medium text-gray-900">
                           {config.label}
@@ -658,8 +681,12 @@ export function DashboardAccessSelector({
                   {hasAccessPoints && (
                     <button
                       type="button"
-                      onClick={() => toggleExpand(dashboardType)}
-                      className="p-1 hover:bg-gray-100 rounded transition-colors"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        toggleExpand(dashboardType);
+                      }}
+                      aria-label={expanded ? `Collapse ${config.label}` : `Expand ${config.label}`}
+                      className="p-1 hover:bg-gray-100 rounded transition-colors shrink-0"
                     >
                       {expanded ? (
                         <ChevronDown className="h-4 w-4 text-gray-600" />

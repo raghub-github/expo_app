@@ -30,7 +30,7 @@ import {
   isUserAccountActive,
 } from "../auth/user-mapping";
 import { dashboardAccess, dashboardAccessPoints, type DashboardType, type AccessPointGroup, type ActionType } from "../db/schema";
-import { getDashboardTypeFromPath } from "./path-mapping";
+import { getDashboardTypeFromPath, isOpenDashboardPath } from "./path-mapping";
 import { supabaseAdmin } from "../supabase/server";
 
 // Type definitions - these should match your database schema
@@ -388,14 +388,14 @@ export async function canAccessPage(
       return true; // Super admin bypass
     }
 
-    // Dashboard home page - allow if user has any dashboard access or is super admin
-    if (pagePath === "/dashboard" || pagePath === "/dashboard/") {
+    // Home + open fleet tools — any agent with ≥1 dashboard access
+    if (isOpenDashboardPath(pagePath)) {
       const systemUserId = await getSystemUserIdFromAuthUser(supabaseAuthId, email);
       if (!systemUserId) {
         return false;
       }
       const dashboards = await getUserDashboardAccess(systemUserId);
-      return dashboards.length > 0; // User can access dashboard home if they have at least one dashboard
+      return dashboards.length > 0;
     }
 
     // Map page path to dashboard type
@@ -656,8 +656,18 @@ export async function hasAccessPointAction(
       )
       .limit(1);
     const row = result[0];
+    if (!row) return false;
     const actions = (row?.allowedActions as string[] | null) ?? [];
-    return actions.includes(actionType);
+    const want = String(actionType).trim().toUpperCase();
+    // Legacy / incomplete rows: active TICKET_AGENT_STATUS_TOGGLE with no actions ⇒ UPDATE.
+    if (
+      actions.length === 0 &&
+      String(accessPointGroup).trim().toUpperCase() === "TICKET_AGENT_STATUS_TOGGLE" &&
+      want === "UPDATE"
+    ) {
+      return true;
+    }
+    return actions.some((a) => String(a).trim().toUpperCase() === want);
   } catch (error) {
     return false;
   }

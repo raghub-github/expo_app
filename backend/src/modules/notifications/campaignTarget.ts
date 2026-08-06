@@ -55,6 +55,17 @@ export function expectedRoleFromTarget(
   if (Array.isArray(target.store_ids) && target.store_ids.length > 0) {
     return "merchant";
   }
+  if (Array.isArray(target.user_ids) && target.user_ids.length > 0) {
+    const roles = new Set<"customer" | "merchant" | "rider">();
+    for (const raw of target.user_ids) {
+      const id = String(raw).trim().toUpperCase();
+      if (!id) continue;
+      if (/^GMR\d+$/.test(id) || /^USR_\d+$/.test(id)) roles.add("rider");
+      else if (/^GMMP\d+$/.test(id)) roles.add("merchant");
+      else if (/^GM\d+$/.test(id)) roles.add("customer");
+    }
+    if (roles.size === 1) return [...roles][0]!;
+  }
   if (typeof target.role === "string") {
     const r = target.role.toLowerCase();
     if (r === "customer" || r === "merchant" || r === "rider") return r;
@@ -90,4 +101,56 @@ export function defaultAnnouncementTemplateForRole(
   if (role === "merchant") return "MERCHANT_ANNOUNCEMENT";
   if (role === "rider") return "RIDER_ANNOUNCEMENT";
   return null;
+}
+
+/**
+ * Human-readable soft-skip / advisory copy when push devices are missing.
+ * Avoids the generic “Expo Go” message for customer / rider campaigns.
+ */
+export function softSkipWarningForTarget(
+  target: Record<string, unknown>,
+  skipReason: "no_recipients" | "quiet_hours" | string,
+  opts?: { inboxOnlyCount?: number },
+): string {
+  if (skipReason === "quiet_hours") {
+    return "Quiet hours active — push skipped. Campaign recorded.";
+  }
+  const role = expectedRoleFromTarget(target ?? {});
+  if (opts?.inboxOnlyCount && opts.inboxOnlyCount > 0) {
+    const who =
+      role === "customer"
+        ? "customers"
+        : role === "rider"
+          ? "riders"
+          : role === "merchant"
+            ? "merchants"
+            : "users";
+    return (
+      `No push devices registered for this ${role ?? "audience"}. ` +
+      `Recorded in-app for ${opts.inboxOnlyCount} ${who}. ` +
+      `Open the ${role ?? "mobile"} app once (with notifications allowed) to enable push.`
+    );
+  }
+  if (role === "customer") {
+    return (
+      "No customer devices registered. Open the customer app on a device " +
+      "(notifications allowed) so a push token can register, then resend. Campaign recorded."
+    );
+  }
+  if (role === "rider") {
+    return (
+      "No rider devices registered. Open the rider app on a device " +
+      "(notifications allowed) so a push token can register, then resend. Campaign recorded."
+    );
+  }
+  if (role === "merchant") {
+    return (
+      "No merchant devices registered for this target. " +
+      "Open the partner app or partnersite with notifications allowed, then resend. Campaign recorded."
+    );
+  }
+  return (
+    "No registered push devices for this target. " +
+    "Open the target app once with notifications allowed, then resend. Campaign recorded."
+  );
 }

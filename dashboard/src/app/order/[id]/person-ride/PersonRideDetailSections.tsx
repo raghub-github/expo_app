@@ -345,6 +345,13 @@ export function PassengerCard({
     if (dbId) return `/dashboard/customers/${dbId}?${searchQ}fromOrder=1`;
     return `/dashboard/customers/all?${searchQ}fromOrder=1`;
   })();
+  const walletLedgerHref = (() => {
+    const externalId = order.customerExternalId?.trim() || "";
+    const dbId = order.customerId;
+    if (!dbId) return null;
+    const searchQ = externalId ? `search=${encodeURIComponent(externalId)}&` : "";
+    return `/dashboard/customers/${dbId}?${searchQ}fromOrder=1&nav=transactions`;
+  })();
   const copyText = (text: string, field: "customerId" | "mobile" | "email") => {
     if (!text || typeof navigator === "undefined" || !navigator.clipboard) return;
     void navigator.clipboard.writeText(text).then(() => {
@@ -495,9 +502,21 @@ export function PassengerCard({
         <Row
           label="Wallet"
           value={
-            <span className="pr-num whitespace-nowrap font-semibold text-slate-900">
-              {walletLabel}
-            </span>
+            walletLedgerHref ? (
+              <a
+                href={walletLedgerHref}
+                target="_blank"
+                rel="noopener noreferrer"
+                title="Open full wallet ledger"
+                className="pr-num cursor-pointer whitespace-nowrap font-semibold text-emerald-700 no-underline hover:text-emerald-800 hover:no-underline"
+              >
+                {walletLabel}
+              </a>
+            ) : (
+              <span className="pr-num whitespace-nowrap font-semibold text-slate-900">
+                {walletLabel}
+              </span>
+            )
           }
         />
       </div>

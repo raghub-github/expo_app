@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { getSql } from "../../db/client.js";
+import { getSql, withSqlRetry, isDbConnectionError } from "../../db/client.js";
+import { isTransientDbError, hasTransientDbCause } from "../../lib/db/is-transient-db-error.js";
 import { resolveGeoServiceAvailability } from "./geoServiceAvailability.service.js";
 import { resolveFoodHomeLayout } from "../cxapp-home/cxappFoodHomeLayout.service.js";
 
@@ -43,10 +44,11 @@ export async function geoRoutes(app: FastifyInstance) {
     if (!q.success) {
       return reply.code(400).send({ error: "invalid_query", details: q.error.flatten() });
     }
-    const sql = getSql();
     const { pincode, service, lat, lng } = q.data;
     try {
-      const rows = await sql<[{ geo_resolve_pincode: unknown }]>`
+      const rows = await withSqlRetry(async () => {
+        const sql = getSql();
+        return sql<[{ geo_resolve_pincode: unknown }]>`
         SELECT geo_resolve_pincode(
           ${pincode.trim()},
           ${service},
@@ -54,11 +56,20 @@ export async function geoRoutes(app: FastifyInstance) {
           ${lng ?? null}
         ) AS geo_resolve_pincode
       `;
+      });
       const payload = rows[0]?.geo_resolve_pincode ?? { found: false };
       return reply.send(payload);
     } catch (e) {
       const msg = e instanceof Error ? e.message : "resolve_failed";
       request.log.error({ err: e }, "geo_resolve_failed");
+      const transient =
+        isDbConnectionError(e) || isTransientDbError(e) || hasTransientDbCause(e);
+      if (transient) {
+        return reply.code(503).send({
+          error: "database_unavailable",
+          message: "Database is busy. Please try again in a moment.",
+        });
+      }
       return reply.code(500).send({ error: "resolve_failed", message: msg });
     }
   });
@@ -77,11 +88,19 @@ export async function geoRoutes(app: FastifyInstance) {
       });
     }
     try {
-      const result = await resolveFoodHomeLayout({ pincode, state, lat, lng });
+      const result = await withSqlRetry(() => resolveFoodHomeLayout({ pincode, state, lat, lng }));
       return reply.send({ ok: true, ...result });
     } catch (e) {
       const msg = e instanceof Error ? e.message : "resolve_failed";
       request.log.error({ err: e }, "food_home_layout_resolve_failed");
+      const transient =
+        isDbConnectionError(e) || isTransientDbError(e) || hasTransientDbCause(e);
+      if (transient) {
+        return reply.code(503).send({
+          error: "database_unavailable",
+          message: "Database is busy. Please try again in a moment.",
+        });
+      }
       return reply.code(500).send({ error: "resolve_failed", message: msg });
     }
   });
@@ -100,16 +119,26 @@ export async function geoRoutes(app: FastifyInstance) {
       });
     }
     try {
-      const result = await resolveGeoServiceAvailability({
-        pincode,
-        state,
-        lat,
-        lng,
-      });
+      const result = await withSqlRetry(() =>
+        resolveGeoServiceAvailability({
+          pincode,
+          state,
+          lat,
+          lng,
+        })
+      );
       return reply.send({ ok: true, ...result });
     } catch (e) {
       const msg = e instanceof Error ? e.message : "resolve_failed";
       request.log.error({ err: e }, "geo_services_resolve_failed");
+      const transient =
+        isDbConnectionError(e) || isTransientDbError(e) || hasTransientDbCause(e);
+      if (transient) {
+        return reply.code(503).send({
+          error: "database_unavailable",
+          message: "Database is busy. Please try again in a moment.",
+        });
+      }
       return reply.code(500).send({ error: "resolve_failed", message: msg });
     }
   });
@@ -149,10 +178,11 @@ export async function geoRoutes(app: FastifyInstance) {
     if (!q.success) {
       return reply.code(400).send({ error: "invalid_query", details: q.error.flatten() });
     }
-    const sql = getSql();
     const { pincode, service, distanceKm, waitingMin } = q.data;
     try {
-      const rows = await sql<[{ geo_resolve_rider_payout: unknown }]>`
+      const rows = await withSqlRetry(async () => {
+        const sql = getSql();
+        return sql<[{ geo_resolve_rider_payout: unknown }]>`
         SELECT geo_resolve_rider_payout(
           ${pincode.trim()},
           ${service}::geo_service,
@@ -160,11 +190,20 @@ export async function geoRoutes(app: FastifyInstance) {
           ${waitingMin ?? 0}
         ) AS geo_resolve_rider_payout
       `;
+      });
       const payload = rows[0]?.geo_resolve_rider_payout ?? null;
       return reply.send(payload);
     } catch (e) {
       const msg = e instanceof Error ? e.message : "resolve_failed";
       request.log.error({ err: e }, "rider_payout_resolve_failed");
+      const transient =
+        isDbConnectionError(e) || isTransientDbError(e) || hasTransientDbCause(e);
+      if (transient) {
+        return reply.code(503).send({
+          error: "database_unavailable",
+          message: "Database is busy. Please try again in a moment.",
+        });
+      }
       return reply.code(500).send({ error: "resolve_failed", message: msg });
     }
   });

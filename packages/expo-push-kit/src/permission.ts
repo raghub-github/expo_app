@@ -1,5 +1,5 @@
 import Constants from "expo-constants";
-import { Linking, Platform } from "react-native";
+import { Linking, PermissionsAndroid, Platform } from "react-native";
 import type { PushOsPermissionStatus } from "./types";
 
 export function isExpoGoRuntime(): boolean {
@@ -46,38 +46,103 @@ function mapOsStatus(
   return "undetermined";
 }
 
-export async function readNotificationPermission(): Promise<NotificationPermissionSnapshot> {
-  const Notifications = await loadNotificationsModule({ allowExpoGo: true });
-  if (!Notifications) {
-    return { osStatus: "undetermined", canAskAgain: true, rawStatus: "unavailable" };
+function androidApiLevel(): number {
+  return typeof Platform.Version === "number"
+    ? Platform.Version
+    : parseInt(String(Platform.Version), 10) || 0;
+}
+
+/**
+ * Android 13+ POST_NOTIFICATIONS is the source of truth for the master
+ * "Allow notifications" toggle — expo-notifications alone can lag or be missing.
+ */
+async function readAndroidNativePermission(): Promise<NotificationPermissionSnapshot | null> {
+  if (Platform.OS !== "android") return null;
+  if (androidApiLevel() < 33) {
+    // Pre-33: install-time grant; channel can still be disabled in Settings.
+    return { osStatus: "granted", canAskAgain: false, rawStatus: "legacy_android" };
   }
-  const result = await Notifications.getPermissionsAsync();
-  const canAskAgain = result.canAskAgain !== false;
-  return {
-    osStatus: mapOsStatus(result.status, result.canAskAgain),
-    canAskAgain,
-    rawStatus: result.status,
-  };
+  try {
+    const ok = await PermissionsAndroid.check(
+      PermissionsAndroid.PERMISSIONS.POST_NOTIFICATIONS
+    );
+    if (ok) {
+      return { osStatus: "granted", canAskAgain: false, rawStatus: "permissions_android" };
+    }
+    return { osStatus: "denied", canAskAgain: true, rawStatus: "permissions_android" };
+  } catch {
+    return null;
+  }
+}
+
+async function requestAndroidNativePermission(): Promise<NotificationPermissionSnapshot | null> {
+  if (Platform.OS !== "android" || androidApiLevel() < 33) return null;
+  try {
+    const result = await PermissionsAndroid.request(
+      PermissionsAndroid.PERMISSIONS.POST_NOTIFICATIONS
+    );
+    if (result === PermissionsAndroid.RESULTS.GRANTED) {
+      return { osStatus: "granted", canAskAgain: false, rawStatus: "permissions_android" };
+    }
+    if (result === PermissionsAndroid.RESULTS.NEVER_ASK_AGAIN) {
+      return { osStatus: "blocked", canAskAgain: false, rawStatus: "permissions_android" };
+    }
+    return { osStatus: "denied", canAskAgain: true, rawStatus: "permissions_android" };
+  } catch {
+    return null;
+  }
+}
+
+export async function readNotificationPermission(): Promise<NotificationPermissionSnapshot> {
+  const [native, expoModule] = await Promise.all([
+    readAndroidNativePermission(),
+    loadNotificationsModule({ allowExpoGo: true }),
+  ]);
+
+  // Android 13+: native master toggle wins (matches Settings → Allow notifications).
+  if (Platform.OS === "android" && native && native.rawStatus === "permissions_android") {
+    if (native.osStatus !== "granted") return native;
+    return native;
+  }
+
+  if (expoModule) {
+    const result = await expoModule.getPermissionsAsync();
+    const canAskAgain = result.canAskAgain !== false;
+    return {
+      osStatus: mapOsStatus(result.status, result.canAskAgain),
+      canAskAgain,
+      rawStatus: result.status,
+    };
+  }
+
+  if (native) return native;
+  return { osStatus: "undetermined", canAskAgain: true, rawStatus: "unavailable" };
 }
 
 export async function requestNotificationPermission(): Promise<NotificationPermissionSnapshot> {
+  const native = await requestAndroidNativePermission();
+  if (native?.osStatus === "granted") return native;
+  if (native?.osStatus === "blocked") return native;
+
   const Notifications = await loadNotificationsModule({ allowExpoGo: true });
-  if (!Notifications) {
-    return { osStatus: "undetermined", canAskAgain: true, rawStatus: "unavailable" };
+  if (Notifications) {
+    const result = await Notifications.requestPermissionsAsync({
+      ios: {
+        allowAlert: true,
+        allowBadge: true,
+        allowSound: true,
+      },
+    });
+    const canAskAgain = result.canAskAgain !== false;
+    return {
+      osStatus: mapOsStatus(result.status, result.canAskAgain),
+      canAskAgain,
+      rawStatus: result.status,
+    };
   }
-  const result = await Notifications.requestPermissionsAsync({
-    ios: {
-      allowAlert: true,
-      allowBadge: true,
-      allowSound: true,
-    },
-  });
-  const canAskAgain = result.canAskAgain !== false;
-  return {
-    osStatus: mapOsStatus(result.status, result.canAskAgain),
-    canAskAgain,
-    rawStatus: result.status,
-  };
+
+  if (native) return native;
+  return { osStatus: "undetermined", canAskAgain: true, rawStatus: "unavailable" };
 }
 
 /**

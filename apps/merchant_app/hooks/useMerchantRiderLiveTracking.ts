@@ -83,6 +83,8 @@ type Props = {
   wsOrderIds: string[];
   token: string | null;
   onLocationPatch?: (payload: MerchantRiderTrackingPayload) => void;
+  /** Server-authoritative ETA push (`eta.updated.v1`). */
+  onEtaUpdated?: (payload: Record<string, unknown>) => void;
 };
 
 export function useMerchantRiderLiveTracking({
@@ -92,6 +94,7 @@ export function useMerchantRiderLiveTracking({
   wsOrderIds,
   token,
   onLocationPatch,
+  onEtaUpdated,
 }: Props): {
   data: MerchantRiderTrackingPayload | null;
   loading: boolean;
@@ -107,6 +110,8 @@ export function useMerchantRiderLiveTracking({
   const dataRef = useRef<MerchantRiderTrackingPayload | null>(null);
   const onPatchRef = useRef(onLocationPatch);
   onPatchRef.current = onLocationPatch;
+  const onEtaRef = useRef(onEtaUpdated);
+  onEtaRef.current = onEtaUpdated;
   const ticketKey = useMemo(() => orderIdsForWsTicket(wsOrderIds).join("|"), [wsOrderIds]);
   const ticketIds = useMemo(() => orderIdsForWsTicket(wsOrderIds), [ticketKey]);
 
@@ -304,6 +309,26 @@ export function useMerchantRiderLiveTracking({
             if (msg.type === "pong" || msg.type === "ping") return;
             if (msg.type === "rider.location.updated.v1") {
               applyWsLocation(msg);
+            }
+            if (msg.type === "eta.updated.v1" || msg.type === "eta.updated") {
+              onEtaRef.current?.(msg);
+              // Keep approach minutes in sync with server display ETA when present.
+              const stageAware = msg.stageAware as
+                | { displayEta?: number | null; riderToMerchantEta?: number | null }
+                | undefined;
+              const display =
+                stageAware?.riderToMerchantEta ?? stageAware?.displayEta ?? null;
+              if (display != null && Number.isFinite(Number(display)) && dataRef.current) {
+                const cur = dataRef.current;
+                applyPayload({
+                  ...cur,
+                  approach: {
+                    remaining_distance_m: cur.approach?.remaining_distance_m ?? 0,
+                    eta_minutes: Math.max(1, Math.round(Number(display))),
+                    source: "server_eta",
+                  },
+                });
+              }
             }
           } catch {
             /* ignore malformed */

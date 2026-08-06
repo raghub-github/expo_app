@@ -13,7 +13,7 @@ import CustomerDetails from "./CustomerDetails";
 import MerchantDetails from "./MerchantDetails";
 import PaymentDetails from "./PaymentDetails";
 import type { OrderPaymentDetail } from "@/lib/orders/order-payment-types";
-import RiderDetails from "./RiderDetails";
+import RiderDetails, { type ForceAssignmentLiveState } from "./RiderDetails";
 import type { RiderTimelineData } from "./RiderTimeline";
 import type { OrderRiderTrackingPayload } from "@/lib/db/operations/order-rider-tracking";
 import RiderRouteMap from "./RiderRouteMap";
@@ -302,6 +302,8 @@ export interface OrderRefundListItem {
   createdAt: string;
   processedAt: string | null;
   completedAt: string | null;
+  /** Partial item refunds — refund_metadata.refundItems. */
+  refundMetadata?: Record<string, unknown> | null;
 }
 
 /** Penalty / debit / credit record from GET /api/orders/[id]/recovery-records */
@@ -600,6 +602,8 @@ export default function OrderDetailClient({
   const [refetchTrigger, setRefetchTrigger] = useState(0);
   const [dispatchSessionActive, setDispatchSessionActive] = useState(false);
   const [watchRiderAssignment, setWatchRiderAssignment] = useState(false);
+  const [forceAssignment, setForceAssignment] = useState<ForceAssignmentLiveState | null>(null);
+  const [watchForceAssignment, setWatchForceAssignment] = useState(false);
   const [activityLogRefreshKey, setActivityLogRefreshKey] = useState(0);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [showStatusModal, setShowStatusModal] = useState(false);
@@ -779,12 +783,32 @@ export default function OrderDetailClient({
     };
   }, [order?.id]);
 
+  const authReady = Boolean(auth?.authReady);
+  const isAuthenticated = Boolean(auth?.isAuthenticated);
+
   useEffect(() => {
     // Do not gate on pageVisible — tab blur / DevTools focus would cancel the
     // in-flight core fetch and leave loading=true with order=null forever.
     if (!isOrderPage) return;
     // Wait for auth without bumping generation (avoids orphaning an in-flight fetch).
-    if (!auth?.authReady) return;
+    if (!authReady) return;
+
+    // Session gone / never logged in — go to login instead of a bare error page.
+    if (!isAuthenticated) {
+      void import("@/lib/auth/redirect-to-login").then(({ redirectToLoginOnSessionExpired }) => {
+        redirectToLoginOnSessionExpired({
+          reason: "session_required",
+          redirectPath:
+            typeof window !== "undefined"
+              ? `${window.location.pathname}${window.location.search}`
+              : `/order/${encodeURIComponent(orderPublicId)}`,
+        });
+      });
+      setError("Redirecting to login…");
+      setLoading(false);
+      setIsRefreshing(false);
+      return;
+    }
 
     let cancelled = false;
     const generation = ++fetchGenerationRef.current;
@@ -1144,7 +1168,17 @@ export default function OrderDetailClient({
           const apiError =
             typeof body.error === "string" && body.error.trim() ? body.error.trim() : null;
           if (httpStatus === 401) {
-            setError(apiError ?? "Not authenticated. Please sign in again.");
+            const { redirectToLoginOnSessionExpired } = await import(
+              "@/lib/auth/redirect-to-login"
+            );
+            redirectToLoginOnSessionExpired({
+              reason: "session_required",
+              redirectPath:
+                typeof window !== "undefined"
+                  ? `${window.location.pathname}${window.location.search}`
+                  : `/order/${encodeURIComponent(orderPublicId)}`,
+            });
+            setError("Redirecting to login…");
           } else if (httpStatus === 403) {
             setError(
               apiError ?? "Insufficient permissions. Access to Orders dashboard required."
@@ -1179,7 +1213,7 @@ export default function OrderDetailClient({
     return () => {
       cancelled = true;
     };
-  }, [orderPublicId, refetchTrigger, isOrderPage, auth?.authReady]);
+  }, [orderPublicId, refetchTrigger, isOrderPage, authReady, isAuthenticated]);
 
   const dispatchStage = useMemo(
     () =>
@@ -1286,6 +1320,27 @@ export default function OrderDetailClient({
           };
           return [...(prev ?? []), newEntry];
         });
+        // Dispatched / Delivered updates rider milestones — bust stale activity log + timeline.
+        invalidateRiderActivityLogCache(order.id);
+        setActivityLogRefreshKey((k) => k + 1);
+        void fetchRiderActivityLogCached(order.id, { force: true }).catch(() => undefined);
+        const riderId =
+          order.riderId != null && Number.isFinite(Number(order.riderId))
+            ? Number(order.riderId)
+            : null;
+        if (riderId != null && riderId > 0) {
+          void fetch(`/api/orders/${order.id}/rider-timeline?rider_id=${riderId}`, {
+            credentials: "include",
+            cache: "no-store",
+          })
+            .then((r) => (r.ok ? r.json() : null))
+            .then((body) => {
+              if (body && typeof body === "object") {
+                setRiderTimelineInitial(body as RiderTimelineData);
+              }
+            })
+            .catch(() => undefined);
+        }
         setRefetchTrigger((t) => t + 1);
       } else {
         setStatusUpdateError(
@@ -1301,6 +1356,7 @@ export default function OrderDetailClient({
     }
   }, [
     order?.id,
+    order?.riderId,
     order?.status,
     order?.currentStatus,
     selectedStatus,
@@ -1317,7 +1373,7 @@ export default function OrderDetailClient({
     (coreOrderId: number, riderId: number, previousRiderId: number | null) => {
       if (riderId === previousRiderId) return;
       invalidateRiderActivityLogCache(coreOrderId);
-      void fetchRiderActivityLogCached(coreOrderId);
+      void fetchRiderActivityLogCached(coreOrderId).catch(() => undefined);
       setActivityLogRefreshKey((k) => k + 1);
       void fetch(`/api/orders/${coreOrderId}/rider-timeline?rider_id=${riderId}`, {
         credentials: "include",
@@ -1428,6 +1484,112 @@ export default function OrderDetailClient({
     refreshRiderAssignmentArtifacts,
   ]);
 
+  useEffect(() => {
+    const coreId = order?.id;
+    if (!isOrderPage || coreId == null) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await fetch(`/api/orders/${coreId}/force-assignment`, {
+          credentials: "include",
+          cache: "no-store",
+        });
+        const body = (await res.json().catch(() => ({}))) as {
+          success?: boolean;
+          forceAssignment?: ForceAssignmentLiveState | null;
+        };
+        if (cancelled || !res.ok || !body.success) return;
+        const next = body.forceAssignment ?? null;
+        if (next?.status === "pending") {
+          setForceAssignment({
+            status: next.status,
+            newRiderId: next.newRiderId,
+            newRiderName: next.newRiderName ?? null,
+            oldRiderId: next.oldRiderId ?? null,
+            oldRiderName: next.oldRiderName ?? null,
+            reasonText: next.reasonText ?? "",
+            offerExpiresAt: next.offerExpiresAt,
+            startedAt: next.startedAt,
+          });
+          setWatchForceAssignment(true);
+        }
+      } catch {
+        /* ignore */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [order?.id, isOrderPage]);
+
+  useEffect(() => {
+    const coreId = order?.id;
+    if (!isOrderPage || !pageVisible || coreId == null) return;
+    if (!watchForceAssignment && forceAssignment?.status !== "pending") return;
+
+    let cancelled = false;
+    const pollForce = async () => {
+      try {
+        const res = await fetch(`/api/orders/${coreId}/force-assignment`, {
+          credentials: "include",
+          cache: "no-store",
+        });
+        const body = (await res.json().catch(() => ({}))) as {
+          success?: boolean;
+          forceAssignment?: ForceAssignmentLiveState | null;
+        };
+        if (cancelled || !res.ok || !body.success) return;
+
+        const next = body.forceAssignment ?? null;
+        setForceAssignment(
+          next && next.status
+            ? {
+                status: next.status,
+                newRiderId: next.newRiderId,
+                newRiderName: next.newRiderName ?? null,
+                oldRiderId: next.oldRiderId ?? null,
+                oldRiderName: next.oldRiderName ?? null,
+                reasonText: next.reasonText ?? "",
+                offerExpiresAt: next.offerExpiresAt,
+                startedAt: next.startedAt,
+              }
+            : null
+        );
+
+        if (next?.status === "pending") {
+          setWatchForceAssignment(true);
+          return;
+        }
+
+        if (next?.status === "accepted") {
+          setWatchForceAssignment(false);
+          setActivityLogRefreshKey((k) => k + 1);
+          setRefetchTrigger((n) => n + 1);
+          return;
+        }
+
+        if (next && ["rejected", "timeout", "cancelled"].includes(next.status)) {
+          setWatchForceAssignment(false);
+        }
+      } catch {
+        /* ignore */
+      }
+    };
+
+    void pollForce();
+    const timer = window.setInterval(() => void pollForce(), 3000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [
+    order?.id,
+    isOrderPage,
+    pageVisible,
+    watchForceAssignment,
+    forceAssignment?.status,
+  ]);
+
   const displayId = useMemo(
     () =>
       order
@@ -1490,13 +1652,23 @@ export default function OrderDetailClient({
   }
 
   if (error || !order) {
+    const isAuthError =
+      /not authenticated|sign in|session|redirecting to login/i.test(error ?? "");
+    if (isAuthError && typeof window !== "undefined") {
+      void import("@/lib/auth/redirect-to-login").then(({ redirectToLoginOnSessionExpired }) => {
+        redirectToLoginOnSessionExpired({
+          reason: "session_required",
+          redirectPath: `${window.location.pathname}${window.location.search}`,
+        });
+      });
+    }
     return (
       <div
         className="flex h-full min-h-[50vh] w-full flex-1 items-center justify-center bg-[#F8FAFC] px-4"
         role="alert"
       >
-        <p className="text-center text-sm font-medium text-red-600">
-          {error ?? "Order not found."}
+        <p className="text-center text-sm font-medium text-slate-600">
+          {isAuthError ? "Redirecting to login…" : (error ?? "Order not found.")}
         </p>
       </div>
     );
@@ -1512,7 +1684,7 @@ export default function OrderDetailClient({
         minute: "2-digit",
         second: "2-digit",
         hour12: true,
-      })
+      }).replace(/\//g, "-")
     : order.createdAt
       ? new Date(order.createdAt).toLocaleString("en-IN", {
           day: "numeric",
@@ -1522,7 +1694,7 @@ export default function OrderDetailClient({
           minute: "2-digit",
           second: "2-digit",
           hour12: true,
-        })
+        }).replace(/\//g, "-")
       : "—";
   const createdLabel = orderTimeLabel;
   const updatedLabel = order.updatedAt
@@ -1983,9 +2155,11 @@ export default function OrderDetailClient({
               initialRiderTimeline={riderTimelineInitial}
               riderSelfieUrl={riderSelfieUrl}
               dispatchSessionActive={dispatchSessionActive}
+              forceAssignment={forceAssignment}
               activityLogRefreshKey={activityLogRefreshKey}
               order={{
                 orderId: order.id,
+                formattedOrderId: displayId !== "—" ? String(displayId) : null,
                 riderId: order.riderId ?? null,
                 riderName: order.riderName,
                 riderMobile: order.riderMobile,
@@ -2014,8 +2188,14 @@ export default function OrderDetailClient({
               onRiderManagementComplete={(detail) => {
                 if (order.id != null) {
                   invalidateRiderActivityLogCache(order.id);
-                  void fetchRiderActivityLogCached(order.id);
+                  void fetchRiderActivityLogCached(order.id).catch(() => undefined);
                   setActivityLogRefreshKey((k) => k + 1);
+                  setRoutedToHistory(null);
+                }
+                if (detail.routedToEmail?.trim()) {
+                  setOrder((prev) =>
+                    prev ? { ...prev, routedToEmail: detail.routedToEmail!.trim() } : prev
+                  );
                 }
                 if (
                   detail.action === "cancel_reassign" ||
@@ -2023,6 +2203,12 @@ export default function OrderDetailClient({
                 ) {
                   setDispatchSessionActive(true);
                   setWatchRiderAssignment(true);
+                } else if (detail.action === "force_assignment") {
+                  setWatchForceAssignment(true);
+                } else if (detail.action === "hard_assign") {
+                  setDispatchSessionActive(false);
+                  setWatchRiderAssignment(false);
+                  setWatchForceAssignment(false);
                 } else {
                   setDispatchSessionActive(false);
                   setWatchRiderAssignment(false);

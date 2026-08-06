@@ -20,6 +20,7 @@ import {
 } from "@/lib/db/operations/orders-core";
 import { getOrderDetailEnrichment } from "@/lib/db/operations/order-detail-enrichment";
 import { getPersonRideOrderDetail, getPersonRideBillingContext } from "@/lib/db/operations/person-ride-order-detail";
+import { getParcelOrderDetail, getParcelBillingContext } from "@/lib/db/operations/parcel-order-detail";
 import {
   getOrderRiderAssignmentSnapshot,
   type OrderRiderAssignmentSnapshot,
@@ -162,7 +163,8 @@ async function enrichSingleOrderDetail(
         return null;
       }),
       getOrderTimelineEntriesWithFallback(orderId, {
-        includeRiderMilestones: first?.orderType === "person_ride",
+        includeRiderMilestones:
+          first?.orderType === "person_ride" || first?.orderType === "parcel",
       }).catch((err) => {
         console.error("[GET /api/orders/core] timeline fetch failed", err);
         return [] as OrderTimelineEntry[];
@@ -276,7 +278,58 @@ async function enrichSingleOrderDetail(
               }
             : {}),
           billingSnapshot: billingCtx.billingSnapshot,
-          // Prefer live DB payment fields over list-cache stale values
+          paymentStatus:
+            billingCtx.paymentStatus ??
+            (enrichedData[0] as { paymentStatus?: string | null }).paymentStatus ??
+            null,
+          paymentMethod:
+            billingCtx.paymentMethod ??
+            (enrichedData[0] as { paymentMethod?: string | null }).paymentMethod ??
+            null,
+          fareAmount:
+            billingCtx.fareAmount ??
+            (enrichedData[0] as { fareAmount?: number | null }).fareAmount ??
+            null,
+          itemTotal:
+            billingCtx.itemTotal ??
+            (enrichedData[0] as { itemTotal?: number | null }).itemTotal ??
+            null,
+          grandTotal:
+            billingCtx.grandTotal ??
+            (enrichedData[0] as { grandTotal?: number | null }).grandTotal ??
+            null,
+          tipAmount:
+            billingCtx.tipAmount ??
+            (enrichedData[0] as { tipAmount?: number | null }).tipAmount ??
+            null,
+        },
+      ] as unknown as typeof enrichedData;
+    } else if (first?.orderType === "parcel" && orderId != null) {
+      const [parcelDetailRaw, billingCtx] = await Promise.all([
+        getParcelOrderDetail(orderId),
+        getParcelBillingContext(orderId),
+      ]);
+      const row0 = enrichedData[0] as Record<string, unknown>;
+      const topPickupOtp =
+        row0.pickupOtp != null ? String(row0.pickupOtp).trim() || null : null;
+      const topDeliveryOtp =
+        row0.deliveryOtp != null ? String(row0.deliveryOtp).trim() || null : null;
+      const parcelDetail = parcelDetailRaw
+        ? {
+            ...parcelDetailRaw,
+            pickupOtp: parcelDetailRaw.pickupOtp ?? topPickupOtp,
+            deliveryOtp: parcelDetailRaw.deliveryOtp ?? topDeliveryOtp,
+          }
+        : null;
+      enrichedData = [
+        {
+          ...row0,
+          ...(parcelDetail ? { parcelDetail } : {}),
+          pickupLat: row0.pickupLat ?? parcelDetail?.pickupLat ?? null,
+          pickupLon: row0.pickupLon ?? parcelDetail?.pickupLon ?? null,
+          dropLat: row0.dropLat ?? parcelDetail?.dropLat ?? null,
+          dropLon: row0.dropLon ?? parcelDetail?.dropLon ?? null,
+          billingSnapshot: billingCtx.billingSnapshot,
           paymentStatus:
             billingCtx.paymentStatus ??
             (enrichedData[0] as { paymentStatus?: string | null }).paymentStatus ??
@@ -371,12 +424,23 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    const [userIsSuperAdmin, hasOrderAccess] = await Promise.all([
-      isSuperAdmin(user.id, user.email ?? ""),
-      hasDashboardAccessByAuth(user.id, user.email ?? "", "ORDER_FOOD"),
-    ]);
+    const searchParams = request.nextUrl.searchParams;
+    const orderTypeForAuth =
+      (searchParams.get("orderType") as "food" | "parcel" | "person_ride") || "food";
 
-    const allowed = userIsSuperAdmin || hasOrderAccess;
+    const [userIsSuperAdmin, hasFoodAccess, hasParcelAccess, hasRideAccess] =
+      await Promise.all([
+        isSuperAdmin(user.id, user.email ?? ""),
+        hasDashboardAccessByAuth(user.id, user.email ?? "", "ORDER_FOOD"),
+        hasDashboardAccessByAuth(user.id, user.email ?? "", "ORDER_PARCEL"),
+        hasDashboardAccessByAuth(user.id, user.email ?? "", "ORDER_PERSON_RIDE"),
+      ]);
+
+    const allowed =
+      userIsSuperAdmin ||
+      hasFoodAccess ||
+      (orderTypeForAuth === "parcel" && hasParcelAccess) ||
+      (orderTypeForAuth === "person_ride" && hasRideAccess);
 
     if (!allowed) {
       return NextResponse.json(
@@ -388,7 +452,6 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    const searchParams = request.nextUrl.searchParams;
     const search = searchParams.get("search")?.trim() || undefined;
     const searchTypeParam = searchParams.get("searchType");
     const searchType: OrderSearchType = VALID_SEARCH_TYPES.includes(
@@ -403,7 +466,7 @@ export async function GET(request: NextRequest) {
         ? (statusFilterParam as OrderStatusFilter)
         : null;
 
-    const orderType = (searchParams.get("orderType") as "food" | "parcel" | "person_ride") || "food";
+    const orderType = orderTypeForAuth;
     const idParam = searchParams.get("id");
     const id = idParam ? parseInt(idParam, 10) : undefined;
     const page = Math.max(1, parseInt(searchParams.get("page") || "1", 10));
@@ -467,6 +530,12 @@ export async function GET(request: NextRequest) {
       }
     }
 
+    const sortOrderParam = searchParams.get("sortOrder");
+    const sortOrder =
+      sortOrderParam === "asc" || sortOrderParam === "desc" ? sortOrderParam : "desc";
+    const listSort = searchParams.get("listSort");
+    const delayedOnly = listSort === "delayed";
+
     const listParams = {
       page,
       limit,
@@ -476,10 +545,12 @@ export async function GET(request: NextRequest) {
       statusFilter,
       orderType,
       sortBy: "created_at" as const,
-      sortOrder: "desc" as const,
+      sortOrder: sortOrder as "asc" | "desc",
       userTypeLabels: userTypeLabels.length ? userTypeLabels : undefined,
       deliveryFilters: deliveryFilters.length ? deliveryFilters : undefined,
-      foodPanelFilters,
+      foodPanelFilters: delayedOnly
+        ? { ...(foodPanelFilters ?? {}), overview: true }
+        : foodPanelFilters,
     };
 
     const skipCache = searchParams.get("skipCache") === "1";

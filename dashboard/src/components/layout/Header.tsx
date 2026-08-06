@@ -72,10 +72,89 @@ import {
   PERSON_RIDE_SEARCH_TYPES,
   normalizePersonRideSearchType,
 } from "@/lib/orders/person-ride-search";
+import {
+  PARCEL_SEARCH_TYPES,
+  normalizeParcelSearchType,
+} from "@/lib/orders/parcel-search";
 import { resolveOrderTypeFromPublicId } from "@/lib/orders/resolve-order-type-from-public-id";
 
 const ORDER_HUB_ACCENT = "#121212";
 const ORDER_HUB_ACCENT_TEXT = "#FFFFFF";
+
+/** Query keys that only make sense on a specific order hub — strip when switching. */
+const FOOD_ONLY_QS_KEYS = [
+  "statusFilter",
+  "foodFilters",
+  "listSort",
+  "bulk",
+  "deliveryType",
+  "userType",
+] as const;
+
+function orderHubBasePath(href: string): "food" | "parcel" | "person-ride" | null {
+  if (href.includes("/orders/person-ride")) return "person-ride";
+  if (href.includes("/orders/parcel")) return "parcel";
+  if (href.includes("/orders/food")) return "food";
+  return null;
+}
+
+function buildOrderHubHref(href: string, currentQs: string): string {
+  const target = orderHubBasePath(href);
+  if (!target || !currentQs) return href;
+
+  const params = new URLSearchParams(currentQs);
+  // Drop food-only filters when leaving food.
+  if (target !== "food") {
+    for (const key of FOOD_ONLY_QS_KEYS) params.delete(key);
+  }
+  // Drop status tabs that don't map across hubs (food uses statusFilter; ride/parcel use status).
+  if (target === "food") {
+    params.delete("status");
+  } else {
+    params.delete("statusFilter");
+    const status = params.get("status");
+    const rideLike = new Set([
+      "",
+      "assigned",
+      "accepted",
+      "reached_store",
+      "picked_up",
+      "in_transit",
+    ]);
+    if (status && !rideLike.has(status)) params.delete("status");
+  }
+  // Reset search type when switching hubs — Merchant Id etc. don't apply to parcel/ride.
+  const searchType = params.get("searchType");
+  if (searchType) {
+    if (target === "parcel" && !(PARCEL_SEARCH_TYPES as readonly string[]).includes(searchType)) {
+      params.set("searchType", "Order Id");
+    } else if (
+      target === "person-ride" &&
+      !(PERSON_RIDE_SEARCH_TYPES as readonly string[]).includes(searchType)
+    ) {
+      params.set("searchType", "Order Id");
+    } else if (target === "food" && (PARCEL_SEARCH_TYPES as readonly string[]).includes(searchType)) {
+      // Receiver Name etc. aren't food types — keep Order Id if coming from parcel.
+      const foodTypes = new Set([
+        "Order Id",
+        "Merchant Id",
+        "Customer Mobile",
+        "Third Party Order Id",
+        "ONDC Order Id",
+        "Client Reference Id",
+        "Partner Order Id",
+        "Internal Order Id",
+        "Rider Mobile",
+        "Tracking Order Id",
+        "Client Name",
+      ]);
+      if (!foodTypes.has(searchType)) params.set("searchType", "Order Id");
+    }
+  }
+  params.delete("page");
+  const qs = params.toString();
+  return qs ? `${href}?${qs}` : href;
+}
 
 // Order type switcher — replaces the orders right sidebar (Food / Parcel / Person Ride)
 function OrderTypeDropdown() {
@@ -146,8 +225,7 @@ function OrderTypeDropdown() {
   }, [showDropdown]);
 
   const handleSelect = (href: string) => {
-    const qs = searchParams.toString();
-    router.push(qs ? `${href}?${qs}` : href);
+    router.push(buildOrderHubHref(href, searchParams.toString()));
     setShowDropdown(false);
   };
 
@@ -219,12 +297,15 @@ function OrderSearchBar() {
   const searchParams = useAppSearchParams();
   const cleanPath = useMemo(() => pathname.split("?")[0].split("#")[0], [pathname]);
   const isPersonRideOrders = cleanPath.startsWith("/dashboard/orders/person-ride");
+  const isParcelOrders = cleanPath.startsWith("/dashboard/orders/parcel");
 
-  const defaultSearchType = isPersonRideOrders ? "Order Id" : "Order Id";
+  const defaultSearchType = "Order Id";
   const urlSearch = searchParams.get("search") ?? "";
   const urlSearchType = isPersonRideOrders
     ? normalizePersonRideSearchType(searchParams.get("searchType"))
-    : searchParams.get("searchType") ?? defaultSearchType;
+    : isParcelOrders
+      ? normalizeParcelSearchType(searchParams.get("searchType"))
+      : searchParams.get("searchType") ?? defaultSearchType;
 
   const [searchType, setSearchType] = useState(urlSearchType);
   const [searchValue, setSearchValue] = useState(urlSearch);
@@ -236,10 +317,12 @@ function OrderSearchBar() {
     setSearchValue((searchParams.get("search") ?? "").toUpperCase());
     if (isPersonRideOrders) {
       setSearchType(normalizePersonRideSearchType(searchParams.get("searchType")));
+    } else if (isParcelOrders) {
+      setSearchType(normalizeParcelSearchType(searchParams.get("searchType")));
     } else {
       setSearchType(searchParams.get("searchType") ?? "Order Id");
     }
-  }, [searchParams, isPersonRideOrders]);
+  }, [searchParams, isPersonRideOrders, isParcelOrders]);
 
   const foodSearchItems = [
     "Order Id",
@@ -255,7 +338,11 @@ function OrderSearchBar() {
     "Client Name",
   ];
 
-  const searchItems = isPersonRideOrders ? [...PERSON_RIDE_SEARCH_TYPES] : foodSearchItems;
+  const searchItems = isPersonRideOrders
+    ? [...PERSON_RIDE_SEARCH_TYPES]
+    : isParcelOrders
+      ? [...PARCEL_SEARCH_TYPES]
+      : foodSearchItems;
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -331,7 +418,13 @@ function OrderSearchBar() {
         type="text"
         value={searchValue}
         onChange={(e) => setSearchValue(e.target.value.toUpperCase())}
-        placeholder={isPersonRideOrders ? "GMP10006, passenger, rider…" : "Search here..."}
+        placeholder={
+          isPersonRideOrders
+            ? "GMP10006, passenger, rider…"
+            : isParcelOrders
+              ? "GMC10006, receiver, rider…"
+              : "Search here..."
+        }
         className="min-w-0 flex-1 border-r border-gray-300 bg-white px-3 text-sm uppercase text-gray-900 placeholder:normal-case placeholder:text-gray-400 focus:outline-none"
         onKeyDown={(e) => {
           if (e.key === "Enter") handleSearch();
@@ -378,6 +471,14 @@ const ROUTE_TITLES: Record<string, string> = {
   "/dashboard/super-admin/rule-engine": "Financial Rule Engine",
   "/dashboard/super-admin/rule-engine/new": "Create rule",
   "/dashboard/super-admin/geo": "Geo & coverage",
+  "/dashboard/super-admin/offers-coupons": "Offers & coupons",
+  "/dashboard/super-admin/offers-coupons/analytics": "Platform offer analytics",
+  "/dashboard/super-admin/offers-coupons/new": "Create platform offer",
+  "/dashboard/super-admin/offers-coupons/coupons/new": "Create checkout coupon",
+  "/dashboard/super-admin/cxapp-home": "CX App Home",
+  "/dashboard/super-admin/customer-app-categories": "App Category",
+  "/dashboard/super-admin/commission": "Commission Engine",
+  "/dashboard/users": "User Management",
 };
 
 const SUPER_ADMIN_HUB_PATH = "/dashboard/super-admin";
@@ -395,6 +496,16 @@ function resolveSuperAdminBackHref(cleanPath: string): string {
   if (GEO_DETAIL_ROUTE_RE.test(cleanPath)) {
     return GEO_LIST_PATH;
   }
+  // Offers & coupons nested pages → list
+  if (
+    cleanPath === "/dashboard/super-admin/offers-coupons/analytics" ||
+    cleanPath === "/dashboard/super-admin/offers-coupons/new" ||
+    cleanPath === "/dashboard/super-admin/offers-coupons/coupons/new" ||
+    /^\/dashboard\/super-admin\/offers-coupons\/\d+\/edit$/.test(cleanPath) ||
+    /^\/dashboard\/super-admin\/offers-coupons\/coupons\/\d+\/edit$/.test(cleanPath)
+  ) {
+    return "/dashboard/super-admin/offers-coupons";
+  }
   // Policy Center / Analytics / queues → Verification hub (not Super Admin root)
   if (VERIFICATION_INNER_ROUTE_RE.test(cleanPath)) {
     return VERIFICATION_HUB_PATH;
@@ -408,8 +519,25 @@ const ORDER_ACCEPTANCE_SETTINGS_PATH = "/dashboard/super-admin/order-acceptance"
 const RIDER_ASSIGNMENT_CONTROLS_PATH = "/dashboard/super-admin/rider-assignment-controls";
 const RULE_ENGINE_PATH = "/dashboard/super-admin/rule-engine";
 const PAYMENTS_PATH = "/dashboard/payments";
+const USERS_PATH = "/dashboard/users";
 const OFFERS_SUPER_ADMIN_PATH = "/dashboard/offers";
 const OFFERS_MERCHANTS_PATH = "/dashboard/merchants/offers";
+
+/** One-step back within User Management nested routes. */
+function resolveUsersBackHref(cleanPath: string): string {
+  if (cleanPath === USERS_PATH) return SUPER_ADMIN_HUB_PATH;
+  if (/^\/dashboard\/users\/roles\/\d+\/edit$/.test(cleanPath)) {
+    return `${USERS_PATH}/roles`;
+  }
+  if (cleanPath === `${USERS_PATH}/roles/new`) return `${USERS_PATH}/roles`;
+  if (cleanPath === `${USERS_PATH}/roles`) return USERS_PATH;
+  if (/^\/dashboard\/users\/[^/]+\/access$/.test(cleanPath)) {
+    const id = cleanPath.split("/")[3];
+    return id ? `${USERS_PATH}/${id}` : USERS_PATH;
+  }
+  // /dashboard/users/new, /dashboard/users/[id], etc.
+  return USERS_PATH;
+}
 
 function HeaderComponent() {
   const pathname = useAppPathname();
@@ -435,9 +563,20 @@ function HeaderComponent() {
     if (isTicketsAppDetailPath(clean) && ticketDetailHasQueueContext(searchParams)) {
       return "Queue";
     }
-    if (ROUTE_TITLES[clean]) return ROUTE_TITLES[clean];
+    if (ROUTE_TITLES[clean]) {
+      if (clean === "/dashboard/super-admin/offers-coupons") {
+        const tab = (searchParams.get("tab") ?? "").toLowerCase();
+        if (tab === "incentive") return "Rider incentives";
+      }
+      return ROUTE_TITLES[clean];
+    }
     if (/^\/dashboard\/super-admin\/rule-engine\/\d+\/edit$/.test(clean)) return "Edit rule";
+    if (/^\/dashboard\/super-admin\/offers-coupons\/\d+\/edit$/.test(clean)) return "Edit platform offer";
+    if (/^\/dashboard\/super-admin\/offers-coupons\/coupons\/\d+\/edit$/.test(clean)) {
+      return "Edit checkout coupon";
+    }
     if (GEO_DETAIL_ROUTE_RE.test(clean)) return "Geo & coverage";
+    if (/^\/dashboard\/super-admin\/cxapp-home\/[^/]+$/.test(clean)) return "CX App Home";
     return getCurrentPageName(clean);
   }, [effectivePathname, searchParams]);
   const isStoreVerificationDetail = useMemo(
@@ -484,6 +623,10 @@ function HeaderComponent() {
   const rightSidebar = useRightSidebar();
   const cleanPathname = useMemo(() => effectivePathname.split("?")[0].split("#")[0], [effectivePathname]);
   const isGeoRiderAvailabilityPage =
+    cleanPathname === "/dashboard/rx" ||
+    cleanPathname.startsWith("/dashboard/rx/") ||
+    cleanPathname === "/dashboard/geo-rider-availability" ||
+    cleanPathname.startsWith("/dashboard/geo-rider-availability/") ||
     cleanPathname === "/dashboard/area-managers/availability" ||
     cleanPathname.startsWith("/dashboard/area-managers/availability/");
   const isAnalyticsPage =
@@ -532,6 +675,9 @@ function HeaderComponent() {
         : null;
   const isAmOnboardingFailedPage =
     cleanPathname.startsWith("/dashboard/area-managers/stores/onboarding-failed");
+  const isUsersArea =
+    cleanPathname === USERS_PATH || cleanPathname.startsWith(`${USERS_PATH}/`);
+  const usersBackHref = isUsersArea ? resolveUsersBackHref(cleanPathname) : null;
   const isNotificationsArea = cleanPathname.startsWith(
     "/dashboard/super-admin/notifications"
   );
@@ -597,11 +743,13 @@ function HeaderComponent() {
     if (isSuperAdmin) return true;
     const points = dashboardAccessData?.accessPoints ?? [];
     return points.some((ap) => {
-      if (!ap?.isActive) return false;
+      if (ap?.isActive === false) return false;
       if (String(ap.accessPointGroup).trim().toUpperCase() !== "TICKET_AGENT_STATUS_TOGGLE") {
         return false;
       }
       const actions = Array.isArray(ap.allowedActions) ? ap.allowedActions : [];
+      // Active grant with no actions still unlocks Queue (same as server fallback).
+      if (actions.length === 0) return true;
       return actions.some((action) => String(action).trim().toUpperCase() === "UPDATE");
     });
   }, [dashboardAccessData?.accessPoints, isSuperAdmin]);
@@ -984,6 +1132,18 @@ function HeaderComponent() {
             </Link>
             <h2 className="min-w-0 truncate text-base font-semibold text-gray-900 sm:text-lg">{pageName}</h2>
           </div>
+        ) : isUsersArea ? (
+          <div className="flex min-w-0 items-center gap-2 sm:gap-2.5">
+            <Link
+              href={usersBackHref ?? SUPER_ADMIN_HUB_PATH}
+              className="shrink-0 cursor-pointer rounded-md p-1.5 text-gray-600 transition hover:bg-gray-100"
+              aria-label="Back"
+              title="Back"
+            >
+              <ArrowLeft className="h-4 w-4" />
+            </Link>
+            <h2 className="min-w-0 truncate text-base font-semibold text-gray-900 sm:text-lg">{pageName}</h2>
+          </div>
         ) : cleanPathname === OFFERS_SUPER_ADMIN_PATH ? (
           <div className="flex min-w-0 items-center gap-2 sm:gap-2.5">
             <Link
@@ -1163,7 +1323,16 @@ function HeaderComponent() {
               </nav>
             </div>
           </div>
-        ) : isGeoRiderAvailabilityPage ? null : (
+        ) : isGeoRiderAvailabilityPage ? (
+          <div className="min-w-0 flex flex-col justify-center">
+            <h2 className="min-w-0 truncate text-base font-semibold text-[#121212] sm:text-lg leading-tight">
+              Geo Rx Availability
+            </h2>
+            <p className="hidden sm:block truncate text-[11px] text-slate-500 leading-tight mt-0.5">
+              Search riders near any location within a radius — live fleet coverage.
+            </p>
+          </div>
+        ) : (
           <h2
             className={`min-w-0 truncate text-base font-semibold text-[#121212] sm:text-lg flex-shrink ${
               cleanPathname.startsWith("/dashboard/orders") ||

@@ -127,10 +127,17 @@ export function hasRiderMarkedFoodPickup(riderPickedUpAt?: string | null): boole
   return Number.isFinite(Date.parse(t));
 }
 
-/** Merchant dispatch / core in_transit must not advance tabs until rider pickup is recorded. */
-function capPipelineUntilRiderPickup(status: string, riderPickedUpAt?: string | null): string {
+/** Merchant dispatch must not advance until rider pickup — unless core is already in_transit (agent Dispatched). */
+function capPipelineUntilRiderPickup(
+  status: string,
+  riderPickedUpAt?: string | null,
+  coreStatus?: string | null
+): string {
   if (status !== "OUT_FOR_DELIVERY") return status;
   if (hasRiderMarkedFoodPickup(riderPickedUpAt)) return status;
+  const core = String(coreStatus ?? "").trim().toLowerCase();
+  // Agent marked Dispatched / Dispatch Ready after rider couldn't update milestones.
+  if (core === "in_transit" || core === "picked_up") return status;
   return "READY_FOR_PICKUP";
 }
 
@@ -165,13 +172,13 @@ export function resolvePartnerPipeline(
     pipelineRank(best) >= pipelineRank("READY_FOR_PICKUP")
   ) {
     if (fromFood && pipelineRank(fromFood) >= 0) {
-      return capPipelineUntilRiderPickup(fromFood, riderPickedUpAt);
+      return capPipelineUntilRiderPickup(fromFood, riderPickedUpAt, coreStatus);
     }
     if (cur && pipelineRank(cur) >= 0 && cur !== "READY_FOR_PICKUP") {
-      return capPipelineUntilRiderPickup(cur, riderPickedUpAt);
+      return capPipelineUntilRiderPickup(cur, riderPickedUpAt, coreStatus);
     }
     return "PREPARING";
   }
 
-  return capPipelineUntilRiderPickup(best || "CREATED", riderPickedUpAt);
+  return capPipelineUntilRiderPickup(best || "CREATED", riderPickedUpAt, coreStatus);
 }

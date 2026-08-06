@@ -10,6 +10,7 @@ import { StatusChangeModal } from "./StatusChangeModal";
 import { SystemRolesListPanel } from "./SystemRolesListPanel";
 import { useQueryClient, useQuery } from "@tanstack/react-query";
 import { queryKeys } from "@/lib/queryKeys";
+import { DashboardErrorBanner } from "@/components/ui/DashboardErrorBanner";
 
 interface UserListProps {
   onUserSelect?: (user: SystemUser) => void;
@@ -543,12 +544,18 @@ export function UserList({ onUserSelect, showActions = true }: UserListProps) {
         <SystemRolesListPanel enabled toolbarTrailing={usersRolesTabToggle} />
       )}
 
-      {/* Error Message */}
-      {listTab === "users" && error && (
-        <div className="bg-red-50 border border-red-200 text-red-800 px-4 py-3 rounded-lg">
-          {error instanceof Error ? error.message : "Failed to load users"}
-        </div>
-      )}
+      {/* Error Message — auth failures logout instead of showing "Not authenticated" */}
+      {listTab === "users" ? (
+        <DashboardErrorBanner
+          error={
+            error
+              ? error instanceof Error
+                ? error.message
+                : "Failed to load users"
+              : null
+          }
+        />
+      ) : null}
 
       {/* Users Table */}
       {listTab === "users" && (

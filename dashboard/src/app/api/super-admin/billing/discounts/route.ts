@@ -19,6 +19,7 @@ const postSchema = z.object({
   offer_audience: z.enum(["CUSTOMER", "MERCHANT", "RIDER"]).optional(),
   per_user_usage_limit: z.number().int().nullable().optional(),
   metadata: z.unknown().optional(),
+  coupon_config: z.unknown().optional(),
 });
 
 export async function GET() {

@@ -10,6 +10,13 @@ import { canRefundOrder } from "@/lib/permissions/actions";
 import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine";
 import { getSystemUserByEmail } from "@/lib/db/operations/users";
 import { createOrderRefund, listOrderRefunds, type RefundTypeDb } from "@/lib/db/operations/order-refunds";
+import { getOrderItemRefundTotals, itemRefundBalances, ITEM_REFUND_MONEY_EPS } from "@/lib/db/operations/order-refund-item-totals";
+import {
+  allocatePartialCancelAcrossItems,
+  insertOrderRefundItems,
+  loadOrderItemWeightsForRefund,
+  parseRefundItemsFromMetadata,
+} from "@/lib/db/operations/order-refund-items";
 import {
   loadOrderRefundGuardState,
   evaluateRefundGuard,
@@ -275,7 +282,16 @@ export async function GET(
     }
 
     const refunds = await listOrderRefunds(orderId);
-    return NextResponse.json({ success: true, data: refunds });
+    const itemTotalsMap = await getOrderItemRefundTotals(orderId);
+    const itemRefundTotals: Record<string, { alreadyRefunded: number }> = {};
+    for (const [itemId, alreadyRefunded] of itemTotalsMap) {
+      itemRefundTotals[String(itemId)] = { alreadyRefunded };
+    }
+    return NextResponse.json({
+      success: true,
+      data: refunds,
+      itemRefundTotals,
+    });
   } catch (error) {
     console.error("[GET /api/orders/[orderId]/refunds] Error:", error);
     return NextResponse.json(
@@ -480,6 +496,58 @@ export async function POST(
       );
     }
 
+    // Per-item remaining cap for partial (refund without cancellation).
+    if (refundType === "refund_without_cancellation") {
+      const meta =
+        body?.refundMetadata && typeof body.refundMetadata === "object"
+          ? (body.refundMetadata as Record<string, unknown>)
+          : null;
+      const refundItems = Array.isArray(meta?.refundItems) ? meta!.refundItems : [];
+      if (refundItems.length > 0) {
+        const alreadyById = await getOrderItemRefundTotals(orderId);
+        for (const raw of refundItems) {
+          if (!raw || typeof raw !== "object") continue;
+          const row = raw as Record<string, unknown>;
+          const itemId = Number(row.id);
+          const requested = Number(row.amount);
+          const originalTotal = Number(row.originalTotal);
+          if (!Number.isFinite(itemId) || itemId <= 0) continue;
+          if (!Number.isFinite(requested) || requested <= 0) continue;
+
+          const original =
+            Number.isFinite(originalTotal) && originalTotal > 0
+              ? originalTotal
+              : Number(row.remainingBefore ?? 0) + Number(row.alreadyRefundedBefore ?? 0);
+
+          const bal = itemRefundBalances({
+            itemId,
+            originalTotal: original > 0 ? original : requested,
+            alreadyById,
+          });
+
+          if (requested - bal.remainingRefundable > ITEM_REFUND_MONEY_EPS) {
+            return NextResponse.json(
+              {
+                success: false,
+                error: `Item #${itemId}: refund ₹${requested.toFixed(
+                  2
+                )} exceeds remaining refundable ₹${bal.remainingRefundable.toFixed(
+                  2
+                )} (already refunded ₹${bal.alreadyRefunded.toFixed(2)} of ₹${bal.originalTotal.toFixed(
+                  2
+                )}).`,
+                code: "ITEM_REFUND_EXCEEDS_REMAINING",
+                itemId,
+                remainingRefundable: bal.remainingRefundable,
+                alreadyRefunded: bal.alreadyRefunded,
+              },
+              { status: 409 }
+            );
+          }
+        }
+      }
+    }
+
     const cancellationMetadata = {
       catalogReasonId: catalogRow.id,
       attribute: catalogRow.attribute,
@@ -662,6 +730,56 @@ export async function POST(
         ? body.mxDebitAmount
         : mxDebitAmount;
 
+    // Resolve item attribution before insert so metadata + order_refund_items match.
+    let attributedItems = parseRefundItemsFromMetadata(refundMetadata);
+    if (refundType === "refund_with_cancellation") {
+      const pctRaw = Number(
+        (refundMetadata as { refundPercentage?: unknown }).refundPercentage
+      );
+      const pct = Number.isFinite(pctRaw) ? pctRaw : 100;
+      if (pct >= 100 - 0.001) {
+        attributedItems = [];
+      } else if (attributedItems.length === 0) {
+        try {
+          const lines = await loadOrderItemWeightsForRefund(orderId);
+          const ctcTotal = Number(
+            (refundMetadata as { ctcTotal?: unknown }).ctcTotal
+          );
+          attributedItems = allocatePartialCancelAcrossItems({
+            refundAmount: effectiveRefundAmount,
+            refundPercentage: pct,
+            ctcTotal: Number.isFinite(ctcTotal) && ctcTotal > 0 ? ctcTotal : null,
+            lines,
+          });
+        } catch (allocErr) {
+          console.warn(
+            "[POST /api/orders/[orderId]/refunds] item allocation skipped:",
+            allocErr instanceof Error ? allocErr.message : allocErr
+          );
+        }
+      }
+    } else if (refundType !== "refund_without_cancellation") {
+      attributedItems = [];
+    }
+
+    const refundMetadataToStore: Record<string, unknown> = {
+      ...refundMetadata,
+      ...cancellationMetadata,
+      refundTypeUI: refundType,
+      financial_rule_engine: engineResult.raw ?? null,
+      engine_applied: engineResult.applied,
+    };
+    if (attributedItems.length > 0) {
+      refundMetadataToStore.refundItems = attributedItems.map((r) => ({
+        id: r.orderItemId,
+        name: r.itemName,
+        amount: r.refundAmount,
+        refundPercentage: r.refundPercentage,
+        originalTotal: r.originalTotal,
+        selectedQuantity: r.selectedQuantity,
+      }));
+    }
+
     const record = await createOrderRefund({
       orderId,
       orderPaymentId: null,
@@ -676,14 +794,19 @@ export async function POST(
       mxDebitReason: mxDebitReason?.trim() ?? null,
       refundInitiatedBy,
       refundInitiatedById,
-      refundMetadata: {
-        ...refundMetadata,
-        ...cancellationMetadata,
-        refundTypeUI: refundType,
-        financial_rule_engine: engineResult.raw ?? null,
-        engine_applied: engineResult.applied,
-      },
+      refundMetadata: refundMetadataToStore,
     });
+
+    try {
+      if (attributedItems.length > 0) {
+        await insertOrderRefundItems(record.id, orderId, attributedItems);
+      }
+    } catch (itemErr) {
+      console.warn(
+        "[POST /api/orders/[orderId]/refunds] order_refund_items write skipped:",
+        itemErr instanceof Error ? itemErr.message : itemErr
+      );
+    }
 
     // ── ATOMIC CANCEL + REFUND ────────────────────────────────────────────
     // Cancelling and refunding together must be all-or-nothing. A gateway

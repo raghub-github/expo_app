@@ -71,8 +71,12 @@ type RouteEndpoints = {
   mode: "live" | "planned";
 };
 
-/** Rider app writes live location every ~3–5s; poll faster for visible movement. */
-const POLL_MS = 2_000;
+/**
+ * Rider app writes live location every ~3–5s.
+ * Poll after the previous request finishes + this delay — never overlap.
+ * (setInterval @ 2s while each GET took 2–9s flooded the dev server and crashed Node.)
+ */
+const POLL_MS = 5_000;
 const ROUTE_SOURCE_ID = "active-route";
 const ROUTE_CASING_LAYER_ID = "active-route-casing";
 const ROUTE_LAYER_ID = "active-route-line";
@@ -1217,11 +1221,61 @@ export default function RiderRouteMap({
     }
   }, [orderId, riderId, buildPhaseArgs]);
 
+  const trackingPollInFlightRef = useRef(false);
+
   useEffect(() => {
-    void fetchTracking();
-    const id = window.setInterval(() => void fetchTracking(), POLL_MS);
-    return () => window.clearInterval(id);
-  }, [fetchTracking]);
+    if (!orderId) return;
+
+    const terminal = [orderStatus, coreStatus, foodOrderStatus]
+      .map((s) => String(s ?? "").toUpperCase())
+      .some((s) =>
+        ["DELIVERED", "CANCELLED", "FAILED", "REJECTED", "COMPLETED"].includes(s)
+      );
+    if (terminal) return;
+
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+
+    const scheduleNext = () => {
+      if (cancelled) return;
+      timer = setTimeout(() => {
+        void tick();
+      }, POLL_MS);
+    };
+
+    const tick = async () => {
+      if (cancelled) return;
+      if (typeof document !== "undefined" && document.hidden) {
+        scheduleNext();
+        return;
+      }
+      if (trackingPollInFlightRef.current) {
+        scheduleNext();
+        return;
+      }
+      trackingPollInFlightRef.current = true;
+      try {
+        await fetchTracking();
+      } finally {
+        trackingPollInFlightRef.current = false;
+        scheduleNext();
+      }
+    };
+
+    const onVisibility = () => {
+      if (cancelled || document.hidden) return;
+      if (timer != null) clearTimeout(timer);
+      void tick();
+    };
+
+    void tick();
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      cancelled = true;
+      if (timer != null) clearTimeout(timer);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
+  }, [orderId, orderStatus, coreStatus, foodOrderStatus, fetchTracking]);
 
   const updateTrailOnMap = useCallback((map: any, payload: OrderRiderTrackingPayload | null) => {
     const trail = payload?.trail ?? [];

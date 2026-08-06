@@ -22,7 +22,7 @@ export type LiveProgressMeta = {
 };
 
 const FOOD_LIVE: Record<string, { step: number; title: string; body: string }> = {
-  ORDER_ACCEPTED: { step: 1, title: "Order Accepted", body: "Store accepted your order" },
+  ORDER_ACCEPTED: { step: 1, title: "Order Confirmed by the Store", body: "Your order has been confirmed by the store and is now being prepared." },
   ORDER_PREPARING: { step: 1, title: "Preparing Your Order", body: "Preparing" },
   ORDER_FOOD_READY: { step: 2, title: "Ready for Pickup", body: "Rider arriving at store" },
   ORDER_RIDER_AT_STORE: { step: 2, title: "Ready for Pickup", body: "Rider at the store" },
@@ -82,10 +82,32 @@ async function riderDisplayName(riderId: number): Promise<string> {
   return rows[0]?.name?.trim() || "Your rider";
 }
 
+/** Resolve 4-digit delivery OTP for customer-facing nearby notification. */
+export async function deliveryOtpForOrderIdText(orderIdText: string): Promise<string | null> {
+  const sql = getSql();
+  const rows = await sql<{ delivery_otp: string | null }[]>`
+    SELECT NULLIF(TRIM(oc.delivery_otp), '') AS delivery_otp
+    FROM orders_core oc
+    WHERE oc.order_id = ${orderIdText}
+       OR oc.formatted_order_id = ${orderIdText}
+       OR oc.id::text = ${orderIdText}
+    LIMIT 1
+  `;
+  const otp = rows[0]?.delivery_otp?.trim() ?? "";
+  if (!otp) return null;
+  const digits = otp.replace(/\D/g, "");
+  if (!digits) return null;
+  return digits.length >= 4 ? digits.slice(-4) : digits.padStart(4, "0");
+}
+
 function foodLiveMeta(
   templateCode: string,
   orderId: string,
-  opts?: { etaMinutes?: number | null; storeName?: string | null }
+  opts?: {
+    etaMinutes?: number | null;
+    storeName?: string | null;
+    deliveryOtp?: string | null;
+  }
 ): LiveProgressMeta | Record<string, unknown> {
   const live = FOOD_LIVE[templateCode];
   if (!live) return { gmType: templateCode, orderId };
@@ -96,6 +118,9 @@ function foodLiveMeta(
   let liveBody = live.body;
   if (templateCode === "ORDER_PREPARING" && eta != null) liveBody = `Preparing • ${eta} mins`;
   if (templateCode === "ORDER_OUT_FOR_DELIVERY" && eta != null) liveBody = `Arriving in ${eta} mins`;
+  if (templateCode === "ORDER_RIDER_ARRIVING" && opts?.deliveryOtp) {
+    liveBody = `OTP ${opts.deliveryOtp} · Share with your delivery partner`;
+  }
   return {
     gmLiveProgress: true,
     liveService: "food",
@@ -106,6 +131,7 @@ function foodLiveMeta(
     orderId,
     ...(opts?.storeName ? { storeName: opts.storeName } : {}),
     ...(eta != null ? { etaMinutes: eta } : {}),
+    ...(opts?.deliveryOtp ? { deliveryOtp: opts.deliveryOtp } : {}),
     gmType: templateCode,
   };
 }
@@ -180,6 +206,7 @@ export async function notifyCustomerFoodLifecycle(args: {
   merchantName?: string | null;
   etaMinutes?: number | null;
   orderShortId?: string | null;
+  deliveryOtp?: string | null;
 }): Promise<void> {
   try {
     const customerId = await customerUserIdForOrderIdText(args.orderIdText);
@@ -195,6 +222,12 @@ export async function notifyCustomerFoodLifecycle(args: {
         ? Math.max(1, Math.round(args.etaMinutes))
         : 25;
 
+    const deliveryOtp =
+      args.deliveryOtp?.trim() ||
+      (args.templateCode === "ORDER_RIDER_ARRIVING"
+        ? await deliveryOtpForOrderIdText(args.orderIdText)
+        : null);
+
     await sendNotification({
       templateCode: args.templateCode,
       variables: {
@@ -203,12 +236,16 @@ export async function notifyCustomerFoodLifecycle(args: {
         merchantName: args.merchantName?.trim() || "Store",
         riderName,
         etaMinutes,
+        ...(args.templateCode === "ORDER_RIDER_ARRIVING"
+          ? { deliveryOtp: deliveryOtp || "your app OTP" }
+          : {}),
       },
       target: { user_id: customerId },
       idempotencyKey: `${args.templateCode}:${args.orderIdText}`,
       metadata: foodLiveMeta(args.templateCode, args.orderIdText, {
         etaMinutes,
         storeName: args.merchantName,
+        deliveryOtp,
       }),
     });
   } catch (err) {

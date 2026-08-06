@@ -1,9 +1,7 @@
 "use client";
 
-import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  ListX,
   Plus,
   Loader2,
   Pencil,
@@ -12,7 +10,7 @@ import {
   Check,
   X,
   RotateCcw,
-  ArrowLeft,
+  Search,
 } from "lucide-react";
 import type {
   CancellationAttributeRow,
@@ -59,6 +57,10 @@ export default function SuperAdminCancellationReasonsPage() {
   const [filterAttr, setFilterAttr] = useState<string>("ALL");
   const [showInactive, setShowInactive] = useState(true);
   const [savingKey, setSavingKey] = useState<string | null>(null);
+  const [reasonSearch, setReasonSearch] = useState("");
+  const [attrSearch, setAttrSearch] = useState("");
+  const [showAddReason, setShowAddReason] = useState(false);
+  const [showAddAttribute, setShowAddAttribute] = useState(false);
 
   const [newAttrCode, setNewAttrCode] = useState("");
   const [newAttrLabel, setNewAttrLabel] = useState("");
@@ -144,13 +146,32 @@ export default function SuperAdminCancellationReasonsPage() {
     if (channel === "app" && filterServiceType !== "ALL") {
       list = list.filter((r) => (r.serviceType ?? "") === filterServiceType);
     }
+    const q = reasonSearch.trim().toLowerCase();
+    if (q) {
+      list = list.filter(
+        (r) =>
+          r.label.toLowerCase().includes(q) ||
+          r.reasonCode.toLowerCase().includes(q) ||
+          r.attribute.toLowerCase().includes(q)
+      );
+    }
     return list;
-  }, [rows, filterAttr, showInactive, channel, filterServiceType]);
+  }, [rows, filterAttr, showInactive, channel, filterServiceType, reasonSearch]);
 
   const filteredAttributes = useMemo(() => {
-    const list = [...attributes].sort((a, b) => a.sortOrder - b.sortOrder || a.code.localeCompare(b.code));
-    return showInactive ? list : list.filter((a) => a.isActive);
-  }, [attributes, showInactive]);
+    let list = [...attributes].sort((a, b) => a.sortOrder - b.sortOrder || a.code.localeCompare(b.code));
+    if (!showInactive) list = list.filter((a) => a.isActive);
+    const q = attrSearch.trim().toLowerCase();
+    if (q) {
+      list = list.filter(
+        (a) =>
+          a.code.toLowerCase().includes(q) ||
+          a.displayLabel.toLowerCase().includes(q) ||
+          (a.defaultFault || "").toLowerCase().includes(q)
+      );
+    }
+    return list;
+  }, [attributes, showInactive, attrSearch]);
 
   const createAttribute = async () => {
     const code = newAttrCode.trim().toUpperCase();
@@ -180,6 +201,7 @@ export default function SuperAdminCancellationReasonsPage() {
       setNewAttrLabel("");
       setNewAttrFault("");
       setNewAttrSort(0);
+      setShowAddAttribute(false);
       invalidateCancellationCatalogClientCache();
       await load();
     } finally {
@@ -279,6 +301,7 @@ export default function SuperAdminCancellationReasonsPage() {
       setNewLabel("");
       setNewSort(0);
       setNewServiceType("");
+      setShowAddReason(false);
       invalidateCancellationCatalogClientCache();
       await load();
     } finally {
@@ -356,27 +379,37 @@ export default function SuperAdminCancellationReasonsPage() {
   return (
     <div className="w-full min-w-0 -m-4 md:-m-6">
       <div className="bg-[#eef1f4] min-h-[calc(100vh-4rem)]">
-        <div className="border-b border-slate-200/90 bg-white/80 backdrop-blur-sm px-4 md:px-6 py-4">
-          <div className="max-w-6xl mx-auto flex flex-wrap items-center justify-between gap-3">
-            <div className="flex items-start gap-3 min-w-0">
-              <Link
-                href="/dashboard/super-admin"
-                className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 hover:text-slate-900 transition-colors"
-                aria-label="Back to Super Admin"
-              >
-                <ArrowLeft className="h-4 w-4" />
-              </Link>
-              <div className="min-w-0">
-                <h1 className="text-lg font-bold text-slate-900 tracking-tight flex items-center gap-2">
-                  <ListX className="h-5 w-5 text-emerald-600 shrink-0" />
-                  Cancellation reasons
-                </h1>
-                <p className="text-xs text-slate-500 mt-0.5">
-                  {channel === "web"
-                    ? "Dashboard order cancel / refund (web)."
-                    : "Rider, customer & merchant app cancellation options."}
-                </p>
-              </div>
+        <div className="max-w-6xl mx-auto px-4 md:px-6 py-5 space-y-5">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-500 mr-1">
+                Catalog
+              </span>
+              {(["web", "app"] as const).map((c) => (
+                <button
+                  key={c}
+                  type="button"
+                  onClick={() => {
+                    setChannel(c);
+                    setFilterServiceType("ALL");
+                    setEditReasonId(null);
+                    setShowAddReason(false);
+                    setReasonSearch("");
+                  }}
+                  className={`h-9 px-4 rounded-lg text-xs font-semibold transition-colors ${
+                    channel === c
+                      ? "bg-emerald-600 text-white shadow-sm"
+                      : "bg-white text-slate-600 ring-1 ring-slate-200 hover:bg-slate-50"
+                  }`}
+                >
+                  {c === "web" ? "Web Cancellation" : "App Cancellation"}
+                </button>
+              ))}
+              <p className="w-full text-xs text-slate-500 mt-0.5 sm:w-auto sm:mt-0 sm:ml-2">
+                {channel === "web"
+                  ? "Dashboard order cancel / refund (web)."
+                  : "Rider, customer & merchant app cancellation options."}
+              </p>
             </div>
             <button
               type="button"
@@ -387,32 +420,6 @@ export default function SuperAdminCancellationReasonsPage() {
               <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
               Refresh
             </button>
-          </div>
-        </div>
-
-        <div className="max-w-6xl mx-auto px-4 md:px-6 py-5 space-y-5">
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-500 mr-1">
-              Catalog
-            </span>
-            {(["web", "app"] as const).map((c) => (
-              <button
-                key={c}
-                type="button"
-                onClick={() => {
-                  setChannel(c);
-                  setFilterServiceType("ALL");
-                  setEditReasonId(null);
-                }}
-                className={`h-9 px-4 rounded-lg text-xs font-semibold transition-colors ${
-                  channel === c
-                    ? "bg-emerald-600 text-white shadow-sm"
-                    : "bg-white text-slate-600 ring-1 ring-slate-200 hover:bg-slate-50"
-                }`}
-              >
-                {c === "web" ? "Web Cancellation" : "App Cancellation"}
-              </button>
-            ))}
           </div>
 
           {msg ? (
@@ -447,52 +454,86 @@ export default function SuperAdminCancellationReasonsPage() {
 
         {/* Attributes */}
         <section className="rounded-xl overflow-hidden bg-white shadow-sm ring-1 ring-slate-200/80">
-          <div className="px-4 py-3 bg-gradient-to-r from-slate-800 to-slate-700 text-white flex items-center justify-between">
+          <div className="px-4 py-3 bg-gradient-to-r from-slate-800 to-slate-700 text-white flex flex-wrap items-center justify-between gap-2">
             <h2 className="text-xs font-bold uppercase tracking-wider">
               Attributes — Select Attribute dropdown
             </h2>
-            <span className="text-[10px] text-slate-300">{filteredAttributes.length} rows</span>
+            <div className="flex items-center gap-2">
+              <span className="text-[10px] text-slate-300">{filteredAttributes.length} rows</span>
+              <button
+                type="button"
+                onClick={() => setShowAddAttribute((v) => !v)}
+                className="h-7 px-2.5 rounded-md bg-white/15 text-[11px] font-semibold text-white hover:bg-white/25 inline-flex items-center gap-1"
+              >
+                {showAddAttribute ? (
+                  <>
+                    <X className="h-3 w-3" />
+                    Cancel
+                  </>
+                ) : (
+                  <>
+                    <Plus className="h-3 w-3" />
+                    Add attribute
+                  </>
+                )}
+              </button>
+            </div>
           </div>
-          <div className="flex flex-wrap gap-2 items-end mb-3 py-2">
-            <input
-              value={newAttrCode}
-              onChange={(e) => setNewAttrCode(e.target.value.toUpperCase())}
-              placeholder="Code (CUSTOMER)"
-              className={`${inputCls} w-28 font-mono`}
-            />
-            <input
-              value={newAttrLabel}
-              onChange={(e) => setNewAttrLabel(e.target.value)}
-              placeholder="Display label"
-              className={`${inputCls} flex-1 min-w-[140px]`}
-            />
-            <input
-              value={newAttrFault}
-              onChange={(e) => setNewAttrFault(e.target.value)}
-              placeholder="Default fault"
-              className={`${inputCls} w-36`}
-            />
-            <input
-              type="number"
-              value={newAttrSort}
-              onChange={(e) => setNewAttrSort(Number(e.target.value) || 0)}
-              placeholder="Sort"
-              className={`${inputCls} w-16`}
-            />
-            <button
-              type="button"
-              onClick={() => void createAttribute()}
-              disabled={savingKey === "attr-create"}
-              className={btnPrimary}
-            >
-              {savingKey === "attr-create" ? (
-                <Loader2 className="h-3.5 w-3.5 animate-spin" />
-              ) : (
-                <Plus className="h-3.5 w-3.5" />
-              )}
-              Add attribute
-            </button>
+
+          <div className="flex flex-wrap gap-2 items-center px-4 py-3 border-b border-slate-100 bg-slate-50/50">
+            <div className="relative flex-1 min-w-[200px]">
+              <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
+              <input
+                value={attrSearch}
+                onChange={(e) => setAttrSearch(e.target.value)}
+                placeholder="Search attributes by code, label, fault…"
+                className={`${inputCls} w-full pl-8`}
+              />
+            </div>
           </div>
+
+          {showAddAttribute ? (
+            <div className="flex flex-wrap gap-2 items-end px-4 py-3 border-b border-slate-100 bg-emerald-50/40">
+              <input
+                value={newAttrCode}
+                onChange={(e) => setNewAttrCode(e.target.value.toUpperCase())}
+                placeholder="Code (CUSTOMER)"
+                className={`${inputCls} w-28 font-mono`}
+              />
+              <input
+                value={newAttrLabel}
+                onChange={(e) => setNewAttrLabel(e.target.value)}
+                placeholder="Display label"
+                className={`${inputCls} flex-1 min-w-[140px]`}
+              />
+              <input
+                value={newAttrFault}
+                onChange={(e) => setNewAttrFault(e.target.value)}
+                placeholder="Default fault"
+                className={`${inputCls} w-36`}
+              />
+              <input
+                type="number"
+                value={newAttrSort}
+                onChange={(e) => setNewAttrSort(Number(e.target.value) || 0)}
+                placeholder="Sort"
+                className={`${inputCls} w-16`}
+              />
+              <button
+                type="button"
+                onClick={() => void createAttribute()}
+                disabled={savingKey === "attr-create"}
+                className={btnPrimary}
+              >
+                {savingKey === "attr-create" ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Plus className="h-3.5 w-3.5" />
+                )}
+                Add attribute
+              </button>
+            </div>
+          ) : null}
 
           <div className="overflow-x-auto">
             <table className="w-full text-xs border-collapse">
@@ -620,7 +661,9 @@ export default function SuperAdminCancellationReasonsPage() {
                 {filteredAttributes.length === 0 && !loading ? (
                   <tr>
                     <td colSpan={6} className="px-3 py-6 text-center text-slate-500 bg-white">
-                      No attributes. Add one above or run migration 0235/0236.
+                      {attrSearch.trim()
+                        ? "No attributes match this search."
+                        : "No attributes. Click “+ Add attribute” or run migration 0235/0236."}
                     </td>
                   </tr>
                 ) : null}
@@ -633,7 +676,7 @@ export default function SuperAdminCancellationReasonsPage() {
         <section className="rounded-xl overflow-hidden bg-white shadow-sm ring-1 ring-slate-200/80">
           <div className="px-4 py-3 bg-gradient-to-r from-slate-800 to-slate-700 text-white flex flex-wrap items-center justify-between gap-2">
             <h2 className="text-xs font-bold uppercase tracking-wider">Rejection reasons</h2>
-            <div className="flex items-center gap-3 text-[11px] text-slate-200">
+            <div className="flex flex-wrap items-center gap-3 text-[11px] text-slate-200">
               <label className="flex items-center gap-1.5 cursor-pointer">
                 <input
                   type="checkbox"
@@ -669,63 +712,94 @@ export default function SuperAdminCancellationReasonsPage() {
                   ))}
                 </select>
               ) : null}
+              <button
+                type="button"
+                onClick={() => setShowAddReason((v) => !v)}
+                className="h-7 px-2.5 rounded-md bg-white/15 text-[11px] font-semibold text-white hover:bg-white/25 inline-flex items-center gap-1"
+              >
+                {showAddReason ? (
+                  <>
+                    <X className="h-3 w-3" />
+                    Cancel
+                  </>
+                ) : (
+                  <>
+                    <Plus className="h-3 w-3" />
+                    Add reason
+                  </>
+                )}
+              </button>
             </div>
           </div>
 
-          <div className="flex flex-wrap gap-2 items-end px-4 py-3 border-b border-slate-100 bg-slate-50/50">
-            <select
-              value={newReasonAttr}
-              onChange={(e) => setNewReasonAttr(e.target.value)}
-              className={selectCls}
-            >
-              <option value="">Attribute</option>
-              {activeAttributes.map((a) => (
-                <option key={a.code} value={a.code}>
-                  {a.displayLabel || a.code}
-                </option>
-              ))}
-            </select>
-            <input
-              value={newLabel}
-              onChange={(e) => setNewLabel(e.target.value)}
-              placeholder="Reason label"
-              className={`${inputCls} flex-1 min-w-[200px]`}
-            />
-            {channel === "app" ? (
+          <div className="flex flex-wrap gap-2 items-center px-4 py-3 border-b border-slate-100 bg-slate-50/50">
+            <div className="relative flex-1 min-w-[220px]">
+              <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
+              <input
+                value={reasonSearch}
+                onChange={(e) => setReasonSearch(e.target.value)}
+                placeholder="Search reasons by label, code, attribute…"
+                className={`${inputCls} w-full pl-8`}
+              />
+            </div>
+          </div>
+
+          {showAddReason ? (
+            <div className="flex flex-wrap gap-2 items-end px-4 py-3 border-b border-slate-100 bg-emerald-50/40">
               <select
-                value={newServiceType}
-                onChange={(e) => setNewServiceType(e.target.value)}
+                value={newReasonAttr}
+                onChange={(e) => setNewReasonAttr(e.target.value)}
                 className={selectCls}
-                title="Service type (optional)"
               >
-                {SERVICE_TYPE_OPTIONS.map((o) => (
-                  <option key={o.value || "all"} value={o.value}>
-                    {o.label}
+                <option value="">Attribute</option>
+                {activeAttributes.map((a) => (
+                  <option key={a.code} value={a.code}>
+                    {a.displayLabel || a.code}
                   </option>
                 ))}
               </select>
-            ) : null}
-            <input
-              type="number"
-              value={newSort}
-              onChange={(e) => setNewSort(Number(e.target.value) || 0)}
-              className={`${inputCls} w-16`}
-              title="Sort order"
-            />
-            <button
-              type="button"
-              onClick={() => void createReason()}
-              disabled={savingKey === "reason-create"}
-              className={btnPrimary}
-            >
-              {savingKey === "reason-create" ? (
-                <Loader2 className="h-3.5 w-3.5 animate-spin" />
-              ) : (
-                <Plus className="h-3.5 w-3.5" />
-              )}
-              Add reason
-            </button>
-          </div>
+              <input
+                value={newLabel}
+                onChange={(e) => setNewLabel(e.target.value)}
+                placeholder="Reason label"
+                className={`${inputCls} flex-1 min-w-[200px]`}
+              />
+              {channel === "app" ? (
+                <select
+                  value={newServiceType}
+                  onChange={(e) => setNewServiceType(e.target.value)}
+                  className={selectCls}
+                  title="Service type (optional)"
+                >
+                  {SERVICE_TYPE_OPTIONS.map((o) => (
+                    <option key={o.value || "all"} value={o.value}>
+                      {o.label}
+                    </option>
+                  ))}
+                </select>
+              ) : null}
+              <input
+                type="number"
+                value={newSort}
+                onChange={(e) => setNewSort(Number(e.target.value) || 0)}
+                className={`${inputCls} w-16`}
+                title="Sort order"
+              />
+              <button
+                type="button"
+                onClick={() => void createReason()}
+                disabled={savingKey === "reason-create"}
+                className={btnPrimary}
+              >
+                {savingKey === "reason-create" ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Plus className="h-3.5 w-3.5" />
+                )}
+                Add reason
+              </button>
+            </div>
+          ) : null}
 
           <div className="overflow-x-auto">
             {loading ? (
@@ -896,7 +970,9 @@ export default function SuperAdminCancellationReasonsPage() {
                         colSpan={channel === "app" ? 7 : 6}
                         className="px-3 py-8 text-center text-slate-500 bg-white"
                       >
-                        No reasons match this filter.
+                        {reasonSearch.trim()
+                          ? "No reasons match this search."
+                          : "No reasons match this filter."}
                       </td>
                     </tr>
                   ) : null}

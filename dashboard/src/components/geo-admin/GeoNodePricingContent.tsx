@@ -4,8 +4,9 @@ import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useSta
 import { toast } from "sonner";
 import { Layers, Loader2, Plus } from "lucide-react";
 import { RiderPayoutRulesPanel } from "./RiderPayoutRulesPanel";
-import { VEHICLE_OPTIONS, type VehicleType } from "./rideVehicleTypes";
+import { VEHICLE_OPTIONS, PARCEL_VEHICLE_OPTIONS, type VehicleType } from "./rideVehicleTypes";
 import { RideCustomerPricingPanel } from "./RideCustomerPricingPanel";
+import { ParcelCustomerPricingPanel } from "./ParcelCustomerPricingPanel";
 import { InlineVehicleRideLimitField } from "./InlineVehicleRideLimitField";
 import { StateSurgeManagementSidesheet } from "./StateSurgeManagementSidesheet";
 import { prefetchServicePayoutRules } from "@/lib/geo/servicePayoutRulesCache";
@@ -77,6 +78,13 @@ export function GeoNodePricingContent(props: { level: GeoNodeLevel; refId: strin
   const actorType: ActorType = pricingTab === "rider" ? "rider" : "customer";
   const riderService = serviceType === "person_ride" ? "ride" : serviceType;
 
+  // Parcel never uses 4 Wheeler AC — reset if leftover from Ride selection.
+  useEffect(() => {
+    if (serviceType === "parcel" && rideVehicleType === "4_wheeler_ac") {
+      setRideVehicleType("2_wheeler");
+    }
+  }, [serviceType, rideVehicleType]);
+
   useLayoutEffect(() => {
     slabsRef.current = slabs;
   }, [slabs]);
@@ -97,7 +105,7 @@ export function GeoNodePricingContent(props: { level: GeoNodeLevel; refId: strin
   }, [savingAll]);
 
   useEffect(() => {
-    if (pricingTab === "rider" || serviceType === "person_ride") return;
+    if (pricingTab === "rider" || serviceType === "person_ride" || serviceType === "parcel") return;
     prefetchDeliveryRateSlabs({
       level,
       refId,
@@ -147,7 +155,11 @@ export function GeoNodePricingContent(props: { level: GeoNodeLevel; refId: strin
 
   const refresh = useCallback(
     async (opts?: { force?: boolean; showLoading?: boolean }) => {
-      if (pricingTab === "rider" || (pricingTab === "customer" && serviceType === "person_ride")) return;
+      if (
+        pricingTab === "rider" ||
+        (pricingTab === "customer" && (serviceType === "person_ride" || serviceType === "parcel"))
+      )
+        return;
 
       const cacheKey = deliveryRateSlabsCacheKey({
         level,
@@ -380,7 +392,7 @@ export function GeoNodePricingContent(props: { level: GeoNodeLevel; refId: strin
     }
   };
 
-  const showCustomerSlabActions = pricingTab === "customer" && serviceType !== "person_ride";
+  const showCustomerSlabActions = pricingTab === "customer" && serviceType === "food";
 
   const actionBusy = rowBusyId != null || savingAll;
 
@@ -505,23 +517,29 @@ export function GeoNodePricingContent(props: { level: GeoNodeLevel; refId: strin
                 </button>
               </div>
             </div>
-            {serviceType === "person_ride" ? (
+            {serviceType === "person_ride" || serviceType === "parcel" ? (
               <>
                 <label className="block text-xs font-semibold text-slate-700">
                   Vehicle
                   <select
                     className="mt-1 block w-52 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm shadow-sm"
-                    value={rideVehicleType}
+                    value={
+                      serviceType === "parcel" && rideVehicleType === "4_wheeler_ac"
+                        ? "2_wheeler"
+                        : rideVehicleType
+                    }
                     onChange={(e) => setRideVehicleType(e.target.value as VehicleType)}
                   >
-                    {VEHICLE_OPTIONS.map((v) => (
-                      <option key={v.value} value={v.value}>
-                        {v.label}
-                      </option>
-                    ))}
+                    {(serviceType === "parcel" ? PARCEL_VEHICLE_OPTIONS : VEHICLE_OPTIONS).map(
+                      (v) => (
+                        <option key={v.value} value={v.value}>
+                          {v.label}
+                        </option>
+                      )
+                    )}
                   </select>
                 </label>
-                {level === "state" ? (
+                {level === "state" && serviceType === "person_ride" ? (
                   <InlineVehicleRideLimitField
                     stateId={refId}
                     vehicleType={rideVehicleType}
@@ -548,6 +566,8 @@ export function GeoNodePricingContent(props: { level: GeoNodeLevel; refId: strin
             />
           ) : serviceType === "person_ride" ? (
             <RideCustomerPricingPanel level={level} refId={refId} vehicleType={rideVehicleType} />
+          ) : serviceType === "parcel" ? (
+            <ParcelCustomerPricingPanel level={level} refId={refId} vehicleType={rideVehicleType} />
           ) : (
             <>
               {showCustomerSlabActions ? (

@@ -3,11 +3,18 @@ import { describe, it } from "node:test";
 import {
   applyPlatformCartOffers,
   applyPlatformFeeBucketOffers,
+  platformOfferEligible,
   platformOfferGeoMatches,
   platformOfferMerchantScopeMatches,
+  isPlatformOfferHardVisibilityRejection,
+  platformOfferLocationVisible,
   qualifyingCartFromRem,
   listEligiblePlatformOffersForCheckout,
 } from "./platformOffersApply.js";
+import {
+  platformOfferFirstRideOnlyPasses,
+  platformOfferRequiresFirstRideOnly,
+} from "./platformOfferFirstRide.js";
 import type {
   BillContext,
   BillingDataset,
@@ -43,7 +50,8 @@ const baseCtx = (): BillContext => ({
     post_office: "po-uuid",
     pincode: "pin-uuid",
   },
-  platformOfferGeoBindingEffectiveIds: new Set(),
+  platformOfferGeoBindingEffectiveIds: new Set([1]),
+    checkoutCouponGeoBindingEffectiveIds: new Set([1]),
   deliveryFeeFromRateCard: 0,
   deliveryFeeFromGeo: null,
   deliveryDefaultBaseInr: 25,
@@ -91,6 +99,8 @@ function datasetWithOffers(platformOffers: PlatformOfferRow[]): BillingDataset {
 const baseOffer = (): PlatformOfferRow => ({
   id: 1,
   name: "Test",
+  couponCode: "TEST10",
+  promoConfig: {},
   serviceType: "FOOD",
   discountType: "PERCENTAGE",
   valueNumeric: 10,
@@ -118,6 +128,13 @@ const baseOffer = (): PlatformOfferRow => ({
   endsAt: null,
   budgetTotal: null,
   budgetUsed: null,
+  maxUsesTotal: null,
+  maxUsesPerUser: null,
+  maxUsesPerDay: null,
+  maxUsesPerMonth: null,
+  consumeMode: "ON_PLACED",
+  restoreOnCancel: true,
+  restoreOnRefund: true,
   priority: 0,
   isHidden: false,
   conditions: {},
@@ -188,9 +205,38 @@ describe("qualifyingCartFromRem", () => {
 });
 
 describe("platformOfferGeoMatches", () => {
-  it("GLOBAL ignores geo", () => {
+  it("GLOBAL without binding is not location-eligible", () => {
+    const ctx = baseCtx();
+    ctx.platformOfferGeoBindingEffectiveIds = new Set();
     const o = baseOffer();
-    assert.equal(platformOfferGeoMatches(baseCtx(), o), true);
+    assert.equal(platformOfferGeoMatches(ctx, o), false);
+  });
+
+  it("GLOBAL matches when present in effective geo bindings", () => {
+    const ctx = baseCtx();
+    ctx.platformOfferGeoBindingEffectiveIds = new Set([1]);
+    const o = baseOffer();
+    o.id = 1;
+    assert.equal(platformOfferGeoMatches(ctx, o), true);
+  });
+
+  it("MERCHANT without binding is not location-eligible", () => {
+    const ctx = baseCtx();
+    ctx.platformOfferGeoBindingEffectiveIds = new Set();
+    const o = baseOffer();
+    o.targetScope = "MERCHANT";
+    o.merchantIds = [42];
+    assert.equal(platformOfferGeoMatches(ctx, o), false);
+  });
+
+  it("MERCHANT matches when present in effective geo bindings", () => {
+    const ctx = baseCtx();
+    ctx.platformOfferGeoBindingEffectiveIds = new Set([9]);
+    const o = baseOffer();
+    o.id = 9;
+    o.targetScope = "MERCHANT";
+    o.merchantIds = [42];
+    assert.equal(platformOfferGeoMatches(ctx, o), true);
   });
 
   it("GEO matches when district id in geo_targets", () => {
@@ -205,6 +251,7 @@ describe("platformOfferGeoMatches", () => {
   it("GEO fails when no drop geo", () => {
     const ctx = baseCtx();
     ctx.dropGeoRefByLevel = null;
+    ctx.platformOfferGeoBindingEffectiveIds = new Set();
     const o = baseOffer();
     o.targetScope = "GEO";
     o.conditions = { geo_targets: [{ level: "state", ids: ["state-uuid"] }] };
@@ -212,10 +259,12 @@ describe("platformOfferGeoMatches", () => {
   });
 
   it("GEO fails when buckets empty", () => {
+    const ctx = baseCtx();
+    ctx.platformOfferGeoBindingEffectiveIds = new Set();
     const o = baseOffer();
     o.targetScope = "GEO";
     o.geoIds = [];
-    assert.equal(platformOfferGeoMatches(baseCtx(), o), false);
+    assert.equal(platformOfferGeoMatches(ctx, o), false);
   });
 
   it("GEO matches via geo_platform_offer_bindings effective ids when legacy geo_targets empty", () => {
@@ -238,6 +287,30 @@ describe("platformOfferGeoMatches", () => {
     o.merchantIds = [42];
     o.conditions = {};
     assert.equal(platformOfferGeoMatches(ctx, o), true);
+  });
+});
+
+describe("isPlatformOfferHardVisibilityRejection", () => {
+  it("treats geo failures as hard hide", () => {
+    assert.equal(
+      isPlatformOfferHardVisibilityRejection("geo=NOT_ELIGIBLE (scope=GLOBAL, effectiveIds.size=0)|minCart=500"),
+      true
+    );
+  });
+
+  it("allows soft min-cart unlock reasons", () => {
+    assert.equal(isPlatformOfferHardVisibilityRejection("minCart=500 cart=100"), false);
+  });
+});
+
+describe("platformOfferLocationVisible", () => {
+  it("requires geo binding even for MERCHANT allow-listed stores", () => {
+    const ctx = baseCtx();
+    ctx.platformOfferGeoBindingEffectiveIds = new Set();
+    const o = baseOffer();
+    o.targetScope = "MERCHANT";
+    o.merchantIds = [42];
+    assert.equal(platformOfferLocationVisible(ctx, o), false);
   });
 });
 
@@ -379,5 +452,72 @@ describe("applyPlatformFeeBucketOffers", () => {
     applyPlatformFeeBucketOffers(ctx, datasetWithOffers([o]), state, 200, rem);
     assert.equal(rem.packaging, 20);
     assert.equal(state.discountTotal, 20);
+  });
+});
+
+describe("First Ride Only eligibility", () => {
+  it("detects conditions.first_ride_only", () => {
+    const o = baseOffer();
+    assert.equal(platformOfferRequiresFirstRideOnly(o), false);
+    o.conditions = { first_ride_only: true };
+    assert.equal(platformOfferRequiresFirstRideOnly(o), true);
+  });
+
+  it("passes on RIDE with zero completed person rides", () => {
+    const ctx = baseCtx();
+    ctx.serviceType = "RIDE";
+    ctx.completedPersonRideCount = 0;
+    const o = baseOffer();
+    o.serviceType = "RIDE";
+    o.conditions = { first_ride_only: true };
+    assert.equal(platformOfferFirstRideOnlyPasses(ctx, o), true);
+    assert.equal(platformOfferEligible(ctx, o, 100), true);
+  });
+
+  it("fails when customer already completed a person ride", () => {
+    const ctx = baseCtx();
+    ctx.serviceType = "RIDE";
+    ctx.completedPersonRideCount = 1;
+    const o = baseOffer();
+    o.serviceType = "RIDE";
+    o.conditions = { first_ride_only: true };
+    assert.equal(platformOfferFirstRideOnlyPasses(ctx, o), false);
+    assert.equal(platformOfferEligible(ctx, o, 100), false);
+  });
+
+  it("fails closed when completedPersonRideCount is unknown", () => {
+    const ctx = baseCtx();
+    ctx.serviceType = "RIDE";
+    ctx.completedPersonRideCount = null;
+    const o = baseOffer();
+    o.serviceType = "RIDE";
+    o.conditions = { first_ride_only: true };
+    assert.equal(platformOfferFirstRideOnlyPasses(ctx, o), false);
+  });
+
+  it("does not apply first-ride gate on FOOD billing", () => {
+    const ctx = baseCtx();
+    ctx.serviceType = "FOOD";
+    ctx.completedPersonRideCount = 0;
+    const o = baseOffer();
+    o.serviceType = "ALL";
+    o.conditions = { first_ride_only: true };
+    assert.equal(platformOfferFirstRideOnlyPasses(ctx, o), false);
+  });
+
+  it("is independent of per-user usage limits", () => {
+    const ctx = baseCtx();
+    ctx.serviceType = "RIDE";
+    ctx.completedPersonRideCount = 0;
+    ctx.platformOfferUsagesByUser = new Map();
+    const o = baseOffer();
+    o.serviceType = "RIDE";
+    o.conditions = { first_ride_only: true };
+    o.maxUsesPerUser = 1;
+    assert.equal(platformOfferEligible(ctx, o, 100), true);
+    // Usage already consumed once — usage limit blocks, but first-ride still would pass alone.
+    ctx.platformOfferUsagesByUser = new Map([[1, { lifetime: 1, day: 1, month: 1 }]]);
+    assert.equal(platformOfferFirstRideOnlyPasses(ctx, o), true);
+    assert.equal(platformOfferEligible(ctx, o, 100), false);
   });
 });

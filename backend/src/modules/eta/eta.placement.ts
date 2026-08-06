@@ -133,11 +133,43 @@ export async function freezeEtaForPlacedOrder(args: {
       mapboxRouteId,
       routeSnapshot,
     });
+
+    const { resolveStageAwareEta } = await import("./eta.stage-aware.js");
+    const { resolveCustomerEtaContext } = await import("./eta.customer-view.js");
+    const initialStageAware = resolveStageAwareEta({
+      stage: "MERCHANT_PREP",
+      legs: {
+        remainingPrep: snap.breakdown.foodPrepMinutes,
+        pickupLeg: snap.breakdown.riderToStoreMinutes,
+        travelLeg: snap.breakdown.travelMinutes,
+        total: snap.etaMaxMinutes,
+      },
+      merchantDelayed: false,
+      confidenceScore: snap.confidenceScore,
+      etaSource: "INITIAL_ESTIMATE",
+      promisedAt: snap.promisedDeliveryAt,
+      etaVersion: 1,
+    });
+    const initialCustomer = resolveCustomerEtaContext({
+      orderStatus: "ORDER_PLACED",
+      currentEtaMinutes: initialStageAware.displayEta ?? snap.etaMaxMinutes,
+      promisedEtaMinutes: snap.etaMaxMinutes,
+      merchantDelayed: false,
+      hasRider: false,
+      riderAtStore: false,
+      isReady: false,
+      isPickedUp: false,
+    });
+
     await appendEtaRecalc({
       orderIdText: args.orderIdText,
       newSnap: snap,
       reason: "ORDER_PLACED",
       merchantStoreId: args.merchantStoreId,
+      stageAware: initialStageAware,
+      customer: initialCustomer,
+      fingerprint: `placed:${snap.etaMaxMinutes}:${snap.promisedDeliveryAt}`,
+      orderStatus: "ORDER_PLACED",
     });
     void recordLoadSample({ storeId: args.merchantStoreId, activeOrders });
 

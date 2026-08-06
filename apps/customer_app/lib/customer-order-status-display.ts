@@ -29,14 +29,26 @@ export function getActiveOrderBadge(status: string): {
   color: string;
   bg: string;
 } {
-  const s = status.toUpperCase();
+  const s = normalizeCustomerOrderStatus(status);
+  if (isRiderAtCustomerStatus(s)) {
+    return { label: "Arriving", color: "#1D4ED8", bg: "#DBEAFE" };
+  }
   if (isCustomerOrderOnTheWayStatus(s)) {
     return { label: "On the way", color: "#1D4ED8", bg: "#DBEAFE" };
   }
-  if (s === "PREPARING" || s === "READY_FOR_PICKUP" || s === "READY") {
+  if (isRiderAtStoreStatus(s)) {
+    return { label: "At store", color: "#7C3AED", bg: "#EDE9FE" };
+  }
+  if (s === "RIDER_ASSIGNED" || s === "ASSIGNED") {
+    return { label: "Rider assigned", color: "#0369A1", bg: "#E0F2FE" };
+  }
+  if (s === "READY_FOR_PICKUP" || s === "READY" || s === "SEARCHING_RIDER") {
+    return { label: "Ready", color: "#047857", bg: "#D1FAE5" };
+  }
+  if (s === "PREPARING") {
     return { label: "Preparing", color: "#C2410C", bg: "#FFEDD5" };
   }
-  if (s === "ORDER_PLACED" || s === "ACCEPTED" || s === "PLACED") {
+  if (s === "ORDER_PLACED" || s === "ACCEPTED" || s === "PLACED" || s === "CREATED") {
     return { label: "Confirmed", color: "#047857", bg: "#D1FAE5" };
   }
   return { label: "Processing", color: "#C2410C", bg: "#FFEDD5" };
@@ -267,11 +279,11 @@ export function getCustomerOrderLiveHeadline(
     isRiderAtStoreStatus(s) ||
     (options?.riderReachedPickupAt && !isCustomerOrderOnTheWayStatus(s))
   ) {
-    return "Picking up your order";
+    return "Handing off the order ASAP";
   }
 
   if (s === "RIDER_ASSIGNED" || s === "ASSIGNED") {
-    return "Rider heading to store";
+    return "Rider arriving at the restaurant";
   }
 
   if (
@@ -284,11 +296,11 @@ export function getCustomerOrderLiveHeadline(
   }
 
   if (s === "SEARCHING_RIDER") {
-    return "Finding a delivery partner";
+    return "Waiting for a delivery partner";
   }
 
   if (s === "READY_FOR_PICKUP" || s === "READY") {
-    return hasRider ? "Order is ready — rider on the way" : "Order is ready for pickup";
+    return hasRider ? "Rider arriving at the restaurant" : "Order is ready for pickup";
   }
 
   if (s === "PREPARING") {
@@ -317,21 +329,76 @@ export function getCustomerOrderLiveHeadline(
   return "Order in progress";
 }
 
-/** ETA pill on the live tracking header — single minute value only. */
+/** ETA pill on the live tracking header — stage-aware, customer-friendly. */
 export function getCustomerOrderEtaPillText(
   etaMinutes: number | null | undefined,
-  options?: { merchantDelayed?: boolean; etaUpdated?: boolean; riderArrived?: boolean }
+  options?: {
+    merchantDelayed?: boolean;
+    etaUpdated?: boolean;
+    riderArrived?: boolean;
+    /** Delay without a bumped promise — hold ETA and hint slight delay. */
+    slightDelay?: boolean;
+    arrivingSoon?: boolean;
+    stuckRider?: boolean;
+    gpsUnavailable?: boolean;
+    phase?:
+      | "preparing"
+      | "rider_to_store"
+      | "waiting_at_store"
+      | "on_the_way"
+      | "arriving"
+      | "arrived";
+  }
 ): string {
-  if (options?.riderArrived) {
+  if (options?.riderArrived || options?.phase === "arrived") {
     return "Reached your location";
+  }
+  // Stale/missing GPS must not hide a valid server ETA — only show this when we have no minutes.
+  if (options?.gpsUnavailable && (etaMinutes == null || etaMinutes <= 0)) {
+    return "Updating ETA…";
+  }
+  if (options?.arrivingSoon || options?.phase === "arriving") {
+    return "Arriving now";
+  }
+  if (options?.stuckRider) {
+    if (options.phase === "waiting_at_store" || options.phase === "rider_to_store") {
+      return etaMinutes != null && etaMinutes > 0
+        ? `Waiting at restaurant • ${Math.round(etaMinutes)} mins`
+        : "Waiting at restaurant";
+    }
+    return etaMinutes != null && etaMinutes > 0
+      ? `Driver temporarily stopped • ${Math.round(etaMinutes)} mins`
+      : "Driver temporarily stopped";
+  }
+  if (options?.phase === "waiting_at_store") {
+    return "📦 Handing off the order ASAP";
+  }
+  if (options?.phase === "preparing") {
+    if (etaMinutes != null && etaMinutes > 0) {
+      const mins = Math.round(etaMinutes);
+      const minLabel = mins === 1 ? "min" : "mins";
+      if (options.slightDelay || options.merchantDelayed) {
+        return `Preparing • Approx. ${mins} ${minLabel} remaining • Slight delay`;
+      }
+      return `Preparing • Approx. ${mins} ${minLabel} remaining`;
+    }
+    return "Preparing your order";
+  }
+  if (options?.phase === "rider_to_store") {
+    if (etaMinutes != null && etaMinutes > 0) {
+      const mins = Math.round(etaMinutes);
+      const minLabel = mins === 1 ? "min" : "mins";
+      return `Rider arriving at the restaurant • ${mins} ${minLabel}`;
+    }
+    return "Rider arriving at the restaurant";
   }
   if (etaMinutes != null && etaMinutes > 0) {
     const mins = Math.round(etaMinutes);
     const minLabel = mins === 1 ? "min" : "mins";
-    if (options?.merchantDelayed) {
-      return `Arriving in ${mins} ${minLabel} • Updated estimate`;
+    if (options?.slightDelay) {
+      return `Arriving in ${mins} ${minLabel} • Slight delay`;
     }
-    if (options?.etaUpdated) {
+    if (options?.merchantDelayed || options?.etaUpdated) {
       return `Arriving in ${mins} ${minLabel} • Updated estimate`;
     }
     return `Arriving in ${mins} ${minLabel} • On time`;
@@ -347,8 +414,8 @@ export function getFloatingOrderStatusText(
   const s = normalizeCustomerOrderStatus(status);
   if (isRiderAtCustomerStatus(s)) return "Rider has arrived";
   if (isCustomerOrderOnTheWayStatus(s)) return "Order is on the way";
-  if (isRiderAtStoreStatus(s)) return "Picking up your order";
-  if (s === "RIDER_ASSIGNED" || s === "ASSIGNED") return "Rider heading to store";
+  if (isRiderAtStoreStatus(s)) return "Handing off the order ASAP";
+  if (s === "RIDER_ASSIGNED" || s === "ASSIGNED") return "Rider arriving at the restaurant";
   if (
     hasRider &&
     !isRiderAtStoreStatus(s) &&
@@ -357,13 +424,13 @@ export function getFloatingOrderStatusText(
     return "Rider heading to store";
   }
   if (s === "READY_FOR_PICKUP" || s === "READY") {
-    return hasRider ? "Order is ready — rider on the way" : "Order ready for pickup";
+    return hasRider ? "Rider arriving at the restaurant" : "Waiting for a delivery partner";
   }
   if (s === "PREPARING") return "Restaurant is preparing your order";
   if (s === "ACCEPTED") return "Order accepted by restaurant";
   if (isMerchantPreparingStatus(s)) return "Order accepted & being prepared";
   if (s === "ORDER_PLACED" || s === "PLACED" || s === "CREATED") return "Order confirmed";
-  if (s === "SEARCHING_RIDER") return "Finding a delivery partner";
+  if (s === "SEARCHING_RIDER") return "Waiting for a delivery partner";
   return "Order in progress";
 }
 
@@ -372,17 +439,21 @@ export function getCustomerOrderStatusBannerText(
   status: string,
   paymentStatus?: string | null
 ): string {
-  const s = status.toUpperCase();
+  const s = normalizeCustomerOrderStatus(status);
   if (s === "CANCELLED") return "Order was cancelled";
   if (s === "PAYMENT_FAILED" || s === "FAILED" || paymentStatus?.toLowerCase() === "failed") {
     return "Payment failed";
   }
   if (s === "DELIVERED") return "Order was delivered";
+  if (isRiderAtCustomerStatus(s)) return "Rider is nearby";
   if (isCustomerOrderOnTheWayStatus(s)) return "Order is on the way";
-  if (s === "PREPARING" || s === "READY_FOR_PICKUP" || s === "READY") {
-    return "Restaurant is preparing your order";
+  if (isRiderAtStoreStatus(s)) return "Handing off the order ASAP";
+  if (s === "RIDER_ASSIGNED" || s === "ASSIGNED") return "Rider arriving at the restaurant";
+  if (s === "READY_FOR_PICKUP" || s === "READY" || s === "SEARCHING_RIDER") {
+    return "Order is ready for pickup";
   }
-  if (s === "ORDER_PLACED" || s === "ACCEPTED" || s === "PLACED") {
+  if (s === "PREPARING") return "Restaurant is preparing your order";
+  if (s === "ORDER_PLACED" || s === "ACCEPTED" || s === "PLACED" || s === "CREATED") {
     return "Order placed";
   }
   return "Order in progress";

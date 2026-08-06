@@ -1,9 +1,11 @@
 "use client";
 
+import { useEffect } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { AuthProvider } from "@/providers/AuthProvider";
 import { useBootstrapGate } from "@/hooks/useBootstrapGate";
 import { FoodOrdersListQueryGate } from "@/components/query/FoodOrdersListQueryGate";
+import { installDashboardAuthFetchGuard } from "@/lib/auth/redirect-to-login";
 
 /**
  * Shared auth shell for dashboard + standalone order routes.
@@ -16,6 +18,10 @@ export default function AuthenticatedShell({
 }) {
   const queryClient = useQueryClient();
   const authReady = useBootstrapGate(queryClient);
+
+  useEffect(() => {
+    installDashboardAuthFetchGuard();
+  }, []);
 
   return (
     <AuthProvider authReady={authReady}>

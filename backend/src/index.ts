@@ -617,6 +617,9 @@ app.get<{ Params: { token: string } }>("/live-trip/:token", liveTrackRouteOpts, 
 const { sendLiveTrackMapbike } = await import("./modules/trip-share/live-track-map-assets.js");
 app.get("/trip/assets/mapbike.png", liveTrackRouteOpts, async (_req, reply) => sendLiveTrackMapbike(reply));
 await app.register(rideRoutes, { prefix: "/v1/rides" });
+await app.register((await import("./modules/parcel/parcel.routes.js")).parcelRoutes, {
+  prefix: "/v1/parcel",
+});
 await app.register(distanceModule, { prefix: "/v1/distance" });
 const { weatherRoutes } = await import("./modules/weather/weather.routes.js");
 await app.register(weatherRoutes, { prefix: "/v1/weather" });

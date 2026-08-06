@@ -338,21 +338,25 @@ export async function listSystemUsers(filters: UserFilters = {}) {
   const limit = filters.limit || 20;
   const offset = (page - 1) * limit;
   
-  let query = db.select().from(systemUsers).$dynamic();
-    // Build where conditions
+  // Build where conditions
   const conditions = [];
   
   // Exclude soft-deleted users
   conditions.push(isNull(systemUsers.deletedAt));
   
-  // Search filter
-  if (filters.search) {
+  // Search: full name, first/last, email, phone, agent ID (GMitra-AG00x) — case-insensitive
+  const searchTrimmed = filters.search?.trim();
+  if (searchTrimmed) {
+    const pattern = `%${searchTrimmed}%`;
     conditions.push(
       or(
-        ilike(systemUsers.fullName, `%${filters.search}%`),
-        ilike(systemUsers.email, `%${filters.search}%`),
-        ilike(systemUsers.mobile, `%${filters.search}%`),
-        ilike(systemUsers.systemUserId, `%${filters.search}%`)
+        ilike(systemUsers.fullName, pattern),
+        ilike(systemUsers.firstName, pattern),
+        ilike(systemUsers.lastName, pattern),
+        ilike(systemUsers.email, pattern),
+        ilike(systemUsers.mobile, pattern),
+        ilike(systemUsers.alternateMobile, pattern),
+        ilike(systemUsers.systemUserId, pattern)
       )!
     );
   }
@@ -371,36 +375,39 @@ export async function listSystemUsers(filters: UserFilters = {}) {
   if (filters.department) {
     conditions.push(eq(systemUsers.department, filters.department));
   }
-  
-  const filteredQuery =
-    conditions.length > 0 ? db.select().from(systemUsers).where(and(...conditions)) : db.select().from(systemUsers);
+
+  const whereClause = and(...conditions);
 
   const sortBy = filters.sortBy || "createdAt";
   const sortOrder = filters.sortOrder || "desc";
-  
-  if (sortBy === "fullName") {
-    query = query.orderBy(sortOrder === "asc" ? asc(systemUsers.fullName) : desc(systemUsers.fullName));
-  } else if (sortBy === "email") {
-    query = query.orderBy(sortOrder === "asc" ? asc(systemUsers.email) : desc(systemUsers.email));
-  } else if (sortBy === "createdAt") {
-    query = query.orderBy(sortOrder === "asc" ? asc(systemUsers.createdAt) : desc(systemUsers.createdAt));
-  } else {
-    query = query.orderBy(desc(systemUsers.createdAt));
-  }
-  
-  // Get total count for pagination
-  let countQuery = db
+
+  const orderByClause =
+    sortBy === "fullName"
+      ? sortOrder === "asc"
+        ? asc(systemUsers.fullName)
+        : desc(systemUsers.fullName)
+      : sortBy === "email"
+        ? sortOrder === "asc"
+          ? asc(systemUsers.email)
+          : desc(systemUsers.email)
+        : sortOrder === "asc"
+          ? asc(systemUsers.createdAt)
+          : desc(systemUsers.createdAt);
+
+  // Get total count for pagination (same filters as list)
+  const [{ count: total }] = await db
     .select({ count: sql<number>`count(*)::int` })
     .from(systemUsers)
-    .$dynamic();
+    .where(whereClause);
 
-  if (conditions.length > 0) {
-    countQuery = countQuery.where(and(...conditions));
-  }
-  const [{ count: total }] = await countQuery;
-  
-  // Apply pagination
-  const users = await query.limit(limit).offset(offset);
+  // Apply the same where filters to the list query (previously filters were built but unused)
+  const users = await db
+    .select()
+    .from(systemUsers)
+    .where(whereClause)
+    .orderBy(orderByClause)
+    .limit(limit)
+    .offset(offset);
   
   return {
     users,

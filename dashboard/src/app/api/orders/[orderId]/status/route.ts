@@ -116,9 +116,27 @@ export async function PATCH(
       actorName: systemUser?.fullName ?? null,
       actorRole: updatedByRole,
       action: "status_update",
-      actionLabel: `Updated status to ${status}`,
+      actionLabel: `Updated status to ${
+        status === "in_transit"
+          ? "Dispatched"
+          : status === "picked_up"
+            ? "Dispatch Ready"
+            : status === "delivered"
+              ? "Delivered"
+              : status
+      }`,
       metadata: { status },
     });
+
+    // Instant customer tracking — push status over Redis → ws-gateway.
+    try {
+      const { publishOrderStatusChanged } = await import(
+        "@/lib/orders/publish-order-status-realtime"
+      );
+      await publishOrderStatusChanged(orderId, status);
+    } catch (pubErr) {
+      console.warn("[PATCH /api/orders/[orderId]/status] realtime publish:", pubErr);
+    }
 
     return NextResponse.json({
       success: true,

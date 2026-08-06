@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { memo, useEffect, useMemo, useState } from "react";
 import { Image, type ImageStyle } from "expo-image";
 import { View, type StyleProp, type ViewStyle } from "react-native";
 import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
@@ -23,7 +23,7 @@ type Props = {
   fallback?: "soft" | "ndf";
 };
 
-export function UserAppCategoryImage({
+function UserAppCategoryImageInner({
   imageUrl,
   style,
   contentFit = "contain",
@@ -72,3 +72,10 @@ export function UserAppCategoryImage({
   // Soft placeholder — keeps chip layout stable without flashing "No Data Found".
   return <View style={[style as StyleProp<ViewStyle>, { backgroundColor: "#EEF2F6" }]} />;
 }
+
+/**
+ * Rendered once per list item. Memoised so a parent re-render (a filter
+ * toggle, a store-status tick, a bill recalculation) does not walk every
+ * mounted instance.
+ */
+export const UserAppCategoryImage = memo(UserAppCategoryImageInner);

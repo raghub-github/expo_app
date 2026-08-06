@@ -79,10 +79,11 @@ function buildEligibleSnapshot(
     const key = `platform:${p.id}`;
     keys.add(key);
     const name = (p.name ?? `Offer ${p.id}`).trim();
+    const code = (p.couponCode ?? "").trim() || name;
     candidates.set(key, {
       key,
       savingsInr: resolveSavingsInr(p.estimatedSavingsInr, p.summary, cartSubtotal),
-      couponCode: name,
+      couponCode: code,
       offerTitle: name,
       promoLine: p.name?.trim() ? `with ${p.name.trim()}` : "with this GatiMitra offer",
       description: p.summary,

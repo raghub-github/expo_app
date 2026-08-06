@@ -1,4 +1,4 @@
-import { getSql } from "../../db/client.js";
+import { getSql, withSqlRetry } from "../../db/client.js";
 import type { DropGeoRefByLevel } from "./types.js";
 import { stateNameFromPincode } from "./pincodePrefixToState.js";
 
@@ -102,51 +102,53 @@ export async function resolveDropGeoRefsFromPincode(
   let stateIdFromPrefix: string | null = null;
   let stateMatchedBy: string | null = null;
   if (pincodePrefixState) {
-    const sql0 = getSql();
     // Try increasingly loose matches so a state can resolve regardless of
     // capitalization, abbreviation, or local-language spelling stored in the
     // `states` table. The first match wins; we stop the moment we get a UUID.
     const variants = stateVariantsFor(pincodePrefixState);
     for (const v of variants) {
       try {
-        // Exact case-insensitive match
-        const [exact] = await sql0<{ id: string }[]>`
-          SELECT id FROM states WHERE LOWER(TRIM(name)) = LOWER(${v}) LIMIT 1
-        `;
-        if (exact?.id) {
-          stateIdFromPrefix = exact.id;
-          stateMatchedBy = `name=${v}`;
-          break;
-        }
-        // Code column (e.g. "WB", "MH") — only valid for 2–3 char strings.
-        if (v.length <= 3) {
-          try {
-            const [byCode] = await sql0<{ id: string }[]>`
-              SELECT id FROM states WHERE UPPER(TRIM(code)) = UPPER(${v}) LIMIT 1
-            `;
-            if (byCode?.id) {
-              stateIdFromPrefix = byCode.id;
-              stateMatchedBy = `code=${v}`;
-              break;
-            }
-          } catch {
-            /* states.code column may not exist; ignore. */
-          }
-        }
-        // Substring match — last resort for "West Bengal " (trailing space) or
-        // "WEST_BENGAL" oddities. Restricted to >= 4 chars to avoid false hits.
-        if (v.length >= 4) {
-          const [byLike] = await sql0<{ id: string }[]>`
-            SELECT id FROM states WHERE LOWER(name) LIKE ${"%" + v.toLowerCase() + "%"} LIMIT 1
+        await withSqlRetry(async () => {
+          const sql0 = getSql();
+          // Exact case-insensitive match
+          const [exact] = await sql0<{ id: string }[]>`
+            SELECT id FROM states WHERE LOWER(TRIM(name)) = LOWER(${v}) LIMIT 1
           `;
-          if (byLike?.id) {
-            stateIdFromPrefix = byLike.id;
-            stateMatchedBy = `name~${v}`;
-            break;
+          if (exact?.id) {
+            stateIdFromPrefix = exact.id;
+            stateMatchedBy = `name=${v}`;
+            return;
           }
-        }
+          // Code column (e.g. "WB", "MH") — only valid for 2–3 char strings.
+          if (v.length <= 3) {
+            try {
+              const [byCode] = await sql0<{ id: string }[]>`
+                SELECT id FROM states WHERE UPPER(TRIM(code)) = UPPER(${v}) LIMIT 1
+              `;
+              if (byCode?.id) {
+                stateIdFromPrefix = byCode.id;
+                stateMatchedBy = `code=${v}`;
+                return;
+              }
+            } catch {
+              /* states.code column may not exist; ignore. */
+            }
+          }
+          // Substring match — last resort for "West Bengal " (trailing space) or
+          // "WEST_BENGAL" oddities. Restricted to >= 4 chars to avoid false hits.
+          if (v.length >= 4) {
+            const [byLike] = await sql0<{ id: string }[]>`
+              SELECT id FROM states WHERE LOWER(name) LIKE ${"%" + v.toLowerCase() + "%"} LIMIT 1
+            `;
+            if (byLike?.id) {
+              stateIdFromPrefix = byLike.id;
+              stateMatchedBy = `name~${v}`;
+            }
+          }
+        });
+        if (stateIdFromPrefix) break;
       } catch {
-        // best-effort — try next variant
+        // best-effort — try next variant (including after transient DB blips)
       }
     }
     // eslint-disable-next-line no-console
@@ -160,18 +162,19 @@ export async function resolveDropGeoRefsFromPincode(
     });
   }
 
-  const sql = getSql();
   // IMPORTANT: do not require the full hierarchy to be present.
   // A pincode may exist but not yet be linked to a post office; in that case we still must return pincode uuid
   // so delivery slabs bound directly to that pincode work (and distance-based pricing changes).
-  const rows = await sql<{
-    pincode_id: string;
-    post_office_id: string | null;
-    division_id: string | null;
-    district_id: string | null;
-    region_id: string | null;
-    state_id: string | null;
-  }[]>`
+  const rows = await withSqlRetry(async () => {
+    const sql = getSql();
+    return sql<{
+      pincode_id: string;
+      post_office_id: string | null;
+      division_id: string | null;
+      district_id: string | null;
+      region_id: string | null;
+      state_id: string | null;
+    }[]>`
     SELECT
       p.id AS pincode_id,
       po.id AS post_office_id,
@@ -195,6 +198,7 @@ export async function resolveDropGeoRefsFromPincode(
     WHERE p.pincode = ${pc}
     LIMIT 1
   `;
+  });
 
   const x = rows[0];
 
@@ -212,9 +216,12 @@ export async function resolveDropGeoRefsFromPincode(
     const sn = sanitizeGeoText(stateName);
     if (sn) {
       try {
-        const [stateRow] = await sql<{ id: string }[]>`
+        const [stateRow] = await withSqlRetry(async () => {
+          const sql = getSql();
+          return sql<{ id: string }[]>`
           SELECT id FROM states WHERE LOWER(TRIM(name)) = LOWER(${sn}) LIMIT 1
         `;
+        });
         stateId = stateRow?.id ?? null;
       } catch {
         // ignore — state fallback is best-effort
@@ -272,6 +279,56 @@ export async function resolvePlatformOfferGeoBindingEffectiveIds(
     queries.push(
       sql<{ ids: unknown }[]>`
         SELECT geo_platform_offer_ids_effective_for_location('state'::geo_pricing_level, ${stateId}::uuid) AS ids
+      `
+    );
+  }
+
+  const out = new Set<number>();
+  try {
+    const results = await Promise.allSettled(queries);
+    for (const result of results) {
+      if (result.status !== "fulfilled") continue;
+      const raw = result.value[0]?.ids;
+      if (!Array.isArray(raw)) continue;
+      for (const x of raw) {
+        const n = typeof x === "bigint" ? Number(x) : typeof x === "number" ? x : parseInt(String(x), 10);
+        if (Number.isInteger(n) && n > 0) out.add(n);
+      }
+    }
+  } catch {
+    // ignore errors, return partial set
+  }
+
+  return out;
+}
+
+/**
+ * IDs of active checkout coupons bound on the geo chain for the drop location.
+ * Same visibility model as platform offers — unmapped coupons never surface.
+ */
+export async function resolveCheckoutCouponGeoBindingEffectiveIds(
+  refs: DropGeoRefByLevel | null
+): Promise<ReadonlySet<number>> {
+  if (refs == null) return new Set();
+
+  const pinId = refs.pincode;
+  const stateId = refs.state;
+  if (!pinId && !stateId) return new Set();
+
+  const sql = getSql();
+  const queries: Promise<{ ids: unknown }[]>[] = [];
+
+  if (pinId && String(pinId).trim()) {
+    queries.push(
+      sql<{ ids: unknown }[]>`
+        SELECT geo_billing_discount_ids_effective_for_location('pincode'::geo_pricing_level, ${pinId}::uuid) AS ids
+      `
+    );
+  }
+  if (stateId && String(stateId).trim()) {
+    queries.push(
+      sql<{ ids: unknown }[]>`
+        SELECT geo_billing_discount_ids_effective_for_location('state'::geo_pricing_level, ${stateId}::uuid) AS ids
       `
     );
   }

@@ -1,8 +1,9 @@
 import { z } from "zod";
 export const PushDeviceTypeSchema = z.enum(["ios", "android", "web", "unknown"]);
 export const NativePushTokenTypeSchema = z.enum(["fcm", "apns"]);
-export const PushRegisterBodySchema = z.object({
-    expo_push_token: z.string().min(10),
+export const PushRegisterBodySchema = z
+    .object({
+    expo_push_token: z.string().min(10).optional().nullable(),
     device_type: PushDeviceTypeSchema,
     native_push_token: z.string().min(8).optional().nullable(),
     native_token_type: NativePushTokenTypeSchema.optional().nullable(),
@@ -15,7 +16,9 @@ export const PushRegisterBodySchema = z.object({
     app_version: z.string().max(20).optional().nullable(),
     locale: z.string().max(20).optional().nullable(),
     timezone: z.string().max(60).optional().nullable(),
-});
+})
+    .refine((b) => (typeof b.expo_push_token === "string" && b.expo_push_token.trim().length >= 10) ||
+    (typeof b.native_push_token === "string" && b.native_push_token.trim().length >= 8), { message: "expo_push_token or native_push_token required" });
 export const PushUnregisterBodySchema = z.object({
     expo_push_token: z.string().min(10).optional().nullable(),
     native_push_token: z.string().min(8).optional().nullable(),

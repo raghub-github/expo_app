@@ -19,8 +19,32 @@ import { prefetchFeaturedOfferHeroImages } from "@/lib/prefetchGridFirstHeroMedi
 import { prefetchMerchantsList } from "@/lib/merchantsListCache";
 import { useDietaryPreferenceStore } from "@/store/dietaryPreferenceStore";
 import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
+import { getGeoServiceAvailability } from "@/services/geoServices.service";
 
 const FOOD_HOME_CATEGORY_STORE_TYPE = "FOOD";
+
+async function prefetchGeoServices(queryClient: QueryClient): Promise<void> {
+  const { coords, address } = useLocationStore.getState();
+  const pincode = address?.pincode?.trim() || null;
+  const state = address?.state?.trim() || null;
+  const lat = coords?.latitude ?? null;
+  const lng = coords?.longitude ?? null;
+  if (!pincode && !state && (lat == null || lng == null)) return;
+
+  await queryClient.prefetchQuery({
+    queryKey: ["geo", "services", pincode, state, lat, lng],
+    queryFn: async () => {
+      const result = await getGeoServiceAvailability({
+        ...(pincode ? { pincode } : {}),
+        ...(state ? { state } : {}),
+        ...(lat != null && lng != null ? { lat, lng } : {}),
+      });
+      if (!result.ok) throw new Error(result.error);
+      return result.availability;
+    },
+    staleTime: 10_000,
+  });
+}
 
 async function prefetchOfferBannerImages(queryClient: QueryClient): Promise<void> {
   const { coords, address } = useLocationStore.getState();
@@ -69,6 +93,7 @@ export async function prefetchHomeScreenData(queryClient: QueryClient): Promise<
     prefetchOfferBannerImages(queryClient),
     prefetchFoodHomeLayout(queryClient, address, coords),
     prefetchUserAppCategories(queryClient, FOOD_HOME_CATEGORY_STORE_TYPE),
+    prefetchGeoServices(queryClient),
   ];
 
   if (coords) {

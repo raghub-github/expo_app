@@ -12,6 +12,7 @@ import { ReportsToSelector } from "./ReportsToSelector";
 import { hasSubroles } from "@/lib/roles/subrole-mapping";
 import { useToast } from "@/context/ToastContext";
 import { buildDashboardAccessPayload } from "@/lib/permissions/access-level";
+import { DashboardErrorBanner } from "@/components/ui/DashboardErrorBanner";
 
 interface UserFormProps {
   userId?: number;
@@ -123,6 +124,12 @@ export function UserForm({ userId, mode, onSuccess, onCancel, isSuperAdmin = fal
       const response = await fetch(`/api/users/${userId}`);
       const result = await response.json();
 
+      if (response.status === 401 || response.status === 403) {
+        const { redirectIfUnauthenticatedError } = await import("@/lib/auth/redirect-to-login");
+        redirectIfUnauthenticatedError(result?.error || "Not authenticated");
+        return;
+      }
+
       if (result.success) {
         const user = result.data;
         setFormData({
@@ -189,10 +196,15 @@ export function UserForm({ userId, mode, onSuccess, onCancel, isSuperAdmin = fal
           }
         }
       } else {
+        const { redirectIfUnauthenticatedError } = await import("@/lib/auth/redirect-to-login");
+        if (redirectIfUnauthenticatedError(result.error)) return;
         setError(result.error || "Failed to fetch user");
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Unknown error");
+      const msg = err instanceof Error ? err.message : "Unknown error";
+      const { redirectIfUnauthenticatedError } = await import("@/lib/auth/redirect-to-login");
+      if (redirectIfUnauthenticatedError(msg)) return;
+      setError(msg);
     } finally {
       setLoading(false);
     }
@@ -321,10 +333,15 @@ export function UserForm({ userId, mode, onSuccess, onCancel, isSuperAdmin = fal
           router.push("/dashboard/users");
         }
       } else {
+        const { redirectIfUnauthenticatedError } = await import("@/lib/auth/redirect-to-login");
+        if (redirectIfUnauthenticatedError(result.error)) return;
         setError(result.error || "Failed to save user");
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Unknown error");
+      const msg = err instanceof Error ? err.message : "Unknown error";
+      const { redirectIfUnauthenticatedError } = await import("@/lib/auth/redirect-to-login");
+      if (redirectIfUnauthenticatedError(msg)) return;
+      setError(msg);
     } finally {
       setLoading(false);
     }
@@ -340,11 +357,7 @@ export function UserForm({ userId, mode, onSuccess, onCancel, isSuperAdmin = fal
 
   return (
     <form onSubmit={handleSubmit} className="space-y-6">
-      {error && (
-        <div className="bg-red-50 border border-red-200 text-red-800 px-4 py-3 rounded-lg">
-          {error}
-        </div>
-      )}
+      <DashboardErrorBanner error={error} />
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         {/* System User ID */}

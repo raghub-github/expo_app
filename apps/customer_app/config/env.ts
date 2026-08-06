@@ -274,10 +274,15 @@ export function getConfig(): {
     phoneOtpBackendRaw?.toLowerCase() === "yes" ||
     phoneOtpBackendRaw?.toLowerCase() === "on";
 
+  /**
+   * Google Play review phone (E.164). When set, this number uses the backend
+   * OTP path so server-side GOOGLE_REVIEW_* can apply. Never hardcode a default
+   * — omit the env var in normal builds so only real SMS OTPs work.
+   */
   const reviewPhone =
     asNonEmptyString(process.env.EXPO_PUBLIC_REVIEW_PHONE) ??
     asNonEmptyString(extra?.EXPO_PUBLIC_REVIEW_PHONE as string) ??
-    "+919999999999";
+    null;
 
   return {
     apiBaseUrl,

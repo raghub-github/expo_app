@@ -1,5 +1,6 @@
 import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
+import { Readable } from "node:stream";
 import { getEnv } from "../../config/env.js";
 
 /**
@@ -149,8 +150,53 @@ export async function getR2SignedUrl(key: string, expiresIn: number = 604800): P
 /**
  * Get object from R2 by key (for proxy/serving without signed URL).
  * Returns buffer and contentType; null if not found.
+ * Rejects oversized bodies so callers cannot OOM the process.
  */
-export async function getObjectByKey(key: string): Promise<{ buffer: Buffer; contentType: string } | null> {
+export async function getObjectByKey(
+  key: string,
+  options?: { maxBytes?: number }
+): Promise<{ buffer: Buffer; contentType: string } | null> {
+  const client = getR2Client();
+  const bucket = getBucketName();
+  const maxBytes = options?.maxBytes ?? 8 * 1024 * 1024;
+  try {
+    const response = await client.send(
+      new GetObjectCommand({
+        Bucket: bucket,
+        Key: key,
+      })
+    );
+    if (!response.Body) return null;
+    if (response.ContentLength != null && response.ContentLength > maxBytes) {
+      try {
+        (response.Body as { destroy?: () => void }).destroy?.();
+      } catch {
+        /* ignore */
+      }
+      throw new Error(`R2 object too large (${response.ContentLength} bytes)`);
+    }
+    const buffer = Buffer.from(await response.Body.transformToByteArray());
+    if (buffer.byteLength > maxBytes) {
+      throw new Error(`R2 object too large (${buffer.byteLength} bytes)`);
+    }
+    const contentType = response.ContentType ?? "application/octet-stream";
+    return { buffer, contentType };
+  } catch (err: unknown) {
+    const code = (err as { name?: string })?.name;
+    if (code === "NoSuchKey") return null;
+    throw err;
+  }
+}
+
+/**
+ * Open an R2 object as a Node stream (no full-body Buffer).
+ * Caller must pipe/destroy the stream.
+ */
+export async function getObjectStreamByKey(key: string): Promise<{
+  stream: Readable;
+  contentType: string;
+  contentLength: number | null;
+} | null> {
   const client = getR2Client();
   const bucket = getBucketName();
   try {
@@ -161,9 +207,16 @@ export async function getObjectByKey(key: string): Promise<{ buffer: Buffer; con
       })
     );
     if (!response.Body) return null;
-    const buffer = Buffer.from(await response.Body.transformToByteArray());
-    const contentType = response.ContentType ?? "application/octet-stream";
-    return { buffer, contentType };
+    const body = response.Body as unknown as Readable;
+    const stream =
+      typeof body.pipe === "function"
+        ? body
+        : Readable.from(body as unknown as AsyncIterable<Uint8Array>);
+    return {
+      stream,
+      contentType: response.ContentType ?? "application/octet-stream",
+      contentLength: response.ContentLength ?? null,
+    };
   } catch (err: unknown) {
     const code = (err as { name?: string })?.name;
     if (code === "NoSuchKey") return null;

@@ -1,21 +1,48 @@
 'use client'
 
 import { useCallback, useEffect, useState } from 'react'
+import { useAppAssetUrl } from '@/components/providers/AppAssetsProvider'
+import { CX } from '@/lib/appAssetKeys'
 import {
   CUSTOMER_APP_SCREEN_IMG,
   RIDE_APP_SCREEN_IMG,
+  PARCEL_HERO_FALLBACK_IMG,
   resolveAndroidDownloadUrl,
   resolveIosDownloadUrl,
 } from '@/lib/appDownload'
 import { AppleStoreIcon, GooglePlayIcon } from '@/components/common/StoreBrandIcons'
+
+function ParcelModalPreview() {
+  const cmsUrl = useAppAssetUrl(CX.home.serviceParcel)
+  const src = cmsUrl ?? PARCEL_HERO_FALLBACK_IMG
+
+  return (
+    <div className="relative flex w-full max-w-[320px] items-center justify-center">
+      <div
+        className="pointer-events-none absolute inset-0 scale-90 rounded-full bg-[#16c2a5]/20 blur-3xl"
+        aria-hidden
+      />
+      {/* eslint-disable-next-line @next/next/no-img-element -- CMS or local parcel art */}
+      <img
+        src={src}
+        alt="GatiMitra parcel van"
+        className="relative z-[1] h-auto w-full max-h-[380px] object-contain drop-shadow-[0_24px_48px_rgba(0,0,0,0.18)]"
+        width={320}
+        height={380}
+        decoding="async"
+        fetchPriority="high"
+      />
+    </div>
+  )
+}
 
 interface AppDownloadModalProps {
   isOpen: boolean
   onClose: () => void
   title?: string
   description?: string
-  /** `ride` → ride.png, `customer` → dnscreen.png (food / parcel / general). */
-  variant?: 'ride' | 'customer'
+  /** `ride` → ride.png, `parcel` → parcel van art, `customer` → dnscreen.png. */
+  variant?: 'ride' | 'customer' | 'parcel'
   /** Called after link is sent successfully (modal already closed). */
   onLinkSent?: () => void
 }
@@ -44,7 +71,12 @@ export default function AppDownloadModal({
   const androidUrl = resolveAndroidDownloadUrl()
   const iosUrl = resolveIosDownloadUrl()
   const previewSrc = variant === 'customer' ? CUSTOMER_APP_SCREEN_IMG : RIDE_APP_SCREEN_IMG
-  const panelBg = variant === 'ride' ? 'bg-[#e8fffa]' : 'bg-[#18d4b3]'
+  const panelBg =
+    variant === 'parcel'
+      ? 'bg-gradient-to-br from-[#ecfdf5] via-[#f0fdf4] to-[#fef9c3]'
+      : variant === 'ride'
+        ? 'bg-[#e8fffa]'
+        : 'bg-[#18d4b3]'
 
   const handleShare = useCallback(async () => {
     const value = downloadValue.trim()
@@ -93,14 +125,18 @@ export default function AppDownloadModal({
           <div
             className={`hidden min-h-[420px] items-center justify-center self-stretch px-4 py-5 md:flex md:px-5 md:py-6 ${panelBg}`}
           >
-            {/* eslint-disable-next-line @next/next/no-img-element -- synced public/img asset */}
-            <img
-              src={previewSrc}
-              alt={variant === 'ride' ? 'GatiMitra ride app' : 'GatiMitra customer app'}
-              className="h-full w-full max-h-[460px] max-w-[320px] object-contain drop-shadow-[0_18px_40px_rgba(0,0,0,0.22)]"
-              decoding="async"
-              fetchPriority="high"
-            />
+            {variant === 'parcel' ? (
+              <ParcelModalPreview />
+            ) : (
+              /* eslint-disable-next-line @next/next/no-img-element -- synced public/img asset */
+              <img
+                src={previewSrc}
+                alt={variant === 'ride' ? 'GatiMitra ride app' : 'GatiMitra customer app'}
+                className="h-full w-full max-h-[460px] max-w-[320px] object-contain drop-shadow-[0_18px_40px_rgba(0,0,0,0.22)]"
+                decoding="async"
+                fetchPriority="high"
+              />
+            )}
           </div>
 
           <div className="p-6 md:p-8">

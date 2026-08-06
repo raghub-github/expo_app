@@ -5,6 +5,7 @@
 
 import React, { useEffect } from "react";
 import { View, StyleSheet } from "react-native";
+import { useCardAnimationsEnabled } from "@/hooks/useCardAnimationsEnabled";
 import Animated, {
   cancelAnimation,
   Easing,
@@ -39,7 +40,7 @@ function MetaDivider({ color }: { color: string }) {
   return <View style={[styles.divider, { backgroundColor: color }]} />;
 }
 
-export function NearFastDeliveryMeta({
+function NearFastDeliveryMetaInner({
   deliveryTime,
   distanceKm,
   nearThresholdKm = 5,
@@ -53,7 +54,13 @@ export function NearFastDeliveryMeta({
   const hasDistance = Boolean(distanceStr);
   const showFree = freeDelivery === true;
   const hasEtaRow = hasTime || hasDistance || showFree;
+  // Drives LAYOUT — must stay independent of motion so the row does not collapse
+  // to a single line whenever the list is scrolled.
   const shouldSwap = isNear && hasEtaRow;
+  // Drives only the timer: one per merchant card, suspended while the app is
+  // backgrounded or a scroll is in flight. See useCardAnimationsEnabled.
+  const motionAllowed = useCardAnimationsEnabled();
+  const animateSwap = shouldSwap && motionAllowed;
 
   /**
    * Seamless ticker: [near, eta, near] — slide 0→1→2, then snap 2→0 (identical frame).
@@ -64,7 +71,7 @@ export function NearFastDeliveryMeta({
   useEffect(() => {
     cancelAnimation(slideIndex);
     slideIndex.value = 0;
-    if (!shouldSwap) return;
+    if (!animateSwap) return;
 
     /** 0 = resting on Near & Fast, 1 = resting on ETA */
     let phase: 0 | 1 = 0;
@@ -96,7 +103,7 @@ export function NearFastDeliveryMeta({
       clearInterval(id);
       cancelAnimation(slideIndex);
     };
-  }, [shouldSwap, slideIndex]);
+  }, [animateSwap, slideIndex]);
 
   const sliderStyle = useAnimatedStyle(() => ({
     transform: [{ translateY: -slideIndex.value * LINE_H }],
@@ -275,3 +282,10 @@ const styles = StyleSheet.create({
     fontWeight: "700",
   },
 });
+
+/**
+ * Rendered once per list item. Memoised so a parent re-render (a filter
+ * toggle, a store-status tick, a bill recalculation) does not walk every
+ * mounted instance.
+ */
+export const NearFastDeliveryMeta = React.memo(NearFastDeliveryMetaInner);

@@ -117,7 +117,25 @@ export async function GET(
       parent_id: store.parent_id ?? null,
       parent_merchant_id: parent?.parent_merchant_id ?? null,
       parent_name: parent?.parent_name ?? null,
+      parent_merchant_type: null as string | null,
     };
+
+    if (store.parent_id != null) {
+      try {
+        const sql = getSql();
+        const mtRows = await sql`
+          SELECT merchant_type::text AS merchant_type
+          FROM merchant_parents
+          WHERE id = ${store.parent_id}
+          LIMIT 1
+        `;
+        const mt = Array.isArray(mtRows) ? mtRows[0] : mtRows;
+        const raw = (mt as { merchant_type?: string | null } | null)?.merchant_type ?? null;
+        storePayload.parent_merchant_type = raw ? String(raw).trim().toUpperCase() : null;
+      } catch (e) {
+        console.warn("[profile-full] parent merchant_type:", e);
+      }
+    }
 
     let documents: Record<string, unknown> | null = null;
     try {
@@ -220,13 +238,20 @@ export async function GET(
       console.warn("[profile-full] getStoreBankAccounts:", e);
     }
 
-    let areaManager: { id: number; name: string; email: string; mobile: string } | null = null;
+    let areaManager: {
+      id: number;
+      name: string;
+      email: string;
+      mobile: string;
+      team: string | null;
+      department: string | null;
+    } | null = null;
     const amId = (store as { area_manager_id?: number | null }).area_manager_id;
     if (amId != null) {
       try {
         const sql = getSql();
         const rows = await sql`
-          SELECT am.id, su.full_name, su.email, su.mobile
+          SELECT am.id, su.full_name, su.email, su.mobile, su.team, su.department
           FROM area_managers am
           JOIN system_users su ON su.id = am.user_id
           WHERE am.id = ${amId}
@@ -234,12 +259,21 @@ export async function GET(
         `;
         const row = Array.isArray(rows) ? rows[0] : rows;
         if (row) {
-          const r = row as { id: number; full_name: string | null; email: string | null; mobile: string | null };
+          const r = row as {
+            id: number;
+            full_name: string | null;
+            email: string | null;
+            mobile: string | null;
+            team: string | null;
+            department: string | null;
+          };
           areaManager = {
             id: r.id,
             name: r.full_name ?? "—",
             email: r.email ?? "—",
             mobile: r.mobile ?? "—",
+            team: r.team?.trim() || null,
+            department: r.department?.trim() || null,
           };
         }
       } catch (e) {

@@ -5,6 +5,14 @@ import { deleteDiscount, updateDiscount } from "@/lib/db/operations/billing-refe
 
 export const runtime = "nodejs";
 
+const optionalIsoDateTime = z
+  .union([z.string(), z.null()])
+  .optional()
+  .refine(
+    (v) => v === undefined || v === null || (typeof v === "string" && !Number.isNaN(Date.parse(v))),
+    { message: "Invalid date/time" }
+  );
+
 const patchSchema = z
   .object({
     code: z.string().optional(),
@@ -14,12 +22,13 @@ const patchSchema = z
     usage_limit: z.number().nullable().optional(),
     is_active: z.boolean().optional(),
     is_hidden: z.boolean().optional(),
-    valid_from: z.string().datetime().nullable().optional(),
-    valid_until: z.string().datetime().nullable().optional(),
+    valid_from: optionalIsoDateTime,
+    valid_until: optionalIsoDateTime,
     service_type: z.string().optional(),
     offer_audience: z.enum(["CUSTOMER", "MERCHANT", "RIDER"]).optional(),
     per_user_usage_limit: z.number().int().nullable().optional(),
     metadata: z.unknown().optional(),
+    coupon_config: z.unknown().optional(),
   })
   .refine((d) => Object.keys(d).length > 0, { message: "At least one field required" });
 

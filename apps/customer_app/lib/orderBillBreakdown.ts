@@ -3,7 +3,8 @@
  *
  * Grand total / savings mirror checkout BillSummarySheet:
  *   grandTotal = paid − tip − donation + discount_total + checkout wallet adjustments
- *   totalSavings = discount_total + GatiCash + missed-offer discount (not delivery quote delta)
+ *   totalSavings = discount_total + missed-offer discount only
+ *   GatiCash is wallet payment (user's own money), never counted as "savings"
  */
 
 export type OrderBillDiscountLine = {
@@ -314,9 +315,8 @@ export function parseOrderBillFromSnapshot(
     )
   );
 
-  const totalSavings = roundBill(
-    Math.max(0, totalDiscount + gatiCashApplied + missedOfferDiscount)
-  );
+  // GatiCash is payment from the customer's wallet — not a promo/discount.
+  const totalSavings = roundBill(Math.max(0, totalDiscount + missedOfferDiscount));
 
   return {
     itemTotal,
@@ -376,4 +376,106 @@ export function resolveOrderCustomerPaidAmount(order: {
   if (ctc <= 0.005 && gati > 0.005) return gati;
   if (ctc <= 0.005 && bill.paid > 0.005) return bill.paid;
   return ctc;
+}
+
+export type OrderPaymentLine = {
+  /** e.g. "UPI", "GatiCash", "Card" */
+  label: string;
+  amount: number;
+};
+
+export type OrderPaymentDisplay = {
+  /** Remaining Cashin after wallet (UPI/card/COD). */
+  cashinAmount: number;
+  gatiCashAmount: number;
+  /** What the customer settled in total (Cashin + GatiCash). */
+  totalPaid: number;
+  /** Compact row label: "UPI", "GatiCash", or "UPI + GatiCash". */
+  compactLabel: string;
+  /** One row per instrument for Bill Summary. */
+  lines: OrderPaymentLine[];
+};
+
+function formatExternalPayMethod(method: string | null | undefined): string {
+  const raw = String(method ?? "").trim().toLowerCase().replace(/_/g, " ");
+  if (!raw || raw === "wallet" || raw === "gaticash" || raw === "gati cash") return "UPI";
+  if (raw === "upi") return "UPI";
+  if (raw === "card") return "Card";
+  if (raw === "cod" || raw === "cash") return "Cash";
+  if (raw === "online") return "Online";
+  return raw.replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+/**
+ * How the customer paid — UPI / GatiCash / both — with correct amounts.
+ * `billing.final_amount` / `bill.paid` is Cashin only (often ₹0 when fully wallet-paid).
+ */
+export function resolveOrderPaymentDisplay(order: {
+  paymentMethod?: string | null;
+  totalAmount?: number | null;
+  gatiCashUsed?: number | null;
+  billingSnapshot?: Record<string, unknown> | null;
+  tipAmount?: number | null;
+}): OrderPaymentDisplay {
+  const bill = parseOrderBillFromSnapshot(
+    order.billingSnapshot,
+    order.totalAmount ?? null,
+    order.tipAmount ?? null
+  );
+
+  const fromApi = num(order.gatiCashUsed);
+  const gatiCashAmount = roundBill(
+    fromApi > 0.005 ? fromApi : bill.gatiCashApplied > 0.005 ? bill.gatiCashApplied : 0
+  );
+
+  const cashinFromTotal =
+    order.totalAmount != null && Number.isFinite(Number(order.totalAmount))
+      ? roundBill(Math.max(0, Number(order.totalAmount)))
+      : null;
+  const cashinAmount = roundBill(
+    Math.max(0, cashinFromTotal != null ? cashinFromTotal : bill.paid)
+  );
+
+  const totalPaid = roundBill(cashinAmount + gatiCashAmount);
+  const externalLabel = formatExternalPayMethod(order.paymentMethod);
+  const lines: OrderPaymentLine[] = [];
+
+  if (cashinAmount > 0.005) {
+    lines.push({ label: externalLabel, amount: cashinAmount });
+  }
+  if (gatiCashAmount > 0.005) {
+    lines.push({ label: "GatiCash", amount: gatiCashAmount });
+  }
+  if (lines.length === 0) {
+    const method = String(order.paymentMethod ?? "").toLowerCase();
+    const label =
+      method === "wallet" || method.includes("gati") ? "GatiCash" : externalLabel;
+    lines.push({ label, amount: 0 });
+  }
+
+  let compactLabel: string;
+  if (cashinAmount > 0.005 && gatiCashAmount > 0.005) {
+    compactLabel = `${externalLabel} + GatiCash`;
+  } else if (gatiCashAmount > 0.005 && cashinAmount <= 0.005) {
+    compactLabel = "GatiCash";
+  } else if (cashinAmount > 0.005) {
+    compactLabel = externalLabel;
+  } else {
+    compactLabel = lines[0]?.label ?? externalLabel;
+  }
+
+  const settledTotal =
+    totalPaid > 0.005
+      ? totalPaid
+      : gatiCashAmount > 0.005
+        ? gatiCashAmount
+        : cashinAmount;
+
+  return {
+    cashinAmount,
+    gatiCashAmount,
+    totalPaid: settledTotal,
+    compactLabel,
+    lines,
+  };
 }

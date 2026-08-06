@@ -6,3 +6,10 @@ export const VEHICLE_OPTIONS: { value: VehicleType; label: string }[] = [
   { value: "4_wheeler_non_ac", label: "4 Wheeler Non AC" },
   { value: "4_wheeler_ac", label: "4 Wheeler AC" },
 ];
+
+/** Parcel customer slabs — no 4 Wheeler AC. */
+export const PARCEL_VEHICLE_OPTIONS: { value: VehicleType; label: string }[] = [
+  { value: "2_wheeler", label: "2 Wheeler" },
+  { value: "3_wheeler", label: "3 Wheeler" },
+  { value: "4_wheeler_non_ac", label: "4 Wheeler" },
+];

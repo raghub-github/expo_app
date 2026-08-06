@@ -1,37 +1,95 @@
 import type { OrderEtaResponse } from "@/services/eta.service";
 import { minutesUntil } from "@/services/eta.service";
+import {
+  decayServerSnapshotMinutes,
+  effectiveNowMs,
+} from "@/lib/server-time-offset";
 
-const MIN_ACTIVE_ETA = 3;
+/**
+ * Live countdown minutes — derived only from server timestamps (or aged
+ * server snapshot minutes when a timestamp is not yet available for that leg).
+ * Never invents ETA from GPS / local heuristics.
+ */
+export function resolveDisplayEtaMinutes(
+  eta: OrderEtaResponse | null | undefined,
+  nowMs: number = effectiveNowMs()
+): number | null {
+  if (!eta) return null;
+  if (eta.customer?.contextMessage === "DELIVERED") return 0;
+
+  const stage = eta.stageAware;
+  if (stage?.currentStage === "ARRIVING") return null;
+  if (stage?.currentStage === "DELIVERED") return 0;
+
+  const now = new Date(nowMs);
+
+  const deliveryStage =
+    stage?.currentStage === "CUSTOMER_DELIVERY" ||
+    eta.customer?.contextMessage === "ON_THE_WAY" ||
+    eta.customer?.contextMessage === "ALMOST_THERE";
+
+  const riderToMerchantStage =
+    stage?.currentStage === "RIDER_TO_MERCHANT" ||
+    eta.customer?.contextMessage === "RIDER_TO_MERCHANT";
+
+  const prepStage =
+    !deliveryStage &&
+    !riderToMerchantStage &&
+    (stage?.currentStage === "MERCHANT_ACCEPTED" ||
+      stage?.currentStage === "MERCHANT_PREP" ||
+      stage?.currentStage === "READY_AWAITING_RIDER" ||
+      stage?.currentStage === "AT_STORE" ||
+      eta.customer?.contextMessage === "PREPARING" ||
+      eta.customer?.contextMessage === "MERCHANT_DELAYED" ||
+      eta.customer?.contextMessage === "READY_FOR_PICKUP" ||
+      eta.customer?.contextMessage === "RIDER_PICKING_UP" ||
+      Boolean(eta.prep?.readyByAt));
+
+  // Kitchen ready clock — remaining = readyByAt - now (never negative)
+  if (prepStage) {
+    const readyBy = eta.prep?.readyByAt?.trim() || null;
+    if (readyBy) {
+      const m = minutesUntil(readyBy, now);
+      if (m != null) return Math.max(0, Math.round(m));
+    }
+    return null;
+  }
+
+  // Rider heading to store — age server snapshot; do not invent from GPS
+  if (riderToMerchantStage) {
+    return decayServerSnapshotMinutes(
+      stage?.riderToMerchantEta,
+      stage?.lastUpdatedAt,
+      nowMs
+    );
+  }
+
+  // Delivery clock after pickup — only from promised timestamps
+  if (deliveryStage) {
+    const liveAt =
+      eta.live?.promisedDeliveryAt?.trim() ||
+      stage?.promisedAt?.trim() ||
+      null;
+    if (liveAt) {
+      const m = minutesUntil(liveAt, now);
+      if (m != null) return Math.max(0, Math.round(m));
+    }
+    return null;
+  }
+
+  // Prefer kitchen timestamp if present even without stage classification
+  const readyBy = eta.prep?.readyByAt?.trim() || null;
+  if (readyBy) {
+    const m = minutesUntil(readyBy, now);
+    if (m != null) return Math.max(0, Math.round(m));
+  }
+
+  return null;
+}
 
 /** Resolve the single dynamic ETA minute value for customer tracking UI. */
 export function resolveLiveEtaMinutes(eta: OrderEtaResponse | null | undefined): number | null {
-  if (!eta) return null;
-
-  const fromCustomer = eta.customer?.etaMinutes;
-  if (fromCustomer != null && Number.isFinite(fromCustomer)) {
-    if (eta.customer?.contextMessage === "DELIVERED") return 0;
-    if (fromCustomer > 0) return Math.round(fromCustomer);
-    if (fromCustomer === 0) return null;
-  }
-
-  if (eta.live?.maxMinutes != null && eta.live.maxMinutes >= MIN_ACTIVE_ETA) {
-    return Math.round(eta.live.maxMinutes);
-  }
-
-  if (eta.live?.promisedDeliveryAt) {
-    const m = minutesUntil(eta.live.promisedDeliveryAt);
-    if (m != null && m >= MIN_ACTIVE_ETA) return m;
-  }
-
-  if (eta.promise?.promisedDeliveryAt) {
-    const m = minutesUntil(eta.promise.promisedDeliveryAt);
-    if (m != null && m >= MIN_ACTIVE_ETA) return m;
-  }
-
-  const fallback = eta.promise?.maxMinutes ?? eta.live?.maxMinutes ?? null;
-  if (fallback != null && fallback >= MIN_ACTIVE_ETA) return Math.round(fallback);
-
-  return null;
+  return resolveDisplayEtaMinutes(eta, effectiveNowMs());
 }
 
 export function resolveCustomerEtaContextLabel(eta: OrderEtaResponse | null | undefined): string | null {

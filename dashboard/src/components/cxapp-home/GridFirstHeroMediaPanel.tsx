@@ -14,16 +14,18 @@ import { cn } from "@/lib/utils";
 type Props = {
   stateId: string;
   enabled: boolean;
+  /** Seed from layout GET so we skip a duplicate hero-media round-trip on first paint. */
+  initialItems?: GridFirstHeroMediaItem[];
 };
 
 function mediaPreviewUrl(url: string): string {
   return resolveAttachmentProxyUrl(url) || url;
 }
 
-export function GridFirstHeroMediaPanel({ stateId, enabled }: Props) {
+export function GridFirstHeroMediaPanel({ stateId, enabled, initialItems }: Props) {
   const inputRef = useRef<HTMLInputElement>(null);
-  const [items, setItems] = useState<GridFirstHeroMediaItem[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [items, setItems] = useState<GridFirstHeroMediaItem[]>(() => initialItems ?? []);
+  const [loading, setLoading] = useState(() => enabled && !initialItems);
   const [uploading, setUploading] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -34,7 +36,7 @@ export function GridFirstHeroMediaPanel({ stateId, enabled }: Props) {
     setError(null);
     try {
       const res = await fetch(`/api/super-admin/cxapp-home/food-layout/${stateId}/hero-media`, {
-        cache: "no-store",
+        cache: "default",
       });
       const json = (await res.json()) as { items?: GridFirstHeroMediaItem[]; error?: string };
       if (!res.ok) throw new Error(json.error ?? "Failed to load hero media");
@@ -52,8 +54,13 @@ export function GridFirstHeroMediaPanel({ stateId, enabled }: Props) {
       setLoading(false);
       return;
     }
+    if (initialItems !== undefined) {
+      setItems(initialItems);
+      setLoading(false);
+      return;
+    }
     void loadItems();
-  }, [enabled, stateId, loadItems]);
+  }, [enabled, stateId, loadItems, initialItems]);
 
   const onPickFiles = () => {
     if (!enabled || uploading) return;

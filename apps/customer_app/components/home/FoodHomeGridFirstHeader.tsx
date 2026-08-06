@@ -66,7 +66,7 @@ type Props = {
   /** Fade in-flow search when staged sticky search takes over. */
   stickyScrollY?: SharedValue<number>;
   searchStickAt?: SharedValue<number>;
-  /** Compact pre-hero state uses dark text on a white background. */
+  /** Compact pre-hero state uses dark text on the page soft background. */
   heroReady?: boolean;
 };
 
@@ -112,8 +112,12 @@ export function FoodHomeGridFirstHeader({
   const avatarUri = avatarCandidates[0] ?? null;
 
   useEffect(() => {
+    if (PLACEHOLDERS.length <= 1) return;
     const id = setInterval(() => {
-      setPlaceholderIndex((i) => (i + 1) % PLACEHOLDERS.length);
+      setPlaceholderIndex((i) => {
+        const next = (i + 1) % PLACEHOLDERS.length;
+        return next === i ? i : next;
+      });
     }, ROTATE_MS);
     return () => clearInterval(id);
   }, []);

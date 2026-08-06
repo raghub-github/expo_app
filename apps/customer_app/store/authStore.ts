@@ -57,16 +57,25 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   hydrate: async () => {
     if (get().hydrated) return;
     try {
-      const session = await authService.getStoredSession();
+      const stored = await authService.getStoredSession();
+      if (!stored) {
+        await clearCustomerScopedState(null);
+        set({ session: null, hydrated: true });
+        return;
+      }
+
+      // Backend is source of truth — drop forged/revoked tokens before first paint.
+      const session = await authService.validateStoredSession(stored);
       const customerId = customerIdOf(session);
       if (!customerId) {
-        // No restorable session: drop anything the last customer left behind
-        // (force-close, crash, or a cleared token store).
         await clearCustomerScopedState(null);
-      } else if (customerId !== getActiveCustomerScopeId()) {
-        // Persisted caches belong to a different customer than the restored
-        // session — a teardown that never completed. Clear before first paint.
+        set({ session: null, hydrated: true });
+        return;
+      }
+      if (customerId !== getActiveCustomerScopeId()) {
         await clearCustomerScopedState(customerId);
+      } else {
+        setActiveCustomerScopeId(customerId);
       }
       set({ session, hydrated: true });
     } catch (e) {

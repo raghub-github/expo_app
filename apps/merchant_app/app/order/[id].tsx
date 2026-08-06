@@ -39,6 +39,7 @@ import { OrderDetailInstructionsSection } from "@/components/order/OrderDetailIn
 import { OrderDetailRiderCard } from "@/components/order/OrderDetailRiderCard";
 import { OrderDetailSkeleton } from "@/components/order/OrderDetailSkeleton";
 import { fetchOrderEta, minutesUntil, prepDeadlineIso, type OrderEtaResponse } from "@/services/etaApi";
+import { useOrderEtaRealtime } from "@/hooks/useOrderEtaRealtime";
 import {
   apiStatusToStage,
   mapApiOrder,
@@ -161,6 +162,15 @@ export default function OrderDetailScreen() {
   const [actionLoading, setActionLoading] = useState(false);
   const markReadyInFlightRef = useRef(false);
   const [eta, setEta] = useState<OrderEtaResponse | null>(null);
+
+  const etaOrderIdText = (order?.formatted_order_id ?? "").trim() || null;
+  useOrderEtaRealtime({
+    enabled: Boolean(token && etaOrderIdText),
+    orderIdText: etaOrderIdText,
+    token,
+    eta,
+    setEta,
+  });
 
   // Late board arrival (poll finished after mount) — paint immediately, never blank.
   useEffect(() => {

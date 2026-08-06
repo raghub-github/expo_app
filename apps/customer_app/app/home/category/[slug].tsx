@@ -29,6 +29,7 @@ import {
 } from "@/lib/foodHomeScrollGuard";
 import { LovedMerchantsGridSkeleton, RestaurantListSkeleton } from "@/components/ShimmerSkeleton";
 import { EmptyRestaurantsNearby } from "@/components/EmptyRestaurantsNearby";
+import { FlashList, type ListRenderItem } from "@shopify/flash-list";
 import { GMRestaurantCardV2 } from "@/components/GMRestaurantCardV2";
 import { LovedMerchantsHorizontal } from "@/components/home/LovedMerchantsHorizontal";
 import { UserAppCategoryImage } from "@/components/category/UserAppCategoryImage";
@@ -51,6 +52,8 @@ import { CX } from "@/lib/appAssetKeys";
 const { width, height: WINDOW_HEIGHT } = Dimensions.get("window");
 /** Cuisines bottom sheet height (~72% screen): taller drawer, still leaves header/chips visible. */
 const SHEET_MAX_HEIGHT = Math.round(WINDOW_HEIGHT * 0.72);
+/** Stable identity so an empty list never re-triggers FlashList's data diff. */
+const EMPTY_MERCHANTS: MerchantSummary[] = [];
 /** Vertical for user_app_category rows (PHARMA / GROCERY / FASHION when those homes ship). */
 const SHEET_STORE_TYPE = "FOOD";
 /** Max category icons on the top rail before "See all" (full list stays in the sheet). */
@@ -457,6 +460,55 @@ export default function CategoryBrowseScreen() {
     else router.push("/search");
   }, [router, searchQuery]);
 
+  // ── Virtualised restaurant list ────────────────────────────────────────────
+  const listData = useMemo(
+    () => (isLoading ? EMPTY_MERCHANTS : allRestaurants),
+    [isLoading, allRestaurants]
+  );
+
+  const merchantKeyExtractor = useCallback((m: MerchantSummary) => m.id, []);
+
+  const renderMerchant = useCallback<ListRenderItem<MerchantSummary>>(
+    ({ item }) => {
+      if (isCategoryFocus) {
+        return (
+          <View style={styles.fullBleedList}>
+            <GMRestaurantCardV2 merchant={item} />
+          </View>
+        );
+      }
+      const featuredHero = merchantCardImageUri(item);
+      const fallback = defaultMerchantImage();
+      return (
+        <TouchableOpacity
+          style={styles.featuredCard}
+          onPress={() => openMerchantPage(item.id, item)}
+          activeOpacity={0.9}
+        >
+          <View style={styles.featuredImageWrap}>
+            {featuredHero ? (
+              <Image source={{ uri: featuredHero }} style={styles.featuredImage} resizeMode="cover" />
+            ) : fallback ? (
+              <Image source={fallback} style={styles.featuredImage} resizeMode="cover" />
+            ) : null}
+            <View style={styles.featuredOfferTag}>
+              <AppText style={styles.featuredOfferText}>Flat 50% OFF</AppText>
+            </View>
+            <View style={styles.featuredOverlay}>
+              <AppText style={styles.featuredTitle} numberOfLines={1}>
+                {item.name}
+              </AppText>
+              <AppText style={styles.featuredPrice}>
+                ₹{(item as MerchantSummary & { costForTwo?: number }).costForTwo ?? 299} for two
+              </AppText>
+            </View>
+          </View>
+        </TouchableOpacity>
+      );
+    },
+    [isCategoryFocus, openMerchantPage]
+  );
+
   return (
     <View style={styles.container}>
       <Modal
@@ -587,7 +639,16 @@ export default function CategoryBrowseScreen() {
         </View>
       </View>
 
-      <ScrollView
+      {/**
+       * Virtualised. This screen previously rendered every merchant in the
+       * response (`limit: 50`) inside a plain ScrollView via `.map()`, so all 50
+       * `GMRestaurantCardV2`s stayed mounted at once — each running an infinite
+       * Ken Burns loop, an auto-rotating banner carousel and two ticker
+       * `setInterval`s. That was ~50 concurrent GPU animations and ~150 live
+       * timers on a single screen, none of it gated on visibility.
+       */}
+      <FlashList
+        data={listData}
         style={styles.scroll}
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
@@ -595,10 +656,12 @@ export default function CategoryBrowseScreen() {
         keyboardDismissMode="on-drag"
         delaysContentTouches={false}
         nestedScrollEnabled
+        drawDistance={480}
         onScrollBeginDrag={markFoodHomeListScrollActive}
         onScrollEndDrag={markFoodHomeListScrollEnded}
         onMomentumScrollEnd={markFoodHomeListScrollEnded}
-      >
+        ListHeaderComponent={
+          <>
         {/* Category chips – horizontal */}
         <ScrollView
           horizontal
@@ -803,19 +866,6 @@ export default function CategoryBrowseScreen() {
             {selectedCategoryLabel ? (
               <AppText style={[styles.sectionSub, styles.sectionSubAccent]}>{selectedCategoryLabel}</AppText>
             ) : null}
-            {isLoading ? (
-              <View style={styles.skeletonListWrap}>
-                <RestaurantListSkeleton count={5} />
-              </View>
-            ) : allRestaurants.length === 0 ? (
-              <EmptyRestaurantsNearby />
-            ) : (
-              <View style={styles.fullBleedList}>
-                {allRestaurants.map((m) => (
-                  <GMRestaurantCardV2 key={m.id} merchant={m} />
-                ))}
-              </View>
-            )}
           </>
         ) : (
           <>
@@ -833,51 +883,24 @@ export default function CategoryBrowseScreen() {
 
             <AppText style={styles.sectionHeading}>ALL RESTAURANTS</AppText>
             <AppText style={styles.sectionSub}>Featured</AppText>
-            {isLoading ? (
-              <View style={styles.skeletonListWrap}>
-                <RestaurantListSkeleton count={4} />
-              </View>
-            ) : allRestaurants.length === 0 ? (
-              <EmptyRestaurantsNearby />
-            ) : (
-              allRestaurants.map((m) => {
-                const featuredHero = merchantCardImageUri(m);
-                return (
-                  <TouchableOpacity
-                    key={m.id}
-                    style={styles.featuredCard}
-                    onPress={() => openMerchantPage(m.id, m)}
-                    activeOpacity={0.9}
-                  >
-                    <View style={styles.featuredImageWrap}>
-                      {featuredHero ? (
-                        <Image source={{ uri: featuredHero }} style={styles.featuredImage} resizeMode="cover" />
-                      ) : (
-                        defaultMerchantImage() ? (
-                          <Image source={defaultMerchantImage()!} style={styles.featuredImage} resizeMode="cover" />
-                        ) : null
-                      )}
-                      <View style={styles.featuredOfferTag}>
-                        <AppText style={styles.featuredOfferText}>Flat 50% OFF</AppText>
-                      </View>
-                      <View style={styles.featuredOverlay}>
-                        <AppText style={styles.featuredTitle} numberOfLines={1}>
-                          {m.name}
-                        </AppText>
-                        <AppText style={styles.featuredPrice}>
-                          ₹{(m as MerchantSummary & { costForTwo?: number }).costForTwo ?? 299} for two
-                        </AppText>
-                      </View>
-                    </View>
-                  </TouchableOpacity>
-                );
-              })
-            )}
           </>
         )}
-
-        <BrandingFooter />
-      </ScrollView>
+          </>
+        }
+        renderItem={renderMerchant}
+        keyExtractor={merchantKeyExtractor}
+        extraData={isCategoryFocus}
+        ListEmptyComponent={
+          isLoading ? (
+            <View style={styles.skeletonListWrap}>
+              <RestaurantListSkeleton count={isCategoryFocus ? 5 : 4} />
+            </View>
+          ) : (
+            <EmptyRestaurantsNearby />
+          )
+        }
+        ListFooterComponent={<BrandingFooter />}
+      />
 
       <Modal
         visible={filterSheetVisible}

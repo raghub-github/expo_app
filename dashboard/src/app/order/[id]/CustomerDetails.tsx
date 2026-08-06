@@ -18,7 +18,8 @@ import { OrderMixedText, OrderNum } from "@/components/orders/orders-typography"
 
 function buildCustomerDashboardUrl(
   customerDbId: number | null | undefined,
-  customerExternalId: string | number | null | undefined
+  customerExternalId: string | number | null | undefined,
+  options?: { nav?: "transactions" }
 ): string | null {
   const externalId =
     customerExternalId != null && String(customerExternalId).trim() !== ""
@@ -36,8 +37,11 @@ function buildCustomerDashboardUrl(
 
   const searchQ = externalId ? encodeURIComponent(externalId) : "";
   const fromOrderQs = "fromOrder=1";
+  const navQs = options?.nav === "transactions" ? "&nav=transactions" : "";
   if (customerDbId) {
-    const query = searchQ ? `search=${searchQ}&${fromOrderQs}` : fromOrderQs;
+    const query = searchQ
+      ? `search=${searchQ}&${fromOrderQs}${navQs}`
+      : `${fromOrderQs}${navQs}`;
     return `${base}/dashboard/customers/${customerDbId}?${query}`;
   }
   const query = searchQ ? `search=${searchQ}&${fromOrderQs}` : fromOrderQs;
@@ -251,6 +255,10 @@ export default function CustomerDetails({
   const userId = order.userId ?? "—";
   const cxDasUrl = useMemo(
     () => buildCustomerDashboardUrl(order.customerDbId, order.userId),
+    [order.customerDbId, order.userId]
+  );
+  const customerWalletLedgerUrl = useMemo(
+    () => buildCustomerDashboardUrl(order.customerDbId, order.userId, { nav: "transactions" }),
     [order.customerDbId, order.userId]
   );
 
@@ -507,9 +515,21 @@ export default function CustomerDetails({
               Wallet balance:
             </div>
             <div className="text-[12px] text-gati-text-primary font-normal flex items-center justify-between gap-4 min-w-0">
-              <span className="shrink-0 font-semibold tabular-nums text-emerald-700">
-                {formatWalletBalance(walletBalance)}
-              </span>
+              {customerWalletLedgerUrl ? (
+                <a
+                  href={customerWalletLedgerUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  title="Open full wallet ledger"
+                  className="shrink-0 cursor-pointer font-semibold tabular-nums text-emerald-700 no-underline hover:text-emerald-800 hover:no-underline"
+                >
+                  {formatWalletBalance(walletBalance)}
+                </a>
+              ) : (
+                <span className="shrink-0 font-semibold tabular-nums text-emerald-700">
+                  {formatWalletBalance(walletBalance)}
+                </span>
+              )}
               {onOpenPartnerChat ? (
                 <button
                   type="button"

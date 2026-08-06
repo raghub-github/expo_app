@@ -1,7 +1,7 @@
 "use client";
 import { useAppPathname } from "@/hooks/useAppSearchParams";
 
-import { useState, useMemo, useEffect, useCallback } from "react";
+import { useState, useMemo, useEffect, useCallback, useRef } from "react";
 import Link from "next/link";
 import Image from "next/image";
 import { useQueryClient } from "@tanstack/react-query";
@@ -171,7 +171,10 @@ export function HierarchicalSidebar({
 
   const filteredNavigation = useMemo(() => {
     return mainNavigation.filter((item) => {
-      if (item.href === "/dashboard") return true;
+      // Home + open fleet tools (no dashboardType grant required)
+      if (item.href === "/dashboard" || item.href === "/dashboard/rx") {
+        return true;
+      }
       if (item.requiresSuperAdmin) return effectiveSuperAdmin;
       if (accessibleDashboards === null) return true;
       if (item.dashboardType) {
@@ -188,6 +191,10 @@ export function HierarchicalSidebar({
       return true;
     });
   }, [effectiveSuperAdmin, accessibleDashboards]);
+
+  const navRef = useRef<HTMLElement | null>(null);
+  /** Start true so short viewports can scroll before measure; flipped off when content fits. */
+  const [navOverflows, setNavOverflows] = useState(true);
 
   // Close mobile menu when pathname changes
   useEffect(() => {
@@ -206,6 +213,27 @@ export function HierarchicalSidebar({
   const showSkeleton = !leftSidebarSessionPrimed && isLoading;
   const isNavigating = currentRouteCtx?.isNavigating ?? false;
   const mobileTranslate = isMobileMenuOpen ? "max-lg:translate-x-0" : "max-lg:-translate-x-full";
+
+  // Scroll nav only when items don't fit the viewport; hide overflow when they do.
+  useEffect(() => {
+    if (showSkeleton) return;
+    const el = navRef.current;
+    if (!el) return;
+
+    const check = () => {
+      setNavOverflows(el.scrollHeight > el.clientHeight + 1);
+    };
+
+    check();
+    const ro = new ResizeObserver(check);
+    ro.observe(el);
+    window.addEventListener("resize", check);
+    return () => {
+      ro.disconnect();
+      window.removeEventListener("resize", check);
+    };
+  }, [filteredNavigation, isOpen, showSkeleton, isMobileMenuOpen]);
+
   /** Skip width animation while skeleton mounts or nav is in-flight so the rail doesn't flash collapsed→expand. */
   const sidebarBase =
     `fixed inset-y-0 left-0 z-40 flex h-screen max-lg:w-72 flex-col shrink-0 overflow-hidden lg:translate-x-0 ${mobileTranslate} ${isOpen ? "lg:w-56" : "lg:w-16"} ${sidebarFont.className} ${
@@ -333,7 +361,12 @@ export function HierarchicalSidebar({
           </div>
 
           {/* MENU — stable icon column (w-10) prevents jump on collapse/expand */}
-          <nav className="flex-1 min-h-0 overflow-x-hidden overflow-y-auto px-3 pb-3 pt-2">
+          <nav
+            ref={navRef}
+            className={`flex-1 min-h-0 overflow-x-hidden px-3 pb-3 pt-2 ${
+              navOverflows ? "overflow-y-auto" : "overflow-y-hidden"
+            }`}
+          >
             <div className="space-y-1.5">
               {filteredNavigation.map((item) => {
                 const inQueueWorkspace = isTicketsQueueWorkspacePath(cleanPathname);

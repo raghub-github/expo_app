@@ -328,7 +328,8 @@ export async function middleware(request: NextRequest) {
     // If Supabase session exists and trying to access login, redirect to dashboard
     if (session && pathname === "/login") {
       if (debugMiddleware) console.log("[middleware] Session exists, redirecting from login to dashboard");
-      return NextResponse.redirect(new URL("/dashboard", request.url));
+      // 303 + Location so Back from dashboard does not re-show login content.
+      return NextResponse.redirect(new URL("/dashboard", request.url), 303);
     }
 
     // Authenticated users hitting "/" — send to dashboard (stable first load on hosted setups).

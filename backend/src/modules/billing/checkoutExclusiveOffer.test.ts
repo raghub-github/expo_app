@@ -32,6 +32,7 @@ function baseCtx(overrides: Partial<BillContext> = {}): BillContext {
     dropPostalCode: "560001",
     dropGeoRefByLevel: {},
     platformOfferGeoBindingEffectiveIds: new Set(),
+    checkoutCouponGeoBindingEffectiveIds: new Set(),
     deliveryFeeFromRateCard: 0,
     deliveryFeeFromGeo: null,
     deliveryDefaultBaseInr: 25,
@@ -138,6 +139,8 @@ function platformOffer(overrides: Partial<PlatformOfferRow> = {}): PlatformOffer
   return {
     id: 900,
     name: "Platform 15% Off",
+    couponCode: "PLATFORM15",
+    promoConfig: {},
     serviceType: "FOOD",
     discountType: "PERCENTAGE",
     valueNumeric: 15,
@@ -165,6 +168,13 @@ function platformOffer(overrides: Partial<PlatformOfferRow> = {}): PlatformOffer
     endsAt: null,
     budgetTotal: null,
     budgetUsed: null,
+    maxUsesTotal: null,
+    maxUsesPerUser: null,
+    maxUsesPerDay: null,
+    maxUsesPerMonth: null,
+    consumeMode: "ON_PLACED",
+    restoreOnCancel: true,
+    restoreOnRefund: true,
     priority: 0,
     isHidden: false,
     conditions: {},
@@ -241,7 +251,11 @@ describe("applyExclusiveCheckoutOffer — auto-pick priority", () => {
   });
 
   it("explicit selectedPlatformOfferId is always honored regardless of merchant offer eligibility", () => {
-    const ctx = baseCtx({ selectedPlatformOfferId: 900 });
+    const ctx = baseCtx({
+      selectedPlatformOfferId: 900,
+      platformOfferGeoBindingEffectiveIds: new Set([900]),
+    checkoutCouponGeoBindingEffectiveIds: new Set([900]),
+    });
     const state = emptyState();
     const dataset = datasetWith(
       [merchantOffer({ id: 1 })],
@@ -262,6 +276,51 @@ describe("applyExclusiveCheckoutOffer — auto-pick priority", () => {
 
     assert.equal(merchantDiscountRows(state).length, 0);
     assert.equal(platformDiscountRows(state).length, 0);
+  });
+
+  it("auto mode: auto_apply coupon with higher savings wins over merchant Precision", () => {
+    const ctx = baseCtx({
+      checkoutCouponGeoBindingEffectiveIds: new Set([55]),
+    });
+    const state = emptyState();
+    let appliedCouponId: number | null = null;
+    const dataset = {
+      ...datasetWith([merchantOffer({ id: 1, discountPercentage: 5 })]),
+      autoApplyCoupons: [
+        {
+          id: 55,
+          code: "AUTO50",
+          discountType: "FIXED",
+          valueNumeric: 50,
+          maxDiscountCap: null,
+          usageLimit: null,
+          usedCount: 0,
+          validFrom: null,
+          validUntil: null,
+          isActive: true,
+          isHidden: false,
+          serviceType: "FOOD",
+          offerAudience: "CUSTOMER",
+          perUserUsageLimit: null,
+          metadata: null,
+          couponConfig: { auto_apply: true, priority: 10 },
+        },
+      ],
+    };
+    applyExclusiveCheckoutOffer(ctx, dataset, state, 500, remFor(500), (_c, coupon) => {
+      appliedCouponId = coupon.id;
+      state.discounts.push({
+        kind: "discount",
+        label: `Coupon ${coupon.code}`,
+        amount: 50,
+        hidden: false,
+        meta: { couponId: coupon.id, code: coupon.code },
+      });
+    });
+
+    assert.equal(appliedCouponId, 55);
+    assert.equal(merchantDiscountRows(state).length, 0);
+    assert.equal(state.discounts.some((d) => d.meta?.code === "AUTO50"), true);
   });
 });
 

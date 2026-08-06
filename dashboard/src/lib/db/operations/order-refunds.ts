@@ -213,10 +213,13 @@ export interface OrderRefundListItem {
   createdAt: Date;
   processedAt: Date | null;
   completedAt: Date | null;
+  /** Partial item refunds — from refund_metadata.refundItems. */
+  refundMetadata: Record<string, unknown> | null;
 }
 
 export async function listOrderRefunds(orderId: number): Promise<OrderRefundListItem[]> {
   const sql = getSql();
+  let mapped: OrderRefundListItem[] = [];
   try {
     const rows = await sql`
       SELECT
@@ -243,13 +246,14 @@ export async function listOrderRefunds(orderId: number): Promise<OrderRefundList
         u.email AS "initiatedByEmail",
         r.created_at AS "createdAt",
         r.processed_at AS "processedAt",
-        r.completed_at AS "completedAt"
+        r.completed_at AS "completedAt",
+        r.refund_metadata AS "refundMetadata"
       FROM order_refunds r
       LEFT JOIN system_users u ON u.id = r.refund_initiated_by_id
       WHERE r.order_id = ${orderId}
       ORDER BY r.created_at DESC
     `;
-    return (rows as Record<string, unknown>[]).map((row) => ({
+    mapped = (rows as Record<string, unknown>[]).map((row) => ({
       ...(row as unknown as OrderRefundListItem),
       splitWalletAmount:
         row.splitWalletAmount != null && Number.isFinite(Number(row.splitWalletAmount))
@@ -262,6 +266,10 @@ export async function listOrderRefunds(orderId: number): Promise<OrderRefundList
       customerWalletAmount:
         row.customerWalletAmount != null && Number.isFinite(Number(row.customerWalletAmount))
           ? Number(row.customerWalletAmount)
+          : null,
+      refundMetadata:
+        row.refundMetadata && typeof row.refundMetadata === "object"
+          ? (row.refundMetadata as Record<string, unknown>)
           : null,
     }));
   } catch (e) {
@@ -299,19 +307,48 @@ export async function listOrderRefunds(orderId: number): Promise<OrderRefundList
         u.email AS "initiatedByEmail",
         r.created_at AS "createdAt",
         r.processed_at AS "processedAt",
-        r.completed_at AS "completedAt"
+        r.completed_at AS "completedAt",
+        r.refund_metadata AS "refundMetadata"
       FROM order_refunds r
       LEFT JOIN system_users u ON u.id = r.refund_initiated_by_id
       WHERE r.order_id = ${orderId}
       ORDER BY r.created_at DESC
     `;
-    return (rows as unknown as OrderRefundListItem[]).map((row) => ({
-      ...row,
+    mapped = (rows as Record<string, unknown>[]).map((row) => ({
+      ...(row as unknown as OrderRefundListItem),
       refundReference: null,
       originalGatiCashTxnId: null,
       splitWalletAmount: null,
       splitRazorpayAmount: null,
       customerWalletAmount: null,
+      refundMetadata:
+        row.refundMetadata && typeof row.refundMetadata === "object"
+          ? (row.refundMetadata as Record<string, unknown>)
+          : null,
     }));
   }
+
+  try {
+    const { listRefundItemsByRefundIds } = await import("./order-refund-items");
+    const byRefund = await listRefundItemsByRefundIds(mapped.map((r) => r.id));
+    for (const refund of mapped) {
+      const lines = byRefund.get(refund.id);
+      if (!lines?.length) continue;
+      refund.refundMetadata = {
+        ...(refund.refundMetadata ?? {}),
+        refundItems: lines.map((l) => ({
+          id: l.orderItemId,
+          name: l.itemName,
+          amount: l.refundAmount,
+          refundPercentage: l.refundPercentage,
+          originalTotal: l.originalTotal,
+          selectedQuantity: l.selectedQuantity,
+        })),
+      };
+    }
+  } catch {
+    /* order_refund_items may not exist until migration */
+  }
+
+  return mapped;
 }

@@ -16,12 +16,12 @@ function assertSplashStatusBar() {
   NativeStatusBar.setBarStyle("light-content", true);
 }
 
-function assertStatusBarVisible(opts?: { solidWhite?: boolean }) {
+function assertStatusBarVisible(opts?: { solidWhite?: boolean; backgroundColor?: string }) {
   NativeStatusBar.setHidden(false, "none");
   if (Platform.OS !== "android") return;
-  if (opts?.solidWhite) {
+  if (opts?.solidWhite || opts?.backgroundColor) {
     NativeStatusBar.setTranslucent(false);
-    NativeStatusBar.setBackgroundColor("#FFFFFF", true);
+    NativeStatusBar.setBackgroundColor(opts.backgroundColor ?? "#FFFFFF", true);
     NativeStatusBar.setBarStyle("dark-content", true);
     return;
   }
@@ -83,10 +83,17 @@ export function StatusBarRouteChromeGuard() {
           true
         );
       }
+    } else if ((segments[0] ?? "") === "(auth)") {
+      // Match login/OTP screen chrome — avoid white↔mint status-bar flicker.
+      assertStatusBarVisible({ backgroundColor: "#F0F4F3" });
     } else {
-      assertStatusBarVisible({
-        solidWhite: true,
-      });
+      // Honor screen-set chrome (e.g. courier mint) instead of always forcing white.
+      const chrome = useScreenChromeStore.getState();
+      const bg =
+        chrome.statusBarBackground && chrome.statusBarBackground !== "transparent"
+          ? chrome.statusBarBackground
+          : "#FFFFFF";
+      assertStatusBarVisible({ backgroundColor: bg });
     }
 
     const onAppStateChange = (state: AppStateStatus) => {
@@ -112,9 +119,16 @@ export function StatusBarRouteChromeGuard() {
         }
         return;
       }
-      assertStatusBarVisible({
-        solidWhite: true,
-      });
+      if ((segments[0] ?? "") === "(auth)") {
+        assertStatusBarVisible({ backgroundColor: "#F0F4F3" });
+        return;
+      }
+      const chrome = useScreenChromeStore.getState();
+      const bg =
+        chrome.statusBarBackground && chrome.statusBarBackground !== "transparent"
+          ? chrome.statusBarBackground
+          : "#FFFFFF";
+      assertStatusBarVisible({ backgroundColor: bg });
     };
     const subscription = AppState.addEventListener("change", onAppStateChange);
     return () => subscription.remove();
@@ -148,14 +162,22 @@ export function StatusBarRouteChromeGuard() {
     // must show a solid, visible status bar. If it inherited leaked immersive/transparent
     // chrome from a previous screen, restore the safe default.
     const chrome = useScreenChromeStore.getState();
-    if (chrome.hideStatusBarSpacer || chrome.statusBarBackground === "transparent") {
+    const authChrome = (segments[0] ?? "") === "(auth)";
+    const desiredBar = authChrome ? "#F0F4F3" : "#FFFFFF";
+    if (
+      chrome.hideStatusBarSpacer ||
+      chrome.statusBarBackground === "transparent" ||
+      (authChrome && chrome.statusBarBackground !== desiredBar)
+    ) {
       useScreenChromeStore.setState({
-        statusBarBackground: "#FFFFFF",
+        statusBarBackground: desiredBar,
         statusBarStyle: "dark",
         hideStatusBarSpacer: false,
         bootstrapActive: false,
       });
-      assertStatusBarVisible({ solidWhite: true });
+      assertStatusBarVisible(
+        authChrome ? { backgroundColor: desiredBar } : { solidWhite: true },
+      );
     }
   }, [segments, bootstrapActive, hideStatusBarSpacer]);
 

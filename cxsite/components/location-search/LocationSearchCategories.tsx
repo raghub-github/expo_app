@@ -20,7 +20,7 @@ const categories: Category[] = [
   },
   {
     title: 'Parcel',
-    href: '/courier',
+    href: '/parcel',
     icon: 'fa-shipping-fast',
     short: 'Send parcels',
     parcelGated: true,

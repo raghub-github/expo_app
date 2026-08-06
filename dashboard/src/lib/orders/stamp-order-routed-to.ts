@@ -1,7 +1,7 @@
 /**
  * Stamp CS ownership ("Routed To") on an order whenever an agent performs
  * a tracked action: remark, refund, cancel, status update, rider cancel,
- * rider recon, or CX notification.
+ * rider recon, CX notification, manual rider assign, or force assignment.
  */
 
 import "server-only";

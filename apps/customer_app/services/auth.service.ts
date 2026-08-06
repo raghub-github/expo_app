@@ -35,7 +35,7 @@ function isReviewPhone(phoneE164: string): boolean {
   if (!reviewPhone) return false;
   const a = phoneE164.replace(/\D/g, "").slice(-10);
   const b = reviewPhone.replace(/\D/g, "").slice(-10);
-  return a.length === 10 && a === b;
+  return a.length === 10 && b.length === 10 && a === b;
 }
 
 function shouldSendPhoneOtpViaBackend(phoneE164: string): boolean {
@@ -190,6 +190,9 @@ export const authService = {
         { timeout: 15000 },
       );
       _lastBackendOtpRequestId = null;
+      if (!data?.accessToken || data.role !== "customer") {
+        throw new Error("Invalid OTP.");
+      }
       if (__DEV__) {
         // eslint-disable-next-line no-console
         console.log("[CustomerAuth] verifyOtp: backend OK");
@@ -235,6 +238,9 @@ export const authService = {
     if (__DEV__) {
       // eslint-disable-next-line no-console
       console.log("[CustomerAuth] verifyOtp: Supabase + exchange-customer OK");
+    }
+    if (!session?.accessToken || session.role !== "customer") {
+      throw new Error("Invalid OTP.");
     }
     return session;
   },
@@ -286,10 +292,38 @@ export const authService = {
     if (!raw) return null;
     try {
       const session = JSON.parse(raw) as Session;
-      if (session.accessToken) return session;
+      if (!session?.accessToken || !session?.userId) return null;
+      // Reject clearly expired local sessions before first paint.
+      if (typeof session.expiresAt === "number" && session.expiresAt * 1000 <= Date.now()) {
+        await this.clearSession();
+        return null;
+      }
+      return session;
     } catch {
-      // ignore
+      return null;
     }
-    return null;
+  },
+
+  /**
+   * Probe the backend with the stored JWT. Clears local session on 401 so a
+   * forged/revoked token cannot keep the user on authenticated screens.
+   */
+  async validateStoredSession(session: Session): Promise<Session | null> {
+    if (!session?.accessToken) return null;
+    try {
+      await api.get("/v1/me/profile", {
+        timeout: 12_000,
+        headers: { Authorization: `Bearer ${session.accessToken}` },
+      });
+      return session;
+    } catch (e: unknown) {
+      const status = (e as { response?: { status?: number } })?.response?.status;
+      if (status === 401 || status === 403) {
+        await this.clearSession();
+        return null;
+      }
+      // Network blip — keep local session; APIs will 401 later if truly invalid.
+      return session;
+    }
   },
 };

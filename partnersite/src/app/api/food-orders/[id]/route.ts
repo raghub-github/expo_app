@@ -37,6 +37,7 @@ import {
   computePreparedLateMinutes,
 } from '@/lib/order-prep-time';
 import { triggerOrderEtaRecalcAfterAccept } from '@/lib/trigger-order-eta-recalc';
+import { notifyCustomerMerchantAccepted } from '@/lib/notify-customer-merchant-accepted';
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder.supabase.co";
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "placeholder-service-role-key";
@@ -321,6 +322,13 @@ export async function PATCH(
       } catch (ctmErr) {
         console.warn('[food-orders PATCH] merchant CTM freeze failed:', ctmErr);
       }
+
+      // Backend-driven customer push: Order Confirmed by the Store
+      void notifyCustomerMerchantAccepted({
+        ordersCoreId: existing.order_id as number,
+        fromStatus: currentStatus,
+        storeName: null,
+      });
     }
 
     if (newStatus === 'CANCELLED') {

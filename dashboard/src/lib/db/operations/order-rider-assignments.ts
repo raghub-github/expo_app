@@ -355,6 +355,20 @@ function resolveActivityUpdatedBy(
     typeof meta.actor_type === "string" ? meta.actor_type.trim().toLowerCase() : "";
   const adminCancelled = meta.adminCancelled === true;
 
+  // Prefer explicit agent identity when present (manual / force assignment).
+  const agentEmailCandidates = [
+    meta.updated_by,
+    meta.adminEmail,
+    meta.admin_email,
+    meta.actor_email,
+    meta.actorEmail,
+  ];
+  for (const value of agentEmailCandidates) {
+    if (typeof value === "string" && value.trim().includes("@")) {
+      return value.trim();
+    }
+  }
+
   if (CANCELLATION_EVENT_TYPES.has(eventType)) {
     if (adminCancelled || actorType === "admin" || actorType === "agent") {
       return ADMIN_TEAM_UPDATED_BY;

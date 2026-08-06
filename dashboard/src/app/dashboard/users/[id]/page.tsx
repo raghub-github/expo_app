@@ -9,10 +9,12 @@ import { LoadingButton } from "@/components/ui/LoadingButton";
 import Link from "next/link";
 import { usePermissions } from "@/hooks/usePermissions";
 import { DASHBOARD_DEFINITIONS } from "@/components/users/DashboardAccessSelector";
+import { DashboardErrorBanner } from "@/components/ui/DashboardErrorBanner";
 import {
   computeEffectiveAccessLevel,
   formatAccessLevelLabel,
 } from "@/lib/permissions/access-level";
+import { isUnauthenticatedErrorMessage } from "@/lib/auth/redirect-to-login";
 
 interface ReportsToUser {
   id: number;
@@ -132,6 +134,15 @@ export default function UserDetailsPage() {
         } catch {
           errorMessage = errorText || errorMessage;
         }
+        const { redirectIfUnauthenticatedError } = await import("@/lib/auth/redirect-to-login");
+        if (
+          response.status === 401 ||
+          response.status === 403 ||
+          redirectIfUnauthenticatedError(errorMessage)
+        ) {
+          setLoading(false);
+          return;
+        }
         setError(errorMessage);
         setLoading(false);
         return;
@@ -142,6 +153,11 @@ export default function UserDetailsPage() {
       if (result.success) {
         setUser(result.data);
       } else {
+        const { redirectIfUnauthenticatedError } = await import("@/lib/auth/redirect-to-login");
+        if (redirectIfUnauthenticatedError(result.error)) {
+          setLoading(false);
+          return;
+        }
         setError(result.error || "Failed to fetch user");
       }
     } catch (err) {
@@ -167,6 +183,14 @@ export default function UserDetailsPage() {
         } catch {
           errorMessage = errorText || errorMessage;
         }
+        const { redirectIfUnauthenticatedError } = await import("@/lib/auth/redirect-to-login");
+        if (
+          response.status === 401 ||
+          response.status === 403 ||
+          redirectIfUnauthenticatedError(errorMessage)
+        ) {
+          return;
+        }
         setAccessError(errorMessage);
         return;
       }
@@ -175,6 +199,8 @@ export default function UserDetailsPage() {
       if (result.success) {
         setAccessData(result.data);
       } else {
+        const { redirectIfUnauthenticatedError } = await import("@/lib/auth/redirect-to-login");
+        if (redirectIfUnauthenticatedError(result.error)) return;
         setAccessError(result.error || "Failed to fetch access");
       }
     } catch (err) {
@@ -214,6 +240,14 @@ export default function UserDetailsPage() {
   }
 
   if (error || !user) {
+    if (isUnauthenticatedErrorMessage(error)) {
+      return (
+        <div className="flex items-center justify-center py-12">
+          <div className="text-gray-500">Redirecting to login…</div>
+          <DashboardErrorBanner error={error} />
+        </div>
+      );
+    }
     return (
       <div className="space-y-4">
         <Link
@@ -223,9 +257,7 @@ export default function UserDetailsPage() {
           <ArrowLeft className="h-4 w-4 mr-2" />
           Back to Users
         </Link>
-        <div className="bg-red-50 border border-red-200 text-red-800 px-4 py-3 rounded-lg">
-          {error || "User not found"}
-        </div>
+        <DashboardErrorBanner error={error || "User not found"} />
       </div>
     );
   }

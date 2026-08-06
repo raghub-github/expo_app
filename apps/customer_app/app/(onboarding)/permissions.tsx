@@ -290,6 +290,18 @@ export default function OnboardingPermissionsScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- run once when landing on SMS step
   }, [currentPermission?.id]);
 
+  useEffect(() => {
+    // Expo Go cannot register remote push tokens (SDK 53+). Skip the OS prompt
+    // so onboarding is not blocked; in-app inbox banners still work after login.
+    if (currentPermission?.id !== "notifications") return;
+    if (Constants.appOwnership !== "expo") return;
+    const next = { ...statusRef.current, notifications: "granted" as const };
+    setStatus(next);
+    updatePermissionsRef(next);
+    goNext();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- Expo Go one-shot
+  }, [currentPermission?.id]);
+
   const handleAllow = async (id: string) => {
     setLoading(id);
     try {

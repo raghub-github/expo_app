@@ -13,13 +13,12 @@
 
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { getSql } from "../../db/client.js";
-import {
-  getEtaForOrder,
-  type EtaRecalcReason,
-} from "./eta.repository.js";
+import { getEtaForOrder, type EtaRecalcReason } from "./eta.repository.js";
 import { recalcOrderEta } from "./eta.recalc-service.js";
 import { runLiveEtaForOrder } from "./eta.live-engine.js";
+import { getEtaTimelineForOrder } from "./eta.history-service.js";
+import { getEtaDriftAnalytics } from "./eta.analytics.js";
+import { resolveCanonicalOrderIdText } from "./eta.order-ref.js";
 
 const RECALC_REASONS: EtaRecalcReason[] = [
   "RIDER_ASSIGNED",
@@ -41,7 +40,9 @@ export async function etaRoutes(app: FastifyInstance) {
       },
     },
     async (req, reply) => {
-      const { orderIdText } = req.params as { orderIdText: string };
+      const { orderIdText: orderRef } = req.params as { orderIdText: string };
+      const orderIdText =
+        (await resolveCanonicalOrderIdText(orderRef)) ?? orderRef.trim();
       let view = await getEtaForOrder(orderIdText);
       if (!view) return reply.code(404).send({ ok: false, error: "Order not found" });
 
@@ -63,14 +64,15 @@ export async function etaRoutes(app: FastifyInstance) {
         const ageMs =
           updatedAt != null ? Date.now() - new Date(updatedAt).getTime() : Number.POSITIVE_INFINITY;
         if (ageMs > 45_000) {
-          await runLiveEtaForOrder(orderIdText, "STATUS_CHANGE");
+          // Soft refresh — must not write a history row every poll.
+          await runLiveEtaForOrder(orderIdText, "LIVE_TICK");
           view = (await getEtaForOrder(orderIdText)) ?? view;
         }
       } catch {
         /* non-fatal — return cached view */
       }
 
-      return reply.send({ ok: true, ...view });
+      return reply.send({ ok: true, ...view, serverNow: new Date().toISOString() });
     },
   );
 
@@ -79,30 +81,77 @@ export async function etaRoutes(app: FastifyInstance) {
     {
       schema: {
         params: z.object({ orderIdText: z.string().min(1) }),
+        querystring: z
+          .object({
+            audience: z.enum(["customer", "admin"]).optional(),
+            order: z.enum(["asc", "desc"]).optional(),
+            limit: z.coerce.number().int().min(1).max(200).optional(),
+          })
+          .optional(),
       },
     },
     async (req, reply) => {
       const { orderIdText } = req.params as { orderIdText: string };
-      const sql = getSql();
-      const rows = await sql`
-        SELECT id, old_eta_min, old_eta_max, new_eta_min, new_eta_max,
-               promised_delivery_at::text AS promised_delivery_at,
-               new_promised_delivery_at::text AS new_promised_delivery_at,
-               recalc_reason, prep_minutes, rider_assignment_minutes,
-               rider_to_store_minutes, store_to_customer_minutes,
-               traffic_delay_minutes, weather_delay_minutes,
-               congestion_delay_minutes, buffer_minutes,
-               rider_id, merchant_store_id,
-               route_distance_km::text AS route_distance_km,
-               metadata,
-               created_at::text AS created_at
-        FROM order_eta_history
-        WHERE order_id_text = ${orderIdText}
-        ORDER BY id DESC
-        LIMIT 100
-      `;
-      return reply.send({ ok: true, entries: rows });
+      const q = (req.query ?? {}) as {
+        audience?: "customer" | "admin";
+        order?: "asc" | "desc";
+        limit?: number;
+      };
+      const timeline = await getEtaTimelineForOrder(orderIdText, {
+        audience: q.audience ?? "admin",
+        order: q.order,
+        limit: q.limit,
+      });
+      return reply.send({
+        ok: true,
+        orderIdText: timeline.orderIdText,
+        entries: timeline.entries,
+        /** @deprecated raw rows — use entries (timeline). Kept empty for compat. */
+        raw: [],
+      });
+    }
+  );
+
+  /** Customer-facing alias — same SoT, redacted admin fields. */
+  app.get(
+    "/orders/:orderIdText/timeline",
+    {
+      schema: {
+        params: z.object({ orderIdText: z.string().min(1) }),
+      },
     },
+    async (req, reply) => {
+      const { orderIdText } = req.params as { orderIdText: string };
+      const timeline = await getEtaTimelineForOrder(orderIdText, {
+        audience: "customer",
+        order: "asc",
+        limit: 100,
+      });
+      return reply.send({ ok: true, ...timeline });
+    }
+  );
+
+  /** Analytics foundation — ETA drift from immutable history (future SLA dashboards). */
+  app.get(
+    "/analytics/drift",
+    {
+      schema: {
+        querystring: z
+          .object({
+            days: z.coerce.number().int().min(1).max(365).optional(),
+            merchantStoreId: z.coerce.number().int().min(1).optional(),
+          })
+          .optional(),
+      },
+    },
+    async (req, reply) => {
+      const q = (req.query ?? {}) as { days?: number; merchantStoreId?: number };
+      const summary = await getEtaDriftAnalytics({
+        days: q.days ?? 30,
+        merchantStoreId: q.merchantStoreId,
+      });
+      return reply.send({ ok: true, ...summary });
+    }
   );
 
   /**

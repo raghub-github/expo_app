@@ -27,8 +27,9 @@ export default function QuickCategories() {
   // /courier page = parcel service (courier/parcel delivery)
   const pathToService: Record<string, ServiceCategory> = {
     '/order': 'food',
-    '/ride': 'person',    // RidePage uses 'person' service
-    '/courier': 'parcel', // CourierPage uses 'parcel' service
+    '/ride': 'person',
+    '/courier': 'parcel',
+    '/parcel': 'parcel',
   }
 
   // Handle navigation with service switch check
@@ -91,7 +92,7 @@ export default function QuickCategories() {
       tag: 'Courier Service',
       title: 'Send Parcels',
       image: '/img/parcelcard.png', // Real package icon
-      href: '/courier#parcel-form',
+      href: '/parcel',
       service: 'parcel' as ServiceCategory,
       iconBg: 'from-[#16c2a5]/20 to-[#16c2a5]/10',
       borderColor: 'rgba(22, 194, 165, 0.3)',

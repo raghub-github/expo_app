@@ -370,8 +370,21 @@ export async function listOrdersCore(
     const exact = search.replace(/%/g, "");
     const exactUpper = exact.toUpperCase();
     switch (searchType) {
-      case "Order Id":
       case "Internal Order Id": {
+        // Match orders_core.order_uuid (full UUID or partial text)
+        const uuidCandidate = exact.trim().toLowerCase();
+        const isUuid =
+          /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+            uuidCandidate
+          );
+        if (isUuid) {
+          conditions.push(eq(ordersCore.orderUuid, uuidCandidate));
+        } else {
+          conditions.push(sql`${ordersCore.orderUuid}::text ILIKE ${term}`);
+        }
+        break;
+      }
+      case "Order Id": {
         const bareUpper = exactUpper.replace(/^#/, "");
         if (/^(GMF|GMC|GMP|GM)\d+$/i.test(bareUpper) || /^\d+$/.test(bareUpper)) {
           conditions.push(sqlPublicOrderIdMatch(bareUpper, orderType));
@@ -863,8 +876,25 @@ async function syncOrdersFoodForDashboardStatus(
       SET
         order_status = 'OUT_FOR_DELIVERY',
         updated_at = ${nowIso}::timestamptz,
-        dispatched_at = COALESCE(dispatched_at, ${nowIso}::timestamptz)
+        dispatched_at = COALESCE(dispatched_at, ${nowIso}::timestamptz),
+        rider_picked_up_at = COALESCE(rider_picked_up_at, ${nowIso}::timestamptz),
+        handed_over_to_rider_at = COALESCE(handed_over_to_rider_at, ${nowIso}::timestamptz)
       WHERE order_id = ${orderId}
+    `;
+    // Keep assignment pickup in sync so DESPATCHED tab + rider timeline stay aligned.
+    await sql`
+      UPDATE order_rider_assignments
+      SET
+        picked_up_at = COALESCE(picked_up_at, ${nowIso}::timestamptz),
+        updated_at = ${nowIso}::timestamptz
+      WHERE (order_core_id = ${orderId} OR order_id = ${orderId})
+        AND rider_id IS NOT NULL
+        AND cancelled_at IS NULL
+        AND unassigned_at IS NULL
+        AND upper(coalesce(assignment_status::text, '')) NOT IN (
+          'CANCELLED', 'REJECTED', 'UNASSIGNED'
+        )
+        AND picked_up_at IS NULL
     `;
     return;
   }
@@ -1247,14 +1277,16 @@ export async function updateOrderStatus(
     const { syncRiderMilestoneFromDashboardStatus } = await import(
       "@/lib/db/operations/rider-milestone-dashboard-sync"
     );
-    await syncRiderMilestoneFromDashboardStatus(
-      orderId,
-      status,
-      updatedByEmail,
-      now
-    ).catch((err) => {
+    try {
+      await syncRiderMilestoneFromDashboardStatus(
+        orderId,
+        status,
+        updatedByEmail,
+        now
+      );
+    } catch (err) {
       console.warn("[updateOrderStatus] rider milestone sync failed:", err);
-    });
+    }
 
     if (status === "delivered") {
       const { creditMerchantWalletForDeliveredCoreOrder } = await import(
@@ -1745,6 +1777,63 @@ export async function updateOrdersCoreCancellation(
     cancelledByType,
     cancellationDetails,
   });
+
+  // Best-effort: restore platform offer usage when admin cancels (idempotent).
+  try {
+    const [core] = await sql<{ order_id: string | null }[]>`
+      SELECT order_id FROM orders_core WHERE id = ${orderId} LIMIT 1
+    `;
+    const orderKey = core?.order_id ?? String(orderId);
+    const rows = await sql<
+      Array<{
+        id: number;
+        status: string;
+        consumed_budget: string | null;
+        discount_amount: string | null;
+        platform_offer_id: number;
+        restore_on_cancel: boolean | null;
+      }>
+    >`
+      SELECT
+        u.id::int AS id,
+        u.status,
+        u.consumed_budget::text AS consumed_budget,
+        u.discount_amount::text AS discount_amount,
+        u.platform_offer_id::int AS platform_offer_id,
+        o.restore_on_cancel
+      FROM platform_offer_usages u
+      INNER JOIN billing_platform_offers o ON o.id = u.platform_offer_id
+      WHERE u.status IN ('reserved', 'consumed')
+        AND (u.order_id = ${orderId} OR u.order_id_text = ${orderKey})
+    `;
+    for (const row of rows) {
+      if (row.restore_on_cancel === false) continue;
+      const wasConsumed = row.status === "consumed";
+      const budgetToRestore = wasConsumed
+        ? Number(row.consumed_budget ?? row.discount_amount ?? 0) || 0
+        : 0;
+      await sql`
+        UPDATE platform_offer_usages
+        SET
+          status = 'cancelled',
+          cancelled_at = COALESCE(cancelled_at, now()),
+          updated_at = now()
+        WHERE id = ${row.id}
+          AND status IN ('reserved', 'consumed')
+      `;
+      if (budgetToRestore > 0) {
+        await sql`
+          UPDATE billing_platform_offers
+          SET
+            budget_used = GREATEST(0, COALESCE(budget_used, 0) - ${budgetToRestore}),
+            updated_at = now()
+          WHERE id = ${row.platform_offer_id}
+        `;
+      }
+    }
+  } catch (err) {
+    console.warn("[updateOrdersCoreCancellation] platform offer usage restore failed", err);
+  }
 
   await insertOrderTimelineEntry({
     orderId,

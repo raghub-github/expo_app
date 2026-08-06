@@ -228,6 +228,10 @@ export async function pushRoutes(app: FastifyInstance) {
         const userId = req.auth!.sub;
         const db = getDb();
         const now = new Date();
+        const expoToken =
+          typeof expo_push_token === "string" && expo_push_token.trim().length >= 10
+            ? expo_push_token.trim()
+            : null;
 
         let validatedStoreId: number | null = null;
         if (role === "merchant" && store_id != null) {
@@ -238,41 +242,43 @@ export async function pushRoutes(app: FastifyInstance) {
           validatedStoreId = store_id;
         }
 
-        await db
-          .insert(expoPushTokens)
-          .values({
-            userId,
-            role,
-            deviceType: device_type,
-            expoPushToken: expo_push_token,
-            createdAt: now,
-            updatedAt: now,
-            lastSeenAt: now,
-            deviceModel: device_model ?? null,
-            deviceBrand: device_brand ?? null,
-            osName: os_name ?? null,
-            osVersion: os_version ?? null,
-            appVersion: app_version ?? null,
-            locale: locale ?? null,
-            timezone: timezone ?? null,
-          })
-          .onConflictDoUpdate({
-            target: expoPushTokens.expoPushToken,
-            set: {
+        if (expoToken) {
+          await db
+            .insert(expoPushTokens)
+            .values({
               userId,
               role,
               deviceType: device_type,
+              expoPushToken: expoToken,
+              createdAt: now,
               updatedAt: now,
               lastSeenAt: now,
-              ...(device_model ? { deviceModel: device_model } : {}),
-              ...(device_brand ? { deviceBrand: device_brand } : {}),
-              ...(os_name ? { osName: os_name } : {}),
-              ...(os_version ? { osVersion: os_version } : {}),
-              ...(app_version ? { appVersion: app_version } : {}),
-              ...(locale ? { locale } : {}),
-              ...(timezone ? { timezone } : {}),
-            },
-          });
+              deviceModel: device_model ?? null,
+              deviceBrand: device_brand ?? null,
+              osName: os_name ?? null,
+              osVersion: os_version ?? null,
+              appVersion: app_version ?? null,
+              locale: locale ?? null,
+              timezone: timezone ?? null,
+            })
+            .onConflictDoUpdate({
+              target: expoPushTokens.expoPushToken,
+              set: {
+                userId,
+                role,
+                deviceType: device_type,
+                updatedAt: now,
+                lastSeenAt: now,
+                ...(device_model ? { deviceModel: device_model } : {}),
+                ...(device_brand ? { deviceBrand: device_brand } : {}),
+                ...(os_name ? { osName: os_name } : {}),
+                ...(os_version ? { osVersion: os_version } : {}),
+                ...(app_version ? { appVersion: app_version } : {}),
+                ...(locale ? { locale } : {}),
+                ...(timezone ? { timezone } : {}),
+              },
+            });
+        }
 
         let topics: string[] = [];
         const nativeToken =

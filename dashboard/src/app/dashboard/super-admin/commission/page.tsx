@@ -13,11 +13,8 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import Link from "next/link";
 import {
-  ArrowLeft,
   Loader2,
-  Percent,
   AlertCircle,
   Plug,
   Search,
@@ -348,27 +345,7 @@ export default function CommissionAdminPage() {
   }
 
   return (
-    <div className="mx-auto max-w-5xl space-y-6 p-6">
-      <header className="flex items-start gap-3">
-        <Link
-          href="/dashboard/super-admin"
-          aria-label="Back to Super Admin"
-          className="mt-1 shrink-0 rounded-lg border border-gray-200 bg-white p-2 hover:bg-gray-50"
-        >
-          <ArrowLeft className="h-4 w-4 text-gray-600" />
-        </Link>
-        <div className="space-y-1">
-          <h1 className="flex items-center gap-2 text-2xl font-semibold text-gray-900">
-            <Percent className="h-6 w-6 text-violet-500" />
-            Commission Engine
-          </h1>
-          <p className="text-sm text-gray-600">
-            Manage the platform-wide default rate, plan-based benefits, and per-store overrides — all in
-            one place. Every change is recorded in <code>commission_audit_log</code>.
-          </p>
-        </div>
-      </header>
-
+    <div className="w-full min-w-0 max-w-none space-y-6 px-4 py-6 sm:px-6 lg:px-8">
       {pageError ? (
         <div className="flex items-start gap-2 rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700">
           <AlertCircle className="mt-0.5 h-4 w-4 flex-shrink-0" />

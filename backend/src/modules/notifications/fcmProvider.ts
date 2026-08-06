@@ -25,6 +25,10 @@ type FcmSendInput = {
   imageUrl?: string | null;
   data?: Record<string, string>;
   deepLink?: string | null;
+  /** Web-only click URL (partnersite). Falls back to deepLink. */
+  webLink?: string | null;
+  /** Android notification channel (merchant_default, customer_default, …). */
+  channelId?: string | null;
   priority?: NotificationPriority;
   collapseKey?: string | null;
   silent?: boolean;
@@ -89,8 +93,12 @@ export async function sendFcmV1(input: FcmSendInput): Promise<ProviderSendResult
             title: input.title,
             body: input.body,
             imageUrl: input.imageUrl ?? undefined,
-            clickAction: input.deepLink ?? undefined,
-            channelId: "default",
+            // Prefer data.deep_link for navigation; only set clickAction for real intent actions.
+            clickAction:
+              input.deepLink && !input.deepLink.startsWith("/") && !/^https?:\/\//i.test(input.deepLink)
+                ? input.deepLink
+                : undefined,
+            channelId: input.channelId?.trim() || "default",
             defaultSound: true,
             defaultVibrateTimings: true,
           }
@@ -121,7 +129,10 @@ export async function sendFcmV1(input: FcmSendInput): Promise<ProviderSendResult
             icon: undefined,
             image: input.imageUrl ?? undefined,
           },
-          fcmOptions: input.deepLink ? { link: input.deepLink } : undefined,
+          fcmOptions: (() => {
+            const link = (input.webLink ?? input.deepLink)?.trim();
+            return link ? { link } : undefined;
+          })(),
         }
       : undefined,
     notification: wantsNotificationBlock

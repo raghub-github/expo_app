@@ -49,7 +49,7 @@ export default function Footer() {
   const quickLinks: LinkItem[] = [
     { icon: <Home size={14} />, text: "Home", href: "/" },
     { icon: <UtensilsCrossed size={14} />, text: "Food Delivery", href: "/order" },
-    { icon: <Truck size={14} />, text: "Parcel Delivery", href: "/courier", parcelGated: true },
+    { icon: <Truck size={14} />, text: "Parcel Delivery", href: "/parcel", parcelGated: true },
     { icon: <Users size={14} />, text: "Ride and Cab Services", href: "/ride" },
     { icon: <Tag size={14} />, text: "Deals & Offers", href: "/restaurants" },
     { icon: <MapPin size={14} />, text: "Around You", href: "/india/All/Stores" },

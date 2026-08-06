@@ -473,14 +473,15 @@ export const orderService = {
     return data;
   },
 
-  /** Pay a delivery partner tip during live order tracking (after Razorpay success). */
+  /** Pay a delivery partner tip (UPI / Razorpay, or GatiCash when balance allows). */
   async submitRiderTip(
     orderId: string,
     payload: {
       tipAmount: number;
-      razorpayOrderId: string;
-      razorpayPaymentId: string;
-      razorpaySignature: string;
+      paymentMethod?: "upi" | "gaticash";
+      razorpayOrderId?: string;
+      razorpayPaymentId?: string;
+      razorpaySignature?: string;
     }
   ): Promise<{ ok: true; tipAmount: number }> {
     const { data } = await api.post(`${ORDERS_PREFIX}/${orderId}/rider-tip`, payload);

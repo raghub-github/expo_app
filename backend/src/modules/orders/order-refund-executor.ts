@@ -1189,6 +1189,22 @@ export async function completeOrderRefundFromRazorpayWebhook(args: {
       kind: "completed",
       refundAmount,
     }, sql);
+
+    try {
+      const { getDb } = await import("../../db/client.js");
+      const { releasePlatformOfferUsagesOnRefund } = await import(
+        "../billing/platformOfferUsage.service.js"
+      );
+      const [core] = await sql<{ order_id: string | null }[]>`
+        SELECT order_id FROM orders_core WHERE id = ${orderCoreId} LIMIT 1
+      `;
+      await releasePlatformOfferUsagesOnRefund(
+        getDb(),
+        core?.order_id ?? orderCoreId
+      );
+    } catch {
+      /* non-fatal */
+    }
   }
   return { ok: true, matched: true };
 }

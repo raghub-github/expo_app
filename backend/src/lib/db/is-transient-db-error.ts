@@ -37,7 +37,9 @@ export function isTransientDbError(reason: unknown): boolean {
     msg.includes("connect_timeout") ||
     msg.includes("getaddrinfo enotfound") ||
     msg.includes("getaddrinfo eai_again") ||
-    msg.includes("write connection_closed")
+    msg.includes("write connection_closed") ||
+    msg.includes("read econnreset") ||
+    msg.includes("econnreset")
   );
 }
 

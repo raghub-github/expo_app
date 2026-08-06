@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { ImageSourcePropType, ImageStyle, StyleProp } from "react-native";
 import { Image } from "expo-image";
 import { getAppAssetUrl, getAppAssetProxyUrl, useAppAssetsStore } from "@/store/appAssetsStore";
@@ -24,6 +24,8 @@ export function AppAssetImage({
   const rawUrl = useAppAssetsStore((s) => s.assets[assetKey]?.url ?? null);
   const proxyUrl = useAppAssetsStore((s) => s.assets[assetKey]?.proxyUrl ?? null);
   const [primaryFailed, setPrimaryFailed] = useState(false);
+  /** Keep last good URI so asset refresh / signed-URL rotate never blanks the tile. */
+  const lastGoodUriRef = useRef<string | null>(null);
 
   const primaryUri = useMemo(() => {
     if (!rawUrl?.trim()) return null;
@@ -39,10 +41,16 @@ export function AppAssetImage({
     setPrimaryFailed(false);
   }, [primaryUri]);
 
-  const uri =
+  const preferredUri =
     primaryFailed && fallbackUri && fallbackUri !== primaryUri
       ? fallbackUri
       : primaryUri;
+
+  if (preferredUri) {
+    lastGoodUriRef.current = preferredUri;
+  }
+
+  const uri = preferredUri ?? lastGoodUriRef.current;
 
   const source: ImageSourcePropType | null = uri
     ? { uri }
@@ -52,14 +60,14 @@ export function AppAssetImage({
 
   return (
     <Image
-      key={`${assetKey}:${uri ?? "fallback"}`}
+      // Stable key — remounting on every signed-URL change blanked all home tiles.
+      recyclingKey={assetKey}
       source={source}
       style={style}
       contentFit={contentFit}
       cachePolicy="memory-disk"
       priority="high"
       transition={0}
-      recyclingKey={assetKey}
       accessibilityLabel={accessibilityLabel}
       onError={() => {
         if (!primaryFailed && fallbackUri && fallbackUri !== primaryUri) {

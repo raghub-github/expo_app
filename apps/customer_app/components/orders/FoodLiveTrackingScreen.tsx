@@ -20,6 +20,7 @@ import { GatiMitraColors } from "@/constants/gatimitra";
 import { DEFAULT_STATUS_BAR_HEIGHT, STATUS_BAR_TO_HEADER_GAP } from "@/constants/layout";
 import { useScreenChromeStore } from "@/store/screenChromeStore";
 import type { OrderDetail, OrderTrackingResponse } from "@/services/order.service";
+import type { OrderEtaResponse } from "@/services/eta.service";
 import { merchantService } from "@/services/merchant.service";
 import { useLocationWeather } from "@/hooks/useLocationWeather";
 import { WeatherStatusChip } from "@/components/weather";
@@ -31,25 +32,27 @@ import { RideTripShareSheet } from "@/components/ride/RideTripShareSheet";
 import { DeliveryPartnerSafetyBottomSheet } from "@/components/orders/DeliveryPartnerSafetyBottomSheet";
 import { DeliveryPartnerTrackingCard } from "@/components/orders/DeliveryPartnerTrackingCard";
 import { FoodOrderTipSheet } from "@/components/orders/FoodOrderTipSheet";
-import { parseOrderBillFromSnapshot } from "@/lib/orderBillBreakdown";
+import { parseOrderBillFromSnapshot, resolveOrderPaymentDisplay } from "@/lib/orderBillBreakdown";
 import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
 import { useFoodDeliveryRouteProgress } from "@/hooks/useFoodDeliveryRouteProgress";
+import { useLiveTrackingEtaMinutes } from "@/hooks/useLiveTrackingEtaMinutes";
 import { resolveOrderTrackingMapSnapshots } from "@/lib/orderTrackingMapSnapshots";
 import {
   FOOD_DELIVERY_GEOFENCE_RADIUS_M,
   FOOD_DELIVERY_GEOFENCE_PROXIMITY_M,
   getFoodDeliveryMapPhase,
+  isFoodRiderAssignedForMap,
   shouldHighlightFoodDropZone,
   shouldHighlightFoodPickupZone,
 } from "@/lib/food-delivery-map-phase";
 import {
-  getCustomerOrderLiveHeadline,
-  getCustomerOrderEtaPillText,
   isRiderAtCustomerStatus,
+  isRiderAtStoreStatus,
   isTerminalOrderStatus,
   normalizeCustomerOrderStatus,
   shouldShowCustomerDeliveryOtp,
 } from "@/lib/customer-order-status-display";
+import { buildLiveOrderStatusView, ORDER_PLACED_OVERDUE_MESSAGE } from "@/lib/live-order-status-engine";
 import {
   orderItemHasCustomizations,
   type OrderDetailLineItem,
@@ -93,6 +96,9 @@ const ETA_CHIP_BORDER = "rgba(255,255,255,0.22)";
 type FoodLiveTrackingScreenProps = {
   order: OrderDetail;
   tracking: OrderTrackingResponse | undefined;
+  /** Full ETA payload — used for live countdown between refetches. */
+  eta?: OrderEtaResponse | null;
+  /** Fallback when `eta` is unavailable. */
   etaMinutes: number | null;
   merchantDelayed?: boolean;
   etaUpdated?: boolean;
@@ -189,6 +195,7 @@ function DeliveryOtpBanner({ otp }: { otp: string }) {
 export function FoodLiveTrackingScreen({
   order,
   tracking,
+  eta = null,
   etaMinutes,
   merchantDelayed = false,
   etaUpdated = false,
@@ -246,9 +253,24 @@ export function FoodLiveTrackingScreen({
     prepDelayBanner.expiresAt > Date.now();
 
   const orderStatus = normalizeCustomerOrderStatus(order.status);
-  /** Assigned delivery partner on the order — keep dashed store↔home map until then. */
-  const hasRider = Boolean(
-    order.rider && (order.rider.name || order.rider.phone)
+  /** Assigned delivery partner — hide dashed store↔home preview once true. */
+  const hasTrackingFix =
+    tracking?.rider?.latitude != null &&
+    tracking?.rider?.longitude != null &&
+    Number.isFinite(tracking.rider.latitude) &&
+    Number.isFinite(tracking.rider.longitude);
+  const hasRider = isFoodRiderAssignedForMap(
+    orderStatus,
+    order.rider,
+    hasTrackingFix,
+    eta?.stageAware?.currentStage ??
+      (eta?.customer?.contextMessage === "RIDER_PICKING_UP"
+        ? "AT_STORE"
+        : eta?.customer?.contextMessage === "RIDER_TO_MERCHANT"
+          ? "RIDER_TO_MERCHANT"
+          : eta?.customer?.contextMessage === "READY_FOR_PICKUP"
+            ? "READY_AWAITING_RIDER"
+            : null)
   );
   const riderArrived = isRiderAtCustomerStatus(orderStatus);
   const showDeliveryOtpNow = shouldShowCustomerDeliveryOtp(orderStatus, order.deliveryOtp);
@@ -263,19 +285,9 @@ export function FoodLiveTrackingScreen({
   }, [order.orderId]);
 
   const showDeliveryOtp =
-    deliveryOtpPinned &&
     Boolean(order.deliveryOtp?.trim()) &&
-    !isTerminalOrderStatus(orderStatus);
-  const headline = getCustomerOrderLiveHeadline(orderStatus, hasRider, {
-    merchantDelayed,
-    etaContextLabel,
-    riderReachedPickupAt: order.riderReachedPickupAt,
-  });
-  const etaPillText = getCustomerOrderEtaPillText(etaMinutes, {
-    merchantDelayed,
-    etaUpdated,
-    riderArrived,
-  });
+    !isTerminalOrderStatus(orderStatus) &&
+    (showDeliveryOtpNow || deliveryOtpPinned);
 
   const restaurantName = order.merchantPublicName ?? order.merchantName ?? "Restaurant";
   const merchantArea = getCompactAddressLine(order.merchantAddress);
@@ -287,6 +299,7 @@ export function FoodLiveTrackingScreen({
     order.totalAmount ?? null,
     order.tipAmount ?? null
   );
+  const paymentDisplay = resolveOrderPaymentDisplay(order);
   const billItemTotalFallback = useMemo(
     () => items.reduce((sum, item) => sum + (item.lineTotal ?? item.price * item.quantity), 0),
     [items]
@@ -336,11 +349,30 @@ export function FoodLiveTrackingScreen({
   const riderHeading = tracking?.rider?.headingDegrees ?? null;
   const riderPos =
     riderLat != null && riderLng != null ? { latitude: riderLat, longitude: riderLng } : null;
+  const riderUpdatedAtMs = (() => {
+    const raw = tracking?.rider?.updatedAt;
+    if (!raw) return 0;
+    const ms = Date.parse(raw);
+    return Number.isFinite(ms) ? ms : 0;
+  })();
+  const riderSample =
+    riderPos && riderUpdatedAtMs > 0
+      ? { latitude: riderPos.latitude, longitude: riderPos.longitude, updatedAtMs: riderUpdatedAtMs }
+      : riderPos
+        ? {
+            latitude: riderPos.latitude,
+            longitude: riderPos.longitude,
+            updatedAtMs: Date.now(),
+          }
+        : null;
 
   const mapPhase = getFoodDeliveryMapPhase(orderStatus, {
     riderReachedPickupAt: order.riderReachedPickupAt,
     riderPickedUpAt: order.riderPickedUpAt,
   });
+  const waitingAtStore =
+    isRiderAtStoreStatus(orderStatus) ||
+    Boolean(order.riderReachedPickupAt && mapPhase === "rider_to_pickup");
   const highlightPickupZone = shouldHighlightFoodPickupZone({
     status: orderStatus,
     riderReachedPickupAt: order.riderReachedPickupAt,
@@ -374,6 +406,7 @@ export function FoodLiveTrackingScreen({
     preRiderArcRoute,
     connectorRoute,
     routeJoinPoint,
+    remainingDistanceM,
     hideRouteLine,
     displayRider,
   } = useFoodDeliveryRouteProgress({
@@ -386,6 +419,119 @@ export function FoodLiveTrackingScreen({
     riderHeading,
     hasRider,
   });
+
+  const liveEta = useLiveTrackingEtaMinutes({
+    eta,
+    orderId: order.orderId,
+    movementEtaMinutes: null,
+    remainingDistanceM,
+    mapPhase,
+    orderStatus,
+    hasRider,
+    riderArrived,
+    waitingAtStore,
+    riderSample,
+    accuracyMeters: tracking?.rider?.accuracyMeters ?? null,
+    enabled: !isTerminalOrderStatus(orderStatus),
+  });
+  const displayEtaMinutes = liveEta.minutes ?? etaMinutes;
+  const liveStatus = buildLiveOrderStatusView({
+    status: orderStatus,
+    hasRider,
+    riderName: order.rider?.name,
+    riderReachedPickupAt: order.riderReachedPickupAt,
+    prepReadyByAt: order.prepReadyByAt ?? eta?.prep?.readyByAt,
+    eta,
+    merchantDelayed,
+    nowMs: liveEta.nowMs || Date.now(),
+  });
+  const headline = liveStatus.headline;
+  const awaitingAcceptOverdue =
+    liveStatus.stage === "ORDER_PLACED" &&
+    (() => {
+      const createdMs = Date.parse(order.createdAt);
+      if (!Number.isFinite(createdMs)) return false;
+      const now = liveEta.nowMs > 0 ? liveEta.nowMs : Date.now();
+      return now - createdMs >= 2 * 60_000;
+    })();
+  /**
+   * `buildLiveOrderStatusView` returns `kitchenDelayed: stage === "PREPARATION_DELAYED"`
+   * (live-order-status-engine.ts), so the old second clause — `kitchenDelayed &&
+   * (stage === "MERCHANT_PREPARING" || stage === "PREPARATION_DELAYED")` — could
+   * never add a case the first clause had not already matched, and its
+   * MERCHANT_PREPARING arm was unreachable. Reduced to the one condition that
+   * actually decides this; behaviour is unchanged.
+   */
+  const prepPastPromised = liveStatus.stage === "PREPARATION_DELAYED";
+  const waitingForRider = liveStatus.stage === "WAITING_FOR_RIDER";
+  const riderToMerchant =
+    liveStatus.stage === "RIDER_TO_MERCHANT" || liveStatus.stage === "AT_STORE";
+  /** Sticky: once prep was delayed, keep white header even after ready + rider en route. */
+  const everPrepDelayedRef = useRef(false);
+  if (
+    merchantDelayed ||
+    eta?.customer?.merchantDelayed === true ||
+    prepPastPromised ||
+    showPrepDelayMarquee
+  ) {
+    everPrepDelayedRef.current = true;
+  }
+  useEffect(() => {
+    everPrepDelayedRef.current = false;
+  }, [order.orderId]);
+  /**
+   * White header: accept overdue, prep delayed, waiting for rider, rider en route
+   * after a prior delay, or delivery ETA already past while still on the way.
+   * Green when on-time OTW / assigned.
+   */
+  const deliveryLate = liveStatus.deliveryLate === true;
+  const headerLight =
+    awaitingAcceptOverdue ||
+    prepPastPromised ||
+    waitingForRider ||
+    deliveryLate ||
+    (riderToMerchant && everPrepDelayedRef.current);
+  const headerFg = headerLight ? "#111827" : "#fff";
+  const headerFgMuted = headerLight ? "#4B5563" : "rgba(255,255,255,0.88)";
+  const headerBg = headerLight ? "#FFFFFF" : HEADER_GREEN;
+  /** Nested status card duplicates headline for these stages — pill only. */
+  const hideLiveStatusCard =
+    liveStatus.stage === "ORDER_PLACED" ||
+    liveStatus.stage === "MERCHANT_PREPARING" ||
+    liveStatus.stage === "PREPARATION_DELAYED" ||
+    liveStatus.stage === "WAITING_FOR_RIDER" ||
+    liveStatus.stage === "RIDER_TO_MERCHANT" ||
+    liveStatus.stage === "AT_STORE" ||
+    liveStatus.stage === "PICKED_UP" ||
+    liveStatus.stage === "NEARBY";
+  /** Status pill — prefer engine pillText; fall back to live ETA when promise window is past/zero. */
+  const etaPillText = (() => {
+    if (liveStatus.stage === "ORDER_PLACED" && awaitingAcceptOverdue) {
+      return ORDER_PLACED_OVERDUE_MESSAGE;
+    }
+    if (liveStatus.stage !== "PICKED_UP") return liveStatus.pillText;
+
+    const liveMins =
+      displayEtaMinutes != null && displayEtaMinutes > 0
+        ? Math.round(displayEtaMinutes)
+        : null;
+    const promiseMins =
+      liveStatus.deliveryAwayMinutes != null && liveStatus.deliveryAwayMinutes > 0
+        ? liveStatus.deliveryAwayMinutes
+        : null;
+    const mins = liveMins ?? promiseMins;
+    if (mins != null) {
+      const minLabel = mins === 1 ? "min" : "mins";
+      if (deliveryLate) return `Arriving in ${mins} ${minLabel} • Slight delay`;
+      return `Arriving in ${mins} ${minLabel}`;
+    }
+    if (deliveryLate) return "Slight delay · Arriving soon";
+    return liveStatus.pillText;
+  })();
+
+  useEffect(() => {
+    setStatusBarBackground(headerBg, headerLight ? "dark" : "light");
+  }, [headerBg, headerLight, setStatusBarBackground]);
 
   const mapRiderLat = displayRider?.latitude ?? riderLat;
   const mapRiderLng = displayRider?.longitude ?? riderLng;
@@ -426,18 +572,19 @@ export function FoodLiveTrackingScreen({
       pickupLng,
       dropLat: deliveryLat,
       dropLng: deliveryLng,
-      riderLat: mapRiderLat,
-      riderLng: mapRiderLng,
-      riderHeading,
-      fullRoute,
-      remainingRoute,
-      preRiderArcRoute: preRiderArcRoute ?? undefined,
-      connectorRoute: connectorRoute ?? undefined,
-      routeJoinLat: routeJoinPoint?.latitude ?? null,
-      routeJoinLng: routeJoinPoint?.longitude ?? null,
+      // Never show rider pin / GPS until a partner is assigned (avoids ghost marker + dashed arc).
+      riderLat: hasRider ? mapRiderLat : null,
+      riderLng: hasRider ? mapRiderLng : null,
+      riderHeading: hasRider ? riderHeading : null,
+      fullRoute: hasRider ? fullRoute : [],
+      remainingRoute: hasRider ? remainingRoute : [],
+      preRiderArcRoute: hasRider ? undefined : preRiderArcRoute ?? undefined,
+      connectorRoute: hasRider ? connectorRoute ?? undefined : undefined,
+      routeJoinLat: hasRider ? routeJoinPoint?.latitude ?? null : null,
+      routeJoinLng: hasRider ? routeJoinPoint?.longitude ?? null : null,
       hideRouteLine,
-      highlightPickupZone,
-      highlightDropZone,
+      highlightPickupZone: hasRider ? highlightPickupZone : false,
+      highlightDropZone: hasRider ? highlightDropZone : false,
       geofenceRadiusM: FOOD_DELIVERY_GEOFENCE_RADIUS_M,
       geofenceProximityM: FOOD_DELIVERY_GEOFENCE_PROXIMITY_M,
       riderArrived,
@@ -635,7 +782,7 @@ export function FoodLiveTrackingScreen({
   );
 
   const existingTip = order.tipAmount != null && order.tipAmount > 0 ? order.tipAmount : 0;
-  const paymentMethodLabel = (order.paymentMethod ?? "UPI").replace(/_/g, " ");
+  const paymentMethodLabel = paymentDisplay.compactLabel;
   const riderName = order.rider?.name?.trim() || "Delivery partner";
   const riderFirstName = riderName.split(" ")[0] ?? riderName;
   const riderPhotoUri = toAbsoluteImageUrl(order.rider?.photoUrl);
@@ -648,54 +795,112 @@ export function FoodLiveTrackingScreen({
 
   return (
     <View style={styles.screen}>
-      <StatusBar style="light" backgroundColor={HEADER_GREEN} />
+      <StatusBar style={headerLight ? "dark" : "light"} backgroundColor={headerBg} />
 
       <LinearGradient
-        colors={[HEADER_GREEN, HEADER_GREEN]}
+        colors={[headerBg, headerBg]}
         start={{ x: 0, y: 0 }}
         end={{ x: 1, y: 0 }}
-        style={[styles.heroHeader, { paddingTop: headerTopPadding }]}
+        style={[
+          styles.heroHeader,
+          { paddingTop: headerTopPadding, backgroundColor: headerBg },
+          headerLight ? styles.heroHeaderLight : null,
+        ]}
       >
         <View style={styles.heroTopRow}>
           <TouchableOpacity onPress={onBack} hitSlop={12} style={styles.heroSideBtnLeft}>
-            <Ionicons name="arrow-back" size={22} color="#fff" />
+            <Ionicons name="arrow-back" size={22} color={headerFg} />
           </TouchableOpacity>
-          <CheckoutText style={styles.heroRestaurant} numberOfLines={1}>
+          <CheckoutText style={[styles.heroRestaurant, { color: headerFgMuted }]} numberOfLines={1}>
             {restaurantName}
           </CheckoutText>
           <TouchableOpacity onPress={handleShare} hitSlop={12} style={styles.heroSideBtnRight}>
-            <Ionicons name="share-social-outline" size={22} color="#fff" />
+            <Ionicons name="share-social-outline" size={22} color={headerFg} />
           </TouchableOpacity>
         </View>
 
-        <CheckoutText style={styles.heroHeadline}>{headline}</CheckoutText>
+        <CheckoutText style={[styles.heroHeadline, { color: headerFg }]}>{headline}</CheckoutText>
+        {/* No duplicate delay line under headline — pill carries follow-up copy. */}
+        {!awaitingAcceptOverdue && !prepPastPromised && liveStatus.reassurance ? (
+          <CheckoutText style={[styles.heroReassurance, { color: headerFgMuted }]}>
+            {liveStatus.reassurance}
+          </CheckoutText>
+        ) : null}
+
+        {/* Prep / placed: headline + pill only — no nested duplicate status card */}
+        {!hideLiveStatusCard && liveStatus.layers.length > 0 ? (
+          <View style={[styles.liveStatusCard, headerLight ? styles.liveStatusCardLight : null]}>
+            {liveStatus.layers.map((layer, idx) => (
+              <View key={layer.key}>
+                {idx > 0 ? (
+                  <View
+                    style={[
+                      styles.liveStatusDivider,
+                      headerLight ? styles.liveStatusDividerLight : null,
+                    ]}
+                  />
+                ) : null}
+                <View style={styles.liveStatusLayer}>
+                  <CheckoutText style={styles.liveStatusEmoji}>{layer.emoji}</CheckoutText>
+                  <View style={styles.liveStatusTextCol}>
+                    <CheckoutText style={[styles.liveStatusTitle, { color: headerFg }]}>
+                      {layer.title}
+                    </CheckoutText>
+                    {layer.subtitle ? (
+                      <CheckoutText style={[styles.liveStatusSubtitle, { color: headerFgMuted }]}>
+                        {layer.subtitle}
+                      </CheckoutText>
+                    ) : null}
+                  </View>
+                </View>
+              </View>
+            ))}
+          </View>
+        ) : null}
 
         <View style={styles.etaPillRow}>
           <View style={styles.etaPillInner}>
-            <View style={[styles.etaPill, styles.etaPillChipBase]}>
-              <CheckoutText style={styles.etaPillText}>{etaPillText}</CheckoutText>
+            <View
+              style={[
+                styles.etaPill,
+                styles.etaPillChipBase,
+                headerLight ? styles.etaPillChipLight : null,
+              ]}
+            >
+              <CheckoutText
+                style={[styles.etaPillText, headerLight ? { color: headerFg } : null]}
+                numberOfLines={2}
+              >
+                {etaPillText}
+              </CheckoutText>
             </View>
             <TouchableOpacity
-              style={[styles.etaRefreshBtn, styles.etaPillChipBase]}
+              style={[
+                styles.etaRefreshBtn,
+                styles.etaPillChipBase,
+                headerLight ? styles.etaPillChipLight : null,
+              ]}
               onPress={() => void handleRefreshEta()}
               activeOpacity={0.85}
             >
               {refreshingEta ? (
-                <ActivityIndicator size="small" color="#fff" />
+                <ActivityIndicator size="small" color={headerLight ? headerFg : "#fff"} />
               ) : (
-                <Ionicons name="refresh" size={18} color="#fff" />
+                <Ionicons name="refresh" size={18} color={headerLight ? headerFg : "#fff"} />
               )}
             </TouchableOpacity>
           </View>
           {refreshAckVisible ? (
-            <CheckoutText style={styles.refreshAckText}>Just refreshed now</CheckoutText>
+            <CheckoutText style={[styles.refreshAckText, { color: headerFgMuted }]}>
+              Just refreshed now
+            </CheckoutText>
           ) : null}
         </View>
       </LinearGradient>
 
       <ScrollView
         style={styles.scroll}
-        contentContainerStyle={{ paddingBottom: insets.bottom + 24 }}
+        contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 0) }}
         showsVerticalScrollIndicator={false}
       >
         <View style={styles.mapWrap}>
@@ -810,8 +1015,15 @@ export function FoodLiveTrackingScreen({
             activeOpacity={0.85}
           >
             <Ionicons name="wallet-outline" size={18} color={MUTED} />
-            <CheckoutText style={styles.billCompactLabel}>Paid via {paymentMethodLabel}</CheckoutText>
-            <CheckoutText style={styles.billCompactValue}>{formatMoney(bill.paid)}</CheckoutText>
+            <View style={styles.billCompactTextCol}>
+              <CheckoutText style={styles.billCompactLabel}>Paid via {paymentMethodLabel}</CheckoutText>
+              {paymentDisplay.gatiCashAmount > 0.005 && paymentDisplay.cashinAmount <= 0.005 ? (
+                <CheckoutText style={styles.billGatiCashHint}>100% GatiCash</CheckoutText>
+              ) : null}
+            </View>
+            <CheckoutText style={styles.billCompactValue}>
+              {formatMoney(paymentDisplay.totalPaid)}
+            </CheckoutText>
             <Ionicons name="chevron-forward" size={16} color="#C4C4C4" />
           </TouchableOpacity>
         </SectionCard>
@@ -891,12 +1103,14 @@ export function FoodLiveTrackingScreen({
         onClose={() => setBillSheetVisible(false)}
         bill={bill}
         paymentMethodLabel={paymentMethodLabel}
+        paymentLines={paymentDisplay.lines}
         itemTotalFallback={billItemTotalFallback}
       />
 
       <RideTripShareSheet
         visible={shareSheetVisible}
         orderId={order.orderId}
+        shareKind="food"
         onClose={() => setShareSheetVisible(false)}
       />
 
@@ -915,9 +1129,19 @@ const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: PAGE_BG },
   heroHeader: {
     paddingHorizontal: 14,
-    paddingBottom: 10,
+    paddingBottom: 12,
     zIndex: 10,
-    elevation: 10,
+    // Keep above the map without a drop-shadow edge (reads as overlap).
+    elevation: 0,
+    overflow: "hidden",
+  },
+  heroHeaderLight: {
+    backgroundColor: "#FFFFFF",
+    borderBottomWidth: 0,
+    // No bottom shadow — otherwise the white header looks like it overlaps the map.
+    shadowOpacity: 0,
+    shadowRadius: 0,
+    elevation: 0,
   },
   heroTopRow: {
     flexDirection: "row",
@@ -957,12 +1181,71 @@ const styles = StyleSheet.create({
     lineHeight: 27,
     textAlign: "center",
     letterSpacing: -0.2,
-    marginBottom: 8,
+    marginBottom: 12,
     paddingHorizontal: 2,
+  },
+  heroReassurance: {
+    fontSize: 12,
+    fontWeight: "500",
+    color: "rgba(255,255,255,0.88)",
+    textAlign: "center",
+    marginBottom: 10,
+    paddingHorizontal: 8,
+    lineHeight: 16,
+  },
+  liveStatusCard: {
+    alignSelf: "stretch",
+    backgroundColor: "rgba(0,0,0,0.18)",
+    borderRadius: 14,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    marginBottom: 10,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.12)",
+  },
+  liveStatusCardLight: {
+    backgroundColor: "#F3F4F6",
+    borderColor: "#E5E7EB",
+  },
+  liveStatusLayer: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 8,
+  },
+  liveStatusEmoji: {
+    fontSize: 16,
+    lineHeight: 20,
+    marginTop: 1,
+  },
+  liveStatusTextCol: {
+    flex: 1,
+    minWidth: 0,
+  },
+  liveStatusTitle: {
+    fontSize: 13,
+    fontWeight: "700",
+    color: "#fff",
+    lineHeight: 18,
+  },
+  liveStatusSubtitle: {
+    marginTop: 2,
+    fontSize: 12,
+    fontWeight: "500",
+    color: "rgba(255,255,255,0.85)",
+    lineHeight: 16,
+  },
+  liveStatusDivider: {
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: "rgba(255,255,255,0.22)",
+    marginVertical: 8,
+  },
+  liveStatusDividerLight: {
+    backgroundColor: "#D1D5DB",
   },
   etaPillRow: {
     alignItems: "center",
     justifyContent: "center",
+    marginTop: 2,
   },
   etaPillInner: {
     flexDirection: "row",
@@ -975,9 +1258,15 @@ const styles = StyleSheet.create({
     borderColor: ETA_CHIP_BORDER,
     overflow: "hidden",
   },
+  etaPillChipLight: {
+    backgroundColor: "#F3F4F6",
+    borderColor: "#D1D5DB",
+  },
   etaPill: {
-    height: ETA_CHIP_HEIGHT,
+    minHeight: ETA_CHIP_HEIGHT,
+    maxWidth: Dimensions.get("window").width - 96,
     paddingHorizontal: 14,
+    paddingVertical: 8,
     borderRadius: 999,
     alignItems: "center",
     justifyContent: "center",
@@ -987,6 +1276,7 @@ const styles = StyleSheet.create({
     fontWeight: "600",
     color: "#fff",
     lineHeight: 16,
+    textAlign: "center",
   },
   etaRefreshBtn: {
     width: ETA_CHIP_HEIGHT,
@@ -1072,7 +1362,17 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: 10,
   },
-  billCompactLabel: { flex: 1, fontSize: 13, color: MUTED, textTransform: "capitalize" },
+  billCompactTextCol: {
+    flex: 1,
+    minWidth: 0,
+  },
+  billCompactLabel: { fontSize: 13, color: MUTED, textTransform: "capitalize" },
+  billGatiCashHint: {
+    marginTop: 2,
+    fontSize: 11,
+    fontWeight: "600",
+    color: MINT,
+  },
   billCompactValue: { fontSize: 14, fontWeight: "700", color: TEXT },
   otpBanner: {
     backgroundColor: GatiMitraColors.mintSoft,

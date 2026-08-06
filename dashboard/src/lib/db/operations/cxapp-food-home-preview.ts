@@ -129,6 +129,14 @@ async function anchorFromGeoPostOffice(
   return toAnchorRow((Array.isArray(rows) ? rows[0] : null) as Record<string, unknown> | undefined);
 }
 
+async function settleAnchor(promise: Promise<AnchorRow | null>): Promise<AnchorRow | null> {
+  try {
+    return await promise;
+  } catch {
+    return null;
+  }
+}
+
 export async function resolveStatePreviewAnchor(stateId: string): Promise<StatePreviewAnchor | null> {
   const sql = getSql();
   const stateRows = await sql`
@@ -139,26 +147,14 @@ export async function resolveStatePreviewAnchor(stateId: string): Promise<StateP
 
   const stateName = String((stateRow as { name: string }).name);
 
-  let anchor: AnchorRow | null = null;
-  try {
-    anchor = await anchorFromStoresByStateName(sql, stateName);
-  } catch {
-    /* best-effort */
-  }
-  if (!anchor) {
-    try {
-      anchor = await anchorFromStoresByGeoState(sql, stateId);
-    } catch {
-      /* geo tables may differ by env */
-    }
-  }
-  if (!anchor) {
-    try {
-      anchor = await anchorFromGeoPostOffice(sql, stateId);
-    } catch {
-      /* best-effort */
-    }
-  }
+  // Race lighter post-office lookup with store-based anchors instead of waiting
+  // on sequential AVG(merchant_stores) queries that often dominate latency.
+  const [byName, byGeo, byPostOffice] = await Promise.all([
+    settleAnchor(anchorFromStoresByStateName(sql, stateName)),
+    settleAnchor(anchorFromStoresByGeoState(sql, stateId)),
+    settleAnchor(anchorFromGeoPostOffice(sql, stateId)),
+  ]);
+  const anchor = byName ?? byGeo ?? byPostOffice;
 
   if (anchor) {
     const areaLabel = anchor.city ? `${anchor.city}, ${stateName}` : stateName;
@@ -309,7 +305,8 @@ export async function fetchBackendFoodHomePreview(opts: {
   }
 
   const base = backendUrl.replace(/\/$/, "");
-  const limit = opts.limit ?? 20;
+  // Preview UI only needs a handful of cards — keep payload small.
+  const limit = opts.limit ?? 8;
   const { anchor } = opts;
 
   const offerQs = new URLSearchParams({
@@ -324,12 +321,12 @@ export async function fetchBackendFoodHomePreview(opts: {
     offerQs.set("lng", String(anchor.lng));
   }
 
-  let offers: FoodHomePreviewOffer[] = [];
-  try {
-    const offerRes = await fetch(`${base}/v1/offers/featured?${offerQs.toString()}`, {
-      cache: "no-store",
-    });
-    if (offerRes.ok) {
+  const fetchOffers = async (): Promise<FoodHomePreviewOffer[]> => {
+    try {
+      const offerRes = await fetch(`${base}/v1/offers/featured?${offerQs.toString()}`, {
+        next: { revalidate: 45 },
+      });
+      if (!offerRes.ok) return [];
       const offerJson = (await offerRes.json()) as {
         offers?: Array<{
           id: string;
@@ -344,7 +341,7 @@ export async function fetchBackendFoodHomePreview(opts: {
           offer_image_url?: string | null;
         }>;
       };
-      offers = (offerJson.offers ?? []).map((o) => ({
+      return (offerJson.offers ?? []).map((o) => ({
         id: o.id,
         kind: o.kind,
         title: o.title?.trim() || "Special offers",
@@ -352,10 +349,33 @@ export async function fetchBackendFoodHomePreview(opts: {
         cta: merchantOfferCta(o) ?? "",
         imageUrl: o.offer_image_url ? normalizePreviewMediaUrl(o.offer_image_url) : null,
       }));
+    } catch {
+      return [];
     }
-  } catch {
-    offers = [];
-  }
+  };
+
+  const fetchMerchants = async (): Promise<RawMerchant[]> => {
+    if (anchor.lat == null || anchor.lng == null) return [];
+    const merchantQs = new URLSearchParams({
+      limit: String(limit),
+      lat: String(anchor.lat),
+      lng: String(anchor.lng),
+      // Road distance is slower; air is enough for admin preview cards.
+      distanceMode: "air",
+    });
+    try {
+      const merchantRes = await fetch(`${base}/v1/merchants?${merchantQs.toString()}`, {
+        next: { revalidate: 45 },
+      });
+      if (!merchantRes.ok) return [];
+      const merchantJson = (await merchantRes.json()) as { items?: RawMerchant[] };
+      return merchantJson.items ?? [];
+    } catch {
+      return [];
+    }
+  };
+
+  const [offers, rawMerchants] = await Promise.all([fetchOffers(), fetchMerchants()]);
 
   if (anchor.lat == null || anchor.lng == null) {
     return {
@@ -364,26 +384,6 @@ export async function fetchBackendFoodHomePreview(opts: {
       restaurants: [],
       storeCountLabel: "0 stores",
     };
-  }
-
-  const merchantQs = new URLSearchParams({
-    limit: String(limit),
-    lat: String(anchor.lat),
-    lng: String(anchor.lng),
-    distanceMode: "road",
-  });
-
-  let rawMerchants: RawMerchant[] = [];
-  try {
-    const merchantRes = await fetch(`${base}/v1/merchants?${merchantQs.toString()}`, {
-      cache: "no-store",
-    });
-    if (merchantRes.ok) {
-      const merchantJson = (await merchantRes.json()) as { items?: RawMerchant[] };
-      rawMerchants = merchantJson.items ?? [];
-    }
-  } catch {
-    rawMerchants = [];
   }
 
   const lovedMerchants = pickLovedMerchants(rawMerchants);

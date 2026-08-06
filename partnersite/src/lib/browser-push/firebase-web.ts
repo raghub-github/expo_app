@@ -77,22 +77,40 @@ export async function registerBrowserPushToken(_userId: string): Promise<string 
     const reg = await navigator.serviceWorker.register("/firebase-messaging-sw.js");
     const token = await getToken(messaging, { vapidKey, serviceWorkerRegistration: reg });
     if (!token) return null;
+    let storeId: string | undefined;
+    if (typeof window !== "undefined") {
+      try {
+        const { readPartnerSelectedStoreId } = await import("@/lib/partner-selected-store");
+        storeId = readPartnerSelectedStoreId() || undefined;
+      } catch {
+        storeId =
+          localStorage.getItem("selectedStoreId")?.trim() ||
+          localStorage.getItem("selectedRestaurantId")?.trim() ||
+          undefined;
+      }
+    }
     // Send to backend (proxy will forward with the shared secret)
-    await fetch("/api/notifications/browser-tokens", {
+    const res = await fetch("/api/notifications/browser-tokens", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       credentials: "include",
       body: JSON.stringify({
         token,
         platform: "web",
-        store_id:
-          typeof window !== "undefined"
-            ? localStorage.getItem("selectedStoreId") ||
-              localStorage.getItem("selectedRestaurantId") ||
-              undefined
-            : undefined,
+        store_id: storeId || undefined,
+        source: "partnersite",
       }),
-    }).catch(() => undefined);
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      console.warn(
+        "[browser-push] register failed",
+        res.status,
+        text.slice(0, 200),
+      );
+      return null;
+    }
+    console.info("[browser-push] partnersite FCM token registered");
     return token;
   } catch (e) {
     console.warn("[browser-push] getToken failed:", (e as Error).message);

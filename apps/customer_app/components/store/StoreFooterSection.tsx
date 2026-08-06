@@ -118,66 +118,78 @@ export function StoreFooterSection({
 
   return (
     <View style={[styles.wrap, bottomPadding > 0 ? { paddingBottom: bottomPadding } : null]}>
-      {similarMerchants.length > 0 ? (
-        <View style={styles.block}>
-          <TouchableOpacity
-            style={styles.similarHeader}
-            onPress={() => setExpanded((v) => !v)}
-            activeOpacity={0.8}
-          >
-            <AppText style={styles.similarTitle}>Try these similar restaurants</AppText>
-            <Ionicons
-              name={expanded ? "chevron-up" : "chevron-down"}
-              size={18}
-              color={StoreTheme.textPrimary}
-            />
-          </TouchableOpacity>
-          {expanded ? (
-            <View style={styles.grid}>
-              {similarMerchants.slice(0, 4).map((m) => (
-                <SimilarRestaurantCard
-                  key={m.id}
-                  merchant={m}
-                  width={cardW}
-                  onPress={() => router.push(`/home/merchant/${m.id}`)}
-                />
-              ))}
-            </View>
-          ) : null}
-        </View>
-      ) : null}
-
+      {/* Soft white → gray fade so the item-list seam isn't a hard color cut. */}
       <LinearGradient
-        colors={[StoreTheme.promoBannerStart, StoreTheme.promoBannerEnd]}
-        start={{ x: 0, y: 0 }}
-        end={{ x: 1, y: 0 }}
-        style={styles.promoBanner}
-      >
-        <View style={styles.promoTextBlock}>
-          <AppText style={styles.promoTitle}>Serving smiles at your doorstep</AppText>
-          <View style={styles.promoArrow}>
-            <Ionicons name="arrow-forward" size={14} color="#fff" />
-          </View>
-        </View>
-        <View style={styles.promoImageClip}>
-          <AppAssetImage
-            assetKey={CX.store.footerPromo}
-            style={styles.promoImage}
-            contentFit="contain"
-          />
-        </View>
-      </LinearGradient>
+        colors={["#FFFFFF", "#F5F5F5"]}
+        locations={[0, 1]}
+        start={{ x: 0.5, y: 0 }}
+        end={{ x: 0.5, y: 1 }}
+        style={styles.topBlend}
+        pointerEvents="none"
+      />
 
-      <View style={styles.disclaimerBlock}>
-        {DISCLAIMERS.map((d) => (
-          <View key={d} style={styles.bulletRow}>
-            <AppText style={styles.bullet}>•</AppText>
-            <AppText style={styles.disclaimerText}>{d}</AppText>
+      <View style={styles.inner}>
+        {similarMerchants.length > 0 ? (
+          <View style={styles.block}>
+            <TouchableOpacity
+              style={styles.similarHeader}
+              onPress={() => setExpanded((v) => !v)}
+              activeOpacity={0.8}
+            >
+              <AppText style={styles.similarTitle}>Try these similar restaurants</AppText>
+              <Ionicons
+                name={expanded ? "chevron-up" : "chevron-down"}
+                size={18}
+                color={StoreTheme.textPrimary}
+              />
+            </TouchableOpacity>
+            {expanded ? (
+              <View style={styles.grid}>
+                {similarMerchants.slice(0, 4).map((m) => (
+                  <SimilarRestaurantCard
+                    key={m.id}
+                    merchant={m}
+                    width={cardW}
+                    onPress={() => router.push(`/home/merchant/${m.id}`)}
+                  />
+                ))}
+              </View>
+            ) : null}
           </View>
-        ))}
+        ) : null}
+
+        <LinearGradient
+          colors={[StoreTheme.promoBannerStart, StoreTheme.promoBannerEnd]}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 0 }}
+          style={styles.promoBanner}
+        >
+          <View style={styles.promoTextBlock}>
+            <AppText style={styles.promoTitle}>Serving smiles at your doorstep</AppText>
+            <View style={styles.promoArrow}>
+              <Ionicons name="arrow-forward" size={14} color="#fff" />
+            </View>
+          </View>
+          <View style={styles.promoImageClip}>
+            <AppAssetImage
+              assetKey={CX.store.footerPromo}
+              style={styles.promoImage}
+              contentFit="contain"
+            />
+          </View>
+        </LinearGradient>
+
+        <View style={styles.disclaimerBlock}>
+          {DISCLAIMERS.map((d) => (
+            <View key={d} style={styles.bulletRow}>
+              <AppText style={styles.bullet}>•</AppText>
+              <AppText style={styles.disclaimerText}>{d}</AppText>
+            </View>
+          ))}
+        </View>
+
+        <BrandingFooter compact />
       </View>
-
-      <BrandingFooter compact />
     </View>
   );
 }
@@ -192,9 +204,17 @@ const DISCLAIMERS = [
 const styles = StyleSheet.create({
   wrap: {
     backgroundColor: "#F5F5F5",
-    paddingHorizontal: 16,
-    paddingTop: 28,
     paddingBottom: 4,
+  },
+  topBlend: {
+    height: 56,
+    width: "100%",
+  },
+  inner: {
+    paddingHorizontal: 16,
+    // Pull content slightly into the fade so the seam reads continuous.
+    marginTop: -20,
+    paddingTop: 8,
   },
   block: {
     marginBottom: 16,

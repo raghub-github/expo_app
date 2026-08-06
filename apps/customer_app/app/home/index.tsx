@@ -1757,7 +1757,8 @@ const styles = StyleSheet.create({
     backgroundColor: "#F3E8D4",
   },
   gridFirstSkyInnerCompact: {
-    backgroundColor: "#FFFFFF",
+    // Match page bg so pre-hero header + categories read as one surface
+    backgroundColor: GatiMitraColors.softBackground,
   },
   gridFirstHeroLoading: {
     opacity: 0,

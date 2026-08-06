@@ -343,6 +343,11 @@ async function fetchPlatformOffers(
 ): Promise<Array<{
   id: number; name: string | null; offer_kind: string;
   label: string; sub_label: string; is_geo_bound: boolean;
+  coupon_code: string | null;
+  discount_type: string | null;
+  value: number | null;
+  max_discount_amount: number | null;
+  min_order_amount: number | null;
 }>> {
   const db = getDb();
   const st = serviceType.toUpperCase();
@@ -365,6 +370,7 @@ async function fetchPlatformOffers(
     .select({
       id:                 billingPlatformOffers.id,
       name:               billingPlatformOffers.name,
+      couponCode:         billingPlatformOffers.couponCode,
       serviceType:        billingPlatformOffers.serviceType,
       offerKind:          billingPlatformOffers.offerKind,
       discountType:       billingPlatformOffers.discountType,
@@ -385,6 +391,7 @@ async function fetchPlatformOffers(
   const result: Array<{
     id: number; name: string | null; offer_kind: string;
     label: string; sub_label: string; is_geo_bound: boolean;
+    coupon_code: string | null;
     discount_type: string | null;
     value: number | null;
     max_discount_amount: number | null;
@@ -404,23 +411,23 @@ async function fetchPlatformOffers(
     if (o.startsAt && new Date() < o.startsAt) continue;
     if (o.endsAt && new Date() > o.endsAt) continue;
 
-    // Geo gate
+    // Geo gate: platform offers are customer-visible only with an effective
+    // geo_platform_offer_bindings match at the customer's location.
+    // Unmapped GLOBAL / MERCHANT offers must NOT appear.
     const scope = String(o.targetScope ?? "GLOBAL").toUpperCase();
-    let isGeoBound = false;
-    if (scope === "GEO" || scope === "GEO_MERCHANT") {
-      // Must be in geoBoundIds (effective for this pincode location) OR have legacy geo_targets
-      if (!geoBoundIds.has(o.id)) continue;
-      isGeoBound = true;
-    } else if (scope === "MERCHANT") {
-      // Merchant-specific: skip for generic listing (no merchantIds filter applied here)
+    if (scope === "MERCHANT") {
+      // Store-page listing has no merchant allow-list context here — skip.
+      // Checkout / bill apply still handles MERCHANT-scoped rows with bindings.
       continue;
     }
-    // GLOBAL scope: always show
+    if (!geoBoundIds.has(o.id)) continue;
+    const isGeoBound = true;
 
     const kind     = String(o.offerKind ?? "DISCOUNT").toUpperCase();
     const value    = n(o.valueNumeric);
     const maxDisc  = n(o.maxDiscountAmount);
     const minOrder = n(o.minOrderAmount);
+    const couponCode = String(o.couponCode ?? "").trim() || null;
 
     result.push({
       id:         o.id,
@@ -429,6 +436,7 @@ async function fetchPlatformOffers(
       label:      buildPlatformLabel(kind, o.discountType, value, maxDisc),
       sub_label:  minOrder != null && minOrder > 0 ? `on orders above ₹${Math.round(minOrder)}` : "",
       is_geo_bound: isGeoBound,
+      coupon_code: couponCode,
       discount_type: o.discountType ?? null,
       value,
       max_discount_amount: maxDisc,
@@ -591,6 +599,7 @@ async function fetchPlatformBannerOffers(
     .select({
       id: billingPlatformOffers.id,
       name: billingPlatformOffers.name,
+      couponCode: billingPlatformOffers.couponCode,
       serviceType: billingPlatformOffers.serviceType,
       offerKind: billingPlatformOffers.offerKind,
       discountType: billingPlatformOffers.discountType,
@@ -619,17 +628,19 @@ async function fetchPlatformBannerOffers(
     if (o.endsAt && new Date() > o.endsAt) continue;
 
     const scope = String(o.targetScope ?? "GLOBAL").toUpperCase();
-    if (scope === "GEO" || scope === "GEO_MERCHANT") {
-      if (!geoBoundIds.has(o.id)) continue;
-    } else if (scope === "MERCHANT") {
-      // Shown only when tied to a nearby store below.
-    } else if (scope === "GLOBAL") {
+    // Every customer-facing platform banner requires an effective geo binding.
+    // MERCHANT / GEO_MERCHANT also need a nearby mapped store (below).
+    if (!geoBoundIds.has(o.id)) continue;
+
+    const platformCoupon = String(o.couponCode ?? "").trim() || null;
+
+    if (scope === "GLOBAL" || scope === "GEO") {
       const kind = String(o.offerKind ?? "DISCOUNT").toUpperCase();
       const value = n(o.valueNumeric);
       const maxDisc = n(o.maxDiscountAmount);
       const minOrder = n(o.minOrderAmount);
       banners.push({
-        id: `platform-global-${o.id}`,
+        id: scope === "GEO" ? `platform-geo-${o.id}` : `platform-global-${o.id}`,
         store_id: "",
         store_name: null,
         title: buildPlatformBannerTitle(o.name, kind, o.discountType, value, maxDisc),
@@ -637,7 +648,7 @@ async function fetchPlatformBannerOffers(
         kind: "platform",
         source_offer_id: o.id,
         offer_type: kind,
-        coupon_code: null,
+        coupon_code: platformCoupon,
         min_order_amount: minOrder,
         max_discount_amount: maxDisc,
         discount_percentage: o.discountType === "PERCENTAGE" ? value : null,
@@ -645,9 +656,9 @@ async function fetchPlatformBannerOffers(
         valid_till: o.endsAt ? new Date(o.endsAt).toISOString() : null,
       });
       continue;
-    } else {
-      continue;
     }
+
+    if (scope !== "MERCHANT" && scope !== "GEO_MERCHANT") continue;
 
     const rawIds = Array.isArray(o.merchantIds) ? o.merchantIds : [];
     const merchantInternalIds = rawIds
@@ -681,7 +692,7 @@ async function fetchPlatformBannerOffers(
       kind: "platform",
       source_offer_id: o.id,
       offer_type: kind,
-      coupon_code: null,
+      coupon_code: platformCoupon,
       min_order_amount: minOrder,
       max_discount_amount: maxDisc,
       discount_percentage: o.discountType === "PERCENTAGE" ? value : null,
@@ -693,9 +704,14 @@ async function fetchPlatformBannerOffers(
   return banners;
 }
 
-async function fetchCouponBannerOffers(serviceType: string): Promise<HomeBannerOffer[]> {
+async function fetchCouponBannerOffers(
+  serviceType: string,
+  geoBoundCouponIds?: ReadonlySet<number> | null
+): Promise<HomeBannerOffer[]> {
+  // Unmapped / unknown-location coupons must never appear on Home.
+  if (geoBoundCouponIds == null || geoBoundCouponIds.size === 0) return [];
   const db = getDb();
-  const coupons = await listActiveCustomerCoupons(db, serviceType);
+  const coupons = await listActiveCustomerCoupons(db, serviceType, { geoBoundCouponIds });
   return coupons.map((coupon, idx) => {
     const value = coupon.valueNumeric;
     const isPct = String(coupon.discountType).toUpperCase() === "PERCENTAGE";
@@ -770,11 +786,13 @@ async function fetchRideFeaturedOffersFast(params: {
     longitude: params.longitude,
   });
   const geoBoundIds = geo.geoBoundOfferIds;
+  const geoBoundCouponIds = geo.geoBoundCouponIds;
 
   const platformRows = await db
       .select({
         id: billingPlatformOffers.id,
         name: billingPlatformOffers.name,
+        couponCode: billingPlatformOffers.couponCode,
         serviceType: billingPlatformOffers.serviceType,
         offerKind: billingPlatformOffers.offerKind,
         discountType: billingPlatformOffers.discountType,
@@ -797,7 +815,7 @@ async function fetchRideFeaturedOffersFast(params: {
         )
       )
       .orderBy(asc(billingPlatformOffers.priority));
-  const couponBanners = await fetchCouponBannerOffers("RIDE");
+  const couponBanners = await fetchCouponBannerOffers("RIDE", geoBoundCouponIds);
 
   const platformBanners: HomeBannerOffer[] = [];
   for (const o of platformRows) {
@@ -807,7 +825,8 @@ async function fetchRideFeaturedOffersFast(params: {
 
     const scope = String(o.targetScope ?? "GLOBAL").toUpperCase();
     if (scope === "MERCHANT" || scope === "GEO_MERCHANT") continue;
-    if ((scope === "GEO" || scope === "GEO_MERCHANT") && !geoBoundIds.has(o.id)) continue;
+    // Unmapped platform offers must never appear on ride featured surfaces.
+    if (!geoBoundIds.has(o.id)) continue;
 
     const kind = String(o.offerKind ?? "DISCOUNT").toUpperCase();
     if (RIDE_EXCLUDED_PLATFORM_OFFER_KINDS.has(kind)) continue;
@@ -816,7 +835,7 @@ async function fetchRideFeaturedOffersFast(params: {
     const maxDisc = n(o.maxDiscountAmount);
     const minOrder = n(o.minOrderAmount);
     platformBanners.push({
-      id: scope === "GEO" ? `platform-geo-${o.id}` : `platform-global-${o.id}`,
+      id: `platform-geo-${o.id}`,
       store_id: "",
       store_name: null,
       title: buildPlatformBannerTitle(o.name, kind, o.discountType, value, maxDisc),
@@ -824,7 +843,7 @@ async function fetchRideFeaturedOffersFast(params: {
       kind: "platform",
       source_offer_id: o.id,
       offer_type: kind,
-      coupon_code: null,
+      coupon_code: String(o.couponCode ?? "").trim() || null,
       min_order_amount: minOrder,
       max_discount_amount: maxDisc,
       discount_percentage: o.discountType === "PERCENTAGE" ? value : null,
@@ -843,10 +862,7 @@ async function fetchRideFeaturedOffersFast(params: {
     merged.push(b);
   };
 
-  const globalPlatform = platformBanners.filter((b) => b.id.startsWith("platform-global-"));
-  const scopedPlatform = platformBanners.filter((b) => !b.id.startsWith("platform-global-"));
-  for (const b of globalPlatform) push(b);
-  for (const b of scopedPlatform) push(b);
+  for (const b of platformBanners) push(b);
   for (const b of couponBanners) push(b);
 
   return merged.slice(0, params.limit);
@@ -883,7 +899,14 @@ async function fetchHomeFeaturedOffers(params: {
     params.longitude,
     nearby
   );
-  const couponBanners = await fetchCouponBannerOffers(params.serviceType);
+  const geo = await resolveGeoLocation({
+    livePincode: params.pincode,
+    liveState: params.stateName,
+    liveCity: params.cityName,
+    latitude: params.latitude,
+    longitude: params.longitude,
+  });
+  const couponBanners = await fetchCouponBannerOffers(params.serviceType, geo.geoBoundCouponIds);
 
   const seen = new Set<string>();
   const merged: HomeBannerOffer[] = [];
@@ -961,6 +984,7 @@ export async function offersRoutes(app: FastifyInstance) {
               label:        z.string(),
               sub_label:    z.string(),
               is_geo_bound: z.boolean(),
+              coupon_code:  z.string().nullable().optional(),
               discount_type: z.string().nullable().optional(),
               value: z.number().nullable().optional(),
               max_discount_amount: z.number().nullable().optional(),

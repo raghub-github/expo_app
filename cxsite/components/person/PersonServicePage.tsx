@@ -287,7 +287,7 @@ export default function PersonServicePage() {
                 badgePlacement="inline"
                 className="text-[#b0b0d0] font-medium transition-colors hover:text-[#16c2a5] text-sm sm:text-base"
                 disabledClassName="cursor-not-allowed opacity-45 hover:text-[#b0b0d0]"
-                onEnabledClick={() => handleNavigation('/courier', 'parcel')}
+                onEnabledClick={() => handleNavigation('/parcel', 'parcel')}
               />
             </nav>
 

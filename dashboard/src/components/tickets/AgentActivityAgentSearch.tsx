@@ -22,6 +22,10 @@ export function AgentActivityAgentSearch() {
   const [loading, setLoading] = useState(false);
   const [open, setOpen] = useState(false);
 
+  /** Optimistic pick so the label never blanks while router.replace is in flight. */
+  const pendingSelectionRef = useRef<{ id: number; label: string } | null>(null);
+  const lastUrlAgentIdRef = useRef<number | "all" | null>(null);
+
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
@@ -59,19 +63,33 @@ export function AgentActivityAgentSearch() {
     return null; // Default: All agents selected
   }, [agents, selectedAgentUserId]);
 
-  /** Sync input to URL selection (deep link / back) without fighting in-progress typing. */
-  const lastUrlAgentIdRef = useRef<number | "all" | null>(null);
+  /** Sync input to URL selection (deep link / back) without fighting a pending local pick. */
   useEffect(() => {
     const urlId =
       Number.isFinite(selectedAgentUserId) && selectedAgentUserId > 0 ? selectedAgentUserId : null;
+
     if (urlId == null) {
+      // URL still catching up after a local select — keep the optimistic label.
+      if (pendingSelectionRef.current) return;
       if (lastUrlAgentIdRef.current !== "all") {
         lastUrlAgentIdRef.current = "all";
         setQuery("");
       }
       return;
     }
-    if (!selectedAgent) return;
+
+    if (pendingSelectionRef.current?.id === urlId) {
+      pendingSelectionRef.current = null;
+    }
+
+    if (!selectedAgent) {
+      // Agent list not loaded yet — keep pending label if we have one.
+      if (pendingSelectionRef.current?.id === urlId) {
+        setQuery(pendingSelectionRef.current.label);
+        lastUrlAgentIdRef.current = urlId;
+      }
+      return;
+    }
     if (lastUrlAgentIdRef.current === urlId) return;
     lastUrlAgentIdRef.current = urlId;
     setQuery(selectedAgent.name || selectedAgent.email || "");
@@ -90,7 +108,14 @@ export function AgentActivityAgentSearch() {
       .slice(0, 10);
   }, [agents, deferredQuery]);
 
+  const displaySelectedLabel = useMemo(() => {
+    if (selectedAgent) return selectedAgent.name || `User ${selectedAgent.id}`;
+    if (pendingSelectionRef.current) return pendingSelectionRef.current.label;
+    return "All agents";
+  }, [selectedAgent, selectedAgentUserId, query]);
+
   const setAgent = (agentId: number, displayLabel: string) => {
+    pendingSelectionRef.current = { id: agentId, label: displayLabel };
     lastUrlAgentIdRef.current = agentId;
     setQuery(displayLabel);
     setOpen(false);
@@ -103,6 +128,7 @@ export function AgentActivityAgentSearch() {
   };
 
   const setAllAgents = () => {
+    pendingSelectionRef.current = null;
     lastUrlAgentIdRef.current = "all";
     setQuery("");
     setOpen(false);
@@ -118,9 +144,7 @@ export function AgentActivityAgentSearch() {
     <div className="px-1 pb-2">
       <div className="mb-1 flex items-center justify-between gap-2 px-1">
         <div className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">Agent</div>
-        <div className="text-[11px] font-medium text-gray-600">
-          {selectedAgent ? selectedAgent.name || `User ${selectedAgent.id}` : "All agents"}
-        </div>
+        <div className="text-[11px] font-medium text-gray-600">{displaySelectedLabel}</div>
       </div>
 
       <div className="relative px-1">
@@ -130,7 +154,10 @@ export function AgentActivityAgentSearch() {
           enterKeyHint="search"
           inputMode="search"
           value={query}
-          onChange={(e) => setQuery(e.target.value)}
+          onChange={(e) => {
+            pendingSelectionRef.current = null;
+            setQuery(e.target.value);
+          }}
           onFocus={() => setOpen(true)}
           onBlur={() => {
             // Let click handlers run before closing.
@@ -161,7 +188,9 @@ export function AgentActivityAgentSearch() {
                   onMouseDown={(e) => e.preventDefault()}
                   onClick={setAllAgents}
                   className={`w-full rounded-lg px-2 py-1.5 text-left text-xs transition-colors ${
-                    !selectedAgent ? "bg-blue-50 text-blue-800" : "hover:bg-gray-50 text-gray-800"
+                    !selectedAgent && !pendingSelectionRef.current
+                      ? "bg-blue-50 text-blue-800"
+                      : "hover:bg-gray-50 text-gray-800"
                   }`}
                 >
                   <div className="truncate font-semibold">All agents</div>
@@ -171,15 +200,15 @@ export function AgentActivityAgentSearch() {
                   <p className="px-2 py-1.5 text-xs text-gray-500">No agents found</p>
                 ) : (
                   filtered.map((a) => {
-                    const isSelected = Number.isFinite(selectedAgentUserId) && selectedAgentUserId === a.id;
+                    const isSelected =
+                      (Number.isFinite(selectedAgentUserId) && selectedAgentUserId === a.id) ||
+                      pendingSelectionRef.current?.id === a.id;
                     return (
                       <button
                         key={a.id}
                         type="button"
                         onMouseDown={(e) => e.preventDefault()}
-                        onClick={() =>
-                          setAgent(a.id, a.name || a.email || `User ${a.id}`)
-                        }
+                        onClick={() => setAgent(a.id, a.name || a.email || `User ${a.id}`)}
                         className={`w-full rounded-lg px-2 py-1.5 text-left text-xs transition-colors ${
                           isSelected ? "bg-blue-50 text-blue-800" : "hover:bg-gray-50 text-gray-800"
                         }`}
@@ -198,4 +227,3 @@ export function AgentActivityAgentSearch() {
     </div>
   );
 }
-

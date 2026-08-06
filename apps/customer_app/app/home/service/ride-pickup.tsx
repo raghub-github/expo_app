@@ -14,6 +14,7 @@ import { Ionicons } from "@expo/vector-icons";
 import * as Contacts from "expo-contacts";
 import { useLocationStore } from "@/store/locationStore";
 import { useRecentLocationStore } from "@/store/recentLocationStore";
+import { useFavoriteLocationsStore } from "@/store/favoriteLocationsStore";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import { StoreFonts } from "@/constants/storeTypography";
 import { BookingRiderSheet } from "@/features/ride/BookingRiderSheet";
@@ -250,6 +251,9 @@ export default function RidePickupScreen() {
   const getRecentLocationKeys = useRecentLocationStore((s) => s.getRecentLocationKeys);
   const hydrateRecentLocations = useRecentLocationStore((s) => s.hydrate);
   const recentLocationItems = useRecentLocationStore((s) => s.items);
+  const hydrateFavorites = useFavoriteLocationsStore((s) => s.hydrate);
+  const isFavorite = useFavoriteLocationsStore((s) => s.isFavorite);
+  const toggleFavorite = useFavoriteLocationsStore((s) => s.toggleFavorite);
   const hasCoords = coords?.latitude != null && coords?.longitude != null;
 
   const dropInputRef = useRef<TextInput>(null);
@@ -366,7 +370,8 @@ export default function RidePickupScreen() {
 
   useEffect(() => {
     hydrateRecentLocations();
-  }, [hydrateRecentLocations]);
+    void hydrateFavorites();
+  }, [hydrateRecentLocations, hydrateFavorites]);
 
   useEffect(() => {
     if (restoringFromBook) return;
@@ -1324,7 +1329,9 @@ export default function RidePickupScreen() {
     loc: EnrichedPlaceResult,
     kind: "pickup" | "drop" | "stop",
     stopIndex?: number
-  ) => (
+  ) => {
+    const primary = resolvePlaceDisplayName(loc);
+    return (
     <LocationSearchResultRow
       key={`${kind}-${loc.fullAddress}-${loc.mapboxSuggestion?.mapbox_id ?? loc.latitude}`}
       item={loc}
@@ -1335,8 +1342,18 @@ export default function RidePickupScreen() {
         else if (kind === "drop") void handleDropSelect(loc);
         else if (stopIndex != null) void handleStopSelect(stopIndex, loc);
       }}
+      favorited={isFavorite(loc.latitude, loc.longitude, primary)}
+      onToggleFavorite={() =>
+        toggleFavorite({
+          latitude: loc.latitude,
+          longitude: loc.longitude,
+          primary,
+          fullAddress: loc.fullAddress,
+        })
+      }
     />
-  );
+    );
+  };
 
   const renderConnectorSegment = () => (
     <View style={styles.connectorSegment}>

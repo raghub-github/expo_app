@@ -555,7 +555,15 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
   );
 
   const [partnerNotifications, setPartnerNotifications] = useState<
-    Array<{ id: string; title: string; body: string; read: boolean; created_at?: string }>
+    Array<{
+      id: string;
+      title: string;
+      body: string;
+      read: boolean;
+      created_at?: string;
+      action_url?: string;
+      source?: string;
+    }>
   >([]);
   const [partnerNotifLoading, setPartnerNotifLoading] = useState(false);
   const [storeSettings, setStoreSettings] = useState<PartnerSheetStoreSettings>(
@@ -681,29 +689,49 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
     [resolvedStoreId, loadStoreSettings]
   );
 
+  const partnerNotifFetchedOnceRef = useRef(false);
+  const partnerNotifInFlightRef = useRef(false);
+
   const fetchPartnerNotifications = useCallback(async () => {
     if (!resolvedStoreId) {
       setPartnerNotifications([]);
+      partnerNotifFetchedOnceRef.current = false;
       return;
     }
-    setPartnerNotifLoading(true);
+    if (partnerNotifInFlightRef.current) return;
+    partnerNotifInFlightRef.current = true;
+    // Only the first load shows the full-panel spinner — background polls / realtime
+    // must not flash "Loading notifications…" every few seconds.
+    const showSpinner = !partnerNotifFetchedOnceRef.current;
+    if (showSpinner) setPartnerNotifLoading(true);
     try {
       const res = await fetch(
         `/api/merchant/store-notifications?store_id=${encodeURIComponent(resolvedStoreId)}`,
         { credentials: 'include' }
       );
       const data = (await res.json().catch(() => ({}))) as {
-        notifications?: Array<{ id: string; title: string; body: string; read: boolean; created_at?: string }>;
+        notifications?: Array<{
+          id: string;
+          title: string;
+          body: string;
+          read: boolean;
+          created_at?: string;
+          action_url?: string;
+          source?: string;
+        }>;
       };
       if (res.ok && Array.isArray(data.notifications)) {
         setPartnerNotifications(data.notifications);
-      } else {
+      } else if (!partnerNotifFetchedOnceRef.current) {
         setPartnerNotifications([]);
       }
+      // Keep previous list on transient errors after first success.
+      partnerNotifFetchedOnceRef.current = true;
     } catch {
-      setPartnerNotifications([]);
+      if (!partnerNotifFetchedOnceRef.current) setPartnerNotifications([]);
     } finally {
-      setPartnerNotifLoading(false);
+      partnerNotifInFlightRef.current = false;
+      if (showSpinner) setPartnerNotifLoading(false);
     }
   }, [resolvedStoreId]);
 
@@ -717,25 +745,43 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
   );
 
   const markPartnerNotificationRead = useCallback(
-    async (n: { id: string; read: boolean }) => {
-      if (!resolvedStoreId || n.read) return;
+    async (n: { id: string; read: boolean; action_url?: string }) => {
+      if (!resolvedStoreId) return;
+      if (!n.read) {
+        try {
+          const res = await fetch('/api/merchant/store-notifications', {
+            method: 'POST',
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              store_id: resolvedStoreId,
+              action: 'mark_read',
+              notification_id: n.id,
+            }),
+          });
+          if (res.ok) await fetchPartnerNotifications();
+        } catch {
+          /* ignore */
+        }
+      }
+      const href = typeof n.action_url === 'string' ? n.action_url.trim() : '';
+      if (!href) return;
       try {
-        const res = await fetch('/api/merchant/store-notifications', {
-          method: 'POST',
-          credentials: 'include',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            store_id: resolvedStoreId,
-            action: 'mark_read',
-            notification_id: n.id,
-          }),
-        });
-        if (res.ok) await fetchPartnerNotifications();
+        if (/^https?:\/\//i.test(href)) {
+          const u = new URL(href);
+          if (u.origin === window.location.origin) {
+            router.push(`${u.pathname}${u.search}${u.hash}`);
+            return;
+          }
+          window.location.assign(href);
+          return;
+        }
+        router.push(href.startsWith('/') ? href : `/${href}`);
       } catch {
         /* ignore */
       }
     },
-    [resolvedStoreId, fetchPartnerNotifications]
+    [resolvedStoreId, fetchPartnerNotifications, router]
   );
 
   const markAllPartnerNotificationsRead = useCallback(async () => {
@@ -1068,6 +1114,10 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
   }, [resolvedStoreId, licenseBlocked]);
 
   useEffect(() => {
+    partnerNotifFetchedOnceRef.current = false;
+  }, [resolvedStoreId]);
+
+  useEffect(() => {
     if (!resolvedStoreId) return;
     void fetchPartnerNotifications();
     const t = window.setInterval(() => void fetchPartnerNotifications(), 60_000);
@@ -1085,11 +1135,13 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
   }, [fetchPartnerNotifications]);
 
   // Live inbox: when backend deletes "New order!" on cancel/deliver, refresh immediately.
+  // Debounce so waiting-kind DELETE storms don't hammer the list endpoint.
   useEffect(() => {
     if (!resolvedStoreId || !isValidPartnerStoreId(resolvedStoreId)) return;
     const storePk = Number(resolvedStoreId);
     if (!Number.isFinite(storePk) || storePk <= 0) return;
     const supabase = createClient();
+    let debounceTimer: ReturnType<typeof setTimeout> | null = null;
     const ch = supabase
       .channel(`partner_store_notifs:${storePk}`)
       .on(
@@ -1101,11 +1153,16 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
           filter: `store_id=eq.${storePk}`,
         },
         () => {
-          void fetchPartnerNotifications();
+          if (debounceTimer) clearTimeout(debounceTimer);
+          debounceTimer = setTimeout(() => {
+            debounceTimer = null;
+            void fetchPartnerNotifications();
+          }, 750);
         }
       )
       .subscribe();
     return () => {
+      if (debounceTimer) clearTimeout(debounceTimer);
       void supabase.removeChannel(ch);
     };
   }, [resolvedStoreId, fetchPartnerNotifications]);

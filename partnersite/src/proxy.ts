@@ -59,14 +59,31 @@ export async function proxy(request: NextRequest) {
     return NextResponse.redirect(callbackUrl);
   }
 
-  const clearSupabaseCookies = () => {
+  const clearAuthCookiesOn = (res: NextResponse) => {
     const supabaseCookieNames = request.cookies
       .getAll()
       .map((c) => c.name)
       .filter((name) => name.startsWith("sb-"));
     supabaseCookieNames.forEach((name) => {
-      response.cookies.set(name, "", { path: "/", maxAge: 0 });
+      res.cookies.set(name, "", { path: "/", maxAge: 0 });
     });
+    expireSession({
+      set: (name, value, options) => {
+        res.cookies.set(name, value, options as Parameters<typeof res.cookies.set>[2]);
+      },
+    });
+  };
+
+  /** Redirect AND clear auth cookies on the same response (otherwise clears are lost). */
+  const redirectToLogin = (reason: string, redirectPath?: string) => {
+    const redirectUrl = request.nextUrl.clone();
+    redirectUrl.pathname = "/auth/login";
+    redirectUrl.search = "";
+    if (redirectPath) redirectUrl.searchParams.set("redirect", redirectPath);
+    redirectUrl.searchParams.set("reason", reason);
+    const res = NextResponse.redirect(redirectUrl);
+    clearAuthCookiesOn(res);
+    return res;
   };
 
   try {
@@ -162,27 +179,21 @@ export async function proxy(request: NextRequest) {
       if (isFatalRefreshTokenError(sessionError)) {
         console.log("[proxy] Fatal refresh token error — clearing this browser cookies only");
         // Do NOT call supabase.auth.signOut() — it can revoke refresh for other tabs/devices.
-        clearSupabaseCookies();
-        expireSession({
-          set: (name, value, options) => {
-            response.cookies.set(name, value, options as Parameters<typeof response.cookies.set>[2]);
-          },
-        });
-
         if (pathname.startsWith("/api/")) {
-          return NextResponse.json(
+          const res = NextResponse.json(
             { success: false, error: "Session invalid", code: "SESSION_INVALID" },
             { status: 401 }
           );
+          clearAuthCookiesOn(res);
+          return res;
         }
         if (!isLoginPage && !pathname.startsWith("/auth/register")) {
-          const redirectUrl = request.nextUrl.clone();
-          redirectUrl.pathname = "/auth/login";
-          const fullPath = redirectPathWithoutOAuthParams(pathname, request.nextUrl.search || "");
-          redirectUrl.searchParams.set("redirect", fullPath);
-          redirectUrl.searchParams.set("reason", "session_invalid");
-          return NextResponse.redirect(redirectUrl);
+          return redirectToLogin(
+            "session_invalid",
+            redirectPathWithoutOAuthParams(pathname, request.nextUrl.search || "")
+          );
         }
+        clearAuthCookiesOn(response);
       }
     }
 
@@ -226,6 +237,8 @@ export async function proxy(request: NextRequest) {
 
     // Authenticated users must never land on sign-in / signup entry pages.
     // Keep onboarding routes (/auth/register-store, resubmit-onboarding, callback) accessible.
+    // Exception: forced logout reasons — stay on login even if sb-* cookies briefly remain,
+    // otherwise login ↔ all-stores redirect loops (ERR_TOO_MANY_REDIRECTS).
     if (session) {
       const pathNorm = pathname.replace(/\/$/, "") || "/";
       const authEntryPaths = new Set([
@@ -240,6 +253,18 @@ export async function proxy(request: NextRequest) {
         "/auth/search",
       ]);
       if (authEntryPaths.has(pathNorm)) {
+        const reason = (request.nextUrl.searchParams.get("reason") ?? "").trim().toLowerCase();
+        const forcedLogout =
+          reason === "device_session_invalid" ||
+          reason === "session_invalid" ||
+          reason === "session_expired";
+
+        if (forcedLogout) {
+          // Stay on login and clear cookies on THIS response so the loop stops.
+          clearAuthCookiesOn(response);
+          return response;
+        }
+
         return NextResponse.redirect(new URL("/partners/all-stores", request.url));
       }
     }
@@ -297,23 +322,19 @@ export async function proxy(request: NextRequest) {
       }
       if (!deviceSessionValid) {
         // Account blocked / device row revoked — clear this browser only (no global signOut).
-        clearSupabaseCookies();
-        expireSession({
-          set: (name, value, options) => {
-            response.cookies.set(name, value, options as Parameters<typeof response.cookies.set>[2]);
-          },
-        });
+        // Cookie clears MUST be on the returned response (redirect/JSON), not on `response`.
         if (pathname.startsWith("/api/")) {
-          return NextResponse.json(
+          const res = NextResponse.json(
             { success: false, error: "Session expired or invalid for this device.", code: "DEVICE_SESSION_INVALID" },
             { status: 401 }
           );
+          clearAuthCookiesOn(res);
+          return res;
         }
-        const redirectUrl = request.nextUrl.clone();
-        redirectUrl.pathname = "/auth/login";
-        redirectUrl.searchParams.set("redirect", redirectPathWithoutOAuthParams(pathname, request.nextUrl.search || ""));
-        redirectUrl.searchParams.set("reason", "device_session_invalid");
-        return NextResponse.redirect(redirectUrl);
+        return redirectToLogin(
+          "device_session_invalid",
+          redirectPathWithoutOAuthParams(pathname, request.nextUrl.search || "")
+        );
       }
 
       const cookieWrapper = { get: (name: string) => request.cookies.get(name) };

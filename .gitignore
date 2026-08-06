@@ -64,4 +64,8 @@ serviceAccountKey.json
 **/google-services.json
 **/GoogleService-Info.plist
 
+# Local perf/debug workspace — not for commit
+.perf-isolation/
+backend/scripts/_tmp_*
+
 packages/bill-print/dist/

@@ -1,7 +1,13 @@
 /**
  * Extends app.json with expo-notifications and EAS project id for push tokens.
  * Set EAS_PROJECT_ID or EXPO_PUBLIC_EAS_PROJECT_ID for dev builds / production.
+ *
+ * Android FCM: place google-services.json next to this file (package
+ * com.gatimitra.customer). Only referenced when the file exists so Expo Go /
+ * local Metro does not warn about a missing path.
  */
+const fs = require("fs");
+const path = require("path");
 const appJson = require("./app.json");
 
 // Launcher icons: logo-only mark on pure black, ~40% safe zone — see scripts/generate-app-icons.mjs
@@ -10,6 +16,11 @@ const APP_ADAPTIVE_FOREGROUND = "./assets/adaptive-icon.png";
 const APP_ICON_BG = "#000000";
 /** Native splash + Android 12+ splash window — match JS bootstrap mint (GatiMitraBootstrapScreen). */
 const LAUNCHER_SPLASH_BG = "#5eead4";
+
+const googleServicesFile = path.resolve(__dirname, "google-services.json");
+const hasGoogleServices = fs.existsSync(googleServicesFile);
+
+const CUSTOMER_EAS_PROJECT_ID = "53fb1df5-d522-4e6a-bc73-04b7ad260992";
 
 module.exports = {
   ...appJson,
@@ -49,6 +60,7 @@ module.exports = {
         foregroundImage: APP_ADAPTIVE_FOREGROUND,
         backgroundColor: APP_ICON_BG,
       },
+      ...(hasGoogleServices ? { googleServicesFile: "./google-services.json" } : {}),
       permissions: [
         ...new Set([
           ...((appJson.expo.android?.permissions || []) as string[]),
@@ -82,6 +94,7 @@ module.exports = {
           color: "#14b8a6",
           defaultChannel: "customer_default",
           sounds: ["./assets/sounds/cx_notification.mp3"],
+          enableBackgroundRemoteNotifications: true,
         },
       ],
       [
@@ -120,13 +133,16 @@ module.exports = {
         process.env.EXPO_PUBLIC_MAPBOX_PUBLIC_TOKEN ||
         "",
       eas: {
+        ...(appJson.expo.extra?.eas && typeof appJson.expo.extra.eas === "object"
+          ? appJson.expo.extra.eas
+          : {}),
         // EAS project: https://expo.dev/accounts/raghubhunia/projects/gatimitra-customer
-        // Hardcoded fallback so EAS CLI can find the project without an env var,
-        // but env override still wins so CI / different environments can swap.
+        // Hardcoded fallback so getExpoPushTokenAsync always has a projectId.
         projectId:
           process.env.EAS_PROJECT_ID ||
           process.env.EXPO_PUBLIC_EAS_PROJECT_ID ||
-          "53fb1df5-d522-4e6a-bc73-04b7ad260992",
+          appJson.expo.extra?.eas?.projectId ||
+          CUSTOMER_EAS_PROJECT_ID,
       },
     },
     // Required for development builds — links the runtime to your EAS project.

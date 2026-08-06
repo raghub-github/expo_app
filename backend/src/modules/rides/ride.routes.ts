@@ -53,6 +53,9 @@ const placeRideBodySchema = z.object({
   customerTipAmount: z.number().int().min(0).optional().default(0),
   pickupPincode: z.string().optional().nullable(),
   pickupState: z.string().optional().nullable(),
+  couponCode: z.string().optional().nullable(),
+  selectedPlatformOfferId: z.coerce.number().int().positive().optional().nullable(),
+  forceNoAutoOffer: z.boolean().optional(),
 });
 
 const cancelRideBodySchema = z.object({
@@ -267,6 +270,8 @@ export async function rideRoutes(app: FastifyInstance) {
           dropLon: body.dropLng,
           pickupPincode: body.pickupPincode,
           pickupState: body.pickupState,
+          rideType: body.catalogCode,
+          vehicleType: body.catalogCode,
         });
         if (billRes.ok) {
           billing = {
@@ -365,6 +370,8 @@ export async function rideRoutes(app: FastifyInstance) {
             dropLon: body.dropLng,
             pickupPincode: body.pickupPincode,
             pickupState: body.pickupState,
+            rideType: code,
+            vehicleType: code,
             resolvedGeo,
           });
           if (billRes.ok) {
@@ -481,6 +488,9 @@ export async function rideRoutes(app: FastifyInstance) {
             customerTipAmount: body.customerTipAmount ?? 0,
             pickupPincode: body.pickupPincode,
             pickupState: body.pickupState,
+            couponCode: body.couponCode ?? null,
+            selectedPlatformOfferId: body.selectedPlatformOfferId ?? null,
+            forceNoAutoOffer: body.forceNoAutoOffer === true,
           });
           return result;
         } catch (e) {

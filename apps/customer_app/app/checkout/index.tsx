@@ -79,6 +79,7 @@ import { CouponApplyCelebration } from "@/components/checkout/CouponApplyCelebra
 import { CouponAvailableBottomSheet } from "@/components/checkout/CouponAvailableBottomSheet";
 import { BillSummarySheet } from "@/components/checkout/BillSummarySheet";
 import { CheckoutText } from "@/components/checkout/CheckoutText";
+import { AnimatedRupeeAmount } from "@/components/checkout/AnimatedRupeeAmount";
 import { CheckoutGatiCashWalletBar } from "@/components/checkout/CheckoutGatiCashWalletBar";
 import { CheckoutMissedOfferWalletCard } from "@/components/checkout/CheckoutMissedOfferWalletCard";
 import { MissedOfferUnlockSheet } from "@/components/checkout/MissedOfferUnlockSheet";
@@ -128,6 +129,7 @@ import { useCheckoutAddressHandoffStore } from "@/store/checkoutAddressHandoffSt
 import { useAuthStore } from "@/store/authStore";
 import { walletService } from "@/services/wallet.service";
 import { DeliveryPartnerInstructionSheet } from "@/components/address/DeliveryPartnerInstructionSheet";
+import { StoreScheduleSheet } from "@/components/store/StoreScheduleSheet";
 import { cartAddonTotalPerUnit, cartLineBaseUnitPrice } from "@/lib/cart-line-pricing";
 import { cartItemBaseId } from "@/lib/cart-line-identity";
 import {
@@ -367,21 +369,8 @@ const CHECKOUT_CTA_GREEN_MUTED = "#6B7280";
 /** Matches checkout header strip — synced with root status bar via screenChromeStore. */
 const CHECKOUT_HEADER_BG = "#F8F8F8";
 
-const SCHEDULE_SLOT_OPTIONS = [
-  "11:00 AM - 11:30 AM",
-  "11:30 AM - 12:00 PM",
-  "12:00 PM - 12:30 PM",
-  "12:30 PM - 1:00 PM",
-  "1:00 PM - 1:30 PM",
-  "1:30 PM - 2:00 PM",
-  "2:00 PM - 2:30 PM",
-  "2:30 PM - 3:00 PM",
-  "3:00 PM - 3:30 PM",
-  "5:00 PM - 5:30 PM",
-  "6:00 PM - 6:30 PM",
-  "7:00 PM - 8:00 PM",
-  "8:00 PM - 8:30 PM",
-] as const;
+/** Shared size for address / instructions / contact / bill trailing chevrons. */
+const CHECKOUT_META_CHEVRON_SIZE = 14;
 
 function checkoutAddressRowIcon(
   label: string | null | undefined,
@@ -1020,9 +1009,6 @@ export default function CheckoutScreen() {
   const [restaurantNoteModalVisible, setRestaurantNoteModalVisible] = useState(false);
   const [skipCutlery, setSkipCutlery] = useState(false);
   const [scheduleSheetVisible, setScheduleSheetVisible] = useState(false);
-  const [scheduleDayIndex, setScheduleDayIndex] = useState(0);
-  const [scheduleSlotDraft, setScheduleSlotDraft] = useState<string | null>(null);
-  const [scheduledDeliverySummary, setScheduledDeliverySummary] = useState<string | null>(null);
   const [instructionSheetVisible, setInstructionSheetVisible] = useState(false);
   const [addressSheetVisible, setAddressSheetVisible] = useState(false);
   const [addressSheetBusyId, setAddressSheetBusyId] = useState<number | null>(null);
@@ -1193,11 +1179,6 @@ export default function CheckoutScreen() {
       return () => resetStatusBarBackground();
     }, [isCheckoutSheet, setStatusBarBackground, resetStatusBarBackground])
   );
-
-  useEffect(() => {
-    if (!scheduleSheetVisible) return;
-    setScheduleSlotDraft(SCHEDULE_SLOT_OPTIONS[0]);
-  }, [scheduleDayIndex, scheduleSheetVisible]);
 
   // Only a serviceability-validated id can become the checkout address.
   // Candidate resolution (nearby/default/handoff) happens below and must pass
@@ -2468,13 +2449,46 @@ export default function CheckoutScreen() {
     return [...cartLevelCheckoutPromoDiscounts].sort((a, b) => b.amount - a.amount)[0];
   }, [cartLevelCheckoutPromoDiscounts]);
 
+  /** Coupon code from server auto-apply (no client pin) — for Applied badges / featured hide. */
+  const serverAutoAppliedCouponCode = useMemo(() => {
+    if (checkoutOfferUserPinned || forceNoAutoOffer) return null;
+    for (const d of cartLevelCheckoutPromoDiscounts) {
+      const code = d.meta?.code;
+      if (typeof code === "string" && code.trim()) return code.trim();
+      const couponId = d.meta?.couponId;
+      if (typeof couponId === "number" && couponId > 0) {
+        const fromLabel = String(d.label ?? "").replace(/^Coupon\s+/i, "").trim();
+        if (fromLabel) return fromLabel;
+      }
+    }
+    return null;
+  }, [cartLevelCheckoutPromoDiscounts, checkoutOfferUserPinned, forceNoAutoOffer]);
+
+  const effectiveAppliedCouponCode = appliedCouponCode ?? serverAutoAppliedCouponCode;
+
   const couponDiscountAmount = useMemo(() => {
-    if (!appliedCouponCode || !primaryCheckoutDiscount) return 0;
-    if (!discountMatchesCoupon(primaryCheckoutDiscount.label, appliedCouponCode, appliedCouponLabel)) {
+    if (!effectiveAppliedCouponCode || !primaryCheckoutDiscount) return 0;
+    const metaCode =
+      typeof primaryCheckoutDiscount.meta?.code === "string"
+        ? primaryCheckoutDiscount.meta.code.trim()
+        : "";
+    if (
+      metaCode &&
+      metaCode.toUpperCase() === effectiveAppliedCouponCode.toUpperCase()
+    ) {
+      return primaryCheckoutDiscount.amount;
+    }
+    if (
+      !discountMatchesCoupon(
+        primaryCheckoutDiscount.label,
+        effectiveAppliedCouponCode,
+        appliedCouponLabel
+      )
+    ) {
       return 0;
     }
     return primaryCheckoutDiscount.amount;
-  }, [primaryCheckoutDiscount, appliedCouponCode, appliedCouponLabel]);
+  }, [primaryCheckoutDiscount, effectiveAppliedCouponCode, appliedCouponLabel]);
 
   const itemDealSavingsTotal = useMemo(
     () => Object.values(itemDealSavingsByOfferId).reduce((sum, n) => sum + n, 0),
@@ -2581,11 +2595,10 @@ export default function CheckoutScreen() {
 
   const hideGatiCashUnlockCard = Boolean(eligibleStorePrecisionOffer) && !missedOfferWalletPending;
 
-  // Auto-apply of the best eligible merchant Precision offer happens server-side
-  // (checkoutExclusiveOffer.ts, whenever selectedMerchantOfferId/selectedPlatformOfferId
-  // are both null) — the client never soft-selects/echoes an id back into billingQuery's
-  // params for the auto case. This avoids both a guaranteed second billing-calculate
-  // round trip and a stale client-held id going silently out of sync with eligibility.
+  // Auto-apply of the best eligible merchant Precision offer / auto_apply coupon happens
+  // server-side (checkoutExclusiveOffer.ts, whenever selectedMerchantOfferId /
+  // selectedPlatformOfferId / couponCode are all unset). The client never soft-selects
+  // those back into billingQuery params for the auto case.
 
   useEffect(() => {
     pendingMissedOfferWalletRef.current = null;
@@ -2731,9 +2744,12 @@ export default function CheckoutScreen() {
   }, [queryClient]);
 
   const featuredCoupon = useMemo(() => {
-    const list = checkoutOffersQuery.data?.coupons?.filter((c) => c.code !== appliedCouponCode) ?? [];
+    const list =
+      checkoutOffersQuery.data?.coupons?.filter(
+        (c) => c.code.toUpperCase() !== (effectiveAppliedCouponCode ?? "").toUpperCase()
+      ) ?? [];
     return list[0] ?? null;
-  }, [checkoutOffersQuery.data?.coupons, appliedCouponCode]);
+  }, [checkoutOffersQuery.data?.coupons, effectiveAppliedCouponCode]);
 
   const appliedPlatformOfferId = useMemo(() => {
     for (const d of cartLevelCheckoutPromoDiscounts) {
@@ -2924,9 +2940,27 @@ export default function CheckoutScreen() {
     if (appliedCouponCode) {
       const couponApplied = checkoutPromos.some((d) => !isSubscriptionBenefitDiscount(d));
       if (!couponApplied) {
+        const listed = (checkoutOffersQuery.data?.coupons ?? []).find(
+          (c) => c.code.toUpperCase() === appliedCouponCode.toUpperCase()
+        );
+        const minOrd = listed?.minOrderAmount;
+        const gap =
+          minOrd != null && minOrd > 0
+            ? Math.ceil(Math.max(0, minOrd - (cartSubtotalForOffers ?? 0)))
+            : 0;
+        let msg = "This coupon could not be applied on this order.";
+        if (gap > 0) {
+          msg = `Add ₹${gap} more to use this coupon (min order ₹${Math.round(minOrd!)}).`;
+        } else if (listed?.customerSegment === "NEW") {
+          msg = "This coupon is for new customers only.";
+        } else if (minOrd != null && minOrd > 0) {
+          msg = `Minimum order value ₹${Math.round(minOrd)} required for this coupon.`;
+        }
         setAppliedCouponCode(null);
         setAppliedCouponLabel(null);
         setCheckoutOfferUserPinned(false);
+        setCouponCelebrationVisible(false);
+        setCouponApplyError(msg);
       }
     }
   }, [
@@ -2942,6 +2976,7 @@ export default function CheckoutScreen() {
     cartLevelCheckoutPromoDiscounts,
     checkoutOffersQuery.data,
     checkoutOffersQuery.isFetching,
+    cartSubtotalForOffers,
   ]);
 
   /** Surface when a user-pinned platform/store promo did not land on this bill (transient). */
@@ -2986,6 +3021,45 @@ export default function CheckoutScreen() {
     const trimmed = code.trim();
     if (!trimmed) return;
     setCouponApplyError(null);
+    // Prefer matching an eligible platform offer by its coupon code (same engine).
+    const platformHit =
+      checkoutOffersQuery.data?.platformOffers.find(
+        (o) =>
+          (o.couponCode ?? "").trim().toUpperCase() === trimmed.toUpperCase()
+      ) ?? null;
+    if (platformHit) {
+      setSelectedMerchantOfferId(null);
+      pendingMissedOfferWalletRef.current = null;
+      setMissedOfferWalletPending(false);
+      setSelectedMissedOfferKey(null);
+      setMissedOfferCelebration(null);
+      setForceNoAutoOffer(false);
+      setCheckoutOfferUserPinned(true);
+      setSelectedPlatformOfferId(platformHit.id);
+      setAppliedCouponCode(platformHit.couponCode?.trim() || trimmed);
+      setAppliedCouponLabel(platformHit.name ?? label ?? trimmed);
+      setCouponCodeInput("");
+      setCouponSheetVisible(false);
+      setCouponCelebrationCode(platformHit.couponCode?.trim() || trimmed);
+      setCouponCelebrationVisible(true);
+      return;
+    }
+
+    const listed = checkoutOffersQuery.data?.coupons?.find(
+      (c) => c.code.toUpperCase() === trimmed.toUpperCase()
+    );
+    const minOrd = listed?.minOrderAmount;
+    const gap =
+      minOrd != null && minOrd > 0
+        ? Math.ceil(Math.max(0, minOrd - (cartSubtotalForOffers ?? 0)))
+        : 0;
+    if (gap > 0) {
+      setCouponApplyError(
+        `Add ₹${gap} more to use this coupon (min order ₹${Math.round(minOrd!)}).`
+      );
+      return;
+    }
+
     // Replace any other checkout promo (platform / merchant / GatiCash unlock). Membership stays.
     setSelectedPlatformOfferId(null);
     setSelectedMerchantOfferId(null);
@@ -3001,12 +3075,16 @@ export default function CheckoutScreen() {
     setCouponSheetVisible(false);
     setCouponCelebrationCode(trimmed);
     setCouponCelebrationVisible(true);
-  }, [hasEligibleCheckoutOfferBase]);
+  }, [hasEligibleCheckoutOfferBase, checkoutOffersQuery.data?.platformOffers, checkoutOffersQuery.data?.coupons, cartSubtotalForOffers]);
 
   const applyPlatformOfferById = useCallback((offerId: number, name: string | null) => {
     if (!hasEligibleCheckoutOfferBase) return;
-    setAppliedCouponCode(null);
-    setAppliedCouponLabel(null);
+    const fromList =
+      checkoutOffersQuery.data?.platformOffers.find((o) => o.id === offerId) ??
+      checkoutOffersQuery.data?.platformOffersIneligible?.find((o) => o.id === offerId);
+    const code = fromList?.couponCode?.trim() || null;
+    setAppliedCouponCode(code);
+    setAppliedCouponLabel(name ?? code);
     setSelectedMerchantOfferId(null);
     pendingMissedOfferWalletRef.current = null;
     setMissedOfferWalletPending(false);
@@ -3017,9 +3095,9 @@ export default function CheckoutScreen() {
     setCheckoutOfferUserPinned(true);
     setCouponApplyError(null);
     setCouponSheetVisible(false);
-    setCouponCelebrationCode(name?.trim() || "Offer");
+    setCouponCelebrationCode(code || name?.trim() || "Offer");
     setCouponCelebrationVisible(true);
-  }, [hasEligibleCheckoutOfferBase]);
+  }, [hasEligibleCheckoutOfferBase, checkoutOffersQuery.data]);
 
   const applyMerchantOfferById = useCallback((offerId: number, couponCode?: string | null) => {
     if (!hasEligibleCheckoutOfferBase) return;
@@ -3184,7 +3262,8 @@ export default function CheckoutScreen() {
     setAppliedCouponCode(null);
     setAppliedCouponLabel(null);
     setCheckoutOfferUserPinned(false);
-    setForceNoAutoOffer(false);
+    // Opt out of server auto-apply so the same coupon does not immediately reattach.
+    setForceNoAutoOffer(true);
     setCouponCelebrationVisible(false);
   }, []);
 
@@ -3498,8 +3577,9 @@ export default function CheckoutScreen() {
    * `ready` snaps the first real bill straight in instead of visibly counting up from
    * the 0 placeholder used before billingQuery resolves. */
   const billingReady = serverBill != null;
-  const animatedToPayAmount = useAnimatedCount(toPayAmount ?? 0, 260, billingReady);
-  const animatedGmStrikethroughTotal = useAnimatedCount(gmStrikethroughTotal ?? 0, 260, billingReady);
+  // The two animated totals used to be driven from here, which re-rendered this
+  // entire component once per animation tick on every bill change. They now live
+  // inside <AnimatedRupeeAmount>, so each tick re-renders only that leaf.
   /** Payable is fully covered by wallet — explain ₹0 on the Place Order CTA. */
   const fullyPaidByGatiCash =
     toPayAmount != null && toPayAmount <= 0.005 && gatiCashApplyAmount > 0.005;
@@ -3566,7 +3646,6 @@ export default function CheckoutScreen() {
         ...(instrAvoidCalling ? { avoidCalling: true } : {}),
         ...(instrDontRingBell ? { dontRingBell: true } : {}),
         ...(instrPetAtHome ? { petAtHome: true } : {}),
-        ...(scheduledDeliverySummary ? { scheduledDeliverySummary } : {}),
         ...(restaurantNote.trim() ? { restaurantNote: restaurantNote.trim() } : {}),
         ...(skipCutlery ? { skipCutlery: true } : {}),
         ...(gatiCashApplyAmount > 0.005 ? { gatiCashAmount: gatiCashApplyAmount } : {}),
@@ -3611,7 +3690,6 @@ export default function CheckoutScreen() {
     instrAvoidCalling,
     instrDontRingBell,
     instrPetAtHome,
-    scheduledDeliverySummary,
     restaurantNote,
     skipCutlery,
     gatiCashApplyAmount,
@@ -4177,20 +4255,6 @@ export default function CheckoutScreen() {
   checkoutDeliveryEtaRef.current = checkoutDeliveryEta;
   const deliveryEta = checkoutDeliveryEta.label;
   const deliveryEtaImpactLabel = checkoutWeather?.etaImpactLabel ?? null;
-
-  const scheduleDayTabs = useMemo(() => {
-    const out: { id: string; line1: string; line2: string }[] = [];
-    const base = new Date();
-    for (let i = 0; i < 5; i++) {
-      const d = new Date(base.getFullYear(), base.getMonth(), base.getDate() + i);
-      const line1 = d.toLocaleDateString("en-IN", { day: "numeric", month: "short" });
-      const line2 =
-        i === 0 ? "Today" : i === 1 ? "Tomorrow" : d.toLocaleDateString("en-IN", { weekday: "long" });
-      const id = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-      out.push({ id, line1, line2 });
-    }
-    return out;
-  }, []);
 
   const partnerInstructionSummary = useMemo(() => {
     const bits: string[] = [];
@@ -4836,11 +4900,6 @@ export default function CheckoutScreen() {
                   {deliveryEtaImpactLabel ? (
                     <CheckoutText style={styles.weatherEtaImpact}>{deliveryEtaImpactLabel}</CheckoutText>
                   ) : null}
-                  {scheduledDeliverySummary ? (
-                    <CheckoutText style={styles.scheduledSummaryLine} numberOfLines={2}>
-                      {scheduledDeliverySummary}
-                    </CheckoutText>
-                  ) : null}
                   <CheckoutText style={styles.gmScheduleLine} onPress={() => setScheduleSheetVisible(true)}>
                     Want this later? Schedule it
                   </CheckoutText>
@@ -4852,54 +4911,51 @@ export default function CheckoutScreen() {
 
             {hasDeliveryAddress ? (
               <>
-            <View style={styles.gmAddrBlock}>
-              <View style={styles.gmAddrRowInner}>
-                <Ionicons
-                  name="location-outline"
-                  size={20}
-                  color={GatiMitraColors.textSecondary}
-                  style={styles.gmAddrIcon}
-                />
-                <Pressable
-                  style={({ pressed }) => [
-                    styles.deliveryAddrTextWrap,
-                    pressed && styles.deliveryAddrRowPressed,
-                  ]}
-                  onPress={openCheckoutAddressSheet}
-                  android_ripple={{ color: "rgba(45, 181, 160, 0.08)" }}
-                >
-                  <View style={styles.deliveryAddrTitleRow}>
-                    <View style={styles.deliveryAddrTitleTextWrap}>
-                      <CheckoutText style={styles.deliveryAddrLabel} numberOfLines={2}>
-                        <CheckoutText style={styles.deliveryAddrPre}>Delivery at </CheckoutText>
-                        <CheckoutText style={styles.deliveryAddrName}>
-                          {selectedAddress?.label ?? "—"}
-                        </CheckoutText>
+            <TouchableOpacity
+              style={[styles.gmCardPad, styles.gmMetaRow]}
+              onPress={openCheckoutAddressSheet}
+              activeOpacity={0.75}
+              accessibilityRole="button"
+              accessibilityLabel="Change delivery address"
+            >
+              <Ionicons
+                name="location-outline"
+                size={20}
+                color={GatiMitraColors.textSecondary}
+                style={styles.gmAddrIcon}
+              />
+              <View style={styles.gmMetaTextCol}>
+                <View style={styles.deliveryAddrTitleRow}>
+                  <View style={styles.deliveryAddrTitleTextWrap}>
+                    <CheckoutText style={styles.deliveryAddrLabel} numberOfLines={2}>
+                      <CheckoutText style={styles.deliveryAddrPre}>Delivery at </CheckoutText>
+                      <CheckoutText style={styles.deliveryAddrName}>
+                        {selectedAddress?.label ?? "—"}
                       </CheckoutText>
-                    </View>
+                    </CheckoutText>
                   </View>
-                  <DeliveryAddressText
-                    variant="checkout"
-                    address={selectedAddress?.fullAddress}
-                    emptyLabel="Tap to choose delivery address"
-                    style={styles.deliveryAddrSub}
-                  />
-                  {leaveAtDoor ? (
-                    <View style={[styles.leaveAtDoorChip, styles.leaveAtDoorChipBelowAddr]}>
-                      <Ionicons name="checkmark-circle" size={14} color={GatiMitraColors.emerald} />
-                      <CheckoutText style={styles.leaveAtDoorChipText}>Leave at door</CheckoutText>
-                    </View>
-                  ) : null}
-                </Pressable>
-                <Pressable
-                  style={styles.gmAddrChevronHit}
-                  onPress={openCheckoutAddressSheet}
-                  hitSlop={8}
-                >
-                  <Ionicons name="chevron-forward" size={18} color={GatiMitraColors.textSecondary} />
-                </Pressable>
+                </View>
+                <DeliveryAddressText
+                  variant="checkout"
+                  address={selectedAddress?.fullAddress}
+                  emptyLabel="Tap to choose delivery address"
+                  style={styles.deliveryAddrSub}
+                />
+                {leaveAtDoor ? (
+                  <View style={[styles.leaveAtDoorChip, styles.leaveAtDoorChipBelowAddr]}>
+                    <Ionicons name="checkmark-circle" size={14} color={GatiMitraColors.emerald} />
+                    <CheckoutText style={styles.leaveAtDoorChipText}>Leave at door</CheckoutText>
+                  </View>
+                ) : null}
               </View>
-            </View>
+              <View style={[styles.gmMetaChevron, styles.gmMetaChevronTop]}>
+                <Ionicons
+                  name="chevron-forward"
+                  size={CHECKOUT_META_CHEVRON_SIZE}
+                  color={GatiMitraColors.textSecondary}
+                />
+              </View>
+            </TouchableOpacity>
 
             <View style={styles.gmCardDash} />
 
@@ -4917,7 +4973,13 @@ export default function CheckoutScreen() {
                   </CheckoutText>
                 ) : null}
               </View>
-              <Ionicons name="chevron-forward" size={18} color={GatiMitraColors.textSecondary} />
+              <View style={styles.gmMetaChevron}>
+                <Ionicons
+                  name="chevron-forward"
+                  size={CHECKOUT_META_CHEVRON_SIZE}
+                  color={GatiMitraColors.textSecondary}
+                />
+              </View>
             </TouchableOpacity>
 
             <View style={styles.gmCardDash} />
@@ -4939,7 +5001,13 @@ export default function CheckoutScreen() {
                   </CheckoutText>
                 ) : null}
               </View>
-              <Ionicons name="chevron-forward" size={18} color={GatiMitraColors.textSecondary} />
+              <View style={styles.gmMetaChevron}>
+                <Ionicons
+                  name="chevron-forward"
+                  size={CHECKOUT_META_CHEVRON_SIZE}
+                  color={GatiMitraColors.textSecondary}
+                />
+              </View>
             </TouchableOpacity>
 
             <View style={styles.gmCardDash} />
@@ -4964,11 +5032,17 @@ export default function CheckoutScreen() {
                     <>
                       <View style={styles.gmBillPriceCluster}>
                         {gmStrikethroughTotal != null ? (
-                          <CheckoutText style={styles.gmBillStrike}>₹{animatedGmStrikethroughTotal.toFixed(2)}</CheckoutText>
+                          <AnimatedRupeeAmount
+                            value={gmStrikethroughTotal}
+                            ready={billingReady}
+                            style={styles.gmBillStrike}
+                          />
                         ) : null}
-                        <CheckoutText style={styles.gmBillFinal}>
-                          {toPayAmount != null ? `₹${animatedToPayAmount.toFixed(2)}` : "—"}
-                        </CheckoutText>
+                        <AnimatedRupeeAmount
+                          value={toPayAmount}
+                          ready={billingReady}
+                          style={styles.gmBillFinal}
+                        />
                         {checkoutSavingsTotal > 0.005 ? (
                           <View style={styles.gmSavedPill}>
                             <CheckoutText style={styles.gmSavedPillText}>
@@ -4977,7 +5051,13 @@ export default function CheckoutScreen() {
                           </View>
                         ) : null}
                       </View>
-                      <Ionicons name="chevron-forward" size={22} color={GatiMitraColors.textSecondary} />
+                      <View style={styles.gmMetaChevron}>
+                        <Ionicons
+                          name="chevron-forward"
+                          size={CHECKOUT_META_CHEVRON_SIZE}
+                          color={GatiMitraColors.textSecondary}
+                        />
+                      </View>
                     </>
                   ) : (
                     <GMSkeleton style={{ width: 72, height: 18, borderRadius: 4 }} />
@@ -5141,7 +5221,7 @@ export default function CheckoutScreen() {
           setCouponApplyError(null);
         }}
         couponError={couponApplyError}
-        appliedCouponCode={appliedCouponCode}
+        appliedCouponCode={effectiveAppliedCouponCode}
         appliedPlatformOfferId={appliedPlatformOfferId}
         appliedMerchantOfferId={appliedMerchantOfferId}
         appliedDiscounts={appliedDiscountRows}
@@ -5322,13 +5402,21 @@ export default function CheckoutScreen() {
                   <View style={styles.ctaSolidLeft}>
                     <View style={styles.ctaSolidAmountRow}>
                       {gmStrikethroughTotal != null ? (
-                        <CheckoutText style={styles.ctaSolidStrike} bold numberOfLines={1}>
-                          ₹{animatedGmStrikethroughTotal.toFixed(2)}
-                        </CheckoutText>
+                        <AnimatedRupeeAmount
+                          value={gmStrikethroughTotal}
+                          ready={billingReady}
+                          style={styles.ctaSolidStrike}
+                          bold
+                          numberOfLines={1}
+                        />
                       ) : null}
-                      <CheckoutText style={styles.ctaSolidAmount} bold numberOfLines={1}>
-                        {toPayAmount != null ? `₹${animatedToPayAmount.toFixed(2)}` : "—"}
-                      </CheckoutText>
+                      <AnimatedRupeeAmount
+                        value={toPayAmount}
+                        ready={billingReady}
+                        style={styles.ctaSolidAmount}
+                        bold
+                        numberOfLines={1}
+                      />
                     </View>
                     <View style={styles.ctaSolidTotalRow}>
                       <CheckoutText style={styles.ctaSolidTotal} bold numberOfLines={1}>
@@ -5512,81 +5600,10 @@ export default function CheckoutScreen() {
         </KeyboardAvoidingView>
       </Modal>
 
-      <Modal
+      <StoreScheduleSheet
         visible={scheduleSheetVisible}
-        transparent
-        animationType="slide"
-        presentationStyle="overFullScreen"
-        onRequestClose={() => setScheduleSheetVisible(false)}
-      >
-        <View style={styles.noteSheetRoot}>
-          <Pressable style={styles.noteSheetDim} onPress={() => setScheduleSheetVisible(false)} />
-          <View style={[styles.noteSheetCard, { paddingBottom: Math.max(insets.bottom, 20) + 10 }]}>
-            <CheckoutText style={styles.scheduleSheetTitle}>Select your delivery time</CheckoutText>
-            <ScrollView
-              horizontal
-              showsHorizontalScrollIndicator={false}
-              contentContainerStyle={styles.scheduleTabRow}
-              keyboardShouldPersistTaps="handled"
-            >
-              {scheduleDayTabs.map((tab, idx) => {
-                const on = idx === scheduleDayIndex;
-                return (
-                  <Pressable
-                    key={tab.id}
-                    onPress={() => setScheduleDayIndex(idx)}
-                    style={styles.scheduleTabHit}
-                    hitSlop={4}
-                  >
-                    <CheckoutText style={[styles.scheduleTabLine1, on && styles.scheduleTabLine1On]}>{tab.line1}</CheckoutText>
-                    <CheckoutText style={[styles.scheduleTabLine2, on && styles.scheduleTabLine2On]}>{tab.line2}</CheckoutText>
-                    <View style={[styles.scheduleTabUnderline, on ? styles.scheduleTabUnderlineOn : styles.scheduleTabUnderlineOff]} />
-                  </Pressable>
-                );
-              })}
-            </ScrollView>
-            <ScrollView
-              style={styles.scheduleSlotScroll}
-              contentContainerStyle={styles.scheduleSlotScrollContent}
-              showsVerticalScrollIndicator={false}
-              keyboardShouldPersistTaps="handled"
-            >
-              {SCHEDULE_SLOT_OPTIONS.map((slot) => {
-                const picked = scheduleSlotDraft === slot;
-                return (
-                  <Pressable
-                    key={slot}
-                    onPress={() => setScheduleSlotDraft(slot)}
-                    style={[styles.scheduleSlotRow, picked && styles.scheduleSlotRowOn]}
-                  >
-                    <CheckoutText style={[styles.scheduleSlotText, picked && styles.scheduleSlotTextOn]}>{slot}</CheckoutText>
-                  </Pressable>
-                );
-              })}
-            </ScrollView>
-            <TouchableOpacity
-              activeOpacity={0.92}
-              onPress={() => {
-                const tab = scheduleDayTabs[scheduleDayIndex];
-                const slot = scheduleSlotDraft ?? SCHEDULE_SLOT_OPTIONS[0];
-                if (tab && slot) {
-                  setScheduledDeliverySummary(`${tab.line1} (${tab.line2}), ${slot}`);
-                }
-                setScheduleSheetVisible(false);
-              }}
-            >
-              <LinearGradient
-                colors={[CX.mintGradient[0], CX.mintGradient[1]]}
-                start={{ x: 0, y: 0 }}
-                end={{ x: 1, y: 0 }}
-                style={styles.scheduleConfirmBtn}
-              >
-                <CheckoutText style={styles.scheduleConfirmBtnText}>Confirm</CheckoutText>
-              </LinearGradient>
-            </TouchableOpacity>
-          </View>
-        </View>
-      </Modal>
+        onClose={() => setScheduleSheetVisible(false)}
+      />
 
       <DeliveryPartnerInstructionSheet
         visible={instructionSheetVisible}
@@ -7200,6 +7217,27 @@ const styles = StyleSheet.create({
   gmAddrBlock: {
     paddingHorizontal: 14,
     paddingVertical: 12,
+  },
+  gmMetaRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 10,
+    paddingTop: 12,
+    paddingBottom: 12,
+  },
+  gmMetaTextCol: {
+    flex: 1,
+    minWidth: 0,
+  },
+  /** Fixed trailing slot so address / instructions / contact / bill chevrons share one column. */
+  gmMetaChevron: {
+    width: CHECKOUT_META_CHEVRON_SIZE,
+    flexShrink: 0,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  gmMetaChevronTop: {
+    marginTop: 2,
   },
   deliveryAddrTitleRow: {
     flexDirection: "row",

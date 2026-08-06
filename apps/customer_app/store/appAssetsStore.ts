@@ -35,8 +35,12 @@ export const useAppAssetsStore = create<AppAssetsState>((set) => ({
   homeImagesPrefetched: false,
   setAssets: (assets) => {
     const normalized = normalizeAssets(assets);
-    writeSyncAppAssets(normalized);
-    set({ assets: normalized, loaded: true, loading: false });
+    set((state) => {
+      // Merge so a network refresh never briefly drops keys already on screen.
+      const merged = { ...state.assets, ...normalized };
+      writeSyncAppAssets(merged);
+      return { assets: merged, loaded: true, loading: false };
+    });
   },
   setLoading: (loading) => set({ loading }),
   setHomeImagesPrefetched: (done) => set({ homeImagesPrefetched: done }),

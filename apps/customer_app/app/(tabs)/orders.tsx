@@ -11,12 +11,12 @@ import {
   TouchableOpacity,
   StyleSheet,
   ActivityIndicator,
-  Image,
   Share,
   Alert,
   Animated,
   useWindowDimensions,
 } from "react-native";
+import { Image } from "expo-image";
 import { Gesture, GestureDetector, ScrollView as GHScrollView } from "react-native-gesture-handler";
 import { runOnJS } from "react-native-reanimated";
 import { useAppSafeAreaInsets } from "@/hooks/useAppSafeAreaInsets";
@@ -55,6 +55,7 @@ import {
   isTerminalOrderStatus,
   normalizeCustomerOrderStatus,
 } from "@/lib/customer-order-status-display";
+import { resolveOrderCustomerPaidAmount } from "@/lib/orderBillBreakdown";
 
 const GREEN = GatiMitraColors.primaryMint;
 const ERROR = GatiMitraColors.errorRed;
@@ -66,6 +67,27 @@ const PAGE_BG = "#F5F5F5";
 const PAD = 16;
 
 type OrdersTab = "active" | "history";
+
+/** Cashin + GatiCash for list cards (grand_total alone is ₹0 when fully wallet-paid). */
+function orderListPriceDisplay(order: OrderSummary): {
+  amount: number | null;
+  fullyGatiCash: boolean;
+} {
+  const paid = resolveOrderCustomerPaidAmount(order);
+  const gati = Number(order.gatiCashUsed);
+  const gatiAmt = Number.isFinite(gati) && gati > 0.005 ? gati : 0;
+  const cashin = Number(order.totalAmount);
+  const fully =
+    order.fullyGatiCashUsed === true ||
+    (gatiAmt > 0.005 && (!Number.isFinite(cashin) || cashin <= 0.005));
+  if (paid > 0.005) {
+    return { amount: paid, fullyGatiCash: fully };
+  }
+  if (order.totalAmount != null && Number.isFinite(order.totalAmount)) {
+    return { amount: Math.max(0, order.totalAmount), fullyGatiCash: fully };
+  }
+  return { amount: null, fullyGatiCash: fully };
+}
 
 function orderMatchesSearch(order: OrderSummary, query: string): boolean {
   const q = query.trim().toLowerCase();
@@ -134,13 +156,14 @@ function ActiveOrderCard({
   const items = order.items ?? [];
   const primaryItems = items.slice(0, 2);
   const moreCount = Math.max(0, items.length - 2);
+  const price = orderListPriceDisplay(order);
 
   return (
     <View style={styles.orderCard}>
       <View style={styles.orderCardHeader}>
         <View style={styles.orderThumb}>
           {bannerUri ? (
-            <Image source={{ uri: bannerUri }} style={styles.orderThumbImage} resizeMode="cover" />
+            <Image source={{ uri: bannerUri }} style={styles.orderThumbImage} contentFit="cover" />
           ) : (
             <View style={styles.orderThumbFallback}>
               <Ionicons name="restaurant-outline" size={22} color="#B0B0B0" />
@@ -218,9 +241,14 @@ function ActiveOrderCard({
       <TouchableOpacity style={styles.orderFooter} onPress={onTrack} activeOpacity={0.85}>
         <AppText style={styles.orderDate}>Order placed on {formatOrderDate(order.createdAt)}</AppText>
         <View style={styles.priceRow}>
-          {order.totalAmount != null && (
-            <AppText style={styles.orderPrice}>₹{order.totalAmount.toFixed(2)}</AppText>
-          )}
+          <View style={styles.priceCol}>
+            {price.amount != null && (
+              <AppText style={styles.orderPrice}>₹{price.amount.toFixed(2)}</AppText>
+            )}
+            {price.fullyGatiCash ? (
+              <AppText style={styles.gatiCashUsedHint}>100% GatiCash</AppText>
+            ) : null}
+          </View>
           <Ionicons name="chevron-forward" size={16} color="#9CA3AF" />
         </View>
       </TouchableOpacity>
@@ -288,6 +316,7 @@ function HistoryOrderCard({
       refundStatus: order.refundStatus,
     });
   const hasRating = order.storeRatingSubmitted === true && order.storeRating != null;
+  const price = orderListPriceDisplay(order);
 
   const hasDeliveryAnchor = deliveryAddressId != null || dropCoords != null;
   const { data: storeQuote } = useStoreDeliveryQuote({
@@ -315,7 +344,7 @@ function HistoryOrderCard({
       <View style={styles.orderCardHeader}>
         <View style={styles.orderThumb}>
           {bannerUri ? (
-            <Image source={{ uri: bannerUri }} style={styles.orderThumbImage} resizeMode="cover" />
+            <Image source={{ uri: bannerUri }} style={styles.orderThumbImage} contentFit="cover" />
           ) : (
             <View style={styles.orderThumbFallback}>
               <Ionicons name="restaurant-outline" size={22} color="#B0B0B0" />
@@ -420,9 +449,14 @@ function HistoryOrderCard({
               })}
             </AppText>
             <View style={styles.priceRow}>
-              {order.totalAmount != null && (
-                <AppText style={styles.orderPrice}>₹{order.totalAmount.toFixed(2)}</AppText>
-              )}
+              <View style={styles.priceCol}>
+                {price.amount != null && (
+                  <AppText style={styles.orderPrice}>₹{price.amount.toFixed(2)}</AppText>
+                )}
+                {price.fullyGatiCash ? (
+                  <AppText style={styles.gatiCashUsedHint}>100% GatiCash</AppText>
+                ) : null}
+              </View>
               <Ionicons name="chevron-forward" size={16} color="#9CA3AF" />
             </View>
           </TouchableOpacity>
@@ -432,11 +466,11 @@ function HistoryOrderCard({
           <AppText style={styles.orderDate}>Order placed on {formatOrderDate(order.createdAt)}</AppText>
           <View style={styles.priceRow}>
             <View style={styles.priceCol}>
-              {order.totalAmount != null && (
-                <AppText style={styles.orderPrice}>₹{order.totalAmount.toFixed(2)}</AppText>
+              {price.amount != null && (
+                <AppText style={styles.orderPrice}>₹{price.amount.toFixed(2)}</AppText>
               )}
-              {order.fullyGatiCashUsed === true ? (
-                <AppText style={styles.gatiCashUsedHint}>100% GatiCash used</AppText>
+              {price.fullyGatiCash ? (
+                <AppText style={styles.gatiCashUsedHint}>100% GatiCash</AppText>
               ) : null}
             </View>
             <Ionicons name="chevron-forward" size={16} color="#9CA3AF" />
@@ -567,8 +601,8 @@ export default function OrdersScreen() {
       void writeCachedMyOrders(list);
       return list;
     },
-    staleTime: 15_000,
-    refetchInterval: tab === "active" ? 15_000 : false,
+    staleTime: 5_000,
+    refetchInterval: tab === "active" ? 5_000 : false,
     initialData: cachedOrders,
     initialDataUpdatedAt: getMyOrdersCachedAt(),
     placeholderData: (previous) => previous ?? cachedOrders,

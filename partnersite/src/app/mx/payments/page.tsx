@@ -1271,7 +1271,7 @@ function PaymentsContent() {
                           <th className="text-left py-3 px-4 font-semibold text-gray-700">Date & Time</th>
                           <th className="text-left py-3 px-4 font-semibold text-gray-700">Description</th>
                           <th className="text-left py-3 px-4 font-semibold text-gray-700">PG TNX ID</th>
-                          <th className="text-right py-3 px-4 font-semibold text-gray-700">Amount</th>
+                          <th className="text-right py-3 px-4 font-semibold text-gray-700 whitespace-nowrap">Amount</th>
                           <th className="text-center py-3 px-4 font-semibold text-gray-700">Status</th>
                           <th className="text-right py-3 px-4 font-semibold text-gray-700">Withdrawable After</th>
                         </tr>
@@ -1317,7 +1317,7 @@ function PaymentsContent() {
                                   '—'
                                 )}
                               </td>
-                              <td className="py-3 px-4 text-right">
+                              <td className="py-3 px-4 text-right whitespace-nowrap">
                                 <LedgerEntryAmount display={resolveLedgerDisplayAmount(row)} />
                               </td>
                               <td className="py-3 px-4 text-center">

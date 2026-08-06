@@ -21,18 +21,64 @@ function hasRiderMarkedFoodPickup(riderPickedUpAt?: string | null): boolean {
   return Number.isFinite(Date.parse(t));
 }
 
-/** Pre-pickup: rider → store. Post-pickup: rider → customer. */
+/** True once a delivery partner is assigned (status and/or rider profile). */
+export function isFoodRiderAssignedForMap(
+  status: string | null | undefined,
+  rider?: { name?: string | null; phone?: string | null; photoUrl?: string | null } | null,
+  hasTrackingFix = false,
+  /** Server stage — authoritative when present. */
+  etaStage?: string | null
+): boolean {
+  // Never treat ready/searching stages as assigned — no rider yet.
+  if (etaStage === "READY_AWAITING_RIDER" || etaStage === "MERCHANT_PREP" || etaStage === "MERCHANT_ACCEPTED") {
+    // Fall through to rider profile / assignment status only.
+  } else if (
+    // Post-assignment stages imply a rider exists (backend SoT).
+    // Do NOT treat RIDER_TO_MERCHANT alone as assigned — ready-without-rider
+    // must never flip map/chat/status into "rider arriving".
+    etaStage === "AT_STORE" ||
+    etaStage === "CUSTOMER_DELIVERY" ||
+    etaStage === "ARRIVING"
+  ) {
+    return true;
+  }
+  if (rider && (rider.name?.trim() || rider.phone?.trim() || rider.photoUrl?.trim())) {
+    return true;
+  }
+  if (hasTrackingFix) return true;
+  const s = normalizeCustomerOrderStatus(status);
+  return (
+    s === "RIDER_ASSIGNED" ||
+    s === "ASSIGNED" ||
+    isRiderAtStoreStatus(s) ||
+    isCustomerOrderOnTheWayStatus(s) ||
+    isRiderAtCustomerStatus(s)
+  );
+}
+
+/** Pre-pickup: rider → store. Post-pickup: rider → customer (merchant pin removed). */
 export function getFoodDeliveryMapPhase(
   status: string,
   options?: { riderReachedPickupAt?: string | null; riderPickedUpAt?: string | null }
 ): FoodDeliveryMapPhase {
+  // Prefer real pickup timestamp (backend SoT) so OUT_FOR_DELIVERY alone never flips early.
   if (hasRiderMarkedFoodPickup(options?.riderPickedUpAt)) {
     return "rider_to_drop";
   }
   const s = normalizeCustomerOrderStatus(status);
   if (isRiderAtCustomerStatus(s)) return "rider_to_drop";
-  // PICKED_UP / OUT_FOR_DELIVERY / ON_THE_WAY → customer leg (hide store, show home).
-  if (isCustomerOrderOnTheWayStatus(s)) return "rider_to_drop";
+  // Admin Dispatched / rider en route to customer — even without pickup timestamp.
+  if (isCustomerOrderOnTheWayStatus(s)) {
+    return "rider_to_drop";
+  }
+  if (
+    s === "PICKED_UP" ||
+    s === "PICKED_BY_RIDER" ||
+    s === "IN_TRANSIT" ||
+    s === "ON_THE_WAY"
+  ) {
+    return "rider_to_drop";
+  }
   return "rider_to_pickup";
 }
 

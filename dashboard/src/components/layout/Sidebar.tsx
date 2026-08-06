@@ -17,6 +17,7 @@ import {
   BarChart3,
   Shield,
   MapPin,
+  Radar,
 } from "lucide-react";
 import { Logo } from "@/components/brand/Logo";
 import { useDashboardAccess } from "@/hooks/useDashboardAccess";
@@ -40,6 +41,7 @@ const navigation: NavItem[] = [
   { name: "Orders", href: "/dashboard/orders", icon: ShoppingCart, dashboardType: "ORDER_FOOD" }, // Check for any order type access
   { name: "Area Managers", href: "/dashboard/area-managers", icon: MapPin, dashboardType: "AREA_MANAGER" },
   { name: "Tickets", href: "/dashboard/tickets", icon: Ticket, dashboardType: "TICKET" },
+  { name: "Geo Rx Availability", href: "/dashboard/rx", icon: Radar },
   { name: "System", href: "/dashboard/system", icon: Settings, dashboardType: "SYSTEM" },
   { name: "Analytics", href: "/dashboard/analytics", icon: BarChart3, dashboardType: "ANALYTICS" },
 ];
@@ -60,8 +62,8 @@ function SidebarComponent() {
   // Filter navigation items based on access - memoized to prevent unnecessary re-renders
   const filteredNavigation = useMemo(() => {
     return navigation.filter((item) => {
-      // Always show Home
-      if (item.href === "/dashboard") {
+      // Always show Home + open fleet tools
+      if (item.href === "/dashboard" || item.href === "/dashboard/rx") {
         return true;
       }
 

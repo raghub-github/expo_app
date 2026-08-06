@@ -39,7 +39,7 @@ messaging.onBackgroundMessage((payload) => {
     image: notif.image,
     badge: "/favicon.png",
     data: {
-      deepLink: data.deep_link || "/",
+      deepLink: data.deep_link || data.deepLink || "/mx/food-orders",
       notificationId: data.notification_id,
       campaignId: data.campaign_id,
     },
@@ -51,7 +51,21 @@ messaging.onBackgroundMessage((payload) => {
 // already have one on the target URL; otherwise open a new one.
 self.addEventListener("notificationclick", (event) => {
   event.notification.close();
-  const deep = event.notification.data?.deepLink || "/";
+  let deep = event.notification.data?.deepLink || "/mx/food-orders";
+  if (
+    deep === "/" ||
+    deep === "/notifications" ||
+    /^\/notifications(\/|$|\?)/.test(String(deep))
+  ) {
+    deep = "/mx/food-orders";
+  }
+  // Absolute partnersite URLs → use pathname for same-origin open/focus.
+  try {
+    if (/^https?:\/\//i.test(deep)) {
+      const u = new URL(deep);
+      if (u.origin === self.location.origin) deep = `${u.pathname}${u.search}${u.hash}` || "/mx/food-orders";
+    }
+  } catch { /* keep deep as-is */ }
   const notifId = event.notification.data?.notificationId;
   event.waitUntil((async () => {
     const clientsList = await self.clients.matchAll({ type: "window", includeUncontrolled: true });

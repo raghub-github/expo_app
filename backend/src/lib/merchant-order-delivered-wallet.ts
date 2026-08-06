@@ -136,5 +136,18 @@ export async function finalizeMerchantOrderDelivered(input: {
     previousStatus: prev.toUpperCase() === "DELIVERED" ? "OUT_FOR_DELIVERY" : prev,
   });
 
+  try {
+    const { getDb } = await import("../db/client.js");
+    const { consumePlatformOfferUsagesOnDelivery } = await import(
+      "../modules/billing/platformOfferUsage.service.js"
+    );
+    await consumePlatformOfferUsagesOnDelivery(
+      getDb(),
+      String(core.order_id ?? core.id)
+    );
+  } catch {
+    /* non-fatal */
+  }
+
   return { ok: true, credited: credit.credited, error: credit.error };
 }

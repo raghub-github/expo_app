@@ -48,7 +48,7 @@ export async function tripShareRoutes(app: FastifyInstance) {
 
       const allowed = await assertCustomerCanShareOrder({ customerPk, orderIdParam });
       if (!allowed) {
-        return reply.status(404).send({ error: "Active trip not found or sharing unavailable" });
+        return reply.status(404).send({ error: "Active order not found or sharing unavailable" });
       }
 
       const link = await createOrReuseTripShareLink({
@@ -56,21 +56,38 @@ export async function tripShareRoutes(app: FastifyInstance) {
         customerPk,
       });
 
-      const shareMessage = [
-        "Hi 👋,",
-        "",
-        "I'm currently travelling with GatiMitra.",
-        "",
-        "You can track my live location and trip status here:",
-        "",
-        `📍 ${link.url}`,
-        "",
-        "The link will show my real-time location, route, and ETA.",
-        "",
-        "🔒 For security, this link will automatically expire when my trip ends.",
-        "",
-        "Thank you ❤️",
-      ].join("\n");
+      const isFoodish = allowed.orderType === "food" || allowed.orderType === "parcel";
+      const shareMessage = isFoodish
+        ? [
+            "Hi 👋,",
+            "",
+            "I'm tracking my GatiMitra order live.",
+            "",
+            "You can follow the delivery status here:",
+            "",
+            `📍 ${link.url}`,
+            "",
+            "The link shows live order progress and location updates.",
+            "",
+            "🔒 For security, this link expires when the order is delivered or cancelled.",
+            "",
+            "Thank you ❤️",
+          ].join("\n")
+        : [
+            "Hi 👋,",
+            "",
+            "I'm currently travelling with GatiMitra.",
+            "",
+            "You can track my live location and trip status here:",
+            "",
+            `📍 ${link.url}`,
+            "",
+            "The link will show my real-time location, route, and ETA.",
+            "",
+            "🔒 For security, this link will automatically expire when my trip ends.",
+            "",
+            "Thank you ❤️",
+          ].join("\n");
 
       return {
         token: link.token,

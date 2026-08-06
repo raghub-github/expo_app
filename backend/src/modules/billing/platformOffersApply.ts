@@ -7,6 +7,17 @@ import type {
   PlatformOfferRow,
 } from "./types.js";
 import { cartPromoQualifyingSubtotal } from "./discountEligibility.js";
+import {
+  platformOfferBudgetAvailable,
+  platformOfferUsageLimitsPass,
+} from "./platformOfferUsage.service.js";
+import { platformOfferFirstRideOnlyPasses } from "./platformOfferFirstRide.js";
+import {
+  computeRideParcelPromoDiscount,
+  getOfferPromoConfig,
+  rideParcelPromoPasses,
+} from "./rideParcelPromoApply.js";
+import { platformOfferCouponCodesMatch } from "./platformOfferCouponCode.js";
 
 function num(v: unknown): number {
   if (v == null) return 0;
@@ -103,23 +114,53 @@ function geoTargetsFromOffer(o: PlatformOfferRow): GeoTargetBucket[] {
 }
 
 export function platformOfferGeoMatches(ctx: BillContext, o: PlatformOfferRow): boolean {
+  const bound = ctx.platformOfferGeoBindingEffectiveIds;
+
+  // Map / Coverage bindings are the sole visibility source for all scopes
+  // (GLOBAL, MERCHANT, GEO, GEO_MERCHANT). An offer with zero active geo
+  // mappings — or none matching this delivery location — is not visible.
+  if (bound.has(o.id)) return true;
+
   const scope = (o.targetScope ?? "GLOBAL").toUpperCase();
-  if (scope !== "GEO" && scope !== "GEO_MERCHANT") return true;
 
-  const refs = ctx.dropGeoRefByLevel;
-  const buckets = geoTargetsFromOffer(o);
-
-  if (buckets.length > 0 && refs) {
-    for (const b of buckets) {
-      const idAtLevel = refs[b.level as keyof NonNullable<BillContext["dropGeoRefByLevel"]>];
-      if (typeof idAtLevel === "string" && b.ids.includes(idAtLevel)) return true;
+  // Legacy GEO / GEO_MERCHANT row targets (geo_ids / conditions.geo_targets)
+  // kept for rows not yet migrated into geo_platform_offer_bindings.
+  if (scope === "GEO" || scope === "GEO_MERCHANT") {
+    const refs = ctx.dropGeoRefByLevel;
+    const buckets = geoTargetsFromOffer(o);
+    if (buckets.length > 0 && refs) {
+      for (const b of buckets) {
+        const idAtLevel = refs[b.level as keyof NonNullable<BillContext["dropGeoRefByLevel"]>];
+        if (typeof idAtLevel === "string" && b.ids.includes(idAtLevel)) return true;
+      }
     }
   }
 
-  const bound = ctx.platformOfferGeoBindingEffectiveIds;
-  if (bound.size > 0 && bound.has(o.id)) return true;
-
+  // GLOBAL / MERCHANT / anything else without an effective binding = hidden.
   return false;
+}
+
+/**
+ * True when a rejection reason means the offer must stay completely hidden
+ * from the customer (no Unlock More / grayed row / banner).
+ * Soft unlock reasons (min cart, first-ride, membership) may still surface.
+ */
+export function isPlatformOfferHardVisibilityRejection(reason: string): boolean {
+  const r = String(reason ?? "");
+  if (/geo=NOT_ELIGIBLE|geo=GEO_NOT_BOUND/.test(r)) return true;
+  if (/merchantScope=/.test(r)) return true;
+  if (/audience=/.test(r)) return true;
+  if (/serviceType=/.test(r)) return true;
+  if (/starts_at=|ends_at=/.test(r)) return true;
+  if (/segment=/.test(r)) return true;
+  if (/conditions=failed/.test(r)) return true;
+  return false;
+}
+
+/** Location + merchant allow-list only (no min-cart). Used to decide if an offer may exist in customer UI. */
+export function platformOfferLocationVisible(ctx: BillContext, o: PlatformOfferRow): boolean {
+  if (!platformOfferMerchantScopeMatches(ctx, o)) return false;
+  return platformOfferGeoMatches(ctx, o);
 }
 
 export function platformOfferMerchantScopeMatches(ctx: BillContext, o: PlatformOfferRow): boolean {
@@ -139,13 +180,28 @@ function platformOfferMinCartMeetsThreshold(o: PlatformOfferRow, grossCart: numb
   return true;
 }
 
-/** Exported for checkout promo listing (same gates as apply phase, minus budget exhaustion). */
+/** Exported for checkout promo listing (same gates as apply phase). */
 export function platformOfferEligible(ctx: BillContext, o: PlatformOfferRow, grossCart: number): boolean {
+  if (!nowInWindow(new Date(), o.startsAt, o.endsAt)) return false;
   if (!platformOfferMerchantScopeMatches(ctx, o)) return false;
   if (!platformOfferGeoMatches(ctx, o)) return false;
   if (!platformOfferMinCartMeetsThreshold(o, grossCart)) return false;
   const cond = (o.conditions ?? {}) as Record<string, unknown>;
   if (!platformOfferConditionsPass(cond, ctx)) return false;
+  // First Ride Only — independent of per-user usage limits; server-side only.
+  if (!platformOfferFirstRideOnlyPasses(ctx, o)) return false;
+  // Ride/Parcel promo_config gates (first-N, vehicle, payment, peak, weight, …).
+  if (!rideParcelPromoPasses(ctx, o)) return false;
+  if (!platformOfferBudgetAvailable(o)) return false;
+  if (
+    !platformOfferUsageLimitsPass(
+      o,
+      ctx.platformOfferUsagesByUser?.get(o.id),
+      ctx.platformOfferLifetimeUseCounts?.get(o.id)
+    )
+  ) {
+    return false;
+  }
   return true;
 }
 
@@ -220,7 +276,24 @@ function sumCheapestUnitPrices(units: { unitPrice: number }[], count: number): n
   return sum;
 }
 
+const RIDE_PARCEL_SPECIAL_PROMO_TYPES = new Set([
+  "FREE_FIRST_N",
+  "FREE_UP_TO_KM",
+  "FLAT_FARE_UP_TO_KM",
+  "PAY_FIXED",
+  "FARE_CAP",
+  "DISTANCE_TIERED",
+  "FREE_PICKUP",
+  "FREE_DROP",
+]);
+
+function hasRideParcelSpecialDiscount(o: PlatformOfferRow): boolean {
+  const cfg = getOfferPromoConfig(o);
+  return cfg != null && RIDE_PARCEL_SPECIAL_PROMO_TYPES.has(cfg.promo_type);
+}
+
 function hasStandardCartDiscount(o: PlatformOfferRow): boolean {
+  if (hasRideParcelSpecialDiscount(o)) return true;
   return (
     (o.discountType === "PERCENTAGE" || o.discountType === "FIXED") && num(o.valueNumeric) > 0
   );
@@ -236,6 +309,11 @@ export function estimateOfferDiscountValue(o: PlatformOfferRow, ctx: BillContext
   const k = String(o.offerKind ?? "DISCOUNT").toUpperCase();
   const value = num(o.valueNumeric);
   const cap = num(o.maxDiscountAmount);
+
+  // Ride/Parcel special promo math (free/fare-cap/pay-fixed/…)
+  const specialBase = Math.max(0, rem.items);
+  const special = computeRideParcelPromoDiscount(ctx, o, specialBase);
+  if (special != null) return Math.max(0, Math.min(special, specialBase));
 
   // FREE_DELIVERY: based on delivery_discount_type
   if (k === "FREE_DELIVERY") {
@@ -329,13 +407,24 @@ function pickPlatformOfferWinner(
     return resolveSelectedPlatformOfferForCheckout(ctx, dataset, grossCart, selectedId, kindFilter);
   }
 
-  if (eligible.length === 0) return null;
+  // Manual-apply-only promos: skip auto-pick unless coupon matches.
+  const enteredCode = (ctx.couponCode ?? "").trim();
+  const autoEligible = eligible.filter((o) => {
+    const cfg = getOfferPromoConfig(o);
+    if (cfg && cfg.auto_apply === false) {
+      if (!enteredCode) return false;
+      return platformOfferCouponCodesMatch(o.couponCode, enteredCode);
+    }
+    return true;
+  });
+
+  if (autoEligible.length === 0) return null;
 
   // No user selection — pick the one that yields the highest discount value
   if (rem) {
     let best: PlatformOfferRow | null = null;
     let bestAmt = -1;
-    for (const o of eligible) {
+    for (const o of autoEligible) {
       const amt = estimateOfferDiscountValue(o, ctx, rem);
       if (amt > bestAmt) {
         bestAmt = amt;
@@ -346,7 +435,7 @@ function pickPlatformOfferWinner(
   }
 
   // Fallback: priority order (rem unavailable, e.g. listing-only context)
-  return eligible[0] ?? null;
+  return autoEligible[0] ?? null;
 }
 
 /** Platform promos that pass geo / merchant / min-cart gates (for checkout UI listing). */
@@ -382,16 +471,25 @@ function applyCartDiscountAmount(
   state: MutableBillState,
   rem: FeeRem,
   base: number,
-  labelSuffix?: string
+  labelSuffix?: string,
+  ctx?: BillContext
 ): number {
   const pool = Math.max(0, rem.items);
   const share = base > 0 ? Math.min(1, base / pool) : 0;
   const afterDiscBase = pool * share;
-  let amt =
-    winner.discountType === "PERCENTAGE"
-      ? (afterDiscBase * num(winner.valueNumeric)) / 100
-      : num(winner.valueNumeric);
-  if (num(winner.maxDiscountAmount) > 0) amt = Math.min(amt, num(winner.maxDiscountAmount));
+
+  let amt: number;
+  const special =
+    ctx != null ? computeRideParcelPromoDiscount(ctx, winner, afterDiscBase) : null;
+  if (special != null) {
+    amt = special;
+  } else {
+    amt =
+      winner.discountType === "PERCENTAGE"
+        ? (afterDiscBase * num(winner.valueNumeric)) / 100
+        : num(winner.valueNumeric);
+    if (num(winner.maxDiscountAmount) > 0) amt = Math.min(amt, num(winner.maxDiscountAmount));
+  }
   amt = Math.min(Math.max(0, amt), afterDiscBase, pool);
   if (amt <= 0) return 0;
 
@@ -410,6 +508,8 @@ function applyCartDiscountAmount(
       platformContribution: (amt * winner.platformSharePct) / 100,
       merchantContribution: (amt * winner.merchantSharePct) / 100,
       offerKind: kindUpper(winner),
+      consumeMode: winner.consumeMode ?? "ON_PLACED",
+      couponCode: winner.couponCode ?? null,
     },
   };
   state.discounts.push(line);
@@ -472,7 +572,7 @@ export function applyPlatformCartOffers(
     const allow = menuItemAllowSet(winner);
     const units = filterUnitsByMenu(unitPieces(ctx), allow);
     const base = sumCheapestUnitPrices(units, getQ);
-    applyCartDiscountAmount(winner, state, rem, base, "(buy X get Y)");
+    applyCartDiscountAmount(winner, state, rem, base, "(buy X get Y)", ctx);
     return;
   }
 
@@ -499,6 +599,7 @@ export function applyPlatformCartOffers(
         fundingMode: winner.fundingMode,
         offerKind: k,
         freeMenuUnits: getQ,
+        consumeMode: winner.consumeMode ?? "ON_PLACED",
       },
     };
     state.discounts.push(line);
@@ -510,7 +611,7 @@ export function applyPlatformCartOffers(
     0,
     Math.min(rem.items, cartPromoQualifyingSubtotal(ctx, itemPlusAddon))
   );
-  applyCartDiscountAmount(winner, state, rem, baseAfterDisc);
+  applyCartDiscountAmount(winner, state, rem, baseAfterDisc, undefined, ctx);
 }
 
 /** Delivery: FREE_DELIVERY kind or any offer with a delivery adjustment type. */
@@ -544,8 +645,27 @@ export function applyPlatformDeliveryOffers(
     rem.delivery -= cut;
   }
   if (cut <= 0) return;
+  state.discountTotal += cut;
+  const label = winner.name?.trim()
+    ? `Delivery discount · ${winner.name}`
+    : `Delivery discount (#${winner.id})`;
+  const line: AppliedLine = {
+    kind: "discount",
+    label,
+    amount: cut,
+    hidden: winner.isHidden,
+    meta: {
+      platformOfferId: winner.id,
+      fundingMode: winner.fundingMode,
+      platformContribution: (cut * winner.platformSharePct) / 100,
+      merchantContribution: (cut * winner.merchantSharePct) / 100,
+      offerKind: kindUpper(winner),
+      consumeMode: winner.consumeMode ?? "ON_PLACED",
+    },
+  };
+  state.discounts.push(line);
   state.breakdown_steps.push({
-    step: winner.name?.trim() ? `Delivery discount · ${winner.name}` : `Delivery discount (#${winner.id})`,
+    step: label,
     amount: -cut,
     meta: {
       platformOfferId: winner.id,
@@ -553,6 +673,7 @@ export function applyPlatformDeliveryOffers(
       platformContribution: (cut * winner.platformSharePct) / 100,
       merchantContribution: (cut * winner.merchantSharePct) / 100,
       offerKind: kindUpper(winner),
+      consumeMode: winner.consumeMode ?? "ON_PLACED",
     },
   });
 }
@@ -605,6 +726,7 @@ export function applyPlatformFeeBucketOffers(
       fundingMode: winner.fundingMode,
       offerKind: k,
       feeBucket: remKey,
+      consumeMode: winner.consumeMode ?? "ON_PLACED",
     },
   };
   state.discounts.push(line);

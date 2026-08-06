@@ -146,6 +146,7 @@ export async function syncRideCustomerBillingSnapshot(
       dropLat: ordersCore.dropLat,
       dropLon: ordersCore.dropLon,
       paymentStatus: ordersCore.paymentStatus,
+      paymentMethod: ordersCore.paymentMethod,
       billingSnapshot: ordersCore.billingSnapshot,
       checkoutMetadata: ordersCore.checkoutMetadata,
       estimatedFare: ordersRide.estimatedFare,
@@ -216,6 +217,14 @@ export async function syncRideCustomerBillingSnapshot(
     pickupPincode: typeof meta.pickupPincode === "string" ? meta.pickupPincode : null,
     pickupState: typeof meta.pickupState === "string" ? meta.pickupState : null,
     selectedPlatformOfferId: platformOfferId,
+    rideType: typeof meta.rideType === "string" ? meta.rideType : null,
+    vehicleType: typeof meta.rideType === "string" ? meta.rideType : null,
+    paymentMode:
+      typeof row.paymentMethod === "string"
+        ? row.paymentMethod
+        : typeof meta.paymentMethod === "string"
+          ? meta.paymentMethod
+          : null,
     useCache: false,
   });
 
@@ -419,6 +428,12 @@ export async function computeRideBillForCustomerOrder(
     pickupState: typeof meta.pickupState === "string" ? meta.pickupState : null,
     selectedPlatformOfferId: input.platformOfferId ?? null,
     forceNoAutoOffer: input.forceNoAutoOffer === true,
+    rideType: typeof meta.rideType === "string" ? meta.rideType : null,
+    vehicleType: typeof meta.rideType === "string" ? meta.rideType : null,
+    paymentMode:
+      typeof meta.paymentMethod === "string"
+        ? meta.paymentMethod
+        : orderRow.paymentMethod ?? null,
     useCache: false,
   });
 

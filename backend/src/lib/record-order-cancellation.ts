@@ -82,6 +82,28 @@ function slugReasonCode(text: string): string {
   return (slug || "CANCELLED").slice(0, 200);
 }
 
+/** Best-effort platform offer usage restore (idempotent). */
+async function releasePlatformOfferUsageForCorePk(
+  sql: Sql,
+  orderCorePk: number
+): Promise<void> {
+  try {
+    const { getDb } = await import("../db/client.js");
+    const { releasePlatformOfferUsagesOnCancel } = await import(
+      "../modules/billing/platformOfferUsage.service.js"
+    );
+    const [core] = await sql<{ order_id: string | null }[]>`
+      SELECT order_id FROM orders_core WHERE id = ${orderCorePk} LIMIT 1
+    `;
+    await releasePlatformOfferUsagesOnCancel(
+      getDb(),
+      core?.order_id ?? orderCorePk
+    );
+  } catch {
+    /* non-fatal — must not block cancellation bookkeeping */
+  }
+}
+
 /**
  * Canonical cancellation row + orders_core link + orders_food display sync.
  */
@@ -159,6 +181,7 @@ export async function recordOrderCancellation(
     } catch {
       /* non-fatal */
     }
+    await releasePlatformOfferUsageForCorePk(sql, input.orderCorePk);
     return existingReasonId;
   }
 
@@ -284,6 +307,10 @@ export async function recordOrderCancellation(
       WHERE order_id = ${input.orderCorePk}
     `;
   }
+
+  // Restore platform offer usage for merchant/system/admin cancels (idempotent).
+  // Customer cancel also calls this explicitly; duplicate release is a no-op.
+  await releasePlatformOfferUsageForCorePk(sql, input.orderCorePk);
 
   return cancellationReasonId;
 }

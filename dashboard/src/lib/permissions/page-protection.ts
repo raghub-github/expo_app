@@ -23,7 +23,10 @@ import {
   hasAccessPointAction,
   getUserPermissions,
   hasDashboardAccess,
+  getUserDashboardAccess,
+  getSystemUserIdFromAuthUser,
 } from "./engine";
+import { isOpenDashboardPath } from "./path-mapping";
 import type { AccessPointGroup, ActionType, DashboardType } from "../db/schema";
 
 async function getAuthenticatedUser() {
@@ -106,6 +109,46 @@ export async function getDefaultOrdersDashboardHref(): Promise<string | null> {
 }
 
 /**
+ * Require any authenticated dashboard agent (same bar as Home).
+ * No specific DashboardType grant required — just a valid session with ≥1 dashboard.
+ */
+export async function requireAnyDashboardAccess(
+  redirectTo: string = "/login"
+): Promise<void> {
+  const { user, error } = await getAuthenticatedUser();
+
+  if (error || !user?.email) {
+    if (error && isTransientPageAuthFailure(error)) {
+      redirect("/dashboard");
+    }
+    if (!user?.email) {
+      redirect(redirectTo);
+    }
+    redirect("/dashboard");
+  }
+
+  const userPerms = await getUserPermissions(user.id, user.email);
+  if (!userPerms) {
+    console.warn(
+      `[requireAnyDashboardAccess] permissions unavailable for ${user.email}; soft-fail to /dashboard`
+    );
+    redirect("/dashboard");
+  }
+  if (userPerms.isSuperAdmin) {
+    return;
+  }
+
+  const systemUserId = await getSystemUserIdFromAuthUser(user.id, user.email);
+  if (!systemUserId) {
+    redirect("/dashboard");
+  }
+  const dashboards = await getUserDashboardAccess(systemUserId);
+  if (dashboards.length === 0) {
+    redirect("/dashboard");
+  }
+}
+
+/**
  * Check if user has access to a dashboard page and redirect if not
  * Use this in server components to protect dashboard pages
  */
@@ -157,6 +200,11 @@ export async function requireDashboardAccessByPath(
   pagePath: string,
   redirectTo: string = "/dashboard"
 ): Promise<void> {
+  if (isOpenDashboardPath(pagePath)) {
+    await requireAnyDashboardAccess(redirectTo === "/dashboard" ? "/login" : redirectTo);
+    return;
+  }
+
   const dashboardType = getDashboardTypeFromPath(pagePath);
 
   if (!dashboardType) {

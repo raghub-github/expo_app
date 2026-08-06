@@ -15,6 +15,7 @@ export type RideCancelConfirmSheetProps = {
   visible: boolean;
   loading?: boolean;
   message?: string;
+  title?: string;
   confirmLabel?: string;
   keepLabel?: string;
   heroImage?: ImageSourcePropType;
@@ -31,6 +32,7 @@ export function RideCancelConfirmSheet({
   visible,
   loading = false,
   message = "By cancelling this ride, you'll have to restart the search that may lead to delay in finding a rider.",
+  title = "Are you sure you want to cancel this ride?",
   confirmLabel = "Cancel my ride",
   keepLabel = "Keep searching",
   heroImage,
@@ -64,7 +66,7 @@ export function RideCancelConfirmSheet({
             {hero ? <Image source={hero} style={styles.heroImage} resizeMode="contain" /> : null}
           </View>
 
-          <AppText style={styles.title}>Are you sure you want to cancel this ride?</AppText>
+          <AppText style={styles.title}>{title}</AppText>
 
           <DashedDivider />
 

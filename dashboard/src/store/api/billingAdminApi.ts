@@ -90,6 +90,7 @@ export type BillingAdminDiscountRow = {
   offer_audience: string;
   per_user_usage_limit: number | null;
   metadata: unknown;
+  coupon_config?: unknown;
 };
 
 export type BillingAdminDiscountCreateBody = {
@@ -106,6 +107,7 @@ export type BillingAdminDiscountCreateBody = {
   service_type?: string;
   offer_audience?: string;
   metadata?: unknown;
+  coupon_config?: unknown;
 };
 
 function errMsg(body: unknown): string {
@@ -163,6 +165,8 @@ export type BillingAdminRateCardRow = {
 export type BillingAdminPlatformOfferRow = {
   id: number;
   name: string | null;
+  coupon_code: string;
+  promo_config?: unknown;
   service_type: string;
   offer_kind: string;
   /** CUSTOMER | MERCHANT | RIDER — only CUSTOMER offers apply at customer checkout today. */
@@ -187,6 +191,13 @@ export type BillingAdminPlatformOfferRow = {
   ends_at: string | null;
   budget_total: string | null;
   budget_used: string | null;
+  max_uses_total?: number | null;
+  max_uses_per_user?: number | null;
+  max_uses_per_day?: number | null;
+  max_uses_per_month?: number | null;
+  consume_mode?: string;
+  restore_on_cancel?: boolean;
+  restore_on_refund?: boolean;
   discount_type: string;
   value_numeric: string | null;
   delivery_discount_type: string | null;
@@ -678,6 +689,25 @@ export const billingAdminApi = baseApi.injectEndpoints({
         return { ...res.offer, id: Number(res.offer.id) };
       },
       invalidatesTags: [billingTags.platformOffers],
+      async onQueryStarted(_arg, { dispatch, queryFulfilled }) {
+        try {
+          const { data: offer } = await queryFulfilled;
+          dispatch(
+            billingAdminApi.util.updateQueryData("getBillingPlatformOffers", undefined, (draft) => {
+              const next = {
+                ...offer,
+                id: Number(offer.id),
+                offer_audience: String(offer.offer_audience ?? "CUSTOMER").toUpperCase(),
+              };
+              if (!draft.some((r) => Number(r.id) === next.id)) {
+                draft.unshift(next);
+              }
+            })
+          );
+        } catch {
+          /* invalidatesTags refetches */
+        }
+      },
     }),
 
     updateBillingPlatformOffer: build.mutation<
@@ -694,6 +724,28 @@ export const billingAdminApi = baseApi.injectEndpoints({
         return { ...res.offer, id: Number(res.offer.id) };
       },
       invalidatesTags: [billingTags.platformOffers],
+      async onQueryStarted({ id }, { dispatch, queryFulfilled }) {
+        try {
+          const { data: offer } = await queryFulfilled;
+          dispatch(
+            billingAdminApi.util.updateQueryData("getBillingPlatformOffers", undefined, (draft) => {
+              const next = {
+                ...offer,
+                id: Number(offer.id),
+                offer_audience: String(offer.offer_audience ?? "CUSTOMER").toUpperCase(),
+              };
+              const i = draft.findIndex((r) => Number(r.id) === Number(id));
+              if (i >= 0) {
+                draft[i] = { ...draft[i], ...next };
+              } else {
+                draft.unshift(next);
+              }
+            })
+          );
+        } catch {
+          /* invalidatesTags refetches */
+        }
+      },
     }),
 
     deleteBillingPlatformOffer: build.mutation<void, number>({
@@ -702,6 +754,19 @@ export const billingAdminApi = baseApi.injectEndpoints({
         if (res?.error) throw new Error(res.error);
       },
       invalidatesTags: [billingTags.platformOffers],
+      async onQueryStarted(id, { dispatch, queryFulfilled }) {
+        const patch = dispatch(
+          billingAdminApi.util.updateQueryData("getBillingPlatformOffers", undefined, (draft) => {
+            const i = draft.findIndex((r) => Number(r.id) === Number(id));
+            if (i >= 0) draft.splice(i, 1);
+          })
+        );
+        try {
+          await queryFulfilled;
+        } catch {
+          patch.undo();
+        }
+      },
     }),
 
     simulateBilling: build.mutation<string, unknown>({

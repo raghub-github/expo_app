@@ -24,19 +24,23 @@ export async function GET(_request: NextRequest, ctx: RouteCtx) {
   }
 
   try {
-    const [anchor, categories, allTab, layoutConfig, subscriptionPlanName] = await Promise.all([
-      resolveStatePreviewAnchor(stateId),
+    const metaPromise = Promise.all([
       listFoodHomePreviewCategories(),
       getUserAppCategoryAllTab("FOOD"),
       getStateFoodHomeLayoutConfig(stateId),
       fetchFeaturedCustomerSubscriptionPlanName(),
     ]);
 
+    const anchor = await resolveStatePreviewAnchor(stateId);
     if (!anchor) {
       return NextResponse.json({ error: "State not found" }, { status: 404 });
     }
 
-    const backend = await fetchBackendFoodHomePreview({ anchor });
+    // Overlap backend merchants/offers with any remaining meta queries.
+    const [backend, [categories, allTab, layoutConfig, subscriptionPlanName]] = await Promise.all([
+      fetchBackendFoodHomePreview({ anchor }),
+      metaPromise,
+    ]);
 
     const payload: FoodHomePreviewPayload = {
       stateId,
@@ -63,7 +67,12 @@ export async function GET(_request: NextRequest, ctx: RouteCtx) {
       gridFirstUnder250HeroImageUrl: layoutConfig.gridFirstUnder250.heroImageUrl,
     };
 
-    return NextResponse.json(payload);
+    return NextResponse.json(payload, {
+      headers: {
+        // Short private cache — preview is expensive (DB + backend) but not realtime-critical.
+        "Cache-Control": "private, max-age=30, stale-while-revalidate=60",
+      },
+    });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "Failed to load preview";
     return NextResponse.json({ error: msg }, { status: 500 });

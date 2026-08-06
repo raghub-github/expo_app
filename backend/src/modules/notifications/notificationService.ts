@@ -55,6 +55,7 @@ import type {
 } from "./types.js";
 import {
   expectedRoleFromTarget,
+  softSkipWarningForTarget,
   templateRoleMatchesTarget,
 } from "./campaignTarget.js";
 
@@ -135,8 +136,60 @@ function applyOverrides(
     title: overrides.title?.trim() || rendered.title,
     body: overrides.body?.trim() || rendered.body,
     imageUrl: overrides.imageUrl !== undefined ? overrides.imageUrl : rendered.imageUrl,
-    deepLink: overrides.deepLink !== undefined ? overrides.deepLink : rendered.deepLink,
+    // null/empty override must not wipe the template deep link (resend stores null).
+    deepLink:
+      overrides.deepLink != null && String(overrides.deepLink).trim()
+        ? String(overrides.deepLink).trim()
+        : rendered.deepLink,
   };
+}
+
+/**
+ * Partnersite has no /notifications route. Map generic / mobile deep links to a
+ * real merchant page so browser FCM clicks open the partner console.
+ * FCM webpush.fcmOptions.link requires an absolute https/http URL.
+ */
+function partnersiteOrigin(): string {
+  const fromEnv =
+    process.env.PARTNER_SITE_URL?.trim() ||
+    process.env.PARTNERSITE_PUBLIC_URL?.trim() ||
+    process.env.NEXT_PUBLIC_PARTNER_SITE_URL?.trim();
+  if (fromEnv) return fromEnv.replace(/\/+$/, "");
+  return process.env.NODE_ENV === "production"
+    ? "https://partner.gatimitra.com"
+    : "http://localhost:3002";
+}
+
+function deepLinkForWebRecipient(
+  deepLink: string | null | undefined,
+  role: string,
+  opts?: { topic?: string | null },
+): string | null {
+  const isMerchant =
+    role === "merchant" ||
+    opts?.topic === "app_merchant" ||
+    (opts?.topic ?? "").startsWith("merchant_store_");
+  if (!isMerchant) {
+    const raw = deepLink?.trim() || null;
+    if (!raw) return null;
+    if (/^https?:\/\//i.test(raw)) return raw;
+    return raw;
+  }
+  const raw = (deepLink ?? "").trim();
+  let path = "/mx/food-orders";
+  if (
+    raw &&
+    raw !== "/" &&
+    raw !== "/notifications" &&
+    !/^\/notifications(\/|$|\?)/.test(raw)
+  ) {
+    if (raw.startsWith("/mx") || raw.startsWith("/partners") || raw.startsWith("/auth")) {
+      path = raw.split("#")[0]!;
+    } else if (/^https?:\/\//i.test(raw)) {
+      return raw;
+    }
+  }
+  return `${partnersiteOrigin()}${path.startsWith("/") ? path : `/${path}`}`;
 }
 
 function pushDataForRow(row: CreateLogRow): Record<string, unknown> {
@@ -310,8 +363,8 @@ async function sendImpl(intent: SendIntent): Promise<SendResult> {
     recipients = recipients.filter((r) => r.role === templateRole || r.role === "all");
   }
 
-  // No push tokens: still write in-app inbox rows for explicit user / order targets
-  // (Expo Go / denied permission). Never throw — business APIs must keep working.
+  // No push tokens: still write in-app inbox rows for explicit user / order /
+  // all_customers / all_riders targets when we can resolve user ids.
   let inboxOnlyFallback = false;
   if (recipients.length === 0) {
     const inboxOnly = await resolveInboxOnlyRecipients(intent.target, template.role);
@@ -339,15 +392,16 @@ async function sendImpl(intent: SendIntent): Promise<SendResult> {
         failedSync: 0,
         notificationIds: [],
         skipReason: "no_recipients",
+        warning: softSkipWarningForTarget(intent.target, "no_recipients"),
       };
     }
   }
 
   // 3b. Quiet-hours + rate-limit enforcement (skips critical priority).
   // Marketing + announcement categories only deliver inside the allowed
-  // window when quiet_hours settings apply.
+  // window when quiet_hours settings apply. Admin Send now / Resend bypasses.
   const effectivePriority = intent.priority ?? template.priority;
-  if (effectivePriority !== "critical") {
+  if (effectivePriority !== "critical" && !intent.bypassQuietHours) {
     const quiet = await readSetting<{
       start: string;
       end: string;
@@ -383,26 +437,8 @@ async function sendImpl(intent: SendIntent): Promise<SendResult> {
   const realRecipients = recipients.filter((r) => r.userId !== "__topic__" && r.userId !== "__direct__");
   const syntheticRecipients = recipients.filter((r) => r.userId === "__topic__" || r.userId === "__direct__");
 
-  // 4b. Per-user rate limit — skip real recipients over hourly cap.
-  // (Synthetic device-token / topic sends bypass; they are one-off.)
-  const rateSkipped = new Set<string>();
-  if (effectivePriority !== "critical" && realRecipients.length > 0) {
-    const cap = (await readSetting<number>("rate_limit_per_user_per_hour")) ?? 20;
-    if (cap > 0) {
-      const sql = getSql();
-      const userIds = realRecipients.map((r) => r.userId);
-      const rows = (await sql`
-        SELECT recipient_user_id, COUNT(*)::int AS n
-        FROM public.notification_dispatch_logs
-        WHERE recipient_user_id = ANY(${userIds}::text[])
-          AND queued_at >= now() - interval '1 hour'
-        GROUP BY recipient_user_id
-      `) as unknown as Array<{ recipient_user_id: string; n: number }>;
-      for (const row of rows) {
-        if (row.n >= cap) rateSkipped.add(row.recipient_user_id);
-      }
-    }
-  }
+  // No per-user rate limit — admins send campaigns whenever they choose.
+  // Transactional event volume is controlled upstream (idempotency keys), not here.
 
   const masks = await resolveChannelMasks(
     realRecipients.map((r) => r.userId),
@@ -411,18 +447,18 @@ async function sendImpl(intent: SendIntent): Promise<SendResult> {
     effectivePriority,
   );
 
-  // 5. Build log rows (audit-first), filtering by channel preference + rate cap
+  // 5. Build log rows (audit-first), filtering by channel preference
   const logRows: CreateLogRow[] = [];
   let skipped = 0;
   /** One in-app inbox row per user — multi-token fan-out must not multiply the badge. */
   const inAppEmittedForUser = new Set<string>();
-  /** One push per user for standard campaigns — Expo+FCM on the same phone must not double-fire. */
-  const pushEmittedForUser = new Set<string>();
+  /**
+   * Dedup push by device token only (resolver already unique-tokens).
+   * Do NOT collapse to one mobile device per user — phone + tablet must both get campaigns.
+   * Expo vs native-on-same-phone is already handled in nativeFcmTokens (skip app FCM when Expo exists).
+   */
+  const pushEmittedForToken = new Set<string>();
   for (const r of realRecipients) {
-    if (rateSkipped.has(r.userId)) {
-      skipped++;
-      continue;
-    }
     const mask = masks.get(r.userId) ?? { push: true, in_app: true, browser: true, email: false };
     // Tokenless / Expo Go fallback: inbox history only — never attempt push.
     const allowed = inboxOnlyFallback || r.deviceToken === IN_APP_ONLY_TOKEN
@@ -438,10 +474,10 @@ async function sendImpl(intent: SendIntent): Promise<SendResult> {
         if (inAppEmittedForUser.has(r.userId)) continue;
         inAppEmittedForUser.add(r.userId);
       }
-      if (channel === "push" && effectivePriority !== "critical") {
-        // Critical (e.g. new order) still fans out to every registered device token.
-        if (pushEmittedForUser.has(r.userId)) continue;
-        pushEmittedForUser.add(r.userId);
+      if (channel === "push" || channel === "browser") {
+        const tok = r.deviceToken;
+        if (tok && pushEmittedForToken.has(tok)) continue;
+        if (tok) pushEmittedForToken.add(tok);
       }
       logRows.push({
         notificationId: randomUUID(),
@@ -501,13 +537,17 @@ async function sendImpl(intent: SendIntent): Promise<SendResult> {
         const topic = row.recipient.deviceToken.startsWith(FCM_TOPIC_PREFIX)
           ? row.recipient.deviceToken.slice(FCM_TOPIC_PREFIX.length)
           : row.recipient.deviceToken;
+        const webLink = deepLinkForWebRecipient(row.deepLink, row.recipient.role, { topic });
         const res = await sendFcmV1({
           notificationId: row.notificationId,
           topic,
           title: row.title,
           body: row.body,
           imageUrl: row.imageUrl ?? null,
+          // Mobile apps keep template deep link; webpush uses partnersite path.
           deepLink: row.deepLink ?? null,
+          webLink,
+          channelId: channelIdForRecipient(row.recipient, row.priority, row),
           data: {
             template_code: row.templateCode,
             ...(row.campaignId != null ? { campaign_id: String(row.campaignId) } : {}),
@@ -531,6 +571,7 @@ async function sendImpl(intent: SendIntent): Promise<SendResult> {
           body: row.body,
           imageUrl: row.imageUrl ?? null,
           deepLink: row.deepLink ?? null,
+          channelId: channelIdForRecipient(row.recipient, row.priority, row),
           data: {
             template_code: row.templateCode,
             ...(row.campaignId != null ? { campaign_id: String(row.campaignId) } : {}),
@@ -562,16 +603,29 @@ async function sendImpl(intent: SendIntent): Promise<SendResult> {
         }
 
         // Native FCM (Android app without Expo, or partnersite/dashboard web)
+        const isWeb = row.recipient.platform === "web";
+        const deepLink = isWeb
+          ? deepLinkForWebRecipient(row.deepLink, row.recipient.role)
+          : row.deepLink ?? null;
         const res = await sendFcmV1({
           notificationId: row.notificationId,
           token,
           title: row.title,
           body: row.body,
           imageUrl: row.imageUrl ?? null,
-          deepLink: row.deepLink ?? null,
+          deepLink,
+          webLink: isWeb ? deepLink : undefined,
+          channelId: isWeb
+            ? undefined
+            : channelIdForRecipient(row.recipient, row.priority, row),
           data: {
             template_code: row.templateCode,
             gmType: row.templateCode,
+            title: row.title,
+            body: row.body,
+            gmTitle: row.title,
+            gmMessage: row.body,
+            gmBanner: "true",
             ...(row.campaignId != null ? { campaign_id: String(row.campaignId) } : {}),
           },
           priority: row.priority as never,
@@ -584,17 +638,21 @@ async function sendImpl(intent: SendIntent): Promise<SendResult> {
       if (row.channel === "browser") {
         const token = row.recipient.deviceToken;
         if (isExpoDeviceToken(token) || row.recipient.platform !== "web") {
-          await updateLogStatus(row.notificationId, "delivered");
-          queued++;
+          await updateLogStatus(row.notificationId, "failed", {
+            errorCode: "WRONG_CHANNEL_PLATFORM",
+            errorMessage: "Browser channel requires a web FCM token.",
+          });
           continue;
         }
+        const deepLink = deepLinkForWebRecipient(row.deepLink, row.recipient.role);
         const res = await sendFcmV1({
           notificationId: row.notificationId,
           token,
           title: row.title,
           body: row.body,
           imageUrl: row.imageUrl ?? null,
-          deepLink: row.deepLink ?? null,
+          deepLink,
+          webLink: deepLink,
           data: {
             template_code: row.templateCode,
             ...(row.campaignId != null ? { campaign_id: String(row.campaignId) } : {}),
@@ -639,6 +697,15 @@ async function sendImpl(intent: SendIntent): Promise<SendResult> {
     skipped,
     failedSync: 0,
     notificationIds: logRows.map((r) => r.notificationId),
+    ...(inboxOnlyFallback
+      ? {
+          warning: softSkipWarningForTarget(
+            intent.target as unknown as Record<string, unknown>,
+            "no_recipients",
+            { inboxOnlyCount: inAppEmittedForUser.size || recipients.length },
+          ),
+        }
+      : {}),
   };
 }
 
@@ -736,19 +803,36 @@ export async function resendCampaign(
   await prepareCampaignResend(campaignId);
   await markCampaignStarted(campaignId);
   try {
+    const roleDefaultDeepLink = "/notifications";
+    const storedVars = (campaign.variables ?? {}) as TemplateVariables;
     const result = await send({
       templateCode: campaign.template_code,
-      variables: campaign.variables as TemplateVariables,
+      variables: {
+        deepLink: roleDefaultDeepLink,
+        ...storedVars,
+      },
       target: campaign.target_filter as TargetFilter,
       campaignId,
+      // Operator-triggered resend should deliver even during quiet hours.
+      bypassQuietHours: true,
       overrides: {
         title: campaign.override_title,
         body: campaign.override_body,
         imageUrl: campaign.override_image,
-        deepLink: campaign.override_deep_link,
+        deepLink: campaign.override_deep_link?.trim() || roleDefaultDeepLink,
       },
     });
-    // Missing tokens is a soft complete — never mark the campaign failed for Expo Go / empty audience.
+    // Missing tokens / quiet hours are soft complete — never mark failed for Expo Go / empty audience.
+    const softSkip =
+      result.skipReason === "no_recipients" || result.skipReason === "quiet_hours";
+    if (result.skipReason && !softSkip) {
+      await finalizeCampaignSend(campaignId, "failed");
+      return { ...result, campaignId, status: "failed" };
+    }
+    if (!softSkip && result.failedSync > 0 && result.queued === 0) {
+      await finalizeCampaignSend(campaignId, "failed");
+      return { ...result, campaignId, status: "failed" };
+    }
     await finalizeCampaignSend(campaignId, "completed");
     return { ...result, campaignId, status: "completed" };
   } catch (e) {

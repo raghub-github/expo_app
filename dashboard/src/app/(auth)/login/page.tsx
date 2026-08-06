@@ -47,6 +47,47 @@ export default function LoginPage() {
       })();
     }
 
+    // Clear stale client-only sessions. Middleware uses httpOnly cookies; a local
+    // Supabase session without those cookies must not navigate to /dashboard or
+    // we get an endless login ↔ dashboard reload loop.
+    void (async () => {
+      try {
+        const statusRes = await fetch("/api/auth/session-status", {
+          credentials: "include",
+          cache: "no-store",
+        });
+        if (statusRes.ok) {
+          const body = (await statusRes.json().catch(() => null)) as {
+            success?: boolean;
+            authenticated?: boolean;
+          } | null;
+          if (body?.authenticated === true) {
+            // Prevent a second bounce if dashboard sends us back once.
+            if (sessionStorage.getItem("gm_login_autoredirect") === "1") {
+              sessionStorage.removeItem("gm_login_autoredirect");
+              await supabase.auth.signOut({ scope: "local" });
+              return;
+            }
+            sessionStorage.setItem("gm_login_autoredirect", "1");
+            const redirectParam = searchParams.get("redirect");
+            const redirectTo =
+              redirectParam?.startsWith("/") && !redirectParam.startsWith("//")
+                ? redirectParam
+                : "/dashboard";
+            window.location.replace(redirectTo);
+            return;
+          }
+        }
+        sessionStorage.removeItem("gm_login_autoredirect");
+        const { data } = await supabase.auth.getSession();
+        if (data?.session) {
+          await supabase.auth.signOut({ scope: "local" });
+        }
+      } catch {
+        // stay on login
+      }
+    })();
+
     // Add global error handler to catch unhandled promise rejections
     const handleUnhandledRejection = (event: PromiseRejectionEvent) => {
       console.error("Unhandled promise rejection:", event.reason);
@@ -191,8 +232,10 @@ export default function LoginPage() {
           // Ignore bootstrap preload errors; dashboard will fall back to network.
         }
 
-        // Full navigation so the next request has cookies and middleware sees the session
-        window.location.href = "/dashboard";
+        // Full navigation so the next request has cookies and middleware sees the session.
+        // replace() removes /login from history so Back does not return to the auth page.
+        sessionStorage.removeItem("gm_login_autoredirect");
+        window.location.replace("/dashboard");
         return;
         } catch (cookieError) {
           console.error("Error setting cookies:", cookieError);

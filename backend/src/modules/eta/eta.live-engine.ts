@@ -8,11 +8,24 @@ import { getEnv } from "../../config/env.js";
 import { getRoute } from "../distance/distance.service.js";
 import { computeEta, type EtaSnapshot } from "./eta.engine.js";
 import { resolveBlendedStorePrepMinutes } from "./eta.merchant-prep-stats.js";
-import { appendEtaRecalc, type EtaRecalcReason } from "./eta.repository.js";
+import { appendEtaRecalc, getLatestEtaHistoryMeta, type EtaRecalcReason } from "./eta.repository.js";
 import { resolveCustomerEtaContext, MIN_ACTIVE_ETA } from "./eta.customer-view.js";
+import {
+  resolveOperationalStage,
+  resolveStageAwareEta,
+  type LiveEtaLegs,
+  type StageAwareEta,
+  type EtaSource,
+} from "./eta.stage-aware.js";
+import {
+  etaMeaningfulFingerprint,
+  shouldAppendEtaHistory,
+  publishEtaUpdated,
+} from "./eta.realtime.js";
 import { processRiderWaitEscalations } from "./eta.rider-wait-escalation.js";
 import { processRiderFreeWaitPriority } from "./eta.rider-free-wait-priority.js";
 import { getActiveOrdersForStore } from "./restaurantLoad.js";
+import { resolveCanonicalOrderIdText } from "./eta.order-ref.js";
 
 export type LiveOrderEtaContext = {
   orderCoreId: number;
@@ -117,13 +130,15 @@ function computeRiderWaitMinutes(ctx: LiveOrderEtaContext, now: Date): number {
   return Math.ceil((now.getTime() - ctx.riderReachedPickupAt.getTime()) / 60_000);
 }
 
-/** Status-aware remaining minutes — not a naive countdown. */
-export function computeLiveEtaMinutes(
+/** Status-aware remaining minutes + independent legs. */
+export function computeLiveEtaLegs(
   ctx: LiveOrderEtaContext,
   snap: EtaSnapshot,
   now: Date
-): number {
-  if (isDelivered(ctx)) return 0;
+): LiveEtaLegs {
+  if (isDelivered(ctx)) {
+    return { remainingPrep: 0, pickupLeg: 0, travelLeg: 0, total: 0 };
+  }
 
   const delay = detectMerchantDelay(ctx, now);
   const riderWait = computeRiderWaitMinutes(ctx, now);
@@ -148,9 +163,12 @@ export function computeLiveEtaMinutes(
 
   let pickupLeg = 0;
   if (ready && !pickedUp) {
+    // Rider→merchant when assigned; short handover buffer when already at store.
     pickupLeg = riderAtStore ? 2 : hasRider ? 4 : 6;
   } else if (riderAtStore && !ready) {
     pickupLeg = MIN_ACTIVE_ETA;
+  } else if (hasRider && !pickedUp) {
+    pickupLeg = Math.max(MIN_ACTIVE_ETA, snap.breakdown.riderArrivalMinutes || 4);
   }
 
   let travelLeg = 0;
@@ -181,11 +199,59 @@ export function computeLiveEtaMinutes(
     total = delay.delayed ? Math.max(MIN_ACTIVE_ETA, delay.delayMinutes + MIN_ACTIVE_ETA) : MIN_ACTIVE_ETA;
   }
 
-  return Math.min(120, Math.max(MIN_ACTIVE_ETA, Math.round(total)));
+  total = Math.min(120, Math.max(MIN_ACTIVE_ETA, Math.round(total)));
+
+  return {
+    remainingPrep: Math.max(0, Math.round(remainingPrep)),
+    pickupLeg: Math.max(0, Math.round(pickupLeg)),
+    travelLeg: Math.max(0, Math.round(travelLeg)),
+    total,
+  };
+}
+
+/** @deprecated Prefer computeLiveEtaLegs — kept for call sites expecting a number. */
+export function computeLiveEtaMinutes(
+  ctx: LiveOrderEtaContext,
+  snap: EtaSnapshot,
+  now: Date
+): number {
+  return computeLiveEtaLegs(ctx, snap, now).total;
+}
+
+export function buildStageAwareFromContext(
+  ctx: LiveOrderEtaContext,
+  legs: LiveEtaLegs,
+  opts: {
+    merchantDelayed: boolean;
+    etaSource?: EtaSource;
+    promisedAt?: string | null;
+    confidenceScore?: number | null;
+    etaVersion?: number;
+    arrivingSoon?: boolean;
+  }
+): StageAwareEta {
+  const stage = resolveOperationalStage({
+    delivered: isDelivered(ctx),
+    pickedUp: isPickedUp(ctx),
+    ready: isReady(ctx),
+    hasRider: ctx.riderId != null && ctx.riderId > 0,
+    riderAtStore: ctx.riderReachedPickupAt != null,
+    arrivingSoon: opts.arrivingSoon,
+  });
+  return resolveStageAwareEta({
+    stage,
+    legs,
+    merchantDelayed: opts.merchantDelayed,
+    confidenceScore: opts.confidenceScore,
+    etaSource: opts.etaSource,
+    promisedAt: opts.promisedAt,
+    etaVersion: opts.etaVersion,
+  });
 }
 
 export async function loadLiveOrderEtaContext(orderIdText: string): Promise<LiveOrderEtaContext | null> {
   const sql = getSql();
+  const canonical = (await resolveCanonicalOrderIdText(orderIdText)) ?? orderIdText.trim();
   const rows = await sql<
     Array<{
       order_core_id: number;
@@ -245,7 +311,7 @@ export async function loadLiveOrderEtaContext(orderIdText: string): Promise<Live
       oc.placed_at
     FROM orders_core oc
     LEFT JOIN orders_food of ON of.order_id = oc.id
-    WHERE oc.order_id = ${orderIdText}
+    WHERE oc.order_id = ${canonical}
     LIMIT 1
   `;
   const r = rows[0];
@@ -338,6 +404,7 @@ export type LiveEtaRunResult = {
   riderWaitMinutes: number;
   changed: boolean;
   customer: ReturnType<typeof resolveCustomerEtaContext>;
+  stageAware: StageAwareEta;
 };
 
 export async function runLiveEtaForOrder(
@@ -351,42 +418,130 @@ export async function runLiveEtaForOrder(
   const delay = detectMerchantDelay(ctx, now);
   const riderWaitMinutes = computeRiderWaitMinutes(ctx, now);
   const baseSnap = await buildEngineSnap(ctx, now);
-  const liveMinutes = computeLiveEtaMinutes(ctx, baseSnap, now);
+  const legs = computeLiveEtaLegs(ctx, baseSnap, now);
+  const liveMinutes = legs.total;
   const liveSnap = snapWithLiveMinutes(baseSnap, liveMinutes, now);
-
-  const prevMinutes = ctx.currentEtaMinutes;
-  const changed = prevMinutes == null || Math.abs(prevMinutes - liveMinutes) >= 1;
-
   const livePromisedAt = liveSnap.promisedDeliveryAt;
+  const effectiveReason: EtaRecalcReason =
+    delay.delayed && (reason === "STATUS_CHANGE" || reason === "LIVE_TICK")
+      ? "MERCHANT_DELAY"
+      : reason;
+
+  const prevMeta = await getLatestEtaHistoryMeta(orderIdText);
+  const prevVersion = prevMeta?.id ?? 1;
+
+  const stageAwareDraft = buildStageAwareFromContext(ctx, legs, {
+    merchantDelayed: delay.delayed,
+    etaSource: delay.delayed ? "MERCHANT_DELAY" : (effectiveReason as EtaSource),
+    promisedAt: livePromisedAt,
+    etaVersion: prevVersion,
+  });
+
+  const orderStatus = normalizeStatus(ctx.currentStatus, ctx.foodStatus, ctx.status);
+  const customerDraft = resolveCustomerEtaContext({
+    orderStatus,
+    currentEtaMinutes: stageAwareDraft.displayEta ?? liveMinutes,
+    promisedEtaMinutes: ctx.promisedEtaMinutes,
+    merchantDelayed: delay.delayed,
+    hasRider: ctx.riderId != null && ctx.riderId > 0,
+    riderAtStore: ctx.riderReachedPickupAt != null,
+    isReady: isReady(ctx),
+    isPickedUp: isPickedUp(ctx),
+  });
+
+  const fingerprint = etaMeaningfulFingerprint(stageAwareDraft, customerDraft, {
+    orderStatus,
+    // Boolean delay only — do not include growing delay minutes (would spam audits).
+    merchantDelayMinutes: delay.delayed ? 1 : 0,
+  });
+  const appendHistory = shouldAppendEtaHistory({
+    reason: effectiveReason,
+    prevFingerprint: prevMeta?.fingerprint,
+    nextFingerprint: fingerprint,
+    prevStage: prevMeta?.stageAware?.currentStage ?? null,
+    nextStage: stageAwareDraft.currentStage,
+    prevDisplayEta: prevMeta?.stageAware?.displayEta ?? null,
+    nextDisplayEta: stageAwareDraft.displayEta ?? liveMinutes,
+    hasPriorHistory: prevMeta != null,
+  });
+
   const sql = getSql();
+  const clocksChanged =
+    ctx.currentEtaMinutes == null ||
+    Math.abs((ctx.currentEtaMinutes ?? 0) - liveMinutes) >= 1;
 
-  await sql`
-    UPDATE orders_core
-    SET
-      current_eta_minutes = ${liveMinutes},
-      live_promised_delivery_at = ${livePromisedAt}::timestamptz,
-      live_eta_updated_at = ${now.toISOString()}::timestamptz,
-      -- Current / revised ETA clock (First ETA first_eta_at is never touched here).
-      estimated_delivery_time = ${livePromisedAt}::timestamptz,
-      merchant_delayed = ${delay.delayed},
-      merchant_delay_minutes = ${delay.delayMinutes},
-      merchant_delay_reason = ${delay.reason},
-      rider_wait_minutes = ${riderWaitMinutes > 0 ? riderWaitMinutes : null},
-      expected_ready_at = COALESCE(expected_ready_at, prep_ready_by_at),
-      reached_store_at = COALESCE(reached_store_at, ${ctx.riderReachedPickupAt?.toISOString() ?? null}::timestamptz),
-      actual_ready_at = COALESCE(actual_ready_at, ${ctx.preparedAt?.toISOString() ?? null}::timestamptz)
-    WHERE order_id = ${orderIdText}
-  `;
-
-  if (changed) {
-    await appendEtaRecalc({
-      orderIdText,
-      newSnap: liveSnap,
-      reason: delay.delayed && reason === "STATUS_CHANGE" ? "MERCHANT_DELAY" : reason,
-      riderId: ctx.riderId,
-      merchantStoreId: ctx.merchantStoreId,
-    });
+  // Heartbeat live clocks without spamming order_eta_history on countdown ticks.
+  if (appendHistory || clocksChanged || effectiveReason === "LIVE_TICK") {
+    await sql`
+      UPDATE orders_core
+      SET
+        current_eta_minutes = ${liveMinutes},
+        live_promised_delivery_at = ${livePromisedAt}::timestamptz,
+        live_eta_updated_at = ${now.toISOString()}::timestamptz,
+        -- Current / revised ETA clock (First ETA first_eta_at is never touched here).
+        estimated_delivery_time = ${livePromisedAt}::timestamptz,
+        merchant_delayed = ${delay.delayed},
+        merchant_delay_minutes = ${delay.delayMinutes},
+        merchant_delay_reason = ${delay.reason},
+        rider_wait_minutes = ${riderWaitMinutes > 0 ? riderWaitMinutes : null},
+        expected_ready_at = COALESCE(expected_ready_at, prep_ready_by_at),
+        reached_store_at = COALESCE(reached_store_at, ${ctx.riderReachedPickupAt?.toISOString() ?? null}::timestamptz),
+        actual_ready_at = COALESCE(actual_ready_at, ${ctx.preparedAt?.toISOString() ?? null}::timestamptz)
+      WHERE order_id = ${orderIdText}
+    `;
   }
+
+  if (!appendHistory) {
+    return {
+      orderIdText,
+      currentEtaMinutes: liveMinutes,
+      merchantDelayed: delay.delayed,
+      merchantDelayMinutes: delay.delayMinutes,
+      riderWaitMinutes,
+      changed: false,
+      customer: customerDraft,
+      stageAware: { ...stageAwareDraft, etaVersion: prevVersion },
+    };
+  }
+
+  const historyId = await appendEtaRecalc({
+    orderIdText,
+    newSnap: liveSnap,
+    reason: effectiveReason,
+    riderId: ctx.riderId,
+    merchantStoreId: ctx.merchantStoreId,
+    stageAware: stageAwareDraft,
+    customer: customerDraft,
+    fingerprint,
+    previousStageAware: prevMeta?.stageAware ?? null,
+    orderStatus,
+  });
+
+  const etaVersion = historyId ?? prevVersion + 1;
+  const stageAware: StageAwareEta = {
+    ...stageAwareDraft,
+    etaVersion,
+    lastUpdatedAt: now.toISOString(),
+  };
+  const customer = {
+    ...customerDraft,
+    etaUpdated: true,
+  };
+
+  void publishEtaUpdated({
+    orderIdText,
+    riderId: ctx.riderId,
+    payload: {
+      etaVersion,
+      reason: effectiveReason,
+      customer,
+      stageAware,
+      livePromisedDeliveryAt: livePromisedAt,
+      prepReadyByAt: ctx.prepReadyByAt ? ctx.prepReadyByAt.toISOString() : null,
+      prepMinutes: ctx.prepTimeMinutes ?? null,
+      currentEtaMinutes: liveMinutes,
+    },
+  }).catch(() => {});
 
   if (riderWaitMinutes >= 5 && !isReady(ctx)) {
     void processRiderWaitEscalations({
@@ -411,25 +566,15 @@ export async function runLiveEtaForOrder(
     });
   }
 
-  const customer = resolveCustomerEtaContext({
-    orderStatus: normalizeStatus(ctx.currentStatus, ctx.foodStatus, ctx.status),
-    currentEtaMinutes: liveMinutes,
-    promisedEtaMinutes: ctx.promisedEtaMinutes,
-    merchantDelayed: delay.delayed,
-    hasRider: ctx.riderId != null && ctx.riderId > 0,
-    riderAtStore: ctx.riderReachedPickupAt != null,
-    isReady: isReady(ctx),
-    isPickedUp: isPickedUp(ctx),
-  });
-
   return {
     orderIdText,
     currentEtaMinutes: liveMinutes,
     merchantDelayed: delay.delayed,
     merchantDelayMinutes: delay.delayMinutes,
     riderWaitMinutes,
-    changed,
+    changed: true,
     customer,
+    stageAware,
   };
 }
 

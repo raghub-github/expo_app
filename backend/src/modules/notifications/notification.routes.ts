@@ -53,6 +53,7 @@ import { createCampaign, finalizeCampaignSend, markCampaignStarted, getCampaignB
 import { resolveTarget } from "./targetResolver.js";
 import {
   expectedRoleFromTarget,
+  softSkipWarningForTarget,
   templateRoleMatchesTarget,
 } from "./campaignTarget.js";
 import type { NotificationRole, TargetFilter, TemplateVariables } from "./types.js";
@@ -333,11 +334,16 @@ export const notificationRoutes: FastifyPluginAsync = async (app) => {
               : String(tmpl.role).toLowerCase() === "rider"
                 ? "/notifications"
                 : "/notifications";
+          // Web partnersite rewrites /notifications → /mx/food-orders at FCM send time.
           const result = await send({
             templateCode: b.templateCode,
-            variables: b.variables,
+            variables: {
+              deepLink: roleDefaultDeepLink,
+              ...(b.variables ?? {}),
+            },
             target: b.target,
             campaignId: campaign.id,
+            bypassQuietHours: true,
             overrides: {
               title: b.overrideTitle ?? null,
               body: b.overrideBody ?? null,
@@ -362,13 +368,15 @@ export const notificationRoutes: FastifyPluginAsync = async (app) => {
               "Push token unavailable or quiet hours — campaign completed with 0 push deliveries",
             );
             return reply.send({
+              ...result,
               campaignId: campaign.id,
               status: "completed",
               warning:
-                result.skipReason === "quiet_hours"
-                  ? "Quiet hours active — push skipped. Campaign recorded."
-                  : "Push token unavailable. Skipping notification — no registered devices for this target (common in Expo Go). Campaign recorded.",
-              ...result,
+                result.warning ??
+                softSkipWarningForTarget(
+                  b.target as Record<string, unknown>,
+                  result.skipReason ?? "no_recipients",
+                ),
             });
           }
           if (result.skipReason) {
@@ -377,6 +385,15 @@ export const notificationRoutes: FastifyPluginAsync = async (app) => {
               error: result.skipReason,
               campaignId: campaign.id,
               message: result.skipReason,
+              ...result,
+            });
+          }
+          if (result.failedSync > 0 && result.queued === 0) {
+            await finalizeCampaignSend(campaign.id, "failed");
+            return reply.code(502).send({
+              error: "all_dispatches_failed",
+              campaignId: campaign.id,
+              message: "Every push dispatch failed (FCM/Expo). Check Firebase credentials and device tokens.",
               ...result,
             });
           }
@@ -597,6 +614,22 @@ export const notificationRoutes: FastifyPluginAsync = async (app) => {
       if (!Number.isInteger(id) || id < 1) return reply.code(400).send({ error: "invalid_id" });
       try {
         const result = await resendCampaign(id);
+        if (result.skipReason === "no_recipients" || result.skipReason === "quiet_hours") {
+          const campaign = await getCampaignById(id);
+          req.log.warn(
+            { campaignId: id, skipReason: result.skipReason },
+            "campaign resend soft-skipped",
+          );
+          return reply.send({
+            ...result,
+            warning:
+              result.warning ??
+              softSkipWarningForTarget(
+                (campaign?.target_filter ?? {}) as Record<string, unknown>,
+                result.skipReason,
+              ),
+          });
+        }
         return reply.send(result);
       } catch (e) {
         const err = e as Error & { statusCode?: number };
@@ -749,11 +782,49 @@ export const notificationRoutes: FastifyPluginAsync = async (app) => {
       const source = ["app", "partnersite", "dashboard", "browser"].includes(sourceRaw)
         ? sourceRaw
         : "browser";
+      const storeIdRaw = b.store_id as number | string | undefined;
+      const storeIdParsed =
+        typeof storeIdRaw === "number"
+          ? storeIdRaw
+          : typeof storeIdRaw === "string" && /^\d+$/.test(storeIdRaw.trim())
+            ? Number(storeIdRaw.trim())
+            : NaN;
       const storeId =
-        typeof b.store_id === "number" && Number.isFinite(b.store_id) && b.store_id > 0
-          ? b.store_id
-          : null;
+        Number.isFinite(storeIdParsed) && storeIdParsed > 0 ? storeIdParsed : null;
       const sql = getSql();
+      let currentTopics: string[] = [];
+      try {
+        const [existing] = (await sql`
+          SELECT subscribed_topics
+          FROM public.native_device_push_tokens
+          WHERE native_token = ${token}
+          LIMIT 1
+        `) as unknown as Array<{ subscribed_topics: unknown }>;
+        if (Array.isArray(existing?.subscribed_topics)) {
+          currentTopics = existing.subscribed_topics.map((t) => String(t));
+        }
+      } catch {
+        currentTopics = [];
+      }
+
+      const { desiredFcmTopics, reconcileFcmTopics } = await import("../push/topicReconcile.js");
+      const desired =
+        role === "customer" || role === "rider" || role === "merchant"
+          ? desiredFcmTopics({ role, storeId })
+          : [];
+      let nextTopics = currentTopics;
+      try {
+        nextTopics = await reconcileFcmTopics({
+          nativeToken: token,
+          tokenType: "fcm",
+          currentTopics,
+          desiredTopics: desired,
+          log: req.log,
+        });
+      } catch (e) {
+        req.log.warn({ err: e }, "browser_token_topic_reconcile_failed");
+      }
+
       try {
         await sql`
           INSERT INTO public.native_device_push_tokens (
@@ -761,13 +832,14 @@ export const notificationRoutes: FastifyPluginAsync = async (app) => {
             subscribed_topics, source, created_at, updated_at, last_seen_at
           ) VALUES (
             ${userId}, ${role}, ${"web"}, ${"fcm"}, ${token}, ${storeId},
-            ${JSON.stringify([])}::jsonb, ${source}, NOW(), NOW(), NOW()
+            ${JSON.stringify(nextTopics)}::jsonb, ${source}, NOW(), NOW(), NOW()
           )
           ON CONFLICT (native_token) DO UPDATE SET
             user_id = EXCLUDED.user_id,
             role = EXCLUDED.role,
             platform = EXCLUDED.platform,
             store_id = COALESCE(EXCLUDED.store_id, public.native_device_push_tokens.store_id),
+            subscribed_topics = EXCLUDED.subscribed_topics,
             source = EXCLUDED.source,
             updated_at = NOW(),
             last_seen_at = NOW()
@@ -779,7 +851,7 @@ export const notificationRoutes: FastifyPluginAsync = async (app) => {
           message: "Apply migration 0436_native_device_push_tokens.sql then retry.",
         });
       }
-      return reply.send({ ok: true });
+      return reply.send({ ok: true, topics: nextTopics });
     });
 
     // --- devices: list registered push tokens for a user_id ---
@@ -909,14 +981,6 @@ export const notificationRoutes: FastifyPluginAsync = async (app) => {
       return { items: rows, unread: Number((unread[0] as { n: string }).n ?? 0) };
     });
 
-    // Mark click (called when the user taps the deep link)
-    user.post<{ Params: { notificationId: string } }>("/:notificationId/click", async (req, reply) => {
-      const nid = req.params.notificationId;
-      if (!/^[0-9a-f-]{36}$/i.test(nid)) return reply.code(400).send({ error: "invalid_id" });
-      await markClicked(nid);
-      return reply.code(204).send();
-    });
-
     // Mark read — also sets clicked_at so the inbox unread badge / green dot clears.
     user.post<{ Params: { notificationId: string } }>("/:notificationId/read", async (req, reply) => {
       const nid = req.params.notificationId;
@@ -977,6 +1041,20 @@ export const notificationRoutes: FastifyPluginAsync = async (app) => {
           push = EXCLUDED.push, in_app = EXCLUDED.in_app,
           browser = EXCLUDED.browser, email = EXCLUDED.email
       `;
+      return reply.code(204).send();
+    });
+  }, { prefix: "/v1/notifications" });
+
+  // Click tracking — user JWT OR partnersite X-Internal-Secret (SW has no session).
+  await app.register(async (click) => {
+    await click.register(auth, { required: false });
+    click.post<{ Params: { notificationId: string } }>("/:notificationId/click", async (req, reply) => {
+      if (!internalSecretGrantsAdmin(req) && !req.auth?.sub) {
+        return reply.code(401).send({ error: "unauthorized" });
+      }
+      const nid = req.params.notificationId;
+      if (!/^[0-9a-f-]{36}$/i.test(nid)) return reply.code(400).send({ error: "invalid_id" });
+      await markClicked(nid);
       return reply.code(204).send();
     });
   }, { prefix: "/v1/notifications" });

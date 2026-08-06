@@ -573,6 +573,31 @@ async function persistOfferSnapshots(
         // Non-critical — snapshot already saved
       }
     }
+
+    if (platformOfferId != null && customerId > 0 && offerSource === "PLATFORM") {
+      try {
+        const { recordPlatformOfferUsageAtPlacement } = await import(
+          "../billing/platformOfferUsage.service.js"
+        );
+        // Prefer snapshot meta; otherwise omit so DB consume_mode (e.g. ON_DELIVERED) is used.
+        const snapConsume =
+          meta.consumeMode != null
+            ? String(meta.consumeMode)
+            : meta.consume_mode != null
+              ? String(meta.consume_mode)
+              : undefined;
+        await recordPlatformOfferUsageAtPlacement(tx, {
+          platformOfferId,
+          customerId,
+          orderId,
+          discountAmount: amount,
+          orderSaleAmount: asNumber(pending.grandTotal ?? 0),
+          ...(snapConsume ? { consumeMode: snapConsume } : {}),
+        });
+      } catch {
+        // Non-critical — snapshot already saved; eligibility re-checks on next order
+      }
+    }
   }
 }
 

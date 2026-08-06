@@ -24,6 +24,7 @@ const baseCtx = (): BillContext => ({
   dropPostalCode: null,
   dropGeoRefByLevel: null,
   platformOfferGeoBindingEffectiveIds: new Set(),
+    checkoutCouponGeoBindingEffectiveIds: new Set(),
   deliveryFeeFromRateCard: 0,
   deliveryFeeFromGeo: null,
   deliveryDefaultBaseInr: 25,

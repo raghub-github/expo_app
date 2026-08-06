@@ -45,7 +45,7 @@ import { computeFallbackCustomerFee } from "../fallback-pricing/fallbackSlabPric
 import { buildCustomerPricingBreakdown } from "../../lib/customer-pricing-breakdown.js";
 import type { DeliveryActorType, DeliveryRateSlabRow, DeliveryServiceType } from "../delivery-slab-pricing/types.js";
 import { resolveRiderPayoutQuote } from "../rider-payout-pricing/resolveRiderPayoutQuote.js";
-import { loadEffectiveRideCustomerPricing } from "../rider-payout-pricing/riderPayoutPricing.repository.js";
+import { loadEffectiveRideCustomerPricing, loadEffectiveParcelCustomerPricing } from "../rider-payout-pricing/riderPayoutPricing.repository.js";
 import type { GeoHierarchyLevel, RideVehiclePricingType } from "../rider-payout-pricing/types.js";
 
 function round2(n: number): number {
@@ -81,7 +81,7 @@ export type StoreQuoteInput = {
   /** Rider payout v2: separate pickup (rider→merchant) and drop (merchant→customer) km. */
   riderPickupKm?: number;
   riderDropKm?: number;
-  /** Ride vehicle type for ride service pricing. */
+  /** Ride / parcel vehicle type for vehicle-scoped customer pricing. */
   rideVehicleType?: RideVehiclePricingType;
   /** Rider id for GMitra Max surge/waiting eligibility. */
   riderId?: number | null;
@@ -330,20 +330,66 @@ export async function resolveStoreDeliveryQuote(
 
     let slabs: DeliveryRateSlabRow[] = [];
     const slabWalkAttempts: Array<{ level: string; refId: string; rows: number }> = [];
-    try {
-      const db = getDb();
-      for (const geo of geoLevelsToTry) {
-        const result = await loadDirectDeliveryRateSlabs(db, {
-          geoLevel: geo.level,
-          geoRefId: geo.refId,
-          serviceType: serviceTypeSlab,
-          actorType: (actor === "rider" ? "rider" : "customer") as DeliveryActorType,
+
+    // PARCEL + vehicle: prefer parcel_customer_pricing (RIDE-style), then fall back to delivery_rate_slabs.
+    let usedParcelVehiclePricing = false;
+    if (
+      actor !== "rider" &&
+      serviceTypeSlab === "parcel" &&
+      input.rideVehicleType &&
+      geoLevelsToTry.length > 0
+    ) {
+      const start = geoLevelsToTry[0]!;
+      try {
+        const parcelPricing = await loadEffectiveParcelCustomerPricing({
+          level: start.level,
+          refId: start.refId,
+          vehicleType: input.rideVehicleType,
         });
-        slabWalkAttempts.push({ level: geo.level, refId: geo.refId, rows: result.length });
-        if (result.length > 0) {
-          slabs = result;
-          appliedGeoLevel = geo.level;
-          break;
+        if (parcelPricing.slabs.length > 0) {
+          usedParcelVehiclePricing = true;
+          appliedGeoLevel = parcelPricing.applied?.level ?? start.level;
+          slabs = parcelPricing.slabs.map((s) => ({
+            id: s.id,
+            geoLevel: s.geoLevel,
+            geoRefId: s.geoRefId,
+            serviceType: "parcel" as DeliveryServiceType,
+            actorType: "customer" as DeliveryActorType,
+            minKm: s.minKm,
+            maxKm: s.maxKm,
+            baseFare: s.baseFare,
+            perKmRate: s.perKmRate,
+            minCharge: s.minCharge,
+            priority: s.priority,
+            isActive: s.isActive,
+          }));
+          slabWalkAttempts.push({
+            level: appliedGeoLevel ?? start.level,
+            refId: parcelPricing.applied?.refId ?? start.refId,
+            rows: slabs.length,
+          });
+        }
+      } catch {
+        // fall through to delivery_rate_slabs
+      }
+    }
+
+    try {
+      if (!usedParcelVehiclePricing) {
+        const db = getDb();
+        for (const geo of geoLevelsToTry) {
+          const result = await loadDirectDeliveryRateSlabs(db, {
+            geoLevel: geo.level,
+            geoRefId: geo.refId,
+            serviceType: serviceTypeSlab,
+            actorType: (actor === "rider" ? "rider" : "customer") as DeliveryActorType,
+          });
+          slabWalkAttempts.push({ level: geo.level, refId: geo.refId, rows: result.length });
+          if (result.length > 0) {
+            slabs = result;
+            appliedGeoLevel = geo.level;
+            break;
+          }
         }
       }
     } catch {

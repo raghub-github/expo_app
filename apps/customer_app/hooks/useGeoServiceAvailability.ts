@@ -1,4 +1,4 @@
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, keepPreviousData } from "@tanstack/react-query";
 import { getGeoServiceAvailability } from "@/services/geoServices.service";
 
 export type GeoEnabledServices = {
@@ -7,10 +7,11 @@ export type GeoEnabledServices = {
   parcels: boolean;
 };
 
+/** Optimistic while coverage loads — all three tiles stay tappable/painted. */
 const DEFAULT_WHILE_LOADING: GeoEnabledServices = {
   food: true,
   ride: true,
-  parcels: false,
+  parcels: true,
 };
 
 const ALL_DISABLED: GeoEnabledServices = {
@@ -51,14 +52,18 @@ export function useGeoServiceAvailability(args: {
     refetchInterval: 20_000,
     refetchOnWindowFocus: true,
     refetchOnMount: "always",
+    // Keep prior coverage while coords/pincode change so tiles don't flash disabled
+    // and remount (which was blanking service-card images on Android).
+    placeholderData: keepPreviousData,
   });
 
   const enabledServices: GeoEnabledServices = (() => {
     if (!canQuery) return ALL_DISABLED;
     if (query.isLoading && !query.data) return DEFAULT_WHILE_LOADING;
-    if (query.isError || !query.data) return ALL_DISABLED;
+    if (!query.data) return ALL_DISABLED;
     // Main home / tab bar: use coverage* so Prevent Services does not grey out
     // tiles — user can enter the inner page, where ServiceBlockedGateHost runs.
+    // On error, keepPreviousData still supplies last successful coverage.
     const food = query.data.coverageFood ?? query.data.food;
     const ride = query.data.coverageRide ?? query.data.ride;
     const parcels = query.data.coverageParcel ?? query.data.parcel;

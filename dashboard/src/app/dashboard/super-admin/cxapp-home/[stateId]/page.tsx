@@ -2,11 +2,11 @@
 
 import { useAppParams } from "@/hooks/useAppSearchParams";
 
+import dynamic from "next/dynamic";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { Check } from "lucide-react";
 
-import { FoodHomeLayoutPhonePreview } from "@/components/cxapp-home/FoodHomeLayoutPhonePreview";
 import { GridFirstHeroMediaPanel } from "@/components/cxapp-home/GridFirstHeroMediaPanel";
 import { GridFirstSubscriptionRowPanel } from "@/components/cxapp-home/GridFirstSubscriptionRowPanel";
 import { GridFirstUnder250Panel } from "@/components/cxapp-home/GridFirstUnder250Panel";
@@ -19,12 +19,31 @@ import {
   FOOD_HOME_LAYOUT_CATALOG,
   type FoodHomeLayoutKey,
 } from "@/lib/cxapp-home/food-home-layout";
+import type { GridFirstHeroMediaItem } from "@/lib/cxapp-home/grid-first-hero-media";
 import { cn } from "@/lib/utils";
+
+/** Defer heavy live-preview chunk + fetch until after layout chrome paints. */
+const FoodHomeLayoutPhonePreview = dynamic(
+  () =>
+    import("@/components/cxapp-home/FoodHomeLayoutPhonePreview").then(
+      (m) => m.FoodHomeLayoutPhonePreview
+    ),
+  {
+    ssr: false,
+    loading: () => (
+      <div className="mb-2 rounded-xl border border-slate-200 bg-slate-50 p-3">
+        <p className="text-center text-sm font-semibold text-slate-700">Live app preview</p>
+        <div className="mx-auto mt-3 h-64 w-[200px] rounded-[24px] border-[5px] border-slate-200 bg-white" />
+      </div>
+    ),
+  }
+);
 
 const LAYOUT_CACHE_PREFIX = "cxapp-food-layout-v2:";
 
 type LayoutApiPayload = {
   layoutKey?: FoodHomeLayoutKey;
+  gridFirstHeroMedia?: GridFirstHeroMediaItem[];
   gridFirstSubscriptionRowEnabled?: boolean;
   gridFirstSubscriptionRowText?: string;
   gridFirstSubscriptionRowBgColor?: string;
@@ -133,7 +152,11 @@ export default function CxAppHomeStateDetailPage() {
   const params = useAppParams<{ stateId: string }>();
   const stateId = params.stateId ?? "";
 
-  const { data: statesData } = useGeoStatesQuery();
+  const { data: statesData } = useGeoStatesQuery(undefined, {
+    refetchOnMountOrArgChange: false,
+    refetchOnFocus: false,
+    refetchOnReconnect: false,
+  });
   const states = statesData?.states ?? [];
   const stateName = useMemo(
     () => states.find((s) => s.id === stateId)?.name ?? "State / UT",
@@ -175,9 +198,31 @@ export default function CxAppHomeStateDetailPage() {
   const [under250HeroImageUrl, setUnder250HeroImageUrl] = useState<string | null>(
     cached?.gridFirstUnder250HeroImageUrl ?? null
   );
+  const [heroMediaItems, setHeroMediaItems] = useState<GridFirstHeroMediaItem[] | undefined>(
+    cached?.gridFirstHeroMedia
+  );
   const [syncingLayout, setSyncingLayout] = useState(!cached?.layoutKey);
   const [savingLayout, setSavingLayout] = useState<FoodHomeLayoutKey | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
+  /** Mount live preview after first paint so layout cards aren't blocked. */
+  const [previewReady, setPreviewReady] = useState(false);
+
+  useEffect(() => {
+    let idleId: number | undefined;
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
+    const enable = () => setPreviewReady(true);
+    if (typeof window !== "undefined" && "requestIdleCallback" in window) {
+      idleId = window.requestIdleCallback(enable, { timeout: 500 });
+    } else {
+      timeoutId = setTimeout(enable, 50);
+    }
+    return () => {
+      if (idleId != null && typeof window !== "undefined" && "cancelIdleCallback" in window) {
+        window.cancelIdleCallback(idleId);
+      }
+      if (timeoutId != null) clearTimeout(timeoutId);
+    };
+  }, [stateId]);
 
   const applyLayoutPayload = useCallback(
     (json: LayoutApiPayload) => {
@@ -211,6 +256,9 @@ export default function CxAppHomeStateDetailPage() {
       if (json.gridFirstUnder250HeroImageUrl !== undefined) {
         setUnder250HeroImageUrl(json.gridFirstUnder250HeroImageUrl?.trim() || null);
       }
+      if (json.gridFirstHeroMedia !== undefined) {
+        setHeroMediaItems(Array.isArray(json.gridFirstHeroMedia) ? json.gridFirstHeroMedia : []);
+      }
       writeLayoutCache(stateId, json);
     },
     [stateId]
@@ -221,7 +269,9 @@ export default function CxAppHomeStateDetailPage() {
     setSyncingLayout(true);
     setSaveError(null);
     try {
-      const res = await fetch(`/api/super-admin/cxapp-home/food-layout/${stateId}`, { cache: "no-store" });
+      const res = await fetch(`/api/super-admin/cxapp-home/food-layout/${stateId}`, {
+        cache: "default",
+      });
       const json = (await res.json()) as LayoutApiPayload & { error?: string };
       if (!res.ok) throw new Error(json.error ?? "Failed to load layout");
       applyLayoutPayload(json);
@@ -337,6 +387,7 @@ export default function CxAppHomeStateDetailPage() {
               setSubscriptionRowBgColor(config.backgroundColor);
               writeLayoutCache(stateId, {
                 layoutKey: activeLayout,
+                gridFirstHeroMedia: heroMediaItems,
                 gridFirstSubscriptionRowEnabled: config.enabled,
                 gridFirstSubscriptionRowText: config.text,
                 gridFirstSubscriptionRowBgColor: config.backgroundColor,
@@ -362,6 +413,7 @@ export default function CxAppHomeStateDetailPage() {
               setUnder250HeroImageUrl(config.heroImageUrl);
               writeLayoutCache(stateId, {
                 layoutKey: activeLayout,
+                gridFirstHeroMedia: heroMediaItems,
                 gridFirstSubscriptionRowEnabled: subscriptionRowEnabled,
                 gridFirstSubscriptionRowText: subscriptionRowText,
                 gridFirstSubscriptionRowBgColor: subscriptionRowBgColor,
@@ -375,21 +427,34 @@ export default function CxAppHomeStateDetailPage() {
             }}
           />
 
-          <GridFirstHeroMediaPanel stateId={stateId} enabled={gridFirstPanelEnabled} />
+          {gridFirstPanelEnabled && !syncingLayout ? (
+            <GridFirstHeroMediaPanel
+              stateId={stateId}
+              enabled
+              initialItems={heroMediaItems ?? []}
+            />
+          ) : null}
         </div>
 
         <div className="order-1 xl:sticky xl:top-2 xl:z-10 xl:order-2 xl:self-start">
-          <FoodHomeLayoutPhonePreview
-            stateId={stateId}
-            layoutKey={previewLayout}
-            stateName={stateName}
-            subscriptionRowEnabled={subscriptionRowEnabled}
-            subscriptionRowText={subscriptionRowText}
-            subscriptionRowBgColor={subscriptionRowBgColor}
-            under250Enabled={under250Enabled}
-            under250FilterLabel={under250FilterLabel}
-            under250TabImageUrl={under250TabImageUrl}
-          />
+          {previewReady ? (
+            <FoodHomeLayoutPhonePreview
+              stateId={stateId}
+              layoutKey={previewLayout}
+              stateName={stateName}
+              subscriptionRowEnabled={subscriptionRowEnabled}
+              subscriptionRowText={subscriptionRowText}
+              subscriptionRowBgColor={subscriptionRowBgColor}
+              under250Enabled={under250Enabled}
+              under250FilterLabel={under250FilterLabel}
+              under250TabImageUrl={under250TabImageUrl}
+            />
+          ) : (
+            <div className="mb-2 rounded-xl border border-slate-200 bg-slate-50 p-3">
+              <p className="text-center text-sm font-semibold text-slate-700">Live app preview</p>
+              <div className="mx-auto mt-3 h-64 w-[200px] rounded-[24px] border-[5px] border-slate-200 bg-white" />
+            </div>
+          )}
         </div>
       </div>
     </div>

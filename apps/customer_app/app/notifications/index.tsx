@@ -18,6 +18,8 @@ import {
   Animated,
   PanResponder,
   RefreshControl,
+  Text as RNText,
+  TouchableOpacity,
 } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -40,8 +42,13 @@ import {
 } from "@/lib/dismissedNotifications";
 import { AndroidBackHandler } from "@/components/AndroidBackHandler";
 import { NotificationsEmptyMailboxArt } from "@/components/NotificationsEmptyMailboxArt";
-import { GatiMitraColors } from "@/constants/gatimitra";
 import { StoreFonts } from "@/constants/storeTypography";
+import { formatNotificationTimeAgo } from "@/lib/notificationTime";
+import {
+  dedupeInboxItems,
+  resolveActiveOrderPath,
+  siblingNotificationIds,
+} from "@/lib/notificationDedupe";
 
 const LORA = StoreFonts.loraRegular;
 const LORA_BOLD = StoreFonts.loraBold;
@@ -49,8 +56,11 @@ const H_PADDING = 16;
 
 const BG_GRADIENT = ["#E8F8F2", "#F5FBFF", "#FFF5F7"] as const;
 
+/** Solid teal — matches merchant unread / primary accents */
+const ACCENT = "#14b8a6";
+
 const COLORS = {
-  primary: GatiMitraColors.deepMintStart,
+  primary: ACCENT,
   textPrimary: "#0F172A",
   textSecondary: "#475569",
   textTertiary: "#94A3B8",
@@ -71,26 +81,41 @@ const ICON_MAP: Record<NotifVisualType, keyof typeof Ionicons.glyphMap> = {
   earning: "wallet-outline",
 };
 
-const ICON_BG: Record<NotifVisualType, string> = {
-  order: "#E0F2FE",
-  store: "#FEF3C7",
-  system: "#F1F5F9",
-  earning: "#DCFCE7",
-};
-
 const ICON_COLOR: Record<NotifVisualType, string> = {
   order: COLORS.info,
   store: COLORS.warning,
-  system: COLORS.textSecondary,
+  system: ACCENT,
   earning: COLORS.success,
 };
 
-const SWIPE_ACTION_WIDTH = 64;
-const SWIPE_OPEN_THRESHOLD = 40;
+const SWIPE_ACTION_WIDTH = 88;
+const SWIPE_OPEN_THRESHOLD = 36;
 
 function isUnread(item: InboxItem): boolean {
-  if (item.clicked_at) return false;
-  return item.status === "queued" || item.status === "sent";
+  return !item.clicked_at;
+}
+
+function previewBody(raw: string | null | undefined): string {
+  return String(raw ?? "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/** True when the inbox row has a real detail screen to open. */
+function hasInnerPage(item: InboxItem): boolean {
+  return Boolean(item.title?.trim() || previewBody(item.body));
+}
+
+/** Reject "/", empty, and other routes that become Unmatched Route. */
+function isValidAppDeepLink(raw: string | null | undefined): boolean {
+  const d = String(raw ?? "").trim();
+  if (!d) return false;
+  if (d === "/" || d === "/--" || d === "#" || d === "." || d === "./") return false;
+  if (d.startsWith("/notifications")) return false;
+  if (d.startsWith("http://") || d.startsWith("https://")) return true;
+  if (d.startsWith("/") && d.length > 1) return true;
+  if (/^[a-zA-Z(]/.test(d)) return true;
+  return false;
 }
 
 function visualTypeFor(item: InboxItem): NotifVisualType {
@@ -109,153 +134,143 @@ function visualTypeFor(item: InboxItem): NotifVisualType {
   return "system";
 }
 
-function formatTime(iso: string): string {
-  const then = new Date(iso).getTime();
-  if (!Number.isFinite(then)) return "";
-  const diff = Date.now() - then;
-  const min = Math.floor(diff / 60_000);
-  if (min < 1) return "Just now";
-  if (min < 60) return `${min}m ago`;
-  const hr = Math.floor(min / 60);
-  if (hr < 24) return `${hr}h ago`;
-  const d = Math.floor(hr / 24);
-  if (d < 7) return `${d}d ago`;
-  try {
-    return new Date(iso).toLocaleString(undefined, {
-      day: "numeric",
-      month: "short",
-      hour: "numeric",
-      minute: "2-digit",
-    });
-  } catch {
-    return `${d}d ago`;
-  }
-}
-
 function NotificationItem({
   item,
+  displayBody,
+  clickable,
   onPress,
   onDeletePress,
 }: {
   item: InboxItem;
+  displayBody: string;
+  clickable: boolean;
   onPress: () => void;
   onDeletePress: () => void;
 }) {
   const type = visualTypeFor(item);
   const iconName = ICON_MAP[type];
-  const iconBg = ICON_BG[type];
   const iconColor = ICON_COLOR[type];
   const unread = isUnread(item);
+  const when = formatNotificationTimeAgo(item.queued_at);
   const translateX = useRef(new Animated.Value(0)).current;
-  const openedSide = useRef<"right" | null>(null);
+  const dragStartX = useRef(0);
   const [isOpen, setIsOpen] = useState(false);
   const movedRef = useRef(false);
-  const actionsOpacity = translateX.interpolate({
-    inputRange: [-SWIPE_ACTION_WIDTH, -4, 0],
-    outputRange: [1, 1, 0],
-    extrapolate: "clamp",
-  });
 
   const close = () => {
-    openedSide.current = null;
     setIsOpen(false);
+    dragStartX.current = 0;
     Animated.spring(translateX, {
       toValue: 0,
       useNativeDriver: true,
+      bounciness: 0,
     }).start();
   };
 
   const openRight = () => {
-    openedSide.current = "right";
     setIsOpen(true);
+    dragStartX.current = -SWIPE_ACTION_WIDTH;
     Animated.spring(translateX, {
       toValue: -SWIPE_ACTION_WIDTH,
       useNativeDriver: true,
+      bounciness: 0,
     }).start();
   };
 
   const panResponder = useRef(
     PanResponder.create({
-      onMoveShouldSetPanResponder: (_, g) => {
-        return Math.abs(g.dx) > 8 && Math.abs(g.dx) > Math.abs(g.dy);
+      onMoveShouldSetPanResponder: (_, g) =>
+        Math.abs(g.dx) > 6 && Math.abs(g.dx) > Math.abs(g.dy) * 1.2,
+      onPanResponderGrant: () => {
+        movedRef.current = false;
+        translateX.stopAnimation((v) => {
+          dragStartX.current = typeof v === "number" ? v : 0;
+        });
       },
       onPanResponderMove: (_, g) => {
-        movedRef.current = movedRef.current || Math.abs(g.dx) > 6 || Math.abs(g.dy) > 6;
-        const clamped = Math.max(-SWIPE_ACTION_WIDTH, Math.min(0, g.dx));
-        translateX.setValue(clamped);
+        movedRef.current = movedRef.current || Math.abs(g.dx) > 4;
+        const next = Math.max(-SWIPE_ACTION_WIDTH, Math.min(0, dragStartX.current + g.dx));
+        translateX.setValue(next);
       },
       onPanResponderRelease: (_, g) => {
         const dragged = movedRef.current;
         movedRef.current = false;
-        if (!dragged) {
+        if (!dragged) return;
+        const projected = dragStartX.current + g.dx;
+        if (projected < -SWIPE_OPEN_THRESHOLD || g.vx < -0.35) {
+          openRight();
+        } else {
           close();
-          return;
         }
-        const shouldOpenRight = g.dx < -SWIPE_OPEN_THRESHOLD;
-        if (!shouldOpenRight) {
-          close();
-          return;
-        }
-        openRight();
       },
       onPanResponderTerminate: close,
-      onPanResponderGrant: () => {
-        movedRef.current = false;
-      },
     })
   ).current;
 
   return (
     <View style={styles.swipeWrap}>
-      <Animated.View
-        style={[styles.swipeActions, { opacity: actionsOpacity }]}
-        pointerEvents={isOpen ? "auto" : "none"}
-      >
-        <Pressable
+      {/* Red delete slot behind the card — revealed by translateX (no elevation on front). */}
+      <View style={styles.swipeDeleteBox} pointerEvents={isOpen ? "auto" : "none"}>
+        <TouchableOpacity
+          activeOpacity={0.85}
           onPress={() => {
             close();
             onDeletePress();
           }}
-          style={({ pressed }) => [styles.swipeActionRight, pressed && styles.pressed]}
+          style={styles.swipeDeleteHit}
+          accessibilityRole="button"
+          accessibilityLabel="Delete notification"
         >
-          <Ionicons name="trash-outline" size={20} color="#FFFFFF" />
-        </Pressable>
-      </Animated.View>
+          <Ionicons name="trash" size={24} color="#FFFFFF" />
+          <RNText style={styles.swipeDeleteLabel}>Delete</RNText>
+        </TouchableOpacity>
+      </View>
 
       <Animated.View
         {...panResponder.panHandlers}
+        pointerEvents={isOpen ? "none" : "auto"}
         style={[styles.swipeFront, { transform: [{ translateX }] }]}
       >
         <Pressable
           onPress={() => {
             if (movedRef.current) return;
-            if (isOpen) {
-              close();
-              return;
-            }
+            if (!clickable) return;
             onPress();
           }}
+          disabled={!clickable}
           style={({ pressed }) => [
             styles.item,
             unread && styles.itemUnread,
-            pressed && styles.pressed,
+            !clickable && styles.itemMuted,
+            pressed && clickable && styles.pressed,
           ]}
         >
-          <View style={[styles.iconWrap, { backgroundColor: iconBg }]}>
-            <Ionicons name={iconName} size={22} color={iconColor} />
-          </View>
-          <View style={styles.content}>
-            <Text style={styles.title} numberOfLines={1}>
+          <View style={styles.topRow}>
+            <View style={styles.iconWrap}>
+              <Ionicons name={iconName} size={22} color={iconColor} />
+            </View>
+            <Text style={styles.title} numberOfLines={2}>
               {item.title?.trim() || "Notification"}
             </Text>
-            <Text style={styles.body} numberOfLines={2}>
-              {item.body?.trim() || ""}
-            </Text>
-            <Text style={styles.time}>{formatTime(item.queued_at)}</Text>
+            {unread ? <View style={styles.unreadDot} /> : <View style={styles.unreadDotSpacer} />}
           </View>
-          <View style={styles.itemRight}>{unread ? <View style={styles.unreadDot} /> : null}</View>
+          {!!displayBody ? (
+            <Text style={styles.body} numberOfLines={2}>
+              {displayBody}
+            </Text>
+          ) : null}
+          {when ? <Text style={styles.time}>{when}</Text> : null}
         </Pressable>
       </Animated.View>
+
+      {isOpen ? (
+        <TouchableOpacity
+          activeOpacity={1}
+          onPress={close}
+          style={styles.swipeDismissOverlay}
+          accessibilityLabel="Close swipe actions"
+        />
+      ) : null}
     </View>
   );
 }
@@ -266,8 +281,9 @@ export default function NotificationsScreen() {
   const [items, setItems] = useState<InboxItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [selected, setSelected] = useState<InboxItem | null>(null);
   const [pendingDelete, setPendingDelete] = useState<InboxItem | null>(null);
+  const [confirmClearAll, setConfirmClearAll] = useState(false);
+  const [clearingAll, setClearingAll] = useState(false);
   const dismissedIds = useRef<Set<string>>(new Set());
 
   const apiConfig = useMemo<NotificationApiConfig>(
@@ -289,7 +305,17 @@ export default function NotificationsScreen() {
       ]);
       for (const id of dismissedIds.current) dismissed.add(id);
       dismissedIds.current = dismissed;
-      setItems(page.items.filter((n) => !dismissed.has(n.notification_id)));
+      const visible = page.items.filter((n) => !dismissed.has(n.notification_id));
+      // Collapse campaign/order duplicates so list + detail stay one entry.
+      const unique = dedupeInboxItems(visible);
+      const hiddenDupes = visible
+        .filter((n) => !unique.some((u) => u.notification_id === n.notification_id))
+        .map((n) => n.notification_id);
+      if (hiddenDupes.length > 0) {
+        for (const id of hiddenDupes) dismissedIds.current.add(id);
+        void addDismissedNotificationIds(hiddenDupes);
+      }
+      setItems(unique);
     } catch {
       // Keep previous list on soft failure.
     } finally {
@@ -310,10 +336,8 @@ export default function NotificationsScreen() {
     }
   }, [load]);
 
-  const hasUnread = items.some(isUnread);
-  const modalVisible = selected != null;
+  const hasNotifications = items.length > 0;
   const confirmVisible = pendingDelete != null;
-  const canOpenSelected = Boolean(selected?.deep_link);
 
   const showToast = (message: string) => {
     if (Platform.OS === "android") {
@@ -334,6 +358,11 @@ export default function NotificationsScreen() {
   };
 
   const handleItemPress = async (item: InboxItem) => {
+    // No detail content and no valid link → stay put (row is unclickable).
+    if (!hasInnerPage(item) && !isValidAppDeepLink(item.deep_link) && !resolveActiveOrderPath(item)) {
+      return;
+    }
+
     markItemReadLocal(item.notification_id);
     try {
       await markClickedRemote(apiConfig, item.notification_id);
@@ -345,61 +374,78 @@ export default function NotificationsScreen() {
       }
     }
 
-    const deepLink = item.deep_link?.trim();
-    if (deepLink) {
+    // Active / order lifecycle → open the live order screen directly.
+    const orderPath = resolveActiveOrderPath(item);
+    if (orderPath) {
       try {
-        if (!deepLink.startsWith("http")) {
-          router.push(deepLink as never);
-          return;
-        }
+        router.push(orderPath as never);
+        return;
       } catch {
-        /* fall through to detail modal */
+        /* fall through */
       }
     }
-    setSelected(item);
-  };
 
-  const handleOpenSelected = () => {
-    if (!selected?.deep_link) return;
-    const deepLink = selected.deep_link.trim();
-    setSelected(null);
-    try {
-      if (!deepLink.startsWith("http")) {
+    const deepLink = item.deep_link?.trim() ?? "";
+    if (isValidAppDeepLink(deepLink) && !deepLink.startsWith("http")) {
+      try {
         router.push(deepLink as never);
+        return;
+      } catch {
+        /* fall through to detail */
       }
-    } catch {
-      /* ignore */
     }
-  };
 
-  const handleMarkAllRead = async () => {
-    setItems((prev) =>
-      prev.map((p) =>
-        isUnread(p)
-          ? { ...p, status: "delivered", delivered_at: p.delivered_at ?? new Date().toISOString() }
-          : p
-      )
-    );
-    try {
-      await markAllReadRemote(apiConfig);
-    } catch {
-      /* tolerated */
+    // Announcements / system → in-app notification detail.
+    if (hasInnerPage(item)) {
+      router.push(`/notifications/${encodeURIComponent(item.notification_id)}` as never);
     }
   };
 
   const requestDelete = (item: InboxItem) => {
-    setPendingDelete(item);
+    Alert.alert("Delete notification?", item.title?.trim() || "Remove this notification?", [
+      { text: "Cancel", style: "cancel" },
+      {
+        text: "Delete",
+        style: "destructive",
+        onPress: () => {
+          const ids = siblingNotificationIds(items, item);
+          for (const id of ids) dismissedIds.current.add(id);
+          setItems((prev) => prev.filter((n) => !ids.includes(n.notification_id)));
+          void addDismissedNotificationIds(ids);
+          showToast("Notification deleted");
+        },
+      },
+    ]);
   };
 
   const confirmDelete = () => {
     if (!pendingDelete) return;
-    const id = pendingDelete.notification_id;
-    dismissedIds.current.add(id);
-    if (selected?.notification_id === id) setSelected(null);
+    const target = pendingDelete;
+    const ids = siblingNotificationIds(items, target);
+    for (const id of ids) dismissedIds.current.add(id);
     setPendingDelete(null);
-    setItems((prev) => prev.filter((n) => n.notification_id !== id));
-    void addDismissedNotificationIds([id]);
+    setItems((prev) => prev.filter((n) => !ids.includes(n.notification_id)));
+    void addDismissedNotificationIds(ids);
     showToast("Notification deleted");
+  };
+
+  const runClearAll = async () => {
+    setClearingAll(true);
+    try {
+      const ids = items.map((n) => n.notification_id);
+      for (const id of ids) dismissedIds.current.add(id);
+      setItems([]);
+      await addDismissedNotificationIds(ids);
+      try {
+        await markAllReadRemote(apiConfig);
+      } catch {
+        /* tolerated */
+      }
+      setConfirmClearAll(false);
+      showToast("All notifications cleared");
+    } finally {
+      setClearingAll(false);
+    }
   };
 
   return (
@@ -444,48 +490,49 @@ export default function NotificationsScreen() {
         </Modal>
 
         <Modal
-          visible={modalVisible}
+          visible={confirmClearAll}
           transparent
           animationType="fade"
-          onRequestClose={() => setSelected(null)}
+          onRequestClose={() => (!clearingAll ? setConfirmClearAll(false) : undefined)}
         >
-          <Pressable style={styles.modalBackdrop} onPress={() => setSelected(null)}>
-            <Pressable style={styles.modalCard} onPress={() => null}>
-              <View style={styles.modalHeader}>
-                <Text style={styles.modalTitle} numberOfLines={2}>
-                  {selected?.title ?? ""}
-                </Text>
+          <Pressable
+            style={styles.modalBackdrop}
+            onPress={() => (!clearingAll ? setConfirmClearAll(false) : undefined)}
+          >
+            <Pressable style={styles.confirmCard} onPress={() => null}>
+              <Text style={styles.confirmTitle}>Clear all notifications?</Text>
+              <Text style={styles.confirmBody}>
+                This removes every notification from your inbox. You can't undo this.
+              </Text>
+              <View style={styles.confirmActions}>
                 <Pressable
-                  onPress={() => setSelected(null)}
-                  hitSlop={12}
-                  style={({ pressed }) => pressed && styles.pressed}
+                  onPress={() => setConfirmClearAll(false)}
+                  style={({ pressed }) => [styles.modalBtn, pressed && styles.pressed]}
+                  disabled={clearingAll}
                 >
-                  <Ionicons name="close" size={22} color={COLORS.textSecondary} />
+                  <Text style={styles.modalBtnText}>Cancel</Text>
                 </Pressable>
-              </View>
-              {!!selected?.queued_at && (
-                <Text style={styles.modalTime}>{formatTime(selected.queued_at)}</Text>
-              )}
-              <Text style={styles.modalBody}>{selected?.body ?? ""}</Text>
-              <View style={styles.modalActions}>
-                {canOpenSelected ? (
-                  <Pressable
-                    onPress={handleOpenSelected}
-                    style={({ pressed }) => [
-                      styles.modalBtn,
-                      styles.modalBtnPrimary,
-                      pressed && styles.pressed,
-                    ]}
-                  >
-                    <Text style={[styles.modalBtnText, styles.modalBtnPrimaryText]}>Open</Text>
-                  </Pressable>
-                ) : null}
+                <Pressable
+                  onPress={() => void runClearAll()}
+                  style={({ pressed }) => [
+                    styles.modalBtn,
+                    styles.confirmDeleteBtn,
+                    pressed && styles.pressed,
+                  ]}
+                  disabled={clearingAll}
+                >
+                  {clearingAll ? (
+                    <ActivityIndicator color="#FFFFFF" size="small" />
+                  ) : (
+                    <Text style={[styles.modalBtnText, styles.modalBtnPrimaryText]}>Clear all</Text>
+                  )}
+                </Pressable>
               </View>
             </Pressable>
           </Pressable>
         </Modal>
 
-        <View style={[styles.header, { paddingTop: insets.top + 4 }]}>
+        <View style={[styles.header, { paddingTop: Math.max(insets.top - 4, 6) }]}>
           <Pressable
             onPress={() => router.back()}
             style={({ pressed }) => [styles.backBtn, pressed && styles.pressed]}
@@ -494,12 +541,13 @@ export default function NotificationsScreen() {
             <Ionicons name="arrow-back" size={24} color={COLORS.textPrimary} />
           </Pressable>
           <Text style={styles.headerTitle}>Notifications</Text>
-          {hasUnread ? (
+          {hasNotifications ? (
             <Pressable
-              onPress={() => void handleMarkAllRead()}
-              style={({ pressed }) => [styles.markReadBtn, pressed && styles.pressed]}
+              onPress={() => setConfirmClearAll(true)}
+              style={({ pressed }) => [styles.clearAllBtn, pressed && styles.pressed]}
+              hitSlop={8}
             >
-              <Text style={styles.markReadText}>Mark all read</Text>
+              <Text style={styles.clearAllText}>Clear all</Text>
             </Pressable>
           ) : (
             <View style={styles.headerSpacer} />
@@ -541,6 +589,12 @@ export default function NotificationsScreen() {
               <NotificationItem
                 key={item.notification_id}
                 item={item}
+                displayBody={previewBody(item.body)}
+                clickable={
+                  hasInnerPage(item) ||
+                  isValidAppDeepLink(item.deep_link) ||
+                  Boolean(resolveActiveOrderPath(item))
+                }
                 onPress={() => void handleItemPress(item)}
                 onDeletePress={() => requestDelete(item)}
               />
@@ -561,7 +615,7 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     paddingHorizontal: H_PADDING,
-    paddingBottom: 12,
+    paddingBottom: 8,
     backgroundColor: "transparent",
   },
   backBtn: {
@@ -577,19 +631,21 @@ const styles = StyleSheet.create({
     fontFamily: LORA_BOLD,
     color: COLORS.textPrimary,
     textAlign: "center",
-    marginRight: 8,
   },
-  headerSpacer: { width: 88 },
-  markReadBtn: {
-    paddingVertical: 8,
-    paddingHorizontal: 8,
+  headerSpacer: { width: 88, minWidth: 88 },
+  clearAllBtn: {
     minWidth: 88,
-    alignItems: "flex-end",
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 20,
+    backgroundColor: "rgba(20, 184, 166, 0.14)",
+    alignItems: "center",
+    justifyContent: "center",
   },
-  markReadText: {
+  clearAllText: {
     fontSize: 13,
     fontFamily: LORA_BOLD,
-    color: COLORS.primary,
+    color: "#0D9488",
   },
   scroll: { flex: 1 },
   scrollContent: {
@@ -601,72 +657,96 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   item: {
-    flexDirection: "row",
-    alignItems: "flex-start",
+    width: "100%",
     paddingVertical: 14,
     paddingHorizontal: 12,
     borderRadius: 14,
-    marginBottom: 8,
-    backgroundColor: "rgba(255,255,255,0.88)",
+    backgroundColor: COLORS.cardBg,
     borderWidth: 1,
     borderColor: "rgba(226,232,240,0.9)",
-  },
-  itemRight: {
-    alignItems: "flex-end",
-    justifyContent: "space-between",
-    gap: 10,
-    marginLeft: 8,
   },
   swipeWrap: {
     position: "relative",
     overflow: "hidden",
     borderRadius: 14,
-    marginBottom: 2,
+    marginBottom: 10,
+    width: "100%",
+    backgroundColor: "#EF4444",
   },
-  swipeActions: {
-    ...StyleSheet.absoluteFillObject,
-    flexDirection: "row",
-    alignItems: "stretch",
-    justifyContent: "flex-end",
-    backgroundColor: "transparent",
-  },
-  swipeActionRight: {
+  swipeDeleteBox: {
+    position: "absolute",
+    top: 0,
+    right: 0,
+    bottom: 0,
     width: SWIPE_ACTION_WIDTH,
-    backgroundColor: COLORS.error,
+    backgroundColor: "#EF4444",
     alignItems: "center",
     justifyContent: "center",
-    borderRadius: 14,
+    zIndex: 0,
+  },
+  swipeDeleteHit: {
+    width: SWIPE_ACTION_WIDTH,
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  swipeDeleteLabel: {
+    marginTop: 4,
+    fontSize: 12,
+    fontWeight: "700",
+    color: "#FFFFFF",
+    textAlign: "center",
   },
   swipeFront: {
-    backgroundColor: "transparent",
+    backgroundColor: COLORS.cardBg,
+    width: "100%",
+    zIndex: 1,
+    // Do not set elevation — Android draws elevated views over the delete slot.
+  },
+  swipeDismissOverlay: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    bottom: 0,
+    right: SWIPE_ACTION_WIDTH,
+    zIndex: 2,
   },
   itemUnread: {
-    backgroundColor: "rgba(232,248,242,0.95)",
+    backgroundColor: "#F0FDFA",
     borderColor: "#A7F3D0",
   },
+  itemMuted: {
+    opacity: 0.85,
+  },
+  topRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    width: "100%",
+    paddingRight: 6,
+  },
   iconWrap: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
+    width: 28,
+    height: 28,
     alignItems: "center",
     justifyContent: "center",
-    marginRight: 12,
-  },
-  content: {
-    flex: 1,
-    minWidth: 0,
+    flexShrink: 0,
+    backgroundColor: "transparent",
   },
   title: {
     flex: 1,
+    flexShrink: 1,
     fontSize: 15,
     fontFamily: LORA_BOLD,
     color: COLORS.textPrimary,
+    lineHeight: 20,
   },
   body: {
     fontSize: 13,
     fontFamily: LORA,
     color: COLORS.textSecondary,
-    marginTop: 4,
+    marginTop: 8,
+    marginLeft: 38,
     lineHeight: 18,
   },
   time: {
@@ -674,13 +754,21 @@ const styles = StyleSheet.create({
     fontFamily: LORA,
     color: COLORS.textTertiary,
     marginTop: 6,
+    marginLeft: 38,
   },
   unreadDot: {
     width: 8,
     height: 8,
     borderRadius: 4,
-    backgroundColor: COLORS.primary,
-    marginTop: 6,
+    backgroundColor: "#5EEAD4",
+    marginRight: 14,
+    flexShrink: 0,
+  },
+  unreadDotSpacer: {
+    width: 8,
+    height: 8,
+    marginRight: 14,
+    flexShrink: 0,
   },
   pressed: { opacity: 0.75 },
   modalBackdrop: {
@@ -725,6 +813,8 @@ const styles = StyleSheet.create({
   confirmDeleteBtn: {
     backgroundColor: COLORS.error,
     borderColor: COLORS.error,
+    minWidth: 88,
+    alignItems: "center",
   },
   modalHeader: {
     flexDirection: "row",
@@ -771,8 +861,8 @@ const styles = StyleSheet.create({
     color: COLORS.textPrimary,
   },
   modalBtnPrimary: {
-    backgroundColor: COLORS.primary,
-    borderColor: COLORS.primary,
+    backgroundColor: ACCENT,
+    borderColor: ACCENT,
   },
   modalBtnPrimaryText: {
     color: "#FFFFFF",

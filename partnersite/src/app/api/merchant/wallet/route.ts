@@ -219,10 +219,10 @@ export async function GET(req: NextRequest) {
 
     const earningsPromise = db
       .from('merchant_wallet_ledger')
-      .select('amount, created_at')
+      .select('amount, created_at, category')
       .eq('wallet_id', walletId)
       .eq('direction', 'CREDIT')
-      .eq('category', 'ORDER_EARNING')
+      .in('category', ['ORDER_EARNING', 'ORDER_ADJUSTMENT'])
       .gte('created_at', yesterdayStart.toISOString())
       .lt('created_at', todayEnd.toISOString());
 
@@ -265,7 +265,7 @@ export async function GET(req: NextRequest) {
         .select('amount')
         .eq('wallet_id', walletId)
         .eq('direction', 'CREDIT')
-        .eq('category', 'ORDER_EARNING')
+        .in('category', ['ORDER_EARNING', 'ORDER_ADJUSTMENT'])
         .limit(5000);
       total_earned = roundMoney(
         (earningRows ?? []).reduce((s, row) => s + Number(row.amount ?? 0), 0)

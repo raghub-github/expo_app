@@ -1,5 +1,5 @@
 /**
- * Dispatch Engine — Phase 5b: auto-cancel + refund a food order that stayed unfilled
+ * Dispatch Engine - Phase 5b: auto-cancel + refund a food order that stayed unfilled
  * past the retry window (max_retry_duration_seconds), gated by
  * platform_rider_dispatch_strategy_config.auto_cancel_on_exhaustion.
  *
@@ -23,6 +23,7 @@ import { recordCancellationTimeline } from "./order-cancellation-timeline.js";
 import { recordOrderCancellation } from "./record-order-cancellation.js";
 import { applyMerchantOrderCancellationLedger } from "./apply-merchant-cancellation-ledger.js";
 import { autoRefundOnCancellation } from "./auto-refund-on-cancellation.js";
+import { syncOrderRefundCompletionMarkers } from "./order-refund-completion-sync.js";
 import { recordDispatchEvent } from "./dispatch-events.js";
 import { emitEvent } from "../modules/notifications/eventBus.js";
 
@@ -33,6 +34,11 @@ export type ExhaustedCancelResult = {
   cancelled: boolean;
   reason?: string;
 };
+
+function num(v: unknown): number {
+  const n = typeof v === "number" ? v : Number(v);
+  return Number.isFinite(n) ? n : 0;
+}
 
 /** Cancel + refund a food order unfilled past the retry window. Never throws. */
 export async function cancelDispatchExhaustedOrder(
@@ -117,7 +123,7 @@ export async function cancelDispatchExhaustedOrder(
       WHERE id = ${orderCoreId} AND status NOT IN ('delivered', 'cancelled', 'failed')
     `;
 
-    // 2) Financials + refund + merchant compensation — reuse the existing engine.
+    // 2) Financials + refund + merchant compensation - reuse the existing engine.
     await recordCancellationTimeline(sql, {
       orderCorePk: orderCoreId,
       previousStatus,
@@ -141,7 +147,24 @@ export async function cancelDispatchExhaustedOrder(
       },
       sql
     );
-    const refund = refundFieldsFromEngineResult(engineResult.raw);
+    const engineRefund = refundFieldsFromEngineResult(engineResult.raw);
+
+    // System no-rider cancel is never the customer's fault - always capture refund
+    // intent (pending) even when the rule engine returns no_refund / 0. Otherwise
+    // Payment Details → Refund Records stays empty and OCR says no_refund.
+    const gross = num(row.grand_total ?? orderCtx.grandTotal);
+    const refundAmount =
+      engineRefund.refundAmount != null && num(engineRefund.refundAmount) > 0.005
+        ? num(engineRefund.refundAmount)
+        : gross > 0.005
+          ? gross
+          : null;
+    const refundStatus =
+      refundAmount != null && refundAmount > 0.005
+        ? engineRefund.refundStatus === "no_refund"
+          ? "pending"
+          : engineRefund.refundStatus || "pending"
+        : "pending";
 
     await recordOrderCancellation(sql, {
       orderCorePk: orderCoreId,
@@ -154,8 +177,8 @@ export async function cancelDispatchExhaustedOrder(
       cancelMode: "auto",
       previousStatus,
       grandTotal: row.grand_total,
-      refundStatus: refund.refundStatus,
-      refundAmount: refund.refundAmount,
+      refundStatus,
+      refundAmount,
       metadata: {
         reason_code: NO_RIDER_REASON,
         rejected_reason: NO_RIDER_REASON,
@@ -163,7 +186,7 @@ export async function cancelDispatchExhaustedOrder(
       },
     });
 
-    // Merchant compensation — engine decides (prepared food => partial credit; else none).
+    // Merchant compensation - engine decides (prepared food => partial credit; else none).
     try {
       await applyMerchantOrderCancellationLedger(
         { orderCoreId, source: "system_auto_cancel" },
@@ -177,16 +200,56 @@ export async function cancelDispatchExhaustedOrder(
       );
     }
 
-    // Customer refund — full (no rider found, not the customer's fault).
+    // Customer refund - full (no rider found, not the customer's fault).
+    let refundOutcomeStatus = refundStatus;
     try {
-      await autoRefundOnCancellation(
+      const outcome = await autoRefundOnCancellation(
         {
           orderCoreId,
-          reason: `${NO_RIDER_LABEL} — ${NO_RIDER_REASON}`,
+          reason: `${NO_RIDER_LABEL} - ${NO_RIDER_REASON}`,
           actorEmail: null,
           actorRole: "system",
+          amount:
+            refundAmount != null && refundAmount > 0.005 ? refundAmount : null,
         },
         sql
+      );
+      if (outcome.triggered && outcome.refundId != null) {
+        const execStatus = String(outcome.result?.status ?? "").toUpperCase();
+        const kind =
+          execStatus === "COMPLETED" || execStatus === "NOOP"
+            ? "completed"
+            : execStatus === "FAILED"
+              ? "failed"
+              : "processing";
+        await syncOrderRefundCompletionMarkers(
+          {
+            orderCoreId,
+            refundId: outcome.refundId,
+            kind,
+            refundAmount:
+              refundAmount != null && refundAmount > 0.005 ? refundAmount : null,
+          },
+          sql
+        );
+        refundOutcomeStatus =
+          kind === "completed"
+            ? "completed"
+            : kind === "failed"
+              ? "failed"
+              : "pending";
+      } else if (outcome.skippedReason === "already_refunded") {
+        refundOutcomeStatus = "completed";
+      }
+      console.info(
+        "[dispatch] exhausted_auto_refund",
+        JSON.stringify({
+          orderCoreId,
+          triggered: outcome.triggered,
+          skipped: outcome.skippedReason,
+          status: outcome.result?.status ?? null,
+          refundId: outcome.refundId ?? null,
+        })
       );
     } catch (refundErr) {
       console.error(
@@ -231,11 +294,14 @@ export async function cancelDispatchExhaustedOrder(
         merchantName: owner?.store_name ?? null,
         reason: NO_RIDER_REASON,
         refundEligible: true,
-        refundStatus: refund.refundStatus === "no_refund" ? "pending" : refund.refundStatus,
+        refundStatus:
+          refundOutcomeStatus === "no_refund" ? "pending" : refundOutcomeStatus,
         refundAmount:
-          refund.refundAmount != null && Number(refund.refundAmount) > 0.005
-            ? Number(refund.refundAmount)
-            : Number(row.grand_total ?? 0) || null,
+          refundAmount != null && refundAmount > 0.005
+            ? refundAmount
+            : gross > 0.005
+              ? gross
+              : null,
       });
     } catch {
       /* notification fan-out is best-effort */
@@ -251,16 +317,28 @@ export async function cancelDispatchExhaustedOrder(
       orderCoreId,
       serviceType: "food",
       eventType: "refund_triggered",
-      metadata: { reason: NO_RIDER_REASON, previousStatus, refundStatus: refund.refundStatus },
+      metadata: {
+        reason: NO_RIDER_REASON,
+        previousStatus,
+        refundStatus: refundOutcomeStatus,
+      },
     });
 
     console.info(
       "[dispatch] exhausted_auto_cancel",
-      JSON.stringify({ orderCoreId, previousStatus, refundStatus: refund.refundStatus })
+      JSON.stringify({
+        orderCoreId,
+        previousStatus,
+        refundStatus: refundOutcomeStatus,
+      })
     );
     return { cancelled: true };
   } catch (err) {
-    console.error("[dispatch] exhausted_auto_cancel_failed", orderCoreId, (err as Error).message);
+    console.error(
+      "[dispatch] exhausted_auto_cancel_failed",
+      orderCoreId,
+      (err as Error).message
+    );
     return { cancelled: false, reason: "error" };
   }
 }

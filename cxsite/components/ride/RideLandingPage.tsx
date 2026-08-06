@@ -152,7 +152,7 @@ export default function RideLandingPage() {
               badgePlacement="inline"
               className="text-sm font-medium text-[#9ca8a5] transition-colors hover:text-[#16c2a5] sm:text-base"
               disabledClassName="cursor-not-allowed opacity-45 hover:text-[#9ca8a5]"
-              onEnabledClick={() => handleNavigation('/courier', 'parcel')}
+              onEnabledClick={() => handleNavigation('/parcel', 'parcel')}
             />
           </nav>
 

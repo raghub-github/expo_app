@@ -5,6 +5,7 @@
 
 import React, { useEffect, useMemo } from "react";
 import { View, StyleSheet, type StyleProp, type ViewStyle } from "react-native";
+import { useCardAnimationsEnabled } from "@/hooks/useCardAnimationsEnabled";
 import Animated, {
   cancelAnimation,
   Easing,
@@ -61,15 +62,22 @@ function parseOfferLines(offerText?: string | null, texts?: string[]): string[] 
   return lines;
 }
 
-export function MerchantOfferRow({ offerText, texts, compact = false, style }: Props) {
+function MerchantOfferRowInner({ offerText, texts, compact = false, style }: Props) {
   const lines = useMemo(() => parseOfferLines(offerText, texts), [offerText, texts]);
+  // `shouldSwap` decides LAYOUT (ticker vs single line) and must not depend on
+  // motion, or the row would visibly collapse to one offer whenever the user
+  // scrolls. `animateSwap` decides only whether the timer runs.
   const shouldSwap = lines.length > 1;
+  // One of these runs per merchant card — suspended while the app is
+  // backgrounded or a scroll is in flight. See useCardAnimationsEnabled.
+  const motionAllowed = useCardAnimationsEnabled();
+  const animateSwap = shouldSwap && motionAllowed;
   const slideIndex = useSharedValue(0);
 
   useEffect(() => {
     cancelAnimation(slideIndex);
     slideIndex.value = 0;
-    if (!shouldSwap) return;
+    if (!animateSwap) return;
 
     const n = lines.length;
     let phase = 0;
@@ -99,7 +107,7 @@ export function MerchantOfferRow({ offerText, texts, compact = false, style }: P
       clearInterval(id);
       cancelAnimation(slideIndex);
     };
-  }, [shouldSwap, lines.length, slideIndex]);
+  }, [animateSwap, lines.length, slideIndex]);
 
   const sliderStyle = useAnimatedStyle(() => ({
     transform: [{ translateY: -slideIndex.value * LINE_H }],
@@ -201,3 +209,10 @@ const styles = StyleSheet.create({
     fontSize: 12,
   },
 });
+
+/**
+ * Rendered once per list item. Memoised so a parent re-render (a filter
+ * toggle, a store-status tick, a bill recalculation) does not walk every
+ * mounted instance.
+ */
+export const MerchantOfferRow = React.memo(MerchantOfferRowInner);

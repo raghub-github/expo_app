@@ -60,6 +60,38 @@ interface OrderRefundForDisplay {
   splitRazorpayAmount?: number | null;
   initiatedByEmail: string | null;
   createdAt: string;
+  refundType?: string | null;
+  refundMetadata?: Record<string, unknown> | null;
+}
+
+type RefundItemLine = {
+  id: number;
+  name: string;
+  amount: number | null;
+  refundPercentage: number | null;
+};
+
+function refundItemLines(r: OrderRefundForDisplay): RefundItemLine[] {
+  const meta = r.refundMetadata;
+  const raw = meta && Array.isArray(meta.refundItems) ? meta.refundItems : [];
+  const out: RefundItemLine[] = [];
+  for (const entry of raw) {
+    if (!entry || typeof entry !== "object") continue;
+    const row = entry as Record<string, unknown>;
+    const id = Number(row.id);
+    if (!Number.isFinite(id) || id <= 0) continue;
+    const name =
+      String(row.name ?? row.itemName ?? row.item_name ?? "").trim() || `Item #${id}`;
+    const amountRaw = Number(row.amount);
+    const pctRaw = Number(row.refundPercentage);
+    out.push({
+      id,
+      name,
+      amount: Number.isFinite(amountRaw) && amountRaw > 0 ? amountRaw : null,
+      refundPercentage: Number.isFinite(pctRaw) && pctRaw > 0 ? pctRaw : null,
+    });
+  }
+  return out;
 }
 
 function refundMethodsLabel(r: OrderRefundForDisplay): string {
@@ -455,13 +487,13 @@ function PaymentDetailsModal({
                 {refundTxnCount > 0 ? ` · Refund ${refundTxnCount}` : ''}
               </p>
             </div>
-            <div className="bg-white p-3 rounded-md border border-gray-200">
+            <div className="bg-white p-3 rounded-md border border-gray-200 min-w-0 overflow-hidden">
               <p className="text-[11px] font-medium text-gray-600">Total amount (CTC)</p>
-              <div className="mt-1 flex flex-nowrap items-center gap-x-2 whitespace-nowrap min-w-0 overflow-x-auto">
-                <p className="text-lg font-bold text-gray-900 orders-num shrink-0">
-                  {formatCurrency(totalAmount)}
-                </p>
-                {showGatiCash ? (
+              <p className="text-lg font-bold text-gray-900 orders-num mt-1">
+                {formatCurrency(totalAmount)}
+              </p>
+              {showGatiCash ? (
+                <div className="mt-1.5 min-w-0">
                   <CustomerCtcIconSplit
                     cashin={Math.max(
                       0,
@@ -469,10 +501,10 @@ function PaymentDetailsModal({
                     )}
                     gatiCashUsed={Number(totalGatiCash) || 0}
                     formatCurrency={formatCurrency}
-                    className="shrink-0"
+                    className="max-w-full"
                   />
-                ) : null}
-              </div>
+                </div>
+              ) : null}
             </div>
             <div className="bg-white p-3 rounded-md border border-emerald-200">
               <p className="text-[11px] font-medium text-emerald-800">Merchant amount (CTM)</p>
@@ -523,11 +555,12 @@ function PaymentDetailsModal({
               <>
                 <h3 className="text-sm font-semibold text-slate-800 mb-2">Refund records</h3>
                 <div className="overflow-x-auto overscroll-x-contain rounded-lg border border-gray-200 [-webkit-overflow-scrolling:touch]">
-                  <table className="w-full min-w-[980px] border-collapse">
+                  <table className="w-full min-w-[1100px] border-collapse">
                     <thead className="bg-gray-50">
                       <tr>
                         <th className={TH}>Refund RRN</th>
                         <th className={TH}>Reason</th>
+                        <th className={TH}>Item(s)</th>
                         <th className={TH}>Amount</th>
                         <th className={TH}>Method(s)</th>
                         <th className={TH}>Status</th>
@@ -551,12 +584,35 @@ function PaymentDetailsModal({
                             : outcome === 'failed'
                               ? 'bg-red-100 text-red-800'
                               : 'bg-amber-100 text-amber-900';
+                        const itemLines = refundItemLines(r);
                         return (
                           <tr key={r.id} className="hover:bg-gray-50 transition-colors">
                             <td className={`${TD} font-mono font-semibold text-red-700`}>
                               {refundDisplayId(r)}
                             </td>
                             <td className={TD}>{formatPlain(r.refundReason)}</td>
+                            <td className={`${TD} max-w-[220px]`}>
+                              {itemLines.length === 0 ? (
+                                <span className="text-slate-400">—</span>
+                              ) : (
+                                <ul className="space-y-0.5">
+                                  {itemLines.map((line) => (
+                                    <li key={`${r.id}-${line.id}`} className="text-[10px] leading-snug text-slate-700">
+                                      <span className="font-medium text-slate-800">{line.name}</span>
+                                      {line.refundPercentage != null ? (
+                                        <span className="text-slate-500"> · {line.refundPercentage}%</span>
+                                      ) : null}
+                                      {line.amount != null ? (
+                                        <span className="tabular-nums text-red-700">
+                                          {" "}
+                                          · {formatInrWithGap(line.amount)}
+                                        </span>
+                                      ) : null}
+                                    </li>
+                                  ))}
+                                </ul>
+                              )}
+                            </td>
                             <td className={`${TD} tabular-nums font-semibold text-red-700`}>
                               {Number.isFinite(amt) ? `-${formatInrWithGap(amt)}` : '—'}
                             </td>
@@ -990,21 +1046,29 @@ export default function PaymentDetails({
               capturedAmount: resolved.totalAmount,
             });
             return (
-              <div className={paymentDetailRowClass}>
-                <span className="text-gati-text-secondary font-medium shrink-0">
-                  Total Amount (CTC):
-                </span>
-                <span className="text-gati-text-primary font-semibold orders-num shrink-0">
-                  {formatCurrency(ctc > 0 ? ctc : resolved.totalAmount)}
-                </span>
-                {gati > 0.005 ? (
-                  <CustomerCtcIconSplit
-                    cashin={cashin}
-                    gatiCashUsed={gati}
-                    formatCurrency={formatCurrency}
-                    className="shrink-0"
-                  />
-                ) : null}
+              <div className="text-[12px] min-w-0">
+                <div className="flex flex-nowrap items-center gap-x-1.5 overflow-x-auto whitespace-nowrap">
+                  <span className="text-gati-text-secondary font-medium shrink-0">
+                    Total Amount (CTC):
+                  </span>
+                  <span className="text-gati-text-primary font-semibold orders-num shrink-0">
+                    {formatCurrency(ctc > 0 ? ctc : resolved.totalAmount)}
+                  </span>
+                  {gati > 0.005 ? (
+                    <>
+                      <span className="text-gati-text-secondary font-semibold shrink-0" aria-hidden>
+                        -
+                      </span>
+                      <CustomerCtcIconSplit
+                        cashin={cashin}
+                        gatiCashUsed={gati}
+                        formatCurrency={formatCurrency}
+                        nowrap
+                        className="shrink-0"
+                      />
+                    </>
+                  ) : null}
+                </div>
               </div>
             );
           })()}

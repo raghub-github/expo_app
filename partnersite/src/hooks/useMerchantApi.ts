@@ -376,10 +376,11 @@ export function useMerchantWallet(
       return data;
     },
     enabled,
-    staleTime: 5 * 60 * 1000,
+    staleTime: 30 * 1000,
     gcTime: 30 * 60 * 1000,
     placeholderData: cached ?? keepPreviousData,
-    refetchOnMount: false,
+    refetchOnMount: 'always',
+    refetchOnWindowFocus: true,
   });
 }
 
@@ -393,7 +394,8 @@ export function useMerchantWalletAnalytics(
     queryKey: merchantKeys.walletAnalytics(storeId ?? '', period),
     queryFn: () => fetchWalletAnalytics(storeId!, period),
     enabled,
-    staleTime: 60 * 1000,
+    staleTime: 30 * 1000,
+    refetchOnMount: 'always',
   });
 }
 
@@ -459,7 +461,8 @@ export function useMerchantLedger(
     queryFn: () => fetchLedger(storeId!, params),
     enabled,
     placeholderData: keepPreviousData,
-    staleTime: 45 * 1000,
+    staleTime: 30 * 1000,
+    refetchOnMount: 'always',
   });
 }
 

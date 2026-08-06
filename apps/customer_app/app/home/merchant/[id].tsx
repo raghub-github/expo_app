@@ -265,7 +265,6 @@ export default function MerchantDetailScreen() {
   const [offersSheetVisible, setOffersSheetVisible] = useState(false);
   const [scheduleSheetVisible, setScheduleSheetVisible] = useState(false);
   const [ratingSheetVisible, setRatingSheetVisible] = useState(false);
-  const [scheduledSlotLabel, setScheduledSlotLabel] = useState<string | null>(null);
   const [headerSearchExpanded, setHeaderSearchExpanded] = useState(false);
   const headerSearchExpandedSv = useSharedValue(false);
   const headerSearchInputRef = useRef<TextInput>(null);
@@ -805,7 +804,6 @@ export default function MerchantDetailScreen() {
 
   const {
     data: storeOffersData,
-    isPending: storeOffersPending,
   } = useQuery({
     queryKey: storeOffersQueryKey,
     queryFn: async () => {
@@ -1084,17 +1082,9 @@ export default function MerchantDetailScreen() {
   }, [merchant]);
 
   const offerTickerTexts = useMemo(
-    () => offerTextsFromStoreOffers(storeOffersData, merchant?.offerText),
-    [storeOffersData, merchant?.offerText]
-  );
-
-  const reserveOfferRow = useMemo(
-    () =>
-      offerTickerTexts.length > 0 ||
-      Boolean(merchant?.offerText?.trim()) ||
-      Boolean(syncStoreOffers) ||
-      (storeOffersPending && !storeOffersData),
-    [offerTickerTexts.length, merchant?.offerText, syncStoreOffers, storeOffersPending, storeOffersData]
+    // Only mapped platform/store offers — no list-card fallback (hides empty offer row).
+    () => offerTextsFromStoreOffers(storeOffersData),
+    [storeOffersData]
   );
 
   // Kept for legacy fields (polyline for map) while we migrate to canonical quote.
@@ -2121,7 +2111,7 @@ export default function MerchantDetailScreen() {
         merchantId={merchantId}
         distanceKm={distanceKm}
         storeEtaLabel={storeEtaLabel}
-        scheduledSlotLabel={scheduledSlotLabel}
+        scheduledSlotLabel={null}
         isStoreClosedForStatus={isStoreClosedForStatus}
         merchantNextOpenAt={merchantNextOpenAt}
         merchantNextCloseAt={merchantNextCloseAt}
@@ -2130,7 +2120,7 @@ export default function MerchantDetailScreen() {
         rushRemainingMinutes={rushRemainingMinutes}
         offerTickerTexts={offerTickerTexts}
         visibleOffersCount={storeOffersBadgeCount}
-        reserveOfferRow={reserveOfferRow}
+        reserveOfferRow={false}
         loadingMessageIndex={loadingMessageIndex}
         onInfoPress={handleMerchantInfoPress}
         onOffersPress={openOffersSheet}
@@ -2186,7 +2176,6 @@ export default function MerchantDetailScreen() {
         visible={scheduleSheetVisible}
         onClose={closeScheduleSheet}
         storeName={merchant.name}
-        onConfirm={(label) => setScheduledSlotLabel(label)}
       />
 
       <MerchantRatingExplainerSheet

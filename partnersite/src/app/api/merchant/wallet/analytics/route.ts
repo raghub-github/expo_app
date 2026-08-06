@@ -31,7 +31,7 @@ async function sumLedgerEarnings(db: ReturnType<typeof getDb>, walletId: number)
     .select('amount')
     .eq('wallet_id', walletId)
     .eq('direction', 'CREDIT')
-    .eq('category', 'ORDER_EARNING');
+    .in('category', ['ORDER_EARNING', 'ORDER_ADJUSTMENT']);
   return roundMoney(
     (data ?? []).reduce((s, row) => s + Number(row.amount ?? 0), 0)
   );
@@ -115,7 +115,8 @@ export async function GET(req: NextRequest) {
       const amt = Number(row.amount ?? 0);
       if (!(amt > 0)) continue;
 
-      const isEarning = cat === 'ORDER_EARNING' && dir === 'CREDIT';
+      const isEarning =
+        dir === 'CREDIT' && (cat === 'ORDER_EARNING' || cat === 'ORDER_ADJUSTMENT');
       const isWithdrawal =
         (cat === 'WITHDRAWAL' || cat === 'WITHDRAWAL_DEBIT') && dir === 'DEBIT';
       if (!isEarning && !isWithdrawal) continue;

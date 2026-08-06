@@ -501,9 +501,9 @@ export function mapboxFoodDeliveryScript(bikeUri: string): string {
         if (showPickup || showDrop) startPulse();
 
         // Marker visibility by phase:
-        // - Pre-rider: store + customer (dashed preview)
-        // - Rider → store: store + rider (hide customer)
-        // - Rider → customer (picked up): rider + customer (hide store)
+        // - Pre-rider: store + customer (dashed preview) — no rider pin
+        // - Rider → store: store + rider + road route (hide customer)
+        // - Rider → customer (picked up): rider + customer + road route (hide store)
         var preRiderArc = data.preRiderArcRoute && data.preRiderArcRoute.length >= 2 ? data.preRiderArcRoute : null;
         var isPreRider = !!preRiderArc;
         var showPickupPin = data.showPickupMarker !== false;
@@ -520,7 +520,12 @@ export function mapboxFoodDeliveryScript(bikeUri: string): string {
         }
         setPin('pickup', showPickupPin ? data.pickupLat : null, showPickupPin ? data.pickupLng : null, 'pickup');
         setPin('drop', showDropPin ? data.dropLat : null, showDropPin ? data.dropLng : null, 'drop');
-        setRiderMarker(data.riderLat, data.riderLng, data.riderHeading);
+        // Hide rider marker until assigned (pre-rider preview has no partner).
+        if (isPreRider) {
+          setRiderMarker(null, null, null);
+        } else {
+          setRiderMarker(data.riderLat, data.riderLng, data.riderHeading);
+        }
 
         var hideRoute = state.hideRouteLine || state.riderArrived;
         var preRiderModeChanged = state.wasPreRider !== isPreRider;

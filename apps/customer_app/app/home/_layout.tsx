@@ -30,6 +30,8 @@ export default function HomeLayout() {
       <Stack.Screen name="service/ride-book" />
       <Stack.Screen name="service/ride-confirm-pickup" />
       <Stack.Screen name="service/ride-searching" />
+      <Stack.Screen name="service/parcel-book" />
+      <Stack.Screen name="service/parcel-searching" />
       <Stack.Screen
         name="merchant/[id]"
         options={{

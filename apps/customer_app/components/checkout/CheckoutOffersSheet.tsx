@@ -90,6 +90,15 @@ export type CheckoutOffersSheetProps = {
   onRemoveMissedOfferWallet?: () => void;
 };
 
+function couponMinOrderGap(
+  coupon: { minOrderAmount?: number | null } | null | undefined,
+  cartSubtotal: number
+): number {
+  const min = coupon?.minOrderAmount;
+  if (min == null || !(min > 0)) return 0;
+  return Math.ceil(Math.max(0, min - cartSubtotal));
+}
+
 function OfferRow({
   title,
   subtitle,
@@ -264,6 +273,18 @@ export function CheckoutOffersSheet({
     return d?.amount ?? null;
   };
 
+  const typedCouponCode = couponInput.trim();
+  const typedListedCoupon =
+    typedCouponCode.length > 0
+      ? (data?.coupons ?? []).find((c) => c.code.toUpperCase() === typedCouponCode.toUpperCase())
+      : undefined;
+  const typedCouponGap = couponMinOrderGap(typedListedCoupon, cartSubtotal);
+  const typedCouponBlocked = typedCouponGap > 0;
+  const typedCouponBlockReason = typedCouponBlocked
+    ? `Add ₹${typedCouponGap} more to use this coupon (min order ₹${Math.round(typedListedCoupon!.minOrderAmount!)}).`
+    : null;
+  const codeApplyDisabled = !typedCouponCode || typedCouponBlocked;
+
   /**
    * appliedMerchantOfferId comes from the billing snapshot's meta.merchantOfferId,
    * which the checkout exclusive-offer auto-pick (Precision/cart offers can apply
@@ -315,7 +336,13 @@ export function CheckoutOffersSheet({
 
   /** Instant unlock gaps as cart changes — before listing refetch lands. */
   const livePlatformLocked = useMemo(() => {
-    const rows = data?.platformOffersIneligible ?? [];
+    const rows = (data?.platformOffersIneligible ?? []).filter((o) => {
+      const reason = String(o.reason ?? "").toLowerCase();
+      // Never show geo / location-hidden platform offers in Unlock More.
+      if (reason.includes("not available at your delivery location")) return false;
+      if (reason.includes("not available for your account")) return false;
+      return true;
+    });
     const lockedFromIneligible = rows
       .map((o) => {
         const wasMinCart =
@@ -336,7 +363,7 @@ export function CheckoutOffersSheet({
               : o.reason,
         };
       })
-      .filter((o) => o.liveGap > 0);
+      .filter((o) => o.liveGap > 0 && o.liveGap < Number.MAX_SAFE_INTEGER);
 
     const ineligibleIds = new Set(lockedFromIneligible.map((o) => o.id));
     const relocked = (data?.platformOffers ?? [])
@@ -349,6 +376,11 @@ export function CheckoutOffersSheet({
         return {
           id: o.id,
           name: o.name,
+          // Carried through so this arm of the union matches `lockedFromIneligible`
+          // (which spreads the source row). Without it the merged list had no
+          // `couponCode` on one branch, and the locked OfferRow below silently
+          // lost the coupon code for any offer that came back via this path.
+          couponCode: o.couponCode,
           offerKind: o.offerKind,
           summary: o.summary,
           reason: formatAddMoreToUnlock(gap),
@@ -486,17 +518,26 @@ export function CheckoutOffersSheet({
             autoCapitalize="characters"
           />
           <TouchableOpacity
-            style={styles.codeApplyBtn}
+            style={[styles.codeApplyBtn, codeApplyDisabled && styles.codeApplyBtnDisabled]}
+            disabled={codeApplyDisabled}
             onPress={() => {
-              const trimmed = couponInput.trim();
-              if (trimmed) onApplyCouponCode(trimmed);
+              if (codeApplyDisabled) return;
+              onApplyCouponCode(typedCouponCode);
             }}
             activeOpacity={0.9}
           >
-            <CheckoutText style={styles.codeApplyText}>Apply</CheckoutText>
+            <CheckoutText
+              style={[styles.codeApplyText, codeApplyDisabled && styles.codeApplyTextDisabled]}
+            >
+              Apply
+            </CheckoutText>
           </TouchableOpacity>
         </View>
-        {couponError ? <CheckoutText style={styles.codeError}>{couponError}</CheckoutText> : null}
+        {couponError ? (
+          <CheckoutText style={styles.codeError}>{couponError}</CheckoutText>
+        ) : typedCouponBlockReason ? (
+          <CheckoutText style={styles.codeHint}>{typedCouponBlockReason}</CheckoutText>
+        ) : null}
       </LinearGradient>
 
       <ScrollView
@@ -603,6 +644,7 @@ export function CheckoutOffersSheet({
                             key={`pf-${o.id}`}
                             title={displayPlatformOfferTitle(o.name, o.offerKind)}
                             subtitle={o.summary}
+                            couponCode={o.couponCode}
                             applied={isApplied}
                             savings={isApplied ? savingsForPlatform(o.id) : null}
                             onApply={isApplied ? undefined : () => onApplyPlatformOffer(o.id, o.name)}
@@ -617,6 +659,7 @@ export function CheckoutOffersSheet({
                             key={`pf-ready-${o.id}`}
                             title={displayPlatformOfferTitle(o.name, o.offerKind)}
                             subtitle={o.summary}
+                            couponCode={o.couponCode}
                             applied={isApplied}
                             savings={isApplied ? savingsForPlatform(o.id) : null}
                             onApply={isApplied ? undefined : () => onApplyPlatformOffer(o.id, o.name)}
@@ -661,6 +704,7 @@ export function CheckoutOffersSheet({
                             key={`pf-lock-${o.id}`}
                             title={displayPlatformOfferTitle(o.name, o.offerKind)}
                             subtitle={o.summary}
+                            couponCode={o.couponCode}
                             locked
                             lockReason={o.liveLockReason || o.reason}
                             gatiCashPending={
@@ -837,14 +881,26 @@ export function CheckoutOffersSheet({
                       <CheckoutText style={styles.sectionLabel}>COUPON CODES</CheckoutText>
                       {data!.coupons.map((c) => {
                         const isApplied = appliedCouponCode?.toUpperCase() === c.code.toUpperCase();
+                        const gap = couponMinOrderGap(c, cartSubtotal);
+                        const locked = !isApplied && gap > 0;
                         return (
                           <OfferRow
                             key={c.code}
                             title={c.code}
                             subtitle={c.description}
                             applied={isApplied}
+                            locked={locked}
+                            lockReason={
+                              locked
+                                ? `Add ₹${gap} more to use this coupon (min order ₹${Math.round(c.minOrderAmount!)}).`
+                                : undefined
+                            }
                             savings={isApplied ? savingsForLabel(c.code) : null}
-                            onApply={isApplied ? undefined : () => onApplyCouponCode(c.code, c.description)}
+                            onApply={
+                              isApplied || locked
+                                ? undefined
+                                : () => onApplyCouponCode(c.code, c.description)
+                            }
                             onRemove={isApplied ? onRemoveCoupon : undefined}
                           />
                         );
@@ -929,8 +985,13 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     minHeight: 42,
   },
+  codeApplyBtnDisabled: {
+    backgroundColor: "#E2E8F0",
+  },
   codeApplyText: { color: "#fff", fontWeight: "700", fontSize: 14 },
+  codeApplyTextDisabled: { color: "#94A3B8" },
   codeError: { fontSize: 11, color: CX.errorRed, marginTop: 6 },
+  codeHint: { fontSize: 11, color: CX.errorRed, marginTop: 6 },
   list: { width: "100%" },
   listContent: { paddingHorizontal: 14, paddingTop: 4 },
   loadingWrap: { paddingVertical: 24, alignItems: "center", gap: 8 },
