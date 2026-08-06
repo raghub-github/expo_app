@@ -26,6 +26,15 @@ const ServicesQuerySchema = z.object({
   lng: z.coerce.number().min(-180).max(180).optional(),
 });
 
+const DispatchServiceabilityQuerySchema = z.object({
+  service: z.enum(["food", "parcel", "ride", "person_ride"]),
+  fulfillment: z.enum(["self_pickup", "delivery"]).default("delivery"),
+  lat: z.coerce.number().min(-90).max(90),
+  lng: z.coerce.number().min(-180).max(180),
+  pincode: z.string().min(3).max(12).optional(),
+  state: z.string().min(2).max(80).optional(),
+});
+
 /**
  * Public geo resolve — uses DB RPC `geo_resolve_pincode` (see dashboard/drizzle 0172).
  */
@@ -131,6 +140,35 @@ export async function geoRoutes(app: FastifyInstance) {
         });
       }
       return reply.code(500).send({ error: "resolve_failed", message: msg });
+    }
+  });
+
+  /**
+   * Pre-placement serviceability — can the customer place this order here?
+   * Self-pickup skips the rider check; delivery requires an available internal rider
+   * within the service radius, or 3PL enabled for the location.
+   */
+  app.get("/geo/dispatch-serviceability", async (request, reply) => {
+    const q = DispatchServiceabilityQuerySchema.safeParse(request.query);
+    if (!q.success) {
+      return reply.code(400).send({ error: "invalid_query", details: q.error.flatten() });
+    }
+    const { service, fulfillment, lat, lng, pincode, state } = q.data;
+    const serviceType = service === "ride" ? "person_ride" : service;
+    try {
+      const { checkDispatchServiceability } = await import(
+        "../../lib/dispatch-serviceability.js"
+      );
+      const result = await checkDispatchServiceability({
+        serviceType,
+        fulfillment,
+        pickup: { lat, lng, pincode, state },
+      });
+      return reply.send({ ok: true, ...result });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "serviceability_failed";
+      request.log.error({ err: e }, "dispatch_serviceability_failed");
+      return reply.code(500).send({ error: "serviceability_failed", message: msg });
     }
   });
 

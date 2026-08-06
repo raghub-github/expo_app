@@ -1,12 +1,12 @@
 /**
- * Dispatch Engine - Phase 0 config loaders (service radius + strategy/rate/retry).
+ * Dispatch Engine — Phase 0 config loaders (service radius + strategy/rate/retry).
  *
  * Always reads fresh from DB (no cache), mirroring order-dispatch-settings.ts. These
  * back the Phase 0 config tables:
  *   - platform_rider_service_radius            (order-placement serviceability gate)
  *   - platform_rider_dispatch_strategy_config  (ordering strategy, retry loop, pre-pickup pay)
  *
- * Defaults are behavior-preserving: strategy 'nearest' + pre-pickup rate 0 -> the engine
+ * Defaults are behavior-preserving: strategy 'nearest' + pre-pickup rate 0 → the engine
  * behaves exactly as before until an admin changes a value.
  */
 
@@ -105,7 +105,7 @@ function normalizeScoreWeights(raw: unknown): DispatchScoreWeights {
 }
 
 /**
- * Serviceability radius (meters) for order placement - pickup->rider max distance a
+ * Serviceability radius (meters) for order placement — pickup->rider max distance a
  * customer may place a delivery order within. Fresh DB read. Throws if unconfigured.
  */
 export async function fetchServiceRadiusMeters(
@@ -171,7 +171,21 @@ export async function fetchDispatchStrategyConfig(
   serviceType: DispatchServiceType
 ): Promise<DispatchStrategyConfig> {
   const sql = getSql();
-  let rows: Array<{
+  const rows = (await sql`
+    SELECT
+      service_type,
+      strategy,
+      score_weights,
+      retry_interval_seconds,
+      max_retry_duration_seconds,
+      pre_pickup_rate_per_km,
+      pre_pickup_funding,
+      auto_cancel_on_exhaustion,
+      enabled
+    FROM platform_rider_dispatch_strategy_config
+    WHERE service_type = ${serviceType}
+    LIMIT 1
+  `) as Array<{
     service_type: string;
     strategy: string;
     score_weights: unknown;
@@ -179,47 +193,9 @@ export async function fetchDispatchStrategyConfig(
     max_retry_duration_seconds: number;
     pre_pickup_rate_per_km: string | number;
     pre_pickup_funding: string;
-    auto_cancel_on_exhaustion?: boolean;
+    auto_cancel_on_exhaustion: boolean;
     enabled: boolean;
-  }> = [];
-
-  try {
-    rows = (await sql`
-      SELECT
-        service_type,
-        strategy,
-        score_weights,
-        retry_interval_seconds,
-        max_retry_duration_seconds,
-        pre_pickup_rate_per_km,
-        pre_pickup_funding,
-        auto_cancel_on_exhaustion,
-        enabled
-      FROM platform_rider_dispatch_strategy_config
-      WHERE service_type = ${serviceType}
-      LIMIT 1
-    `) as typeof rows;
-  } catch {
-    // Column or table may be absent until migration 0500 / strategy table migrate.
-    try {
-      rows = (await sql`
-        SELECT
-          service_type,
-          strategy,
-          score_weights,
-          retry_interval_seconds,
-          max_retry_duration_seconds,
-          pre_pickup_rate_per_km,
-          pre_pickup_funding,
-          enabled
-        FROM platform_rider_dispatch_strategy_config
-        WHERE service_type = ${serviceType}
-        LIMIT 1
-      `) as typeof rows;
-    } catch {
-      return { serviceType, ...DEFAULT_STRATEGY_CONFIG };
-    }
-  }
+  }>;
 
   const row = rows[0];
   if (!row) {

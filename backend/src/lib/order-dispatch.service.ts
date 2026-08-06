@@ -30,6 +30,7 @@ import {
   isOrderDispatchManualHold,
   setOrderDispatchManualHold,
 } from "./order-dispatch-manual-hold.js";
+import { recordDispatchEvent } from "./dispatch-events.js";
 
 export type DispatchSessionStatus = "active" | "accepted" | "expired" | "cancelled";
 
@@ -64,12 +65,10 @@ async function isOrderStillDispatchable(orderCoreId: number): Promise<boolean> {
       foodCancelled: ordersFood.cancelledAt,
       rideCancelled: ordersRide.cancelledAt,
       rideSearchExpiresAt: ordersRide.searchExpiresAt,
-      parcelSearchExpiresAt: ordersParcel.searchExpiresAt,
     })
     .from(ordersCore)
     .leftJoin(ordersFood, eq(ordersFood.orderId, ordersCore.id))
     .leftJoin(ordersRide, eq(ordersRide.orderId, ordersCore.id))
-    .leftJoin(ordersParcel, eq(ordersParcel.orderId, ordersCore.id))
     .where(eq(ordersCore.id, orderCoreId))
     .limit(1);
 
@@ -87,18 +86,10 @@ async function isOrderStillDispatchable(orderCoreId: number): Promise<boolean> {
   }
 
   if (serviceType === "parcel") {
-    const searching =
-      row.status === "assigned" &&
-      ["SEARCHING_RIDER", "PLACED", "CREATED", "READY_FOR_PICKUP"].includes(
-        String(row.currentStatus ?? "")
-      );
-    if (!searching || ["delivered", "cancelled", "failed"].includes(String(row.status ?? ""))) {
-      return false;
-    }
-    if (row.parcelSearchExpiresAt && new Date(row.parcelSearchExpiresAt) <= new Date()) {
-      return false;
-    }
-    return true;
+    return (
+      row.currentStatus === "READY_FOR_PICKUP" &&
+      !["delivered", "cancelled", "failed"].includes(String(row.status ?? ""))
+    );
   }
 
   if (row.rideCancelled != null) return false;
@@ -124,26 +115,14 @@ async function loadDispatchOrderTarget(
       pickupLon: ordersCore.pickupLon,
       rideType: ordersRide.rideType,
       vehicleTypeRequired: ordersRide.vehicleTypeRequired,
-      parcelVehicleTypeRequired: ordersParcel.vehicleTypeRequired,
-      parcelVehicleCategory: ordersParcel.vehicleCategory,
-      parcelSearchExpiresAt: ordersParcel.searchExpiresAt,
     })
     .from(ordersCore)
     .leftJoin(ordersRide, eq(ordersRide.orderId, ordersCore.id))
-    .leftJoin(ordersParcel, eq(ordersParcel.orderId, ordersCore.id))
     .where(eq(ordersCore.id, orderCoreId))
     .limit(1);
 
   const serviceType = normalizeOrderServiceType(row?.orderType);
   if (!row?.orderId || !serviceType) return null;
-
-  if (
-    serviceType === "parcel" &&
-    row.parcelSearchExpiresAt &&
-    new Date(row.parcelSearchExpiresAt) <= new Date()
-  ) {
-    return null;
-  }
 
   const effectiveRadiusMeters = await fetchEffectiveDispatchRadiusMeters(serviceType, waveNumber);
 
@@ -165,14 +144,6 @@ async function loadDispatchOrderTarget(
       const fallback = row.vehicleTypeRequired?.trim();
       if (fallback) personRideVehicleTypes = [fallback];
     }
-  }
-
-  if (serviceType === "parcel") {
-    const parcelVehicle =
-      row.parcelVehicleTypeRequired?.trim() ||
-      row.parcelVehicleCategory?.trim() ||
-      undefined;
-    if (parcelVehicle) personRideVehicleTypes = [parcelVehicle];
   }
 
   return {
@@ -283,6 +254,12 @@ export async function completeOrderDispatch(
     WHERE order_core_id = ${orderCoreId}
       AND status IN ('active', 'accepted')
   `;
+
+  void recordDispatchEvent({
+    orderCoreId,
+    eventType: "dispatch_completed",
+    metadata: { status },
+  });
 
   if (status === "expired" || status === "cancelled") {
     const { recordPendingDispatchOffersMissed } = await import(
@@ -435,6 +412,15 @@ export async function executeDispatchWave(sessionId: number): Promise<{
     waveNumber,
     toNotify.map((r) => r.riderId)
   );
+  void recordDispatchEvent({
+    orderCoreId,
+    sessionId,
+    serviceType: target.serviceType,
+    eventType: "wave_dispatched",
+    waveNumber,
+    radiusMeters: target.effectiveRadiusMeters,
+    metadata: { newlyNotified: notified, eligibleWithinRadius: eligible.length },
+  });
   if (toNotify.length > 0) {
     await recordDispatchOffersSent({
       orderCoreId,
@@ -486,7 +472,12 @@ export async function advanceDispatchWave(sessionId: number): Promise<boolean> {
   const currentWave = Math.max(1, Number(session.current_wave) || 1);
   const canExpand = await hasNextDispatchWave(serviceType, currentWave);
   if (!canExpand) {
-    // Phase 5: food/parcel retry until max_retry_duration_seconds, then optional auto-cancel.
+    // Phase 5: unified auto-retry. Food/parcel — once the last wave is exhausted with
+    // no accept, restart from wave 1 after retry_interval_seconds and keep re-offering
+    // until max_retry_duration_seconds elapses (from the dispatch session start), then
+    // stop. Non-destructive: it only re-offers (clears the per-session notification
+    // dedup so idle riders can be offered again). Ride keeps its own search-timeout /
+    // tip-boost flow and is never retried here.
     if (serviceType !== "person_ride") {
       const { fetchDispatchStrategyConfig } = await import("./dispatch-strategy-config.js");
       const cfg = await fetchDispatchStrategyConfig(serviceType).catch(() => null);
@@ -525,6 +516,7 @@ export async function advanceDispatchWave(sessionId: number): Promise<boolean> {
         return true;
       }
 
+      // Retry window exhausted (food/parcel).
       await sql`
         UPDATE order_dispatch_sessions
         SET next_wave_at = NULL, updated_at = NOW()
@@ -542,6 +534,9 @@ export async function advanceDispatchWave(sessionId: number): Promise<boolean> {
         waveNumber: currentWave,
       });
 
+      // Phase 5b: optional auto-cancel + refund on exhaustion (food only; gated by
+      // auto_cancel_on_exhaustion, default OFF). Reuses the existing cancellation +
+      // refund + merchant-compensation engine (prepared food -> partial merchant credit).
       if (cfg?.autoCancelOnExhaustion && serviceType === "food") {
         const { cancelDispatchExhaustedOrder } = await import(
           "./dispatch-exhausted-cancel.service.js"
@@ -557,6 +552,7 @@ export async function advanceDispatchWave(sessionId: number): Promise<boolean> {
       return false;
     }
 
+    // Ride: stop; ride-search-timeout / tip-boost handles expiry + refund.
     await sql`
       UPDATE order_dispatch_sessions
       SET next_wave_at = NULL, updated_at = NOW()
@@ -608,6 +604,15 @@ export async function advanceDispatchWave(sessionId: number): Promise<boolean> {
       maxWaves: waveSettings.maxWaves,
     })
   );
+  void recordDispatchEvent({
+    orderCoreId,
+    sessionId,
+    serviceType,
+    eventType: "wave_expanded",
+    waveNumber: nextWave,
+    radiusMeters: nextRadius,
+    metadata: { fromWave: currentWave, toWave: nextWave, fromRadiusMeters: prevRadius },
+  });
 
   await executeDispatchWave(sessionId);
   return true;

@@ -64,6 +64,7 @@ import {
   resolveRiderOrderEarnings,
 } from "../../lib/rider-order-earning-resolve.js";
 import { resolveOrderRiderPayoutBreakdown } from "../../lib/resolve-order-rider-payout.js";
+import { computePrePickupAllowanceForPickup } from "../../lib/pre-pickup-pay.js";
 import { rideAddressLabelsFromCheckoutMetadata, rideGeoFromCheckoutMetadata, resolveRideAddressDisplayLabel, rideTripDistanceFromCheckoutMetadata, roundRideTripDistanceKm } from "../../lib/ride-address-display.js";
 import {
   persistRideRiderAcceptPayoutSnapshot,
@@ -2356,8 +2357,9 @@ async function acceptFoodOrderForRider(
 
   const foodStatusAtAccept = String(preCheck.foodStatus ?? "").trim().toUpperCase();
 
+  let foodAcceptCtx: Awaited<ReturnType<typeof validateRiderAcceptance>> | null = null;
   try {
-    await validateRiderAcceptance(
+    foodAcceptCtx = await validateRiderAcceptance(
       riderId,
       "food",
       {
@@ -2369,6 +2371,18 @@ async function acceptFoodOrderForRider(
   } catch (error) {
     throwDispatchError(error);
   }
+
+  // First-mile allowance snapshot: rate/km × rider→store distance at accept. 0 when the
+  // pre-pickup rate is unset (Phase 4b). Paid into the delivery credit on delivery.
+  const foodPrePickup = foodAcceptCtx
+    ? await computePrePickupAllowanceForPickup(
+        "food",
+        foodAcceptCtx.lat,
+        foodAcceptCtx.lng,
+        parseCoord(preCheck.pickupLat),
+        parseCoord(preCheck.pickupLon)
+      ).catch(() => null)
+    : null;
 
   const [riderProfile] = await db
     .select({ name: riders.name, mobile: riders.mobile })
@@ -2390,6 +2404,12 @@ async function acceptFoodOrderForRider(
         status: "accepted",
         currentStatus: readyNow ? "RIDER_ASSIGNED" : nextCoreStatus,
         actualPickupTime: null,
+        ...(foodPrePickup
+          ? {
+              riderPrePickupAllowance: String(foodPrePickup.amount),
+              riderPickupDistanceMeters: foodPrePickup.pickupDistanceMeters,
+            }
+          : {}),
         updatedAt: now,
       })
       .where(
@@ -2621,8 +2641,9 @@ async function acceptParcelOrderForRider(
     throw Object.assign(new Error("Order not available"), { statusCode: 409 });
   }
 
+  let parcelAcceptCtx: Awaited<ReturnType<typeof validateRiderAcceptance>> | null = null;
   try {
-    await validateRiderAcceptance(
+    parcelAcceptCtx = await validateRiderAcceptance(
       riderId,
       "parcel",
       {
@@ -2636,6 +2657,16 @@ async function acceptParcelOrderForRider(
   }
 
   const previousStatus = String(preCheck.currentStatus ?? "SEARCHING_RIDER");
+  // First-mile allowance snapshot (Phase 4b): rate/km × rider→store distance at accept.
+  const parcelPrePickup = parcelAcceptCtx
+    ? await computePrePickupAllowanceForPickup(
+        "parcel",
+        parcelAcceptCtx.lat,
+        parcelAcceptCtx.lng,
+        parseCoord(preCheck.pickupLat),
+        parseCoord(preCheck.pickupLon)
+      ).catch(() => null)
+    : null;
 
   const accepted = await db.transaction(async (tx) => {
     const [existing] = await tx
@@ -2654,6 +2685,12 @@ async function acceptParcelOrderForRider(
         riderId,
         status: "accepted",
         currentStatus: "OUT_FOR_DELIVERY",
+        ...(parcelPrePickup
+          ? {
+              riderPrePickupAllowance: String(parcelPrePickup.amount),
+              riderPickupDistanceMeters: parcelPrePickup.pickupDistanceMeters,
+            }
+          : {}),
         updatedAt: now,
       })
       .where(and(eq(ordersCore.id, existing.id), isNull(ordersCore.riderId)))
@@ -2784,8 +2821,9 @@ async function acceptRideOrderForRider(
     throw Object.assign(new Error("Order not available"), { statusCode: 409 });
   }
 
+  let rideAcceptCtx: Awaited<ReturnType<typeof validateRiderAcceptance>> | null = null;
   try {
-    await validateRiderAcceptance(
+    rideAcceptCtx = await validateRiderAcceptance(
       riderId,
       "person_ride",
       {
@@ -2797,6 +2835,17 @@ async function acceptRideOrderForRider(
   } catch (error) {
     throwDispatchError(error);
   }
+
+  // First-mile allowance snapshot (Phase 4b): rate/km × rider→pickup distance at accept.
+  const ridePrePickup = rideAcceptCtx
+    ? await computePrePickupAllowanceForPickup(
+        "person_ride",
+        rideAcceptCtx.lat,
+        rideAcceptCtx.lng,
+        parseCoord(preCheck.pickupLat),
+        parseCoord(preCheck.pickupLon)
+      ).catch(() => null)
+    : null;
 
   const [takenByOther] = await db
     .select({ riderId: ordersCore.riderId })
@@ -2845,6 +2894,12 @@ async function acceptRideOrderForRider(
         riderId,
         status: "accepted",
         currentStatus: "RIDER_ASSIGNED",
+        ...(ridePrePickup
+          ? {
+              riderPrePickupAllowance: String(ridePrePickup.amount),
+              riderPickupDistanceMeters: ridePrePickup.pickupDistanceMeters,
+            }
+          : {}),
         updatedAt: now,
       })
       .where(

@@ -65,6 +65,7 @@ import {
 import { seedOrderDetailCache } from "@/lib/orderDetailCache";
 import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
 import { reverseGeocode } from "@/services/location.service";
+import { checkDispatchServiceability } from "@/services/geoServices.service";
 import { getRoute, getStoreDeliveryQuote, type StoreDeliveryQuote } from "@/services/distance.service";
 import { checkoutRouterBack } from "@/lib/safeRouterBack";
 import { evaluateCartCheckoutEligibility } from "@/lib/cartCheckoutGate";
@@ -3965,6 +3966,25 @@ export default function CheckoutScreen() {
       );
       return;
     }
+    // Pre-placement serviceability gate (delivery). Fail-open on API/network error so a
+    // transient issue never blocks checkout — only a definitive "not serviceable" stops it.
+    if (merchant?.latitude != null && merchant?.longitude != null) {
+      const svc = await checkDispatchServiceability({
+        service: "food",
+        fulfillment: "delivery",
+        lat: Number(merchant.latitude),
+        lng: Number(merchant.longitude),
+      });
+      if (svc.ok && !svc.result.serviceable) {
+        Alert.alert(
+          "Delivery unavailable",
+          svc.result.message ||
+            "No riders are currently available right now. Please try again shortly.",
+          [{ text: "OK" }]
+        );
+        return;
+      }
+    }
     if (hasValidPayment) {
       setRazorpayCreating(true);
       try {
@@ -4037,6 +4057,7 @@ export default function CheckoutScreen() {
     razorpayCreating,
     hasValidPayment,
     merchantId,
+    merchant,
     checkoutReceiverName,
     checkoutReceiverMobile,
     openReceiverSheet,
