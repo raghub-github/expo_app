@@ -42,7 +42,7 @@ const placeBodySchema = z.object({
   paymentMethod: z.enum(["cash", "cod", "online"]).optional(),
   couponCode: z.string().optional().nullable(),
   selectedPlatformOfferId: z.coerce.number().int().positive().optional().nullable(),
-  offerSnapshot: z.record(z.unknown()).optional().nullable(),
+  offerSnapshot: z.record(z.string(), z.unknown()).optional().nullable(),
   appliedOfferDiscount: z.coerce.number().nonnegative().optional().nullable(),
   weightKg: z.coerce.number().positive().optional().nullable(),
   lengthCm: z.coerce.number().positive().optional().nullable(),
