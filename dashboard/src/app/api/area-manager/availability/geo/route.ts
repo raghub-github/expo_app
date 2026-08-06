@@ -1,12 +1,16 @@
 /**
  * GET /api/area-manager/availability/geo
  * Riders within radiusKm of lat/lng (live GPS + fallback), with KPIs and insights.
- * Any area-manager session (or super admin) may access — Rider AM role not required.
+ * Open to any authenticated dashboard agent (same bar as Home) — no AREA_MANAGER grant required.
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { createServerSupabaseClient } from "@/lib/supabase/server";
-import { requireAreaManagerApiAuth } from "@/lib/area-manager/auth";
+import { getAuthenticatedApiUser } from "@/lib/auth/api-session";
+import { getSystemUserByEmail } from "@/lib/auth/user-mapping";
+import {
+  getUserDashboardAccess,
+  isSuperAdmin,
+} from "@/lib/permissions/engine";
 import {
   GEO_AVAILABILITY_RADIUS_KM,
   searchRidersNearPoint,
@@ -15,31 +19,45 @@ import { apiErrorResponse } from "@/lib/api-errors";
 
 export const runtime = "nodejs";
 
-function riderScopeAreaManagerId(resolved: {
-  isSuperAdmin?: boolean;
-  managerType: string;
-  areaManager: { id: number };
-}): number | null {
-  if (resolved.isSuperAdmin) return null;
-  if (resolved.managerType === "RIDER" && resolved.areaManager.id > 0) {
-    return resolved.areaManager.id;
-  }
-  // Merchant AM / other: unscoped fleet view for availability checks
-  return null;
-}
-
 export async function GET(request: NextRequest) {
   try {
-    const supabase = await createServerSupabaseClient();
-    const getAuthUser = async () => {
-      const { data } = await supabase.auth.getUser();
-      return data?.user ?? null;
-    };
-    const authResult = await requireAreaManagerApiAuth(getAuthUser);
-    if (authResult.error) return authResult.error;
+    const auth = await getAuthenticatedApiUser(request);
+    if (!auth.ok) {
+      return NextResponse.json(auth.body, { status: auth.status });
+    }
 
-    const { resolved } = authResult;
-    const areaManagerId = riderScopeAreaManagerId(resolved);
+    const email = auth.user.email;
+    if (!email) {
+      return NextResponse.json(
+        { success: false, error: "Not authenticated", code: "SESSION_REQUIRED" },
+        { status: 401 }
+      );
+    }
+
+    const superAdmin = await isSuperAdmin(auth.user.id, email);
+    if (!superAdmin) {
+      const systemUser = await getSystemUserByEmail(email);
+      if (!systemUser) {
+        return NextResponse.json(
+          { success: false, error: "Not authenticated", code: "SESSION_REQUIRED" },
+          { status: 401 }
+        );
+      }
+      const dashboards = await getUserDashboardAccess(systemUser.id);
+      if (dashboards.length === 0) {
+        return NextResponse.json(
+          {
+            success: false,
+            error: "Dashboard access required",
+            code: "DASHBOARD_ACCESS_REQUIRED",
+          },
+          { status: 403 }
+        );
+      }
+    }
+
+    // Fleet-wide search for all agents (no AM locality scope).
+    const areaManagerId: number | null = null;
 
     const sp = request.nextUrl.searchParams;
     const lat = Number(sp.get("lat"));

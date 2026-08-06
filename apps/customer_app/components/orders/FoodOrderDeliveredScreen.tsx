@@ -28,6 +28,7 @@ import { DeliveryPartnerTrackingCard } from "@/components/orders/DeliveryPartner
 import { DeliveryPartnerSafetyBottomSheet } from "@/components/orders/DeliveryPartnerSafetyBottomSheet";
 import { FoodOrderTipSheet } from "@/components/orders/FoodOrderTipSheet";
 import { RestaurantPostDeliveryRatingSheet } from "@/components/orders/RestaurantPostDeliveryRatingSheet";
+import { resolveOrderPaymentDisplay } from "@/lib/orderBillBreakdown";
 import { DeliveryPartnerPostRatingSheet } from "@/components/orders/DeliveryPartnerPostRatingSheet";
 import { usePartnerChatUnread } from "@/hooks/usePartnerChatUnread";
 import {
@@ -268,7 +269,7 @@ export function FoodOrderDeliveredScreen({
       : null;
   const existingTip = order.tipAmount != null && order.tipAmount > 0 ? order.tipAmount : 0;
   const displayTipAmount = Math.max(existingTip, localTipAmount);
-  const paymentMethodLabel = (order.paymentMethod ?? "UPI").replace(/_/g, " ");
+  const paymentMethodLabel = resolveOrderPaymentDisplay(order).compactLabel;
   const deliveredTime = formatDeliveredTime(getDeliveredAtIso(order));
 
   const displayStoreRating = alreadySubmitted ? serverStoreRating : localStoreRating;

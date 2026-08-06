@@ -42,7 +42,14 @@ function formatWhen(iso: string | null | undefined): string {
 }
 
 function actionLabelFor(item: RoutedToHistoryItem): string {
-  if (item.actionLabel?.trim()) return item.actionLabel.trim();
+  const raw = item.actionLabel?.trim() || "";
+  if (raw) {
+    // Legacy rows stored DB codes (in_transit / picked_up) — show agent-facing labels.
+    return raw
+      .replace(/\bin_transit\b/gi, "Dispatched")
+      .replace(/\bpicked_up\b/gi, "Dispatch Ready")
+      .replace(/\bdelivered\b/gi, "Delivered");
+  }
   const key = item.action as OrderRoutedToAction;
   return ORDER_ROUTED_TO_ACTION_LABELS[key] ?? item.action;
 }

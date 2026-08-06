@@ -551,7 +551,7 @@ export function AreaManagerDashboardClient() {
           title="Available (Online)"
           value={riderData.availability.online}
           icon={Activity}
-          href="/dashboard/area-managers/availability"
+          href="/dashboard/rx"
           subtitle="Currently available"
           bgColor="bg-gradient-to-br from-emerald-50 to-emerald-100"
           iconBgColor="bg-emerald-500"
@@ -562,7 +562,7 @@ export function AreaManagerDashboardClient() {
           title="Busy"
           value={riderData.availability.busy}
           icon={Clock}
-          href="/dashboard/area-managers/availability"
+          href="/dashboard/rx"
           bgColor="bg-gradient-to-br from-amber-50 to-amber-100"
           iconBgColor="bg-amber-500"
           iconColor="text-white"
@@ -572,7 +572,7 @@ export function AreaManagerDashboardClient() {
           title="Offline"
           value={riderData.availability.offline}
           icon={MapPin}
-          href="/dashboard/area-managers/availability"
+          href="/dashboard/rx"
           bgColor="bg-gradient-to-br from-slate-50 to-slate-100"
           iconBgColor="bg-slate-500"
           iconColor="text-white"
@@ -594,7 +594,7 @@ export function AreaManagerDashboardClient() {
             ))}
           </ul>
           <Link
-            href="/dashboard/area-managers/availability"
+            href="/dashboard/rx"
             className="mt-2 inline-block text-sm font-medium text-amber-800 underline"
           >
             View availability

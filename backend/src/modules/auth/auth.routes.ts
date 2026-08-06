@@ -16,7 +16,13 @@ import {
 import { getEnv } from "../../config/env.js";
 import { deliverSupabaseOtpViaMsg91 } from "../../services/otp/msg91DeliverSupabaseOtp.js";
 import { issueSupabaseCompatibleJwt } from "./jwt.js";
-import { createReviewBypasses, matchReviewBypass } from "./reviewMode.js";
+import {
+  createReviewBypasses,
+  matchReviewBypass,
+  otpsEqual,
+  isReviewOtpOnForeignPhone,
+  __test as reviewModeTest,
+} from "./reviewMode.js";
 import { verifyFirebaseIdToken } from "./firebaseAdmin.js";
 import { getDb, getSql } from "../../db/client.js";
 import { riders, userProfiles, customers } from "../../db/schema.js";
@@ -238,10 +244,21 @@ export async function authRoutes(app: FastifyInstance) {
   // discriminator — each bypass owns a distinct, separately-configured number.
   const reviewBypasses = createReviewBypasses(env);
 
-  // Dev-only in-memory OTP store. In production, use Redis/DB.
+  // In-memory OTP store. Production should prefer Redis; semantics are the same.
+  // `isReview` marks entries seeded by a review bypass — verify re-checks phone
+  // binding so a review OTP can never unlock a foreign number.
   const otpStore = new Map<
     string,
-    { phoneE164: string; otp: string; expiresAtMs: number; attempts: number }
+    {
+      phoneE164: string;
+      otp: string;
+      expiresAtMs: number;
+      attempts: number;
+      isReview?: boolean;
+      reviewApp?: string;
+      /** Bound at request time when provided — verify must match for customer. */
+      appType?: string;
+    }
   >();
 
   /**
@@ -513,16 +530,26 @@ export async function authRoutes(app: FastifyInstance) {
   /**
    * Dev-only auth flow: exchange Firebase ID token (from Firebase Phone Auth)
    * for a backend-issued Supabase-compatible session JWT.
+   * Hard-blocked in production — customer/merchant/rider must use OTP verify.
    */
   app.post(
     "/firebase/session",
     {
       schema: {
         body: FirebaseSessionExchangeSchema,
-        response: { 200: SessionSchema },
+        response: {
+          200: SessionSchema,
+          403: z.object({ error: z.string(), message: z.string().optional() }),
+        },
       },
     },
-    async (req) => {
+    async (req, reply) => {
+      if (env.NODE_ENV === "production") {
+        return reply.code(403).send({
+          error: "forbidden",
+          message: "Firebase session exchange is disabled in production.",
+        });
+      }
       const { idToken, deviceId } = FirebaseSessionExchangeSchema.parse(req.body) as FirebaseSessionExchange;
       const decoded = await verifyFirebaseIdToken(env, idToken);
 
@@ -584,12 +611,16 @@ export async function authRoutes(app: FastifyInstance) {
           otp,
           expiresAtMs: Date.now() + expiresInSec * 1000,
           attempts: 0,
+          isReview: true,
+          reviewApp: requestBypass.app,
+          appType: typeof appType === "string" ? appType : undefined,
         });
         requestBypass.logReviewLogin(req.log, {
           phone: phoneE164,
           ip: req.ip ?? null,
           stage: "request",
           ok: true,
+          appType: typeof appType === "string" ? appType : undefined,
         });
         return {
           requestId,
@@ -667,12 +698,18 @@ export async function authRoutes(app: FastifyInstance) {
       }
 
       // 6-digit OTP (SMS standard; MSG91 and partnersite use 6).
-      const otp = Math.floor(100000 + Math.random() * 900000).toString();
+      // Never collide with an armed review fixed OTP for a non-review phone.
+      let otp = Math.floor(100000 + Math.random() * 900000).toString();
+      if (isReviewOtpOnForeignPhone(reviewBypasses, phoneE164, otp)) {
+        otp = Math.floor(100000 + Math.random() * 900000).toString();
+      }
       otpStore.set(requestId, {
         phoneE164,
         otp,
         expiresAtMs: Date.now() + expiresInSec * 1000,
         attempts: 0,
+        isReview: false,
+        appType: typeof appType === "string" ? appType : undefined,
       });
 
       req.log?.info?.({ requestId, expiresInSec }, "[OTP] Generated");
@@ -767,7 +804,11 @@ export async function authRoutes(app: FastifyInstance) {
         req.log?.warn?.({ requestId, appType }, "[OTP] Verify failed — invalid request id");
         return reply.code(400).send({ error: "invalid_request_id" });
       }
-      if (entry.phoneE164 !== phoneE164) {
+      // Phone must match the number the OTP was issued for (exact or trailing-10).
+      if (
+        entry.phoneE164 !== phoneE164 &&
+        !reviewModeTest.phonesEqual(entry.phoneE164, phoneE164)
+      ) {
         req.log?.warn?.({ requestId, appType }, "[OTP] Verify failed — phone mismatch");
         return reply.code(400).send({ error: "phone_mismatch" });
       }
@@ -784,26 +825,48 @@ export async function authRoutes(app: FastifyInstance) {
         return reply.code(429).send({ error: "too_many_attempts" });
       }
 
-      if (entry.otp !== otp) {
-        req.log?.warn?.({ requestId, appType, attempt: entry.attempts }, "[OTP] Verify failed — invalid code");
-        const failBypass = matchReviewBypass(reviewBypasses, phoneE164);
-        if (failBypass) {
-          failBypass.logReviewLogin(req.log, {
+      // Defense: review fixed OTP must never unlock a non-review phone.
+      if (isReviewOtpOnForeignPhone(reviewBypasses, phoneE164, otp)) {
+        req.log?.warn?.(
+          { requestId, appType, phoneTail },
+          "[OTP] Verify rejected — review OTP used on non-review phone",
+        );
+        return reply.code(400).send({ error: "invalid_otp" });
+      }
+
+      // Review-seeded entries must still bind to an armed review phone.
+      const verifyBypass = matchReviewBypass(reviewBypasses, phoneE164);
+      if (entry.isReview) {
+        if (!verifyBypass) {
+          otpStore.delete(requestId);
+          req.log?.warn?.(
+            { requestId, appType, phoneTail },
+            "[OTP] Verify rejected — review entry without matching review phone",
+          );
+          return reply.code(400).send({ error: "invalid_otp" });
+        }
+        if (!otpsEqual(otp, verifyBypass.getReviewOtp()) || !otpsEqual(entry.otp, verifyBypass.getReviewOtp())) {
+          req.log?.warn?.({ requestId, appType, attempt: entry.attempts }, "[OTP] Verify failed — invalid review code");
+          verifyBypass.logReviewLogin(req.log, {
             phone: phoneE164,
             ip: req.ip ?? null,
             stage: "verify",
             ok: false,
             appType,
           });
+          return reply.code(400).send({ error: "invalid_otp" });
         }
+      } else if (!otpsEqual(entry.otp, otp)) {
+        req.log?.warn?.({ requestId, appType, attempt: entry.attempts }, "[OTP] Verify failed — invalid code");
         return reply.code(400).send({ error: "invalid_otp" });
       }
+
+      // Consume OTP before issuing any session (replay protection).
       otpStore.delete(requestId);
 
       req.log?.info?.({ requestId, appType, phoneTail }, "[OTP] Verified");
-      const okBypass = matchReviewBypass(reviewBypasses, phoneE164);
-      if (okBypass) {
-        okBypass.logReviewLogin(req.log, {
+      if (verifyBypass) {
+        verifyBypass.logReviewLogin(req.log, {
           phone: phoneE164,
           ip: req.ip ?? null,
           stage: "verify",
@@ -1501,6 +1564,7 @@ export async function authRoutes(app: FastifyInstance) {
           200: SessionSchema,
           400: z.object({ error: z.string() }),
           401: z.object({ error: z.string() }),
+          403: z.object({ error: z.string(), message: z.string() }),
           503: z.object({ error: z.string() }),
         },
       },
@@ -1552,7 +1616,25 @@ export async function authRoutes(app: FastifyInstance) {
 
       let customerUserId: string;
       if (existing.length > 0) {
-        customerUserId = existing[0]!.customerId;
+        // Closed/deactivated accounts cannot be revived by logging back in.
+        // Same guard as /otp/verify — Supabase exchange must not bypass it.
+        const existingCustomer = existing[0]!;
+        const isClosed =
+          existingCustomer.deletedAt != null ||
+          existingCustomer.accountStatus === "DEACTIVATED" ||
+          existingCustomer.accountStatus === "BLOCKED";
+        if (isClosed) {
+          req.log?.warn?.(
+            { customerId: existingCustomer.customerId, accountStatus: existingCustomer.accountStatus },
+            "[auth] exchange-customer refused — customer account closed/deactivated",
+          );
+          return reply.code(403).send({
+            error: "account_closed",
+            message:
+              "This account has been closed and cannot be reopened. If you think this is a mistake, contact grievance@gatimitra.com.",
+          });
+        }
+        customerUserId = existingCustomer.customerId;
       } else {
         const normalizedMobile = phoneE164.replace(/\D/g, "");
         const placeholderId = `GM_PENDING_${normalizedMobile}`;

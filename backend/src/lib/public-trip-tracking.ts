@@ -60,18 +60,20 @@ function firstName(full: string | null | undefined): string | null {
   return full.trim().split(/\s+/)[0] ?? null;
 }
 
-function statusLabel(status: string): string {
+function statusLabel(status: string, orderType?: string): string {
+  const food = String(orderType ?? "").toLowerCase() === "food";
   const map: Record<string, string> = {
-    SEARCHING: "Finding Captain",
-    ASSIGNED: "Captain Assigned",
-    ACCEPTED: "Ride Accepted",
-    REACHED_STORE: "Captain at Pickup",
+    SEARCHING: food ? "Finding delivery partner" : "Finding Captain",
+    ASSIGNED: food ? "Partner Assigned" : "Captain Assigned",
+    ACCEPTED: food ? "Order Accepted" : "Ride Accepted",
+    PREPARING: "Preparing",
+    REACHED_STORE: food ? "Partner at restaurant" : "Captain at Pickup",
     RIDE_IN_PROGRESS: "On The Way",
     ON_THE_WAY: "On The Way",
     OUT_FOR_DELIVERY: "On The Way",
-    NEAR_DESTINATION: "Near Destination",
-    DELIVERED: "Trip Completed",
-    CANCELLED: "Trip Cancelled",
+    NEAR_DESTINATION: food ? "Nearby" : "Near Destination",
+    DELIVERED: food ? "Delivered" : "Trip Completed",
+    CANCELLED: food ? "Order Cancelled" : "Trip Cancelled",
   };
   return map[status] ?? status.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 }
@@ -86,7 +88,9 @@ function displayCustomerName(full: string | null | undefined): string | null {
 function buildTripTitle(name: string | null, orderType: string): string {
   const who = name?.trim() || "Guest";
   if (orderType === "person_ride") return `${who}'s Bike ride`;
-  return `${who}'s Trip`;
+  if (orderType === "food") return `${who}'s Food order`;
+  if (orderType === "parcel") return `${who}'s Parcel`;
+  return `${who}'s Order`;
 }
 
 function buildStatusHeading(args: {
@@ -95,11 +99,31 @@ function buildStatusHeading(args: {
   riderReachedPickup: boolean;
   rideStarted: boolean;
   nearDestination: boolean;
+  orderType?: string | null;
+  hasRider?: boolean;
 }): string {
-  if (args.nearDestination && args.enRoute) return "Captain is near your destination";
-  if (args.enRoute || args.rideStarted) return "Heading to your destination";
-  if (args.riderReachedPickup || args.appStatus === "REACHED_STORE") return "Captain has arrived at pickup";
-  return "Captain on the way to pickup";
+  const food = String(args.orderType ?? "").toLowerCase() === "food";
+  if (args.nearDestination && args.enRoute) {
+    return food ? "Delivery partner is nearby" : "Captain is near your destination";
+  }
+  if (args.enRoute || args.rideStarted) {
+    return food ? "Order is on the way" : "Heading to your destination";
+  }
+  if (args.riderReachedPickup || args.appStatus === "REACHED_STORE") {
+    return food ? "Partner has arrived at the restaurant" : "Captain has arrived at pickup";
+  }
+  if (food && !args.hasRider) {
+    if (
+      args.appStatus === "PREPARING" ||
+      args.appStatus === "ACCEPTED" ||
+      args.appStatus === "READY" ||
+      args.appStatus === "READY_FOR_PICKUP"
+    ) {
+      return "Restaurant is preparing your order";
+    }
+    return "Waiting for a delivery partner";
+  }
+  return food ? "Delivery partner heading to the restaurant" : "Captain on the way to pickup";
 }
 
 function isTerminalAppStatus(status: string): boolean {
@@ -570,6 +594,8 @@ export async function loadPublicTripByToken(token: string): Promise<PublicTripTr
     riderReachedPickup,
     rideStarted,
     nearDestination,
+    orderType: orderRow.orderType,
+    hasRider: orderRow.riderId != null,
   });
   const tripTitle = buildTripTitle(customerDisplayName ?? customerName, orderRow.orderType ?? "person_ride");
   const pickupPinRaw = rideMeta?.pickupOtp?.replace(/\D/g, "") ?? "";
@@ -581,7 +607,7 @@ export async function loadPublicTripByToken(token: string): Promise<PublicTripTr
     tripId: orderIdText,
     orderType: orderRow.orderType ?? "person_ride",
     status: displayStatus,
-    statusLabel: statusLabel(displayStatus),
+    statusLabel: statusLabel(displayStatus, orderRow.orderType ?? undefined),
     statusHeading,
     tripTitle,
     tripPhase,
@@ -654,7 +680,7 @@ export async function loadPublicTripByToken(token: string): Promise<PublicTripTr
 export async function assertCustomerCanShareOrder(args: {
   customerPk: number;
   orderIdParam: string;
-}): Promise<{ orderIdText: string; appStatus: string } | null> {
+}): Promise<{ orderIdText: string; appStatus: string; orderType: string } | null> {
   const db = getDb();
   const [row] = await db
     .select({
@@ -667,7 +693,13 @@ export async function assertCustomerCanShareOrder(args: {
     .from(ordersCore)
     .where(customerOrderRefWhere(args.customerPk, args.orderIdParam))
     .limit(1);
-  if (!row?.orderId || row.riderId == null) return null;
+  if (!row?.orderId) return null;
+
+  const orderType = String(row.orderType ?? "").trim().toLowerCase() || "food";
+  // Rides still require an assigned captain. Food/parcel can share while preparing
+  // (store → drop preview) even before a rider is assigned.
+  if (orderType === "person_ride" && row.riderId == null) return null;
+
   const appStatus = resolveCustomerAppOrderStatus({
     currentStatus: row.currentStatus,
     coreStatus: row.status,
@@ -676,5 +708,5 @@ export async function assertCustomerCanShareOrder(args: {
     orderType: row.orderType,
   });
   if (isTerminalAppStatus(appStatus)) return null;
-  return { orderIdText: row.orderId, appStatus };
+  return { orderIdText: row.orderId, appStatus, orderType };
 }

@@ -10,6 +10,14 @@ import { getRulesetVersion, loadBillingDatasetUncached } from "./billing.reposit
 import { resolveGeoLocation, type ResolveGeoLocationResult } from "./geoLocationResolver.js";
 import type { BillContext, BillingResult } from "./types.js";
 import type { ComputeBillResult } from "./billing.service.js";
+import {
+  loadPlatformOfferLifetimeUseCounts,
+  loadPlatformOfferUsageCountsForUser,
+} from "./platformOfferUsage.service.js";
+import {
+  countCompletedPersonRidesForCustomer,
+} from "./platformOfferFirstRide.js";
+import { platformOfferCouponCodesMatch } from "./platformOfferCouponCode.js";
 
 function sanitizePlaceholder(v: string | null | undefined): string | null {
   if (v == null) return null;
@@ -47,6 +55,11 @@ export type ComputeBillForRideInput = {
   userSegment?: "NEW" | "EXISTING" | "ALL";
   selectedPlatformOfferId?: number | null;
   forceNoAutoOffer?: boolean;
+  /** Catalog ride type (bike, auto, cab-economy, …) for vehicle-specific offers. */
+  rideType?: string | null;
+  vehicleType?: string | null;
+  /** Payment mode at quote/placement/checkout (upi, wallet, card, online, cash, …). */
+  paymentMode?: string | null;
   now?: Date;
   useCache?: boolean;
   /** When provided (batch path), skip reverse-geocode / geo resolve. */
@@ -175,6 +188,9 @@ export async function computeBillForRide(
   const couponCode = input.couponCode?.trim() || null;
   const serviceType = "RIDE";
   const distanceKm = Math.max(0, input.distanceKm);
+  const rideType = (input.rideType ?? "").trim().toLowerCase() || null;
+  const vehicleType = (input.vehicleType ?? rideType ?? "").trim().toLowerCase() || null;
+  const paymentMode = (input.paymentMode ?? "").trim().toLowerCase() || null;
 
   const pickupPostalCode = normalizePincode(input.pickupPincode);
   const pickupStateName = sanitizePlaceholder(input.pickupState);
@@ -191,6 +207,7 @@ export async function computeBillForRide(
     }));
   const dropGeoRefByLevel = calcGeo.refs;
   const platformOfferGeoBindingEffectiveIds = calcGeo.geoBoundOfferIds;
+  const checkoutCouponGeoBindingEffectiveIds = calcGeo.geoBoundCouponIds;
 
   const userSegRaw = input.userSegment ?? "ALL";
   const userSegment: "NEW" | "EXISTING" | "ALL" =
@@ -209,6 +226,13 @@ export async function computeBillForRide(
       ...(input.customerId > 0 ? { userId: input.customerId } : {}),
     } as Parameters<typeof loadBillingDatasetUncached>[1] & { userId?: number });
     if (useCache) setCachedBillingDataset(cacheKey, dataset);
+  }
+
+  // First Ride Only: server-authoritative completed person_ride count (never Food/Parcel).
+  // Fail-closed when customer is unknown — first-ride offers will not apply.
+  let completedPersonRideCount: number | null = null;
+  if (input.customerId > 0) {
+    completedPersonRideCount = await countCompletedPersonRidesForCustomer(db, input.customerId);
   }
 
   const ctx: BillContext = {
@@ -232,6 +256,7 @@ export async function computeBillForRide(
     dropPostalCode: pickupPostalCode,
     dropGeoRefByLevel,
     platformOfferGeoBindingEffectiveIds,
+    checkoutCouponGeoBindingEffectiveIds,
     deliveryFeeFromRateCard: 0,
     deliveryFeeFromSlabsGeoV2: 0,
     deliverySlabsGeoV2Quote: null,
@@ -248,10 +273,50 @@ export async function computeBillForRide(
     isSelfPickup: true,
     deliveryPricingEngine: undefined,
     checkoutAudience: "CUSTOMER",
-    selectedPlatformOfferId: input.selectedPlatformOfferId ?? null,
+    completedPersonRideCount,
+    rideType,
+    vehicleType,
+    paymentMode,
+    selectedPlatformOfferId: (() => {
+      const explicit = input.selectedPlatformOfferId ?? null;
+      if (explicit != null) return explicit;
+      if (couponCode && !dataset.coupon) {
+        const matched = dataset.platformOffers.find((o) =>
+          platformOfferCouponCodesMatch(o.couponCode, couponCode)
+        );
+        if (matched) return matched.id;
+      }
+      return null;
+    })(),
     selectedMerchantOfferId: null,
     forceNoAutoOffer: input.forceNoAutoOffer === true,
   };
+
+  // Per-user / lifetime platform offer caps (independent of First Ride Only).
+  if (input.customerId > 0) {
+    const platformWithLimits = dataset.platformOffers.filter(
+      (o) =>
+        (o.maxUsesPerUser != null && o.maxUsesPerUser > 0) ||
+        (o.maxUsesPerDay != null && o.maxUsesPerDay > 0) ||
+        (o.maxUsesPerMonth != null && o.maxUsesPerMonth > 0)
+    );
+    if (platformWithLimits.length > 0) {
+      ctx.platformOfferUsagesByUser = await loadPlatformOfferUsageCountsForUser(
+        db,
+        input.customerId,
+        platformWithLimits.map((o) => o.id)
+      );
+    }
+    const platformWithTotal = dataset.platformOffers.filter(
+      (o) => o.maxUsesTotal != null && o.maxUsesTotal > 0
+    );
+    if (platformWithTotal.length > 0) {
+      ctx.platformOfferLifetimeUseCounts = await loadPlatformOfferLifetimeUseCounts(
+        db,
+        platformWithTotal.map((o) => o.id)
+      );
+    }
+  }
 
   const billing = executeBillingPipeline(ctx, dataset);
 

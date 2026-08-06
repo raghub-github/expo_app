@@ -92,10 +92,12 @@ async function fetchSession(): Promise<SessionData> {
     if (response.status === 503 && result.code === "SERVICE_UNAVAILABLE") {
       throw new Error(SESSION_SERVICE_UNAVAILABLE);
     }
-    if (response.status === 401 && result.code === "SESSION_INVALID") {
+    if (response.status === 401) {
       if (typeof window !== "undefined") {
         const { redirectToLoginOnSessionExpired } = await import("@/lib/auth/redirect-to-login");
-        redirectToLoginOnSessionExpired({ reason: "session_invalid" });
+        redirectToLoginOnSessionExpired({
+          reason: result.code || "not_authenticated",
+        });
         return new Promise(() => {});
       }
     }

@@ -4,7 +4,7 @@ import Link from 'next/link'
 import { useGeoServiceAvailability } from '@/lib/hooks/useGeoServiceAvailability'
 import { SoonBadge } from '@/components/common/SoonBadge'
 
-export const PARCEL_SERVICE_HREF = '/courier'
+export const PARCEL_SERVICE_HREF = '/parcel'
 
 type ParcelServiceControlProps = {
   /** Visible label when using default children */

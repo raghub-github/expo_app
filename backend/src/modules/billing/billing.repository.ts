@@ -91,23 +91,48 @@ export async function getRulesetVersion(db: PostgresJsDatabase<Record<string, un
 /** Active promo codes customers can type at checkout (dashboard `billing_discounts`). */
 export async function listActiveCustomerCoupons(
   db: PostgresJsDatabase<Record<string, unknown>>,
-  serviceTypeUpper: string
+  serviceTypeUpper: string,
+  opts?: { geoBoundCouponIds?: ReadonlySet<number> | null }
 ): Promise<
   Array<{
+    id: number;
     code: string;
     discountType: string;
     valueNumeric: number | null;
     maxDiscountCap: number | null;
+    usageLimit: number | null;
+    usedCount: number;
+    validFrom: Date | null;
+    validUntil: Date | null;
+    isActive: boolean;
+    isHidden: boolean;
+    serviceType: string;
+    offerAudience: string;
+    perUserUsageLimit: number | null;
+    metadata: Record<string, unknown> | null;
+    couponConfig: Record<string, unknown> | null;
   }>
 > {
   const st = serviceTypeUpper.trim().toUpperCase();
   const now = new Date();
   const rows = await db
     .select({
+      id: billingDiscounts.id,
       code: billingDiscounts.code,
       discountType: billingDiscounts.discountType,
       valueNumeric: billingDiscounts.valueNumeric,
       maxDiscountCap: billingDiscounts.maxDiscountCap,
+      usageLimit: billingDiscounts.usageLimit,
+      usedCount: billingDiscounts.usedCount,
+      validFrom: billingDiscounts.validFrom,
+      validUntil: billingDiscounts.validUntil,
+      isActive: billingDiscounts.isActive,
+      isHidden: billingDiscounts.isHidden,
+      serviceType: billingDiscounts.serviceType,
+      offerAudience: billingDiscounts.offerAudience,
+      perUserUsageLimit: billingDiscounts.perUserUsageLimit,
+      metadata: billingDiscounts.metadata,
+      couponConfig: billingDiscounts.couponConfig,
     })
     .from(billingDiscounts)
     .where(
@@ -127,12 +152,42 @@ export async function listActiveCustomerCoupons(
     .orderBy(asc(billingDiscounts.code))
     .limit(80);
 
-  return rows.map((r) => ({
-    code: r.code,
-    discountType: String(r.discountType),
-    valueNumeric: n(r.valueNumeric),
-    maxDiscountCap: n(r.maxDiscountCap),
-  }));
+  const { couponCoversService, sanitizeCheckoutCouponConfig } = await import(
+    "./checkoutCouponConfig.js"
+  );
+
+  const geoBound = opts?.geoBoundCouponIds;
+  return rows
+    .filter((r) => {
+      if (geoBound != null && !geoBound.has(r.id)) return false;
+      const cfg = sanitizeCheckoutCouponConfig(r.couponConfig ?? {});
+      // Non-public coupons stay claimable by typed code but are not listed.
+      if (cfg.public === false) return false;
+      return couponCoversService(r.serviceType, cfg, st);
+    })
+    .map((r) => {
+      const audRaw = String(r.offerAudience ?? "CUSTOMER").toUpperCase();
+      const offerAudience =
+        audRaw === "MERCHANT" || audRaw === "RIDER" ? audRaw : "CUSTOMER";
+      return {
+        id: r.id,
+        code: r.code,
+        discountType: String(r.discountType),
+        valueNumeric: n(r.valueNumeric),
+        maxDiscountCap: n(r.maxDiscountCap),
+        usageLimit: r.usageLimit ?? null,
+        usedCount: r.usedCount ?? 0,
+        validFrom: r.validFrom ?? null,
+        validUntil: r.validUntil ?? null,
+        isActive: Boolean(r.isActive),
+        isHidden: Boolean(r.isHidden),
+        serviceType: (r.serviceType ?? "FOOD").trim().toUpperCase(),
+        offerAudience,
+        perUserUsageLimit: r.perUserUsageLimit ?? null,
+        metadata: (r.metadata as Record<string, unknown> | null) ?? null,
+        couponConfig: (r.couponConfig as Record<string, unknown> | null) ?? null,
+      };
+    });
 }
 
 export async function bumpRulesetVersion(db: PostgresJsDatabase<Record<string, unknown>>): Promise<number> {
@@ -277,6 +332,11 @@ export async function loadBillingDatasetUncached(
       (o): PlatformOfferRow => ({
         id: o.id,
         name: o.name,
+        couponCode: (o.couponCode ?? "").trim() || null,
+        promoConfig:
+          o.promoConfig != null && typeof o.promoConfig === "object" && !Array.isArray(o.promoConfig)
+            ? (o.promoConfig as Record<string, unknown>)
+            : {},
         serviceType: (o.serviceType ?? "FOOD").trim().toUpperCase(),
         discountType: o.discountType ?? "PERCENTAGE",
         valueNumeric: n(o.valueNumeric),
@@ -310,6 +370,13 @@ export async function loadBillingDatasetUncached(
         endsAt: o.endsAt ?? null,
         budgetTotal: n(o.budgetTotal),
         budgetUsed: n(o.budgetUsed),
+        maxUsesTotal: o.maxUsesTotal ?? null,
+        maxUsesPerUser: o.maxUsesPerUser ?? null,
+        maxUsesPerDay: o.maxUsesPerDay ?? null,
+        maxUsesPerMonth: o.maxUsesPerMonth ?? null,
+        consumeMode: String(o.consumeMode ?? "ON_PLACED").toUpperCase(),
+        restoreOnCancel: o.restoreOnCancel !== false,
+        restoreOnRefund: o.restoreOnRefund !== false,
         priority: o.priority,
         isHidden: o.isHidden,
         conditions: (o.conditions as Record<string, unknown>) ?? {},
@@ -592,8 +659,14 @@ export async function loadBillingDatasetUncached(
       )
       .limit(1);
     if (d) {
+      const { couponCoversService, sanitizeCheckoutCouponConfig } = await import(
+        "./checkoutCouponConfig.js"
+      );
+      const cfg = sanitizeCheckoutCouponConfig(
+        (d.couponConfig as Record<string, unknown> | null) ?? null
+      );
       const rowSt = (d.serviceType ?? "FOOD").trim().toUpperCase();
-      if (rowSt === serviceType || rowSt === "ALL") {
+      if (couponCoversService(rowSt, cfg, serviceType)) {
         const audRaw = String(d.offerAudience ?? "CUSTOMER").toUpperCase();
         const offerAudience =
           audRaw === "MERCHANT" || audRaw === "RIDER" ? audRaw : "CUSTOMER";
@@ -613,6 +686,7 @@ export async function loadBillingDatasetUncached(
           offerAudience,
           perUserUsageLimit: d.perUserUsageLimit ?? null,
           metadata: (d.metadata as Record<string, unknown> | null) ?? null,
+          couponConfig: (d.couponConfig as Record<string, unknown> | null) ?? null,
         };
       }
     }

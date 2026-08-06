@@ -1,16 +1,15 @@
 /**
- * Customer Detail API Routes
  * GET /api/customers/[id] - Get customer by ID
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { createServerSupabaseClient } from "@/lib/supabase/server";
+import { getAuthenticatedApiUser } from "@/lib/auth/api-session";
 import { getCustomerById, getCustomerByCustomerId } from "@/lib/db/operations/customers";
 import { checkPermission } from "@/lib/permissions/engine";
 import { logAPICall } from "@/lib/auth/activity-tracker";
 import { getSystemUserByEmail } from "@/lib/db/operations/users";
 
-export const runtime = 'nodejs';
+export const runtime = "nodejs";
 
 /**
  * GET /api/customers/[id]
@@ -21,17 +20,12 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const supabase = await createServerSupabaseClient();
-    const { data: { user }, error: userError } = await supabase.auth.getUser();
-
-    if (userError || !user) {
-      return NextResponse.json(
-        { success: false, error: "Not authenticated" },
-        { status: 401 }
-      );
+    const auth = await getAuthenticatedApiUser(request);
+    if (!auth.ok) {
+      return NextResponse.json(auth.body, { status: auth.status });
     }
+    const { user } = auth;
 
-    // Check permission
     const hasPermission = await checkPermission(
       user.id,
       user.email ?? "",
@@ -46,7 +40,6 @@ export async function GET(
       );
     }
 
-    // Get system user ID
     const systemUser = await getSystemUserByEmail(user.email ?? "");
     if (!systemUser) {
       return NextResponse.json(
@@ -56,12 +49,11 @@ export async function GET(
     }
 
     const { id } = await params;
-    
-    // Try to parse as number (database ID), otherwise treat as customer_id
-    const numericId = parseInt(id);
+
+    const numericId = parseInt(id, 10);
     let customer;
-    
-    if (!isNaN(numericId) && numericId.toString() === id) {
+
+    if (!Number.isNaN(numericId) && numericId.toString() === id) {
       customer = await getCustomerById(numericId);
     } else {
       customer = await getCustomerByCustomerId(id);
@@ -74,8 +66,8 @@ export async function GET(
       );
     }
 
-    // Log activity
-    const ipAddress = request.headers.get("x-forwarded-for") || request.headers.get("x-real-ip") || undefined;
+    const ipAddress =
+      request.headers.get("x-forwarded-for") || request.headers.get("x-real-ip") || undefined;
     await logAPICall(
       systemUser.id,
       `/api/customers/${id}`,

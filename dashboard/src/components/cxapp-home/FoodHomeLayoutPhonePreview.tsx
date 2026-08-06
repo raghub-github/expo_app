@@ -6,7 +6,6 @@ import type {
   FoodHomePreviewMerchant,
   FoodHomePreviewPayload,
 } from "@/lib/cxapp-home/food-home-preview-types";
-import { Spinner } from "@/components/geo-admin/Loader";
 import { resolveAttachmentProxyUrl } from "@/lib/attachments/resolve-attachment-proxy-url";
 import { cn } from "@/lib/utils";
 
@@ -643,36 +642,73 @@ export function FoodHomeLayoutPhonePreview({
   under250FilterLabel: under250FilterLabelProp,
   under250TabImageUrl: under250TabImageUrlProp,
 }: Props) {
-  const [data, setData] = useState<FoodHomePreviewPayload | null>(null);
-  const [loading, setLoading] = useState(true);
+  const cacheKey = stateId ? `cxapp-food-preview-v1:${stateId}` : "";
+  const [data, setData] = useState<FoodHomePreviewPayload | null>(() => {
+    if (typeof window === "undefined" || !cacheKey) return null;
+    try {
+      const raw = sessionStorage.getItem(cacheKey);
+      return raw ? (JSON.parse(raw) as FoodHomePreviewPayload) : null;
+    } catch {
+      return null;
+    }
+  });
+  const [loading, setLoading] = useState(() => !data);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!stateId) return;
     let cancelled = false;
-    setLoading(true);
+    const hadCache = !!data;
+    // Keep cached preview visible; only show blocking spinner on cold load.
+    if (!hadCache) setLoading(true);
     setError(null);
-    void (async () => {
-      try {
-        const res = await fetch(`/api/super-admin/cxapp-home/food-preview/${stateId}`, {
-          cache: "no-store",
-        });
-        const json = (await res.json()) as FoodHomePreviewPayload & { error?: string };
-        if (!res.ok) throw new Error(json.error ?? "Failed to load preview");
-        if (!cancelled) setData(json);
-      } catch (e) {
-        if (!cancelled) {
-          setError(e instanceof Error ? e.message : "Failed to load preview");
-          setData(null);
+
+    const run = () => {
+      void (async () => {
+        try {
+          const res = await fetch(`/api/super-admin/cxapp-home/food-preview/${stateId}`, {
+            // Honor route Cache-Control instead of always bypassing.
+            cache: "default",
+          });
+          const json = (await res.json()) as FoodHomePreviewPayload & { error?: string };
+          if (!res.ok) throw new Error(json.error ?? "Failed to load preview");
+          if (cancelled) return;
+          setData(json);
+          try {
+            sessionStorage.setItem(cacheKey, JSON.stringify(json));
+          } catch {
+            /* ignore quota */
+          }
+        } catch (e) {
+          if (!cancelled) {
+            setError(e instanceof Error ? e.message : "Failed to load preview");
+            if (!hadCache) setData(null);
+          }
+        } finally {
+          if (!cancelled) setLoading(false);
         }
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    })();
+      })();
+    };
+
+    // Defer heavy preview fetch so layout chrome paints first.
+    let idleId: number | undefined;
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
+    if (typeof window !== "undefined" && "requestIdleCallback" in window) {
+      idleId = window.requestIdleCallback(run, { timeout: 400 });
+    } else {
+      timeoutId = setTimeout(run, 0);
+    }
+
     return () => {
       cancelled = true;
+      if (idleId != null && typeof window !== "undefined" && "cancelIdleCallback" in window) {
+        window.cancelIdleCallback(idleId);
+      }
+      if (timeoutId != null) clearTimeout(timeoutId);
     };
-  }, [stateId]);
+    // Intentionally only re-fetch when state changes; cached `data` seeds first paint.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [stateId, cacheKey]);
 
   const label = stateName ?? data?.stateName ?? "State / UT";
   const subscriptionRowEnabled = subscriptionRowEnabledProp === true;
@@ -694,14 +730,11 @@ export function FoodHomeLayoutPhonePreview({
         <p className="text-sm font-semibold text-slate-900">Live app preview</p>
         <p className="mt-0.5 text-xs text-slate-500">
           {label} — same APIs as customer food home
+          {loading && data ? " · updating…" : ""}
         </p>
       </div>
 
-      {loading ? (
-        <div className="flex justify-center py-12">
-          <Spinner label="Loading live preview…" className="text-slate-600" />
-        </div>
-      ) : error ? (
+      {error && !data ? (
         <p className="py-8 text-center text-xs text-red-600">{error}</p>
       ) : data ? (
         <PhoneChrome skyTop={layoutKey === "grid_first"}>
@@ -715,6 +748,20 @@ export function FoodHomeLayoutPhonePreview({
             under250FilterLabel={under250FilterLabel}
             under250TabImageUrl={under250TabImageUrl}
           />
+        </PhoneChrome>
+      ) : loading ? (
+        <PhoneChrome skyTop={layoutKey === "grid_first"}>
+          <div className="space-y-2 px-2.5 py-3">
+            <div className="h-8 animate-pulse rounded-lg bg-slate-200/80" />
+            <div className="h-24 animate-pulse rounded-xl bg-slate-200/70" />
+            <div className="flex gap-1.5">
+              {Array.from({ length: 4 }).map((_, i) => (
+                <div key={i} className="h-10 w-10 animate-pulse rounded-full bg-slate-200/70" />
+              ))}
+            </div>
+            <div className="h-16 animate-pulse rounded-xl bg-slate-200/60" />
+            <div className="h-16 animate-pulse rounded-xl bg-slate-200/60" />
+          </div>
         </PhoneChrome>
       ) : null}
 

@@ -594,24 +594,54 @@ function CustomerDetailsContent() {
   }
 
   if (error || !customer) {
+    const backHref = searchQs
+      ? `/dashboard/customers/all?search=${encodeURIComponent(searchQs)}`
+      : "/dashboard/customers/all";
     return (
       <div className="w-full max-w-full overflow-x-hidden py-2">
-        <div className="rounded-xl border border-red-200/80 bg-red-50/90 p-6">
-          <div className="flex items-center gap-2 text-red-800">
-            <AlertCircle className="h-5 w-5 shrink-0" />
-            <p className="font-medium">Error: {error || "Customer not found"}</p>
-          </div>
-          <div className="mt-4">
-            <Link
-              href={
-                searchQs
-                  ? `/dashboard/customers/all?search=${encodeURIComponent(searchQs)}`
-                  : "/dashboard/customers/all"
-              }
-              className="inline-flex items-center gap-2 text-sm font-medium text-[#0d5c4a] hover:underline"
-            >
-              Back to search
-            </Link>
+        <div
+          className="fixed inset-0 z-[12000] flex items-center justify-center bg-slate-900/45 p-4 backdrop-blur-[1px]"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="customer-fetch-error-title"
+        >
+          <div className="w-full max-w-md rounded-xl border border-red-100 bg-white p-6 shadow-xl">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <h3
+                  id="customer-fetch-error-title"
+                  className="flex items-center gap-2 text-base font-semibold text-gray-900"
+                >
+                  <AlertCircle className="h-5 w-5 shrink-0 text-red-600" />
+                  Couldn’t load customer
+                </h3>
+                <p className="mt-2 text-sm leading-relaxed text-gray-600">
+                  {error || "Customer not found"}
+                </p>
+              </div>
+              <Link
+                href={backHref}
+                className="shrink-0 rounded-md p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-600"
+                aria-label="Close"
+              >
+                ×
+              </Link>
+            </div>
+            <div className="mt-6 flex flex-wrap justify-end gap-2">
+              <Link
+                href={backHref}
+                className="rounded-lg border border-gray-200 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
+              >
+                Back to search
+              </Link>
+              <button
+                type="button"
+                onClick={() => void fetchCustomer()}
+                className="rounded-lg bg-[#0d5c4a] px-4 py-2 text-sm font-semibold text-white hover:bg-[#0a4a3c]"
+              >
+                Retry
+              </button>
+            </div>
           </div>
         </div>
       </div>
@@ -827,7 +857,16 @@ function CustomerDetailsContent() {
             <FieldItem label="Global active">
               <BoolVal v={customer.isGlobalActive} />
             </FieldItem>
-            <FieldItem label="Wallet balance">{formatCurrency(customer.walletBalance)}</FieldItem>
+            <FieldItem label="Wallet balance">
+              <button
+                type="button"
+                onClick={toggleTransactionsNav}
+                title="View full wallet ledger"
+                className="cursor-pointer font-semibold tabular-nums text-emerald-700 no-underline hover:text-emerald-800 hover:no-underline"
+              >
+                {formatCurrency(customer.walletBalance)}
+              </button>
+            </FieldItem>
             <FieldItem label="Wallet locked">{formatCurrency(customer.walletLockedAmount)}</FieldItem>
           </DetailRow>
 

@@ -4,7 +4,7 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { createServerSupabaseClient } from "@/lib/supabase/server";
+import { getAuthenticatedApiUser } from "@/lib/auth/api-session";
 import { checkPermission } from "@/lib/permissions/engine";
 import { getCustomerById, getCustomerByCustomerId } from "@/lib/db/operations/customers";
 import { getSql } from "@/lib/db/client";
@@ -16,18 +16,11 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const supabase = await createServerSupabaseClient();
-    const {
-      data: { user },
-      error: userError,
-    } = await supabase.auth.getUser();
-
-    if (userError || !user) {
-      return NextResponse.json(
-        { success: false, error: "Not authenticated" },
-        { status: 401 }
-      );
+    const auth = await getAuthenticatedApiUser(request);
+    if (!auth.ok) {
+      return NextResponse.json(auth.body, { status: auth.status });
     }
+    const { user } = auth;
 
     const hasPermission = await checkPermission(
       user.id,
@@ -46,7 +39,7 @@ export async function GET(
     const { id } = await params;
     const numericId = parseInt(id, 10);
     const customer =
-      !isNaN(numericId) && numericId.toString() === id
+      !Number.isNaN(numericId) && numericId.toString() === id
         ? await getCustomerById(numericId)
         : await getCustomerByCustomerId(id);
 
@@ -122,12 +115,20 @@ export async function GET(
         referenceType: r.reference_type,
         createdAt: r.created_at,
       })),
-      pagination: { page, limit, total },
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages: Math.max(1, Math.ceil(total / limit)),
+      },
     });
-  } catch (e) {
-    console.error("GET /api/customers/[id]/wallet-transactions", e);
+  } catch (error) {
+    console.error("[GET /api/customers/[id]/wallet-transactions] Error:", error);
     return NextResponse.json(
-      { success: false, error: e instanceof Error ? e.message : "Server error" },
+      {
+        success: false,
+        error: error instanceof Error ? error.message : "Unknown error",
+      },
       { status: 500 }
     );
   }

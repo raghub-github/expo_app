@@ -19,7 +19,6 @@ export const PATH_TO_DASHBOARD_MAP: Record<string, DashboardType> = {
   "/dashboard/area-managers": "AREA_MANAGER",
   "/dashboard/area-managers/stores": "AREA_MANAGER",
   "/dashboard/area-managers/riders": "AREA_MANAGER",
-  "/dashboard/area-managers/availability": "AREA_MANAGER",
   "/dashboard/area-managers/activity-logs": "AREA_MANAGER",
   "/dashboard/merchants/verifications": "MERCHANT",
   "/dashboard/merchants/order-overview": "MERCHANT",
@@ -32,10 +31,39 @@ export const PATH_TO_DASHBOARD_MAP: Record<string, DashboardType> = {
 };
 
 /**
+ * Paths open to any authenticated agent with ≥1 dashboard (same rule as Home).
+ * Exact matches only — do not use a `/dashboard` prefix check (would open every page).
+ */
+export function isOpenDashboardPath(pagePath: string): boolean {
+  const trimmed = pagePath.replace(/\/$/, "") || "/dashboard";
+  if (trimmed === "/dashboard") return true;
+  if (
+    trimmed === "/dashboard/rx" ||
+    trimmed.startsWith("/dashboard/rx/") ||
+    trimmed === "/dashboard/geo-rider-availability" ||
+    trimmed.startsWith("/dashboard/geo-rider-availability/")
+  ) {
+    return true;
+  }
+  // Legacy URL — still treated as open so old bookmarks work until redirect.
+  if (
+    trimmed === "/dashboard/area-managers/availability" ||
+    trimmed.startsWith("/dashboard/area-managers/availability/")
+  ) {
+    return true;
+  }
+  return false;
+}
+
+/**
  * Map URL path to dashboard type. Safe to use on client and server.
  */
 export function getDashboardTypeFromPath(pagePath: string): DashboardType | null {
   const trimmed = pagePath.replace(/\/$/, "") || "/dashboard";
+  // Open / home-like pages are intentionally unmapped (no DashboardType gate).
+  if (isOpenDashboardPath(trimmed)) {
+    return null;
+  }
   if (PATH_TO_DASHBOARD_MAP[trimmed]) {
     return PATH_TO_DASHBOARD_MAP[trimmed];
   }

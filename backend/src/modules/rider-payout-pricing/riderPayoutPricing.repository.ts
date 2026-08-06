@@ -176,3 +176,31 @@ export async function loadEffectiveRideCustomerPricing(args: {
   const slabs = (Array.isArray(rows) ? rows : []).map((r) => mapRideCustomerRow(r as Record<string, unknown>));
   return { applied, slabs };
 }
+
+export async function loadEffectiveParcelCustomerPricing(args: {
+  level: GeoHierarchyLevel;
+  refId: string;
+  vehicleType: RideVehiclePricingType;
+}): Promise<{ applied: { level: string; refId: string } | null; slabs: RideCustomerPricingRow[] }> {
+  const applied = await findEffectiveGeoNode(args.level, args.refId, async (l, id) => {
+    const sql = getSql();
+    const rows = await sql<{ ok: number }[]>`
+      SELECT 1 AS ok FROM parcel_customer_pricing
+      WHERE geo_level = ${l}::geo_pricing_level AND geo_ref_id = ${id}::uuid
+        AND vehicle_type = ${args.vehicleType}::ride_vehicle_pricing_type
+        AND is_active = true AND deleted_at IS NULL LIMIT 1
+    `;
+    return rows.length > 0;
+  });
+  if (!applied) return { applied: null, slabs: [] };
+  const sql = getSql();
+  const rows = await sql`
+    SELECT * FROM parcel_customer_pricing
+    WHERE geo_level = ${applied.level}::geo_pricing_level AND geo_ref_id = ${applied.refId}::uuid
+      AND vehicle_type = ${args.vehicleType}::ride_vehicle_pricing_type
+      AND is_active = true AND deleted_at IS NULL
+    ORDER BY min_km ASC, max_km ASC NULLS LAST, priority DESC, id ASC
+  `;
+  const slabs = (Array.isArray(rows) ? rows : []).map((r) => mapRideCustomerRow(r as Record<string, unknown>));
+  return { applied, slabs };
+}

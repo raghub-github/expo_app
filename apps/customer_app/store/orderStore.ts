@@ -139,6 +139,22 @@ export const useOrderStore = create<OrderState>((set) => ({
         ...(patch?.storeName ? { storeName: patch.storeName } : {}),
         ...(patch?.serviceType ? { serviceType: patch.serviceType } : {}),
       });
+      const same =
+        (o: ActiveOrder | null | undefined) =>
+          !!o &&
+          o.status === status &&
+          (etaMinutes == null || o.etaMinutes === etaMinutes) &&
+          (!patch?.formattedOrderId || o.formattedOrderId === patch.formattedOrderId) &&
+          (!patch?.storeName || o.storeName === patch.storeName) &&
+          (!patch?.serviceType || o.serviceType === patch.serviceType);
+
+      const activeUnchanged =
+        s.activeOrder?.orderId !== orderId || same(s.activeOrder);
+      const listUnchanged = s.activeOrders.every((o) =>
+        o.orderId === orderId ? same(o) : true
+      );
+      if (activeUnchanged && listUnchanged) return s;
+
       return {
         activeOrder: s.activeOrder?.orderId === orderId ? apply(s.activeOrder) : s.activeOrder,
         activeOrders: s.activeOrders.map((o) => (o.orderId === orderId ? apply(o) : o)),

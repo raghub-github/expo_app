@@ -20,8 +20,16 @@ import { getSql } from "../../db/client.js";
 import { ETA_ENGINE_VERSION, type EtaSnapshot } from "./eta.engine.js";
 import {
   resolveCustomerEtaContext,
+  MIN_ACTIVE_ETA,
   type CustomerEtaView,
 } from "./eta.customer-view.js";
+import {
+  resolveOperationalStage,
+  resolveStageAwareEta,
+  type StageAwareEta,
+} from "./eta.stage-aware.js";
+import { parseStageAwareFromHistoryMetadata } from "./eta.realtime.js";
+import { resolveCanonicalOrderIdText } from "./eta.order-ref.js";
 
 export type EtaRecalcReason =
   | "ORDER_PLACED"
@@ -32,7 +40,9 @@ export type EtaRecalcReason =
   | "MERCHANT_DELAY"
   | "BATCHING_CHANGE"
   | "MANUAL_OVERRIDE"
-  | "STATUS_CHANGE";
+  | "STATUS_CHANGE"
+  /** Periodic live refresh — must not spam order_eta_history on countdown ticks. */
+  | "LIVE_TICK";
 
 /**
  * Write the v2 snapshot to orders_core. v1 columns are populated by mapping
@@ -129,25 +139,47 @@ export async function appendEtaRecalc(args: {
   reason: EtaRecalcReason;
   riderId?: number | null;
   merchantStoreId?: number | null;
-}): Promise<void> {
+  /** Persisted for meaningful-change detection + WS consumers. */
+  stageAware?: StageAwareEta | null;
+  customer?: CustomerEtaView | null;
+  fingerprint?: string | null;
+  /** Previous stageAware for immutable audit delta. */
+  previousStageAware?: StageAwareEta | null;
+  previousCustomer?: CustomerEtaView | null;
+  orderStatus?: string | null;
+}): Promise<number | null> {
   const sql = getSql();
-  const rows = await sql<
-    Array<{
-      id: number;
-      eta_min_minutes: number | null;
-      eta_max_minutes: number | null;
-      promised_delivery_at: Date | string | null;
-    }>
-  >`
-    SELECT id, eta_min_minutes, eta_max_minutes, promised_delivery_at
-    FROM orders_core
-    WHERE order_id = ${args.orderIdText}
-    LIMIT 1
-  `;
+  let rows: Array<{
+    id: number;
+    eta_min_minutes: number | null;
+    eta_max_minutes: number | null;
+    promised_delivery_at: Date | string | null;
+    current_eta_minutes: number | null;
+    current_status: string | null;
+    status: string | null;
+  }>;
+  try {
+    rows = await sql`
+      SELECT id, eta_min_minutes, eta_max_minutes, promised_delivery_at,
+             current_eta_minutes, current_status, status::text AS status
+      FROM orders_core
+      WHERE order_id = ${args.orderIdText}
+      LIMIT 1
+    `;
+  } catch {
+    rows = await sql`
+      SELECT id, eta_min_minutes, eta_max_minutes, promised_delivery_at,
+             NULL::int AS current_eta_minutes,
+             current_status, status::text AS status
+      FROM orders_core
+      WHERE order_id = ${args.orderIdText}
+      LIMIT 1
+    `;
+  }
   const row = rows[0];
   if (!row) {
     console.warn("[eta] appendEtaRecalc: order not found", args.orderIdText);
-    return;
+    return null;
   }
   const prevPromisedIso =
     row.promised_delivery_at instanceof Date
@@ -157,41 +189,258 @@ export async function appendEtaRecalc(args: {
         : null;
 
   const snap = args.newSnap;
-  await sql`
-    INSERT INTO order_eta_history (
-      order_id, order_id_text,
-      old_eta_min, old_eta_max,
-      new_eta_min, new_eta_max,
-      promised_delivery_at, new_promised_delivery_at,
-      recalc_reason,
-      prep_minutes, rider_assignment_minutes,
-      rider_to_store_minutes, store_to_customer_minutes,
-      traffic_delay_minutes, weather_delay_minutes, congestion_delay_minutes,
-      buffer_minutes,
-      rider_id, merchant_store_id,
-      route_distance_km, route_snapshot, metadata
-    ) VALUES (
-      ${row.id}, ${args.orderIdText},
-      ${row.eta_min_minutes}, ${row.eta_max_minutes},
-      ${snap.etaMinMinutes}, ${snap.etaMaxMinutes},
-      ${prevPromisedIso},
-      ${snap.promisedDeliveryAt},
-      ${args.reason},
-      ${snap.breakdown.foodPrepMinutes},
-      ${snap.breakdown.riderAssignmentMinutes},
-      ${snap.breakdown.riderToStoreMinutes},
-      ${snap.breakdown.travelMinutes},
-      ${Math.max(0, Math.round(snap.breakdown.travelMinutes * (snap.multipliers.traffic - 1)))},
-      ${Math.max(0, Math.round(snap.breakdown.travelMinutes * (snap.multipliers.weather - 1)))},
+  const orderStatusRaw =
+    args.orderStatus ??
+    String(row.current_status ?? row.status ?? "")
+      .trim()
+      .toUpperCase();
+  const orderStatus = orderStatusRaw || null;
+
+  const newDisplay =
+    args.stageAware?.displayEta ??
+    args.customer?.etaMinutes ??
+    snap.etaMaxMinutes;
+  const oldDisplay =
+    args.previousStageAware?.displayEta ??
+    args.previousCustomer?.etaMinutes ??
+    row.current_eta_minutes ??
+    row.eta_max_minutes;
+  const deltaMinutes =
+    oldDisplay != null && newDisplay != null
+      ? Math.round(Number(newDisplay) - Number(oldDisplay))
+      : null;
+
+  const previousSnapshot = {
+    stageAware: args.previousStageAware ?? null,
+    customer: args.previousCustomer ?? null,
+    displayEta: oldDisplay ?? null,
+    totalEta: args.previousStageAware?.totalEta ?? oldDisplay ?? null,
+    orderStatus,
+  };
+  const newSnapshot = {
+    stageAware: args.stageAware ?? null,
+    customer: args.customer ?? null,
+    displayEta: newDisplay ?? null,
+    totalEta: args.stageAware?.totalEta ?? snap.etaMaxMinutes,
+    orderStatus,
+  };
+
+  const metadata = {
+    engineVersion: snap.engineVersion,
+    breakdown: snap.breakdown,
+    multipliers: snap.multipliers,
+    context: snap.context,
+    orderStatus,
+    deltaMinutes,
+    previous: previousSnapshot,
+    new: newSnapshot,
+    ...(args.stageAware ? { stageAware: args.stageAware } : {}),
+    ...(args.customer ? { customer: args.customer } : {}),
+    ...(args.fingerprint ? { fingerprint: args.fingerprint } : {}),
+    ...(args.previousStageAware
+      ? { previousStageAware: args.previousStageAware }
+      : {}),
+  };
+
+  const baseValues = {
+    orderId: row.id,
+    orderIdText: args.orderIdText,
+    oldMin: row.eta_min_minutes,
+    oldMax: row.eta_max_minutes,
+    newMin: snap.etaMinMinutes,
+    newMax: snap.etaMaxMinutes,
+    prevPromised: prevPromisedIso,
+    newPromised: snap.promisedDeliveryAt,
+    reason: args.reason,
+    prep: snap.breakdown.foodPrepMinutes,
+    assign: snap.breakdown.riderAssignmentMinutes,
+    toStore: snap.breakdown.riderToStoreMinutes,
+    travel: snap.breakdown.travelMinutes,
+    traffic: Math.max(
       0,
-      ${snap.breakdown.uncertaintyMarginMinutes},
-      ${args.riderId ?? null},
-      ${args.merchantStoreId ?? null},
-      ${snap.routeKm.toFixed(2)},
-      ${JSON.stringify({})}::jsonb,
-      ${JSON.stringify({ engineVersion: snap.engineVersion, breakdown: snap.breakdown, multipliers: snap.multipliers, context: snap.context })}::jsonb
-    )
+      Math.round(snap.breakdown.travelMinutes * (snap.multipliers.traffic - 1))
+    ),
+    weather: Math.max(
+      0,
+      Math.round(snap.breakdown.travelMinutes * (snap.multipliers.weather - 1))
+    ),
+    buffer: snap.breakdown.uncertaintyMarginMinutes,
+    riderId: args.riderId ?? null,
+    storeId: args.merchantStoreId ?? null,
+    routeKm: snap.routeKm.toFixed(2),
+    metaJson: JSON.stringify(metadata),
+  };
+
+  try {
+    const inserted = await sql<Array<{ id: number }>>`
+      INSERT INTO order_eta_history (
+        order_id, order_id_text,
+        old_eta_min, old_eta_max,
+        new_eta_min, new_eta_max,
+        promised_delivery_at, new_promised_delivery_at,
+        recalc_reason,
+        prep_minutes, rider_assignment_minutes,
+        rider_to_store_minutes, store_to_customer_minutes,
+        traffic_delay_minutes, weather_delay_minutes, congestion_delay_minutes,
+        buffer_minutes,
+        rider_id, merchant_store_id,
+        route_distance_km, route_snapshot, metadata,
+        order_status, current_stage, display_eta_minutes, total_eta_minutes,
+        confidence, freeze_countdown, eta_source, delta_minutes,
+        previous_snapshot, new_snapshot
+      ) VALUES (
+        ${baseValues.orderId}, ${baseValues.orderIdText},
+        ${baseValues.oldMin}, ${baseValues.oldMax},
+        ${baseValues.newMin}, ${baseValues.newMax},
+        ${baseValues.prevPromised},
+        ${baseValues.newPromised},
+        ${baseValues.reason},
+        ${baseValues.prep},
+        ${baseValues.assign},
+        ${baseValues.toStore},
+        ${baseValues.travel},
+        ${baseValues.traffic},
+        ${baseValues.weather},
+        0,
+        ${baseValues.buffer},
+        ${baseValues.riderId},
+        ${baseValues.storeId},
+        ${baseValues.routeKm},
+        ${JSON.stringify({})}::jsonb,
+        ${baseValues.metaJson}::jsonb,
+        ${orderStatus},
+        ${args.stageAware?.currentStage ?? null},
+        ${newDisplay != null ? Math.round(Number(newDisplay)) : null},
+        ${args.stageAware?.totalEta ?? snap.etaMaxMinutes},
+        ${args.stageAware?.confidence ?? null},
+        ${args.stageAware?.freezeCountdown ?? null},
+        ${args.stageAware?.etaSource ?? args.reason},
+        ${deltaMinutes},
+        ${JSON.stringify(previousSnapshot)}::jsonb,
+        ${JSON.stringify(newSnapshot)}::jsonb
+      )
+      RETURNING id
+    `;
+    const historyId = inserted[0]?.id ?? null;
+    if (historyId != null) {
+      await stampEtaVersionOnHistoryRow(sql, historyId);
+    }
+    return historyId;
+  } catch (err) {
+    const msg = String(err);
+    if (!/order_status|current_stage|display_eta_minutes|previous_snapshot|does not exist|42703/i.test(msg)) {
+      throw err;
+    }
+    // Pre-migration fallback — metadata still holds the full audit.
+    const inserted = await sql<Array<{ id: number }>>`
+      INSERT INTO order_eta_history (
+        order_id, order_id_text,
+        old_eta_min, old_eta_max,
+        new_eta_min, new_eta_max,
+        promised_delivery_at, new_promised_delivery_at,
+        recalc_reason,
+        prep_minutes, rider_assignment_minutes,
+        rider_to_store_minutes, store_to_customer_minutes,
+        traffic_delay_minutes, weather_delay_minutes, congestion_delay_minutes,
+        buffer_minutes,
+        rider_id, merchant_store_id,
+        route_distance_km, route_snapshot, metadata
+      ) VALUES (
+        ${baseValues.orderId}, ${baseValues.orderIdText},
+        ${baseValues.oldMin}, ${baseValues.oldMax},
+        ${baseValues.newMin}, ${baseValues.newMax},
+        ${baseValues.prevPromised},
+        ${baseValues.newPromised},
+        ${baseValues.reason},
+        ${baseValues.prep},
+        ${baseValues.assign},
+        ${baseValues.toStore},
+        ${baseValues.travel},
+        ${baseValues.traffic},
+        ${baseValues.weather},
+        0,
+        ${baseValues.buffer},
+        ${baseValues.riderId},
+        ${baseValues.storeId},
+        ${baseValues.routeKm},
+        ${JSON.stringify({})}::jsonb,
+        ${baseValues.metaJson}::jsonb
+      )
+      RETURNING id
+    `;
+    const historyId = inserted[0]?.id ?? null;
+    if (historyId != null) {
+      await stampEtaVersionOnHistoryRow(sql, historyId).catch(() => {});
+    }
+    return historyId;
+  }
+}
+
+/** Ensure nested stageAware.etaVersion equals the immutable history row id. */
+async function stampEtaVersionOnHistoryRow(
+  sql: ReturnType<typeof getSql>,
+  historyId: number
+): Promise<void> {
+  try {
+    await sql`
+      UPDATE order_eta_history
+      SET
+        metadata = CASE
+          WHEN metadata IS NULL THEN metadata
+          ELSE jsonb_set(
+            jsonb_set(
+              metadata,
+              '{stageAware,etaVersion}',
+              to_jsonb(${historyId}::bigint),
+              true
+            ),
+            '{new,stageAware,etaVersion}',
+            to_jsonb(${historyId}::bigint),
+            true
+          )
+        END,
+        new_snapshot = CASE
+          WHEN new_snapshot IS NULL THEN new_snapshot
+          ELSE jsonb_set(
+            new_snapshot,
+            '{stageAware,etaVersion}',
+            to_jsonb(${historyId}::bigint),
+            true
+          )
+        END
+      WHERE id = ${historyId}
+    `;
+  } catch {
+    /* columns/json path may be missing on very old DBs — row id remains SoT */
+  }
+}
+
+/** Latest history row id + fingerprint for version gating / dedupe. */
+export async function getLatestEtaHistoryMeta(orderIdText: string): Promise<{
+  id: number;
+  fingerprint: string | null;
+  stageAware: StageAwareEta | null;
+} | null> {
+  const sql = getSql();
+  const rows = await sql<
+    Array<{ id: number; metadata: unknown }>
+  >`
+    SELECT id, metadata
+    FROM order_eta_history
+    WHERE order_id_text = ${orderIdText}
+    ORDER BY id DESC
+    LIMIT 1
   `;
+  const row = rows[0];
+  if (!row) return null;
+  const meta =
+    row.metadata && typeof row.metadata === "object"
+      ? (row.metadata as Record<string, unknown>)
+      : null;
+  const fingerprint =
+    typeof meta?.fingerprint === "string" ? meta.fingerprint : null;
+  const stageAware = parseStageAwareFromHistoryMetadata(row.metadata);
+  return { id: row.id, fingerprint, stageAware };
 }
 
 /**
@@ -240,8 +489,10 @@ export type OrderEtaView = {
     minutes: number | null;
     readyByAt: string | null;
   };
-  /** Single dynamic ETA for customer UI (v3 live engine). */
+  /** Single dynamic ETA for customer UI (v3 live engine) — stage-display minutes. */
   customer: CustomerEtaView;
+  /** Enterprise stage-aware ETA model — client must prefer this over guessing. */
+  stageAware: StageAwareEta;
 };
 
 function toIsoOrNull(v: Date | string | null | undefined): string | null {
@@ -357,12 +608,14 @@ async function loadEtaOrderRow(orderIdText: string): Promise<EtaOrderRow[]> {
 
 export async function getEtaForOrder(orderIdText: string): Promise<OrderEtaView | null> {
   const sql = getSql();
-  const rows = await loadEtaOrderRow(orderIdText);
+  const canonical = (await resolveCanonicalOrderIdText(orderIdText)) ?? orderIdText.trim();
+  const rows = await loadEtaOrderRow(canonical);
   if (rows.length === 0) return null;
   const r = rows[0]!;
 
   const live = await sql<
     Array<{
+      id: number;
       new_eta_min: number;
       new_eta_max: number;
       new_promised_delivery_at: Date | string | null;
@@ -370,9 +623,9 @@ export async function getEtaForOrder(orderIdText: string): Promise<OrderEtaView 
       created_at: Date | string;
     }>
   >`
-    SELECT new_eta_min, new_eta_max, new_promised_delivery_at, recalc_reason, created_at
+    SELECT id, new_eta_min, new_eta_max, new_promised_delivery_at, recalc_reason, created_at
     FROM order_eta_history
-    WHERE order_id_text = ${orderIdText}
+    WHERE order_id_text = ${canonical}
     ORDER BY id DESC
     LIMIT 1
   `;
@@ -384,26 +637,85 @@ export async function getEtaForOrder(orderIdText: string): Promise<OrderEtaView 
     promisedMinutes;
 
   const orderStatus = String(r.current_status ?? r.status ?? "").trim().toUpperCase();
+  const hasRider = r.rider_id != null && r.rider_id > 0;
+  const riderAtStore = r.rider_reached_pickup_at != null;
+  const isReady =
+    r.prepared_at != null || orderStatus === "READY_FOR_PICKUP" || orderStatus === "READY";
+  const isPickedUp =
+    r.rider_picked_up_at != null ||
+    orderStatus === "OUT_FOR_DELIVERY" ||
+    orderStatus === "IN_TRANSIT" ||
+    orderStatus === "PICKED_UP";
+  const delivered = orderStatus === "DELIVERED";
+
+  const travel = Math.max(
+    MIN_ACTIVE_ETA,
+    Number(r.eta_store_to_customer_minutes ?? promisedMinutes ?? MIN_ACTIVE_ETA)
+  );
+  const remainingPrep =
+    !isReady && !isPickedUp
+      ? Math.max(
+          MIN_ACTIVE_ETA,
+          Number(r.prep_time_minutes ?? r.eta_food_prep_minutes ?? MIN_ACTIVE_ETA)
+        )
+      : 0;
+  const pickupLeg = isPickedUp
+    ? 0
+    : riderAtStore
+      ? 2
+      : hasRider
+        ? Math.max(MIN_ACTIVE_ETA, Number(r.eta_rider_arrival_minutes ?? 4))
+        : isReady
+          ? 6
+          : 0;
+
+  const legs = {
+    remainingPrep,
+    pickupLeg,
+    travelLeg: travel,
+    total: Math.max(
+      MIN_ACTIVE_ETA,
+      Number(currentMinutes ?? remainingPrep + pickupLeg + travel)
+    ),
+  };
+
+  const stage = resolveOperationalStage({
+    delivered,
+    pickedUp: isPickedUp,
+    ready: isReady,
+    hasRider,
+    riderAtStore,
+    arrivingSoon: isPickedUp && Number(currentMinutes ?? 99) <= 2,
+  });
+
+  const liveCreatedAt = live.length > 0 ? toIsoOrNull(live[0]!.created_at) : null;
+  const stageAware = resolveStageAwareEta({
+    stage,
+    legs,
+    merchantDelayed: r.merchant_delayed === true,
+    confidenceScore: r.eta_confidence_score == null ? null : Number(r.eta_confidence_score),
+    etaSource: live.length > 0 ? (String(live[0]!.recalc_reason) as StageAwareEta["etaSource"]) : "INITIAL_ESTIMATE",
+    promisedAt: toIsoOrNull(r.first_eta_at) ?? toIsoOrNull(r.promised_delivery_at),
+    lastUpdatedAt: liveCreatedAt ?? toIsoOrNull(r.eta_generated_at) ?? new Date().toISOString(),
+    etaVersion: live.length > 0 ? Number(live[0]!.id) : 1,
+  });
+
   const customer = resolveCustomerEtaContext({
     orderStatus,
-    currentEtaMinutes: currentMinutes,
+    currentEtaMinutes: stageAware.displayEta ?? currentMinutes,
     promisedEtaMinutes: promisedMinutes,
     merchantDelayed: r.merchant_delayed === true,
-    hasRider: r.rider_id != null && r.rider_id > 0,
-    riderAtStore: r.rider_reached_pickup_at != null,
-    isReady: r.prepared_at != null || orderStatus === "READY_FOR_PICKUP" || orderStatus === "READY",
-    isPickedUp:
-      r.rider_picked_up_at != null ||
-      orderStatus === "OUT_FOR_DELIVERY" ||
-      orderStatus === "IN_TRANSIT" ||
-      orderStatus === "PICKED_UP",
+    hasRider,
+    riderAtStore,
+    isReady,
+    isPickedUp,
   });
 
   const firstEtaAt =
     toIsoOrNull(r.first_eta_at) ?? toIsoOrNull(r.promised_delivery_at);
 
   return {
-    orderIdText,
+    orderIdText: canonical,
     engineVersion: r.eta_engine_version ?? ETA_ENGINE_VERSION,
     firstEtaAt,
     promise: {
@@ -453,5 +765,6 @@ export async function getEtaForOrder(orderIdText: string): Promise<OrderEtaView 
       readyByAt: toIsoOrNull(r.prep_ready_by_at),
     },
     customer,
+    stageAware,
   };
 }

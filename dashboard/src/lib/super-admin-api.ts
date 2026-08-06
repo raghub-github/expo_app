@@ -26,8 +26,24 @@ export async function requireSuperAdminApi(): Promise<
   if (error || !user?.id || !user.email) {
     return { ok: false, response: NextResponse.json({ error: "Unauthorized" }, { status: 401 }) };
   }
-  if (!(await isSuperAdmin(user.id, user.email))) {
-    return { ok: false, response: NextResponse.json({ error: "Forbidden" }, { status: 403 }) };
+
+  // Match page-protection: one retry — permissions cache/DB can blip under load.
+  let ok = await isSuperAdmin(user.id, user.email);
+  if (!ok) {
+    await new Promise((r) => setTimeout(r, 250));
+    ok = await isSuperAdmin(user.id, user.email);
+  }
+  if (!ok) {
+    return {
+      ok: false,
+      response: NextResponse.json(
+        {
+          error: "Forbidden",
+          message: "Super admin access required to edit billing coupons and offers.",
+        },
+        { status: 403 }
+      ),
+    };
   }
   return { ok: true };
 }

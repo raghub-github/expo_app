@@ -12,7 +12,7 @@
  * Stale / out-of-order samples are rejected via updatedAt timestamps.
  */
 
-import { useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { AppState, type AppStateStatus } from "react-native";
 import { useQueryClient } from "@tanstack/react-query";
 import { useOrderStore } from "@/store/orderStore";
@@ -31,8 +31,23 @@ import {
   clearRiderGpsFilterState,
   filterRiderGpsSample,
 } from "@/lib/riderGpsFilter";
+import {
+  applyEtaUpdatedToQueryCache,
+  isEtaUpdatedEvent,
+  type EtaUpdatedWsEvent,
+} from "@/lib/applyEtaUpdatedEvent";
 
+/**
+ * Poll cadence is transport-aware. The WebSocket pushes rider location and ETA,
+ * but NOT order status transitions (ACCEPTED → PREPARING → PICKED_UP), so status
+ * polling can never be switched off entirely — only slowed down and slimmed:
+ * while the socket is healthy we skip the per-order ETA request (it arrives as
+ * `eta.updated.v1`) and halve the frequency. That takes an active food order
+ * from 24 req/min to 6 req/min without changing status latency materially.
+ */
 const STATUS_POLL_INTERVAL_MS = 5_000;
+/** Keep status snappy even with WS — ready / accept must not wait 10s+. */
+const STATUS_POLL_INTERVAL_WS_HEALTHY_MS = 5_000;
 const LOCATION_FALLBACK_POLL_MS = 2_000;
 const RECONNECT_BASE_MS = 2_000;
 const RECONNECT_MAX_MS = 60_000;
@@ -114,27 +129,28 @@ function applyAcceptedRider(
     return false;
   }
 
+  // `nextRider` is written by reference to every key, so subscribers comparing
+  // by identity see one change per frame rather than one per alias.
   for (const orderId of ids) {
-    queryClient.setQueryData<OrderTrackingResponse>(["orderTracking", orderId], (prev) => ({
-      orderId: prev?.orderId ?? orderId,
-      rider: nextRider,
-    }));
+    queryClient.setQueryData<OrderTrackingResponse>(["orderTracking", orderId], (prev) => {
+      if (prev?.rider === nextRider) return prev;
+      return { orderId: prev?.orderId ?? orderId, rider: nextRider };
+    });
     lastAcceptedMs.set(orderId.toUpperCase(), nextMs > 0 ? nextMs : Date.now());
   }
 
-  queryClient.setQueriesData<OrderTrackingResponse>(
-    {
-      predicate: (q) => {
-        if (!Array.isArray(q.queryKey) || q.queryKey[0] !== "orderTracking") return false;
-        const keyId = String(q.queryKey[1] ?? "").trim();
-        return keyId.length > 0 && idSet.has(keyId.toUpperCase());
-      },
-    },
-    (prev) => ({
-      orderId: prev?.orderId ?? ids[0]!,
-      rider: nextRider,
-    })
-  );
+  // Cover case-normalised aliases (the backend sometimes echoes a lower-cased
+  // id) directly instead of via `setQueriesData`, whose predicate walked the
+  // ENTIRE query cache on every GPS frame — up to 1 Hz, cost growing with cache
+  // size, for a set of keys we already know by name.
+  for (const upperId of idSet) {
+    if (ids.includes(upperId)) continue;
+    queryClient.setQueryData<OrderTrackingResponse>(["orderTracking", upperId], (prev) => {
+      if (prev === undefined) return prev; // never materialise a key nobody subscribed to
+      if (prev.rider === nextRider) return prev;
+      return { orderId: prev.orderId ?? upperId, rider: nextRider };
+    });
+  }
 
   noteLiveLocationUpdate(transport);
   return true;
@@ -192,35 +208,48 @@ export function useOrderRealtime() {
   const session = useAuthStore((s) => s.session);
   const authHydrated = useAuthStore((s) => s.hydrated);
 
-  const statusPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const locationPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const lastEtaReasonRef = useRef<Record<string, string>>({});
   const lastAcceptedMsRef = useRef<Map<string, number>>(new Map());
+  const lastEtaVersionRef = useRef<Map<string, number>>(new Map());
   const wsConnectedRef = useRef(false);
   const prevActiveIdsRef = useRef<string>("");
   const fetchLatestLocationRef = useRef<(() => Promise<void>) | null>(null);
+  const syncStatusRef = useRef<(() => Promise<void>) | null>(null);
   const reconnectNowRef = useRef<((reason: string) => void) | null>(null);
 
-  const orderIds = Array.from(
-    new Set(
-      activeOrders
-        .filter((o) => o.status !== "DELIVERED" && o.status !== "CANCELLED")
-        .flatMap((o) =>
-          [o.orderId, o.formattedOrderId].filter((v): v is string => Boolean(v?.trim()))
-        )
-    )
+  // Both arrays were rebuilt on every render and then used directly as effect
+  // dependencies, so the cleanup effect below re-ran on every render of the root
+  // layout. Memoising on the *content* key keeps identity stable across renders
+  // that did not actually change the active order set.
+  const liveOrders = useMemo(
+    () => activeOrders.filter((o) => o.status !== "DELIVERED" && o.status !== "CANCELLED"),
+    [activeOrders]
   );
 
-  const pollOrderIds = Array.from(
-    new Set(
-      activeOrders
-        .filter((o) => o.status !== "DELIVERED" && o.status !== "CANCELLED")
-        .map((o) => o.orderId)
-        .filter((v): v is string => Boolean(v?.trim()))
-    )
+  const orderIds = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          liveOrders.flatMap((o) =>
+            [o.orderId, o.formattedOrderId].filter((v): v is string => Boolean(v?.trim()))
+          )
+        )
+      ),
+    [liveOrders]
+  );
+
+  const pollOrderIds = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          liveOrders.map((o) => o.orderId).filter((v): v is string => Boolean(v?.trim()))
+        )
+      ),
+    [liveOrders]
   );
 
   const activeKey = pollOrderIds.join(",");
+  const wsTicketKey = orderIds.join(",");
 
   // Drop tracking listeners / cache when orders leave the active set.
   useEffect(() => {
@@ -246,15 +275,8 @@ export function useOrderRealtime() {
   // ── REST: status + ETA (always). Location only when WS is down. ───────────
   useEffect(() => {
     if (pollOrderIds.length === 0) {
-      if (statusPollRef.current) {
-        clearInterval(statusPollRef.current);
-        statusPollRef.current = null;
-      }
-      if (locationPollRef.current) {
-        clearInterval(locationPollRef.current);
-        locationPollRef.current = null;
-      }
       fetchLatestLocationRef.current = null;
+      syncStatusRef.current = null;
       setLiveLocationWsConnected(false);
       wsConnectedRef.current = false;
       return;
@@ -263,12 +285,15 @@ export function useOrderRealtime() {
     const { wsEnabled } = getConfig();
 
     const syncStatus = async () => {
+      // While the socket is healthy, ETA arrives as `eta.updated.v1` — skipping
+      // the REST ETA call here halves the request count with no added latency.
+      const skipEtaFetch = wsEnabled && wsConnectedRef.current;
       await Promise.all(
         pollOrderIds.map(async (orderId) => {
           try {
             const [detail, eta] = await Promise.all([
               orderService.getOrder(orderId),
-              etaService.getForOrder(orderId),
+              skipEtaFetch ? Promise.resolve(null) : etaService.getForOrder(orderId),
             ]);
 
             const status = (detail?.status ?? "").toUpperCase();
@@ -312,23 +337,65 @@ export function useOrderRealtime() {
               if (detail.formattedOrderId && detail.formattedOrderId !== orderId) {
                 queryClient.setQueryData(["order", detail.formattedOrderId], detail);
               }
+              // Keep My Orders Active badges live (not only on 15s refetch / terminal).
+              queryClient.setQueryData(
+                ["my-orders"],
+                (prev: import("@/services/order.service").OrderSummary[] | undefined) => {
+                  if (!Array.isArray(prev)) return prev;
+                  let changed = false;
+                  const next = prev.map((row) => {
+                    const same =
+                      row.orderId === orderId ||
+                      row.orderId === detail.orderId ||
+                      (detail.formattedOrderId &&
+                        (row.orderId === detail.formattedOrderId ||
+                          row.formattedOrderId === detail.formattedOrderId));
+                    if (!same) return row;
+                    if (row.status === detail.status) return row;
+                    changed = true;
+                    return { ...row, status: detail.status };
+                  });
+                  return changed ? next : prev;
+                }
+              );
             }
 
-            const liveReason = eta?.live?.reason ?? "";
-            const prevReason = lastEtaReasonRef.current[orderId] ?? "";
-            if (liveReason === "MERCHANT_DELAY" && prevReason !== "MERCHANT_DELAY") {
-              const liveCreated = eta?.live?.createdAt ? new Date(eta.live.createdAt).getTime() : 0;
-              const isRecent = liveCreated > 0 && Date.now() - liveCreated < 120_000;
-              if (isRecent) {
-                const message = buildPrepDelayMessage(
-                  5,
-                  etaMins,
-                  detail?.merchantPublicName ?? detail?.merchantName ?? null
-                );
-                showPrepDelayBanner(orderId, message, 20_000);
+            if (eta) {
+              queryClient.setQueryData(["orderEta", orderId], eta);
+              if (detail?.formattedOrderId && detail.formattedOrderId !== orderId) {
+                queryClient.setQueryData(["orderEta", detail.formattedOrderId], eta);
+              }
+              const v = Number(eta.stageAware?.etaVersion ?? 0);
+              if (Number.isFinite(v) && v > 0) {
+                lastEtaVersionRef.current.set(orderId.toUpperCase(), v);
+                if (detail?.formattedOrderId) {
+                  lastEtaVersionRef.current.set(detail.formattedOrderId.toUpperCase(), v);
+                }
               }
             }
-            lastEtaReasonRef.current[orderId] = liveReason;
+
+            // Only evaluate the prep-delay banner when this tick actually fetched
+            // an ETA. Treating a skipped fetch as "reason cleared" would wipe the
+            // remembered MERCHANT_DELAY and re-fire the banner on the next fetch.
+            if (!skipEtaFetch) {
+              const liveReason = eta?.live?.reason ?? "";
+              const prevReason = lastEtaReasonRef.current[orderId] ?? "";
+              if (liveReason === "MERCHANT_DELAY" && prevReason !== "MERCHANT_DELAY") {
+                const liveCreated = eta?.live?.createdAt
+                  ? new Date(eta.live.createdAt).getTime()
+                  : 0;
+                const isRecent = liveCreated > 0 && Date.now() - liveCreated < 120_000;
+                if (isRecent) {
+                  const message = buildPrepDelayMessage(
+                    5,
+                    etaMins,
+                    detail?.merchantPublicName ?? detail?.merchantName ?? null
+                  );
+                  showPrepDelayBanner(orderId, message, 20_000);
+                }
+              }
+              lastEtaReasonRef.current[orderId] = liveReason;
+            }
           } catch {
             // keep current state
           }
@@ -369,25 +436,65 @@ export function useOrderRealtime() {
     };
 
     fetchLatestLocationRef.current = syncLocationOnce;
+    syncStatusRef.current = syncStatus;
+
+    // ── Scheduling ─────────────────────────────────────────────────────────
+    // Self-rescheduling timeouts, not setInterval, for two reasons:
+    //   1. the cadence has to adapt to WS health between ticks, and
+    //   2. a slow request must not stack up behind the previous one.
+    // Both loops stop entirely while the app is backgrounded — on Android JS
+    // timers keep firing with the screen off, which is what let an active order
+    // drain the battery in the user's pocket. `AppState` resume already triggers
+    // an authoritative catch-up sync in the WebSocket effect below.
+    let disposed = false;
+    let statusTimer: ReturnType<typeof setTimeout> | null = null;
+    let locationTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const isForeground = () => AppState.currentState === "active";
+
+    const scheduleStatus = () => {
+      if (disposed) return;
+      const wsHealthy = wsEnabled && wsConnectedRef.current;
+      const delay = wsHealthy ? STATUS_POLL_INTERVAL_WS_HEALTHY_MS : STATUS_POLL_INTERVAL_MS;
+      statusTimer = setTimeout(async () => {
+        if (disposed) return;
+        if (isForeground()) await syncStatus();
+        scheduleStatus();
+      }, delay);
+    };
+
+    const scheduleLocation = () => {
+      if (disposed) return;
+      locationTimer = setTimeout(async () => {
+        if (disposed) return;
+        if (isForeground()) await syncLocationFallback();
+        scheduleLocation();
+      }, LOCATION_FALLBACK_POLL_MS);
+    };
 
     void syncStatus();
     void syncLocationFallback();
+    scheduleStatus();
+    scheduleLocation();
 
-    statusPollRef.current = setInterval(syncStatus, STATUS_POLL_INTERVAL_MS);
-    locationPollRef.current = setInterval(syncLocationFallback, LOCATION_FALLBACK_POLL_MS);
+    // Resume immediately on foreground instead of waiting out the pending tick.
+    const pollAppStateSub = AppState.addEventListener("change", (state: AppStateStatus) => {
+      if (disposed || state !== "active") return;
+      void syncStatus();
+      void syncLocationFallback();
+    });
 
     return () => {
-      if (statusPollRef.current) {
-        clearInterval(statusPollRef.current);
-        statusPollRef.current = null;
-      }
-      if (locationPollRef.current) {
-        clearInterval(locationPollRef.current);
-        locationPollRef.current = null;
-      }
+      disposed = true;
+      pollAppStateSub.remove();
+      if (statusTimer) clearTimeout(statusTimer);
+      if (locationTimer) clearTimeout(locationTimer);
+      statusTimer = null;
+      locationTimer = null;
       fetchLatestLocationRef.current = null;
+      syncStatusRef.current = null;
     };
-  }, [activeKey, updateOrderStatus, removeActiveOrder, showPrepDelayBanner, queryClient]);
+  }, [activeKey, pollOrderIds, updateOrderStatus, removeActiveOrder, showPrepDelayBanner, queryClient]);
 
   // ── WebSocket: primary rider.location.updated.v1 ─────────────────────────
   useEffect(() => {
@@ -487,6 +594,80 @@ export function useOrderRealtime() {
       );
     };
 
+    const applyStatusChangedEvent = (payload: {
+      type?: string;
+      orderId?: string | number;
+      orderIdText?: string;
+      status?: string;
+    }) => {
+      const t = String(payload.type ?? "").trim().toLowerCase();
+      if (t !== "status_changed" && t !== "order.status_changed") return;
+      const orderKey = String(payload.orderIdText ?? payload.orderId ?? "").trim();
+      if (!orderKey) return;
+      // Instant catch-up — don't wait for the 5s poll.
+      void queryClient.invalidateQueries({ queryKey: ["order"] });
+      void queryClient.invalidateQueries({ queryKey: ["orderEta"] });
+      void queryClient.invalidateQueries({ queryKey: ["my-orders"] });
+      void syncStatusRef.current?.();
+    };
+
+    const applyEtaEvent = (payload: EtaUpdatedWsEvent) => {
+      if (!isEtaUpdatedEvent(payload)) return;
+      const orderKey = String(payload.orderIdText ?? payload.orderId ?? "").trim();
+      const accepted = applyEtaUpdatedToQueryCache(
+        queryClient,
+        [orderKey, ...orderIds, ...pollOrderIds],
+        payload,
+        lastEtaVersionRef.current
+      );
+      if (!accepted) return;
+
+      void queryClient.invalidateQueries({ queryKey: ["orderEtaTimeline"] });
+
+      // Ready / stage jumps must refresh order detail immediately (don't wait for poll).
+      const stage = String(payload.stageAware?.currentStage ?? "").toUpperCase();
+      if (
+        stage === "READY_AWAITING_RIDER" ||
+        stage === "RIDER_TO_MERCHANT" ||
+        stage === "AT_STORE" ||
+        stage === "CUSTOMER_DELIVERY" ||
+        stage === "ARRIVING" ||
+        stage === "DELIVERED"
+      ) {
+        void queryClient.invalidateQueries({ queryKey: ["order"] });
+        void syncStatusRef.current?.();
+      }
+
+      const displayMins =
+        payload.stageAware?.displayEta ??
+        payload.customer?.etaMinutes ??
+        null;
+
+      const matching = useOrderStore.getState().activeOrders.filter((o) => {
+        const keys = [o.orderId, o.formattedOrderId]
+          .filter((x): x is string => Boolean(x?.trim()))
+          .map((x) => x.toUpperCase());
+        if (!orderKey) return true;
+        return keys.includes(orderKey.toUpperCase());
+      });
+
+      for (const o of matching) {
+        if (displayMins != null) {
+          updateOrderStatus(o.orderId, o.status, displayMins);
+        }
+      }
+
+      const liveReason = payload.reason ?? "";
+      if (liveReason === "MERCHANT_DELAY" && orderKey) {
+        const message = buildPrepDelayMessage(
+          5,
+          displayMins,
+          matching[0]?.storeName ?? null
+        );
+        showPrepDelayBanner(orderKey, message, 20_000);
+      }
+    };
+
     const connect = async (reason: string) => {
       if (cancelled || connectInFlight) return;
       connectInFlight = true;
@@ -539,6 +720,10 @@ export function useOrderRealtime() {
           lastActivity = Date.now();
           markWs(true);
           if (ws) startHeartbeat(ws);
+          // Catch up after reconnect — REST is authoritative if WS frames were missed.
+          void queryClient.invalidateQueries({ queryKey: ["orderEta"] });
+          void queryClient.invalidateQueries({ queryKey: ["orderEtaTimeline"] });
+          void syncStatusRef.current?.();
           if (__DEV__) {
             console.log("[live-track] customer ws open", { reason, orderIds: ticketOrderIds });
           }
@@ -547,8 +732,17 @@ export function useOrderRealtime() {
         ws.onmessage = (event) => {
           lastActivity = Date.now();
           try {
-            const payload = JSON.parse(String(event.data)) as RiderLocationWsEvent;
+            const payload = JSON.parse(String(event.data)) as RiderLocationWsEvent &
+              EtaUpdatedWsEvent & {
+                type?: string;
+                orderId?: string | number;
+                orderIdText?: string;
+                status?: string;
+              };
+            if (payload.type === "pong") return;
             applyLocationEvent(payload);
+            applyEtaEvent(payload);
+            applyStatusChangedEvent(payload);
           } catch {
             /* ignore malformed frames */
           }
@@ -592,7 +786,7 @@ export function useOrderRealtime() {
       const awayMs = backgroundedAtMs != null ? Date.now() - backgroundedAtMs : 0;
       backgroundedAtMs = null;
 
-      // Immediate reconnect + one-shot latest fix after any resume (esp. 5–10+ min).
+      // Immediate reconnect + authoritative ETA/status sync after any resume.
       setLiveLocationReconnecting(true);
       failureCount = 0;
       if (reconnectTimer) {
@@ -601,6 +795,7 @@ export function useOrderRealtime() {
       }
       void connect(awayMs >= 60_000 ? "resume_long" : "foreground");
       void fetchLatestLocationRef.current?.();
+      void syncStatusRef.current?.();
 
       if (__DEV__) {
         console.log("[live-track] app resume", { awayMs });
@@ -623,5 +818,5 @@ export function useOrderRealtime() {
       }
       ws = null;
     };
-  }, [orderIds.join(","), authHydrated, session?.accessToken, queryClient]);
+  }, [wsTicketKey, orderIds, pollOrderIds, authHydrated, session?.accessToken, queryClient, updateOrderStatus, showPrepDelayBanner]);
 }

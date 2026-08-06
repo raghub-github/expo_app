@@ -1,17 +1,21 @@
 "use client";
 
 import { useState, useMemo, useCallback, useRef, useEffect } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueries, useQueryClient } from "@tanstack/react-query";
 import { useAppSearchParams } from "@/hooks/useAppSearchParams";
 import { useRouter } from "next/navigation";
 import { useFoodOrdersListActive } from "@/hooks/useFoodOrdersListActive";
 import Link from "next/link";
-import { X, RefreshCw, Filter, CheckCircle2, ChevronDown } from "lucide-react";
+import { X, RefreshCw, Filter, CheckCircle2, ChevronDown, ArrowUpDown } from "lucide-react";
 import { type CSSProperties } from "react";
 import { loadClientSnapshot, saveClientSnapshot } from "@/lib/client-route-snapshot";
 import { queryKeys } from "@/lib/queryKeys";
 import { FoodOrdersTableRowsSkeleton } from "@/components/skeletons/FoodOrdersPageSkeleton";
 import { OrderMixedText, OrderNum } from "@/components/orders/orders-typography";
+import {
+  DELAYED_ROW_BG,
+  OrderStatusLegend,
+} from "@/components/orders/OrderStatusLegend";
 import {
   fetchOrderCorePayload,
   orderDetailQueryKey,
@@ -49,6 +53,19 @@ const FOOD_STATUS_TABS: Exclude<OrderStatusFilter, null>[] = [
   "BULK",
 ];
 
+export type ListSortMode = "newest" | "oldest" | "delayed";
+
+const LIST_SORT_OPTIONS: { value: ListSortMode; label: string }[] = [
+  { value: "newest", label: "Newest First" },
+  { value: "oldest", label: "Oldest First" },
+  { value: "delayed", label: "Delayed" },
+];
+
+function parseListSort(raw: string | null): ListSortMode {
+  if (raw === "oldest" || raw === "delayed" || raw === "newest") return raw;
+  return "newest";
+}
+
 interface OrdersCoreRow {
   id: number;
   orderUuid: string;
@@ -85,6 +102,8 @@ interface OrdersCoreRow {
   /** Order source / delivery provider (\"internal\" = GatiMitra). */
   orderSource: string | null;
   isBulkOrder: boolean;
+  /** Set when first ETA was breached — used for delayed row highlight. */
+  etaBreachedAt?: string | Date | null;
 }
 
 interface FilterState {
@@ -151,6 +170,7 @@ export interface OrdersFilters {
   page: number;
   limit: number;
   foodFilters?: FoodFiltersPayload;
+  listSort?: ListSortMode;
 }
 
 function useDebouncedValue<T>(value: T, delay: number): T {
@@ -188,6 +208,13 @@ export async function fetchFoodOrders(
   }
   if (filters.foodFilters) {
     params.set("foodFilters", encodeURIComponent(JSON.stringify(filters.foodFilters)));
+  }
+  const listSort = filters.listSort ?? "newest";
+  params.set("listSort", listSort);
+  if (listSort === "oldest") {
+    params.set("sortOrder", "asc");
+  } else {
+    params.set("sortOrder", "desc");
   }
 
   const res = await fetch(`/api/orders/core?${params.toString()}`, {
@@ -268,8 +295,11 @@ export default function FoodOrdersClient() {
   const urlStatus = searchParams.get("statusFilter") as OrderStatusFilter | null;
   const urlSearch = searchParams.get("search") ?? "";
   const urlSearchType = searchParams.get("searchType") ?? "Order Id";
+  const listSort = parseListSort(searchParams.get("listSort"));
 
   const [filters, setFilters] = useState<FilterState>(DEFAULT_FILTER_STATE);
+  const [showListSortDropdown, setShowListSortDropdown] = useState(false);
+  const listSortRef = useRef<HTMLDivElement>(null);
 
   const foodFiltersRaw = searchParams.get("foodFilters");
   const foodFiltersPayload = useMemo((): FoodFiltersPayload | undefined => {
@@ -305,14 +335,45 @@ export default function FoodOrdersClient() {
 
   const selectedStatus: OrderStatusFilter = urlStatus ?? "PAYMENT DONE";
 
-  // Default tab: PAYMENT DONE when URL has no statusFilter
+  // Default tab: PAYMENT DONE when URL has no statusFilter; default listSort = newest
   useEffect(() => {
     if (!isFoodOrdersListActive) return;
-    if (urlStatus) return;
     const params = new URLSearchParams(searchParams.toString());
-    params.set("statusFilter", "PAYMENT DONE");
-    router.replace(`/dashboard/orders/food?${params.toString()}`, { scroll: false });
+    let changed = false;
+    if (!urlStatus) {
+      params.set("statusFilter", "PAYMENT DONE");
+      changed = true;
+    }
+    if (!searchParams.get("listSort")) {
+      params.set("listSort", "newest");
+      changed = true;
+    }
+    if (changed) {
+      router.replace(`/dashboard/orders/food?${params.toString()}`, { scroll: false });
+    }
   }, [isFoodOrdersListActive, urlStatus, searchParams, router]);
+
+  // Hard reload: clear search so reload never restores a previous order-id lookup.
+  useEffect(() => {
+    if (!isFoodOrdersListActive) return;
+    let isReload = false;
+    try {
+      const nav = performance.getEntriesByType("navigation")[0] as
+        | PerformanceNavigationTiming
+        | undefined;
+      isReload = nav?.type === "reload";
+    } catch {
+      isReload = false;
+    }
+    if (!isReload) return;
+    const params = new URLSearchParams(searchParams.toString());
+    if (!params.get("search") && !params.get("searchType")) return;
+    params.delete("search");
+    params.delete("searchType");
+    router.replace(`/dashboard/orders/food?${params.toString()}`, { scroll: false });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- run once on mount/reload only
+  }, [isFoodOrdersListActive]);
+
   const [page] = useState(1);
   const [limit] = useState(20);
   const debouncedSearch = useDebouncedValue(urlSearch, 400);
@@ -335,11 +396,27 @@ export default function FoodOrdersClient() {
       if (!status) return;
       const params = new URLSearchParams(searchParams.toString());
       params.set("statusFilter", status);
+      // Leaving search mode: drop the lookup so the stage list loads for that CTA.
+      params.delete("search");
+      params.delete("searchType");
       params.delete("page");
+      if (!params.get("listSort")) params.set("listSort", "newest");
       router.replace(`/dashboard/orders/food?${params.toString()}`, { scroll: false });
     },
     [router, searchParams]
   );
+
+  const setListSort = useCallback(
+    (mode: ListSortMode) => {
+      const params = new URLSearchParams(searchParams.toString());
+      params.set("listSort", mode);
+      params.delete("page");
+      setShowListSortDropdown(false);
+      router.replace(`/dashboard/orders/food?${params.toString()}`, { scroll: false });
+    },
+    [router, searchParams]
+  );
+
   const filtersForQuery: OrdersFilters = useMemo(
     () => ({
       orderType: "food",
@@ -349,8 +426,9 @@ export default function FoodOrdersClient() {
       page,
       limit,
       foodFilters: foodFiltersPayload,
+      listSort,
     }),
-    [selectedStatus, debouncedSearch, urlSearchType, page, limit, foodFiltersPayload]
+    [selectedStatus, debouncedSearch, urlSearchType, page, limit, foodFiltersPayload, listSort]
   );
 
   const SNAPSHOT_TTL_MS = 5 * 60 * 1000;
@@ -383,26 +461,44 @@ export default function FoodOrdersClient() {
     refetch: refetchOrders,
   } = useFoodOrdersQuery(filtersForQuery, shouldFetch, snapshotKey, initialListData);
 
-  // Always keep BULK pending count available (even when another status tab is selected).
-  const bulkFiltersForCount = useMemo(
-    (): OrdersFilters => ({ ...filtersForQuery, statusFilter: "BULK" }),
+  // Stage tab counts (ignore active search so CTAs always show stage volume).
+  const statusCountFilters = useMemo(
+    () =>
+      FOOD_STATUS_TABS.map(
+        (status): OrdersFilters => ({
+          ...filtersForQuery,
+          statusFilter: status,
+          search: "",
+          searchType: "Order Id",
+          listSort: "newest",
+        })
+      ),
     [filtersForQuery]
   );
-  const { data: bulkOrdersData } = useQuery({
-    queryKey: queryKeys.ordersCore.foodList(
-      bulkFiltersForCount as unknown as Record<string, unknown>
-    ),
-    queryFn: ({ signal }) => fetchFoodOrders(bulkFiltersForCount, signal),
-    enabled: shouldFetch,
-    staleTime: 2 * 60 * 1000,
-    gcTime: 10 * 60 * 1000,
-    refetchOnWindowFocus: false,
-    placeholderData: (previousData) => previousData,
+  const statusCountQueries = useQueries({
+    queries: statusCountFilters.map((tabFilters) => ({
+      queryKey: queryKeys.ordersCore.foodList(
+        tabFilters as unknown as Record<string, unknown>
+      ),
+      queryFn: ({ signal }: { signal?: AbortSignal }) =>
+        fetchFoodOrders(tabFilters, signal),
+      enabled: shouldFetch,
+      staleTime: 2 * 60 * 1000,
+      gcTime: 10 * 60 * 1000,
+      refetchOnWindowFocus: false,
+      placeholderData: (previousData: Awaited<ReturnType<typeof fetchFoodOrders>> | undefined) =>
+        previousData,
+    })),
   });
-  const bulkPendingCount =
-    selectedStatus === "BULK"
-      ? (ordersData?.total ?? bulkOrdersData?.total ?? 0)
-      : (bulkOrdersData?.total ?? 0);
+  const statusCounts = useMemo(() => {
+    const map = {} as Record<Exclude<OrderStatusFilter, null>, number>;
+    FOOD_STATUS_TABS.forEach((status, i) => {
+      const fromActive =
+        selectedStatus === status ? ordersData?.total : undefined;
+      map[status] = fromActive ?? statusCountQueries[i]?.data?.total ?? 0;
+    });
+    return map;
+  }, [selectedStatus, ordersData?.total, statusCountQueries]);
 
   // Prefetch other status tabs in the background so tab switches feel instant.
   useEffect(() => {
@@ -434,6 +530,9 @@ export default function FoodOrdersClient() {
       }
       if (userTypeRef.current && !userTypeRef.current.contains(event.target as Node)) {
         setShowUserTypeDropdown(false);
+      }
+      if (listSortRef.current && !listSortRef.current.contains(event.target as Node)) {
+        setShowListSortDropdown(false);
       }
     };
     document.addEventListener("mousedown", handleClickOutside);
@@ -584,11 +683,18 @@ export default function FoodOrdersClient() {
           ? "GatiMitra"
           : row.orderSource.charAt(0).toUpperCase() + row.orderSource.slice(1);
 
+      // Search results always use white row bg (no delayed highlight).
+      const isDelayed = !hasActiveSearch && Boolean(row.etaBreachedAt);
+
       return (
         <tr
           key={row.id}
           className="border-b border-gray-200 hover:bg-gray-50"
-          style={style}
+          style={{
+            ...style,
+            backgroundColor: isDelayed ? DELAYED_ROW_BG : "#FFFFFF",
+          }}
+          title={isDelayed ? "Delayed — ETA breached" : undefined}
         >
           <td className="px-2 py-1.5 whitespace-nowrap" style={{ color: TABLE_TEXT }}>
             <Link
@@ -660,7 +766,7 @@ export default function FoodOrdersClient() {
         </tr>
       );
     },
-    [orders, stageInstructionText, queryClient]
+    [orders, stageInstructionText, queryClient, hasActiveSearch]
   );
 
   // Helper function to get button styles - prevents hydration mismatch
@@ -883,7 +989,7 @@ export default function FoodOrdersClient() {
             }`}
             style={getButtonStyles(selectedStatus === "PAYMENT DONE")}
           >
-            PAYMENT DONE
+            PAYMENT DONE (<OrderNum>{statusCounts["PAYMENT DONE"]}</OrderNum>)
           </button>
           <button
             onClick={() => setStatusFilter("ACCEPTED")}
@@ -892,7 +998,7 @@ export default function FoodOrdersClient() {
             }`}
             style={getButtonStyles(selectedStatus === "ACCEPTED")}
           >
-            ACCEPTED
+            ACCEPTED (<OrderNum>{statusCounts.ACCEPTED}</OrderNum>)
           </button>
           <button
             onClick={() => setStatusFilter("DESPATCH READY")}
@@ -901,7 +1007,7 @@ export default function FoodOrdersClient() {
             }`}
             style={getButtonStyles(selectedStatus === "DESPATCH READY")}
           >
-            DESPATCH READY
+            DESPATCH READY (<OrderNum>{statusCounts["DESPATCH READY"]}</OrderNum>)
           </button>
           <button
             onClick={() => setStatusFilter("DESPATCHED")}
@@ -910,7 +1016,7 @@ export default function FoodOrdersClient() {
             }`}
             style={getButtonStyles(selectedStatus === "DESPATCHED")}
           >
-            DESPATCHED
+            DESPATCHED (<OrderNum>{statusCounts.DESPATCHED}</OrderNum>)
           </button>
           <button
             onClick={() => setStatusFilter("BULK")}
@@ -918,26 +1024,31 @@ export default function FoodOrdersClient() {
               selectedStatus === "BULK" ? "font-bold" : "font-medium"
             }`}
             style={getBulkButtonStyles(selectedStatus === "BULK")}
-            title={`${bulkPendingCount} bulk order(s) pending`}
+            title={`${statusCounts.BULK} bulk order(s) pending`}
           >
-            BULK (<OrderNum>{bulkPendingCount}</OrderNum>)
+            BULK (<OrderNum>{statusCounts.BULK}</OrderNum>)
           </button>
         </div>
       </div>
 
-      {/* Summary and Action Bar - No border */}
+      {/* Summary and Action Bar — single row: count | legend | actions */}
       <div
-        className="flex items-center justify-between rounded-xl border p-2 shadow-[0_1px_3px_rgba(18,18,18,0.04)]"
+        className="flex items-center gap-2 rounded-xl border p-2 shadow-[0_1px_3px_rgba(18,18,18,0.04)]"
         style={{ backgroundColor: CONTENT_BG, borderColor: BORDER_COLOR }}
       >
-        <div className="flex items-center gap-1.5">
-          <CheckCircle2 className="h-4 w-4" style={{ color: CHECKMARK_COLOR }} />
-          <span className="text-xs font-medium" style={{ color: DARK_TEXT }}>
+        <div className="flex items-center gap-1.5 shrink-0 min-w-0">
+          <CheckCircle2 className="h-4 w-4 shrink-0" style={{ color: CHECKMARK_COLOR }} />
+          <span className="text-xs font-medium whitespace-nowrap" style={{ color: DARK_TEXT }}>
             {selectedStatus ? selectedStatus.substring(0, 3).toUpperCase() : "PAY"} -{" "}
             <OrderNum>{orderCount}</OrderNum> / Out Of <OrderNum>{orderCount}</OrderNum>
           </span>
         </div>
-        <div className="flex items-center gap-2">
+
+        <div className="flex-1 min-w-0 flex items-center justify-center px-2">
+          <OrderStatusLegend compact />
+        </div>
+
+        <div className="flex items-center gap-2 shrink-0">
           <button
             type="button"
             onClick={refreshData}
@@ -948,6 +1059,43 @@ export default function FoodOrdersClient() {
             <RefreshCw className={`h-3.5 w-3.5 ${isRefreshing ? "animate-spin" : ""}`} />
             Refresh Data
           </button>
+          <div ref={listSortRef} className="relative">
+            <button
+              type="button"
+              onClick={() => setShowListSortDropdown((v) => !v)}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium border cursor-pointer"
+              style={getDropdownButtonStyles(listSort !== "newest")}
+              aria-expanded={showListSortDropdown}
+              title="Sort / filter list"
+            >
+              <ArrowUpDown className="h-3.5 w-3.5" />
+              {LIST_SORT_OPTIONS.find((o) => o.value === listSort)?.label ?? "Newest First"}
+              <ChevronDown className="h-3 w-3" />
+            </button>
+            {showListSortDropdown && (
+              <div
+                className="absolute right-0 top-full mt-1 w-44 border rounded-lg shadow-lg z-50 py-1"
+                style={{ backgroundColor: CONTENT_BG, borderColor: BORDER_COLOR }}
+              >
+                {LIST_SORT_OPTIONS.map((opt) => (
+                  <button
+                    key={opt.value}
+                    type="button"
+                    onClick={() => setListSort(opt.value)}
+                    className={`w-full px-3 py-2 text-left text-xs hover:bg-gray-50 cursor-pointer ${
+                      listSort === opt.value ? "font-semibold" : "font-medium"
+                    }`}
+                    style={{
+                      color: DARK_TEXT,
+                      backgroundColor: listSort === opt.value ? INACTIVE_BG : undefined,
+                    }}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
           <button
             onClick={clearAllFilters}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium border cursor-pointer"

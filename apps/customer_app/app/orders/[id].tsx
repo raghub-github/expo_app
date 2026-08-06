@@ -25,6 +25,7 @@ import {
   isMerchantEtaDelayed,
   isEtaUpdatedFromPromise,
 } from "@/lib/order-eta-display";
+import { useLiveTrackingEtaMinutes } from "@/hooks/useLiveTrackingEtaMinutes";
 import { PrepDelayMarqueeBanner } from "@/components/orders/PrepDelayMarqueeBanner";
 import { DeliveryAddressText } from "@/components/address/DeliveryAddressText";
 import { getRouteCoordinates } from "@/services/directions.service";
@@ -36,6 +37,7 @@ import { LegalFooter } from "@/components/LegalLinks";
 import { DietIndicator } from "@/components/store/DietIndicator";
 import { parseOrderBillFromSnapshot } from "@/lib/orderBillBreakdown";
 import { OrderRefundCard } from "@/components/OrderRefundCard";
+import { CustomerEtaTimeline } from "@/components/orders/CustomerEtaTimeline";
 import { getOrderDetailInitialData } from "@/lib/orderDetailCache";
 import { resolveOrderTrackingMapSnapshots } from "@/lib/orderTrackingMapSnapshots";
 import { resolveOrderItemDiet } from "@/lib/reorderFromOrder";
@@ -263,8 +265,8 @@ export default function OrderDetailsScreen() {
     queryKey: ["orderEta", orderId],
     queryFn: () => etaService.getForOrder(orderId),
     enabled: !!orderId && !!isInProgress,
-    refetchInterval: isInProgress ? 15_000 : false,
-    staleTime: 10_000,
+    refetchInterval: isInProgress ? 30_000 : false,
+    staleTime: 15_000,
   });
 
   const prepDelayBanner = useOrderStore((s) => s.prepDelayBanner);
@@ -482,7 +484,12 @@ export default function OrderDetailsScreen() {
     [pickupLat, pickupLng, deliveryLat, deliveryLng]
   );
 
-  const liveEtaMins = resolveLiveEtaMinutes(etaData);
+  const liveEta = useLiveTrackingEtaMinutes({
+    eta: etaData,
+    orderId,
+    enabled: isInProgress,
+  });
+  const liveEtaMins = liveEta.minutes ?? resolveLiveEtaMinutes(etaData);
   const merchantDelayed = isMerchantEtaDelayed(etaData);
   const etaUpdated = isEtaUpdatedFromPromise(etaData);
   const etaContextLabel = resolveCustomerEtaContextLabel(etaData);
@@ -670,6 +677,7 @@ export default function OrderDetailsScreen() {
         <FoodLiveTrackingScreen
           order={order}
           tracking={tracking}
+          eta={etaData}
           etaMinutes={liveEtaMins}
           merchantDelayed={merchantDelayed}
           etaUpdated={etaUpdated}
@@ -1023,6 +1031,11 @@ export default function OrderDetailsScreen() {
             <OrderRefundCard refund={order.refund} />
           ) : null}
 
+          <CustomerEtaTimeline
+            orderId={order.formattedOrderId ?? order.orderId}
+            enabled={Boolean(isInProgress || order.status === "DELIVERED")}
+          />
+
           <View style={styles.card}>
             <View style={styles.billHeader}>
               <View style={styles.billHeaderLeft}>
@@ -1182,10 +1195,14 @@ export default function OrderDetailsScreen() {
             <View style={styles.card}>
               <View style={styles.riderRow}>
                 <View style={styles.riderAvatar}>
-                  <AppText style={styles.riderAvatarText}>{order.rider.name.slice(0, 1).toUpperCase()}</AppText>
+                  <AppText style={styles.riderAvatarText}>
+                    {(order.rider.name?.trim() || "D").slice(0, 1).toUpperCase()}
+                  </AppText>
                 </View>
                 <View style={styles.riderInfo}>
-                  <AppText style={styles.riderName}>{order.rider.name}</AppText>
+                  <AppText style={styles.riderName}>
+                    {order.rider.name?.trim() || "Delivery partner"}
+                  </AppText>
                   {order.rider.phone ? (
                     <AppText style={styles.riderPhone}>{maskPhone(order.rider.phone)}</AppText>
                   ) : null}

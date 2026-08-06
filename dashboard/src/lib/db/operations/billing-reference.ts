@@ -718,6 +718,7 @@ export type DiscountRow = {
   offer_audience: string;
   per_user_usage_limit: number | null;
   metadata: unknown;
+  coupon_config: unknown;
 };
 
 export async function listDiscounts(): Promise<DiscountRow[]> {
@@ -738,7 +739,8 @@ export async function listDiscounts(): Promise<DiscountRow[]> {
       service_type,
       offer_audience,
       per_user_usage_limit,
-      metadata
+      metadata,
+      coupon_config
     FROM billing_discounts
     ORDER BY id ASC
   `;
@@ -758,6 +760,7 @@ export async function insertDiscount(input: {
   offer_audience?: string;
   per_user_usage_limit?: number | null;
   metadata?: unknown;
+  coupon_config?: unknown;
 }): Promise<DiscountRow> {
   const db = getSql();
   const st = (input.service_type ?? "FOOD").trim().toUpperCase();
@@ -766,7 +769,7 @@ export async function insertDiscount(input: {
   const [row] = await db<DiscountRow[]>`
     INSERT INTO billing_discounts (
       code, discount_type, value_numeric, max_discount_cap, usage_limit, is_active, is_hidden,
-      valid_from, valid_until, service_type, offer_audience, per_user_usage_limit, metadata
+      valid_from, valid_until, service_type, offer_audience, per_user_usage_limit, metadata, coupon_config
     ) VALUES (
       ${input.code.trim()},
       ${input.discount_type}::billing_discount_type,
@@ -780,7 +783,8 @@ export async function insertDiscount(input: {
       ${st},
       ${offerAudience},
       ${input.per_user_usage_limit ?? null},
-      ${sqlJsonb(input.metadata)}::jsonb
+      ${sqlJsonb(input.metadata)}::jsonb,
+      ${sqlJsonb(input.coupon_config ?? {})}::jsonb
     )
     RETURNING
       id,
@@ -797,7 +801,8 @@ export async function insertDiscount(input: {
       service_type,
       offer_audience,
       per_user_usage_limit,
-      metadata
+      metadata,
+      coupon_config
   `;
   if (!row) throw new Error("insertDiscount failed");
   await bumpBillingRulesetVersion();
@@ -830,7 +835,8 @@ export async function getDiscount(id: number): Promise<DiscountRow | null> {
       service_type,
       offer_audience,
       per_user_usage_limit,
-      metadata
+      metadata,
+      coupon_config
     FROM billing_discounts
     WHERE id = ${id}
     LIMIT 1
@@ -852,6 +858,7 @@ export type PatchDiscountInput = Partial<{
   offer_audience: string;
   per_user_usage_limit: number | null;
   metadata: unknown;
+  coupon_config: unknown;
 }>;
 
 export async function updateDiscount(id: number, patch: PatchDiscountInput): Promise<DiscountRow | null> {
@@ -877,6 +884,7 @@ export async function updateDiscount(id: number, patch: PatchDiscountInput): Pro
   const isActive = patch.is_active !== undefined ? patch.is_active : cur.is_active;
   const isHidden = patch.is_hidden !== undefined ? patch.is_hidden : cur.is_hidden;
   const metadata = patch.metadata !== undefined ? patch.metadata : cur.metadata;
+  const couponConfig = patch.coupon_config !== undefined ? patch.coupon_config : cur.coupon_config;
   const validFrom = patch.valid_from !== undefined ? patch.valid_from : cur.valid_from;
   const validUntil = patch.valid_until !== undefined ? patch.valid_until : cur.valid_until;
   const serviceType =
@@ -909,6 +917,7 @@ export async function updateDiscount(id: number, patch: PatchDiscountInput): Pro
       offer_audience = ${offerAudience},
       per_user_usage_limit = ${perUserLimit},
       metadata = ${sqlJsonb(metadata)}::jsonb,
+      coupon_config = ${sqlJsonb(couponConfig ?? {})}::jsonb,
       updated_at = now()
     WHERE id = ${id}
     RETURNING
@@ -926,7 +935,8 @@ export async function updateDiscount(id: number, patch: PatchDiscountInput): Pro
       service_type,
       offer_audience,
       per_user_usage_limit,
-      metadata
+      metadata,
+      coupon_config
   `;
   if (!row) return null;
   await bumpBillingRulesetVersion();

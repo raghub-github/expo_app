@@ -1,6 +1,6 @@
 /**
- * Plays the bundled CX notification chime for ride-service customer pushes
- * (foreground floating banner). Background/killed uses Android channel `customer_ride_cx`.
+ * Plays the bundled CX notification chime (order success, ride push banners, etc.).
+ * Background/killed Android uses channel `customer_ride_cx` for the same asset.
  */
 import { Audio, InterruptionModeAndroid, InterruptionModeIOS } from "expo-av";
 

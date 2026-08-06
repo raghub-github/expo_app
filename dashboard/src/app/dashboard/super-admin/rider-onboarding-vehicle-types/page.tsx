@@ -23,9 +23,14 @@ import type {
 } from "@/lib/db/operations/rider-vehicle-category-service-assignments";
 import type { RiderVehicleTypeServiceAssignmentRow } from "@/lib/db/operations/rider-vehicle-type-service-assignments";
 import { AssignedRideServiceSideSheet } from "@/components/riders/AssignedRideServiceSideSheet";
+import { RideCatalogVehicleMappingPanel } from "@/components/riders/RideCatalogVehicleMappingPanel";
 import { RiderVehicleTypeFormModal } from "@/components/riders/RiderVehicleTypeFormModal";
 import { ConfirmModal } from "@/components/ui/ConfirmModal";
 import { useToast } from "@/context/ToastContext";
+import type {
+  CustomerRideServiceCatalogRow,
+  RideCatalogVehicleRow,
+} from "@/lib/db/operations/customer-ride-service-catalog-admin";
 
 const FALLBACK_DOC_OPTIONS = ["dl", "rc", "rental_proof", "ev_proof"] as const;
 
@@ -40,7 +45,7 @@ const SERVICE_META: Record<
 
 const SERVICE_CODES: DispatchServiceCode[] = ["food", "parcel", "person_ride"];
 
-type ViewTab = "vehicle_types" | "assigned_ride";
+type ViewTab = "vehicle_types" | "assigned_ride" | "ride_catalog";
 
 export type DocRequirementMode = "off" | "required" | "optional";
 
@@ -166,6 +171,9 @@ export default function RiderOnboardingVehicleTypesPage() {
   const [assignmentDraft, setAssignmentDraft] = useState<Record<string, boolean>>({});
   const [vehicleAssignmentDraft, setVehicleAssignmentDraft] = useState<Record<string, boolean>>({});
   const [sheetTarget, setSheetTarget] = useState<SheetTarget | null>(null);
+  const [rideCatalog, setRideCatalog] = useState<CustomerRideServiceCatalogRow[]>([]);
+  const [rideCatalogVehicles, setRideCatalogVehicles] = useState<RideCatalogVehicleRow[]>([]);
+  const [rideCatalogDraft, setRideCatalogDraft] = useState<Record<string, string[]>>({});
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [editId, setEditId] = useState<number | null>(null);
@@ -230,16 +238,36 @@ export default function RiderOnboardingVehicleTypesPage() {
     setVehicleAssignmentDraft(vehicleDraft);
   }, []);
 
+  const loadRideCatalog = useCallback(async () => {
+    const res = await fetch("/api/super-admin/customer-ride-service-catalog", { cache: "no-store" });
+    const data = (await res.json()) as {
+      success?: boolean;
+      catalog?: CustomerRideServiceCatalogRow[];
+      vehicles?: RideCatalogVehicleRow[];
+      error?: string;
+    };
+    if (!res.ok || !data.success) throw new Error(data.error || "Failed to load ride catalog");
+    const catalog = data.catalog ?? [];
+    const vehicles = data.vehicles ?? [];
+    setRideCatalog(catalog);
+    setRideCatalogVehicles(vehicles);
+    const draft: Record<string, string[]> = {};
+    for (const row of vehicles) {
+      draft[row.vehicleTypeCode] = [...row.catalogCodes];
+    }
+    setRideCatalogDraft(draft);
+  }, []);
+
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      await Promise.all([loadVehicleTypes(), loadAssignments()]);
+      await Promise.all([loadVehicleTypes(), loadAssignments(), loadRideCatalog()]);
     } catch (e) {
       toast(e instanceof Error ? e.message : "Load failed", "error");
     } finally {
       setLoading(false);
     }
-  }, [loadVehicleTypes, loadAssignments]);
+  }, [loadVehicleTypes, loadAssignments, loadRideCatalog, toast]);
 
   useEffect(() => {
     void load();
@@ -557,6 +585,45 @@ export default function RiderOnboardingVehicleTypesPage() {
     }
   };
 
+  const saveRideCatalog = async () => {
+    setSaving(true);
+    try {
+      const updates = rideCatalogVehicles.map((row) => ({
+        vehicleTypeCode: row.vehicleTypeCode,
+        catalogCodes: rideCatalogDraft[row.vehicleTypeCode] ?? row.catalogCodes,
+      }));
+      const res = await fetch("/api/super-admin/customer-ride-service-catalog", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ updates }),
+      });
+      const data = (await res.json()) as {
+        success?: boolean;
+        catalog?: CustomerRideServiceCatalogRow[];
+        vehicles?: RideCatalogVehicleRow[];
+        error?: string;
+      };
+      if (!res.ok || !data.success) throw new Error(data.error || "Save failed");
+      await loadRideCatalog();
+      toast("Ride catalog mapping saved — customer ride options update immediately.", "success");
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Save failed", "error");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const toggleRideCatalogVehicle = (vehicleTypeCode: string, catalogCode: string) => {
+    setRideCatalogDraft((prev) => {
+      const current = prev[vehicleTypeCode] ?? [];
+      const has = current.some((c) => c === catalogCode);
+      const next = has
+        ? current.filter((c) => c !== catalogCode)
+        : [...current, catalogCode];
+      return { ...prev, [vehicleTypeCode]: next };
+    });
+  };
+
   return (
     <div className="space-y-3">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -568,7 +635,9 @@ export default function RiderOnboardingVehicleTypesPage() {
           <p className="mt-0.5 max-w-2xl text-sm text-slate-500">
               {viewTab === "vehicle_types"
                 ? "Manage operating vehicle options, required documents, and onboarding flow for the rider app."
-                : "Assign dispatch services per vehicle category and specific vehicle types. Riders only receive offers for enabled vehicles."}
+                : viewTab === "assigned_ride"
+                  ? "Assign dispatch services per vehicle category and specific vehicle types. Riders only receive offers for enabled vehicles."
+                : "Map each vehicle to ride options (Bike, Bike Lite, Auto, Cab Economy, Cab Premium). Remap anytime."}
           </p>
         </div>
 
@@ -601,6 +670,20 @@ export default function RiderOnboardingVehicleTypesPage() {
               }`}
             >
               Assigned ride
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                cancelBulkDelete();
+                setViewTab("ride_catalog");
+              }}
+              className={`rounded-md px-3 py-1.5 text-xs font-semibold transition-colors ${
+                viewTab === "ride_catalog"
+                  ? "bg-slate-900 text-white"
+                  : "text-slate-600 hover:bg-slate-50"
+              }`}
+            >
+              Ride catalog
             </button>
           </div>
 
@@ -653,7 +736,7 @@ export default function RiderOnboardingVehicleTypesPage() {
                 </button>
               </>
             )
-          ) : (
+          ) : viewTab === "assigned_ride" ? (
             <button
               type="button"
               disabled={saving}
@@ -662,6 +745,16 @@ export default function RiderOnboardingVehicleTypesPage() {
             >
               {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
               Save assignments
+            </button>
+          ) : (
+            <button
+              type="button"
+              disabled={saving}
+              onClick={() => void saveRideCatalog()}
+              className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-emerald-700 disabled:opacity-60"
+            >
+              {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+              Save catalog mapping
             </button>
           )}
         </div>
@@ -909,6 +1002,13 @@ export default function RiderOnboardingVehicleTypesPage() {
               </tbody>
             </table>
           </div>
+        ) : viewTab === "ride_catalog" ? (
+          <RideCatalogVehicleMappingPanel
+            catalog={rideCatalog}
+            vehicles={rideCatalogVehicles}
+            draft={rideCatalogDraft}
+            onToggle={toggleRideCatalogVehicle}
+          />
         ) : (
           <div className="overflow-x-auto">
             <table className="min-w-full text-sm">

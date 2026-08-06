@@ -71,6 +71,11 @@ export type BillContext = {
    * Empty when pincode is unknown or no bindings; use with GEO / GEO_MERCHANT scoped offers.
    */
   platformOfferGeoBindingEffectiveIds: ReadonlySet<number>;
+  /**
+   * Checkout coupons (billing_discounts) bound on the geo chain for this drop location.
+   * Unmapped coupons must never apply or appear in customer APIs.
+   */
+  checkoutCouponGeoBindingEffectiveIds: ReadonlySet<number>;
   /** Delivery fee computed by Delivery Rate Card Engine (same as legacy pre-pipeline injection). */
   deliveryFeeFromRateCard: number;
   /** Delivery fee computed by progressive geo slabs (DELIVERY_SLABS_GEO_V2). */
@@ -138,10 +143,62 @@ export type BillContext = {
    */
   couponRedemptionsByUser?: number;
   /**
+   * Time-windowed usage for the requested checkout coupon (from billing_discount_usages).
+   * When omitted, usage modes that need day/week/month fall back to couponRedemptionsByUser for lifetime only.
+   */
+  couponUsageSnapshot?: {
+    lifetime: number;
+    day: number;
+    week: number;
+    month: number;
+    year: number;
+  };
+  /** Usage snapshots keyed by billing_discounts.id (auto-apply / multi-coupon paths). */
+  couponUsageByDiscountId?: Map<
+    number,
+    {
+      lifetime: number;
+      day: number;
+      week: number;
+      month: number;
+      year: number;
+    }
+  >;
+  /** Completed orders for this customer (any service) — FIRST_ORDER / FIRST_N coupon modes. */
+  customerCompletedOrderCount?: number | null;
+  /**
    * Map of merchantOfferId → number of times this user has already used that offer.
    * Used to enforce max_uses_per_user. Omit or leave empty to skip per-user cap check.
    */
   merchantOfferUsagesByUser?: Map<number, number>;
+  /**
+   * Map of platformOfferId → active redemption counts for this customer.
+   * Used to enforce max_uses_per_user / day / month.
+   */
+  platformOfferUsagesByUser?: Map<number, { lifetime: number; day: number; month: number }>;
+  /**
+   * Map of platformOfferId → lifetime active redemptions across all customers.
+   * Used to enforce max_uses_total.
+   */
+  platformOfferLifetimeUseCounts?: Map<number, number>;
+  /**
+   * Count of this customer's completed Person Ride orders (`orders_core.order_type =
+   * person_ride` + delivered). Used only for `conditions.first_ride_only`.
+   * Omit / null = unknown → first-ride offers fail closed (cannot be bypassed).
+   */
+  completedPersonRideCount?: number | null;
+  /** Completed delivered parcel orders for this customer (Parcel first-N / loyalty). */
+  completedParcelCount?: number | null;
+  /** Ride catalog code / type (bike, auto, cab-economy, …). */
+  rideType?: string | null;
+  /** Normalized vehicle class when different from rideType. */
+  vehicleType?: string | null;
+  /** Checkout payment mode: upi | wallet | card | online | cash | … */
+  paymentMode?: string | null;
+  /** Parcel weight kg when known. */
+  parcelWeightKg?: number | null;
+  parcelSpeed?: string | null;
+  parcelScope?: string | null;
   /**
    * User explicitly selected this platform offer in the checkout UI.
    * When set and the offer is eligible, it's applied INSTEAD of the auto-picked
@@ -356,6 +413,8 @@ export type DiscountRow = {
   perUserUsageLimit: number | null;
   /** JSON from billing_discounts.metadata (e.g. customer_segment, discount_applies_on). */
   metadata: Record<string, unknown> | null;
+  /** Checkout coupon engine config from billing_discounts.coupon_config. */
+  couponConfig: Record<string, unknown> | null;
 };
 
 export type DeliveryRateCardRow = {
@@ -376,6 +435,10 @@ export type DeliveryRateCardRow = {
 export type PlatformOfferRow = {
   id: number;
   name: string | null;
+  /** Customer-facing promo code (always present after 0494 migration). */
+  couponCode: string | null;
+  /** Ride/Parcel promo config (empty for Food). */
+  promoConfig: Record<string, unknown> | null;
   serviceType: string;
   discountType: string;
   valueNumeric: number | null;
@@ -404,6 +467,13 @@ export type PlatformOfferRow = {
   endsAt: Date | null;
   budgetTotal: number | null;
   budgetUsed: number | null;
+  maxUsesTotal: number | null;
+  maxUsesPerUser: number | null;
+  maxUsesPerDay: number | null;
+  maxUsesPerMonth: number | null;
+  consumeMode: string;
+  restoreOnCancel: boolean;
+  restoreOnRefund: boolean;
   priority: number;
   isHidden: boolean;
   conditions: Record<string, unknown>;
@@ -489,6 +559,11 @@ export type BillingDataset = {
   taxConfigs: TaxConfigRow[];
   merchantOverrides: Record<string, unknown> | null;
   coupon: DiscountRow | null;
+  /**
+   * Eligible `auto_apply` coupons for this customer/cart (user-specific; never cache).
+   * Used when no explicit coupon/platform/merchant selection is pinned.
+   */
+  autoApplyCoupons?: DiscountRow[];
   /** Per-user usage counts keyed by merchantOfferId. Undefined if userId not provided. */
   merchantOfferUsagesByUser?: Map<number, number>;
 };

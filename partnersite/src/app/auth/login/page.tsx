@@ -56,14 +56,21 @@ function LoginPageContent() {
   const oauthCode = searchParams?.get('code');
 
   useEffect(() => {
-    if (typeof window === 'undefined') return;
+    if (typeof window === "undefined") return;
     // Never reuse another account's store selection across logins
     clearPartnerStoreSelection();
+    // If opened via non-routable 0.0.0.0 (common after bad OAuth Site URL), bounce to localhost.
+    if (window.location.hostname === "0.0.0.0" || window.location.hostname === "[::]") {
+      const fixed = new URL(window.location.href);
+      fixed.hostname = "localhost";
+      window.location.replace(fixed.toString());
+      return;
+    }
     if (redirectTo) {
-      sessionStorage.setItem('auth_redirect', redirectTo);
+      sessionStorage.setItem("auth_redirect", redirectTo);
     } else {
       // Ensure after login we always go to child store list, not auth home (no stale /auth)
-      sessionStorage.setItem('auth_redirect', '/partners/all-stores');
+      sessionStorage.setItem("auth_redirect", "/partners/all-stores");
     }
   }, [redirectTo]);
 

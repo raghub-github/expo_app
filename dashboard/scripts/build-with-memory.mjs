@@ -1,18 +1,19 @@
 /**
  * Run `next build` with a raised V8 heap so the TypeScript checker worker
  * does not OOM on this large dashboard (~1.5k TS files).
- *
- * NODE_OPTIONS is set so child workers inherit the limit (passing
- * --max-old-space-size only on the parent is not enough).
  */
 import { spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { forceRemoveLock, lockPath, root } from "./prepare-next-output.mjs";
 
-const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const require = createRequire(path.join(root, "package.json"));
 const nextBin = require.resolve("next/dist/bin/next");
+
+forceRemoveLock();
+spawnSync("cmd", ["/c", "attrib", "-R", "-S", "-H", lockPath], { stdio: "ignore" });
+spawnSync("cmd", ["/c", "del", "/f", "/q", lockPath], { stdio: "ignore" });
 
 const heapFlag = "--max-old-space-size=8192";
 const existing = (process.env.NODE_OPTIONS ?? "").trim();

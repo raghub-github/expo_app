@@ -43,6 +43,7 @@ import { OrderDeliveryDetailsCard } from "@/components/orders/OrderDeliveryDetai
 import { GatiMitraColors } from "@/constants/gatimitra";
 import { buildOrderDeliveryDetailsView } from "@/lib/order-delivery-details";
 import { parseOrderBillFromSnapshot } from "@/lib/orderBillBreakdown";
+import { playCustomerNotificationSound } from "@/lib/playCustomerNotificationSound";
 import { orderService } from "@/services/order.service";
 import { useScreenChromeStore } from "@/store/screenChromeStore";
 
@@ -435,6 +436,10 @@ export default function OrderSuccessScreen() {
       duration: 520,
       easing: Easing.out(Easing.cubic),
     });
+    // Chime once success UI is on screen (after splash starts).
+    const soundTimer = setTimeout(() => {
+      void playCustomerNotificationSound();
+    }, 280);
     const hold = setTimeout(() => {
       // Settle: green shrinks up, white rises — soft spring so the curve stops (no jump).
       phase.value = withSpring(
@@ -445,7 +450,10 @@ export default function OrderSuccessScreen() {
         }
       );
     }, SPLASH_HOLD_MS + 520);
-    return () => clearTimeout(hold);
+    return () => {
+      clearTimeout(hold);
+      clearTimeout(soundTimer);
+    };
   }, [phase]);
 
   const displayOrderId = order?.formattedOrderId ?? formattedOrderId ?? order?.orderId ?? id;

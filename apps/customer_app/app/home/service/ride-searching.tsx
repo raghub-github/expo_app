@@ -212,6 +212,9 @@ export default function RideSearchingScreen() {
     captainCancelled?: string;
     routeDistanceKm?: string;
     routeEtaMins?: string;
+    couponCode?: string;
+    selectedPlatformOfferId?: string;
+    forceNoAutoOffer?: string;
   }>();
 
   const [tripState, setTripState] = useState(() => buildTripStateFromParams(params));
@@ -967,6 +970,14 @@ export default function RideSearchingScreen() {
       searchTimeoutSec: RIDE_RIDER_SEARCH_TIMEOUT_SEC,
       pickupPincode: params.pickupPincode?.trim() || undefined,
       pickupState: params.pickupState?.trim() || undefined,
+      couponCode: params.couponCode?.trim() || undefined,
+      selectedPlatformOfferId:
+        params.selectedPlatformOfferId != null &&
+        Number.isFinite(Number(params.selectedPlatformOfferId)) &&
+        Number(params.selectedPlatformOfferId) > 0
+          ? Number(params.selectedPlatformOfferId)
+          : undefined,
+      forceNoAutoOffer: params.forceNoAutoOffer === "true",
     })
       .then((result) => {
         if (cancelled) return;

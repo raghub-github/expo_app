@@ -20,10 +20,10 @@ import {
   FlatList,
   Pressable,
   Image,
+  type ImageSourcePropType,
 } from "react-native";
 import { AppText } from "@/components/AppText";
 import { LinearGradient } from "expo-linear-gradient";
-import { StatusBar } from "expo-status-bar";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
@@ -35,6 +35,8 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import { setRuntimeApiBaseUrl, getConfig } from "@/config/env";
 
 const API_URL_OVERRIDE_KEY = "dev.apiBaseUrl";
+/** Bundled fallback so the header never swaps placeholder ↔ remote (layout flicker). */
+const BUNDLED_AUTH_LOGO: ImageSourcePropType = require("../../assets/images/splash-logo.png");
 
 /** Indian mobile display: 98765-43210 (5 digits, hyphen, 5 digits). */
 function formatIndianPhoneDisplay(digits: string): string {
@@ -152,7 +154,8 @@ export default function LoginScreen() {
   const [selectedCountry, setSelectedCountry] = useState<CountryOption>(DEFAULT_COUNTRY);
   const [countryPickerVisible, setCountryPickerVisible] = useState(false);
   const [logoError, setLogoError] = useState(false);
-  const logoSource = useAppAssetSource(CX.auth.logoWithName);
+  const remoteLogo = useAppAssetSource(CX.auth.logoWithName);
+  const logoSource = !logoError && remoteLogo ? remoteLogo : BUNDLED_AUTH_LOGO;
   const [apiUrlModalVisible, setApiUrlModalVisible] = useState(false);
   const [apiUrlInput, setApiUrlInput] = useState("");
   const [apiUrlSaving, setApiUrlSaving] = useState(false);
@@ -254,10 +257,9 @@ export default function LoginScreen() {
 
   return (
     <KeyboardAvoidingView
-      behavior={Platform.OS === "ios" ? "padding" : "height"}
+      behavior={Platform.OS === "ios" ? "padding" : undefined}
       style={[styles.container, { paddingBottom: insets.bottom }]}
     >
-      <StatusBar style="dark" backgroundColor={BG_SCREEN} />
       <ScrollView
         contentContainerStyle={styles.scrollContent}
         keyboardShouldPersistTaps="handled"
@@ -275,19 +277,13 @@ export default function LoginScreen() {
 
           <View style={styles.cardInner}>
             <View style={styles.header}>
-              {!logoError && logoSource ? (
-                <Image
-                  source={logoSource}
-                  style={styles.logoImage}
-                  resizeMode="contain"
-                  accessibilityLabel="GatiMitra logo"
-                  onError={() => setLogoError(true)}
-                />
-              ) : (
-                <View style={styles.logoPlaceholder}>
-                  <AppText style={styles.logoPlaceholderText}>GatiMitra</AppText>
-                </View>
-              )}
+              <Image
+                source={logoSource}
+                style={styles.logoImage}
+                resizeMode="contain"
+                accessibilityLabel="GatiMitra logo"
+                onError={() => setLogoError(true)}
+              />
             </View>
 
             <HeroIllustration />
@@ -654,20 +650,6 @@ const styles = StyleSheet.create({
   logoImage: {
     width: 120,
     height: 36,
-  },
-  logoPlaceholder: {
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-    backgroundColor: MINT_SOFT,
-    borderRadius: 8,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  logoPlaceholderText: {
-    fontSize: 16,
-    fontWeight: "700",
-    color: GREEN_PRIMARY,
-    letterSpacing: 0.5,
   },
   title: {
     fontSize: 26,

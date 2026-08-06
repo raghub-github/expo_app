@@ -69,7 +69,11 @@ function OfferCard({
 }) {
   const [expanded, setExpanded] = useState(false);
   const merchant = isMerchantOffer(offer);
-  const code = merchant ? offer.coupon_code : null;
+  const code = merchant
+    ? offer.coupon_code
+    : isPlatformOffer(offer)
+      ? offer.coupon_code?.trim() || null
+      : null;
   const autoApply = merchant ? offer.auto_apply : true;
   const title =
     platform && isPlatformOffer(offer)
@@ -83,7 +87,9 @@ function OfferCard({
 
   const details = [
     platform
-      ? "Offer will be applied automatically at checkout when eligible."
+      ? code
+        ? `Use code ${code} at checkout, or tap Apply when the offer is eligible.`
+        : "Offer will be applied automatically at checkout when eligible."
       : autoApply
         ? "Offer will be applied automatically. No promo code required."
         : code

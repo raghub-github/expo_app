@@ -4,14 +4,32 @@ import { requireSuperAdminApi } from "@/lib/super-admin-api";
 import { platformOfferKindSchema } from "@/lib/billing/platformOfferKinds";
 import { validatePlatformOfferKindFieldsForApi } from "@/lib/billing/platformOfferKindUi";
 import { deletePlatformOffer, formatPlatformOfferDbError, getPlatformOfferById, updatePlatformOffer } from "@/lib/db/operations/billing-advanced";
+import { auditPlatformOfferMutation } from "@/lib/audit/platform-offer-audit";
 
 export const runtime = "nodejs";
 
 const offerAudienceSchema = z.enum(["CUSTOMER", "MERCHANT", "RIDER"]);
 
+/** Accept ISO / timestamptz strings from the editor (not only Zod's strict .datetime()). */
+const optionalIsoDateTime = z
+  .union([z.string(), z.null()])
+  .optional()
+  .refine(
+    (v) => v === undefined || v === null || (typeof v === "string" && !Number.isNaN(Date.parse(v))),
+    { message: "Invalid date/time" }
+  );
+
 const patchSchema = z
   .object({
     name: z.string().optional().nullable(),
+    coupon_code: z
+      .string()
+      .trim()
+      .min(3)
+      .max(32)
+      .regex(/^[A-Za-z0-9_-]+$/, "Coupon code may only use A–Z, 0–9, underscore, and hyphen")
+      .optional()
+      .nullable(),
     service_type: z.string().optional(),
     offer_kind: platformOfferKindSchema.optional(),
     offer_audience: offerAudienceSchema.optional(),
@@ -31,10 +49,17 @@ const patchSchema = z
     get_qty: z.number().int().nullable().optional(),
     is_stackable: z.boolean().optional(),
     exclusion_group: z.string().nullable().optional(),
-    starts_at: z.string().datetime().nullable().optional(),
-    ends_at: z.string().datetime().nullable().optional(),
+    starts_at: optionalIsoDateTime,
+    ends_at: optionalIsoDateTime,
     budget_total: z.number().nullable().optional(),
     budget_used: z.number().nullable().optional(),
+    max_uses_total: z.number().int().positive().nullable().optional(),
+    max_uses_per_user: z.number().int().positive().nullable().optional(),
+    max_uses_per_day: z.number().int().positive().nullable().optional(),
+    max_uses_per_month: z.number().int().positive().nullable().optional(),
+    consume_mode: z.enum(["ON_PLACED", "ON_DELIVERED"]).optional(),
+    restore_on_cancel: z.boolean().optional(),
+    restore_on_refund: z.boolean().optional(),
     discount_type: z.string().optional(),
     value_numeric: z.number().nullable().optional(),
     delivery_discount_type: z.string().optional().nullable(),
@@ -43,6 +68,7 @@ const patchSchema = z
     is_active: z.boolean().optional(),
     is_hidden: z.boolean().optional(),
     conditions: z.record(z.string(), z.unknown()).optional(),
+    promo_config: z.record(z.string(), z.unknown()).optional(),
     metadata: z.unknown().optional(),
   }).superRefine((d, ctx) => {
     if (d.platform_share_pct !== undefined || d.merchant_share_pct !== undefined) {
@@ -86,6 +112,10 @@ export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: strin
           : {};
     const merged = {
       name: parsed.data.name ?? row0.name,
+      coupon_code:
+        parsed.data.coupon_code !== undefined && parsed.data.coupon_code != null
+          ? parsed.data.coupon_code
+          : row0.coupon_code,
       service_type: parsed.data.service_type ?? row0.service_type,
       offer_kind: parsed.data.offer_kind ?? row0.offer_kind,
       offer_audience: parsed.data.offer_audience ?? row0.offer_audience ?? "CUSTOMER",
@@ -141,6 +171,27 @@ export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: strin
           : row0.budget_used != null
             ? parseFloat(row0.budget_used)
             : 0,
+      max_uses_total:
+        parsed.data.max_uses_total !== undefined ? parsed.data.max_uses_total : row0.max_uses_total,
+      max_uses_per_user:
+        parsed.data.max_uses_per_user !== undefined
+          ? parsed.data.max_uses_per_user
+          : row0.max_uses_per_user,
+      max_uses_per_day:
+        parsed.data.max_uses_per_day !== undefined ? parsed.data.max_uses_per_day : row0.max_uses_per_day,
+      max_uses_per_month:
+        parsed.data.max_uses_per_month !== undefined
+          ? parsed.data.max_uses_per_month
+          : row0.max_uses_per_month,
+      consume_mode: parsed.data.consume_mode ?? row0.consume_mode ?? "ON_PLACED",
+      restore_on_cancel:
+        parsed.data.restore_on_cancel !== undefined
+          ? parsed.data.restore_on_cancel
+          : row0.restore_on_cancel !== false,
+      restore_on_refund:
+        parsed.data.restore_on_refund !== undefined
+          ? parsed.data.restore_on_refund
+          : row0.restore_on_refund !== false,
       discount_type: parsed.data.discount_type ?? row0.discount_type,
       value_numeric:
         parsed.data.value_numeric !== undefined
@@ -160,6 +211,12 @@ export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: strin
       is_active: parsed.data.is_active ?? row0.is_active,
       is_hidden: parsed.data.is_hidden ?? row0.is_hidden,
       conditions: cond,
+      promo_config:
+        parsed.data.promo_config !== undefined
+          ? parsed.data.promo_config
+          : row0.promo_config && typeof row0.promo_config === "object"
+            ? (row0.promo_config as Record<string, unknown>)
+            : {},
       metadata: parsed.data.metadata !== undefined ? parsed.data.metadata : row0.metadata,
     };
     const patchKindErr = validatePlatformOfferKindFieldsForApi({
@@ -176,9 +233,76 @@ export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: strin
     }
     const offer = await updatePlatformOffer(id, merged);
     if (!offer) return NextResponse.json({ error: "Not found" }, { status: 404 });
+    const changed = Object.keys(parsed.data);
+    const changeKinds: string[] = [];
+    if (parsed.data.is_active === true && row0.is_active === false) changeKinds.push("enable");
+    if (parsed.data.is_active === false && row0.is_active !== false) changeKinds.push("disable");
+    if (parsed.data.budget_total !== undefined) changeKinds.push("budget_change");
+    if (parsed.data.starts_at !== undefined || parsed.data.ends_at !== undefined) {
+      changeKinds.push("schedule_change");
+    }
+    if (parsed.data.priority !== undefined) changeKinds.push("priority_change");
+    if (
+      parsed.data.max_uses_total !== undefined ||
+      parsed.data.max_uses_per_user !== undefined ||
+      parsed.data.max_uses_per_day !== undefined ||
+      parsed.data.max_uses_per_month !== undefined ||
+      parsed.data.consume_mode !== undefined ||
+      parsed.data.restore_on_cancel !== undefined ||
+      parsed.data.restore_on_refund !== undefined
+    ) {
+      changeKinds.push("limit_change");
+    }
+    if (changeKinds.length === 0) changeKinds.push("edit");
+    await auditPlatformOfferMutation(req, "UPDATE", {
+      resourceType: "platform_offer",
+      resourceId: String(id),
+      actionDetails: {
+        action: "update_platform_offer",
+        change_kinds: changeKinds,
+        fields: changed,
+        reason: "super_admin_platform_offer_patch",
+      },
+      previousValues: {
+        name: row0.name,
+        is_active: row0.is_active,
+        starts_at: row0.starts_at,
+        ends_at: row0.ends_at,
+        budget_total: row0.budget_total,
+        max_uses_total: row0.max_uses_total,
+        max_uses_per_user: row0.max_uses_per_user,
+        max_uses_per_day: row0.max_uses_per_day,
+        max_uses_per_month: row0.max_uses_per_month,
+        priority: row0.priority,
+        consume_mode: row0.consume_mode,
+        restore_on_cancel: row0.restore_on_cancel,
+        restore_on_refund: row0.restore_on_refund,
+      },
+      newValues: {
+        name: offer.name,
+        is_active: offer.is_active,
+        starts_at: offer.starts_at,
+        ends_at: offer.ends_at,
+        budget_total: offer.budget_total,
+        max_uses_total: offer.max_uses_total,
+        max_uses_per_user: offer.max_uses_per_user,
+        max_uses_per_day: offer.max_uses_per_day,
+        max_uses_per_month: offer.max_uses_per_month,
+        priority: offer.priority,
+        consume_mode: offer.consume_mode,
+        restore_on_cancel: offer.restore_on_cancel,
+        restore_on_refund: offer.restore_on_refund,
+      },
+    });
     return NextResponse.json({ offer });
   } catch (e) {
     const msg = formatPlatformOfferDbError(e);
+    await auditPlatformOfferMutation(req, "UPDATE", {
+      resourceType: "platform_offer",
+      resourceId: String(id),
+      failed: true,
+      errorMessage: msg,
+    });
     const status =
       msg.includes("date/time") ||
       msg.includes("must be on or after") ||
@@ -204,18 +328,33 @@ function parseJsonIds(v: unknown): unknown[] {
   return [];
 }
 
-export async function DELETE(_req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
+export async function DELETE(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
   const gate = await requireSuperAdminApi();
   if (!gate.ok) return gate.response;
   const { id: idStr } = await ctx.params;
   const id = parseInt(idStr, 10);
   if (!Number.isInteger(id) || id < 1) return NextResponse.json({ error: "Invalid id" }, { status: 400 });
   try {
+    const prev = await getPlatformOfferById(id);
     const ok = await deletePlatformOffer(id);
     if (!ok) return NextResponse.json({ error: "Not found" }, { status: 404 });
+    await auditPlatformOfferMutation(req, "DELETE", {
+      resourceType: "platform_offer",
+      resourceId: String(id),
+      actionDetails: { action: "delete_platform_offer" },
+      previousValues: prev
+        ? { name: prev.name, is_active: prev.is_active, service_type: prev.service_type }
+        : null,
+    });
     return NextResponse.json({ ok: true });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "Failed";
+    await auditPlatformOfferMutation(req, "DELETE", {
+      resourceType: "platform_offer",
+      resourceId: String(id),
+      failed: true,
+      errorMessage: msg,
+    });
     return NextResponse.json({ error: msg }, { status: 500 });
   }
 }

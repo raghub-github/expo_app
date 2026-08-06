@@ -38,6 +38,7 @@ export type PlatformOfferItem = {
   label: string;
   sub_label: string;
   is_geo_bound: boolean;
+  coupon_code?: string | null;
   discount_type?: string | null;
   value?: number | null;
   max_discount_amount?: number | null;

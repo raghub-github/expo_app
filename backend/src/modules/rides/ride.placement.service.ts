@@ -83,6 +83,10 @@ export type PlaceRideOrderInput = {
   customerTipAmount?: number;
   pickupPincode?: string | null;
   pickupState?: string | null;
+  /** Apply platform offer at placement (prepaid + auto-apply path). */
+  couponCode?: string | null;
+  selectedPlatformOfferId?: number | null;
+  forceNoAutoOffer?: boolean;
 };
 
 export type PlaceRideOrderResult = {
@@ -401,6 +405,12 @@ export async function placeRideOrder(input: PlaceRideOrderInput): Promise<PlaceR
       tipAmount: customerTipAmount,
       pickupPincode: input.pickupPincode,
       pickupState: input.pickupState,
+      rideType: input.rideType,
+      vehicleType: input.vehicleTypeRequired ?? input.rideType,
+      paymentMode: input.paymentMethod ?? "online",
+      couponCode: input.couponCode ?? null,
+      selectedPlatformOfferId: input.selectedPlatformOfferId ?? null,
+      forceNoAutoOffer: input.forceNoAutoOffer === true,
     });
     if (!billRes.ok) {
       throw Object.assign(new Error(billRes.message), {
@@ -514,6 +524,7 @@ export async function placeRideOrder(input: PlaceRideOrderInput): Promise<PlaceR
           serviceType: "RIDE",
           rideType: input.rideType,
           vehicleTypeRequired: vehicleType,
+          paymentMethod: paymentMethodEnum,
           searchTimeoutSec,
           pickupLabel: resolveRideAddressDisplayLabel({
             label: input.pickupLabel,

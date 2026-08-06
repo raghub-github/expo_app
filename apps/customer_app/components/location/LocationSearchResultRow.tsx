@@ -1,4 +1,4 @@
-import { View, TouchableOpacity, StyleSheet } from "react-native";
+import { View, TouchableOpacity, StyleSheet, Pressable } from "react-native";
 import { AppText } from "@/components/AppText";
 
 import { Ionicons } from "@expo/vector-icons";
@@ -23,10 +23,19 @@ type Props = {
   query?: string;
   distanceLabel?: string | null;
   onPress: () => void;
+  favorited?: boolean;
+  onToggleFavorite?: () => void;
 };
 
 /** Rapido-style row: pin + distance | title + address | heart */
-export function LocationSearchResultRow({ item, query = "", distanceLabel, onPress }: Props) {
+export function LocationSearchResultRow({
+  item,
+  query = "",
+  distanceLabel,
+  onPress,
+  favorited = false,
+  onToggleFavorite,
+}: Props) {
   const primary = resolvePlaceDisplayName(item);
   const secondary =
     item.secondary && item.secondary !== "—"
@@ -54,9 +63,22 @@ export function LocationSearchResultRow({ item, query = "", distanceLabel, onPre
         </AppText>
       </View>
 
-      <TouchableOpacity style={styles.heartBtn} hitSlop={12} onPress={onPress}>
-        <Ionicons name="heart-outline" size={20} color="#9CA3AF" />
-      </TouchableOpacity>
+      <Pressable
+        style={styles.heartBtn}
+        hitSlop={10}
+        onPress={(e) => {
+          e?.stopPropagation?.();
+          onToggleFavorite?.();
+        }}
+        accessibilityRole="button"
+        accessibilityLabel={favorited ? "Remove from favorites" : "Save location"}
+      >
+        <Ionicons
+          name={favorited ? "heart" : "heart-outline"}
+          size={20}
+          color={favorited ? "#EF4444" : "#94A3B8"}
+        />
+      </Pressable>
     </TouchableOpacity>
   );
 }
@@ -66,12 +88,14 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "flex-start",
     paddingVertical: 14,
+    paddingLeft: 16,
+    paddingRight: 12,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: "#E5E7EB",
     gap: 10,
   },
   leftCol: {
-    width: 48,
+    width: 44,
     alignItems: "center",
     paddingTop: 2,
   },
@@ -84,7 +108,9 @@ const styles = StyleSheet.create({
   },
   content: {
     flex: 1,
+    minWidth: 0,
     paddingTop: 1,
+    paddingRight: 4,
   },
   primary: {
     fontSize: 15,
@@ -107,7 +133,10 @@ const styles = StyleSheet.create({
     lineHeight: 18,
   },
   heartBtn: {
-    paddingTop: 2,
-    paddingLeft: 4,
+    width: 36,
+    height: 36,
+    alignItems: "center",
+    justifyContent: "center",
+    marginTop: -4,
   },
 });

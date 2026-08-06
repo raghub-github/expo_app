@@ -32,7 +32,9 @@ type Props = {
   visible: boolean;
   onClose: () => void;
   bill: OrderBillBreakdown;
-  paymentMethodLabel: string;
+  /** @deprecated Prefer paymentLines — kept for older call sites. */
+  paymentMethodLabel?: string;
+  paymentLines?: Array<{ label: string; amount: number }>;
   itemTotalFallback?: number;
 };
 
@@ -40,11 +42,16 @@ export function OrderBillBreakdownSheet({
   visible,
   onClose,
   bill,
-  paymentMethodLabel,
+  paymentMethodLabel = "UPI",
+  paymentLines,
   itemTotalFallback = 0,
 }: Props) {
   const insets = useSafeAreaInsets();
   const itemTotal = bill.itemTotal > 0.005 ? bill.itemTotal : itemTotalFallback;
+  const paidRows =
+    paymentLines && paymentLines.length > 0
+      ? paymentLines
+      : [{ label: paymentMethodLabel, amount: bill.paid }];
 
   return (
     <StoreBottomSheetShell visible={visible} onClose={onClose} maxHeightRatio={0.72}>
@@ -167,9 +174,16 @@ export function OrderBillBreakdownSheet({
           <BillRow label="Add to GatiCash wallet" value={`+ ${formatMoney(bill.missedOfferWalletAdd)}`} />
         ) : null}
 
-        <View style={[styles.billRow, styles.billPaidRow]}>
-          <CheckoutText style={styles.paidLabel}>Paid via {paymentMethodLabel}</CheckoutText>
-          <CheckoutText style={styles.paidValue}>{formatMoney(bill.paid)}</CheckoutText>
+        <View style={styles.billPaidBlock}>
+          {paidRows.map((row, idx) => (
+            <View
+              key={`paid-${row.label}-${idx}`}
+              style={[styles.billRow, idx === 0 ? styles.billPaidRow : styles.billPaidRowFollow]}
+            >
+              <CheckoutText style={styles.paidLabel}>Paid via {row.label}</CheckoutText>
+              <CheckoutText style={styles.paidValue}>{formatMoney(row.amount)}</CheckoutText>
+            </View>
+          ))}
         </View>
 
         {bill.totalSavings > 0.005 ? (
@@ -232,8 +246,15 @@ const styles = StyleSheet.create({
   billGrandValue: { fontSize: 14, fontWeight: "700", color: TEXT },
   couponLabel: { flex: 1, fontSize: 13, fontWeight: "600", color: LINK_BLUE, paddingRight: 8 },
   couponValue: { fontSize: 13, fontWeight: "700", color: LINK_BLUE },
+  billPaidBlock: {
+    paddingTop: 4,
+  },
   billPaidRow: {
     paddingTop: 8,
+    paddingBottom: 4,
+  },
+  billPaidRowFollow: {
+    paddingTop: 2,
     paddingBottom: 4,
   },
   paidLabel: { flex: 1, fontSize: 15, fontWeight: "700", color: TEXT, textTransform: "capitalize" },

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import RiderTimeline, { type RiderTimelineData } from "./RiderTimeline";
 import { useCancellationReasonCatalog } from "@/hooks/useCancellationReasonCatalog";
 import {
@@ -16,8 +16,13 @@ import {
   isSelfPickupDelivery,
 } from "@/lib/orders/order-detail-display";
 import { useLiveElapsedSeconds } from "@/hooks/useLiveElapsedSeconds";
-import { Check, Copy, Star } from "lucide-react";
+import { Check, ChevronDown, Copy, Star } from "lucide-react";
 import { RiderPhotoModal } from "@/components/orders/RiderPhotoModal";
+import {
+  RiderSelectionSideSheet,
+  type RiderSelectionMode,
+  type SelectableRider,
+} from "@/components/orders/RiderSelectionSideSheet";
 import {
   fetchRiderActivityLogCached,
   getCachedRiderActivityLog,
@@ -59,6 +64,8 @@ function riderManagementToastMessage(error: string | undefined, fallback: string
 
 interface RiderDetailsOrder {
   orderId?: number | null;
+  /** Public formatted id (e.g. GMF000105) — used in Force Assignment header. */
+  formattedOrderId?: string | null;
   riderId?: number | null;
   riderName?: string | null;
   riderMobile?: string | null;
@@ -77,6 +84,17 @@ interface RiderDetailsOrder {
   orderType?: string | null;
 }
 
+export type ForceAssignmentLiveState = {
+  status: string;
+  newRiderId: number;
+  newRiderName: string | null;
+  oldRiderId: number | null;
+  oldRiderName: string | null;
+  reasonText: string;
+  offerExpiresAt: string;
+  startedAt: string;
+};
+
 interface RiderDetailsProps {
   order: RiderDetailsOrder;
   initialRiderTimeline?: RiderTimelineData | null | undefined;
@@ -87,12 +105,15 @@ interface RiderDetailsProps {
   onOpenFeedback?: () => void;
   onCopy: (text: string) => void;
   onPhoneClick?: (title: string, phone: string) => void;
-  /** Refetch order after rider cancel / manual assign. */
+  /** Refetch order after rider cancel / manual assign / force assign. */
   onRiderManagementComplete?: (detail: {
-    action: "cancel_only" | "cancel_reassign" | "assign_rider";
+    action: "cancel_only" | "cancel_reassign" | "assign_rider" | "force_assignment" | "hard_assign";
+    routedToEmail?: string | null;
   }) => void;
   /** Active dispatch waves — hide manual assign while riders are being offered. */
   dispatchSessionActive?: boolean;
+  /** Pending Force Assignment live state from parent polling. */
+  forceAssignment?: ForceAssignmentLiveState | null;
   /** Bumps when rider activity log should reload (e.g. new assignment). */
   activityLogRefreshKey?: number;
   className?: string;
@@ -205,7 +226,7 @@ export function RiderLogModal({ isOpen, orderId, refreshKey = 0, onClose, onCopy
     setError(null);
 
     let cancelled = false;
-    void fetchRiderActivityLogCached(orderId)
+    void fetchRiderActivityLogCached(orderId, { force: true })
       .then((entry) => {
         if (cancelled) return;
         setLogs(entry.logs);
@@ -503,7 +524,8 @@ export function RiderLogModal({ isOpen, orderId, refreshKey = 0, onClose, onCopy
   );
 }
 
-type CancelActionOption = "" | "CANCEL" | "CANCEL_ASSIGN";
+type CancelActionOption = "" | "CANCEL" | "CANCEL_ASSIGN" | "FORCE_ASSIGN";
+type AssignmentMethodOption = "" | "MANUAL" | "FORCE";
 
 function DetailField({
   label,
@@ -576,6 +598,7 @@ export default function RiderDetails({
   onPhoneClick,
   onRiderManagementComplete,
   dispatchSessionActive = false,
+  forceAssignment = null,
   activityLogRefreshKey = 0,
   className = "",
 }: RiderDetailsProps) {
@@ -615,8 +638,17 @@ export default function RiderDetails({
   const [catalogReasonId, setCatalogReasonId] = useState<number | null>(null);
   const [rejectionOption, setRejectionOption] = useState("");
   const [cancelAction, setCancelAction] = useState<CancelActionOption>("");
+  const [assignmentMethod, setAssignmentMethod] = useState<AssignmentMethodOption>("MANUAL");
+  const [assignMethodMenuOpen, setAssignMethodMenuOpen] = useState(false);
+  const assignMethodMenuRef = useRef<HTMLDivElement | null>(null);
   const [managementSubmitting, setManagementSubmitting] = useState(false);
   const [assignSubmitting, setAssignSubmitting] = useState(false);
+  const [sheetOpen, setSheetOpen] = useState(false);
+  const [sheetMode, setSheetMode] = useState<RiderSelectionMode>("manual");
+  const [sheetRiders, setSheetRiders] = useState<SelectableRider[]>([]);
+  const [sheetLoading, setSheetLoading] = useState(false);
+  const [sheetSubmitting, setSheetSubmitting] = useState(false);
+  const [cancelForceSubmitting, setCancelForceSubmitting] = useState(false);
   const { toast } = useToast();
 
   const attributeRejectionOptions = riderAttribute
@@ -718,17 +750,17 @@ export default function RiderDetails({
   const isTerminalOrder =
     isDeliveredOrder || ["CANCELLED", "FAILED", "REJECTED"].includes(orderStatusUpper);
 
+  // Always show when no rider / order open — never hide during dispatch or force pending.
   const showManualAssign =
-    !hasAssignedRider &&
-    !isTerminalOrder &&
-    order.orderId != null &&
-    !dispatchSessionActive;
+    !hasAssignedRider && !isTerminalOrder && order.orderId != null;
+  const manualAssignDisabled =
+    assignSubmitting || forceAssignment?.status === "pending";
 
   const showRiderCancellation = order.orderId != null;
-  const riderCancellationDisabled = isTerminalOrder || !hasAssignedRider;
+  const riderCancellationDisabled =
+    isTerminalOrder || !hasAssignedRider || forceAssignment?.status === "pending";
   const isSecondDropdownEnabled = !!riderAttribute && !riderCancellationDisabled;
   const isThirdDropdownEnabled = isSecondDropdownEnabled && !!rejectionOption;
-  const isButtonEnabled = isThirdDropdownEnabled && !!cancelAction;
 
   const selectedCatalogReason =
     catalogReasonId != null
@@ -738,14 +770,29 @@ export default function RiderDetails({
         )
       : null;
 
-  const submitRiderManagement = async () => {
-    if (riderCancellationDisabled || !isButtonEnabled || !order.orderId || managementSubmitting) {
+  const submitRiderManagement = async (actionOverride?: Exclude<CancelActionOption, "">) => {
+    const selectedAction = actionOverride ?? cancelAction;
+    if (
+      riderCancellationDisabled ||
+      !order.orderId ||
+      managementSubmitting ||
+      !riderAttribute ||
+      !rejectionOption ||
+      !selectedAction
+    ) {
       return;
     }
 
+    if (selectedAction === "FORCE_ASSIGN") {
+      setCancelAction(selectedAction);
+      await openRiderSheet("force");
+      return;
+    }
+
+    setCancelAction(selectedAction);
     setManagementSubmitting(true);
 
-    const action = cancelAction === "CANCEL_ASSIGN" ? "cancel_reassign" : "cancel_only";
+    const action = selectedAction === "CANCEL_ASSIGN" ? "cancel_reassign" : "cancel_only";
 
     try {
       const res = await fetch(`/api/orders/${order.orderId}/rider-management`, {
@@ -813,11 +860,46 @@ export default function RiderDetails({
     }
   };
 
-  const submitManualAssign = async () => {
+  const loadEligibleRiders = async () => {
+    if (!order.orderId) return;
+    setSheetLoading(true);
+    try {
+      const res = await fetch(`/api/orders/${order.orderId}/eligible-riders`, {
+        credentials: "include",
+        cache: "no-store",
+      });
+      const json = (await res.json().catch(() => ({}))) as {
+        success?: boolean;
+        riders?: SelectableRider[];
+        error?: string;
+      };
+      if (!res.ok || !json.success) {
+        toast(
+          typeof json.error === "string" ? json.error : "Could not load eligible riders.",
+          "error"
+        );
+        setSheetRiders([]);
+        return;
+      }
+      setSheetRiders(Array.isArray(json.riders) ? json.riders : []);
+    } catch {
+      toast("Could not load eligible riders.", "error");
+      setSheetRiders([]);
+    } finally {
+      setSheetLoading(false);
+    }
+  };
+
+  const openRiderSheet = async (mode: RiderSelectionMode) => {
+    setSheetMode(mode);
+    setSheetOpen(true);
+    await loadEligibleRiders();
+  };
+
+  /** Previous Assign-rider-manually flow: start auto/manual dispatch (no rider picker sheet). */
+  const runManualAssignRider = async () => {
     if (!order.orderId || assignSubmitting) return;
-
     setAssignSubmitting(true);
-
     try {
       const res = await fetch(`/api/orders/${order.orderId}/rider-management`, {
         method: "POST",
@@ -825,30 +907,214 @@ export default function RiderDetails({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action: "assign_rider" }),
       });
-      const json = (await res.json().catch(() => ({}))) as { success?: boolean; error?: string };
-
+      const json = (await res.json().catch(() => ({}))) as {
+        success?: boolean;
+        error?: string;
+        routedToEmail?: string | null;
+      };
       if (!res.ok || !json.success) {
-        const rawError = typeof json.error === "string" ? json.error : undefined;
         toast(
           riderManagementToastMessage(
-            rawError,
-            res.status === 409
-              ? "No active rider on this locality"
-              : "Could not start rider assignment."
+            typeof json.error === "string" ? json.error : undefined,
+            "Could not start rider assignment."
           ),
           "error"
         );
         return;
       }
-
-      toast("Assignment offers sent to eligible riders.", "success");
-      onRiderManagementComplete?.({ action: "assign_rider" });
+      toast("Rider assignment started.", "success");
+      setAssignmentMethod("MANUAL");
+      onRiderManagementComplete?.({
+        action: "assign_rider",
+        routedToEmail: json.routedToEmail ?? null,
+      });
     } catch {
       toast("Could not start rider assignment. Please try again.", "error");
     } finally {
       setAssignSubmitting(false);
     }
   };
+
+  const applyAssignmentMethod = async (method: Exclude<AssignmentMethodOption, "">) => {
+    if (assignSubmitting || forceAssignment?.status === "pending") return;
+    setAssignmentMethod(method);
+    setAssignMethodMenuOpen(false);
+    if (method === "FORCE") {
+      setAssignSubmitting(true);
+      try {
+        await openRiderSheet("force");
+      } finally {
+        setAssignSubmitting(false);
+      }
+      return;
+    }
+    if (dispatchSessionActive) {
+      toast("Rider offer already in progress.", "error");
+      return;
+    }
+    await runManualAssignRider();
+  };
+
+  useEffect(() => {
+    if (!assignMethodMenuOpen) return;
+    const onPointerDown = (e: MouseEvent) => {
+      if (!assignMethodMenuRef.current?.contains(e.target as Node)) {
+        setAssignMethodMenuOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", onPointerDown);
+    return () => document.removeEventListener("mousedown", onPointerDown);
+  }, [assignMethodMenuOpen]);
+
+  const resolveForceReason = (): { code: string; text: string; catalogReasonId: number | null } | null => {
+    if (hasAssignedRider && rejectionOption) {
+      return {
+        code: selectedCatalogReason?.reasonCode ?? riderAttribute ?? "FORCE_ASSIGNMENT",
+        text: rejectionOption,
+        catalogReasonId,
+      };
+    }
+    // No rider assigned — cancellation reason is not required.
+    if (!hasAssignedRider) {
+      return {
+        code: "ADMIN_OVERRIDE",
+        text: "Manual force assignment (no prior rider)",
+        catalogReasonId: null,
+      };
+    }
+    return null;
+  };
+
+  const onRiderSheetConfirm = async (rider: SelectableRider) => {
+    if (!order.orderId || sheetSubmitting) return;
+    setSheetSubmitting(true);
+    try {
+      if (sheetMode === "force") {
+        const reason = resolveForceReason();
+        if (!reason) {
+          toast("Select a cancellation reason before Force Assignment.", "error");
+          return;
+        }
+        const res = await fetch(`/api/orders/${order.orderId}/force-assignment`, {
+          method: "POST",
+          credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            newRiderId: rider.riderId,
+            reasonCode: reason.code,
+            reasonText: reason.text,
+            catalogReasonId: reason.catalogReasonId,
+          }),
+        });
+        const json = (await res.json().catch(() => ({}))) as {
+          success?: boolean;
+          error?: string;
+          routedToEmail?: string | null;
+        };
+        if (!res.ok || !json.success) {
+          toast(
+            typeof json.error === "string" ? json.error : "Could not start Force Assignment.",
+            "error"
+          );
+          setSheetOpen(false);
+          return;
+        }
+        toast(
+          "Force Assignment offer sent. Current rider stays assigned until the new rider accepts.",
+          "success"
+        );
+        setSheetOpen(false);
+        setCancelAction("");
+        setAssignmentMethod("MANUAL");
+        onRiderManagementComplete?.({
+          action: "force_assignment",
+          routedToEmail: json.routedToEmail ?? null,
+        });
+        return;
+      }
+
+      const res = await fetch(`/api/orders/${order.orderId}/rider-management`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "hard_assign", riderId: rider.riderId }),
+      });
+      const json = (await res.json().catch(() => ({}))) as {
+        success?: boolean;
+        error?: string;
+        routedToEmail?: string | null;
+      };
+      if (!res.ok || !json.success) {
+        toast(
+          riderManagementToastMessage(
+            typeof json.error === "string" ? json.error : undefined,
+            "Could not assign rider."
+          ),
+          "error"
+        );
+        setSheetOpen(false);
+        return;
+      }
+      toast("Rider assigned successfully.", "success");
+      setSheetOpen(false);
+      setAssignmentMethod("MANUAL");
+      onRiderManagementComplete?.({
+        action: "hard_assign",
+        routedToEmail: json.routedToEmail ?? null,
+      });
+    } catch {
+      toast("Could not complete rider selection. Please try again.", "error");
+      setSheetOpen(false);
+    } finally {
+      setSheetSubmitting(false);
+    }
+  };
+
+  const cancelForceAssignment = async () => {
+    if (!order.orderId || cancelForceSubmitting) return;
+    setCancelForceSubmitting(true);
+    try {
+      const res = await fetch(`/api/orders/${order.orderId}/force-assignment`, {
+        method: "DELETE",
+        credentials: "include",
+      });
+      const json = (await res.json().catch(() => ({}))) as {
+        success?: boolean;
+        error?: string;
+      };
+      if (!res.ok || !json.success) {
+        toast(
+          typeof json.error === "string" ? json.error : "Could not cancel Force Assignment.",
+          "error"
+        );
+        return;
+      }
+      toast("Force Assignment cancelled. Current rider remains assigned.", "success");
+      onRiderManagementComplete?.({ action: "force_assignment" });
+    } catch {
+      toast("Could not cancel Force Assignment.", "error");
+    } finally {
+      setCancelForceSubmitting(false);
+    }
+  };
+
+  const [forceTick, setForceTick] = useState(0);
+  useEffect(() => {
+    if (forceAssignment?.status !== "pending") return;
+    const t = window.setInterval(() => setForceTick((n) => n + 1), 1000);
+    return () => window.clearInterval(t);
+  }, [forceAssignment?.status, forceAssignment?.offerExpiresAt]);
+
+  const forceSecondsLeft =
+    forceAssignment?.status === "pending"
+      ? Math.max(
+          0,
+          Math.ceil(
+            (new Date(forceAssignment.offerExpiresAt).getTime() - Date.now()) / 1000 +
+              forceTick * 0
+          )
+        )
+      : 0;
 
   return (
     <>
@@ -1072,6 +1338,44 @@ export default function RiderDetails({
             ) : null}
           </div>
 
+          {forceAssignment?.status === "pending" ? (
+            <div className="shrink-0 rounded-md border border-violet-200 bg-violet-50 p-2.5 mb-2">
+              <div className="flex flex-wrap items-start justify-between gap-2">
+                <div className="min-w-0">
+                  <p className="text-[11px] font-semibold text-violet-900">
+                    Force Assignment in Progress
+                  </p>
+                  <p className="text-[10px] text-violet-800 mt-0.5">
+                    Waiting for the selected rider to accept. Current rider remains assigned until
+                    then.
+                  </p>
+                  <div className="mt-1.5 grid grid-cols-1 sm:grid-cols-3 gap-1 text-[10px] text-violet-900">
+                    <span>
+                      Selected:{" "}
+                      <strong>
+                        {forceAssignment.newRiderName || `#${forceAssignment.newRiderId}`}
+                      </strong>
+                    </span>
+                    <span>
+                      Offer: <strong>Pending</strong>
+                    </span>
+                    <span>
+                      Expires in: <strong>{forceSecondsLeft}s</strong>
+                    </span>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  disabled={cancelForceSubmitting}
+                  onClick={() => void cancelForceAssignment()}
+                  className="h-8 shrink-0 rounded px-3 text-[11px] font-semibold border border-violet-300 bg-white text-violet-800 hover:bg-violet-100 disabled:opacity-50"
+                >
+                  {cancelForceSubmitting ? "Cancelling…" : "Cancel Force Assignment"}
+                </button>
+              </div>
+            </div>
+          ) : null}
+
           {showRiderCancellation ? (
           <div className="shrink-0 rounded-md border border-slate-200 bg-slate-50 p-2.5">
             <div className="mb-2 flex items-center justify-between gap-2">
@@ -1095,26 +1399,21 @@ export default function RiderDetails({
                 >
                   {!hasAssignedRider
                     ? "Assign a rider only if Needed !!"
-                    : `Disabled — order ${isDeliveredOrder ? riderDeliveryMilestoneLabel(order.orderType).toLowerCase() : "closed"}`}
+                    : forceAssignment?.status === "pending"
+                      ? "Force Assignment in progress"
+                      : `Disabled — order ${isDeliveredOrder ? riderDeliveryMilestoneLabel(order.orderType).toLowerCase() : "closed"}`}
                 </span>
               ) : (
-                <span className="text-[10px] text-slate-500">Cancel rider only · Cancel &amp; reassign</span>
+                <span className="text-[10px] text-slate-500">
+                  Cancel rider only · Cancel &amp; reassign
+                </span>
               )}
             </div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-[1fr_1fr_1fr_auto] gap-2 text-[10px]">
-              <div
-                className={`grid grid-cols-1 sm:grid-cols-2 lg:col-span-3 lg:grid-cols-3 gap-2 ${
-                  !hasAssignedRider
-                    ? "opacity-50"
-                    : riderCancellationDisabled
-                      ? "opacity-60"
-                      : ""
-                }`}
-              >
+            <div className="grid grid-cols-1 gap-2 text-[10px] sm:grid-cols-2 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)_auto]">
               <select
-                className={`h-8 w-full border border-slate-300 rounded px-2 bg-white ${
+                className={`h-8 w-full rounded border border-slate-300 bg-white px-2 ${
                   riderCancellationDisabled ? "cursor-not-allowed" : "cursor-pointer"
-                }`}
+                } ${!hasAssignedRider || riderCancellationDisabled ? "opacity-50" : ""}`}
                 value={riderAttribute}
                 onChange={(e) => handleAttributeChange(e.target.value)}
                 disabled={riderCancellationDisabled}
@@ -1127,11 +1426,11 @@ export default function RiderDetails({
                 ))}
               </select>
               <select
-                className={`h-8 w-full border border-slate-300 rounded px-2 bg-white ${
+                className={`h-8 w-full rounded border border-slate-300 bg-white px-2 ${
                   isSecondDropdownEnabled && !catalogLoading
                     ? "cursor-pointer"
                     : "cursor-not-allowed opacity-60"
-                }`}
+                } ${!hasAssignedRider ? "opacity-50" : ""}`}
                 value={catalogReasonId != null ? String(catalogReasonId) : ""}
                 onChange={(e) => handleRejectionOptionChange(e.target.value)}
                 disabled={
@@ -1148,77 +1447,209 @@ export default function RiderDetails({
                 ))}
               </select>
               <select
-                className={`h-8 w-full border border-slate-300 rounded px-2 bg-white ${
+                className={`h-8 w-full rounded border border-slate-300 bg-white px-2 ${
                   isThirdDropdownEnabled ? "cursor-pointer" : "cursor-not-allowed opacity-60"
-                }`}
+                } ${!hasAssignedRider ? "opacity-50" : ""}`}
                 value={cancelAction}
-                onChange={(e) => setCancelAction(e.target.value as CancelActionOption)}
-                disabled={riderCancellationDisabled || !isThirdDropdownEnabled}
+                onChange={(e) => {
+                  setCancelAction(e.target.value as CancelActionOption);
+                }}
+                disabled={
+                  riderCancellationDisabled || !isThirdDropdownEnabled || managementSubmitting
+                }
               >
-                <option value="">Select Option</option>
+                <option value="">
+                  {managementSubmitting ? "Processing…" : "Select Option"}
+                </option>
                 <option value="CANCEL">Cancel Rider Only</option>
                 <option value="CANCEL_ASSIGN">Cancel &amp; Reassign Rider</option>
+                <option value="FORCE_ASSIGN">Force Assignment</option>
               </select>
-              </div>
+
               {showManualAssign ? (
-                <button
-                  type="button"
-                  disabled={assignSubmitting}
-                  onClick={() => void submitManualAssign()}
-                  className={`h-8 w-full sm:w-auto shrink-0 px-4 rounded text-[11px] font-semibold inline-flex items-center justify-center gap-1 ${
-                    assignSubmitting
-                      ? "cursor-not-allowed bg-emerald-400 text-white"
-                      : "cursor-pointer bg-emerald-600 hover:bg-emerald-700 text-white"
-                  }`}
-                >
-                  {assignSubmitting ? (
-                    <>
-                      <span className="inline-block h-3.5 w-3.5 animate-spin rounded-full border-2 border-white border-r-transparent" />
-                      Assigning...
-                    </>
-                  ) : (
-                    <>
-                      <i className="bi bi-person-plus" />
-                      Assign Rider manually
-                    </>
-                  )}
-                </button>
+                <div className="relative w-full sm:w-auto min-w-[13.5rem]" ref={assignMethodMenuRef}>
+                  {(() => {
+                    const method = assignmentMethod || "MANUAL";
+                    const isForce = method === "FORCE";
+                    const btnBg = isForce
+                      ? "bg-violet-600 hover:bg-violet-700"
+                      : "bg-emerald-600 hover:bg-emerald-700";
+                    const divider = "border-l border-white/40";
+                    return (
+                      <div
+                        className={`flex h-8 w-full overflow-hidden rounded-md ${btnBg} text-white shadow-md ring-1 ring-black/10 ${
+                          assignSubmitting ? "brightness-95" : ""
+                        }`}
+                      >
+                        <button
+                          type="button"
+                          disabled={manualAssignDisabled}
+                          onClick={() => void applyAssignmentMethod(method)}
+                          className="flex flex-1 items-center justify-center gap-1.5 px-2.5 text-[10px] font-bold text-white cursor-pointer disabled:cursor-not-allowed disabled:opacity-70"
+                          aria-label={
+                            isForce ? "Force Assignment" : "Assign rider manually"
+                          }
+                          title={
+                            forceAssignment?.status === "pending"
+                              ? "Force Assignment in progress"
+                              : undefined
+                          }
+                        >
+                          {assignSubmitting ? (
+                            <span className="inline-block h-3.5 w-3.5 animate-spin rounded-full border-2 border-white border-r-transparent" />
+                          ) : (
+                            <i className="bi bi-person-plus text-[12px]" aria-hidden />
+                          )}
+                          <span className="whitespace-nowrap">
+                            {assignSubmitting
+                              ? "Offer sending...."
+                              : isForce
+                                ? "Force Assignment"
+                                : "Assign rider manually"}
+                          </span>
+                        </button>
+                        <button
+                          type="button"
+                          disabled={manualAssignDisabled}
+                          onClick={() => setAssignMethodMenuOpen((v) => !v)}
+                          className={`flex h-full w-8 shrink-0 items-center justify-center ${divider} text-white cursor-pointer disabled:cursor-not-allowed disabled:opacity-70`}
+                          aria-haspopup="listbox"
+                          aria-expanded={assignMethodMenuOpen}
+                          aria-label="Open assignment options"
+                        >
+                          <ChevronDown
+                            className={`h-3.5 w-3.5 transition-transform ${
+                              assignMethodMenuOpen ? "" : "rotate-180"
+                            }`}
+                          />
+                        </button>
+                      </div>
+                    );
+                  })()}
+                  {assignMethodMenuOpen ? (
+                    <div
+                      className="absolute right-0 bottom-full z-50 mb-1 w-full min-w-[13.5rem] overflow-hidden rounded-md border border-slate-200 bg-white py-1 shadow-lg"
+                      role="listbox"
+                    >
+                      <button
+                        type="button"
+                        role="option"
+                        disabled={manualAssignDisabled}
+                        onClick={() => {
+                          setAssignmentMethod("MANUAL");
+                          setAssignMethodMenuOpen(false);
+                        }}
+                        className="w-full px-3 py-2 text-left text-[11px] font-medium text-slate-800 hover:bg-emerald-50 cursor-pointer disabled:opacity-60"
+                      >
+                        Assign rider manually
+                      </button>
+                      <button
+                        type="button"
+                        role="option"
+                        disabled={manualAssignDisabled}
+                        onClick={() => {
+                          setAssignmentMethod("FORCE");
+                          setAssignMethodMenuOpen(false);
+                        }}
+                        className="w-full px-3 py-2 text-left text-[11px] font-medium text-slate-800 hover:bg-violet-50 cursor-pointer disabled:opacity-60"
+                      >
+                        Force Assignment
+                      </button>
+                    </div>
+                  ) : null}
+                </div>
               ) : (
-                <button
-                  type="button"
-                  disabled={riderCancellationDisabled || !isButtonEnabled || managementSubmitting}
-                  className={`h-8 w-full sm:w-auto shrink-0 px-4 rounded text-[11px] font-semibold inline-flex items-center justify-center gap-1 ${
-                    isButtonEnabled
-                      ? cancelAction === "CANCEL_ASSIGN"
-                        ? "bg-slate-700 hover:bg-slate-800 text-white cursor-pointer"
-                        : "bg-red-600 hover:bg-red-700 text-white cursor-pointer"
-                      : "bg-slate-300 text-slate-500 cursor-not-allowed"
-                  }`}
-                  onClick={() => void submitRiderManagement()}
-                >
-                  {managementSubmitting ? (
-                    <>
-                      <span className="inline-block h-3.5 w-3.5 animate-spin rounded-full border-2 border-white border-r-transparent" />
-                      Processing...
-                    </>
-                  ) : cancelAction === "CANCEL_ASSIGN" ? (
-                    <>
-                      <i className="bi bi-arrow-repeat" />
-                      Cancel &amp; Reassign
-                    </>
-                  ) : (
-                    <>
-                      <i className="bi bi-x-circle" />
-                      Cancel Rider Only
-                    </>
-                  )}
-                </button>
+                (() => {
+                  const actionReady =
+                    !riderCancellationDisabled &&
+                    !!riderAttribute &&
+                    !!rejectionOption &&
+                    !!cancelAction &&
+                    isThirdDropdownEnabled;
+                  const label =
+                    cancelAction === "CANCEL_ASSIGN"
+                      ? "Cancel & Reassign"
+                      : cancelAction === "FORCE_ASSIGN"
+                        ? "Force Assignment"
+                        : "Cancel Rider Only";
+                  const iconClass =
+                    cancelAction === "CANCEL_ASSIGN"
+                      ? "bi bi-arrow-repeat"
+                      : cancelAction === "FORCE_ASSIGN"
+                        ? "bi bi-lightning-charge"
+                        : "bi bi-x-circle";
+                  const activeClasses =
+                    cancelAction === "FORCE_ASSIGN"
+                      ? "border-violet-700 bg-violet-600 text-white hover:bg-violet-700"
+                      : cancelAction === "CANCEL_ASSIGN"
+                        ? "border-slate-800 bg-slate-800 text-white hover:bg-slate-900"
+                        : cancelAction === "CANCEL"
+                          ? "border-red-700 bg-red-600 text-white hover:bg-red-700"
+                          : "border-slate-300 bg-slate-200 text-slate-600";
+                  const fadedClasses =
+                    cancelAction === "FORCE_ASSIGN"
+                      ? "border-violet-200 bg-violet-100 text-violet-700"
+                      : cancelAction === "CANCEL_ASSIGN"
+                        ? "border-slate-300 bg-slate-200 text-slate-600"
+                        : "border-slate-300 bg-slate-200 text-slate-600";
+                  return (
+                    <button
+                      type="button"
+                      disabled={
+                        riderCancellationDisabled ||
+                        managementSubmitting ||
+                        !actionReady
+                      }
+                      onClick={() => {
+                        if (
+                          cancelAction === "CANCEL" ||
+                          cancelAction === "CANCEL_ASSIGN" ||
+                          cancelAction === "FORCE_ASSIGN"
+                        ) {
+                          void submitRiderManagement(cancelAction);
+                        }
+                      }}
+                      className={`inline-flex h-8 w-full min-w-[10.5rem] shrink-0 items-center justify-center gap-1.5 rounded-md border px-3 text-[10px] font-semibold shadow-sm transition-colors sm:w-auto ${
+                        actionReady && !managementSubmitting
+                          ? `${activeClasses} cursor-pointer`
+                          : `${fadedClasses} cursor-not-allowed`
+                      } disabled:cursor-not-allowed`}
+                    >
+                      {managementSubmitting ? (
+                        <span className="inline-block h-3.5 w-3.5 animate-spin rounded-full border-2 border-current border-r-transparent" />
+                      ) : (
+                        <i className={`${iconClass} text-[12px]`} aria-hidden />
+                      )}
+                      <span className="whitespace-nowrap">
+                        {managementSubmitting ? "Processing…" : label}
+                      </span>
+                    </button>
+                  );
+                })()
               )}
             </div>
           </div>
           ) : null}
         </div>
       </div>
+
+      <RiderSelectionSideSheet
+        open={sheetOpen}
+        mode={sheetMode}
+        orderId={order.orderId ?? 0}
+        orderLabel={
+          order.formattedOrderId?.trim() ||
+          order.trackingOrderId?.trim() ||
+          null
+        }
+        excludeRiderId={order.riderId ?? null}
+        loading={sheetLoading}
+        submitting={sheetSubmitting}
+        riders={sheetRiders}
+        onClose={() => setSheetOpen(false)}
+        onConfirm={(rider) => void onRiderSheetConfirm(rider)}
+        onRefresh={() => void loadEligibleRiders()}
+      />
 
       <RiderLogModal
         isOpen={showLogModal}

@@ -6,7 +6,7 @@
 import { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { AppText } from "@/components/AppText";
 
-import { View, ScrollView, TouchableOpacity, StyleSheet, Switch, Modal, Pressable, ActivityIndicator } from "react-native";
+import { View, ScrollView, TouchableOpacity, StyleSheet, Switch, Modal, Pressable, ActivityIndicator, AppState, type AppStateStatus } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
 import { StatusBar } from "expo-status-bar";
@@ -106,6 +106,8 @@ export default function SettingsScreen() {
 
   const { snapshot, controller } = usePushPermissionController(pushOptions);
   const osNotificationsOn = snapshot.osStatus === "granted";
+  const pushToggleOn = osNotificationsOn && backendPushEnabled;
+  const expoGo = Constants.appOwnership === "expo";
 
   const prefsCfg = useMemo(
     () => ({
@@ -130,12 +132,36 @@ export default function SettingsScreen() {
       .catch(() => {});
   }, [session?.accessToken, prefsCfg]);
 
+  // After user enables "Allow notifications" in Android Settings and returns,
+  // re-read OS permission and register Expo + FCM tokens while logged in.
+  useEffect(() => {
+    if (!session?.accessToken || session.role !== "customer") return;
+    const onChange = (state: AppStateStatus) => {
+      if (state !== "active") return;
+      void (async () => {
+        const snap = await controller.refresh({ syncIfGranted: true });
+        if (snap.osStatus === "granted" && snap.lastBackendSyncOk) {
+          setBackendPushEnabled(true);
+        }
+      })();
+    };
+    const sub = AppState.addEventListener("change", onChange);
+    return () => sub.remove();
+  }, [session?.accessToken, session?.role, controller]);
+
   const handleNotificationsToggle = useCallback(
     async (next: boolean) => {
+      if (expoGo) {
+        // Expo Go cannot register remote push — still open OS settings for the host app.
+        await controller.openSettings();
+        return;
+      }
       if (next) {
         const result = await controller.requestOrOpenSettings();
         if (result.granted && session?.accessToken) {
           setBackendPushEnabled(true);
+          // Force a second sync in case the first raced the OS grant.
+          await controller.syncTokens();
           try {
             await setPreference(prefsCfg, "ORDER_UPDATES", { push: true, in_app: true });
           } catch {
@@ -156,7 +182,7 @@ export default function SettingsScreen() {
         await controller.openSettings();
       }
     },
-    [controller, session?.accessToken, prefsCfg, osNotificationsOn]
+    [controller, session?.accessToken, prefsCfg, osNotificationsOn, expoGo]
   );
 
   const handleSignOutThisDevice = async () => {
@@ -170,7 +196,7 @@ export default function SettingsScreen() {
       ]);
       await logout();
       setLogoutModalVisible(false);
-      router.replace("/");
+      router.replace("/(auth)/login");
     } catch {
       setLoggingOut(null);
     }
@@ -186,7 +212,7 @@ export default function SettingsScreen() {
       ]);
       await logoutAllDevices();
       setLogoutModalVisible(false);
-      router.replace("/");
+      router.replace("/(auth)/login");
     } catch {
       setLoggingOut(null);
     }
@@ -237,10 +263,16 @@ export default function SettingsScreen() {
               </View>
               <View style={styles.rowTextWrap}>
                 <AppText style={styles.rowLabel}>{t("settings.pushNotifications")}</AppText>
-                <AppText style={styles.rowValue}>{t("settings.pushNotificationsSub")}</AppText>
+                <AppText style={styles.rowValue}>
+                  {expoGo
+                    ? "Use a development build for OS push"
+                    : !osNotificationsOn
+                      ? "Turn on in phone Settings to receive alerts"
+                      : t("settings.pushNotificationsSub")}
+                </AppText>
               </View>
               <Switch
-                value={osNotificationsOn && backendPushEnabled}
+                value={pushToggleOn}
                 onValueChange={handleNotificationsToggle}
                 trackColor={{ false: "#E5E7EB", true: GREEN }}
                 thumbColor="#fff"

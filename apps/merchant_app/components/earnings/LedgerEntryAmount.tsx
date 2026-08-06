@@ -19,12 +19,17 @@ type Props = {
 export function LedgerEntryAmount({ display }: Props) {
   if (display.compensationPolicy) {
     const { orderCtm, receivedAmount } = display.compensationPolicy;
+    const round2 = (n: number) => Math.round(n * 100) / 100;
+    const showStrike =
+      round2(orderCtm) > 0 && Math.abs(round2(orderCtm) - round2(receivedAmount)) > 0.005;
     const accent = receivedAmount > 0 ? ACCENT.credit : ACCENT.neutral;
     return (
       <View style={s.col}>
-        <Text style={[s.ctmStrike, { color: GatiMitraMerchant.textSecondary }]}>
-          {formatCurrency(orderCtm)}
-        </Text>
+        {showStrike ? (
+          <Text style={[s.ctmStrike, { color: GatiMitraMerchant.textSecondary }]}>
+            {formatCurrency(orderCtm)}
+          </Text>
+        ) : null}
         <Text style={[s.amount, { color: accent }]}>
           {receivedAmount > 0 ? `+${formatCurrency(receivedAmount)}` : formatCurrency(0)}
         </Text>

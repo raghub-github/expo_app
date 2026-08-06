@@ -5,7 +5,7 @@ import { useMemo } from "react";
 
 import { usePermissionsQuery } from "@/hooks/queries/usePermissionsQuery";
 import { useDashboardAccessQuery, type AccessPoint } from "@/hooks/queries/useDashboardAccessQuery";
-import { getDashboardTypeFromPath } from "@/lib/permissions/path-mapping";
+import { getDashboardTypeFromPath, isOpenDashboardPath } from "@/lib/permissions/path-mapping";
 import { toPermissionKey, toPermissionKeys } from "@/lib/permissions/constants";
 import type { DashboardType, ActionType } from "@/lib/db/schema";
 
@@ -58,6 +58,9 @@ export function usePermission() {
   const canAccessPage = useMemo(() => {
     return (path: string) => {
       if (isSuperAdmin) return true;
+      if (isOpenDashboardPath(path)) {
+        return dashboardSet.size > 0;
+      }
       const dashboardType = getDashboardTypeFromPath(path);
       if (!dashboardType) return false;
       if (dashboardType === "PAYMENT") return false;

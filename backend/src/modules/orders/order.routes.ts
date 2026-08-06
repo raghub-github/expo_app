@@ -33,10 +33,15 @@ import { getRiderAverageRating } from "../../lib/rider-average-rating.js";
 import { resolveOrderDeliveryDetails } from "../../lib/order-delivery-details.js";
 import { buildDeliveryPromiseComparison } from "../../lib/delivery-promise-comparison.js";
 import { resolveCustomerAppOrderStatus } from "../../lib/customer-order-status-resolve.js";
+import { loadFoodDeliveryOtpCandidates } from "../../lib/resolve-food-delivery-otp.js";
 import {
   loadOrdersFoodSummariesByCoreRows,
   ordersFoodMatchForCoreRow,
 } from "../../lib/food-order-enrichment.js";
+import {
+  debitCustomerGatiCashForRideFare,
+  getCustomerGatiCashAvailable,
+} from "../../lib/checkout-gaticash-wallet-ops.js";
 import {
   appendMerchantInstruction,
   canCustomerAppendCookingRequest,
@@ -558,35 +563,37 @@ export async function orderRoutes(app: FastifyInstance) {
       }
       const db = getDb();
 
-      const pageRows = await db
-        .select({
-          id: ordersCore.id,
-          orderId: ordersCore.orderId,
-          formattedOrderId: ordersCore.formattedOrderId,
-          merchantStoreId: ordersCore.merchantStoreId,
-          orderType: ordersCore.orderType,
-          pickupOtp: ordersCore.pickupOtp,
-          pickupLat: ordersCore.pickupLat,
-          pickupLon: ordersCore.pickupLon,
-          dropLat: ordersCore.dropLat,
-          dropLon: ordersCore.dropLon,
-          status: ordersCore.status,
-          currentStatus: ordersCore.currentStatus,
-          riderId: ordersCore.riderId,
-          pickupAddressRaw: ordersCore.pickupAddressRaw,
-          dropAddressRaw: ordersCore.dropAddressRaw,
-          grandTotal: ordersCore.grandTotal,
-          paymentStatus: ordersCore.paymentStatus,
-          checkoutMetadata: ordersCore.checkoutMetadata,
-          items: ordersCore.items,
-          createdAt: ordersCore.createdAt,
-          placedAt: ordersCore.placedAt,
-        })
-        .from(ordersCore)
-        .where(eq(ordersCore.customerId, customerPk))
-        .orderBy(desc(ordersCore.placedAt), desc(ordersCore.createdAt))
-        .limit(limit)
-        .offset(offset);
+      const pageRows = await withSqlRetry(() =>
+        db
+          .select({
+            id: ordersCore.id,
+            orderId: ordersCore.orderId,
+            formattedOrderId: ordersCore.formattedOrderId,
+            merchantStoreId: ordersCore.merchantStoreId,
+            orderType: ordersCore.orderType,
+            pickupOtp: ordersCore.pickupOtp,
+            pickupLat: ordersCore.pickupLat,
+            pickupLon: ordersCore.pickupLon,
+            dropLat: ordersCore.dropLat,
+            dropLon: ordersCore.dropLon,
+            status: ordersCore.status,
+            currentStatus: ordersCore.currentStatus,
+            riderId: ordersCore.riderId,
+            pickupAddressRaw: ordersCore.pickupAddressRaw,
+            dropAddressRaw: ordersCore.dropAddressRaw,
+            grandTotal: ordersCore.grandTotal,
+            paymentStatus: ordersCore.paymentStatus,
+            checkoutMetadata: ordersCore.checkoutMetadata,
+            items: ordersCore.items,
+            createdAt: ordersCore.createdAt,
+            placedAt: ordersCore.placedAt,
+          })
+          .from(ordersCore)
+          .where(eq(ordersCore.customerId, customerPk))
+          .orderBy(desc(ordersCore.placedAt), desc(ordersCore.createdAt))
+          .limit(limit)
+          .offset(offset)
+      );
 
       const storeBannerCache = new Map<number, string | null>();
       const storeRatingCache = new Map<number, { avgRating: number; totalReviews: number } | null>();
@@ -1498,7 +1505,7 @@ export async function orderRoutes(app: FastifyInstance) {
             `
           : Promise.resolve([]);
 
-      const [foodRows, items, store, riderRows, prepRows, vehicleRows, rideMetaRows, riderAvgRating, riderDeliveredRows] =
+      const [foodRows, items, store, riderRows, prepRows, vehicleRows, rideMetaRows, riderAvgRating, riderDeliveredRows, otpCandidates] =
         await Promise.all([
         foodPromise,
         loadDetailItems(),
@@ -1509,9 +1516,32 @@ export async function orderRoutes(app: FastifyInstance) {
         rideMetaPromise,
         riderRatingPromise,
         riderDeliveredCountPromise,
+        loadFoodDeliveryOtpCandidates(db, coreRow.id).catch(() => ({
+          deliveryCodes: [] as string[],
+          pickupCode: null as string | null,
+        })),
       ]);
 
       const foodRow = foodRows[0] ?? null;
+      const resolvedDeliveryOtp =
+        otpCandidates.deliveryCodes[0] ??
+        (coreRow.deliveryOtp?.trim() || null);
+      // Backfill orders_core so subsequent reads / rider verify stay consistent.
+      if (
+        resolvedDeliveryOtp &&
+        !(coreRow.deliveryOtp ?? "").trim()
+      ) {
+        void (async () => {
+          try {
+            await db
+              .update(ordersCore)
+              .set({ deliveryOtp: resolvedDeliveryOtp, updatedAt: new Date() })
+              .where(eq(ordersCore.id, coreRow.id));
+          } catch {
+            /* non-blocking */
+          }
+        })();
+      }
       const merchantBannerUrl = store?.bannerUrl ?? null;
       const merchantPublicName = store?.storeDisplayName ?? store?.storeName ?? null;
       const merchantPublicStoreId = store?.storeId ?? null;
@@ -1856,8 +1886,8 @@ export async function orderRoutes(app: FastifyInstance) {
           }
           return { pickupLat: orderLat, pickupLng: orderLng };
         })(),
-        deliveryOtp: coreRow.deliveryOtp ?? null,
-        pickupOtp: coreRow.pickupOtp ?? null,
+        deliveryOtp: resolvedDeliveryOtp,
+        pickupOtp: otpCandidates.pickupCode ?? coreRow.pickupOtp ?? null,
         orderType: coreRow.orderType ?? null,
         rideType: rideMetaRow?.rideType?.trim() || null,
         riderReachedPickupAt: riderReachedPickupAtResolved,
@@ -2929,9 +2959,10 @@ export async function orderRoutes(app: FastifyInstance) {
 
   const riderTipBodySchema = z.object({
     tipAmount: z.number().int().positive().max(5000),
-    razorpayOrderId: z.string().min(1),
-    razorpayPaymentId: z.string().min(1),
-    razorpaySignature: z.string().min(1),
+    paymentMethod: z.enum(["upi", "gaticash"]).optional().default("upi"),
+    razorpayOrderId: z.string().min(1).optional(),
+    razorpayPaymentId: z.string().min(1).optional(),
+    razorpaySignature: z.string().min(1).optional(),
   });
 
   app.post<{ Params: { id: string }; Body: z.infer<typeof riderTipBodySchema> }>(
@@ -2957,6 +2988,7 @@ export async function orderRoutes(app: FastifyInstance) {
       const orderIdParam = (req.params as { id: string }).id;
       const body = riderTipBodySchema.parse(req.body ?? {});
       const db = getDb();
+      const sqlClient = getSql();
 
       const [customerRow] = await db
         .select({ id: customers.id })
@@ -2969,6 +3001,7 @@ export async function orderRoutes(app: FastifyInstance) {
       const [orderRow] = await db
         .select({
           id: ordersCore.id,
+          orderId: ordersCore.orderId,
           orderType: ordersCore.orderType,
           currentStatus: ordersCore.currentStatus,
           status: ordersCore.status,
@@ -3018,36 +3051,73 @@ export async function orderRoutes(app: FastifyInstance) {
         return reply.status(400).send({ error: "invalid_tip_amount" });
       }
 
-      const signatureOk = verifyRazorpaySignature(
-        body.razorpayOrderId,
-        body.razorpayPaymentId,
-        body.razorpaySignature
-      );
-      if (!signatureOk) {
-        return reply.status(400).send({ error: "invalid_payment_signature" });
-      }
+      const payWithGatiCash = body.paymentMethod === "gaticash";
+      const orderIdText = orderRow.orderId?.trim() || String(orderRow.id);
 
-      try {
-        const verified = await verifyRazorpayPaymentDetails(
-          body.razorpayOrderId,
-          body.razorpayPaymentId,
-          body.razorpaySignature,
-          tipAmount * 100
-        );
-        if (!verified.ok) {
+      if (payWithGatiCash) {
+        const available = await getCustomerGatiCashAvailable(sqlClient, customerPk);
+        if (available + 0.005 < tipAmount) {
           return reply.status(400).send({
-            error: "payment_verification_failed",
-            message: verified.message ?? "Could not verify payment.",
+            error: "insufficient_gaticash",
+            message: "GatiCash balance is not enough for this tip. Pay with UPI instead.",
           });
         }
-      } catch {
-        /* dummy / dev simulated payments may skip gateway fetch */
+        try {
+          await debitCustomerGatiCashForRideFare(sqlClient, {
+            customerInternalId: customerPk,
+            orderIdText: `tip_${orderIdText}`,
+            amount: tipAmount,
+          });
+        } catch (err) {
+          console.warn("[POST /orders/:id/rider-tip] gaticash debit failed", orderRow.id, err);
+          return reply.status(400).send({
+            error: "gaticash_debit_failed",
+            message: "Could not pay tip with GatiCash. Try UPI instead.",
+          });
+        }
+      } else {
+        const razorpayOrderId = body.razorpayOrderId?.trim() ?? "";
+        const razorpayPaymentId = body.razorpayPaymentId?.trim() ?? "";
+        const razorpaySignature = body.razorpaySignature?.trim() ?? "";
+        if (!razorpayOrderId || !razorpayPaymentId || !razorpaySignature) {
+          return reply.status(400).send({
+            error: "payment_required",
+            message: "UPI payment details are required.",
+          });
+        }
+
+        const signatureOk = verifyRazorpaySignature(
+          razorpayOrderId,
+          razorpayPaymentId,
+          razorpaySignature
+        );
+        if (!signatureOk) {
+          return reply.status(400).send({ error: "invalid_payment_signature" });
+        }
+
+        try {
+          const verified = await verifyRazorpayPaymentDetails(
+            razorpayOrderId,
+            razorpayPaymentId,
+            razorpaySignature,
+            tipAmount * 100
+          );
+          if (!verified.ok) {
+            return reply.status(400).send({
+              error: "payment_verification_failed",
+              message: verified.message ?? "Could not verify payment.",
+            });
+          }
+        } catch {
+          /* dummy / dev simulated payments may skip gateway fetch */
+        }
       }
 
       const nextSnap = {
         ...(snap ?? {}),
         tip_amount: tipAmount,
         live_tracking_tip: true,
+        tip_payment_method: payWithGatiCash ? "gaticash" : "upi",
       };
       await db
         .update(ordersCore)
@@ -3058,9 +3128,8 @@ export async function orderRoutes(app: FastifyInstance) {
         })
         .where(eq(ordersCore.id, orderRow.id));
 
-      const sql = getSql();
       try {
-        await sql`
+        await sqlClient`
           INSERT INTO customer_tips_given (customer_id, order_id, rider_id, tip_amount, tip_paid, paid_at)
           VALUES (
             ${customerPk}::bigint,

@@ -91,6 +91,10 @@ const calculateBodySchema = z.object({
   selectedPlatformOfferId: z.coerce.number().int().positive().optional().nullable(),
   selectedMerchantOfferId: z.coerce.number().int().positive().optional().nullable(),
   forceNoAutoOffer: z.boolean().optional(),
+  parcelWeightKg: z.coerce.number().nonnegative().optional().nullable(),
+  parcelSpeed: z.string().optional().nullable(),
+  parcelScope: z.string().optional().nullable(),
+  paymentMode: z.string().optional().nullable(),
 });
 
 function isSimRequest(req: { headers: Record<string, string | string[] | undefined> }): boolean {
@@ -420,6 +424,10 @@ export async function billingRoutes(app: FastifyInstance) {
           selectedPlatformOfferId: body.selectedPlatformOfferId ?? null,
           selectedMerchantOfferId: body.selectedMerchantOfferId ?? null,
           forceNoAutoOffer: body.forceNoAutoOffer,
+          parcelWeightKg: body.parcelWeightKg ?? null,
+          parcelSpeed: body.parcelSpeed ?? null,
+          parcelScope: body.parcelScope ?? null,
+          paymentMode: body.paymentMode ?? null,
         });
         if (!result.ok) {
           return reply.status(400).send({ error: result.code, message: result.message });
@@ -492,6 +500,10 @@ export async function billingRoutes(app: FastifyInstance) {
         selectedPlatformOfferId: body.selectedPlatformOfferId ?? null,
         selectedMerchantOfferId: body.selectedMerchantOfferId ?? null,
         forceNoAutoOffer: body.forceNoAutoOffer,
+        parcelWeightKg: body.parcelWeightKg ?? null,
+        parcelSpeed: body.parcelSpeed ?? null,
+        parcelScope: body.parcelScope ?? null,
+        paymentMode: body.paymentMode ?? null,
       });
 
       if (!result.ok) {
@@ -516,6 +528,8 @@ export async function billingRoutes(app: FastifyInstance) {
                 discountType: z.string(),
                 description: z.string(),
                 estimatedSavingsInr: z.number().nullable().optional(),
+                minOrderAmount: z.number().nullable().optional(),
+                customerSegment: z.string().nullable().optional(),
               })
             ),
             merchantOffers: z.array(checkoutOfferMerchantRowSchema),

@@ -152,9 +152,19 @@ export default function MerchantDetails({
           fullAddress: store.full_address ?? null,
           latitude: store.latitude ?? null,
           longitude: store.longitude ?? null,
-          merchantType: store.store_type ?? null,
+          merchantType: (() => {
+            const kind = String(store.parent_merchant_type ?? "").trim().toUpperCase();
+            if (kind === "BRAND") return "Brand";
+            if (kind === "LOCAL") return "Local";
+            if (kind === "CHAIN") return "Chain";
+            if (kind === "FRANCHISE") return "Franchise";
+            return kind || null;
+          })(),
           assignedUserEmail: areaManager?.email ?? null,
-          assignedUserDepartment: areaManager ? "Area Manager" : null,
+          assignedUserDepartment:
+            (typeof areaManager?.team === "string" && areaManager.team.trim()) ||
+            (typeof areaManager?.department === "string" && areaManager.department.trim()) ||
+            (areaManager ? "Area Manager" : null),
           approval_status: store.approval_status ?? null,
           operational_status: store.operational_status ?? null,
           is_active: store.is_active ?? null,

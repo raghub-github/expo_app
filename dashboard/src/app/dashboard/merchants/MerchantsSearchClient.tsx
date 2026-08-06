@@ -339,7 +339,7 @@ interface StatCardConfig {
   border: string;
 }
 
-const CARD_MIN_HEIGHT = "min-h-[90px]";
+const CARD_MIN_HEIGHT = "min-h-[80px]";
 
 const StatCardsRow = React.memo(function StatCardsRow({
   cards,
@@ -353,7 +353,7 @@ const StatCardsRow = React.memo(function StatCardsRow({
   if (cards.length === 0) return null;
 
   return (
-    <div className="mt-2 grid grid-cols-2 gap-1.5 sm:grid-cols-3 lg:grid-cols-6">
+    <div className="mt-2 grid grid-cols-2 gap-1.5 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-7">
       {cards.map(({ key, label, count, icon, bg, border }) => {
         const isActive = category === key;
         return (
@@ -912,8 +912,8 @@ export function MerchantsSearchClient({
           {/* Stats cards row - below the filter */}
           <>
             {statsLoading ? (
-              <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
-                {[1, 2, 3, 4, 5, 6].map((i) => (
+              <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-7">
+                {[1, 2, 3, 4, 5, 6, 7].map((i) => (
                   <div
                     key={i}
                     className={`animate-pulse rounded-lg border border-gray-200 bg-gray-100 ${CARD_MIN_HEIGHT}`}
@@ -934,7 +934,7 @@ export function MerchantsSearchClient({
       )}
 
       {/* Merchant portal: no card; plain tagline when no search, direct results when search. Admin: empty state or results. */}
-      {portal === "merchant" && !hasSearchParams && !hasCategory ? (
+      {portal === "merchant" && !hasSearchParams && !hasCategory && filter !== "parent" ? (
         <div className="flex min-h-[calc(100vh-12rem)] flex-col items-center justify-center">
           <p className="text-center text-gray-700 text-base">
             One search. Complete merchant context —{" "}
@@ -943,7 +943,7 @@ export function MerchantsSearchClient({
             </span>
           </p>
         </div>
-      ) : !hasSearchParams && !hasCategory ? (
+      ) : !hasSearchParams && !hasCategory && filter !== "parent" ? (
         <div className="rounded-lg border border-gray-200 bg-gray-50/80 p-4 text-center">
           <Store className="mx-auto h-8 w-8 text-gray-400" />
         </div>
@@ -1011,6 +1011,9 @@ export function MerchantsSearchClient({
           </div>
         ) : (
           <div className="space-y-3">
+            <p className="text-[10px] font-medium uppercase tracking-wide text-gray-500">
+              Partners ({parentItems?.length ?? 0})
+            </p>
             {(parentItems ?? []).map((parent) => (
               <div
                 key={`parent-${parent.id}`}

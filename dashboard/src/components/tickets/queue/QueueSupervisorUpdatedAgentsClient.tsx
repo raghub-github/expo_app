@@ -579,13 +579,8 @@ export function QueueSupervisorUpdatedAgentsClient() {
                   const v = e.target.value;
                   setAgentQuery(v);
                   setAgentSuggestOpen(true);
-                  if (selectedAgentId) {
-                    const cur = agents.find((x) => String(x.id) === selectedAgentId);
-                    if (cur && v.trim() !== agentDisplayLabel(cur)) {
-                      setSelectedAgentId("");
-                      syncAgentIdToUrl("");
-                    }
-                  }
+                  // Keep the selected agent while the user edits the search box.
+                  // Clearing happens only via the × button or picking a different agent.
                 }}
                 onFocus={() => setAgentSuggestOpen(true)}
                 placeholder="Search by agent name or email…"

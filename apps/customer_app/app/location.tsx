@@ -342,6 +342,10 @@ export default function SelectLocationScreen() {
       router.replace("/checkout");
       return;
     }
+    if (params.afterSaveReturn === "parcel") {
+      router.replace("/home/service/parcels");
+      return;
+    }
     if (typeof router.canGoBack === "function" && router.canGoBack()) {
       router.back();
       return;
@@ -352,6 +356,7 @@ export default function SelectLocationScreen() {
   const forwardParams = {
     ...(params.fromOnboarding === "1" ? { fromOnboarding: "1" as const } : {}),
     ...(params.afterSaveReturn === "checkout" ? { afterSaveReturn: "checkout" as const } : {}),
+    ...(params.afterSaveReturn === "parcel" ? { afterSaveReturn: "parcel" as const } : {}),
   };
 
   useEffect(() => {

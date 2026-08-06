@@ -226,11 +226,14 @@ export default function CampaignsPage() {
       }
       const queued = typeof j.queued === "number" ? j.queued : Number(j.queued);
       if (!Number.isFinite(queued) || queued <= 0) {
-        // Soft outcome — not an API failure (Expo Go / no registered devices).
+        // Soft outcome — not an API failure (quiet hours / no devices).
+        const skip = typeof j.skipReason === "string" ? j.skipReason : "";
         toast.warning(
           typeof j.warning === "string"
             ? j.warning
-            : "Push token unavailable. Skipping notification — no registered devices for this target (common in Expo Go). Campaign recorded.",
+            : skip === "quiet_hours"
+              ? "Quiet hours active — push skipped. Campaign recorded."
+              : "No registered push devices for this target. Open the customer/rider/partner app once with notifications allowed, then resend. Campaign recorded.",
           { id: toastId },
         );
       } else {
@@ -589,6 +592,28 @@ function CampaignDetail({
             <MiniKpi label="Delivered" value={delivered} accent="text-teal-700" sub={sent > 0 ? `${deliveredRate}% of sent` : undefined} />
             <MiniKpi label="Clicked" value={clicked} accent="text-amber-700" sub={delivered > 0 ? `${clickRate}% CTR` : undefined} />
             <MiniKpi label="Failed" value={failed} accent="text-rose-600" />
+          </div>
+
+          <div className="rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 text-sm">
+            <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Target</div>
+            <div className="mt-1 font-medium text-slate-900">{targetLabel}</div>
+            {(() => {
+              const platforms = [...new Set(items.map((r) => (r.platform || "").toLowerCase()).filter(Boolean))];
+              const hasMobile = platforms.some((p) => p === "android" || p === "ios");
+              const hasWeb = platforms.includes("web");
+              if (items.length === 0 || hasMobile || !hasWeb) return null;
+              return (
+                <div className="mt-2 flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 p-2.5 text-xs text-amber-900">
+                  <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                  <div>
+                    Only <span className="font-semibold">web</span> devices matched this target (partnersite).
+                    No Android/iOS tokens for this store&apos;s merchant parent.
+                    Open the merchant app logged into this store (or pick{" "}
+                    <span className="font-semibold">All merchants</span> / the store whose phone is registered), then Resend.
+                  </div>
+                </div>
+              );
+            })()}
           </div>
 
           {(sent === 0 && (recipientEstimate === 0 || noTokensInSystem)) ? (
@@ -1283,7 +1308,16 @@ function CreateCampaign({ onClose, onSaved }: { onClose: () => void; onSaved: ()
       }
       onSaved();
       if (status === "running") {
-        toast.success(`Campaign “${name}” is sending.`);
+        const queued = typeof j.queued === "number" ? j.queued : Number(j.queued);
+        if (typeof j.warning === "string" && j.warning.trim()) {
+          toast.warning(j.warning);
+        } else if (!Number.isFinite(queued) || queued <= 0) {
+          toast.warning(
+            "No registered push devices for this target. Open the customer/rider app once with notifications allowed, then resend.",
+          );
+        } else {
+          toast.success(`Campaign “${name}” is sending — ${queued} queued.`);
+        }
         onClose();
         return;
       }

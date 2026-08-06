@@ -1,7 +1,24 @@
-import { QueryClient } from "@tanstack/react-query";
+import { QueryClient, QueryCache, MutationCache } from "@tanstack/react-query";
 import { createPersister } from "./query-persistence";
+import {
+  isSessionExpiredApiError,
+  redirectToLoginOnSessionExpired,
+} from "@/lib/auth/redirect-to-login";
+
+function handleQueryAuthError(error: unknown) {
+  if (typeof window === "undefined") return;
+  if (isSessionExpiredApiError(error)) {
+    redirectToLoginOnSessionExpired({ reason: "query_unauthorized" });
+  }
+}
 
 const QUERY_CLIENT_OPTIONS = {
+  queryCache: new QueryCache({
+    onError: (error) => handleQueryAuthError(error),
+  }),
+  mutationCache: new MutationCache({
+    onError: (error) => handleQueryAuthError(error),
+  }),
   defaultOptions: {
     queries: {
       staleTime: 10 * 60 * 1000, // 10 minutes default

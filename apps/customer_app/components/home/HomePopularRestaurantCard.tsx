@@ -2,7 +2,7 @@
  * Compact horizontal restaurant card for home "Popular Restaurants Near You".
  */
 
-import { useState, useCallback } from "react";
+import { memo, useState, useCallback } from "react";
 import { AppText } from "@/components/AppText";
 
 import { View, TouchableOpacity, StyleSheet } from "react-native";
@@ -25,7 +25,7 @@ type Props = {
   weatherDelayMinutes?: number;
 };
 
-export function HomePopularRestaurantCard({ merchant, weatherDelayMinutes = 0 }: Props) {
+function HomePopularRestaurantCardInner({ merchant, weatherDelayMinutes = 0 }: Props) {
   const router = useRouter();
   const [saved, setSaved] = useState(false);
   const [savedLoading, setSavedLoading] = useState(false);
@@ -187,3 +187,10 @@ const styles = StyleSheet.create({
     color: "#D1D5DB",
   },
 });
+
+/**
+ * Rendered once per list item. Memoised so a parent re-render (a filter
+ * toggle, a store-status tick, a bill recalculation) does not walk every
+ * mounted instance.
+ */
+export const HomePopularRestaurantCard = memo(HomePopularRestaurantCardInner);

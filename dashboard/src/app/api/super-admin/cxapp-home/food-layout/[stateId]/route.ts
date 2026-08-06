@@ -32,20 +32,27 @@ export async function GET(_request: NextRequest, ctx: RouteCtx) {
 
   try {
     const config = await getStateFoodHomeLayoutConfig(stateId);
-    return NextResponse.json({
-      stateId,
-      layoutKey: config.layoutKey,
-      gridFirstHeroMedia: config.gridFirstHeroMedia,
-      gridFirstSubscriptionRowEnabled: config.gridFirstSubscriptionRow.enabled,
-      gridFirstSubscriptionRowText: config.gridFirstSubscriptionRow.text,
-      gridFirstSubscriptionRowBgColor: config.gridFirstSubscriptionRow.backgroundColor,
-      gridFirstUnder250Enabled: config.gridFirstUnder250.enabled,
-      gridFirstUnder250MaxPrice: config.gridFirstUnder250.maxPrice,
-      gridFirstUnder250Title: config.gridFirstUnder250.title,
-      gridFirstUnder250FilterLabel: config.gridFirstUnder250.filterLabel,
-      gridFirstUnder250TabImageUrl: config.gridFirstUnder250.tabImageUrl,
-      gridFirstUnder250HeroImageUrl: config.gridFirstUnder250.heroImageUrl,
-    });
+    return NextResponse.json(
+      {
+        stateId,
+        layoutKey: config.layoutKey,
+        gridFirstHeroMedia: config.gridFirstHeroMedia,
+        gridFirstSubscriptionRowEnabled: config.gridFirstSubscriptionRow.enabled,
+        gridFirstSubscriptionRowText: config.gridFirstSubscriptionRow.text,
+        gridFirstSubscriptionRowBgColor: config.gridFirstSubscriptionRow.backgroundColor,
+        gridFirstUnder250Enabled: config.gridFirstUnder250.enabled,
+        gridFirstUnder250MaxPrice: config.gridFirstUnder250.maxPrice,
+        gridFirstUnder250Title: config.gridFirstUnder250.title,
+        gridFirstUnder250FilterLabel: config.gridFirstUnder250.filterLabel,
+        gridFirstUnder250TabImageUrl: config.gridFirstUnder250.tabImageUrl,
+        gridFirstUnder250HeroImageUrl: config.gridFirstUnder250.heroImageUrl,
+      },
+      {
+        headers: {
+          "Cache-Control": "private, max-age=15, stale-while-revalidate=30",
+        },
+      }
+    );
   } catch (e) {
     const msg = e instanceof Error ? e.message : "Failed to load layout";
     return NextResponse.json({ error: msg }, { status: 500 });

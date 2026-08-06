@@ -39,6 +39,7 @@ import {
   Megaphone,
   Smartphone,
   ListChecks,
+  Radar,
 } from "lucide-react";
 
 /** For Area Manager sidebar: show only routes allowed for this manager type. */
@@ -414,13 +415,6 @@ export const areaManagerDashboardRoutes: DashboardSubRoute[] = [
     areaManagerType: "RIDER",
   },
   {
-    name: "Geo Rider Availability",
-    href: "/dashboard/area-managers/availability",
-    icon: MapPin,
-    description: "Search riders near a location",
-    areaManagerType: "BOTH",
-  },
-  {
     name: "Activity Logs",
     href: "/dashboard/area-managers/activity-logs",
     icon: History,
@@ -572,6 +566,12 @@ export const mainNavigation: MainNavItem[] = [
     subRoutes: ticketDashboardRoutes,
   },
   {
+    name: "Geo Rx Availability",
+    href: "/dashboard/rx",
+    icon: Radar,
+    // No dashboardType — visible to every authenticated agent (like Home).
+  },
+  {
     name: "System",
     href: "/dashboard/system",
     icon: Settings,
@@ -720,6 +720,8 @@ export function getCurrentPageName(pathname: string): string {
     "/dashboard/merchants/stores": "Store Dashboard",
     "/dashboard/area-managers/stores": "Stores",
     "/dashboard/area-managers/riders": "Riders",
+    "/dashboard/rx": "Geo Rx Availability",
+    "/dashboard/geo-rider-availability": "Geo Rider Availability",
     "/dashboard/area-managers/availability": "Geo Rider Availability",
     "/dashboard/area-managers/activity-logs": "Activity Logs",
     "/dashboard/super-admin/ticket-settings": "Ticket Management",
@@ -729,6 +731,8 @@ export function getCurrentPageName(pathname: string): string {
     "/dashboard/super-admin/tracking-config": "Real-time tracking & geo-scoping",
     "/dashboard/super-admin/tracking-violations": "Geo-engine violations",
     "/dashboard/super-admin/rider-surge-management": "Rider surge management",
+    "/dashboard/super-admin/cxapp-home": "CX App Home",
+    "/dashboard/super-admin/customer-app-categories": "App Category",
   };
   
   // Check exact matches first

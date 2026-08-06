@@ -47,9 +47,23 @@ async function pollOnce(): Promise<void> {
             deepLink: campaign.override_deep_link,
           },
         });
-        await finalizeCampaignSend(campaign.id, "completed");
-        if (result.queued === 0 && result.failedSync === 0 && result.skipped === 0) {
-          console.info(`[notifications] scheduled campaign cid=${campaign.id} completed with 0 recipients`);
+        const softSkip =
+          result.skipReason === "no_recipients" || result.skipReason === "quiet_hours";
+        if (result.skipReason && !softSkip) {
+          await finalizeCampaignSend(campaign.id, "failed");
+          console.warn(
+            `[notifications] scheduled campaign cid=${campaign.id} failed: ${result.skipReason}`,
+          );
+        } else if (!softSkip && result.failedSync > 0 && result.queued === 0) {
+          await finalizeCampaignSend(campaign.id, "failed");
+          console.warn(
+            `[notifications] scheduled campaign cid=${campaign.id} failed: all dispatches failed`,
+          );
+        } else {
+          await finalizeCampaignSend(campaign.id, "completed");
+          if (result.queued === 0 && result.failedSync === 0 && result.skipped === 0) {
+            console.info(`[notifications] scheduled campaign cid=${campaign.id} completed with 0 recipients`);
+          }
         }
       } catch (e) {
         console.error(`[notifications] scheduled send failed cid=${campaign.id}`, (e as Error).message);

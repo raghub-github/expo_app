@@ -6,7 +6,7 @@
     "dev": "next dev --webpack -p 3001",
     "dev:turbopack": "next dev -p 3001",
     "dev:webpack": "next dev --webpack -p 3001",
-    "clean": "node -e \"const fs=require('fs');const o={recursive:true,force:true,maxRetries:8,retryDelay:150};try{fs.rmSync('.next',o)}catch(e){}try{fs.rmSync('node_modules/.cache',o)}catch(e){}\"",
+    "clean": "node ./scripts/clean-next.mjs",
     "dev:clean": "npm run clean && next dev --webpack -p 3001",
     "build": "npm run clean && node ./scripts/build-with-memory.mjs",
     "start": "next start",

@@ -52,6 +52,177 @@ async function upsertTimelineEvent(
   `;
 }
 
+type AssignmentRow = {
+  id: number;
+  riderId: number;
+  reachedMerchantAt: unknown;
+  assignedAt: unknown;
+  orderIdText: string;
+};
+
+async function findActiveAssignment(
+  sql: ReturnType<typeof getSql>,
+  orderCoreId: number
+): Promise<AssignmentRow | null> {
+  const rows = await sql`
+    SELECT
+      ora.id,
+      ora.rider_id AS "riderId",
+      ora.reached_merchant_at AS "reachedMerchantAt",
+      ora.assigned_at AS "assignedAt",
+      COALESCE(
+        NULLIF(TRIM(ora.order_id_text), ''),
+        NULLIF(TRIM(oc.order_id), ''),
+        NULLIF(TRIM(oc.formatted_order_id), ''),
+        ${String(orderCoreId)}
+      ) AS "orderIdText"
+    FROM order_rider_assignments ora
+    INNER JOIN orders_core oc ON oc.id = ${orderCoreId}
+    WHERE ora.rider_id IS NOT NULL
+      AND (
+        ora.order_core_id = ${orderCoreId}
+        OR ora.order_id = ${orderCoreId}
+        OR (oc.rider_id IS NOT NULL AND ora.rider_id = oc.rider_id)
+      )
+    ORDER BY
+      CASE WHEN ora.order_core_id = ${orderCoreId} OR ora.order_id = ${orderCoreId} THEN 0 ELSE 1 END,
+      ora.is_active DESC NULLS LAST,
+      ora.assignment_sequence DESC NULLS LAST,
+      ora.created_at DESC
+    LIMIT 1
+  `;
+
+  const row = (rows as Record<string, unknown>[])[0];
+  if (!row?.id) return null;
+
+  const riderId = Number(row.riderId);
+  if (!Number.isFinite(riderId) || riderId < 1) return null;
+
+  return {
+    id: Number(row.id),
+    riderId,
+    reachedMerchantAt: row.reachedMerchantAt,
+    assignedAt: row.assignedAt,
+    orderIdText: String(row.orderIdText ?? orderCoreId),
+  };
+}
+
+/**
+ * Ensure an assignment row exists when orders_core already has a rider
+ * (hard-assign / force-assign edge cases).
+ */
+async function ensureAssignmentFromCoreRider(
+  sql: ReturnType<typeof getSql>,
+  orderCoreId: number,
+  occurredAt: Date
+): Promise<AssignmentRow | null> {
+  const coreRows = await sql`
+    SELECT
+      oc.rider_id AS "riderId",
+      COALESCE(NULLIF(TRIM(oc.order_id), ''), NULLIF(TRIM(oc.formatted_order_id), ''), ${String(orderCoreId)}) AS "orderIdText",
+      NULLIF(TRIM(r.name), '') AS "riderName",
+      NULLIF(TRIM(r.mobile), '') AS "riderMobile"
+    FROM orders_core oc
+    LEFT JOIN riders r ON r.id = oc.rider_id
+    WHERE oc.id = ${orderCoreId}
+      AND oc.rider_id IS NOT NULL
+    LIMIT 1
+  `;
+  const core = (coreRows as Record<string, unknown>[])[0];
+  if (!core?.riderId) return null;
+
+  const riderId = Number(core.riderId);
+  if (!Number.isFinite(riderId) || riderId < 1) return null;
+  const orderIdText = String(core.orderIdText ?? orderCoreId);
+  const nowIso = toIso(occurredAt);
+
+  const inserted = await sql`
+    INSERT INTO order_rider_assignments (
+      order_id,
+      order_core_id,
+      order_id_text,
+      rider_id,
+      rider_name,
+      rider_mobile,
+      assignment_status,
+      assignment_sequence,
+      service_type,
+      is_active,
+      assigned_at,
+      accepted_at,
+      assignment_metadata,
+      created_at,
+      updated_at
+    )
+    VALUES (
+      ${orderCoreId},
+      ${orderCoreId},
+      ${orderIdText},
+      ${riderId},
+      ${(core.riderName as string | null) ?? null},
+      ${(core.riderMobile as string | null) ?? null},
+      'accepted'::rider_assignment_status,
+      1,
+      'food',
+      TRUE,
+      ${nowIso}::timestamptz,
+      ${nowIso}::timestamptz,
+      ${JSON.stringify({ source: "dashboard_status_sync" })}::jsonb,
+      ${nowIso}::timestamptz,
+      ${nowIso}::timestamptz
+    )
+    RETURNING id
+  `;
+
+  const id = Number((inserted as unknown as { id: number }[])[0]?.id);
+  if (!Number.isFinite(id) || id < 1) return null;
+
+  return {
+    id,
+    riderId,
+    reachedMerchantAt: null,
+    assignedAt: occurredAt,
+    orderIdText,
+  };
+}
+
+async function markPickedUpOnAssignment(
+  sql: ReturnType<typeof getSql>,
+  assignmentId: number,
+  occurredAt: Date,
+  skipReach: boolean,
+  actorLabel: string
+): Promise<void> {
+  const nowIso = toIso(occurredAt);
+  try {
+    await sql`
+      UPDATE order_rider_assignments
+      SET
+        picked_up_at = COALESCE(picked_up_at, ${nowIso}::timestamptz),
+        reached_merchant_skipped = CASE
+          WHEN reached_merchant_skipped THEN reached_merchant_skipped
+          ELSE ${skipReach}
+        END,
+        picked_up_actor_type = COALESCE(picked_up_actor_type, 'agent'),
+        picked_up_actor_label = COALESCE(picked_up_actor_label, ${actorLabel}),
+        updated_at = ${nowIso}::timestamptz
+      WHERE id = ${assignmentId}
+    `;
+  } catch (err) {
+    console.warn(
+      "[syncRiderMilestone] attribution columns unavailable, falling back to picked_up_at only:",
+      err
+    );
+    await sql`
+      UPDATE order_rider_assignments
+      SET
+        picked_up_at = COALESCE(picked_up_at, ${nowIso}::timestamptz),
+        updated_at = ${nowIso}::timestamptz
+      WHERE id = ${assignmentId}
+    `;
+  }
+}
+
 export async function syncRiderMilestoneFromDashboardStatus(
   orderCoreId: number,
   status: UpdateableOrderStatus,
@@ -61,66 +232,73 @@ export async function syncRiderMilestoneFromDashboardStatus(
   if (status !== "in_transit" && status !== "delivered") return;
 
   const sql = getSql();
-  const rows = await sql`
-    SELECT
-      ora.id,
-      ora.rider_id AS "riderId",
-      ora.reached_merchant_at AS "reachedMerchantAt",
-      ora.picked_up_at AS "pickedUpAt",
-      ora.delivered_at AS "deliveredAt",
-      COALESCE(NULLIF(TRIM(ora.order_id_text), ''), NULLIF(TRIM(oc.order_id), ''), NULLIF(TRIM(oc.formatted_order_id), '')) AS "orderIdText"
-    FROM order_rider_assignments ora
-    INNER JOIN orders_core oc ON oc.id = ${orderCoreId}
-    WHERE (ora.order_core_id = ${orderCoreId} OR ora.order_id = ${orderCoreId})
-      AND ora.rider_id IS NOT NULL
-    ORDER BY ora.is_active DESC NULLS LAST, ora.assignment_sequence DESC NULLS LAST, ora.created_at DESC
-    LIMIT 1
-  `;
+  let assignment = await findActiveAssignment(sql, orderCoreId);
+  if (!assignment && status === "in_transit") {
+    try {
+      assignment = await ensureAssignmentFromCoreRider(sql, orderCoreId, occurredAt);
+    } catch (err) {
+      console.warn("[syncRiderMilestone] ensure assignment failed:", err);
+    }
+  }
+  if (!assignment) {
+    console.warn(
+      `[syncRiderMilestone] no assignment for order_core_id=${orderCoreId} status=${status}`
+    );
+    return;
+  }
 
-  const row = (rows as Record<string, unknown>[])[0];
-  if (!row?.id) return;
+  const { id: assignmentId, riderId, orderIdText } = assignment;
+  const actorLabel = actorEmail.trim() || "GatiMitra team";
 
-  const assignmentId = Number(row.id);
-  const riderId = Number(row.riderId);
-  const orderIdText = String(row.orderIdText ?? orderCoreId);
-  if (!Number.isFinite(riderId) || riderId < 1) return;
-
-  const reachedAt = row.reachedMerchantAt ? new Date(String(row.reachedMerchantAt)) : null;
+  const reachedAt = assignment.reachedMerchantAt
+    ? new Date(String(assignment.reachedMerchantAt))
+    : null;
   const hasReached = reachedAt != null && !Number.isNaN(reachedAt.getTime());
 
   if (status === "in_transit") {
     const skipReach = !hasReached;
-    const actorLabel = actorEmail.trim() || "GatiMitra team";
 
-    await sql`
-      UPDATE order_rider_assignments
-      SET
-        picked_up_at = COALESCE(picked_up_at, ${toIso(occurredAt)}::timestamptz),
-        reached_merchant_skipped = CASE
-          WHEN reached_merchant_skipped THEN reached_merchant_skipped
-          ELSE ${skipReach}
-        END,
-        picked_up_actor_type = COALESCE(picked_up_actor_type, 'agent'),
-        picked_up_actor_label = COALESCE(picked_up_actor_label, ${actorLabel}),
-        updated_at = ${toIso(occurredAt)}::timestamptz
-      WHERE id = ${assignmentId}
-    `;
+    await markPickedUpOnAssignment(sql, assignmentId, occurredAt, skipReach, actorLabel);
 
-    if (skipReach) {
+    // Ensure activity log always has an Assigned row for this assignment.
+    const assignedAt = assignment.assignedAt
+      ? new Date(String(assignment.assignedAt))
+      : occurredAt;
+    try {
       await upsertTimelineEvent(sql, {
         assignmentId,
         orderCoreId,
         orderIdText,
         riderId,
-        eventType: "reached_merchant_skipped",
-        occurredAt,
-        statusMessage: "Reached store skipped — pickup marked by GatiMitra team",
-        metadata: {
-          actor_type: "agent",
-          updated_by: actorLabel,
-          reason: "pickup_before_reach",
-        },
+        eventType: "assigned",
+        occurredAt:
+          assignedAt != null && !Number.isNaN(assignedAt.getTime()) ? assignedAt : occurredAt,
+        statusMessage: "Rider assigned",
+        metadata: { actor_type: "system", source: "dashboard_status_sync" },
       });
+    } catch (err) {
+      console.warn("[syncRiderMilestone] assigned event upsert failed:", err);
+    }
+
+    if (skipReach) {
+      try {
+        await upsertTimelineEvent(sql, {
+          assignmentId,
+          orderCoreId,
+          orderIdText,
+          riderId,
+          eventType: "reached_merchant_skipped",
+          occurredAt,
+          statusMessage: "Reached store skipped — pickup marked by GatiMitra team",
+          metadata: {
+            actor_type: "agent",
+            updated_by: actorLabel,
+            reason: "pickup_before_reach",
+          },
+        });
+      } catch (err) {
+        console.warn("[syncRiderMilestone] reached_merchant_skipped upsert failed:", err);
+      }
     }
 
     await upsertTimelineEvent(sql, {
@@ -169,7 +347,7 @@ export async function syncRiderMilestoneFromDashboardStatus(
       statusMessage: "Delivered (GatiMitra team)",
       metadata: {
         actor_type: "agent",
-        updated_by: actorEmail.trim() || "GatiMitra team",
+        updated_by: actorLabel,
       },
     });
   }

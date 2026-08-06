@@ -189,6 +189,10 @@ export default function LocationAddressScreen() {
       router.replace("/checkout");
       return;
     }
+    if (params.afterSaveReturn === "parcel") {
+      router.replace("/home/service/parcels");
+      return;
+    }
     router.replace("/(tabs)/");
   };
   const mapRef = useRef<CustomerMapRef | null>(null);

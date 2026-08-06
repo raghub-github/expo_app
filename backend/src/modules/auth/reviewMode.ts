@@ -15,25 +15,15 @@
  *   Rider app      → RIDER_REVIEW_LOGIN_BYPASS_ENABLED / RIDER_REVIEW_LOGIN_PHONE /
  *                    RIDER_REVIEW_LOGIN_FIXED_OTP
  *
- * All three apps sign in through the SAME backend OTP endpoints
- * (POST /otp/request → /otp/verify). The OTP request carries no appType (adding
- * one would need a frontend change), so the phone number is the discriminator —
- * each bypass owns a DISTINCT review number. verify DOES carry appType, so each
- * app's own pipeline (merchant session vs rider profile/onboarding/KYC vs
- * customer) runs unchanged. The bypass only ever overrides the OTP gate.
+ * Critical invariant: a fixed review OTP is ONLY seeded into the OTP store when
+ * the request phone matches that bypass's configured phone. On verify we also
+ * reject any attempt to use a review OTP against a non-review phone
+ * (defense-in-depth against store poisoning / collisions).
  *
- * A bypass activates only when ALL of the following hold:
- *   - its enable flag is true
- *   - its phone is configured
- *   - its fixed OTP is configured (4–8 digits)
- *   - the inbound phone matches its phone after normalisation
- *
- * Because the fixed OTP is only ever SEEDED for its own configured phone, it can
- * never authenticate any other number — including the other app's review number.
- *
- * Nothing here is hardcoded; every value is read from the environment, and both
+ * Nothing here is hardcoded; every value is read from the environment, and all
  * bypasses are disabled by default.
  */
+import { timingSafeEqual } from "node:crypto";
 import type { FastifyBaseLogger } from "fastify";
 import type { Env } from "../../config/env.js";
 
@@ -62,9 +52,22 @@ function phonesEqual(a: string | undefined | null, b: string | undefined | null)
   return tailA === tailB && tailA.length === 10;
 }
 
+/** Constant-time OTP compare — rejects length mismatch without leaking timing. */
+export function otpsEqual(a: string, b: string): boolean {
+  if (typeof a !== "string" || typeof b !== "string") return false;
+  if (a.length === 0 || a.length !== b.length) return false;
+  try {
+    return timingSafeEqual(Buffer.from(a, "utf8"), Buffer.from(b, "utf8"));
+  } catch {
+    return false;
+  }
+}
+
 export interface ReviewModeService {
   /** Which app this bypass serves. */
   readonly app: ReviewApp;
+  /** True when enable flag + phone + OTP are all configured. */
+  isArmed(): boolean;
   /** Whether this bypass is enabled AND the given phone is its review phone. */
   isReviewLogin(phone: string): boolean;
   /** The fixed OTP to seed for this bypass. Throws if not configured. */
@@ -80,11 +83,6 @@ export interface ReviewModeService {
       ip: string | null;
       stage: "request" | "verify";
       ok: boolean;
-      /**
-       * The concrete app the request came from ("merchant" | "rider" | ...),
-       * known at verify. Falls back to the bypass's own surface at request time,
-       * where the OTP endpoint has no appType.
-       */
       appType?: string;
     },
   ): void;
@@ -101,13 +99,18 @@ interface BypassConfig {
 }
 
 function createBypass(cfg: BypassConfig): ReviewModeService {
+  const armed = Boolean(cfg.enabled && cfg.phone && cfg.otp);
+
   return {
     app: cfg.app,
 
+    isArmed(): boolean {
+      return armed;
+    },
+
     isReviewLogin(phone: string): boolean {
       // Disabled by default; a half-configured bypass stays off (fail closed).
-      if (!cfg.enabled) return false;
-      if (!cfg.phone || !cfg.otp) return false;
+      if (!armed) return false;
       return phonesEqual(phone, cfg.phone);
     },
 
@@ -128,9 +131,6 @@ function createBypass(cfg: BypassConfig): ReviewModeService {
       log?.info?.(
         {
           event: "review_login_bypass",
-          // The bypass surface ("customer" | "partner") and the concrete app the
-          // request came from ("merchant" | "rider" | ...). At request time the
-          // OTP endpoint has no appType, so appType falls back to `surface`.
           surface: cfg.app,
           appType,
           stage: args.stage,
@@ -146,7 +146,7 @@ function createBypass(cfg: BypassConfig): ReviewModeService {
   };
 }
 
-/** Customer app bypass — GOOGLE_REVIEW_* (pre-existing, unchanged semantics). */
+/** Customer app bypass — GOOGLE_REVIEW_* . */
 export function createReviewModeService(env: Env): ReviewModeService {
   return createBypass({
     app: "customer",
@@ -160,8 +160,6 @@ export function createReviewModeService(env: Env): ReviewModeService {
 
 /**
  * Merchant app bypass — REVIEW_LOGIN_* (independent of customer + rider).
- * (Historically called "partner"; the function name is kept so callers/tests
- * don't churn.)
  */
 export function createPartnerReviewLoginService(env: Env): ReviewModeService {
   return createBypass({
@@ -175,9 +173,7 @@ export function createPartnerReviewLoginService(env: Env): ReviewModeService {
 }
 
 /**
- * Rider app bypass — RIDER_REVIEW_LOGIN_* (its OWN review number, independent of
- * merchant + customer). Rider signs in through the same backend OTP endpoints;
- * verify's appType routes to the rider profile / onboarding / KYC pipeline.
+ * Rider app bypass — RIDER_REVIEW_LOGIN_* (independent of merchant + customer).
  */
 export function createRiderReviewLoginService(env: Env): ReviewModeService {
   return createBypass({
@@ -192,8 +188,8 @@ export function createRiderReviewLoginService(env: Env): ReviewModeService {
 
 /**
  * Every configured bypass, in a stable order. The OTP request endpoint has no
- * appType (adding one would require a frontend change), so the phone number is
- * the discriminator — each bypass owns a distinct number.
+ * appType, so the phone number is the discriminator — each bypass owns a
+ * distinct number.
  */
 export function createReviewBypasses(env: Env): ReviewModeService[] {
   return [
@@ -211,5 +207,27 @@ export function matchReviewBypass(
   return services.find((s) => s.isReviewLogin(phone)) ?? null;
 }
 
+/**
+ * Defense-in-depth: reject when the submitted OTP equals an armed bypass's
+ * fixed OTP but the phone is NOT that bypass's review phone.
+ * Prevents review OTP reuse on arbitrary numbers.
+ */
+export function isReviewOtpOnForeignPhone(
+  services: ReviewModeService[],
+  phone: string,
+  otp: string,
+): boolean {
+  for (const s of services) {
+    if (!s.isArmed()) continue;
+    if (s.isReviewLogin(phone)) continue;
+    try {
+      if (otpsEqual(otp, s.getReviewOtp())) return true;
+    } catch {
+      // not configured
+    }
+  }
+  return false;
+}
+
 // Exported for tests.
-export const __test = { digitsOnly, phonesEqual };
+export const __test = { digitsOnly, phonesEqual, otpsEqual };

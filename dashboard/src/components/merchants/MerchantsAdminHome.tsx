@@ -617,8 +617,8 @@ export function MerchantsAdminHome({
         </div>
       </div>
 
-      {/* Hero KPI strip */}
-      <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-6">
+      {/* Hero KPI strip — single row from xl up */}
+      <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3 lg:grid-cols-6">
         {(statsLoading ? Array.from({ length: 6 }) : statCards).map((card, i) => {
           if (statsLoading) {
             return (

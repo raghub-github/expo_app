@@ -2797,6 +2797,25 @@ export async function patchMerchantFoodOrderStatus(
           }
         : {}),
     });
+    try {
+      const { publishOrderEvent } = await import("../realtime/publish.js");
+      const channels = [orderIdText, order.formatted_order_id].filter(
+        (v): v is string => Boolean(String(v ?? "").trim())
+      );
+      await Promise.all(
+        [...new Set(channels)].map((id) =>
+          publishOrderEvent(String(id).trim(), {
+            type: "status_changed",
+            status: String(status).toUpperCase(),
+            orderId: String(id).trim(),
+            orderIdText: String(id).trim(),
+            source: "merchant",
+          })
+        )
+      );
+    } catch {
+      /* tolerated */
+    }
   } catch { /* tolerated */ }
 
   return order;

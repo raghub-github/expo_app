@@ -6,6 +6,7 @@ import {
   listGeoPlatformOfferBindingsForNode,
 } from "@/lib/db/operations/geo-admin";
 import type { GeoHierarchyLevel } from "@/lib/geo/geo-shared";
+import { auditPlatformOfferMutation } from "@/lib/audit/platform-offer-audit";
 
 export const runtime = "nodejs";
 
@@ -61,6 +62,21 @@ export async function POST(req: NextRequest) {
       refId: parsed.data.refId,
       platformOfferId: parsed.data.platform_offer_id,
     });
+    await auditPlatformOfferMutation(req, "CREATE", {
+      resourceType: "geo_platform_offer_binding",
+      resourceId: String(binding.id),
+      actionDetails: {
+        action: "map_platform_offer",
+        level: parsed.data.level,
+        refId: parsed.data.refId,
+        platform_offer_id: parsed.data.platform_offer_id,
+      },
+      newValues: {
+        geo_level: binding.geo_level,
+        geo_ref_id: binding.geo_ref_id,
+        platform_offer_id: binding.platform_offer_id,
+      },
+    });
     return NextResponse.json({ binding });
   } catch (e: unknown) {
     const code = typeof e === "object" && e !== null && "code" in e ? String((e as { code?: string }).code) : "";
@@ -68,6 +84,13 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "This offer is already mapped at this location." }, { status: 409 });
     }
     const msg = e instanceof Error ? e.message : "Failed";
+    await auditPlatformOfferMutation(req, "CREATE", {
+      resourceType: "geo_platform_offer_binding",
+      resourceId: "new",
+      failed: true,
+      errorMessage: msg,
+      actionDetails: { action: "map_platform_offer" },
+    });
     return NextResponse.json({ error: msg }, { status: 500 });
   }
 }

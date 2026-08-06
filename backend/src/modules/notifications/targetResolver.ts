@@ -235,10 +235,11 @@ async function merchantRecipients(opts: {
   allStores?: boolean;
 }): Promise<Recipient[]> {
   const storeTokens = await tokensFromMerchantStorePushTokens(opts);
-  let parentIds = opts.parentMerchantIds ?? [];
-  if (!parentIds.length && opts.storeIds?.length) {
+  // Always union explicit parents with store→parent (+ store-token user) lookups.
+  let parentIds = [...(opts.parentMerchantIds ?? [])];
+  if (opts.storeIds?.length) {
     const nested = await Promise.all(opts.storeIds.map((id) => userIdsForStore(id)));
-    parentIds = [...new Set(nested.flat())];
+    parentIds = [...new Set([...parentIds, ...nested.flat().filter(Boolean)])];
   }
   const expoRecipients = parentIds.length
     ? await tokensForUserIds(parentIds, "merchant")
@@ -246,15 +247,20 @@ async function merchantRecipients(opts: {
       ? await tokensForUserIds(await userIdsByRole("merchant"), "merchant")
       : [];
 
-  const native = opts.storeIds?.length
-    ? await nativeFcmTokens({ storeIds: opts.storeIds, role: "merchant" })
-    : parentIds.length
-      ? await nativeFcmTokens({ userIds: parentIds, role: "merchant" })
-      : opts.allStores
-        ? await nativeFcmTokens({ allForRole: true, role: "merchant" })
-        : [];
+  // Partnersite web tokens often have store_id=null — always also resolve by parent user ids
+  // so store-targeted and all-merchant campaigns reach the browser session.
+  // App Android FCM tokens also often have store_id=null — parent id fan-out covers them.
+  const nativeParts: Recipient[] = [];
+  if (opts.storeIds?.length) {
+    nativeParts.push(...(await nativeFcmTokens({ storeIds: opts.storeIds, role: "merchant" })));
+  }
+  if (parentIds.length) {
+    nativeParts.push(...(await nativeFcmTokens({ userIds: parentIds, role: "merchant" })));
+  } else if (opts.allStores) {
+    nativeParts.push(...(await nativeFcmTokens({ allForRole: true, role: "merchant" })));
+  }
 
-  return dedupeByToken([...storeTokens, ...expoRecipients, ...native]);
+  return dedupeByToken([...storeTokens, ...expoRecipients, ...nativeParts]);
 }
 
 async function userIdsByRole(role: NotificationRole): Promise<string[]> {
@@ -301,6 +307,7 @@ async function userIdsByRole(role: NotificationRole): Promise<string[]> {
 
 async function userIdsForStore(storeId: number): Promise<string[]> {
   const sql = getSql();
+  const ids = new Set<string>();
   const rows = (await sql`
     SELECT DISTINCT mp.parent_merchant_id AS user_id
     FROM public.merchant_stores s
@@ -309,7 +316,27 @@ async function userIdsForStore(storeId: number): Promise<string[]> {
       AND s.deleted_at IS NULL
       AND mp.parent_merchant_id IS NOT NULL
   `) as unknown as Array<{ user_id: string }>;
-  return rows.map((r) => r.user_id);
+  for (const r of rows) {
+    if (r.user_id) ids.add(r.user_id);
+  }
+  // Devices that registered against this store (partnersite / app) even when
+  // parent_id resolution is incomplete — include their user ids for fan-out.
+  try {
+    const tokenUsers = (await sql`
+      SELECT DISTINCT user_id
+      FROM public.native_device_push_tokens
+      WHERE store_id = ${storeId}
+        AND user_id IS NOT NULL
+        AND token_type = 'fcm'
+        AND (last_seen_at IS NULL OR last_seen_at >= now() - (${TOKEN_STALENESS_DAYS} || ' days')::interval)
+    `) as unknown as Array<{ user_id: string }>;
+    for (const r of tokenUsers) {
+      if (r.user_id) ids.add(r.user_id);
+    }
+  } catch (e) {
+    console.warn("[notifications] store token user lookup skipped:", (e as Error).message);
+  }
+  return [...ids];
 }
 
 async function userIdsForOrder(
@@ -366,10 +393,50 @@ async function userIdsForOrder(
  */
 export const IN_APP_ONLY_TOKEN = "__in_app_only__";
 
+/** Cap census-style inbox fallback so all_* campaigns stay bounded. */
+const INBOX_ONLY_BROADCAST_CAP = 2_000;
+
+async function customerIdsForInboxFallback(limit = INBOX_ONLY_BROADCAST_CAP): Promise<string[]> {
+  const sql = getSql();
+  try {
+    const rows = (await sql`
+      SELECT customer_id AS user_id
+      FROM public.customers
+      WHERE deleted_at IS NULL
+        AND customer_id IS NOT NULL
+        AND trim(customer_id) <> ''
+      ORDER BY id DESC
+      LIMIT ${limit}
+    `) as unknown as Array<{ user_id: string }>;
+    return rows.map((r) => String(r.user_id).trim()).filter(Boolean);
+  } catch (e) {
+    console.warn("[notifications] inbox customer census failed:", (e as Error).message);
+    return [];
+  }
+}
+
+async function riderIdsForInboxFallback(limit = INBOX_ONLY_BROADCAST_CAP): Promise<string[]> {
+  const sql = getSql();
+  try {
+    const rows = (await sql`
+      SELECT ('usr_' || id::text) AS user_id
+      FROM public.riders
+      WHERE deleted_at IS NULL
+      ORDER BY id DESC
+      LIMIT ${limit}
+    `) as unknown as Array<{ user_id: string }>;
+    return rows.map((r) => String(r.user_id).trim()).filter(Boolean);
+  } catch (e) {
+    console.warn("[notifications] inbox rider census failed:", (e as Error).message);
+    return [];
+  }
+}
+
 /**
  * Resolve explicit user targets for inbox history even when no push token exists.
  * Used so Expo Go / tokenless devices still get notification_dispatch_logs + inbox.
- * Broadcast targets (all_*) without tokens return [] — never fabricate a full user census.
+ * Also covers all_customers / all_riders / role broadcasts (capped census) so
+ * super-admin campaigns still land in-app when no Expo tokens are registered yet.
  */
 export async function resolveInboxOnlyRecipients(
   target: TargetFilter,
@@ -430,6 +497,46 @@ export async function resolveInboxOnlyRecipients(
         ? pairs
         : pairs.filter((p) => p.role === roleHint);
     return toRecipients(filtered.map((p) => ({ userId: p.userId, role: p.role })));
+  }
+
+  const wantsCustomers =
+    ("all_customers" in target && target.all_customers === true) ||
+    ("role" in target && target.role === "customer" && !hasGeoFields(target as never)) ||
+    ("topic" in target && String(target.topic).trim() === "app_customer");
+  const wantsRiders =
+    ("all_riders" in target && target.all_riders === true) ||
+    ("role" in target && target.role === "rider" && !hasGeoFields(target as never)) ||
+    ("topic" in target && String(target.topic).trim() === "app_rider");
+
+  if (wantsCustomers || wantsRiders) {
+    const pairs: Array<{ userId: string; role: NotificationRole }> = [];
+    if (wantsCustomers) {
+      for (const userId of await customerIdsForInboxFallback()) {
+        pairs.push({ userId, role: "customer" });
+      }
+    }
+    if (wantsRiders) {
+      for (const userId of await riderIdsForInboxFallback()) {
+        pairs.push({ userId, role: "rider" });
+      }
+    }
+    return toRecipients(pairs);
+  }
+
+  // Geo customer/rider: resolve audience ids even without tokens.
+  if ("geo" in target && target.geo === true && hasGeoFields(target)) {
+    const audience = await resolveGeoAudience({
+      city: target.city,
+      lat: target.lat,
+      lng: target.lng,
+      radius_km: target.radius_km,
+      role: target.role ?? roleHint === "all" ? null : roleHint,
+    });
+    const pairs: Array<{ userId: string; role: NotificationRole }> = [];
+    for (const userId of audience.customerIds) pairs.push({ userId, role: "customer" });
+    for (const userId of audience.riderIds) pairs.push({ userId, role: "rider" });
+    for (const userId of audience.merchantParentIds) pairs.push({ userId, role: "merchant" });
+    return toRecipients(pairs);
   }
 
   return [];
@@ -613,6 +720,10 @@ async function resolveGeoAudience(opts: {
 
   if (!role || role === "merchant") {
     try {
+      // City match is fuzzy (ILIKE) — stores often store "Panipat Haryana" etc.
+      // When both city + coords are provided, match EITHER (not AND) so a store
+      // with correct lat/lng still receives even if city text differs.
+      const cityLike = hasCity ? `%${city}%` : "";
       const rows = (await sql`
         SELECT ms.id AS store_id, mp.parent_merchant_id AS parent_id
         FROM public.merchant_stores ms
@@ -622,14 +733,11 @@ async function resolveGeoAudience(opts: {
             ${
               hasCity && hasCoords
                 ? sql`(
-                    lower(coalesce(ms.city, '')) = lower(${city})
-                    AND (
-                      (ms.latitude IS NOT NULL AND ms.longitude IS NOT NULL AND ${withinRadius("ms")})
-                      OR (ms.latitude IS NULL)
-                    )
+                    lower(coalesce(ms.city, '')) LIKE lower(${cityLike})
+                    OR (ms.latitude IS NOT NULL AND ms.longitude IS NOT NULL AND ${withinRadius("ms")})
                   )`
                 : hasCity
-                  ? sql`lower(coalesce(ms.city, '')) = lower(${city})`
+                  ? sql`lower(coalesce(ms.city, '')) LIKE lower(${cityLike})`
                   : sql`(ms.latitude IS NOT NULL AND ms.longitude IS NOT NULL AND ${withinRadius("ms")})`
             }
           )
@@ -807,19 +915,9 @@ export async function resolveTarget(target: TargetFilter): Promise<Recipient[]> 
 
   if ("topic" in target && typeof target.topic === "string") {
     const topic = target.topic.trim();
-    const out: Recipient[] = [
-      {
-        userId: "__topic__",
-        role: "all",
-        deviceToken: `topic:${topic}`,
-        deviceId: null,
-        platform: "android",
-      },
-    ];
-
-    // Role topics (`app_customer` / `app_rider` / `app_merchant`) only reach
-    // native FCM subscribers. Also fan out Expo (+ merchant store) tokens so
-    // Expo-only devices still receive the campaign.
+    // Role topics: fan out by registered tokens (Expo + native FCM + partnersite web).
+    // Avoid FCM topic+Expo dual send — dual-token Android devices were double-notified,
+    // and partnersite web missed topic campaigns when topic subscribe had failed.
     const roleTopic =
       topic === "app_customer"
         ? ("customer" as const)
@@ -829,15 +927,41 @@ export async function resolveTarget(target: TargetFilter): Promise<Recipient[]> 
             ? ("merchant" as const)
             : null;
     if (roleTopic === "merchant") {
-      const expoAndStore = await merchantRecipients({ allStores: true });
-      // Topic already covers native FCM — keep Expo/store tokens only.
-      out.push(...expoAndStore.filter((r) => isExpoPushTokenString(r.deviceToken)));
-    } else if (roleTopic) {
-      const ids = await userIdsByRole(roleTopic);
-      out.push(...(await tokensForUserIds(ids, roleTopic)));
+      return merchantRecipients({ allStores: true });
+    }
+    if (roleTopic) {
+      return recipientsForRole(roleTopic);
     }
 
-    return dedupeByToken(out);
+    // Custom topic name — pure FCM topic broadcast (no per-device fan-out).
+    return [
+      {
+        userId: "__topic__",
+        role: "all",
+        deviceToken: `topic:${topic}`,
+        deviceId: null,
+        platform: "android",
+      },
+    ];
+  }
+
+  // Broadcast stubs used by older clients / API explorers.
+  if ("all_active" in target && target.all_active) {
+    return dedupeByToken([
+      ...(await recipientsForRole("customer")),
+      ...(await merchantRecipients({ allStores: true })),
+      ...(await recipientsForRole("rider")),
+    ]);
+  }
+  if ("all_inactive" in target && target.all_inactive) {
+    // No reliable inactive inventory — soft-empty rather than erroring the campaign.
+    return [];
+  }
+  if ("subscription_status" in target) {
+    return [];
+  }
+  if ("blacklisted" in target && target.blacklisted) {
+    return [];
   }
 
   return [];

@@ -199,11 +199,12 @@ export function createPushPermissionController(
       const expoToken = await getFreshExpoPushToken({ requestIfNeeded: false });
       const native = await getFreshNativePushToken();
 
-      if (!expoToken) {
+      if (!expoToken && !native?.token) {
         emit({
           syncStatus: "error",
           error: "expo_token_unavailable",
           expoPushToken: null,
+          nativePushToken: null,
           lastBackendSyncOk: false,
         });
         return snapshot;
@@ -253,6 +254,7 @@ export function createPushPermissionController(
           if (
             auth.role === "merchant" &&
             auth.storeId &&
+            expoToken &&
             options.registerStoreExpoToken
           ) {
             try {
@@ -276,6 +278,7 @@ export function createPushPermissionController(
           });
           log("tokens registered", {
             role: auth.role,
+            hasExpo: !!expoToken,
             hasNative: !!native?.token,
             storeId: auth.storeId ?? null,
           });

@@ -148,6 +148,11 @@ export type SendIntent = {
     imageUrl?: string | null;
     deepLink?: string | null;
   };
+  /**
+   * When true, skip quiet-hours gating (admin “Send now” / Resend).
+   * Scheduled poller leaves this unset so automated marketing still respects the window.
+   */
+  bypassQuietHours?: boolean;
 };
 
 /** Result of one send across all resolved recipients. */
@@ -159,6 +164,8 @@ export type SendResult = {
   notificationIds: string[]; // notification_logs.notification_id UUIDs
   /** Why a campaign produced zero deliveries (quiet hours, empty audience, etc.). */
   skipReason?: "no_recipients" | "quiet_hours" | "template_missing" | string;
+  /** Soft advisory (e.g. in-app only because no push tokens). */
+  warning?: string;
 };
 
 /** Resolved per-recipient delivery descriptor (one row in notification_logs). */

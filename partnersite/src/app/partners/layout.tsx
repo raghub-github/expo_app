@@ -9,6 +9,7 @@ import { GlobalToaster } from "@/components/GlobalToaster";
 import { PartnerStoreAccessGate } from "@/components/PartnerStoreAccessGate";
 import { PartnerShellFrame } from "@/components/PartnerShellFrame";
 import { PartnerIncomingOrderModal } from "@/components/PartnerIncomingOrderModal";
+import { PartnerBrowserPushBootstrap } from "@/components/PartnerBrowserPushBootstrap";
 
 /** Routes that render their own full-screen UI instead of the partner shell. */
 const ROUTES_WITHOUT_SHELL = [
@@ -53,6 +54,7 @@ export default function PartnersLayout({ children }: { children: React.ReactNode
         )}
       </div>
       <GlobalToaster />
+      <PartnerBrowserPushBootstrap />
       <PartnerShellWarmup />
       <PartnerAcceptanceTimeoutSync />
       <Suspense fallback={null}>

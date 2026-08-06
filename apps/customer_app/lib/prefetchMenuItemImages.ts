@@ -1,9 +1,24 @@
-import { Image } from "expo-image";
 import type { MenuItem } from "@/services/merchant.service";
 import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
+import {
+  enqueueImagePrefetch,
+  isImagePrefetchRequested,
+  prefetchImagesNow,
+} from "@/lib/prefetchQueue";
 
-const prefetchedUris = new Set<string>();
-const PRIORITY_PREFETCH_COUNT = 48;
+/**
+ * Above-the-fold batch, awaited so the first screen of the menu paints warm.
+ * 48 was the old value but it was fired as 48 simultaneous requests; the shared
+ * queue now caps in-flight work, so the number is a batch size, not a fan-out.
+ */
+const PRIORITY_PREFETCH_COUNT = 12;
+
+/**
+ * Everything past the priority batch is queued lazily and hard-capped. A large
+ * menu previously enqueued one `Image.prefetch` per item with no ceiling — a
+ * 300-item menu meant 300 concurrent downloads and decodes on open.
+ */
+const BACKGROUND_PREFETCH_COUNT = 36;
 
 function resolveMenuImageUri(imageUrl: string | null | undefined): string | null {
   if (!imageUrl?.trim()) return null;
@@ -13,7 +28,7 @@ function resolveMenuImageUri(imageUrl: string | null | undefined): string | null
 export function isMenuItemImagePrefetched(uri: string | null | undefined): boolean {
   if (!uri?.trim()) return false;
   const resolved = toAbsoluteImageUrl(uri) ?? uri;
-  return prefetchedUris.has(resolved);
+  return isImagePrefetchRequested(resolved);
 }
 
 function collectMenuImageUris(menu: MenuItem[]): string[] {
@@ -29,37 +44,14 @@ function collectMenuImageUris(menu: MenuItem[]): string[] {
 }
 
 export function prefetchMenuItemImages(menu: MenuItem[]): void {
-  for (const uri of collectMenuImageUris(menu)) {
-    if (prefetchedUris.has(uri)) continue;
-    prefetchedUris.add(uri);
-    void Image.prefetch(uri, { cachePolicy: "memory-disk" });
-  }
+  enqueueImagePrefetch(collectMenuImageUris(menu), BACKGROUND_PREFETCH_COUNT);
 }
 
-async function prefetchUrisAwait(uris: string[]): Promise<void> {
-  const pending = uris.filter((uri) => {
-    if (prefetchedUris.has(uri)) return false;
-    prefetchedUris.add(uri);
-    return true;
-  });
-  if (pending.length === 0) return;
-  await Promise.all(
-    pending.map((uri) =>
-      Image.prefetch(uri, { cachePolicy: "memory-disk" }).catch(() => undefined)
-    )
-  );
-}
-
-/** Priority batch first (above-fold), rest in background — no duplicate downloads. */
+/** Priority batch awaited (above-fold), the rest queued — no duplicate downloads. */
 export async function prefetchMenuItemImagesForMenu(menu: MenuItem[]): Promise<void> {
   const uris = collectMenuImageUris(menu);
   if (uris.length === 0) return;
 
-  const priority = uris.slice(0, PRIORITY_PREFETCH_COUNT);
-  const rest = uris.slice(PRIORITY_PREFETCH_COUNT);
-
-  await prefetchUrisAwait(priority);
-  if (rest.length > 0) {
-    void prefetchUrisAwait(rest);
-  }
+  await prefetchImagesNow(uris.slice(0, PRIORITY_PREFETCH_COUNT), PRIORITY_PREFETCH_COUNT);
+  enqueueImagePrefetch(uris.slice(PRIORITY_PREFETCH_COUNT), BACKGROUND_PREFETCH_COUNT);
 }

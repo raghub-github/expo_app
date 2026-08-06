@@ -1062,7 +1062,7 @@ export async function getMerchantStoreSummaryByStoreId(
   if (s.area_manager_id != null) {
     try {
       const amRows = await sql`
-        SELECT su.email
+        SELECT su.email, su.team, su.department
         FROM area_managers am
         JOIN system_users su ON su.id = am.user_id
         WHERE am.id = ${s.area_manager_id}
@@ -1070,8 +1070,16 @@ export async function getMerchantStoreSummaryByStoreId(
       `;
       const amRow = Array.isArray(amRows) ? amRows[0] : amRows;
       if (amRow && (amRow as { email?: string | null }).email) {
-        assignedUserEmail = (amRow as { email: string }).email;
-        assignedUserDepartment = "Area Manager";
+        const am = amRow as {
+          email: string;
+          team?: string | null;
+          department?: string | null;
+        };
+        assignedUserEmail = am.email;
+        assignedUserDepartment =
+          (typeof am.team === "string" && am.team.trim()) ||
+          (typeof am.department === "string" && am.department.trim()) ||
+          "Area Manager";
       }
     } catch {
       // ignore
@@ -1079,14 +1087,24 @@ export async function getMerchantStoreSummaryByStoreId(
   }
   let parentMerchantId: string | null = null;
   let parentName: string | null = null;
+  let parentMerchantType: string | null = null;
   if (s.parent_id != null) {
     const parentRows = await sql`
-      SELECT parent_merchant_id, parent_name FROM merchant_parents WHERE id = ${s.parent_id} LIMIT 1
+      SELECT parent_merchant_id, parent_name, merchant_type::text AS merchant_type
+      FROM merchant_parents WHERE id = ${s.parent_id} LIMIT 1
     `;
     const p = Array.isArray(parentRows) ? parentRows[0] : parentRows;
     if (p) {
       parentMerchantId = (p as { parent_merchant_id?: string | null }).parent_merchant_id ?? null;
       parentName = (p as { parent_name?: string | null }).parent_name ?? null;
+      const kind = String((p as { merchant_type?: string | null }).merchant_type ?? "")
+        .trim()
+        .toUpperCase();
+      if (kind === "BRAND") parentMerchantType = "Brand";
+      else if (kind === "LOCAL") parentMerchantType = "Local";
+      else if (kind === "CHAIN") parentMerchantType = "Chain";
+      else if (kind === "FRANCHISE") parentMerchantType = "Franchise";
+      else parentMerchantType = kind || null;
     }
   }
   const phones: string[] | null = Array.isArray(s.store_phones)
@@ -1143,7 +1161,7 @@ export async function getMerchantStoreSummaryByStoreId(
     fullAddress: s.full_address ?? null,
     latitude: s.latitude ?? null,
     longitude: s.longitude ?? null,
-    merchantType: s.store_type ?? null,
+    merchantType: parentMerchantType,
     assignedUserEmail,
     assignedUserDepartment,
     approval_status: s.approval_status ?? null,

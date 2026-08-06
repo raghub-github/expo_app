@@ -1,12 +1,6 @@
 /**
- * Rider-side ETA client.
- *
- * Reads the platform's frozen promise + most recent recalc snapshot for an
- * order. Used on the active-order screen to show the rider:
- *   - "Pickup by HH:MM" — when they must reach the store
- *   - "Deliver by HH:MM" — the customer-promised delivery time
- *
- * Failures are silent: the rider screen falls back to "—" rather than crashing.
+ * Rider-side ETA client — prefer server `stageAware` / `eta.updated.v1`.
+ * Do not invent pickup/delivery minutes locally when stageAware is present.
  */
 import { getRiderAppConfig } from "@/src/config/env";
 
@@ -28,14 +22,43 @@ export type EtaLive = {
   createdAt: string;
 };
 
+export type CustomerEtaView = {
+  etaMinutes: number | null;
+  contextMessage: string;
+  contextLabel: string;
+  merchantDelayed: boolean;
+  etaUpdated: boolean;
+  promisedEtaMinutes: number | null;
+};
+
+export type StageAwareEta = {
+  currentStage: string;
+  merchantPrepEta: number | null;
+  riderToMerchantEta: number | null;
+  pickupEta: number | null;
+  customerDeliveryEta: number | null;
+  displayEta: number | null;
+  totalEta: number;
+  etaVersion: number;
+  etaSource: string;
+  confidence: "HIGH" | "MEDIUM" | "LOW";
+  promisedAt: string | null;
+  lastUpdatedAt: string;
+  freezeCountdown: boolean;
+};
+
 export type OrderEtaResponse = {
   ok: true;
   orderIdText: string;
-  /** Immutable First ETA (first_eta_at → promised_delivery_at). */
   firstEtaAt?: string | null;
   promise: EtaPromise;
   live: EtaLive | null;
+  customer?: CustomerEtaView;
+  stageAware?: StageAwareEta;
 };
+
+export const RIDER_ORDER_ETA_QUERY_KEY = (orderIdText: string) =>
+  ["riderOrderEta", orderIdText] as const;
 
 export async function fetchOrderEta(orderIdText: string): Promise<OrderEtaResponse | null> {
   try {
@@ -56,14 +79,79 @@ export function minutesUntil(iso: string | null | undefined, now: Date = new Dat
   return Math.round((t - now.getTime()) / 60_000);
 }
 
-/**
- * Rider's pickup deadline = promise time − rider→customer leg − safety margin.
- * Approximated from the recorded route distance because the snapshot stores
- * the aggregate breakdown but not individual leg geometry. Falls back to 12
- * minutes when distance is missing.
- */
+export function shouldAcceptEtaVersion(
+  incoming: number | null | undefined,
+  lastAccepted: number | null | undefined
+): boolean {
+  const next = Number(incoming);
+  if (!Number.isFinite(next) || next <= 0) return false;
+  const prev = Number(lastAccepted);
+  if (!Number.isFinite(prev) || prev <= 0) return true;
+  return next > prev;
+}
+
+export function mergeEtaUpdatedEvent(
+  prev: OrderEtaResponse | null,
+  event: {
+    orderIdText?: string;
+    orderId?: string;
+    etaVersion?: number;
+    reason?: string;
+    customer?: CustomerEtaView;
+    stageAware?: StageAwareEta;
+    livePromisedDeliveryAt?: string | null;
+    currentEtaMinutes?: number;
+    at?: string;
+  }
+): OrderEtaResponse | null {
+  if (!event.stageAware || !event.customer) return prev;
+  const version = Number(event.etaVersion);
+  if (!Number.isFinite(version) || version <= 0) return prev;
+  if (!shouldAcceptEtaVersion(version, prev?.stageAware?.etaVersion)) return prev;
+
+  const orderIdText =
+    String(event.orderIdText ?? event.orderId ?? prev?.orderIdText ?? "").trim() ||
+    prev?.orderIdText ||
+    "";
+  const at = event.at ?? event.stageAware.lastUpdatedAt ?? new Date().toISOString();
+  const liveMinutes =
+    event.currentEtaMinutes ?? event.stageAware.totalEta ?? event.customer.etaMinutes ?? 0;
+
+  return {
+    ok: true,
+    orderIdText,
+    firstEtaAt: prev?.firstEtaAt ?? null,
+    promise: prev?.promise ?? {
+      minMinutes: null,
+      maxMinutes: null,
+      promisedDeliveryAt: null,
+      generatedAt: null,
+      bufferMinutes: null,
+      routeKm: null,
+      confidenceScore: null,
+    },
+    live: {
+      minMinutes: liveMinutes,
+      maxMinutes: liveMinutes,
+      promisedDeliveryAt: event.livePromisedDeliveryAt ?? prev?.live?.promisedDeliveryAt ?? at,
+      reason: event.reason ?? event.stageAware.etaSource ?? "STATUS_CHANGE",
+      createdAt: at,
+    },
+    customer: event.customer,
+    stageAware: { ...event.stageAware, etaVersion: version },
+  };
+}
+
+/** Prefer server pickup/rider-to-merchant ETA over local route approximation. */
 export function pickupDeadlineIso(eta: OrderEtaResponse | null): string | null {
   if (!eta) return null;
+  const leg =
+    eta.stageAware?.pickupEta ??
+    eta.stageAware?.riderToMerchantEta ??
+    eta.stageAware?.displayEta;
+  if (leg != null && Number.isFinite(leg) && leg >= 0) {
+    return new Date(Date.now() + leg * 60_000).toISOString();
+  }
   const promiseIso = eta.firstEtaAt || eta.promise.promisedDeliveryAt;
   if (!promiseIso) return null;
   const t = new Date(promiseIso).getTime();

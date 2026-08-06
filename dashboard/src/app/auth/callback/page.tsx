@@ -83,7 +83,7 @@ function AuthCallbackContent() {
           sessionStorage.removeItem("auth_redirect");
           markDashboardFreshLogin();
           window.history.replaceState(null, "", window.location.pathname + window.location.search);
-          window.location.href = next;
+          window.location.replace(next);
           return;
         }
       }
@@ -109,7 +109,7 @@ function AuthCallbackContent() {
           }
           sessionStorage.removeItem("auth_redirect");
           markDashboardFreshLogin();
-          window.location.href = next;
+          window.location.replace(next);
           return;
         }
       }
@@ -151,7 +151,7 @@ function AuthCallbackContent() {
         }
         sessionStorage.removeItem("auth_redirect");
         markDashboardFreshLogin();
-        window.location.href = next;
+        window.location.replace(next);
         return;
       }
 

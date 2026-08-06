@@ -64,10 +64,12 @@ async function isOrderStillDispatchable(orderCoreId: number): Promise<boolean> {
       foodCancelled: ordersFood.cancelledAt,
       rideCancelled: ordersRide.cancelledAt,
       rideSearchExpiresAt: ordersRide.searchExpiresAt,
+      parcelSearchExpiresAt: ordersParcel.searchExpiresAt,
     })
     .from(ordersCore)
     .leftJoin(ordersFood, eq(ordersFood.orderId, ordersCore.id))
     .leftJoin(ordersRide, eq(ordersRide.orderId, ordersCore.id))
+    .leftJoin(ordersParcel, eq(ordersParcel.orderId, ordersCore.id))
     .where(eq(ordersCore.id, orderCoreId))
     .limit(1);
 
@@ -85,10 +87,18 @@ async function isOrderStillDispatchable(orderCoreId: number): Promise<boolean> {
   }
 
   if (serviceType === "parcel") {
-    return (
-      row.currentStatus === "READY_FOR_PICKUP" &&
-      !["delivered", "cancelled", "failed"].includes(String(row.status ?? ""))
-    );
+    const searching =
+      row.status === "assigned" &&
+      ["SEARCHING_RIDER", "PLACED", "CREATED", "READY_FOR_PICKUP"].includes(
+        String(row.currentStatus ?? "")
+      );
+    if (!searching || ["delivered", "cancelled", "failed"].includes(String(row.status ?? ""))) {
+      return false;
+    }
+    if (row.parcelSearchExpiresAt && new Date(row.parcelSearchExpiresAt) <= new Date()) {
+      return false;
+    }
+    return true;
   }
 
   if (row.rideCancelled != null) return false;
@@ -114,14 +124,26 @@ async function loadDispatchOrderTarget(
       pickupLon: ordersCore.pickupLon,
       rideType: ordersRide.rideType,
       vehicleTypeRequired: ordersRide.vehicleTypeRequired,
+      parcelVehicleTypeRequired: ordersParcel.vehicleTypeRequired,
+      parcelVehicleCategory: ordersParcel.vehicleCategory,
+      parcelSearchExpiresAt: ordersParcel.searchExpiresAt,
     })
     .from(ordersCore)
     .leftJoin(ordersRide, eq(ordersRide.orderId, ordersCore.id))
+    .leftJoin(ordersParcel, eq(ordersParcel.orderId, ordersCore.id))
     .where(eq(ordersCore.id, orderCoreId))
     .limit(1);
 
   const serviceType = normalizeOrderServiceType(row?.orderType);
   if (!row?.orderId || !serviceType) return null;
+
+  if (
+    serviceType === "parcel" &&
+    row.parcelSearchExpiresAt &&
+    new Date(row.parcelSearchExpiresAt) <= new Date()
+  ) {
+    return null;
+  }
 
   const effectiveRadiusMeters = await fetchEffectiveDispatchRadiusMeters(serviceType, waveNumber);
 
@@ -143,6 +165,14 @@ async function loadDispatchOrderTarget(
       const fallback = row.vehicleTypeRequired?.trim();
       if (fallback) personRideVehicleTypes = [fallback];
     }
+  }
+
+  if (serviceType === "parcel") {
+    const parcelVehicle =
+      row.parcelVehicleTypeRequired?.trim() ||
+      row.parcelVehicleCategory?.trim() ||
+      undefined;
+    if (parcelVehicle) personRideVehicleTypes = [parcelVehicle];
   }
 
   return {
@@ -424,7 +454,7 @@ export async function executeDispatchWave(sessionId: number): Promise<{
 export async function advanceDispatchWave(sessionId: number): Promise<boolean> {
   const sql = getSql();
   const sessions = (await sql`
-    SELECT id, order_core_id, service_type, current_wave, status
+    SELECT id, order_core_id, service_type, current_wave, status, created_at
     FROM order_dispatch_sessions
     WHERE id = ${sessionId}
     LIMIT 1
@@ -434,6 +464,7 @@ export async function advanceDispatchWave(sessionId: number): Promise<boolean> {
     service_type: string;
     current_wave: number;
     status: string;
+    created_at: string | Date;
   }>;
 
   const session = sessions[0];
@@ -455,11 +486,93 @@ export async function advanceDispatchWave(sessionId: number): Promise<boolean> {
   const currentWave = Math.max(1, Number(session.current_wave) || 1);
   const canExpand = await hasNextDispatchWave(serviceType, currentWave);
   if (!canExpand) {
+    // Phase 5: food/parcel retry until max_retry_duration_seconds, then optional auto-cancel.
+    if (serviceType !== "person_ride") {
+      const { fetchDispatchStrategyConfig } = await import("./dispatch-strategy-config.js");
+      const cfg = await fetchDispatchStrategyConfig(serviceType).catch(() => null);
+      const createdAtMs = session.created_at ? new Date(session.created_at).getTime() : Date.now();
+      const elapsedSec = Math.max(0, (Date.now() - createdAtMs) / 1000);
+      if (cfg && cfg.maxRetryDurationSeconds > 0 && elapsedSec < cfg.maxRetryDurationSeconds) {
+        const retryAt = toTimestamptzParam(Date.now() + cfg.retryIntervalSeconds * 1000);
+        await sql`
+          UPDATE order_dispatch_sessions
+          SET current_wave = 1, last_wave_at = NOW(), next_wave_at = ${retryAt}, updated_at = NOW()
+          WHERE id = ${sessionId}
+        `;
+        await sql`
+          DELETE FROM order_dispatch_rider_notifications WHERE session_id = ${sessionId}
+        `;
+        console.info(
+          "[dispatch] retry_cycle_scheduled",
+          JSON.stringify({
+            orderCoreId,
+            serviceType,
+            elapsedSec: Math.round(elapsedSec),
+            retryIntervalSeconds: cfg.retryIntervalSeconds,
+            maxRetryDurationSeconds: cfg.maxRetryDurationSeconds,
+          })
+        );
+        void recordDispatchEvent({
+          orderCoreId,
+          sessionId,
+          serviceType,
+          eventType: "retry_scheduled",
+          metadata: {
+            elapsedSec: Math.round(elapsedSec),
+            retryIntervalSeconds: cfg.retryIntervalSeconds,
+          },
+        });
+        return true;
+      }
+
+      await sql`
+        UPDATE order_dispatch_sessions
+        SET next_wave_at = NULL, updated_at = NOW()
+        WHERE id = ${sessionId}
+      `;
+      console.info(
+        "[dispatch] dispatch_exhausted",
+        JSON.stringify({ orderCoreId, serviceType })
+      );
+      void recordDispatchEvent({
+        orderCoreId,
+        sessionId,
+        serviceType,
+        eventType: "dispatch_exhausted",
+        waveNumber: currentWave,
+      });
+
+      if (cfg?.autoCancelOnExhaustion && serviceType === "food") {
+        const { cancelDispatchExhaustedOrder } = await import(
+          "./dispatch-exhausted-cancel.service.js"
+        );
+        await cancelDispatchExhaustedOrder(orderCoreId).catch((err) =>
+          console.error(
+            "[dispatch] exhausted auto-cancel failed",
+            orderCoreId,
+            (err as Error).message
+          )
+        );
+      }
+      return false;
+    }
+
     await sql`
       UPDATE order_dispatch_sessions
       SET next_wave_at = NULL, updated_at = NOW()
       WHERE id = ${sessionId}
     `;
+    console.info(
+      "[dispatch] dispatch_exhausted",
+      JSON.stringify({ orderCoreId, serviceType })
+    );
+    void recordDispatchEvent({
+      orderCoreId,
+      sessionId,
+      serviceType,
+      eventType: "dispatch_exhausted",
+      waveNumber: currentWave,
+    });
     return false;
   }
 

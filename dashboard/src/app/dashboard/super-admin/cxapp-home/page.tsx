@@ -4,7 +4,6 @@ import { useMemo, useState } from "react";
 import Link from "next/link";
 import { ChevronLeft, ChevronRight, Filter, MapPinned, Search } from "lucide-react";
 
-import { Spinner } from "@/components/geo-admin/Loader";
 import { CxAppHomeSectionToggle } from "@/components/cxapp-home/CxAppHomeSectionToggle";
 import { useGeoStatesQuery } from "@/store/api/geoAdminApi";
 
@@ -21,7 +20,7 @@ export default function CxAppHomePage() {
   const [page, setPage] = useState(1);
 
   const pageSize = 21;
-  const showInitialSpinner = isLoading && !data;
+  const showInitialSkeleton = isLoading && !data;
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -83,9 +82,11 @@ export default function CxAppHomePage() {
             </div>
           </div>
 
-          {showInitialSpinner ? (
-            <div className="flex justify-center py-10">
-              <Spinner label="Loading states / UT..." className="text-slate-600" />
+          {showInitialSkeleton ? (
+            <div className="relative mt-3 grid grid-cols-1 gap-1.5 sm:grid-cols-2 lg:grid-cols-3">
+              {Array.from({ length: 9 }).map((_, i) => (
+                <div key={i} className="h-10 rounded-lg border border-gray-100 bg-slate-50" />
+              ))}
             </div>
           ) : isError ? (
             <p className="py-8 text-sm text-red-600">
@@ -107,11 +108,8 @@ export default function CxAppHomePage() {
                   <Link
                     key={state.id}
                     href={`/dashboard/super-admin/cxapp-home/${state.id}`}
-                    onMouseEnter={() => {
-                      void fetch(`/api/super-admin/cxapp-home/food-layout/${state.id}`, {
-                        cache: "force-cache",
-                      }).catch(() => {});
-                    }}
+                    // Prefetch Next route only — avoid hammering food-layout on every hover.
+                    prefetch
                     className="group flex min-h-[40px] items-center justify-between rounded-lg border border-gray-200 bg-white px-3 py-2 text-slate-800 transition hover:border-cyan-300 hover:bg-cyan-50/40"
                   >
                     <span className="truncate text-[13px] font-semibold">{state.name}</span>
@@ -123,12 +121,14 @@ export default function CxAppHomePage() {
           )}
 
           <div className="mt-3 flex flex-wrap items-center justify-between gap-2.5">
-            <p className="text-xs text-slate-500">Showing {filtered.length} items</p>
+            <p className="text-xs text-slate-500">
+              {showInitialSkeleton ? "Loading…" : `Showing ${filtered.length} items`}
+            </p>
             <div className="inline-flex items-center gap-1 rounded-lg border border-gray-200 bg-white p-1">
               <button
                 type="button"
                 onClick={() => setPage((p) => Math.max(1, p - 1))}
-                disabled={pageSafe <= 1}
+                disabled={pageSafe <= 1 || showInitialSkeleton}
                 className="inline-flex h-8 w-8 items-center justify-center rounded-md text-slate-500 enabled:hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 <ChevronLeft className="h-4 w-4" />
@@ -139,7 +139,7 @@ export default function CxAppHomePage() {
               <button
                 type="button"
                 onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
-                disabled={pageSafe >= totalPages}
+                disabled={pageSafe >= totalPages || showInitialSkeleton}
                 className="inline-flex h-8 w-8 items-center justify-center rounded-md text-slate-500 enabled:hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 <ChevronRight className="h-4 w-4" />

@@ -14,6 +14,12 @@ const prepDelayNotifyBody = z.object({
   store_name: z.string().max(200).optional(),
 });
 
+const merchantAcceptNotifyBody = z.object({
+  orders_core_id: z.number().int().min(1),
+  from_status: z.string().max(64).optional(),
+  store_name: z.string().max(200).optional(),
+});
+
 export async function ordersInternalRoutes(app: FastifyInstance) {
   app.addHook("preHandler", async (req, reply) => {
     const env = getEnv();
@@ -169,6 +175,151 @@ export async function ordersInternalRoutes(app: FastifyInstance) {
     }
   });
 
+  app.get("/orders/eligible-riders", async (req, reply) => {
+    const ordersCoreId = Number((req.query as { orders_core_id?: string }).orders_core_id);
+    if (!Number.isInteger(ordersCoreId) || ordersCoreId < 1) {
+      return reply.code(400).send({ ok: false, error: "invalid_orders_core_id" });
+    }
+    try {
+      const { listAdminSelectableRidersForOrder } = await import(
+        "../../lib/force-assignment.service.js"
+      );
+      const riders = await listAdminSelectableRidersForOrder(ordersCoreId);
+      return reply.send({ ok: true, riders });
+    } catch (err) {
+      req.log.warn({ err, ordersCoreId }, "eligible-riders failed");
+      return reply.code(500).send({ ok: false, error: "eligible_riders_failed" });
+    }
+  });
+
+  app.get("/orders/force-assignment", async (req, reply) => {
+    const ordersCoreId = Number((req.query as { orders_core_id?: string }).orders_core_id);
+    if (!Number.isInteger(ordersCoreId) || ordersCoreId < 1) {
+      return reply.code(400).send({ ok: false, error: "invalid_orders_core_id" });
+    }
+    try {
+      const { getForceAssignmentState } = await import("../../lib/force-assignment.service.js");
+      const state = await getForceAssignmentState(ordersCoreId);
+      return reply.send({ ok: true, forceAssignment: state });
+    } catch (err) {
+      req.log.warn({ err, ordersCoreId }, "force-assignment get failed");
+      return reply.code(500).send({ ok: false, error: "force_assignment_get_failed" });
+    }
+  });
+
+  app.post("/orders/force-assignment/start", async (req, reply) => {
+    const parsed = z
+      .object({
+        orders_core_id: z.number().int().min(1),
+        new_rider_id: z.number().int().min(1),
+        reason_code: z.string().min(1).max(120),
+        reason_text: z.string().min(1).max(500),
+        catalog_reason_id: z.number().int().min(1).optional().nullable(),
+        actor_email: z.string().email().optional(),
+        actor_id: z.string().max(120).optional(),
+        offer_seconds: z.number().int().min(30).max(300).optional(),
+      })
+      .safeParse(req.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ ok: false, error: "validation_failed" });
+    }
+    try {
+      const { startForceAssignment } = await import("../../lib/force-assignment.service.js");
+      const state = await startForceAssignment({
+        orderCoreId: parsed.data.orders_core_id,
+        newRiderId: parsed.data.new_rider_id,
+        reasonCode: parsed.data.reason_code,
+        reasonText: parsed.data.reason_text,
+        catalogReasonId: parsed.data.catalog_reason_id ?? null,
+        adminEmail: parsed.data.actor_email ?? null,
+        adminUserId: parsed.data.actor_id ?? null,
+        offerSeconds: parsed.data.offer_seconds,
+      });
+      return reply.send({ ok: true, forceAssignment: state });
+    } catch (err) {
+      req.log.warn({ err, body: parsed.data }, "force-assignment start failed");
+      const message = err instanceof Error ? err.message : "force_assignment_failed";
+      const statusCode =
+        typeof (err as { statusCode?: unknown })?.statusCode === "number"
+          ? Number((err as { statusCode: number }).statusCode)
+          : 400;
+      return reply.code(statusCode >= 400 && statusCode < 600 ? statusCode : 400).send({
+        ok: false,
+        error: message,
+      });
+    }
+  });
+
+  app.post("/orders/force-assignment/cancel", async (req, reply) => {
+    const parsed = z
+      .object({
+        orders_core_id: z.number().int().min(1),
+        actor_email: z.string().email().optional(),
+        actor_id: z.string().max(120).optional(),
+      })
+      .safeParse(req.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ ok: false, error: "validation_failed" });
+    }
+    try {
+      const { cancelForceAssignment } = await import("../../lib/force-assignment.service.js");
+      const state = await cancelForceAssignment({
+        orderCoreId: parsed.data.orders_core_id,
+        adminEmail: parsed.data.actor_email ?? null,
+        adminUserId: parsed.data.actor_id ?? null,
+      });
+      return reply.send({ ok: true, forceAssignment: state });
+    } catch (err) {
+      req.log.warn({ err, body: parsed.data }, "force-assignment cancel failed");
+      const message = err instanceof Error ? err.message : "force_assignment_cancel_failed";
+      const statusCode =
+        typeof (err as { statusCode?: unknown })?.statusCode === "number"
+          ? Number((err as { statusCode: number }).statusCode)
+          : 400;
+      return reply.code(statusCode >= 400 && statusCode < 600 ? statusCode : 400).send({
+        ok: false,
+        error: message,
+      });
+    }
+  });
+
+  app.post("/orders/rider-hard-assign", async (req, reply) => {
+    const parsed = z
+      .object({
+        orders_core_id: z.number().int().min(1),
+        rider_id: z.number().int().min(1),
+        actor_email: z.string().email().optional(),
+        actor_id: z.string().max(120).optional(),
+      })
+      .safeParse(req.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ ok: false, error: "validation_failed" });
+    }
+    try {
+      const { adminHardAssignSpecificRider } = await import(
+        "../../lib/force-assignment.service.js"
+      );
+      await adminHardAssignSpecificRider({
+        orderCoreId: parsed.data.orders_core_id,
+        riderId: parsed.data.rider_id,
+        adminEmail: parsed.data.actor_email ?? null,
+        adminUserId: parsed.data.actor_id ?? null,
+      });
+      return reply.send({ ok: true });
+    } catch (err) {
+      req.log.warn({ err, body: parsed.data }, "rider-hard-assign failed");
+      const message = err instanceof Error ? err.message : "hard_assign_failed";
+      const statusCode =
+        typeof (err as { statusCode?: unknown })?.statusCode === "number"
+          ? Number((err as { statusCode: number }).statusCode)
+          : 400;
+      return reply.code(statusCode >= 400 && statusCode < 600 ? statusCode : 400).send({
+        ok: false,
+        error: message,
+      });
+    }
+  });
+
   app.post("/orders/prep-delay-notify", async (req, reply) => {
     const parsed = prepDelayNotifyBody.safeParse(req.body);
     if (!parsed.success) {
@@ -185,6 +336,65 @@ export async function ordersInternalRoutes(app: FastifyInstance) {
       return reply.send({ ok: true });
     } catch (err) {
       req.log.warn({ err }, "prep-delay-notify failed");
+      return reply.code(500).send({ ok: false, error: "notify_failed" });
+    }
+  });
+
+  /** Partnersite accept path — emit ORDER_ACCEPTED customer push + live-progress. */
+  app.post("/orders/merchant-accept-notify", async (req, reply) => {
+    const parsed = merchantAcceptNotifyBody.safeParse(req.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ ok: false, error: "validation_failed" });
+    }
+    const { orders_core_id, from_status, store_name } = parsed.data;
+    const sql = getSql();
+    try {
+      const preferredStore = store_name?.trim() || null;
+      const rows = (await sql`
+        SELECT
+          oc.order_id,
+          oc.formatted_order_id,
+          oc.current_status,
+          oc.status,
+          c.customer_id AS customer_user_id,
+          ms.id AS merchant_store_id,
+          COALESCE(
+            ${preferredStore},
+            NULLIF(TRIM(ms.store_display_name), ''),
+            'Store'
+          ) AS store_name
+        FROM public.orders_core oc
+        LEFT JOIN public.customers c ON c.id = oc.customer_id
+        LEFT JOIN public.merchant_stores ms ON ms.id = oc.merchant_store_id
+        WHERE oc.id = ${orders_core_id}
+        LIMIT 1
+      `) as unknown as Array<{
+        order_id: string | null;
+        formatted_order_id: string | null;
+        current_status: string | null;
+        status: string | null;
+        customer_user_id: string | null;
+        merchant_store_id: number | null;
+        store_name: string | null;
+      }>;
+      const row = rows[0];
+      const orderIdText = row?.order_id?.trim();
+      if (!orderIdText) {
+        return reply.code(404).send({ ok: false, error: "order_not_found" });
+      }
+      const { emitEvent } = await import("../notifications/eventBus.js");
+      emitEvent("order.status_changed", {
+        orderId: orderIdText,
+        orderShortId: row.formatted_order_id?.trim() || orderIdText,
+        fromStatus: (from_status ?? row.current_status ?? row.status ?? "CREATED").toUpperCase(),
+        toStatus: "ACCEPTED",
+        customerId: row.customer_user_id ?? null,
+        merchantStoreId: row.merchant_store_id ?? null,
+        merchantName: row.store_name ?? "Store",
+      });
+      return reply.send({ ok: true });
+    } catch (err) {
+      req.log.warn({ err }, "merchant-accept-notify failed");
       return reply.code(500).send({ ok: false, error: "notify_failed" });
     }
   });

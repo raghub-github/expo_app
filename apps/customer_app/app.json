@@ -75,7 +75,10 @@
       "expo-font"
     ],
     "extra": {
-      "API_BASE_URL": "${EXPO_PUBLIC_API_BASE_URL}"
+      "API_BASE_URL": "${EXPO_PUBLIC_API_BASE_URL}",
+      "eas": {
+        "projectId": "53fb1df5-d522-4e6a-bc73-04b7ad260992"
+      }
     }
   }
 }

@@ -1,4 +1,5 @@
 import { getSql } from "../client";
+import { bumpBillingRulesetVersion } from "./billing-admin";
 import type {
   GeoAncestorStep,
   GeoChildRow,
@@ -235,12 +236,18 @@ async function withEffectiveBaseFees(
               WHEN s.base_fare IS NULL OR s.base_fare = 0 THEN concat('₹', trim(to_char(s.per_km_rate, 'FM999999990.009999')), '/km')
               ELSE concat(
                 '₹', trim(to_char(s.base_fare, 'FM999999990.009999')),
-                '+₹', trim(to_char(s.per_km_rate, 'FM999999990.009999')), '/km'
+                ' + ₹', trim(to_char(s.per_km_rate, 'FM999999990.009999')), '/km'
               )
             END
-          FROM delivery_rate_slabs_effective(${level}::geo_pricing_level, ${id}::uuid, 'parcel'::order_type, 'customer'::delivery_actor_type) s
-          WHERE s.min_km = 0
-          ORDER BY s.priority DESC, s.id ASC
+          FROM geo_pricing_chain_steps(${level}::geo_pricing_level, ${id}::uuid) steps
+          INNER JOIN parcel_customer_pricing s
+            ON s.geo_level = steps.step_level
+           AND s.geo_ref_id = steps.step_id
+           AND s.vehicle_type = '2_wheeler'::ride_vehicle_pricing_type
+           AND s.is_active = true
+           AND s.deleted_at IS NULL
+           AND s.min_km = 0
+          ORDER BY steps.step_ord ASC, s.priority DESC, s.id ASC
           LIMIT 1
         ) AS parcel_slabs,
         (
@@ -453,12 +460,18 @@ export async function geoGetChildren(params: {
             WHEN s.base_fare IS NULL OR s.base_fare = 0 THEN concat('₹', trim(to_char(s.per_km_rate, 'FM999999990.009999')), '/km')
             ELSE concat(
               '₹', trim(to_char(s.base_fare, 'FM999999990.009999')),
-              '+₹', trim(to_char(s.per_km_rate, 'FM999999990.009999')), '/km'
+              ' + ₹', trim(to_char(s.per_km_rate, 'FM999999990.009999')), '/km'
             )
           END
-        FROM delivery_rate_slabs_effective(ch.kind::geo_pricing_level, ch.id, 'parcel'::order_type, 'customer'::delivery_actor_type) s
-        WHERE s.min_km = 0
-        ORDER BY s.priority DESC, s.id ASC
+        FROM geo_pricing_chain_steps(ch.kind::geo_pricing_level, ch.id) steps
+        INNER JOIN parcel_customer_pricing s
+          ON s.geo_level = steps.step_level
+         AND s.geo_ref_id = steps.step_id
+         AND s.vehicle_type = '2_wheeler'::ride_vehicle_pricing_type
+         AND s.is_active = true
+         AND s.deleted_at IS NULL
+         AND s.min_km = 0
+        ORDER BY steps.step_ord ASC, s.priority DESC, s.id ASC
         LIMIT 1
       ) AS customer_parcel_delivery_slabs_preview,
       (
@@ -557,12 +570,18 @@ export async function geoSearchLocations(params: {
             WHEN s.base_fare IS NULL OR s.base_fare = 0 THEN concat('₹', trim(to_char(s.per_km_rate, 'FM999999990.009999')), '/km')
             ELSE concat(
               '₹', trim(to_char(s.base_fare, 'FM999999990.009999')),
-              '+₹', trim(to_char(s.per_km_rate, 'FM999999990.009999')), '/km'
+              ' + ₹', trim(to_char(s.per_km_rate, 'FM999999990.009999')), '/km'
             )
           END
-        FROM delivery_rate_slabs_effective(h.kind::geo_pricing_level, h.id, 'parcel'::order_type, 'customer'::delivery_actor_type) s
-        WHERE s.min_km = 0
-        ORDER BY s.priority DESC, s.id ASC
+        FROM geo_pricing_chain_steps(h.kind::geo_pricing_level, h.id) steps
+        INNER JOIN parcel_customer_pricing s
+          ON s.geo_level = steps.step_level
+         AND s.geo_ref_id = steps.step_id
+         AND s.vehicle_type = '2_wheeler'::ride_vehicle_pricing_type
+         AND s.is_active = true
+         AND s.deleted_at IS NULL
+         AND s.min_km = 0
+        ORDER BY steps.step_ord ASC, s.priority DESC, s.id ASC
         LIMIT 1
       ) AS customer_parcel_delivery_slabs_preview,
       (
@@ -917,6 +936,7 @@ export async function insertGeoPlatformOfferBinding(params: {
       updated_at::text AS updated_at
   `;
   if (!row) throw new Error("Failed to insert platform offer binding");
+  await bumpBillingRulesetVersion();
   return row;
 }
 
@@ -925,7 +945,69 @@ export async function deleteGeoPlatformOfferBinding(bindingId: number): Promise<
   const rows = await sql<{ id: string }[]>`
     DELETE FROM geo_platform_offer_bindings WHERE id = ${bindingId}::bigint RETURNING id::text AS id
   `;
-  return rows.length > 0;
+  const ok = rows.length > 0;
+  if (ok) await bumpBillingRulesetVersion();
+  return ok;
+}
+
+export type GeoBillingDiscountBindingAdminRow = {
+  id: string;
+  geo_level: string;
+  geo_ref_id: string;
+  billing_discount_id: number;
+  created_at: string;
+  updated_at: string;
+};
+
+export async function listGeoBillingDiscountBindingsForNode(
+  level: Exclude<GeoHierarchyLevel, "root">,
+  refId: string
+): Promise<GeoBillingDiscountBindingAdminRow[]> {
+  const sql = getSql();
+  return sql<GeoBillingDiscountBindingAdminRow[]>`
+    SELECT
+      id::text AS id,
+      geo_level::text AS geo_level,
+      geo_ref_id::text AS geo_ref_id,
+      billing_discount_id,
+      created_at::text AS created_at,
+      updated_at::text AS updated_at
+    FROM geo_billing_discount_bindings
+    WHERE geo_level = ${level}::geo_pricing_level AND geo_ref_id = ${refId}::uuid
+    ORDER BY billing_discount_id ASC
+  `;
+}
+
+export async function insertGeoBillingDiscountBinding(params: {
+  level: Exclude<GeoHierarchyLevel, "root">;
+  refId: string;
+  billingDiscountId: number;
+}): Promise<GeoBillingDiscountBindingAdminRow> {
+  const sql = getSql();
+  const [row] = await sql<GeoBillingDiscountBindingAdminRow[]>`
+    INSERT INTO geo_billing_discount_bindings (geo_level, geo_ref_id, billing_discount_id)
+    VALUES (${params.level}::geo_pricing_level, ${params.refId}::uuid, ${params.billingDiscountId})
+    RETURNING
+      id::text AS id,
+      geo_level::text AS geo_level,
+      geo_ref_id::text AS geo_ref_id,
+      billing_discount_id,
+      created_at::text AS created_at,
+      updated_at::text AS updated_at
+  `;
+  if (!row) throw new Error("Failed to insert checkout coupon binding");
+  await bumpBillingRulesetVersion();
+  return row;
+}
+
+export async function deleteGeoBillingDiscountBinding(bindingId: number): Promise<boolean> {
+  const sql = getSql();
+  const rows = await sql<{ id: string }[]>`
+    DELETE FROM geo_billing_discount_bindings WHERE id = ${bindingId}::bigint RETURNING id::text AS id
+  `;
+  const ok = rows.length > 0;
+  if (ok) await bumpBillingRulesetVersion();
+  return ok;
 }
 
 export async function geoUpdateLocation(

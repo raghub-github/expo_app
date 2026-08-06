@@ -10,7 +10,15 @@ import { getItem } from "@/utils/storage";
 import { enterStartupApiGate, leaveStartupApiGate, shouldBypassStartupGate } from "@/lib/startup-api-gate";
 import { isNetworkError } from "@/utils/networkError";
 
-const MAX_RETRIES = 3;
+/**
+ * Transport-level retry budget. This layer owns retrying network failures and
+ * 503s, because it sits closest to the failure and can back off per request.
+ * React Query deliberately does NOT retry those on top (see lib/queryClient.ts)
+ * — when both layers retried, one logical fetch could become 16 requests on a
+ * flaky connection, which on top of the tracking polls was a self-inflicted
+ * traffic storm.
+ */
+const MAX_RETRIES = 2;
 const RETRYABLE_METHODS = new Set(["get", "head", "options"]);
 
 type RetryConfig = InternalAxiosRequestConfig & {

@@ -24,6 +24,7 @@ const ctx = (): BillContext => ({
   dropPostalCode: null,
   dropGeoRefByLevel: null,
   platformOfferGeoBindingEffectiveIds: new Set(),
+    checkoutCouponGeoBindingEffectiveIds: new Set(),
   deliveryFeeFromRateCard: 0,
   deliveryFeeFromGeo: null,
   deliveryDefaultBaseInr: 25,
@@ -309,6 +310,7 @@ describe("executeBillingPipeline", () => {
       offerAudience: "CUSTOMER",
       perUserUsageLimit: null,
       metadata: { customer_segment: "NEW" } as Record<string, unknown>,
+      couponConfig: null,
     };
     const dataset: BillingDataset = {
       rulesetVersion: 1,
@@ -322,7 +324,7 @@ describe("executeBillingPipeline", () => {
       merchantOverrides: null,
       coupon,
     };
-    const c = ctx();
+    const c = { ...ctx(), checkoutCouponGeoBindingEffectiveIds: new Set([1]) };
     const rExisting = executeBillingPipeline({ ...c, userSegment: "EXISTING" }, dataset);
     assert.equal(rExisting.discount_total, 0);
     const rNew = executeBillingPipeline({ ...c, userSegment: "NEW" }, dataset);
@@ -346,6 +348,7 @@ describe("executeBillingPipeline", () => {
       offerAudience: "CUSTOMER",
       perUserUsageLimit: null,
       metadata: { customer_segment: "EXISTING" } as Record<string, unknown>,
+      couponConfig: null,
     };
     const dataset: BillingDataset = {
       rulesetVersion: 1,
@@ -359,7 +362,7 @@ describe("executeBillingPipeline", () => {
       merchantOverrides: null,
       coupon,
     };
-    const c = ctx();
+    const c = { ...ctx(), checkoutCouponGeoBindingEffectiveIds: new Set([2]) };
     const rNew = executeBillingPipeline({ ...c, userSegment: "NEW" }, dataset);
     assert.equal(rNew.discount_total, 0);
     const rExisting = executeBillingPipeline({ ...c, userSegment: "EXISTING" }, dataset);

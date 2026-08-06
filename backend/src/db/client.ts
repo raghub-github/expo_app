@@ -193,13 +193,17 @@ export function isDbConnectionError(err: unknown): boolean {
  * pooler destroyed the handle). In that case we must rebuild the singleton.
  * Plain ECONNRESET on one socket must NOT trigger a full pool reset — that
  * is what caused CONNECTION_DESTROYED storms across background ticks.
+ * DNS failures (ENOTFOUND / EAI_AGAIN) do rebuild — every socket is unusable
+ * until resolution recovers, and a fresh pool after DNS returns is required.
  */
 function needsFullPoolReset(err: unknown): boolean {
   const codes = new Set(collectErrCodes(err));
   if (
     codes.has("CONNECTION_DESTROYED") ||
     codes.has("CONNECTION_CLOSED") ||
-    codes.has("CONNECT_TIMEOUT")
+    codes.has("CONNECT_TIMEOUT") ||
+    codes.has("ENOTFOUND") ||
+    codes.has("EAI_AGAIN")
   ) {
     return true;
   }
@@ -208,6 +212,8 @@ function needsFullPoolReset(err: unknown): boolean {
     msg.includes("connection_destroyed") ||
     msg.includes("connection_closed") ||
     msg.includes("connect_timeout") ||
+    msg.includes("getaddrinfo enotfound") ||
+    msg.includes("getaddrinfo eai_again") ||
     // Pooler rejected checkout — stale client often needs a fresh pool.
     msg.includes("edbhandlerexited") ||
     msg.includes("echeckouttimeout")
@@ -221,9 +227,9 @@ function needsFullPoolReset(err: unknown): boolean {
  * by API requests and many ticks; ending it mid-flight cascades CONNECTION_DESTROYED.
  * Only rebuild the pool when the client is actually unusable.
  */
-export async function withSqlRetry<T>(fn: () => Promise<T>, attempts = 4): Promise<T> {
+export async function withSqlRetry<T>(fn: () => Promise<T>, attempts = 5): Promise<T> {
   // Backoff grows for DNS / connect timeouts so we wait out brief outages.
-  const delaysMs = [0, 200, 600, 1500];
+  const delaysMs = [0, 250, 750, 1800, 3500];
   let lastErr: unknown;
   let generationAtStart = _poolGeneration;
 
@@ -245,7 +251,7 @@ export async function withSqlRetry<T>(fn: () => Promise<T>, attempts = 4): Promi
         generationAtStart = _poolGeneration;
       }
 
-      const delay = delaysMs[attempt + 1] ?? 1500;
+      const delay = delaysMs[Math.min(attempt + 1, delaysMs.length - 1)] ?? 3500;
       if (delay > 0) await new Promise((r) => setTimeout(r, delay));
     }
   }

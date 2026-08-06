@@ -200,6 +200,9 @@ export type CheckoutOffersResponse = {
     discountType: string;
     description: string;
     estimatedSavingsInr?: number | null;
+    minOrderAmount?: number | null;
+    customerSegment?: string | null;
+    autoApply?: boolean;
   }[];
   merchantOffers: Array<
     CheckoutOfferMerchantRow & { estimatedSavingsInr?: number | null }
@@ -214,6 +217,7 @@ export type CheckoutOffersResponse = {
   platformOffers: {
     id: number;
     name: string | null;
+    couponCode?: string | null;
     offerKind: string;
     summary: string;
     estimatedSavingsInr?: number | null;
@@ -225,6 +229,7 @@ export type CheckoutOffersResponse = {
   platformOffersIneligible?: {
     id: number;
     name: string | null;
+    couponCode?: string | null;
     offerKind: string;
     summary: string;
     reason: string;

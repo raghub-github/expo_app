@@ -6,6 +6,7 @@ import { getSql } from "@/lib/db/client";
 import {
   cancelAndReassignRiderOnBackend,
   cancelRiderOnlyOnBackend,
+  hardAssignRiderOnBackend,
   manualAssignRiderOnBackend,
 } from "@/lib/orders/rider-management-backend";
 import { applyRiderCancellationPenalty } from "@/lib/orders/apply-rider-cancellation-penalty";
@@ -19,7 +20,11 @@ function parseOrderId(param: string | undefined): number | null {
   return Number.isFinite(id) ? id : null;
 }
 
-type RiderManagementAction = "cancel_only" | "cancel_reassign" | "assign_rider";
+type RiderManagementAction =
+  | "cancel_only"
+  | "cancel_reassign"
+  | "assign_rider"
+  | "hard_assign";
 
 export async function POST(
   request: NextRequest,
@@ -83,7 +88,7 @@ export async function POST(
         ? Number(body.catalogReasonId)
         : null;
 
-    if (!["cancel_only", "cancel_reassign", "assign_rider"].includes(action)) {
+    if (!["cancel_only", "cancel_reassign", "assign_rider", "hard_assign"].includes(action)) {
       return NextResponse.json({ success: false, error: "Invalid action" }, { status: 400 });
     }
 
@@ -115,6 +120,41 @@ export async function POST(
     const actorEmail = user.email ?? null;
     const actorId = systemUser?.id != null ? String(systemUser.id) : actorEmail;
 
+    if (action === "hard_assign") {
+      if (orderRow.riderId != null) {
+        return NextResponse.json(
+          { success: false, error: "Order already has an assigned rider — use Force Assignment" },
+          { status: 409 }
+        );
+      }
+      if (riderId == null) {
+        return NextResponse.json({ success: false, error: "Select a rider" }, { status: 400 });
+      }
+      const result = await hardAssignRiderOnBackend({
+        ordersCoreId: orderCoreId,
+        riderId,
+        actorEmail,
+        actorId,
+      });
+      if (!result.ok) {
+        return NextResponse.json(
+          { success: false, error: result.error },
+          { status: result.status }
+        );
+      }
+      await stampOrderRoutedTo({
+        orderId: orderCoreId,
+        systemUserId: systemUser?.id ?? null,
+        actorEmail,
+        actorName: systemUser?.full_name ?? null,
+        actorRole: systemUser?.primary_role ?? null,
+        action: "rider_manual_assign",
+        actionLabel: "Assign rider manually (specific rider)",
+        metadata: { action: "hard_assign", riderId },
+      }).catch(() => undefined);
+      return NextResponse.json({ success: true, routedToEmail: actorEmail });
+    }
+
     if (action === "assign_rider") {
       if (orderRow.riderId != null) {
         return NextResponse.json(
@@ -129,7 +169,21 @@ export async function POST(
       if (!result.ok) {
         return NextResponse.json({ success: false, error: result.error }, { status: result.status });
       }
-      return NextResponse.json({ success: true, action });
+      const stamp = await stampOrderRoutedTo({
+        orderId: orderCoreId,
+        systemUserId: systemUser?.id ?? null,
+        actorEmail,
+        actorName: systemUser?.full_name ?? null,
+        actorRole: systemUser?.primary_role ?? null,
+        action: "rider_manual_assign",
+        actionLabel: "Assign rider manually",
+        metadata: { action: "assign_rider" },
+      }).catch(() => ({ ok: false as const, routedToEmail: null }));
+      return NextResponse.json({
+        success: true,
+        action,
+        routedToEmail: stamp.routedToEmail ?? actorEmail,
+      });
     }
 
     const effectiveRiderId = riderId ?? orderRow.riderId;

@@ -12,6 +12,10 @@ import {
 } from "./platformOffersApply.js";
 import { applyExclusiveCheckoutOffer } from "./checkoutExclusiveOffer.js";
 import { cartPromoQualifyingSubtotal, eligibleSubtotal } from "./discountEligibility.js";
+import {
+  evaluateCheckoutCouponEligibility,
+  estimateCheckoutCouponDiscountInr,
+} from "./checkoutCouponEligibility.js";
 import type {
   AppliedLine,
   BillContext,
@@ -145,37 +149,39 @@ function applyCouponDiscount(
   state: MutableBillState,
   rem: FeeRem
 ): void {
-  const now = new Date();
-  if (!coupon.isActive) return;
-  if (coupon.validFrom && now < coupon.validFrom) return;
-  if (coupon.validUntil && now > coupon.validUntil) return;
-  if (coupon.usageLimit != null && coupon.usedCount >= coupon.usageLimit) return;
+  // Geo visibility: unmapped coupons never apply (same rule as platform offers).
+  const geoBound = ctx.checkoutCouponGeoBindingEffectiveIds;
+  if (!geoBound || !geoBound.has(coupon.id)) return;
 
-  const rowAud = String(coupon.offerAudience ?? "CUSTOMER").toUpperCase();
-  const checkoutAud = String(ctx.checkoutAudience ?? "CUSTOMER").toUpperCase();
-  if (rowAud !== checkoutAud) return;
+  const lifetimeFallback = ctx.couponRedemptionsByUser ?? 0;
+  const usage =
+    ctx.couponUsageByDiscountId?.get(coupon.id) ??
+    ctx.couponUsageSnapshot ?? {
+      lifetime: lifetimeFallback,
+      day: lifetimeFallback,
+      week: lifetimeFallback,
+      month: lifetimeFallback,
+      year: lifetimeFallback,
+    };
 
-  const meta = (coupon.metadata ?? {}) as Record<string, unknown>;
-  const couponSeg = String(meta.customer_segment ?? "ALL").toUpperCase();
-  if (couponSeg === "NEW" && ctx.userSegment !== "NEW") return;
-  if (couponSeg === "EXISTING" && ctx.userSegment === "NEW") return;
+  const eligibility = evaluateCheckoutCouponEligibility(coupon, usage, {
+    serviceType: ctx.serviceType,
+    userSegment: ctx.userSegment,
+    checkoutAudience: ctx.checkoutAudience,
+    customerCompletedOrderCount: ctx.customerCompletedOrderCount,
+    cartSubtotal: Math.max(0, itemPlusAddon),
+    distanceKm: ctx.distanceKm,
+    weightKg: ctx.parcelWeightKg,
+    vehicleType: ctx.vehicleType ?? ctx.rideType,
+    paymentMode: ctx.paymentMode,
+    cityName: ctx.cityName,
+    stateName: null,
+    now: ctx.now ?? new Date(),
+  });
+  if (!eligibility.fullyEligible) return;
 
-  const perUser = coupon.perUserUsageLimit;
-  if (perUser != null && perUser > 0) {
-    const usedByUser = ctx.couponRedemptionsByUser ?? 0;
-    if (usedByUser >= perUser) return;
-  }
-
-  let amt = 0;
   const eligibleBase = cartPromoQualifyingSubtotal(ctx, Math.max(0, rem.items));
-  if (coupon.discountType === "FIXED") {
-    amt = Math.max(0, coupon.valueNumeric ?? 0);
-  } else if (coupon.discountType === "PERCENTAGE") {
-    const base = Math.max(0, eligibleBase);
-    amt = (base * (coupon.valueNumeric ?? 0)) / 100;
-  }
-  const cap = coupon.maxDiscountCap;
-  if (cap != null && cap > 0) amt = Math.min(amt, cap);
+  const amt = estimateCheckoutCouponDiscountInr(coupon, eligibleBase);
   const take = Math.min(Math.max(0, amt), rem.items, eligibleBase);
   if (take <= 0) return;
 
@@ -186,7 +192,11 @@ function applyCouponDiscount(
     label: `Coupon ${coupon.code}`,
     amount: take,
     hidden: coupon.isHidden,
-    meta: { couponId: coupon.id, code: coupon.code },
+    meta: {
+      couponId: coupon.id,
+      code: coupon.code,
+      couponType: eligibility.config.coupon_type ?? null,
+    },
   };
   state.discounts.push(line);
   state.breakdown_steps.push({ step: line.label, amount: -take, meta: { couponId: coupon.id } });

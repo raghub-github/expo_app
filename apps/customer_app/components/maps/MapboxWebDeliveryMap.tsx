@@ -121,6 +121,18 @@ export function MapboxWebDeliveryMap({
       ...payload,
       refitCamera: forceRefit || payload.refitCamera === true,
     };
+
+    // The web side only reads `fullRoute` as a fallback for when `remainingRoute`
+    // is too short to draw (see mapbox-food-delivery-script.ts — both the bounds
+    // pass and the line builder prefer `remainingRoute` and fall back). Once the
+    // remaining polyline is usable, shipping the full one too doubles the size of
+    // a JSON string that crosses the WebView bridge on every rider position, up
+    // to 1 Hz, for the whole delivery.
+    if (mapPayload.remainingRoute && mapPayload.remainingRoute.length >= 2) {
+      delete (mapPayload as { fullRoute?: unknown }).fullRoute;
+      delete (mapPayload as { route?: unknown }).route;
+    }
+
     const json = JSON.stringify(mapPayload);
     const recenterJs = forceRefit ? "if (window.recenterOnRider) { window.recenterOnRider(); }" : "";
     webRef.current?.injectJavaScript(
@@ -128,20 +140,37 @@ export function MapboxWebDeliveryMap({
     );
   }, [payload, refitNonce]);
 
-  const syncAll = useCallback(() => {
+  // `sync` closes over `payload`, which is a fresh object on most renders, so
+  // `syncAll` changed identity constantly. Anything depending on it re-ran every
+  // render — including the settle timeout below, which meant a `setTimeout` was
+  // created and cleared on each render while rider positions streamed in at up
+  // to 1 Hz. Holding it in a ref keeps the callbacks callable without making
+  // them dependencies.
+  const syncAllRef = useRef<() => void>(() => {});
+  syncAllRef.current = () => {
     injectMarkerIcon();
     sync();
-  }, [injectMarkerIcon, sync]);
+  };
+  const syncAll = useCallback(() => syncAllRef.current(), []);
 
+  // Payload-driven sync. `sync` itself is a no-op when the derived syncKey is
+  // unchanged, so this stays cheap even when `payload` churns.
   useEffect(() => {
     syncAll();
-  }, [syncAll, refitNonce]);
+  }, [payload, refitNonce, markerDataUri, syncAll]);
 
+  // Route arrays land a beat after the rider position they belong to; this
+  // re-syncs once they do. Keyed on the lengths only — not on `syncAll` — so it
+  // no longer re-arms on every unrelated render.
   useEffect(() => {
     if (!readyRef.current) return;
-    const t = setTimeout(() => syncAll(), 80);
+    const t = setTimeout(() => syncAllRef.current(), 80);
     return () => clearTimeout(t);
-  }, [payload.remainingRoute.length, payload.connectorRoute?.length, payload.preRiderArcRoute?.length, syncAll]);
+  }, [
+    payload.remainingRoute.length,
+    payload.connectorRoute?.length,
+    payload.preRiderArcRoute?.length,
+  ]);
 
   if (!token || !html) {
     // html is only ever empty when token is — see the memo above.

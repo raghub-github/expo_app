@@ -9,6 +9,11 @@ import { showAcceptedByAnotherRiderToast } from "@/src/lib/riderDispatchTakenToa
 import { riderDispatchLog, riderDispatchWarn } from "@/src/lib/rider-dispatch-log";
 import { useRiderWsStore } from "@/src/stores/riderWsStore";
 import { useRiderToastStore } from "@/src/stores/riderToastStore";
+import {
+  mergeEtaUpdatedEvent,
+  RIDER_ORDER_ETA_QUERY_KEY,
+  type OrderEtaResponse,
+} from "@/src/services/api/etaApi";
 
 const RECONNECT_BASE_MS = 3_000;
 const RECONNECT_MAX_MS = 60_000;
@@ -232,6 +237,23 @@ export function RiderDispatchRealtime() {
             // one directly — it warns the rider their order may be auto-cancelled.
             if (payload.type === "tracking.warning.v1" && payload.message) {
               useRiderToastStore.getState().showToast(String(payload.message));
+              return;
+            }
+            if (payload.type === "eta.updated.v1" || payload.type === "eta.updated") {
+              const orderKey = String(
+                (payload as { orderIdText?: string; orderId?: string }).orderIdText ??
+                  (payload as { orderId?: string }).orderId ??
+                  ""
+              ).trim();
+              if (!orderKey) return;
+              const prev = queryClient.getQueryData<OrderEtaResponse>(
+                RIDER_ORDER_ETA_QUERY_KEY(orderKey)
+              );
+              const merged = mergeEtaUpdatedEvent(prev ?? null, payload as never);
+              if (merged) {
+                queryClient.setQueryData(RIDER_ORDER_ETA_QUERY_KEY(orderKey), merged);
+                queryClient.setQueryData(RIDER_ORDER_ETA_QUERY_KEY(orderKey.toUpperCase()), merged);
+              }
               return;
             }
             if (payload.type === "dispatch_offer" || payload.type === "incoming_order") {

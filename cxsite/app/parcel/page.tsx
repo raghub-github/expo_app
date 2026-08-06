@@ -1,16 +1,17 @@
-import ParcelServicePageModern from '@/components/parcel/ParcelServicePageModern'
+import ParcelLandingPage from '@/components/parcel/ParcelLandingPage'
 import ParcelServiceGate from '@/components/parcel/ParcelServiceGate'
 import { pageTitleSegment } from '@/lib/pageTitle'
 
 export const metadata = {
   title: pageTitleSegment('Parcel Delivery'),
-  description: 'Fast, reliable and insured parcel delivery service. Send anything, anywhere with GatiMitra.',
+  description:
+    'Send parcels with GatiMitra — courier booking is available only on the mobile app. Fast pickup, live tracking, OTP handoff.',
 }
 
 export default function ParcelPage() {
   return (
     <ParcelServiceGate>
-      <ParcelServicePageModern />
+      <ParcelLandingPage />
     </ParcelServiceGate>
   )
 }

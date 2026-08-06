@@ -647,7 +647,8 @@ export async function evaluateRiderDispatchEligibility(
     | "orderCoreId"
     | "orderId"
     | "personRideVehicleTypes"
-  >
+  >,
+  options?: { ignoreAssignmentLimit?: boolean }
 ): Promise<EligibleDispatchRider | null> {
   const reject = (reason: string, extra?: Partial<DispatchRiderTrace>): null => {
     traceRiderDecision({
@@ -679,12 +680,14 @@ export async function evaluateRiderDispatchEligibility(
     }
   }
 
-  const assignmentOk = await canRiderReceiveDispatchOffer(riderId, target.serviceType, {
-    orderCoreId: target.orderCoreId,
-    orderId: target.orderId,
-    eventContext: "dispatch_offer",
-  });
-  if (!assignmentOk) return reject("assignment_limit_or_active_order", { riderLat: ctx.lat, riderLng: ctx.lng });
+  if (!options?.ignoreAssignmentLimit) {
+    const assignmentOk = await canRiderReceiveDispatchOffer(riderId, target.serviceType, {
+      orderCoreId: target.orderCoreId,
+      orderId: target.orderId,
+      eventContext: "dispatch_offer",
+    });
+    if (!assignmentOk) return reject("assignment_limit_or_active_order", { riderLat: ctx.lat, riderLng: ctx.lng });
+  }
   if (!ctx.eligibleServices.includes(target.serviceType)) return reject("service_not_in_duty");
   if (await isRiderBlacklistedForService(riderId, target.serviceType)) {
     return reject("blacklisted_for_service", { riderLat: ctx.lat, riderLng: ctx.lng });
@@ -739,10 +742,13 @@ export async function evaluateRiderDispatchEligibility(
 
 /** Inverse of pool listing — eligible riders for one order at the current wave. */
 export async function listEligibleRidersForDispatchOrder(
-  target: DispatchOrderTarget
+  target: DispatchOrderTarget,
+  options?: { ignoreManualHold?: boolean; ignoreAssignmentLimit?: boolean }
 ): Promise<EligibleDispatchRider[]> {
   const { isOrderDispatchManualHold } = await import("./order-dispatch-manual-hold.js");
-  if (await isOrderDispatchManualHold(target.orderCoreId)) return [];
+  if (!options?.ignoreManualHold && (await isOrderDispatchManualHold(target.orderCoreId))) {
+    return [];
+  }
 
   // Area-level Prevent Services: if this order's points are blocked, offer it
   // to nobody. Riders stay on duty; only this order is withheld.
@@ -779,7 +785,9 @@ export async function listEligibleRidersForDispatchOrder(
 
   for (const riderId of candidateIds) {
     if (excludedRiderIds.has(riderId)) continue;
-    const row = await evaluateRiderDispatchEligibility(riderId, target);
+    const row = await evaluateRiderDispatchEligibility(riderId, target, {
+      ignoreAssignmentLimit: options?.ignoreAssignmentLimit,
+    });
     if (row) eligible.push(row);
   }
 
@@ -1054,15 +1062,23 @@ async function fetchParcelPoolRows(): Promise<DispatchPoolOrderRow[]> {
       dropLat: ordersCore.dropLat,
       dropLon: ordersCore.dropLon,
       createdAt: ordersCore.createdAt,
+      searchExpiresAt: ordersParcel.searchExpiresAt,
     })
     .from(ordersCore)
     .innerJoin(ordersParcel, eq(ordersParcel.orderId, ordersCore.id))
     .where(
       and(
         eq(ordersCore.orderType, "parcel"),
+        eq(ordersCore.status, "assigned"),
         isNull(ordersCore.riderId),
-        eq(ordersCore.currentStatus, "READY_FOR_PICKUP"),
-        sql`${ordersCore.status} NOT IN ('delivered', 'cancelled', 'failed')`
+        inArray(ordersCore.currentStatus, [
+          "SEARCHING_RIDER",
+          "PLACED",
+          "CREATED",
+          "READY_FOR_PICKUP",
+        ]),
+        sql`${ordersCore.status} NOT IN ('delivered', 'cancelled', 'failed')`,
+        sql`(${ordersParcel.searchExpiresAt} IS NULL OR ${ordersParcel.searchExpiresAt} > now())`
       )
     )
     .orderBy(asc(ordersCore.createdAt))
@@ -1177,7 +1193,7 @@ export async function listDispatchPoolOrdersForRider(
     if (eligible) withinRadius.push(order);
   }
 
-  return withinRadius
+  const sorted = withinRadius
     .sort((a, b) => {
       const pri = Number(b.higherDispatchPriority) - Number(a.higherDispatchPriority);
       if (pri !== 0) return pri;
@@ -1187,6 +1203,13 @@ export async function listDispatchPoolOrdersForRider(
       return a.createdAt.getTime() - b.createdAt.getTime();
     })
     .slice(0, 15);
+
+  try {
+    const { appendForceAssignmentPoolRow } = await import("./force-assignment.service.js");
+    return await appendForceAssignmentPoolRow(riderId, sorted);
+  } catch {
+    return sorted;
+  }
 }
 
 /** Pre-accept validation: duty, services, active-order, GPS, pickup radius (DB-driven). */

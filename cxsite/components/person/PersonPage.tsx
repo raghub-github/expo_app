@@ -270,7 +270,7 @@ export default function PersonPage() {
                 badgePlacement="inline"
                 className="text-gray-700 font-medium hover:text-[#00B4D8] transition-colors"
                 disabledClassName="cursor-not-allowed opacity-45 hover:text-gray-700"
-                onEnabledClick={() => handleNavigation('/courier', 'parcel')}
+                onEnabledClick={() => handleNavigation('/parcel', 'parcel')}
               />
             </nav>
 

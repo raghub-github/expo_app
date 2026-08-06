@@ -10,6 +10,19 @@ const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "placeholde
 
 const isProduction = process.env.NODE_ENV === "production";
 
+/** Browsers cannot open 0.0.0.0 — map to localhost so post-auth redirects work. */
+function sanitizeOrigin(origin: string): string {
+  try {
+    const u = new URL(origin);
+    if (u.hostname === "0.0.0.0" || u.hostname === "::") {
+      u.hostname = "localhost";
+    }
+    return u.origin;
+  } catch {
+    return "http://localhost:3002";
+  }
+}
+
 /**
  * Production-safe cookie options so cookies work on HTTPS and are sent on same-site requests.
  */
@@ -39,6 +52,7 @@ function applyCookieOptions(
  */
 export async function GET(request: NextRequest) {
   const url = new URL(request.url);
+  const origin = sanitizeOrigin(url.origin);
   const code = url.searchParams.get("code");
   let next = url.searchParams.get("next") || "/partners/all-stores";
 
@@ -46,7 +60,7 @@ export async function GET(request: NextRequest) {
   if (next.startsWith("http")) {
     try {
       const nextUrl = new URL(next);
-      if (nextUrl.origin !== url.origin) next = "/partners/all-stores";
+      if (sanitizeOrigin(nextUrl.origin) !== origin) next = "/partners/all-stores";
       else next = nextUrl.pathname + nextUrl.search;
     } catch {
       next = "/partners/all-stores";
@@ -56,10 +70,10 @@ export async function GET(request: NextRequest) {
 
   if (!code) {
     console.warn("[auth/callback] GET called without code");
-    return NextResponse.redirect(new URL("/auth/login?error=missing_code", url.origin));
+    return NextResponse.redirect(new URL("/auth/login?error=missing_code", origin));
   }
 
-  const redirectUrl = new URL(next, url.origin);
+  const redirectUrl = new URL(next, origin);
   const response = NextResponse.redirect(redirectUrl);
 
   const cookieStore = {
@@ -80,13 +94,13 @@ export async function GET(request: NextRequest) {
   if (error) {
     console.error("[auth/callback] exchangeCodeForSession error:", error.message);
     return NextResponse.redirect(
-      new URL(`/auth/login?error=${encodeURIComponent(error.message)}`, url.origin)
+      new URL(`/auth/login?error=${encodeURIComponent(error.message)}`, origin)
     );
   }
 
   if (!data.session?.user) {
     console.warn("[auth/callback] No session after exchange");
-    return NextResponse.redirect(new URL("/auth/login?error=no_session", url.origin));
+    return NextResponse.redirect(new URL("/auth/login?error=no_session", origin));
   }
 
   const validation = await validateMerchantFromSession(data.session.user);
@@ -96,7 +110,7 @@ export async function GET(request: NextRequest) {
     return NextResponse.redirect(
       new URL(
         `/auth/login?error=${encodeURIComponent(validation.error ?? "Not authorized for merchant dashboard")}`,
-        url.origin
+        origin
       )
     );
   }

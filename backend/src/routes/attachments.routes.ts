@@ -2,41 +2,45 @@
  * GET /attachments/proxy?key=<r2_key>
  * Serves file from R2 by key. Use for permanent image URLs (bucket can stay private).
  *
- * Hot paths (e.g. user-app-categories) are served from an in-process LRU so home
- * category chips do not re-fetch R2 on every icon request.
+ * Memory-safe: always 302 to a short-lived signed R2 URL so Node never buffers
+ * image bodies (category icons in this fleet are often 1–2MB+).
  */
 import type { FastifyInstance } from "fastify";
-import { getObjectByKey } from "../services/r2/r2Service.js";
+import { getR2SignedUrl } from "../services/r2/r2Service.js";
 
 const CATEGORY_KEY_PREFIX = "user-app-categories/";
-const LRU_MAX = 250;
-type CacheEntry = { buffer: Buffer; contentType: string };
-const objectLru = new Map<string, CacheEntry>();
+const SIGNED_URL_TTL_SEC = 3600;
 
-function lruGet(key: string): CacheEntry | null {
-  const hit = objectLru.get(key);
-  if (!hit) return null;
-  objectLru.delete(key);
-  objectLru.set(key, hit);
-  return hit;
-}
-
-function lruSet(key: string, entry: CacheEntry): void {
-  if (objectLru.has(key)) objectLru.delete(key);
-  objectLru.set(key, entry);
-  while (objectLru.size > LRU_MAX) {
-    const oldest = objectLru.keys().next().value;
-    if (oldest == null) break;
-    objectLru.delete(oldest);
-  }
-}
+/** Memoize signed URLs so home grids don't mint a new signature per chip. */
+type SignedCacheEntry = { url: string; expiresAtMs: number };
+const signedUrlLru = new Map<string, SignedCacheEntry>();
+const SIGNED_URL_CACHE_MAX = 500;
 
 function cacheControlForKey(key: string): string {
-  // Content-addressed category icons — safe to cache aggressively on device/CDN.
   if (key.startsWith(CATEGORY_KEY_PREFIX)) {
-    return "public, max-age=31536000, immutable";
+    // Redirect response only — client caches the final R2 URL until signature expiry.
+    return "private, max-age=300";
   }
-  return "public, max-age=86400, stale-while-revalidate=604800";
+  return "private, max-age=300";
+}
+
+async function signedUrlCached(key: string): Promise<string> {
+  const now = Date.now();
+  const hit = signedUrlLru.get(key);
+  // Refresh 5 minutes before expiry.
+  if (hit && hit.expiresAtMs - now > 5 * 60_000) {
+    signedUrlLru.delete(key);
+    signedUrlLru.set(key, hit);
+    return hit.url;
+  }
+  const url = await getR2SignedUrl(key, SIGNED_URL_TTL_SEC);
+  signedUrlLru.set(key, { url, expiresAtMs: now + SIGNED_URL_TTL_SEC * 1000 });
+  while (signedUrlLru.size > SIGNED_URL_CACHE_MAX) {
+    const oldest = signedUrlLru.keys().next().value;
+    if (oldest == null) break;
+    signedUrlLru.delete(oldest);
+  }
+  return url;
 }
 
 export async function attachmentsRoutes(app: FastifyInstance) {
@@ -56,27 +60,10 @@ export async function attachmentsRoutes(app: FastifyInstance) {
       })();
 
       try {
-        let result = lruGet(decodedKey);
-        if (!result) {
-          const fromR2 = await getObjectByKey(decodedKey);
-          if (!fromR2) {
-            return reply.code(404).send({ error: "File not found" });
-          }
-          result = { buffer: fromR2.buffer, contentType: fromR2.contentType };
-          if (
-            decodedKey.startsWith(CATEGORY_KEY_PREFIX) ||
-            result.buffer.byteLength <= 512 * 1024
-          ) {
-            lruSet(decodedKey, result);
-          }
-        }
-
+        const signed = await signedUrlCached(decodedKey);
         return reply
-          .code(200)
-          .header("Content-Type", result.contentType)
           .header("Cache-Control", cacheControlForKey(decodedKey))
-          .header("Vary", "Accept")
-          .send(result.buffer);
+          .redirect(signed, 302);
       } catch (e) {
         req.log.error(e, "attachments/proxy");
         return reply.code(500).send({ error: "Failed to load file" });

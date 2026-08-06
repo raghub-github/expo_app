@@ -40,6 +40,7 @@ import {
 } from '@gatimitra/financial-rules';
 import { resolveMerchantOfferBadge } from '@/lib/merchant-offer-display';
 import { OrderMixedText, OrderNum } from '@/components/orders/orders-typography';
+import { itemRefundBalances } from '@/lib/orders/item-refund-balances';
 
 type RiderPenaltyPreviewRider = {
   riderId: number;
@@ -86,6 +87,8 @@ interface ItemsRefundModalProps {
   refundActionsDisabled?: boolean;
   /** Remaining amount that can still be refunded (grand total − already refunded). */
   refundRemainingRefundable?: number;
+  /** Per-item already-refunded CTC amounts from prior partial refunds. */
+  itemRefundTotals?: Record<string, { alreadyRefunded: number }> | null;
 }
 
 /** Payment gateways (Razorpay) reject refunds below ₹1. */
@@ -603,6 +606,12 @@ function roundMoney(n: number): number {
   return Math.round(n * 100) / 100;
 }
 
+/** Full original line total (CTC) for remaining-refund math. */
+function originalItemCtcTotal(item: RefundItem): number {
+  const qty = isDeliveryFeeRow(item) ? 1 : Math.max(1, item.quantity);
+  return roundMoney(item.totalPerQuantity * qty);
+}
+
 export default function ItemsRefundModal({
   isOpen,
   onClose,
@@ -615,6 +624,7 @@ export default function ItemsRefundModal({
   orderFullyRefunded = false,
   refundActionsDisabled = false,
   refundRemainingRefundable,
+  itemRefundTotals: itemRefundTotalsProp,
 }: ItemsRefundModalProps) {
   const pathname = useAppPathname();
   const resolvedDashboard = dashboardTypeProp ?? getDashboardTypeFromPath(pathname ?? '') ?? 'ORDER_FOOD';
@@ -629,9 +639,55 @@ export default function ItemsRefundModal({
   // Once the order is fully refunded, every refund-moving action is blocked.
   const blockAllRefunds = orderFullyRefunded;
   // Already-cancelled orders cannot be cancelled again (with or without refund).
+
+  const [itemAlreadyRefunded, setItemAlreadyRefunded] = useState<Map<number, number>>(
+    () => new Map()
+  );
   const blockCancellation = orderCancelledOnTimeline;
 
   const [modalOpen, setModalOpen] = useState(false);
+
+  const syncItemRefundTotals = useCallback(
+    (totals: Record<string, { alreadyRefunded: number }> | null | undefined) => {
+      const m = new Map<number, number>();
+      if (totals) {
+        for (const [k, v] of Object.entries(totals)) {
+          const id = Number(k);
+          const amt = Number(v?.alreadyRefunded);
+          if (Number.isFinite(id) && id > 0 && Number.isFinite(amt) && amt > 0) {
+            m.set(id, amt);
+          }
+        }
+      }
+      setItemAlreadyRefunded(m);
+    },
+    []
+  );
+
+  useEffect(() => {
+    if (itemRefundTotalsProp) {
+      syncItemRefundTotals(itemRefundTotalsProp);
+    }
+  }, [itemRefundTotalsProp, syncItemRefundTotals]);
+
+  useEffect(() => {
+    if (!modalOpen || orderIdProp == null) return;
+    let cancelled = false;
+    void fetch(`/api/orders/${orderIdProp}/refunds`)
+      .then((r) => r.json())
+      .then((body) => {
+        if (cancelled) return;
+        syncItemRefundTotals(
+          (body?.itemRefundTotals as Record<string, { alreadyRefunded: number }>) ?? null
+        );
+      })
+      .catch(() => {
+        if (!cancelled && !itemRefundTotalsProp) setItemAlreadyRefunded(new Map());
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [modalOpen, orderIdProp, syncItemRefundTotals, itemRefundTotalsProp]);
 
   const {
     attributes: catalogAttributes,
@@ -1176,18 +1232,59 @@ export default function ItemsRefundModal({
     setRefundItems(prev => prev.map(item => item.id === itemId ? { ...item, remark } : item));
   };
 
+  const getItemBalances = useCallback(
+    (item: RefundItem) =>
+      itemRefundBalances({
+        itemId: item.id,
+        originalTotal: originalItemCtcTotal(item),
+        alreadyById: itemAlreadyRefunded,
+      }),
+    [itemAlreadyRefunded]
+  );
+
+  /** Remaining for selected qty (proportional share of line remaining). */
+  const remainingForSelectedQty = useCallback(
+    (item: RefundItem) => {
+      const bal = getItemBalances(item);
+      if (bal.fullyRefunded) return 0;
+      const fullQty = Math.max(1, item.quantity);
+      const selQty = item.selectedQuantity > 0 ? item.selectedQuantity : fullQty;
+      return roundMoney(bal.remainingRefundable * (selQty / fullQty));
+    },
+    [getItemBalances]
+  );
+
   const handlePercentageChange = (itemId: number, percentage: number) => {
-    setRefundItems(prev => prev.map(item => {
-      if (item.id !== itemId) return item;
-      const currentQuantity = item.selectedQuantity > 0 ? item.selectedQuantity : 1;
-      return {
-        ...item,
-        refundPercentage: percentage,
-        customAmount: (item.amountPerQuantity * percentage * currentQuantity) / 100,
-        refundType: percentage > 0 ? 'PARTIAL' : 'NONE',
-        selectedQuantity: percentage > 0 ? Math.max(1, item.selectedQuantity) : 0
-      };
-    }));
+    setRefundItems((prev) =>
+      prev.map((item) => {
+        if (item.id !== itemId) return item;
+        const bal = itemRefundBalances({
+          itemId: item.id,
+          originalTotal: originalItemCtcTotal(item),
+          alreadyById: itemAlreadyRefunded,
+        });
+        if (bal.fullyRefunded) {
+          return {
+            ...item,
+            refundPercentage: 0,
+            customAmount: 0,
+            refundType: 'NONE' as const,
+            selectedQuantity: 0,
+          };
+        }
+        const currentQuantity = item.selectedQuantity > 0 ? item.selectedQuantity : item.quantity;
+        const remainingShare = roundMoney(
+          bal.remainingRefundable * (Math.max(1, currentQuantity) / Math.max(1, item.quantity))
+        );
+        return {
+          ...item,
+          refundPercentage: percentage,
+          customAmount: roundMoney((remainingShare * percentage) / 100),
+          refundType: percentage > 0 ? 'PARTIAL' : 'NONE',
+          selectedQuantity: percentage > 0 ? Math.max(1, item.selectedQuantity || item.quantity) : 0,
+        };
+      })
+    );
   };
 
   const generatePercentageOptions = () => {
@@ -1198,18 +1295,16 @@ export default function ItemsRefundModal({
 
   const calculatePercentageRefundAmount = (item: RefundItem) => {
     if (item.refundPercentage === 0) return 0;
-    const qty = item.selectedQuantity > 0 ? item.selectedQuantity : 1;
-    return (item.amountPerQuantity * item.refundPercentage * qty) / 100;
+    const bal = getItemBalances(item);
+    if (bal.fullyRefunded) return 0;
+    const remainingShare = remainingForSelectedQty(item);
+    return roundMoney((remainingShare * item.refundPercentage) / 100);
   };
 
   const calculateTotalPercentageRefundAmount = () => {
     return refundItems
-      .filter(item => !isDeliveryFeeRow(item))
-      .reduce((total, item) => {
-        if (item.refundPercentage === 0) return total;
-        const qty = item.selectedQuantity > 0 ? item.selectedQuantity : 1;
-        return total + (item.amountPerQuantity * item.refundPercentage * qty) / 100;
-      }, 0);
+      .filter((item) => !isDeliveryFeeRow(item))
+      .reduce((total, item) => total + calculatePercentageRefundAmount(item), 0);
   };
 
   const handleImageClick = (item: RefundItem) => {
@@ -1237,14 +1332,25 @@ export default function ItemsRefundModal({
   };
 
   const handleRefundQuantityChange = (itemId: number, quantity: number) => {
-    setRefundItems(prev => prev.map(item => {
-      if (item.id !== itemId) return item;
-      const updatedItem = { ...item, selectedQuantity: quantity };
-      if (item.refundPercentage > 0) {
-        updatedItem.customAmount = (item.amountPerQuantity * item.refundPercentage * quantity) / 100;
-      }
-      return updatedItem;
-    }));
+    setRefundItems((prev) =>
+      prev.map((item) => {
+        if (item.id !== itemId) return item;
+        const bal = itemRefundBalances({
+          itemId: item.id,
+          originalTotal: originalItemCtcTotal(item),
+          alreadyById: itemAlreadyRefunded,
+        });
+        if (bal.fullyRefunded) return item;
+        const updatedItem = { ...item, selectedQuantity: quantity };
+        if (item.refundPercentage > 0) {
+          const remainingShare = roundMoney(
+            bal.remainingRefundable * (quantity / Math.max(1, item.quantity))
+          );
+          updatedItem.customAmount = roundMoney((remainingShare * item.refundPercentage) / 100);
+        }
+        return updatedItem;
+      })
+    );
   };
 
   const calculateTotalRefundAmount = () => {
@@ -1262,11 +1368,13 @@ export default function ItemsRefundModal({
 
   /** Merchant CTM amount to debit from wallet (uses frozen merchant line amounts, not customer CTC). */
   /**
-   * What the CUSTOMER actually gets back. Item percentages apply to item prices
-   * (≈ merchant CTM), so convert the selection to a ratio and apply it to the
-   * customer's paid total (CTC). This is the figure we refund and display.
+   * Customer refund for partial path = sum of remaining-based CTC amounts
+   * (already in customer CTC space — no second ratio scale).
    */
   const calculateCustomerPayableRefund = (): number => {
+    if (refundType === 'refund_without_cancellation') {
+      return roundMoney(calculateTotalPercentageRefundAmount());
+    }
     const selected = calculateTotalRefundAmount();
     const itemBillTotal = refundItems.reduce(
       (sum, i) => sum + i.amountPerQuantity * (isDeliveryFeeRow(i) ? 1 : i.quantity),
@@ -1367,7 +1475,9 @@ export default function ItemsRefundModal({
           const previewAmount =
             refundType === 'refund_with_cancellation'
               ? customerRefundAmount
-              : totalAmount;
+              : refundType === 'refund_without_cancellation'
+                ? calculateCustomerPayableRefund()
+                : totalAmount;
           const res = await fetch(`/api/orders/${orderId}/refunds/preview`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -1381,8 +1491,19 @@ export default function ItemsRefundModal({
                 refundType === 'refund_without_cancellation'
                   ? {
                       refundItems: refundItems
-                        .filter(i => i.refundType !== 'NONE')
-                        .map(i => ({ id: i.id, refundPercentage: i.refundPercentage })),
+                        .filter((i) => i.refundType !== 'NONE' && calculatePercentageRefundAmount(i) > 0)
+                        .map((i) => {
+                          const bal = getItemBalances(i);
+                          const amount = calculatePercentageRefundAmount(i);
+                          return {
+                            id: i.id,
+                            refundPercentage: i.refundPercentage,
+                            amount,
+                            originalTotal: bal.originalTotal,
+                            alreadyRefundedBefore: bal.alreadyRefunded,
+                            remainingBefore: bal.remainingRefundable,
+                          };
+                        }),
                     }
                   : refundType === 'refund_with_cancellation'
                     ? {
@@ -1456,7 +1577,10 @@ export default function ItemsRefundModal({
 
   const confirmRefund = async () => {
     const orderId = orderIdProp ?? null;
-    const totalAmount = calculateTotalRefundAmount();
+    const totalAmount =
+      refundType === 'refund_without_cancellation'
+        ? calculateCustomerPayableRefund()
+        : calculateTotalRefundAmount();
     const mxDebitAmount = calculateMerchantDebitAmount();
 
     // ── Client-side mirror of the server money-safety guard ──────────────
@@ -1486,6 +1610,26 @@ export default function ItemsRefundModal({
       );
       return;
     }
+
+    // Per-item remaining check (partial path).
+    if (refundType === 'refund_without_cancellation') {
+      for (const item of refundItems) {
+        if (item.refundType === 'NONE' || item.refundPercentage <= 0) continue;
+        const bal = getItemBalances(item);
+        const amt = calculatePercentageRefundAmount(item);
+        if (bal.fullyRefunded) {
+          onToast?.(`Item #${item.id} is already fully refunded.`);
+          return;
+        }
+        if (amt - bal.remainingRefundable > 0.01) {
+          onToast?.(
+            `Item #${item.id}: ₹${amt.toFixed(2)} exceeds remaining ₹${bal.remainingRefundable.toFixed(2)}.`
+          );
+          return;
+        }
+      }
+    }
+
     const notificationMessages: Record<string, string> = {
       cancel_without_refund: 'Order has been cancelled successfully without refund.',
       refund_with_cancellation: 'Order has been cancelled and refund processed successfully.',
@@ -1537,22 +1681,11 @@ export default function ItemsRefundModal({
       onToast?.('Refund amount must be greater than 0.');
       return;
     }
-    // ── Refund basis: ALWAYS what the CUSTOMER actually paid (CTC) ──────────
-    // Item-level percentages are applied to item prices, which sum to roughly
-    // the merchant CTM — not the customer's bill. So turn the selection into a
-    // ratio and apply that ratio to the customer's paid total instead. A 60%
-    // item selection on a ₹1.83 order now refunds ₹1.10, not ₹0.60.
-    // (refund_with_cancellation already derives its amount from the CTC total,
-    // so it needs no scaling.)
-    const fullOrderAmount = refundItems.reduce(
-      (sum, i) => sum + (i.amountPerQuantity * (isDeliveryFeeRow(i) ? 1 : i.quantity)),
-      0
-    );
-    const refundRatio = fullOrderAmount > 0 ? totalAmount / fullOrderAmount : 0;
-    const scaledCustomerRefund =
-      customerCtcTotal > 0 ? roundMoney(refundRatio * customerCtcTotal) : totalAmount;
+    // Partial refunds: amounts are already CTC remaining-based — no CTM→CTC rescale.
     const refundAmount =
-      refundType === 'refund_with_cancellation' ? customerRefundAmount : scaledCustomerRefund;
+      refundType === 'refund_with_cancellation'
+        ? customerRefundAmount
+        : roundMoney(calculateCustomerPayableRefund());
 
     // Razorpay rejects refunds below ₹1 — lift to the minimum, but never beyond
     // what is still refundable on this order.
@@ -1598,20 +1731,27 @@ export default function ItemsRefundModal({
             refundType === 'refund_without_cancellation'
               ? {
                   refundItems: refundItems
-                    .filter(i => i.refundType !== 'NONE')
-                    .map(i => ({
-                      id: i.id,
-                      name: i.name,
-                      refundPercentage: i.refundPercentage,
-                      amount: calculatePercentageRefundAmount(i),
-                    })),
+                    .filter((i) => i.refundType !== 'NONE' && calculatePercentageRefundAmount(i) > 0)
+                    .map((i) => {
+                      const bal = getItemBalances(i);
+                      const amount = calculatePercentageRefundAmount(i);
+                      return {
+                        id: i.id,
+                        name: i.name,
+                        refundPercentage: i.refundPercentage,
+                        selectedQuantity: i.selectedQuantity,
+                        amount,
+                        originalTotal: bal.originalTotal,
+                        alreadyRefundedBefore: bal.alreadyRefunded,
+                        remainingBefore: bal.remainingRefundable,
+                      };
+                    }),
                 }
               : refundType === 'refund_with_cancellation'
                 ? {
                     refundPercentage: customerRefundPercent,
                     ctcTotal: customerCtcTotal,
                     customerRefundAmount: customerRefundAmount,
-                    fullOrderAmount,
                   }
                 : undefined,
         }),
@@ -1945,7 +2085,7 @@ export default function ItemsRefundModal({
           </div>
 
           <div className="p-4">
-            {canCreateRefund ? (
+            {canCreateRefund && refundType !== 'refund_without_cancellation' ? (
             <div className="mb-3 px-3 py-2 bg-emerald-50/80 border border-slate-200 rounded-md flex flex-wrap items-center justify-between gap-2">
               <label className="flex items-center gap-2 cursor-pointer group">
                 <input
@@ -1992,10 +2132,10 @@ export default function ItemsRefundModal({
 
             {refundItems.length > 0 ? (
             <div className="overflow-x-auto -mx-1 px-1">
-            <table className={`w-full border-collapse text-xs mb-3 ${canCreateRefund ? 'min-w-[960px]' : 'min-w-[880px]'}`}>
+            <table className={`w-full border-collapse text-xs mb-3 ${canCreateRefund && refundType !== 'refund_without_cancellation' ? 'min-w-[960px]' : 'min-w-[880px]'}`}>
               <thead>
                 <tr>
-                  {canCreateRefund ? (
+                  {canCreateRefund && refundType !== 'refund_without_cancellation' ? (
                     <th className="px-2 py-1.5 border border-slate-200 text-center bg-emerald-50 font-semibold text-slate-800">Select</th>
                   ) : null}
                   <th className="px-2 py-1.5 border border-slate-200 text-center bg-emerald-50 font-semibold text-slate-800">Id</th>
@@ -2011,8 +2151,8 @@ export default function ItemsRefundModal({
               </thead>
               <tbody>
                 {refundItems.map((item) => (
-                  <tr key={item.id} className={canCreateRefund && item.isSelected ? 'bg-emerald-50/50' : ''}>
-                    {canCreateRefund ? (
+                  <tr key={item.id} className={canCreateRefund && refundType !== 'refund_without_cancellation' && item.isSelected ? 'bg-emerald-50/50' : ''}>
+                    {canCreateRefund && refundType !== 'refund_without_cancellation' ? (
                     <td className="px-2 py-1.5 border border-slate-200 text-center">
                       <input type="checkbox" checked={item.isSelected} onChange={() => toggleItemSelection(item.id)} className="checkbox-circle text-emerald-600 focus:ring-emerald-500 focus:ring-offset-0" />
                     </td>
@@ -2075,7 +2215,9 @@ export default function ItemsRefundModal({
                     <td className="px-2 py-1.5 border border-slate-200 text-center text-slate-600 tabular-nums">{isDeliveryFeeRow(item) ? item.amountPerQuantity.toFixed(2) : item.amountPerQuantity}</td>
                     <td className="px-2 py-1.5 border border-slate-200 text-center text-slate-600 tabular-nums">{item.taxPerQuantity.toFixed(2)}</td>
                     <td className="px-2 py-1.5 border border-slate-200 text-center text-slate-600 tabular-nums">{item.chargesPerQuantity.toFixed(2)}</td>
-                    <td className="px-2 py-1.5 border border-slate-200 text-center text-slate-600 tabular-nums">{item.totalPerQuantity.toFixed(2)}</td>
+                    <td className="px-2 py-1.5 border border-slate-200 text-center text-slate-600 tabular-nums">
+                      {originalItemCtcTotal(item).toFixed(2)}
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -2194,15 +2336,37 @@ export default function ItemsRefundModal({
                               <th className="px-1.5 py-1 border border-slate-200 text-center bg-emerald-50 font-semibold text-slate-800">Cust.</th>
                               <th className="px-1.5 py-1 border border-slate-200 text-center bg-emerald-50 font-semibold text-slate-800">Remark</th>
                               <th className="px-1.5 py-1 border border-slate-200 text-center bg-emerald-50 font-semibold text-slate-800">Qty</th>
-                              <th className="px-1.5 py-1 border border-slate-200 text-center bg-emerald-50 font-semibold text-slate-800">Amt</th>
+                              <th className="px-1.5 py-1 border border-slate-200 text-center bg-emerald-50 font-semibold text-slate-800">Original</th>
+                              <th className="px-1.5 py-1 border border-slate-200 text-center bg-emerald-50 font-semibold text-slate-800">Already</th>
+                              <th className="px-1.5 py-1 border border-slate-200 text-center bg-emerald-50 font-semibold text-slate-800">Remaining</th>
                               <th className="px-1.5 py-1 border border-slate-200 text-center bg-emerald-50 font-semibold text-slate-800">Refund %</th>
                               <th className="px-1.5 py-1 border border-slate-200 text-center bg-emerald-50 font-semibold text-slate-800">Refund ₹</th>
                             </tr>
                           </thead>
                           <tbody>
-                            {refundItems.filter(item => !isDeliveryFeeRow(item)).map((item) => (
-                              <tr key={item.id} className={item.refundPercentage > 0 ? 'bg-green-50/50' : ''}>
-                                <td className="px-1.5 py-1 border border-slate-200 text-slate-600">({item.id}) {item.name}</td>
+                            {refundItems.filter(item => !isDeliveryFeeRow(item)).map((item) => {
+                              const bal = getItemBalances(item);
+                              const disabled = bal.fullyRefunded;
+                              const refundAmt = calculatePercentageRefundAmount(item);
+                              return (
+                              <tr
+                                key={item.id}
+                                className={
+                                  disabled
+                                    ? 'bg-slate-100/80 opacity-70'
+                                    : item.refundPercentage > 0
+                                      ? 'bg-green-50/50'
+                                      : ''
+                                }
+                              >
+                                <td className="px-1.5 py-1 border border-slate-200 text-slate-600">
+                                  ({item.id}) {item.name}
+                                  {disabled ? (
+                                    <span className="ml-1 inline-flex rounded bg-slate-200 px-1 py-0.5 text-[9px] font-semibold uppercase text-slate-600">
+                                      Fully refunded
+                                    </span>
+                                  ) : null}
+                                </td>
                                 <td className="px-1.5 py-1 border border-slate-200 text-left align-top text-slate-600 min-w-[120px]">
                                   <CustomisationCell
                                     detail={item.customisationDetail}
@@ -2211,26 +2375,54 @@ export default function ItemsRefundModal({
                                   />
                                 </td>
                                 <td className="px-1.5 py-1 border border-slate-200">
-                                  <input type="text" value={item.remark} onChange={(e) => handleRemarkChange(item.id, e.target.value)} placeholder="Remark" className="w-full h-6 px-1.5 border border-slate-200 rounded text-[10px] bg-white focus:outline-none focus:ring-1 focus:ring-emerald-500" />
+                                  <input
+                                    type="text"
+                                    value={item.remark}
+                                    disabled={disabled}
+                                    onChange={(e) => handleRemarkChange(item.id, e.target.value)}
+                                    placeholder="Remark"
+                                    className="w-full h-6 px-1.5 border border-slate-200 rounded text-[10px] bg-white focus:outline-none focus:ring-1 focus:ring-emerald-500 disabled:cursor-not-allowed disabled:bg-slate-50"
+                                  />
                                 </td>
                                 <td className="px-1.5 py-1 border border-slate-200 text-center">
-                                  <select value={item.selectedQuantity || 1} onChange={(e) => handleRefundQuantityChange(item.id, parseInt(e.target.value, 10))} className="w-full h-6 px-1 border border-slate-200 rounded text-[10px] bg-white focus:outline-none focus:ring-1 focus:ring-emerald-500 appearance-none cursor-pointer">
+                                  <select
+                                    value={item.selectedQuantity || 1}
+                                    disabled={disabled}
+                                    onChange={(e) => handleRefundQuantityChange(item.id, parseInt(e.target.value, 10))}
+                                    className="w-full h-6 px-1 border border-slate-200 rounded text-[10px] bg-white focus:outline-none focus:ring-1 focus:ring-emerald-500 appearance-none cursor-pointer disabled:cursor-not-allowed disabled:bg-slate-50"
+                                  >
                                     {generateQuantityOptionsFrom1(item.quantity).map((qty) => <option key={qty} value={qty}>{qty}</option>)}
                                   </select>
                                 </td>
-                                <td className="px-1.5 py-1 border border-slate-200 text-center text-slate-600 orders-num">{item.amountPerQuantity}</td>
+                                <td className="px-1.5 py-1 border border-slate-200 text-center text-slate-700 orders-num">
+                                  ₹{bal.originalTotal.toFixed(2)}
+                                </td>
+                                <td className="px-1.5 py-1 border border-slate-200 text-center text-slate-600 orders-num">
+                                  {bal.alreadyRefunded > 0
+                                    ? `${bal.alreadyRefundedPct.toFixed(0)}% · ₹${bal.alreadyRefunded.toFixed(2)}`
+                                    : '—'}
+                                </td>
+                                <td className="px-1.5 py-1 border border-slate-200 text-center font-medium text-slate-800 orders-num">
+                                  ₹{bal.remainingRefundable.toFixed(2)}
+                                </td>
                                 <td className="px-1.5 py-1 border border-slate-200 text-center">
-                                  <select value={item.refundPercentage} onChange={(e) => handlePercentageChange(item.id, parseInt(e.target.value, 10))} className="w-full h-6 px-1 border border-slate-200 rounded text-[10px] bg-white focus:outline-none focus:ring-1 focus:ring-emerald-500 appearance-none cursor-pointer">
+                                  <select
+                                    value={disabled ? 0 : item.refundPercentage}
+                                    disabled={disabled}
+                                    onChange={(e) => handlePercentageChange(item.id, parseInt(e.target.value, 10))}
+                                    className="w-full h-6 px-1 border border-slate-200 rounded text-[10px] bg-white focus:outline-none focus:ring-1 focus:ring-emerald-500 appearance-none cursor-pointer disabled:cursor-not-allowed disabled:bg-slate-50"
+                                  >
                                     {generatePercentageOptions().map((pct) => <option key={pct} value={pct}>{pct}%</option>)}
                                   </select>
                                 </td>
                                 <td className="px-1.5 py-1 border border-slate-200 text-center">
-                                  <OrderNum className={item.refundPercentage > 0 ? 'font-semibold text-green-600' : 'text-slate-400'}>
-                                    {item.refundPercentage > 0 ? `₹${calculatePercentageRefundAmount(item).toFixed(2)}` : '0'}
+                                  <OrderNum className={!disabled && item.refundPercentage > 0 ? 'font-semibold text-green-600' : 'text-slate-400'}>
+                                    {!disabled && item.refundPercentage > 0 ? `₹${refundAmt.toFixed(2)}` : '0'}
                                   </OrderNum>
                                 </td>
                               </tr>
-                            ))}
+                              );
+                            })}
                           </tbody>
                         </table>
                         <div className="mt-2 flex flex-col items-end gap-1">
@@ -2247,7 +2439,7 @@ export default function ItemsRefundModal({
                                 ₹{calculateCustomerPayableRefund().toFixed(2)}
                               </OrderNum>
                               <OrderMixedText className="ml-1 text-[10px] text-slate-500">
-                                {`(same % of ₹${customerCtcTotal.toFixed(2)} paid)`}
+                                (from remaining refundable balance)
                               </OrderMixedText>
                             </div>
                           ) : null}

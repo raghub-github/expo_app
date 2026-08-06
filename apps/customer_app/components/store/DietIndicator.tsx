@@ -4,7 +4,7 @@ import { StoreTheme } from "@/constants/storeTheme";
 
 type DietType = "veg" | "nonveg" | "egg";
 
-export function DietIndicator({ type }: { type: DietType }) {
+function DietIndicatorInner({ type }: { type: DietType }) {
   if (type === "veg") {
     return (
       <View style={[styles.box, { borderColor: StoreTheme.vegGreen }]}>
@@ -58,3 +58,10 @@ const styles = StyleSheet.create({
     marginTop: -1,
   },
 });
+
+/**
+ * Rendered once per list item. Memoised so a parent re-render (a filter
+ * toggle, a store-status tick, a bill recalculation) does not walk every
+ * mounted instance.
+ */
+export const DietIndicator = React.memo(DietIndicatorInner);

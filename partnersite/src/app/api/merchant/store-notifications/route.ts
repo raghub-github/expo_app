@@ -7,6 +7,14 @@ import {
   markPartnerNotificationsPanelCleared,
 } from '@/lib/partner-notifications-panel';
 import { purgeStaleNewOrderNotifications } from '@/lib/purge-stale-new-order-notifications';
+import {
+  clearPartnerCampaignNotifications,
+  deletePartnerCampaignNotification,
+  isCampaignNotificationId,
+  listPartnerCampaignNotifications,
+  markAllPartnerCampaignsRead,
+  markPartnerCampaignRead,
+} from '@/lib/partner-campaign-inbox';
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder.supabase.co";
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "placeholder-service-role-key";
@@ -17,7 +25,7 @@ function getDb() {
   });
 }
 
-/** GET ?store_id= — list in-app notifications for the store */
+/** GET ?store_id= — store ops alerts + super-admin campaign announcements */
 export async function GET(req: NextRequest) {
   try {
     const storeId = new URL(req.url).searchParams.get('store_id');
@@ -39,7 +47,7 @@ export async function GET(req: NextRequest) {
     const raw = data ?? [];
     const purged = await purgeStaleNewOrderNotifications(db, gate.storeIdNum, raw);
     const remaining = purged.size > 0 ? raw.filter((r) => !purged.has(String(r.id))) : raw;
-    const notifications = remaining.map((r) => ({
+    const storeNotifications = remaining.map((r) => ({
       id: String(r.id),
       type: r.type,
       title: r.title,
@@ -47,8 +55,18 @@ export async function GET(req: NextRequest) {
       read: r.read === true,
       order_id: r.order_id != null ? String(r.order_id) : undefined,
       action_url: r.action_url ?? undefined,
-      created_at: r.created_at,
+      created_at: r.created_at as string | undefined,
+      source: 'store' as const,
     }));
+
+    const campaignNotifications = await listPartnerCampaignNotifications(gate.storeIdNum, 40);
+
+    const notifications = [...storeNotifications, ...campaignNotifications].sort((a, b) => {
+      const ta = a.created_at ? new Date(a.created_at).getTime() : 0;
+      const tb = b.created_at ? new Date(b.created_at).getTime() : 0;
+      return tb - ta;
+    });
+
     return NextResponse.json({ notifications });
   } catch (e) {
     console.error('[store-notifications GET]', e);
@@ -77,6 +95,7 @@ export async function POST(req: NextRequest) {
         console.error('[store-notifications POST] mark_all_read', error);
         return NextResponse.json({ error: 'update_failed' }, { status: 500 });
       }
+      await markAllPartnerCampaignsRead(gate.storeIdNum);
       return NextResponse.json({ ok: true });
     }
 
@@ -89,13 +108,22 @@ export async function POST(req: NextRequest) {
         console.error('[store-notifications POST] clear_all', error);
         return NextResponse.json({ error: 'delete_failed' }, { status: 500 });
       }
+      await clearPartnerCampaignNotifications(gate.storeIdNum);
       await markPartnerNotificationsPanelCleared(db, gate.storeIdNum);
       return NextResponse.json({ ok: true });
     }
 
     if (action === 'mark_read') {
       const nid = typeof body.notification_id === 'string' ? body.notification_id.trim() : '';
-      if (!nid || !/^\d+$/.test(nid)) {
+      if (!nid) {
+        return NextResponse.json({ error: 'notification_id required' }, { status: 400 });
+      }
+      if (isCampaignNotificationId(nid)) {
+        const ok = await markPartnerCampaignRead(gate.storeIdNum, nid);
+        if (!ok) return NextResponse.json({ error: 'update_failed' }, { status: 500 });
+        return NextResponse.json({ ok: true });
+      }
+      if (!/^\d+$/.test(nid)) {
         return NextResponse.json({ error: 'notification_id required' }, { status: 400 });
       }
       const { error } = await db
@@ -176,7 +204,15 @@ export async function DELETE(req: NextRequest) {
       }
       return NextResponse.json({ ok: true });
     }
-    if (!notificationId || !/^\d+$/.test(notificationId)) {
+    if (!notificationId) {
+      return NextResponse.json({ error: 'notification_id required' }, { status: 400 });
+    }
+    if (isCampaignNotificationId(notificationId)) {
+      const ok = await deletePartnerCampaignNotification(gate.storeIdNum, notificationId);
+      if (!ok) return NextResponse.json({ error: 'delete_failed' }, { status: 500 });
+      return NextResponse.json({ ok: true });
+    }
+    if (!/^\d+$/.test(notificationId)) {
       return NextResponse.json({ error: 'notification_id required' }, { status: 400 });
     }
     const { error } = await db

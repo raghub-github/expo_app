@@ -436,7 +436,14 @@ export interface GeoRiderNearPoint {
   distanceKm: number;
   status: string;
   localityCode: string | null;
+  storeName: string | null;
   lastUpdatedAt: string | null;
+  /** Active duty services from latest duty_logs (food / parcel / person_ride). */
+  activeServices: string[];
+  currentAssignedOrderId: string | null;
+  totalDeliveredOrders: number;
+  totalCancelledOrders: number;
+  city: string | null;
 }
 
 export interface GeoRiderSearchResult {
@@ -462,9 +469,40 @@ function isAllowedRadiusKm(n: number): n is GeoAvailabilityRadiusKm {
   return (GEO_AVAILABILITY_RADIUS_KM as readonly number[]).includes(n);
 }
 
+function parseServiceTypes(raw: unknown): string[] {
+  if (raw == null) return [];
+  let arr: unknown[] = [];
+  if (Array.isArray(raw)) arr = raw;
+  else if (typeof raw === "string") {
+    try {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) arr = parsed;
+    } catch {
+      return [];
+    }
+  }
+  const out: string[] = [];
+  for (const item of arr) {
+    const s = String(item ?? "")
+      .trim()
+      .toLowerCase()
+      .replace(/-/g, "_");
+    if (!s) continue;
+    if (s === "food" || s === "parcel" || s === "person_ride" || s === "person") {
+      out.push(s === "person" ? "person_ride" : s);
+    }
+  }
+  return Array.from(new Set(out));
+}
+
 /**
- * Search riders within radiusKm of (lat, lng) using live GPS (rider_current_locations)
- * with fallback to riders.lat/lon. Scoped by area_manager_id when provided.
+ * Search riders currently located within radiusKm of (lat, lng).
+ * Uses live GPS only (rider_current_locations) — never onboarding/profile lat/lon.
+ *
+ * Status is derived from duty_logs (source of truth for online/offline) + active
+ * orders_core assignment (BUSY). Do NOT use riders.availability_status — it is stale.
+ *
+ * KPIs / insights / rider list are computed only from riders inside the selected radius.
  */
 export async function searchRidersNearPoint(params: {
   lat: number;
@@ -479,6 +517,8 @@ export async function searchRidersNearPoint(params: {
   const radiusKm = isAllowedRadiusKm(params.radiusKm) ? params.radiusKm : 3;
   const areaManagerId = params.areaManagerId;
   const maxRadius = GEO_AVAILABILITY_RADIUS_KM[GEO_AVAILABILITY_RADIUS_KM.length - 1]!;
+  // Rough degree pad for bbox prefilter (~111 km per degree lat).
+  const padDeg = (maxRadius / 111) * 1.2;
 
   const rows = await sql`
     WITH positioned AS (
@@ -486,17 +526,69 @@ export async function searchRidersNearPoint(params: {
         r.id,
         r.mobile,
         r.name,
-        r.availability_status AS status,
         r.locality_code,
-        COALESCE(rcl.lat, r.lat) AS lat,
-        COALESCE(rcl.lng, r.lon) AS lng,
-        COALESCE(rcl.updated_at, r.updated_at) AS last_updated_at
-      FROM public.riders r
-      LEFT JOIN public.rider_current_locations rcl ON rcl.rider_id = r.id
+        r.city,
+        rcl.lat AS lat,
+        rcl.lng AS lng,
+        rcl.updated_at AS last_updated_at,
+        ld.duty_status,
+        ld.service_types AS duty_service_types,
+        ao.order_display_id AS current_assigned_order_id,
+        ao.store_name AS store_name,
+        COALESCE(stats.delivered_count, 0) AS total_delivered,
+        COALESCE(stats.cancelled_count, 0) AS total_cancelled
+      FROM public.rider_current_locations rcl
+      INNER JOIN public.riders r ON r.id = rcl.rider_id
+      LEFT JOIN LATERAL (
+        SELECT
+          dl.status::text AS duty_status,
+          dl.service_types
+        FROM public.duty_logs dl
+        WHERE dl.rider_id = r.id
+        ORDER BY dl.timestamp DESC
+        LIMIT 1
+      ) ld ON true
+      LEFT JOIN LATERAL (
+        SELECT
+          COALESCE(
+            NULLIF(TRIM(oc.formatted_order_id), ''),
+            NULLIF(TRIM(oc.order_id), ''),
+            oc.id::text
+          ) AS order_display_id,
+          ms.store_name AS store_name
+        FROM public.orders_core oc
+        LEFT JOIN public.merchant_stores ms ON ms.id = oc.merchant_store_id
+        WHERE oc.rider_id = r.id
+          AND oc.cancelled_at IS NULL
+          AND lower(COALESCE(oc.status::text, '')) NOT IN (
+            'delivered', 'cancelled', 'failed', 'rejected'
+          )
+          AND lower(COALESCE(oc.current_status, '')) NOT IN (
+            'delivered', 'cancelled', 'canceled', 'failed', 'rejected',
+            'rto', 'rto_initiated', 'rto_in_transit', 'rto_delivered', 'rto_lost'
+          )
+        ORDER BY oc.updated_at DESC NULLS LAST, oc.id DESC
+        LIMIT 1
+      ) ao ON true
+      LEFT JOIN LATERAL (
+        SELECT
+          COUNT(*) FILTER (
+            WHERE lower(ora.assignment_status::text) = 'completed'
+          )::int AS delivered_count,
+          COUNT(*) FILTER (
+            WHERE lower(ora.assignment_status::text) IN (
+              'cancelled', 'rejected', 'failed', 'unassigned'
+            )
+          )::int AS cancelled_count
+        FROM public.order_rider_assignments ora
+        WHERE ora.rider_id = r.id
+      ) stats ON true
       WHERE r.deleted_at IS NULL
         AND (${areaManagerId}::int IS NULL OR r.area_manager_id = ${areaManagerId})
-        AND COALESCE(rcl.lat, r.lat) IS NOT NULL
-        AND COALESCE(rcl.lng, r.lon) IS NOT NULL
+        AND rcl.lat IS NOT NULL
+        AND rcl.lng IS NOT NULL
+        AND rcl.lat BETWEEN ${lat - padDeg} AND ${lat + padDeg}
+        AND rcl.lng BETWEEN ${lng - padDeg} AND ${lng + padDeg}
     ),
     with_distance AS (
       SELECT
@@ -509,7 +601,13 @@ export async function searchRidersNearPoint(params: {
               + sin(radians(${lat})) * sin(radians(p.lat))
             ))
           )
-        ) AS distance_km
+        ) AS distance_km,
+        CASE
+          WHEN upper(COALESCE(p.duty_status, '')) = 'ON'
+            AND p.current_assigned_order_id IS NOT NULL THEN 'BUSY'
+          WHEN upper(COALESCE(p.duty_status, '')) = 'ON' THEN 'ONLINE'
+          ELSE 'OFFLINE'
+        END AS status
       FROM positioned p
     )
     SELECT
@@ -521,7 +619,13 @@ export async function searchRidersNearPoint(params: {
       distance_km,
       status,
       locality_code,
-      last_updated_at
+      city,
+      store_name,
+      last_updated_at,
+      duty_service_types,
+      current_assigned_order_id,
+      total_delivered,
+      total_cancelled
     FROM with_distance
     WHERE distance_km <= ${maxRadius}
     ORDER BY distance_km ASC
@@ -536,6 +640,17 @@ export async function searchRidersNearPoint(params: {
       const d = new Date(String(last));
       lastUpdatedAt = Number.isFinite(d.getTime()) ? d.toISOString() : null;
     }
+    const status = String(row.status ?? "OFFLINE").toUpperCase();
+    const activeServices =
+      status === "ONLINE" || status === "BUSY"
+        ? parseServiceTypes(row.duty_service_types)
+        : [];
+    const storeName =
+      row.store_name != null && String(row.store_name).trim()
+        ? String(row.store_name).trim()
+        : null;
+    const localityCode =
+      row.locality_code != null ? String(row.locality_code) : null;
     return {
       id: Number(row.id),
       mobile: String(row.mobile ?? ""),
@@ -543,9 +658,18 @@ export async function searchRidersNearPoint(params: {
       lat: Number(row.lat),
       lng: Number(row.lng),
       distanceKm: Math.round(Number(row.distance_km) * 1000) / 1000,
-      status: String(row.status ?? "OFFLINE").toUpperCase(),
-      localityCode: row.locality_code != null ? String(row.locality_code) : null,
+      status,
+      localityCode,
+      storeName: storeName ?? localityCode,
       lastUpdatedAt,
+      activeServices,
+      currentAssignedOrderId:
+        row.current_assigned_order_id != null
+          ? String(row.current_assigned_order_id)
+          : null,
+      totalDeliveredOrders: Number(row.total_delivered ?? 0) || 0,
+      totalCancelledOrders: Number(row.total_cancelled ?? 0) || 0,
+      city: row.city != null ? String(row.city) : null,
     };
   });
 

@@ -24,7 +24,9 @@ export type MapboxSearchSessionContext =
   | "food-delivery"
   | "add-address"
   | "location-picker"
-  | "checkout";
+  | "checkout"
+  | "parcel-pickup"
+  | "parcel-drop";
 
 let fetchPolyfilled = false;
 let searchBoxCore: SearchBoxCore | null = null;

@@ -320,12 +320,49 @@ export const geoAdminApi = baseApi.injectEndpoints({
         method: "POST",
         body,
       }),
-      invalidatesTags: [{ type: "Geo" }],
+      invalidatesTags: (_r, _e, arg) => [
+        { type: "Geo", id: `PO_BIND_${arg.refId}` },
+        { type: "Geo" },
+      ],
     }),
 
     geoPlatformOfferBindingDelete: build.mutation<{ ok: boolean }, { id: number }>({
       query: ({ id }) => ({
         url: `/super-admin/geo/platform-offer-bindings/${id}`,
+        method: "DELETE",
+      }),
+      invalidatesTags: [{ type: "Geo" }],
+    }),
+
+    geoCheckoutCouponBindings: build.query<
+      { bindings: Array<{ id: string; billing_discount_id: number; geo_level: string; geo_ref_id: string }> },
+      { level: Exclude<GeoHierarchyLevel, "root">; refId: string }
+    >({
+      query: (arg) => ({
+        url: "/super-admin/geo/checkout-coupon-bindings",
+        params: { level: arg.level, refId: arg.refId },
+      }),
+      providesTags: (_r, _e, arg) => [{ type: "Geo", id: `COUPON_BIND_${arg.refId}` }],
+    }),
+
+    geoCheckoutCouponBindingCreate: build.mutation<
+      { binding: { id: string; billing_discount_id: number } },
+      { level: Exclude<GeoHierarchyLevel, "root">; refId: string; billing_discount_id: number }
+    >({
+      query: (body) => ({
+        url: "/super-admin/geo/checkout-coupon-bindings",
+        method: "POST",
+        body,
+      }),
+      invalidatesTags: (_r, _e, arg) => [
+        { type: "Geo", id: `COUPON_BIND_${arg.refId}` },
+        { type: "Geo" },
+      ],
+    }),
+
+    geoCheckoutCouponBindingDelete: build.mutation<{ ok: boolean }, { id: number }>({
+      query: ({ id }) => ({
+        url: `/super-admin/geo/checkout-coupon-bindings/${id}`,
         method: "DELETE",
       }),
       invalidatesTags: [{ type: "Geo" }],
@@ -355,4 +392,7 @@ export const {
   useGeoPlatformOfferBindingsQuery,
   useGeoPlatformOfferBindingCreateMutation,
   useGeoPlatformOfferBindingDeleteMutation,
+  useGeoCheckoutCouponBindingsQuery,
+  useGeoCheckoutCouponBindingCreateMutation,
+  useGeoCheckoutCouponBindingDeleteMutation,
 } = geoAdminApi;

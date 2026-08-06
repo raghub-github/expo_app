@@ -4,7 +4,8 @@
  */
 
 import { useMemo, useState } from "react";
-import { View, TouchableOpacity, StyleSheet, Image, Pressable } from "react-native";
+import { View, TouchableOpacity, StyleSheet, Pressable } from "react-native";
+import { Image } from "expo-image";
 import { useQuery } from "@tanstack/react-query";
 import { Ionicons } from "@expo/vector-icons";
 import { GatiMitraColors } from "@/constants/gatimitra";
@@ -78,7 +79,7 @@ export function FloatingOrderTrackingPill({
             <Image
               source={{ uri: thumbUri }}
               style={styles.thumbImg}
-              resizeMode="cover"
+              contentFit="cover"
               onError={() => setThumbFailed(true)}
             />
           ) : (

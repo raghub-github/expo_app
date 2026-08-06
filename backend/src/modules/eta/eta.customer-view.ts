@@ -7,6 +7,7 @@ export type CustomerEtaContextMessage =
   | "PREPARING"
   | "MERCHANT_DELAYED"
   | "READY_FOR_PICKUP"
+  | "RIDER_TO_MERCHANT"
   | "RIDER_PICKING_UP"
   | "ON_THE_WAY"
   | "ALMOST_THERE"
@@ -14,7 +15,7 @@ export type CustomerEtaContextMessage =
   | "UPDATING";
 
 export type CustomerEtaView = {
-  /** Single dynamic ETA in minutes — never 0 while order is active. */
+  /** Stage-display ETA in minutes — stage-appropriate, not always total delivery. */
   etaMinutes: number | null;
   contextMessage: CustomerEtaContextMessage;
   contextLabel: string;
@@ -29,10 +30,11 @@ const MIN_ACTIVE_ETA = 3;
 const CONTEXT_LABELS: Record<CustomerEtaContextMessage, string> = {
   PREPARING: "Preparing your order",
   MERCHANT_DELAYED: "Restaurant is taking longer than expected",
-  READY_FOR_PICKUP: "Order ready for pickup",
-  RIDER_PICKING_UP: "Rider picking up your order",
+  READY_FOR_PICKUP: "Order is ready for pickup",
+  RIDER_TO_MERCHANT: "Rider arriving at the restaurant",
+  RIDER_PICKING_UP: "Handing off the order ASAP",
   ON_THE_WAY: "On the way",
-  ALMOST_THERE: "Almost there",
+  ALMOST_THERE: "Arriving now",
   DELIVERED: "Delivered",
   UPDATING: "Updating delivery estimate",
 };
@@ -78,19 +80,22 @@ export function resolveCustomerEtaContext(args: {
   if (args.merchantDelayed && !args.isReady && !args.isPickedUp) {
     contextMessage = "MERCHANT_DELAYED";
   } else if (args.isPickedUp || status === "OUT_FOR_DELIVERY" || status === "IN_TRANSIT" || status === "PICKED_UP") {
-    if (eta != null && eta <= 5) {
+    if (eta != null && eta <= 2) {
       contextMessage = "ALMOST_THERE";
     } else {
       contextMessage = "ON_THE_WAY";
     }
+  } else if (args.riderAtStore) {
+    contextMessage = "RIDER_PICKING_UP";
   } else if (args.isReady || status === "READY_FOR_PICKUP" || status === "READY") {
-    if (args.riderAtStore || args.hasRider) {
-      contextMessage = "RIDER_PICKING_UP";
+    if (args.hasRider) {
+      // Stage 3: ready + rider en route to merchant — NOT customer delivery ETA copy.
+      contextMessage = "RIDER_TO_MERCHANT";
     } else {
       contextMessage = "READY_FOR_PICKUP";
     }
-  } else if (args.riderAtStore) {
-    contextMessage = args.merchantDelayed ? "MERCHANT_DELAYED" : "RIDER_PICKING_UP";
+  } else if (args.hasRider && (status === "RIDER_ASSIGNED" || status === "ASSIGNED" || status === "PREPARING")) {
+    contextMessage = "RIDER_TO_MERCHANT";
   } else if (
     status === "PREPARING" ||
     status === "ACCEPTED" ||

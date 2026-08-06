@@ -243,8 +243,24 @@ export function resolveCustomerAppOrderStatus(args: {
     }
   }
 
+  /**
+   * Cap premature merchant/core "out for delivery" until the rider marks pickup —
+   * EXCEPT when an agent already forced Dispatched (`orders_core.status = in_transit`
+   * / current_status Dispatched). That is the admin override when the rider app
+   * cannot mark reach/pickup.
+   */
+  const coreLower = String(args.coreStatus ?? "").trim().toLowerCase();
+  const agentForcedDispatch =
+    coreLower === "in_transit" ||
+    coreLower === "picked_up" ||
+    currentNorm === "DISPATCHED" ||
+    currentNorm === "DESPATCHED" ||
+    currentNorm === "IN_TRANSIT";
+
   if (!hasRiderMarkedFoodPickup(riderPickedUpIso) && isCustomerOnTheWay(status)) {
-    if (args.riderReachedPickupAt) {
+    if (agentForcedDispatch) {
+      status = pickHigherCustomerStatus(status, "OUT_FOR_DELIVERY");
+    } else if (args.riderReachedPickupAt) {
       status = "REACHED_STORE";
     } else if (pipeline === "PREPARING") {
       status = "PREPARING";

@@ -3,6 +3,7 @@
  * Static banner only (no carousel). Rating pill overlays image bottom-left.
  */
 
+import { memo } from "react";
 import { View, TouchableOpacity, StyleSheet, Dimensions, type GestureResponderEvent } from "react-native";
 import { useEffect, useMemo } from "react";
 import { Image } from "expo-image";
@@ -54,7 +55,7 @@ type MerchantGridCardProps = {
   width?: number;
 };
 
-export function MerchantGridCard({
+function MerchantGridCardInner({
   merchant,
   onPress,
   onPressIn,
@@ -293,3 +294,10 @@ const styles = StyleSheet.create({
     fontWeight: "600",
   },
 });
+
+/**
+ * Rendered once per list item. Memoised so a parent re-render (a filter
+ * toggle, a store-status tick, a bill recalculation) does not walk every
+ * mounted instance.
+ */
+export const MerchantGridCard = memo(MerchantGridCardInner);

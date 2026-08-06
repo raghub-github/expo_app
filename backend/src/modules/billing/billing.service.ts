@@ -17,13 +17,31 @@ import {
   listActiveCustomerCoupons,
   loadMerchantOfferUsagesByUser,
 } from "./billing.repository.js";
+import {
+  loadPlatformOfferLifetimeUseCounts,
+  loadPlatformOfferUsageCountsForUser,
+} from "./platformOfferUsage.service.js";
+import { loadCheckoutCouponUsageSnapshot, loadCheckoutCouponUsageSnapshotsForCustomer } from "./checkoutCouponUsage.service.js";
+import { sanitizeCheckoutCouponConfig } from "./checkoutCouponConfig.js";
+import {
+  evaluateCheckoutCouponEligibility,
+} from "./checkoutCouponEligibility.js";
 import { executeBillingPipeline } from "./executeBillingPipeline.js";
 import {
   customerHasSubscriptionOfferAccess,
   listEligiblePlatformOffersForCheckout,
   platformOfferConditionsPass,
   platformOfferConflictsWithSubscriptionFreeDelivery,
+  platformOfferGeoMatches,
+  isPlatformOfferHardVisibilityRejection,
+  platformOfferLocationVisible,
 } from "./platformOffersApply.js";
+import { platformOfferRequiresFirstRideOnly } from "./platformOfferFirstRide.js";
+import { countCompletedParcelsForCustomer } from "./rideParcelPromoApply.js";
+import {
+  countDeliveredOrdersForCustomer,
+  userSegmentFromOrderCount,
+} from "./customerOrderSegment.js";
 import { listMerchantOffersForCheckout } from "./merchantOffersCheckout.js";
 import {
   resolveOfferDisplaySurface,
@@ -44,7 +62,8 @@ import {
   getCachedBillingDataset,
   setCachedBillingDataset,
 } from "./ruleCache.js";
-import type { BillContext, BillingResult, PlatformOfferRow } from "./types.js";
+import type { BillContext, BillingResult, DiscountRow, PlatformOfferRow } from "./types.js";
+import { platformOfferCouponCodesMatch } from "./platformOfferCouponCode.js";
 import { getSupabase } from "../../lib/supabase.js";
 import { resolveStoreDeliveryQuote } from "../distance/storeQuote.service.js";
 import { reverseGeocodeCoords } from "../../services/mapbox/geocoding.js";
@@ -109,6 +128,12 @@ export type ComputeBillInput = {
   selectedMerchantOfferId?: number | null;
   /** When true, skip auto platform/merchant offers (customer tapped Remove). */
   forceNoAutoOffer?: boolean;
+  /** Parcel weight (kg) for weight-based platform offers. */
+  parcelWeightKg?: number | null;
+  parcelSpeed?: string | null;
+  parcelScope?: string | null;
+  /** Checkout payment mode for payment-mode platform offers. */
+  paymentMode?: string | null;
 };
 
 export type ComputeBillResult =
@@ -325,8 +350,16 @@ export async function computeBillForOrder(
 
   const serviceType = (input.serviceType ?? "FOOD").trim().toUpperCase();
   const userSegRaw = input.userSegment ?? "ALL";
+  let customerCompletedOrderCount: number | null = null;
+  if (input.customerId > 0) {
+    customerCompletedOrderCount = await countDeliveredOrdersForCustomer(db, input.customerId);
+  }
   const userSegment: "NEW" | "EXISTING" | "ALL" =
-    userSegRaw === "NEW" || userSegRaw === "EXISTING" ? userSegRaw : "ALL";
+    userSegRaw === "NEW" || userSegRaw === "EXISTING"
+      ? userSegRaw
+      : customerCompletedOrderCount != null
+        ? userSegmentFromOrderCount(customerCompletedOrderCount)
+        : "ALL";
 
   const version = await getRulesetVersion(db);
   const cacheKey = billingDatasetCacheKey(version, resolved.merchantStoreId, couponCode, serviceType);
@@ -398,6 +431,7 @@ export async function computeBillForOrder(
   });
   const dropGeoRefByLevel = calcGeo.refs;
   const platformOfferGeoBindingEffectiveIds = calcGeo.geoBoundOfferIds;
+  const checkoutCouponGeoBindingEffectiveIds = calcGeo.geoBoundCouponIds;
 
   const audRaw = String(input.checkoutAudience ?? "CUSTOMER").toUpperCase();
   const checkoutAudience: "CUSTOMER" | "MERCHANT" | "RIDER" =
@@ -449,6 +483,7 @@ export async function computeBillForOrder(
     dropPostalCode,
     dropGeoRefByLevel,
     platformOfferGeoBindingEffectiveIds,
+    checkoutCouponGeoBindingEffectiveIds,
     // Canonical delivery fee: always use store-quote output as the single source of truth.
     // Billing should not re-resolve delivery pricing using rate cards / geo rules.
     // Self-pickup: the customer collects from the store, so every delivery cost
@@ -477,11 +512,33 @@ export async function computeBillForOrder(
     deliveryPricingEngine: quote.pricing_engine,
     checkoutAudience,
     couponRedemptionsByUser: input.couponRedemptionsByUser,
+    customerCompletedOrderCount,
     merchantOfferUsagesByUser: undefined,
-    selectedPlatformOfferId: input.selectedPlatformOfferId ?? null,
+    parcelWeightKg: input.parcelWeightKg ?? null,
+    parcelSpeed: input.parcelSpeed ?? null,
+    parcelScope: input.parcelScope ?? null,
+    paymentMode: input.paymentMode ?? null,
+    completedParcelCount: null as number | null,
+    selectedPlatformOfferId: (() => {
+      const explicit = input.selectedPlatformOfferId ?? null;
+      if (explicit != null) return explicit;
+      // Manual coupon entry: resolve platform offer codes through the same engine
+      // (billing_discounts still win when dataset.coupon is set).
+      if (couponCode && !dataset.coupon) {
+        const matched = dataset.platformOffers.find((o) =>
+          platformOfferCouponCodesMatch(o.couponCode, couponCode)
+        );
+        if (matched) return matched.id;
+      }
+      return null;
+    })(),
     selectedMerchantOfferId: input.selectedMerchantOfferId ?? null,
     forceNoAutoOffer: input.forceNoAutoOffer === true,
   };
+
+  if (serviceType === "PARCEL" && input.customerId > 0) {
+    ctx.completedParcelCount = await countCompletedParcelsForCustomer(db, input.customerId);
+  }
 
   // Load per-user merchant offer usage counts outside the shared dataset cache.
   // Only needed when at least one active offer has a per-user cap.
@@ -493,6 +550,108 @@ export async function computeBillForOrder(
         input.customerId,
         offersWithCap.map((o) => o.id)
       );
+    }
+
+    const platformWithLimits = dataset.platformOffers.filter(
+      (o) =>
+        (o.maxUsesPerUser != null && o.maxUsesPerUser > 0) ||
+        (o.maxUsesPerDay != null && o.maxUsesPerDay > 0) ||
+        (o.maxUsesPerMonth != null && o.maxUsesPerMonth > 0)
+    );
+    if (platformWithLimits.length > 0) {
+      ctx.platformOfferUsagesByUser = await loadPlatformOfferUsageCountsForUser(
+        db,
+        input.customerId,
+        platformWithLimits.map((o) => o.id)
+      );
+    }
+    const platformWithTotal = dataset.platformOffers.filter(
+      (o) => o.maxUsesTotal != null && o.maxUsesTotal > 0
+    );
+    if (platformWithTotal.length > 0) {
+      ctx.platformOfferLifetimeUseCounts = await loadPlatformOfferLifetimeUseCounts(
+        db,
+        platformWithTotal.map((o) => o.id)
+      );
+    }
+
+    if (dataset.coupon) {
+      ctx.couponUsageSnapshot = await loadCheckoutCouponUsageSnapshot(
+        db,
+        input.customerId,
+        dataset.coupon.id,
+        ctx.now
+      );
+    }
+
+    // Auto-apply path: when nothing is pinned, preload fully-eligible auto_apply coupons.
+    const autoMode =
+      !couponCode &&
+      ctx.selectedPlatformOfferId == null &&
+      (ctx.selectedMerchantOfferId == null || ctx.selectedMerchantOfferId <= 0) &&
+      ctx.forceNoAutoOffer !== true;
+    if (autoMode) {
+      const listed = await listActiveCustomerCoupons(db, serviceType, {
+        geoBoundCouponIds: checkoutCouponGeoBindingEffectiveIds,
+      });
+      const autoCandidates = listed.filter((c) => {
+        const cfg = sanitizeCheckoutCouponConfig(c.couponConfig ?? null);
+        return cfg.auto_apply === true;
+      });
+      if (autoCandidates.length > 0) {
+        const usageMap = await loadCheckoutCouponUsageSnapshotsForCustomer(
+          db,
+          input.customerId,
+          autoCandidates.map((c) => c.id),
+          ctx.now
+        );
+        ctx.couponUsageByDiscountId = usageMap;
+        const eligibleCart = cartPromoQualifyingSubtotal(
+          ctx,
+          Math.max(0, ctx.itemSubtotal + ctx.addonSubtotal)
+        );
+        const autoApplyCoupons: DiscountRow[] = [];
+        for (const c of autoCandidates) {
+          const asDiscount: DiscountRow = {
+            id: c.id,
+            code: c.code,
+            discountType: c.discountType,
+            valueNumeric: c.valueNumeric,
+            maxDiscountCap: c.maxDiscountCap,
+            usageLimit: c.usageLimit,
+            usedCount: c.usedCount,
+            validFrom: c.validFrom,
+            validUntil: c.validUntil,
+            isActive: c.isActive,
+            isHidden: c.isHidden,
+            serviceType: c.serviceType,
+            offerAudience: c.offerAudience,
+            perUserUsageLimit: c.perUserUsageLimit,
+            metadata: c.metadata,
+            couponConfig: c.couponConfig,
+          };
+          const eligibility = evaluateCheckoutCouponEligibility(
+            asDiscount,
+            usageMap.get(c.id) ?? { lifetime: 0, day: 0, week: 0, month: 0, year: 0 },
+            {
+              serviceType,
+              userSegment: ctx.userSegment,
+              checkoutAudience: ctx.checkoutAudience,
+              customerCompletedOrderCount: ctx.customerCompletedOrderCount,
+              cartSubtotal: eligibleCart,
+              distanceKm: ctx.distanceKm,
+              weightKg: ctx.parcelWeightKg,
+              vehicleType: ctx.vehicleType ?? ctx.rideType,
+              paymentMode: ctx.paymentMode,
+              cityName: ctx.cityName,
+              now: ctx.now,
+            }
+          );
+          if (eligibility.fullyEligible) autoApplyCoupons.push(asDiscount);
+        }
+        // Clone dataset so the shared cache stays user-agnostic.
+        dataset = { ...dataset, autoApplyCoupons };
+      }
     }
   }
 
@@ -586,6 +745,10 @@ export type CheckoutOfferCouponRow = {
   discountType: string;
   description: string;
   estimatedSavingsInr: number | null;
+  minOrderAmount?: number | null;
+  customerSegment?: string | null;
+  /** Dashboard coupon_config.auto_apply — server may apply without a tap. */
+  autoApply?: boolean;
 };
 
 export type CheckoutOfferMerchantRow = {
@@ -606,6 +769,7 @@ export type CheckoutOfferMerchantRow = {
 export type CheckoutOfferPlatformRow = {
   id: number;
   name: string | null;
+  couponCode: string | null;
   offerKind: string;
   summary: string;
   estimatedSavingsInr: number | null;
@@ -681,17 +845,26 @@ function describeCouponRow(c: {
   discountType: string;
   valueNumeric: number | null;
   maxDiscountCap: number | null;
+  couponConfig?: Record<string, unknown> | null;
 }): string {
+  const parts: string[] = [];
   const v = c.valueNumeric ?? 0;
   const cap =
     c.maxDiscountCap != null && c.maxDiscountCap > 0 ? ` up to ₹${c.maxDiscountCap}` : "";
   if (String(c.discountType).toUpperCase() === "PERCENTAGE") {
-    return `${v}% OFF${cap}`;
+    parts.push(`${v}% OFF${cap}`);
+  } else if (String(c.discountType).toUpperCase() === "FIXED") {
+    parts.push(`₹${v} OFF${cap}`);
+  } else {
+    parts.push("Promo discount");
   }
-  if (String(c.discountType).toUpperCase() === "FIXED") {
-    return `₹${v} OFF${cap}`;
+  const cfg = sanitizeCheckoutCouponConfig(c.couponConfig ?? null);
+  if (cfg.min_order_value != null && cfg.min_order_value > 0) {
+    parts.push(`Min order ₹${Math.round(cfg.min_order_value)}`);
   }
-  return "Promo discount";
+  if (cfg.customer_segment === "NEW") parts.push("New customers");
+  else if (cfg.customer_segment === "EXISTING") parts.push("Existing customers");
+  return parts.join(" · ");
 }
 
 function describeMerchantOfferRow(m: {
@@ -722,6 +895,13 @@ function describeMerchantOfferRow(m: {
 }
 
 function formatPlatformOfferLockReason(reason: string, grossCart: number): string {
+  // Geo / hard visibility failures must never be masked as "Add ₹X more".
+  if (reason.includes("geo=GEO_NOT_BOUND") || reason.includes("geo=NOT_ELIGIBLE")) {
+    return "Not available at your delivery location";
+  }
+  if (reason.includes("segment=")) return "Not available for your account";
+  if (reason.includes("conditions=")) return "Not available at your delivery location";
+
   const minMatch = reason.match(/minCart=(\d+(?:\.\d+)?)/);
   if (minMatch) {
     const min = Number(minMatch[1]);
@@ -731,17 +911,18 @@ function formatPlatformOfferLockReason(reason: string, grossCart: number): strin
       return `Minimum order value ₹${Math.round(min)} required`;
     }
   }
-  if (reason.includes("geo=GEO_NOT_BOUND")) return "Not available at your delivery location";
-  if (reason.includes("segment=")) return "Not available for your account";
+  if (reason.includes("first_ride_only=")) return "Only available on your first Person Ride";
   if (reason.includes("subscription_free_delivery=active")) return "Already included in your membership";
   if (reason.includes("subscription_benefit_requires_membership")) return "Available with GMitra Plus membership";
-  if (reason.includes("conditions=")) return "Not available at your delivery location";
   return "Not eligible on this order";
 }
 
 function describePlatformOfferRow(o: PlatformOfferRow): string {
   const parts: string[] = [];
   const cond = (o.conditions ?? {}) as Record<string, unknown>;
+  if (cond.first_ride_only === true || cond.first_ride_only === "true" || cond.first_ride_only === 1) {
+    parts.push("First ride only");
+  }
   const minOrd = num(o.minOrderAmount) || num(cond.min_order_value);
   if (minOrd > 0) parts.push(`Min order ₹${minOrd}`);
   const dt = String(o.discountType ?? "").toUpperCase();
@@ -868,11 +1049,8 @@ export async function listCheckoutBillOffers(
   const dropLat = addrRow.latitude != null ? Number(addrRow.latitude) : 0;
   const dropLon = addrRow.longitude != null ? Number(addrRow.longitude) : 0;
 
-  // Master geo resolver: tries live values → saved values → reverse-geocode lat/lng → state-name fallback.
+  // Selected delivery address only — never live device GPS for offer eligibility.
   const geo = await resolveGeoLocation({
-    livePincode: input.livePincode,
-    liveState: input.liveState,
-    liveCity: input.liveCity,
     savedPincode: addrRow.postalCode,
     savedState: addrRow.state,
     savedCity: addrRow.city,
@@ -919,11 +1097,20 @@ export async function listCheckoutBillOffers(
 
   const serviceType = (input.serviceType ?? "FOOD").trim().toUpperCase();
   const userSegRaw = input.userSegment ?? "ALL";
+  let customerCompletedOrderCount: number | null = null;
+  if (input.customerId > 0) {
+    customerCompletedOrderCount = await countDeliveredOrdersForCustomer(db, input.customerId);
+  }
   const userSegment: "NEW" | "EXISTING" | "ALL" =
-    userSegRaw === "NEW" || userSegRaw === "EXISTING" ? userSegRaw : "ALL";
+    userSegRaw === "NEW" || userSegRaw === "EXISTING"
+      ? userSegRaw
+      : customerCompletedOrderCount != null
+        ? userSegmentFromOrderCount(customerCompletedOrderCount)
+        : "ALL";
 
   const dropGeoRefByLevel = geo.refs;
   const platformOfferGeoBindingEffectiveIds = geo.geoBoundOfferIds;
+  const checkoutCouponGeoBindingEffectiveIds = geo.geoBoundCouponIds;
 
   const rates = await getStoreBillingRates(resolved.merchantStoreId);
   const itemPlusAddon = Math.max(0, input.cartSubtotal);
@@ -1022,6 +1209,7 @@ export async function listCheckoutBillOffers(
     userType: "customer",
     userSegment,
     couponCode: null,
+    customerCompletedOrderCount,
     lineCategories: [],
     itemPackagingTotal: 0,
     packagingChargeAmount: rates?.packagingChargeAmount ?? 0,
@@ -1031,6 +1219,7 @@ export async function listCheckoutBillOffers(
     dropPostalCode,
     dropGeoRefByLevel,
     platformOfferGeoBindingEffectiveIds,
+    checkoutCouponGeoBindingEffectiveIds,
     deliveryFeeFromRateCard: 0,
     deliveryFeeFromGeo: null,
     deliveryDefaultBaseInr,
@@ -1066,16 +1255,107 @@ export async function listCheckoutBillOffers(
         offersWithCap.map((o) => o.id)
       );
     }
+
+    const platformWithLimits = dataset.platformOffers.filter(
+      (o) =>
+        (o.maxUsesPerUser != null && o.maxUsesPerUser > 0) ||
+        (o.maxUsesPerDay != null && o.maxUsesPerDay > 0) ||
+        (o.maxUsesPerMonth != null && o.maxUsesPerMonth > 0)
+    );
+    if (platformWithLimits.length > 0) {
+      ctx.platformOfferUsagesByUser = await loadPlatformOfferUsageCountsForUser(
+        db,
+        input.customerId,
+        platformWithLimits.map((o) => o.id)
+      );
+    }
+    const platformWithTotal = dataset.platformOffers.filter(
+      (o) => o.maxUsesTotal != null && o.maxUsesTotal > 0
+    );
+    if (platformWithTotal.length > 0) {
+      ctx.platformOfferLifetimeUseCounts = await loadPlatformOfferLifetimeUseCounts(
+        db,
+        platformWithTotal.map((o) => o.id)
+      );
+    }
   }
 
-  const couponRows = await listActiveCustomerCoupons(db, serviceType);
+  const couponRows = await listActiveCustomerCoupons(db, serviceType, {
+    geoBoundCouponIds: checkoutCouponGeoBindingEffectiveIds,
+  });
 
-  const coupons: CheckoutOfferCouponRow[] = couponRows.map((c) => ({
-    code: c.code,
-    discountType: c.discountType,
-    description: describeCouponRow(c),
-    estimatedSavingsInr: estimateCouponSavingsInr(c, grossCart),
-  }));
+  const couponUsageById =
+    input.customerId > 0 && couponRows.length > 0
+      ? await loadCheckoutCouponUsageSnapshotsForCustomer(
+          db,
+          input.customerId,
+          couponRows.map((c) => c.id),
+          ctx.now
+        )
+      : new Map();
+
+  const coupons: CheckoutOfferCouponRow[] = [];
+  for (const c of couponRows) {
+    const asDiscount: DiscountRow = {
+      id: c.id,
+      code: c.code,
+      discountType: c.discountType,
+      valueNumeric: c.valueNumeric,
+      maxDiscountCap: c.maxDiscountCap,
+      usageLimit: c.usageLimit,
+      usedCount: c.usedCount,
+      validFrom: c.validFrom,
+      validUntil: c.validUntil,
+      isActive: c.isActive,
+      isHidden: c.isHidden,
+      serviceType: c.serviceType,
+      offerAudience: c.offerAudience,
+      perUserUsageLimit: c.perUserUsageLimit,
+      metadata: c.metadata,
+      couponConfig: c.couponConfig,
+    };
+    const eligibility = evaluateCheckoutCouponEligibility(
+      asDiscount,
+      couponUsageById.get(c.id) ?? { lifetime: 0, day: 0, week: 0, month: 0, year: 0 },
+      {
+        serviceType,
+        userSegment,
+        checkoutAudience: "CUSTOMER",
+        customerCompletedOrderCount,
+        cartSubtotal: grossCart,
+        distanceKm,
+        cityName,
+        stateName: dropStateName,
+        now: ctx.now,
+        skipPaymentMode: true,
+      }
+    );
+    // Hide coupons the customer can never use (segment, first-order, usage, …).
+    if (!eligibility.hardEligible) continue;
+    coupons.push({
+      code: c.code,
+      discountType: c.discountType,
+      description: describeCouponRow(c),
+      estimatedSavingsInr: estimateCouponSavingsInr(c, grossCart),
+      minOrderAmount:
+        eligibility.config.min_order_value != null && eligibility.config.min_order_value > 0
+          ? eligibility.config.min_order_value
+          : null,
+      customerSegment:
+        eligibility.config.customer_segment && eligibility.config.customer_segment !== "ALL"
+          ? eligibility.config.customer_segment
+          : null,
+      autoApply: eligibility.config.auto_apply === true,
+    });
+  }
+
+  // Prefer higher savings first; auto_apply coupons float to the top for featured banner.
+  coupons.sort((a, b) => {
+    const aa = a.autoApply ? 1 : 0;
+    const ba = b.autoApply ? 1 : 0;
+    if (ba !== aa) return ba - aa;
+    return (b.estimatedSavingsInr ?? 0) - (a.estimatedSavingsInr ?? 0);
+  });
 
   const { eligible: merchantEligible, ineligible: merchantIneligible } =
     listMerchantOffersForCheckout(ctx, dataset, grossCart);
@@ -1157,19 +1437,27 @@ export async function listCheckoutBillOffers(
   const platformOffers: CheckoutOfferPlatformRow[] = platformRows.map((o) => ({
     id: o.id,
     name: platformOfferCheckoutDisplayName(o),
+    couponCode: (o.couponCode ?? "").trim() || null,
     offerKind: String(o.offerKind ?? "DISCOUNT").toUpperCase(),
     summary: describePlatformOfferRow(o),
     estimatedSavingsInr: estimatePlatformOfferSavingsInr(o, grossCart),
   }));
 
-  // Ineligible platform offers — surfaced so the customer sees "min cart ₹399"
-  // style hints (instead of the offer being hidden entirely).
+  // Ineligible platform offers — only soft unlocks (min cart / membership / first-ride).
+  // Geo-unmapped or location-mismatched offers stay completely hidden.
   const rejectionById = new Map<number, string>();
   for (const r of platformRejections) rejectionById.set(r.id, r.reason);
   const platformOffersIneligible: Array<
     CheckoutOfferPlatformRow & { reason: string; minCartAmount?: number | null }
   > = dataset.platformOffers
-      .filter((o) => rejectionById.has(o.id))
+      .filter((o) => {
+        const tech = rejectionById.get(o.id);
+        if (!tech) return false;
+        if (isPlatformOfferHardVisibilityRejection(tech)) return false;
+        // Defense: never surface an offer that fails location/geo gates.
+        if (!platformOfferLocationVisible(ctx, o)) return false;
+        return true;
+      })
       .map((o) => {
         const tech = rejectionById.get(o.id) ?? "";
         const minMatch = tech.match(/minCart=(\d+(?:\.\d+)?)/);
@@ -1178,6 +1466,7 @@ export async function listCheckoutBillOffers(
         return {
           id: o.id,
           name: platformOfferCheckoutDisplayName(o),
+          couponCode: (o.couponCode ?? "").trim() || null,
           offerKind: String(o.offerKind ?? "DISCOUNT").toUpperCase(),
           summary: describePlatformOfferRow(o),
           estimatedSavingsInr: estimatePlatformOfferSavingsInr(o, grossCart),
@@ -1270,9 +1559,11 @@ function listEligiblePlatformOffersForCheckoutWithReasons(
         reasons.push(`merchantScope=${scope} merchants=[${o.merchantIds.join(",")}] store=${ctx.merchantStoreId}`);
       }
     }
-    if (scope === "GEO" || scope === "GEO_MERCHANT") {
+    // Platform offers require an effective geo binding at the delivery address
+    // (or legacy GEO row targets). Unmapped GLOBAL is not customer-visible.
+    if (!platformOfferGeoMatches(ctx, o)) {
       const bound = ctx.platformOfferGeoBindingEffectiveIds;
-      if (!bound.has(o.id)) reasons.push(`geo=GEO_NOT_BOUND (effectiveIds.size=${bound.size})`);
+      reasons.push(`geo=NOT_ELIGIBLE (scope=${scope}, effectiveIds.size=${bound.size})`);
     }
     if (platformOfferConflictsWithSubscriptionFreeDelivery(ctx, o)) {
       reasons.push("subscription_free_delivery=active");
@@ -1291,6 +1582,16 @@ function listEligiblePlatformOffersForCheckoutWithReasons(
     if (minAmt > 0 && grossCart < minAmt) reasons.push(`minCart=${minAmt} cart=${grossCart}`);
     const cond = (o.conditions ?? {}) as Record<string, unknown>;
     if (!platformOfferConditionsPass(cond, ctx)) reasons.push("conditions=failed");
+    if (platformOfferRequiresFirstRideOnly(o)) {
+      const st = String(ctx.serviceType ?? "").toUpperCase();
+      if (st !== "RIDE") {
+        reasons.push("first_ride_only=not_ride_service");
+      } else if (ctx.completedPersonRideCount == null) {
+        reasons.push("first_ride_only=unknown_history");
+      } else if (ctx.completedPersonRideCount > 0) {
+        reasons.push(`first_ride_only=has_${ctx.completedPersonRideCount}_completed_rides`);
+      }
+    }
     rejections.push({ id: o.id, name: o.name ?? null, reason: reasons.length > 0 ? reasons.join("|") : "unknown" });
   }
   return { eligible, rejections };

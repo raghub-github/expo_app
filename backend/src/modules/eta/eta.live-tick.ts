@@ -39,7 +39,7 @@ export async function runLiveEtaTick(limit = 200): Promise<LiveEtaTickResult> {
     const orderIdText = row.order_id?.trim();
     if (!orderIdText) continue;
     try {
-      const result = await runLiveEtaForOrder(orderIdText, "STATUS_CHANGE");
+      const result = await runLiveEtaForOrder(orderIdText, "LIVE_TICK");
       if (result?.changed) updated += 1;
     } catch (e) {
       errors += 1;

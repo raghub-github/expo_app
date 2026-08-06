@@ -1,12 +1,23 @@
 /**
  * Registers Expo + native push tokens via the shared push controller,
  * handles foreground/background opens, optional rich in-app modal, and deep links.
+ *
+ * Expo Go cannot obtain remote FCM/Expo tokens (SDK 53+). We still mount this
+ * host so campaign/in-app inbox polls can surface floating banners; the shared
+ * controller soft-skips remote registration there.
  */
 
 import { useEffect, useRef, useState, useCallback, useMemo } from "react";
 import { AppText } from "@/components/AppText";
 
-import { Modal, Platform, Pressable, StyleSheet, View } from "react-native";
+import {
+  AppState,
+  Modal,
+  Platform,
+  Pressable,
+  StyleSheet,
+  type AppStateStatus,
+} from "react-native";
 import Constants from "expo-constants";
 import * as Device from "expo-device";
 import * as Localization from "expo-localization";
@@ -15,8 +26,10 @@ import { Image } from "expo-image";
 import {
   navigateFromPushData,
   usePushPermissionController,
+  enqueueInAppBanner,
   enqueueInAppBannerFromPush,
   FloatingInAppBannerHost,
+  loadInbox,
   type PushNotificationOpenPayload,
 } from "@gatimitra/expo-push-kit";
 import { useAuthStore } from "@/store/authStore";
@@ -51,10 +64,10 @@ const CUSTOMER_PUSH_CHANNELS = [
   { channelId: "default", name: "Orders & updates", lightColor: "#14b8a6" },
 ] as const;
 
-const isExpoGo = Constants.appOwnership === "expo";
+/** Campaign inbox has no realtime channel — poll while foregrounded. */
+const CAMPAIGN_INBOX_POLL_MS = 18_000;
 
 export function PushNotificationBootstrap() {
-  if (isExpoGo) return null;
   return <PushNotificationBootstrapInner />;
 }
 
@@ -174,7 +187,9 @@ function PushNotificationBootstrapInner() {
   const { controller } = usePushPermissionController(pushOptions);
 
   // Foreground: we play CX sound ourselves — skip OS default chime (avoids double play).
+  // Never import expo-notifications in Expo Go (SDK 53+ logs a hard error on import).
   useEffect(() => {
+    if (Constants.appOwnership === "expo") return;
     let cancelled = false;
     void (async () => {
       try {
@@ -202,8 +217,97 @@ function PushNotificationBootstrapInner() {
   // run earlier with getAuth() === null and skipped registration).
   useEffect(() => {
     if (!hydrated || !session?.accessToken || session.role !== "customer") return;
-    void controller.refresh({ syncIfGranted: true });
+    void (async () => {
+      const snap = await controller.refresh({ syncIfGranted: true });
+      if (__DEV__) {
+        console.log("[push] post-login refresh", {
+          osStatus: snap.osStatus,
+          syncStatus: snap.syncStatus,
+          lastBackendSyncOk: snap.lastBackendSyncOk,
+          hasExpo: !!snap.expoPushToken,
+          hasNative: !!snap.nativePushToken,
+          error: snap.error,
+          expoGo: Constants.appOwnership === "expo",
+        });
+      }
+    })();
   }, [hydrated, session?.accessToken, session?.role, controller]);
+
+  // In-app campaign delivery: when no Expo/FCM token is registered (Expo Go /
+  // permission denied), admin sends still land in notification_dispatch_logs.
+  // Poll the inbox and surface new rows as floating banners so announcements
+  // are visible without a development build.
+  useEffect(() => {
+    if (!hydrated || !session?.accessToken || session.role !== "customer") return;
+
+    const seenIds = new Set<string>();
+    let primed = false;
+    let cancelled = false;
+
+    const apiCfg = {
+      baseUrl: apiBaseUrl,
+      getAuthHeader: async () => {
+        const token = authRef.current.session?.accessToken;
+        return token ? `Bearer ${token}` : null;
+      },
+    };
+
+    const poll = async () => {
+      if (cancelled) return;
+      if (AppState.currentState !== "active") return;
+      try {
+        const page = await loadInbox(apiCfg, { limit: 40 });
+        if (cancelled) return;
+        const items = page.items ?? [];
+        if (!primed) {
+          for (const item of items) {
+            if (item.notification_id) seenIds.add(item.notification_id);
+          }
+          primed = true;
+          return;
+        }
+        for (const item of items) {
+          const id = item.notification_id?.trim();
+          if (!id || seenIds.has(id)) continue;
+          seenIds.add(id);
+          if (item.clicked_at) continue;
+          const title = (item.title ?? "").trim();
+          if (!title) continue;
+          enqueueInAppBanner({
+            id,
+            title,
+            body: item.body,
+            deepLink: item.deep_link,
+            templateCode: item.template_code,
+            data: {
+              notification_id: id,
+              gmType: item.template_code ?? "",
+              gmTitle: item.title ?? "",
+              gmMessage: item.body ?? "",
+              deepLink: item.deep_link ?? "",
+              imageUrl: item.image_url ?? "",
+            },
+          });
+        }
+      } catch {
+        // Best-effort — never block the app on inbox poll failures.
+      }
+    };
+
+    void poll();
+    const intervalId = setInterval(() => {
+      void poll();
+    }, CAMPAIGN_INBOX_POLL_MS);
+    const onAppState = (state: AppStateStatus) => {
+      if (state === "active") void poll();
+    };
+    const sub = AppState.addEventListener("change", onAppState);
+    return () => {
+      cancelled = true;
+      clearInterval(intervalId);
+      sub.remove();
+    };
+  }, [hydrated, session?.accessToken, session?.role, apiBaseUrl]);
 
   return (
     <>

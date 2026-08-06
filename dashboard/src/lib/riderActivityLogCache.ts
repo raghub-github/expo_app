@@ -57,24 +57,31 @@ export function invalidateRiderActivityLogCache(orderId: number): void {
   inflight.delete(orderId);
 }
 
-export function prefetchRiderActivityLog(orderId: number): void {
+export function prefetchRiderActivityLog(orderId: number, force = false): void {
   if (!Number.isFinite(orderId)) return;
-  if (cache.has(orderId) || inflight.has(orderId)) return;
-  void fetchRiderActivityLogCached(orderId);
+  if (!force && (cache.has(orderId) || inflight.has(orderId))) return;
+  void fetchRiderActivityLogCached(orderId, { force }).catch(() => {
+    /* network / backend down — ignore for background prefetch */
+  });
 }
 
 export async function fetchRiderActivityLogCached(
-  orderId: number
+  orderId: number,
+  options?: { force?: boolean }
 ): Promise<RiderActivityLogCacheEntry> {
   if (!Number.isFinite(orderId)) {
     return { logs: [], summary: EMPTY_SUMMARY };
   }
 
-  const cached = cache.get(orderId);
-  if (cached) return cached;
+  if (options?.force) {
+    invalidateRiderActivityLogCache(orderId);
+  } else {
+    const cached = cache.get(orderId);
+    if (cached) return cached;
 
-  const pending = inflight.get(orderId);
-  if (pending) return pending;
+    const pending = inflight.get(orderId);
+    if (pending) return pending;
+  }
 
   const request = fetch(`/api/orders/${orderId}/rider-activity-log`, {
     credentials: "include",
@@ -99,6 +106,13 @@ export async function fetchRiderActivityLogCached(
       };
       cache.set(orderId, entry);
       return entry;
+    })
+    .catch((err: unknown) => {
+      // Backend down / network blip — do not cache so a later retry can succeed.
+      if (err instanceof TypeError) {
+        return { logs: [], summary: EMPTY_SUMMARY, trackingOrderId: null };
+      }
+      throw err;
     })
     .finally(() => {
       inflight.delete(orderId);

@@ -13,6 +13,8 @@ import {
   type ViewStyle,
 } from "react-native";
 import { Image } from "expo-image";
+import { enqueueImagePrefetch } from "@/lib/prefetchQueue";
+import { useCardAnimationsEnabled } from "@/hooks/useCardAnimationsEnabled";
 import Animated, {
   cancelAnimation,
   Easing,
@@ -167,6 +169,9 @@ export function StoreBannerCarousel({
   const resolvedHoldMs = holdMs ?? slideIntervalMs ?? initialBannerHoldMs ?? DEFAULT_HOLD;
   const resolvedSlideMs = slideMs ?? slideDurationMs ?? DEFAULT_SLIDE;
 
+  // Decorative motion only — suspended while backgrounded or mid-scroll.
+  const motionAllowed = useCardAnimationsEnabled();
+
   const [activeIndex, setActiveIndex] = useState(0);
 
   const activeIndexRef = useRef(0);
@@ -255,10 +260,11 @@ export function StoreBannerCarousel({
     [syncTranslateToPhysical, useInfiniteLoop]
   );
 
+  // Runs once per mounted card. Unbounded `Image.prefetch` here meant a list of
+  // N cards issued N x slides downloads at once; the shared queue caps in-flight
+  // work so on-screen images are not starved by off-screen ones.
   useEffect(() => {
-    for (const uri of slides) {
-      void Image.prefetch(uri);
-    }
+    enqueueImagePrefetch(slides, 3);
   }, [dataKey, slides]);
 
   useEffect(() => {
@@ -363,16 +369,16 @@ export function StoreBannerCarousel({
   }, [clearHoldTimer, runSlide]);
 
   useEffect(() => {
-    if (!showCarousel || !enableAutoRotate) {
+    if (!showCarousel || !enableAutoRotate || !motionAllowed) {
       clearHoldTimer();
       return;
     }
     startAutoLoop();
     return clearHoldTimer;
-  }, [showCarousel, enableAutoRotate, dataKey, clearHoldTimer, startAutoLoop]);
+  }, [showCarousel, enableAutoRotate, motionAllowed, dataKey, clearHoldTimer, startAutoLoop]);
 
   useEffect(() => {
-    if (enableKenBurns && !showCarousel && slides.length === 1) {
+    if (enableKenBurns && motionAllowed && !showCarousel && slides.length === 1) {
       kenBurns.value = 0;
       kenBurns.value = withRepeat(
         withSequence(
@@ -389,7 +395,7 @@ export function StoreBannerCarousel({
     }
     cancelAnimation(kenBurns);
     kenBurns.value = 0;
-  }, [enableKenBurns, showCarousel, slides.length, kenBurns]);
+  }, [enableKenBurns, motionAllowed, showCarousel, slides.length, kenBurns]);
 
   const resetAutoAfterGesture = useCallback(() => {
     if (showCarouselRef.current) startAutoLoop();

@@ -2162,9 +2162,55 @@ export const billingDiscounts = pgTable("billing_discounts", {
   offerAudience: text("offer_audience").notNull().default("CUSTOMER"),
   /** Max redemptions per actor; null = unlimited per user (total cap is usage_limit). */
   perUserUsageLimit: integer("per_user_usage_limit"),
+  /** Checkout coupon engine config (usage rules, multi-service, restrictions). */
+  couponConfig: jsonb("coupon_config").notNull().default({}),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
+
+/** Geo bindings for checkout coupons (billing_discounts) — same model as platform offers. */
+export const geoBillingDiscountBindings = pgTable(
+  "geo_billing_discount_bindings",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    geoLevel: text("geo_level").notNull(),
+    geoRefId: uuid("geo_ref_id").notNull(),
+    billingDiscountId: bigint("billing_discount_id", { mode: "number" })
+      .notNull()
+      .references(() => billingDiscounts.id, { onDelete: "cascade" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    uniq: uniqueIndex("geo_billing_discount_bindings_uniq").on(
+      t.geoLevel,
+      t.geoRefId,
+      t.billingDiscountId
+    ),
+  })
+);
+
+/** Per-customer checkout coupon redemption ledger. */
+export const billingDiscountUsages = pgTable("billing_discount_usages", {
+  id: bigserial("id", { mode: "number" }).primaryKey(),
+  billingDiscountId: bigint("billing_discount_id", { mode: "number" })
+    .notNull()
+    .references(() => billingDiscounts.id, { onDelete: "cascade" }),
+  customerId: bigint("customer_id", { mode: "number" }).notNull(),
+  orderId: bigint("order_id", { mode: "number" }),
+  orderIdText: text("order_id_text"),
+  status: text("status").notNull().default("reserved"),
+  appliedAt: timestamp("applied_at", { withTimezone: true }).notNull().defaultNow(),
+  consumedAt: timestamp("consumed_at", { withTimezone: true }),
+  cancelledAt: timestamp("cancelled_at", { withTimezone: true }),
+  refundedAt: timestamp("refunded_at", { withTimezone: true }),
+  discountAmount: numeric("discount_amount", { precision: 14, scale: 4 }).notNull().default("0"),
+  usageCount: integer("usage_count").notNull().default(1),
+  metadata: jsonb("metadata").notNull().default({}),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
 
 export const billingDeliveryRateCards = pgTable(
   "billing_delivery_rate_cards",
@@ -2198,6 +2244,13 @@ export const billingPlatformOffers = pgTable(
   {
     id: bigserial("id", { mode: "number" }).primaryKey(),
     name: text("name"),
+    /** Customer-facing promo code — unique case-insensitively (A-Z 0-9 _ -). */
+    couponCode: text("coupon_code").notNull(),
+    /**
+     * Ride/Parcel promo configuration (jsonb). Food offers leave as {}.
+     * See rideParcelPromo.ts for shape.
+     */
+    promoConfig: jsonb("promo_config").notNull().default({}),
     serviceType: text("service_type").notNull().default("FOOD"),
     discountType: text("discount_type").notNull().default("PERCENTAGE"),
     valueNumeric: numeric("value_numeric", { precision: 14, scale: 4 }),
@@ -2225,6 +2278,18 @@ export const billingPlatformOffers = pgTable(
     endsAt: timestamp("ends_at", { withTimezone: true }),
     budgetTotal: numeric("budget_total", { precision: 14, scale: 4 }),
     budgetUsed: numeric("budget_used", { precision: 14, scale: 4 }).notNull().default("0"),
+    /** Lifetime redemptions across all customers; null = unlimited. */
+    maxUsesTotal: integer("max_uses_total"),
+    /** Max redemptions per customer; null = unlimited. */
+    maxUsesPerUser: integer("max_uses_per_user"),
+    /** Max redemptions per customer per UTC day; null = unlimited. */
+    maxUsesPerDay: integer("max_uses_per_day"),
+    /** Max redemptions per customer per UTC month; null = unlimited. */
+    maxUsesPerMonth: integer("max_uses_per_month"),
+    /** ON_PLACED | ON_DELIVERED */
+    consumeMode: text("consume_mode").notNull().default("ON_PLACED"),
+    restoreOnCancel: boolean("restore_on_cancel").notNull().default(true),
+    restoreOnRefund: boolean("restore_on_refund").notNull().default(true),
     priority: integer("priority").notNull().default(0),
     isActive: boolean("is_active").notNull().default(true),
     isHidden: boolean("is_hidden").notNull().default(false),
@@ -2238,6 +2303,45 @@ export const billingPlatformOffers = pgTable(
       table.serviceType,
       table.isActive,
       table.priority
+    ),
+    couponCodeUidx: uniqueIndex("billing_platform_offers_coupon_code_lower_uidx").on(table.couponCode),
+  })
+);
+
+/** Platform offer redemption ledger — per-user / budget enforcement source of truth. */
+export const platformOfferUsages = pgTable(
+  "platform_offer_usages",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    platformOfferId: bigint("platform_offer_id", { mode: "number" })
+      .notNull()
+      .references(() => billingPlatformOffers.id, { onDelete: "cascade" }),
+    customerId: bigint("customer_id", { mode: "number" }).notNull(),
+    orderId: bigint("order_id", { mode: "number" }),
+    orderIdText: text("order_id_text"),
+    status: text("status").notNull().default("reserved"),
+    appliedAt: timestamp("applied_at", { withTimezone: true }).notNull().defaultNow(),
+    consumedAt: timestamp("consumed_at", { withTimezone: true }),
+    cancelledAt: timestamp("cancelled_at", { withTimezone: true }),
+    refundedAt: timestamp("refunded_at", { withTimezone: true }),
+    expiredAt: timestamp("expired_at", { withTimezone: true }),
+    discountAmount: numeric("discount_amount", { precision: 14, scale: 4 }).notNull().default("0"),
+    consumedBudget: numeric("consumed_budget", { precision: 14, scale: 4 }).notNull().default("0"),
+    /** Order grand total at redemption — analytics / sales attribution. */
+    orderSaleAmount: numeric("order_sale_amount", { precision: 14, scale: 4 }),
+    usageCount: integer("usage_count").notNull().default(1),
+    metadata: jsonb("metadata").notNull().default({}),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    offerCustomerIdx: index("platform_offer_usages_offer_customer_idx").on(
+      table.platformOfferId,
+      table.customerId
+    ),
+    customerStatusIdx: index("platform_offer_usages_customer_status_idx").on(
+      table.customerId,
+      table.status
     ),
   })
 );
@@ -2901,6 +3005,57 @@ export const ordersParcel = pgTable(
     scheduledDeliveryTime: timestamp("scheduled_delivery_time", {
       withTimezone: true,
     }),
+    /** Receiver at drop — also mirrored on orders_core.delivery_primary_contact_*. */
+    receiverName: text("receiver_name"),
+    receiverMobile: text("receiver_mobile"),
+    senderName: text("sender_name"),
+    senderMobile: text("sender_mobile"),
+    pickupLabel: text("pickup_label"),
+    pickupAddress: text("pickup_address"),
+    pickupLat: numeric("pickup_lat", { precision: 9, scale: 6 }),
+    pickupLon: numeric("pickup_lon", { precision: 9, scale: 6 }),
+    dropLabel: text("drop_label"),
+    dropAddress: text("drop_address"),
+    dropLat: numeric("drop_lat", { precision: 9, scale: 6 }),
+    dropLon: numeric("drop_lon", { precision: 9, scale: 6 }),
+    /** Customer book category: 2_wheeler | 3_wheeler | 4_wheeler_non_ac. */
+    vehicleCategory: text("vehicle_category"),
+    /** Dispatch family: two_wheeler | auto | cab. */
+    vehicleTypeRequired: text("vehicle_type_required"),
+    paymentMethod: text("payment_method"),
+    /** cash/COD collection point: pickup | drop. */
+    payAt: text("pay_at"),
+    estimatedFare: numeric("estimated_fare", { precision: 10, scale: 2 }).notNull().default("0"),
+    finalFare: numeric("final_fare", { precision: 10, scale: 2 }),
+    tripDistanceKm: numeric("trip_distance_km", { precision: 10, scale: 2 }),
+    currency: text("currency").notNull().default("INR"),
+    amountCollected: numeric("amount_collected", { precision: 10, scale: 2 }).notNull().default("0"),
+    couponCode: text("coupon_code"),
+    platformOfferId: bigint("platform_offer_id", { mode: "number" }),
+    offerSnapshot: jsonb("offer_snapshot").notNull().default({}),
+    appliedOfferDiscount: numeric("applied_offer_discount", { precision: 10, scale: 2 })
+      .notNull()
+      .default("0"),
+    pickupOtp: text("pickup_otp"),
+    deliveryOtp: text("delivery_otp"),
+    searchStartedAt: timestamp("search_started_at", { withTimezone: true }),
+    searchExpiresAt: timestamp("search_expires_at", { withTimezone: true }),
+    searchTimeoutSec: integer("search_timeout_sec"),
+    assignedRiderId: integer("assigned_rider_id").references(() => riders.id, {
+      onDelete: "set null",
+    }),
+    riderAssignedAt: timestamp("rider_assigned_at", { withTimezone: true }),
+    riderReachedPickupAt: timestamp("rider_reached_pickup_at", { withTimezone: true }),
+    pickupOtpVerifiedAt: timestamp("pickup_otp_verified_at", { withTimezone: true }),
+    deliveryOtpVerifiedAt: timestamp("delivery_otp_verified_at", { withTimezone: true }),
+    cancelledByType: text("cancelled_by_type"),
+    cancelledAt: timestamp("cancelled_at", { withTimezone: true }),
+    cancellationReasonCode: text("cancellation_reason_code"),
+    cancellationReasonText: text("cancellation_reason_text"),
+    cashCollectedAt: timestamp("cash_collected_at", { withTimezone: true }),
+    cashCollectedByRiderId: integer("cash_collected_by_rider_id"),
+    acceptPayoutSnapshot: jsonb("accept_payout_snapshot"),
+    placementSnapshot: jsonb("placement_snapshot").notNull().default({}),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -2910,6 +3065,12 @@ export const ordersParcel = pgTable(
   },
   (table) => ({
     orderIdIdx: index("orders_parcel_order_id_idx").on(table.orderId),
+    vehicleCategoryIdx: index("orders_parcel_vehicle_category_idx").on(table.vehicleCategory),
+    paymentMethodIdx: index("orders_parcel_payment_method_idx").on(table.paymentMethod),
+    payAtIdx: index("orders_parcel_pay_at_idx").on(table.payAt),
+    searchExpiresIdx: index("orders_parcel_search_expires_idx").on(table.searchExpiresAt),
+    assignedRiderIdx: index("orders_parcel_assigned_rider_idx").on(table.assignedRiderId),
+    platformOfferIdx: index("orders_parcel_platform_offer_idx").on(table.platformOfferId),
   })
 );
 

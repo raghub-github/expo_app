@@ -47,7 +47,7 @@ export const LANDING_HERO_ARC_ITEMS: LandingArcItem[] = [
   {
     title: 'Parcel',
     assetKey: CX.home.serviceParcel,
-    href: '/courier#parcel-form',
+    href: '/parcel',
     service: 'parcel',
   },
   {
@@ -201,6 +201,7 @@ export function LandingHeroArcProvider({ children }: { children: React.ReactNode
     '/order': 'food',
     '/ride': 'person',
     '/courier': 'parcel',
+    '/parcel': 'parcel',
   }
 
   const pathKey = (path: string) => path.split('#')[0] || path

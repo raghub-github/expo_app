@@ -17,6 +17,8 @@ import { STORAGE_KEYS } from "@/constants";
 import { paymentService } from "@/services/payment.service";
 import { orderService } from "@/services/order.service";
 import { useProfile } from "@/hooks/useProfile";
+import { useWalletBalance, WALLET_BALANCE_QUERY_KEY } from "@/hooks/useWalletBalance";
+import { useQueryClient } from "@tanstack/react-query";
 
 const MINT = GatiMitraColors.primaryMint;
 const MINT_DARK = GatiMitraColors.deepMintStart;
@@ -25,11 +27,14 @@ const MUTED = GatiMitraColors.textSecondary;
 
 export const FOOD_TIP_PRESETS = [15, 20, 30] as const;
 
+type TipPayMethod = "upi" | "gaticash";
+
 type FoodOrderTipSheetProps = {
   visible: boolean;
   orderId: string;
   partnerName: string;
   partnerPhotoUri?: string | null;
+  /** @deprecated Tip pay defaults to UPI; kept for call-site compat. */
   paymentMethodLabel?: string;
   existingTipAmount?: number;
   onClose: () => void;
@@ -41,19 +46,25 @@ export function FoodOrderTipSheet({
   orderId,
   partnerName,
   partnerPhotoUri,
-  paymentMethodLabel = "UPI",
   existingTipAmount = 0,
   onClose,
   onTipPaid,
 }: FoodOrderTipSheetProps) {
   const insets = useSafeAreaInsets();
+  const queryClient = useQueryClient();
   const { data: profile } = useProfile();
+  const { data: wallet } = useWalletBalance();
+  const walletAvailable = Math.max(
+    0,
+    Number(wallet?.available_balance ?? wallet?.balance ?? 0)
+  );
 
   const [selectedTip, setSelectedTip] = useState<number>(FOOD_TIP_PRESETS[0]);
   const [customMode, setCustomMode] = useState(false);
   const [customAmount, setCustomAmount] = useState("");
   const [saveForNext, setSaveForNext] = useState(true);
   const [paying, setPaying] = useState(false);
+  const [payMethod, setPayMethod] = useState<TipPayMethod>("upi");
   const [razorpayVisible, setRazorpayVisible] = useState(false);
   const [razorpayParams, setRazorpayParams] = useState<{
     orderId: string;
@@ -73,6 +84,8 @@ export function FoodOrderTipSheet({
     return selectedTip;
   }, [customMode, customAmount, selectedTip]);
 
+  const canPayWithGatiCash = tipAmount > 0 && walletAvailable + 0.005 >= tipAmount;
+
   useEffect(() => {
     if (!visible) return;
     void AsyncStorage.getItem(STORAGE_KEYS.SAVED_DELIVERY_TIP).then((raw) => {
@@ -86,7 +99,32 @@ export function FoodOrderTipSheet({
       }
     });
     setSaveForNext(true);
+    setPayMethod("upi");
   }, [visible]);
+
+  useEffect(() => {
+    if (payMethod === "gaticash" && !canPayWithGatiCash) {
+      setPayMethod("upi");
+    }
+  }, [payMethod, canPayWithGatiCash]);
+
+  const afterTipSuccess = useCallback(
+    async (amount: number) => {
+      if (saveForNext) {
+        await AsyncStorage.setItem(STORAGE_KEYS.SAVED_DELIVERY_TIP, String(amount));
+      }
+      setRazorpayVisible(false);
+      setRazorpayParams(null);
+      setSimulatedPayment(null);
+      onClose();
+      onTipPaid(amount);
+      Alert.alert(
+        "Thank you!",
+        `₹${amount} tip has been sent to ${partnerName.split(" ")[0] ?? "your delivery partner"}.`
+      );
+    },
+    [saveForNext, onClose, onTipPaid, partnerName]
+  );
 
   const finalizeTip = useCallback(
     async (result: RazorpayPaymentResult) => {
@@ -95,22 +133,12 @@ export function FoodOrderTipSheet({
       try {
         await orderService.submitRiderTip(orderId, {
           tipAmount,
+          paymentMethod: "upi",
           razorpayOrderId: result.razorpayOrderId,
           razorpayPaymentId: result.razorpayPaymentId,
           razorpaySignature: result.razorpaySignature,
         });
-        if (saveForNext) {
-          await AsyncStorage.setItem(STORAGE_KEYS.SAVED_DELIVERY_TIP, String(tipAmount));
-        }
-        setRazorpayVisible(false);
-        setRazorpayParams(null);
-        setSimulatedPayment(null);
-        onClose();
-        onTipPaid(tipAmount);
-        Alert.alert(
-          "Thank you!",
-          `₹${tipAmount} tip has been sent to ${partnerName.split(" ")[0] ?? "your delivery partner"}.`
-        );
+        await afterTipSuccess(tipAmount);
       } catch (e) {
         const msg =
           (e as { response?: { data?: { message?: string } } })?.response?.data?.message ??
@@ -120,7 +148,7 @@ export function FoodOrderTipSheet({
         setPaying(false);
       }
     },
-    [tipAmount, orderId, saveForNext, onClose, onTipPaid, partnerName]
+    [tipAmount, orderId, afterTipSuccess]
   );
 
   const handlePayTip = useCallback(async () => {
@@ -132,6 +160,36 @@ export function FoodOrderTipSheet({
       Alert.alert("Tip already added", "You have already tipped for this order.");
       return;
     }
+
+    if (payMethod === "gaticash") {
+      if (!canPayWithGatiCash) {
+        Alert.alert(
+          "Insufficient GatiCash",
+          "Your wallet balance is not enough for this tip. Pay with UPI instead."
+        );
+        setPayMethod("upi");
+        return;
+      }
+      setPaying(true);
+      try {
+        await orderService.submitRiderTip(orderId, {
+          tipAmount,
+          paymentMethod: "gaticash",
+        });
+        void queryClient.invalidateQueries({ queryKey: WALLET_BALANCE_QUERY_KEY });
+        await afterTipSuccess(tipAmount);
+      } catch (e) {
+        const msg =
+          (e as { response?: { data?: { message?: string } } })?.response?.data?.message ??
+          "Could not pay tip with GatiCash. Try UPI instead.";
+        Alert.alert("Tip failed", msg);
+        setPayMethod("upi");
+      } finally {
+        setPaying(false);
+      }
+      return;
+    }
+
     setPaying(true);
     try {
       const razorpayOrder = await paymentService.createRazorpayOrder({
@@ -155,12 +213,33 @@ export function FoodOrderTipSheet({
     } finally {
       setPaying(false);
     }
-  }, [tipAmount, existingTipAmount, orderId]);
+  }, [
+    tipAmount,
+    existingTipAmount,
+    orderId,
+    payMethod,
+    canPayWithGatiCash,
+    afterTipSuccess,
+    queryClient,
+  ]);
 
   const handleClear = () => {
     setCustomMode(false);
     setCustomAmount("");
     setSelectedTip(FOOD_TIP_PRESETS[0]);
+  };
+
+  const selectPayMethod = (method: TipPayMethod) => {
+    if (method === "gaticash" && !canPayWithGatiCash) {
+      Alert.alert(
+        "Insufficient GatiCash",
+        tipAmount > 0
+          ? `You need ₹${tipAmount} in GatiCash (available ₹${Math.floor(walletAvailable)}).`
+          : "Add a tip amount first, then switch to GatiCash if balance is enough."
+      );
+      return;
+    }
+    setPayMethod(method);
   };
 
   if (existingTipAmount > 0) return null;
@@ -249,10 +328,26 @@ export function FoodOrderTipSheet({
           </View>
 
           <View style={styles.payFooter}>
-            <View style={styles.payMethodCol}>
+            <TouchableOpacity
+              style={styles.payMethodCol}
+              onPress={() => selectPayMethod(payMethod === "upi" ? "gaticash" : "upi")}
+              activeOpacity={0.85}
+            >
               <AppText style={styles.payUsing}>PAY USING</AppText>
-              <AppText style={styles.payMethod}>{paymentMethodLabel.replace(/_/g, " ")}</AppText>
-            </View>
+              <View style={styles.payMethodRow}>
+                <AppText style={styles.payMethod}>
+                  {payMethod === "gaticash" ? "GatiCash" : "UPI"}
+                </AppText>
+                <Ionicons name="chevron-down" size={14} color={TEXT} />
+              </View>
+              {payMethod === "gaticash" ? (
+                <AppText style={styles.walletHint}>Bal ₹{Math.floor(walletAvailable)}</AppText>
+              ) : canPayWithGatiCash ? (
+                <AppText style={styles.walletHint}>Tap to use GatiCash</AppText>
+              ) : (
+                <AppText style={styles.walletHintMuted}>GatiCash unavailable</AppText>
+              )}
+            </TouchableOpacity>
             <TouchableOpacity
               style={[styles.payBtn, (paying || tipAmount <= 0) && styles.payBtnDisabled]}
               onPress={() => void handlePayTip()}
@@ -299,7 +394,9 @@ export function FoodOrderTipSheet({
         <Pressable style={styles.simBackdrop} onPress={() => setSimulatedPayment(null)} />
         <View style={styles.simCard}>
           <AppText style={styles.simTitle}>Simulate tip payment</AppText>
-          <AppText style={styles.simSub}>₹{tipAmount} to {partnerName}</AppText>
+          <AppText style={styles.simSub}>
+            ₹{tipAmount} to {partnerName}
+          </AppText>
           <TouchableOpacity
             style={styles.simSuccessBtn}
             onPress={() => {
@@ -407,13 +504,15 @@ const styles = StyleSheet.create({
   },
   payMethodCol: { flex: 1 },
   payUsing: { fontSize: 10, fontWeight: "700", color: MUTED, letterSpacing: 0.4 },
+  payMethodRow: { flexDirection: "row", alignItems: "center", gap: 2, marginTop: 2 },
   payMethod: {
     fontSize: 13,
     fontWeight: "700",
     color: TEXT,
     textTransform: "capitalize",
-    marginTop: 2,
   },
+  walletHint: { fontSize: 10, color: MINT_DARK, fontWeight: "600", marginTop: 2 },
+  walletHintMuted: { fontSize: 10, color: MUTED, marginTop: 2 },
   payBtn: { borderRadius: 14, overflow: "hidden", minWidth: 168 },
   payBtnDisabled: { opacity: 0.55 },
   payBtnGradient: {
@@ -438,17 +537,17 @@ const styles = StyleSheet.create({
     backgroundColor: "#fff",
     borderRadius: 16,
     padding: 20,
+    gap: 10,
   },
-  simTitle: { fontSize: 18, fontWeight: "800", color: TEXT, marginBottom: 6 },
-  simSub: { fontSize: 14, color: MUTED, marginBottom: 16 },
+  simTitle: { fontSize: 16, fontWeight: "800", color: TEXT, textAlign: "center" },
+  simSub: { fontSize: 13, color: MUTED, textAlign: "center", marginBottom: 8 },
   simSuccessBtn: {
     backgroundColor: MINT,
     borderRadius: 12,
-    paddingVertical: 14,
+    paddingVertical: 12,
     alignItems: "center",
-    marginBottom: 10,
   },
-  simSuccessText: { color: "#fff", fontWeight: "700", fontSize: 15 },
-  simCancelBtn: { alignItems: "center", paddingVertical: 10 },
-  simCancelText: { color: MUTED, fontWeight: "600" },
+  simSuccessText: { color: "#fff", fontWeight: "700", fontSize: 14 },
+  simCancelBtn: { paddingVertical: 10, alignItems: "center" },
+  simCancelText: { color: MUTED, fontWeight: "600", fontSize: 13 },
 });

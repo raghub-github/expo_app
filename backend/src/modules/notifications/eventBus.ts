@@ -27,6 +27,7 @@ import {
   clearMerchantStoreOrderNotificationsByOrderRef,
   shouldClearOrderNotifications,
 } from "../../lib/clear-merchant-order-notifications.js";
+import { clearCustomerOrderNotifications } from "../../lib/clear-customer-order-notifications.js";
 import { resolveCustomerOrderCancelledTemplateCode } from "../../lib/order-cancel-notification.js";
 
 // ---------------------------------------------------------------------------
@@ -231,7 +232,7 @@ const FOOD_LIVE_BY_TEMPLATE: Record<
   string,
   { step: number; title: string; body: string }
 > = {
-  ORDER_ACCEPTED: { step: 1, title: "Order Accepted", body: "Store accepted your order" },
+  ORDER_ACCEPTED: { step: 1, title: "Order Confirmed by the Store", body: "Your order has been confirmed by the store and is now being prepared." },
   ORDER_PREPARING: { step: 1, title: "Preparing Your Order", body: "Preparing" },
   ORDER_FOOD_READY: { step: 2, title: "Ready for Pickup", body: "Rider arriving at store" },
   ORDER_RIDER_AT_STORE: { step: 2, title: "Ready for Pickup", body: "Rider at the store" },
@@ -243,7 +244,12 @@ const FOOD_LIVE_BY_TEMPLATE: Record<
 function foodLiveMetadata(
   templateCode: string,
   orderId: string,
-  extras?: { riderName?: string | null; merchantName?: string | null; etaMinutes?: number }
+  extras?: {
+    riderName?: string | null;
+    merchantName?: string | null;
+    etaMinutes?: number;
+    deliveryOtp?: string | null;
+  }
 ): Record<string, unknown> {
   const live = FOOD_LIVE_BY_TEMPLATE[templateCode];
   const base: Record<string, unknown> = {
@@ -251,6 +257,10 @@ function foodLiveMetadata(
     gmType: templateCode,
   };
   if (!live) return base;
+  let liveBody = live.body;
+  if (templateCode === "ORDER_RIDER_ARRIVING" && extras?.deliveryOtp) {
+    liveBody = `OTP ${extras.deliveryOtp} · Share with your delivery partner`;
+  }
   return {
     ...base,
     gmLiveProgress: true,
@@ -258,9 +268,10 @@ function foodLiveMetadata(
     liveStep: live.step,
     liveSteps: 5,
     liveTitle: live.title,
-    liveBody: live.body,
+    liveBody,
     ...(extras?.merchantName ? { storeName: extras.merchantName } : {}),
     ...(extras?.etaMinutes != null ? { etaMinutes: extras.etaMinutes } : {}),
+    ...(extras?.deliveryOtp ? { deliveryOtp: extras.deliveryOtp } : {}),
   };
 }
 
@@ -273,19 +284,26 @@ export function registerDomainEventHandlers(): void {
 
   // Order status → clear stale "New order!" inbox rows, then push templates.
   on("order.status_changed", async (e) => {
-    if (
-      shouldClearOrderNotifications(e.toStatus) &&
-      e.merchantStoreId != null &&
-      e.merchantStoreId > 0
-    ) {
+    if (shouldClearOrderNotifications(e.toStatus)) {
+      if (e.merchantStoreId != null && e.merchantStoreId > 0) {
+        try {
+          await clearMerchantStoreOrderNotificationsByOrderRef(getSql(), {
+            merchantStoreId: e.merchantStoreId,
+            orderIdText: e.orderId,
+            formattedOrderId: e.orderShortId ?? e.orderId,
+          });
+        } catch {
+          /* inbox clear is best-effort */
+        }
+      }
       try {
-        await clearMerchantStoreOrderNotificationsByOrderRef(getSql(), {
-          merchantStoreId: e.merchantStoreId,
+        await clearCustomerOrderNotifications(getSql(), {
           orderIdText: e.orderId,
           formattedOrderId: e.orderShortId ?? e.orderId,
+          customerUserId: e.customerId ?? null,
         });
       } catch {
-        /* inbox clear is best-effort */
+        /* customer inbox clear is best-effort */
       }
     }
 
@@ -456,6 +474,8 @@ export function registerDomainEventHandlers(): void {
 
   on("order.rider_arriving", async (e) => {
     if (!e.customerId) return;
+    const { deliveryOtpForOrderIdText } = await import("../../lib/customer-lifecycle-notify.js");
+    const deliveryOtp = await deliveryOtpForOrderIdText(e.orderId);
     await sendNotification({
       templateCode: "ORDER_RIDER_ARRIVING",
       variables: {
@@ -463,12 +483,14 @@ export function registerDomainEventHandlers(): void {
         orderShortId: e.orderShortId ?? e.orderId,
         riderName: e.riderName ?? "Your rider",
         etaMinutes: e.etaMinutes ?? 5,
+        deliveryOtp: deliveryOtp || "your app OTP",
       },
       target: { user_id: e.customerId },
       idempotencyKey: `ORDER_RIDER_ARRIVING:${e.orderId}`,
       metadata: foodLiveMetadata("ORDER_RIDER_ARRIVING", e.orderId, {
         riderName: e.riderName,
         etaMinutes: e.etaMinutes,
+        deliveryOtp,
       }),
     });
   });

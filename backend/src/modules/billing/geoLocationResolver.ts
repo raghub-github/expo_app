@@ -21,6 +21,7 @@
 import {
   resolveDropGeoRefsFromPincode,
   resolvePlatformOfferGeoBindingEffectiveIds,
+  resolveCheckoutCouponGeoBindingEffectiveIds,
 } from "./geoRefFromPincode.js";
 import { reverseGeocodeCoords, type ReverseGeocodeBackendResult } from "../../services/mapbox/geocoding.js";
 import type { DropGeoRefByLevel } from "./types.js";
@@ -127,6 +128,8 @@ export type ResolveGeoLocationResult = {
   refs: DropGeoRefByLevel | null;
   /** Effective platform offer IDs at the resolved location (closest-binding wins). */
   geoBoundOfferIds: ReadonlySet<number>;
+  /** Effective checkout coupon IDs at the resolved location. */
+  geoBoundCouponIds: ReadonlySet<number>;
   /** Which source supplied each value — useful for diagnostics. */
   source: {
     pincode: "live" | "saved" | "reverse-geocode" | "none";
@@ -194,7 +197,10 @@ export async function resolveGeoLocation(
 
   // Step 4: chain walk + state-name fallback inside resolveDropGeoRefsFromPincode.
   const refs = await resolveDropGeoRefsFromPincode(pincode, stateName);
-  const geoBoundOfferIds = await resolvePlatformOfferGeoBindingEffectiveIds(refs);
+  const [geoBoundOfferIds, geoBoundCouponIds] = await Promise.all([
+    resolvePlatformOfferGeoBindingEffectiveIds(refs),
+    resolveCheckoutCouponGeoBindingEffectiveIds(refs),
+  ]);
 
-  return { pincode, stateName, city, refs, geoBoundOfferIds, source, reverseGeocoded };
+  return { pincode, stateName, city, refs, geoBoundOfferIds, geoBoundCouponIds, source, reverseGeocoded };
 }

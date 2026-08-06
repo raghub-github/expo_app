@@ -1040,7 +1040,7 @@ function OrdersPageClient({
                       type="button"
                       onClick={() =>
                         router.push(
-                          sidebarFilter === 'person' ? '/ride' : sidebarFilter === 'parcel' ? '/courier' : '/order'
+                          sidebarFilter === 'person' ? '/ride' : sidebarFilter === 'parcel' ? '/parcel' : '/order'
                         )
                       }
                       className="inline-flex items-center gap-2 rounded-xl bg-[#16c2a5] px-5 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-[#14b095]"

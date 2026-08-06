@@ -15,12 +15,12 @@ export type StoreInfoCardProps = {
   distanceKm?: number | null;
   areaLabel?: string | null;
   etaLabel?: string | null;
-  /** When user picks a slot from schedule sheet, show this instead of default ETA row. */
+  /** @deprecated Scheduling disabled — ignored; row always shows ETA · Schedule for later. */
   scheduledLabel?: string | null;
   /** Rotating offer lines shown in the offer strip (actual offer text, not store name). */
   offerTexts?: string[];
   offerCount?: number;
-  /** Reserve offer strip space before network offers resolve (prevents layout jump). */
+  /** @deprecated Empty offer row is no longer reserved; only shown when offers exist. */
   reserveOfferRow?: boolean;
   isFrequentlyReordered?: boolean;
   onInfoPress?: () => void;
@@ -37,10 +37,8 @@ export function StoreInfoCard({
   distanceKm,
   areaLabel,
   etaLabel,
-  scheduledLabel,
   offerTexts = [],
   offerCount = 0,
-  reserveOfferRow = false,
   isFrequentlyReordered,
   onInfoPress,
   onLocationPress,
@@ -55,8 +53,8 @@ export function StoreInfoCard({
     .filter(Boolean)
     .join(" · ");
 
-  const hasOffers = offerTexts.length > 0 || offerCount > 0;
-  const showOfferRow = hasOffers || reserveOfferRow;
+  // Only show when platform/store offers are actually mapped — never reserve empty space.
+  const showOfferRow = offerTexts.length > 0 || offerCount > 0;
 
   return (
     <View style={[styles.card, !showOfferRow && styles.cardPadBottom]}>
@@ -91,15 +89,7 @@ export function StoreInfoCard({
         </TouchableOpacity>
       ) : null}
 
-      {scheduledLabel ? (
-        <TouchableOpacity style={styles.metaRow} onPress={onSchedulePress} activeOpacity={0.7}>
-          <Ionicons name="calendar-outline" size={15} color={StoreTheme.accentMint} />
-          <AppText style={[styles.metaText, styles.scheduledText]} numberOfLines={1}>
-            {scheduledLabel}
-          </AppText>
-          <Ionicons name="chevron-down" size={14} color={StoreTheme.textSecondary} />
-        </TouchableOpacity>
-      ) : etaLabel ? (
+      {etaLabel ? (
         <TouchableOpacity style={styles.metaRow} onPress={onSchedulePress} activeOpacity={0.7}>
           <Ionicons name="time-outline" size={15} color={StoreTheme.textSecondary} />
           <AppText style={styles.metaText} numberOfLines={1}>
@@ -129,18 +119,14 @@ export function StoreInfoCard({
           ) : (
             <View style={styles.offerTicker} />
           )}
-          {offerCount > 0 ? (
-            <View style={styles.offerCountWrap}>
+          <View style={styles.offerCountWrap}>
+            {offerCount > 0 ? (
               <AppText style={styles.offerCount}>
                 {offerCount} {offerCount === 1 ? "offer" : "offers"}
               </AppText>
-              <Ionicons name="chevron-forward" size={14} color={StoreTheme.textSecondary} />
-            </View>
-          ) : offerTexts.length > 0 || reserveOfferRow ? (
-            <View style={styles.offerCountWrap}>
-              <Ionicons name="chevron-forward" size={14} color={StoreTheme.textSecondary} />
-            </View>
-          ) : null}
+            ) : null}
+            <Ionicons name="chevron-forward" size={14} color={StoreTheme.textSecondary} />
+          </View>
         </TouchableOpacity>
       ) : null}
     </View>
@@ -235,10 +221,6 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: StoreTheme.textSecondary,
     fontWeight: "500",
-  },
-  scheduledText: {
-    color: StoreTheme.accentMintDark,
-    fontWeight: "600",
   },
   reorderBadge: {
     flexDirection: "row",

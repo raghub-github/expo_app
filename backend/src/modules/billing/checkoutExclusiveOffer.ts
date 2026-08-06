@@ -2,10 +2,10 @@
  * Customer checkout promos:
  * 1) Menu Boost / BOGO (item-surface) always apply when eligible — matches "Get for ₹" on menu.
  * 2) Exactly ONE cart-level promo (platform OR precision merchant OR coupon) — never stacked
- *    with each other. Auto-pick ONLY ever considers merchant Precision offers — Platform
- *    Offers never auto-apply, they are manual-selection-only (client must pass
- *    selectedPlatformOfferId explicitly). Membership benefits (e.g. GMitra Plus free
- *    delivery) apply after this.
+ *    with each other. Auto-pick considers merchant Precision offers AND coupons flagged
+ *    `auto_apply` (best estimated savings wins). Platform offers never auto-apply — they are
+ *    manual-selection-only (client must pass selectedPlatformOfferId explicitly). Membership
+ *    benefits (e.g. GMitra Plus free delivery) apply after this.
  */
 
 import type {
@@ -31,6 +31,7 @@ import {
 } from "./platformOffersApply.js";
 import { merchantOfferEligibilityReason } from "./merchantOffersCheckout.js";
 import { cartPromoQualifyingSubtotal } from "./discountEligibility.js";
+import { estimateCheckoutCouponDiscountInr } from "./checkoutCouponEligibility.js";
 
 function merchantOfferConflictsWithSubscriptionFreeDelivery(
   ctx: BillContext,
@@ -89,14 +90,14 @@ function estimateMerchantOfferDiscount(
 /**
  * Best eligible auto-applicable merchant offer by estimated discount value.
  * Never considers item-surface (Boost/BOGO) or COUPON-type offers — those are handled
- * elsewhere (item-surface always-on, coupon requires an explicit code).
+ * elsewhere (item-surface always-on; coupons via autoApplyCoupons / explicit code).
  */
 function bestEligibleMerchantOffer(
   ctx: BillContext,
   dataset: BillingDataset,
   grossCart: number,
   rem: FeeRem
-): Winner {
+): { winner: Winner; amount: number } {
   let best: Winner = { kind: "none" };
   let bestAmt = 0;
   for (const offer of dataset.merchantOffers) {
@@ -112,7 +113,54 @@ function bestEligibleMerchantOffer(
       best = { kind: "merchant", offer };
     }
   }
-  return best;
+  return { winner: best, amount: bestAmt };
+}
+
+/**
+ * Best fully-eligible auto_apply coupon preloaded on the dataset (customer-filtered).
+ */
+function bestEligibleAutoCoupon(
+  ctx: BillContext,
+  dataset: BillingDataset,
+  rem: FeeRem
+): { winner: Winner; amount: number } {
+  const geoBound = ctx.checkoutCouponGeoBindingEffectiveIds;
+  const eligibleBase = cartPromoQualifyingSubtotal(ctx, Math.max(0, rem.items));
+  let best: Winner = { kind: "none" };
+  let bestAmt = 0;
+  let bestPriority = Number.POSITIVE_INFINITY;
+  for (const coupon of dataset.autoApplyCoupons ?? []) {
+    if (!geoBound || !geoBound.has(coupon.id)) continue;
+    const amt = estimateCheckoutCouponDiscountInr(coupon, eligibleBase);
+    if (amt <= 0) continue;
+    const priority = Number(
+      (coupon.couponConfig as { priority?: number } | null)?.priority ?? 100
+    );
+    const p = Number.isFinite(priority) ? priority : 100;
+    // Prefer higher savings; on tie, lower priority number wins (dashboard convention).
+    if (amt > bestAmt || (amt === bestAmt && p < bestPriority)) {
+      bestAmt = amt;
+      bestPriority = p;
+      best = { kind: "coupon", coupon };
+    }
+  }
+  return { winner: best, amount: bestAmt };
+}
+
+function bestAutoExclusiveWinner(
+  ctx: BillContext,
+  dataset: BillingDataset,
+  grossCart: number,
+  rem: FeeRem
+): Winner {
+  const merchant = bestEligibleMerchantOffer(ctx, dataset, grossCart, rem);
+  const coupon = bestEligibleAutoCoupon(ctx, dataset, rem);
+  if (coupon.amount <= 0 && merchant.amount <= 0) return { kind: "none" };
+  if (coupon.amount > merchant.amount) return coupon.winner;
+  if (merchant.amount > coupon.amount) return merchant.winner;
+  // Tie: prefer coupon when both save the same (explicit auto_apply promo).
+  if (coupon.winner.kind === "coupon") return coupon.winner;
+  return merchant.winner;
 }
 
 function resolveExclusiveWinner(
@@ -154,7 +202,7 @@ function resolveExclusiveWinner(
     // The previously-applied merchant offer is no longer eligible (e.g. a borderline
     // min-order recompute) — re-auto-pick the next-best eligible merchant offer instead
     // of silently dropping the discount. Never falls back to platform (manual-only).
-    return bestEligibleMerchantOffer(ctx, dataset, grossCart, rem);
+    return bestEligibleMerchantOffer(ctx, dataset, grossCart, rem).winner;
   }
 
   const code = (ctx.couponCode ?? "").trim();
@@ -167,9 +215,9 @@ function resolveExclusiveWinner(
     return { kind: "coupon", coupon: dataset.coupon };
   }
 
-  // Auto mode (nothing explicitly selected): merchant Precision only. Platform offers
-  // are never auto-applied — they remain in the offer sheet for manual selection.
-  return bestEligibleMerchantOffer(ctx, dataset, grossCart, rem);
+  // Auto mode (nothing explicitly selected): best of merchant Precision + auto_apply coupons.
+  // Platform offers never auto-apply — they remain in the offer sheet for manual selection.
+  return bestAutoExclusiveWinner(ctx, dataset, grossCart, rem);
 }
 
 function withScopedSelection<T>(

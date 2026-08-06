@@ -4,7 +4,8 @@
  */
 
 import { cacheDel, cacheGet, cacheSet } from "@gatimitra/redis";
-import { getSql } from "../../db/client.js";
+import { getSql, withSqlRetry, isDbConnectionError } from "../../db/client.js";
+import { isTransientDbError } from "../../lib/db/is-transient-db-error.js";
 
 export const PREVENT_SERVICE_CODES = [
   "food",
@@ -329,8 +330,9 @@ export async function checkPreventServicesAtPoint(args: {
   const serviceCode = toPreventServiceCode(args.service ?? null);
 
   try {
-    const sql = getSql();
-    const rows = await sql<CheckRow[]>`
+    const rows = await withSqlRetry(async () => {
+      const sql = getSql();
+      return sql<CheckRow[]>`
       SELECT *
       FROM public.prevent_services_check_point(
         ${lat},
@@ -338,6 +340,7 @@ export async function checkPreventServicesAtPoint(args: {
         ${serviceCode}
       )
     `;
+    });
 
     const matches = (rows ?? []).map(mapRow);
     if (matches.length === 0) {
@@ -375,6 +378,18 @@ export async function checkPreventServicesAtPoint(args: {
     const msg = err instanceof Error ? err.message : String(err);
     if (/prevent_services_check_point|prevent_service_/i.test(msg)) {
       console.warn("[prevent-services] check skipped (schema missing?):", msg.slice(0, 200));
+      return {
+        blocked: false,
+        blockedServices: [],
+        matches: [],
+        nearest: null,
+        message: null,
+        code: null,
+      };
+    }
+    // Transient DB / DNS blips — fail open so home/checkout polling does not 503.
+    if (isDbConnectionError(err) || isTransientDbError(err)) {
+      console.warn("[prevent-services] check skipped (db transient):", msg.slice(0, 200));
       return {
         blocked: false,
         blockedServices: [],

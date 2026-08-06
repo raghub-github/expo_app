@@ -2,7 +2,7 @@ import type { PushDeviceMetadata } from "./types";
 import type { NativePushTokenType } from "./types";
 
 export type RegisterPushBody = {
-  expo_push_token: string;
+  expo_push_token?: string | null;
   device_type: "ios" | "android" | "web" | "unknown";
   native_push_token?: string | null;
   native_token_type?: NativePushTokenType | null;

@@ -28,7 +28,13 @@ type GeoRider = {
   distanceKm: number;
   status: string;
   localityCode: string | null;
+  storeName?: string | null;
   lastUpdatedAt: string | null;
+  activeServices?: string[];
+  currentAssignedOrderId?: string | null;
+  totalDeliveredOrders?: number;
+  totalCancelledOrders?: number;
+  city?: string | null;
 };
 
 type GeoSearchData = {
@@ -57,7 +63,13 @@ type PlaceSuggestion = {
   lng: number;
 };
 
-type SortKey = "id" | "name" | "distanceKm" | "status" | "localityCode" | "lastUpdatedAt";
+type SortKey =
+  | "id"
+  | "name"
+  | "distanceKm"
+  | "status"
+  | "currentAssignedOrderId"
+  | "lastUpdatedAt";
 
 function statusLabel(status: string): string {
   const s = status.toUpperCase();
@@ -111,7 +123,6 @@ export function AreaManagerAvailabilityClient() {
   const [hasSearched, setHasSearched] = useState(false);
 
   const [statusFilter, setStatusFilter] = useState<string>("ALL");
-  const [storeFilter, setStoreFilter] = useState<string>("ALL");
   const [sortKey, setSortKey] = useState<SortKey>("distanceKm");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
 
@@ -139,7 +150,7 @@ export function AreaManagerAvailabilityClient() {
           throw new Error(
             (json as { error?: string })?.error ||
               (res.status === 403
-                ? "You need Rider Area Manager or Super Admin access."
+                ? "You need to be logged into the control dashboard."
                 : "Failed to search riders")
           );
         }
@@ -263,21 +274,10 @@ export function AreaManagerAvailabilityClient() {
     return () => window.clearInterval(id);
   }, [data?.center.lat, data?.center.lng, data?.radiusKm, runSearch]);
 
-  const storeOptions = useMemo(() => {
-    const set = new Set<string>();
-    for (const r of data?.riders ?? []) {
-      if (r.localityCode?.trim()) set.add(r.localityCode.trim());
-    }
-    return Array.from(set).sort((a, b) => a.localeCompare(b));
-  }, [data?.riders]);
-
   const filteredSorted = useMemo(() => {
     let list = [...(data?.riders ?? [])];
     if (statusFilter !== "ALL") {
       list = list.filter((r) => r.status.toUpperCase() === statusFilter);
-    }
-    if (storeFilter !== "ALL") {
-      list = list.filter((r) => (r.localityCode || "") === storeFilter);
     }
     list.sort((a, b) => {
       let cmp = 0;
@@ -294,8 +294,10 @@ export function AreaManagerAvailabilityClient() {
         case "status":
           cmp = a.status.localeCompare(b.status);
           break;
-        case "localityCode":
-          cmp = (a.localityCode || "").localeCompare(b.localityCode || "");
+        case "currentAssignedOrderId":
+          cmp = (a.currentAssignedOrderId || "").localeCompare(
+            b.currentAssignedOrderId || ""
+          );
           break;
         case "lastUpdatedAt":
           cmp = (a.lastUpdatedAt || "").localeCompare(b.lastUpdatedAt || "");
@@ -304,13 +306,13 @@ export function AreaManagerAvailabilityClient() {
       return sortDir === "asc" ? cmp : -cmp;
     });
     return list;
-  }, [data?.riders, statusFilter, storeFilter, sortKey, sortDir]);
+  }, [data?.riders, statusFilter, sortKey, sortDir]);
 
   const toggleSort = (key: SortKey) => {
     if (sortKey === key) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
     else {
       setSortKey(key);
-      setSortDir(key === "distanceKm" ? "asc" : "asc");
+      setSortDir("asc");
     }
   };
 
@@ -322,7 +324,16 @@ export function AreaManagerAvailabilityClient() {
     setLngInput(String(s.lng));
     setSuggestions([]);
     setSuggestOpen(false);
+    void runSearch(s.lat, s.lng, radiusKm);
   };
+
+  // Re-search immediately when radius changes after an active search center exists.
+  useEffect(() => {
+    const c = activeCenterRef.current;
+    if (!c) return;
+    if (c.radiusKm === radiusKm) return;
+    void runSearch(c.lat, c.lng, radiusKm);
+  }, [radiusKm, runSearch]);
 
   const applyRecommendedRadius = () => {
     if (!data || !activeCenterRef.current) return;
@@ -333,13 +344,7 @@ export function AreaManagerAvailabilityClient() {
 
   return (
     <div className="space-y-5 w-full max-w-full">
-      <div className="flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
-        <div>
-          <h2 className="text-lg font-semibold text-slate-900">Geo Rider Availability</h2>
-          <p className="text-sm text-slate-500">
-            Search riders near any location within a radius — live fleet coverage.
-          </p>
-        </div>
+      <div className="flex justify-end">
         {hasSearched && activeCenterRef.current ? (
           <button
             type="button"
@@ -463,11 +468,6 @@ export function AreaManagerAvailabilityClient() {
             </button>
           </div>
         </div>
-        {centerLabel ? (
-          <p className="mt-2 truncate text-xs text-slate-500">
-            Searching near: <span className="font-medium text-slate-700">{centerLabel}</span>
-          </p>
-        ) : null}
         {error ? (
           <div className="mt-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">
             {error}
@@ -487,7 +487,45 @@ export function AreaManagerAvailabilityClient() {
 
       {hasSearched && data ? (
         <>
-          {/* KPIs */}
+          {/* Active search context */}
+          <div className="rounded-xl border border-slate-200 bg-slate-50/80 px-4 py-3 shadow-sm">
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5 text-sm">
+              <div>
+                <p className="text-[11px] font-medium uppercase tracking-wide text-slate-400">
+                  Search Location
+                </p>
+                <p className="mt-0.5 font-medium text-slate-800 truncate" title={centerLabel || undefined}>
+                  {centerLabel || `${data.center.lat.toFixed(5)}, ${data.center.lng.toFixed(5)}`}
+                </p>
+              </div>
+              <div>
+                <p className="text-[11px] font-medium uppercase tracking-wide text-slate-400">
+                  Latitude
+                </p>
+                <p className="mt-0.5 font-mono text-slate-800">{data.center.lat.toFixed(5)}</p>
+              </div>
+              <div>
+                <p className="text-[11px] font-medium uppercase tracking-wide text-slate-400">
+                  Longitude
+                </p>
+                <p className="mt-0.5 font-mono text-slate-800">{data.center.lng.toFixed(5)}</p>
+              </div>
+              <div>
+                <p className="text-[11px] font-medium uppercase tracking-wide text-slate-400">
+                  Search Radius
+                </p>
+                <p className="mt-0.5 font-medium text-slate-800">{data.radiusKm} km</p>
+              </div>
+              <div>
+                <p className="text-[11px] font-medium uppercase tracking-wide text-slate-400">
+                  Matching Riders
+                </p>
+                <p className="mt-0.5 font-semibold text-slate-900">{data.kpis.total}</p>
+              </div>
+            </div>
+          </div>
+
+          {/* KPIs — only riders inside selected radius */}
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
             <KpiCard
               label="Total Riders Found"
@@ -520,7 +558,7 @@ export function AreaManagerAvailabilityClient() {
           </div>
 
           <div className="grid gap-4 xl:grid-cols-12">
-            <div className="space-y-4 xl:col-span-8">
+            <div className="xl:col-span-8">
               {mapboxToken ? (
                 <GeoRiderAvailabilityMap
                   mapboxToken={mapboxToken}
@@ -534,108 +572,8 @@ export function AreaManagerAvailabilityClient() {
                   Map unavailable — set NEXT_PUBLIC_MAPBOX_TOKEN
                 </div>
               )}
-
-              <div className="rounded-xl border border-slate-200 bg-white shadow-sm">
-                <div className="flex flex-col gap-3 border-b border-slate-100 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
-                  <h3 className="text-sm font-semibold text-slate-900">
-                    Riders in radius{" "}
-                    <span className="font-normal text-slate-500">({filteredSorted.length})</span>
-                  </h3>
-                  <div className="flex flex-wrap gap-2">
-                    <select
-                      value={statusFilter}
-                      onChange={(e) => setStatusFilter(e.target.value)}
-                      className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs text-slate-700"
-                    >
-                      <option value="ALL">All statuses</option>
-                      <option value="ONLINE">Available</option>
-                      <option value="BUSY">On Delivery</option>
-                      <option value="OFFLINE">Offline</option>
-                    </select>
-                    <select
-                      value={storeFilter}
-                      onChange={(e) => setStoreFilter(e.target.value)}
-                      className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs text-slate-700"
-                    >
-                      <option value="ALL">All stores / localities</option>
-                      {storeOptions.map((s) => (
-                        <option key={s} value={s}>
-                          {s}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                </div>
-                <div className="overflow-x-auto">
-                  <table className="min-w-full divide-y divide-slate-100 text-sm">
-                    <thead className="bg-slate-50">
-                      <tr>
-                        {(
-                          [
-                            ["id", "Rider ID"],
-                            ["name", "Name"],
-                            ["distanceKm", "Distance"],
-                            ["status", "Status"],
-                            ["localityCode", "Store"],
-                            ["lastUpdatedAt", "Last Updated"],
-                          ] as [SortKey, string][]
-                        ).map(([key, label]) => (
-                          <th key={key} className="px-4 py-2.5 text-left text-xs font-medium text-slate-500">
-                            <button
-                              type="button"
-                              onClick={() => toggleSort(key)}
-                              className="inline-flex items-center gap-1 hover:text-slate-800"
-                            >
-                              {label}
-                              <ArrowUpDown className="h-3 w-3 opacity-50" />
-                            </button>
-                          </th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-100 bg-white">
-                      {filteredSorted.length === 0 ? (
-                        <tr>
-                          <td colSpan={6} className="px-4 py-8 text-center text-sm text-slate-500">
-                            No riders match the current filters.
-                          </td>
-                        </tr>
-                      ) : (
-                        filteredSorted.map((r) => (
-                          <tr key={r.id} className="hover:bg-slate-50/80">
-                            <td className="whitespace-nowrap px-4 py-2.5 font-mono text-xs text-slate-700">
-                              {r.id}
-                            </td>
-                            <td className="whitespace-nowrap px-4 py-2.5 text-slate-900">
-                              {r.name || "—"}
-                              <div className="text-[11px] text-slate-400">{r.mobile}</div>
-                            </td>
-                            <td className="whitespace-nowrap px-4 py-2.5 text-slate-600">
-                              {formatDistance(r.distanceKm)}
-                            </td>
-                            <td className="whitespace-nowrap px-4 py-2.5">
-                              <span
-                                className={`inline-flex rounded-full px-2 py-0.5 text-[11px] font-semibold ring-1 ring-inset ${statusBadgeClass(r.status)}`}
-                              >
-                                {statusLabel(r.status)}
-                              </span>
-                            </td>
-                            <td className="whitespace-nowrap px-4 py-2.5 text-slate-600">
-                              {r.localityCode || "—"}
-                            </td>
-                            <td className="whitespace-nowrap px-4 py-2.5 text-slate-500">
-                              {formatUpdated(r.lastUpdatedAt)}
-                            </td>
-                          </tr>
-                        ))
-                      )}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
             </div>
 
-            {/* Insights */}
             <aside className="xl:col-span-4">
               <div className="sticky top-4 space-y-3 rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
                 <h3 className="text-sm font-semibold text-slate-900">Search insights</h3>
@@ -696,6 +634,97 @@ export function AreaManagerAvailabilityClient() {
                 )}
               </div>
             </aside>
+          </div>
+
+          <div className="w-full rounded-xl border border-slate-200 bg-white shadow-sm">
+            <div className="flex flex-col gap-3 border-b border-slate-100 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+              <h3 className="text-sm font-semibold text-slate-900">
+                Riders in radius{" "}
+                <span className="font-normal text-slate-500">({filteredSorted.length})</span>
+              </h3>
+              <select
+                value={statusFilter}
+                onChange={(e) => setStatusFilter(e.target.value)}
+                className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs text-slate-700"
+              >
+                <option value="ALL">All statuses</option>
+                <option value="ONLINE">Available</option>
+                <option value="BUSY">On Delivery</option>
+                <option value="OFFLINE">Offline</option>
+              </select>
+            </div>
+            <div className="w-full overflow-x-auto">
+              <table className="w-full min-w-[1000px] divide-y divide-slate-100 text-sm">
+                <thead className="bg-slate-50">
+                  <tr>
+                    {(
+                      [
+                        ["name", "Rider Name"],
+                        ["id", "Rider ID"],
+                        ["status", "Status"],
+                        ["distanceKm", "Distance"],
+                        ["lastUpdatedAt", "Last Location Update"],
+                        ["currentAssignedOrderId", "Assigned Order"],
+                      ] as [SortKey, string][]
+                    ).map(([key, label]) => (
+                      <th key={key} className="px-3 py-2.5 text-left text-xs font-medium text-slate-500">
+                        <button
+                          type="button"
+                          onClick={() => toggleSort(key)}
+                          className="inline-flex items-center gap-1 hover:text-slate-800"
+                        >
+                          {label}
+                          <ArrowUpDown className="h-3 w-3 opacity-50" />
+                        </button>
+                      </th>
+                    ))}
+                    <th className="px-3 py-2.5 text-left text-xs font-medium text-slate-500">
+                      Coordinates
+                    </th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 bg-white">
+                  {filteredSorted.length === 0 ? (
+                    <tr>
+                      <td colSpan={7} className="px-4 py-8 text-center text-sm text-slate-500">
+                        No riders found inside this search radius.
+                      </td>
+                    </tr>
+                  ) : (
+                    filteredSorted.map((r) => (
+                      <tr key={r.id} className="hover:bg-slate-50/80">
+                        <td className="px-3 py-2.5 text-slate-900">
+                          <div className="max-w-[180px] truncate font-medium">{r.name || "—"}</div>
+                          <div className="text-[11px] text-slate-400">{r.mobile}</div>
+                        </td>
+                        <td className="whitespace-nowrap px-3 py-2.5 font-mono text-xs text-slate-700">
+                          {r.id}
+                        </td>
+                        <td className="whitespace-nowrap px-3 py-2.5">
+                          <span
+                            className={`inline-flex rounded-full px-2 py-0.5 text-[11px] font-semibold ring-1 ring-inset ${statusBadgeClass(r.status)}`}
+                          >
+                            {statusLabel(r.status)}
+                          </span>
+                        </td>
+                        <td className="whitespace-nowrap px-3 py-2.5 text-slate-600">
+                          {formatDistance(r.distanceKm)}
+                        </td>
+                        <td className="whitespace-nowrap px-3 py-2.5 text-slate-500">
+                          {formatUpdated(r.lastUpdatedAt)}
+                        </td>
+                        <td className="whitespace-nowrap px-3 py-2.5 font-mono text-xs text-slate-700">
+                          {r.currentAssignedOrderId || "—"}
+                        </td>
+                        <td className="whitespace-nowrap px-3 py-2.5 font-mono text-[11px] text-slate-600">
+                          {r.lat.toFixed(5)}, {r.lng.toFixed(5)}
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
           </div>
         </>
       ) : null}

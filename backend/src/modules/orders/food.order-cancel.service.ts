@@ -182,6 +182,16 @@ export async function cancelFoodOrderForCustomer(
   }
 
   try {
+    const { getDb } = await import("../../db/client.js");
+    const { releasePlatformOfferUsagesOnCancel } = await import(
+      "../billing/platformOfferUsage.service.js"
+    );
+    await releasePlatformOfferUsagesOnCancel(getDb(), orderIdText);
+  } catch {
+    /* non-fatal — usage restore must not block cancel */
+  }
+
+  try {
     await recordCancellationTimeline(sql, {
       orderCorePk: row.coreId,
       previousStatus,

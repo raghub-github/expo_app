@@ -24,16 +24,27 @@ export interface AuthResponse {
 }
 
 /**
- * Base URL for OAuth redirect. Always use current origin when in the browser so that:
- * - On localhost → redirects back to localhost
- * - On production domain → redirects back to that domain
- * (Avoids redirecting to localhost when user is on production, or vice versa.)
+ * Base URL for OAuth redirect. Prefer the browser origin, but never use 0.0.0.0
+ * (non-routable — causes ERR_ADDRESS_INVALID + PKCE cookie loss after Google/phone auth).
  */
 function getAuthRedirectBaseUrl(): string {
+  const sanitize = (raw: string): string => {
+    try {
+      const u = new URL(raw);
+      if (u.hostname === "0.0.0.0" || u.hostname === "::") {
+        u.hostname = "localhost";
+      }
+      return u.origin;
+    } catch {
+      return "http://localhost:3002";
+    }
+  };
   if (typeof window !== "undefined") {
-    return window.location.origin;
+    return sanitize(window.location.origin);
   }
-  return process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3002";
+  const fromEnv = (process.env.NEXT_PUBLIC_APP_URL || process.env.NEXT_PUBLIC_PARTNER_SITE_URL || "").trim();
+  if (fromEnv) return sanitize(fromEnv);
+  return "http://localhost:3002";
 }
 
 /** Redirect to Google sign-in (Supabase OAuth). Configure Google in Supabase Dashboard > Authentication > Providers. */

@@ -109,11 +109,15 @@ function buildPersonRideSearchCondition(
       );
     }
     case "Internal Order Id": {
-      const orderIdNum = parseInt(trimmed, 10);
-      if (!Number.isNaN(orderIdNum) && orderIdNum > 0) {
-        return eq(ordersCore.id, orderIdNum);
+      const uuidCandidate = trimmed.trim().toLowerCase();
+      const isUuid =
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+          uuidCandidate
+        );
+      if (isUuid) {
+        return eq(ordersCore.orderUuid, uuidCandidate);
       }
-      return sql`${ordersCore.id}::text ILIKE ${like}`;
+      return sql`${ordersCore.orderUuid}::text ILIKE ${like}`;
     }
     case "Passenger Name":
       return or(

@@ -79,7 +79,8 @@ export type GetWalletSummaryOptions = {
 /**
  * Wallet summary aligned with Partner Site GET /api/merchant/wallet:
  * - Default: read table available_balance (no always-on ledger reconcile)
- * - Today/yesterday ORDER_EARNING: UTC calendar day windows (same as Partner)
+ * - Today/yesterday earnings: UTC calendar day windows (same as Partner).
+ *   Includes ORDER_EARNING + ORDER_ADJUSTMENT credits (compensation / adjustments).
  * - pending_withdrawal_total = PENDING only; in_process = APPROVED+PROCESSING
  * - Backfill is best-effort and does not block the read path
  */
@@ -160,7 +161,7 @@ export async function getWalletSummary(
     FROM merchant_wallet_ledger
     WHERE wallet_id = ${walletId}
       AND direction = 'CREDIT'
-      AND category = 'ORDER_EARNING'
+      AND category IN ('ORDER_EARNING', 'ORDER_ADJUSTMENT')
       AND created_at >= ${yesterdayStart.toISOString()}::timestamptz
       AND created_at < ${todayEnd.toISOString()}::timestamptz
   `;
@@ -196,7 +197,7 @@ export async function getWalletSummary(
         FROM merchant_wallet_ledger
         WHERE wallet_id = ${walletId}
           AND direction = 'CREDIT'
-          AND category = 'ORDER_EARNING'
+          AND category IN ('ORDER_EARNING', 'ORDER_ADJUSTMENT')
       `;
       total_earned = Number((allEarnings[0] as any)?.total ?? 0);
     }

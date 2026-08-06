@@ -115,27 +115,34 @@ function ServiceTile({
 
   return (
     <TouchableOpacity
-      style={[styles.card, { height: cardHeight }, !enabled && styles.cardDisabled]}
+      style={[styles.card, { height: cardHeight }]}
       activeOpacity={enabled ? 0.88 : 1}
       disabled={!enabled}
       onPress={() => router.push(item.route as never)}
     >
       {item.pill ? (
         <View style={styles.pill}>
-          <AppText style={styles.pillText} numberOfLines={1}>
+          <AppText style={[styles.pillText, !enabled && styles.textMuted]} numberOfLines={1}>
             {item.pill}
           </AppText>
         </View>
       ) : null}
 
-      <AppText style={styles.title} numberOfLines={1}>
+      <AppText style={[styles.title, !enabled && styles.textMuted]} numberOfLines={1}>
         {item.title}
       </AppText>
 
-      <View style={[styles.arrowBtn, { backgroundColor: item.arrowColor }]}>
+      <View
+        style={[
+          styles.arrowBtn,
+          { backgroundColor: item.arrowColor },
+          !enabled && styles.arrowBtnMuted,
+        ]}
+      >
         <Ionicons name="chevron-forward" size={13} color="#fff" />
       </View>
 
+      {/* Images stay at full opacity — parent opacity < 1 blanks expo-image on Android. */}
       <View style={[styles.imageWrap, { width: iconWrap, height: iconWrap }]}>
         <AppAssetImage
           assetKey={item.assetKey}
@@ -143,6 +150,8 @@ function ServiceTile({
           contentFit="contain"
         />
       </View>
+
+      {!enabled ? <View style={styles.disabledWash} pointerEvents="none" /> : null}
     </TouchableOpacity>
   );
 }
@@ -184,9 +193,16 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.05,
     shadowRadius: 5,
     elevation: 2,
+    overflow: "hidden",
   },
-  cardDisabled: {
-    opacity: 0.42,
+  disabledWash: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(255,255,255,0.52)",
+    borderRadius: 14,
+    zIndex: 4,
+  },
+  textMuted: {
+    color: "#9CA3AF",
   },
   pill: {
     alignSelf: "flex-start",
@@ -218,6 +234,10 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     alignItems: "center",
     justifyContent: "center",
+    zIndex: 5,
+  },
+  arrowBtnMuted: {
+    opacity: 0.45,
   },
   imageWrap: {
     position: "absolute",

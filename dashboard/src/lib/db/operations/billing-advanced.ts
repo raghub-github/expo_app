@@ -1,5 +1,40 @@
 import { bumpBillingRulesetVersion, sqlJsonb } from "./billing-admin";
 import { getSql } from "../client";
+import {
+  generatePlatformOfferCouponCode,
+  normalizePlatformOfferCouponCode,
+  validatePlatformOfferCouponCode,
+} from "@/lib/billing/platformOfferCouponCode";
+import {
+  emptyRideParcelPromoConfig,
+  parseRideParcelPromoConfig,
+} from "@/lib/billing/rideParcelPromo";
+
+function sanitizePromoConfig(
+  input: unknown,
+  serviceType: string
+): Record<string, unknown> {
+  const st = serviceType.trim().toUpperCase();
+  if (st !== "RIDE" && st !== "PARCEL") {
+    // Preserve an explicit empty object for Food; never invent ride fields.
+    if (input != null && typeof input === "object" && !Array.isArray(input)) {
+      return input as Record<string, unknown>;
+    }
+    return {};
+  }
+  const parsed = parseRideParcelPromoConfig(input);
+  if (!parsed) {
+    // Keep previously stored shape if caller passed a non-empty object without promo_type.
+    if (input != null && typeof input === "object" && !Array.isArray(input) && Object.keys(input as object).length > 0) {
+      return input as Record<string, unknown>;
+    }
+    return emptyRideParcelPromoConfig(st === "PARCEL" ? "PARCEL" : "RIDE") as unknown as Record<
+      string,
+      unknown
+    >;
+  }
+  return parsed as unknown as Record<string, unknown>;
+}
 
 function sanitizePlatformOfferConditions(input: unknown): Record<string, unknown> {
   if (input != null && typeof input === "object" && !Array.isArray(input)) {
@@ -9,6 +44,12 @@ function sanitizePlatformOfferConditions(input: unknown): Record<string, unknown
     delete c.user_segment;
     // Min cart gate is `min_order_amount` on the row; drop legacy duplicate in JSON.
     delete c.min_order_value;
+    // Keep first_ride_only (Person Ride eligibility) and menu_item_ids etc.
+    if (c.first_ride_only === true || c.first_ride_only === "true" || c.first_ride_only === 1) {
+      c.first_ride_only = true;
+    } else {
+      delete c.first_ride_only;
+    }
     return c;
   }
   return {};
@@ -46,8 +87,15 @@ function normalizePlatformOfferInput(input: InsertPlatformOfferInput): InsertPla
   if (starts_at && ends_at && new Date(starts_at) > new Date(ends_at)) {
     throw new Error("End date/time must be on or after start date/time.");
   }
+  let coupon_code = normalizePlatformOfferCouponCode(String(input.coupon_code ?? ""));
+  if (!coupon_code) {
+    coupon_code = generatePlatformOfferCouponCode(String(input.name ?? ""));
+  }
+  const codeErr = validatePlatformOfferCouponCode(coupon_code);
+  if (codeErr) throw new Error(codeErr);
   return {
     ...input,
+    coupon_code,
     geo_ids: parseJsonArrayField(input.geo_ids),
     merchant_ids: parseJsonArrayField(input.merchant_ids),
     starts_at,
@@ -58,8 +106,51 @@ function normalizePlatformOfferInput(input: InsertPlatformOfferInput): InsertPla
   };
 }
 
+async function assertPlatformCouponCodeAvailable(
+  code: string,
+  excludeOfferId?: number
+): Promise<void> {
+  const sql = getSql();
+  const offerHits =
+    excludeOfferId != null
+      ? await sql<{ id: number }[]>`
+          SELECT id::int AS id
+          FROM billing_platform_offers
+          WHERE lower(coupon_code) = ${code.toLowerCase()}
+            AND id <> ${excludeOfferId}
+          LIMIT 1
+        `
+      : await sql<{ id: number }[]>`
+          SELECT id::int AS id
+          FROM billing_platform_offers
+          WHERE lower(coupon_code) = ${code.toLowerCase()}
+          LIMIT 1
+        `;
+  if (offerHits[0]) {
+    throw new Error("Coupon code already exists on another platform offer.");
+  }
+  const [discountHit] = await sql<{ id: number }[]>`
+    SELECT id::int AS id
+    FROM billing_discounts
+    WHERE lower(code) = ${code.toLowerCase()}
+    LIMIT 1
+  `;
+  if (discountHit) {
+    throw new Error("Coupon code already exists as a checkout coupon. Choose a different code.");
+  }
+}
+
 export function formatPlatformOfferDbError(e: unknown): string {
   const err = e as { code?: string; constraint_name?: string; message?: string };
+  if (err.code === "23505") {
+    if (
+      /coupon_code/i.test(err.constraint_name ?? "") ||
+      /coupon_code/i.test(err.message ?? "")
+    ) {
+      return "Coupon code already exists. Choose a different code.";
+    }
+    return "A unique constraint failed (duplicate value).";
+  }
   if (err.code === "23514") {
     if (
       err.constraint_name === "billing_platform_offers_time_window_chk" ||
@@ -72,6 +163,12 @@ export function formatPlatformOfferDbError(e: unknown): string {
     }
     if (err.constraint_name === "billing_platform_offers_offer_kind_chk") {
       return "This offer kind is not allowed by the database. Run billing migrations or pick a supported kind.";
+    }
+    if (
+      err.constraint_name === "billing_platform_offers_coupon_code_format_chk" ||
+      /coupon_code_format/i.test(err.message ?? "")
+    ) {
+      return "Coupon code may only use A–Z, 0–9, underscore, and hyphen.";
     }
     return "Offer failed a database validation rule. Check dates, shares, and field values.";
   }
@@ -205,6 +302,7 @@ export async function deleteDeliveryRateCard(id: number): Promise<boolean> {
 export type PlatformOfferAdminRow = {
   id: number;
   name: string | null;
+  coupon_code: string;
   service_type: string;
   offer_kind: string;
   offer_audience: string;
@@ -228,6 +326,13 @@ export type PlatformOfferAdminRow = {
   ends_at: string | null;
   budget_total: string | null;
   budget_used: string | null;
+  max_uses_total: number | null;
+  max_uses_per_user: number | null;
+  max_uses_per_day: number | null;
+  max_uses_per_month: number | null;
+  consume_mode: string;
+  restore_on_cancel: boolean;
+  restore_on_refund: boolean;
   discount_type: string;
   value_numeric: string | null;
   delivery_discount_type: string | null;
@@ -236,13 +341,14 @@ export type PlatformOfferAdminRow = {
   is_active: boolean;
   is_hidden: boolean;
   conditions: unknown;
+  promo_config: unknown;
   metadata: unknown;
 };
 
 export async function listPlatformOffers(): Promise<PlatformOfferAdminRow[]> {
   const sql = getSql();
   return sql<PlatformOfferAdminRow[]>`
-    SELECT id::int AS id, name, service_type,
+    SELECT id::int AS id, name, coupon_code, service_type,
       offer_kind, offer_audience, funding_mode,
       platform_share_pct::text AS platform_share_pct,
       merchant_share_pct::text AS merchant_share_pct,
@@ -254,11 +360,13 @@ export async function listPlatformOffers(): Promise<PlatformOfferAdminRow[]> {
       buy_qty, get_qty, is_stackable, exclusion_group,
       starts_at::text AS starts_at, ends_at::text AS ends_at,
       budget_total::text AS budget_total, budget_used::text AS budget_used,
+      max_uses_total, max_uses_per_user, max_uses_per_day, max_uses_per_month,
+      consume_mode, restore_on_cancel, restore_on_refund,
       discount_type,
       value_numeric::text AS value_numeric,
       delivery_discount_type,
       delivery_discount_value::text AS delivery_discount_value,
-      priority, is_active, is_hidden, conditions, metadata
+      priority, is_active, is_hidden, conditions, promo_config, metadata
     FROM billing_platform_offers
     ORDER BY priority ASC, id ASC
   `;
@@ -267,7 +375,7 @@ export async function listPlatformOffers(): Promise<PlatformOfferAdminRow[]> {
 export async function getPlatformOfferById(id: number): Promise<PlatformOfferAdminRow | null> {
   const sql = getSql();
   const [row] = await sql<PlatformOfferAdminRow[]>`
-    SELECT id::int AS id, name, service_type,
+    SELECT id::int AS id, name, coupon_code, service_type,
       offer_kind, offer_audience, funding_mode,
       platform_share_pct::text AS platform_share_pct,
       merchant_share_pct::text AS merchant_share_pct,
@@ -279,11 +387,13 @@ export async function getPlatformOfferById(id: number): Promise<PlatformOfferAdm
       buy_qty, get_qty, is_stackable, exclusion_group,
       starts_at::text AS starts_at, ends_at::text AS ends_at,
       budget_total::text AS budget_total, budget_used::text AS budget_used,
+      max_uses_total, max_uses_per_user, max_uses_per_day, max_uses_per_month,
+      consume_mode, restore_on_cancel, restore_on_refund,
       discount_type,
       value_numeric::text AS value_numeric,
       delivery_discount_type,
       delivery_discount_value::text AS delivery_discount_value,
-      priority, is_active, is_hidden, conditions, metadata
+      priority, is_active, is_hidden, conditions, promo_config, metadata
     FROM billing_platform_offers
     WHERE id = ${id}
     LIMIT 1
@@ -293,6 +403,7 @@ export async function getPlatformOfferById(id: number): Promise<PlatformOfferAdm
 
 export type InsertPlatformOfferInput = {
   name?: string | null;
+  coupon_code?: string | null;
   service_type?: string;
   offer_kind?: string;
   offer_audience?: string;
@@ -316,6 +427,13 @@ export type InsertPlatformOfferInput = {
   ends_at?: string | null;
   budget_total?: number | null;
   budget_used?: number | null;
+  max_uses_total?: number | null;
+  max_uses_per_user?: number | null;
+  max_uses_per_day?: number | null;
+  max_uses_per_month?: number | null;
+  consume_mode?: string;
+  restore_on_cancel?: boolean;
+  restore_on_refund?: boolean;
   discount_type?: string;
   value_numeric?: number | null;
   delivery_discount_type?: string | null;
@@ -324,6 +442,7 @@ export type InsertPlatformOfferInput = {
   is_active?: boolean;
   is_hidden?: boolean;
   conditions?: unknown;
+  promo_config?: unknown;
   metadata?: unknown;
 };
 
@@ -331,19 +450,24 @@ export async function insertPlatformOffer(input: InsertPlatformOfferInput): Prom
   const sql = getSql();
   const normalized = normalizePlatformOfferInput(input);
   const st = (normalized.service_type ?? "FOOD").trim().toUpperCase();
+  const promoConfig = sanitizePromoConfig(normalized.promo_config, st);
+  await assertPlatformCouponCodeAvailable(normalized.coupon_code!);
   const [row] = await sql<PlatformOfferAdminRow[]>`
     INSERT INTO billing_platform_offers (
-      name, service_type,
+      name, coupon_code, service_type,
       offer_kind, offer_audience, funding_mode, platform_share_pct, merchant_share_pct,
       max_platform_contribution, max_merchant_contribution,
       target_scope, geo_level, geo_ids, merchant_ids, customer_segment,
       min_order_amount, max_discount_amount, buy_qty, get_qty, is_stackable, exclusion_group,
       starts_at, ends_at, budget_total, budget_used,
+      max_uses_total, max_uses_per_user, max_uses_per_day, max_uses_per_month,
+      consume_mode, restore_on_cancel, restore_on_refund,
       discount_type, value_numeric,
       delivery_discount_type, delivery_discount_value,
-      priority, is_active, is_hidden, conditions, metadata
+      priority, is_active, is_hidden, conditions, promo_config, metadata
     ) VALUES (
       ${normalized.name ?? null},
+      ${normalized.coupon_code!},
       ${st},
       ${(normalized.offer_kind ?? "DISCOUNT").toUpperCase()},
       ${(normalized.offer_audience ?? "CUSTOMER").toUpperCase()},
@@ -367,6 +491,13 @@ export async function insertPlatformOffer(input: InsertPlatformOfferInput): Prom
       ${normalized.ends_at ?? null},
       ${normalized.budget_total ?? null},
       ${normalized.budget_used ?? 0},
+      ${normalized.max_uses_total ?? null},
+      ${normalized.max_uses_per_user ?? null},
+      ${normalized.max_uses_per_day ?? null},
+      ${normalized.max_uses_per_month ?? null},
+      ${(normalized.consume_mode ?? "ON_PLACED").toUpperCase()},
+      ${normalized.restore_on_cancel !== false},
+      ${normalized.restore_on_refund !== false},
       ${normalized.discount_type ?? "PERCENTAGE"},
       ${normalized.value_numeric ?? null},
       ${normalized.delivery_discount_type ?? null},
@@ -375,9 +506,10 @@ export async function insertPlatformOffer(input: InsertPlatformOfferInput): Prom
       ${normalized.is_active ?? true},
       ${normalized.is_hidden ?? false},
       ${sqlJsonb(sanitizePlatformOfferConditions(normalized.conditions))}::jsonb,
+      ${sqlJsonb(promoConfig)}::jsonb,
       ${sqlJsonb(normalized.metadata ?? null)}::jsonb
     )
-    RETURNING id::int AS id, name, service_type,
+    RETURNING id::int AS id, name, coupon_code, service_type,
       offer_kind, offer_audience, funding_mode,
       platform_share_pct::text AS platform_share_pct,
       merchant_share_pct::text AS merchant_share_pct,
@@ -389,11 +521,13 @@ export async function insertPlatformOffer(input: InsertPlatformOfferInput): Prom
       buy_qty, get_qty, is_stackable, exclusion_group,
       starts_at::text AS starts_at, ends_at::text AS ends_at,
       budget_total::text AS budget_total, budget_used::text AS budget_used,
+      max_uses_total, max_uses_per_user, max_uses_per_day, max_uses_per_month,
+      consume_mode, restore_on_cancel, restore_on_refund,
       discount_type,
       value_numeric::text AS value_numeric,
       delivery_discount_type,
       delivery_discount_value::text AS delivery_discount_value,
-      priority, is_active, is_hidden, conditions, metadata
+      priority, is_active, is_hidden, conditions, promo_config, metadata
   `;
   if (!row) throw new Error("insertPlatformOffer failed");
   await bumpBillingRulesetVersion();
@@ -407,9 +541,12 @@ export async function updatePlatformOffer(
   const sql = getSql();
   const normalized = normalizePlatformOfferInput(input);
   const st = (normalized.service_type ?? "FOOD").trim().toUpperCase();
+  const promoConfig = sanitizePromoConfig(normalized.promo_config, st);
+  await assertPlatformCouponCodeAvailable(normalized.coupon_code!, id);
   const [row] = await sql<PlatformOfferAdminRow[]>`
     UPDATE billing_platform_offers SET
       name = ${normalized.name ?? null},
+      coupon_code = ${normalized.coupon_code!},
       service_type = ${st},
       offer_kind = ${(normalized.offer_kind ?? "DISCOUNT").toUpperCase()},
       offer_audience = ${(normalized.offer_audience ?? "CUSTOMER").toUpperCase()},
@@ -432,7 +569,13 @@ export async function updatePlatformOffer(
       starts_at = ${normalized.starts_at ?? null},
       ends_at = ${normalized.ends_at ?? null},
       budget_total = ${normalized.budget_total ?? null},
-      budget_used = ${normalized.budget_used ?? 0},
+      max_uses_total = ${normalized.max_uses_total ?? null},
+      max_uses_per_user = ${normalized.max_uses_per_user ?? null},
+      max_uses_per_day = ${normalized.max_uses_per_day ?? null},
+      max_uses_per_month = ${normalized.max_uses_per_month ?? null},
+      consume_mode = ${(normalized.consume_mode ?? "ON_PLACED").toUpperCase()},
+      restore_on_cancel = ${normalized.restore_on_cancel !== false},
+      restore_on_refund = ${normalized.restore_on_refund !== false},
       discount_type = ${normalized.discount_type ?? "PERCENTAGE"},
       value_numeric = ${normalized.value_numeric ?? null},
       delivery_discount_type = ${normalized.delivery_discount_type ?? null},
@@ -441,10 +584,11 @@ export async function updatePlatformOffer(
       is_active = ${normalized.is_active ?? true},
       is_hidden = ${normalized.is_hidden ?? false},
       conditions = ${sqlJsonb(sanitizePlatformOfferConditions(normalized.conditions))}::jsonb,
+      promo_config = ${sqlJsonb(promoConfig)}::jsonb,
       metadata = ${sqlJsonb(normalized.metadata ?? null)}::jsonb,
       updated_at = now()
     WHERE id = ${id}
-    RETURNING id::int AS id, name, service_type,
+    RETURNING id::int AS id, name, coupon_code, service_type,
       offer_kind, offer_audience, funding_mode,
       platform_share_pct::text AS platform_share_pct,
       merchant_share_pct::text AS merchant_share_pct,
@@ -456,11 +600,13 @@ export async function updatePlatformOffer(
       buy_qty, get_qty, is_stackable, exclusion_group,
       starts_at::text AS starts_at, ends_at::text AS ends_at,
       budget_total::text AS budget_total, budget_used::text AS budget_used,
+      max_uses_total, max_uses_per_user, max_uses_per_day, max_uses_per_month,
+      consume_mode, restore_on_cancel, restore_on_refund,
       discount_type,
       value_numeric::text AS value_numeric,
       delivery_discount_type,
       delivery_discount_value::text AS delivery_discount_value,
-      priority, is_active, is_hidden, conditions, metadata
+      priority, is_active, is_hidden, conditions, promo_config, metadata
   `;
   if (!row) return null;
   await bumpBillingRulesetVersion();

@@ -12,7 +12,7 @@ export declare const NativePushTokenTypeSchema: z.ZodEnum<{
 }>;
 export type NativePushTokenType = z.infer<typeof NativePushTokenTypeSchema>;
 export declare const PushRegisterBodySchema: z.ZodObject<{
-    expo_push_token: z.ZodString;
+    expo_push_token: z.ZodNullable<z.ZodOptional<z.ZodString>>;
     device_type: z.ZodEnum<{
         unknown: "unknown";
         ios: "ios";

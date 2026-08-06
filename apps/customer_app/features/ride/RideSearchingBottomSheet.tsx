@@ -39,6 +39,8 @@ type Props = {
   onRetry?: () => void;
   onCancelRide?: () => void;
   showCancel: boolean;
+  cancelTitle?: string;
+  cancelSubtitle?: string;
   bottomInset?: number;
 };
 
@@ -171,6 +173,8 @@ export function RideSearchingBottomSheet({
   onRetry,
   onCancelRide,
   showCancel,
+  cancelTitle = "Cancel Ride",
+  cancelSubtitle = "Free cancellation before rider accepts",
   bottomInset = 0,
 }: Props) {
   const isError = phase === "error";
@@ -343,8 +347,8 @@ export function RideSearchingBottomSheet({
               <Ionicons name="close" size={18} color="#FFFFFF" />
             </View>
             <View style={styles.cancelTextCol}>
-              <AppText style={styles.cancelTitle}>Cancel Ride</AppText>
-              <AppText style={styles.cancelSub}>Free cancellation before rider accepts</AppText>
+              <AppText style={styles.cancelTitle}>{cancelTitle}</AppText>
+              <AppText style={styles.cancelSub}>{cancelSubtitle}</AppText>
             </View>
           </TouchableOpacity>
         ) : null}

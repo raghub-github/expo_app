@@ -168,16 +168,9 @@ export function AgentActivityPageClient({ embed }: { embed?: AgentActivityEmbed 
     Number.isFinite(parsedSelectedAgentUserId) && parsedSelectedAgentUserId > 0 ? parsedSelectedAgentUserId : null;
   const selectedAgentSuffix = selectedAgentUserId != null ? String(selectedAgentUserId) : "all";
 
-  useEffect(() => {
-    if (embed === "ticketSettingsActivity") return;
-    if (sectionFromUrl !== "activity") return;
-    if (!searchParams.get("agentUserId")) return;
-    // Always land on "All agents" by default when opening Activity.
-    const next = new URLSearchParams(searchParams.toString());
-    next.set("section", "activity");
-    next.delete("agentUserId");
-    router.replace(`${AGENT_ACTIVITY_PATH}?${next.toString()}`, { scroll: false });
-  }, [embed, sectionFromUrl, searchParams, router]);
+  // NOTE: Do NOT strip `agentUserId` from the URL here. A previous effect always deleted it
+  // whenever it was present, which cleared the agent picker ~0.5s after every selection.
+  // Default remains "All agents" when the param is absent.
 
   const activitySnapshotKey = useMemo(() => {
     const suffix = period === "custom" ? `${startDate}|${endDate}` : period;
