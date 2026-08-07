@@ -117,9 +117,11 @@ export function ParcelLocationSearchScreen() {
         const state = useParcelBookingStore.getState();
         if (state.pickup && state.drop) {
           state.markVisitedInnerPage();
+          state.markPreserveDraftOnNextFocus();
           router.replace("/home/service/parcel-book" as never);
           return;
         }
+        state.markPreserveDraftOnNextFocus();
         router.back();
         return;
       }
@@ -275,9 +277,11 @@ export function ParcelLocationSearchScreen() {
       const nextDrop = isPickup ? state.drop : stop;
       if (nextPickup && nextDrop) {
         state.markVisitedInnerPage();
+        state.markPreserveDraftOnNextFocus();
         router.replace("/home/service/parcel-book" as never);
         return;
       }
+      state.markPreserveDraftOnNextFocus();
       router.back();
     },
     [isPickup, setPickup, setDrop, addRecentLocation, field, router]

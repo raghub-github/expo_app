@@ -11,10 +11,14 @@ import {
   resolveTabBarBottomInset,
 } from "@/constants/layout";
 import { useCustomerGeoServiceAvailability } from "@/hooks/useCustomerGeoServiceAvailability";
+import { useCustomerServiceBlocks } from "@/hooks/useCustomerServiceBlocks";
+import { CUSTOMER_HOME_SERVICE_META } from "@/lib/customerHomeServiceMeta";
+import { useCustomerServiceBlockSheetStore } from "@/store/customerServiceBlockSheetStore";
 import { AppText } from "@/components/AppText";
 
 const TAB_ACTIVE = GatiMitraColors.splashMint;
 const TAB_INACTIVE = "#94A3B8";
+const TAB_DISABLED = "#CBD5E1";
 const ICON_SIZE = 23;
 
 /** @deprecated Use `CUSTOMER_BOTTOM_NAV_CONTENT_HEIGHT` from `@/constants/layout`. */
@@ -70,9 +74,9 @@ function getTabConfig(routeName: string): TabConfig {
   return TABS.find((t) => t.routeName === routeName) ?? TABS[0];
 }
 
-function TabIcon({ tab, focused }: { tab: TabConfig; focused: boolean }) {
+function TabIcon({ tab, focused, disabled }: { tab: TabConfig; focused: boolean; disabled?: boolean }) {
   const name = focused ? tab.iconFocused : tab.icon;
-  const color = focused ? TAB_ACTIVE : TAB_INACTIVE;
+  const color = disabled ? TAB_DISABLED : focused ? TAB_ACTIVE : TAB_INACTIVE;
 
   if (tab.family === "material") {
     return (
@@ -97,7 +101,10 @@ export function CustomerTabBar({ state, navigation }: BottomTabBarProps) {
   const { bottom: rawBottom } = useSafeAreaInsets();
   const router = useRouter();
   const { enabledServices } = useCustomerGeoServiceAvailability();
+  const { accountBlocks } = useCustomerServiceBlocks();
+  const openBlockSheet = useCustomerServiceBlockSheetStore((s) => s.open);
   const foodEnabled = enabledServices.food;
+  const foodBlocked = Boolean(accountBlocks.food);
   const bottomPad = resolveTabBarBottomInset(rawBottom);
 
   const visibleRoutes = state.routes.filter(
@@ -105,10 +112,10 @@ export function CustomerTabBar({ state, navigation }: BottomTabBarProps) {
   );
 
   useEffect(() => {
-    if (!foodEnabled && state.routes[state.index]?.name === "food") {
+    if ((!foodEnabled || foodBlocked) && state.routes[state.index]?.name === "food") {
       navigation.navigate("index");
     }
-  }, [foodEnabled, state.index, state.routes, navigation]);
+  }, [foodEnabled, foodBlocked, state.index, state.routes, navigation]);
 
   return (
     <View style={[styles.wrapper, bottomPad > 0 ? { paddingBottom: bottomPad } : null]}>
@@ -118,6 +125,14 @@ export function CustomerTabBar({ state, navigation }: BottomTabBarProps) {
           const tab = getTabConfig(route.name);
           const onPress = () => {
             if (route.name === "food") {
+              if (foodBlocked) {
+                openBlockSheet({
+                  serviceLabel: CUSTOMER_HOME_SERVICE_META.food.label,
+                  reason: accountBlocks.food!,
+                  serviceAssetKey: CUSTOMER_HOME_SERVICE_META.food.assetKey,
+                });
+                return;
+              }
               router.push("/home" as never);
               return;
             }
@@ -134,6 +149,8 @@ export function CustomerTabBar({ state, navigation }: BottomTabBarProps) {
             navigation.emit({ type: "tabLongPress", target: route.key });
           };
 
+          const foodTabDisabled = route.name === "food" && foodBlocked;
+
           return (
             <Pressable
               key={route.key}
@@ -142,10 +159,18 @@ export function CustomerTabBar({ state, navigation }: BottomTabBarProps) {
               accessibilityLabel={tab.label}
               onPress={onPress}
               onLongPress={onLongPress}
-              style={styles.tab}
+              style={[styles.tab, foodTabDisabled && styles.tabDisabled]}
             >
-              <TabIcon tab={tab} focused={focused} />
-              <AppText style={[styles.label, focused && styles.labelActive]}>{tab.label}</AppText>
+              <TabIcon tab={tab} focused={focused} disabled={foodTabDisabled} />
+              <AppText
+                style={[
+                  styles.label,
+                  focused && !foodTabDisabled && styles.labelActive,
+                  foodTabDisabled && styles.labelDisabled,
+                ]}
+              >
+                {tab.label}
+              </AppText>
               {focused ? <View style={styles.activeUnderline} /> : <View style={styles.underlineSpacer} />}
             </Pressable>
           );
@@ -186,6 +211,12 @@ const styles = StyleSheet.create({
   labelActive: {
     color: TAB_ACTIVE,
     fontWeight: "700",
+  },
+  labelDisabled: {
+    color: TAB_DISABLED,
+  },
+  tabDisabled: {
+    opacity: 0.72,
   },
   activeUnderline: {
     width: 20,

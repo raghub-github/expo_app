@@ -29,13 +29,19 @@ export function buildAddressSharePageHtml(args: {
   const { shortCode, token } = args;
   const appUrl = `gatimitra://address/save?id=${encodeURIComponent(token)}`;
   const androidPackage = "com.gatimitra.customer";
+  const pageUrl = buildAddressShareUrl(shortCode, token);
+  const httpsPath = `/addr/${shortCode}?id=${encodeURIComponent(token)}`;
+  const androidIntentUrl =
+    `intent://gatimitra.com${httpsPath}#Intent;scheme=https;package=${androidPackage};` +
+    `S.browser_fallback_url=${encodeURIComponent(
+      `https://play.google.com/store/apps/details?id=${androidPackage}&referrer=${encodeURIComponent(`addr_${token}`)}`
+    )};end`;
   // Carry the token as the Play install referrer so the app can resume the
   // deep link after a fresh install (deferred deep linking via the Play
   // Install Referrer API — see native follow-up).
   const playStoreUrl =
     `https://play.google.com/store/apps/details?id=${androidPackage}` +
     `&referrer=${encodeURIComponent(`addr_${token}`)}`;
-  const pageUrl = buildAddressShareUrl(shortCode, token);
   const ogImage = buildAddressShareOgImageUrl();
   const ogTitle = "GatiMitra";
   const ogDescription = "Share your GatiMitra address";
@@ -94,12 +100,19 @@ export function buildAddressSharePageHtml(args: {
   <script>
     (function () {
       var appUrl = ${JSON.stringify(appUrl)};
+      var androidIntentUrl = ${JSON.stringify(androidIntentUrl)};
       var playStoreUrl = ${JSON.stringify(playStoreUrl)};
       var isAndroid = /Android/i.test(navigator.userAgent);
       var isIOS = /iPhone|iPad|iPod/i.test(navigator.userAgent);
       function openApp() {
         document.getElementById('status').textContent = 'Opening GatiMitra…';
-        window.location.href = appUrl;
+        if (isAndroid) {
+          // Prefer verified App Links; intent:// opens the installed app directly
+          // when domain verification is still pending on the device.
+          window.location.href = androidIntentUrl;
+        } else {
+          window.location.href = appUrl;
+        }
         // If we're still visible after the scheme attempt, the app isn't
         // installed. On Android, send the user to the Play Store (the token
         // rides along as the install referrer so the deep link resumes after
@@ -108,7 +121,7 @@ export function buildAddressSharePageHtml(args: {
         setTimeout(function () {
           if (document.visibilityState === 'hidden') return;
           if (isAndroid) {
-            document.getElementById('status').textContent = 'Opening Play Store…';
+            document.getElementById('status').textContent = 'Install GatiMitra to save this address.';
             window.location.href = playStoreUrl;
           } else {
             document.getElementById('status').textContent =

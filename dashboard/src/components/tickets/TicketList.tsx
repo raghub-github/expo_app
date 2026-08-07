@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useState, useRef } from "react";
 import { useAppPathname, useAppSearchParams } from "@/hooks/useAppSearchParams";
 
-import { ChevronLeft, ChevronRight, ChevronDown, Check, Download, LayoutList, LayoutGrid, UserPlus, UserMinus, CheckCircle, RefreshCw, Link2, Merge, Ban, Trash2, PanelRightOpen, PanelRightClose } from "lucide-react";
+import { ChevronLeft, ChevronRight, ChevronDown, Check, Download, LayoutList, LayoutGrid, UserPlus, UserMinus, CheckCircle, RefreshCw, Link2, Merge, Ban, PanelRightOpen, PanelRightClose } from "lucide-react";
 import { useTickets, fetchTickets, compactTicketFilters, type TicketFilters } from "@/hooks/tickets/useTickets";
 import { useTicketsRealtime } from "@/hooks/tickets/useTicketsRealtime";
 import { useTicketsAgentsQuery } from "@/hooks/tickets/useTicketsAgentsQuery";
@@ -12,7 +12,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { playQueueAssignmentSound } from "@/lib/tickets/play-queue-assignment-sound";
 import { TicketListRow } from "./TicketListRow";
 import { TicketGridCard } from "./TicketGridCard";
-import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
+import { TicketsPageSkeleton } from "@/components/skeletons/TicketsPageSkeleton";
 import { useTicketFilters } from "@/hooks/tickets/useTicketFilters";
 import { useTicketUpdate } from "@/hooks/tickets/useTicketUpdate";
 import {
@@ -23,6 +23,7 @@ import {
 import { useRightSidebar } from "@/context/RightSidebarContext";
 import { useToast } from "@/context/ToastContext";
 import { queryKeys } from "@/lib/queryKeys";
+import { patchTicketInListCaches, invalidateTicketListCaches } from "@/lib/tickets/patch-ticket-list-cache";
 import type { Option } from "./InlineSearchableSelect";
 import { BulkUpdateModal } from "./BulkUpdateModal";
 import { ExportTicketsModal } from "./ExportTicketsModal";
@@ -103,7 +104,6 @@ export function TicketList({ hideExportAndSidebarToggle = false }: { hideExportA
   const [mergeTargetId, setMergeTargetId] = useState<number | null>(null);
   const [mergeReason, setMergeReason] = useState("");
   const [mergeSubmitting, setMergeSubmitting] = useState(false);
-  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [closeConfirmOpen, setCloseConfirmOpen] = useState(false);
   const [assignDropdownOpen, setAssignDropdownOpen] = useState(false);
   const [exportModalOpen, setExportModalOpen] = useState(false);
@@ -286,7 +286,6 @@ export function TicketList({ hideExportAndSidebarToggle = false }: { hideExportA
     refetchIntervalInBackground: true,
     retry: 1,
   });
-  const [loadingMessageSlow, setLoadingMessageSlow] = useState(false);
   const currentTotal = data?.total ?? 0;
   const activeCountDisplay = Number(activeCountData?.total ?? 0);
   const snoozedCountDisplay = Number(snoozedCountData?.total ?? 0);
@@ -404,16 +403,6 @@ export function TicketList({ hideExportAndSidebarToggle = false }: { hideExportA
     }, minDelayMs);
     return () => window.clearTimeout(timer);
   }, [data, queryClient]);
-
-  useEffect(() => {
-    const waiting = isLoading || (isPending && data == null);
-    if (!waiting) {
-      setLoadingMessageSlow(false);
-      return;
-    }
-    const id = window.setTimeout(() => setLoadingMessageSlow(true), 55_000);
-    return () => clearTimeout(id);
-  }, [isLoading, isPending, data]);
 
   const inlineErrorMessage = error instanceof Error ? error.message : "Unknown error";
   const hasCachedData = Boolean(data);
@@ -601,18 +590,11 @@ export function TicketList({ hideExportAndSidebarToggle = false }: { hideExportA
     ) => {
       const ids = Array.from(selectedIds);
       if (ids.length === 0) return;
-      const selectedSet = new Set(ids);
       const patchRow = opts.patchRow;
 
       if (patchRow) {
-        queryClient.setQueriesData({ queryKey: queryKeys.tickets.all() }, (old: any) => {
-          if (!old || !Array.isArray(old.tickets)) return old;
-          return {
-            ...old,
-            tickets: old.tickets.map((t: any) => (selectedSet.has(t.id) ? patchRow(t) : t)),
-          };
-        });
         ids.forEach((id) => {
+          patchTicketInListCaches(queryClient, id, (t) => patchRow(t));
           queryClient.setQueryData(queryKeys.tickets.detail(id), (old: any) =>
             old ? patchRow(old) : old
           );
@@ -627,12 +609,7 @@ export function TicketList({ hideExportAndSidebarToggle = false }: { hideExportA
       } catch (e) {
         toast(e instanceof Error ? e.message : `Bulk ${opts.verb} failed`, "error");
       } finally {
-        // Always reconcile: the server may have skipped tickets the optimistic
-        // patch already moved (assignee validation, terminal status, …).
-        await queryClient.invalidateQueries({
-          predicate: (q) => q.queryKey[0] === "tickets" && q.queryKey[1] === "list",
-        });
-        await queryClient.invalidateQueries({ queryKey: queryKeys.tickets.helpdeskDashboard() });
+        invalidateTicketListCaches(queryClient);
         await refetch();
       }
     },
@@ -796,14 +773,9 @@ export function TicketList({ hideExportAndSidebarToggle = false }: { hideExportA
     !(isQueueHome && queueHomeAgentOffline) && data == null && (isLoading || isPending);
   if (awaitingTickets) {
     return (
-      <div className="tickets-typo flex h-full min-h-0 w-full flex-1 flex-col items-center justify-center gap-4 bg-white px-4 text-center">
+      <div className="tickets-typo flex h-full min-h-0 w-full flex-1 flex-col overflow-hidden bg-white">
         {ticketsFetchErrorModal}
-        <LoadingSpinner />
-        <p className="text-sm text-gray-500 max-w-md">
-          {loadingMessageSlow
-            ? "Something's taking longer than expected. Please refresh or check your connection to continue."
-            : "Getting everything ready..."}
-        </p>
+        <TicketsPageSkeleton />
       </div>
     );
   }
@@ -1052,15 +1024,9 @@ export function TicketList({ hideExportAndSidebarToggle = false }: { hideExportA
                   title={rightSidebar.isOpen ? "Hide filters" : "Open filters"}
                 >
                   {rightSidebar.isOpen ? (
-                    <>
-                      <PanelRightClose className="h-3 w-3" />
-                      <span>Hide</span>
-                    </>
+                    <PanelRightClose className="h-3 w-3" />
                   ) : (
-                    <>
-                      <PanelRightOpen className="h-3 w-3" />
-                      <span>Open</span>
-                    </>
+                    <PanelRightOpen className="h-3 w-3" />
                   )}
                 </button>
               )}
@@ -1177,15 +1143,6 @@ export function TicketList({ hideExportAndSidebarToggle = false }: { hideExportA
           >
             <Ban className="h-3.5 w-3.5" />
             Spam
-          </button>
-          <button
-            type="button"
-            onClick={() => setDeleteConfirmOpen(true)}
-            className="inline-flex cursor-pointer items-center justify-center rounded-lg border border-red-200 bg-white p-1.5 text-red-600 hover:bg-red-50"
-            title="Delete"
-            aria-label="Delete"
-          >
-            <Trash2 className="h-3.5 w-3.5" />
           </button>
           {!hideExportAndSidebarToggle && (
             <button
@@ -1332,22 +1289,9 @@ export function TicketList({ hideExportAndSidebarToggle = false }: { hideExportA
         </div>
       )}
 
-      {/* Delete confirm - no API yet */}
-      {deleteConfirmOpen && (
-        <div className="fixed inset-0 z-[200] flex items-center justify-center p-4 bg-black/50" onClick={() => setDeleteConfirmOpen(false)}>
-          <div className="w-full max-w-sm rounded-2xl border border-gray-200 bg-white p-6 shadow-xl" onClick={(e) => e.stopPropagation()}>
-            <h3 className="text-lg font-semibold text-gray-900">Delete tickets?</h3>
-            <p className="mt-2 text-sm text-gray-600">Bulk delete is not yet available. You can close tickets or mark as rejected (Spam) instead. Delete API will be added in a future update.</p>
-            <div className="mt-4 flex gap-2">
-              <button type="button" onClick={() => setDeleteConfirmOpen(false)} className="flex-1 rounded-xl border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50">OK</button>
-            </div>
-          </div>
-        </div>
-      )}
-
       {/* Ticket List or Grid - scrollable area */}
       <div
-        className={`flex-1 min-h-0 overflow-y-auto overflow-x-visible ${viewMode === "grid" ? "p-4" : ""}`}
+        className={`flex-1 min-h-0 overflow-y-auto overflow-x-visible`}
       >
         {tickets.length === 0 ? (
           <div className="flex h-full min-h-0 w-full flex-col items-center justify-center px-4 py-12 text-center">
@@ -1396,24 +1340,24 @@ export function TicketList({ hideExportAndSidebarToggle = false }: { hideExportA
           </div>
         ) : (
           <>
-            {/* Grid header - select all */}
-            <div className="flex items-center gap-2 px-1 pb-2 text-xs font-medium text-gray-600">
+            {/* Grid header - select all (matches list header styling) */}
+            <div className="flex items-center gap-2 border-b border-gray-200 bg-slate-50/90 pl-2 pr-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-gray-500">
               <input
                 type="checkbox"
                 checked={allSelected}
                 onChange={(e) => selectAll(e.target.checked)}
-                className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                className="h-3.5 w-3.5 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
                 aria-label="Select all on page"
               />
-              <span>Select all</span>
+              <span className="normal-case font-medium text-gray-600">Select all</span>
               {someSelected && (
-                <span className="text-blue-600 font-medium">
+                <span className="normal-case text-blue-600 font-medium">
                   ({selectedIds.size} selected)
                 </span>
               )}
             </div>
             <div
-              className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-3"
+              className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-3 p-3"
               style={{ overflow: "visible" }}
             >
               {data.tickets.map((ticket) => (

@@ -17,6 +17,7 @@ import {
   useNotificationInboxStore,
 } from "@/src/stores/notificationInboxStore";
 import { RIDER_AVAILABLE_ORDERS_QUERY_KEY } from "@/src/hooks/useOrders";
+import { setRiderPushUnregister } from "@/src/lib/riderPushUnregister";
 
 /**
  * Registers Expo + native tokens via shared push controller (JWT role = rider).
@@ -92,6 +93,11 @@ export function RiderPushSetup() {
   );
 
   const { snapshot, controller } = usePushPermissionController(pushOptions);
+
+  useEffect(() => {
+    setRiderPushUnregister(() => controller.unregisterCurrent());
+    return () => setRiderPushUnregister(null);
+  }, [controller]);
 
   useEffect(() => {
     if (!hydrated || !session?.accessToken || session.role !== "rider") return;

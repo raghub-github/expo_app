@@ -72,6 +72,7 @@ const SOURCE_ROLES = [
 
 function optionLabel(options: { value: string; label: string }[], value: string | null | undefined): string {
   if (value == null || value === "") return "—";
+  if (value === "all") return "All";
   return options.find((o) => o.value === value)?.label ?? value;
 }
 
@@ -321,7 +322,10 @@ function TicketSettingsPageContent() {
   const helpFilteredTitles = useMemo(() => {
     return ticketTitles.filter((t) => {
       if (helpAudience !== "all" && String(t.ticketSection ?? "").toLowerCase() !== helpAudience) return false;
-      if (helpService !== "all" && String(t.serviceType ?? "").toLowerCase() !== helpService) return false;
+      if (helpService !== "all") {
+        const st = String(t.serviceType ?? "").toLowerCase();
+        if (st !== helpService && st !== "all") return false;
+      }
       return true;
     });
   }, [ticketTitles, helpAudience, helpService]);

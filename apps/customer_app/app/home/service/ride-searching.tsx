@@ -79,7 +79,7 @@ function clearActiveRideOrder(orderId: string): void {
   useOrderStore.getState().removeActiveOrder(orderId);
 }
 
-function trackActiveRideOrder(orderId: string): void {
+function trackActiveRideOrder(orderId: string, vehicleImageKey?: string | null): void {
   rememberActivePersonRide(orderId);
   useOrderStore.getState().addActiveOrder({
     orderId,
@@ -89,6 +89,7 @@ function trackActiveRideOrder(orderId: string): void {
     storeName: null,
     placedAt: Date.now(),
     serviceType: "ride",
+    vehicleImageKey: vehicleImageKey ?? null,
   });
 }
 
@@ -360,7 +361,10 @@ export default function RideSearchingScreen() {
     if (params.orderId?.trim()) {
       const id = params.orderId.trim();
       setOrderId(id);
-      trackActiveRideOrder(id);
+      trackActiveRideOrder(
+        id,
+        String(params.selectedRideImageKey ?? params.selectedRideId ?? "") || null
+      );
     }
   }, [
     isResumeMode,
@@ -605,6 +609,7 @@ export default function RideSearchingScreen() {
         storeName: null,
         placedAt: Date.now(),
         serviceType: "ride",
+        vehicleImageKey: rideImageKey || rideTypeId || null,
       });
       void queryClient.invalidateQueries({ queryKey: ["my-orders"] });
       clearRideSearchTimer(assignedOrderId);
@@ -631,7 +636,7 @@ export default function RideSearchingScreen() {
 
       openLiveRideTracking(assignedOrderId);
     },
-    [openLiveRideTracking, queryClient]
+    [openLiveRideTracking, queryClient, rideImageKey, rideTypeId]
   );
 
   const handleSearchWindowEnded = useCallback(async () => {
@@ -982,7 +987,7 @@ export default function RideSearchingScreen() {
       .then((result) => {
         if (cancelled) return;
         setOrderId(result.orderId);
-        trackActiveRideOrder(result.orderId);
+        trackActiveRideOrder(result.orderId, rideImageKey || rideTypeId);
         void queryClient.invalidateQueries({ queryKey: ["my-orders"] });
         void queryClient.invalidateQueries({ queryKey: ["my-orders", "active-rides"] });
         if (result.totalAmount != null && Number.isFinite(result.totalAmount) && result.totalAmount > 0) {
@@ -1032,6 +1037,7 @@ export default function RideSearchingScreen() {
     params.farPickupAcknowledged,
     stopsForApi,
     rideTypeId,
+    rideImageKey,
     slabFareForPlacement,
     initialTipAmount,
     tripKm,

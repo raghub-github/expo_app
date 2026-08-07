@@ -8,6 +8,7 @@ import { AlertCircle, FolderGit2, ChevronDown, X, Search } from "lucide-react";
 import { Ticket } from "@/hooks/tickets/useTickets";
 import { prefetchTicketDetail } from "@/hooks/tickets/useTicketDetail";
 import { buildTicketDetailHref } from "@/lib/tickets/ticket-path-utils";
+import { formatTicketDisplaySubject } from "@/lib/tickets/ticket-display-subject";
 import { InlineSearchableSelect, type Option } from "./InlineSearchableSelect";
 import { TicketMixedText, TicketNum } from "./tickets-typography";
 
@@ -137,6 +138,7 @@ export const TicketListRow = React.memo(function TicketListRow({
   detailHref,
 }: TicketListRowProps) {
   const detailLink = detailHref ?? buildTicketDetailHref(ticket.id, "");
+  const displaySubject = formatTicketDisplaySubject(ticket);
   const [groupAgentOpen, setGroupAgentOpen] = useState(false);
   const [groupAgentTab, setGroupAgentTab] = useState<"group" | "agent">("group");
   const [searchGroup, setSearchGroup] = useState("");
@@ -506,13 +508,13 @@ export const TicketListRow = React.memo(function TicketListRow({
           scroll={false}
           // Only the subject + ticket id text should be clickable.
           // Avoid `w-full` here because it makes the whole row width clickable (including blank space).
-          className="inline-flex w-fit max-w-full min-w-0 text-left hover:underline underline-offset-2"
-          title={`${ticket.subject} · #${ticket.ticketNumber || ticket.id}`}
+          className="group/title inline-flex w-fit max-w-full min-w-0 text-left rounded-sm px-0.5 -mx-0.5 transition-colors duration-150 hover:bg-blue-50/80"
+          title={`${displaySubject} · #${ticket.ticketNumber || ticket.id}`}
         >
-          <TicketMixedText className="font-medium text-[#121212] text-[12.5px] leading-snug [overflow-wrap:anywhere]">
-            {ticket.subject}
+          <TicketMixedText className="font-medium text-[#121212] group-hover/title:text-blue-700 transition-colors duration-150 text-[12.5px] leading-snug [overflow-wrap:anywhere]">
+            {displaySubject}
           </TicketMixedText>
-          <TicketNum className="text-[11px] text-[#121212]/55 font-medium whitespace-nowrap align-baseline ml-2">
+          <TicketNum className="text-[11px] text-[#121212]/55 group-hover/title:text-blue-600/75 font-medium whitespace-nowrap align-baseline ml-2 transition-colors duration-150">
             #{ticket.ticketNumber || ticket.id}
           </TicketNum>
         </Link>

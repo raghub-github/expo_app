@@ -41,6 +41,9 @@ import { useActiveOrdersHydration } from "@/hooks/useActiveOrdersHydration";
 import { LocationWatchSync } from "@/components/LocationWatchSync";
 import { CustomerPermissionSheetsHost } from "@/components/CustomerPermissionSheetsHost";
 import { ServiceBlockedGateHost } from "@/components/ServiceBlockedGateHost";
+import { CustomerAccountBlockedGateHost } from "@/components/CustomerAccountBlockedGateHost";
+import { CustomerServiceBlockSheetHost } from "@/components/CustomerServiceBlockSheetHost";
+import { CustomerServiceBlocksSync } from "@/components/CustomerServiceBlocksSync";
 import { useSmsPermissionStore } from "@/store/smsPermissionStore";
 import { GlobalFloatingCart } from "@/components/GlobalFloatingCart";
 import { MerchantNavTransitionShutter } from "@/components/MerchantNavTransitionShutter";
@@ -392,6 +395,8 @@ export default function RootLayout() {
                   <GlobalFloatingCart />
                   <CustomerPermissionSheetsHost />
                   <ServiceBlockedGateHost />
+                  <CustomerAccountBlockedGateHost />
+                  <CustomerServiceBlockSheetHost />
                   <LiveOrderProgressNotification />
                   <LegalConsentGate />
                   {/* Absolute shutter over home — no Modal fade; drops when store page is ready */}
@@ -410,6 +415,7 @@ export default function RootLayout() {
                   <FoodHomeLayoutPrefetch />
                   <ProfilePrefetch />
                   <WalletBalancePrefetch />
+                  <CustomerServiceBlocksSync />
                   <SubscriptionPlansPrefetch />
                 </AppErrorBoundary>
               </>

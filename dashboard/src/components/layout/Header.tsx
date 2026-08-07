@@ -44,6 +44,10 @@ const AgentStatusToggle = dynamic(
     loading: () => <div className="h-10 w-40 shrink-0" aria-hidden />,
   }
 );
+const NewTicketSideSheet = dynamic(
+  () => import("@/components/tickets/TicketsNewSideSheet").then((m) => m.TicketsNewSideSheet),
+  { ssr: false }
+);
 import { ProfileStatusCard } from "@/components/profile/ProfileStatusCard";
 import { useLeftSidebarMobile } from "@/context/LeftSidebarMobileContext";
 import { useRightSidebar } from "@/context/RightSidebarContext";
@@ -291,6 +295,16 @@ function OrderTypeDropdown() {
 }
 
 // Order Search Bar — syncs with URL so Food/Parcel/Ride order pages can read search params
+const MOBILE_SEARCH_TYPES = new Set(["Customer Mobile", "Rider Mobile"]);
+
+function normalizeOrderSearchInput(value: string, searchType: string): string {
+  const trimmed = value.trim();
+  if (MOBILE_SEARCH_TYPES.has(searchType)) {
+    return trimmed.replace(/\s/g, "");
+  }
+  return trimmed.toUpperCase();
+}
+
 function OrderSearchBar() {
   const pathname = useAppPathname();
   const router = useRouter();
@@ -314,7 +328,13 @@ function OrderSearchBar() {
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    setSearchValue((searchParams.get("search") ?? "").toUpperCase());
+    const urlValue = searchParams.get("search") ?? "";
+    const type = isPersonRideOrders
+      ? normalizePersonRideSearchType(searchParams.get("searchType"))
+      : isParcelOrders
+        ? normalizeParcelSearchType(searchParams.get("searchType"))
+        : searchParams.get("searchType") ?? "Order Id";
+    setSearchValue(normalizeOrderSearchInput(urlValue, type));
     if (isPersonRideOrders) {
       setSearchType(normalizePersonRideSearchType(searchParams.get("searchType")));
     } else if (isParcelOrders) {
@@ -360,7 +380,7 @@ function OrderSearchBar() {
 
   const handleSearch = useCallback(() => {
     const params = new URLSearchParams(searchParams.toString());
-    const value = searchValue.trim().toUpperCase();
+    const value = normalizeOrderSearchInput(searchValue, searchType);
     if (value) {
       params.set("search", value);
       params.set("searchType", searchType);
@@ -417,7 +437,9 @@ function OrderSearchBar() {
         ref={inputRef}
         type="text"
         value={searchValue}
-        onChange={(e) => setSearchValue(e.target.value.toUpperCase())}
+        onChange={(e) =>
+          setSearchValue(normalizeOrderSearchInput(e.target.value, searchType))
+        }
         placeholder={
           isPersonRideOrders
             ? "GMP10006, passenger, rider…"
@@ -425,7 +447,9 @@ function OrderSearchBar() {
               ? "GMC10006, receiver, rider…"
               : "Search here..."
         }
-        className="min-w-0 flex-1 border-r border-gray-300 bg-white px-3 text-sm uppercase text-gray-900 placeholder:normal-case placeholder:text-gray-400 focus:outline-none"
+        className={`min-w-[12rem] flex-[2] border-r border-gray-300 bg-white px-3 text-sm text-gray-900 placeholder:text-gray-400 focus:outline-none ${
+          MOBILE_SEARCH_TYPES.has(searchType) ? "" : "uppercase"
+        }`}
         onKeyDown={(e) => {
           if (e.key === "Enter") handleSearch();
         }}
@@ -595,6 +619,7 @@ function HeaderComponent() {
   const isMerchantsArea = pathnameClean.startsWith("/dashboard/merchants");
   const [showDropdown, setShowDropdown] = useState(false);
   const [showNewDropdown, setShowNewDropdown] = useState(false);
+  const [newSheetType, setNewSheetType] = useState<"ticket" | "email" | "contact" | "company" | null>(null);
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
   const [showProfileCard, setShowProfileCard] = useState(false);
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
@@ -1354,7 +1379,7 @@ function HeaderComponent() {
               {showQueueLinkFromTickets && (
                 <Link
                   href={TICKETS_QUEUE_HOME_PATH}
-                  prefetch={false}
+                  prefetch
                   scroll={false}
                   target="_blank"
                   rel="noopener noreferrer"
@@ -1374,7 +1399,7 @@ function HeaderComponent() {
       {effectivePathname.startsWith("/dashboard/orders") ? (
         <div className="hidden lg:flex min-w-0 flex-1 items-center justify-center gap-3 px-4">
           <OrderTypeDropdown />
-          <div className="min-w-0 w-full max-w-[26rem]">
+          <div className="min-w-0 w-full max-w-[34rem]">
             <OrderSearchBar />
           </div>
         </div>
@@ -1407,56 +1432,37 @@ function HeaderComponent() {
             </button>
             {showNewDropdown && (
               <div
-                className="absolute right-0 top-full z-[100] mt-1.5 w-56 rounded-xl border border-gray-200 bg-white py-1.5 shadow-lg ring-1 ring-black/5"
+                className="absolute right-0 top-full z-[100] mt-1 w-40 rounded-lg border border-gray-200 bg-white py-0.5 shadow-lg ring-1 ring-black/5"
                 role="menu"
               >
-                <Link
-                  href="/dashboard/tickets/new"
-                  onClick={() => setShowNewDropdown(false)}
-                  className="flex items-center gap-3 px-4 py-2.5 text-sm text-gray-700 hover:bg-gray-50 transition-colors"
-                  role="menuitem"
-                >
-                  <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-amber-100 text-amber-700">
-                    <Ticket className="h-4 w-4" />
-                  </div>
-                  <span>Ticket</span>
-                </Link>
-                <Link
-                  href="/dashboard/email"
-                  onClick={() => setShowNewDropdown(false)}
-                  className="flex items-center gap-3 px-4 py-2.5 text-sm text-gray-700 hover:bg-gray-50 transition-colors"
-                  role="menuitem"
-                >
-                  <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-blue-100 text-blue-700">
-                    <Mail className="h-4 w-4" />
-                  </div>
-                  <span>Email</span>
-                </Link>
-                <Link
-                  href="/dashboard/contacts/new"
-                  onClick={() => setShowNewDropdown(false)}
-                  className="flex items-center gap-3 px-4 py-2.5 text-sm text-gray-700 hover:bg-gray-50 transition-colors"
-                  role="menuitem"
-                >
-                  <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-emerald-100 text-emerald-700">
-                    <UserPlus className="h-4 w-4" />
-                  </div>
-                  <span>Contact</span>
-                </Link>
-                <Link
-                  href="/dashboard/companies/new"
-                  onClick={() => setShowNewDropdown(false)}
-                  className="flex items-center gap-3 px-4 py-2.5 text-sm text-gray-700 hover:bg-gray-50 transition-colors"
-                  role="menuitem"
-                >
-                  <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-violet-100 text-violet-700">
-                    <Building2 className="h-4 w-4" />
-                  </div>
-                  <span>Company</span>
-                </Link>
+                {(
+                  [
+                    { type: "ticket" as const, icon: Ticket, label: "Ticket", iconClass: "bg-amber-100 text-amber-700" },
+                    { type: "email" as const, icon: Mail, label: "Email", iconClass: "bg-blue-100 text-blue-700" },
+                    { type: "contact" as const, icon: UserPlus, label: "Contact", iconClass: "bg-emerald-100 text-emerald-700" },
+                    { type: "company" as const, icon: Building2, label: "Company", iconClass: "bg-violet-100 text-violet-700" },
+                  ] as const
+                ).map(({ type, icon: Icon, label, iconClass }) => (
+                  <button
+                    key={type}
+                    type="button"
+                    onClick={() => {
+                      setShowNewDropdown(false);
+                      setNewSheetType(type);
+                    }}
+                    className="flex w-full items-center gap-2 px-2 py-1 text-[13px] text-gray-700 hover:bg-gray-50 transition-colors"
+                    role="menuitem"
+                  >
+                    <div className={`flex h-5 w-5 shrink-0 items-center justify-center rounded ${iconClass}`}>
+                      <Icon className="h-3 w-3" />
+                    </div>
+                    <span>{label}</span>
+                  </button>
+                ))}
               </div>
             )}
           </div>
+          <NewTicketSideSheet type={newSheetType} onClose={() => setNewSheetType(null)} />
         </div>
       ) : !effectivePathname.startsWith("/dashboard/tickets") &&
         effectivePathname !== "/dashboard/area-managers" &&

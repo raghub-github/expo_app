@@ -1017,6 +1017,8 @@ export default function FoodMerchantsScreen() {
   const [gridFirstMeasuredSkyHeight, setGridFirstMeasuredSkyHeight] =
     useState(gridFirstSkyHeightDefault);
   const [gridFirstHeroReady, setGridFirstHeroReady] = useState(false);
+  /** Once the carousel reports an aspect-based height, don't clobber it with the default. */
+  const gridFirstSkyMeasuredFromHeroRef = useRef(false);
   const gridFirstSkyHeight = gridFirstHeroReady
     ? gridFirstMeasuredSkyHeight
     : gridFirstCompactSkyHeight;
@@ -1024,15 +1026,26 @@ export default function FoodMerchantsScreen() {
     new NativeAnimated.Value(gridFirstCompactSkyHeight)
   ).current;
   const gridFirstHeroReveal = useRef(new NativeAnimated.Value(0)).current;
+  const prevSkyDefaultRef = useRef(gridFirstSkyHeightDefault);
 
+  // Only adjust for status-bar inset changes — never reset a hero-measured height
+  // back to the tall default (that left a cream gap under the banner).
   useEffect(() => {
-    setGridFirstMeasuredSkyHeight((prev) =>
-      Math.abs(prev - gridFirstSkyHeightDefault) < 1 ? prev : gridFirstSkyHeightDefault
-    );
-  }, [gridFirstSkyHeightDefault]);
+    const prevDefault = prevSkyDefaultRef.current;
+    prevSkyDefaultRef.current = gridFirstSkyHeightDefault;
+    const delta = gridFirstSkyHeightDefault - prevDefault;
+    if (Math.abs(delta) < 1) return;
+    setGridFirstMeasuredSkyHeight((prev) => {
+      if (!gridFirstSkyMeasuredFromHeroRef.current) {
+        return gridFirstSkyHeightDefault;
+      }
+      return Math.max(gridFirstCompactSkyHeight, prev + delta);
+    });
+  }, [gridFirstSkyHeightDefault, gridFirstCompactSkyHeight]);
 
   const onGridFirstHeroHeightChange = useCallback((h: number) => {
     if (!(h > 0)) return;
+    gridFirstSkyMeasuredFromHeroRef.current = true;
     setGridFirstMeasuredSkyHeight((prev) => (Math.abs(prev - h) < 1 ? prev : h));
   }, []);
 

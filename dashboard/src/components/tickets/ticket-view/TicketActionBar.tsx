@@ -453,7 +453,7 @@ export function TicketActionBar({
           aria-disabled={composeLocked}
         >
           <StickyNote className="h-3.5 w-3.5" />
-          Add note
+          Note
         </button>
         <button
           type="button"
@@ -782,25 +782,29 @@ export function TicketActionBar({
         type="button"
         onClick={onToggleCsat}
         className={`inline-flex h-7.5 cursor-pointer items-center gap-1 rounded-md border px-2.5 text-[12px] font-medium ${
-          showCsat ? "border border-gray-300 bg-gray-100 text-gray-800" : "border-gray-300 bg-white text-gray-700 hover:bg-gray-50"
+          showCsat
+            ? "border-[#121212] bg-[#121212] text-white"
+            : "border-gray-300 bg-white text-gray-700 hover:bg-gray-50"
         }`}
-        aria-label={"C&D-SAT — satisfaction for this ticket only"}
+        aria-label={"C&D — satisfaction for this ticket only"}
         aria-pressed={showCsat}
       >
         <Star className="h-3.5 w-3.5" />
-        {showCsat ? "Hide C&D-SAT" : "C&D-SAT"}
+        C&D
       </button>
 
-      {/* Show / Hide activities */}
+      {/* Stats toggle */}
       <button
         type="button"
         onClick={onToggleActivities}
         className={`inline-flex h-7.5 cursor-pointer items-center gap-1 rounded-md border px-2.5 text-[12px] font-medium ${
-          showActivities ? "border border-gray-300 bg-gray-100 text-gray-800" : "border border-gray-300 bg-white text-gray-700 hover:bg-gray-50"
+          showActivities
+            ? "border-[#121212] bg-[#121212] text-white"
+            : "border border-gray-300 bg-white text-gray-700 hover:bg-gray-50"
         }`}
       >
         <Activity className="h-3.5 w-3.5" />
-        {showActivities ? "Hide activities" : "Show activities"}
+        Stats
       </button>
 
       <button
@@ -817,9 +821,9 @@ export function TicketActionBar({
         scroll={false}
         className="inline-flex h-7.5 max-w-[76px] cursor-pointer items-center rounded-md border border-gray-300 bg-white px-2.5 text-[12px] font-medium text-gray-700 hover:bg-gray-50 sm:max-w-none"
         aria-label={fromQueue ? "Back to queue" : "Back to ticket list"}
-        title={fromQueue ? "Queue" : "All Tickets"}
+        title={fromQueue ? "Queue" : "All"}
       >
-        <span className="block truncate">{fromQueue ? "Queue" : "All Tickets"}</span>
+        <span className="block truncate">{fromQueue ? "Queue" : "All"}</span>
       </Link>
       <button
         type="button"

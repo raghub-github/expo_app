@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { STANDARD_REMARKS } from "@/lib/remarks/standardRemarks";
 import { useAuthOptional } from "@/providers/AuthProvider";
 import { syncServerSessionCookies } from "@/lib/auth/sync-server-session";
@@ -585,30 +585,6 @@ function formatReconDisplayTime(isoOrDate: string | Date): string {
 
 type CxNotification = SidebarCxNotification;
 
-function SidebarLatestPreview({
-  label,
-  body,
-  meta,
-  onOpen,
-}: {
-  label: string;
-  body: string;
-  meta: string;
-  onOpen: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onOpen}
-      className="mb-2 w-full rounded-lg border border-emerald-100 bg-emerald-50/60 px-2.5 py-2 text-left transition hover:bg-emerald-50 cursor-pointer"
-    >
-      <p className="text-[10px] font-semibold uppercase tracking-wide text-emerald-700">{label}</p>
-      <p className="mt-0.5 line-clamp-3 text-[11px] leading-snug text-slate-800">{body}</p>
-      <p className="mt-1 text-[10px] text-slate-500">{meta}</p>
-    </button>
-  );
-}
-
 export default function OrderRightSidebar({
   order,
   itemCount: itemCountProp,
@@ -643,7 +619,24 @@ export default function OrderRightSidebar({
   const [notifications, setNotifications] = useState<CxNotification[]>(
     initialNotifications ?? []
   );
+  const [cxTemplates, setCxTemplates] = useState<
+    Array<{
+      code: string;
+      label: string;
+      title_template: string;
+      body_template: string;
+      is_custom?: boolean;
+      allow_edit?: boolean;
+    }>
+  >([]);
+  const [selectedTemplateCode, setSelectedTemplateCode] = useState("");
+  const [templateMenuOpen, setTemplateMenuOpen] = useState(false);
+  const templateMenuRef = useRef<HTMLDivElement | null>(null);
+  const [notificationTitle, setNotificationTitle] = useState("");
   const [notificationText, setNotificationText] = useState("");
+  /** Message editor collapsed by default; expand only when agent wants to override. */
+  const [notificationBodyOpen, setNotificationBodyOpen] = useState(false);
+  const notificationBodyRef = useRef<HTMLTextAreaElement | null>(null);
   const [isLoadingNotifications, setIsLoadingNotifications] = useState(false);
   const [isSavingNotification, setIsSavingNotification] = useState(false);
   const [showNotificationsModal, setShowNotificationsModal] = useState(false);
@@ -996,6 +989,108 @@ export default function OrderRightSidebar({
     [activityRefreshKey, initialNotifications, order.id]
   );
 
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await fetch("/api/orders/cx-notification-templates", {
+          credentials: "include",
+        });
+        if (cancelled) return;
+        if (!res.ok) {
+          console.error("Failed to load Cx templates", res.status, await res.text());
+          return;
+        }
+        const json = (await res.json()) as { items?: unknown; success?: boolean };
+        if (cancelled) return;
+        const items = Array.isArray(json?.items) ? json.items : [];
+        setCxTemplates(
+          items.filter(
+            (t): t is {
+              code: string;
+              label: string;
+              title_template: string;
+              body_template: string;
+              is_custom?: boolean;
+            } =>
+              !!t &&
+              typeof t === "object" &&
+              typeof (t as { code?: unknown }).code === "string" &&
+              typeof (t as { label?: unknown }).label === "string"
+          )
+        );
+      } catch (err) {
+        if (!cancelled) console.error("Error loading Cx templates", err);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!templateMenuOpen) return;
+    const onPointerDown = (event: MouseEvent) => {
+      const el = templateMenuRef.current;
+      if (el && !el.contains(event.target as Node)) {
+        setTemplateMenuOpen(false);
+      }
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setTemplateMenuOpen(false);
+    };
+    document.addEventListener("mousedown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [templateMenuOpen]);
+
+  useEffect(() => {
+    const el = notificationBodyRef.current;
+    if (!el) return;
+    if (!notificationBodyOpen && selectedTemplateCode !== "ADMIN_CX_CUSTOM") return;
+    el.style.height = "auto";
+    el.style.height = `${Math.max(el.scrollHeight, 72)}px`;
+  }, [notificationText, notificationBodyOpen, selectedTemplateCode]);
+
+  const applyTemplatePreview = useCallback(
+    (code: string) => {
+      const tmpl = cxTemplates.find((t) => t.code === code);
+      if (!tmpl) {
+        setNotificationTitle("");
+        setNotificationText("");
+        return;
+      }
+      if (tmpl.is_custom) {
+        setNotificationTitle("Order Update");
+        setNotificationText("");
+        return;
+      }
+      const orderIdText =
+        order.formattedOrderId ??
+        order.orderId ??
+        `GMF${order.id.toString().padStart(6, "0")}`;
+      const vars: Record<string, string> = {
+        orderId: orderIdText,
+        orderShortId: orderIdText,
+        customerName: order.customerName ?? "Customer",
+        merchantName: "the restaurant",
+        riderName: order.riderName ?? "Your delivery partner",
+        pickupOtp: "",
+        deliveryOtp: "",
+        title: "",
+        body: "",
+      };
+      const fill = (s: string) =>
+        s.replace(/\{\{(\w+)\}\}/g, (_, key: string) => vars[key] ?? "");
+      setNotificationTitle(fill(tmpl.title_template || ""));
+      setNotificationText(fill(tmpl.body_template || ""));
+    },
+    [cxTemplates, order.customerName, order.formattedOrderId, order.id, order.orderId, order.riderName]
+  );
+
   const loadRecons = useCallback(
     async (signal?: AbortSignal) => {
       if (shouldSkipEmbeddedActivityFetch(activityRefreshKey, initialRecons)) {
@@ -1271,15 +1366,27 @@ export default function OrderRightSidebar({
   };
 
   const addNotification = async () => {
-    const message = notificationText.trim();
-    if (!message || isSavingNotification) return;
+    if (!selectedTemplateCode || isSavingNotification) return;
+    const isCustom = selectedTemplateCode === "ADMIN_CX_CUSTOM";
+    const title = notificationTitle.trim();
+    const body = notificationText.trim();
+    // Custom requires a typed body; templates may send with preview filled even if editor is collapsed.
+    if (isCustom && !body) return;
+    if (!isCustom && !title && !body) return;
 
     setIsSavingNotification(true);
     try {
       const res = await fetch(`/api/orders/${order.id}/notifications`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message }),
+        body: JSON.stringify({
+          templateCode: selectedTemplateCode,
+          // Always pass filled title/body so backend override path is consistent
+          // whether the editor was expanded or left collapsed.
+          overrideTitle: title || undefined,
+          overrideBody: body || undefined,
+          customMessage: isCustom ? body : undefined,
+        }),
       });
       const json = await res.json().catch(() => ({}));
       if (!res.ok || !json?.success) {
@@ -1290,9 +1397,19 @@ export default function OrderRightSidebar({
         );
         return;
       }
+      setSelectedTemplateCode("");
+      setNotificationTitle("");
       setNotificationText("");
+      setNotificationBodyOpen(false);
       await loadNotifications();
-      setToastMessage("Notification saved.");
+      const routedEmail =
+        typeof json?.routedToEmail === "string" && json.routedToEmail.trim()
+          ? json.routedToEmail.trim()
+          : userEmail;
+      if (routedEmail) {
+        onRoutedToChange?.(routedEmail);
+      }
+      setToastMessage("Notification sent successfully");
     } catch {
       setToastMessage("Could not send notification. Please try again.");
     } finally {
@@ -1427,6 +1544,13 @@ export default function OrderRightSidebar({
             providerName: normalizeProviderName(saved.providerName) ?? saved.providerName ?? null,
           },
         ]);
+      }
+      const routedEmail =
+        typeof json?.routedToEmail === "string" && json.routedToEmail.trim()
+          ? json.routedToEmail.trim()
+          : mapped.actorEmail;
+      if (routedEmail) {
+        onRoutedToChange?.(routedEmail);
       }
       setReconText("");
       setReconReason("");
@@ -1958,25 +2082,126 @@ export default function OrderRightSidebar({
             <OrderMixedText>{`See all (${notificationsCountDisplay})`}</OrderMixedText>
           </button>
         </div>
-        {notifications[0] ? (
-          <SidebarLatestPreview
-            label="Latest notification"
-            body={notifications[0].message}
-            meta={`${notifications[0].actorName ?? notifications[0].actorEmail ?? "Agent"} · ${notifications[0].time}`}
-            onOpen={() => setShowNotificationsModal(true)}
-          />
-        ) : null}
-        <div className="space-y-2">
-          <textarea
-            value={notificationText}
-            onChange={(e) => setNotificationText(e.target.value)}
-            placeholder="Enter notification message..."
-            className="min-h-[60px] w-full rounded border border-slate-200 bg-white p-2 text-[12px] text-slate-700 focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
-          />
+        <div className="w-full space-y-2">
+          <div className="relative" ref={templateMenuRef}>
+            <button
+              type="button"
+              aria-haspopup="listbox"
+              aria-expanded={templateMenuOpen}
+              onClick={() => setTemplateMenuOpen((open) => !open)}
+              className="flex min-h-8 w-full items-start justify-between gap-2 rounded border border-slate-200 bg-white px-2.5 py-1.5 text-left text-[12px] leading-snug text-slate-700 hover:border-slate-300 focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+            >
+              <span className="whitespace-normal break-words">
+                {cxTemplates.find((t) => t.code === selectedTemplateCode)?.label ||
+                  "Select notification"}
+              </span>
+              <i
+                className={`bi bi-chevron-down mt-0.5 shrink-0 text-[10px] text-slate-400 transition ${
+                  templateMenuOpen ? "rotate-180" : ""
+                }`}
+              />
+            </button>
+            {templateMenuOpen ? (
+              <ul
+                role="listbox"
+                className="absolute left-0 right-0 z-30 mt-1 max-h-40 w-full overflow-y-auto rounded border border-slate-200 bg-white py-1 shadow-md"
+              >
+                <li>
+                  <button
+                    type="button"
+                    role="option"
+                    aria-selected={!selectedTemplateCode}
+                    onClick={() => {
+                      setSelectedTemplateCode("");
+                      applyTemplatePreview("");
+                      setNotificationBodyOpen(false);
+                      setTemplateMenuOpen(false);
+                    }}
+                    className={`block w-full whitespace-normal break-words px-2.5 py-1.5 text-left text-[11px] leading-snug hover:bg-emerald-50 ${
+                      !selectedTemplateCode
+                        ? "bg-emerald-50 font-medium text-emerald-700"
+                        : "text-slate-600"
+                    }`}
+                  >
+                    Select notification
+                  </button>
+                </li>
+                {cxTemplates.map((t) => (
+                  <li key={t.code}>
+                    <button
+                      type="button"
+                      role="option"
+                      aria-selected={selectedTemplateCode === t.code}
+                      onClick={() => {
+                        setSelectedTemplateCode(t.code);
+                        applyTemplatePreview(t.code);
+                        // Custom needs a body; other templates stay collapsed until Edit.
+                        setNotificationBodyOpen(Boolean(t.is_custom));
+                        setTemplateMenuOpen(false);
+                      }}
+                      className={`block w-full whitespace-normal break-words px-2.5 py-1.5 text-left text-[11px] leading-snug hover:bg-emerald-50 ${
+                        selectedTemplateCode === t.code
+                          ? "bg-emerald-50 font-medium text-emerald-700"
+                          : "text-slate-700"
+                      }`}
+                    >
+                      {t.label}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            ) : null}
+          </div>
+
+          {selectedTemplateCode ? (
+            <div className="space-y-1.5">
+              {selectedTemplateCode !== "ADMIN_CX_CUSTOM" ? (
+                <button
+                  type="button"
+                  onClick={() => setNotificationBodyOpen((open) => !open)}
+                  className="flex w-full items-center justify-between rounded border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-left text-[11px] font-medium text-slate-600 hover:bg-slate-100 cursor-pointer"
+                >
+                  <span>{notificationBodyOpen ? "Edit Alert !" : "Show Alert !"}</span>
+                  <i
+                    className={`bi bi-chevron-down text-[10px] text-slate-400 transition ${
+                      notificationBodyOpen ? "rotate-180" : ""
+                    }`}
+                  />
+                </button>
+              ) : null}
+
+              {notificationBodyOpen || selectedTemplateCode === "ADMIN_CX_CUSTOM" ? (
+                <textarea
+                  ref={notificationBodyRef}
+                  value={notificationText}
+                  onChange={(e) => {
+                    setNotificationText(e.target.value);
+                    const el = e.currentTarget;
+                    el.style.height = "auto";
+                    el.style.height = `${Math.max(el.scrollHeight, 72)}px`;
+                  }}
+                  placeholder={
+                    selectedTemplateCode === "ADMIN_CX_CUSTOM"
+                      ? "Enter custom notification message..."
+                      : "Message body (optional override)"
+                  }
+                  rows={1}
+                  className="min-h-[72px] w-full resize-none overflow-hidden rounded border border-slate-200 bg-white p-2 text-[12px] leading-snug text-slate-700 focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                />
+              ) : null}
+            </div>
+          ) : null}
+
           <button
             type="button"
             onClick={() => void addNotification()}
-            disabled={isSavingNotification || !notificationText.trim()}
+            disabled={
+              isSavingNotification ||
+              !selectedTemplateCode ||
+              (selectedTemplateCode === "ADMIN_CX_CUSTOM"
+                ? !notificationText.trim()
+                : !notificationTitle.trim() && !notificationText.trim())
+            }
             className="flex w-full items-center justify-center gap-1.5 rounded-lg bg-emerald-500 px-4 py-2 text-[12px] font-medium text-white shadow-sm transition hover:bg-emerald-600 cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
           >
             {isSavingNotification ? (
@@ -2481,9 +2706,16 @@ export default function OrderRightSidebar({
                                 CUSTOMER
                               </span>
                             </div>
-                            <p className="text-[12px] leading-relaxed text-slate-700 whitespace-pre-line">
-                              {n.message}
-                            </p>
+                            <div className="space-y-0.5">
+                              {n.title ? (
+                                <p className="text-[12px] font-semibold leading-snug text-slate-900">
+                                  Title: {n.title}
+                                </p>
+                              ) : null}
+                              <p className="text-[12px] leading-relaxed text-slate-700 whitespace-pre-line">
+                                {n.body ?? n.message}
+                              </p>
+                            </div>
                           </div>
                         </div>
                         <div className="text-[11px] text-slate-500 whitespace-nowrap shrink-0">

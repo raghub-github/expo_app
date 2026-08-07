@@ -17,12 +17,21 @@ export function getApiErrorMessage(error: unknown): string {
   return "Unknown error";
 }
 
-/** Return 503 JSON for timeout, 500 JSON for other errors. Use in API route catch blocks. */
+/** Return 503 JSON for timeout, 499 for abort, 500 JSON for other errors. Use in API route catch blocks. */
 export function apiErrorResponse(error: unknown): { body: object; status: number } {
   if (isPostgresTimeout(error)) {
     return {
       body: { success: false, error: "Request timed out. Please try again.", code: "TIMEOUT" },
       status: 503,
+    };
+  }
+  if (
+    error instanceof Error &&
+    (error.name === "AbortError" || /aborted/i.test(error.message))
+  ) {
+    return {
+      body: { success: false, error: "Request aborted", code: "REQUEST_ABORTED" },
+      status: 499,
     };
   }
   return {

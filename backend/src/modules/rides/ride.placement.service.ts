@@ -23,6 +23,10 @@ import { quoteCustomerRideFare } from "../ride-state-config/rideQuote.service.js
 import { resolveRideAddressDisplayLabel } from "../../lib/ride-address-display.js";
 import { resolveRidePickupFreeWaitMinutes, resolveRidePickupWaitingChargePerMin } from "../../lib/ride-pickup-wait.js";
 import { findCustomerOutstandingRideFare } from "../../lib/ride-fare-gate.js";
+import {
+  assertCustomerServiceNotBlocked,
+  CUSTOMER_SERVICE_BLOCKED_CODE,
+} from "../../lib/customer-service-blocks.js";
 import { countDispatchDeclinedForOrder } from "../../lib/rider-dispatch-assignment-audit-read.js";
 import { computeBillForRide } from "../billing/rideBilling.service.js";
 import type { BillingResult } from "../billing/types.js";
@@ -273,6 +277,15 @@ function rideStopColumns(stops: RideIntermediateStop[]): RideStopColumns {
 export async function placeRideOrder(input: PlaceRideOrderInput): Promise<PlaceRideOrderResult> {
   const db = getDb();
   const now = new Date();
+
+  const rideBlock = await assertCustomerServiceNotBlocked(input.customerPk, "person_ride");
+  if (rideBlock.blocked) {
+    throw Object.assign(new Error(rideBlock.reason), {
+      statusCode: 403,
+      code: CUSTOMER_SERVICE_BLOCKED_CODE,
+    });
+  }
+
   const searchTimeoutSec = Math.min(
     600,
     Math.max(60, input.searchTimeoutSec ?? DEFAULT_RIDE_SEARCH_TIMEOUT_SEC)
@@ -1075,7 +1088,10 @@ export async function getRideOrderForCustomer(
     totalAmount: Number(row.grandTotal ?? 0),
     searchExpiresAt: rideRow?.searchExpiresAt?.toISOString?.() ?? null,
     cancelled,
-    pickupOtp: row.pickupOtp?.trim() || null,
+    pickupOtp:
+      riderReachedPickupAt || pickupOtpVerified
+        ? row.pickupOtp?.trim() || null
+        : null,
     rideStarted,
     riderReachedPickupAt,
     pickupOtpVerifiedAt,

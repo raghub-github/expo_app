@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { createServerSupabaseClient } from "@/lib/supabase/server";
+import { getAuthenticatedApiUser, authFailureResponse } from "@/lib/auth/api-session";
 import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine";
 import { getMerchantAccess, type MerchantAccess } from "@/lib/permissions/merchant-access";
 import { getSystemUserByEmail } from "@/lib/auth/user-mapping";
@@ -35,12 +35,12 @@ export async function authorizeMerchantStoreRoute(
     return NextResponse.json({ success: false, error: "Invalid store id" }, { status: 400 });
   }
 
-  const supabase = await createServerSupabaseClient();
-  const {
-    data: { user },
-    error,
-  } = await supabase.auth.getUser();
-  if (error || !user?.email) {
+  const auth = await getAuthenticatedApiUser();
+  if (!auth.ok) {
+    return authFailureResponse(auth);
+  }
+  const user = auth.user;
+  if (!user.email) {
     return NextResponse.json({ success: false, error: "Not authenticated" }, { status: 401 });
   }
 

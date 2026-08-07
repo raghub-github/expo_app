@@ -118,7 +118,7 @@ export function isCustomerOrderOnTheWayStatus(status: string | null | undefined)
   );
 }
 
-/** Live tracking — show delivery OTP from rider en-route through arrival until delivered. */
+/** Live tracking — show delivery OTP only after rider enters drop radius / arrives. */
 export function shouldShowCustomerDeliveryOtp(
   status: string | null | undefined,
   deliveryOtp: string | null | undefined
@@ -126,7 +126,36 @@ export function shouldShowCustomerDeliveryOtp(
   if (!deliveryOtp?.trim()) return false;
   const s = normalizeCustomerOrderStatus(status);
   if (isTerminalOrderStatus(s)) return false;
-  return isCustomerOrderOnTheWayStatus(s) || isRiderAtCustomerStatus(s);
+  return isRiderAtCustomerStatus(s);
+}
+
+/** Live tracking — show pickup PIN until trip/pickup is started. */
+export function shouldShowCustomerPickupOtp(
+  status: string | null | undefined,
+  pickupOtp: string | null | undefined,
+  opts?: {
+    riderReachedPickupAt?: string | null;
+    pickupOtpVerifiedAt?: string | null;
+    rideStarted?: boolean | null;
+    /** parcel: show from book; person_ride: only after pickup radius / at-store. */
+    orderType?: string | null;
+  }
+): boolean {
+  if (!pickupOtp?.trim()) return false;
+  const s = normalizeCustomerOrderStatus(status);
+  if (isTerminalOrderStatus(s)) return false;
+  if (opts?.pickupOtpVerifiedAt || opts?.rideStarted) return false;
+  if (isCustomerOrderOnTheWayStatus(s)) return false;
+
+  const orderType = String(opts?.orderType ?? "").trim().toLowerCase();
+  if (orderType === "parcel") {
+    // Parcel tracking shows pickup OTP from booking until collected.
+    return true;
+  }
+
+  // Person ride (default): only after captain reaches pickup.
+  if (opts?.riderReachedPickupAt) return true;
+  return isRiderAtStoreStatus(s);
 }
 
 /** Person-ride order (mobility), not food delivery. */
@@ -139,14 +168,30 @@ export function isPersonRideOrder(order: {
   rideType?: string | null;
   items?: unknown[] | null;
 }): boolean {
-  if ((order.orderType ?? "").trim().toLowerCase() === "person_ride") return true;
+  const t = (order.orderType ?? "").trim().toLowerCase();
+  if (t === "parcel" || t === "food") return false;
+  if (t === "person_ride" || t === "ride") return true;
   const ref = (order.formattedOrderId ?? order.orderId ?? "").trim().toUpperCase();
+  if (/^GMC\d*/.test(ref) || /^GMX\d*/.test(ref) || /^GMPARCEL/i.test(ref) || /^GMF\d*/.test(ref)) {
+    return false;
+  }
   if (/^GMP\d*/.test(ref)) return true;
   if ((order.rideType ?? "").trim().length > 0) return true;
   if (order.merchantStoreId != null) return false;
   const items = order.items ?? [];
   if (Array.isArray(items) && items.length > 0) return false;
   return !!order.pickupOtp?.trim();
+}
+
+/** Parcel / courier order — not food delivery. */
+export function isParcelOrder(order: {
+  orderType?: string | null;
+  formattedOrderId?: string | null;
+  orderId?: string;
+}): boolean {
+  if ((order.orderType ?? "").trim().toLowerCase() === "parcel") return true;
+  const ref = (order.formattedOrderId ?? order.orderId ?? "").trim().toUpperCase();
+  return /^GMC\d*/.test(ref) || /^GMX\d*/.test(ref) || /^GMPARCEL/i.test(ref);
 }
 
 /** Active person-ride — show live tracking UI instead of food order details. */
@@ -409,19 +454,31 @@ export function getCustomerOrderEtaPillText(
 /** Subtitle on the floating order tracking pill (GatiMitra-style). */
 export function getFloatingOrderStatusText(
   status: string | null | undefined,
-  hasRider = false
+  hasRider = false,
+  serviceType?: "food" | "ride" | "parcel" | null
 ): string {
   const s = normalizeCustomerOrderStatus(status);
-  if (isRiderAtCustomerStatus(s)) return "Rider has arrived";
-  if (isCustomerOrderOnTheWayStatus(s)) return "Order is on the way";
-  if (isRiderAtStoreStatus(s)) return "Handing off the order ASAP";
-  if (s === "RIDER_ASSIGNED" || s === "ASSIGNED") return "Rider arriving at the restaurant";
+  const service = String(serviceType ?? "").trim().toLowerCase();
+  const isParcelOrRide = service === "parcel" || service === "ride";
+
+  if (isRiderAtCustomerStatus(s)) {
+    return isParcelOrRide ? "Captain has arrived" : "Rider has arrived";
+  }
+  if (isCustomerOrderOnTheWayStatus(s)) {
+    return isParcelOrRide ? "Parcel is on the way" : "Order is on the way";
+  }
+  if (isRiderAtStoreStatus(s)) {
+    return isParcelOrRide ? "Captain at pickup" : "Handing off the order ASAP";
+  }
+  if (s === "RIDER_ASSIGNED" || s === "ASSIGNED") {
+    return isParcelOrRide ? "Captain on the way to pickup" : "Rider arriving at the restaurant";
+  }
   if (
     hasRider &&
     !isRiderAtStoreStatus(s) &&
     (s === "ACCEPTED" || s === "PREPARING" || s === "ORDER_PLACED" || s === "CREATED")
   ) {
-    return "Rider heading to store";
+    return isParcelOrRide ? "Captain on the way to pickup" : "Rider heading to store";
   }
   if (s === "READY_FOR_PICKUP" || s === "READY") {
     return hasRider ? "Rider arriving at the restaurant" : "Waiting for a delivery partner";
@@ -429,9 +486,55 @@ export function getFloatingOrderStatusText(
   if (s === "PREPARING") return "Restaurant is preparing your order";
   if (s === "ACCEPTED") return "Order accepted by restaurant";
   if (isMerchantPreparingStatus(s)) return "Order accepted & being prepared";
-  if (s === "ORDER_PLACED" || s === "PLACED" || s === "CREATED") return "Order confirmed";
-  if (s === "SEARCHING_RIDER") return "Waiting for a delivery partner";
+  if (s === "SEARCHING_RIDER") {
+    return isParcelOrRide ? "Finding a nearby captain" : "Waiting for a delivery partner";
+  }
+  if (s === "ORDER_PLACED" || s === "PLACED" || s === "CREATED") {
+    return isParcelOrRide ? "Finding a nearby captain" : "Order confirmed";
+  }
   return "Order in progress";
+}
+
+/**
+ * Floating dock CTA: never show "arriving in X min" until a partner is
+ * actually on the job (assigned / at pickup / en route). Quote/trip ETA
+ * alone must not drive the pill when still searching for a captain.
+ */
+export function shouldShowFloatingOrderEta(
+  status: string | null | undefined,
+  etaMinutes: number | null | undefined,
+  serviceType?: "food" | "ride" | "parcel" | null
+): boolean {
+  if (etaMinutes == null || !Number.isFinite(etaMinutes) || etaMinutes <= 0) return false;
+  const s = normalizeCustomerOrderStatus(status);
+  if (isTerminalOrderStatus(s)) return false;
+
+  const service = String(serviceType ?? "").trim().toLowerCase();
+
+  // Parcel / ride: arrival ETA only after captain is assigned (or further).
+  if (service === "parcel" || service === "ride") {
+    if (
+      s === "SEARCHING_RIDER" ||
+      s === "ORDER_PLACED" ||
+      s === "PLACED" ||
+      s === "CREATED" ||
+      s === "NEW"
+    ) {
+      return false;
+    }
+    return (
+      s === "RIDER_ASSIGNED" ||
+      s === "ASSIGNED" ||
+      s === "ACCEPTED" ||
+      isRiderAtStoreStatus(s) ||
+      isCustomerOrderOnTheWayStatus(s) ||
+      isRiderAtCustomerStatus(s) ||
+      s === "RIDE_IN_PROGRESS"
+    );
+  }
+
+  // Food: prep / promise ETA is valid before rider assignment.
+  return true;
 }
 
 /** Primary banner line on the order details screen. */

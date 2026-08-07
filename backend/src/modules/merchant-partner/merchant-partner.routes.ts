@@ -4931,6 +4931,19 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
           const previousStatus = body.is_open === true ? "CLOSED" : "OPEN";
           const reason = body.is_open === true ? "manual_open" : (mergedManualCloseUntil ? "manual_close" : "manual_indefinite");
           await emitStoreStatusChanged(sql, storeId, previousStatus, newStatus, reason, "MANUAL", req.log);
+          try {
+            const {
+              ensureWaitingForOrderInbox,
+              deleteWaitingForOrderInbox,
+            } = await import("../../lib/merchant-waiting-for-order.js");
+            if (body.is_open === true) {
+              await ensureWaitingForOrderInbox(storeId);
+            } else {
+              await deleteWaitingForOrderInbox(storeId);
+            }
+          } catch (e) {
+            req.log.warn({ err: e, storeId }, "waiting_for_order_inbox_sync_failed");
+          }
         }
         const auditCtx = getAuditContext(req, parentRow, parentId);
         await insertAuditLog(
@@ -5861,9 +5874,8 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
       );
 
       const WAITING_FOR_ORDER_TITLE = "🟢 Your restaurant is online";
-      const WAITING_FOR_ORDER_BODY = "Waiting for orders";
 
-      /** POST /merchant-partner/stores/:storeId/notifications/waiting-for-order/ensure — idempotent in-app row for idle pipeline. */
+      /** POST …/waiting-for-order/ensure — kept for compat; primary create is on store open. */
       protectedApp.post<{ Params: { storeId: string } }>(
         "/stores/:storeId/notifications/waiting-for-order/ensure",
         async (req, reply) => {
@@ -5884,70 +5896,10 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
           `;
           if (storeRows.length === 0) return reply.code(404).send({ error: "store_not_found" });
 
-          const settingsRows = await sql`
-            SELECT settings_metadata
-            FROM merchant_store_settings
-            WHERE store_id = ${storeId}
-            LIMIT 1
-          `;
-          const settingsMeta = (settingsRows[0] as { settings_metadata?: unknown } | undefined)?.settings_metadata;
-          if (
-            settingsMeta &&
-            typeof settingsMeta === "object" &&
-            typeof (settingsMeta as Record<string, unknown>).partner_notifications_cleared_at === "string"
-          ) {
-            return reply.send({ created: false, suppressed: true });
-          }
-
-          const existing = await sql`
-            SELECT id FROM merchant_store_notifications
-            WHERE store_id = ${storeId} AND title = ${WAITING_FOR_ORDER_TITLE}
-            ORDER BY created_at DESC
-            LIMIT 1
-          `;
-          const ex = existing[0] as { id?: unknown } | undefined;
-          if (ex?.id != null) {
-            return reply.send({
-              id: String(ex.id),
-              created: false,
-            });
-          }
-
-          // Race-safe insert — concurrent ensure polls must not create twin rows.
-          const ins = await sql`
-            INSERT INTO merchant_store_notifications (store_id, type, title, body, read, action_url)
-            SELECT
-              ${storeId},
-              'system',
-              ${WAITING_FOR_ORDER_TITLE},
-              ${WAITING_FOR_ORDER_BODY},
-              FALSE,
-              '/(tabs)/'
-            WHERE NOT EXISTS (
-              SELECT 1 FROM merchant_store_notifications
-              WHERE store_id = ${storeId} AND title = ${WAITING_FOR_ORDER_TITLE}
-            )
-            RETURNING id
-          `;
-          const row = ins[0] as { id?: unknown } | undefined;
-          if (!row?.id) {
-            const again = await sql`
-              SELECT id FROM merchant_store_notifications
-              WHERE store_id = ${storeId} AND title = ${WAITING_FOR_ORDER_TITLE}
-              ORDER BY created_at DESC
-              LIMIT 1
-            `;
-            const againId = (again[0] as { id?: unknown } | undefined)?.id;
-            return reply.send({
-              id: againId != null ? String(againId) : null,
-              created: false,
-            });
-          }
-          const id = String(row.id);
-          // No remote push here — StoreOnlineStatusNotifier owns the single sticky
-          // tray notification. Pushing MERCHANT_WAITING_FOR_ORDER stacked a second
-          // OS notification on the same device for the same idle event.
-          return reply.send({ id, created: true });
+          const { ensureWaitingForOrderInbox } = await import("../../lib/merchant-waiting-for-order.js");
+          const result = await ensureWaitingForOrderInbox(storeId);
+          if (result.suppressed) return reply.send({ created: false, suppressed: true });
+          return reply.send({ id: result.id, created: result.created });
         }
       );
 
@@ -5972,12 +5924,9 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
           `;
           if (storeRows.length === 0) return reply.code(404).send({ error: "store_not_found" });
 
-          const del = await sql`
-            DELETE FROM merchant_store_notifications
-            WHERE store_id = ${storeId} AND title = ${WAITING_FOR_ORDER_TITLE}
-            RETURNING id
-          `;
-          return reply.send({ deleted: (del as unknown as { id: unknown }[]).length });
+          const { deleteWaitingForOrderInbox } = await import("../../lib/merchant-waiting-for-order.js");
+          const deleted = await deleteWaitingForOrderInbox(storeId);
+          return reply.send({ deleted });
         }
       );
 

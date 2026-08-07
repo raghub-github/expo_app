@@ -20,7 +20,9 @@ import { useRouter } from "expo-router";
 import { GatiCashHeaderPill } from "@/components/home/GatiCashHeaderPill";
 import { useCurrentSubscription } from "@/hooks/useCustomerSubscription";
 import { useProfile } from "@/hooks/useProfile";
-import { buildEmailAvatarCandidates } from "@/lib/emailAvatar";
+import { isCustomProfileUploadUrl } from "@/lib/emailAvatar";
+import { getNameInitials } from "@/lib/nameInitials";
+import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
 import { useAuthStore } from "@/store/authStore";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import { STATUS_BAR_TO_HEADER_GAP } from "@/constants/layout";
@@ -44,13 +46,6 @@ const HERO_OVERLAY_TEXT_SHADOW = {
   textShadowOffset: { width: 0, height: 1 },
   textShadowRadius: 5,
 } as const;
-
-function getInitials(name: string): string {
-  const parts = name.trim().split(/\s+/).filter(Boolean);
-  if (parts.length >= 2) return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
-  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
-  return "GM";
-}
 
 type Props = {
   variant?: "full" | "location" | "search";
@@ -101,15 +96,12 @@ export function FoodHomeGridFirstHeader({
   const micScale = useSharedValue(1);
 
   const displayName = profile?.full_name?.trim() || "Customer";
-  const initials = useMemo(() => getInitials(displayName), [displayName]);
-  const email = profile?.email?.trim() || null;
+  const initials = useMemo(() => getNameInitials(displayName), [displayName]);
   const profileImageUrl = profile?.profile_image_url?.trim() || null;
-  const showEmailAvatar = (profile?.is_email_verified ?? false) && !!email;
-  const avatarCandidates = useMemo(() => {
-    if (!showEmailAvatar || !email) return [];
-    return buildEmailAvatarCandidates(email, profileImageUrl);
-  }, [showEmailAvatar, email, profileImageUrl]);
-  const avatarUri = avatarCandidates[0] ?? null;
+  const avatarUri = useMemo(() => {
+    if (!isCustomProfileUploadUrl(profileImageUrl) || !profileImageUrl) return null;
+    return toAbsoluteImageUrl(profileImageUrl);
+  }, [profileImageUrl]);
 
   useEffect(() => {
     if (PLACEHOLDERS.length <= 1) return;

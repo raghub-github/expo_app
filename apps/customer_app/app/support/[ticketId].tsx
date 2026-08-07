@@ -15,7 +15,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AppText } from "@/components/AppText";
 
-import { View, TextInput, TouchableOpacity, ScrollView, ActivityIndicator, Image, StyleSheet, KeyboardAvoidingView, Platform, Pressable, Linking, Alert } from "react-native";
+import { View, TextInput, TouchableOpacity, ScrollView, ActivityIndicator, Image, StyleSheet, KeyboardAvoidingView, Platform, Pressable, Linking, Alert, Keyboard } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { StatusBar } from "expo-status-bar";
@@ -23,6 +23,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Ionicons } from "@expo/vector-icons";
 import * as ImagePicker from "expo-image-picker";
 import { AndroidBackHandler } from "@/components/AndroidBackHandler";
+import { ChatImageViewerModal } from "@/components/support/ChatImageViewerModal";
 import { formatTicketMessageText } from "@/lib/formatTicketMessage";
 import {
   customerSupportService,
@@ -31,13 +32,75 @@ import {
   type TicketAttachment,
 } from "@/services/customerSupport.service";
 import { useTicketRealtime } from "@/hooks/useTicketRealtime";
+import { useKeyboardBottomInset } from "@/hooks/useKeyboardBottomInset";
+import { useAuthStore } from "@/store/authStore";
+import { useCustomerSupportReadStore } from "@/store/customerSupportReadStore";
+import { computeTicketReadWatermark } from "@/lib/customerSupportReadStorage";
 import { getConfig } from "@/config/env";
 import { GatiMitraColors } from "@/constants/gatimitra";
+import { StoreFonts } from "@/constants/storeTypography";
+import { supportHeaderPaddingTop } from "@/lib/supportLayout";
 
 const GREEN = GatiMitraColors.primaryMint;
+const MINE_BUBBLE_BG = "#DCFCE7";
+const MINE_BUBBLE_TEXT = "#14532D";
+const MINE_BUBBLE_TIME = "#166534";
 const TEXT = "#1C1C1C";
 const MUTED = "#828282";
 const FALLBACK_POLL_MS = 4_000;
+const MAX_CHAT_ATTACHMENTS = 10;
+
+type PendingAttachment = {
+  id: string;
+  localPreviewUri: string;
+  uploading: boolean;
+  storageKey?: string;
+  url?: string;
+  name?: string;
+  mimeType?: string;
+};
+
+function newAttachmentId(): string {
+  return `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+}
+
+function restoreComposerKeyboard(inputRef: React.RefObject<TextInput | null>, restore: boolean) {
+  if (restore) {
+    requestAnimationFrame(() => inputRef.current?.focus());
+    setTimeout(() => inputRef.current?.focus(), 64);
+    return;
+  }
+  inputRef.current?.blur();
+  Keyboard.dismiss();
+}
+
+function collectChatImageUris(
+  messages: TicketMessage[],
+  pending: PendingAttachment[]
+): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  const push = (uri: string | undefined | null) => {
+    const u = String(uri ?? "").trim();
+    if (!u || seen.has(u)) return;
+    seen.add(u);
+    out.push(u);
+  };
+
+  for (const message of messages) {
+    const attachments = (Array.isArray(message.attachments) ? message.attachments : [])
+      .map(resolveAttachmentUrl)
+      .filter((a): a is { name: string; url: string; isImage: boolean } => !!a);
+    for (const att of attachments) {
+      if (att.isImage) push(att.url);
+    }
+  }
+  for (const pendingItem of pending) {
+    push(pendingItem.localPreviewUri);
+    if (pendingItem.url) push(pendingItem.url);
+  }
+  return out;
+}
 
 const RATING_OPTIONS = [
   { value: 1, label: "Very poor", emoji: "😡" },
@@ -62,6 +125,7 @@ function statusBadge(status: string): { label: string; color: string; bg: string
   if (s === "WAITING_FOR_MERCHANT" || s === "WAITING_FOR_RIDER" || s === "PENDING") return { label: "Pending", color: "#b45309", bg: "#fef3c7" };
   if (s === "RESOLVED") return { label: "Resolved", color: "#15803d", bg: "#dcfce7" };
   if (s === "CLOSED") return { label: "Closed", color: "#374151", bg: "#e5e7eb" };
+  if (s === "REJECTED") return { label: "Rejected", color: "#b91c1c", bg: "#fee2e2" };
   if (s === "ESCALATED") return { label: "Escalated", color: "#b91c1c", bg: "#fee2e2" };
   return { label: s, color: "#374151", bg: "#e5e7eb" };
 }
@@ -131,14 +195,25 @@ export default function TicketDetailScreen() {
 
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
-  const [pendingAttachments, setPendingAttachments] = useState<
-    Array<{ storageKey: string; url: string; name: string; mimeType: string; localPreviewUri?: string }>
-  >([]);
+  const [pendingAttachments, setPendingAttachments] = useState<PendingAttachment[]>([]);
   const [ratingValue, setRatingValue] = useState<number | null>(null);
   const [ratingFeedback, setRatingFeedback] = useState("");
   const [ratingSubmitting, setRatingSubmitting] = useState(false);
+  const [viewerUri, setViewerUri] = useState<string | null>(null);
   const scrollRef = useRef<ScrollView | null>(null);
+  const inputRef = useRef<TextInput | null>(null);
+  const keyboardOpenRef = useRef(false);
   const prevMessageCountRef = useRef(0);
+  const keyboardInset = useKeyboardBottomInset();
+
+  const authToken = useAuthStore((s) => s.session?.accessToken ?? null);
+  const customerSub = useAuthStore((s) => s.session?.userId ?? null);
+  const setCustomerSub = useCustomerSupportReadStore((s) => s.setCustomerSub);
+  const markTicketRead = useCustomerSupportReadStore((s) => s.markTicketRead);
+
+  useEffect(() => {
+    setCustomerSub(customerSub);
+  }, [customerSub, setCustomerSub]);
 
   const { data, isLoading, error, refetch } = useQuery<TicketDetailResponse>({
     queryKey: ["customer-support-ticket", ticketIdNum],
@@ -151,7 +226,8 @@ export default function TicketDetailScreen() {
 
   const { postgresLive } = useTicketRealtime({
     ticketNumericId: ticketIdNum,
-    enabled: ticketIdNum != null,
+    enabled: ticketIdNum != null && Boolean(authToken),
+    authToken,
     onStale: () => {
       void refetch();
     },
@@ -160,6 +236,28 @@ export default function TicketDetailScreen() {
   const ticket = data?.ticket;
   const messages = data?.messages ?? [];
 
+  const chatImageUris = useMemo(
+    () => collectChatImageUris(messages, pendingAttachments),
+    [messages, pendingAttachments]
+  );
+
+  useEffect(() => {
+    keyboardOpenRef.current = keyboardInset > 0;
+  }, [keyboardInset]);
+
+  useEffect(() => {
+    const showSub = Keyboard.addListener("keyboardDidShow", () => {
+      keyboardOpenRef.current = true;
+    });
+    const hideSub = Keyboard.addListener("keyboardDidHide", () => {
+      keyboardOpenRef.current = false;
+    });
+    return () => {
+      showSub.remove();
+      hideSub.remove();
+    };
+  }, []);
+
   // Auto-scroll to bottom when new messages arrive
   useEffect(() => {
     if (messages.length > prevMessageCountRef.current) {
@@ -167,6 +265,22 @@ export default function TicketDetailScreen() {
       requestAnimationFrame(() => scrollRef.current?.scrollToEnd({ animated: true }));
     }
   }, [messages.length]);
+
+  useEffect(() => {
+    if (ticketIdNum == null || !ticket) return;
+    const readAt = computeTicketReadWatermark(
+      messages,
+      ticket.updated_at ?? null,
+      ticket.updated_at ?? null
+    );
+    markTicketRead(ticketIdNum, readAt);
+  }, [ticketIdNum, ticket, messages, markTicketRead]);
+
+  useEffect(() => {
+    if (keyboardInset > 0) {
+      requestAnimationFrame(() => scrollRef.current?.scrollToEnd({ animated: true }));
+    }
+  }, [keyboardInset]);
 
   const submitRating = useCallback(async () => {
     if (!ticketIdNum || ratingValue == null || ratingValue < 1 || ratingValue > 5) return;
@@ -188,71 +302,181 @@ export default function TicketDetailScreen() {
     }
   }, [ticketIdNum, ratingValue, ratingFeedback, refetch]);
 
-  const pickImage = useCallback(async () => {
+  const uploadPickedAssets = useCallback(
+    async (assets: ImagePicker.ImagePickerAsset[], restoreKeyboard: boolean) => {
+      if (!ticketIdNum || assets.length === 0) {
+        restoreComposerKeyboard(inputRef, restoreKeyboard);
+        return;
+      }
+
+      const slotsLeft = MAX_CHAT_ATTACHMENTS - pendingAttachments.length;
+      const picked = assets.slice(0, Math.max(0, slotsLeft));
+      if (picked.length === 0) {
+        Alert.alert("Limit reached", `You can attach up to ${MAX_CHAT_ATTACHMENTS} images at a time.`);
+        restoreComposerKeyboard(inputRef, restoreKeyboard);
+        return;
+      }
+
+      const queued: PendingAttachment[] = picked.map((asset) => ({
+        id: newAttachmentId(),
+        localPreviewUri: asset.uri,
+        uploading: true,
+      }));
+
+      setPendingAttachments((prev) => [...prev, ...queued]);
+      restoreComposerKeyboard(inputRef, restoreKeyboard);
+      requestAnimationFrame(() => scrollRef.current?.scrollToEnd({ animated: true }));
+
+      let failedCount = 0;
+      await Promise.all(
+        picked.map(async (asset, index) => {
+          const itemId = queued[index]?.id;
+          if (!itemId) return;
+          const filename =
+            asset.fileName || asset.uri.split("/").pop() || `image-${Date.now()}.jpg`;
+          const mime = asset.mimeType || "image/jpeg";
+          try {
+            const uploaded = await customerSupportService.uploadAttachment(ticketIdNum, {
+              uri: asset.uri,
+              name: filename,
+              mimeType: mime,
+            });
+            setPendingAttachments((prev) => {
+              if (!prev.some((p) => p.id === itemId)) return prev;
+              return prev.map((p) =>
+                p.id === itemId
+                  ? {
+                      ...p,
+                      uploading: false,
+                      storageKey: uploaded.storageKey,
+                      url: uploaded.url,
+                      name: uploaded.name,
+                      mimeType: uploaded.mimeType,
+                    }
+                  : p
+              );
+            });
+          } catch (e) {
+            failedCount += 1;
+            console.warn("attachment upload failed", e);
+            setPendingAttachments((prev) => prev.filter((p) => p.id !== itemId));
+          }
+        })
+      );
+
+      if (failedCount > 0) {
+        Alert.alert(
+          "Upload failed",
+          failedCount === 1
+            ? "Could not upload 1 image. Try again."
+            : `Could not upload ${failedCount} images. Try again.`
+        );
+      }
+    },
+    [ticketIdNum, pendingAttachments.length]
+  );
+
+  const pickFromGallery = useCallback(async () => {
     if (!ticketIdNum) return;
+    const restoreKeyboard = keyboardOpenRef.current;
+    const slotsLeft = MAX_CHAT_ATTACHMENTS - pendingAttachments.length;
+    if (slotsLeft <= 0) {
+      Alert.alert("Limit reached", `You can attach up to ${MAX_CHAT_ATTACHMENTS} images at a time.`);
+      return;
+    }
+
     try {
       const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
       if (!perm.granted) {
         Alert.alert("Permission required", "Allow photo access to attach images.");
         return;
       }
+
       const res = await ImagePicker.launchImageLibraryAsync({
         mediaTypes: ImagePicker.MediaTypeOptions.Images,
         quality: 0.85,
-        allowsMultipleSelection: false,
+        allowsMultipleSelection: slotsLeft > 1,
+        selectionLimit: slotsLeft,
       });
-      if (res.canceled || !res.assets?.[0]) return;
-      const asset = res.assets[0];
-      const filename =
-        asset.fileName || asset.uri.split("/").pop() || `image-${Date.now()}.jpg`;
-      const mime = asset.mimeType || "image/jpeg";
-      setSending(true);
-      const uploaded = await customerSupportService.uploadAttachment(ticketIdNum, {
-        uri: asset.uri,
-        name: filename,
-        mimeType: mime,
-      });
-      setPendingAttachments((prev) => [
-        ...prev,
-        {
-          storageKey: uploaded.storageKey,
-          url: uploaded.url,
-          name: uploaded.name,
-          mimeType: uploaded.mimeType,
-          localPreviewUri: asset.uri,
-        },
-      ]);
+
+      if (res.canceled || !res.assets?.length) {
+        restoreComposerKeyboard(inputRef, restoreKeyboard);
+        return;
+      }
+
+      await uploadPickedAssets(res.assets, restoreKeyboard);
     } catch (e) {
-      console.warn("pickImage failed", e);
-      Alert.alert("Upload failed", "Could not upload image. Try again.");
-    } finally {
-      setSending(false);
+      console.warn("pickFromGallery failed", e);
+      Alert.alert("Upload failed", "Could not open your photo library. Try again.");
+      restoreComposerKeyboard(inputRef, restoreKeyboard);
     }
-  }, [ticketIdNum]);
+  }, [ticketIdNum, uploadPickedAssets]);
+
+  const pickFromCamera = useCallback(async () => {
+    if (!ticketIdNum) return;
+    const restoreKeyboard = keyboardOpenRef.current;
+    if (pendingAttachments.length >= MAX_CHAT_ATTACHMENTS) {
+      Alert.alert("Limit reached", `You can attach up to ${MAX_CHAT_ATTACHMENTS} images at a time.`);
+      return;
+    }
+
+    try {
+      const perm = await ImagePicker.requestCameraPermissionsAsync();
+      if (!perm.granted) {
+        Alert.alert("Permission required", "Allow camera access to take photos.");
+        return;
+      }
+
+      const res = await ImagePicker.launchCameraAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        quality: 0.85,
+        allowsEditing: false,
+      });
+
+      if (res.canceled || !res.assets?.length) {
+        restoreComposerKeyboard(inputRef, restoreKeyboard);
+        return;
+      }
+
+      await uploadPickedAssets(res.assets, restoreKeyboard);
+    } catch (e) {
+      console.warn("pickFromCamera failed", e);
+      Alert.alert("Camera failed", "Could not open the camera. Try again.");
+      restoreComposerKeyboard(inputRef, restoreKeyboard);
+    }
+  }, [ticketIdNum, pendingAttachments.length, uploadPickedAssets]);
 
   const sendMessage = useCallback(async () => {
     if (!ticketIdNum) return;
     const text = draft.trim();
-    if (!text && pendingAttachments.length === 0) return;
+    const readyAttachments = pendingAttachments.filter(
+      (a) => !a.uploading && a.storageKey && a.url && a.name && a.mimeType
+    );
+    if (!text && readyAttachments.length === 0) return;
+    if (pendingAttachments.some((a) => a.uploading)) return;
     setSending(true);
     try {
       await customerSupportService.sendMessage(ticketIdNum, {
         message_text: text || "(attachment)",
-        attachments: pendingAttachments.map((a) => ({
-          storageKey: a.storageKey,
-          url: a.url,
-          name: a.name,
-          mimeType: a.mimeType,
+        attachments: readyAttachments.map((a) => ({
+          storageKey: a.storageKey!,
+          url: a.url!,
+          name: a.name!,
+          mimeType: a.mimeType!,
         })),
       });
       setDraft("");
       setPendingAttachments([]);
       await refetch();
+      requestAnimationFrame(() => scrollRef.current?.scrollToEnd({ animated: true }));
     } catch (e) {
       console.warn("sendMessage failed", e);
       Alert.alert("Send failed", "Could not send your message. Try again.");
     } finally {
       setSending(false);
+      // Keep keyboard open after send — only dismiss when user taps outside or leaves screen.
+      requestAnimationFrame(() => inputRef.current?.focus());
+      setTimeout(() => inputRef.current?.focus(), 64);
     }
   }, [ticketIdNum, draft, pendingAttachments, refetch]);
 
@@ -267,10 +491,13 @@ export default function TicketDetailScreen() {
     }
   }, [ticketIdNum, refetch]);
 
-  const canSend = useMemo(
-    () => !sending && (draft.trim().length > 0 || pendingAttachments.length > 0),
-    [sending, draft, pendingAttachments.length]
-  );
+  const canSend = useMemo(() => {
+    if (sending || pendingAttachments.some((a) => a.uploading)) return false;
+    const readyCount = pendingAttachments.filter((a) => a.storageKey).length;
+    return draft.trim().length > 0 || readyCount > 0;
+  }, [sending, draft, pendingAttachments]);
+
+  const attachmentsAtMax = pendingAttachments.length >= MAX_CHAT_ATTACHMENTS;
 
   const ratingSummary = useMemo(() => {
     if (!ticket || ticket.satisfaction_rating == null || Number.isNaN(Number(ticket.satisfaction_rating))) {
@@ -306,7 +533,8 @@ export default function TicketDetailScreen() {
   }, [ticket]);
 
   const statusNorm = ticket ? ticketStatusNormalized(ticket.status) : "";
-  const isTerminal = statusNorm === "RESOLVED" || statusNorm === "CLOSED";
+  const isTerminal = statusNorm === "RESOLVED" || statusNorm === "CLOSED" || statusNorm === "REJECTED";
+  const showLiveIndicator = !isTerminal;
   const showRatingPrompt =
     !!ticket &&
     isTerminal &&
@@ -338,35 +566,39 @@ export default function TicketDetailScreen() {
   }
 
   const sb = statusBadge(ticket.status);
-  const ratingBarBottomPad = 12 + insets.bottom;
+  const headerSubject = ticket.subject || ticket.ticket_title || "Ticket";
+  const composerBottomPad = keyboardInset > 0 ? 8 : insets.bottom + 8;
+  const ratingBarBottomPad = keyboardInset > 0 ? 12 : 12 + insets.bottom;
+  const screenStyle = [
+    styles.screen,
+    Platform.OS === "android" && keyboardInset > 0 ? { paddingBottom: keyboardInset } : null,
+  ];
+  const ChatShell = Platform.OS === "ios" ? KeyboardAvoidingView : View;
+  const chatShellProps =
+    Platform.OS === "ios"
+      ? { behavior: "padding" as const, keyboardVerticalOffset: 0 }
+      : {};
 
   return (
     <>
       <AndroidBackHandler />
       <StatusBar style="dark" backgroundColor="#fff" />
-      <View style={styles.screen}>
-        <View style={[styles.navHeader, { paddingTop: Math.max(insets.top - 8, 0) }]}>
+      <View style={screenStyle}>
+        <View style={[styles.navHeader, { paddingTop: supportHeaderPaddingTop(insets.top) }]}>
           <TouchableOpacity onPress={() => router.back()} style={styles.navSide} hitSlop={12}>
             <Ionicons name="arrow-back" size={22} color={TEXT} />
           </TouchableOpacity>
-          <AppText style={styles.navTitle}>Support chat</AppText>
-          <View style={styles.navSide} />
+          <AppText style={styles.navTitle} numberOfLines={2}>
+            {headerSubject}
+          </AppText>
+          <View style={[styles.badge, styles.navBadge, { backgroundColor: sb.bg }]}>
+            <AppText style={[styles.badgeText, { color: sb.color }]}>{sb.label}</AppText>
+          </View>
         </View>
 
         <View style={styles.headerCard}>
           <View style={styles.headerAccent} />
           <View style={styles.headerBody}>
-            <View style={styles.headerTop}>
-              <View style={styles.headerIconWrap}>
-                <Ionicons name="chatbubbles-outline" size={18} color={GREEN} />
-              </View>
-              <AppText style={styles.headerSubject} numberOfLines={2}>
-                {ticket.subject || ticket.ticket_title || "Ticket"}
-              </AppText>
-              <View style={[styles.badge, { backgroundColor: sb.bg }]}>
-                <AppText style={[styles.badgeText, { color: sb.color }]}>{sb.label}</AppText>
-              </View>
-            </View>
             <View style={styles.headerMeta}>
               <View style={styles.ticketIdPill}>
                 <AppText style={styles.ticketIdText}>#{ticket.ticket_id}</AppText>
@@ -377,30 +609,31 @@ export default function TicketDetailScreen() {
                   <AppText style={styles.orderLinkedText}>Order linked</AppText>
                 </View>
               ) : null}
-              <View style={[styles.live, postgresLive ? styles.liveOn : styles.liveOff]}>
-                <View style={[styles.liveDot, postgresLive ? styles.liveDotOn : styles.liveDotOff]} />
-                <AppText style={styles.liveText}>{postgresLive ? "Live" : "Reconnecting…"}</AppText>
-              </View>
+              {showLiveIndicator ? (
+                <View style={[styles.live, postgresLive ? styles.liveOn : styles.liveOff]}>
+                  <View style={[styles.liveDot, postgresLive ? styles.liveDotOn : styles.liveDotOff]} />
+                  <AppText style={styles.liveText}>{postgresLive ? "Live" : "Reconnecting…"}</AppText>
+                </View>
+              ) : null}
             </View>
           </View>
         </View>
 
-        <KeyboardAvoidingView
-          style={styles.container}
-          behavior={Platform.OS === "ios" ? "padding" : undefined}
-          keyboardVerticalOffset={Platform.OS === "ios" ? 90 : 0}
-        >
+        <ChatShell style={styles.container} {...chatShellProps}>
 
       <ScrollView
         ref={scrollRef}
         style={styles.thread}
-        contentContainerStyle={{ padding: 14, paddingBottom: 20 }}
+        contentContainerStyle={{ paddingHorizontal: 14, paddingTop: 10, paddingBottom: 20 }}
+        keyboardShouldPersistTaps="handled"
+        keyboardDismissMode="interactive"
         onContentSizeChange={() => scrollRef.current?.scrollToEnd({ animated: false })}
       >
         {/* Original description as the first "customer" message */}
         {ticket.description ? (
           <MessageBubble
             mine
+            onImagePress={setViewerUri}
             message={{
               id: -1,
               message_text: ticket.description,
@@ -424,6 +657,7 @@ export default function TicketDetailScreen() {
             <MessageBubble
               key={m.id}
               mine={mine}
+              onImagePress={setViewerUri}
               message={m}
               showSender={!mine && isFirstOfStreak}
               tightTop={!isFirstOfStreak}
@@ -562,62 +796,116 @@ export default function TicketDetailScreen() {
         <>
           {pendingAttachments.length > 0 && (
             <ScrollView horizontal style={styles.attachmentsRow} showsHorizontalScrollIndicator={false}>
-              {pendingAttachments.map((a, idx) => (
-                <View key={idx} style={styles.attachmentTile}>
-                  {a.localPreviewUri ? (
-                    <Image source={{ uri: a.localPreviewUri }} style={styles.attachmentImage} />
-                  ) : (
-                    <View style={styles.attachmentFile}>
-                      <Ionicons name="document" size={22} color={GREEN} />
-                    </View>
-                  )}
+              {pendingAttachments.map((a) => (
+                <View key={a.id} style={styles.attachmentTile}>
                   <TouchableOpacity
-                    onPress={() => setPendingAttachments((p) => p.filter((_, i) => i !== idx))}
-                    style={styles.attachmentRemove}
+                    activeOpacity={0.92}
+                    onPress={() => setViewerUri(a.localPreviewUri)}
+                    disabled={a.uploading}
                   >
-                    <Ionicons name="close" size={14} color="#fff" />
+                    <Image source={{ uri: a.localPreviewUri }} style={styles.attachmentImage} />
                   </TouchableOpacity>
+                  {a.uploading ? (
+                    <View style={styles.attachmentUploadOverlay}>
+                      <ActivityIndicator color="#fff" size="small" />
+                    </View>
+                  ) : (
+                    <TouchableOpacity
+                      onPress={() => setPendingAttachments((p) => p.filter((item) => item.id !== a.id))}
+                      style={styles.attachmentRemove}
+                      hitSlop={6}
+                    >
+                      <Ionicons name="close" size={14} color="#fff" />
+                    </TouchableOpacity>
+                  )}
                 </View>
               ))}
             </ScrollView>
           )}
 
-          <View style={[styles.composer, { paddingBottom: insets.bottom + 8 }]}>
+          <View style={[styles.composer, { paddingBottom: composerBottomPad }]}>
             {ticket.status === "CLOSED" ? (
               <View style={styles.closedRow}>
                 <AppText style={styles.closedText}>
                   This ticket is closed. To get help again, raise a new ticket.
                 </AppText>
-                <TouchableOpacity style={styles.closedCta} onPress={() => router.push("/support/new")}>
+                <TouchableOpacity
+                  style={styles.closedCta}
+                  onPress={() =>
+                    router.push({ pathname: "/support", params: { newTicket: "1" } } as never)
+                  }
+                >
                   <AppText style={styles.closedCtaText}>Raise new</AppText>
                 </TouchableOpacity>
               </View>
             ) : (
               <>
-                <TouchableOpacity onPress={pickImage} style={styles.composerIconBtn} disabled={sending}>
-                  <Ionicons name="image-outline" size={22} color={GatiMitraColors.textSecondary} />
-                </TouchableOpacity>
-                <TextInput
-                  style={styles.composerInput}
-                  placeholder={ticket.status === "RESOLVED" ? "Reply to reopen…" : "Type your reply…"}
-                  placeholderTextColor={GatiMitraColors.textSecondary}
-                  value={draft}
-                  onChangeText={setDraft}
-                  multiline
-                  maxLength={5000}
-                  editable={!sending}
-                />
+                <View style={styles.waInputShell}>
+                  <TextInput
+                    ref={inputRef}
+                    style={styles.waInput}
+                    placeholder={ticket.status === "RESOLVED" ? "Reply to reopen…" : "Message"}
+                    placeholderTextColor="#94A3B8"
+                    value={draft}
+                    onChangeText={setDraft}
+                    multiline
+                    maxLength={5000}
+                    blurOnSubmit={false}
+                    onFocus={() => {
+                      requestAnimationFrame(() => scrollRef.current?.scrollToEnd({ animated: true }));
+                    }}
+                  />
+                  <View style={styles.waInputDivider} />
+                  <TouchableOpacity
+                    onPress={pickFromGallery}
+                    style={styles.waInputIconBtn}
+                    disabled={attachmentsAtMax}
+                    hitSlop={8}
+                  >
+                    <Ionicons
+                      name="attach-outline"
+                      size={22}
+                      color={attachmentsAtMax ? "#CBD5E1" : "#64748B"}
+                    />
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    onPress={pickFromCamera}
+                    style={styles.waInputIconBtn}
+                    disabled={attachmentsAtMax}
+                    hitSlop={8}
+                  >
+                    <Ionicons
+                      name="camera-outline"
+                      size={22}
+                      color={attachmentsAtMax ? "#CBD5E1" : "#64748B"}
+                    />
+                  </TouchableOpacity>
+                </View>
                 <TouchableOpacity
-                  onPress={
-                    ticket.status === "RESOLVED" ? () => void reopen().then(sendMessage) : sendMessage
-                  }
-                  disabled={!canSend}
-                  style={[styles.sendBtn, !canSend && styles.sendBtnDisabled]}
+                  onPress={() => {
+                    if (canSend) {
+                      if (ticket.status === "RESOLVED") {
+                        void reopen().then(sendMessage);
+                        return;
+                      }
+                      void sendMessage();
+                      return;
+                    }
+                    if (!attachmentsAtMax) void pickFromCamera();
+                  }}
+                  disabled={sending || (attachmentsAtMax && !canSend)}
+                  style={[
+                    styles.waSendBtn,
+                    canSend ? styles.waSendBtnActive : styles.waSendBtnIdle,
+                    (sending || (attachmentsAtMax && !canSend)) && styles.waSendBtnDisabled,
+                  ]}
                 >
                   {sending ? (
                     <ActivityIndicator color="#fff" size="small" />
-                  ) : (
+                  ) : canSend ? (
                     <Ionicons name="send" size={18} color="#fff" />
+                  ) : (
+                    <Ionicons name="camera" size={20} color="#fff" />
                   )}
                 </TouchableOpacity>
               </>
@@ -626,8 +914,14 @@ export default function TicketDetailScreen() {
         </>
       )}
 
-        </KeyboardAvoidingView>
+        </ChatShell>
       </View>
+      <ChatImageViewerModal
+        visible={viewerUri != null}
+        uris={chatImageUris.length > 0 ? chatImageUris : viewerUri ? [viewerUri] : []}
+        initialUri={viewerUri}
+        onClose={() => setViewerUri(null)}
+      />
     </>
   );
 }
@@ -637,11 +931,13 @@ function MessageBubble({
   mine,
   showSender = true,
   tightTop = false,
+  onImagePress,
 }: {
   message: TicketMessage;
   mine: boolean;
   showSender?: boolean;
   tightTop?: boolean;
+  onImagePress?: (uri: string) => void;
 }) {
   const senderType = String(message.sender_type || "").toUpperCase();
   if (senderType === "SYSTEM") {
@@ -651,11 +947,158 @@ function MessageBubble({
       </View>
     );
   }
+
   const attachments = (Array.isArray(message.attachments) ? message.attachments : [])
     .map(resolveAttachmentUrl)
     .filter((a): a is { name: string; url: string; isImage: boolean } => !!a);
-  const bodyText = formatTicketMessageText(message.message_text);
+  const rawText = formatTicketMessageText(message.message_text);
+  const bodyText =
+    rawText && rawText.trim() !== "(attachment)" && rawText.trim() !== "(Attachment)"
+      ? rawText
+      : "";
+  const imageAttachments = attachments.filter((a) => a.isImage);
+  const fileAttachments = attachments.filter((a) => !a.isImage);
+  const timestamp = formatTime(message.created_at);
 
+  const rowProps = (index: number, isFirstInGroup: boolean) => ({
+    mine,
+    showSender: !mine && showSender && isFirstInGroup,
+    tightTop: tightTop || (!isFirstInGroup && index > 0),
+  });
+
+  const renderTimestamp = (isLast: boolean, onImage = false) =>
+    isLast ? (
+      <AppText
+        style={[
+          styles.timestamp,
+          mine && styles.timestampMine,
+          onImage && styles.timestampOnImage,
+          onImage && mine && styles.timestampOnImageMine,
+        ]}
+      >
+        {timestamp}
+      </AppText>
+    ) : null;
+
+  type BubblePart =
+    | { kind: "text" }
+    | { kind: "image"; attachment: { name: string; url: string; isImage: boolean } }
+    | { kind: "files" };
+
+  const parts: BubblePart[] = [];
+  if (bodyText) parts.push({ kind: "text" });
+  imageAttachments.forEach((attachment) => parts.push({ kind: "image", attachment }));
+  if (fileAttachments.length > 0) parts.push({ kind: "files" });
+
+  if (parts.length === 0) return null;
+
+  return (
+    <>
+      {parts.map((part, idx) => {
+        const isFirst = idx === 0;
+        const isLast = idx === parts.length - 1;
+        const row = rowProps(idx, isFirst);
+
+        if (part.kind === "text") {
+          return (
+            <MessageBubbleRow key={`text-${idx}`} {...row}>
+              <View style={[styles.bubble, mine ? styles.bubbleMine : styles.bubbleTheirs]}>
+                {!mine && showSender && isFirst ? (
+                  <AppText style={styles.supportLabel}>Support</AppText>
+                ) : null}
+                <AppText
+                  style={[
+                    styles.bubbleText,
+                    mine && styles.bubbleTextMine,
+                    !mine && styles.bubbleTextTheirs,
+                  ]}
+                >
+                  {bodyText}
+                </AppText>
+                {renderTimestamp(isLast)}
+              </View>
+            </MessageBubbleRow>
+          );
+        }
+
+        if (part.kind === "image") {
+          return (
+            <MessageBubbleRow key={`img-${idx}-${part.attachment.url}`} {...row}>
+              <View
+                style={[
+                  styles.bubble,
+                  styles.bubbleImageOnly,
+                  mine ? styles.bubbleMine : styles.bubbleTheirs,
+                ]}
+              >
+                <TouchableOpacity
+                  activeOpacity={0.92}
+                  onPress={() =>
+                    onImagePress ? onImagePress(part.attachment.url) : Linking.openURL(part.attachment.url)
+                  }
+                >
+                  <Image
+                    source={{ uri: part.attachment.url }}
+                    style={styles.bubbleImage}
+                    resizeMode="cover"
+                  />
+                </TouchableOpacity>
+                {renderTimestamp(isLast, true)}
+              </View>
+            </MessageBubbleRow>
+          );
+        }
+
+        return (
+          <MessageBubbleRow key={`files-${idx}`} {...row}>
+            <View style={[styles.bubble, mine ? styles.bubbleMine : styles.bubbleTheirs]}>
+              {!mine && showSender && isFirst ? (
+                <AppText style={styles.supportLabel}>Support</AppText>
+              ) : null}
+              <View style={styles.attachmentsInline}>
+                {fileAttachments.map((a, i) => (
+                  <TouchableOpacity
+                    key={i}
+                    onPress={() => Linking.openURL(a.url)}
+                    style={[
+                      styles.attachmentInlineFile,
+                      mine && { backgroundColor: "rgba(20, 83, 45, 0.08)" },
+                    ]}
+                  >
+                    <Ionicons
+                      name="document-attach"
+                      size={18}
+                      color={mine ? MINE_BUBBLE_TEXT : GatiMitraColors.emerald}
+                    />
+                    <AppText
+                      style={[styles.attachmentInlineFileText, mine && { color: MINE_BUBBLE_TEXT }]}
+                      numberOfLines={1}
+                    >
+                      {a.name}
+                    </AppText>
+                  </TouchableOpacity>
+                ))}
+              </View>
+              {renderTimestamp(isLast)}
+            </View>
+          </MessageBubbleRow>
+        );
+      })}
+    </>
+  );
+}
+
+function MessageBubbleRow({
+  mine,
+  showSender,
+  tightTop,
+  children,
+}: {
+  mine: boolean;
+  showSender: boolean;
+  tightTop: boolean;
+  children: React.ReactNode;
+}) {
   return (
     <View
       style={[
@@ -673,56 +1116,7 @@ function MessageBubble({
           <View style={styles.supportAvatarSpacer} />
         )
       ) : null}
-      <View style={[styles.bubble, mine ? styles.bubbleMine : styles.bubbleTheirs]}>
-        {!mine && showSender ? <AppText style={styles.supportLabel}>Support</AppText> : null}
-        {bodyText ? (
-          <AppText
-            style={[
-              styles.bubbleText,
-              mine && styles.bubbleTextMine,
-              !mine && styles.bubbleTextTheirs,
-            ]}
-          >
-            {bodyText}
-          </AppText>
-        ) : null}
-        {attachments.length > 0 && (
-          <View style={styles.attachmentsInline}>
-            {attachments.map((a, i) =>
-              a.isImage ? (
-                <TouchableOpacity key={i} onPress={() => Linking.openURL(a.url)}>
-                  <Image source={{ uri: a.url }} style={styles.attachmentInlineImage} />
-                </TouchableOpacity>
-              ) : (
-                <TouchableOpacity
-                  key={i}
-                  onPress={() => Linking.openURL(a.url)}
-                  style={[
-                    styles.attachmentInlineFile,
-                    mine && { backgroundColor: "rgba(255,255,255,0.18)" },
-                  ]}
-                >
-                  <Ionicons
-                    name="document-attach"
-                    size={18}
-                    color={mine ? "#fff" : GatiMitraColors.emerald}
-                  />
-                  <AppText
-                    style={[
-                      styles.attachmentInlineFileText,
-                      mine && { color: "#fff" },
-                    ]}
-                    numberOfLines={1}
-                  >
-                    {a.name}
-                  </AppText>
-                </TouchableOpacity>
-              )
-            )}
-          </View>
-        )}
-        <AppText style={[styles.timestamp, mine && styles.timestampMine]}>{formatTime(message.created_at)}</AppText>
-      </View>
+      {children}
     </View>
   );
 }
@@ -731,7 +1125,7 @@ const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: "#F5F5F5" },
   navHeader: {
     flexDirection: "row",
-    alignItems: "center",
+    alignItems: "flex-start",
     paddingHorizontal: 12,
     paddingBottom: 10,
     backgroundColor: "#fff",
@@ -741,12 +1135,15 @@ const styles = StyleSheet.create({
   navSide: { width: 40, alignItems: "flex-start" },
   navTitle: {
     flex: 1,
-    textAlign: "center",
-    fontSize: 17,
-    fontWeight: "700",
+    textAlign: "left",
+    fontSize: 16,
+    fontFamily: StoreFonts.loraBold,
     color: TEXT,
+    lineHeight: 21,
+    paddingRight: 8,
   },
-  container: { flex: 1, backgroundColor: GatiMitraColors.softBackground },
+  navBadge: { alignSelf: "flex-start", marginTop: 2 },
+  container: { flex: 1, backgroundColor: "#ECEFF1" },
   centered: { flex: 1, justifyContent: "center", alignItems: "center", padding: 20, backgroundColor: "#F5F5F5" },
   errText: { color: GatiMitraColors.textSecondary, marginBottom: 12 },
   retryBtn: {
@@ -773,25 +1170,13 @@ const styles = StyleSheet.create({
   },
   headerBody: {
     flex: 1,
-    padding: 12,
-    paddingLeft: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
   },
-  headerTop: { flexDirection: "row", alignItems: "flex-start", gap: 8 },
-  headerIconWrap: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: "#ECFDF5",
-    alignItems: "center",
-    justifyContent: "center",
-    marginTop: 1,
-  },
-  headerSubject: { flex: 1, fontSize: 15, fontWeight: "700", color: TEXT, lineHeight: 20 },
   headerMeta: {
     flexDirection: "row",
     alignItems: "center",
     flexWrap: "wrap",
-    marginTop: 10,
     gap: 6,
   },
   ticketIdPill: {
@@ -800,7 +1185,7 @@ const styles = StyleSheet.create({
     paddingVertical: 4,
     borderRadius: 6,
   },
-  ticketIdText: { fontSize: 11, color: MUTED, fontWeight: "700" },
+  ticketIdText: { fontSize: 11, fontFamily: StoreFonts.poppinsBold, color: MUTED },
   orderLinkedPill: {
     flexDirection: "row",
     alignItems: "center",
@@ -810,22 +1195,27 @@ const styles = StyleSheet.create({
     paddingVertical: 4,
     borderRadius: 6,
   },
-  orderLinkedText: { fontSize: 11, color: GREEN, fontWeight: "700" },
+  orderLinkedText: { fontSize: 11, fontFamily: StoreFonts.loraBold, color: GREEN },
   badge: { paddingHorizontal: 8, paddingVertical: 4, borderRadius: 8 },
-  badgeText: { fontSize: 10, fontWeight: "800", textTransform: "uppercase", letterSpacing: 0.4 },
+  badgeText: {
+    fontSize: 10,
+    fontFamily: StoreFonts.poppinsBold,
+    textTransform: "uppercase",
+    letterSpacing: 0.4,
+  },
   live: { flexDirection: "row", alignItems: "center", gap: 4, marginLeft: "auto" },
   liveOn: {},
   liveOff: { opacity: 0.6 },
   liveDot: { width: 8, height: 8, borderRadius: 4 },
   liveDotOn: { backgroundColor: "#15803d" },
   liveDotOff: { backgroundColor: "#9ca3af" },
-  liveText: { fontSize: 11, color: GatiMitraColors.textSecondary, fontWeight: "600" },
+  liveText: { fontSize: 11, fontFamily: StoreFonts.loraBold, color: GatiMitraColors.textSecondary },
   thread: { flex: 1 },
   row: { width: "100%", marginBottom: 10, flexDirection: "row", alignItems: "flex-end" },
-  rowMine: { justifyContent: "flex-end" },
-  rowTheirs: { justifyContent: "flex-start", gap: 6 },
+  rowMine: { justifyContent: "flex-end", paddingRight: 6 },
+  rowTheirs: { justifyContent: "flex-start", gap: 6, paddingRight: 8 },
   /** Pulls the bubble closer to the previous one when we suppress the avatar+label. */
-  rowTight: { marginBottom: 3 },
+  rowTight: { marginBottom: 3, marginTop: -2 },
   /** Small circular icon next to support replies — generic, never shows the agent's name. */
   supportAvatar: {
     width: 26,
@@ -839,12 +1229,28 @@ const styles = StyleSheet.create({
   /** Invisible placeholder to keep follow-up bubbles aligned with the streak's first bubble. */
   supportAvatarSpacer: { width: 26, height: 1 },
   bubble: {
-    maxWidth: "78%",
+    maxWidth: "76%",
     borderRadius: 14,
     paddingHorizontal: 12,
     paddingVertical: 8,
   },
-  bubbleMine: { backgroundColor: GREEN, borderBottomRightRadius: 4 },
+  bubbleMine: {
+    backgroundColor: MINE_BUBBLE_BG,
+    borderBottomRightRadius: 4,
+    borderWidth: 1,
+    borderColor: "#BBF7D0",
+  },
+  bubbleImageOnly: {
+    padding: 0,
+    overflow: "hidden",
+    borderRadius: 10,
+  },
+  bubbleImage: {
+    width: 216,
+    height: 216,
+    borderRadius: 9,
+    backgroundColor: "#e5e7eb",
+  },
   bubbleTheirs: {
     backgroundColor: "#fff",
     borderBottomLeftRadius: 4,
@@ -854,19 +1260,45 @@ const styles = StyleSheet.create({
   /** Generic "Support" label above agent messages — never shows the agent's personal name. */
   supportLabel: {
     fontSize: 11,
-    fontWeight: "800",
+    fontFamily: StoreFonts.loraBold,
     color: GREEN,
     marginBottom: 3,
     letterSpacing: 0.2,
   },
-  bubbleText: { fontSize: 14, color: GatiMitraColors.textPrimary, lineHeight: 21 },
-  bubbleTextMine: { color: "#fff" },
+  bubbleText: { fontSize: 14, fontFamily: StoreFonts.loraRegular, color: GatiMitraColors.textPrimary, lineHeight: 21 },
+  bubbleTextMine: { color: MINE_BUBBLE_TEXT },
   bubbleTextTheirs: { color: "#1f2937" },
-  timestamp: { fontSize: 10, color: GatiMitraColors.textSecondary, marginTop: 4, alignSelf: "flex-end" },
-  timestampMine: { color: "#e0f2f1" },
+  timestamp: {
+    fontSize: 10,
+    fontFamily: StoreFonts.poppinsSemiBold,
+    color: GatiMitraColors.textSecondary,
+    marginTop: 4,
+    alignSelf: "flex-end",
+  },
+  timestampMine: { color: MINE_BUBBLE_TIME, opacity: 0.72 },
+  timestampOnImage: {
+    position: "absolute",
+    right: 8,
+    bottom: 8,
+    marginTop: 0,
+    alignSelf: "auto",
+    backgroundColor: "rgba(15, 23, 42, 0.52)",
+    color: "#fff",
+    opacity: 1,
+    paddingHorizontal: 7,
+    paddingVertical: 3,
+    borderRadius: 8,
+    overflow: "hidden",
+  },
+  timestampOnImageMine: {
+    backgroundColor: "rgba(20, 83, 45, 0.58)",
+    color: "#fff",
+    opacity: 1,
+  },
   systemRow: { width: "100%", alignItems: "center", paddingVertical: 6 },
   systemText: {
     fontSize: 11,
+    fontFamily: StoreFonts.loraRegular,
     color: GatiMitraColors.textSecondary,
     backgroundColor: "#f1f5f9",
     paddingHorizontal: 10,
@@ -898,24 +1330,31 @@ const styles = StyleSheet.create({
   },
   resolvedText: { flex: 1, fontSize: 12, color: "#15803d", fontWeight: "600" },
   attachmentsRow: {
-    paddingHorizontal: 14,
+    paddingHorizontal: 10,
     paddingVertical: 8,
-    backgroundColor: "#fff",
-    borderTopWidth: 1,
-    borderTopColor: GatiMitraColors.border,
-    maxHeight: 80,
+    backgroundColor: "#ECEFF1",
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: "#D8DEE4",
+    maxHeight: 92,
   },
   attachmentTile: {
-    width: 60,
-    height: 60,
-    borderRadius: 10,
-    backgroundColor: "#f1f5f9",
+    width: 72,
+    height: 72,
+    borderRadius: 12,
+    backgroundColor: "#fff",
     marginRight: 8,
     position: "relative",
     overflow: "hidden",
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "#D8DEE4",
   },
   attachmentImage: { width: "100%", height: "100%" },
-  attachmentFile: { flex: 1, alignItems: "center", justifyContent: "center" },
+  attachmentUploadOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(15, 23, 42, 0.42)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
   attachmentRemove: {
     position: "absolute",
     top: 2,
@@ -930,35 +1369,68 @@ const styles = StyleSheet.create({
   composer: {
     flexDirection: "row",
     alignItems: "flex-end",
-    padding: 10,
+    paddingHorizontal: 8,
+    paddingTop: 8,
     gap: 8,
-    backgroundColor: "#fff",
-    borderTopWidth: 1,
-    borderTopColor: GatiMitraColors.border,
+    backgroundColor: "#ECEFF1",
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: "#D8DEE4",
   },
-  composerIconBtn: { padding: 8 },
-  composerInput: {
+  waInputShell: {
     flex: 1,
-    minHeight: 40,
-    maxHeight: 120,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    backgroundColor: "#f8fafc",
-    borderRadius: 18,
-    borderWidth: 1,
-    borderColor: GatiMitraColors.border,
-    color: GatiMitraColors.textPrimary,
-    fontSize: 15,
+    flexDirection: "row",
+    alignItems: "flex-end",
+    minHeight: 44,
+    maxHeight: 132,
+    backgroundColor: "#fff",
+    borderRadius: 24,
+    paddingLeft: 14,
+    paddingRight: 4,
+    paddingVertical: 4,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "#E2E8F0",
   },
-  sendBtn: {
-    backgroundColor: GREEN,
-    width: 40,
-    height: 40,
-    borderRadius: 20,
+  waInput: {
+    flex: 1,
+    minHeight: 36,
+    maxHeight: 120,
+    paddingVertical: 8,
+    paddingRight: 4,
+    color: GatiMitraColors.textPrimary,
+    fontSize: 16,
+    fontFamily: StoreFonts.loraRegular,
+  },
+  waInputDivider: {
+    width: StyleSheet.hairlineWidth,
+    alignSelf: "stretch",
+    backgroundColor: "#E2E8F0",
+    marginVertical: 10,
+    marginHorizontal: 2,
+  },
+  waInputIconBtn: {
+    width: 36,
+    height: 36,
     alignItems: "center",
     justifyContent: "center",
+    marginBottom: 1,
   },
-  sendBtnDisabled: { opacity: 0.5 },
+  waSendBtn: {
+    width: 46,
+    height: 46,
+    borderRadius: 23,
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 1,
+  },
+  waSendBtnActive: {
+    backgroundColor: GatiMitraColors.emerald,
+  },
+  waSendBtnIdle: {
+    backgroundColor: GatiMitraColors.emerald,
+  },
+  waSendBtnDisabled: {
+    opacity: 0.45,
+  },
   closedRow: {
     flex: 1,
     flexDirection: "row",

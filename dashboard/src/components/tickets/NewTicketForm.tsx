@@ -12,8 +12,14 @@ const CATEGORY_OPTIONS = [
   { value: "other", label: "Other" },
 ];
 
-export function NewTicketForm() {
+interface NewTicketFormProps {
+  variant?: "page" | "sidesheet";
+  onClose?: () => void;
+}
+
+export function NewTicketForm({ variant = "page", onClose }: NewTicketFormProps) {
   const router = useRouter();
+  const isSideSheet = variant === "sidesheet";
   const { data: refData, isLoading: loading, isError, error: queryError } = useTicketsReferenceDataQuery();
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -65,6 +71,7 @@ export function NewTicketForm() {
       const json = await res.json();
       if (!res.ok) throw new Error(json?.error || "Failed to create ticket");
       const ticketId = json?.data?.ticket?.id;
+      onClose?.();
       if (ticketId) router.push(`/dashboard/tickets/${ticketId}`, { scroll: false });
       else router.push("/dashboard/tickets", { scroll: false });
     } catch (e) {
@@ -82,31 +89,8 @@ export function NewTicketForm() {
     );
   }
 
-  return (
-    <div className="mx-auto max-w-2xl">
-      <div className="mb-6 flex items-center gap-3">
-        <Link
-          href="/dashboard/tickets"
-          scroll={false}
-          className="flex items-center gap-1.5 text-sm font-medium text-gray-600 hover:text-gray-900"
-        >
-          <ArrowLeft className="h-4 w-4" />
-          Back to tickets
-        </Link>
-      </div>
-      <div className="rounded-2xl border border-gray-200 bg-white shadow-sm overflow-hidden">
-        <div className="border-b border-gray-200 bg-gradient-to-r from-amber-50 to-orange-50 px-6 py-5">
-          <div className="flex items-center gap-3">
-            <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-amber-100 text-amber-700">
-              <Ticket className="h-6 w-6" />
-            </div>
-            <div>
-              <h1 className="text-xl font-semibold text-gray-900">Create new ticket</h1>
-              <p className="text-sm text-gray-600 mt-0.5">Add a support ticket for a customer, rider, or merchant.</p>
-            </div>
-          </div>
-        </div>
-        <form onSubmit={handleSubmit} className="p-6 space-y-6">
+  const formContent = (
+        <form onSubmit={handleSubmit} className={isSideSheet ? "space-y-4" : "p-6 space-y-6"}>
           {displayError && (
             <div className="rounded-lg bg-red-50 px-4 py-3 text-sm text-red-800 border border-red-200">
               {displayError}
@@ -238,11 +222,15 @@ export function NewTicketForm() {
             </label>
           </div>
 
-          <div className="flex flex-wrap items-center gap-3 pt-2 border-t border-gray-200">
+          <div className={`flex flex-wrap items-center gap-3 ${isSideSheet ? "pt-3" : "pt-2 border-t border-gray-200"}`}>
             <button
               type="submit"
               disabled={submitting || !form.subject.trim() || !form.description.trim()}
-              className="inline-flex items-center gap-2 rounded-xl bg-amber-600 px-5 py-2.5 text-sm font-medium text-white shadow-sm hover:bg-amber-700 focus:outline-none focus:ring-2 focus:ring-amber-500 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed"
+              className={`inline-flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-medium text-white focus:outline-none focus:ring-2 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed ${
+                isSideSheet
+                  ? "bg-[#121212] hover:bg-black focus:ring-[#121212]"
+                  : "rounded-xl bg-amber-600 px-5 py-2.5 shadow-sm hover:bg-amber-700 focus:ring-amber-500"
+              }`}
             >
               {submitting ? (
                 <>
@@ -253,15 +241,56 @@ export function NewTicketForm() {
                 "Create ticket"
               )}
             </button>
-            <Link
-              href="/dashboard/tickets"
-              scroll={false}
-              className="rounded-xl border border-gray-300 bg-white px-5 py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-50"
-            >
-              Cancel
-            </Link>
+            {isSideSheet ? (
+              <button
+                type="button"
+                onClick={onClose}
+                className="rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
+              >
+                Cancel
+              </button>
+            ) : (
+              <Link
+                href="/dashboard/tickets"
+                scroll={false}
+                className="rounded-xl border border-gray-300 bg-white px-5 py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-50"
+              >
+                Cancel
+              </Link>
+            )}
           </div>
         </form>
+  );
+
+  if (isSideSheet) {
+    return formContent;
+  }
+
+  return (
+    <div className="mx-auto max-w-2xl">
+      <div className="mb-6 flex items-center gap-3">
+        <Link
+          href="/dashboard/tickets"
+          scroll={false}
+          className="flex items-center gap-1.5 text-sm font-medium text-gray-600 hover:text-gray-900"
+        >
+          <ArrowLeft className="h-4 w-4" />
+          Back to tickets
+        </Link>
+      </div>
+      <div className="rounded-2xl border border-gray-200 bg-white shadow-sm overflow-hidden">
+        <div className="border-b border-gray-200 bg-gradient-to-r from-amber-50 to-orange-50 px-6 py-5">
+          <div className="flex items-center gap-3">
+            <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-amber-100 text-amber-700">
+              <Ticket className="h-6 w-6" />
+            </div>
+            <div>
+              <h1 className="text-xl font-semibold text-gray-900">Create new ticket</h1>
+              <p className="text-sm text-gray-600 mt-0.5">Add a support ticket for a customer, rider, or merchant.</p>
+            </div>
+          </div>
+        </div>
+        {formContent}
       </div>
     </div>
   );

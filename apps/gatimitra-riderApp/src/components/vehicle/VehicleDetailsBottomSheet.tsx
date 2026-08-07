@@ -6,7 +6,7 @@ import { BlockingBottomSheetShell } from "@/src/components/vehicle/BlockingBotto
 import { VehicleDetailsForm } from "@/src/components/vehicle/VehicleDetailsForm";
 import { useUpsertRiderVehicle } from "@/src/hooks/useRiderVehicle";
 import { extractApiErrorMessage } from "@/src/services/http";
-import type { RiderVehicleDto, RiderVehicleOnboardingPrefill } from "@/src/hooks/useRiderVehicle";
+import type { RiderVehicleDto, RiderVehicleFormMeta, RiderVehicleOnboardingPrefill } from "@/src/hooks/useRiderVehicle";
 import { colors } from "@/src/theme";
 
 const TEAL = colors.primary[600];
@@ -14,6 +14,7 @@ const TEAL = colors.primary[600];
 type VehicleDetailsBottomSheetProps = {
   visible: boolean;
   initial?: RiderVehicleDto | null;
+  formMeta?: RiderVehicleFormMeta | null;
   onboardingVehicleChoice?: string | null;
   onboardingVehicleCategoryCode?: string | null;
   onboardingPrefill?: RiderVehicleOnboardingPrefill | null;
@@ -23,6 +24,7 @@ type VehicleDetailsBottomSheetProps = {
 export function VehicleDetailsBottomSheet({
   visible,
   initial,
+  formMeta,
   onboardingVehicleChoice,
   onboardingVehicleCategoryCode,
   onboardingPrefill,
@@ -31,6 +33,7 @@ export function VehicleDetailsBottomSheet({
   const { t } = useTranslation();
   const upsert = useUpsertRiderVehicle();
   const [apiError, setApiError] = useState<string | null>(null);
+  const isCompact = formMeta?.formMode === "cashfree_missing_only";
 
   return (
     <BlockingBottomSheetShell visible={visible}>
@@ -41,19 +44,27 @@ export function VehicleDetailsBottomSheet({
         </View>
         <View style={styles.headerText}>
           <Text style={styles.title}>
-            {t("vehicle.sheet.title", "Complete vehicle details")}
+            {isCompact
+              ? t("vehicle.sheet.titleCompact", "Complete remaining details")
+              : t("vehicle.sheet.title", "Complete vehicle details")}
           </Text>
           <Text style={styles.subtitle}>
-            {t(
-              "vehicle.sheet.subtitle",
-              "Required before you can go online. This cannot be skipped.",
-            )}
+            {isCompact
+              ? t(
+                  "vehicle.sheet.subtitleCompact",
+                  "Your RC is verified. Confirm the details below to go online.",
+                )
+              : t(
+                  "vehicle.sheet.subtitle",
+                  "Required before you can go online. This cannot be skipped.",
+                )}
           </Text>
         </View>
       </View>
 
       <VehicleDetailsForm
         initial={initial}
+        formMeta={formMeta}
         onboardingVehicleChoice={onboardingVehicleChoice}
         onboardingVehicleCategoryCode={onboardingVehicleCategoryCode}
         onboardingPrefill={onboardingPrefill}

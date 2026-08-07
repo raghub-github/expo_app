@@ -92,11 +92,20 @@ export async function resolveOrderDeliveryDetails(
       : {};
 
   let deliveryAddressLabel = readString(meta, "addressLabel", "address_label");
-  let deliveryContactName = readString(meta, "receiverContactName", "receiver_contact_name", "contactName");
+  let deliveryContactName = readString(
+    meta,
+    "receiverContactName",
+    "receiver_contact_name",
+    "receiverName",
+    "receiver_name",
+    "contactName"
+  );
   let deliveryContactPhone = readString(
     meta,
     "receiverContactMobile",
     "receiver_contact_mobile",
+    "receiverMobile",
+    "receiver_mobile",
     "contactMobile"
   );
 
@@ -144,6 +153,12 @@ export async function resolveOrderDeliveryDetails(
       }
     }
   }
+
+  // Parcel receiver / food primary snapshot — prefer over customer-profile fallback.
+  const primaryName = input.deliveryPrimaryContactName?.trim() || null;
+  const primaryPhone = input.deliveryPrimaryContactPhone?.trim() || null;
+  if (primaryName) deliveryContactName = deliveryContactName ?? primaryName;
+  if (primaryPhone) deliveryContactPhone = deliveryContactPhone ?? primaryPhone;
 
   if ((!deliveryContactName || !deliveryContactPhone) && input.customerPk != null) {
     const [customerRow] = await db

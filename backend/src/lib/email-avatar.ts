@@ -17,6 +17,11 @@ export function getGravatarUrl(email: string, size = 256): string {
 }
 
 /** Stored or resolved URLs that are not a real user photo. */
+export function isCustomProfileUploadUrl(url: string | null | undefined): boolean {
+  if (!url?.trim()) return false;
+  return url.trim().toLowerCase().includes("/attachments/proxy");
+}
+
 export function isGenericProfileImageUrl(url: string | null | undefined): boolean {
   if (!url?.trim()) return true;
   const u = url.trim().toLowerCase();

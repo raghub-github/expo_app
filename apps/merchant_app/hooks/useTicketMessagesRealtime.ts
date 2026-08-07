@@ -1,19 +1,20 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import type { RealtimeChannel } from "@supabase/supabase-js";
 import { getSupabaseAuth } from "@/lib/supabaseClient";
+import { applySupabaseRealtimeAuth } from "@/lib/supabaseRealtimeAuth";
 
 const DEBOUNCE_MS = 180;
 
 /**
- * Postgres changes on `ticket_<numericId>` — same topic/filters as dashboard `useTicketRoomRealtime`.
- * Triggers a debounced refetch so new agent messages appear without waiting for the slow poll.
+ * Postgres changes on `ticket_<numericId>` — debounced refetch for instant agent replies.
  */
 export function useTicketMessagesRealtime(options: {
   ticketNumericId: number | null;
   enabled: boolean;
+  authToken: string | null;
   onMessagesStale: () => void;
 }) {
-  const { ticketNumericId, enabled, onMessagesStale } = options;
+  const { ticketNumericId, enabled, authToken, onMessagesStale } = options;
   const [postgresLive, setPostgresLive] = useState(false);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const onStaleRef = useRef(onMessagesStale);
@@ -38,6 +39,8 @@ export function useTicketMessagesRealtime(options: {
       setPostgresLive(false);
       return;
     }
+
+    applySupabaseRealtimeAuth(supabase, authToken);
 
     const topic = `ticket_${ticketNumericId}`;
     const filterTicket = `ticket_id=eq.${ticketNumericId}`;
@@ -103,7 +106,7 @@ export function useTicketMessagesRealtime(options: {
       setPostgresLive(false);
       void supabase.removeChannel(channel);
     };
-  }, [enabled, ticketNumericId, schedule]);
+  }, [enabled, ticketNumericId, authToken, schedule]);
 
   return { postgresLive };
 }

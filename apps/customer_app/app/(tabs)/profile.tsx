@@ -5,22 +5,30 @@
 import { useCallback, useMemo, useState, useEffect } from "react";
 import { AppText } from "@/components/AppText";
 
-import { View, ScrollView, TouchableOpacity, StyleSheet, Alert, Pressable } from "react-native";
+import { View, ScrollView, TouchableOpacity, StyleSheet, Alert, Pressable, ActivityIndicator } from "react-native";
 import { Image } from "expo-image";
+import * as ImagePicker from "expo-image-picker";
 import { useAppSafeAreaInsets } from "@/hooks/useAppSafeAreaInsets";
 import { useFocusEffect, useRouter } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import { useTranslation } from "react-i18next";
 import * as Clipboard from "expo-clipboard";
+import { useQueryClient } from "@tanstack/react-query";
 import { BrandingFooter } from "@/components/BrandingFooter";
 import { shareReferralCode } from "@/lib/referralShare";
-import { buildEmailAvatarCandidates } from "@/lib/emailAvatar";
+import { isCustomProfileUploadUrl } from "@/lib/emailAvatar";
+import { getNameInitials } from "@/lib/nameInitials";
 import { useProfile } from "@/hooks/useProfile";
 import { useCurrentSubscription } from "@/hooks/useCustomerSubscription";
 import { GmitraPlusMembershipSheet } from "@/components/profile/GmitraPlusMembershipSheet";
+import { ProfilePhotoSourceSheet } from "@/components/profile/ProfilePhotoSourceSheet";
+import { ProfilePhotoViewerSheet } from "@/components/profile/ProfilePhotoViewerSheet";
 import { useScreenChromeStore } from "@/store/screenChromeStore";
 import { STATUS_BAR_TO_HEADER_GAP } from "@/constants/layout";
+import { profileService, type UserProfile } from "@/services/profile.service";
+import { invalidateProfileCache, PROFILE_QUERY_KEY, writeCachedProfile } from "@/lib/profileCache";
+import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
 
 import { GatiMitraColors } from "@/constants/gatimitra";
 
@@ -33,13 +41,6 @@ const PAGE_BG = "#F3F4F6";
 const GOLD = "#F59E0B";
 const GOLD_SOFT = "#FEF3C7";
 
-function getInitials(name: string): string {
-  const parts = name.trim().split(/\s+/).filter(Boolean);
-  if (parts.length >= 2) return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
-  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
-  return "GM";
-}
-
 type MenuItem = {
   id: string;
   label: string;
@@ -51,6 +52,7 @@ type MenuItem = {
 export default function ProfileScreen() {
   const { t } = useTranslation();
   const router = useRouter();
+  const queryClient = useQueryClient();
   const insets = useAppSafeAreaInsets();
   const hideStatusBarSpacer = useScreenChromeStore((s) => s.hideStatusBarSpacer);
   // Root spacer owns safe-top when present; only pad when immersive left it off.
@@ -69,7 +71,7 @@ export default function ProfileScreen() {
   );
 
   const displayName = profile?.full_name?.trim() || t("common.customer");
-  const initials = useMemo(() => getInitials(displayName), [displayName]);
+  const initials = useMemo(() => getNameInitials(displayName), [displayName]);
   const email = profile?.email?.trim() || null;
   const lifetimeSavingsDisplay = useMemo(() => {
     const amount = profile?.lifetime_savings_inr ?? 0;
@@ -80,14 +82,19 @@ export default function ProfileScreen() {
   const customerId = profile?.customer_id ?? profile?.user_id ?? null;
   const isEmailVerified = profile?.is_email_verified ?? false;
   const profileImageUrl = profile?.profile_image_url?.trim() || null;
-  const showEmailAvatar = isEmailVerified && !!email;
+  const hasCustomUpload = isCustomProfileUploadUrl(profileImageUrl);
   const avatarCandidates = useMemo(() => {
-    if (!showEmailAvatar || !email) return [];
-    return buildEmailAvatarCandidates(email, profileImageUrl);
-  }, [showEmailAvatar, email, profileImageUrl]);
+    if (!hasCustomUpload || !profileImageUrl) return [];
+    const abs = toAbsoluteImageUrl(profileImageUrl);
+    return abs ? [abs] : [];
+  }, [hasCustomUpload, profileImageUrl]);
   const [avatarIndex, setAvatarIndex] = useState(0);
   const [membershipSheetVisible, setMembershipSheetVisible] = useState(false);
+  const [photoSourceSheetVisible, setPhotoSourceSheetVisible] = useState(false);
+  const [photoViewerVisible, setPhotoViewerVisible] = useState(false);
+  const [uploadingPhoto, setUploadingPhoto] = useState(false);
   const avatarUri = avatarCandidates[avatarIndex] ?? null;
+  const showAvatarImage = !!avatarUri;
   const subscriptionActive = subscriptionStatus?.active ?? profile?.gmitra_plus_active ?? false;
   const subscriptionPlanName =
     subscriptionStatus?.subscription?.planName ??
@@ -104,6 +111,80 @@ export default function ProfileScreen() {
       return current;
     });
   }, [avatarCandidates.length]);
+
+  const pickProfilePhoto = useCallback(
+    async (source: "camera" | "library") => {
+      try {
+        const perm =
+          source === "camera"
+            ? await ImagePicker.requestCameraPermissionsAsync()
+            : await ImagePicker.requestMediaLibraryPermissionsAsync();
+        if (!perm.granted) {
+          Alert.alert("Permission needed", "Allow access to update your profile photo.");
+          return;
+        }
+
+        const res =
+          source === "camera"
+            ? await ImagePicker.launchCameraAsync({
+                mediaTypes: ImagePicker.MediaTypeOptions.Images,
+                allowsEditing: true,
+                aspect: [1, 1],
+                quality: 0.85,
+              })
+            : await ImagePicker.launchImageLibraryAsync({
+                mediaTypes: ImagePicker.MediaTypeOptions.Images,
+                allowsEditing: true,
+                aspect: [1, 1],
+                quality: 0.85,
+              });
+
+        if (res.canceled || !res.assets?.[0]?.uri) return;
+
+        const asset = res.assets[0];
+        const name = asset.fileName ?? `profile-${Date.now()}.jpg`;
+        const mimeType = asset.mimeType ?? "image/jpeg";
+
+        setUploadingPhoto(true);
+        const { profile_image_url } = await profileService.uploadProfileImage({
+          uri: asset.uri,
+          name,
+          mimeType,
+        });
+
+        queryClient.setQueryData<UserProfile>(PROFILE_QUERY_KEY, (prev) => {
+          if (!prev || typeof prev !== "object") return prev;
+          const next = { ...prev, profile_image_url };
+          void writeCachedProfile(next);
+          return next;
+        });
+        setAvatarIndex(0);
+        void invalidateProfileCache(queryClient);
+      } catch (err) {
+        Alert.alert(
+          "Upload failed",
+          err instanceof Error ? err.message : "Could not upload profile photo. Try again."
+        );
+      } finally {
+        setUploadingPhoto(false);
+      }
+    },
+    [queryClient]
+  );
+
+  const handleChangePhoto = useCallback(() => {
+    if (uploadingPhoto) return;
+    setPhotoSourceSheetVisible(true);
+  }, [uploadingPhoto]);
+
+  const handleAvatarPress = useCallback(() => {
+    if (uploadingPhoto) return;
+    if (showAvatarImage) {
+      setPhotoViewerVisible(true);
+      return;
+    }
+    setPhotoSourceSheetVisible(true);
+  }, [uploadingPhoto, showAvatarImage]);
 
   const copyToClipboard = useCallback(async (text: string, label: string) => {
     if (!text) return;
@@ -180,22 +261,44 @@ export default function ProfileScreen() {
         <View style={[styles.profileCard, { marginTop: profileTopPad }]}>
           <View style={styles.profileCardBody}>
             <View style={styles.identityRow}>
-              <View style={styles.avatar}>
-                {showEmailAvatar && avatarUri ? (
-                  <Image
-                    source={{ uri: avatarUri }}
-                    style={styles.avatarImage}
-                    contentFit="cover"
-                    transition={200}
-                    cachePolicy="memory-disk"
-                    onError={handleAvatarError}
-                  />
-                ) : (
-                  <AppText style={styles.avatarText}>{initials}</AppText>
-                )}
-                {isEmailVerified ? (
+              <View style={styles.avatarWrap}>
+                <Pressable
+                  style={styles.avatar}
+                  onPress={handleAvatarPress}
+                  disabled={uploadingPhoto}
+                  accessibilityRole="button"
+                  accessibilityLabel={showAvatarImage ? "View profile photo" : "Change profile photo"}
+                >
+                  {showAvatarImage ? (
+                    <Image
+                      source={{ uri: avatarUri }}
+                      style={styles.avatarImage}
+                      contentFit="cover"
+                      transition={200}
+                      cachePolicy="memory-disk"
+                      onError={handleAvatarError}
+                    />
+                  ) : (
+                    <AppText style={styles.avatarText}>{initials}</AppText>
+                  )}
+                </Pressable>
+                <Pressable
+                  style={styles.avatarCameraBadge}
+                  onPress={handleChangePhoto}
+                  disabled={uploadingPhoto}
+                  hitSlop={6}
+                  accessibilityRole="button"
+                  accessibilityLabel="Change profile photo"
+                >
+                  {uploadingPhoto ? (
+                    <ActivityIndicator size="small" color="#fff" />
+                  ) : (
+                    <Ionicons name="camera" size={11} color="#fff" />
+                  )}
+                </Pressable>
+                {isEmailVerified && !showAvatarImage ? (
                   <View style={styles.avatarVerifiedDot}>
-                    <Ionicons name="checkmark" size={10} color="#fff" />
+                    <Ionicons name="checkmark" size={9} color="#fff" />
                   </View>
                 ) : null}
               </View>
@@ -339,6 +442,21 @@ export default function ProfileScreen() {
         }
         onBrowseRestaurants={() => router.push("/(tabs)")}
       />
+
+      <ProfilePhotoSourceSheet
+        visible={photoSourceSheetVisible}
+        hasPhoto={hasCustomUpload && showAvatarImage}
+        onClose={() => setPhotoSourceSheetVisible(false)}
+        onPickCamera={() => void pickProfilePhoto("camera")}
+        onPickGallery={() => void pickProfilePhoto("library")}
+        onViewPhoto={() => setPhotoViewerVisible(true)}
+      />
+
+      <ProfilePhotoViewerSheet
+        visible={photoViewerVisible}
+        imageUri={avatarUri}
+        onClose={() => setPhotoViewerVisible(false)}
+      />
     </View>
   );
 }
@@ -356,6 +474,11 @@ const styles = StyleSheet.create({
   },
   profileCardBody: { padding: 16, paddingBottom: 14 },
   identityRow: { flexDirection: "row", alignItems: "center", gap: 14 },
+  avatarWrap: {
+    width: 68,
+    height: 68,
+    position: "relative",
+  },
   avatar: {
     width: 64,
     height: 64,
@@ -366,21 +489,37 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "#BBF7D0",
     overflow: "hidden",
-    position: "relative",
+    marginTop: 2,
+    marginLeft: 2,
   },
   avatarImage: { width: 64, height: 64, borderRadius: 32 },
   avatarVerifiedDot: {
     position: "absolute",
+    top: 0,
     right: 0,
-    bottom: 0,
-    width: 18,
-    height: 18,
+    width: 17,
+    height: 17,
     borderRadius: 9,
     backgroundColor: GREEN,
     alignItems: "center",
     justifyContent: "center",
     borderWidth: 2,
     borderColor: "#fff",
+    zIndex: 3,
+  },
+  avatarCameraBadge: {
+    position: "absolute",
+    bottom: 0,
+    left: 0,
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    backgroundColor: GREEN_DARK,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 2,
+    borderColor: "#fff",
+    zIndex: 3,
   },
   avatarText: { fontSize: 22, fontWeight: "800", color: GREEN_DARK },
   identityBody: { flex: 1 },

@@ -54,6 +54,7 @@ import {
   isRideAwaitingPickupStatus,
   isTerminalOrderStatus,
   normalizeCustomerOrderStatus,
+  isParcelOrder,
 } from "@/lib/customer-order-status-display";
 import {
   customerSupportChatTopicsQueryKey,
@@ -65,6 +66,7 @@ import { RideOrderDeliveredScreen } from "@/components/ride/RideOrderDeliveredSc
 import { RideFarePaymentPendingScreen } from "@/components/ride/RideFarePaymentPendingScreen";
 import { isRideFarePaymentPending } from "@/lib/ride-fare-gate";
 import { FoodLiveTrackingScreen } from "@/components/orders/FoodLiveTrackingScreen";
+import { ParcelLiveTrackingScreen } from "@/components/orders/ParcelLiveTrackingScreen";
 import { FoodOrderDeliveredScreen } from "@/components/orders/FoodOrderDeliveredScreen";
 import { InvoiceDownloadingToast } from "@/components/orders/InvoiceDownloadingToast";
 import {
@@ -76,6 +78,7 @@ import {
   HOME_TAB_FALLBACK,
   RIDE_HOME_FALLBACK,
   FOOD_HOME_FALLBACK,
+  PARCEL_HOME_FALLBACK,
 } from "@/lib/safeRouterBack";
 import { buildRideSearchingResumeParams } from "@/lib/person-ride-orders";
 import { getRideOrderStatus, isRideCaptainAssigned } from "@/services/rideBooking.service";
@@ -126,8 +129,8 @@ function formatMoney(value: number) {
   return `₹${value.toFixed(2)}`;
 }
 
-/** iOS swipe-back / stack POP → food home (not checkout). */
-function FoodOrderTrackingBackGuard() {
+/** iOS swipe-back / stack POP → matching service home (not checkout). */
+function LiveTrackingBackGuard({ fallback }: { fallback: typeof FOOD_HOME_FALLBACK | typeof PARCEL_HOME_FALLBACK }) {
   const router = useRouter();
   const navigation = useNavigation();
 
@@ -136,10 +139,10 @@ function FoodOrderTrackingBackGuard() {
       const type = e.data.action.type;
       if (type !== "GO_BACK" && type !== "POP") return;
       e.preventDefault();
-      router.replace(FOOD_HOME_FALLBACK);
+      router.replace(fallback);
     });
     return unsub;
-  }, [navigation, router]);
+  }, [navigation, router, fallback]);
 
   return null;
 }
@@ -154,6 +157,9 @@ export default function OrderDetailsScreen() {
   const handleFoodTrackingBack = useCallback(() => {
     router.replace(FOOD_HOME_FALLBACK);
   }, [router]);
+  const handleParcelTrackingBack = useCallback(() => {
+    router.replace(PARCEL_HOME_FALLBACK);
+  }, [router]);
   const queryClient = useQueryClient();
   const { id, rate, view, returnTo } = useLocalSearchParams<{
     id: string;
@@ -162,6 +168,7 @@ export default function OrderDetailsScreen() {
     returnTo?: string;
   }>();
   const openedFromRideHome = returnTo === "ride";
+  const openedFromParcelHome = returnTo === "parcel";
   const handleRideHomeBack = useCallback(() => {
     router.replace(RIDE_HOME_FALLBACK);
   }, [router]);
@@ -324,8 +331,13 @@ export default function OrderDetailsScreen() {
     if (status === "DELIVERED" || status === "CANCELLED") {
       removeActiveOrder(order.orderId);
     } else {
-      const etaMins = resolveLiveEtaMinutes(etaData) ?? 20;
-      updateOrderStatus(order.orderId, status as import("@/store/orderStore").OrderStatus, etaMins);
+      const etaMins = resolveLiveEtaMinutes(etaData);
+      // Never invent a default ETA (was hardcoding 20) — especially wrong while searching for a captain.
+      updateOrderStatus(
+        order.orderId,
+        status as import("@/store/orderStore").OrderStatus,
+        etaMins != null && etaMins > 0 ? etaMins : 0
+      );
     }
   }, [order?.status, order?.orderId, etaData, updateOrderStatus, removeActiveOrder]);
 
@@ -591,6 +603,13 @@ export default function OrderDetailsScreen() {
 
   const displayOrderId = order.formattedOrderId ?? order.orderId;
   const isRideOrder = isPersonRideOrder(order);
+  const isParcelDeliveryOrder = isParcelOrder(order) || openedFromParcelHome;
+  const liveTrackingHomeFallback = isParcelDeliveryOrder
+    ? PARCEL_HOME_FALLBACK
+    : FOOD_HOME_FALLBACK;
+  const handleLiveTrackingBack = isParcelDeliveryOrder
+    ? handleParcelTrackingBack
+    : handleFoodTrackingBack;
   const isRideSearching =
     isRideOrder &&
     isPersonRideSearchingStatus(order, order.status) &&
@@ -620,6 +639,26 @@ export default function OrderDetailsScreen() {
           etaMinutes={liveEtaMins}
           onBack={handleRideTrackingBack}
           onOpenSupport={handleOpenHelp}
+        />
+      </>
+    );
+  }
+
+  // Parcel live tracking — food-style courier layout (not person-ride sheet).
+  if (isParcelDeliveryOrder && isInProgress) {
+    return (
+      <>
+        <AndroidBackHandler fallback={PARCEL_HOME_FALLBACK} preferFallback />
+        <LiveTrackingBackGuard fallback={PARCEL_HOME_FALLBACK} />
+        <ParcelLiveTrackingScreen
+          order={order}
+          tracking={tracking}
+          etaMinutes={liveEtaMins}
+          onBack={handleParcelTrackingBack}
+          onOpenHelp={handleOpenHelp}
+          onOrderCancelled={() => {
+            void queryClient.invalidateQueries({ queryKey: ["order", orderId] });
+          }}
         />
       </>
     );
@@ -672,8 +711,8 @@ export default function OrderDetailsScreen() {
     const storeId = order.merchantPublicStoreId;
     return (
       <>
-        <AndroidBackHandler fallback={FOOD_HOME_FALLBACK} preferFallback />
-        <FoodOrderTrackingBackGuard />
+        <AndroidBackHandler fallback={liveTrackingHomeFallback} preferFallback />
+        <LiveTrackingBackGuard fallback={liveTrackingHomeFallback} />
         <FoodLiveTrackingScreen
           order={order}
           tracking={tracking}
@@ -682,7 +721,7 @@ export default function OrderDetailsScreen() {
           merchantDelayed={merchantDelayed}
           etaUpdated={etaUpdated}
           etaContextLabel={etaContextLabel}
-          onBack={handleFoodTrackingBack}
+          onBack={handleLiveTrackingBack}
           onOpenHelp={handleOpenHelp}
           onOpenMerchant={() => {
             if (storeId) router.push(`/home/merchant/${storeId}`);

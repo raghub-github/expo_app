@@ -17,6 +17,7 @@ import {
   ticketPresenceRealtimeTopic,
 } from "@/lib/tickets/ticket-realtime-topics";
 import { hydrateBrowserSupabaseFromCookies } from "@/lib/auth/hydrate-browser-supabase";
+import { patchTicketFromPostgresRow } from "@/lib/tickets/patch-ticket-list-cache";
 
 /** Batch rapid postgres_events into one refetch (status + multi-message bursts). */
 const INVALIDATE_DEBOUNCE_MS = 160;
@@ -63,14 +64,14 @@ export function useTicketRoomRealtime(options: {
       debounceRef.current = null;
       void queryClient.invalidateQueries({
         queryKey: queryKeys.tickets.detail(ticketCacheId),
-        refetchType: "active",
+        refetchType: "all",
       });
       void queryClient.invalidateQueries({
         queryKey: queryKeys.tickets.activities(ticketCacheId),
-        refetchType: "active",
+        refetchType: "all",
       });
-      void queryClient.invalidateQueries({ queryKey: queryKeys.tickets.lists() });
-      void queryClient.invalidateQueries({ queryKey: queryKeys.tickets.helpdeskDashboard() });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.tickets.lists(), refetchType: "all" });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.tickets.helpdeskDashboard(), refetchType: "all" });
     }, INVALIDATE_DEBOUNCE_MS);
   }, [queryClient, ticketCacheId]);
 
@@ -167,7 +168,13 @@ export function useTicketRoomRealtime(options: {
             table: "unified_tickets",
             filter: filterRow,
           },
-          scheduleInvalidate
+          (payload) => {
+            const row = payload.new as Record<string, unknown> | null;
+            if (row && typeof row === "object") {
+              patchTicketFromPostgresRow(queryClient, row);
+            }
+            scheduleInvalidate();
+          }
         );
 
       ch.subscribe((status) => {
@@ -321,6 +328,18 @@ export function useTicketRoomRealtime(options: {
 
     return () => window.clearInterval(id);
   }, [ticketNumericId, ticketCacheId, syncState, queryClient]);
+
+  /** Safety net: poll even when Realtime shows SUBSCRIBED (RLS/publication gaps used to stall updates). */
+  useEffect(() => {
+    if (ticketNumericId == null || !Number.isInteger(ticketNumericId) || ticketNumericId < 1) return;
+    if (syncState !== "live") return;
+
+    const id = window.setInterval(() => {
+      scheduleInvalidate();
+    }, TICKET_ROOM_FALLBACK_POLL_MS);
+
+    return () => window.clearInterval(id);
+  }, [ticketNumericId, syncState, scheduleInvalidate]);
 
   return { syncState, copresenceLive, distinctRoleCount, otherAgentViewers };
 }

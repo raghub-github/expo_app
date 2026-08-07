@@ -44,18 +44,19 @@ const RIDE_LIVE: Record<string, { step: number; title: string; body: string }> =
   RIDE_COMPLETED: { step: 6, title: "Ride Completed", body: "Please rate your ride" },
 };
 
-/** Parcel: Accepted → Rider on way → Picked up → Nearby → Delivered */
+/** Parcel: Accepted → On way → At pickup → Picked up → Nearby → Delivered */
 const PARCEL_LIVE: Record<string, { step: number; title: string; body: string }> = {
-  PARCEL_ACCEPTED: { step: 1, title: "Parcel Accepted", body: "Being prepared" },
+  PARCEL_ACCEPTED: { step: 1, title: "Parcel Accepted", body: "Looking for a captain" },
   PARCEL_RIDER_ON_THE_WAY: { step: 2, title: "Rider On The Way", body: "Collecting your parcel" },
-  PARCEL_PICKED_UP: { step: 3, title: "Parcel Picked Up", body: "On the way" },
-  PARCEL_RIDER_NEARBY: { step: 4, title: "Rider Nearby", body: "Please be ready" },
-  PARCEL_DELIVERED: { step: 5, title: "Parcel Delivered", body: "Delivered successfully" },
+  PARCEL_RIDER_AT_PICKUP: { step: 3, title: "Rider at Pickup", body: "Share pickup PIN" },
+  PARCEL_PICKED_UP: { step: 4, title: "Parcel Picked Up", body: "On the way" },
+  PARCEL_RIDER_NEARBY: { step: 5, title: "Rider Nearby", body: "Share delivery OTP" },
+  PARCEL_DELIVERED: { step: 6, title: "Parcel Delivered", body: "Delivered successfully" },
 };
 
 const FOOD_LIVE_STEPS = 5;
 const RIDE_LIVE_STEPS = 6;
-const PARCEL_LIVE_STEPS = 5;
+const PARCEL_LIVE_STEPS = 6;
 
 async function customerUserIdForOrderIdText(orderIdText: string): Promise<string | null> {
   const sql = getSql();
@@ -94,6 +95,24 @@ export async function deliveryOtpForOrderIdText(orderIdText: string): Promise<st
     LIMIT 1
   `;
   const otp = rows[0]?.delivery_otp?.trim() ?? "";
+  if (!otp) return null;
+  const digits = otp.replace(/\D/g, "");
+  if (!digits) return null;
+  return digits.length >= 4 ? digits.slice(-4) : digits.padStart(4, "0");
+}
+
+/** Resolve 4-digit pickup OTP for customer-facing arrival notification. */
+export async function pickupOtpForOrderIdText(orderIdText: string): Promise<string | null> {
+  const sql = getSql();
+  const rows = await sql<{ pickup_otp: string | null }[]>`
+    SELECT NULLIF(TRIM(oc.pickup_otp), '') AS pickup_otp
+    FROM orders_core oc
+    WHERE oc.order_id = ${orderIdText}
+       OR oc.formatted_order_id = ${orderIdText}
+       OR oc.id::text = ${orderIdText}
+    LIMIT 1
+  `;
+  const otp = rows[0]?.pickup_otp?.trim() ?? "";
   if (!otp) return null;
   const digits = otp.replace(/\D/g, "");
   if (!digits) return null;
@@ -139,9 +158,11 @@ function foodLiveMeta(
 function rideLiveMeta(
   templateCode: string,
   orderId: string,
-  captainName: string
+  captainName: string,
+  pickupOtp?: string | null
 ): LiveProgressMeta | Record<string, unknown> {
   const live = RIDE_LIVE[templateCode];
+  const otp = pickupOtp?.trim() || null;
   if (!live) {
     return {
       gmType: templateCode,
@@ -152,28 +173,37 @@ function rideLiveMeta(
       liveBody: captainName,
       liveStep: 1,
       liveSteps: RIDE_LIVE_STEPS,
+      ...(otp ? { pickupOtp: otp } : {}),
     };
   }
+  const bodyWithOtp =
+    otp && (templateCode === "RIDE_RIDER_NEARBY" || templateCode === "RIDE_RIDER_ARRIVED")
+      ? `${live.body} · PIN ${otp}`
+      : live.body;
   return {
     gmLiveProgress: true,
     liveService: "ride",
     liveStep: live.step,
     liveSteps: RIDE_LIVE_STEPS,
     liveTitle: live.title,
-    liveBody: live.body.includes("Captain") || live.body.includes("rider")
-      ? live.body
-      : `${live.body}${captainName ? ` · ${captainName}` : ""}`,
+    liveBody: bodyWithOtp.includes("Captain") || bodyWithOtp.includes("rider")
+      ? bodyWithOtp
+      : `${bodyWithOtp}${captainName ? ` · ${captainName}` : ""}`,
     orderId,
     gmType: templateCode,
+    ...(otp ? { pickupOtp: otp } : {}),
   };
 }
 
 function parcelLiveMeta(
   templateCode: string,
   orderId: string,
-  riderName: string
+  riderName: string,
+  opts?: { deliveryOtp?: string | null; pickupOtp?: string | null }
 ): LiveProgressMeta | Record<string, unknown> {
   const live = PARCEL_LIVE[templateCode];
+  const deliveryOtp = opts?.deliveryOtp?.trim() || null;
+  const pickupOtp = opts?.pickupOtp?.trim() || null;
   if (!live) {
     return {
       gmType: templateCode,
@@ -184,7 +214,15 @@ function parcelLiveMeta(
       liveBody: riderName,
       liveStep: 1,
       liveSteps: PARCEL_LIVE_STEPS,
+      ...(deliveryOtp ? { deliveryOtp } : {}),
+      ...(pickupOtp ? { pickupOtp } : {}),
     };
+  }
+  let bodyWithOtp = live.body;
+  if (pickupOtp && templateCode === "PARCEL_RIDER_AT_PICKUP") {
+    bodyWithOtp = `${live.body} · PIN ${pickupOtp}`;
+  } else if (deliveryOtp && templateCode === "PARCEL_RIDER_NEARBY") {
+    bodyWithOtp = `${live.body} · OTP ${deliveryOtp}`;
   }
   return {
     gmLiveProgress: true,
@@ -192,9 +230,11 @@ function parcelLiveMeta(
     liveStep: live.step,
     liveSteps: PARCEL_LIVE_STEPS,
     liveTitle: live.title,
-    liveBody: riderName && live.step >= 2 ? `${live.body} · ${riderName}` : live.body,
+    liveBody: riderName && live.step >= 2 ? `${bodyWithOtp} · ${riderName}` : bodyWithOtp,
     orderId,
     gmType: templateCode,
+    ...(deliveryOtp ? { deliveryOtp } : {}),
+    ...(pickupOtp ? { pickupOtp } : {}),
   };
 }
 
@@ -228,6 +268,8 @@ export async function notifyCustomerFoodLifecycle(args: {
         ? await deliveryOtpForOrderIdText(args.orderIdText)
         : null);
 
+    // OTP copy is sent via CUSTOMER_DELIVERY_OTP_NEARBY (radius helper).
+    // Stage ORDER_RIDER_ARRIVING stays progress-only to avoid duplicate OTP pushes.
     await sendNotification({
       templateCode: args.templateCode,
       variables: {
@@ -235,17 +277,16 @@ export async function notifyCustomerFoodLifecycle(args: {
         orderShortId,
         merchantName: args.merchantName?.trim() || "Store",
         riderName,
+        rider_name: riderName,
         etaMinutes,
-        ...(args.templateCode === "ORDER_RIDER_ARRIVING"
-          ? { deliveryOtp: deliveryOtp || "your app OTP" }
-          : {}),
       },
       target: { user_id: customerId },
       idempotencyKey: `${args.templateCode}:${args.orderIdText}`,
       metadata: foodLiveMeta(args.templateCode, args.orderIdText, {
         etaMinutes,
         storeName: args.merchantName,
-        deliveryOtp,
+        deliveryOtp:
+          args.templateCode === "ORDER_RIDER_ARRIVING" ? null : deliveryOtp,
       }),
     });
   } catch (err) {
@@ -261,6 +302,8 @@ export async function notifyCustomerRideLifecycle(args: {
   templateCode: string;
   riderId?: number | null;
   captainName?: string | null;
+  includePickupOtp?: boolean;
+  pickupOtp?: string | null;
 }): Promise<void> {
   try {
     const customerId = await customerUserIdForOrderIdText(args.orderIdText);
@@ -270,6 +313,11 @@ export async function notifyCustomerRideLifecycle(args: {
       args.captainName?.trim() ||
       (args.riderId != null ? await riderDisplayName(args.riderId) : "Your rider");
 
+    const wantsPickupOtp = args.includePickupOtp === true;
+    const pickupOtp =
+      args.pickupOtp?.trim() ||
+      (wantsPickupOtp ? await pickupOtpForOrderIdText(args.orderIdText) : null);
+
     await sendNotification({
       templateCode: args.templateCode,
       variables: {
@@ -278,11 +326,15 @@ export async function notifyCustomerRideLifecycle(args: {
         captainName,
         // ORDER_RIDER_ASSIGNED (and food-parity templates) use {{riderName}}.
         riderName: captainName,
+        rider_name: captainName,
         riderId: args.riderId != null ? String(args.riderId) : "",
+        ...(wantsPickupOtp && pickupOtp
+          ? { pickupOtp, pickup_otp: pickupOtp }
+          : {}),
       },
       target: { user_id: customerId },
       idempotencyKey: `${args.templateCode}:${args.orderIdText}`,
-      metadata: rideLiveMeta(args.templateCode, args.orderIdText, captainName),
+      metadata: rideLiveMeta(args.templateCode, args.orderIdText, captainName, pickupOtp),
     });
   } catch (err) {
     console.warn(
@@ -297,6 +349,11 @@ export async function notifyCustomerParcelLifecycle(args: {
   templateCode: string;
   riderId?: number | null;
   riderName?: string | null;
+  /** Attach delivery OTP only at drop-radius nearby stage. */
+  includeDeliveryOtp?: boolean;
+  deliveryOtp?: string | null;
+  includePickupOtp?: boolean;
+  pickupOtp?: string | null;
 }): Promise<void> {
   try {
     const customerId = await customerUserIdForOrderIdText(args.orderIdText);
@@ -306,16 +363,42 @@ export async function notifyCustomerParcelLifecycle(args: {
       args.riderName?.trim() ||
       (args.riderId != null ? await riderDisplayName(args.riderId) : "Your rider");
 
+    const wantsDeliveryOtp = args.includeDeliveryOtp === true;
+    const wantsPickupOtp = args.includePickupOtp === true;
+
+    const deliveryOtp =
+      args.deliveryOtp?.trim() ||
+      (wantsDeliveryOtp ? await deliveryOtpForOrderIdText(args.orderIdText) : null);
+    const pickupOtp =
+      args.pickupOtp?.trim() ||
+      (wantsPickupOtp ? await pickupOtpForOrderIdText(args.orderIdText) : null);
+
     await sendNotification({
       templateCode: args.templateCode,
       variables: {
         orderId: args.orderIdText,
         orderShortId: args.orderIdText,
         riderName,
+        rider_name: riderName,
+        ...(wantsDeliveryOtp
+          ? {
+              deliveryOtp: deliveryOtp || "your app OTP",
+              delivery_otp: deliveryOtp || "your app OTP",
+            }
+          : {}),
+        ...(wantsPickupOtp
+          ? {
+              pickupOtp: pickupOtp || "your app OTP",
+              pickup_otp: pickupOtp || "your app OTP",
+            }
+          : {}),
       },
       target: { user_id: customerId },
       idempotencyKey: `${args.templateCode}:${args.orderIdText}`,
-      metadata: parcelLiveMeta(args.templateCode, args.orderIdText, riderName),
+      metadata: parcelLiveMeta(args.templateCode, args.orderIdText, riderName, {
+        deliveryOtp,
+        pickupOtp,
+      }),
     });
   } catch (err) {
     console.warn(

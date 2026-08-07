@@ -5,14 +5,20 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { createServerSupabaseClient } from "@/lib/supabase/server";
 import {
   getUserPermissions,
   getUserDashboardAccess,
 } from "@/lib/permissions/engine";
 import { resolveSystemUserForSupabaseAuth } from "@/lib/auth/user-mapping";
 import { toPermissionKeys } from "@/lib/permissions/constants";
-import { isInvalidRefreshToken, isNetworkOrTransientError, isTimeoutOrAbortError, isRefreshTokenAlreadyUsed, signOutIfSessionDead } from "@/lib/auth/session-errors";
+import { getAuthenticatedApiUser, authFailureResponse } from "@/lib/auth/api-session";
+import {
+  isInvalidRefreshToken,
+  isNetworkOrTransientError,
+  isRefreshTokenAlreadyUsed,
+  signOutIfSessionDead,
+} from "@/lib/auth/session-errors";
+import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { getRedisClient } from "@/lib/redis";
 import { getDb } from "@/lib/db/client";
 import { dashboardAccessPoints } from "@/lib/db/schema";
@@ -20,8 +26,6 @@ import { and, eq } from "drizzle-orm";
 
 export const runtime = "nodejs";
 
-const maxGetUserAttempts = 3;
-const retryDelaysMs = [800, 1600];
 const BOOTSTRAP_CACHE_TTL_SECONDS = 60; // Redis TTL; in‑memory cache uses a shorter window
 const BOOTSTRAP_CACHE_TTL_MS = 10_000; // 10s — avoid duplicate work when client retries or multiple tabs
 const bootstrapCache = new Map<string, { body: unknown; ts: number }>();
@@ -78,58 +82,11 @@ const ALL_DASHBOARDS = [
 
 export async function GET(request: NextRequest) {
   try {
-    const supabase = await createServerSupabaseClient();
-
-    let user: { id: string; email?: string; [key: string]: unknown } | null = null;
-    let userError: unknown = null;
-
-    for (let attempt = 1; attempt <= maxGetUserAttempts; attempt++) {
-      try {
-        const result = await supabase.auth.getUser();
-        user = result.data?.user
-          ? { ...result.data.user, id: result.data.user.id, email: result.data.user.email }
-          : null;
-        userError = result.error ?? null;
-      } catch (err) {
-        user = null;
-        userError = err;
-      }
-
-      if (!userError && user) break;
-      if (userError && isInvalidRefreshToken(userError)) break;
-      if (userError && isTimeoutOrAbortError(userError)) break;
-      if (userError && isNetworkOrTransientError(userError) && attempt < maxGetUserAttempts) {
-        await new Promise((r) => setTimeout(r, retryDelaysMs[attempt - 1] ?? 1000));
-        continue;
-      }
-      break;
+    const auth = await getAuthenticatedApiUser(request);
+    if (!auth.ok) {
+      return authFailureResponse(auth);
     }
-
-    if (userError || !user) {
-      if (userError && isInvalidRefreshToken(userError)) {
-        await signOutIfSessionDead(supabase, userError);
-        if (isRefreshTokenAlreadyUsed(userError)) {
-          return NextResponse.json(
-            { success: false, error: "Service temporarily unavailable", code: "SERVICE_UNAVAILABLE" },
-            { status: 503 }
-          );
-        }
-        return NextResponse.json(
-          { success: false, error: "Session invalid", code: "SESSION_INVALID" },
-          { status: 401 }
-        );
-      }
-      if (userError && isNetworkOrTransientError(userError)) {
-        return NextResponse.json(
-          { success: false, error: "Service temporarily unavailable", code: "SERVICE_UNAVAILABLE" },
-          { status: 503 }
-        );
-      }
-      return NextResponse.json(
-        { success: false, error: "Not authenticated", code: "SESSION_REQUIRED" },
-        { status: 401 }
-      );
-    }
+    const user = auth.user;
 
     const cached = await getCachedBootstrap(user.id);
     if (cached) return NextResponse.json(cached);

@@ -461,6 +461,10 @@ export function useTicketFilters() {
     () => countRestrictiveTicketFilters(appliedFilters),
     [appliedFilters]
   );
+  const hasPendingFilterChanges = useMemo(
+    () => buildSearchParams(filters).toString() !== buildSearchParams(appliedFilters).toString(),
+    [filters, appliedFilters]
+  );
 
   return {
     /** Draft filters (form state) - use in filter panel */
@@ -483,5 +487,7 @@ export function useTicketFilters() {
     activeFilterCount,
     /** Restrictive filters currently in the URL (after Apply). For empty list messaging. */
     appliedTicketFilterCount,
+    /** True when draft filters differ from URL-applied filters */
+    hasPendingFilterChanges,
   };
 }

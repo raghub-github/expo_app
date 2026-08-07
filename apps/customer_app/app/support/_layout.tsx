@@ -7,13 +7,20 @@ export default function SupportLayout() {
       <AndroidBackHandler />
       <Stack
         screenOptions={{
-          headerShown: true,
-          headerBackTitle: "Back",
+          headerShown: false,
         }}
       >
-        <Stack.Screen name="index" options={{ headerShown: false }} />
-        <Stack.Screen name="new" options={{ title: "Raise a ticket" }} />
-        <Stack.Screen name="[ticketId]" options={{ headerShown: false }} />
+        <Stack.Screen name="index" />
+        <Stack.Screen name="raise" />
+        <Stack.Screen
+          name="new"
+          options={{
+            presentation: "transparentModal",
+            animation: "fade",
+            contentStyle: { backgroundColor: "transparent" },
+          }}
+        />
+        <Stack.Screen name="[ticketId]" />
       </Stack>
     </>
   );

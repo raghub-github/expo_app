@@ -82,6 +82,7 @@ export function TicketFilters({ variant = "sidebar", onClose, dark = false }: Ti
     clearFilters,
     activeFilterCount,
     appliedTicketFilterCount,
+    hasPendingFilterChanges,
     updateStatuses,
     updateServiceTypes,
     updatePriorities,
@@ -143,10 +144,11 @@ export function TicketFilters({ variant = "sidebar", onClose, dark = false }: Ti
   }, [searchKey]);
 
   const handleApplyFilters = useCallback(() => {
+    if (!hasPendingFilterChanges) return;
     setApplyBusy(true);
     applyFilters();
     window.setTimeout(() => setApplyBusy(false), 1500);
-  }, [applyFilters]);
+  }, [applyFilters, hasPendingFilterChanges]);
 
   /** Reference-style fields: flat white, thin neutral border, muted placeholder, no heavy shadow */
   const inputBase = dark
@@ -595,8 +597,12 @@ export function TicketFilters({ variant = "sidebar", onClose, dark = false }: Ti
         <button
           type="button"
           onClick={handleApplyFilters}
-          disabled={applyBusy}
-          className="flex w-full cursor-pointer items-center justify-center gap-2 rounded-[10px] border border-[#121212] bg-[#121212] px-3 py-2 text-[12px] font-semibold text-white shadow-none transition-colors disabled:cursor-not-allowed disabled:opacity-80 enabled:hover:bg-black"
+          disabled={applyBusy || !hasPendingFilterChanges}
+          className={`flex w-full items-center justify-center gap-2 rounded-[10px] px-3 py-2 text-[12px] font-semibold text-white transition-colors ${
+            applyBusy || !hasPendingFilterChanges
+              ? "cursor-not-allowed bg-[#121212]/40"
+              : "cursor-pointer bg-[#121212] hover:bg-black"
+          }`}
         >
           {applyBusy ? (
             <>

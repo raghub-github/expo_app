@@ -516,6 +516,7 @@ export async function customerSupportRoutes(app: FastifyInstance) {
           )
           AND (
             ${serviceType}::text IS NULL
+            OR tt.service_type::text = 'all'
             OR (
               ${serviceType} = 'person_ride'
               AND tt.service_type::text = 'person_ride'
@@ -652,7 +653,8 @@ export async function customerSupportRoutes(app: FastifyInstance) {
     const offset = Math.max(0, Number(req.query.offset) || 0);
     const sql = getSql();
     const rows = await sql`
-      SELECT oc.id, oc.order_id, oc.formatted_order_id, oc.status::text AS status, oc.current_status,
+      SELECT oc.id, oc.order_id, oc.formatted_order_id, oc.order_type::text AS order_type,
+             oc.status::text AS status, oc.current_status,
              oc.grand_total, oc.placed_at, oc.actual_delivery_time AS delivered_at,
            oc.cancelled_at,
              oc.merchant_store_id,

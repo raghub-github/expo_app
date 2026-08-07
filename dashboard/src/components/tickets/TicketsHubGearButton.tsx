@@ -35,7 +35,7 @@ export function TicketsHubGearButton() {
       aria-pressed={onTicketsHubPage}
       className={`inline-flex h-8 w-8 shrink-0 cursor-pointer items-center justify-center rounded-md border-2 border-transparent transition-[background-color,color] duration-200 ease-out motion-reduce:transition-none ${
         onTicketsHubPage
-          ? "bg-blue-600 text-white hover:bg-blue-700"
+          ? "bg-[#121212] text-white hover:bg-black"
           : "bg-transparent text-gray-600 hover:bg-gray-200/90 hover:text-gray-900"
       }`}
       title={onTicketsHubPage ? "Back to ticket list" : "Open GatiMitra Queue dashboard"}

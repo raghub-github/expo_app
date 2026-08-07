@@ -17,6 +17,10 @@ import { getMessaging, getToken, onMessage, type Messaging, type MessagePayload 
 let cachedApp: FirebaseApp | null = null;
 let cachedMessaging: Messaging | null = null;
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
 function config() {
   return {
     apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY,
@@ -51,6 +55,41 @@ function getMessagingSafe(): Messaging | null {
   }
 }
 
+async function waitForActiveServiceWorker(
+  registration: ServiceWorkerRegistration,
+  timeoutMs = 12_000,
+): Promise<ServiceWorkerRegistration | null> {
+  if (registration.active) return registration;
+
+  const ready = await Promise.race([
+    navigator.serviceWorker.ready.catch(() => null),
+    sleep(timeoutMs).then(() => null),
+  ]);
+  if (ready?.active) return ready;
+
+  return new Promise((resolve) => {
+    const deadline = window.setTimeout(() => resolve(null), timeoutMs);
+    const finish = (reg: ServiceWorkerRegistration | null) => {
+      window.clearTimeout(deadline);
+      resolve(reg?.active ? reg : null);
+    };
+
+    const worker = registration.installing ?? registration.waiting;
+    if (worker) {
+      worker.addEventListener("statechange", () => {
+        if (registration.active) finish(registration);
+      });
+    }
+
+    registration.addEventListener("updatefound", () => {
+      const next = registration.installing;
+      next?.addEventListener("statechange", () => {
+        if (registration.active) finish(registration);
+      });
+    });
+  });
+}
+
 export async function requestBrowserPushPermission(): Promise<NotificationPermission> {
   if (typeof window === "undefined" || !("Notification" in window)) return "denied";
   if (Notification.permission === "granted") return "granted";
@@ -58,64 +97,89 @@ export async function requestBrowserPushPermission(): Promise<NotificationPermis
   return Notification.requestPermission();
 }
 
-/**
- * Fetch the FCM token for this browser, then POST it to the backend so
- * NotificationService.sendToUser can reach this session.
- *
- * Backend endpoint: POST /api/notifications/browser-tokens
- * (partnersite proxy → /v1/notifications/browser-tokens)
- */
-export async function registerBrowserPushToken(_userId: string): Promise<string | null> {
+async function registerBrowserPushTokenOnce(_userId: string): Promise<string | null> {
   const messaging = getMessagingSafe();
   if (!messaging) return null;
   const vapidKey = process.env.NEXT_PUBLIC_FIREBASE_VAPID_KEY;
   if (!vapidKey) {
-    console.warn("[browser-push] NEXT_PUBLIC_FIREBASE_VAPID_KEY missing; run the Firebase Console → Cloud Messaging step (see docs/NOTIFICATION_ARCHITECTURE.md §8).");
+    console.warn(
+      "[browser-push] NEXT_PUBLIC_FIREBASE_VAPID_KEY missing; run the Firebase Console → Cloud Messaging step (see docs/NOTIFICATION_ARCHITECTURE.md §8).",
+    );
     return null;
   }
+
+  if (Notification.permission !== "granted") return null;
+
+  const registration = await navigator.serviceWorker.register("/firebase-messaging-sw.js", {
+    scope: "/",
+  });
+  const activeRegistration = await waitForActiveServiceWorker(registration);
+  if (!activeRegistration) {
+    console.warn("[browser-push] service worker did not become active in time");
+    return null;
+  }
+
+  const token = await getToken(messaging, {
+    vapidKey,
+    serviceWorkerRegistration: activeRegistration,
+  });
+  if (!token) return null;
+
+  let storeId: string | undefined;
   try {
-    const reg = await navigator.serviceWorker.register("/firebase-messaging-sw.js");
-    const token = await getToken(messaging, { vapidKey, serviceWorkerRegistration: reg });
-    if (!token) return null;
-    let storeId: string | undefined;
-    if (typeof window !== "undefined") {
-      try {
-        const { readPartnerSelectedStoreId } = await import("@/lib/partner-selected-store");
-        storeId = readPartnerSelectedStoreId() || undefined;
-      } catch {
-        storeId =
-          localStorage.getItem("selectedStoreId")?.trim() ||
-          localStorage.getItem("selectedRestaurantId")?.trim() ||
-          undefined;
-      }
-    }
-    // Send to backend (proxy will forward with the shared secret)
-    const res = await fetch("/api/notifications/browser-tokens", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      credentials: "include",
-      body: JSON.stringify({
-        token,
-        platform: "web",
-        store_id: storeId || undefined,
-        source: "partnersite",
-      }),
-    });
-    if (!res.ok) {
-      const text = await res.text().catch(() => "");
-      console.warn(
-        "[browser-push] register failed",
-        res.status,
-        text.slice(0, 200),
-      );
-      return null;
-    }
-    console.info("[browser-push] partnersite FCM token registered");
-    return token;
-  } catch (e) {
-    console.warn("[browser-push] getToken failed:", (e as Error).message);
+    const { readPartnerSelectedStoreId } = await import("@/lib/partner-selected-store");
+    storeId = readPartnerSelectedStoreId() || undefined;
+  } catch {
+    storeId =
+      localStorage.getItem("selectedStoreId")?.trim() ||
+      localStorage.getItem("selectedRestaurantId")?.trim() ||
+      undefined;
+  }
+
+  const res = await fetch("/api/notifications/browser-tokens", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify({
+      token,
+      platform: "web",
+      store_id: storeId || undefined,
+      source: "partnersite",
+    }),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    console.warn("[browser-push] register failed", res.status, text.slice(0, 200));
     return null;
   }
+
+  console.info("[browser-push] partnersite FCM token registered");
+  return token;
+}
+
+/**
+ * Fetch the FCM token for this browser, then POST it to the backend so
+ * NotificationService.sendToUser can reach this session.
+ */
+export async function registerBrowserPushToken(
+  userId: string,
+  options?: { retries?: number },
+): Promise<string | null> {
+  const retries = Math.max(1, options?.retries ?? 3);
+
+  for (let attempt = 0; attempt < retries; attempt += 1) {
+    try {
+      if (attempt > 0) {
+        await sleep(600 * attempt);
+      }
+      const token = await registerBrowserPushTokenOnce(userId);
+      if (token) return token;
+    } catch (e) {
+      console.warn("[browser-push] getToken failed:", (e as Error).message);
+    }
+  }
+
+  return null;
 }
 
 export function onBrowserPushForeground(cb: (payload: MessagePayload) => void): () => void {

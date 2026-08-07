@@ -69,25 +69,32 @@ function isInAppOnlyToken(token: string | null | undefined): boolean {
   return !token || token === IN_APP_ONLY_TOKEN;
 }
 
-/** Persist FCM outcome; purge terminal/invalid tokens once (no endless retry). */
+/** Persist FCM outcome; schedule retries for non-terminal failures; purge dead tokens. */
 async function finalizeFcmDelivery(
   notificationId: string,
   token: string | undefined,
   res: { ok: boolean; errorCode?: string; errorMessage?: string },
+  opts?: { maxRetries?: number },
 ): Promise<boolean> {
-  await updateLogStatus(notificationId, res.ok ? "delivered" : "failed", {
+  if (res.ok) {
+    await updateLogStatus(notificationId, "delivered");
+    return true;
+  }
+  const { markFailedWithRetrySchedule } = await import("./retryEngine.js");
+  await markFailedWithRetrySchedule({
+    notificationId,
     errorCode: res.errorCode,
     errorMessage: res.errorMessage,
+    maxRetries: opts?.maxRetries,
   });
   if (
-    !res.ok &&
     token &&
     !isInAppOnlyToken(token) &&
     isTerminalPushDeliveryError(res.errorCode, res.errorMessage)
   ) {
     void purgeInvalidPushTokens([token]);
   }
-  return res.ok;
+  return false;
 }
 
 function isRideCustomerPush(row: {
@@ -216,7 +223,10 @@ function pushDataForRow(row: CreateLogRow): Record<string, unknown> {
   };
 }
 
-async function dispatchExpoRow(row: CreateLogRow): Promise<boolean> {
+async function dispatchExpoRow(
+  row: CreateLogRow,
+  opts?: { maxRetries?: number; attempt?: number },
+): Promise<boolean> {
   const result = await deliverExpoPush({
     to: row.recipient.deviceToken,
     title: row.title,
@@ -226,12 +236,25 @@ async function dispatchExpoRow(row: CreateLogRow): Promise<boolean> {
     imageUrl: row.imageUrl ?? undefined,
     channelId: channelIdForRecipient(row.recipient, row.priority, row),
     sound: soundForRecipient(row.recipient, row),
+    dispatchLogId: row.notificationId,
+    templateCode: row.templateCode,
+    attempt: opts?.attempt ?? 0,
+    priority: row.priority,
   });
   if (!result.ok) {
-    await updateLogStatus(row.notificationId, "failed", {
+    const { markFailedWithRetrySchedule } = await import("./retryEngine.js");
+    await markFailedWithRetrySchedule({
+      notificationId: row.notificationId,
       errorCode: result.mode === "queued" ? "ENQUEUE_FAILED" : "EXPO_SEND_FAILED",
       errorMessage: result.error ?? "expo_send_failed",
+      maxRetries: opts?.maxRetries,
     });
+    if (
+      isTerminalPushDeliveryError(result.error, result.error) &&
+      row.recipient.deviceToken
+    ) {
+      void purgeInvalidPushTokens([row.recipient.deviceToken]);
+    }
     return false;
   }
   // Inline Expo acceptance ≈ provider accepted; queue path stays "sent" until worker reports.
@@ -434,11 +457,49 @@ async function sendImpl(intent: SendIntent): Promise<SendResult> {
   }
 
   // 4. Channel preferences (skip topic/direct-token synthetic recipients)
-  const realRecipients = recipients.filter((r) => r.userId !== "__topic__" && r.userId !== "__direct__");
+  let realRecipients = recipients.filter((r) => r.userId !== "__topic__" && r.userId !== "__direct__");
   const syntheticRecipients = recipients.filter((r) => r.userId === "__topic__" || r.userId === "__direct__");
+  let skipped = 0;
 
-  // No per-user rate limit — admins send campaigns whenever they choose.
-  // Transactional event volume is controlled upstream (idempotency keys), not here.
+  // Per-user rate limit for marketing / announcement (never blocks critical).
+  // Transactional event volume is controlled upstream (idempotency keys).
+  if (
+    effectivePriority !== "critical" &&
+    (template.category === "marketing" || template.category === "announcement") &&
+    !intent.bypassQuietHours
+  ) {
+    const rateLimit = (await readSetting<number>("rate_limit_per_user_per_hour")) ?? 20;
+    if (rateLimit > 0 && realRecipients.length > 0) {
+      const sql = getSql();
+      const filtered: typeof realRecipients = [];
+      const seenUsers = new Set<string>();
+      for (const r of realRecipients) {
+        if (seenUsers.has(r.userId)) {
+          filtered.push(r);
+          continue;
+        }
+        seenUsers.add(r.userId);
+        const [cnt] = (await sql`
+          SELECT COUNT(*)::int AS n
+          FROM public.notification_dispatch_logs
+          WHERE recipient_user_id = ${r.userId}
+            AND queued_at >= now() - interval '1 hour'
+            AND status NOT IN ('failed', 'expired')
+        `) as unknown as Array<{ n: number }>;
+        if ((cnt?.n ?? 0) >= rateLimit) {
+          skipped++;
+          continue;
+        }
+        filtered.push(r);
+      }
+      // Drop other tokens for rate-limited users.
+      const allowedUsers = new Set(filtered.map((r) => r.userId));
+      realRecipients = realRecipients.filter((r) => {
+        if (allowedUsers.has(r.userId)) return true;
+        return false;
+      });
+    }
+  }
 
   const masks = await resolveChannelMasks(
     realRecipients.map((r) => r.userId),
@@ -449,7 +510,6 @@ async function sendImpl(intent: SendIntent): Promise<SendResult> {
 
   // 5. Build log rows (audit-first), filtering by channel preference
   const logRows: CreateLogRow[] = [];
-  let skipped = 0;
   /** One in-app inbox row per user — multi-token fan-out must not multiply the badge. */
   const inAppEmittedForUser = new Set<string>();
   /**
@@ -530,6 +590,7 @@ async function sendImpl(intent: SendIntent): Promise<SendResult> {
 
   // 7. Dispatch — Expo Push for mobile push rows, FCM v1 for topic/direct/browser
   let queued = 0;
+  const maxRetries = Math.max(1, Number(template.retry_count) || 4);
   for (const row of logRows) {
     try {
       if (row.recipient.userId === "__topic__") {
@@ -555,13 +616,13 @@ async function sendImpl(intent: SendIntent): Promise<SendResult> {
           priority: row.priority as never,
           silent: template.silent,
         });
-        if (await finalizeFcmDelivery(row.notificationId, undefined, res)) queued++;
+        if (await finalizeFcmDelivery(row.notificationId, undefined, res, { maxRetries })) queued++;
         continue;
       }
       if (row.recipient.userId === "__direct__") {
         const isExpo = isExpoDeviceToken(row.recipient.deviceToken);
         if (isExpo) {
-          if (await dispatchExpoRow(row)) queued++;
+          if (await dispatchExpoRow(row, { maxRetries })) queued++;
           continue;
         }
         const res = await sendFcmV1({
@@ -579,7 +640,7 @@ async function sendImpl(intent: SendIntent): Promise<SendResult> {
           priority: row.priority as never,
           silent: template.silent,
         });
-        if (await finalizeFcmDelivery(row.notificationId, row.recipient.deviceToken, res)) queued++;
+        if (await finalizeFcmDelivery(row.notificationId, row.recipient.deviceToken, res, { maxRetries })) queued++;
         continue;
       }
 
@@ -598,7 +659,7 @@ async function sendImpl(intent: SendIntent): Promise<SendResult> {
           continue;
         }
         if (isExpoDeviceToken(token)) {
-          if (await dispatchExpoRow(row)) queued++;
+          if (await dispatchExpoRow(row, { maxRetries })) queued++;
           continue;
         }
 
@@ -631,7 +692,7 @@ async function sendImpl(intent: SendIntent): Promise<SendResult> {
           priority: row.priority as never,
           silent: template.silent,
         });
-        if (await finalizeFcmDelivery(row.notificationId, token, res)) queued++;
+        if (await finalizeFcmDelivery(row.notificationId, token, res, { maxRetries })) queued++;
         continue;
       }
       // Legacy "browser" log rows (if any) — only deliver for true web tokens, never Expo.
@@ -660,7 +721,7 @@ async function sendImpl(intent: SendIntent): Promise<SendResult> {
           priority: row.priority as never,
           silent: template.silent,
         });
-        if (await finalizeFcmDelivery(row.notificationId, token, res)) queued++;
+        if (await finalizeFcmDelivery(row.notificationId, token, res, { maxRetries })) queued++;
         continue;
       }
       if (row.channel === "in_app") {

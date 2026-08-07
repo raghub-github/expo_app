@@ -78,6 +78,7 @@ module.exports = {
             { scheme: "https", host: "gatimitra.com", pathPrefix: "/ref" },
             { scheme: "https", host: "gatimitra.com", pathPrefix: "/invite" },
             { scheme: "gatimitra", host: "address" },
+            { scheme: "gatimitra", host: "addr" },
             { scheme: "gatimitra", host: "referral" },
           ],
           category: ["BROWSABLE", "DEFAULT"],

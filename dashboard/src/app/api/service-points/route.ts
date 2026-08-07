@@ -1,8 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createServerSupabaseClient } from "@/lib/supabase/server";
+import { getAuthenticatedApiUser, authFailureResponse } from "@/lib/auth/api-session";
 import { isSuperAdmin } from "@/lib/permissions/engine";
 import { getSql } from "@/lib/db/client";
 import { apiErrorResponse } from "@/lib/api-errors";
+import { isTimeoutOrAbortError } from "@/lib/auth/session-errors";
 
 export const runtime = 'nodejs';
 
@@ -12,14 +13,9 @@ export const runtime = 'nodejs';
  */
 export async function GET(request: NextRequest) {
   try {
-    const supabase = await createServerSupabaseClient();
-    const { data: { user }, error: userError } = await supabase.auth.getUser();
-
-    if (userError || !user) {
-      return NextResponse.json(
-        { success: false, error: "Not authenticated" },
-        { status: 401 }
-      );
+    const auth = await getAuthenticatedApiUser(request);
+    if (!auth.ok) {
+      return authFailureResponse(auth);
     }
 
     const sql = getSql();
@@ -44,6 +40,12 @@ export async function GET(request: NextRequest) {
       data: servicePoints,
     });
   } catch (error) {
+    if (request.signal.aborted || isTimeoutOrAbortError(error)) {
+      return NextResponse.json(
+        { success: false, error: "Request aborted", code: "REQUEST_ABORTED" },
+        { status: 499 }
+      );
+    }
     console.error("[service-points API] Error:", error);
     const { body, status } = apiErrorResponse(error);
     return NextResponse.json(body, { status });
@@ -56,15 +58,11 @@ export async function GET(request: NextRequest) {
  */
 export async function POST(request: NextRequest) {
   try {
-    const supabase = await createServerSupabaseClient();
-    const { data: { user }, error: userError } = await supabase.auth.getUser();
-
-    if (userError || !user) {
-      return NextResponse.json(
-        { success: false, error: "Not authenticated" },
-        { status: 401 }
-      );
+    const auth = await getAuthenticatedApiUser(request);
+    if (!auth.ok) {
+      return authFailureResponse(auth);
     }
+    const { user } = auth;
 
     // Check if user is super admin
     const userIsSuperAdmin = await isSuperAdmin(user.id, user.email ?? "");
@@ -150,15 +148,11 @@ export async function POST(request: NextRequest) {
  */
 export async function PUT(request: NextRequest) {
   try {
-    const supabase = await createServerSupabaseClient();
-    const { data: { user }, error: userError } = await supabase.auth.getUser();
-
-    if (userError || !user) {
-      return NextResponse.json(
-        { success: false, error: "Not authenticated" },
-        { status: 401 }
-      );
+    const auth = await getAuthenticatedApiUser(request);
+    if (!auth.ok) {
+      return authFailureResponse(auth);
     }
+    const { user } = auth;
 
     // Check if user is super admin
     const userIsSuperAdmin = await isSuperAdmin(user.id, user.email ?? "");
@@ -264,15 +258,11 @@ export async function PUT(request: NextRequest) {
  */
 export async function DELETE(request: NextRequest) {
   try {
-    const supabase = await createServerSupabaseClient();
-    const { data: { user }, error: userError } = await supabase.auth.getUser();
-
-    if (userError || !user) {
-      return NextResponse.json(
-        { success: false, error: "Not authenticated" },
-        { status: 401 }
-      );
+    const auth = await getAuthenticatedApiUser(request);
+    if (!auth.ok) {
+      return authFailureResponse(auth);
     }
+    const { user } = auth;
 
     // Check if user is super admin
     const userIsSuperAdmin = await isSuperAdmin(user.id, user.email ?? "");

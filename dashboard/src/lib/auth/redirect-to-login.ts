@@ -1,4 +1,5 @@
 import { clearDashboardAuthCaches } from "@/lib/dashboard-auth-client-state";
+import { isHardSessionDeathCode } from "@/lib/auth/session-errors";
 
 declare global {
   interface Window {
@@ -114,19 +115,14 @@ export function isSessionExpiredApiError(error: unknown): boolean {
   if (!error) return false;
   if (typeof error === "object" && error !== null) {
     const e = error as { status?: number | string; data?: { code?: string; error?: string }; message?: string };
-    // 401 = unauthenticated. Do not treat generic 403 (permission) as session death.
-    if (e.status === 401) return true;
-    if (e.data?.code === "SESSION_EXPIRED" || e.data?.code === "SESSION_INVALID" || e.data?.code === "SESSION_REQUIRED") {
-      return true;
+    if (isHardSessionDeathCode(e.data?.code)) return true;
+    // Generic 401/403 without an explicit dead-session code may be abort/transient — do not logout.
+    if (typeof e.data?.error === "string" && isUnauthenticatedErrorMessage(e.data.error)) {
+      return isHardSessionDeathCode(e.data.code);
     }
-    if (typeof e.data?.error === "string" && isUnauthenticatedErrorMessage(e.data.error)) return true;
-    if (typeof e.message === "string" && isUnauthenticatedErrorMessage(e.message)) return true;
-  }
-  if (error instanceof Error) {
-    return isUnauthenticatedErrorMessage(error.message);
-  }
-  if (typeof error === "string") {
-    return isUnauthenticatedErrorMessage(error);
+    if (typeof e.message === "string" && isUnauthenticatedErrorMessage(e.message)) {
+      return isHardSessionDeathCode(e.data?.code);
+    }
   }
   return false;
 }
@@ -203,25 +199,35 @@ export function installDashboardAuthFetchGuard(): void {
         payload && typeof payload === "object"
           ? String((payload as { code?: unknown }).code ?? "").toUpperCase()
           : "";
-      if (code === "SERVICE_UNAVAILABLE") return response;
+      // Never hard-logout on transient/abort/permission-denied codes.
+      // (499/503 already returned above — status here is only 401|403.)
+      if (
+        code === "SERVICE_UNAVAILABLE" ||
+        code === "REQUEST_ABORTED" ||
+        code === "FORBIDDEN"
+      ) {
+        return response;
+      }
+
+      // Bare 403 without a dead-session code is usually RBAC, not auth death.
+      if (response.status === 403 && !isHardSessionDeathCode(code)) {
+        return response;
+      }
 
       if (isAuthProbe) {
         if (
-          code === "SESSION_INVALID" ||
-          code === "SESSION_EXPIRED" ||
+          isHardSessionDeathCode(code) ||
           code === "SESSION_REQUIRED" ||
-          isUnauthenticatedApiPayload(payload)
+          (response.status === 401 && isUnauthenticatedApiPayload(payload))
         ) {
           redirectToLoginOnSessionExpired({ reason: code || "not_authenticated" });
         }
         return response;
       }
 
-      // Dashboard API auth failures → logout. Permission 403s keep their own UI.
-      if (response.status === 401 || isUnauthenticatedApiPayload(payload)) {
-        redirectToLoginOnSessionExpired({
-          reason: code || "not_authenticated",
-        });
+      // Only hard-logout on explicit dead-session codes — bare 401 may be abort/transient.
+      if (isHardSessionDeathCode(code)) {
+        redirectToLoginOnSessionExpired({ reason: code });
       }
     } catch {
       // Never break the original caller.

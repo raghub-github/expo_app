@@ -80,6 +80,8 @@ export type RideOrderStatusResponse = {
   searchExpiresAt: string | null;
   cancelled: boolean;
   pickupOtp: string | null;
+  /** Parcel: delivery/drop OTP — only after pickup OTP verified. */
+  deliveryOtp?: string | null;
   rideStarted: boolean;
   riderReachedPickupAt?: string | null;
   pickupOtpVerifiedAt?: string | null;

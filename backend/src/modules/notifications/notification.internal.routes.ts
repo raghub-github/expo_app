@@ -14,7 +14,8 @@ import type { FastifyPluginAsync } from "fastify";
 import { getEnv } from "../../config/env.js";
 import { getSql } from "../../db/client.js";
 import { send } from "./notificationService.js";
-import { updateLogStatus, syncCampaignCountsFromLogs } from "./db.js";
+import { updateLogStatus, syncCampaignCountsFromLogs, loadTemplate } from "./db.js";
+import { markFailedWithRetrySchedule } from "./retryEngine.js";
 import type { NotificationStatus } from "./types.js";
 
 function checkSecret(headers: Record<string, string | string[] | undefined>): boolean {
@@ -98,10 +99,33 @@ export const notificationInternalRoutes: FastifyPluginAsync = async (app) => {
     const sql = getSql();
     let updated = 0;
     for (const u of updates) {
-      await updateLogStatus(u.notificationId, u.status, {
-        errorCode: u.errorCode,
-        errorMessage: u.errorMessage,
-      });
+      if (u.status === "failed") {
+        let maxRetries = 4;
+        try {
+          const [row] = (await sql`
+            SELECT template_code FROM public.notification_dispatch_logs
+            WHERE notification_id = ${u.notificationId}::uuid
+            LIMIT 1
+          `) as unknown as Array<{ template_code: string | null }>;
+          if (row?.template_code) {
+            const tmpl = await loadTemplate(row.template_code);
+            if (tmpl?.retry_count) maxRetries = Math.max(1, Number(tmpl.retry_count) || 4);
+          }
+        } catch {
+          /* use default */
+        }
+        await markFailedWithRetrySchedule({
+          notificationId: u.notificationId,
+          errorCode: u.errorCode,
+          errorMessage: u.errorMessage,
+          maxRetries,
+        });
+      } else {
+        await updateLogStatus(u.notificationId, u.status, {
+          errorCode: u.errorCode,
+          errorMessage: u.errorMessage,
+        });
+      }
       updated++;
       const rows = (await sql`
         SELECT campaign_id FROM public.notification_dispatch_logs

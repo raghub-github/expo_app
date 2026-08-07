@@ -1,9 +1,9 @@
+import { getAuthenticatedApiUser, authFailureResponse } from "@/lib/auth/api-session";
 /**
  * POST /api/orders/[orderId]/rider-penalty-preview
  * Preview 3PL Fault rider penalty for confirm-refund modal (rider picker + amount).
  */
 import { NextRequest, NextResponse } from "next/server";
-import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { canRefundOrder } from "@/lib/permissions/actions";
 import { getSql } from "@/lib/db/client";
 import { listOrderRiderAssignmentsForOrder } from "@/lib/db/operations/order-rider-assignments";
@@ -57,14 +57,11 @@ export async function POST(
       return NextResponse.json({ success: false, error: "Invalid order id" }, { status: 400 });
     }
 
-    const supabase = await createServerSupabaseClient();
-    const {
-      data: { user },
-      error: userError,
-    } = await supabase.auth.getUser();
-    if (userError || !user) {
-      return NextResponse.json({ success: false, error: "Not authenticated" }, { status: 401 });
+    const auth = await getAuthenticatedApiUser(request);
+    if (!auth.ok) {
+      return authFailureResponse(auth);
     }
+    const { user } = auth;
 
     const canRefund = await canRefundOrder(user.id, user.email ?? "", "ORDER_FOOD");
     if (!canRefund) {

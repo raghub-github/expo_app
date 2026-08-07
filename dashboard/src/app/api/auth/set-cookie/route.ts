@@ -3,51 +3,26 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { createServerClient } from "@supabase/ssr";
 import { cookies } from "next/headers";
 import { initializeSession } from "@/lib/auth/session-manager";
 import { validateUserForLogin } from "@/lib/auth/user-validation";
 import {
-  isInvalidRefreshToken,
-  isNetworkOrTransientError,
+  isTransientAuthError,
   isTimeoutOrAbortError,
+  isNetworkOrTransientError,
   signOutIfSessionDead,
 } from "@/lib/auth/session-errors";
-import { isTransientAuthError } from "@/lib/auth/api-session";
+import { validateAndPersistSupabaseSession } from "@/lib/auth/persist-supabase-session";
+import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { recordFailedLogin, recordLogin } from "@/lib/auth/user-management";
 import { getSystemUserById } from "@/lib/db/operations/users";
 import { getIpAddress, getUserAgent } from "@/lib/audit/logger";
-import { fetchWithTimeout } from "@/lib/supabase/fetch-timeout";
 
 export const runtime = "nodejs";
 
-const maxSetSessionAttempts = 3;
-const retryDelaysMs = [800, 1600];
-
-function normalizeSupabaseCookieOptions(options: any) {
-  // Supabase sets `secure` based on request context; in Next dev this can end up true,
-  // causing browsers to not send cookies over plain `http://`.
-  // Force `secure: false` outside production so Edge middleware/server can read cookies.
-  const isProd = process.env.NODE_ENV === "production";
-  const secure = isProd ? options?.secure : false;
-
-  const sameSiteRaw = options?.sameSite;
-  const sameSite =
-    sameSiteRaw === "lax" || sameSiteRaw === "strict" || sameSiteRaw === "none" ? sameSiteRaw : undefined;
-
-  return {
-    ...options,
-    secure,
-    sameSite,
-    // Ensure a safe default so cookies are sent to all routes.
-    path: options?.path ?? "/",
-  };
-}
-
 export async function POST(request: NextRequest) {
   try {
-    // ✅ SAFE BODY PARSING (fixes 502 issue)
-    let body: any = null;
+    let body: { access_token?: string; refresh_token?: string } | null = null;
 
     try {
       const text = await request.text();
@@ -60,10 +35,11 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const access_token = body?.access_token;
-    const refresh_token = body?.refresh_token;
+    const access_token =
+      typeof body?.access_token === "string" ? body.access_token.trim() : "";
+    const refresh_token =
+      typeof body?.refresh_token === "string" ? body.refresh_token.trim() : "";
 
-    // ✅ STRICT VALIDATION
     if (!access_token || !refresh_token) {
       console.error("[set-cookie] Missing tokens:", body);
       return NextResponse.json(
@@ -72,84 +48,26 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-    const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-
-    if (!supabaseUrl || !supabaseAnonKey) {
-      return NextResponse.json(
-        {
-          success: false,
-          error: "Missing Supabase environment variables",
-          code: "MISSING_SUPABASE_ENV",
-        },
-        { status: 500 }
-      );
-    }
-
     const cookieStore = await cookies();
     const response = NextResponse.json({ success: true });
 
-    const supabase = createServerClient(supabaseUrl, supabaseAnonKey, {
-      global: {
-        fetch: fetchWithTimeout,
-      },
+    const persist = await validateAndPersistSupabaseSession({
+      accessToken: access_token,
+      refreshToken: refresh_token,
+      signal: request.signal,
       cookies: {
-        getAll() {
-          return cookieStore.getAll();
-        },
-        setAll(cookiesToSet) {
-          cookiesToSet.forEach(({ name, value, options }) => {
-            // Never blank auth cookies from a failed setSession race — logout route clears explicitly.
-            if (name.startsWith("sb-") && (!value || value.length === 0)) {
-              return;
-            }
-            const normalized = normalizeSupabaseCookieOptions(options);
-            cookieStore.set(name, value, normalized);
-            response.cookies.set(name, value, normalized);
-          });
+        getAll: () => cookieStore.getAll(),
+        set: (name, value, options) => {
+          cookieStore.set(name, value, options as Parameters<typeof cookieStore.set>[2]);
+          response.cookies.set(name, value, options as Parameters<typeof response.cookies.set>[2]);
         },
       },
     });
 
-    // ✅ SET SESSION (retry transient Supabase/network failures)
-    let data: Awaited<ReturnType<typeof supabase.auth.setSession>>["data"] | null = null;
-    let sessionError: unknown = null;
-
-    for (let attempt = 1; attempt <= maxSetSessionAttempts; attempt++) {
-      if (request.signal.aborted) {
-        return NextResponse.json(
-          { success: false, error: "Request aborted", code: "REQUEST_ABORTED" },
-          { status: 499 }
-        );
-      }
-
-      try {
-        const result = await supabase.auth.setSession({
-          access_token,
-          refresh_token,
-        });
-        data = result.data;
-        sessionError = result.error ?? null;
-      } catch (err) {
-        data = null;
-        sessionError = err;
-      }
-
-      if (!sessionError && data?.session) break;
-      if (sessionError && isInvalidRefreshToken(sessionError)) break;
-      if (sessionError && isTransientAuthError(sessionError) && attempt < maxSetSessionAttempts) {
-        const delay = retryDelaysMs[attempt - 1] ?? 1000;
-        await new Promise((r) => setTimeout(r, delay));
-        continue;
-      }
-      break;
-    }
-
-    if (sessionError || !data?.session) {
-      if (sessionError && isInvalidRefreshToken(sessionError)) {
-        // Stale client tokens during sync must not wipe a still-valid cookie session
-        // (that race was causing repeated auto-logouts on the dashboard).
+    if (!persist.ok) {
+      if (persist.code === "SESSION_INVALID") {
         try {
+          const supabase = await createServerSupabaseClient();
           const existing = await supabase.auth.getUser();
           if (existing.data?.user && !existing.error) {
             console.warn(
@@ -157,47 +75,23 @@ export async function POST(request: NextRequest) {
             );
             return NextResponse.json({ success: true, reusedExistingSession: true });
           }
+          await signOutIfSessionDead(supabase, new Error("Session invalid"));
         } catch {
           // fall through
         }
-        await signOutIfSessionDead(supabase, sessionError);
-        return NextResponse.json(
-          { success: false, error: "Session invalid", code: "SESSION_INVALID" },
-          { status: 401 }
-        );
       }
-      if (sessionError && isTransientAuthError(sessionError)) {
-        return NextResponse.json(
-          {
-            success: false,
-            error: "Service temporarily unavailable",
-            code: "SERVICE_UNAVAILABLE",
-          },
-          { status: 503 }
-        );
-      }
-      const message =
-        sessionError instanceof Error
-          ? sessionError.message
-          : typeof sessionError === "object" &&
-              sessionError != null &&
-              "message" in sessionError &&
-              typeof (sessionError as { message?: unknown }).message === "string"
-            ? (sessionError as { message: string }).message
-            : "Failed to set session";
-      console.error("[set-cookie] Supabase error:", sessionError);
+      console.error("[set-cookie] Persist failed:", persist.error);
       return NextResponse.json(
-        { success: false, error: message, code: "SET_SESSION_FAILED" },
-        { status: 400 }
+        { success: false, error: persist.error, code: persist.code },
+        { status: persist.status }
       );
     }
 
+    const data = { session: persist.session };
     let systemUserId: number | null = null;
 
-    // ✅ USER VALIDATION
     if (data.session?.user?.email) {
       const email = data.session.user.email;
-
       const validation = await validateUserForLogin(email);
 
       if (!validation.isValid) {
@@ -208,7 +102,12 @@ export async function POST(request: NextRequest) {
           getUserAgent(request)
         );
 
-        await supabase.auth.signOut();
+        try {
+          const supabase = await createServerSupabaseClient();
+          await supabase.auth.signOut();
+        } catch {
+          // ignore
+        }
 
         return NextResponse.json(
           {
@@ -224,23 +123,23 @@ export async function POST(request: NextRequest) {
       systemUserId = validation.systemUserId ?? null;
     }
 
-    // ✅ SESSION INIT
     if (data.session) {
       const cookieManager = {
-        set: (name: string, value: string, options: any) => {
-          cookieStore.set(name, value, options);
-          response.cookies.set(name, value, options);
+        set: (name: string, value: string, options: Record<string, unknown>) => {
+          cookieStore.set(name, value, options as Parameters<typeof cookieStore.set>[2]);
+          response.cookies.set(
+            name,
+            value,
+            options as Parameters<typeof response.cookies.set>[2]
+          );
         },
       };
 
       initializeSession(cookieManager);
-
       console.log("[set-cookie] Session initialized");
 
       if (data.session.user?.email && systemUserId) {
-        const provider =
-          data.session.user.app_metadata?.provider || "unknown";
-
+        const provider = data.session.user.app_metadata?.provider || "unknown";
         const systemUser = await getSystemUserById(systemUserId);
         const canTogglePortal = Boolean(systemUser?.canTogglePortal);
         response.cookies.set("gm_portal_toggle_access", canTogglePortal ? "1" : "0", {
@@ -262,7 +161,7 @@ export async function POST(request: NextRequest) {
 
     return response;
   } catch (e: unknown) {
-    if (isTimeoutOrAbortError(e) || isNetworkOrTransientError(e)) {
+    if (isTimeoutOrAbortError(e) || isNetworkOrTransientError(e) || isTransientAuthError(e)) {
       return NextResponse.json(
         {
           success: false,

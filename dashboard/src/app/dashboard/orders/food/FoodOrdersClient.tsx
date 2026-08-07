@@ -194,6 +194,9 @@ export async function fetchFoodOrders(
     Boolean(filters.search?.trim()) &&
     (filters.searchType === "Order Id" ||
       filters.searchType === "Internal Order Id" ||
+      filters.searchType === "Merchant Id" ||
+      filters.searchType === "Customer Mobile" ||
+      filters.searchType === "Rider Mobile" ||
       !filters.searchType);
   // Direct ID lookup must ignore stage tabs (cancelled/delivered still resolve).
   if (filters.statusFilter && !isDirectOrderIdLookup) {

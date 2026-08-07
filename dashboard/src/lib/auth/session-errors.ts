@@ -28,6 +28,16 @@ export function isRefreshTokenAlreadyUsed(err: unknown): boolean {
   );
 }
 
+/** Server/client has no cookie session yet — common during first set-cookie after OAuth. */
+export function isAuthSessionMissingError(err: unknown): boolean {
+  const { message, name } = authErrorParts(err);
+  return (
+    name === "authsessionmissingerror" ||
+    message.includes("auth session missing") ||
+    message.includes("session missing")
+  );
+}
+
 /** Refresh token is gone / revoked — session cannot be recovered. */
 export function isRefreshTokenNotFound(err: unknown): boolean {
   const { message, code } = authErrorParts(err);
@@ -58,10 +68,15 @@ export function isInvalidRefreshToken(err: unknown): boolean {
 /**
  * Only clear cookies for irrecoverable refresh failures.
  * Never clear on already_used — that is a parallel-refresh race.
+ * Never clear on refresh_token_not_found from API handlers either:
+ * another parallel request may have already rotated cookies; signing out
+ * here wipes the winner's session and causes logout loops.
+ * Explicit logout (/api/auth/logout) is the only safe place to clear cookies.
  */
 export function shouldClearAuthSession(err: unknown): boolean {
   if (!isInvalidRefreshToken(err)) return false;
   if (isRefreshTokenAlreadyUsed(err)) return false;
+  if (isRefreshTokenNotFound(err)) return false;
   return true;
 }
 
@@ -80,6 +95,17 @@ export async function signOutIfSessionDead(
     // ignore
   }
   return true;
+}
+
+/** True when an API error code means the browser session is dead (hard logout). */
+export function isHardSessionDeathCode(code: string | undefined | null): boolean {
+  const c = String(code ?? "").toUpperCase();
+  return c === "SESSION_INVALID" || c === "SESSION_EXPIRED";
+}
+
+/** Transient auth/network failures — return 503, never logout. */
+export function isTransientAuthError(err: unknown): boolean {
+  return isTimeoutOrAbortError(err) || isNetworkOrTransientError(err);
 }
 
 /** Supabase Auth rate limit (429). Do not retry in a loop – return 503 and let client retry after delay. */

@@ -148,9 +148,15 @@ function md5Hex(input: string): string {
   return md51(utf8).map(rhex).join("");
 }
 
+export function isCustomProfileUploadUrl(url: string | null | undefined): boolean {
+  if (!url?.trim()) return false;
+  return url.trim().toLowerCase().includes("/attachments/proxy");
+}
+
 export function isGenericProfileImageUrl(url: string | null | undefined): boolean {
   if (!url?.trim()) return true;
   const u = url.trim().toLowerCase();
+  if (u.includes("/attachments/proxy")) return false;
   if (u.includes("fallback.png")) return true;
   if (u.includes("api.unavatar.io/fallback")) return true;
   if (u.includes("unavatar.io/google/") && u.includes("@")) return true;

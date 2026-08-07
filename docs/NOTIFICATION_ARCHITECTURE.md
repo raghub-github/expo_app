@@ -17,7 +17,7 @@ This document is the source of truth for the enterprise notification system acro
 ```
 ┌────────────────────────────────────────────────────────────────────┐
 │                          Controllers (any module)                  │
-│   order.routes.ts │ payment.routes.ts │ super-admin/notif.routes   │
+│   order.routes.ts │ payment.routes.ts │ emitEvent(...)             │
 └────────────────────────────────────────────────────────────────────┘
                                   │
                                   ▼
@@ -27,27 +27,31 @@ This document is the source of truth for the enterprise notification system acro
 │   • schedule / cancel / retry / replaceVariables / saveHistory     │
 │   • applies notification_templates + notification_user_prefs      │
 │   • writes notification_dispatch_logs row BEFORE enqueue (audit-first)      │
+│   • schedules retries: 30s → 2m → 5m → 15m (next_retry_at)         │
 └────────────────────────────────────────────────────────────────────┘
                                   │
                                   ▼
 ┌────────────────────────────────────────────────────────────────────┐
-│                    BullMQ queues (Redis)                           │
-│   q.push.send  │  q.notification.broadcast  │  q.notification.scheduled │
+│                    BullMQ queue (Redis) — queue-first              │
+│   q.push.send   (+ delayed retry via next_retry_at poller)         │
 └────────────────────────────────────────────────────────────────────┘
                                   │
             ┌─────────────────────┼─────────────────────┐
             ▼                     ▼                     ▼
 ┌─────────────────────┐ ┌────────────────────┐ ┌────────────────────┐
-│ Expo Push provider  │ │ FCM v1 provider    │ │ Socket.io provider │
-│ (mobile, default)   │ │ (web + direct FCM) │ │ (admin in-app)     │
+│ Expo Push provider  │ │ FCM v1 provider    │ │ Inline fallback    │
+│ (mobile, default)   │ │ (web + direct FCM) │ │ (if Redis down)    │
 └─────────────────────┘ └────────────────────┘ └────────────────────┘
-            │                     │                     │
-            ▼                     ▼                     ▼
-   Expo → FCM v1 / APNs   Firebase FCM v1     Browser WebSocket
-            │                     │                     │
-            ▼                     ▼                     ▼
-        Device              Device / Web              UI
+            │                     │
+            ▼                     ▼
+        Device              Device / Web
 ```
+
+**Push mode:** `PUSH_USE_QUEUE` defaults to **true**. Set `PUSH_USE_QUEUE=0` only for emergency inline-only delivery. Production must run `services/notification-worker` against Redis.
+
+**Domain triggers:** Prefer `emitEvent("…")` from [`eventBus.ts`](../backend/src/modules/notifications/eventBus.ts). Thin lifecycle helpers may call `send()` but must never call Expo/FCM directly.
+
+**Apps are consumers only:** register/unregister tokens, display banners/stickies, navigate deep links. They never decide when a remote push is sent.
 
 ### Why both Expo Push AND FCM v1 providers?
 
@@ -56,9 +60,23 @@ This document is the source of truth for the enterprise notification system acro
 | Mobile push to customer/merchant/rider apps | **Expo Push** (uses FCM v1 internally for Android, APNs for iOS) |
 | Browser push to partnersite + dashboard | **FCM v1 web** (via VAPID + service worker) |
 | Direct FCM token send (super-admin "Send to one device" testing) | **FCM v1** |
-| Real-time admin notifications inside super-admin dashboard | **Socket.io** |
 
 Choosing Expo Push as the mobile carrier (instead of `@react-native-firebase/messaging` direct) is the **Phase 0 decision**: it preserves the working device-token base, avoids a multi-week mobile rewrite, and Expo internally routes through FCM v1 — so the "Use FCM v1" requirement is satisfied transparently.
+
+### Retry + delivery tracking
+
+1. Audit log row inserted as `queued`
+2. Expo path: enqueue `q.push.send` → status `sent` → worker reports `delivered` / `failed`
+3. Non-terminal failures set `next_retry_at` using delays from `notification_settings.retry_delays_sec` (default `[30,120,300,900]`)
+4. `notificationRetryPoller` re-dispatches due rows; permanent fail after template `retry_count`
+5. Terminal token errors purge devices and do **not** retry
+6. Dashboard Logs page can force `POST /v1/notifications/logs/:id/retry`
+
+### Settings / Analytics APIs
+
+- `GET/PUT /v1/notifications/settings` — editable from dashboard Settings
+- `GET /v1/notifications/analytics/summary` — today funnel + daily/platform/role splits + CTR / failure_rate / avg_delivery_sec
+- Reminders: hourly `reminderPoller` (subscription / inactive / low wallet) when `reminders_enabled` is true
 
 ---
 

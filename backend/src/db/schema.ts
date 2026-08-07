@@ -1737,6 +1737,14 @@ export const ordersCore = pgTable(
     pickupOtp: text("pickup_otp"),
     deliveryOtp: text("delivery_otp"),
     rtoOtp: text("rto_otp"),
+    /** Customer push: pickup OTP sent once when rider first enters pickup radius. */
+    pickupOtpRadiusNotifiedAt: timestamp("pickup_otp_radius_notified_at", {
+      withTimezone: true,
+    }),
+    /** Customer push: delivery OTP sent once when rider first enters drop radius. */
+    deliveryOtpRadiusNotifiedAt: timestamp("delivery_otp_radius_notified_at", {
+      withTimezone: true,
+    }),
     deliveryInstructionsList: jsonb("delivery_instructions_list").notNull().default([]),
     merchantInstructionsList: jsonb("merchant_instructions_list").notNull().default([]),
     /** Customer help — alternate receiver contact for this order only. */

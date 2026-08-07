@@ -5,6 +5,7 @@ export const HOME_TAB_FALLBACK = "/(tabs)/" as const;
 export const PROFILE_TAB_FALLBACK = "/(tabs)/profile" as const;
 export const FOOD_HOME_FALLBACK = "/home" as const;
 export const RIDE_HOME_FALLBACK = "/home/service/ride" as const;
+export const PARCEL_HOME_FALLBACK = "/home/service/parcels" as const;
 
 export type SafeRouterBackFallback =
   | typeof ORDERS_TAB_FALLBACK
@@ -12,6 +13,7 @@ export type SafeRouterBackFallback =
   | typeof PROFILE_TAB_FALLBACK
   | typeof FOOD_HOME_FALLBACK
   | typeof RIDE_HOME_FALLBACK
+  | typeof PARCEL_HOME_FALLBACK
   | "/(auth)/login"
   | "/profile/legal";
 

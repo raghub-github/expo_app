@@ -4,8 +4,9 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { createServerSupabaseClient } from "@/lib/supabase/server";
+import { getAuthenticatedApiUser, authFailureResponse } from "@/lib/auth/api-session";
 import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine";
+import { isTimeoutOrAbortError } from "@/lib/auth/session-errors";
 import {
   listOrdersCore,
   getFoodDeliveryInstructions,
@@ -411,18 +412,11 @@ const VALID_STATUS_FILTERS: OrderStatusFilter[] = [
 
 export async function GET(request: NextRequest) {
   try {
-    const supabase = await createServerSupabaseClient();
-    const {
-      data: { user },
-      error: userError,
-    } = await supabase.auth.getUser();
-
-    if (userError || !user) {
-      return NextResponse.json(
-        { success: false, error: "Not authenticated" },
-        { status: 401 }
-      );
+    const auth = await getAuthenticatedApiUser(request);
+    if (!auth.ok) {
+      return authFailureResponse(auth);
     }
+    const { user } = auth;
 
     const searchParams = request.nextUrl.searchParams;
     const orderTypeForAuth =
@@ -436,11 +430,13 @@ export async function GET(request: NextRequest) {
         hasDashboardAccessByAuth(user.id, user.email ?? "", "ORDER_PERSON_RIDE"),
       ]);
 
+    // Super admin: all types. Otherwise require access for the requested type
+    // (food access still covers food list; parcel/ride are gated separately).
     const allowed =
       userIsSuperAdmin ||
-      hasFoodAccess ||
-      (orderTypeForAuth === "parcel" && hasParcelAccess) ||
-      (orderTypeForAuth === "person_ride" && hasRideAccess);
+      (orderTypeForAuth === "food" && hasFoodAccess) ||
+      (orderTypeForAuth === "parcel" && (hasParcelAccess || hasFoodAccess)) ||
+      (orderTypeForAuth === "person_ride" && (hasRideAccess || hasFoodAccess));
 
     if (!allowed) {
       return NextResponse.json(
@@ -644,6 +640,12 @@ export async function GET(request: NextRequest) {
       ...buildSingleOrderResponseExtras(enrichment),
     });
   } catch (error) {
+    if (request.signal.aborted || isTimeoutOrAbortError(error)) {
+      return NextResponse.json(
+        { success: false, error: "Request aborted", code: "REQUEST_ABORTED" },
+        { status: 499 }
+      );
+    }
     console.error("[GET /api/orders/core] Error:", error);
     return NextResponse.json(
       {

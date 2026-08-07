@@ -192,6 +192,7 @@ async function creditCustomerGatiCash(opts: {
       title: rendered.title,
       body: rendered.body,
       party: opts.party,
+      rewardKey: opts.idempotencyKey,
     });
   }
 
@@ -355,6 +356,7 @@ async function creditRiderWallet(opts: {
     title: rendered.title,
     body: rendered.body,
     party: "referrer",
+    rewardKey: opts.idempotencyKey,
   });
 
   return { ledgerId };

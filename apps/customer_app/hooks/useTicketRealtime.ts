@@ -1,25 +1,21 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import type { RealtimeChannel } from "@supabase/supabase-js";
 import { getSupabaseAuth } from "@/lib/supabaseClient";
+import { applySupabaseRealtimeAuth } from "@/lib/supabaseRealtimeAuth";
 
 const DEBOUNCE_MS = 180;
 
 /**
- * Mirror of merchant_app/hooks/useTicketMessagesRealtime — subscribes to the
- * same Supabase realtime channel ("ticket_<id>") the agent dashboard and
- * partnersite use. Any INSERT/UPDATE/DELETE on unified_ticket_messages for
- * this ticket, or UPDATE on unified_tickets, fires a debounced onStale callback.
- *
- * The customer-app screen passes a refetch function as onStale so the chat
- * pulls the new agent reply within ~200ms of the dashboard message insert,
- * without needing slow polling.
+ * Subscribes to Supabase postgres_changes on `ticket_<id>` — same channel as dashboard.
+ * Pass `authToken` (backend session JWT) so Realtime RLS delivers rows for this customer.
  */
 export function useTicketRealtime(options: {
   ticketNumericId: number | null;
   enabled: boolean;
+  authToken: string | null;
   onStale: () => void;
 }) {
-  const { ticketNumericId, enabled, onStale } = options;
+  const { ticketNumericId, enabled, authToken, onStale } = options;
   const [postgresLive, setPostgresLive] = useState(false);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const onStaleRef = useRef(onStale);
@@ -48,6 +44,8 @@ export function useTicketRealtime(options: {
       setPostgresLive(false);
       return;
     }
+
+    applySupabaseRealtimeAuth(supabase, authToken);
 
     const topic = `ticket_${ticketNumericId}`;
     const filterTicket = `ticket_id=eq.${ticketNumericId}`;
@@ -91,7 +89,7 @@ export function useTicketRealtime(options: {
       setPostgresLive(false);
       void supabase.removeChannel(channel);
     };
-  }, [enabled, ticketNumericId, schedule]);
+  }, [enabled, ticketNumericId, authToken, schedule]);
 
   return { postgresLive };
 }

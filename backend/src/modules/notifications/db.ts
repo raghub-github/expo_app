@@ -368,3 +368,44 @@ export async function readSetting<T = unknown>(key: string): Promise<T | null> {
   const rows = (await sql`SELECT value FROM public.notification_settings WHERE key = ${key}`) as unknown as Array<{ value: T }>;
   return rows[0]?.value ?? null;
 }
+
+export async function listSettings(): Promise<
+  Array<{ key: string; value: unknown; description: string | null; updated_at: string; updated_by: string | null }>
+> {
+  const sql = getSql();
+  return (await sql`
+    SELECT key, value, description, updated_at::text, updated_by
+    FROM public.notification_settings
+    ORDER BY key ASC
+  `) as unknown as Array<{
+    key: string;
+    value: unknown;
+    description: string | null;
+    updated_at: string;
+    updated_by: string | null;
+  }>;
+}
+
+export async function upsertSetting(
+  key: string,
+  value: unknown,
+  opts?: { description?: string | null; updatedBy?: string | null },
+): Promise<void> {
+  const sql = getSql();
+  const valueStr = JSON.stringify(value ?? null);
+  await sql`
+    INSERT INTO public.notification_settings (key, value, description, updated_by, updated_at)
+    VALUES (
+      ${key},
+      ${valueStr}::jsonb,
+      ${opts?.description ?? null},
+      ${opts?.updatedBy ?? null},
+      now()
+    )
+    ON CONFLICT (key) DO UPDATE SET
+      value = EXCLUDED.value,
+      description = COALESCE(EXCLUDED.description, notification_settings.description),
+      updated_by = COALESCE(EXCLUDED.updated_by, notification_settings.updated_by),
+      updated_at = now()
+  `;
+}

@@ -51,7 +51,7 @@ import { withLock, closeRedis } from "@gatimitra/redis";
 import { incrCounter, renderPrometheus } from "@gatimitra/logger";
 import { merchantMenuRoutes } from "./modules/merchant-menu/merchant-menu.routes.js";
 import { pushRoutes } from "./modules/push/push.routes.js";
-import { notificationRoutes, notificationInternalRoutes, startScheduledPoller, registerDomainEventHandlers } from "./modules/notifications/index.js";
+import { notificationRoutes, notificationInternalRoutes, startScheduledPoller, startNotificationRetryPoller, startReminderPoller, registerDomainEventHandlers } from "./modules/notifications/index.js";
 import { verificationAdminRoutes } from "./modules/verification/routes/admin.routes.js";
 import { cashfreeHeaderWebhookRoutes, cashfreeBodySignedWebhookRoutes } from "./modules/verification/routes/webhook.routes.js";
 import { offersRoutes } from "./modules/offers/offers.routes.js";
@@ -705,6 +705,10 @@ const { financialRulesInternalRoutes } = await import(
 await app.register(financialRulesInternalRoutes, { prefix: "/v1/internal" });
 const { ordersInternalRoutes } = await import("./modules/orders/orders.internal.routes.js");
 await app.register(ordersInternalRoutes, { prefix: "/v1/internal" });
+const { orderCxNotificationAdminRoutes } = await import(
+  "./modules/orders/order-cx-notification.admin.routes.js"
+);
+await app.register(orderCxNotificationAdminRoutes, { prefix: "/v1/admin/orders" });
 const { offersInternalRoutes } = await import("./modules/pricing/offers.internal.routes.js");
 await app.register(offersInternalRoutes, { prefix: "/v1/internal" });
 const { weatherInternalRoutes } = await import("./modules/weather/weather.routes.js");
@@ -897,6 +901,16 @@ try {
   // NotificationService. Redis lock ensures only one backend replica polls.
   void startScheduledPoller().catch((err) => app.log.error({ err }, "notification_scheduled_poller_start_failed"));
   app.log.info("notification scheduled poller started");
+
+  void startNotificationRetryPoller().catch((err) =>
+    app.log.error({ err }, "notification_retry_poller_start_failed"),
+  );
+  app.log.info("notification retry poller started");
+
+  void startReminderPoller().catch((err) =>
+    app.log.error({ err }, "notification_reminder_poller_start_failed"),
+  );
+  app.log.info("notification reminder poller started");
 
   // Wire domain events → notification templates.
   registerDomainEventHandlers();

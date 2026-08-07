@@ -47,6 +47,8 @@ import { LocationWeatherBanner, WeatherDetailsSheet } from "@/components/weather
 import { useLocationWeather } from "@/hooks/useLocationWeather";
 import { useAddresses, useActiveLocation } from "@/hooks/useAddresses";
 import { invalidateFoodHomeLocationQueries } from "@/lib/invalidateFoodHomeLocationQueries";
+import { SavedAddressLocationCard } from "@/components/address/SavedAddressLocationCard";
+import { distanceMeters } from "@/lib/addressGeo";
 import { STATUS_BAR_TO_HEADER_GAP } from "@/constants/layout";
 import { GatiMitraColors } from "@/constants/gatimitra";
 
@@ -66,20 +68,6 @@ const INITIAL_SAVED_VISIBLE = 3;
 const NEARBY_PLACES_LIMIT = 6;
 const NEARBY_MIN_DISTANCE_M = 30;
 const NEARBY_MAX_DISTANCE_M = 25_000;
-
-function savedAddressIcon(saved: Address): { name: keyof typeof Ionicons.glyphMap; color: string } {
-  const label = (saved.label ?? "").trim().toLowerCase();
-  if (label === "current location") {
-    return { name: "locate", color: BRAND };
-  }
-  if (label === "home") {
-    return { name: "home-outline", color: "#374151" };
-  }
-  if (label === "work" || label === "office") {
-    return { name: "briefcase-outline", color: "#374151" };
-  }
-  return { name: "location-outline", color: "#374151" };
-}
 
 function formatDistanceAway(m: number): string {
   if (m < 50) return "0 m away";
@@ -196,26 +184,6 @@ async function fetchNearbyPlacesForAnchor(
     .slice(0, NEARBY_PLACES_LIMIT);
 }
 
-function toRad(deg: number) {
-  return (deg * Math.PI) / 180;
-}
-
-/** Live GPS within this many metres of a saved address ⇒ it is the user's current location. */
-const CURRENT_LOCATION_BADGE_RADIUS_M = 100;
-
-function distanceMeters(aLat: number, aLon: number, bLat: number, bLon: number) {
-  const R = 6371000;
-  const dLat = toRad(bLat - aLat);
-  const dLon = toRad(bLon - aLon);
-  const lat1 = toRad(aLat);
-  const lat2 = toRad(bLat);
-  const sinDLat = Math.sin(dLat / 2);
-  const sinDLon = Math.sin(dLon / 2);
-  const a = sinDLat * sinDLat + Math.cos(lat1) * Math.cos(lat2) * sinDLon * sinDLon;
-  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-  return R * c;
-}
-
 /** Splits text by query (case-insensitive) and returns segments for highlight. */
 function highlightSegments(text: string, query: string): { text: string; match: boolean }[] {
   if (!query.trim() || !text) return [{ text, match: false }];
@@ -228,12 +196,6 @@ function highlightSegments(text: string, query: string): { text: string; match: 
     { text: text.slice(idx, idx + q.length), match: true },
     { text: text.slice(idx + q.length), match: false },
   ].filter((s) => s.text.length > 0);
-}
-
-function formatDistanceMeters(m: number): string {
-  if (m < 50) return "0 m";
-  if (m < 1000) return `${Math.round(m)} m`;
-  return `${(m / 1000).toFixed(1)} km`;
 }
 
 function formatLocationPreviewUpper(preview: string): string {
@@ -285,14 +247,6 @@ function extractWeatherAreaLabel(
   }
 
   return null;
-}
-
-function formatPhoneLine(mobile: string | null | undefined): string | null {
-  if (!mobile?.trim()) return null;
-  const digits = mobile.replace(/\D/g, "");
-  if (!digits) return null;
-  const local = digits.length > 10 ? digits.slice(-10) : digits;
-  return `Phone number: +91-${local}`;
 }
 
 export default function SelectLocationScreen() {
@@ -1187,21 +1141,7 @@ export default function SelectLocationScreen() {
                       saved.longitude
                     )
                   : null;
-              const phoneLine = formatPhoneLine(saved.contactMobile);
-              const icon = savedAddressIcon(saved);
               const isSelected = saved.id === matchedSavedIdForPill;
-              // Distance-based badge: compare LIVE GPS (not a selected pin) to this saved
-              // address. Derived from store `coords`, so it re-evaluates automatically on
-              // every GPS change / screen open / address refresh — no manual refresh.
-              const liveDistM =
-                coords?.latitude != null &&
-                coords?.longitude != null &&
-                Number.isFinite(saved.latitude) &&
-                Number.isFinite(saved.longitude)
-                  ? distanceMeters(coords.latitude, coords.longitude, saved.latitude, saved.longitude)
-                  : null;
-              const isAtCurrentLocation =
-                liveDistM != null && liveDistM <= CURRENT_LOCATION_BADGE_RADIUS_M;
               const openEdit = () => {
                 router.push({
                   pathname: "/location-address",
@@ -1215,86 +1155,25 @@ export default function SelectLocationScreen() {
                 });
               };
               return (
-                <View key={saved.id} style={styles.savedCard}>
-                  <View style={styles.savedCardTop}>
-                    <View style={styles.savedCardLeftCol}>
-                      <Ionicons name={icon.name} size={24} color={icon.color} />
-                      {distM != null ? (
-                        <AppText style={styles.savedDistance}>{formatDistanceMeters(distM)}</AppText>
-                      ) : null}
-                    </View>
-                    <View style={styles.savedCardBody}>
-                      <TouchableOpacity
-                        onPress={() => handleSelectSaved(saved)}
-                        disabled={savedAddressLoading !== null}
-                        activeOpacity={0.85}
-                      >
-                        <View style={styles.addressLabelRow}>
-                          <AppText style={styles.savedAddressTitle}>{saved.label ?? "Address"}</AppText>
-                          {isSelected ? (
-                            <View style={styles.selectedPillRight}>
-                              <AppText style={styles.selectedPillRightText}>SELECTED</AppText>
-                            </View>
-                          ) : (
-                            <View style={styles.unselectedRadio} />
-                          )}
-                        </View>
-                        <View
-                          style={isAtCurrentLocation ? styles.badgeCurrent : styles.badgeSaved}
-                        >
-                          <AppText
-                            style={isAtCurrentLocation ? styles.badgeCurrentText : styles.badgeSavedText}
-                          >
-                            {isAtCurrentLocation ? "● Current Location" : "📍 Saved Location"}
-                          </AppText>
-                        </View>
-                        <AppText style={styles.savedAddressLine} numberOfLines={3}>
-                          {saved.fullAddress}
-                        </AppText>
-                        {phoneLine ? (
-                          <AppText style={styles.savedPhoneLine} numberOfLines={1}>
-                            {phoneLine}
-                          </AppText>
-                        ) : null}
-                      </TouchableOpacity>
-                      <View style={styles.savedActionsRow}>
-                        {savedAddressLoading === saved.id ? (
-                          <ActivityIndicator size="small" color={BRAND} style={{ marginRight: 4 }} />
-                        ) : null}
-                        <TouchableOpacity
-                          style={styles.savedActionBtn}
-                          onPress={() => setOptionsAddress(saved)}
-                          hitSlop={8}
-                          activeOpacity={0.85}
-                        >
-                          <Ionicons name="ellipsis-horizontal" size={13} color={BRAND} />
-                        </TouchableOpacity>
-                        <TouchableOpacity
-                          style={styles.savedActionBtn}
-                          onPress={async () => {
-                            try {
-                              await shareAddressViaLink(saved);
-                            } catch {
-                              Alert.alert("Share failed", "Could not create address link. Please try again.");
-                            }
-                          }}
-                          hitSlop={8}
-                          activeOpacity={0.85}
-                        >
-                          <Ionicons name="arrow-redo-outline" size={13} color={BRAND} />
-                        </TouchableOpacity>
-                        <TouchableOpacity
-                          style={styles.savedActionBtn}
-                          onPress={openEdit}
-                          hitSlop={8}
-                          activeOpacity={0.85}
-                        >
-                          <Ionicons name="camera-outline" size={13} color={BRAND} />
-                        </TouchableOpacity>
-                      </View>
-                    </View>
-                  </View>
-                </View>
+                <SavedAddressLocationCard
+                  key={saved.id}
+                  address={saved}
+                  distanceM={distM}
+                  liveCoords={coords}
+                  isSelected={isSelected}
+                  loading={savedAddressLoading === saved.id}
+                  disabled={savedAddressLoading !== null}
+                  onPress={() => handleSelectSaved(saved)}
+                  onOptions={() => setOptionsAddress(saved)}
+                  onShare={async () => {
+                    try {
+                      await shareAddressViaLink(saved);
+                    } catch {
+                      Alert.alert("Share failed", "Could not create address link. Please try again.");
+                    }
+                  }}
+                  onCamera={openEdit}
+                />
               );
             })}
             {hasMoreSaved ? (

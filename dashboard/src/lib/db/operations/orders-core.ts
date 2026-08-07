@@ -113,7 +113,38 @@ function isFoodOrderDirectLookup(filters: ListOrdersCoreFilters): boolean {
   const search = filters.search?.trim();
   if (!search) return false;
   const searchType = filters.searchType ?? "Order Id";
-  return searchType === "Order Id" || searchType === "Internal Order Id";
+  return (
+    searchType === "Order Id" ||
+    searchType === "Internal Order Id" ||
+    searchType === "Merchant Id" ||
+    searchType === "Customer Mobile" ||
+    searchType === "Rider Mobile"
+  );
+}
+
+/** Digit-normalized rider mobile match (+91 / 10-digit variants). */
+function sqlRiderMobileOrderSearch(searchRaw: string): SQL {
+  const raw = searchRaw.trim();
+  const compact = raw.replace(/\s/g, "");
+  const digitsOnly = compact.replace(/\D/g, "");
+  const phoneCharsOnly = /^[+\d\s\-().]*$/.test(raw.trim());
+  if (phoneCharsOnly && digitsOnly.length >= 10 && digitsOnly.length <= 15) {
+    const variants = new Set<string>();
+    variants.add(digitsOnly);
+    if (digitsOnly.length === 10) variants.add(`91${digitsOnly}`);
+    if (digitsOnly.length === 12 && digitsOnly.startsWith("91")) {
+      variants.add(digitsOnly.slice(2));
+    }
+    const orParts: SQL[] = [];
+    for (const v of variants) {
+      orParts.push(
+        sql`regexp_replace(COALESCE(${riders.mobile}, ''), '[^0-9]', '', 'g') = ${v}`
+      );
+    }
+    return or(...orParts)!;
+  }
+  const term = `%${raw}%`;
+  return ilike(riders.mobile, term)!;
 }
 
 /**
@@ -400,24 +431,40 @@ export async function listOrdersCore(
         );
         break;
       }
-      case "Merchant Id":
+      case "Merchant Id": {
         const merchantNum = parseInt(search, 10);
-        if (Number.isFinite(merchantNum)) {
-          conditions.push(
-            or(
-              eq(ordersCore.merchantStoreId, merchantNum),
-              eq(ordersCore.merchantParentId, merchantNum)
-            )!
-          );
-        } else {
-          conditions.push(
-            or(
-              sql`${ordersCore.merchantStoreId}::text ILIKE ${term}`,
-              sql`${ordersCore.merchantParentId}::text ILIKE ${term}`
-            )!
+        const merchantIdParts: SQL[] = [];
+        if (Number.isFinite(merchantNum) && String(merchantNum) === search.replace(/\s/g, "")) {
+          merchantIdParts.push(
+            eq(ordersCore.merchantStoreId, merchantNum),
+            eq(ordersCore.merchantParentId, merchantNum)
           );
         }
+        merchantIdParts.push(
+          sql`EXISTS (
+            SELECT 1 FROM merchant_stores ms
+            WHERE ms.id = ${ordersCore.merchantStoreId}
+              AND upper(trim(ms.store_id)) = ${exactUpper}
+          )`,
+          sql`EXISTS (
+            SELECT 1 FROM merchant_parents mp
+            WHERE mp.id = ${ordersCore.merchantParentId}
+              AND upper(trim(mp.parent_merchant_id)) = ${exactUpper}
+          )`,
+          sql`EXISTS (
+            SELECT 1 FROM merchant_stores ms
+            WHERE ms.id = ${ordersCore.merchantStoreId}
+              AND ms.store_id ILIKE ${term}
+          )`,
+          sql`EXISTS (
+            SELECT 1 FROM merchant_parents mp
+            WHERE mp.id = ${ordersCore.merchantParentId}
+              AND mp.parent_merchant_id ILIKE ${term}
+          )`
+        );
+        conditions.push(or(...merchantIdParts)!);
         break;
+      }
       case "Customer Mobile":
       case "Rider Mobile":
         // Need to join and filter; handled in query below
@@ -578,7 +625,6 @@ export async function listOrdersCore(
   }
 
   if (needsRiderJoin) {
-    const riderTerm = `%${search}%`;
     const baseQuery = db
       .select({
         id: ordersCore.id,
@@ -650,10 +696,7 @@ export async function listOrdersCore(
       .where(
         and(
           ...conditions,
-          or(
-            ilike(riders.mobile, riderTerm),
-            ilike(riders.name, riderTerm)
-          )!
+          sqlRiderMobileOrderSearch(search!)
         )
       )
       .orderBy(orderBy)
@@ -669,10 +712,7 @@ export async function listOrdersCore(
       .where(
         and(
           ...conditions,
-          or(
-            ilike(riders.mobile, riderTerm),
-            ilike(riders.name, riderTerm)
-          )!
+          sqlRiderMobileOrderSearch(search!)
         )
       );
 

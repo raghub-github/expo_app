@@ -104,3 +104,43 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "internal_error" }, { status: 500 });
   }
 }
+
+export async function DELETE(req: NextRequest) {
+  try {
+    const body = (await req.json().catch(() => ({}))) as { token?: string };
+    const token = String(body.token ?? "").trim();
+    if (!token) {
+      return NextResponse.json({ error: "token_required" }, { status: 400 });
+    }
+
+    const secret = process.env.BACKEND_SCHEDULE_TICK_SECRET?.trim();
+    if (!secret) {
+      return NextResponse.json({ error: "backend_not_configured" }, { status: 503 });
+    }
+
+    const res = await fetchBackend("/v1/notifications/browser-tokens", {
+      method: "DELETE",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Internal-Secret": secret,
+      },
+      body: JSON.stringify({ token }),
+      timeoutMs: 10_000,
+    });
+
+    if (!res) {
+      return NextResponse.json({ error: "backend_unreachable" }, { status: 503 });
+    }
+    const text = await res.text();
+    let json: unknown = null;
+    try {
+      json = text ? JSON.parse(text) : null;
+    } catch {
+      json = { raw: text.slice(0, 300) };
+    }
+    return NextResponse.json(json, { status: res.status });
+  } catch (e) {
+    console.error("[browser-tokens DELETE]", e);
+    return NextResponse.json({ error: "internal_error" }, { status: 500 });
+  }
+}

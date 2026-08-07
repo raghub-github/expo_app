@@ -27,8 +27,12 @@ import { resolveRideImage } from "@/features/ride/rideOptionAssets";
 import { ParcelGuidelinesBottomSheet } from "./ParcelGuidelinesBottomSheet";
 import { ParcelProhibitedItemsBottomSheet } from "./ParcelProhibitedItemsBottomSheet";
 import { useParcelBookingStore } from "./parcelBookingStore";
+import { useOrderStore } from "@/store/orderStore";
+import { FLOATING_CART_BAR_HEIGHT } from "@/constants/layout";
 
 const HERO_MINT = GatiMitraColors.mintSoft;
+/** Space for the global parcel track pill between Continue and legal links. */
+const TRACK_FOOTER_SLOT = FLOATING_CART_BAR_HEIGHT + 10;
 
 function nearCoords(
   a: { latitude: number; longitude: number },
@@ -59,6 +63,10 @@ export function ParcelBookingScreen() {
   const markGuidelinesShown = useParcelBookingStore((s) => s.markGuidelinesShown);
   const visitedInnerPage = useParcelBookingStore((s) => s.visitedInnerPage);
   const markVisitedInnerPage = useParcelBookingStore((s) => s.markVisitedInnerPage);
+  const markPreserveDraftOnNextFocus = useParcelBookingStore(
+    (s) => s.markPreserveDraftOnNextFocus
+  );
+  const clearDropSession = useParcelBookingStore((s) => s.clearDropSession);
 
   const { data: profile } = useQuery({
     queryKey: ["me", "profile", "parcel"],
@@ -67,10 +75,18 @@ export function ParcelBookingScreen() {
   });
 
   // Status bar strip = same mint as hero. Don't reset on blur so pickup/drop search stays mint.
+  // Fresh entry (closed + reopened) clears drop; returning from location/book keeps draft.
   useFocusEffect(
     useCallback(() => {
       setStatusBarBackground(HERO_MINT, "dark");
-    }, [setStatusBarBackground])
+      const state = useParcelBookingStore.getState();
+      if (state.preserveDraftOnNextFocus) {
+        useParcelBookingStore.setState({ preserveDraftOnNextFocus: false });
+        return;
+      }
+      clearDropSession();
+      pickupSeededRef.current = false;
+    }, [setStatusBarBackground, clearDropSession])
   );
 
   // Seed pickup once only — never again after Switch clears pickup.
@@ -135,6 +151,7 @@ export function ParcelBookingScreen() {
 
   const openSearch = (field: "pickup" | "drop") => {
     setGuidelinesOpen(false);
+    markPreserveDraftOnNextFocus();
     router.push({
       pathname: "/home/service/parcel-location",
       params: { field },
@@ -145,12 +162,21 @@ export function ParcelBookingScreen() {
     if (!pickup || !drop) return;
     setGuidelinesOpen(false);
     markVisitedInnerPage();
+    markPreserveDraftOnNextFocus();
     router.push("/home/service/parcel-book" as never);
-  }, [pickup, drop, markVisitedInnerPage, router]);
+  }, [pickup, drop, markVisitedInnerPage, markPreserveDraftOnNextFocus, router]);
 
   const openTerms = () => router.push("/profile/legal/terms-of-service" as never);
 
   const showContinue = !!(pickup && drop && visitedInnerPage);
+  const hasActiveParcelTrack = useOrderStore((s) =>
+    (s.activeOrders.length > 0 ? s.activeOrders : s.activeOrder ? [s.activeOrder] : []).some(
+      (o) =>
+        (o.serviceType ?? "food") === "parcel" &&
+        o.status !== "DELIVERED" &&
+        o.status !== "CANCELLED"
+    )
+  );
   const dropContactLine = useMemo(() => {
     if (!drop) return null;
     const name = drop.contactName?.trim() || profile?.full_name?.trim() || "You";
@@ -237,6 +263,8 @@ export function ParcelBookingScreen() {
               <AppText style={styles.continueBtnText}>Continue</AppText>
             </TouchableOpacity>
           ) : null}
+          {/* Reserve slot so global Track order sits above prohibited / T&Cs, not over them. */}
+          {hasActiveParcelTrack ? <View style={{ height: TRACK_FOOTER_SLOT }} /> : null}
           <AppText style={styles.footerLine}>
             Read about{" "}
             <AppText style={styles.footerLink} onPress={() => setProhibitedOpen(true)}>

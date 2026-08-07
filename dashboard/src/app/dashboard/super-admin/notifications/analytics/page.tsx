@@ -13,7 +13,12 @@ type AnalyticsSummary = {
     failed: number;
     read_rate: number;
     ctr: number;
+    failure_rate?: number;
+    avg_delivery_sec?: number | null;
   };
+  daily_14d?: Array<{ day: string; total: number; sent: number; delivered: number; failed: number; clicked: number }>;
+  platform_split_7d?: Array<{ platform: string; n: number }>;
+  role_split_7d?: Array<{ role: string; n: number }>;
   top_templates_7d: Array<{ template_code: string; n: string | number }>;
   top_campaigns_30d: Array<{ id: number; name: string; clicked_count: number; sent_count: number }>;
 };
@@ -53,9 +58,50 @@ export default function AnalyticsPage() {
             <StatCard Icon={Send}                label="Sent"       value={today.sent}      accent="text-slate-900" />
             <StatCard Icon={CheckCircle2}        label="Delivered"  value={today.delivered} accent="text-teal-700"  sub={today.sent > 0 ? `${pct(today.read_rate)} of sent` : undefined} />
             <StatCard Icon={MousePointerClick}   label="Clicked"    value={today.clicked}   accent="text-amber-700" sub={today.sent > 0 ? `CTR ${pct(today.ctr)}` : undefined} />
-            <StatCard Icon={AlertCircle}         label="Failed"     value={today.failed}    accent="text-rose-600" />
+            <StatCard Icon={AlertCircle}         label="Failed"     value={today.failed}    accent="text-rose-600" sub={today.failure_rate != null ? `Rate ${pct(today.failure_rate)}` : undefined} />
           </div>
+          {today.avg_delivery_sec != null ? (
+            <p className="mt-2 text-xs text-slate-500">
+              Avg delivery latency today: {Math.round(today.avg_delivery_sec * 10) / 10}s
+            </p>
+          ) : null}
         </div>
+
+        {(data?.daily_14d?.length || data?.platform_split_7d?.length || data?.role_split_7d?.length) ? (
+          <div className="mt-3 grid shrink-0 grid-cols-1 gap-3 lg:grid-cols-3">
+            <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+              <div className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-slate-500">Daily · 14d</div>
+              <div className="max-h-40 space-y-1 overflow-auto text-xs text-slate-700">
+                {(data?.daily_14d ?? []).map((d) => (
+                  <div key={d.day} className="flex justify-between gap-2">
+                    <span className="text-slate-500">{d.day}</span>
+                    <span>{d.delivered}/{d.sent} · fail {d.failed}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+              <div className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-slate-500">Platform · 7d</div>
+              <TopBarList
+                items={(data?.platform_split_7d ?? []).map((p) => ({
+                  key: p.platform,
+                  primary: p.platform,
+                  value: p.n,
+                }))}
+              />
+            </div>
+            <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+              <div className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-slate-500">Role · 7d</div>
+              <TopBarList
+                items={(data?.role_split_7d ?? []).map((p) => ({
+                  key: p.role,
+                  primary: p.role,
+                  value: p.n,
+                }))}
+              />
+            </div>
+          </div>
+        ) : null}
 
         {/* Top templates + campaigns */}
         <div className="mt-4 grid min-h-0 flex-1 grid-cols-1 gap-3 overflow-auto lg:grid-cols-2">
@@ -111,7 +157,7 @@ export default function AnalyticsPage() {
         </div>
 
         <p className="mt-2 shrink-0 text-xs text-slate-500">
-          Per-day breakdowns and click-through funnels will land alongside the log aggregation view.
+          Funnel metrics (CTR, failure rate, latency) and daily/platform/role splits come from notification_dispatch_logs.
         </p>
       </div>
     </div>

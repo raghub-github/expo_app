@@ -28,7 +28,9 @@ import {
 } from "@/hooks/useFeaturedOffersHome";
 import { reloadCustomerAppAssets } from "@/store/appAssetsStore";
 import { useCustomerGeoServiceAvailability } from "@/hooks/useCustomerGeoServiceAvailability";
+import { useCustomerServiceBlocks, CUSTOMER_SERVICE_BLOCKS_QUERY_KEY } from "@/hooks/useCustomerServiceBlocks";
 import { useScreenChromeStore } from "@/store/screenChromeStore";
+import { useCustomerServiceBlockSheetStore } from "@/store/customerServiceBlockSheetStore";
 
 const BG = "#FFFFFF";
 const TEAL = GatiMitraColors.splashMint;
@@ -38,6 +40,7 @@ export default function HomeScreen() {
   const queryClient = useQueryClient();
   const [refreshing, setRefreshing] = useState(false);
   const [weatherSheetVisible, setWeatherSheetVisible] = useState(false);
+  const openBlockSheet = useCustomerServiceBlockSheetStore((s) => s.open);
   const locationHydrated = useLocationStore((s) => s.locationHydrated);
   const locationSource = useLocationStore((s) => s.locationSource);
   const coords = useLocationStore((s) => s.coords);
@@ -53,6 +56,7 @@ export default function HomeScreen() {
         queryClient.invalidateQueries({ queryKey: ["featured-offers-home"] }),
         queryClient.invalidateQueries({ queryKey: ["weather"] }),
         queryClient.invalidateQueries({ queryKey: ["geo", "services"] }),
+        queryClient.invalidateQueries({ queryKey: CUSTOMER_SERVICE_BLOCKS_QUERY_KEY }),
         queryClient.invalidateQueries({ queryKey: ["wallet", "balance"] }),
         reloadCustomerAppAssets(),
       ]);
@@ -85,6 +89,7 @@ export default function HomeScreen() {
     address?.state ??
     [...fullParts].reverse().find((p) => !isPincode(p) && p.toLowerCase() !== "india");
   const { enabledServices } = useCustomerGeoServiceAvailability();
+  const { accountBlocks } = useCustomerServiceBlocks();
   const weatherParams = useMemo(
     () => (coords ? resolveHomeWeatherQueryParams(address, coords) : { lat: undefined, lng: undefined }),
     [address, coords]
@@ -140,7 +145,11 @@ export default function HomeScreen() {
         statusBarStyle: "dark",
         hideStatusBarSpacer: false,
       });
-    }, [])
+      void queryClient.invalidateQueries({
+        queryKey: CUSTOMER_SERVICE_BLOCKS_QUERY_KEY,
+        refetchType: "active",
+      });
+    }, [queryClient])
   );
 
   return (
@@ -179,7 +188,14 @@ export default function HomeScreen() {
           showDefaultWhenEmpty
         />
 
-        <HomeServicesRow cardHeight={serviceCardH} enabledServices={enabledServices} />
+        <HomeServicesRow
+          cardHeight={serviceCardH}
+          enabledServices={enabledServices}
+          accountBlocks={accountBlocks}
+          onAccountBlockedPress={(_id, reason, label, assetKey) =>
+            openBlockSheet({ serviceLabel: label, reason, serviceAssetKey: assetKey })
+          }
+        />
 
         <View style={styles.brandSpacer} />
         <HomeBrandBanner bannerHeight={brandH} />

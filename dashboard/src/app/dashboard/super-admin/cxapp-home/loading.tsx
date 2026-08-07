@@ -1,6 +1,5 @@
 /**
- * Light route shell — paints instantly so navigation does not feel stuck on a
- * heavy pulse skeleton while the client bundle / data hydrate.
+ * Route shell — matches the states grid so navigation never stalls on a lone spinner.
  */
 export default function CxAppHomeLoading() {
   return (
@@ -15,8 +14,10 @@ export default function CxAppHomeLoading() {
         </div>
         <div className="mt-3 rounded-xl border border-gray-200 bg-white p-3">
           <h3 className="text-[24px] font-semibold leading-none text-slate-900">States / UT</h3>
-          <div className="mt-4 flex justify-center py-8">
-            <div className="h-5 w-5 animate-spin rounded-full border-2 border-slate-200 border-t-cyan-600" />
+          <div className="relative mt-3 grid grid-cols-1 gap-1.5 sm:grid-cols-2 lg:grid-cols-3">
+            {Array.from({ length: 12 }).map((_, i) => (
+              <div key={i} className="h-10 animate-pulse rounded-lg border border-gray-100 bg-slate-50" />
+            ))}
           </div>
         </div>
       </div>

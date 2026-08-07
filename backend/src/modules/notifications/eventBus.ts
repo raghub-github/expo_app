@@ -81,6 +81,7 @@ export type DomainEventMap = {
     orderShortId?: string;
     customerId?: string | null;
     riderName?: string | null;
+    riderId?: number | string | null;
     etaMinutes?: number;
   };
 
@@ -110,6 +111,8 @@ export type DomainEventMap = {
     amount: number;
     balance: number;
     reason?: string;
+    /** Stable ledger / txn id for idempotency (preferred). */
+    ledgerId?: string | number | null;
   };
 
   // KYC / documents decision.
@@ -142,6 +145,7 @@ export type DomainEventMap = {
     status: "REQUESTED" | "SUCCESS" | "FAILED";
     reason?: string;
     eta?: string;
+    withdrawalId?: string | number | null;
   };
 
   // Merchant settlement lifecycle.
@@ -169,6 +173,73 @@ export type DomainEventMap = {
     title: string;
     body: string;
     party: "referrer" | "referred";
+    /** Stable reward key / relationship id for idempotency. */
+    rewardKey?: string | null;
+  };
+
+  // Customer / merchant / rider account welcome after signup.
+  "user.signup": {
+    userId: string;
+    role: "customer" | "merchant" | "rider";
+    name?: string | null;
+  };
+
+  // Customer address lifecycle.
+  "customer.address_changed": {
+    userId: string;
+    action: "ADDED" | "UPDATED";
+    addressId?: number | null;
+  };
+
+  // Support ticket update for any role.
+  "support.ticket_updated": {
+    userId: string;
+    role: "customer" | "merchant" | "rider";
+    ticketId: string;
+    ticketTitle?: string;
+    messagePreview: string;
+  };
+
+  // Merchant store approval / suspension.
+  "merchant.store_status": {
+    merchantUserId: string;
+    storeId: number;
+    storeName?: string | null;
+    status: "APPROVED" | "SUSPENDED" | "ACTIVATED";
+    reason?: string;
+  };
+
+  // Merchant menu moderation.
+  "merchant.menu_decision": {
+    merchantUserId: string;
+    storeId: number;
+    storeName?: string | null;
+    decision: "APPROVED" | "REJECTED";
+    reason?: string;
+  };
+
+  // Rider ops.
+  "rider.order_reassigned": {
+    riderUserId: string;
+    orderId: string;
+    reason?: string;
+  };
+
+  "rider.incentive": {
+    riderUserId: string;
+    amount: number;
+    message?: string;
+    incentiveId?: string | null;
+  };
+
+  "rider.shift_reminder": {
+    riderUserId: string;
+  };
+
+  "rider.attendance": {
+    riderUserId: string;
+    message: string;
+    attendanceKey?: string | null;
   };
 };
 
@@ -474,8 +545,6 @@ export function registerDomainEventHandlers(): void {
 
   on("order.rider_arriving", async (e) => {
     if (!e.customerId) return;
-    const { deliveryOtpForOrderIdText } = await import("../../lib/customer-lifecycle-notify.js");
-    const deliveryOtp = await deliveryOtpForOrderIdText(e.orderId);
     await sendNotification({
       templateCode: "ORDER_RIDER_ARRIVING",
       variables: {
@@ -483,16 +552,24 @@ export function registerDomainEventHandlers(): void {
         orderShortId: e.orderShortId ?? e.orderId,
         riderName: e.riderName ?? "Your rider",
         etaMinutes: e.etaMinutes ?? 5,
-        deliveryOtp: deliveryOtp || "your app OTP",
       },
       target: { user_id: e.customerId },
       idempotencyKey: `ORDER_RIDER_ARRIVING:${e.orderId}`,
       metadata: foodLiveMetadata("ORDER_RIDER_ARRIVING", e.orderId, {
         riderName: e.riderName,
         etaMinutes: e.etaMinutes,
-        deliveryOtp,
       }),
     });
+    // Dedicated OTP push (once) — includes delivery OTP in title/body.
+    void import("../../lib/otp-radius-notify.js")
+      .then(({ notifyCustomerDeliveryOtpOnRadius }) =>
+        notifyCustomerDeliveryOtpOnRadius({
+          orderIdText: e.orderId,
+          riderId: e.riderId != null ? Number(e.riderId) : 0,
+          riderName: e.riderName,
+        })
+      )
+      .catch(() => {});
   });
 
   on("payment.settled", async (e) => {
@@ -538,8 +615,8 @@ export function registerDomainEventHandlers(): void {
         balance: e.balance.toFixed(2),
       },
       target: { user_id: e.userId },
-      idempotencyKey: `${template}:${e.userId}:${Math.round(e.amount * 100)}:${Date.now()}`,
-      metadata: { reason: e.reason },
+      idempotencyKey: `${template}:${e.userId}:${e.direction}:${Math.round(e.amount * 100)}:${e.ledgerId ?? Math.round(e.balance * 100)}:${e.reason ?? "na"}`,
+      metadata: { reason: e.reason, ledgerId: e.ledgerId ?? null },
     });
   });
 
@@ -581,7 +658,7 @@ export function registerDomainEventHandlers(): void {
       variables: { reason: e.reason ?? "" },
       target: { user_id: e.userId },
       priority: "critical",
-      idempotencyKey: `${template}:${e.userId}:${Date.now()}`,
+      idempotencyKey: `${template}:${e.userId}:${e.newState}:${e.reason ?? "na"}`,
       metadata: {},
     });
   });
@@ -600,7 +677,7 @@ export function registerDomainEventHandlers(): void {
         eta: e.eta ?? "24-48 hours",
       },
       target: { user_id: e.userId },
-      idempotencyKey: `${template}:${e.userId}:${Math.round(e.amount * 100)}`,
+      idempotencyKey: `${template}:${e.userId}:${e.status}:${e.withdrawalId ?? Math.round(e.amount * 100)}`,
     });
   });
 
@@ -630,8 +707,8 @@ export function registerDomainEventHandlers(): void {
       },
       overrides: { title: e.title, body: e.body },
       target: { user_id: e.userId },
-      idempotencyKey: `${template}:${e.userId}:${e.party}:${Math.round(e.amount * 100)}:${Date.now()}`,
-      metadata: { category: "referral", party: e.party },
+      idempotencyKey: `${template}:${e.userId}:${e.party}:${e.rewardKey ?? Math.round(e.amount * 100)}`,
+      metadata: { category: "referral", party: e.party, rewardKey: e.rewardKey ?? null },
     });
   });
 
@@ -651,6 +728,116 @@ export function registerDomainEventHandlers(): void {
       },
       target: { user_id: e.userId },
       idempotencyKey: `${template}:${e.userId}:${e.event}:${e.expiresOn ?? "na"}`,
+    });
+  });
+
+  on("user.signup", async (e) => {
+    const template =
+      e.role === "customer" ? "CUSTOMER_SIGNUP"
+      : e.role === "merchant" ? "MERCHANT_SIGNUP"
+      : "RIDER_SIGNUP";
+    await sendNotification({
+      templateCode: template,
+      variables: { customerName: e.name ?? "", name: e.name ?? "" },
+      target: { user_id: e.userId },
+      idempotencyKey: `${template}:${e.userId}`,
+    });
+  });
+
+  on("customer.address_changed", async (e) => {
+    const template = e.action === "ADDED" ? "CUSTOMER_ADDRESS_ADDED" : "CUSTOMER_ADDRESS_UPDATED";
+    await sendNotification({
+      templateCode: template,
+      variables: {},
+      target: { user_id: e.userId },
+      overrides: { deepLink: "/addresses" },
+      idempotencyKey: `${template}:${e.userId}:${e.addressId ?? "na"}`,
+    });
+  });
+
+  on("support.ticket_updated", async (e) => {
+    const template =
+      e.role === "customer" ? "CUSTOMER_SUPPORT_TICKET"
+      : e.role === "rider" ? "RIDER_SUPPORT_TICKET"
+      : "MERCHANT_SUPPORT_TICKET";
+    await sendNotification({
+      templateCode: template,
+      variables: {
+        ticketId: e.ticketId,
+        ticketTitle: e.ticketTitle ?? "Support",
+        messagePreview: e.messagePreview,
+      },
+      target: { user_id: e.userId },
+      idempotencyKey: `${template}:${e.ticketId}:${e.messagePreview.slice(0, 40)}`,
+    });
+  });
+
+  on("merchant.store_status", async (e) => {
+    const template =
+      e.status === "SUSPENDED" ? "MERCHANT_STORE_SUSPENDED"
+      : e.status === "APPROVED" ? "MERCHANT_STORE_APPROVED"
+      : "MERCHANT_STORE_ACTIVATED";
+    await sendNotification({
+      templateCode: template,
+      variables: {
+        storeName: e.storeName ?? "Your store",
+        reason: e.reason ?? "",
+      },
+      target: { user_id: e.merchantUserId },
+      priority: e.status === "SUSPENDED" ? "critical" : "high",
+      idempotencyKey: `${template}:${e.storeId}:${e.status}`,
+    });
+  });
+
+  on("merchant.menu_decision", async (e) => {
+    const template = e.decision === "APPROVED" ? "MERCHANT_MENU_APPROVED" : "MERCHANT_MENU_REJECTED";
+    await sendNotification({
+      templateCode: template,
+      variables: {
+        storeName: e.storeName ?? "Your store",
+        reason: e.reason ?? "",
+      },
+      target: { user_id: e.merchantUserId },
+      idempotencyKey: `${template}:${e.storeId}:${e.decision}`,
+    });
+  });
+
+  on("rider.order_reassigned", async (e) => {
+    await sendNotification({
+      templateCode: "RIDER_ORDER_REASSIGNED",
+      variables: { orderId: e.orderId, reason: e.reason ?? "" },
+      target: { user_id: e.riderUserId },
+      idempotencyKey: `RIDER_ORDER_REASSIGNED:${e.orderId}:${e.riderUserId}`,
+    });
+  });
+
+  on("rider.incentive", async (e) => {
+    await sendNotification({
+      templateCode: "RIDER_INCENTIVE",
+      variables: {
+        amount: e.amount.toFixed(2),
+        message: e.message ?? "Keep riding!",
+      },
+      target: { user_id: e.riderUserId },
+      idempotencyKey: `RIDER_INCENTIVE:${e.riderUserId}:${e.incentiveId ?? Math.round(e.amount * 100)}`,
+    });
+  });
+
+  on("rider.shift_reminder", async (e) => {
+    await sendNotification({
+      templateCode: "RIDER_SHIFT_REMINDER",
+      variables: {},
+      target: { user_id: e.riderUserId },
+      idempotencyKey: `RIDER_SHIFT_REMINDER:${e.riderUserId}:${new Date().toISOString().slice(0, 10)}`,
+    });
+  });
+
+  on("rider.attendance", async (e) => {
+    await sendNotification({
+      templateCode: "RIDER_ATTENDANCE",
+      variables: { message: e.message },
+      target: { user_id: e.riderUserId },
+      idempotencyKey: `RIDER_ATTENDANCE:${e.riderUserId}:${e.attendanceKey ?? e.message.slice(0, 40)}`,
     });
   });
 

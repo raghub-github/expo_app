@@ -95,6 +95,8 @@ function unifiedIntakePriorityFromDefinition(p: TicketPriorityDefinition | undef
 }
 
 function unifiedIntakeServiceTypeFromService(serviceType: string): string {
+  const raw = serviceType.trim().toLowerCase();
+  if (raw === "all") return "GENERAL";
   const u = serviceType.trim().toUpperCase();
   if (UNIFIED_SERVICE_TYPE_CODES.has(u)) return u;
   return "GENERAL";
@@ -683,6 +685,11 @@ export function TicketHelpTopicsPanel({
     [serviceTypeOptions]
   );
 
+  const serviceTypeFormOptions = useMemo(
+    () => [{ value: "all", label: "All" }, ...serviceTypeOptions],
+    [serviceTypeOptions]
+  );
+
   return (
     <div className="w-full min-w-0 space-y-3">
       {form == null ? (
@@ -991,7 +998,7 @@ export function TicketHelpTopicsPanel({
                       className="w-full rounded border border-gray-300 px-3 py-2 text-sm"
                     >
                       <option value="">—</option>
-                      {serviceTypeOptions.map((o) => (
+                      {serviceTypeFormOptions.map((o) => (
                         <option key={o.value} value={o.value}>
                           {o.label}
                         </option>

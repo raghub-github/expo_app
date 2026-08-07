@@ -17,6 +17,7 @@ import {
 } from "@/store/orderStore";
 import { isActiveOrderStatus, normalizeCustomerOrderStatus } from "@/lib/customer-order-status-display";
 import { isActivePersonRideOrder, isPersonRideOrderSummary } from "@/lib/person-ride-orders";
+import { resolveDockVehicleImageKey } from "@/lib/dock-vehicle-image";
 import {
   getMyOrdersCachedAt,
   readSyncMyOrders,
@@ -28,16 +29,22 @@ export function resolveActiveOrderService(order: OrderSummary): ActiveOrderServi
   if (t === "person_ride" || t === "ride") return "ride";
   if (t === "parcel") return "parcel";
   if (t === "food") return "food";
-  if (isPersonRideOrderSummary(order)) return "ride";
   const ref = (order.formattedOrderId ?? order.orderId ?? "").trim().toUpperCase();
   if (/^GMP\d*/.test(ref)) return "ride";
-  if (/^GMX\d*/.test(ref) || /^GMPARCEL/i.test(ref)) return "parcel";
+  if (/^GMC\d*/.test(ref) || /^GMX\d*/.test(ref) || /^GMPARCEL/i.test(ref)) return "parcel";
+  if (/^GMF\d*/.test(ref)) return "food";
+  if (isPersonRideOrderSummary(order)) return "ride";
   return "food";
 }
 
 function toActiveOrder(order: OrderSummary, existing?: ActiveOrder): ActiveOrder {
   const preservedEta =
     existing?.etaMinutes != null && existing.etaMinutes > 0 ? existing.etaMinutes : 0;
+  const serviceType = resolveActiveOrderService(order);
+  const fromApi =
+    (serviceType === "ride" || serviceType === "parcel") && order.rideType?.trim()
+      ? resolveDockVehicleImageKey(order.rideType)
+      : null;
   return {
     orderId: order.orderId,
     formattedOrderId: order.formattedOrderId,
@@ -46,7 +53,11 @@ function toActiveOrder(order: OrderSummary, existing?: ActiveOrder): ActiveOrder
     storeId: order.merchantPublicStoreId ?? null,
     storeName: order.merchantPublicName ?? order.merchantName ?? null,
     placedAt: new Date(order.createdAt).getTime(),
-    serviceType: resolveActiveOrderService(order),
+    serviceType,
+    vehicleImageKey:
+      fromApi ||
+      existing?.vehicleImageKey ||
+      (serviceType === "ride" || serviceType === "parcel" ? "bike" : null),
   };
 }
 

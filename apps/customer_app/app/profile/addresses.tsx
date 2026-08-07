@@ -1,10 +1,10 @@
 /**
  * Saved addresses – list from API, delete, set default, add new.
+ * Card UI matches the Select Location saved-address design.
  */
 
-import { useLayoutEffect, useState } from "react";
+import { useLayoutEffect, useMemo, useState } from "react";
 import { AppText } from "@/components/AppText";
-
 import { View, ScrollView, TouchableOpacity, StyleSheet, ActivityIndicator, Alert } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useTranslation } from "react-i18next";
@@ -13,11 +13,13 @@ import { Ionicons } from "@expo/vector-icons";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { addressService, type Address } from "@/services/address.service";
 import { shareAddressViaLink } from "@/services/addressShare.service";
-import { DeliveryAddressText } from "@/components/address/DeliveryAddressText";
+import { SavedAddressLocationCard } from "@/components/address/SavedAddressLocationCard";
+import { AddressOptionsBottomSheet } from "@/components/address/AddressOptionsBottomSheet";
+import { useLocationStore } from "@/store/locationStore";
+import { distanceMeters } from "@/lib/addressGeo";
 
 const TEAL = "#14b8a6";
 const MINT_SOFT = "#ccfbf1";
-const MINT_SOFT_ALT = "#E0F2F1";
 const TITLE_DARK = "#0f172a";
 const TEXT_GRAY = "#64748b";
 const TEXT_MUTED = "#94a3b8";
@@ -33,14 +35,6 @@ const SHADOW_SOFT = {
   elevation: 2,
 };
 
-function addressIcon(label: string | null): "home-outline" | "briefcase-outline" | "location-outline" {
-  if (!label) return "location-outline";
-  const l = label.toLowerCase();
-  if (l === "home") return "home-outline";
-  if (l === "work") return "briefcase-outline";
-  return "location-outline";
-}
-
 const PAD_H = 20;
 const CARD_RADIUS = 16;
 
@@ -50,9 +44,11 @@ export default function AddressesScreen() {
   const router = useRouter();
   const navigation = useNavigation();
   const queryClient = useQueryClient();
+  const coords = useLocationStore((s) => s.coords);
   const params = useLocalSearchParams<{ forCheckout?: string }>();
   const selectingForCheckout = params.forCheckout === "1" || params.forCheckout === "true";
   const [selectingAddressId, setSelectingAddressId] = useState<number | null>(null);
+  const [optionsAddress, setOptionsAddress] = useState<Address | null>(null);
 
   useLayoutEffect(() => {
     navigation.setOptions({
@@ -68,12 +64,18 @@ export default function AddressesScreen() {
     retry: false,
   });
 
+  const referenceCoords = useMemo(() => {
+    if (coords?.latitude != null && coords?.longitude != null) {
+      return { latitude: coords.latitude, longitude: coords.longitude };
+    }
+    return null;
+  }, [coords?.latitude, coords?.longitude]);
+
   const deleteMutation = useMutation({
     mutationFn: (id: number) => addressService.deleteAddress(id),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ["addresses"] });
       await queryClient.invalidateQueries({ queryKey: ["active-location"] });
-      // Backend may have rebound to the next MRU Saved Address — apply SoT locally.
       const { applyActiveLocationFromBackend } = await import(
         "@/lib/applyActiveLocationFromBackend"
       );
@@ -84,23 +86,6 @@ export default function AddressesScreen() {
       void promptCartIfLocationBrokeServiceability(queryClient);
     },
   });
-
-  const setDefaultMutation = useMutation({
-    mutationFn: (id: number) => addressService.setAddressDefault(id),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["addresses"] }),
-  });
-
-  const handleSetDefault = async (addr: Address) => {
-    try {
-      await setDefaultMutation.mutateAsync(addr.id);
-      const { applySelectedDeliveryAddress } = await import(
-        "@/lib/applySelectedDeliveryAddress"
-      );
-      await applySelectedDeliveryAddress(addr, queryClient);
-    } catch {
-      Alert.alert(t("addresses.defaultErrorTitle", "Could not set default"), t("addresses.defaultErrorBody", "Please try again."));
-    }
-  };
 
   const handleAddNewAddress = () =>
     router.push(
@@ -168,32 +153,42 @@ export default function AddressesScreen() {
     <View style={styles.container}>
       <ScrollView
         style={styles.scroll}
-        contentContainerStyle={[
-          styles.scrollContent,
-          { paddingBottom: insets.bottom + 24 },
-        ]}
+        contentContainerStyle={[styles.scrollContent, { paddingBottom: insets.bottom + 24 }]}
         showsVerticalScrollIndicator={false}
       >
         {isLoading ? (
           <View style={styles.emptyWrap}>
             <ActivityIndicator size="small" color={TEAL} />
-            <AppText style={[styles.emptySub, { marginTop: 12 }]}>{t("addresses.loading", "Loading addresses...")}</AppText>
+            <AppText style={[styles.emptySub, { marginTop: 12 }]}>
+              {t("addresses.loading", "Loading addresses...")}
+            </AppText>
           </View>
         ) : error ? (
           <View style={styles.emptyWrap}>
             <View style={styles.emptyIconWrap}>
               <Ionicons name="warning-outline" size={48} color={TEXT_MUTED} />
             </View>
-            <AppText style={styles.emptyTitle}>{t("addresses.errorLoading", "Could not load addresses")}</AppText>
-            <AppText style={styles.emptySub}>{t("addresses.errorLoadingSub", "Please try again later.")}</AppText>
+            <AppText style={styles.emptyTitle}>
+              {t("addresses.errorLoading", "Could not load addresses")}
+            </AppText>
+            <AppText style={styles.emptySub}>
+              {t("addresses.errorLoadingSub", "Please try again later.")}
+            </AppText>
           </View>
         ) : !hasAddresses ? (
           <View style={styles.emptyWrap}>
             <View style={styles.emptyIconWrap}>
               <Ionicons name="location-outline" size={48} color={TEXT_MUTED} />
             </View>
-            <AppText style={styles.emptyTitle}>{t("addresses.noSavedAddresses", "No saved address found")}</AppText>
-            <AppText style={styles.emptySub}>{t("addresses.noSavedAddressesSub", "Please use the Add new address button below for a smooth delivery experience.")}</AppText>
+            <AppText style={styles.emptyTitle}>
+              {t("addresses.noSavedAddresses", "No saved address found")}
+            </AppText>
+            <AppText style={styles.emptySub}>
+              {t(
+                "addresses.noSavedAddressesSub",
+                "Please use the Add new address button below for a smooth delivery experience."
+              )}
+            </AppText>
           </View>
         ) : (
           <>
@@ -203,107 +198,48 @@ export default function AddressesScreen() {
               </AppText>
             ) : null}
             {addresses.map((addr) => {
-              const cardMain = (
-                <>
-                  <View style={styles.addressIconWrap}>
-                    {selectingAddressId === addr.id ? (
-                      <ActivityIndicator size="small" color={TEAL} />
-                    ) : (
-                      <Ionicons name={addressIcon(addr.label)} size={22} color={TEAL} />
-                    )}
-                  </View>
-                  <View style={styles.addressBody}>
-                    <View style={styles.addressLabelRow}>
-                      <AppText style={styles.addressLabel}>{addr.label ?? t("addresses.other", "Other")}</AppText>
-                      {addr.isDefault && (
-                        <View style={styles.defaultBadge}>
-                          <AppText style={styles.defaultBadgeText}>{t("addresses.default", "Default")}</AppText>
-                        </View>
-                      )}
-                    </View>
-                    {addr.contactName ? (
-                      <AppText style={styles.addressLine} numberOfLines={1}>
-                        {addr.contactName}
-                        {addr.contactMobile ? ` • ${addr.contactMobile}` : ""}
-                      </AppText>
-                    ) : null}
-                    <DeliveryAddressText address={addr.fullAddress} style={styles.addressLine} />
-                  </View>
-                </>
-              );
+              const distM =
+                referenceCoords != null
+                  ? distanceMeters(
+                      referenceCoords.latitude,
+                      referenceCoords.longitude,
+                      addr.latitude,
+                      addr.longitude
+                    )
+                  : null;
+              const isSelected = addr.isDefault || addr.isSelected === true;
 
-              const cardBody = (
-                <>
-                  {selectingForCheckout ? (
-                    <View style={styles.addressCardMain}>{cardMain}</View>
-                  ) : (
-                    <TouchableOpacity
-                      style={styles.addressCardMain}
-                      activeOpacity={0.88}
-                      onPress={() => openEditAddress(addr)}
-                    >
-                      {cardMain}
-                    </TouchableOpacity>
-                  )}
-                  <View style={styles.cardActions}>
-                    {!selectingForCheckout && !addr.isDefault && (
-                      <TouchableOpacity
-                        hitSlop={12}
-                        style={styles.editBtn}
-                        onPress={() => void handleSetDefault(addr)}
-                        disabled={setDefaultMutation.isPending}
-                      >
-                        <AppText style={styles.setDefaultText}>{t("addresses.setDefault", "Set default")}</AppText>
-                      </TouchableOpacity>
-                    )}
-                    {!selectingForCheckout && (
-                      <TouchableOpacity hitSlop={12} style={styles.editBtn} onPress={() => handleShare(addr)}>
-                        <Ionicons name="share-social-outline" size={20} color={TEXT_GRAY} />
-                      </TouchableOpacity>
-                    )}
-                    {!selectingForCheckout && (
-                      <TouchableOpacity
-                        hitSlop={12}
-                        style={styles.editBtn}
-                        onPress={() => handleDelete(addr)}
-                        disabled={deleteMutation.isPending}
-                      >
-                        <Ionicons name="trash-outline" size={20} color={TEXT_GRAY} />
-                      </TouchableOpacity>
-                    )}
-                    {selectingForCheckout ? (
-                      <Ionicons name="chevron-forward" size={22} color={TEXT_MUTED} />
-                    ) : null}
-                  </View>
-                </>
-              );
-
-              return selectingForCheckout ? (
-                <TouchableOpacity
+              return (
+                <SavedAddressLocationCard
                   key={addr.id}
-                  style={[styles.addressCard, SHADOW_SOFT, styles.addressCardSelectable]}
-                  activeOpacity={0.88}
+                  address={addr}
+                  distanceM={distM}
+                  liveCoords={coords}
+                  isSelected={isSelected}
+                  selectedPillLabel={
+                    addr.isDefault
+                      ? t("addresses.default", "Default").toUpperCase()
+                      : "SELECTED"
+                  }
+                  loading={selectingAddressId === addr.id}
                   disabled={selectingAddressId != null}
-                  onPress={() => void handleSelectForCheckout(addr)}
-                >
-                  {cardBody}
-                </TouchableOpacity>
-              ) : (
-                <View key={addr.id} style={[styles.addressCard, SHADOW_SOFT]}>
-                  {cardBody}
-                </View>
+                  hideActions={selectingForCheckout}
+                  onPress={
+                    selectingForCheckout
+                      ? () => void handleSelectForCheckout(addr)
+                      : () => openEditAddress(addr)
+                  }
+                  onOptions={selectingForCheckout ? undefined : () => setOptionsAddress(addr)}
+                  onShare={selectingForCheckout ? undefined : () => void handleShare(addr)}
+                  onCamera={selectingForCheckout ? undefined : () => openEditAddress(addr)}
+                />
               );
             })}
           </>
         )}
 
-        {/* Add new address */}
         <TouchableOpacity
-          style={[
-            styles.addCard,
-            SHADOW_SOFT,
-            { marginTop: hasAddresses ? 8 : 24 },
-          ]}
+          style={[styles.addCard, SHADOW_SOFT, { marginTop: hasAddresses ? 8 : 24 }]}
           activeOpacity={0.85}
           onPress={handleAddNewAddress}
         >
@@ -317,6 +253,21 @@ export default function AddressesScreen() {
           <Ionicons name="chevron-forward" size={22} color={TEXT_MUTED} />
         </TouchableOpacity>
       </ScrollView>
+
+      <AddressOptionsBottomSheet
+        visible={optionsAddress != null}
+        onClose={() => setOptionsAddress(null)}
+        onEdit={() => {
+          const addr = optionsAddress;
+          setOptionsAddress(null);
+          if (addr) openEditAddress(addr);
+        }}
+        onDelete={() => {
+          const addr = optionsAddress;
+          setOptionsAddress(null);
+          if (addr) handleDelete(addr);
+        }}
+      />
     </View>
   );
 }
@@ -333,10 +284,6 @@ const styles = StyleSheet.create({
     color: TEXT_GRAY,
     lineHeight: 20,
     marginBottom: 14,
-  },
-  addressCardSelectable: {
-    borderWidth: 2,
-    borderColor: "#14b8a640",
   },
   emptyWrap: {
     alignItems: "center",
@@ -363,51 +310,6 @@ const styles = StyleSheet.create({
     color: TEXT_GRAY,
     textAlign: "center",
     lineHeight: 22,
-  },
-  addressCard: {
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: CARD_BG,
-    borderRadius: CARD_RADIUS,
-    padding: 16,
-    marginBottom: 12,
-    borderWidth: 1,
-    borderColor: BORDER_LIGHT,
-  },
-  /** Tappable area (icon + text) to open map editor; actions stay outside. */
-  addressCardMain: { flexDirection: "row", alignItems: "center", flex: 1, minWidth: 0 },
-  addressIconWrap: {
-    width: 44,
-    height: 44,
-    borderRadius: 12,
-    backgroundColor: MINT_SOFT_ALT,
-    alignItems: "center",
-    justifyContent: "center",
-    marginRight: 14,
-  },
-  addressBody: { flex: 1, marginRight: 12 },
-  addressLabelRow: { flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 4 },
-  addressLabel: {
-    fontSize: 16,
-    fontWeight: "600",
-    color: TITLE_DARK,
-  },
-  defaultBadge: {
-    backgroundColor: MINT_SOFT_ALT,
-    paddingHorizontal: 8,
-    paddingVertical: 2,
-    borderRadius: 6,
-  },
-  defaultBadgeText: { fontSize: 11, fontWeight: "600", color: TEAL },
-  addressLine: {
-    fontSize: 14,
-    color: TEXT_GRAY,
-    lineHeight: 20,
-  },
-  cardActions: { flexDirection: "row", alignItems: "center", gap: 4 },
-  setDefaultText: { fontSize: 12, color: TEAL, fontWeight: "600" },
-  editBtn: {
-    padding: 8,
   },
   addCard: {
     flexDirection: "row",
