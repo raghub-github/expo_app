@@ -953,6 +953,54 @@ export async function GET(req: NextRequest) {
   }
 }
 
+/**
+ * Child-store serviceability gate: resolve the store's location against the Geo &
+ * coverage stack (backend /v1/geo/services, same source as customer/rider). A store may
+ * only onboard where GatiMitra actually serves — "serviceable" = the area is in coverage
+ * AND at least one merchant-relevant delivery service (food or parcel) is live there.
+ * Fail-open: any lookup error returns checked:false so onboarding is never blocked by a
+ * transient issue (parent registration is a separate flow and never reaches here).
+ */
+async function resolveStoreLocationServiceable(
+  step2: Record<string, unknown> | undefined
+): Promise<{ checked: boolean; serviceable: boolean }> {
+  if (!step2) return { checked: false, serviceable: true };
+  const base =
+    process.env.GATIMITRA_BACKEND_API_URL?.replace(/\/$/, "") || "http://127.0.0.1:3000";
+  const pincode = typeof step2.postal_code === "string" ? step2.postal_code.trim() : "";
+  const state = typeof step2.state === "string" ? step2.state.trim() : "";
+  const lat = Number(step2.latitude);
+  const lng = Number(step2.longitude);
+
+  const params = new URLSearchParams();
+  if (pincode) params.set("pincode", pincode);
+  if (state) params.set("state", state);
+  if (Number.isFinite(lat) && Number.isFinite(lng)) {
+    params.set("lat", String(lat));
+    params.set("lng", String(lng));
+  }
+  if ([...params.keys()].length === 0) return { checked: false, serviceable: true };
+
+  try {
+    const res = await fetch(`${base}/v1/geo/services?${params.toString()}`, {
+      cache: "no-store",
+    });
+    if (!res.ok) return { checked: false, serviceable: true };
+    const data = (await res.json()) as {
+      ok?: boolean;
+      found?: boolean;
+      food?: boolean;
+      parcel?: boolean;
+      ride?: boolean;
+    };
+    if (!data?.ok) return { checked: false, serviceable: true };
+    const serviceable = data.found === true && (data.food === true || data.parcel === true);
+    return { checked: true, serviceable };
+  } catch {
+    return { checked: false, serviceable: true };
+  }
+}
+
 export async function PUT(req: NextRequest) {
   try {
     const supabase = await createServerSupabaseClient();
@@ -1538,6 +1586,27 @@ export async function PUT(req: NextRequest) {
 
     // Verification-fix saves must not re-run draft upsert — it forces DRAFT + onboarding_completed:false.
     if (normalizedCurrentStep >= 2 && !preserveProgressPosition) {
+      // Serviceability gate — block committing a child store at a non-serviceable location.
+      const step2Loc = mergedFormData?.step2 as Record<string, unknown> | undefined;
+      if (
+        step2Loc &&
+        (step2Loc.postal_code ||
+          step2Loc.state ||
+          (step2Loc.latitude != null && step2Loc.longitude != null))
+      ) {
+        const svc = await resolveStoreLocationServiceable(step2Loc);
+        if (svc.checked && !svc.serviceable) {
+          return NextResponse.json(
+            {
+              success: false,
+              error:
+                "This location isn't in a serviceable area yet. Store onboarding will open here once GatiMitra launches services in this area.",
+              code: "LOCATION_NOT_SERVICEABLE",
+            },
+            { status: 422 }
+          );
+        }
+      }
       try {
         const draftResult = await upsertStoreDraft(db, {
           parentId: validation.merchantParentId,

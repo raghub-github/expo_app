@@ -6,6 +6,7 @@ import { router } from "expo-router";
 import { useLocationCapture } from "@/src/hooks/useLocationCapture";
 import { useOnboardingStore } from "@/src/stores/onboardingStore";
 import { useSessionStore } from "@/src/stores/sessionStore";
+import { getGeoServiceAvailability } from "@/src/services/geoServices.service";
 import { Button } from "@/src/components/ui/Button";
 import { colors } from "@/src/theme";
 
@@ -36,12 +37,42 @@ export default function LocationScreen() {
     }
 
     // Continue onboarding — method-selection is skipped; Aadhaar applies policy (auto/hybrid/manual).
-    if (session) {
-      router.replace("/(onboarding)/aadhaar");
-    } else {
-      // If no session, go to welcome screen to start onboarding
-      router.replace("/(onboarding)/welcome");
+    const proceed = () => {
+      if (session) {
+        router.replace("/(onboarding)/aadhaar");
+      } else {
+        // If no session, go to welcome screen to start onboarding
+        router.replace("/(onboarding)/welcome");
+      }
+    };
+
+    // Advisory serviceability notice (never blocks). Riders have NO location restriction —
+    // they can complete onboarding anywhere and work once they're in a serviced area. If no
+    // service (food/parcel/ride) is currently live at their captured location, just inform them.
+    try {
+      const res = await getGeoServiceAvailability({
+        ...(data.pincode ? { pincode: data.pincode } : {}),
+        ...(data.state ? { state: data.state } : {}),
+        ...(data.lat != null && data.lon != null ? { lat: data.lat, lng: data.lon } : {}),
+      });
+      if (
+        res.ok &&
+        res.availability.found &&
+        !res.availability.food &&
+        !res.availability.parcel &&
+        !res.availability.ride
+      ) {
+        Alert.alert(
+          "No service in your area yet",
+          "None of our services are live at your current location right now. You can still complete onboarding — and you'll be able to work as soon as you're in a serviced area.",
+          [{ text: "Continue", onPress: proceed }]
+        );
+        return;
+      }
+    } catch {
+      // Fail-open: never block onboarding on a serviceability lookup error.
     }
+    proceed();
   };
 
   const handleRetry = async () => {
