@@ -91,6 +91,7 @@ export type OrderDetail = OrderSummary & {
   deliveryContactName?: string | null;
   deliveryContactPhone?: string | null;
   deliveryPrimaryContactName?: string | null;
+  deliveryPrimaryContactPhone?: string | null;
   alternateContactName?: string | null;
   alternateContactPhone?: string | null;
   /** Set when customer added an alternate contact from order help (one-time). */

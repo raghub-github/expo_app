@@ -4,6 +4,9 @@
  */
 
 import api from "./api";
+import { getConfig } from "@/config/env";
+import { STORAGE_KEYS } from "@/constants";
+import { getItem } from "@/utils/storage";
 import type {
   HearingAccessibility,
   MobilityAccessibility,
@@ -148,5 +151,37 @@ export const profileService = {
       { code }
     );
     return data;
+  },
+
+  /**
+   * Upload profile photo (multipart) → R2 → proxy URL saved on customer row.
+   */
+  async uploadProfileImage(file: {
+    uri: string;
+    name: string;
+    mimeType: string;
+  }): Promise<{ profile_image_url: string }> {
+    const token = await getItem(STORAGE_KEYS.AUTH_TOKEN);
+    if (!token) throw new Error("Not authenticated");
+
+    const form = new FormData();
+    form.append(
+      "file",
+      { uri: file.uri, name: file.name, type: file.mimeType } as unknown as Blob
+    );
+
+    const base = getConfig().apiBaseUrl.replace(/\/+$/, "");
+    const res = await fetch(`${base}${ME_PREFIX}/profile-image`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+      body: form,
+    });
+
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      throw new Error(`Upload failed (${res.status})${text ? `: ${text}` : ""}`);
+    }
+
+    return (await res.json()) as { profile_image_url: string };
   },
 };

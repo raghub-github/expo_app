@@ -32,6 +32,8 @@ import {
 } from "@/src/lib/rider-vehicle-form";
 import type {
   RiderVehicleDto,
+  RiderVehicleFormMeta,
+  RiderVehicleMissingField,
   RiderVehicleOnboardingPrefill,
   UpsertRiderVehiclePayload,
 } from "@/src/hooks/useRiderVehicle";
@@ -61,6 +63,7 @@ function initialServiceSelection(serviceTypes: string[] | undefined): string[] {
 
 type VehicleDetailsFormProps = {
   initial?: RiderVehicleDto | null;
+  formMeta?: RiderVehicleFormMeta | null;
   onboardingVehicleChoice?: string | null;
   onboardingVehicleCategoryCode?: string | null;
   onboardingPrefill?: RiderVehicleOnboardingPrefill | null;
@@ -72,6 +75,7 @@ type VehicleDetailsFormProps = {
 
 export function VehicleDetailsForm({
   initial,
+  formMeta,
   onboardingVehicleChoice,
   onboardingVehicleCategoryCode,
   onboardingPrefill,
@@ -87,7 +91,10 @@ export function VehicleDetailsForm({
   const storeVehicleCategoryCode = useOnboardingStore((s) => s.data.vehicleCategoryCode);
   const storeRcNumber = useOnboardingStore((s) => s.data.rcNumber);
   const hydrateOnboarding = useOnboardingStore((s) => s.hydrate);
-  const [step, setStep] = useState<1 | 2>(1);
+  const isCompact = formMeta?.formMode === "cashfree_missing_only";
+  const missingFields = formMeta?.missingFields ?? [];
+  const missingSet = useMemo(() => new Set(missingFields), [missingFields]);
+  const [step, setStep] = useState<1 | 2>(() => formMeta?.initialStep ?? 1);
 
   const [vehicleType, setVehicleType] = useState(initial?.vehicleType ?? "bike");
   const [customOtherType, setCustomOtherType] = useState(
@@ -128,6 +135,64 @@ export function VehicleDetailsForm({
   useEffect(() => {
     void hydrateOnboarding();
   }, [hydrateOnboarding]);
+
+  useEffect(() => {
+    setStep(formMeta?.initialStep ?? 1);
+  }, [formMeta?.initialStep, initial?.id]);
+
+  const showStep1Field = (field: RiderVehicleMissingField | "vehicle_type" | "make_model") => {
+    if (!isCompact) return true;
+    if (field === "make_model") {
+      return missingSet.has("make") || missingSet.has("model");
+    }
+    return missingSet.has(field);
+  };
+
+  const showStep2Field = (field: RiderVehicleMissingField) => {
+    if (!isCompact) return true;
+    return missingSet.has(field);
+  };
+
+  const showStep1Section = useMemo(() => {
+    if (!isCompact) return step === 1;
+    return (
+      step === 1 &&
+      (showStep1Field("vehicle_type") ||
+        showStep1Field("registration_number") ||
+        showStep1Field("fuel_type") ||
+        showStep1Field("make_model"))
+    );
+  }, [isCompact, step, missingSet]);
+
+  const compactSingleStep = isCompact && formMeta?.step1Complete;
+  const showBackButton = !isCompact || !formMeta?.step1Complete;
+
+  const verifiedSummaryLines = useMemo(() => {
+    if (!isCompact || !initial) return [];
+    const lines: string[] = [];
+    if (initial.registrationNumber) {
+      lines.push(
+        `${t("vehicle.form.registration", "Registration number")}: ${initial.registrationNumber}`,
+      );
+    }
+    if (initial.vehicleTypeLabel) {
+      lines.push(`${t("vehicle.form.typeLabel", "Vehicle type")}: ${initial.vehicleTypeLabel}`);
+    }
+    const makeModel = [initial.make, initial.model].filter(Boolean).join(" ");
+    if (makeModel) {
+      lines.push(`${t("vehicle.form.makeModel", "Make & model")}: ${makeModel}`);
+    }
+    if (initial.fuelTypeLabel) {
+      lines.push(`${t("vehicle.form.fuelType", "Fuel type")}: ${initial.fuelTypeLabel}`);
+    }
+    if (initial.color) {
+      lines.push(`${t("vehicle.form.color", "Color")}: ${initial.color}`);
+    }
+    if (initial.year != null) {
+      lines.push(`${t("vehicle.form.year", "Year")}: ${initial.year}`);
+    }
+    return lines;
+  }, [isCompact, initial, t]);
 
   const effectiveVehicleChoice =
     onboardingVehicleChoice?.trim() ||
@@ -200,6 +265,17 @@ export function VehicleDetailsForm({
     [selectedServices],
   );
   const showPersonRideFields = needsPersonRideFields(normalizedServices);
+
+  const showStep2Section = useMemo(() => {
+    if (!isCompact) return step === 2;
+    if (step !== 2 && !(isCompact && formMeta?.step1Complete)) return false;
+    return (
+      showStep2Field("service_types") ||
+      showStep2Field("ownership_type") ||
+      showStep2Field("is_commercial") ||
+      showPersonRideFields
+    );
+  }, [isCompact, step, formMeta?.step1Complete, missingSet, showPersonRideFields]);
 
   const derivedState = useMemo(
     () => deriveRegistrationStateFromPlate(registrationNumber),
@@ -473,14 +549,18 @@ export function VehicleDetailsForm({
     <>
       <View style={styles.stepHeader}>
         <Text style={styles.stepLabel}>
-          {step === 1
-            ? t("vehicle.form.step1", "Step 1 of 2 — Vehicle details")
-            : t("vehicle.form.step2", "Step 2 of 2 — Service & ownership")}
+          {compactSingleStep
+            ? t("vehicle.form.remainingStep", "Complete remaining details")
+            : step === 1
+              ? t("vehicle.form.step1", "Step 1 of 2 — Vehicle details")
+              : t("vehicle.form.step2", "Step 2 of 2 — Service & ownership")}
         </Text>
-        <View style={styles.stepDots}>
-          <View style={[styles.stepDot, step >= 1 && styles.stepDotActive]} />
-          <View style={[styles.stepDot, step >= 2 && styles.stepDotActive]} />
-        </View>
+        {!compactSingleStep ? (
+          <View style={styles.stepDots}>
+            <View style={[styles.stepDot, step >= 1 && styles.stepDotActive]} />
+            <View style={[styles.stepDot, step >= 2 && styles.stepDotActive]} />
+          </View>
+        ) : null}
       </View>
 
       <ScrollView
@@ -496,8 +576,26 @@ export function VehicleDetailsForm({
           { paddingBottom: keyboardHeight > 0 ? 12 : 4 },
         ]}
       >
-        {step === 1 ? (
+        {compactSingleStep && verifiedSummaryLines.length > 0 ? (
+          <View style={styles.verifiedSummary}>
+            <View style={styles.verifiedSummaryHeader}>
+              <Ionicons name="shield-checkmark" size={16} color={TEAL} />
+              <Text style={styles.verifiedSummaryTitle}>
+                {t("vehicle.form.rcVerifiedSummary", "RC verified from Cashfree")}
+              </Text>
+            </View>
+            {verifiedSummaryLines.map((line) => (
+              <Text key={line} style={styles.verifiedSummaryLine}>
+                {line}
+              </Text>
+            ))}
+          </View>
+        ) : null}
+
+        {showStep1Section ? (
           <>
+            {showStep1Field("vehicle_type") ? (
+              <>
             <Text style={styles.sectionLabel}>
               {t("vehicle.form.typeLabel", "Vehicle type")}
               <Text style={styles.required}> *</Text>
@@ -595,7 +693,10 @@ export function VehicleDetailsForm({
                 {t("vehicle.form.otherTypeLocked", "Type")}: {customOtherType.trim()}
               </Text>
             ) : null}
+              </>
+            ) : null}
 
+            {showStep1Field("registration_number") ? (
             <View
               onLayout={(e) => {
                 regFieldY.current = e.nativeEvent.layout.y;
@@ -633,8 +734,9 @@ export function VehicleDetailsForm({
                 </Text>
               ) : null}
             </View>
+            ) : null}
 
-            {!hideFuelType ? (
+            {showStep1Field("fuel_type") && !hideFuelType ? (
               <>
                 <Text style={styles.fieldLabel}>{t("vehicle.form.fuelType", "Fuel type")}</Text>
                 <View style={styles.chipRow}>
@@ -658,6 +760,8 @@ export function VehicleDetailsForm({
               </>
             ) : null}
 
+            {showStep1Field("make_model") ? (
+            <>
             <Text style={styles.fieldLabel}>
               {t("vehicle.form.makeModel", "Make & model")}
             </Text>
@@ -685,7 +789,10 @@ export function VehicleDetailsForm({
                 />
               </View>
             </View>
+            </>
+            ) : null}
 
+            {!isCompact || showStep1Field("color") || showStep1Field("year") ? (
             <View style={styles.row}>
               <View style={[styles.fieldGroup, styles.half]}>
                 <Text style={styles.fieldLabel}>{t("vehicle.form.color", "Color")}</Text>
@@ -718,9 +825,14 @@ export function VehicleDetailsForm({
                 </View>
               </View>
             </View>
+            ) : null}
           </>
-        ) : (
+        ) : null}
+
+        {showStep2Section ? (
           <>
+            {showStep2Field("service_types") ? (
+              <>
             <Text style={styles.fieldLabel}>
               {t("vehicle.form.serviceTypes", "Services you will deliver")}
               <Text style={styles.required}> *</Text>
@@ -741,7 +853,11 @@ export function VehicleDetailsForm({
               </Text>
               <Ionicons name="chevron-down" size={18} color="#64748B" />
             </Pressable>
+              </>
+            ) : null}
 
+            {showStep2Field("is_commercial") ? (
+              <>
             <Text style={styles.fieldLabel}>
               {t("vehicle.form.isCommercial", "Commercial vehicle?")}
               <Text style={styles.required}> *</Text>
@@ -768,7 +884,11 @@ export function VehicleDetailsForm({
                 </Text>
               </Pressable>
             </View>
+              </>
+            ) : null}
 
+            {showStep2Field("ownership_type") ? (
+              <>
             <Text style={styles.fieldLabel}>
               {t("vehicle.form.ownership", "Ownership")}
               <Text style={styles.required}> *</Text>
@@ -791,6 +911,8 @@ export function VehicleDetailsForm({
                 );
               })}
             </View>
+              </>
+            ) : null}
 
             {showPersonRideFields ? (
               <>
@@ -842,7 +964,7 @@ export function VehicleDetailsForm({
               </>
             ) : null}
           </>
-        )}
+        ) : null}
 
         {displayError ? (
           <View style={styles.errorBanner}>
@@ -851,7 +973,7 @@ export function VehicleDetailsForm({
           </View>
         ) : null}
 
-        {step === 1 ? (
+        {showStep1Section ? (
           <Pressable
             onPress={handleContinue}
             disabled={!canContinueStep1}
@@ -862,8 +984,9 @@ export function VehicleDetailsForm({
             </Text>
             <Ionicons name="arrow-forward" size={20} color="#FFFFFF" />
           </Pressable>
-        ) : (
+        ) : showStep2Section ? (
           <View style={styles.stepActions}>
+            {showBackButton ? (
             <Pressable
               onPress={() => {
                 setLocalError(null);
@@ -875,6 +998,7 @@ export function VehicleDetailsForm({
               <Ionicons name="arrow-back" size={18} color={TEAL} />
               <Text style={styles.backBtnText}>{t("common.back", "Back")}</Text>
             </Pressable>
+            ) : null}
             <Pressable
               onPress={() => void handleSave()}
               disabled={!canSubmitStep2 || submitting}
@@ -882,6 +1006,7 @@ export function VehicleDetailsForm({
                 styles.saveBtn,
                 styles.saveBtnFlex,
                 (!canSubmitStep2 || submitting) && styles.saveBtnDisabled,
+                !showBackButton && styles.saveBtnFullWidth,
               ]}
             >
               {submitting ? (
@@ -889,14 +1014,16 @@ export function VehicleDetailsForm({
               ) : (
                 <>
                   <Text style={styles.saveBtnText}>
-                    {t("vehicle.form.save", "Save vehicle details")}
+                    {compactSingleStep
+                      ? t("vehicle.form.saveCompact", "Save & go online")
+                      : t("vehicle.form.save", "Save vehicle details")}
                   </Text>
                   <Ionicons name="checkmark-circle" size={20} color="#FFFFFF" />
                 </>
               )}
             </Pressable>
           </View>
-        )}
+        ) : null}
       </ScrollView>
 
       <Modal
@@ -1158,6 +1285,33 @@ const styles = StyleSheet.create({
   saveBtnFlex: {
     flex: 1,
     marginTop: 0,
+  },
+  saveBtnFullWidth: {
+    flex: 1,
+  },
+  verifiedSummary: {
+    backgroundColor: colors.primary[50],
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: colors.primary[100],
+    padding: 12,
+    gap: 4,
+  },
+  verifiedSummaryHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    marginBottom: 4,
+  },
+  verifiedSummaryTitle: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: "#334155",
+  },
+  verifiedSummaryLine: {
+    fontSize: 12,
+    color: "#475569",
+    lineHeight: 18,
   },
   saveBtnDisabled: {
     opacity: 0.5,

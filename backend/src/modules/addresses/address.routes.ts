@@ -181,6 +181,16 @@ export async function addressRoutes(app: FastifyInstance) {
       const body = addressBodySchema.parse(request.body);
       try {
         const row = await addAddress(customerPk, body);
+        try {
+          const { emitEvent } = await import("../notifications/index.js");
+          emitEvent("customer.address_changed", {
+            userId: String(request.auth!.sub),
+            action: "ADDED",
+            addressId: row.id,
+          });
+        } catch {
+          /* non-blocking */
+        }
         return reply.status(201).send({ id: row.id });
       } catch (err: unknown) {
         const message = err instanceof Error ? err.message : String(err);
@@ -224,6 +234,16 @@ export async function addressRoutes(app: FastifyInstance) {
       try {
         const updated = await updateAddress(customerPk, id, body);
         if (!updated) return reply.status(404).send({ error: "Address not found" });
+        try {
+          const { emitEvent } = await import("../notifications/index.js");
+          emitEvent("customer.address_changed", {
+            userId: String(request.auth!.sub),
+            action: "UPDATED",
+            addressId: id,
+          });
+        } catch {
+          /* non-blocking */
+        }
         return reply.send({ ok: true });
       } catch (err: unknown) {
         const message = err instanceof Error ? err.message : String(err);

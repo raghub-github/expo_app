@@ -221,8 +221,10 @@ export function GlobalSearch() {
       {expanded ? (
         <>
           {/* Search bar (stays in flow) */}
-          <form onSubmit={handleSubmit} className="w-full min-w-[180px] sm:min-w-[240px] max-w-[380px] md:max-w-[480px] flex items-center gap-2 rounded-xl border border-blue-200 bg-white shadow-md px-3 py-1.5 ring-1 ring-blue-100">
-            <Search className="h-5 w-5 text-gray-400 shrink-0" />
+          <form onSubmit={handleSubmit} className="w-full min-w-[180px] sm:min-w-[240px] max-w-[380px] md:max-w-[480px] flex items-center gap-2 rounded-xl border border-blue-200 bg-white shadow-md px-2 py-1.5 ring-1 ring-blue-100">
+            <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[#121212]/10">
+              <Search className="h-4 w-4 text-[#121212]/70 shrink-0" />
+            </span>
             <input
               ref={inputRef}
               type="text"

@@ -1,9 +1,9 @@
 /**
  * Deliver an Expo push with deep-link data correctly attached.
  *
- * Campaigns must not depend solely on Redis + notification-worker. This helper:
- *   1) Tries BullMQ enqueue when PUSH_USE_QUEUE=1 (optional async path)
- *   2) Otherwise (default) OR on enqueue failure → sends via Expo Push API inline
+ * Queue-first (default PUSH_USE_QUEUE=true):
+ *   1) Enqueue BullMQ `q.push.send` when queue mode is on
+ *   2) On enqueue failure → send via Expo Push API inline (emergency fallback)
  *
  * Always merges `screen` into `data.screen` + `data.deepLink` so client navigators work.
  */
@@ -23,6 +23,12 @@ function mergeDeepLinkData(payload: PushSendJob): Record<string, unknown> {
   if (screen) {
     data.screen = screen;
     data.deepLink = screen;
+  }
+  if (payload.dispatchLogId && !data.notification_id) {
+    data.notification_id = payload.dispatchLogId;
+  }
+  if (payload.templateCode && !data.template_code) {
+    data.template_code = payload.templateCode;
   }
   return data;
 }
@@ -116,12 +122,19 @@ export async function deliverExpoPush(
 
   if (preferQueue) {
     try {
-      await enqueue(QUEUE_NAMES.PUSH_SEND, job);
+      const jobId =
+        payload.dispatchLogId && /^[0-9a-f-]{36}$/i.test(payload.dispatchLogId)
+          ? `push:${payload.dispatchLogId}:${payload.attempt ?? 0}`
+          : undefined;
+      await enqueue(QUEUE_NAMES.PUSH_SEND, job, jobId ? { jobId } : undefined);
       incrCounter("push_enqueued_total", "Push notifications enqueued", 1);
       return { ok: true, accepted: 1, failed: 0, mode: "queued" };
     } catch (err) {
       incrCounter("push_enqueue_failed_total", "Push enqueue failures (tolerated)");
-      console.warn("[push] enqueue failed, falling back to inline:", (err as Error).message);
+      console.warn(
+        "[push] enqueue failed, falling back to inline:",
+        (err as Error).message,
+      );
     }
   }
 

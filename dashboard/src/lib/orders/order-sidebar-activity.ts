@@ -25,12 +25,49 @@ export type SidebarRemark = {
 
 export type SidebarCxNotification = {
   id: string;
+  /** Full stored message (often "Title: Body"). */
   message: string;
+  /** Push title the admin selected / sent. */
+  title: string | null;
+  /** Message body without the title prefix. */
+  body: string | null;
   time: string;
   actorType: string | null;
   actorName: string | null;
   actorEmail: string | null;
 };
+
+/** Split history text stored as "Title: Body", or use metadata when present. */
+export function splitCxNotificationMessage(
+  message: string,
+  metadata?: unknown
+): { title: string | null; body: string | null } {
+  const meta =
+    metadata && typeof metadata === "object" && !Array.isArray(metadata)
+      ? (metadata as Record<string, unknown>)
+      : null;
+  const metaTitle =
+    typeof meta?.title === "string" && meta.title.trim() ? meta.title.trim() : null;
+  const metaBody =
+    typeof meta?.body === "string" && meta.body.trim() ? meta.body.trim() : null;
+  if (metaTitle || metaBody) {
+    return {
+      title: metaTitle,
+      body: metaBody ?? (message.trim() || null),
+    };
+  }
+
+  const text = message.trim();
+  if (!text) return { title: null, body: null };
+  const sep = text.indexOf(": ");
+  if (sep > 0 && sep <= 120) {
+    return {
+      title: text.slice(0, sep).trim() || null,
+      body: text.slice(sep + 2).trim() || null,
+    };
+  }
+  return { title: null, body: text };
+}
 
 export type SidebarRecon = {
   id: string;
@@ -171,13 +208,20 @@ export function mapNotificationsFromApi(
     sentByName?: string | null;
     sentByRole?: string | null;
     sentAt?: string | Date;
+    notificationMetadata?: unknown;
   }>
 ): SidebarCxNotification[] {
   return items.map((n) => {
     const sent = n.sentAt ? new Date(n.sentAt) : new Date();
+    const { title, body } = splitCxNotificationMessage(
+      n.message,
+      n.notificationMetadata
+    );
     return {
       id: String(n.id),
       message: n.message,
+      title,
+      body,
       actorType: n.sentByRole ?? null,
       actorName: n.sentByName ?? null,
       actorEmail: n.sentByEmail ?? null,
@@ -285,6 +329,7 @@ export function serializeNotificationForApi(n: {
   sentByName: string | null;
   sentByRole: string | null;
   sentAt: Date | string;
+  notificationMetadata?: unknown;
 }) {
   return {
     id: n.id,
@@ -293,5 +338,6 @@ export function serializeNotificationForApi(n: {
     sentByName: n.sentByName,
     sentByRole: n.sentByRole,
     sentAt: serializeDateForApi(n.sentAt) ?? new Date().toISOString(),
+    notificationMetadata: n.notificationMetadata ?? null,
   };
 }

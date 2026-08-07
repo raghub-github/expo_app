@@ -1,5 +1,5 @@
+import { getAuthenticatedApiUser, authFailureResponse } from "@/lib/auth/api-session";
 import { NextRequest, NextResponse } from "next/server";
-import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine";
 import { getSystemUserByEmail } from "@/lib/auth/user-mapping";
 import { getSql } from "@/lib/db/client";
@@ -37,15 +37,11 @@ export async function POST(
       return NextResponse.json({ success: false, error: "Invalid order id" }, { status: 400 });
     }
 
-    const supabase = await createServerSupabaseClient();
-    const {
-      data: { user },
-      error: userError,
-    } = await supabase.auth.getUser();
-
-    if (userError || !user) {
-      return NextResponse.json({ success: false, error: "Not authenticated" }, { status: 401 });
+    const auth = await getAuthenticatedApiUser(request);
+    if (!auth.ok) {
+      return authFailureResponse(auth);
     }
+    const { user } = auth;
 
     const allowed =
       (await isSuperAdmin(user.id, user.email ?? "")) ||

@@ -52,6 +52,10 @@
 # Build artefacts that should never be tracked (audit 2026-06)
 # These three directories alone were ~75 MB of accidentally-tracked bytes.
 **/.expo-bundle-check/
+**/.expo-dev-test/
+**/.expo-verify/
+**/.expo-verify2/
+**/.expo-verify-final/
 **/.git.nested-control-panel-backup/
 **/archive-output/
 

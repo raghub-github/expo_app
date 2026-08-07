@@ -303,13 +303,6 @@ export default function UserDetailsPage() {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <Link
-            href="/dashboard/users"
-            className="inline-flex items-center text-blue-600 hover:text-blue-700 mb-2"
-          >
-            <ArrowLeft className="h-4 w-4 mr-2" />
-            Back to Users
-          </Link>
           <p className="text-lg sm:text-xl font-semibold text-gray-900">{user.fullName}</p>
           <p className="mt-1 text-sm text-gray-600">{user.email}</p>
         </div>

@@ -108,12 +108,15 @@ export async function getNearbyRideSupply(input: {
   pickupLng: number;
   radiusKm?: number;
   rideType?: string;
+  /** Duty service_types filter. Default person_ride; parcel for courier supply. */
+  serviceType?: "person_ride" | "parcel";
   tripKm?: number;
   pickupPincode?: string | null;
   pickupState?: string | null;
 }): Promise<RideAvailabilityResult> {
   const radiusKm = input.radiusKm ?? DEFAULT_RIDE_SUPPLY_RADIUS_KM;
   const tripKm = input.tripKm != null && Number.isFinite(input.tripKm) ? Math.max(0, input.tripKm) : null;
+  const dutyService = input.serviceType === "parcel" ? "parcel" : "person_ride";
   const db = getDb();
   const sqlClient = getSql();
 
@@ -186,7 +189,7 @@ export async function getNearbyRideSupply(input: {
       WHERE r.deleted_at IS NULL
         AND r.status <> 'BLOCKED'
         AND ld.status = 'ON'
-        AND ld.service_types @> '["person_ride"]'::jsonb
+        AND ld.service_types @> ${JSON.stringify([dutyService])}::jsonb
         AND rv.deleted_at IS NULL
         AND rv.is_active = true
         AND rv.verified = true
@@ -252,6 +255,9 @@ export async function getNearbyRideSupply(input: {
   const uniqueRiderIds = new Set(riders.map((r) => r.riderId));
   const options: RideAvailabilityOption[] = [];
 
+  // Parcel clients map riders → 2W/3W/4W categories themselves — skip person_ride catalog
+  // (and never surface bike-lite for courier).
+  if (dutyService === "person_ride") {
   for (const row of catalogRows) {
     if (row.code === "travel") continue;
 
@@ -295,6 +301,7 @@ export async function getNearbyRideSupply(input: {
       nearestRiderKm: nearestKm,
       nearestRiderEtaMins: nearestEta,
     });
+  }
   }
 
   let mapRiders = riders;

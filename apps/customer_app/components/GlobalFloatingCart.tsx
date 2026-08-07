@@ -2,7 +2,8 @@
  * Food floating cart + multi-order tracking dock.
  * Cart visible only on food browse: /home, /home/merchant/*, /home/category/*, etc.
  * Hidden on Home tab (/(tabs)/index), Profile, Orders, checkout, search, and other non-food routes.
- * Order tracking dock: food browse + /orders when user has active deliveries.
+ * Order tracking dock: filtered by service — food on food browse, parcel on Courier home.
+ * Parcel tracking must never appear on food home (and vice versa).
  */
 
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -34,7 +35,7 @@ import { useScheduleTick } from "@/hooks/useScheduleTick";
 import { FloatingOrderTrackingPill } from "@/components/orders/FloatingOrderTrackingPill";
 import { StoreText } from "@/components/store/StoreText";
 import { customerTabBarOffset } from "@/components/CustomerTabBar";
-import { resolveFloatingCartBottomOffset, FLOATING_CART_UI_LIFT } from "@/constants/layout";
+import { resolveFloatingCartBottomOffset, FLOATING_CART_UI_LIFT, PARCEL_TRACK_ABOVE_LEGAL_LIFT } from "@/constants/layout";
 import { usePartnerChatUnread } from "@/hooks/usePartnerChatUnread";
 import { prefetchSubscriptionPlans } from "@/lib/subscriptionCache";
 import { useAuthStore } from "@/store/authStore";
@@ -75,6 +76,26 @@ function useIsFoodServicePage(): boolean {
   return false;
 }
 
+/** Courier home only — floating track for parcel must never appear on food routes. */
+function useIsParcelServiceHome(): boolean {
+  const pathname = usePathname();
+  if (typeof pathname !== "string") return false;
+  const p = pathname as string;
+  return p === "/home/service/parcels" || p.startsWith("/home/service/parcels?");
+}
+
+/**
+ * Which service home the floating track dock belongs to on this route.
+ * Ride keeps its own bottom sheet — excluded here.
+ */
+function useTrackingDockService(): ActiveOrder["serviceType"] | null {
+  const isFood = useIsFoodServicePage();
+  const isParcelHome = useIsParcelServiceHome();
+  if (isFood) return "food";
+  if (isParcelHome) return "parcel";
+  return null;
+}
+
 /** Show dock on orders list or order detail when user has active orders (switch between orders). */
 function useIsOnOrdersArea(): boolean {
   const pathname = usePathname();
@@ -101,8 +122,15 @@ function useHideFloatingOrderTrackingPill(): boolean {
   }
   if (p === "/profile" || p.startsWith("/profile/")) return true;
   if (p === "/orders") return true;
-  // Ride searching screen owns its own bottom UI — no floating pill.
+  // Ride / parcel searching screens own their own bottom UI — no floating pill.
   if (p.startsWith("/home/service/ride-searching")) return true;
+  if (p.startsWith("/home/service/parcel-searching")) return true;
+  // Ride home uses ActiveRideBottomSheet — never the food/parcel dock.
+  if (p === "/home/service/ride" || p.startsWith("/home/service/ride?")) return true;
+  if (p.startsWith("/home/service/ride-book")) return true;
+  // Parcel book / location — keep focus on booking, not track dock.
+  if (p.startsWith("/home/service/parcel-book")) return true;
+  if (p.startsWith("/home/service/parcel-location")) return true;
 
   if (segments[0] === "home" && segments[1] === "merchant" && segments.length >= 3) {
     return true;
@@ -186,6 +214,8 @@ export function GlobalFloatingCart() {
   const session = useAuthStore((s) => s.session);
   const segments = useSegments() as string[];
   const isFoodServicePage = useIsFoodServicePage();
+  const isParcelServiceHome = useIsParcelServiceHome();
+  const trackingDockService = useTrackingDockService();
   const isOnOrdersArea = useIsOnOrdersArea();
   const hideFloatingOrderTrackingPill = useHideFloatingOrderTrackingPill();
   const hideFloatingCart = useHideFloatingCart();
@@ -214,17 +244,44 @@ export function GlobalFloatingCart() {
     (o) => o.status !== "DELIVERED" && o.status !== "CANCELLED"
   );
   const trackingOrders = useMemo(() => {
-    if (activeOrders.length > 0) return activeOrders;
-    if (
-      activeOrderFallback &&
-      activeOrderFallback.status !== "DELIVERED" &&
-      activeOrderFallback.status !== "CANCELLED"
-    ) {
-      return [activeOrderFallback];
+    const raw =
+      activeOrders.length > 0
+        ? activeOrders
+        : activeOrderFallback &&
+            activeOrderFallback.status !== "DELIVERED" &&
+            activeOrderFallback.status !== "CANCELLED"
+          ? [activeOrderFallback]
+          : [];
+    // Ride has its own home pill — never mix into food/parcel dock.
+    const withoutRide = raw.filter((o) => (o.serviceType ?? "food") !== "ride");
+    // Service home: only that service's orders. Parcel must never show on food home.
+    if (trackingDockService) {
+      return withoutRide.filter((o) => (o.serviceType ?? "food") === trackingDockService);
     }
+    // Orders area: show food + parcel (still no ride).
+    if (isOnOrdersArea) return withoutRide;
     return [];
-  }, [activeOrders, activeOrderFallback]);
+  }, [activeOrders, activeOrderFallback, trackingDockService, isOnOrdersArea]);
   const activeOrder = trackingOrders[0] ?? null;
+
+  const openOrderTracking = (ord: ActiveOrder) => {
+    const service = ord.serviceType ?? "food";
+    if (service === "parcel") {
+      router.push({
+        pathname: "/orders/[id]",
+        params: { id: ord.orderId, returnTo: "parcel" },
+      } as never);
+      return;
+    }
+    if (service === "ride") {
+      router.push({
+        pathname: "/orders/[id]",
+        params: { id: ord.orderId, returnTo: "ride" },
+      } as never);
+      return;
+    }
+    router.push(`/orders/${ord.orderId}` as const);
+  };
 
   const totalCount = items.reduce((n, i) => n + i.quantity, 0);
   const hasCart = totalCount > 0;
@@ -417,7 +474,8 @@ export function GlobalFloatingCart() {
 
   const visible =
     showFloatingFoodCart ||
-    (showActiveOrderTracking && (isFoodServicePage || isOnOrdersArea));
+    (showActiveOrderTracking &&
+      (isFoodServicePage || isParcelServiceHome || isOnOrdersArea));
   if (!visible) return null;
 
   const inTabs = segments[0] === "(tabs)";
@@ -425,7 +483,10 @@ export function GlobalFloatingCart() {
     resolveFloatingCartBottomOffset(rawBottom, {
       aboveTabBar: inTabs,
       tabBarOffset: inTabs ? customerTabBarOffset(rawBottom) : undefined,
-    }) + (isFoodServicePage ? FLOATING_CART_UI_LIFT : 0);
+    }) +
+    (isFoodServicePage ? FLOATING_CART_UI_LIFT : 0) +
+    // Courier: sit above prohibited-items + T&Cs footer, not on top of it.
+    (isParcelServiceHome && showActiveOrderTracking ? PARCEL_TRACK_ABOVE_LEGAL_LIFT : 0);
 
   const slideUpEntering = SlideInUp.duration(250).easing(Easing.out(Easing.ease));
   const compact = isCartCompact;
@@ -601,7 +662,7 @@ export function GlobalFloatingCart() {
                   <FloatingOrderTrackingPillWithUnread
                     order={ord}
                     emphasis={trackingEmphasis}
-                    onPress={() => router.push(`/orders/${ord.orderId}` as const)}
+                    onPress={() => openOrderTracking(ord)}
                   />
                 </View>
               ))}
@@ -658,7 +719,7 @@ export function GlobalFloatingCart() {
         <FloatingOrderTrackingPillWithUnread
           order={activeOrder}
           emphasis="primary"
-          onPress={() => router.push(`/orders/${activeOrder.orderId}` as const)}
+          onPress={() => openOrderTracking(activeOrder)}
         />
       </Animated.View>
     );

@@ -97,6 +97,11 @@ export async function middleware(request: NextRequest) {
           },
           setAll(cookiesToSet) {
             cookiesToSet.forEach(({ name, value, options }) => {
+              // Parallel Auth races can ask middleware to blank sb-* cookies.
+              // Never wipe auth cookies here — explicit logout clears them.
+              if (name.startsWith("sb-") && (!value || value.length === 0)) {
+                return;
+              }
               request.cookies.set(name, value);
               if (options) {
                 setSafeResponseCookie(response, name, value, {

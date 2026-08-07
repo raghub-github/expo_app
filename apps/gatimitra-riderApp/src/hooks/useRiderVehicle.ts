@@ -36,6 +36,31 @@ export type RiderVehicleOnboardingPrefill = {
   suggestedIsCommercial: boolean | null;
 };
 
+export type RiderVehicleFormMode = "full" | "cashfree_missing_only";
+
+export type RiderVehicleMissingField =
+  | "vehicle_type"
+  | "registration_number"
+  | "fuel_type"
+  | "make"
+  | "model"
+  | "color"
+  | "year"
+  | "service_types"
+  | "ownership_type"
+  | "is_commercial"
+  | "seating_capacity"
+  | "ac_type";
+
+export type RiderVehicleFormMeta = {
+  formMode: RiderVehicleFormMode;
+  prefillSource: "cashfree_rc" | "manual" | null;
+  initialStep: 1 | 2;
+  step1Complete: boolean;
+  step2Complete: boolean;
+  missingFields: RiderVehicleMissingField[];
+};
+
 export type RiderVehicleStatusResponse = {
   hasVehicle: boolean;
   isComplete: boolean;
@@ -43,6 +68,7 @@ export type RiderVehicleStatusResponse = {
   onboardingVehicleChoice?: string | null;
   onboardingVehicleCategoryCode?: string | null;
   onboardingPrefill?: RiderVehicleOnboardingPrefill | null;
+  formMeta?: RiderVehicleFormMeta;
 };
 
 export type UpsertRiderVehiclePayload = {

@@ -441,3 +441,86 @@ select option {
   transform-origin: center center;
   transition: transform 0.35s ease-out;
 }
+
+/* Premium dark sidebar — charcoal base + brand teal mesh glow (bottom-left) */
+.dark-sidebar-chrome {
+  background-color: #121212;
+}
+
+.dark-sidebar-chrome__mesh {
+  pointer-events: none;
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+}
+
+.dark-sidebar-chrome__glow {
+  position: absolute;
+  bottom: -12%;
+  left: -22%;
+  width: 85%;
+  height: 48%;
+  background: radial-gradient(
+    ellipse at center,
+    rgba(45, 212, 191, 0.22) 0%,
+    rgba(13, 148, 136, 0.1) 40%,
+    transparent 70%
+  );
+}
+
+.dark-sidebar-chrome__mesh-art {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  width: 100%;
+  height: min(46%, 280px);
+  max-width: 220px;
+  background-image: url("/bg.png");
+  background-repeat: no-repeat;
+  background-position: left bottom;
+  background-size: 620px auto;
+  opacity: 0.55;
+  filter: brightness(0.45) saturate(1.1);
+  -webkit-mask-image: linear-gradient(to top, #000 0%, #000 22%, transparent 92%);
+  mask-image: linear-gradient(to top, #000 0%, #000 22%, transparent 92%);
+}
+
+.dark-sidebar-chrome__mesh-fade {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    to top,
+    #121212 0%,
+    #121212 12%,
+    rgba(18, 18, 18, 0.96) 28%,
+    rgba(18, 18, 18, 0.88) 42%,
+    rgba(18, 18, 18, 0.72) 56%,
+    rgba(18, 18, 18, 0.45) 72%,
+    transparent 90%
+  );
+}
+
+/* Keeps queue nav labels readable over the decorative bottom art */
+.dark-sidebar-chrome__nav {
+  position: relative;
+  z-index: 10;
+}
+
+.dark-sidebar-chrome__nav::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 62%;
+  pointer-events: none;
+  background: linear-gradient(
+    to top,
+    rgba(18, 18, 18, 0.98) 0%,
+    rgba(18, 18, 18, 0.9) 35%,
+    rgba(18, 18, 18, 0.55) 60%,
+    transparent 100%
+  );
+  z-index: -1;
+}

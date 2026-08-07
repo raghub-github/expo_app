@@ -705,10 +705,61 @@ export const notificationRoutes: FastifyPluginAsync = async (app) => {
           SUM(CASE WHEN status IN ('sent','delivered','clicked') THEN 1 ELSE 0 END) AS sent,
           SUM(CASE WHEN status IN ('delivered','clicked') THEN 1 ELSE 0 END) AS delivered,
           SUM(CASE WHEN status='clicked' THEN 1 ELSE 0 END) AS clicked,
-          SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) AS failed
+          SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) AS failed,
+          AVG(
+            CASE
+              WHEN delivered_at IS NOT NULL AND queued_at IS NOT NULL
+              THEN EXTRACT(EPOCH FROM (delivered_at - queued_at))
+              ELSE NULL
+            END
+          ) AS avg_delivery_sec
         FROM public.notification_dispatch_logs
         WHERE queued_at >= date_trunc('day', now())
-      `) as unknown as Array<{ total: string; sent: string; delivered: string; clicked: string; failed: string }>;
+      `) as unknown as Array<{
+        total: string;
+        sent: string;
+        delivered: string;
+        clicked: string;
+        failed: string;
+        avg_delivery_sec: string | null;
+      }>;
+
+      const daily = (await sql`
+        SELECT
+          date_trunc('day', queued_at)::date::text AS day,
+          COUNT(*)::int AS total,
+          SUM(CASE WHEN status IN ('sent','delivered','clicked') THEN 1 ELSE 0 END)::int AS sent,
+          SUM(CASE WHEN status IN ('delivered','clicked') THEN 1 ELSE 0 END)::int AS delivered,
+          SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END)::int AS failed,
+          SUM(CASE WHEN status='clicked' THEN 1 ELSE 0 END)::int AS clicked
+        FROM public.notification_dispatch_logs
+        WHERE queued_at >= now() - interval '14 days'
+        GROUP BY 1
+        ORDER BY 1 ASC
+      `) as unknown as Array<{
+        day: string;
+        total: number;
+        sent: number;
+        delivered: number;
+        failed: number;
+        clicked: number;
+      }>;
+
+      const platformSplit = (await sql`
+        SELECT COALESCE(platform, 'unknown') AS platform, COUNT(*)::int AS n
+        FROM public.notification_dispatch_logs
+        WHERE queued_at >= now() - interval '7 days'
+        GROUP BY 1
+        ORDER BY n DESC
+      `) as unknown as Array<{ platform: string; n: number }>;
+
+      const roleSplit = (await sql`
+        SELECT COALESCE(recipient_role, 'unknown') AS role, COUNT(*)::int AS n
+        FROM public.notification_dispatch_logs
+        WHERE queued_at >= now() - interval '7 days'
+        GROUP BY 1
+        ORDER BY n DESC
+      `) as unknown as Array<{ role: string; n: number }>;
 
       const top = (await sql`
         SELECT template_code, COUNT(*) AS n
@@ -716,34 +767,66 @@ export const notificationRoutes: FastifyPluginAsync = async (app) => {
         WHERE queued_at >= now() - interval '7 days' AND template_code IS NOT NULL
         GROUP BY template_code
         ORDER BY n DESC
-        LIMIT 5
+        LIMIT 10
       `) as unknown as Array<{ template_code: string; n: string }>;
 
       const topCampaigns = (await sql`
-        SELECT id, name, clicked_count, sent_count
+        SELECT id, name, clicked_count, sent_count, delivered_count, failed_count
         FROM public.notification_campaigns
         WHERE created_at >= now() - interval '30 days'
         ORDER BY clicked_count DESC
-        LIMIT 5
+        LIMIT 10
       `);
 
       const t = today[0]!;
       const sentNum = Number(t.sent ?? 0);
       const deliveredNum = Number(t.delivered ?? 0);
       const clickedNum = Number(t.clicked ?? 0);
+      const failedNum = Number(t.failed ?? 0);
+      const totalNum = Number(t.total ?? 0);
       return {
         today: {
-          total: Number(t.total ?? 0),
+          total: totalNum,
           sent: sentNum,
           delivered: deliveredNum,
+          opened: clickedNum,
           clicked: clickedNum,
-          failed: Number(t.failed ?? 0),
+          failed: failedNum,
           read_rate: sentNum > 0 ? deliveredNum / sentNum : 0,
           ctr: sentNum > 0 ? clickedNum / sentNum : 0,
+          failure_rate: totalNum > 0 ? failedNum / totalNum : 0,
+          avg_delivery_sec: t.avg_delivery_sec != null ? Number(t.avg_delivery_sec) : null,
         },
+        daily_14d: daily,
+        platform_split_7d: platformSplit,
+        role_split_7d: roleSplit,
         top_templates_7d: top,
         top_campaigns_30d: topCampaigns,
       };
+    });
+
+    // --- settings ---
+    admin.get("/settings", async () => {
+      const { listSettings } = await import("./db.js");
+      const items = await listSettings();
+      return { items };
+    });
+
+    admin.put<{
+      Body: { key?: string; value?: unknown; description?: string | null };
+    }>("/settings", async (req, reply) => {
+      const key = String(req.body?.key ?? "").trim();
+      if (!key) return reply.code(400).send({ error: "key_required" });
+      if (!("value" in (req.body ?? {}))) {
+        return reply.code(400).send({ error: "value_required" });
+      }
+      const { upsertSetting, listSettings } = await import("./db.js");
+      await upsertSetting(key, req.body!.value, {
+        description: req.body?.description ?? null,
+        updatedBy: req.auth?.sub ?? null,
+      });
+      const items = await listSettings();
+      return { ok: true, items };
     });
 
     // --- browser / web FCM token registration (partnersite + dashboard) ---
@@ -854,6 +937,24 @@ export const notificationRoutes: FastifyPluginAsync = async (app) => {
       return reply.send({ ok: true, topics: nextTopics });
     });
 
+    admin.delete<{ Body: { token?: string; user_id?: string } }>(
+      "/browser-tokens",
+      async (req, reply) => {
+        const token = String(req.body?.token ?? "").trim();
+        if (!token || token.length < 8) {
+          return reply.code(400).send({ error: "token_required" });
+        }
+        const sql = getSql();
+        const deleted = (await sql`
+          DELETE FROM public.native_device_push_tokens
+          WHERE native_token = ${token}
+            AND lower(coalesce(platform, '')) = 'web'
+          RETURNING id
+        `) as unknown as Array<{ id: number }>;
+        return reply.send({ ok: true, deleted: deleted.length });
+      },
+    );
+
     // --- devices: list registered push tokens for a user_id ---
     // Powers the "Devices" super-admin page. Returns tokens across roles
     // (customer / merchant / rider) so support can confirm which apps a user
@@ -903,7 +1004,8 @@ export const notificationRoutes: FastifyPluginAsync = async (app) => {
           SELECT id, notification_id, campaign_id, template_code,
                  recipient_user_id, recipient_role, platform, channel,
                  title, body, deep_link, status, error_code, error_message,
-                 queued_at, sent_at, delivered_at, clicked_at
+                 retry_attempts, next_retry_at,
+                 queued_at, sent_at, delivered_at, clicked_at, failed_at
           FROM public.notification_dispatch_logs
           WHERE 1=1
             ${q.user_id ? sql`AND recipient_user_id = ${q.user_id}` : sql``}
@@ -916,6 +1018,30 @@ export const notificationRoutes: FastifyPluginAsync = async (app) => {
         return { items: rows };
       },
     );
+
+    admin.post<{ Params: { id: string } }>("/logs/:id/retry", async (req, reply) => {
+      const raw = String(req.params.id ?? "").trim();
+      const sql = getSql();
+      let notificationId: string | null = null;
+      if (/^[0-9a-f-]{36}$/i.test(raw)) {
+        notificationId = raw;
+      } else if (/^\d+$/.test(raw)) {
+        const [row] = (await sql`
+          SELECT notification_id::text AS nid
+          FROM public.notification_dispatch_logs
+          WHERE id = ${Number(raw)}
+          LIMIT 1
+        `) as unknown as Array<{ nid: string }>;
+        notificationId = row?.nid ?? null;
+      }
+      if (!notificationId) return reply.code(404).send({ error: "not_found" });
+      const { forceRetryNow } = await import("./retryEngine.js");
+      const ok = await forceRetryNow(notificationId);
+      if (!ok) return reply.code(400).send({ error: "retry_denied" });
+      const { redispatchDueRetriesOnce } = await import("./notificationRetryPoller.js");
+      await redispatchDueRetriesOnce();
+      return { ok: true, notification_id: notificationId };
+    });
   }, { prefix: "/v1/notifications" });
 
   // ===========================================================================

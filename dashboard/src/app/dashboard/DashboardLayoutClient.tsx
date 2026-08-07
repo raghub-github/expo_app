@@ -622,6 +622,7 @@ function DashboardLayoutContent({
 
   const currentRouteCtx = useCurrentRoute();
   const isNavigating = currentRouteCtx?.isNavigating ?? false;
+  const pendingNavHref = currentRouteCtx?.pendingNavHref ?? null;
 
   const cancelInFlightPageQueries = useCallback(() => {
     queryClient.cancelQueries({
@@ -677,7 +678,6 @@ function DashboardLayoutContent({
   const hasRightSidebarEligible =
     hasRightSidebar && (!isRiderDashboardLayout || hasRiderSidebarContent);
 
-  const pendingNavHref = currentRouteCtx?.pendingNavHref ?? null;
   /** While left-nav is in flight to a page without an active right rail, hide right immediately. */
   const pendingSuppressesRight =
     pendingNavHref != null && !pathRightSidebarActive(pendingNavHref, null);
@@ -778,7 +778,7 @@ function DashboardLayoutContent({
                           : isNotificationsModule
                             ? "overflow-hidden bg-slate-50 p-0"
                           : isCustomerDetailProfilePage
-                            ? "overflow-y-auto bg-white px-3 pb-3 pt-0 sm:px-4 sm:pb-4 sm:pt-0"
+                            ? "overflow-y-auto bg-[#f4f6f8] px-3 pb-4 pt-0 sm:px-5 sm:pb-5 sm:pt-0"
                           : isStoreVerificationStepView
                             ? "overflow-y-auto bg-[#f4f5f7] px-3 pb-3 pt-0 sm:px-4 sm:pb-4 sm:pt-0"
                           : "overflow-y-auto bg-white p-3 sm:p-4"
@@ -790,7 +790,11 @@ function DashboardLayoutContent({
                       }`}
                     >
                       {children}
-                      <DashboardNavOverlay visible={showWorkspaceOverlay} scope="main" />
+                      <DashboardNavOverlay
+                        visible={showWorkspaceOverlay}
+                        scope="main"
+                        pendingHref={pendingNavHref}
+                      />
                     </div>
                   </main>
                 </div>

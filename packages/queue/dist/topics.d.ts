@@ -34,6 +34,14 @@ export type PushSendJob = {
     /** Sound, badge, channel etc. */
     sound?: "default" | string;
     channelId?: string;
+    /** Links job to notification_dispatch_logs.notification_id for delivery tracking. */
+    dispatchLogId?: string;
+    /** Template code for observability / retry. */
+    templateCode?: string;
+    /** Current attempt index (0-based). */
+    attempt?: number;
+    /** Priority hint for worker concurrency / channel. */
+    priority?: string;
 };
 export type PaymentReconcileJob = {
     /** Set to true on the scheduled tick; false when triggered ad-hoc. */

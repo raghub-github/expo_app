@@ -63,6 +63,12 @@ export function screenManagesBottomNav(segments: readonly string[]): boolean {
 /** Extra lift for floating cart on food browse / merchant menu (above system nav). */
 export const FLOATING_CART_UI_LIFT = 20;
 
+/**
+ * On Courier home, float the track pill above the prohibited-items + T&Cs footer row
+ * (2× ~18px lines + gaps + footer padding).
+ */
+export const PARCEL_TRACK_ABOVE_LEGAL_LIFT = 56;
+
 /** Full floating cart bar height (padding + thumb row). Keep in sync with GlobalFloatingCart `gmBar`. */
 export const FLOATING_CART_BAR_HEIGHT = 64;
 

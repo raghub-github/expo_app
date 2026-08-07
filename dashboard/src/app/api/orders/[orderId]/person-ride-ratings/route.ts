@@ -1,3 +1,4 @@
+import { getAuthenticatedApiUser, authFailureResponse } from "@/lib/auth/api-session";
 /**
  * GET /api/orders/[orderId]/person-ride-ratings
  * Person-ride only ratings (does not affect food order detail).
@@ -8,7 +9,6 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { sql } from "drizzle-orm";
-import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine";
 import { getDb } from "@/lib/db/client";
 
@@ -37,14 +37,11 @@ export async function GET(
       return NextResponse.json({ success: false, error: "Invalid order id" }, { status: 400 });
     }
 
-    const supabase = await createServerSupabaseClient();
-    const {
-      data: { user },
-      error: userError,
-    } = await supabase.auth.getUser();
-    if (userError || !user) {
-      return NextResponse.json({ success: false, error: "Unauthorized" }, { status: 401 });
+    const auth = await getAuthenticatedApiUser(request);
+    if (!auth.ok) {
+      return authFailureResponse(auth);
     }
+    const { user } = auth;
 
     const userEmail = user.email ?? "";
     const allowed =

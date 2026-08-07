@@ -1167,6 +1167,24 @@ export default function OrderDetailClient({
               : 0;
           const apiError =
             typeof body.error === "string" && body.error.trim() ? body.error.trim() : null;
+          const apiCode =
+            typeof (body as { code?: unknown }).code === "string"
+              ? String((body as unknown as { code: string }).code).toUpperCase()
+              : "";
+          if (
+            httpStatus === 499 ||
+            httpStatus === 503 ||
+            apiCode === "REQUEST_ABORTED" ||
+            apiCode === "SERVICE_UNAVAILABLE"
+          ) {
+            // Auth timeout / aborted request — do not force logout; allow retry.
+            setError(apiError ?? "Temporarily unavailable. Retrying…");
+            if (fetchGenerationRef.current === generation) {
+              setLoading(false);
+              setIsRefreshing(false);
+            }
+            return;
+          }
           if (httpStatus === 401) {
             const { redirectToLoginOnSessionExpired } = await import(
               "@/lib/auth/redirect-to-login"
@@ -2291,15 +2309,23 @@ export default function OrderDetailClient({
           activityRefreshKey={refetchTrigger}
           onRoutedToChange={(email) => {
             setOrder((prev) => (prev ? { ...prev, routedToEmail: email } : prev));
-            if (order?.id != null) invalidateRoutedToHistory(order.id);
-            setRoutedToHistory(null);
-            ensureRoutedToHistoryPrefetch();
+            if (order?.id != null) {
+              invalidateRoutedToHistory(order.id);
+              setRoutedToHistory(null);
+              void fetchRoutedToHistory(order.id, { force: true })
+                .then((rows) => setRoutedToHistory(rows))
+                .catch(() => {});
+            }
           }}
           onRefundCreated={() => {
             setRefetchTrigger((t) => t + 1);
-            if (order?.id != null) invalidateRoutedToHistory(order.id);
-            setRoutedToHistory(null);
-            ensureRoutedToHistoryPrefetch();
+            if (order?.id != null) {
+              invalidateRoutedToHistory(order.id);
+              setRoutedToHistory(null);
+              void fetchRoutedToHistory(order.id, { force: true })
+                .then((rows) => setRoutedToHistory(rows))
+                .catch(() => {});
+            }
           }}
           onPrefetchOrderItems={ensureOrderItemsPrefetch}
           orderCancelledOnTimeline={orderCancelledOnTimeline}

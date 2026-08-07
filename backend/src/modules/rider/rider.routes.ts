@@ -365,6 +365,19 @@ export async function riderRoutes(app: FastifyInstance) {
         recordedAt: now,
       });
 
+      if (body.order_id) {
+        void import("../../lib/otp-radius-notify.js")
+          .then(({ maybeNotifyOtpOnLiveLocation }) =>
+            maybeNotifyOtpOnLiveLocation({
+              riderId,
+              orderRef: body.order_id!,
+              lat: body.lat,
+              lng: body.lng,
+            })
+          )
+          .catch(() => {});
+      }
+
       return { ok: true as const };
     },
   );

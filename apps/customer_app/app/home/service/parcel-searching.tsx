@@ -17,15 +17,26 @@ import { RideCancelConfirmSheet } from "@/features/ride/RideCancelConfirmSheet";
 import { resolveRideImage } from "@/features/ride/rideOptionAssets";
 import { placeParcelOrder, cancelParcelOrder } from "@/services/parcelBooking.service";
 import { useParcelBookingStore } from "@/features/parcel/parcelBookingStore";
+import { useOrderStore } from "@/store/orderStore";
 import { useNearbyRideAvailability } from "@/hooks/useNearbyRideAvailability";
+import { parcelCategoryHasNearbySupply } from "@/features/parcel/parcelVehicleEta";
+import type { ParcelVehicleCategoryCode } from "@/features/parcel/parcelGuidelinesConfig";
 import { PARCEL_SEARCH_CANCEL_REASONS } from "@/lib/parcel-cancel-reasons";
 import type { RideCancelReason } from "@/lib/ride-cancel-reasons";
+import { useQueryClient } from "@tanstack/react-query";
+import { orderService } from "@/services/order.service";
+import {
+  isActiveOrderStatus,
+  normalizeCustomerOrderStatus,
+} from "@/lib/customer-order-status-display";
+import { getRideAvailability } from "@/services/rideAvailability.service";
 
 type CancelFlowStep = null | "reason" | "confirm";
 
 export default function ParcelSearchingScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  const queryClient = useQueryClient();
   const params = useLocalSearchParams<{
     vehicleId?: string;
     vehicleName?: string;
@@ -47,9 +58,17 @@ export default function ParcelSearchingScreen() {
   const [cancelFlowStep, setCancelFlowStep] = useState<CancelFlowStep>(null);
   const [selectedCancelReason, setSelectedCancelReason] = useState<RideCancelReason | null>(null);
   const [cancelLoading, setCancelLoading] = useState(false);
+  const [tripLabels, setTripLabels] = useState<{
+    pickupLabel: string;
+    dropLabel: string;
+    mapCenter: { latitude: number; longitude: number };
+    pickupLat: number | null;
+    pickupLng: number | null;
+  } | null>(null);
   const placingRef = useRef(false);
   const placedOnceRef = useRef(false);
   const cancelledRef = useRef(false);
+  const navigatedToLiveRef = useRef(false);
 
   const fare = Math.max(0, Math.round(Number(params.fare) || 0));
   const tripKm =
@@ -59,6 +78,7 @@ export default function ParcelSearchingScreen() {
       ? Number(params.routeEtaMins)
       : null;
 
+  const vehicleCategory = (params.vehicleId || "2_wheeler") as ParcelVehicleCategoryCode;
   const vehicleName = params.vehicleName?.trim() || "Parcel";
   const imageKey = params.imageKey ?? "bike";
   const rideImage =
@@ -66,18 +86,34 @@ export default function ParcelSearchingScreen() {
       ? null
       : resolveRideImage(imageKey === "auto" ? "auto" : "bike");
 
-  const pickupLabel = pickup?.primary || pickup?.fullAddress || "Pickup";
-  const dropLabel = drop?.primary || drop?.fullAddress || "Drop";
-  const mapCenter = pickup
-    ? { latitude: pickup.latitude, longitude: pickup.longitude }
-    : drop
-      ? { latitude: drop.latitude, longitude: drop.longitude }
-      : { latitude: 28.6139, longitude: 77.209 };
+  useEffect(() => {
+    if (tripLabels || !pickup || !drop) return;
+    setTripLabels({
+      pickupLabel: pickup.primary || pickup.fullAddress || "Pickup",
+      dropLabel: drop.primary || drop.fullAddress || "Drop",
+      mapCenter: { latitude: pickup.latitude, longitude: pickup.longitude },
+      pickupLat: pickup.latitude,
+      pickupLng: pickup.longitude,
+    });
+  }, [pickup, drop, tripLabels]);
+
+  const pickupLabel =
+    tripLabels?.pickupLabel ?? (pickup?.primary || pickup?.fullAddress || "Pickup");
+  const dropLabel =
+    tripLabels?.dropLabel ?? (drop?.primary || drop?.fullAddress || "Drop");
+  const mapCenter =
+    tripLabels?.mapCenter ??
+    (pickup
+      ? { latitude: pickup.latitude, longitude: pickup.longitude }
+      : drop
+        ? { latitude: drop.latitude, longitude: drop.longitude }
+        : { latitude: 28.6139, longitude: 77.209 });
 
   const { data: availability } = useNearbyRideAvailability(
-    pickup?.latitude ?? null,
-    pickup?.longitude ?? null,
-    tripKm ?? null
+    tripLabels?.pickupLat ?? pickup?.latitude ?? null,
+    tripLabels?.pickupLng ?? pickup?.longitude ?? null,
+    tripKm ?? null,
+    { serviceType: "parcel" }
   );
   const nearbyRiders = availability?.riders ?? [];
 
@@ -90,6 +126,18 @@ export default function ParcelSearchingScreen() {
     router.replace("/home/service/parcels" as never);
   }, [router]);
 
+  const openLiveParcelTracking = useCallback(
+    (assignedOrderId: string) => {
+      if (navigatedToLiveRef.current || cancelledRef.current) return;
+      navigatedToLiveRef.current = true;
+      router.replace({
+        pathname: "/orders/[id]",
+        params: { id: assignedOrderId, returnTo: "parcel" },
+      } as never);
+    },
+    [router]
+  );
+
   const runPlace = useCallback(async () => {
     if (!pickup || !drop || !receiver) {
       goBackToBook();
@@ -100,6 +148,29 @@ export default function ParcelSearchingScreen() {
     setPhase("placing");
     setPlacementError(null);
 
+    // Do not create a courier order unless a matching parcel captain is nearby.
+    try {
+      const supply = await getRideAvailability({
+        pickupLat: pickup.latitude,
+        pickupLng: pickup.longitude,
+        tripKm: tripKm ?? undefined,
+        serviceType: "parcel",
+      });
+      if (!parcelCategoryHasNearbySupply(supply.riders, vehicleCategory)) {
+        setPlacementError(
+          "Oops! No rides are available for this route right now. The trip may be too long for nearby vehicles, or no captains are online. Try a different pickup or drop."
+        );
+        setPhase("error");
+        placingRef.current = false;
+        return;
+      }
+    } catch {
+      setPlacementError("Could not check captain availability. Please try again.");
+      setPhase("error");
+      placingRef.current = false;
+      return;
+    }
+
     const payload = {
       pickupAddress: pickup.fullAddress || pickup.primary,
       pickupLabel: pickup.primary,
@@ -109,7 +180,7 @@ export default function ParcelSearchingScreen() {
       dropLabel: drop.primary,
       dropLat: drop.latitude,
       dropLng: drop.longitude,
-      vehicleCategory: params.vehicleId || "2_wheeler",
+      vehicleCategory,
       estimatedFare: fare,
       tripKm,
       payAt: (params.payAt === "drop" ? "drop" : "pickup") as "pickup" | "drop",
@@ -135,7 +206,6 @@ export default function ParcelSearchingScreen() {
         }
       }
       if (cancelledRef.current) {
-        // User cancelled while place was in-flight — cancel the new order.
         try {
           await cancelParcelOrder(res.orderId, {
             reasonCode: "CUSTOMER_CANCELLED",
@@ -150,6 +220,19 @@ export default function ParcelSearchingScreen() {
       setOrderId(res.orderId);
       setPhase("searching");
       placedOnceRef.current = true;
+      useOrderStore.getState().addActiveOrder({
+        orderId: res.orderId,
+        formattedOrderId: res.formattedOrderId,
+        status: "ORDER_PLACED",
+        etaMinutes: 0,
+        storeId: null,
+        storeName: null,
+        placedAt: Date.now(),
+        serviceType: "parcel",
+        vehicleImageKey: imageKey || vehicleCategory,
+      });
+      void queryClient.invalidateQueries({ queryKey: ["my-orders"] });
+      useParcelBookingStore.getState().clear();
     } catch (e) {
       if (cancelledRef.current) return;
       const msg =
@@ -172,16 +255,49 @@ export default function ParcelSearchingScreen() {
     receiver,
     fare,
     tripKm,
-    params.vehicleId,
+    vehicleCategory,
+    imageKey,
     params.payAt,
     params.paymentMethod,
     goBackToBook,
+    queryClient,
   ]);
 
   useEffect(() => {
     if (placedOnceRef.current || cancelledRef.current) return;
     void runPlace();
   }, [runPlace]);
+
+  // Poll order until a captain is assigned, then open ride-style tracking.
+  useEffect(() => {
+    if (phase !== "searching" || !orderId || cancelledRef.current) return;
+    let alive = true;
+    const poll = async () => {
+      if (!alive || cancelledRef.current || navigatedToLiveRef.current) return;
+      try {
+        const detail = await orderService.getOrder(orderId);
+        const status = normalizeCustomerOrderStatus(detail.status);
+        const assigned =
+          !!detail.rider ||
+          (status !== "SEARCHING_RIDER" &&
+            status !== "PLACED" &&
+            status !== "ORDER_PLACED" &&
+            isActiveOrderStatus(status));
+        if (assigned) {
+          useOrderStore.getState().updateOrderStatus(orderId, status as never);
+          openLiveParcelTracking(orderId);
+        }
+      } catch {
+        /* ignore transient poll errors */
+      }
+    };
+    void poll();
+    const timer = setInterval(() => void poll(), 4_000);
+    return () => {
+      alive = false;
+      clearInterval(timer);
+    };
+  }, [phase, orderId, openLiveParcelTracking]);
 
   const openCancelFlow = useCallback(() => {
     if (phase === "placing") return;

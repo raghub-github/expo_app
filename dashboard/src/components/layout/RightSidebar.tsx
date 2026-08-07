@@ -3,6 +3,8 @@
 import { useMemo, useEffect, useState, useCallback } from "react";
 import Link from "next/link";
 import Image from "next/image";
+import { useRouter } from "next/navigation";
+import { DarkSidebarMeshBackground } from "@/components/layout/DarkSidebarMeshBackground";
 import { useAppPathname, useAppSearchParams } from "@/hooks/useAppSearchParams";
 
 import {
@@ -89,6 +91,7 @@ export function RightSidebar({
 }: RightSidebarProps) {
   const pathname = useAppPathname();
   const searchParams = useAppSearchParams();
+  const router = useRouter();
   const currentRoute = useCurrentRoute();
   const rightSidebarCtx = useRightSidebar();
   const { hasDashboardAccess, isSuperAdmin, canPerformAction } = usePermission();
@@ -334,40 +337,21 @@ export function RightSidebar({
     };
   }, [merchantsSearch?.searchResultStore, isMerchantsListPage, portal, showRightSidebarStoreCard]);
 
-  const dockLeft = dockSide === "left";
-
   const isTicketsDashboard = currentDashboard?.href === "/dashboard/tickets";
   const isTicketDetailPage = isTicketsAppDetailPath(cleanPathname);
   const queueDetailFromHome = isTicketDetailPage && ticketDetailHasQueueContext(searchParams);
   /** Queue routes or ticket detail opened from queue home (`?fromQueue=1`). */
   const isTicketsQueuePath =
     cleanPathname.startsWith("/dashboard/tickets/queue") || queueDetailFromHome;
-  /** Match global `HierarchicalSidebar` chrome when queue rail is docked left. */
-  const queueDarkLeftRail = isTicketsQueuePath && dockLeft;
-  /** Ticket detail + queue context: dark gradient must show through (avoid light inner bg washing out white nav text). */
-  const ticketDetailQueueDarkLeft =
-    isTicketDetailPage && dockLeft && queueDarkLeftRail;
+  /** Queue workspace always docks on the left edge of the viewport. */
+  const dockLeft = dockSide === "left" || isTicketsQueuePath;
+  const queueLeftRail = isTicketsQueuePath;
+  const ticketDetailQueueLeftRail =
+    isTicketDetailPage && dockLeft && queueLeftRail;
   const showQueueDetailPropertiesPanel =
     queueDetailFromHome &&
     ticketIdFromPath != null &&
     (ticketPropertiesRailOpen !== undefined ? ticketPropertiesRailOpen : isOpen);
-  /** Same active / inactive treatment as `HierarchicalSidebar` main nav. */
-  const queueNavActive = queueDarkLeftRail
-    ? "bg-white/10 text-white"
-    : "bg-white text-[#121212] shadow-sm";
-  const queueNavInactive = queueDarkLeftRail
-    ? "text-white/85 hover:bg-white/10 hover:text-white"
-    : "text-[#121212]/75 hover:bg-white/80 hover:text-[#121212]";
-  const queueNavCollapsedActive = queueDarkLeftRail
-    ? "bg-white/10 text-white"
-    : "bg-white text-[#121212] shadow-sm";
-  /** Manager row when a child section is selected — softer than full active. */
-  const queueNavParentFaded = queueDarkLeftRail
-    ? "bg-white/10 text-white/80"
-    : "bg-white/90 text-[#121212]/80 shadow-sm";
-  const queueNavCollapsedParentFaded = queueDarkLeftRail
-    ? "bg-white/10 text-white/90"
-    : "bg-white/90 text-[#121212]/80 shadow-sm";
 
   /** Light right-rail nav (Merchants / Riders / etc.) — matches left sidebar language on #F3F7FA. */
   const rsbNavActive = "bg-white text-[#121212] shadow-sm";
@@ -375,6 +359,24 @@ export function RightSidebar({
   const rsbNavCtaIdle =
     "border border-[#121212]/10 bg-white/60 text-[#121212] hover:bg-white hover:border-[#121212]/15";
   const rsbNavCtaActive = "border border-[#121212]/15 bg-white text-[#121212] shadow-sm";
+
+  /** Queue left rail — black chrome like control dashboard; light rail elsewhere. */
+  const queueNavActive = queueLeftRail
+    ? "bg-gradient-to-r from-teal-500/20 via-teal-600/10 to-transparent text-white"
+    : rsbNavActive;
+  const queueNavInactive = queueLeftRail
+    ? "text-slate-300 hover:bg-white/[0.06] hover:text-white"
+    : rsbNavIdle;
+  const queueNavCollapsedActive = queueLeftRail
+    ? "bg-gradient-to-r from-teal-500/20 via-teal-600/10 to-transparent text-white"
+    : rsbNavActive;
+  const queueNavParentFaded = queueLeftRail
+    ? "bg-gradient-to-r from-teal-500/15 via-teal-600/8 to-transparent text-white/80"
+    : rsbNavCtaActive;
+  const queueNavCollapsedParentFaded = queueLeftRail
+    ? "bg-gradient-to-r from-teal-500/20 via-teal-600/10 to-transparent text-white/90"
+    : rsbNavCtaActive;
+
   const onAgentActivityPage = cleanPathname === AGENT_ACTIVITY_PATH;
   const onTicketsHelpdeskDashboard = cleanPathname === TICKETS_HELPDESK_DASHBOARD_PATH;
   const onTicketsHubSectionsPage = onAgentActivityPage || onTicketsHelpdeskDashboard;
@@ -396,13 +398,18 @@ export function RightSidebar({
     || canPerformAction("TICKET", "VIEW", { access_point_group: "TICKET_QUEUE_SUPERVISOR" });
   const canViewQueueManager = isSuperAdmin
     || canPerformAction("TICKET", "VIEW", { access_point_group: "TICKET_QUEUE_MANAGER" });
-  /** Avoid SSR/client mismatch when React Query restores cached permissions before hydration. */
-  const [queuePermissionsMounted, setQueuePermissionsMounted] = useState(false);
+  const showQueueSupervisorNav = canViewQueueSupervisor;
+  const showQueueManagerNav = canViewQueueManager;
+
+  const [supervisorNavOpen, setSupervisorNavOpen] = useState(true);
+  const [managerNavOpen, setManagerNavOpen] = useState(true);
+
   useEffect(() => {
-    setQueuePermissionsMounted(true);
-  }, []);
-  const showQueueSupervisorNav = queuePermissionsMounted && canViewQueueSupervisor;
-  const showQueueManagerNav = queuePermissionsMounted && canViewQueueManager;
+    if (!isTicketsQueuePath) return;
+    router.prefetch(TICKETS_QUEUE_HOME_PATH);
+    router.prefetch(queueSupervisorHref("updated-agents"));
+    router.prefetch(`${TICKETS_QUEUE_MANAGER_PATH}?section=max-open`);
+  }, [isTicketsQueuePath, router]);
 
   const isRiderDashboard =
     cleanPathname === "/dashboard/riders" ||
@@ -450,19 +457,19 @@ export function RightSidebar({
       <aside
         onClickCapture={handleSidebarNavClickCapture}
         className={`fixed z-40 flex flex-col shadow-none transition-[transform,width] duration-300 ease-out ${
+          queueLeftRail ? "left-0 right-auto" : dockLeft ? "left-0 right-auto" : "right-0 left-auto"
+        } ${
           /* Queue left rail: full viewport height (matches queue home). Right-docked ticket detail: start below header row. */
-          isTicketDetailPage && !(queueDarkLeftRail && dockLeft) ? "bottom-0 top-14" : "inset-y-0"
+          isTicketDetailPage && !(queueLeftRail && dockLeft) ? "bottom-0 top-14" : "inset-y-0"
         }
           ${isOpen ? (isTicketDetailPage && !queueDetailFromHome ? "w-64" : "w-56") : "w-14"}
           max-lg:w-72 ${isOpen ? "max-lg:translate-x-0" : dockLeft ? "max-lg:-translate-x-full" : "max-lg:translate-x-full"}
-          ${queueDarkLeftRail ? "rounded-r-xl border-r border-white/10" : ""}`}
+          ${queueLeftRail ? "dark-sidebar-chrome overflow-hidden border-r border-white/10" : ""}`}
         style={
-          queueDarkLeftRail
+          queueLeftRail
             ? {
                 left: filterSidebarOpen ? "14rem" : 0,
                 right: "auto",
-                background: "linear-gradient(180deg, #0f2d42 0%, #12344D 50%, #0f2d42 100%)",
-                boxShadow: "4px 0 24px rgba(0,0,0,0.15)",
                 scrollbarWidth: "thin",
                 scrollbarColor: "rgba(255,255,255,0.2) transparent",
               }
@@ -476,44 +483,52 @@ export function RightSidebar({
               }
         }
       >
+        {queueLeftRail ? <DarkSidebarMeshBackground /> : null}
         {(!isTicketDetailPage || queueDetailFromHome) && (
           <div
             className={`relative z-20 flex h-14 min-h-14 w-full min-w-0 shrink-0 items-center border-b ${
-              queueDarkLeftRail
-                ? "border-white/10 bg-transparent px-3"
+              queueLeftRail
+                ? "border-white/10 bg-transparent px-2 sm:px-3"
                 : "border-gray-300/30 bg-[#F3F7FA] px-2 sm:px-3"
             } ${isOpen ? "gap-2" : "justify-center"}`}
           >
-            {queueDarkLeftRail ? (
+            {queueLeftRail ? (
               isOpen ? (
                 <Link
                   href="/dashboard"
                   scroll={false}
-                  className="flex min-w-0 flex-1 items-center gap-2.5"
+                  className="flex min-w-0 flex-1 items-center gap-2.5 outline-none focus-visible:ring-2 focus-visible:ring-white/30 rounded-xl"
                 >
-                  <Image
-                    src="/onlylogo.png"
-                    alt="GatiMitra"
-                    width={36}
-                    height={36}
-                    className="shrink-0 rounded-lg object-contain"
-                    priority
-                  />
-                  <span className="truncate text-sm font-semibold text-white">GatiMitra</span>
+                  <span className="flex size-9 shrink-0 items-center justify-center rounded-[10px] bg-[#121212]/80 ring-1 ring-white/10 backdrop-blur-sm">
+                    <Image
+                      src="/onlylogo.png"
+                      alt="GatiMitra"
+                      width={28}
+                      height={28}
+                      className="size-7 object-contain"
+                      priority
+                    />
+                  </span>
+                  <span className="min-w-0 flex flex-col overflow-hidden">
+                    <span className="truncate text-sm font-semibold leading-tight text-white">GatiMitra</span>
+                    <span className="truncate text-[10px] font-medium uppercase tracking-[0.06em] text-slate-400">
+                      Queue
+                    </span>
+                  </span>
                 </Link>
               ) : (
                 <Link
                   href="/dashboard"
                   scroll={false}
-                  className="flex w-full items-center justify-center"
-                  title="GatiMitra"
+                  className="flex size-9 items-center justify-center rounded-[10px] bg-[#121212]/80 ring-1 ring-white/10 backdrop-blur-sm"
+                  title="GatiMitra Queue"
                 >
                   <Image
                     src="/onlylogo.png"
                     alt="GatiMitra"
-                    width={36}
-                    height={36}
-                    className="shrink-0 rounded-lg object-contain"
+                    width={28}
+                    height={28}
+                    className="size-7 object-contain"
                     priority
                   />
                 </Link>
@@ -554,7 +569,7 @@ export function RightSidebar({
           className={`relative z-10 flex min-h-0 flex-1 flex-col overflow-hidden ${
             isTicketDetailPage
               ? dockLeft
-                ? ticketDetailQueueDarkLeft
+                ? ticketDetailQueueLeftRail
                   ? "border-r border-white/10 bg-transparent"
                   : "border-r-0 bg-[#F3F7FA]"
                 : "border-l-0 bg-[#F3F7FA]"
@@ -563,7 +578,7 @@ export function RightSidebar({
         >
           <div
             className={`min-h-0 flex-1 overflow-x-hidden overscroll-y-contain ${
-              isTicketDetailPage && !ticketDetailQueueDarkLeft ? "overflow-y-hidden" : "overflow-y-auto"
+              isTicketDetailPage && !ticketDetailQueueLeftRail ? "overflow-y-hidden" : "overflow-y-auto"
             }`}
           >
             {isTicketsDashboard && ticketIdFromPath != null && isOpen && !queueDetailFromHome ? (
@@ -576,11 +591,12 @@ export function RightSidebar({
               </div>
             ) : isTicketsDashboard && isTicketsQueuePath && isOpen ? (
               <div className="flex h-full min-h-0 flex-col">
-                <nav className="flex-1 min-h-0 overflow-y-auto px-2.5 py-4" aria-label="Queue sections">
+                <nav className="dark-sidebar-chrome__nav flex-1 min-h-0 overflow-y-auto px-2.5 py-4" aria-label="Queue sections">
                   <div className="space-y-1">
                     <Link
                       href={TICKETS_QUEUE_HOME_PATH}
                       scroll={false}
+                      prefetch
                       className={`group relative flex cursor-pointer items-center gap-3 rounded-[10px] px-3 py-2.5 text-sm font-medium transition-colors duration-150 ${
                         onQueueHome ? queueNavActive : queueNavInactive
                       }`}
@@ -589,25 +605,41 @@ export function RightSidebar({
                       <span className="min-w-0 flex-1 truncate">Queue</span>
                     </Link>
                     {showQueueSupervisorNav ? (
-                      <Link
-                        href={queueSupervisorHref("updated-agents", queueSupervisorAgentInUrl || undefined)}
-                        scroll={false}
-                        aria-expanded={onQueueSupervisor}
-                        className={`group relative flex cursor-pointer items-center gap-3 rounded-[10px] px-3 py-2.5 text-sm font-medium transition-colors duration-150 ${
-                          onQueueSupervisor ? queueNavParentFaded : queueNavInactive
+                      <div
+                        className={`flex items-stretch rounded-[10px] ${
+                          onQueueSupervisor ? queueNavParentFaded : ""
                         }`}
                       >
-                        <Users className="h-5 w-5 shrink-0 opacity-90" aria-hidden />
-                        <span className="min-w-0 flex-1 truncate">Supervisor</span>
-                        <ChevronDown
-                          className={`h-4 w-4 shrink-0 opacity-70 transition-transform duration-200 ${
-                            onQueueSupervisor ? "rotate-0" : "-rotate-90"
+                        <Link
+                          href={queueSupervisorHref("updated-agents", queueSupervisorAgentInUrl || undefined)}
+                          scroll={false}
+                          prefetch
+                          className={`group relative flex min-w-0 flex-1 cursor-pointer items-center gap-3 rounded-l-[10px] px-3 py-2.5 text-sm font-medium transition-colors duration-150 ${
+                            onQueueSupervisor ? queueNavParentFaded : queueNavInactive
                           }`}
-                          aria-hidden
-                        />
-                      </Link>
+                        >
+                          <Users className="h-5 w-5 shrink-0 opacity-90" aria-hidden />
+                          <span className="min-w-0 flex-1 truncate">Supervisor</span>
+                        </Link>
+                        <button
+                          type="button"
+                          aria-expanded={supervisorNavOpen}
+                          aria-label={supervisorNavOpen ? "Collapse Supervisor menu" : "Expand Supervisor menu"}
+                          onClick={() => setSupervisorNavOpen((open) => !open)}
+                          className={`inline-flex shrink-0 cursor-pointer items-center rounded-r-[10px] px-2.5 transition-colors duration-150 ${
+                            onQueueSupervisor ? "text-white/70 hover:text-white" : queueNavInactive
+                          }`}
+                        >
+                          <ChevronDown
+                            className={`h-4 w-4 shrink-0 opacity-70 transition-transform duration-200 ${
+                              supervisorNavOpen ? "rotate-0" : "-rotate-90"
+                            }`}
+                            aria-hidden
+                          />
+                        </button>
+                      </div>
                     ) : null}
-                    {showQueueSupervisorNav && onQueueSupervisor ? (
+                    {showQueueSupervisorNav && supervisorNavOpen ? (
                       <div className="mt-2 space-y-1.5 border-l border-white/15 pl-3 ml-1">
                         {(
                           [
@@ -622,6 +654,7 @@ export function RightSidebar({
                               key={id}
                               href={queueSupervisorHref(id, queueSupervisorAgentInUrl || undefined)}
                               scroll={false}
+                              prefetch
                               className={`group relative flex min-h-[2.25rem] cursor-pointer items-center rounded-[10px] px-3 py-2 text-xs font-medium transition-colors duration-150 ${
                                 active ? queueNavActive : queueNavInactive
                               }`}
@@ -633,25 +666,41 @@ export function RightSidebar({
                       </div>
                     ) : null}
                     {showQueueManagerNav ? (
-                      <Link
-                        href={TICKETS_QUEUE_MANAGER_PATH}
-                        scroll={false}
-                        aria-expanded={onQueueManager}
-                        className={`group relative flex cursor-pointer items-center gap-3 rounded-[10px] px-3 py-2.5 text-sm font-medium transition-colors duration-150 ${
-                          onQueueManager ? queueNavParentFaded : queueNavInactive
+                      <div
+                        className={`flex items-stretch rounded-[10px] ${
+                          onQueueManager ? queueNavParentFaded : ""
                         }`}
                       >
-                        <Zap className="h-5 w-5 shrink-0 opacity-90" aria-hidden />
-                        <span className="min-w-0 flex-1 truncate">Manager</span>
-                        <ChevronDown
-                          className={`h-4 w-4 shrink-0 opacity-70 transition-transform duration-200 ${
-                            onQueueManager ? "rotate-0" : "-rotate-90"
+                        <Link
+                          href={TICKETS_QUEUE_MANAGER_PATH}
+                          scroll={false}
+                          prefetch
+                          className={`group relative flex min-w-0 flex-1 cursor-pointer items-center gap-3 rounded-l-[10px] px-3 py-2.5 text-sm font-medium transition-colors duration-150 ${
+                            onQueueManager ? queueNavParentFaded : queueNavInactive
                           }`}
-                          aria-hidden
-                        />
-                      </Link>
+                        >
+                          <Zap className="h-5 w-5 shrink-0 opacity-90" aria-hidden />
+                          <span className="min-w-0 flex-1 truncate">Manager</span>
+                        </Link>
+                        <button
+                          type="button"
+                          aria-expanded={managerNavOpen}
+                          aria-label={managerNavOpen ? "Collapse Manager menu" : "Expand Manager menu"}
+                          onClick={() => setManagerNavOpen((open) => !open)}
+                          className={`inline-flex shrink-0 cursor-pointer items-center rounded-r-[10px] px-2.5 transition-colors duration-150 ${
+                            onQueueManager ? "text-white/70 hover:text-white" : queueNavInactive
+                          }`}
+                        >
+                          <ChevronDown
+                            className={`h-4 w-4 shrink-0 opacity-70 transition-transform duration-200 ${
+                              managerNavOpen ? "rotate-0" : "-rotate-90"
+                            }`}
+                            aria-hidden
+                          />
+                        </button>
+                      </div>
                     ) : null}
-                    {showQueueManagerNav && onQueueManager ? (
+                    {showQueueManagerNav && managerNavOpen ? (
                       <div className="mt-2 space-y-1.5 border-l border-white/15 pl-3 ml-1">
                         {(
                           [
@@ -670,6 +719,7 @@ export function RightSidebar({
                               key={id}
                               href={`${TICKETS_QUEUE_MANAGER_PATH}?section=${id}`}
                               scroll={false}
+                              prefetch
                               className={`group relative flex min-h-[2.25rem] cursor-pointer items-center rounded-[10px] px-3 py-2 text-xs font-medium transition-colors duration-150 ${
                                 active ? queueNavActive : queueNavInactive
                               }`}
@@ -720,7 +770,7 @@ export function RightSidebar({
                 </nav>
               </div>
             ) : isTicketsDashboard && isTicketsQueuePath && !isOpen ? (
-              <nav className="flex flex-col px-2.5 py-4" aria-label="Queue sections">
+              <nav className="dark-sidebar-chrome__nav flex flex-col px-2.5 py-4" aria-label="Queue sections">
                 <div className="space-y-1">
                   <Link
                     href={TICKETS_QUEUE_HOME_PATH}

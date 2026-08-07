@@ -1,8 +1,8 @@
+import { getAuthenticatedApiUser, authFailureResponse } from "@/lib/auth/api-session";
 /**
  * POST /api/orders/[orderId]/refunds/preview — simulate Financial Rule Engine outcome.
  */
 import { NextRequest, NextResponse } from "next/server";
-import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { canRefundOrder } from "@/lib/permissions/actions";
 import { executeFinancialRule, lookupOrderContext } from "@/lib/financial-rule-executor";
 import { mapActorToTriggeredBy, normalizeEnginePreviewDisplay, resolvePaymentCancellationMilestone } from "@gatimitra/financial-rules";
@@ -27,14 +27,11 @@ export async function POST(
       return NextResponse.json({ success: false, error: "Invalid order id" }, { status: 400 });
     }
 
-    const supabase = await createServerSupabaseClient();
-    const {
-      data: { user },
-      error: userError,
-    } = await supabase.auth.getUser();
-    if (userError || !user) {
-      return NextResponse.json({ success: false, error: "Not authenticated" }, { status: 401 });
+    const auth = await getAuthenticatedApiUser(request);
+    if (!auth.ok) {
+      return authFailureResponse(auth);
     }
+    const { user } = auth;
 
     const canRefund = await canRefundOrder(user.id, user.email ?? "", "ORDER_FOOD");
     if (!canRefund) {

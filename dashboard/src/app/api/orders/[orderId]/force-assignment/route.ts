@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createServerSupabaseClient } from "@/lib/supabase/server";
-import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine";
+import { requireOrderApiAuth, orderAuthFailureResponse } from "@/lib/auth/require-order-api-auth";
 import { getSystemUserByEmail } from "@/lib/auth/user-mapping";
 import {
   cancelForceAssignmentOnBackend,
@@ -17,28 +16,12 @@ function parseOrderId(param: string | undefined): number | null {
   return Number.isFinite(id) && id > 0 ? id : null;
 }
 
-async function requireOrderFoodAccess() {
-  const supabase = await createServerSupabaseClient();
-  const {
-    data: { user },
-    error: userError,
-  } = await supabase.auth.getUser();
-
-  if (userError || !user) {
-    return { error: NextResponse.json({ success: false, error: "Not authenticated" }, { status: 401 }) };
+async function requireOrderFoodAccess(request?: Pick<NextRequest, "signal">) {
+  const auth = await requireOrderApiAuth(request, { access: ["ORDER_FOOD"] });
+  if (!auth.ok) {
+    return { error: orderAuthFailureResponse(auth) };
   }
-
-  const allowed =
-    (await isSuperAdmin(user.id, user.email ?? "")) ||
-    (await hasDashboardAccessByAuth(user.id, user.email ?? "", "ORDER_FOOD"));
-
-  if (!allowed) {
-    return {
-      error: NextResponse.json({ success: false, error: "Insufficient permissions" }, { status: 403 }),
-    };
-  }
-
-  return { user };
+  return { user: auth.user };
 }
 
 export async function GET(
@@ -52,7 +35,7 @@ export async function GET(
       return NextResponse.json({ success: false, error: "Invalid order id" }, { status: 400 });
     }
 
-    const auth = await requireOrderFoodAccess();
+    const auth = await requireOrderFoodAccess(_request);
     if ("error" in auth && auth.error) return auth.error;
 
     const result = await getForceAssignmentOnBackend({ ordersCoreId: orderCoreId });
@@ -88,7 +71,7 @@ export async function POST(
       return NextResponse.json({ success: false, error: "Invalid order id" }, { status: 400 });
     }
 
-    const auth = await requireOrderFoodAccess();
+    const auth = await requireOrderFoodAccess(request);
     if ("error" in auth && auth.error) return auth.error;
     const user = auth.user!;
 
@@ -173,7 +156,7 @@ export async function DELETE(
       return NextResponse.json({ success: false, error: "Invalid order id" }, { status: 400 });
     }
 
-    const auth = await requireOrderFoodAccess();
+    const auth = await requireOrderFoodAccess(_request);
     if ("error" in auth && auth.error) return auth.error;
     const user = auth.user!;
 

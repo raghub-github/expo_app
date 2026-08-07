@@ -42,6 +42,23 @@ function riderMatchesCategory(
   return types.some((t) => allowed.has(t));
 }
 
+/** True when at least one nearby rider can serve this parcel category. */
+export function parcelCategoryHasNearbySupply(
+  riders: NearbySupplyRider[] | null | undefined,
+  category: ParcelVehicleCategoryCode
+): boolean {
+  return (riders ?? []).some((r) => riderMatchesCategory(r, category));
+}
+
+/** True when at least one nearby rider can serve any of the given parcel categories. */
+export function hasNearbyParcelCaptainSupply(
+  riders: NearbySupplyRider[] | null | undefined,
+  categories: ParcelVehicleCategoryCode[]
+): boolean {
+  if (!riders?.length || categories.length === 0) return false;
+  return categories.some((cat) => parcelCategoryHasNearbySupply(riders, cat));
+}
+
 /** Estimated minutes for rider to reach pickup from distance km. */
 function awayMinsFromKm(km: number): number {
   if (!(km > 0)) return 1;

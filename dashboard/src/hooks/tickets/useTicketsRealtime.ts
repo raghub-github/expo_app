@@ -1,9 +1,19 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
+import type { RealtimeChannel } from "@supabase/supabase-js";
+import { supabase } from "@/lib/supabase/client";
+import { hydrateBrowserSupabaseFromCookies } from "@/lib/auth/hydrate-browser-supabase";
+import {
+  invalidateTicketListCaches,
+  patchTicketFromPostgresRow,
+} from "@/lib/tickets/patch-ticket-list-cache";
 import { fetchTickets, type TicketFilters } from "@/hooks/tickets/useTickets";
-/** List view: no global postgres subscription (avoids load on every unified_tickets change). */
+
 const POLL_INTERVAL_MS = 12_000;
+const LIST_SYNC_DEBOUNCE_MS = 280;
+const LIST_SAFETY_POLL_MS = 8_000;
 /** Avoid stacking long-running process-jobs calls that exhaust the DB pool. */
 const AUTOMATION_DRAIN_TIMEOUT_MS = 8_000;
 let automationDrainInFlight = false;
@@ -32,14 +42,15 @@ async function drainTicketAutomationJobs(): Promise<void> {
 export type TicketsPollFilters = Omit<TicketFilters, "limit" | "offset">;
 
 /**
- * “N new tickets” badge: count tickets that match the current list filters and were
- * newly created in DB after the last acknowledged time (load list, filter change, or click refresh).
- *
- * IMPORTANT: This must NOT increase for status changes/priority updates on existing tickets.
+ * List sync: Supabase postgres_changes on unified_tickets + messages (status/assignee/last reply),
+ * plus “N new tickets” badge polling for INSERT-only counts.
  */
 export function useTicketsRealtime(pollBase: TicketsPollFilters, listReady: boolean) {
-  const [newTicketsCount, setNewTicketsCount] = useState(0);  const ackTimeIsoRef = useRef<string | null>(null);
+  const queryClient = useQueryClient();
+  const [newTicketsCount, setNewTicketsCount] = useState(0);
+  const ackTimeIsoRef = useRef<string | null>(null);
   const pollBaseKeyRef = useRef<string>("");
+  const listDebounceRef = useRef<number | null>(null);
 
   const pollBaseKey = JSON.stringify(pollBase);
 
@@ -49,6 +60,14 @@ export function useTicketsRealtime(pollBase: TicketsPollFilters, listReady: bool
     setNewTicketsCount(0);
     ackTimeIsoRef.current = new Date().toISOString();
   }, [pollBaseKey]);
+
+  const scheduleListRefresh = useCallback(() => {
+    if (listDebounceRef.current) window.clearTimeout(listDebounceRef.current);
+    listDebounceRef.current = window.setTimeout(() => {
+      listDebounceRef.current = null;
+      invalidateTicketListCaches(queryClient);
+    }, LIST_SYNC_DEBOUNCE_MS);
+  }, [queryClient]);
 
   const runPoll = useCallback(async () => {
     if (!listReady || ackTimeIsoRef.current == null) return;
@@ -67,7 +86,6 @@ export function useTicketsRealtime(pollBase: TicketsPollFilters, listReady: bool
     }
   }, [pollBase, listReady]);
 
-  // One quick check when the list finishes loading or filters change (don’t wait 18s only).
   useEffect(() => {
     if (!listReady) return;
     void runPoll();
@@ -76,22 +94,77 @@ export function useTicketsRealtime(pollBase: TicketsPollFilters, listReady: bool
   const clearNewTickets = useCallback(() => {
     setNewTicketsCount(0);
     ackTimeIsoRef.current = new Date().toISOString();
-  }, []);
+    invalidateTicketListCaches(queryClient);
+  }, [queryClient]);
 
-  /** Poll new-ticket badge + lightly refresh list/dashboard caches (no global Realtime). */
+  /** Postgres sync — status/priority/assignee/last-message updates across tabs & detail view. */
+  useEffect(() => {
+    if (!listReady) return;
+
+    let cancelled = false;
+    let channel: RealtimeChannel | null = null;
+
+    void (async () => {
+      await hydrateBrowserSupabaseFromCookies();
+      if (cancelled) return;
+
+      const ch = supabase.channel("helpdesk_tickets_list_sync");
+      ch.on(
+        "postgres_changes",
+        { event: "INSERT", schema: "public", table: "unified_tickets" },
+        scheduleListRefresh
+      )
+        .on(
+          "postgres_changes",
+          { event: "UPDATE", schema: "public", table: "unified_tickets" },
+          (payload) => {
+            const row = payload.new as Record<string, unknown> | null;
+            if (row && typeof row === "object") {
+              patchTicketFromPostgresRow(queryClient, row);
+            }
+            scheduleListRefresh();
+          }
+        )
+        .on(
+          "postgres_changes",
+          { event: "INSERT", schema: "public", table: "unified_ticket_messages" },
+          scheduleListRefresh
+        );
+
+      ch.subscribe();
+      channel = ch;
+    })();
+
+    return () => {
+      cancelled = true;
+      if (listDebounceRef.current) window.clearTimeout(listDebounceRef.current);
+      listDebounceRef.current = null;
+      if (channel) void supabase.removeChannel(channel);
+    };
+  }, [listReady, scheduleListRefresh]);
+
+  /** Safety poll — keeps list/card status fresh if Realtime is silent. */
   useEffect(() => {
     if (!listReady) return;
     const id = window.setInterval(() => {
       void (async () => {
         await drainTicketAutomationJobs();
         void runPoll();
-        // Do not invalidate the main list on every poll — that caused background
-        // refetch failures ("not_found") while stale snapshot data stayed visible.
-        // Agents use the "N new tickets" pill + manual refresh to reload the list.
+        scheduleListRefresh();
       })();
+    }, LIST_SAFETY_POLL_MS);
+    return () => window.clearInterval(id);
+  }, [listReady, runPoll, scheduleListRefresh]);
+
+  /** Slower poll for new-ticket badge only (createdAfter cursor). */
+  useEffect(() => {
+    if (!listReady) return;
+    const id = window.setInterval(() => {
+      void runPoll();
     }, POLL_INTERVAL_MS);
     return () => window.clearInterval(id);
   }, [listReady, runPoll]);
+
   return {
     hasNewTickets: newTicketsCount > 0,
     newTicketsCount,

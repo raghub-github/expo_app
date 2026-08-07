@@ -25,7 +25,7 @@ import { orderService } from "@/services/order.service";
 import { profileService } from "@/services/profile.service";
 import { AndroidBackHandler } from "@/components/AndroidBackHandler";
 import { LegalFooter } from "@/components/LegalLinks";
-import { isPersonRideOrder } from "@/lib/customer-order-status-display";
+import { isPersonRideOrder, isParcelOrder } from "@/lib/customer-order-status-display";
 import { getRideHistoryStatusLabel, getRideServiceLabel, formatRideFare } from "@/lib/ride-order-display";
 import { maskPhone } from "@/lib/order-delivery-details";
 import { canCustomerUpdateAlternateContact } from "@/lib/alternate-contact";
@@ -226,6 +226,17 @@ export default function OrderRaiseTicketScreen() {
     return /^GMP\d*/.test(ref);
   }, [order, resolved, orderRefParam, orderIdParam]);
 
+  const isParcelDeliveryOrder = useMemo(() => {
+    if (order && isParcelOrder(order)) return true;
+    if ((resolved?.order_type ?? "").trim().toLowerCase() === "parcel") return true;
+    const ref = (resolved?.formatted_order_id ?? resolved?.order_id ?? orderRefParam ?? orderIdParam)
+      .trim()
+      .toUpperCase();
+    return /^GMC\d*/.test(ref) || /^GMX\d*/.test(ref) || /^GMPARCEL/i.test(ref);
+  }, [order, resolved, orderRefParam, orderIdParam]);
+
+  const isFoodOrder = !isRideOrder && !isParcelDeliveryOrder;
+
   const ticketWindowAnchor = useMemo(() => {
     if (chatLinkedOrder) {
       return resolveOrderSupportAnchorAt({
@@ -257,7 +268,7 @@ export default function OrderRaiseTicketScreen() {
   const statusForTopics = statusForHelpFilter(
     order?.status ?? resolved?.current_status ?? resolved?.status
   );
-  const helpServiceType = isRideOrder ? "person_ride" : "food";
+  const helpServiceType = isRideOrder ? "person_ride" : isParcelDeliveryOrder ? "parcel" : "food";
 
   const concernsQ = useQuery({
     queryKey: ["customer-support-help-sections", statusForTopics, showAllTopics, coreOrderId, helpServiceType],
@@ -351,6 +362,22 @@ export default function OrderRaiseTicketScreen() {
   );
 
   const alternateContactLine = useMemo(() => {
+    // Parcel: show booking-time receiver only — never fall back to logged-in profile.
+    if (isParcelDeliveryOrder) {
+      const name =
+        order?.deliveryPrimaryContactName?.trim() ||
+        order?.deliveryContactName?.trim() ||
+        "";
+      const phone =
+        order?.deliveryPrimaryContactPhone?.trim() ||
+        order?.deliveryContactPhone?.trim() ||
+        "";
+      if (name && phone) return `${name}, ${maskPhone(phone)}`;
+      if (name) return name;
+      if (phone) return maskPhone(phone);
+      return null;
+    }
+
     const name =
       order?.deliveryContactName?.trim() ||
       profileQ.data?.full_name?.trim() ||
@@ -364,6 +391,9 @@ export default function OrderRaiseTicketScreen() {
     if (phone) return maskPhone(phone);
     return null;
   }, [
+    isParcelDeliveryOrder,
+    order?.deliveryPrimaryContactName,
+    order?.deliveryPrimaryContactPhone,
     order?.deliveryContactName,
     order?.deliveryContactPhone,
     profileQ.data?.full_name,
@@ -401,8 +431,22 @@ export default function OrderRaiseTicketScreen() {
   }, [order?.merchantPhone, order?.merchantPublicStoreId, router]);
 
   const handleCallRider = useCallback(() => {
-    openDialer(order?.rider?.phone, "Delivery partner contact is not available yet.");
-  }, [openDialer, order?.rider?.phone]);
+    if (!hasRider) {
+      Alert.alert(
+        "Not assigned yet",
+        isParcelDeliveryOrder || isRideOrder
+          ? "Call will be available once a captain is assigned."
+          : "Call will be available once a delivery partner is assigned."
+      );
+      return;
+    }
+    openDialer(
+      order?.rider?.phone,
+      isParcelDeliveryOrder || isRideOrder
+        ? "Captain contact is not available yet."
+        : "Delivery partner contact is not available yet."
+    );
+  }, [hasRider, openDialer, order?.rider?.phone, isParcelDeliveryOrder, isRideOrder]);
 
   const handleChatRider = useCallback(() => {
     if (!canonicalOrderId) return;
@@ -686,18 +730,32 @@ export default function OrderRaiseTicketScreen() {
           <HelpSectionBlock title="UPDATE YOUR DETAILS">
             <HelpActionRow
               icon="call-outline"
-              title={hasAlternateContact ? "Alternate contact number" : "Add alternate contact number"}
+              title={
+                isParcelDeliveryOrder
+                  ? "Change receiver number"
+                  : hasAlternateContact
+                    ? "Alternate contact number"
+                    : "Add alternate contact number"
+              }
               subtitle={
                 alternateContactLine
                   ? alternateContactLine
-                  : "Pick from contacts for this delivery"
+                  : isParcelDeliveryOrder
+                    ? "Pick who the captain should call at drop"
+                    : "Pick from contacts for this delivery"
               }
-              onPress={handlePickAlternateContact}
+              onPress={
+                isParcelDeliveryOrder
+                  ? canUpdateAlternateContact
+                    ? handlePickAlternateContact
+                    : undefined
+                  : handlePickAlternateContact
+              }
             />
           </HelpSectionBlock>
         ) : null}
 
-        {!isRideOrder ? (
+        {isFoodOrder ? (
           <HelpSectionBlock title="MAKE CHANGES TO YOUR ORDER">
             <HelpActionRow icon="call-outline" title="Call restaurant" onPress={handleCallRestaurant} />
           </HelpSectionBlock>
@@ -705,7 +763,12 @@ export default function OrderRaiseTicketScreen() {
 
         {!isRideOrder ? (
           <HelpSectionBlock title="DELIVERY PARTNER INSTRUCTIONS">
-            <HelpActionRow icon="call-outline" title="Call delivery partner" onPress={handleCallRider} />
+            <HelpActionRow
+              icon="call-outline"
+              title="Call delivery partner"
+              subtitle={hasRider ? null : "Available once a delivery partner is assigned"}
+              onPress={hasRider ? handleCallRider : undefined}
+            />
             <DashedDivider />
             <HelpActionRow
               icon="chatbubble-ellipses-outline"
@@ -721,7 +784,7 @@ export default function OrderRaiseTicketScreen() {
         ) : null}
 
         <HelpSectionBlock title="REPORT FRAUD">
-          {!isRideOrder ? (
+          {isFoodOrder ? (
             <>
               <HelpActionRow
                 icon="shield-outline"
@@ -733,7 +796,13 @@ export default function OrderRaiseTicketScreen() {
           ) : null}
           <HelpActionRow
             icon="shield-outline"
-            title={isRideOrder ? "Report ride partner fraud" : "Report delivery partner fraud"}
+            title={
+              isRideOrder
+                ? "Report ride partner fraud"
+                : isParcelDeliveryOrder
+                  ? "Report captain fraud"
+                  : "Report delivery partner fraud"
+            }
             onPress={() => openFraudSheet("rider")}
           />
         </HelpSectionBlock>
@@ -746,9 +815,10 @@ export default function OrderRaiseTicketScreen() {
       {!isRideOrder ? (
         <View style={styles.cancellationCard}>
           <AppText style={styles.cancellationTitle}>Cancellation Policy</AppText>
-          <AppText style={styles.cancellationBody} numberOfLines={3}>
-            Help us reduce food wastage by avoiding order cancellations. A 100% cancellation charge will
-            apply. This helps us compensate the restaurant partner for food preparation.
+          <AppText style={styles.cancellationBody} numberOfLines={4}>
+            {isParcelDeliveryOrder
+              ? "Cancel early when possible so we can free the captain for other deliveries. Charges may apply after a partner is assigned."
+              : "Help us reduce food wastage by avoiding order cancellations. A 100% cancellation charge will apply. This helps us compensate the restaurant partner for food preparation."}
           </AppText>
         </View>
       ) : null}
@@ -890,8 +960,9 @@ export default function OrderRaiseTicketScreen() {
         <AlternateContactFlow
           ref={alternateContactFlowRef}
           orderId={canonicalOrderId}
-          hasAlternateContact={hasAlternateContact}
+          hasAlternateContact={isParcelDeliveryOrder ? false : hasAlternateContact}
           canUpdateAlternateContact={canUpdateAlternateContact}
+          mode={isParcelDeliveryOrder ? "receiver" : "alternate"}
         />
       ) : null}
 

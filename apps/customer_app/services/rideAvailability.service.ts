@@ -43,6 +43,8 @@ export async function getRideAvailability(params: {
   pickupLng: number;
   radiusKm?: number;
   rideType?: string;
+  /** Duty filter — person_ride (default) or parcel. */
+  serviceType?: "person_ride" | "parcel";
   tripKm?: number;
   pickupPincode?: string;
   pickupState?: string;
@@ -53,6 +55,7 @@ export async function getRideAvailability(params: {
   search.set("pickupLng", String(params.pickupLng));
   if (params.radiusKm != null) search.set("radiusKm", String(params.radiusKm));
   if (params.rideType) search.set("rideType", params.rideType);
+  if (params.serviceType) search.set("serviceType", params.serviceType);
   if (params.tripKm != null && Number.isFinite(params.tripKm)) {
     search.set("tripKm", String(params.tripKm));
   }

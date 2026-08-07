@@ -185,6 +185,7 @@ import {
   riders,
   riderVehicles,
   ordersRide,
+  ordersParcel,
   orderRiderTracking,
   riderLiveLocations,
   merchantStoreRatings,
@@ -232,6 +233,11 @@ const orderDetailResponseSchema = z.object({
   deliveryAddressLabel: z.string().optional().nullable(),
   deliveryContactName: z.string().optional().nullable(),
   deliveryContactPhone: z.string().optional().nullable(),
+  deliveryPrimaryContactName: z.string().optional().nullable(),
+  deliveryPrimaryContactPhone: z.string().optional().nullable(),
+  alternateContactName: z.string().optional().nullable(),
+  alternateContactPhone: z.string().optional().nullable(),
+  alternateContactSetAt: z.string().optional().nullable(),
   deliveryInstructionsList: z.array(z.string()).optional(),
   merchantInstructionsList: z.array(z.string()).optional(),
   merchantPhone: z.string().optional().nullable(),
@@ -650,6 +656,24 @@ export async function orderRoutes(app: FastifyInstance) {
         }
       }
 
+      const parcelOrderPks = pageRows
+        .filter((r) => r.orderType === "parcel")
+        .map((r) => r.id);
+      const parcelVehicleByPk = new Map<number, string>();
+      if (parcelOrderPks.length > 0) {
+        const parcelRows = await db
+          .select({
+            orderId: ordersParcel.orderId,
+            vehicleCategory: ordersParcel.vehicleCategory,
+          })
+          .from(ordersParcel)
+          .where(inArray(ordersParcel.orderId, parcelOrderPks));
+        for (const pr of parcelRows) {
+          const cat = pr.vehicleCategory?.trim();
+          if (cat) parcelVehicleByPk.set(Number(pr.orderId), cat);
+        }
+      }
+
       const ordersNeedingCoreItems = pageRows.filter(
         (r) => !(Array.isArray(r.items) && r.items.length > 0) && r.orderId,
       );
@@ -845,7 +869,12 @@ export async function orderRoutes(app: FastifyInstance) {
             merchantBannerUrl,
             merchantStoreId: row.merchantStoreId != null ? Number(row.merchantStoreId) : null,
             orderType: row.orderType ?? null,
-            rideType: row.orderType === "person_ride" ? rideTypeByPk.get(row.id) ?? null : null,
+            rideType:
+              row.orderType === "person_ride"
+                ? rideTypeByPk.get(row.id) ?? null
+                : row.orderType === "parcel"
+                  ? parcelVehicleByPk.get(row.id) ?? null
+                  : null,
             pickupOtp: row.pickupOtp ?? null,
             pickupLat: row.pickupLat != null ? Number(row.pickupLat) : null,
             pickupLng: row.pickupLon != null ? Number(row.pickupLon) : null,
@@ -1270,6 +1299,8 @@ export async function orderRoutes(app: FastifyInstance) {
           deliveryAddress: ordersCore.deliveryAddress,
           deliveryOtp: ordersCore.deliveryOtp,
           pickupOtp: ordersCore.pickupOtp,
+          pickupOtpRadiusNotifiedAt: ordersCore.pickupOtpRadiusNotifiedAt,
+          deliveryOtpRadiusNotifiedAt: ordersCore.deliveryOtpRadiusNotifiedAt,
           orderType: ordersCore.orderType,
           items: ordersCore.items,
           createdAt: ordersCore.createdAt,
@@ -1424,18 +1455,44 @@ export async function orderRoutes(app: FastifyInstance) {
               .limit(1)
           : Promise.resolve([]);
 
-      const rideMetaEarly = await rideMetaPromise;
+      const parcelMetaPromise =
+        coreRow.orderType === "parcel"
+          ? db
+              .select({
+                vehicleCategory: ordersParcel.vehicleCategory,
+                riderReachedPickupAt: ordersParcel.riderReachedPickupAt,
+                pickupOtpVerifiedAt: ordersParcel.pickupOtpVerifiedAt,
+                deliveryOtpVerifiedAt: ordersParcel.deliveryOtpVerifiedAt,
+                assignedRiderId: ordersParcel.assignedRiderId,
+                receiverName: ordersParcel.receiverName,
+                receiverMobile: ordersParcel.receiverMobile,
+              })
+              .from(ordersParcel)
+              .where(eq(ordersParcel.orderId, coreRow.id))
+              .limit(1)
+          : Promise.resolve([]);
+
+      const [rideMetaEarly, parcelMetaEarly] = await Promise.all([
+        rideMetaPromise,
+        parcelMetaPromise,
+      ]);
 
       const assignedFromRide =
         Array.isArray(rideMetaEarly) && rideMetaEarly[0]?.assignedRiderId != null
           ? Number(rideMetaEarly[0].assignedRiderId)
+          : null;
+      const assignedFromParcel =
+        Array.isArray(parcelMetaEarly) && parcelMetaEarly[0]?.assignedRiderId != null
+          ? Number(parcelMetaEarly[0].assignedRiderId)
           : null;
       const effectiveRiderId =
         coreRow.riderId != null
           ? Number(coreRow.riderId)
           : assignedFromRide != null && Number.isFinite(assignedFromRide)
             ? assignedFromRide
-            : null;
+            : assignedFromParcel != null && Number.isFinite(assignedFromParcel)
+              ? assignedFromParcel
+              : null;
 
       const riderPromise =
         effectiveRiderId != null
@@ -1505,7 +1562,7 @@ export async function orderRoutes(app: FastifyInstance) {
             `
           : Promise.resolve([]);
 
-      const [foodRows, items, store, riderRows, prepRows, vehicleRows, rideMetaRows, riderAvgRating, riderDeliveredRows, otpCandidates] =
+      const [foodRows, items, store, riderRows, prepRows, vehicleRows, riderAvgRating, riderDeliveredRows, otpCandidates] =
         await Promise.all([
         foodPromise,
         loadDetailItems(),
@@ -1513,7 +1570,6 @@ export async function orderRoutes(app: FastifyInstance) {
         riderPromise,
         prepPromise,
         vehiclePromise,
-        rideMetaPromise,
         riderRatingPromise,
         riderDeliveredCountPromise,
         loadFoodDeliveryOtpCandidates(db, coreRow.id).catch(() => ({
@@ -1523,6 +1579,8 @@ export async function orderRoutes(app: FastifyInstance) {
       ]);
 
       const foodRow = foodRows[0] ?? null;
+      const rideMetaRow = Array.isArray(rideMetaEarly) ? rideMetaEarly[0] ?? null : null;
+      const parcelMetaRow = Array.isArray(parcelMetaEarly) ? parcelMetaEarly[0] ?? null : null;
       const resolvedDeliveryOtp =
         otpCandidates.deliveryCodes[0] ??
         (coreRow.deliveryOtp?.trim() || null);
@@ -1557,11 +1615,13 @@ export async function orderRoutes(app: FastifyInstance) {
       } | null = null;
       const riderRow = riderRows[0];
       const vehicleRow = vehicleRows[0] ?? null;
-      const rideMetaRow = rideMetaRows[0] ?? null;
       const riderDeliveredCount = Number(riderDeliveredRows[0]?.count ?? 0);
       const coreDbStatus = String(coreRow.status ?? "").toLowerCase();
       const pickupOtpVerifiedAtResolved = (() => {
-        const raw = rideMetaRow?.pickupOtpVerifiedAt ?? null;
+        const raw =
+          rideMetaRow?.pickupOtpVerifiedAt ??
+          parcelMetaRow?.pickupOtpVerifiedAt ??
+          null;
         if (raw instanceof Date) return raw.toISOString();
         if (raw != null) return String(raw);
         return null;
@@ -1570,6 +1630,7 @@ export async function orderRoutes(app: FastifyInstance) {
         const raw =
           rideMetaRow?.riderReachedPickupAt ??
           foodRow?.riderReachedPickupAt ??
+          parcelMetaRow?.riderReachedPickupAt ??
           null;
         if (raw instanceof Date) return raw.toISOString();
         if (raw != null) return String(raw);
@@ -1588,21 +1649,29 @@ export async function orderRoutes(app: FastifyInstance) {
         foodOrderStatus: foodRow?.orderStatus ?? null,
         riderId: effectiveRiderId ?? coreRow.riderId,
         riderReachedPickupAt: riderReachedPickupAtResolved,
-        riderPickedUpAt: riderPickedUpAtResolved,
+        riderPickedUpAt:
+          riderPickedUpAtResolved ??
+          (coreRow.orderType === "parcel" ? pickupOtpVerifiedAtResolved : null),
         orderType: coreRow.orderType,
       });
 
       const rideStartedForCustomer =
-        coreRow.orderType === "person_ride" &&
+        (coreRow.orderType === "person_ride" || coreRow.orderType === "parcel") &&
         (coreDbStatus === "picked_up" ||
           coreDbStatus === "in_transit" ||
           coreDbStatus === "delivered" ||
+          pickupOtpVerifiedAtResolved != null ||
           appStatus === "RIDE_IN_PROGRESS" ||
           appStatus === "OUT_FOR_DELIVERY" ||
           appStatus === "REACHED_CUSTOMER" ||
           appStatus === "ON_THE_WAY" ||
           appStatus === "PICKED_UP" ||
           appStatus === "IN_TRANSIT");
+      const pickupOtpRadiusNotified =
+        coreRow.pickupOtpRadiusNotifiedAt != null ||
+        riderReachedPickupAtResolved != null;
+      const deliveryOtpRadiusNotified =
+        coreRow.deliveryOtpRadiusNotifiedAt != null;
       if (riderRow) {
         const reg =
           vehicleRow?.registrationNumber?.trim() ||
@@ -1616,7 +1685,11 @@ export async function orderRoutes(app: FastifyInstance) {
           rating: riderAvgRating,
           deliveredOrdersCount: riderDeliveredCount > 0 ? riderDeliveredCount : null,
           vehicleRegistration: reg,
-          vehicleModel: modelParts || rideMetaRow?.rideType?.trim() || null,
+          vehicleModel:
+            modelParts ||
+            rideMetaRow?.rideType?.trim() ||
+            parcelMetaRow?.vehicleCategory?.trim() ||
+            null,
         };
       }
 
@@ -1730,8 +1803,14 @@ export async function orderRoutes(app: FastifyInstance) {
         storedDeliveryInstructionsList: coreRow.deliveryInstructionsList,
         alternateContactName: coreRow.alternateContactName,
         alternateContactPhone: coreRow.alternateContactPhone,
-        deliveryPrimaryContactName: coreRow.deliveryPrimaryContactName,
-        deliveryPrimaryContactPhone: coreRow.deliveryPrimaryContactPhone,
+        deliveryPrimaryContactName:
+          coreRow.deliveryPrimaryContactName?.trim() ||
+          parcelMetaRow?.receiverName?.trim() ||
+          null,
+        deliveryPrimaryContactPhone:
+          coreRow.deliveryPrimaryContactPhone?.trim() ||
+          parcelMetaRow?.receiverMobile?.trim() ||
+          null,
       });
 
       const merchantInstructionsList = resolveMerchantInstructionsList(
@@ -1851,7 +1930,14 @@ export async function orderRoutes(app: FastifyInstance) {
         deliveryAddressLabel: deliveryDetails.deliveryAddressLabel,
         deliveryContactName: deliveryDetails.deliveryContactName,
         deliveryContactPhone: deliveryDetails.deliveryContactPhone,
-        deliveryPrimaryContactName: coreRow.deliveryPrimaryContactName?.trim() || null,
+        deliveryPrimaryContactName:
+          coreRow.deliveryPrimaryContactName?.trim() ||
+          parcelMetaRow?.receiverName?.trim() ||
+          null,
+        deliveryPrimaryContactPhone:
+          coreRow.deliveryPrimaryContactPhone?.trim() ||
+          parcelMetaRow?.receiverMobile?.trim() ||
+          null,
         alternateContactName: coreRow.alternateContactName?.trim() || null,
         alternateContactPhone: coreRow.alternateContactPhone?.trim() || null,
         alternateContactSetAt:
@@ -1886,10 +1972,46 @@ export async function orderRoutes(app: FastifyInstance) {
           }
           return { pickupLat: orderLat, pickupLng: orderLng };
         })(),
-        deliveryOtp: resolvedDeliveryOtp,
-        pickupOtp: otpCandidates.pickupCode ?? coreRow.pickupOtp ?? null,
+        deliveryOtp: (() => {
+          const orderType = String(coreRow.orderType ?? "").toLowerCase();
+          const atDropRadius =
+            deliveryOtpRadiusNotified ||
+            String(coreRow.currentStatus ?? "").toUpperCase() === "REACHED_CUSTOMER" ||
+            String(coreRow.currentStatus ?? "").toUpperCase() === "RIDER_AT_DROP" ||
+            String(coreRow.currentStatus ?? "").toUpperCase() === "AT_CUSTOMER";
+          // Never expose delivery OTP before drop radius (food + parcel).
+          if (orderType === "food" || orderType === "parcel") {
+            return atDropRadius ? resolvedDeliveryOtp : null;
+          }
+          return null;
+        })(),
+        pickupOtp: (() => {
+          const orderType = String(coreRow.orderType ?? "").toLowerCase();
+          const rawPickup = otpCandidates.pickupCode ?? coreRow.pickupOtp ?? null;
+          const atPickupRadius =
+            pickupOtpRadiusNotified ||
+            riderReachedPickupAtResolved != null ||
+            String(coreRow.currentStatus ?? "").toUpperCase() === "RIDER_AT_PICKUP" ||
+            String(coreRow.currentStatus ?? "").toUpperCase() === "REACHED_STORE";
+          // Parcel: show pickup PIN on tracking from book until collected.
+          // Push with OTP still fires only at pickup radius (otp-radius-notify).
+          if (orderType === "parcel") {
+            if (pickupOtpVerifiedAtResolved || rideStartedForCustomer) return null;
+            return rawPickup;
+          }
+          // Person ride: expose after captain reaches pickup radius.
+          if (orderType === "person_ride" || orderType === "ride") {
+            return atPickupRadius ? rawPickup : null;
+          }
+          // Food pickup OTP is merchant/rider-facing — do not expose to customer API.
+          return null;
+        })(),
         orderType: coreRow.orderType ?? null,
-        rideType: rideMetaRow?.rideType?.trim() || null,
+        // Person ride: catalog id. Parcel: booked vehicle category (2_wheeler / 3_wheeler / …).
+        rideType:
+          rideMetaRow?.rideType?.trim() ||
+          parcelMetaRow?.vehicleCategory?.trim() ||
+          null,
         riderReachedPickupAt: riderReachedPickupAtResolved,
         riderPickedUpAt: riderPickedUpAtResolved,
         pickupOtpVerifiedAt: pickupOtpVerifiedAtResolved,
@@ -4218,15 +4340,22 @@ export async function orderRoutes(app: FastifyInstance) {
         .where(customerOrderRefWhere(customerPk, orderIdParam))
         .limit(1);
       if (!orderRow) return reply.status(404).send({ error: "Order not found" });
-      if (orderRow.orderType !== "food") {
-        return reply.status(400).send({ error: "not_food_order" });
+      const orderType = String(orderRow.orderType ?? "").trim().toLowerCase();
+      if (orderType !== "food" && orderType !== "parcel") {
+        return reply.status(400).send({
+          error: "unsupported_order_type",
+          message: "Contact update is only available for food and parcel orders.",
+        });
       }
 
       const statusUpper = normalizeCustomerOrderStatus(orderRow.currentStatus, orderRow.status);
       if (!canCustomerUpdateAlternateContact(statusUpper)) {
         return reply.status(409).send({
           error: "alternate_contact_closed",
-          message: "Alternate contact can no longer be updated for this order.",
+          message:
+            orderType === "parcel"
+              ? "Receiver contact can no longer be updated for this parcel."
+              : "Alternate contact can no longer be updated for this order.",
         });
       }
 
@@ -4238,6 +4367,37 @@ export async function orderRoutes(app: FastifyInstance) {
         });
       }
 
+      const contactName = body.contactName.trim();
+      const now = new Date();
+
+      // Parcel: change receiver (primary drop contact) until pickup — may update again.
+      if (orderType === "parcel") {
+        await db
+          .update(ordersCore)
+          .set({
+            deliveryPrimaryContactName: contactName,
+            deliveryPrimaryContactPhone: normalizedPhone,
+            updatedAt: now,
+          })
+          .where(eq(ordersCore.id, orderRow.id));
+
+        await db
+          .update(ordersParcel)
+          .set({
+            receiverName: contactName,
+            receiverMobile: normalizedPhone,
+            updatedAt: now,
+          })
+          .where(eq(ordersParcel.orderId, orderRow.id));
+
+        return {
+          ok: true as const,
+          deliveryContactName: contactName,
+          deliveryContactPhone: normalizedPhone,
+        };
+      }
+
+      // Food: one-time alternate contact (becomes effective delivery contact).
       if (orderRow.alternateContactPhone?.trim()) {
         return reply.status(409).send({
           error: "alternate_contact_already_set",
@@ -4245,7 +4405,6 @@ export async function orderRoutes(app: FastifyInstance) {
         });
       }
 
-      const contactName = body.contactName.trim();
       const orderIdText = orderRow.orderId?.trim() || orderIdParam;
 
       const [foodRow] = await db
@@ -4278,7 +4437,6 @@ export async function orderRoutes(app: FastifyInstance) {
         deliveryDetails.deliveryContactPhone?.trim() ||
         null;
 
-      const now = new Date();
       await db
         .update(ordersCore)
         .set({

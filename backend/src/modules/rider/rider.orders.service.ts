@@ -3545,12 +3545,22 @@ export async function verifyPickupOtpForRider(
     );
   }
   if (meta?.orderType === "parcel") {
-    // Parcel pickup OTP uses core pickup_otp when present; otherwise mark picked up.
+    // Parcel pickup OTP: verify against core pickup_otp, stamp verified_at, then pick up.
     const db = getDb();
+    const now = new Date();
     const [row] = await db
-      .select({ pickupOtp: ordersCore.pickupOtp })
+      .select({
+        id: ordersCore.id,
+        pickupOtp: ordersCore.pickupOtp,
+      })
       .from(ordersCore)
-      .where(and(orderRefWhere(orderRef), eq(ordersCore.orderType, "parcel"), eq(ordersCore.riderId, riderId)))
+      .where(
+        and(
+          orderRefWhere(orderRef),
+          eq(ordersCore.orderType, "parcel"),
+          eq(ordersCore.riderId, riderId)
+        )
+      )
       .limit(1);
     const expected = String(row?.pickupOtp ?? "").trim();
     if (expected) {
@@ -3558,6 +3568,12 @@ export async function verifyPickupOtpForRider(
       if (expected !== got) {
         throw Object.assign(new Error("Incorrect pickup OTP"), { statusCode: 403 });
       }
+    }
+    if (row?.id) {
+      await db
+        .update(ordersParcel)
+        .set({ pickupOtpVerifiedAt: now, updatedAt: now })
+        .where(eq(ordersParcel.orderId, row.id));
     }
     return markParcelPickedUpForRider(riderId, orderRef, gps);
   }
@@ -4025,6 +4041,14 @@ export async function markReachedPickupForRider(
     templateCode: "RIDE_RIDER_NEARBY",
     riderId,
   });
+  void import("../../lib/otp-radius-notify.js")
+    .then(({ notifyCustomerPickupOtpOnRadius }) =>
+      notifyCustomerPickupOtpOnRadius({
+        orderIdText: orderRef.trim(),
+        riderId,
+      })
+    )
+    .catch(() => {});
   return getRideOrderForRider(riderId, orderRef);
 }
 
@@ -4154,6 +4178,14 @@ async function markReachedParcelPickupForRider(
       throw Object.assign(new Error("Could not update parcel order"), { statusCode: 409 });
     }
 
+    await tx
+      .update(ordersParcel)
+      .set({
+        riderReachedPickupAt: now,
+        updatedAt: now,
+      })
+      .where(eq(ordersParcel.orderId, row.id));
+
     const distance = await riderDistanceAtMilestone(riderId, row.id, gps);
     await recordRiderAssignmentMilestone(tx, {
       orderCorePk: row.id,
@@ -4168,6 +4200,16 @@ async function markReachedParcelPickupForRider(
   });
 
   if (newlyReached && orderIdText) {
+    void notifyCustomerParcelLifecycle({
+      orderIdText,
+      templateCode: "PARCEL_RIDER_AT_PICKUP",
+      riderId,
+    });
+    void import("../../lib/otp-radius-notify.js")
+      .then(({ notifyCustomerPickupOtpOnRadius }) =>
+        notifyCustomerPickupOtpOnRadius({ orderIdText, riderId })
+      )
+      .catch(() => {});
     void publishOrderEvent(orderIdText, {
       type: "status_changed",
       status: "RIDER_AT_PICKUP",
@@ -4241,6 +4283,14 @@ async function markParcelPickedUpForRider(
     if (!row?.id) {
       throw Object.assign(new Error("Could not mark parcel picked up"), { statusCode: 409 });
     }
+
+    await tx
+      .update(ordersParcel)
+      .set({
+        pickupOtpVerifiedAt: now,
+        updatedAt: now,
+      })
+      .where(eq(ordersParcel.orderId, row.id));
 
     const distance = await riderDistanceAtMilestone(riderId, row.id, gps);
     await recordRiderAssignmentMilestone(tx, {
@@ -4362,6 +4412,11 @@ async function markReachedParcelCustomerForRider(
       templateCode: "PARCEL_RIDER_NEARBY",
       riderId,
     });
+    void import("../../lib/otp-radius-notify.js")
+      .then(({ notifyCustomerDeliveryOtpOnRadius }) =>
+        notifyCustomerDeliveryOtpOnRadius({ orderIdText, riderId })
+      )
+      .catch(() => {});
     void publishOrderEvent(orderIdText, {
       type: "status_changed",
       status: "REACHED_CUSTOMER",
@@ -4442,6 +4497,14 @@ async function verifyParcelDeliveryOtpForRider(
     if (!row?.id) {
       throw Object.assign(new Error("Could not confirm parcel delivery"), { statusCode: 409 });
     }
+
+    await tx
+      .update(ordersParcel)
+      .set({
+        deliveryOtpVerifiedAt: now,
+        updatedAt: now,
+      })
+      .where(eq(ordersParcel.orderId, row.id));
 
     const distance = await riderDistanceAtMilestone(riderId, row.id, payload);
     await recordRiderAssignmentMilestone(tx, {
@@ -5447,6 +5510,14 @@ async function markReachedFoodCustomerForRider(
     templateCode: "ORDER_RIDER_ARRIVING",
     riderId,
   });
+  void import("../../lib/otp-radius-notify.js")
+    .then(({ notifyCustomerDeliveryOtpOnRadius }) =>
+      notifyCustomerDeliveryOtpOnRadius({
+        orderIdText: updated.id,
+        riderId,
+      })
+    )
+    .catch(() => {});
   return updated;
 }
 

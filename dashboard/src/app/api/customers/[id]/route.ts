@@ -4,7 +4,13 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { getAuthenticatedApiUser } from "@/lib/auth/api-session";
-import { getCustomerById, getCustomerByCustomerId } from "@/lib/db/operations/customers";
+import { resolveAttachmentProxyUrl } from "@/lib/attachments/resolve-attachment-proxy-url";
+import {
+  getCustomerById,
+  getCustomerByCustomerId,
+  getCustomerOrderStats,
+  getCustomerActivityDaily,
+} from "@/lib/db/operations/customers";
 import { checkPermission } from "@/lib/permissions/engine";
 import { logAPICall } from "@/lib/auth/activity-tracker";
 import { getSystemUserByEmail } from "@/lib/db/operations/users";
@@ -78,9 +84,21 @@ export async function GET(
       ipAddress
     );
 
+    const [orderStats, activityDaily] = await Promise.all([
+      getCustomerOrderStats(customer.id),
+      getCustomerActivityDaily(customer.id, 90),
+    ]);
+
     return NextResponse.json({
       success: true,
-      data: customer,
+      data: {
+        ...customer,
+        profileImageUrl: customer.profileImageUrl
+          ? resolveAttachmentProxyUrl(customer.profileImageUrl) || customer.profileImageUrl
+          : customer.profileImageUrl,
+        orderStats,
+        activityDaily,
+      },
     });
   } catch (error) {
     console.error("[GET /api/customers/[id]] Error:", error);

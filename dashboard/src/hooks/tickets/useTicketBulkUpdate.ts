@@ -3,6 +3,7 @@
 import { useCallback } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { queryKeys } from "@/lib/queryKeys";
+import { invalidateTicketListCaches } from "@/lib/tickets/patch-ticket-list-cache";
 
 /**
  * Applies one change set to many tickets through `POST /api/tickets/bulk-update`.
@@ -61,6 +62,8 @@ export function useTicketBulkUpdate() {
         });
         queryClient.invalidateQueries({ queryKey: queryKeys.tickets.activities(String(id)) });
       }
+
+      invalidateTicketListCaches(queryClient);
 
       return data.data as BulkUpdateOutcome;
     },

@@ -58,24 +58,144 @@ function resolveSupabaseProject(
   return { supabaseUrl: url, supabaseAnonKey: anonKey };
 }
 
-/** Android emulator: localhost -> 10.0.2.2; legacy :30000/:4000 -> :3000. */
-function resolveApiBaseUrl(raw: string): string {
-  let trimmed = raw.replace(/\/+$/, "");
+function isLocalhostApiUrl(url: string): boolean {
+  return /^https?:\/\/(localhost|127\.0\.0\.1)(\b|:)/.test(url.replace(/\/+$/, ""));
+}
+
+function isPlausibleIpv4(host: string): boolean {
+  const parts = host.split(".");
+  if (parts.length !== 4) return false;
+  return parts.every((p) => /^\d{1,3}$/.test(p) && Number(p) >= 0 && Number(p) <= 255);
+}
+
+function normalizeDevHost(raw: string): string | null {
+  const host = raw.replace(/^https?:\/\//, "").split("/")[0].replace(/:\d+$/, "").trim();
+  return host && isPlausibleIpv4(host) ? host : null;
+}
+
+function isPrivateLanIpv4(host: string): boolean {
+  if (!isPlausibleIpv4(host)) return false;
+  const [a, b] = host.split(".").map(Number);
+  if (a === 10) return true;
+  if (a === 192 && b === 168) return true;
+  if (a === 172 && b >= 16 && b <= 31) return true;
+  return false;
+}
+
+function hostFromApiUrl(url: string): string | null {
   try {
-    const parsed = new URL(trimmed);
+    return new URL(url).hostname;
+  } catch {
+    return null;
+  }
+}
+
+function portFromApiUrl(url: string): string {
+  try {
+    const parsed = new URL(url);
+    if (parsed.port) return parsed.port;
+  } catch {
+    /* ignore */
+  }
+  return apiDevPort();
+}
+
+/** Metro / Expo dev server LAN IP (e.g. 10.49.x.x from hostUri) — avoids localhost on a physical phone. */
+export function inferLanHostFromExpoBundler(): string | null {
+  const hostUri =
+    Constants.expoConfig?.hostUri ??
+    (Constants.expoGoConfig as { hostUri?: string } | undefined)?.hostUri;
+  if (typeof hostUri === "string" && hostUri.length > 0) {
+    const host = hostUri.split(":")[0]?.trim();
+    if (host && host !== "localhost" && host !== "127.0.0.1") return host;
+  }
+  const debuggerHost = (Constants.manifest as { debuggerHost?: string } | null)?.debuggerHost;
+  if (typeof debuggerHost === "string" && debuggerHost.length > 0) {
+    const host = debuggerHost.split(":")[0]?.trim();
+    if (host && host !== "localhost" && host !== "127.0.0.1") return host;
+  }
+  return null;
+}
+
+function preferredDevLanHost(): string | null {
+  const fromBundler = inferLanHostFromExpoBundler();
+  if (fromBundler && isPrivateLanIpv4(fromBundler)) return fromBundler;
+  const fromDevHost = normalizeDevHost(process.env.EXPO_PUBLIC_DEV_HOST ?? "");
+  if (fromDevHost && isPrivateLanIpv4(fromDevHost)) return fromDevHost;
+  const fromApi = hostFromApiUrl(process.env.EXPO_PUBLIC_API_BASE_URL ?? "");
+  if (fromApi && isPrivateLanIpv4(fromApi)) return fromApi;
+  return null;
+}
+
+const loggedLanHeals = new Set<string>();
+let loggedResolvedApiUrl: string | null = null;
+
+/** Backend HTTP port — must match `PORT` in backend/.env (default 3000). */
+function apiDevPort(): string {
+  const raw = asNonEmptyString(process.env.EXPO_PUBLIC_API_PORT) ?? "3000";
+  return raw === "30000" || raw === "4000" ? "3000" : raw;
+}
+
+function normalizeLegacyBackendPort(url: string): string {
+  try {
+    const parsed = new URL(url);
     if (parsed.port === "30000" || parsed.port === "4000") {
       parsed.port = "3000";
-      trimmed = parsed.toString().replace(/\/$/, "");
+      return parsed.toString().replace(/\/$/, "");
     }
   } catch {
     /* ignore */
   }
-  if (
-    Platform.OS === "android" &&
-    (/^https?:\/\/localhost(\b|:)/.test(trimmed) || /^https?:\/\/127\.0\.0\.1(\b|:)/.test(trimmed))
-  ) {
-    return trimmed.replace(/localhost|127\.0\.0\.1/, "10.0.2.2");
+  return url;
+}
+
+/**
+ * Wi‑Fi IPs change often. In __DEV__, if a configured URL points at a different
+ * private LAN IP than this PC's current Metro host, rewrite to the live IP.
+ */
+function healStaleLanApiUrl(url: string): string {
+  if (!__DEV__) return url;
+  const lan = preferredDevLanHost();
+  if (!lan) return url;
+  const host = hostFromApiUrl(url);
+  if (!host || host === lan || !isPrivateLanIpv4(host)) return url;
+  const healed = `http://${lan}:${portFromApiUrl(url)}`;
+  const healKey = `${url}→${healed}`;
+  if (!loggedLanHeals.has(healKey)) {
+    loggedLanHeals.add(healKey);
+    // eslint-disable-next-line no-console
+    console.log(
+      `[RiderEnv] healed stale LAN API URL ${url} → ${healed} (set EXPO_PUBLIC_API_BASE_URL=${healed} to silence)`
+    );
   }
+  return healed;
+}
+
+/**
+ * Android emulator: always 10.0.2.2 (host loopback).
+ * Physical device + localhost: Metro LAN IP when available.
+ * Legacy :30000/:4000 → :3000.
+ */
+function resolveApiBaseUrl(raw: string): string {
+  const trimmed = normalizeLegacyBackendPort(raw.replace(/\/+$/, ""));
+  const port = portFromApiUrl(trimmed);
+
+  // Emulator cannot reliably reach a hardcoded LAN IP — use the host alias.
+  if (Platform.OS === "android" && !Constants.isDevice) {
+    return `http://10.0.2.2:${port}`;
+  }
+
+  if (isLocalhostApiUrl(trimmed)) {
+    if (Constants.isDevice) {
+      const lan = inferLanHostFromExpoBundler();
+      if (lan) return `http://${lan}:${port}`;
+    }
+    if (Platform.OS === "android") {
+      return trimmed.replace(/localhost|127\.0\.0\.1/, "10.0.2.2");
+    }
+    return trimmed;
+  }
+
   return trimmed;
 }
 
@@ -110,21 +230,42 @@ export function getRiderAppConfig(): RiderAppConfig {
     phoneOtpBackendRaw?.toLowerCase() === "yes" ||
     phoneOtpBackendRaw?.toLowerCase() === "on";
   const fromExtra = asNonEmptyString(extra.API_BASE_URL);
+  const devHost = normalizeDevHost(process.env.EXPO_PUBLIC_DEV_HOST ?? "");
+  const port = apiDevPort();
 
   // Production safety net — see merchant_app/config/env.ts for rationale.
-  const fallback = __DEV__ ? "http://localhost:3000" : "https://api.gatimitra.com";
-  const apiBaseUrl = (
-    asNonEmptyString(fromEnv) ??
-    asNonEmptyString(fromExtra) ??
-    fallback
-  ).replace(/\/+$/, "");
+  const fallback = __DEV__ ? `http://localhost:${port}` : "https://api.gatimitra.com";
+
+  let rawUrl: string;
+  // Explicit LAN URL in .env.local wins over DEV_HOST (avoids stale/wrong DEV_HOST in .env).
+  if (fromEnv && !isLocalhostApiUrl(fromEnv)) {
+    rawUrl = fromEnv.replace(/\/+$/, "");
+  } else if (devHost) {
+    rawUrl = `http://${devHost}:${port}`;
+  } else {
+    rawUrl = (asNonEmptyString(fromEnv) ?? asNonEmptyString(fromExtra) ?? fallback).replace(
+      /\/+$/,
+      ""
+    );
+  }
+
+  const apiBaseUrl = healStaleLanApiUrl(resolveApiBaseUrl(rawUrl));
+
+  if (__DEV__ && loggedResolvedApiUrl !== apiBaseUrl) {
+    loggedResolvedApiUrl = apiBaseUrl;
+    // eslint-disable-next-line no-console
+    console.log(
+      `[RiderEnv] API base URL: ${apiBaseUrl}` +
+        (Platform.OS === "android" && !Constants.isDevice ? " (Android emulator → 10.0.2.2)" : "")
+    );
+  }
 
   const mapboxToken = resolveMapboxPublicToken();
   const wsBaseUrl = resolveWsBaseUrl(apiBaseUrl);
   const wsEnabled = isRiderWsEnabled();
 
   return {
-    apiBaseUrl: resolveApiBaseUrl(apiBaseUrl),
+    apiBaseUrl,
     wsBaseUrl,
     wsEnabled,
     supabaseUrl,
@@ -165,17 +306,24 @@ export function resolveWsBaseUrl(apiBaseUrl: string): string {
   }
 }
 
-/** Normalize localhost URLs for Android emulator (10.0.2.2). */
+/** Normalize API URLs for the current device (emulator loopback, stale LAN heal). */
 export function resolveUrlForDevice(url: string): string {
   if (typeof url !== "string" || !url.trim()) return url;
-  const u = url.trim();
-  if (
-    Platform.OS === "android" &&
-    (/https?:\/\/localhost(\b|:)/.test(u) || /https?:\/\/127\.0\.0\.1(\b|:)/.test(u))
-  ) {
-    return u.replace(/localhost|127\.0\.0\.1/g, "10.0.2.2");
+  const trimmed = url.trim().replace(/\/+$/, "");
+  if (Platform.OS === "android" && !Constants.isDevice) {
+    const port = portFromApiUrl(trimmed);
+    return `http://10.0.2.2:${port}`;
   }
-  return u;
+  if (isLocalhostApiUrl(trimmed)) {
+    if (Constants.isDevice) {
+      const lan = inferLanHostFromExpoBundler();
+      if (lan) return `http://${lan}:${portFromApiUrl(trimmed)}`;
+    }
+    if (Platform.OS === "android") {
+      return trimmed.replace(/localhost|127\.0\.0\.1/g, "10.0.2.2");
+    }
+  }
+  return healStaleLanApiUrl(trimmed);
 }
 
 function asNonEmptyString(v: unknown): string | null {

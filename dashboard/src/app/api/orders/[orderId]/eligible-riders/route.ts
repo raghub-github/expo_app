@@ -1,5 +1,5 @@
+import { getAuthenticatedApiUser, authFailureResponse } from "@/lib/auth/api-session";
 import { NextRequest, NextResponse } from "next/server";
-import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine";
 import { listForceAssignmentRidersFromDb } from "@/lib/orders/force-assignment-eligible-riders";
 
@@ -22,15 +22,11 @@ export async function GET(
       return NextResponse.json({ success: false, error: "Invalid order id" }, { status: 400 });
     }
 
-    const supabase = await createServerSupabaseClient();
-    const {
-      data: { user },
-      error: userError,
-    } = await supabase.auth.getUser();
-
-    if (userError || !user) {
-      return NextResponse.json({ success: false, error: "Not authenticated" }, { status: 401 });
+    const auth = await getAuthenticatedApiUser(_request);
+    if (!auth.ok) {
+      return authFailureResponse(auth);
     }
+    const { user } = auth;
 
     const allowed =
       (await isSuperAdmin(user.id, user.email ?? "")) ||

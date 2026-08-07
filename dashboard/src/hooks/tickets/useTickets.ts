@@ -105,6 +105,7 @@ export interface Ticket {
   isSpam?: boolean;
   priority: string;
   orderId: number | null;
+  formattedOrderId?: string | null;
   orderServiceType: string | null;
   is3plOrder: boolean;
   isHighValueOrder: boolean;
@@ -283,10 +284,11 @@ export function useTickets(
     enabled: isAllowed && isOnTicketsRoute && extraEnabled,
     ...(initialSnapshot != null ? { initialData: initialSnapshot } : {}),
     // Cached list with stale-while-revalidate for smooth pagination/filtering.
-    staleTime: 90 * 1000,
+    staleTime: 15 * 1000,
     gcTime: 5 * 60 * 1000,
     refetchOnWindowFocus: false,
-    /** Inherit global refetchOnMount: false so returning from ticket detail keeps the list cache without a forced refetch. */
+    /** Realtime + explicit invalidation refresh the list; avoid stale rows when returning from detail. */
+    refetchOnMount: "always",
     retry: (failureCount, err) => {
       if (failureCount >= 2) return false;
       if (err instanceof Error && err.name === "AbortError") return false;

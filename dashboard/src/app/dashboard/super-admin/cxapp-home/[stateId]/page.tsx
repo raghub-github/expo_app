@@ -2,11 +2,11 @@
 
 import { useAppParams } from "@/hooks/useAppSearchParams";
 
-import dynamic from "next/dynamic";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { Check } from "lucide-react";
 
+import { FoodHomeLayoutPhonePreview } from "@/components/cxapp-home/FoodHomeLayoutPhonePreview";
 import { GridFirstHeroMediaPanel } from "@/components/cxapp-home/GridFirstHeroMediaPanel";
 import { GridFirstSubscriptionRowPanel } from "@/components/cxapp-home/GridFirstSubscriptionRowPanel";
 import { GridFirstUnder250Panel } from "@/components/cxapp-home/GridFirstUnder250Panel";
@@ -21,23 +21,6 @@ import {
 } from "@/lib/cxapp-home/food-home-layout";
 import type { GridFirstHeroMediaItem } from "@/lib/cxapp-home/grid-first-hero-media";
 import { cn } from "@/lib/utils";
-
-/** Defer heavy live-preview chunk + fetch until after layout chrome paints. */
-const FoodHomeLayoutPhonePreview = dynamic(
-  () =>
-    import("@/components/cxapp-home/FoodHomeLayoutPhonePreview").then(
-      (m) => m.FoodHomeLayoutPhonePreview
-    ),
-  {
-    ssr: false,
-    loading: () => (
-      <div className="mb-2 rounded-xl border border-slate-200 bg-slate-50 p-3">
-        <p className="text-center text-sm font-semibold text-slate-700">Live app preview</p>
-        <div className="mx-auto mt-3 h-64 w-[200px] rounded-[24px] border-[5px] border-slate-200 bg-white" />
-      </div>
-    ),
-  }
-);
 
 const LAYOUT_CACHE_PREFIX = "cxapp-food-layout-v2:";
 

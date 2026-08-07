@@ -1,6 +1,7 @@
 import { createApi, fetchBaseQuery } from "@reduxjs/toolkit/query/react";
 import type { BaseQueryFn, FetchArgs, FetchBaseQueryError } from "@reduxjs/toolkit/query";
 import { redirectToLoginOnSessionExpired } from "@/lib/auth/redirect-to-login";
+import { isHardSessionDeathCode } from "@/lib/auth/session-errors";
 
 /** If `getSession()` never settles (rare Supabase client deadlock), RTK requests would hang forever. */
 const SESSION_HEADER_TIMEOUT_MS = 5000;
@@ -45,7 +46,13 @@ const baseQuery: BaseQueryFn<string | FetchArgs, unknown, FetchBaseQueryError> =
 ) => {
   const result = await rawBaseQuery(args, api, extraOptions);
   if (result.error?.status === 401) {
-    redirectToLoginOnSessionExpired({ reason: "session_expired" });
+    const code =
+      result.error.data && typeof result.error.data === "object"
+        ? String((result.error.data as { code?: unknown }).code ?? "")
+        : "";
+    if (isHardSessionDeathCode(code)) {
+      redirectToLoginOnSessionExpired({ reason: code || "session_expired" });
+    }
   }
   return result;
 };

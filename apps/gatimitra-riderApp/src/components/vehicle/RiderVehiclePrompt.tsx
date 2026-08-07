@@ -21,6 +21,7 @@ export function RiderVehiclePrompt() {
       <VehicleDetailsBottomSheet
         visible
         initial={data?.vehicle ?? null}
+        formMeta={data?.formMeta ?? null}
         onboardingVehicleChoice={data?.onboardingVehicleChoice ?? null}
         onboardingVehicleCategoryCode={data?.onboardingVehicleCategoryCode ?? null}
         onboardingPrefill={data?.onboardingPrefill ?? null}

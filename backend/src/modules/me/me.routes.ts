@@ -1,4 +1,5 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
+import multipart from "@fastify/multipart";
 import { z } from "zod";
 import { getDb, withSqlRetry } from "../../db/client.js";
 import { userProfiles, customers, accountDeletionRequests } from "../../db/schema.js";
@@ -227,6 +228,7 @@ async function ensureEmailAvatarForCustomer(
   if (!email) return row;
 
   const stored = row.profileImageUrl?.trim() || null;
+  if (stored?.includes("/attachments/proxy")) return row;
   if (stored && !isGenericProfileImageUrl(stored)) return row;
 
   try {
@@ -805,4 +807,185 @@ export async function meRoutes(app: FastifyInstance) {
   app.post("/account/deletion-request", { schema: deletionRequestSchema }, handleDeletionRequest);
   // Backward-compatible alias for older app builds.
   app.delete("/account", { schema: deletionRequestSchema }, handleDeletionRequest);
+
+  app.get(
+    "/service-blocks",
+    {
+      schema: {
+        response: {
+          200: z.object({
+            blocks: z.array(
+              z.object({
+                service: z.enum([
+                  "food",
+                  "parcel",
+                  "person_ride",
+                  "ecommerce",
+                  "vouchers",
+                  "near_me",
+                ]),
+                reason: z.string(),
+                blocked_at: z.string(),
+              })
+            ),
+          }),
+          401: z.object({ error: z.string(), message: z.string() }),
+        },
+      },
+    },
+    async (req, reply) => {
+      const sub = req.auth!.sub;
+      const role = req.auth!.role;
+      return withSqlRetry(async () => {
+        const db = getDb();
+        const customerId = await resolveCustomerId(db, sub, role, req.auth?.phone);
+        if (!customerId) {
+          return reply.code(401).send({
+            error: "session_revoked",
+            message: "Please log in again.",
+          });
+        }
+        const [row] = await db
+          .select({ id: customers.id })
+          .from(customers)
+          .where(eq(customers.customerId, customerId))
+          .limit(1);
+        if (!row) {
+          return reply.code(401).send({
+            error: "user_deleted",
+            message: "Your account is no longer available.",
+          });
+        }
+        const { listActiveCustomerServiceBlocksForCustomer } = await import(
+          "../../lib/customer-service-blocks.js"
+        );
+        const blocks = await listActiveCustomerServiceBlocksForCustomer(row.id);
+        return {
+          blocks: blocks.map((b) => ({
+            service: b.serviceType,
+            reason: b.reason,
+            blocked_at: b.blockedAt,
+          })),
+        };
+      });
+    }
+  );
+
+  await app.register(multipart, { limits: { fileSize: 5 * 1024 * 1024 } });
+
+  app.post(
+    "/profile-image",
+    {
+      schema: {
+        response: {
+          201: z.object({
+            profile_image_url: z.string(),
+          }),
+          400: z.object({ error: z.string(), message: z.string().optional() }),
+          401: z.object({ error: z.string(), message: z.string() }),
+          500: z.object({ error: z.string(), message: z.string() }),
+        },
+      },
+    },
+    async (req, reply) => {
+      const sub = req.auth!.sub;
+      const role = req.auth!.role;
+
+      return withSqlRetry(async () => {
+        const db = getDb();
+        const customerId = await resolveCustomerId(db, sub, role, req.auth?.phone);
+        if (!customerId) {
+          return reply.code(401).send({
+            error: "session_revoked",
+            message: "Please log in again.",
+          });
+        }
+
+        const [row] = await db
+          .select()
+          .from(customers)
+          .where(eq(customers.customerId, customerId))
+          .limit(1);
+        if (!row) {
+          return reply.code(401).send({
+            error: "user_deleted",
+            message: "Your account is no longer available.",
+          });
+        }
+
+        const filePart = await (req as unknown as {
+          file?: () => Promise<{
+            filename?: string;
+            mimetype?: string;
+            toBuffer: () => Promise<Buffer>;
+          } | undefined>;
+        }).file?.();
+        if (!filePart) {
+          return reply.code(400).send({ error: "no_file", message: "No image provided." });
+        }
+
+        const buffer = await filePart.toBuffer();
+        if (!buffer || buffer.length === 0) {
+          return reply.code(400).send({ error: "empty_file", message: "Image is empty." });
+        }
+        if (buffer.length > 5 * 1024 * 1024) {
+          return reply.code(400).send({ error: "file_too_large", message: "Max size is 5 MB." });
+        }
+
+        const originalName = String(filePart.filename || "profile.jpg");
+        const safeName = originalName.replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 120) || "profile.jpg";
+        const mime = String(filePart.mimetype || "image/jpeg");
+        if (!/^image\/(jpeg|png|gif|webp)$/i.test(mime)) {
+          return reply.code(400).send({
+            error: "unsupported_mime_type",
+            message: "Only JPEG, PNG, GIF, or WebP images are allowed.",
+          });
+        }
+
+        const { randomUUID } = await import("crypto");
+        const r2Key = `customers/profile-images/${customerId}/${randomUUID()}-${safeName}`;
+
+        try {
+          const { uploadToR2, deleteFromR2 } = await import("../../services/r2/r2Service.js");
+          const uploaded = await uploadToR2(buffer, r2Key, mime);
+          const proxyUrl = `/v1/attachments/proxy?key=${encodeURIComponent(uploaded.key)}`;
+
+          const prevKey = extractProxyAttachmentKey(row.profileImageUrl);
+          if (prevKey?.startsWith("customers/profile-images/")) {
+            deleteFromR2(prevKey).catch(() => undefined);
+          }
+
+          const [updated] = await db
+            .update(customers)
+            .set({ profileImageUrl: proxyUrl, updatedAt: new Date() })
+            .where(eq(customers.customerId, customerId))
+            .returning();
+
+          if (!updated) {
+            await deleteFromR2(uploaded.key).catch(() => undefined);
+            return reply.code(500).send({ error: "save_failed", message: "Could not save profile photo." });
+          }
+
+          return reply.code(201).send({ profile_image_url: proxyUrl });
+        } catch (e) {
+          req.log.error({ err: e }, "profile image upload failed");
+          return reply.code(500).send({ error: "upload_failed", message: "Upload failed. Try again." });
+        }
+      });
+    }
+  );
+}
+
+function extractProxyAttachmentKey(stored: string | null | undefined): string | null {
+  if (!stored?.trim()) return null;
+  const u = stored.trim();
+  try {
+    const parsed = u.startsWith("http") ? new URL(u) : new URL(u, "https://local");
+    if (parsed.pathname.includes("/attachments/proxy")) {
+      return parsed.searchParams.get("key");
+    }
+  } catch {
+    return null;
+  }
+  return null;
 }

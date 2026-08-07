@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { requireSuperAdminApi } from "@/lib/super-admin-api";
-import { getSql } from "@/lib/db/client";
+import { listActiveStates } from "@/lib/geo/list-active-states";
 
 export const runtime = "nodejs";
 
@@ -9,10 +9,7 @@ export async function GET() {
   if (!gate.ok) return gate.response;
 
   try {
-    const sql = getSql();
-    const rows = await sql<{ id: string; name: string }[]>`
-      SELECT id, name FROM states WHERE is_active = true ORDER BY lower(name)
-    `;
+    const rows = await listActiveStates();
     return NextResponse.json(
       { states: rows },
       {

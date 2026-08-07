@@ -141,10 +141,10 @@ export function OrderRoutedToHistorySideSheet({
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
 
-  // Silent refresh — sheet is already open; never block on "Loading…".
+  // Always force-refresh when the sheet opens so new stamps appear immediately.
   useEffect(() => {
     let cancelled = false;
-    void fetchRoutedToHistory(orderId)
+    void fetchRoutedToHistory(orderId, { force: true })
       .then((rows) => {
         if (!cancelled) {
           setItems(rows);

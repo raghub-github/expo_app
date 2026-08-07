@@ -271,9 +271,50 @@ export function TicketPropertiesPanel({ ticketId }: { ticketId: number | string 
     setGroDetails((prev) => (prev === nextGroDetails ? prev : nextGroDetails));
   }, [ticket, currentUser, refData?.tags]);
 
+  const hasPendingChanges = useMemo(() => {
+    if (!ticket) return false;
+    if ((ticket.status || "open") !== status) return true;
+    if ((ticket.priority || "medium") !== priority) return true;
+    if ((ticket.group?.id != null ? String(ticket.group.id) : "") !== groupId) return true;
+    const currentAssigneeStr = ticket.assignee?.id != null ? String(ticket.assignee.id) : "";
+    const nextAssigneeStr =
+      agentId === "me" && currentUser ? String(currentUser.id) : agentId ? String(agentId) : "";
+    if (currentAssigneeStr !== nextAssigneeStr) return true;
+    const currentDueBy = ticket.slaDueAt ? new Date(ticket.slaDueAt).toISOString().slice(0, 16) : "";
+    if (currentDueBy !== dueBy) return true;
+    const normalize = (arr: string[]) => [...arr].map((x) => x.trim()).filter(Boolean).sort();
+    if (JSON.stringify(normalize(ticket.tags ?? [])) !== JSON.stringify(normalize(tags))) return true;
+    if ((ticket.buyerNpName ?? "") !== buyerNpName.trim()) return true;
+    if ((ticket.sellerNpName ?? "") !== sellerNpName.trim()) return true;
+    if ((ticket.logisticsNpName ?? "") !== logisticsNpName.trim()) return true;
+    if ((ticket.igmActionTriggered ?? "") !== igmActionTriggered.trim()) return true;
+    if ((ticket.igmShortResolution ?? "") !== igmShortResolution.trim()) return true;
+    if ((ticket.igmLongResolution ?? "") !== igmLongResolution.trim()) return true;
+    if ((ticket.igmRefundAmount ?? "") !== igmRefundAmount.trim()) return true;
+    if ((ticket.groDetails ?? "") !== groDetails.trim()) return true;
+    return false;
+  }, [
+    ticket,
+    status,
+    priority,
+    groupId,
+    agentId,
+    currentUser,
+    dueBy,
+    tags,
+    buyerNpName,
+    sellerNpName,
+    logisticsNpName,
+    igmActionTriggered,
+    igmShortResolution,
+    igmLongResolution,
+    igmRefundAmount,
+    groDetails,
+  ]);
+
   const handleUpdate = () => {
     const resolvedTicketId = ticket?.id;
-    if (!resolvedTicketId) return;
+    if (!resolvedTicketId || !hasPendingChanges) return;
     const payload: {
       ticketId: number;
       status?: string;
@@ -703,8 +744,12 @@ export function TicketPropertiesPanel({ ticketId }: { ticketId: number | string 
         <button
           type="button"
           onClick={handleUpdate}
-          disabled={updateTicket.isPending}
-          className="flex w-full cursor-pointer items-center justify-center gap-2 rounded-[10px] bg-[#121212] px-3 py-2 text-[12px] font-semibold text-white transition-colors disabled:cursor-not-allowed disabled:opacity-80 enabled:hover:bg-black"
+          disabled={updateTicket.isPending || !hasPendingChanges}
+          className={`flex w-full items-center justify-center gap-2 rounded-[10px] px-3 py-2 text-[12px] font-semibold text-white transition-colors ${
+            updateTicket.isPending || !hasPendingChanges
+              ? "cursor-not-allowed bg-[#121212]/40"
+              : "cursor-pointer bg-[#121212] hover:bg-black"
+          }`}
         >
           {updateTicket.isPending ? "Updating…" : "Update"}
         </button>

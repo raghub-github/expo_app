@@ -1,3 +1,4 @@
+import { getAuthenticatedApiUser, authFailureResponse } from "@/lib/auth/api-session";
 /**
  * GET /api/orders/[orderId]/refunds – list refunds for an order.
  * POST /api/orders/[orderId]/refunds – create a refund record.
@@ -5,7 +6,6 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { canRefundOrder } from "@/lib/permissions/actions";
 import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine";
 import { getSystemUserByEmail } from "@/lib/db/operations/users";
@@ -257,18 +257,11 @@ export async function GET(
       );
     }
 
-    const supabase = await createServerSupabaseClient();
-    const {
-      data: { user },
-      error: userError,
-    } = await supabase.auth.getUser();
-
-    if (userError || !user) {
-      return NextResponse.json(
-        { success: false, error: "Not authenticated" },
-        { status: 401 }
-      );
+    const auth = await getAuthenticatedApiUser(_request);
+    if (!auth.ok) {
+      return authFailureResponse(auth);
     }
+    const { user } = auth;
 
     const canView =
       (await isSuperAdmin(user.id, user.email ?? "")) ||
@@ -331,18 +324,11 @@ export async function POST(
       );
     }
 
-    const supabase = await createServerSupabaseClient();
-    const {
-      data: { user },
-      error: userError,
-    } = await supabase.auth.getUser();
-
-    if (userError || !user) {
-      return NextResponse.json(
-        { success: false, error: "Not authenticated" },
-        { status: 401 }
-      );
+    const auth = await getAuthenticatedApiUser(request);
+    if (!auth.ok) {
+      return authFailureResponse(auth);
     }
+    const { user } = auth;
 
     const canRefund =
       (await isSuperAdmin(user.id, user.email ?? "")) ||

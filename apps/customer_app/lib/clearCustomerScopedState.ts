@@ -31,6 +31,7 @@ import { useCartCheckoutGateStore } from "@/store/cartCheckoutGateStore";
 import { useRecentSearchStore } from "@/store/recentSearchStore";
 import { useRecentLocationStore } from "@/store/recentLocationStore";
 import { useLocationStore } from "@/store/locationStore";
+import { useParcelBookingStore } from "@/features/parcel/parcelBookingStore";
 
 /** In-memory customer state: active orders, carts, checkout handoffs. */
 function clearInMemoryCustomerStores(): void {
@@ -43,6 +44,7 @@ function clearInMemoryCustomerStores(): void {
   useCartCheckoutGateStore.getState().hide();
   useRecentSearchStore.getState().clearRecentSearches();
   useRecentLocationStore.getState().clearRecentLocations();
+  useParcelBookingStore.getState().clear();
 }
 
 /** Location pin + the reconcile gate that would otherwise re-pin the old address. */

@@ -36,21 +36,12 @@ export async function withAuditLog<T>(
   handler: (session: { userId: string; email: string }, context: ActionContext) => Promise<T>,
   context: ActionContext = {}
 ): Promise<T> {
-  const { createServerSupabaseClient } = await import("../supabase/server");
-  const { isInvalidRefreshToken, signOutIfSessionDead } = await import("../auth/session-errors");
-  const supabase = await createServerSupabaseClient();
-  const { data: { user }, error: userError } = await supabase.auth.getUser();
-
-  if (userError) {
-    if (isInvalidRefreshToken(userError)) {
-      await signOutIfSessionDead(supabase, userError);
-    }
+  const { getAuthenticatedApiUser } = await import("../auth/api-session");
+  const auth = await getAuthenticatedApiUser(request);
+  if (!auth.ok || !auth.user?.email) {
     throw new Error("Not authenticated");
   }
-  if (!user?.email) {
-    throw new Error("Not authenticated");
-  }
-  const session = { userId: user.id, email: user.email };
+  const session = { userId: auth.user.id, email: auth.user.email };
 
   const startTime = Date.now();
   let actionStatus: "SUCCESS" | "FAILED" = "SUCCESS";

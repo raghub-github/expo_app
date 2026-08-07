@@ -67,9 +67,10 @@ type Props = {
   mode?: "tracking" | "delivered";
   /** Ride vs food/parcel — affects partner subtitle on delivered screen. */
   partnerKind?: "ride" | "delivery";
+  /** Hide tip upsell (e.g. parcel tracking). */
+  hideTip?: boolean;
   style?: StyleProp<ViewStyle>;
 };
-
 export function DeliveryPartnerTrackingCard({
   riderName,
   riderFirstName,
@@ -88,6 +89,7 @@ export function DeliveryPartnerTrackingCard({
   uniformFeedbackDisabled = false,
   mode = "tracking",
   partnerKind = "delivery",
+  hideTip = false,
   style,
 }: Props) {
   const isDelivered = mode === "delivered";
@@ -135,40 +137,42 @@ export function DeliveryPartnerTrackingCard({
         </TouchableOpacity>
       </View>
 
-      {existingTipAmount > 0 ? (
-        <>
-          <DashedDivider />
-          <CheckoutText style={styles.tipNote}>
-            {isDelivered
-              ? `You tipped ₹${existingTipAmount.toFixed(0)}. 100% goes to ${riderFirstName} directly.`
-              : `You tipped ₹${existingTipAmount.toFixed(0)}. 100% goes to ${riderFirstName} after delivery.`}
-          </CheckoutText>
-        </>
-      ) : (
-        <>
-          <DashedDivider />
-          <CheckoutText style={styles.tipNote}>
-            {isDelivered
-              ? `Thank ${riderFirstName} by leaving a tip. 100% of the amount will go to them directly`
-              : `Thank ${riderFirstName} by leaving a tip. 100% of the amount will go to them after delivery`}
-          </CheckoutText>
-          <View style={styles.tipChipRow}>
-            {FOOD_TIP_PRESETS.map((amount) => (
-              <TouchableOpacity
-                key={amount}
-                style={styles.tipChipBtn}
-                onPress={onTipPreset}
-                activeOpacity={0.85}
-              >
-                <CheckoutText style={styles.tipChipBtnText}>₹{amount}</CheckoutText>
+      {!hideTip ? (
+        existingTipAmount > 0 ? (
+          <>
+            <DashedDivider />
+            <CheckoutText style={styles.tipNote}>
+              {isDelivered
+                ? `You tipped ₹${existingTipAmount.toFixed(0)}. 100% goes to ${riderFirstName} directly.`
+                : `You tipped ₹${existingTipAmount.toFixed(0)}. 100% goes to ${riderFirstName} after delivery.`}
+            </CheckoutText>
+          </>
+        ) : (
+          <>
+            <DashedDivider />
+            <CheckoutText style={styles.tipNote}>
+              {isDelivered
+                ? `Thank ${riderFirstName} by leaving a tip. 100% of the amount will go to them directly`
+                : `Thank ${riderFirstName} by leaving a tip. 100% of the amount will go to them after delivery`}
+            </CheckoutText>
+            <View style={styles.tipChipRow}>
+              {FOOD_TIP_PRESETS.map((amount) => (
+                <TouchableOpacity
+                  key={amount}
+                  style={styles.tipChipBtn}
+                  onPress={onTipPreset}
+                  activeOpacity={0.85}
+                >
+                  <CheckoutText style={styles.tipChipBtnText}>₹{amount}</CheckoutText>
+                </TouchableOpacity>
+              ))}
+              <TouchableOpacity style={styles.tipChipBtn} onPress={onTipPreset} activeOpacity={0.85}>
+                <CheckoutText style={styles.tipChipBtnText}>Other</CheckoutText>
               </TouchableOpacity>
-            ))}
-            <TouchableOpacity style={styles.tipChipBtn} onPress={onTipPreset} activeOpacity={0.85}>
-              <CheckoutText style={styles.tipChipBtnText}>Other</CheckoutText>
-            </TouchableOpacity>
-          </View>
-        </>
-      )}
+            </View>
+          </>
+        )
+      ) : null}
 
       {extraSection ? (
         <>

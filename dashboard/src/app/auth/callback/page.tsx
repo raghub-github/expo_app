@@ -1,7 +1,7 @@
 "use client";
 
 import { useAppSearchParams } from "@/lib/navigation/use-app-search-params";
-import { Suspense, useEffect } from "react";
+import { Suspense, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase/client";
 import { Logo } from "@/components/brand/Logo";
@@ -28,18 +28,79 @@ async function setCookieAndRedirect(
   return postSetCookieWithTokens(accessToken, refreshToken);
 }
 
+function LogoSigningSpinner() {
+  return (
+    <>
+      <div className="relative inline-flex h-[59px] w-[166px] items-center justify-center sm:h-[73px] sm:w-[206px]">
+        <svg
+          className="pointer-events-none absolute inset-0 h-full w-full"
+          viewBox="0 0 206 73"
+          fill="none"
+          aria-hidden
+        >
+          <defs>
+            <linearGradient id="authCallbackSpinnerGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+              <stop offset="0%" stopColor="#16a34a" />
+              <stop offset="45%" stopColor="#ca8a04" />
+              <stop offset="100%" stopColor="#0891b2" />
+            </linearGradient>
+          </defs>
+          <rect
+            x="1.25"
+            y="1.25"
+            width="203.5"
+            height="70.5"
+            rx="12"
+            ry="12"
+            stroke="rgba(203, 213, 225, 0.55)"
+            strokeWidth="2.5"
+          />
+          <rect
+            x="1.25"
+            y="1.25"
+            width="203.5"
+            height="70.5"
+            rx="12"
+            ry="12"
+            stroke="url(#authCallbackSpinnerGrad)"
+            strokeWidth="2.5"
+            strokeLinecap="round"
+            strokeDasharray="120 430"
+            className="auth-callback-spinner-stroke motion-reduce:animate-none"
+          />
+        </svg>
+        <div className="relative flex h-[53px] w-[160px] items-center justify-center rounded-[8px] bg-white sm:h-[67px] sm:w-[200px] sm:rounded-[10px]">
+          <Logo
+            variant="full"
+            size="md"
+            className="block h-full w-full [&_img]:h-full [&_img]:w-full [&_img]:object-contain"
+          />
+        </div>
+      </div>
+      <style>{`
+        @keyframes authCallbackSpinnerStroke {
+          to {
+            stroke-dashoffset: -550;
+          }
+        }
+        .auth-callback-spinner-stroke {
+          animation: authCallbackSpinnerStroke 2.8s linear infinite;
+        }
+      `}</style>
+    </>
+  );
+}
+
 function AuthCallbackLoading() {
   return (
     <div className="flex min-h-screen items-center justify-center bg-gradient-to-br from-gray-50 via-white to-gray-50 px-4">
-      <div className="text-center space-y-6">
+      <div className="space-y-6 text-center">
         <div className="flex justify-center">
-          <Logo variant="full" size="md" className="w-full max-w-[160px] sm:max-w-[200px]" />
+          <LogoSigningSpinner />
         </div>
-        <div className="space-y-4">
-          <div className="mb-4 inline-block h-8 w-8 animate-spin rounded-full border-4 border-solid border-blue-600 border-r-transparent" />
-          <p className="text-sm font-medium text-gray-700 sm:text-base">Completing authentication...</p>
-          <p className="text-xs text-gray-500 sm:text-sm">Please wait while we sign you in</p>
-        </div>
+        <p className="text-sm font-medium text-gray-600 sm:text-base">
+          Almost there... Welcome to GatiMitra 🌐
+        </p>
       </div>
     </div>
   );
@@ -47,10 +108,29 @@ function AuthCallbackLoading() {
 function AuthCallbackContent() {
   const router = useRouter();
   const searchParams = useAppSearchParams();
+  const handledRef = useRef(false);
 
   useEffect(() => {
+    if (handledRef.current) return;
+    handledRef.current = true;
+
     const handleCallback = async () => {
       const next = sessionStorage.getItem("auth_redirect") || "/dashboard";
+
+      const syncCookiesFromSession = async (
+        session: { access_token: string; refresh_token: string } | null | undefined
+      ) => {
+        if (!session?.access_token || !session.refresh_token) {
+          return { ok: false as const, error: "authentication_failed" };
+        }
+        return setCookieAndRedirect(session.access_token, session.refresh_token, next);
+      };
+
+      const finishLogin = (redirectTo: string) => {
+        sessionStorage.removeItem("auth_redirect");
+        markDashboardFreshLogin();
+        window.location.replace(redirectTo);
+      };
 
       // 1) Query error (e.g. OAuth error_description)
       const error = searchParams.get("error");
@@ -66,7 +146,7 @@ function AuthCallbackContent() {
         const accessToken = hashParams.access_token;
         const refreshToken = hashParams.refresh_token;
         if (accessToken && refreshToken) {
-          const { error: setError } = await supabase.auth.setSession({
+          const { data, error: setError } = await supabase.auth.setSession({
             access_token: accessToken,
             refresh_token: refreshToken,
           });
@@ -74,16 +154,14 @@ function AuthCallbackContent() {
             router.push(`/login?error=${encodeURIComponent(setError.message)}`);
             return;
           }
-          const result = await setCookieAndRedirect(accessToken, refreshToken, next);
+          const result = await syncCookiesFromSession(data.session);
           if (!result.ok) {
             await supabase.auth.signOut();
             router.push(`/login?error=${encodeURIComponent(result.error)}`);
             return;
           }
-          sessionStorage.removeItem("auth_redirect");
-          markDashboardFreshLogin();
           window.history.replaceState(null, "", window.location.pathname + window.location.search);
-          window.location.replace(next);
+          finishLogin(next);
           return;
         }
       }
@@ -96,22 +174,19 @@ function AuthCallbackContent() {
           router.push(`/login?error=${encodeURIComponent(exchangeError.message)}`);
           return;
         }
-        if (data?.session) {
-          const result = await setCookieAndRedirect(
-            data.session.access_token,
-            data.session.refresh_token,
-            next
-          );
-          if (!result.ok) {
-            await supabase.auth.signOut();
-            router.push(`/login?error=${encodeURIComponent(result.error)}`);
-            return;
-          }
-          sessionStorage.removeItem("auth_redirect");
-          markDashboardFreshLogin();
-          window.location.replace(next);
+        const session = data.session;
+        if (!session?.access_token || !session.refresh_token) {
+          router.push("/login?error=authentication_failed");
           return;
         }
+        const result = await syncCookiesFromSession(session);
+        if (!result.ok) {
+          await supabase.auth.signOut();
+          router.push(`/login?error=${encodeURIComponent(result.error)}`);
+          return;
+        }
+        finishLogin(next);
+        return;
       }
 
       // 4) Existing session (e.g. return visit)
@@ -139,19 +214,13 @@ function AuthCallbackContent() {
         return;
       }
       if (session) {
-        const result = await setCookieAndRedirect(
-          session.access_token,
-          session.refresh_token,
-          next
-        );
+        const result = await syncCookiesFromSession(session);
         if (!result.ok) {
           await supabase.auth.signOut();
           router.push(`/login?error=${encodeURIComponent(result.error)}`);
           return;
         }
-        sessionStorage.removeItem("auth_redirect");
-        markDashboardFreshLogin();
-        window.location.replace(next);
+        finishLogin(next);
         return;
       }
 

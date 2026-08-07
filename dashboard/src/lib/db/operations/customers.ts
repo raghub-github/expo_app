@@ -535,7 +535,7 @@ export async function getCustomerOrderStats(
     .select({
       orderType: ordersCore.orderType,
       totalOrders: sql<number>`count(*)::int`,
-      totalSpent: sql<number>`coalesce(sum(${ordersCore.fareAmount}), 0)`,
+      totalSpent: sql<number>`coalesce(sum(coalesce(${ordersCore.grandTotal}, ${ordersCore.fareAmount}, ${ordersCore.itemTotal}, 0)), 0)`,
       lastOrderAt: sql<Date | null>`max(${ordersCore.createdAt})`,
     })
     .from(ordersCore)
@@ -547,6 +547,41 @@ export async function getCustomerOrderStats(
     totalOrders: Number(stat.totalOrders),
     totalSpent: Number(stat.totalSpent),
     lastOrderAt: stat.lastOrderAt,
+  }));
+}
+
+export type CustomerActivityDay = {
+  date: string;
+  orders: number;
+  spending: number;
+};
+
+/** Daily order count + spend for customer activity charts (last N days). */
+export async function getCustomerActivityDaily(
+  customerId: number,
+  days = 90
+): Promise<CustomerActivityDay[]> {
+  const db = getDb();
+  const safeDays = Math.min(365, Math.max(7, days));
+  const since = new Date();
+  since.setHours(0, 0, 0, 0);
+  since.setDate(since.getDate() - (safeDays - 1));
+
+  const rows = await db
+    .select({
+      day: sql<string>`to_char(date_trunc('day', ${ordersCore.createdAt}), 'YYYY-MM-DD')`,
+      orders: sql<number>`count(*)::int`,
+      spending: sql<number>`coalesce(sum(coalesce(${ordersCore.grandTotal}, ${ordersCore.fareAmount}, 0)), 0)`,
+    })
+    .from(ordersCore)
+    .where(and(eq(ordersCore.customerId, customerId), gte(ordersCore.createdAt, since))!)
+    .groupBy(sql`date_trunc('day', ${ordersCore.createdAt})`)
+    .orderBy(sql`date_trunc('day', ${ordersCore.createdAt})`);
+
+  return rows.map((r) => ({
+    date: String(r.day),
+    orders: Number(r.orders),
+    spending: Number(r.spending),
   }));
 }
 

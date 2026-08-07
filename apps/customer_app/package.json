@@ -5,9 +5,10 @@
   "private": true,
   "scripts": {
     "start": "expo start --offline --go",
+    "start:c": "node scripts/clear-metro-cache.js && expo start --offline --go --clear",
     "start:dev-client": "expo start --offline --dev-client",
     "start:online": "expo start --go",
-    "start:clear": "expo start --offline --go --clear",
+    "start:clear": "node scripts/clear-metro-cache.js && expo start --offline --go --clear",
     "start:clear:online": "expo start --go --clear",
     "start:android": "expo start --offline --go --android",
     "start:ios": "expo start --offline --go --ios",

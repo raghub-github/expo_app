@@ -4,6 +4,8 @@ import { getRideAvailability } from "@/services/rideAvailability.service";
 type PickupGeoHints = {
   pickupPincode?: string;
   pickupState?: string;
+  /** Duty filter — person_ride (default) or parcel for courier supply. */
+  serviceType?: "person_ride" | "parcel";
 };
 
 export function useNearbyRideAvailability(
@@ -21,6 +23,7 @@ export function useNearbyRideAvailability(
 
   const tripKmKey =
     tripKm != null && Number.isFinite(tripKm) && tripKm > 0 ? tripKm : null;
+  const serviceType = geoHints?.serviceType ?? "person_ride";
 
   return useQuery({
     queryKey: [
@@ -32,6 +35,7 @@ export function useNearbyRideAvailability(
       geoHints?.pickupPincode ?? null,
       geoHints?.pickupState ?? null,
       rideType ?? null,
+      serviceType,
     ],
     queryFn: ({ signal }) =>
       getRideAvailability({
@@ -41,6 +45,7 @@ export function useNearbyRideAvailability(
         pickupPincode: geoHints?.pickupPincode,
         pickupState: geoHints?.pickupState,
         rideType: rideType ?? undefined,
+        serviceType,
         signal,
       }),
     enabled,

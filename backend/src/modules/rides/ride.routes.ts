@@ -87,6 +87,8 @@ const availabilityQuerySchema = z.object({
   pickupLng: z.coerce.number(),
   radiusKm: z.coerce.number().min(0.5).max(15).optional(),
   rideType: z.string().min(1).optional(),
+  /** Duty service filter — person_ride (default) or parcel. */
+  serviceType: z.enum(["person_ride", "parcel"]).optional(),
   tripKm: z.coerce.number().min(0).max(500).optional(),
   pickupPincode: z.string().optional(),
   pickupState: z.string().optional(),
@@ -220,6 +222,7 @@ export async function rideRoutes(app: FastifyInstance) {
         pickupLng: q.pickupLng,
         radiusKm: q.radiusKm,
         rideType: q.rideType,
+        serviceType: q.serviceType ?? "person_ride",
         tripKm: q.tripKm,
         pickupPincode: q.pickupPincode,
         pickupState: q.pickupState,

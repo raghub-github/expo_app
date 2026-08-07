@@ -78,13 +78,9 @@ export function gridFirstSkyHeightForAspect(
   screenHeight: number,
   aspectRatio: number | null | undefined
 ): number {
-  const minH = topInset + GRID_FIRST_HEADER_OVERLAY_H + HERO_MEDIA_MIN_H;
-  const maxH = Math.min(Math.round(screenHeight * 0.55), Math.round(screenWidth * 1.15));
-  if (aspectRatio == null || !Number.isFinite(aspectRatio) || aspectRatio <= 0.15) {
-    return Math.max(minH, gridFirstSkySectionHeight(topInset));
-  }
-  const natural = screenWidth / aspectRatio;
-  return Math.round(Math.min(maxH, Math.max(minH, natural)));
+  const cappedMax = Math.min(380, Math.round(screenHeight * 0.42));
+  const mediaH = gridFirstHeroMediaVisibleHeight(screenWidth, aspectRatio, cappedMax);
+  return gridFirstSkySectionHeight(topInset, mediaH);
 }
 
 type Slide = {
@@ -390,7 +386,6 @@ export function FoodHomeHeroCarousel({
   const [activeIndex, setActiveIndex] = useState(0);
   const [failedIds, setFailedIds] = useState<Set<string>>(() => new Set());
   const [measuredAspectById, setMeasuredAspectById] = useState<Record<string, number>>({});
-  const [backdropReady, setBackdropReady] = useState(false);
   const lastReportedHeightRef = useRef<number | null>(null);
 
   const merchantFallbackUris = useMemo(() => {
@@ -486,13 +481,20 @@ export function FoodHomeHeroCarousel({
     });
   }, []);
 
-  const backdropUri = slides[0]?.kind === "image" ? slides[0].mediaUrl : null;
   const firstSlide = slides[0];
+  const prevFirstSlideIdRef = useRef<string | undefined>(undefined);
 
   useEffect(() => {
-    setBackdropReady(false);
-    onHeroReadyChange?.(false);
-  }, [backdropUri, firstSlide?.id, onHeroReadyChange]);
+    const id = firstSlide?.id;
+    // Only clear ready when the lead slide actually changes — not on every mount.
+    if (
+      prevFirstSlideIdRef.current !== undefined &&
+      prevFirstSlideIdRef.current !== id
+    ) {
+      onHeroReadyChange?.(false);
+    }
+    prevFirstSlideIdRef.current = id;
+  }, [firstSlide?.id, onHeroReadyChange]);
 
   if (slides.length === 0) {
     if (!immersive) return null;
@@ -509,29 +511,13 @@ export function FoodHomeHeroCarousel({
         styles.wrap,
         embeddedInSky && styles.wrapEmbedded,
         immersive && embeddedInSky && styles.wrapImmersiveAbsolute,
-        (!immersive || !embeddedInSky) && { height: slideHeight },
+        // Always pin height to aspect-based slideHeight so we never leave a cream band
+        // under a shorter slide inside a taller absolute-fill parent.
+        { height: slideHeight },
       ]}
     >
-      {immersive ? (
-        <>
-          <GridFirstDefaultHeroBg />
-          {backdropUri ? (
-            <Image
-              source={{ uri: backdropUri }}
-              style={[StyleSheet.absoluteFillObject, { opacity: backdropReady ? 1 : 0 }]}
-              contentFit="cover"
-              cachePolicy="memory-disk"
-              priority="high"
-              transition={0}
-              recyclingKey={`backdrop-${backdropUri}`}
-              onLoad={() => {
-                setBackdropReady(true);
-                onHeroReadyChange?.(true);
-              }}
-            />
-          ) : null}
-        </>
-      ) : null}
+      {/* Cream placeholder only — never a second copy of slide-0 media (that caused vertical double-image). */}
+      {immersive ? <GridFirstDefaultHeroBg /> : null}
       <ScrollView
         ref={scrollRef}
         horizontal
@@ -543,7 +529,7 @@ export function FoodHomeHeroCarousel({
         keyboardShouldPersistTaps="handled"
         onScroll={onScroll}
         scrollEventThrottle={16}
-        style={immersive ? StyleSheet.absoluteFillObject : undefined}
+        style={immersive ? styles.scrollImmersive : undefined}
         contentContainerStyle={styles.scrollContent}
       >
         {slides.map((slide, index) => (
@@ -587,7 +573,15 @@ const styles = StyleSheet.create({
     marginTop: 0,
   },
   wrapImmersiveAbsolute: {
-    ...StyleSheet.absoluteFillObject,
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    overflow: "hidden",
+  },
+  scrollImmersive: {
+    width: "100%",
+    height: "100%",
   },
   scrollContent: {
     alignItems: "stretch",

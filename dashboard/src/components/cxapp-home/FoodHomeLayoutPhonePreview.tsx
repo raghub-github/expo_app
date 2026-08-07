@@ -52,7 +52,7 @@ function Thumb({ src, alt, className }: { src: string | null; alt: string; class
   if (!src) {
     return <div className={cn("bg-slate-200", className)} />;
   }
-  return <img src={src} alt={alt} className={cn("object-cover", className)} loading="lazy" />;
+  return <img src={src} alt={alt} className={cn("object-cover", className)} loading="eager" decoding="async" fetchPriority="high" />;
 }
 
 function merchantMetaLine(m: FoodHomePreviewMerchant): string | null {
@@ -690,21 +690,11 @@ export function FoodHomeLayoutPhonePreview({
       })();
     };
 
-    // Defer heavy preview fetch so layout chrome paints first.
-    let idleId: number | undefined;
-    let timeoutId: ReturnType<typeof setTimeout> | undefined;
-    if (typeof window !== "undefined" && "requestIdleCallback" in window) {
-      idleId = window.requestIdleCallback(run, { timeout: 400 });
-    } else {
-      timeoutId = setTimeout(run, 0);
-    }
+    // Fetch preview immediately so images appear without idle deferral.
+    run();
 
     return () => {
       cancelled = true;
-      if (idleId != null && typeof window !== "undefined" && "cancelIdleCallback" in window) {
-        window.cancelIdleCallback(idleId);
-      }
-      if (timeoutId != null) clearTimeout(timeoutId);
     };
     // Intentionally only re-fetch when state changes; cached `data` seeds first paint.
     // eslint-disable-next-line react-hooks/exhaustive-deps

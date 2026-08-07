@@ -23,6 +23,7 @@ import { useIncomingOrderSheet } from "@/context/IncomingOrderSheetContext";
 import { fetchFoodOrder } from "@/services/ordersApi";
 import { registerStorePushToken } from "@/services/pushTokenApi";
 import { getConfig } from "@/config/env";
+import { setMerchantPushUnregister } from "@/lib/merchantPushUnregister";
 import { PermissionBottomSheetShell } from "@/components/permissions/PermissionBottomSheetShell";
 import { useNotificationPermissionGate } from "@/context/NotificationPermissionGateContext";
 
@@ -225,6 +226,11 @@ function NotificationSetupImpl() {
   const { controller } = usePushPermissionController(pushOptions, {
     autoStart: true,
   });
+
+  useEffect(() => {
+    setMerchantPushUnregister(() => controller.unregisterCurrent());
+    return () => setMerchantPushUnregister(null);
+  }, [controller]);
 
   useEffect(() => {
     if (!authToken) return;

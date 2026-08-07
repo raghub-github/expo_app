@@ -8,6 +8,9 @@ import { useRouter } from "expo-router";
 import { AppAssetImage } from "@/components/AppAssetImage";
 import { CX } from "@/lib/appAssetKeys";
 import { AppText } from "@/components/AppText";
+import type { CustomerAccountBlocksMap } from "@/services/customerServiceBlocks.service";
+import { FrozenServiceIconCircle } from "@/components/FrozenServiceIconCircle";
+import type { CustomerHomeServiceId } from "@/lib/customerHomeServiceMeta";
 
 const { width: SCREEN_W } = Dimensions.get("window");
 const PAD = 16;
@@ -90,6 +93,13 @@ type Props = {
     ride: boolean;
     parcels: boolean;
   };
+  accountBlocks?: CustomerAccountBlocksMap;
+  onAccountBlockedPress?: (
+    serviceId: CustomerHomeServiceId,
+    reason: string,
+    label: string,
+    assetKey: string
+  ) => void;
 };
 
 function isServiceEnabled(
@@ -104,21 +114,59 @@ function isServiceEnabled(
   return false;
 }
 
+function accountBlockReasonFor(
+  id: string,
+  accountBlocks?: CustomerAccountBlocksMap
+): string | undefined {
+  if (!accountBlocks) return undefined;
+  if (id === "food") return accountBlocks.food;
+  if (id === "ride") return accountBlocks.ride;
+  if (id === "parcels") return accountBlocks.parcels;
+  if (id === "ecom") return accountBlocks.ecom;
+  if (id === "vouchers") return accountBlocks.vouchers;
+  if (id === "near-me") return accountBlocks["near-me"];
+  return undefined;
+}
+
 function ServiceTile({
   item,
   cardHeight,
   enabled,
-}: ServiceTileProps & { enabled: boolean }) {
+  accountBlockReason,
+  onAccountBlockedPress,
+}: ServiceTileProps & {
+  enabled: boolean;
+  accountBlockReason?: string;
+  onAccountBlockedPress?: (
+    serviceId: CustomerHomeServiceId,
+    reason: string,
+    label: string,
+    assetKey: string
+  ) => void;
+}) {
   const router = useRouter();
   const imageSize = Math.round(cardHeight * 0.48);
   const iconWrap = Math.round(imageSize * 1.12);
+  const isAccountBlocked = Boolean(accountBlockReason);
+  const overlayIconSize = Math.round(cardHeight * 0.26);
 
   return (
     <TouchableOpacity
       style={[styles.card, { height: cardHeight }]}
-      activeOpacity={enabled ? 0.88 : 1}
-      disabled={!enabled}
-      onPress={() => router.push(item.route as never)}
+      activeOpacity={enabled || isAccountBlocked ? 0.88 : 1}
+      disabled={!enabled && !isAccountBlocked}
+      onPress={() => {
+        if (isAccountBlocked && accountBlockReason) {
+          onAccountBlockedPress?.(
+            item.id as CustomerHomeServiceId,
+            accountBlockReason,
+            item.title,
+            item.assetKey
+          );
+          return;
+        }
+        if (enabled) router.push(item.route as never);
+      }}
     >
       {item.pill ? (
         <View style={styles.pill}>
@@ -151,12 +199,23 @@ function ServiceTile({
         />
       </View>
 
-      {!enabled ? <View style={styles.disabledWash} pointerEvents="none" /> : null}
+      {!enabled && !isAccountBlocked ? <View style={styles.disabledWash} pointerEvents="none" /> : null}
+      {isAccountBlocked ? (
+        <View style={styles.blockedOverlay} pointerEvents="none">
+          <FrozenServiceIconCircle assetKey={item.assetKey} size={overlayIconSize} />
+          <AppText style={styles.frozenLabel}>Frozen</AppText>
+        </View>
+      ) : null}
     </TouchableOpacity>
   );
 }
 
-export function HomeServicesRow({ cardHeight = DEFAULT_CARD_H, enabledServices }: Props) {
+export function HomeServicesRow({
+  cardHeight = DEFAULT_CARD_H,
+  enabledServices,
+  accountBlocks,
+  onAccountBlockedPress,
+}: Props) {
   return (
     <View style={styles.grid}>
       {SERVICES.map((s) => (
@@ -165,6 +224,8 @@ export function HomeServicesRow({ cardHeight = DEFAULT_CARD_H, enabledServices }
           item={s}
           cardHeight={cardHeight}
           enabled={isServiceEnabled(s.id, enabledServices)}
+          accountBlockReason={accountBlockReasonFor(s.id, accountBlocks)}
+          onAccountBlockedPress={onAccountBlockedPress}
         />
       ))}
     </View>
@@ -200,6 +261,24 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(255,255,255,0.52)",
     borderRadius: 14,
     zIndex: 4,
+  },
+  blockedOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(255,255,255,0.78)",
+    borderRadius: 14,
+    zIndex: 6,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderColor: "rgba(220,38,38,0.22)",
+    paddingHorizontal: 8,
+    gap: 6,
+  },
+  frozenLabel: {
+    fontSize: 14,
+    fontWeight: "800",
+    color: "#DC2626",
+    letterSpacing: 0.3,
   },
   textMuted: {
     color: "#9CA3AF",

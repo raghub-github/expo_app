@@ -234,6 +234,31 @@ export type RiderVehicleOnboardingPrefill = {
   suggestedIsCommercial: boolean | null;
 };
 
+export type RiderVehicleFormMode = "full" | "cashfree_missing_only";
+
+export type RiderVehicleMissingField =
+  | "vehicle_type"
+  | "registration_number"
+  | "fuel_type"
+  | "make"
+  | "model"
+  | "color"
+  | "year"
+  | "service_types"
+  | "ownership_type"
+  | "is_commercial"
+  | "seating_capacity"
+  | "ac_type";
+
+export type RiderVehicleFormMeta = {
+  formMode: RiderVehicleFormMode;
+  prefillSource: "cashfree_rc" | "manual" | null;
+  initialStep: 1 | 2;
+  step1Complete: boolean;
+  step2Complete: boolean;
+  missingFields: RiderVehicleMissingField[];
+};
+
 export type RiderVehicleStatusResponse = {
 
   hasVehicle: boolean;
@@ -247,6 +272,8 @@ export type RiderVehicleStatusResponse = {
   onboardingVehicleCategoryCode: string | null;
 
   onboardingPrefill: RiderVehicleOnboardingPrefill | null;
+
+  formMeta: RiderVehicleFormMeta;
 
 };
 
@@ -438,6 +465,109 @@ export function isRiderVehicleComplete(
 
 
 
+const STEP1_MISSING_FIELDS = new Set<RiderVehicleMissingField>([
+  "vehicle_type",
+  "registration_number",
+  "fuel_type",
+  "make",
+  "model",
+  "color",
+  "year",
+]);
+
+function readLimitationFlags(row: typeof riderVehicles.$inferSelect): Record<string, unknown> {
+  const raw = row.limitationFlags;
+  if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+    return raw as Record<string, unknown>;
+  }
+  return {};
+}
+
+export function isCashfreeRcVehicleRow(
+  row: typeof riderVehicles.$inferSelect | null | undefined,
+): boolean {
+  if (!row) return false;
+  const flags = readLimitationFlags(row);
+  if (flags.source === "cashfree_vehicle_rc") return true;
+  const payload = row.cashfreeRcPayload;
+  if (payload && typeof payload === "object" && !Array.isArray(payload)) {
+    return Object.keys(payload as Record<string, unknown>).length > 0;
+  }
+  return false;
+}
+
+export function computeRiderVehicleMissingFields(
+  row: typeof riderVehicles.$inferSelect | null | undefined,
+): RiderVehicleMissingField[] {
+  if (!row) {
+    return [
+      "vehicle_type",
+      "registration_number",
+      "service_types",
+      "ownership_type",
+    ];
+  }
+
+  const missing: RiderVehicleMissingField[] = [];
+  const reg = normalizeRegistrationNumber(row.registrationNumber || "");
+  if (reg.length < 4) missing.push("registration_number");
+
+  const vehicleType = mapVehicleTypeFromDb(String(row.vehicleType));
+  if (!VALID_VEHICLE_TYPES.has(vehicleType)) {
+    missing.push("vehicle_type");
+  } else if (vehicleType === "other" && (row.make?.trim().length ?? 0) < 2) {
+    missing.push("make");
+  }
+
+  if (!row.fuelType) missing.push("fuel_type");
+
+  const rawServices = row.serviceTypes;
+  const serviceTypes = Array.isArray(rawServices)
+    ? rawServices.filter((s): s is string => typeof s === "string")
+    : [];
+  if (serviceTypes.length < 1) missing.push("service_types");
+
+  const ownership = row.ownershipType?.trim();
+  if (!ownership || !VALID_OWNERSHIP_TYPES.has(ownership)) {
+    missing.push("ownership_type");
+  }
+
+  return missing;
+}
+
+export function computeRiderVehicleFormMeta(
+  row: typeof riderVehicles.$inferSelect | null | undefined,
+): RiderVehicleFormMeta {
+  const missingFields = computeRiderVehicleMissingFields(row);
+  const step1Missing = missingFields.filter((field) => STEP1_MISSING_FIELDS.has(field));
+  const step2Missing = missingFields.filter((field) => !STEP1_MISSING_FIELDS.has(field));
+  const step1Complete = step1Missing.length === 0;
+  const step2Complete = step2Missing.length === 0;
+  const cashfree = isCashfreeRcVehicleRow(row);
+
+  if (!cashfree) {
+    return {
+      formMode: "full",
+      prefillSource: row ? "manual" : null,
+      initialStep: 1,
+      step1Complete,
+      step2Complete,
+      missingFields,
+    };
+  }
+
+  return {
+    formMode: "cashfree_missing_only",
+    prefillSource: "cashfree_rc",
+    initialStep: step1Complete ? 2 : 1,
+    step1Complete,
+    step2Complete,
+    missingFields,
+  };
+}
+
+
+
 export async function getActiveRiderVehicleRow(riderId: number) {
 
   const db = getDb();
@@ -573,6 +703,7 @@ export async function getRiderVehicleStatusForApp(
       hasVehicle: false,
       isComplete: false,
       vehicle: null,
+      formMeta: computeRiderVehicleFormMeta(null),
       ...onboardingSelection,
     };
 
@@ -587,6 +718,8 @@ export async function getRiderVehicleStatusForApp(
     isComplete: isRiderVehicleComplete(row),
 
     vehicle,
+
+    formMeta: computeRiderVehicleFormMeta(row),
 
     ...onboardingSelection,
 

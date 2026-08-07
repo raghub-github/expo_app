@@ -160,6 +160,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   );
 
   const signOut = useCallback(async () => {
+    const { runMerchantPushUnregister } = await import("@/lib/merchantPushUnregister");
+    await runMerchantPushUnregister();
     await clearMerchantSessionToken();
     await SecureStore.deleteItemAsync(PARTNER_KEY);
     await clearLastSelectedStore();

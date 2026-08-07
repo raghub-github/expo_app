@@ -43,7 +43,7 @@
   },
   "scripts": {
     "dev:customer": "npm --workspace apps/customer_app run start",
-    "dev:customer:clear": "npm --workspace apps/customer_app run start:clear",
+    "dev:customer:clear": "npm --workspace apps/customer_app run start:c",
     "dev:rider": "npm --workspace apps/gatimitra-riderApp run start",
     "dev:merchant": "npm --workspace apps/merchant_app run start",
     "dev:backend": "npm --workspace backend run dev",

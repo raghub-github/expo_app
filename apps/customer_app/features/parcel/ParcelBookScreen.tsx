@@ -46,7 +46,7 @@ import {
   type ParcelVehicleCategoryCode,
 } from "./parcelGuidelinesConfig";
 import { fetchParcelBookVehicleCodes } from "./parcelVehicleAssignments";
-import { parcelVehicleTotalEtaMins } from "./parcelVehicleEta";
+import { parcelVehicleTotalEtaMins, hasNearbyParcelCaptainSupply, parcelCategoryHasNearbySupply } from "./parcelVehicleEta";
 import { getParcelFareQuoteBatch } from "@/services/parcelQuote.service";
 import { useNearbyRideAvailability } from "@/hooks/useNearbyRideAvailability";
 import { useFeaturedOffersParcel } from "@/hooks/useFeaturedOffersParcel";
@@ -113,14 +113,6 @@ export function ParcelBookScreen() {
 
   const allVehicles = useMemo(() => optionsFromCodes(vehicleCodes), [vehicleCodes]);
 
-  const displayVehicles = useMemo(() => {
-    if (!faresSettled || faresLoading) return allVehicles;
-    return allVehicles.filter((v) => (fareByVehicle[v.id] ?? 0) > 0);
-  }, [allVehicles, fareByVehicle, faresLoading, faresSettled]);
-
-  const selectedVehicle =
-    displayVehicles.find((v) => v.id === selectedVehicleId) ?? displayVehicles[0] ?? null;
-
   useFocusEffect(
     useCallback(() => {
       setStatusBarBackground(HERO_MINT, "dark");
@@ -130,6 +122,7 @@ export function ParcelBookScreen() {
 
   useEffect(() => {
     if (!pickup || !drop) {
+      useParcelBookingStore.getState().markPreserveDraftOnNextFocus();
       router.replace("/home/service/parcels" as never);
     }
   }, [pickup, drop, router]);
@@ -184,10 +177,15 @@ export function ParcelBookScreen() {
     return Math.round(tripKm * 10) / 10;
   }, [tripKm]);
 
-  const { data: availability } = useNearbyRideAvailability(
+  const {
+    data: availability,
+    isLoading: availabilityLoading,
+    isError: availabilityError,
+  } = useNearbyRideAvailability(
     pickupPoint?.latitude ?? null,
     pickupPoint?.longitude ?? null,
-    tripKm
+    tripKm,
+    { serviceType: "parcel" }
   );
   const nearbyRiders = availability?.riders ?? [];
 
@@ -215,10 +213,6 @@ export function ParcelBookScreen() {
     }
     return next;
   }, [allVehicles, routeEtaMins, tripKm, nearbyRiders]);
-
-  const selectedEtaMins = selectedVehicle
-    ? etaByVehicle[selectedVehicle.id] ?? null
-    : null;
 
   useEffect(() => {
     if (!pickupPoint || fareTripKm == null || vehicleCodes.length === 0) {
@@ -253,21 +247,80 @@ export function ParcelBookScreen() {
     return () => ac.abort();
   }, [pickupPoint?.latitude, pickupPoint?.longitude, fareTripKm, vehicleCodesKey]);
 
-  const noVehiclesAvailable = useMemo(
-    () =>
-      faresSettled &&
-      !faresLoading &&
-      !routeLoading &&
-      !!pickupPoint &&
-      displayVehicles.length === 0,
-    [faresSettled, faresLoading, routeLoading, pickupPoint, displayVehicles.length]
+  // Ride-parity: only categories with fare AND nearby on-duty parcel captains.
+  // No bike-lite — parcel catalog is only 2W / 3W / 4W.
+  const displayVehicles = useMemo(() => {
+    let list = allVehicles;
+    if (faresSettled && !faresLoading) {
+      list = list.filter((v) => (fareByVehicle[v.id] ?? 0) > 0);
+    }
+    if (!availabilityLoading && !availabilityError) {
+      list = list.filter((v) =>
+        parcelCategoryHasNearbySupply(nearbyRiders, v.id as ParcelVehicleCategoryCode)
+      );
+    }
+    return list;
+  }, [
+    allVehicles,
+    fareByVehicle,
+    faresLoading,
+    faresSettled,
+    availabilityLoading,
+    availabilityError,
+    nearbyRiders,
+  ]);
+
+  const selectedVehicle =
+    displayVehicles.find((v) => v.id === selectedVehicleId) ?? displayVehicles[0] ?? null;
+
+  const selectedEtaMins = selectedVehicle
+    ? etaByVehicle[selectedVehicle.id] ?? null
+    : null;
+
+  const parcelCategories = useMemo(
+    () => allVehicles.map((v) => v.id as ParcelVehicleCategoryCode),
+    [allVehicles]
   );
+
+  const hasCaptainSupply = useMemo(
+    () => hasNearbyParcelCaptainSupply(nearbyRiders, parcelCategories),
+    [nearbyRiders, parcelCategories]
+  );
+
+  const routeSettled = !routeLoading;
+  /** Same gate as ride-book: no book UI / searching until supply + fares allow it. */
+  const noVehiclesAvailable = useMemo(() => {
+    if (!pickupPoint || !dropPoint) return false;
+    if (!routeSettled || availabilityLoading) return false;
+
+    // No nearby on-duty captains that can serve parcel categories (ride-parity).
+    if (!availabilityError && allVehicles.length > 0 && !hasCaptainSupply) {
+      return true;
+    }
+
+    // Trip too long / no fare slabs for any parcel vehicle.
+    if (faresLoading) return false;
+    if (faresSettled && displayVehicles.length === 0) return true;
+
+    return false;
+  }, [
+    pickupPoint,
+    dropPoint,
+    routeSettled,
+    availabilityLoading,
+    availabilityError,
+    faresLoading,
+    faresSettled,
+    displayVehicles.length,
+    allVehicles.length,
+    hasCaptainSupply,
+  ]);
 
   const unavailableMessage = useMemo(() => {
     if (fareTripKm != null && fareTripKm > 0) {
-      return "Oops! No parcel vehicles are available for this route right now. The trip may be too long for nearby vehicles, or no captains are online. Try a different pickup or drop.";
+      return "Oops! No rides are available for this route right now. The trip may be too long for nearby vehicles, or no captains are online. Try a different pickup or drop.";
     }
-    return "Oops! No parcel vehicles available near your pickup location. Please select a different pickup or try again shortly.";
+    return "Oops! No riders available near your pickup location. Please select a different pickup or try again shortly.";
   }, [fareTripKm]);
 
   useEffect(() => {
@@ -321,6 +374,7 @@ export function ParcelBookScreen() {
   };
 
   const openSearch = (field: "pickup" | "drop") => {
+    useParcelBookingStore.getState().markPreserveDraftOnNextFocus();
     router.push({
       pathname: "/home/service/parcel-location",
       params: { field },
@@ -328,9 +382,15 @@ export function ParcelBookScreen() {
   };
 
   const goToParcelSearching = useCallback(() => {
+    if (noVehiclesAvailable || serviceUnavailableVisible) return;
     if (!selectedVehicle) return;
     const fare = fareByVehicle[selectedVehicle.id];
     if (!(fare != null && fare > 0)) return;
+    // Require a matching nearby captain for the chosen category (ride-parity).
+    if (!hasNearbyParcelCaptainSupply(nearbyRiders, [selectedVehicle.id as ParcelVehicleCategoryCode])) {
+      setServiceUnavailableVisible(true);
+      return;
+    }
     router.push({
       pathname: "/home/service/parcel-searching",
       params: {
@@ -345,14 +405,24 @@ export function ParcelBookScreen() {
       },
     } as never);
   }, [
+    noVehiclesAvailable,
+    serviceUnavailableVisible,
     selectedVehicle,
     fareByVehicle,
+    nearbyRiders,
     tripKm,
     selectedEtaMins,
     payAt,
     paymentMode,
     router,
   ]);
+
+  const mapNearbyRiders = useMemo(() => {
+    if (!selectedVehicle) return nearbyRiders;
+    return nearbyRiders.filter((r) =>
+      parcelCategoryHasNearbySupply([r], selectedVehicle.id as ParcelVehicleCategoryCode)
+    );
+  }, [nearbyRiders, selectedVehicle]);
 
   const effectiveBottomSheetHeight = bottomSheetHeight;
   const selectedFare = selectedVehicle ? fareByVehicle[selectedVehicle.id] : undefined;
@@ -372,7 +442,7 @@ export function ParcelBookScreen() {
           routeCoordinates={routeCoordinates}
           showRoadPolyline={routeCoordinates.length > 1}
           stopCoords={[]}
-          nearbyRiders={nearbyRiders}
+          nearbyRiders={mapNearbyRiders}
           style={StyleSheet.absoluteFill}
           onMapReady={fitMap}
           onRegionChange={() => setMapFrameTick((n) => n + 1)}

@@ -783,6 +783,7 @@ export default function HelpChatScreen() {
   const { postgresLive } = useTicketMessagesRealtime({
     ticketNumericId: activeTicketId,
     enabled: Boolean(token && storeId && activeTicketId && getSupabaseAuth() != null),
+    authToken: token,
     onMessagesStale: () => {
       void loadRef.current({ silent: true });
     },

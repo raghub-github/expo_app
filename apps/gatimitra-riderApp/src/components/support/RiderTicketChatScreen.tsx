@@ -55,6 +55,9 @@ import { formatNotificationTime } from "@/src/lib/format-notification-time";
 import { colors } from "@/src/theme";
 import { formatTicketMessageText } from "@/src/lib/formatTicketMessage";
 import { resolveTicketAttachmentList } from "@/src/lib/ticket-attachment";
+import { useSessionStore } from "@/src/stores/sessionStore";
+import { useTicketMessagesRealtime } from "@/src/hooks/useTicketMessagesRealtime";
+import { getSupabaseAuth } from "@/src/lib/supabaseClient";
 
 const BRAND = colors.primary[600];
 
@@ -226,6 +229,8 @@ export function RiderTicketChatScreen() {
     }, [ticketId, queryClient]),
   );
 
+  const authToken = useSessionStore((s) => s.session?.accessToken ?? null);
+
   const { data, isLoading, error, refetch, isRefetching } = useQuery({
     queryKey: ["rider-support-ticket", ticketId],
 
@@ -240,6 +245,15 @@ export function RiderTicketChatScreen() {
     refetchIntervalInBackground: true,
 
     refetchOnWindowFocus: chatFocused,
+  });
+
+  useTicketMessagesRealtime({
+    ticketNumericId: ticketId,
+    enabled: ticketId != null && chatFocused && Boolean(authToken) && getSupabaseAuth() != null,
+    authToken,
+    onMessagesStale: () => {
+      void refetch();
+    },
   });
 
   const ticket = data?.ticket;

@@ -5,11 +5,10 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { createServerSupabaseClient } from "@/lib/supabase/server";
+import { getAuthenticatedApiUser, authFailureResponse } from "@/lib/auth/api-session";
 import { getSql, withPgRetry } from "@/lib/db/client";
 import { getSystemUserByEmail } from "@/lib/db/operations/users";
 import { isSuperAdmin, hasDashboardAccessByAuth } from "@/lib/permissions/engine";
-import { isInvalidRefreshToken, signOutIfSessionDead } from "@/lib/auth/session-errors";
 import { QUEUE_HOME_ACTIVE_STATUS_DB } from "@/lib/tickets/queue-ticket-filters";
 import { insertTicketActivityAudit } from "@/lib/db/operations/ticket-activity-audit";
 
@@ -84,19 +83,11 @@ function scoreTicketForSearch(
 export async function GET(request: NextRequest) {
   try {
 
-    const supabase = await createServerSupabaseClient();
-    const { data: { user }, error: userError } = await supabase.auth.getUser();
-
-    if (userError) {
-      if (isInvalidRefreshToken(userError)) {
-        await signOutIfSessionDead(supabase, userError);
-        return NextResponse.json({ success: false, error: "Session invalid", code: "SESSION_INVALID" }, { status: 401 });
-      }
-      return NextResponse.json({ success: false, error: "Not authenticated" }, { status: 401 });
+    const auth = await getAuthenticatedApiUser(request);
+    if (!auth.ok) {
+      return authFailureResponse(auth);
     }
-    if (!user) {
-      return NextResponse.json({ success: false, error: "Not authenticated" }, { status: 401 });
-    }
+    const { user } = auth;
 
     const systemUser = await getSystemUserByEmail(user.email!);
     if (!systemUser) {
@@ -650,9 +641,11 @@ export async function GET(request: NextRequest) {
               ut.assigned_at, ut.satisfaction_rating,
               ut.created_at, ut.updated_at, ut.resolved_at, ut.closed_at,
               ut.group_id, ut.metadata, ut.sla_due_at, ut.snoozed_until, ut.snooze_reason,
+              oc.formatted_order_id AS formatted_order_id,
               tg.group_code AS group_code, tg.group_name AS group_name,
               tgl.id AS meta_landed_group_id, tgl.group_code AS meta_landed_group_code, tgl.group_name AS meta_landed_group_name
             FROM public.unified_tickets ut
+            LEFT JOIN public.orders_core oc ON oc.id = ut.order_id
             LEFT JOIN public.ticket_groups tg ON tg.id = ut.group_id
             LEFT JOIN public.ticket_groups tgl ON tgl.id = CASE
               WHEN ut.metadata IS NOT NULL
@@ -675,9 +668,11 @@ export async function GET(request: NextRequest) {
               ut.assigned_at, ut.satisfaction_rating,
               ut.created_at, ut.updated_at, ut.resolved_at, ut.closed_at,
               ut.group_id, ut.metadata, ut.sla_due_at, ut.snoozed_until, ut.snooze_reason,
+              oc.formatted_order_id AS formatted_order_id,
               tg.group_code AS group_code, tg.group_name AS group_name,
               tgl.id AS meta_landed_group_id, tgl.group_code AS meta_landed_group_code, tgl.group_name AS meta_landed_group_name
             FROM public.unified_tickets ut
+            LEFT JOIN public.orders_core oc ON oc.id = ut.order_id
             LEFT JOIN public.ticket_groups tg ON tg.id = ut.group_id
             LEFT JOIN public.ticket_groups tgl ON tgl.id = CASE
               WHEN ut.metadata IS NOT NULL
@@ -713,8 +708,10 @@ export async function GET(request: NextRequest) {
                 ut.assigned_at, ut.satisfaction_rating,
                 ut.created_at, ut.updated_at, ut.resolved_at, ut.closed_at,
                 ut.group_id,
+                oc.formatted_order_id AS formatted_order_id,
                 tg.group_code AS group_code, tg.group_name AS group_name
               FROM public.unified_tickets ut
+              LEFT JOIN public.orders_core oc ON oc.id = ut.order_id
               LEFT JOIN public.ticket_groups tg ON tg.id = ut.group_id
               WHERE ${whereClause as never}
               ORDER BY ${sqlClient.unsafe(orderByClause)}
@@ -730,8 +727,10 @@ export async function GET(request: NextRequest) {
                 ut.assigned_at, ut.satisfaction_rating,
                 ut.created_at, ut.updated_at, ut.resolved_at, ut.closed_at,
                 ut.group_id,
+                oc.formatted_order_id AS formatted_order_id,
                 tg.group_code AS group_code, tg.group_name AS group_name
               FROM public.unified_tickets ut
+              LEFT JOIN public.orders_core oc ON oc.id = ut.order_id
               LEFT JOIN public.ticket_groups tg ON tg.id = ut.group_id
               ORDER BY ${sqlClient.unsafe(orderByClause)}
               LIMIT ${limit}
@@ -966,6 +965,10 @@ export async function GET(request: NextRequest) {
         isSpam: t.is_spam === true || t.is_spam === "t" || String(t.is_spam).toLowerCase() === "true",
         priority: rawPriority ? rawPriority.toLowerCase() : "",
         orderId: rowNum(t, "order_id", "orderId"),
+        formattedOrderId: (() => {
+          const raw = rowStr(t, "formatted_order_id", "formattedOrderId").trim();
+          return raw || null;
+        })(),
         customerId: rowNum(t, "customer_id", "customerId"),
         riderId: rowNum(t, "rider_id", "riderId"),
         merchantStoreId: rowNum(t, "merchant_store_id", "merchantStoreId"),
@@ -1057,19 +1060,11 @@ export async function GET(request: NextRequest) {
  */
 export async function POST(request: NextRequest) {
   try {
-    const supabase = await createServerSupabaseClient();
-    const { data: { user }, error: userError } = await supabase.auth.getUser();
-
-    if (userError) {
-      if (isInvalidRefreshToken(userError)) {
-        await signOutIfSessionDead(supabase, userError);
-        return NextResponse.json({ success: false, error: "Session invalid", code: "SESSION_INVALID" }, { status: 401 });
-      }
-      return NextResponse.json({ success: false, error: "Not authenticated" }, { status: 401 });
+    const auth = await getAuthenticatedApiUser(request);
+    if (!auth.ok) {
+      return authFailureResponse(auth);
     }
-    if (!user) {
-      return NextResponse.json({ success: false, error: "Not authenticated" }, { status: 401 });
-    }
+    const { user } = auth;
 
     const systemUser = await getSystemUserByEmail(user.email!);
     if (!systemUser) {

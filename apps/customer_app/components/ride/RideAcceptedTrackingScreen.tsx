@@ -35,8 +35,10 @@ import {
   shouldHighlightFoodPickupZone,
   shouldHighlightRideDropZone,
 } from "@/lib/food-delivery-map-phase";
-import { normalizeCustomerOrderStatus, isPersonRideOnDropLeg } from "@/lib/customer-order-status-display";
-import { getRideOrderStatus, cancelRideOrder } from "@/services/rideBooking.service";
+import { normalizeCustomerOrderStatus, isPersonRideOnDropLeg, isParcelOrder, shouldShowCustomerPickupOtp } from "@/lib/customer-order-status-display";
+import { getRideOrderStatus, cancelRideOrder, type RideOrderStatusResponse } from "@/services/rideBooking.service";
+import { cancelParcelOrder } from "@/services/parcelBooking.service";
+import { orderService } from "@/services/order.service";
 import { buildRideSearchingResumeParams } from "@/lib/person-ride-orders";
 import { RideTripDetailsSheet } from "@/components/ride/RideTripDetailsSheet";
 import { RideInProgressNoticeCarousel } from "@/components/ride/RideInProgressNoticeCarousel";
@@ -88,13 +90,53 @@ function resolveRideCatalogId(order: OrderDetail): string {
     return raw;
   }
   const meta = order.checkoutMetadata as Record<string, unknown> | null;
-  const fromMeta = String(meta?.rideType ?? meta?.selectedRideId ?? "")
+  const fromMeta = String(meta?.rideType ?? meta?.selectedRideId ?? meta?.vehicleCategory ?? "")
     .trim()
     .toLowerCase();
   if (fromMeta && allowed.includes(fromMeta as (typeof allowed)[number])) {
     return fromMeta;
   }
+  // Parcel category → ride marker family (no bike-lite for courier).
+  if (fromMeta === "2_wheeler") return "bike";
+  if (fromMeta === "3_wheeler") return "auto";
+  if (fromMeta === "4_wheeler_non_ac" || fromMeta.includes("4_wheeler")) return "cab-economy";
+  if (isParcelOrder(order)) return "bike";
   return "bike";
+}
+
+async function fetchLiveTrackingStatus(order: OrderDetail): Promise<RideOrderStatusResponse> {
+  if (isParcelOrder(order)) {
+    const detail = await orderService.getOrder(order.orderId);
+    const status = normalizeCustomerOrderStatus(detail.status);
+    return {
+      orderId: detail.orderId,
+      coreOrderId: 0,
+      status: detail.status,
+      appStatus: status,
+      riderId: detail.rider ? 1 : null,
+      riderAssigned: !!detail.rider,
+      rider: detail.rider
+        ? {
+            name: detail.rider.name,
+            phone: detail.rider.phone,
+            photoUrl: detail.rider.photoUrl,
+            rating: detail.rider.rating,
+            deliveredOrdersCount: detail.rider.deliveredOrdersCount,
+            vehicleRegistration: detail.rider.vehicleRegistration,
+            vehicleModel: detail.rider.vehicleModel,
+          }
+        : null,
+      totalAmount: detail.totalAmount ?? 0,
+      searchExpiresAt: null,
+      cancelled: status === "CANCELLED",
+      pickupOtp: detail.pickupOtp ?? null,
+      deliveryOtp: detail.deliveryOtp ?? null,
+      rideStarted: detail.rideStarted ?? false,
+      riderReachedPickupAt: detail.riderReachedPickupAt ?? null,
+      pickupOtpVerifiedAt: detail.pickupOtpVerifiedAt ?? null,
+    };
+  }
+  return getRideOrderStatus(order.orderId);
 }
 
 export function RideAcceptedTrackingScreen({
@@ -127,8 +169,8 @@ export function RideAcceptedTrackingScreen({
   const orderStatus = normalizeCustomerOrderStatus(order.status);
 
   const { data: liveRideStatus } = useQuery({
-    queryKey: ["rideOrderStatus", order.orderId],
-    queryFn: () => getRideOrderStatus(order.orderId),
+    queryKey: [isParcelOrder(order) ? "parcelOrderStatus" : "rideOrderStatus", order.orderId],
+    queryFn: () => fetchLiveTrackingStatus(order),
     refetchInterval: (query) => pollIntervalWithBackoff(query, 5_000),
     staleTime: 2_500,
     retry: 2,
@@ -145,6 +187,41 @@ export function RideAcceptedTrackingScreen({
       rider: liveRideStatus.rider,
     });
   }, [liveRideStatus?.rider, order.orderId, order.rider?.name, order.status, queryClient]);
+
+  // Parcel: keep drop OTP / rideStarted in sync with status polls.
+  useEffect(() => {
+    if (!isParcelOrder(order) || !liveRideStatus) return;
+    const nextDeliveryOtp = liveRideStatus.deliveryOtp ?? null;
+    const nextRideStarted = liveRideStatus.rideStarted === true;
+    const nextPickupVerified =
+      liveRideStatus.pickupOtpVerifiedAt ?? null;
+    const sameOtp = (nextDeliveryOtp ?? "") === (order.deliveryOtp ?? "");
+    const sameStarted = nextRideStarted === (order.rideStarted === true);
+    const sameVerified =
+      (nextPickupVerified ?? "") === (order.pickupOtpVerifiedAt ?? "");
+    if (sameOtp && sameStarted && sameVerified) return;
+    seedOrderDetailCache(queryClient, order.orderId, {
+      orderId: order.orderId,
+      status: liveRideStatus.appStatus || order.status,
+      deliveryOtp: nextDeliveryOtp ?? order.deliveryOtp ?? null,
+      pickupOtp: liveRideStatus.pickupOtp ?? order.pickupOtp ?? null,
+      pickupOtpVerifiedAt: nextPickupVerified ?? order.pickupOtpVerifiedAt ?? null,
+      rideStarted: nextRideStarted || order.rideStarted === true,
+      riderReachedPickupAt:
+        liveRideStatus.riderReachedPickupAt ?? order.riderReachedPickupAt ?? null,
+      ...(liveRideStatus.rider ? { rider: liveRideStatus.rider } : {}),
+    });
+  }, [
+    liveRideStatus,
+    order.orderId,
+    order.status,
+    order.deliveryOtp,
+    order.pickupOtp,
+    order.pickupOtpVerifiedAt,
+    order.rideStarted,
+    order.riderReachedPickupAt,
+    queryClient,
+  ]);
 
   // Assigned but profile still missing → force order detail refetch once.
   const captainHydrateAttemptedRef = useRef(false);
@@ -182,6 +259,11 @@ export function RideAcceptedTrackingScreen({
     void queryClient.invalidateQueries({ queryKey: ["my-orders"] });
     void queryClient.invalidateQueries({ queryKey: ["my-orders", "active-rides"] });
 
+    if (isParcelOrder(order)) {
+      router.replace("/home/service/parcel-searching" as never);
+      return;
+    }
+
     router.replace({
       pathname: "/home/service/ride-searching",
       params: {
@@ -200,21 +282,27 @@ export function RideAcceptedTrackingScreen({
 
   useEffect(() => {
     if (!rideInProgress) return;
+    if (isParcelOrder(order)) return;
     if (!shouldShowRideTollNotice(rideCatalogId)) return;
     if (tollNoticeSpokenRef.current === order.orderId) return;
     tollNoticeSpokenRef.current = order.orderId;
     void speakRideTollNotice();
-  }, [rideInProgress, order.orderId, rideCatalogId]);
+  }, [rideInProgress, order, rideCatalogId]);
 
   const rideWaitFields = useMemo(
     () => ({
       riderReachedPickupAt:
         liveRideStatus?.riderReachedPickupAt ?? order.riderReachedPickupAt ?? null,
-      pickupOtpVerifiedAt: liveRideStatus?.pickupOtpVerifiedAt ?? null,
+      pickupOtpVerifiedAt:
+        liveRideStatus?.pickupOtpVerifiedAt ?? order.pickupOtpVerifiedAt ?? null,
       pickupWaitSeconds: liveRideStatus?.pickupWaitSeconds ?? null,
       pickupWaitFreeMinutes: liveRideStatus?.pickupWaitFreeMinutes,
     }),
-    [liveRideStatus, order.riderReachedPickupAt]
+    [
+      liveRideStatus,
+      order.riderReachedPickupAt,
+      order.pickupOtpVerifiedAt,
+    ]
   );
 
   const pickupWaitActive = !rideInProgress && isRidePickupWaitActive(rideWaitFields);
@@ -225,11 +313,25 @@ export function RideAcceptedTrackingScreen({
     return () => clearInterval(timer);
   }, [pickupWaitActive]);
 
-  const pinDigits = splitPickupOtpDigits(order.pickupOtp);
-  const showPickupPin =
-    !rideInProgress &&
-    pinDigits.length > 0 &&
-    !(liveRideStatus?.rideStarted ?? order.rideStarted);
+  const isParcel = isParcelOrder(order);
+  const pinDigits = splitPickupOtpDigits(
+    liveRideStatus?.pickupOtp ?? order.pickupOtp
+  );
+  const showPickupPin = shouldShowCustomerPickupOtp(
+    liveRideStatus?.appStatus ?? orderStatus,
+    liveRideStatus?.pickupOtp ?? order.pickupOtp,
+    {
+      riderReachedPickupAt:
+        liveRideStatus?.riderReachedPickupAt ?? order.riderReachedPickupAt ?? null,
+      pickupOtpVerifiedAt:
+        liveRideStatus?.pickupOtpVerifiedAt ?? order.pickupOtpVerifiedAt ?? null,
+      rideStarted: liveRideStatus?.rideStarted ?? order.rideStarted ?? false,
+    }
+  );
+
+  // Person ride has no delivery OTP. Parcel uses ParcelLiveTrackingScreen.
+  const showDropOtp = false;
+  const dropPinDigits: string[] = [];
 
   const rawRiderPos = useMemo<MapLatLng | null>(() => {
     if (!tracking?.rider) return null;
@@ -469,13 +571,21 @@ export function RideAcceptedTrackingScreen({
 
   const bannerText = rideInProgress
     ? highlightDropZone
-      ? "Almost at your destination"
-      : "Heading to your destination"
+      ? isParcel
+        ? "Almost at drop — share delivery OTP"
+        : "Almost at your destination"
+      : isParcel
+        ? "Parcel on the way to drop"
+        : "Heading to your destination"
     : pickupWaitActive
-      ? "Your captain has arrived — share OTP to start"
+      ? isParcel
+        ? "Captain arrived — share pickup PIN"
+        : "Your captain has arrived — share OTP to start"
       : captainArrived
         ? "Your captain has arrived"
-        : "Walk to your pickup-point";
+        : isParcel
+          ? "Captain is heading to pickup"
+          : "Walk to your pickup-point";
 
   const waitBannerText = pickupWaitActive
     ? buildRidePickupWaitCustomerBanner(rideWaitFields, waitTick)
@@ -584,11 +694,19 @@ export function RideAcceptedTrackingScreen({
     setSelectedCancelReason(null);
     purgeRideOrderFromClientCaches(queryClient, order.orderId);
     try {
-      await cancelRideOrder(order.orderId, {
-        reasonCode: reason?.id ?? "CUSTOMER_CANCELLED",
-        reasonText: reason?.label ?? "Customer cancelled after captain assigned",
-        cancelMode: "manual",
-      });
+      if (isParcelOrder(order)) {
+        await cancelParcelOrder(order.orderId, {
+          reasonCode: reason?.id ?? "CUSTOMER_CANCELLED",
+          reasonText: reason?.label ?? "Customer cancelled after captain assigned",
+          cancelMode: "manual",
+        });
+      } else {
+        await cancelRideOrder(order.orderId, {
+          reasonCode: reason?.id ?? "CUSTOMER_CANCELLED",
+          reasonText: reason?.label ?? "Customer cancelled after captain assigned",
+          cancelMode: "manual",
+        });
+      }
     } catch {
       /* best-effort */
     }
@@ -597,7 +715,7 @@ export function RideAcceptedTrackingScreen({
     void queryClient.invalidateQueries({ queryKey: ["order", order.orderId] });
     setCancelLoading(false);
     setCancelledAckVisible(true);
-  }, [cancelLoading, order.orderId, queryClient, selectedCancelReason]);
+  }, [cancelLoading, order, queryClient, selectedCancelReason]);
 
   const handleCancelledAckDismiss = useCallback(() => {
     setCancelledAckVisible(false);
@@ -820,7 +938,7 @@ export function RideAcceptedTrackingScreen({
               <AppText style={styles.bannerText}>{bannerText}</AppText>
             </View>
 
-            <RideInProgressNoticeCarousel rideType={rideCatalogId} />
+            {!isParcel ? <RideInProgressNoticeCarousel rideType={rideCatalogId} /> : null}
 
             <View style={[styles.etaBlock, styles.etaBlockNav]}>
               <View style={styles.etaRowSplit}>
@@ -847,6 +965,21 @@ export function RideAcceptedTrackingScreen({
                 ) : null}
               </View>
             </View>
+
+            {showDropOtp ? (
+              <View style={styles.pinRow}>
+                <AppText style={styles.pinLabel}>
+                  Share delivery OTP with the captain
+                </AppText>
+                <View style={styles.pinBoxes}>
+                  {dropPinDigits.map((digit, index) => (
+                    <View key={`drop-pin-${index}`} style={styles.pinBox}>
+                      <AppText style={styles.pinDigit}>{digit}</AppText>
+                    </View>
+                  ))}
+                </View>
+              </View>
+            ) : null}
 
             <View style={[styles.captainCard, styles.captainCardNav]}>
               <View style={styles.captainTopRow}>
@@ -924,7 +1057,8 @@ export function RideAcceptedTrackingScreen({
                     </AppText>
                   </AppText>
                   <AppText style={styles.etaSub}>
-                    Share your pickup PIN with the captain to start the ride
+                    Share your pickup PIN with the captain
+                    {isParcel ? " to collect the parcel" : " to start the ride"}
                   </AppText>
                 </View>
                 <View style={styles.pickupWaitAside}>
@@ -955,7 +1089,11 @@ export function RideAcceptedTrackingScreen({
 
           {showPickupPin ? (
             <View style={styles.pinRow}>
-              <AppText style={styles.pinLabel}>Start your order with PIN</AppText>
+              <AppText style={styles.pinLabel}>
+                {isParcel
+                  ? "Share pickup PIN with the captain"
+                  : "Start your order with PIN"}
+              </AppText>
               <View style={styles.pinBoxes}>
                 {pinDigits.map((digit, index) => (
                   <View key={`pin-${index}`} style={styles.pinBox}>
@@ -1029,7 +1167,9 @@ export function RideAcceptedTrackingScreen({
 
         <View style={[styles.footer, rideInProgress && styles.footerNav, { paddingBottom: footerBottomPad }]}>
           <View style={styles.footerTop}>
-            <AppText style={styles.footerLabel}>{rideInProgress ? "Drop at" : "Pickup From"}</AppText>
+            <AppText style={styles.footerLabel}>
+              {rideInProgress ? "Drop at" : "Pickup From"}
+            </AppText>
             <AppText style={styles.footerAddress} numberOfLines={rideInProgress ? 1 : 2}>
               {rideInProgress ? dropAddress : pickupAddress}
             </AppText>

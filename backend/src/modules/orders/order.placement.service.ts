@@ -22,6 +22,10 @@ import {
   merchantOfferUsages,
   merchantOffers as merchantOffersTable,
 } from "../../db/schema.js";
+import {
+  assertCustomerServiceNotBlocked,
+  CUSTOMER_SERVICE_BLOCKED_CODE,
+} from "../../lib/customer-service-blocks.js";
 import { getEnv } from "../../config/env.js";
 import { getStoreByStoreId, getStoreByIdForOrder } from "../merchants/merchant.service.js";
 import { verifyRazorpayPaymentDetails, verifyRazorpaySignature } from "../../services/payment/razorpayService.js";
@@ -770,6 +774,15 @@ export async function createPendingOrder(
     subscriptionPlanId,
     subscriptionBillingCycle,
   } = input;
+
+  const serviceBlock = await assertCustomerServiceNotBlocked(customerId, "food");
+  if (serviceBlock.blocked) {
+    return {
+      ok: false,
+      code: CUSTOMER_SERVICE_BLOCKED_CODE,
+      message: serviceBlock.reason,
+    };
+  }
 
   // Order delivery snapshot = checkout addressId (what the customer confirmed).
   // Never override with customer_active_location — active pin can be live GPS or a

@@ -27,11 +27,19 @@ type ParcelBookingState = {
   guidelinesShown: boolean;
   /** User has opened the map/book inner page at least once this session. */
   visitedInnerPage: boolean;
+  /**
+   * When true, next focus of Courier home keeps draft (returning from location/book).
+   * Fresh entry from outside clears drop.
+   */
+  preserveDraftOnNextFocus: boolean;
   setPickup: (stop: ParcelStop | null) => void;
   setDrop: (stop: ParcelStop | null) => void;
   setReceiver: (receiver: ParcelReceiver | null) => void;
   markGuidelinesShown: () => void;
   markVisitedInnerPage: () => void;
+  markPreserveDraftOnNextFocus: () => void;
+  /** Clear drop + receiver for a fresh Courier visit (keeps pickup seed). */
+  clearDropSession: () => void;
   swapStops: () => void;
   clear: () => void;
 };
@@ -42,11 +50,20 @@ export const useParcelBookingStore = create<ParcelBookingState>((set, get) => ({
   receiver: null,
   guidelinesShown: false,
   visitedInnerPage: false,
+  preserveDraftOnNextFocus: false,
   setPickup: (pickup) => set({ pickup }),
   setDrop: (drop) => set({ drop }),
   setReceiver: (receiver) => set({ receiver }),
   markGuidelinesShown: () => set({ guidelinesShown: true }),
   markVisitedInnerPage: () => set({ visitedInnerPage: true }),
+  markPreserveDraftOnNextFocus: () => set({ preserveDraftOnNextFocus: true }),
+  clearDropSession: () =>
+    set({
+      drop: null,
+      receiver: null,
+      visitedInnerPage: false,
+      preserveDraftOnNextFocus: false,
+    }),
   swapStops: () => {
     const { pickup, drop } = get();
     set({ pickup: drop, drop: pickup });
@@ -58,5 +75,6 @@ export const useParcelBookingStore = create<ParcelBookingState>((set, get) => ({
       receiver: null,
       guidelinesShown: false,
       visitedInnerPage: false,
+      preserveDraftOnNextFocus: false,
     }),
 }));

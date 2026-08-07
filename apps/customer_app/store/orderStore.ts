@@ -26,6 +26,11 @@ export type ActiveOrder = {
   placedAt: number;
   /** Drives live progress shade copy (food / ride / parcel). */
   serviceType?: ActiveOrderService;
+  /**
+   * Booked vehicle thumb for ride/parcel dock pill
+   * (bike | auto | van | cab | cab_premium | travel, or catalog/category id).
+   */
+  vehicleImageKey?: string | null;
 };
 
 export type PrepDelayBanner = {
@@ -54,6 +59,7 @@ type OrderState = {
       formattedOrderId?: string | null;
       storeName?: string | null;
       serviceType?: ActiveOrderService;
+      vehicleImageKey?: string | null;
     }
   ) => void;
   showPrepDelayBanner: (orderId: string, message: string, durationMs?: number) => void;
@@ -71,6 +77,10 @@ function mergeActiveOrder(existing: ActiveOrder | undefined, incoming: ActiveOrd
     ...incoming,
     etaMinutes: eta,
     serviceType: incoming.serviceType ?? existing?.serviceType ?? "food",
+    vehicleImageKey:
+      incoming.vehicleImageKey?.trim() ||
+      existing?.vehicleImageKey?.trim() ||
+      null,
   };
 }
 
@@ -138,6 +148,9 @@ export const useOrderStore = create<OrderState>((set) => ({
         ...(patch?.formattedOrderId ? { formattedOrderId: patch.formattedOrderId } : {}),
         ...(patch?.storeName ? { storeName: patch.storeName } : {}),
         ...(patch?.serviceType ? { serviceType: patch.serviceType } : {}),
+        ...(patch?.vehicleImageKey
+          ? { vehicleImageKey: patch.vehicleImageKey }
+          : {}),
       });
       const same =
         (o: ActiveOrder | null | undefined) =>
@@ -146,7 +159,8 @@ export const useOrderStore = create<OrderState>((set) => ({
           (etaMinutes == null || o.etaMinutes === etaMinutes) &&
           (!patch?.formattedOrderId || o.formattedOrderId === patch.formattedOrderId) &&
           (!patch?.storeName || o.storeName === patch.storeName) &&
-          (!patch?.serviceType || o.serviceType === patch.serviceType);
+          (!patch?.serviceType || o.serviceType === patch.serviceType) &&
+          (!patch?.vehicleImageKey || o.vehicleImageKey === patch.vehicleImageKey);
 
       const activeUnchanged =
         s.activeOrder?.orderId !== orderId || same(s.activeOrder);

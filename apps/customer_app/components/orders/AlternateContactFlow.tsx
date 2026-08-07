@@ -33,6 +33,11 @@ type Props = {
   canUpdateAlternateContact?: boolean;
   onSuccess?: () => void;
   extraInvalidateQueryKeys?: readonly (readonly unknown[])[];
+  /**
+   * `alternate` — food one-time alternate contact.
+   * `receiver` — parcel drop receiver (can change until pickup).
+   */
+  mode?: "alternate" | "receiver";
 };
 
 export const AlternateContactFlow = forwardRef<AlternateContactFlowRef, Props>(
@@ -43,10 +48,12 @@ export const AlternateContactFlow = forwardRef<AlternateContactFlowRef, Props>(
       canUpdateAlternateContact = true,
       onSuccess,
       extraInvalidateQueryKeys = [],
+      mode = "alternate",
     },
     ref
   ) {
     const queryClient = useQueryClient();
+    const isReceiverMode = mode === "receiver";
     const [contactSheetVisible, setContactSheetVisible] = useState(false);
     const [nameSheetVisible, setNameSheetVisible] = useState(false);
     const [successVisible, setSuccessVisible] = useState(false);
@@ -74,7 +81,7 @@ export const AlternateContactFlow = forwardRef<AlternateContactFlowRef, Props>(
         setNameSheetVisible(false);
         setPendingContact(null);
         Alert.alert(
-          "Could not update contact",
+          isReceiverMode ? "Could not update receiver" : "Could not update contact",
           err instanceof Error ? err.message : "Please try again."
         );
       },
@@ -84,12 +91,14 @@ export const AlternateContactFlow = forwardRef<AlternateContactFlowRef, Props>(
       if (saveMutation.isPending) return;
       if (!canUpdateAlternateContact) {
         Alert.alert(
-          "Contact update closed",
-          "Alternate contact can no longer be updated for this order."
+          isReceiverMode ? "Receiver update closed" : "Contact update closed",
+          isReceiverMode
+            ? "Receiver number can no longer be updated for this parcel."
+            : "Alternate contact can no longer be updated for this order."
         );
         return;
       }
-      if (hasAlternateContact) {
+      if (!isReceiverMode && hasAlternateContact) {
         Alert.alert(
           "Alternate contact added",
           "You can add an alternate contact only once for this order."
@@ -101,7 +110,9 @@ export const AlternateContactFlow = forwardRef<AlternateContactFlowRef, Props>(
         if (status !== "granted") {
           Alert.alert(
             "Contacts permission",
-            "Please allow access to contacts so you can pick an alternate number for this delivery."
+            isReceiverMode
+              ? "Please allow access to contacts so you can pick a receiver number."
+              : "Please allow access to contacts so you can pick an alternate number for this delivery."
           );
           return;
         }
@@ -109,7 +120,12 @@ export const AlternateContactFlow = forwardRef<AlternateContactFlowRef, Props>(
       } catch {
         Alert.alert("Contacts", "Could not access contacts on this device.");
       }
-    }, [canUpdateAlternateContact, hasAlternateContact, saveMutation.isPending]);
+    }, [
+      canUpdateAlternateContact,
+      hasAlternateContact,
+      isReceiverMode,
+      saveMutation.isPending,
+    ]);
 
     useImperativeHandle(ref, () => ({ open }), [open]);
 
@@ -152,7 +168,7 @@ export const AlternateContactFlow = forwardRef<AlternateContactFlowRef, Props>(
           visible={contactSheetVisible}
           onClose={() => setContactSheetVisible(false)}
           onSelectContact={handleSelectContact}
-          title="Select alternate contact"
+          title={isReceiverMode ? "Select receiver contact" : "Select alternate contact"}
           emptyText="No contacts with a phone number were found."
         />
 
@@ -170,6 +186,12 @@ export const AlternateContactFlow = forwardRef<AlternateContactFlowRef, Props>(
         <AlternateContactSuccessModal
           visible={successVisible}
           onClose={() => setSuccessVisible(false)}
+          title={isReceiverMode ? "Receiver updated" : undefined}
+          body={
+            isReceiverMode
+              ? "Delivery partner will call this number at drop."
+              : undefined
+          }
         />
       </>
     );
@@ -179,9 +201,13 @@ export const AlternateContactFlow = forwardRef<AlternateContactFlowRef, Props>(
 function AlternateContactSuccessModal({
   visible,
   onClose,
+  title,
+  body,
 }: {
   visible: boolean;
   onClose: () => void;
+  title?: string;
+  body?: string;
 }) {
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
@@ -190,9 +216,12 @@ function AlternateContactSuccessModal({
           <View style={styles.successIconWrap}>
             <Ionicons name="checkmark" size={28} color="#fff" />
           </View>
-          <AppText style={styles.successTitle}>Alternate number updated</AppText>
+          <AppText style={styles.successTitle}>
+            {title ?? "Alternate number updated"}
+          </AppText>
           <AppText style={styles.successBody}>
-            The delivery partner will now contact you on your alternate number.
+            {body ??
+              "The delivery partner will now contact you on your alternate number."}
           </AppText>
           <TouchableOpacity style={styles.successBtn} onPress={onClose} activeOpacity={0.9}>
             <AppText style={styles.successBtnText}>OK</AppText>

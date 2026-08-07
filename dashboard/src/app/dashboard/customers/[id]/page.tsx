@@ -1,17 +1,24 @@
 "use client";
 
-import { useState, useEffect, useRef, useMemo, Suspense } from "react";
+import { useState, useEffect, useRef, useMemo, useCallback, Suspense } from "react";
 import { useAppParams, useAppPathname, useAppSearchParams } from "@/hooks/useAppSearchParams";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { AlertCircle, ChevronDown, ExternalLink, Search } from "lucide-react";
+import { AlertCircle } from "lucide-react";
 import {
   resolveTrustTier,
-  TRUST_TIER_LABEL,
-  trustTierUserTypeClass,
   type CustomerTrustTier,
 } from "@/lib/customers/trust-tier";
-import type { CustomerAddressRow } from "@/lib/db/operations/customers";
+import type { CustomerAddressRow, CustomerActivityDay, CustomerOrderStats } from "@/lib/db/operations/customers";
+import {
+  CustomerDetailPremiumView,
+  CustomerDetailSkeleton,
+} from "@/components/customers/CustomerDetailPremiumView";
+import { CustomerBlockSideSheet } from "@/components/customers/CustomerBlockSideSheet";
+import type {
+  CustomerServiceBlockHistoryRow,
+  CustomerServiceBlockRow,
+} from "@/lib/db/operations/customer-service-blocks";
 
 interface CustomerDetail {
   id: number;
@@ -86,6 +93,8 @@ interface CustomerDetail {
   contactTags?: string[] | null;
   referralInstallCount?: number;
   addresses?: CustomerAddressRow[];
+  orderStats?: CustomerOrderStats[];
+  activityDaily?: CustomerActivityDay[];
 }
 
 /** Drop redundant "Current location: " prefix from saved label + address strings. */
@@ -164,27 +173,6 @@ function fmtText(v: unknown): string {
   return s.length > 0 ? s : "—";
 }
 
-function BoolVal({ v }: { v: boolean | null | undefined }) {
-  if (v === true) return <span className="font-semibold text-emerald-600">true</span>;
-  if (v === false) return <span className="font-semibold text-red-600">false</span>;
-  return <span className="text-[#0f2d42]/55">—</span>;
-}
-
-function FieldItem({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <span className="min-w-0 max-w-full">
-      <span className="text-[#0f2d42]/70">{label}: </span>
-      {children}
-    </span>
-  );
-}
-
-function DetailRow({ children }: { children: React.ReactNode }) {
-  return (
-    <div className="flex flex-wrap gap-x-8 gap-y-2.5 py-3.5 text-sm text-[#0f2d42]">{children}</div>
-  );
-}
-
 /** GatiMitra control app (order detail pages). Override with NEXT_PUBLIC_CONTROL_APP_URL if needed. */
 const CONTROL_APP_BASE = (
   typeof process !== "undefined" && process.env.NEXT_PUBLIC_CONTROL_APP_URL?.trim()
@@ -237,25 +225,6 @@ type CustomerWalletTxnRow = {
   createdAt: string;
 };
 
-/** Compact pills for sticky nav strip (smaller hit target, premium tight spacing). */
-function customerNavPillStripClass(active: boolean, disabled?: boolean) {
-  const base =
-    "inline-flex !w-auto shrink-0 items-center justify-center gap-0.5 rounded-full px-2.5 py-1.5 text-center text-[10px] font-medium leading-snug sm:px-3 sm:py-1.5 sm:text-[11px] sm:leading-tight";
-  if (disabled) {
-    return `${base} min-h-8 cursor-not-allowed border border-slate-200/90 bg-slate-50 text-[#0f2d42]/45`;
-  }
-  if (active) {
-    return `${base} min-h-8 border-2 border-[#0d5c4a] bg-[#E6F6F5] font-semibold text-[#0f2d42] shadow-sm ring-1 ring-[#0d5c4a]/15`;
-  }
-  return `${base} min-h-8 border border-teal-200/70 bg-white text-[#0f2d42] shadow-sm transition hover:border-teal-300/90 hover:bg-[#f0fdf9]`;
-}
-
-/** Min width per pill; labels fit without forcing full-width grid. */
-const NAV_PILL_MIN = "min-w-[7.25rem] max-w-[11rem] sm:min-w-[7.75rem]";
-
-/** Orders/tickets panel — plain block, no card border (matches dashboard main surface). */
-const RESULT_CARD_SHELL = "mt-[2px] w-full shrink-0 px-4 py-4 sm:px-6";
-
 function CustomerDetailsContent() {
   const params = useAppParams();
   const searchParams = useAppSearchParams();
@@ -276,6 +245,9 @@ function CustomerDetailsContent() {
   const [txnsLoading, setTxnsLoading] = useState(false);
   const [txnsError, setTxnsError] = useState<string | null>(null);
   const [panelQuery, setPanelQuery] = useState("");
+  const [blockSheetOpen, setBlockSheetOpen] = useState(false);
+  const [activeServiceBlocks, setActiveServiceBlocks] = useState<CustomerServiceBlockRow[]>([]);
+  const [serviceBlockHistory, setServiceBlockHistory] = useState<CustomerServiceBlockHistoryRow[]>([]);
   const ctaNavRef = useRef<HTMLElement>(null);
   const router = useRouter();
   const pathname = useAppPathname();
@@ -286,11 +258,32 @@ function CustomerDetailsContent() {
       ? `?search=${encodeURIComponent(searchQs)}`
       : "";
 
+  const fetchServiceBlocks = useCallback(async () => {
+    if (!customerId) return;
+    try {
+      const res = await fetch(`/api/customers/${encodeURIComponent(customerId)}/service-blocks`);
+      const json = (await res.json()) as {
+        success?: boolean;
+        data?: {
+          activeBlocks?: CustomerServiceBlockRow[];
+          history?: CustomerServiceBlockHistoryRow[];
+        };
+      };
+      if (json.success && json.data) {
+        if (json.data.activeBlocks) setActiveServiceBlocks(json.data.activeBlocks);
+        if (json.data.history) setServiceBlockHistory(json.data.history);
+      }
+    } catch {
+      /* non-fatal */
+    }
+  }, [customerId]);
+
   useEffect(() => {
     setAddressIndex(0);
     setAddressMenuOpen(false);
     if (customerId) {
       void fetchCustomer();
+      void fetchServiceBlocks();
     } else {
       setError("Invalid customer ID");
       setLoading(false);
@@ -584,13 +577,7 @@ function CustomerDetailsContent() {
   }, [customerTxns, panelSearchNeedle]);
 
   if (loading) {
-    return (
-      <div className="w-full max-w-full overflow-x-hidden py-2">
-        <div className="flex items-center justify-center py-16">
-          <div className="text-[#0f2d42]/70">Loading customer…</div>
-        </div>
-      </div>
-    );
+    return <CustomerDetailSkeleton />;
   }
 
   if (error || !customer) {
@@ -652,15 +639,11 @@ function CustomerDetailsContent() {
     customer.trustTier,
     customer.trustScore == null ? null : Number(customer.trustScore)
   ) as CustomerTrustTier;
-  const tierLabel = TRUST_TIER_LABEL[tier];
-  const tierClass = trustTierUserTypeClass(tier);
 
   const trustNum =
     customer.trustScore == null ? null : Number(customer.trustScore);
   const fraudNum =
     customer.fraudScore == null ? null : Number(customer.fraudScore);
-
-  const gmitraActive = customer.gmitraPlusActive === true;
 
   const addresses = customer.addresses ?? [];
   const safeAddrIdx =
@@ -722,498 +705,73 @@ function CustomerDetailsContent() {
       : "Search transactions…";
 
   return (
-    <div className="flex w-full min-w-0 max-w-full flex-1 flex-col pt-3 sm:pt-4">
-      <div className="mb-3 rounded-2xl border border-teal-200/35 bg-gradient-to-br from-[#E6F6F5] via-white to-[#f0fdf9] shadow-sm ring-1 ring-[#0f2d42]/5 sm:mb-4">
-        {/* User Stats header + scrollable detail grid */}
-        <div className="px-4 py-5 sm:px-6">
-          <div className="flex flex-col gap-3">
-          <div className="flex flex-row items-baseline justify-between gap-4">
-            <p className="text-sm font-semibold uppercase tracking-[0.12em] text-[#0f2d42]/80">
-              User Stats
-            </p>
-            <span className="shrink-0 text-xs font-medium text-[#0f2d42]/70 text-right">
-              Current Addresses
-            </span>
-          </div>
-          <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between sm:gap-4">
-            <p className="min-w-0 flex-1 text-[11px] leading-snug text-[#0f2d42]/55 sm:text-xs sm:pr-2">
-              GatiMitra customer profile — trust & risk at a glance
-            </p>
-            <div className="flex min-w-0 w-full max-w-full shrink-0 flex-col items-stretch text-left sm:w-auto sm:max-w-[min(100%,42rem)]">
-              {addresses.length === 0 ? (
-                <span className="text-[11px] text-[#0f2d42]/80 sm:text-xs">—</span>
-              ) : addresses.length === 1 ? (
-                <span className="text-[11px] leading-snug text-[#0f2d42] [overflow-wrap:anywhere] break-words whitespace-normal sm:text-xs">
-                  {formatAddressDisplay(addresses[0])}
-                </span>
-              ) : (
-                <div className="relative w-full min-w-0" ref={addressMenuRef}>
-                  <button
-                    type="button"
-                    aria-expanded={addressMenuOpen}
-                    aria-haspopup="listbox"
-                    aria-label="Select saved address"
-                    onClick={() => setAddressMenuOpen((o) => !o)}
-                    className="flex w-full min-w-0 flex-row items-start gap-2 rounded-md bg-white/70 px-2 py-1.5 text-left text-[11px] leading-snug text-[#0f2d42] outline-none ring-0 transition hover:bg-white/90 focus-visible:ring-2 focus-visible:ring-[#4EE5C1]/40 sm:text-xs"
-                  >
-                    <span className="min-w-0 flex-1 [overflow-wrap:anywhere] break-words whitespace-normal">
-                      {formatAddressDisplay(addresses[safeAddrIdx])}
-                    </span>
-                    <ChevronDown
-                      className={`mt-0.5 h-4 w-4 shrink-0 text-[#0f2d42]/55 transition ${addressMenuOpen ? "rotate-180" : ""}`}
-                      aria-hidden
-                    />
-                  </button>
-                  {addressMenuOpen ? (
-                    <ul
-                      role="listbox"
-                      aria-label="Other saved addresses"
-                      className="absolute left-0 right-0 z-[100] mt-1 max-h-56 overflow-auto rounded-md bg-white py-1 text-[#0f2d42] shadow-[0_8px_24px_-4px_rgba(15,45,66,0.12)] ring-1 ring-[#0f2d42]/12"
-                    >
-                      {otherAddressIndices.map((i) => {
-                        const a = addresses[i];
-                        return (
-                          <li key={a.id} role="option" aria-selected={false}>
-                            <button
-                              type="button"
-                              className="w-full px-2 py-2 text-left text-[11px] font-medium leading-snug text-[#0f2d42] [overflow-wrap:anywhere] break-words whitespace-normal hover:bg-[#E6F6F5]/90 hover:text-[#0f2d42] sm:text-xs"
-                              onClick={() => {
-                                setAddressIndex(i);
-                                setAddressMenuOpen(false);
-                              }}
-                            >
-                              {formatAddressDisplay(a)}
-                            </button>
-                          </li>
-                        );
-                      })}
-                    </ul>
-                  ) : null}
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-        </div>
-
-        <div className="divide-y divide-teal-200/60 border-t border-teal-200/60 px-4 sm:px-6 pb-4">
-          <DetailRow>
-            <FieldItem label="User Id">
-              <Link
-                href={`/dashboard/customers/${customer.id}${idLinkSuffix}`}
-                className="font-semibold text-[#0d5c4a] underline decoration-[#4EE5C1]/80 decoration-2 underline-offset-2 hover:text-[#0f2d42]"
-              >
-                {customer.customerId}
-              </Link>
-            </FieldItem>
-            <FieldItem label="Full name">
-              <span className="font-medium text-[#0f2d42]">{customer.fullName}</span>
-            </FieldItem>
-            <FieldItem label="Gender">{fmtText(customer.gender)}</FieldItem>
-            <FieldItem label="Date of birth">
-              <span className="tabular-nums">{formatDateOnly(customer.dateOfBirth ?? null)}</span>
-            </FieldItem>
-            <FieldItem label="Age group">{fmtText(customer.ageGroup)}</FieldItem>
-            <FieldItem label="Preferred language">{fmtText(customer.preferredLanguage)}</FieldItem>
-            <FieldItem label="Bio">
-              <span className="[overflow-wrap:anywhere] break-words whitespace-normal">
-                {fmtText(customer.bio)}
-              </span>
-            </FieldItem>
-          </DetailRow>
-
-          <DetailRow>
-            <FieldItem label="Primary mobile">
-              <span className="font-medium">{customer.primaryMobile}</span>
-            </FieldItem>
-            <FieldItem label="Mobile verified">
-              <BoolVal v={customer.mobileVerified} />
-            </FieldItem>
-            <FieldItem label="Email">{fmtText(customer.email)}</FieldItem>
-            <FieldItem label="Latitude">
-              <span className="tabular-nums">{formatCoord(customer.latitude)}</span>
-            </FieldItem>
-            <FieldItem label="Longitude">
-              <span className="tabular-nums">{formatCoord(customer.longitude)}</span>
-            </FieldItem>
-          </DetailRow>
-
-          <DetailRow>
-            <FieldItem label="User type ">
-              <span className={tierClass}>{tierLabel}</span>
-            </FieldItem>
-            <FieldItem label="Trust score">
-              <span className="tabular-nums font-medium">
-                {trustNum != null && !Number.isNaN(trustNum) ? trustNum.toFixed(2) : "—"}
-              </span>
-            </FieldItem>
-            <FieldItem label="Fraud score">
-              <span className="tabular-nums font-medium">
-                {fraudNum != null && !Number.isNaN(fraudNum) ? fraudNum.toFixed(2) : "—"}
-              </span>
-            </FieldItem>
-            <FieldItem label="Risk flag">{fmtText(customer.riskFlag)}</FieldItem>
-            <FieldItem label="Account status">{customer.accountStatus.toLowerCase()}</FieldItem>
-            <FieldItem label="Global active">
-              <BoolVal v={customer.isGlobalActive} />
-            </FieldItem>
-            <FieldItem label="Wallet balance">
-              <button
-                type="button"
-                onClick={toggleTransactionsNav}
-                title="View full wallet ledger"
-                className="cursor-pointer font-semibold tabular-nums text-emerald-700 no-underline hover:text-emerald-800 hover:no-underline"
-              >
-                {formatCurrency(customer.walletBalance)}
-              </button>
-            </FieldItem>
-            <FieldItem label="Wallet locked">{formatCurrency(customer.walletLockedAmount)}</FieldItem>
-          </DetailRow>
-
-          <DetailRow>
-            <FieldItem label="GMitra Plus">
-              {gmitraActive ? (
-                <span className="font-semibold text-emerald-600">Active</span>
-              ) : (
-                <span className="font-semibold text-red-600">Not active</span>
-              )}
-            </FieldItem>
-            <FieldItem label="Activated date">
-              {formatIsoDateTime(customer.gmitraPlusActivatedAt)}
-            </FieldItem>
-            <FieldItem label="Expiry date">
-              {formatIsoDateTime(customer.gmitraPlusExpiresAt)}
-            </FieldItem>
-            <FieldItem label="Referral code">{fmtText(customer.referralCode)}</FieldItem>
-            <FieldItem label="Referred by (code)">{fmtText(customer.referredBy)}</FieldItem>
-            <FieldItem label="Referrer customer id">
-              {customer.referrerCustomerId != null ? (
-                <span className="tabular-nums font-medium">{customer.referrerCustomerId}</span>
-              ) : (
-                "—"
-              )}
-            </FieldItem>
-            <FieldItem label="App installs with referral">
-              <span className="tabular-nums font-medium">
-                {typeof customer.referralInstallCount === "number"
-                  ? customer.referralInstallCount
-                  : "—"}
-              </span>
-            </FieldItem>
-          </DetailRow>
-
-          <DetailRow>
-            <FieldItem label="Last login">{formatIsoDateTime(customer.lastLoginAt)}</FieldItem>
-            <FieldItem label="Last order">{formatIsoDateTime(customer.lastOrderAt)}</FieldItem>
-            <FieldItem label="Last activity">{formatIsoDateTime(customer.lastActivityAt)}</FieldItem>
-            <FieldItem label="Created at">{formatIsoDateTime(customer.createdAt)}</FieldItem>
-            <FieldItem label="Updated at">{formatIsoDateTime(customer.updatedAt)}</FieldItem>
-            <FieldItem label="Created via">{fmtText(customer.createdVia)}</FieldItem>
-          </DetailRow>
-
-          <DetailRow>
-            <FieldItem label="SMS permission">
-              <BoolVal v={customer.smsPermission} />
-            </FieldItem>
-            <FieldItem label="Location permission">
-              <BoolVal v={customer.locationPermission} />
-            </FieldItem>
-            <FieldItem label="Contacts permission">
-              <BoolVal v={customer.contactsPermission} />
-            </FieldItem>
-          </DetailRow>
-
-          <DetailRow>
-            <FieldItem label="Customer account">
-              <Link
-                href={`/dashboard/customers/${customer.id}/edit`}
-                className="font-medium text-[#0d5c4a] hover:underline"
-              >
-                Edit profile
-              </Link>
-              <ExternalLink className="inline h-3.5 w-3.5 ml-0.5 text-[#0d5c4a]" aria-hidden />
-            </FieldItem>
-            <FieldItem label="Customer notification">
-              <span className="inline-flex items-center gap-0.5 font-medium text-[#0d5c4a] cursor-pointer hover:underline">
-                link
-                <ExternalLink className="h-3.5 w-3.5" aria-hidden />
-              </span>
-            </FieldItem>
-          </DetailRow>
-        </div>
-      </div>
-
-      <nav
-        ref={ctaNavRef}
-        className="sticky top-0 z-40 w-full min-w-0 shrink-0 border-b border-[#121212]/08 bg-white py-2 sm:py-2.5"
-        aria-label="Order and account shortcuts"
-      >
-        <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:items-center sm:justify-between sm:gap-3">
-          <div className="max-w-full min-w-0 overflow-x-auto overflow-y-visible [-webkit-overflow-scrolling:touch] [scrollbar-width:thin]">
-            <div className="flex w-max min-w-full flex-nowrap items-center justify-start gap-2 sm:gap-2.5 sm:justify-center">
-              <button
-                type="button"
-                onClick={() => toggleOrderPillNav("food-orders")}
-                className={`${NAV_PILL_MIN} cursor-pointer ${customerNavPillStripClass(navActive("food-orders"))}`}
-              >
-                Food · Orders
-              </button>
-              <button
-                type="button"
-                onClick={() => toggleOrderPillNav("parcel-orders")}
-                className={`${NAV_PILL_MIN} cursor-pointer ${customerNavPillStripClass(navActive("parcel-orders"))}`}
-              >
-                Parcel · Orders
-              </button>
-              <button
-                type="button"
-                onClick={() => toggleOrderPillNav("person-ride")}
-                className={`${NAV_PILL_MIN} cursor-pointer ${customerNavPillStripClass(navActive("person-ride"))}`}
-              >
-                Person · Ride
-              </button>
-              <button
-                type="button"
-                onClick={toggleTicketsNav}
-                className={`${NAV_PILL_MIN} cursor-pointer ${customerNavPillStripClass(navActive("tickets"))}`}
-              >
-                Tickets
-              </button>
-              <button
-                type="button"
-                onClick={toggleTransactionsNav}
-                className={`${NAV_PILL_MIN} cursor-pointer ${customerNavPillStripClass(navActive("transactions"))}`}
-              >
-                Transactions
-              </button>
-            </div>
-          </div>
-
-          {showPanelSearch ? (
-            <form
-              className="flex w-full min-w-0 shrink-0 items-center gap-1.5 sm:w-auto sm:max-w-xs"
-              onSubmit={(e) => e.preventDefault()}
-              role="search"
-              aria-label="Filter panel results"
-            >
-              <input
-                type="search"
-                value={panelQuery}
-                onChange={(e) => setPanelQuery(e.target.value)}
-                placeholder={panelSearchPlaceholder}
-                className="h-8 min-w-0 flex-1 rounded-[10px] border border-[#121212]/10 bg-white px-2.5 text-[11px] text-[#121212] placeholder:text-[#121212]/40 shadow-sm focus:border-[#121212]/25 focus:outline-none focus:ring-2 focus:ring-[#121212]/15 sm:w-44 sm:flex-none"
-              />
-              <button
-                type="submit"
-                className="inline-flex h-8 shrink-0 cursor-pointer items-center justify-center gap-1 rounded-[10px] bg-[#121212] px-2.5 text-[11px] font-medium text-white transition-colors hover:bg-black"
-                aria-label="Search results"
-              >
-                <Search className="h-3.5 w-3.5" aria-hidden />
-                <span className="hidden sm:inline">Search</span>
-              </button>
-            </form>
-          ) : null}
-        </div>
-      </nav>
-
-      {showOrdersPanel ? (
-        <section
-          className={`${RESULT_CARD_SHELL} min-h-[55vh] overflow-x-hidden`}
-          aria-label="Customer orders from orders_core"
-        >
-          {ordersLoading ? (
-            <p className="text-sm text-[#0f2d42]/65">Loading orders…</p>
-          ) : ordersError ? (
-            <p className="text-sm font-medium text-red-700">{ordersError}</p>
-          ) : customerOrders.length === 0 ? (
-            <p className="text-sm text-[#0f2d42]/65">No orders found for this type.</p>
-          ) : filteredOrders.length === 0 ? (
-            <p className="text-sm text-[#0f2d42]/65">No orders match your search.</p>
-          ) : (
-            <div className="overflow-x-auto -mx-1 px-1">
-              <table className="min-w-[640px] w-full border-collapse text-left text-sm text-[#0f2d42]">
-                <thead>
-                  <tr className="border-b border-teal-200/70 text-xs font-semibold uppercase tracking-wide text-[#0f2d42]/70">
-                    <th className="whitespace-nowrap py-2 pr-4">Order id</th>
-                    <th className="whitespace-nowrap py-2 pr-4">Status</th>
-                    <th className="whitespace-nowrap py-2 pr-4">Payment</th>
-                    <th className="whitespace-nowrap py-2 pr-4 text-right">Total</th>
-                    <th className="whitespace-nowrap py-2 pr-4">Created</th>
-                    <th className="py-2 min-w-[12rem]">Drop address</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-teal-100/90">
-                  {filteredOrders.map((row) => {
-                    const orderLabel = row.formattedOrderId ?? `#${row.id}`;
-                    const orderHref = controlPortalOrderUrl(row.formattedOrderId);
-                    return (
-                      <tr key={row.id} className="align-top hover:bg-[#f0fdf9]/80">
-                        <td className="py-2.5 pr-4 font-medium">
-                          {orderHref ? (
-                            <a
-                              href={orderHref}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="inline-flex items-center gap-1 text-[#0d5c4a] underline decoration-[#4EE5C1]/70 underline-offset-2 hover:text-[#0f2d42]"
-                            >
-                              {orderLabel}
-                              <ExternalLink className="h-3.5 w-3.5 shrink-0 opacity-70" aria-hidden />
-                            </a>
-                          ) : (
-                            <span className="text-[#0f2d42]/90">{orderLabel}</span>
-                          )}
-                        </td>
-                        <td className="py-2.5 pr-4 capitalize">{row.status}</td>
-                        <td className="py-2.5 pr-4 capitalize">
-                          {row.paymentStatus ?? "—"}
-                        </td>
-                        <td className="py-2.5 pr-4 text-right tabular-nums">
-                          {row.grandTotal != null
-                            ? `₹${Number(row.grandTotal).toFixed(2)}`
-                            : row.fareAmount != null
-                              ? `₹${Number(row.fareAmount).toFixed(2)}`
-                              : "—"}
-                        </td>
-                        <td className="py-2.5 pr-4 whitespace-nowrap text-[#0f2d42]/85">
-                          {formatShortDateTime(row.createdAt)}
-                        </td>
-                        <td className="py-2.5 max-w-md text-[#0f2d42]/90 [overflow-wrap:anywhere]">
-                          {row.dropAddressRaw ?? "—"}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </section>
-      ) : null}
-
-      {showTicketsPanel ? (
-        <section
-          className={`${RESULT_CARD_SHELL} min-h-[55vh] overflow-x-hidden`}
-          aria-label="Customer tickets from unified_tickets"
-        >
-          {ticketsLoading ? (
-            <p className="text-sm text-[#0f2d42]/65">Loading tickets…</p>
-          ) : ticketsError ? (
-            <p className="text-sm font-medium text-red-700">{ticketsError}</p>
-          ) : customerTickets.length === 0 ? (
-            <p className="text-sm text-[#0f2d42]/65">No tickets found for this customer.</p>
-          ) : filteredTickets.length === 0 ? (
-            <p className="text-sm text-[#0f2d42]/65">No tickets match your search.</p>
-          ) : (
-            <div className="overflow-x-auto -mx-1 px-1">
-              <table className="min-w-[640px] w-full border-collapse text-left text-sm text-[#0f2d42]">
-                <thead>
-                  <tr className="border-b border-teal-200/70 text-xs font-semibold uppercase tracking-wide text-[#0f2d42]/70">
-                    <th className="whitespace-nowrap py-2 pr-4">Ticket id</th>
-                    <th className="whitespace-nowrap py-2 pr-4">Status</th>
-                    <th className="whitespace-nowrap py-2 pr-4">Priority</th>
-                    <th className="whitespace-nowrap py-2 pr-4">Service</th>
-                    <th className="whitespace-nowrap py-2 pr-4">Created</th>
-                    <th className="py-2 min-w-[12rem]">Subject</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-teal-100/90">
-                  {filteredTickets.map((row) => (
-                    <tr key={row.id} className="align-top hover:bg-[#f0fdf9]/80">
-                      <td className="py-2.5 pr-4 font-medium">
-                        <a
-                          href={`/dashboard/tickets/${row.id}`}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="inline-flex items-center gap-1 text-[#0d5c4a] underline decoration-[#4EE5C1]/70 underline-offset-2 hover:text-[#0f2d42]"
-                        >
-                          {row.ticketId}
-                          <ExternalLink className="h-3.5 w-3.5 shrink-0 opacity-70" aria-hidden />
-                        </a>
-                      </td>
-                      <td className="py-2.5 pr-4 capitalize">{row.status}</td>
-                      <td className="py-2.5 pr-4 capitalize">{row.priority}</td>
-                      <td className="py-2.5 pr-4 capitalize">{row.serviceType ?? "—"}</td>
-                      <td className="py-2.5 pr-4 whitespace-nowrap text-[#0f2d42]/85">
-                        {formatShortDateTime(row.createdAt)}
-                      </td>
-                      <td className="py-2.5 max-w-md text-[#0f2d42]/90 [overflow-wrap:anywhere]">
-                        {row.subject ?? "—"}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </section>
-      ) : null}
-
-      {showTransactionsPanel ? (
-        <section
-          className={`${RESULT_CARD_SHELL} min-h-[55vh] overflow-x-hidden`}
-          aria-label="Customer wallet transactions"
-        >
-          {txnsLoading ? (
-            <p className="text-sm text-[#0f2d42]/65">Loading transactions…</p>
-          ) : txnsError ? (
-            <p className="text-sm font-medium text-red-700">{txnsError}</p>
-          ) : customerTxns.length === 0 ? (
-            <p className="text-sm text-[#0f2d42]/65">No wallet transactions found for this customer.</p>
-          ) : filteredTxns.length === 0 ? (
-            <p className="text-sm text-[#0f2d42]/65">No transactions match your search.</p>
-          ) : (
-            <div className="overflow-x-auto -mx-1 px-1">
-              <table className="min-w-[720px] w-full border-collapse text-left text-sm text-[#0f2d42]">
-                <thead>
-                  <tr className="border-b border-teal-200/70 text-xs font-semibold uppercase tracking-wide text-[#0f2d42]/70">
-                    <th className="whitespace-nowrap py-2 pr-4">Txn id</th>
-                    <th className="whitespace-nowrap py-2 pr-4">Type</th>
-                    <th className="whitespace-nowrap py-2 pr-4 text-right">Amount</th>
-                    <th className="whitespace-nowrap py-2 pr-4 text-right">Balance after</th>
-                    <th className="whitespace-nowrap py-2 pr-4">Status</th>
-                    <th className="whitespace-nowrap py-2 pr-4">Created</th>
-                    <th className="py-2 min-w-[12rem]">Description</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-teal-100/90">
-                  {filteredTxns.map((row) => (
-                    <tr key={row.id} className="align-top hover:bg-[#f0fdf9]/80">
-                      <td className="py-2.5 pr-4 font-medium tabular-nums text-[#0d5c4a]">
-                        {row.transactionId}
-                      </td>
-                      <td className="py-2.5 pr-4 capitalize">{row.transactionType}</td>
-                      <td className="py-2.5 pr-4 text-right tabular-nums">
-                        ₹{Number(row.amount).toFixed(2)}
-                      </td>
-                      <td className="py-2.5 pr-4 text-right tabular-nums">
-                        ₹{Number(row.balanceAfter).toFixed(2)}
-                      </td>
-                      <td className="py-2.5 pr-4 capitalize">{row.status ?? "—"}</td>
-                      <td className="py-2.5 pr-4 whitespace-nowrap text-[#0f2d42]/85">
-                        {formatShortDateTime(row.createdAt)}
-                      </td>
-                      <td className="py-2.5 max-w-md text-[#0f2d42]/90 [overflow-wrap:anywhere]">
-                        {row.description || "—"}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </section>
-      ) : null}
-    </div>
+    <>
+    <CustomerDetailPremiumView
+      customer={customer}
+      orderStats={customer.orderStats ?? []}
+      activityDaily={customer.activityDaily ?? []}
+      tier={tier}
+      trustNum={trustNum}
+      fraudNum={fraudNum}
+      idLinkSuffix={idLinkSuffix}
+      formatAddressDisplay={formatAddressDisplay}
+      formatShortDateTime={formatShortDateTime}
+      formatIsoDateTime={formatIsoDateTime}
+      formatDateOnly={formatDateOnly}
+      formatCoord={formatCoord}
+      formatCurrency={formatCurrency}
+      fmtText={fmtText}
+      addresses={addresses}
+      safeAddrIdx={safeAddrIdx}
+      otherAddressIndices={otherAddressIndices}
+      addressMenuOpen={addressMenuOpen}
+      setAddressMenuOpen={setAddressMenuOpen}
+      setAddressIndex={setAddressIndex}
+      addressMenuRef={addressMenuRef}
+      navActive={navActive}
+      toggleOrderPillNav={toggleOrderPillNav}
+      toggleTicketsNav={toggleTicketsNav}
+      toggleTransactionsNav={toggleTransactionsNav}
+      showPanelSearch={showPanelSearch}
+      panelSearchPlaceholder={panelSearchPlaceholder}
+      panelQuery={panelQuery}
+      setPanelQuery={setPanelQuery}
+      ctaNavRef={ctaNavRef}
+      showOrdersPanel={showOrdersPanel}
+      showTicketsPanel={showTicketsPanel}
+      showTransactionsPanel={showTransactionsPanel}
+      ordersLoading={ordersLoading}
+      ordersError={ordersError}
+      customerOrders={customerOrders}
+      filteredOrders={filteredOrders}
+      ticketsLoading={ticketsLoading}
+      ticketsError={ticketsError}
+      customerTickets={customerTickets}
+      filteredTickets={filteredTickets}
+      txnsLoading={txnsLoading}
+      txnsError={txnsError}
+      customerTxns={customerTxns}
+      filteredTxns={filteredTxns}
+      controlPortalOrderUrl={controlPortalOrderUrl}
+      activeServiceBlocks={activeServiceBlocks}
+      onOpenBlockSheet={() => setBlockSheetOpen(true)}
+    />
+    <CustomerBlockSideSheet
+      open={blockSheetOpen}
+      onClose={() => setBlockSheetOpen(false)}
+      customerId={customerId}
+      customerName={customer.fullName}
+      activeBlocks={activeServiceBlocks}
+      blockHistory={serviceBlockHistory}
+      onUpdated={() => void fetchServiceBlocks()}
+    />
+  </>
   );
 }
 
 export default function CustomerDetailsPage() {
   return (
-    <Suspense
-      fallback={
-        <div className="w-full max-w-full py-16 text-center text-[#0f2d42]/60">Loading…</div>
-      }
-    >
+    <Suspense fallback={<CustomerDetailSkeleton />}>
       <CustomerDetailsContent />
     </Suspense>
   );

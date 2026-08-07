@@ -13,6 +13,11 @@ import { recordOrderCancellation } from "../../lib/record-order-cancellation.js"
 import { customerOrderRefWhere } from "../../lib/order-ref-resolve.js";
 import { quoteParcelVehicleFare } from "./parcelQuote.service.js";
 import type { RideVehiclePricingType } from "../rider-payout-pricing/types.js";
+import {
+  assertCustomerServiceNotBlocked,
+  CUSTOMER_SERVICE_BLOCKED_CODE,
+} from "../../lib/customer-service-blocks.js";
+import { notifyCustomerParcelLifecycle } from "../../lib/customer-lifecycle-notify.js";
 
 export const DEFAULT_PARCEL_SEARCH_TIMEOUT_SEC = 4 * 60;
 
@@ -131,6 +136,14 @@ function coordString(n: number): string {
 }
 
 export async function placeParcelOrder(input: PlaceParcelOrderInput): Promise<PlaceParcelOrderResult> {
+  const parcelBlock = await assertCustomerServiceNotBlocked(input.customerPk, "parcel");
+  if (parcelBlock.blocked) {
+    throw Object.assign(new Error(parcelBlock.reason), {
+      statusCode: 403,
+      code: CUSTOMER_SERVICE_BLOCKED_CODE,
+    });
+  }
+
   const pickupAddress = sanitizeAddress(input.pickupAddress);
   const dropAddress = sanitizeAddress(input.dropAddress);
   if (!pickupAddress || !dropAddress) {
@@ -409,6 +422,10 @@ export async function placeParcelOrder(input: PlaceParcelOrderInput): Promise<Pl
   });
 
   void maybeStartOrderDispatch(result.coreOrderId).catch(() => undefined);
+  void notifyCustomerParcelLifecycle({
+    orderIdText: result.orderId,
+    templateCode: "PARCEL_ACCEPTED",
+  });
   return result;
 }
 

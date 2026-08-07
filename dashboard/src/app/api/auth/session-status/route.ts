@@ -1,64 +1,48 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createServerSupabaseClient } from "@/lib/supabase/server";
+import { getAuthenticatedApiUser } from "@/lib/auth/api-session";
 import {
   getSessionMetadata,
   checkSessionValidity,
   formatTimeRemaining,
 } from "@/lib/auth/session-manager";
-import {
-  isInvalidRefreshToken,
-  isNetworkOrTransientError,
-  isRefreshTokenAlreadyUsed,
-  signOutIfSessionDead,
-} from "@/lib/auth/session-errors";
+import { isNetworkOrTransientError, isTimeoutOrAbortError } from "@/lib/auth/session-errors";
 import { cookies } from "next/headers";
 
 /**
  * GET /api/auth/session-status
  * Returns current session status, time remaining, etc.
- * Uses getUser() to avoid triggering token refresh (prevents "refresh_token_already_used" when called in parallel with other routes).
+ * Uses cookie-first auth (getAuthenticatedApiUser) — never signs out on refresh races.
  */
 export async function GET(request: NextRequest) {
   try {
-    const supabase = await createServerSupabaseClient();
-    const { data: { user }, error: userError } = await supabase.auth.getUser();
+    const auth = await getAuthenticatedApiUser(request);
 
-    if (userError) {
-      if (isInvalidRefreshToken(userError)) {
-        await signOutIfSessionDead(supabase, userError);
-        if (isRefreshTokenAlreadyUsed(userError)) {
-          return NextResponse.json(
-            { success: false, authenticated: false, error: "Service temporarily unavailable", code: "SERVICE_UNAVAILABLE" },
-            { status: 503, headers: { "Content-Type": "application/json" } }
-          );
-        }
+    if (!auth.ok) {
+      if (auth.status === 503 || auth.status === 499) {
         return NextResponse.json(
-          { success: false, authenticated: false, error: "Session invalid", code: "SESSION_INVALID" },
-          { status: 401, headers: { "Content-Type": "application/json" } }
+          {
+            success: false,
+            authenticated: false,
+            error: auth.body.error,
+            code: auth.body.code,
+          },
+          { status: auth.status, headers: { "Content-Type": "application/json" } }
         );
       }
-      if (isNetworkOrTransientError(userError)) {
-        return NextResponse.json(
-          { success: false, authenticated: false, error: "Service temporarily unavailable", code: "SERVICE_UNAVAILABLE" },
-          { status: 503, headers: { "Content-Type": "application/json" } }
-        );
-      }
+      // Unauthenticated probe — 200 so login page does not treat as hard failure.
       return NextResponse.json(
-        { success: false, authenticated: false, error: "Not authenticated", code: "SESSION_REQUIRED" },
+        {
+          success: false,
+          authenticated: false,
+          error: "Not authenticated",
+          code: "SESSION_REQUIRED",
+        },
         { status: 200, headers: { "Content-Type": "application/json" } }
       );
     }
 
-    if (!user) {
-      return NextResponse.json(
-        { success: false, authenticated: false, error: "Not authenticated", code: "SESSION_REQUIRED" },
-        { status: 200, headers: { "Content-Type": "application/json" } }
-      );
-    }
+    const { user } = auth;
 
-    const session = { user };
-
-    // Get session metadata from cookies
     const cookieStore = await cookies();
     const cookieWrapper = {
       get: (name: string) => cookieStore.get(name),
@@ -81,8 +65,8 @@ export async function GET(request: NextRequest) {
       authenticated: true,
       expired: false,
       session: {
-        email: session.user.email,
-        userId: session.user.id,
+        email: user.email,
+        userId: user.id,
         sessionId: metadata?.sessionId,
         timeRemaining: validity.timeRemaining,
         timeRemainingFormatted: validity.timeRemaining
@@ -94,28 +78,15 @@ export async function GET(request: NextRequest) {
       },
     });
   } catch (error) {
-    if (isInvalidRefreshToken(error)) {
-      try {
-        const supabase = await createServerSupabaseClient();
-        await signOutIfSessionDead(supabase, error);
-      } catch {
-        // ignore
-      }
-      if (isRefreshTokenAlreadyUsed(error)) {
-        return NextResponse.json(
-          { success: false, authenticated: false, error: "Service temporarily unavailable", code: "SERVICE_UNAVAILABLE" },
-          { status: 503, headers: { "Content-Type": "application/json" } }
-        );
-      }
-      return NextResponse.json(
-        { success: false, authenticated: false, error: "Session invalid", code: "SESSION_INVALID" },
-        { status: 401, headers: { "Content-Type": "application/json" } }
-      );
-    }
     console.error("[session-status] Error:", error);
-    if (isNetworkOrTransientError(error)) {
+    if (isTimeoutOrAbortError(error) || isNetworkOrTransientError(error)) {
       return NextResponse.json(
-        { success: false, error: "Service temporarily unavailable", code: "SERVICE_UNAVAILABLE" },
+        {
+          success: false,
+          authenticated: false,
+          error: "Service temporarily unavailable",
+          code: "SERVICE_UNAVAILABLE",
+        },
         { status: 503, headers: { "Content-Type": "application/json" } }
       );
     }

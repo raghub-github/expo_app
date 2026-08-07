@@ -1,24 +1,20 @@
+import { getAuthenticatedApiUser, authFailureResponse } from "@/lib/auth/api-session";
 /**
  * GET /api/orders/person-ride
  * List person ride orders from orders_core + orders_ride.
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine";
 import { listPersonRideOrders } from "@/lib/db/operations/person-ride-orders";
 
 export async function GET(request: NextRequest) {
   try {
-    const supabase = await createServerSupabaseClient();
-    const {
-      data: { user },
-      error: userError,
-    } = await supabase.auth.getUser();
-
-    if (userError || !user) {
-      return NextResponse.json({ success: false, error: "Not authenticated" }, { status: 401 });
+    const auth = await getAuthenticatedApiUser(request);
+    if (!auth.ok) {
+      return authFailureResponse(auth);
     }
+    const { user } = auth;
 
     const [userIsSuperAdmin, hasPersonRideAccess] = await Promise.all([
       isSuperAdmin(user.id, user.email ?? ""),

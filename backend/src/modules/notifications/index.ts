@@ -29,6 +29,14 @@ export { subscribeToTopic, unsubscribeFromTopic } from "./fcmProvider.js";
 export { notificationRoutes } from "./notification.routes.js";
 export { notificationInternalRoutes } from "./notification.internal.routes.js";
 export { startScheduledPoller, stopScheduledPoller } from "./scheduledPoller.js";
+export {
+  startNotificationRetryPoller,
+  stopNotificationRetryPoller,
+} from "./notificationRetryPoller.js";
+export {
+  startReminderPoller,
+  stopReminderPoller,
+} from "./reminderPoller.js";
 export { emitEvent, registerDomainEventHandlers, type DomainEventMap } from "./eventBus.js";
 
 export type {

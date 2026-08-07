@@ -40,32 +40,50 @@ export async function postSetCookieWithTokens(
   accessToken: string,
   refreshToken: string
 ): Promise<SetCookieResult> {
-  const res = await fetch("/api/auth/set-cookie", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    credentials: "include",
-    body: JSON.stringify({
-      access_token: accessToken,
-      refresh_token: refreshToken,
-    }),
-  });
-  const text = await res.text();
-  if (res.ok) {
-    markServerCookieSynced();
-    return { ok: true };
+  const maxAttempts = 3;
+  const retryDelaysMs = [600, 1200];
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const res = await fetch("/api/auth/set-cookie", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({
+        access_token: accessToken,
+        refresh_token: refreshToken,
+      }),
+    });
+    const text = await res.text();
+    if (res.ok) {
+      markServerCookieSynced();
+      return { ok: true };
+    }
+
+    let errorMessage = "Authentication failed";
+    if (text.trim()) {
+      try {
+        const parsed = safeParseJson<{ error?: string; code?: string }>(text, "");
+        if (parsed?.error) errorMessage = parsed.error;
+        else if (text.length < 300) errorMessage = text.trim();
+        if (
+          parsed?.code === "SERVICE_UNAVAILABLE" &&
+          attempt < maxAttempts
+        ) {
+          await new Promise((r) => setTimeout(r, retryDelaysMs[attempt - 1] ?? 1000));
+          continue;
+        }
+      } catch {
+        // keep default
+      }
+    }
+    if (res.status === 503 && attempt < maxAttempts) {
+      await new Promise((r) => setTimeout(r, retryDelaysMs[attempt - 1] ?? 1000));
+      continue;
+    }
+    return { ok: false, error: errorMessage };
   }
 
-  let errorMessage = "Authentication failed";
-  if (text.trim()) {
-    try {
-      const parsed = safeParseJson<{ error?: string }>(text, "");
-      if (parsed?.error) errorMessage = parsed.error;
-      else if (text.length < 300) errorMessage = text.trim();
-    } catch {
-      // keep default
-    }
-  }
-  return { ok: false, error: errorMessage };
+  return { ok: false, error: "Authentication failed" };
 }
 
 let inFlightSync: Promise<boolean> | null = null;

@@ -1,10 +1,10 @@
+import { getAuthenticatedApiUser, authFailureResponse } from "@/lib/auth/api-session";
 /**
  * GET /api/orders/[orderId]/rider-timeline?rider_id=123
  * Rider milestone timeline for one assignment on an order (orders_core.id).
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine";
 import { getRiderAssignmentTimeline } from "@/lib/db/operations/order-rider-assignments";
 
@@ -32,15 +32,11 @@ export async function GET(
       return NextResponse.json({ error: "rider_id is required" }, { status: 400 });
     }
 
-    const supabase = await createServerSupabaseClient();
-    const {
-      data: { user },
-      error: userError,
-    } = await supabase.auth.getUser();
-
-    if (userError || !user) {
-      return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
+    const auth = await getAuthenticatedApiUser(request);
+    if (!auth.ok) {
+      return authFailureResponse(auth);
     }
+    const { user } = auth;
 
     const allowed =
       (await isSuperAdmin(user.id, user.email ?? "")) ||
