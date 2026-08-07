@@ -248,106 +248,115 @@ export async function resolveDropGeoRefsFromPincode(
 }
 
 /**
- * IDs of active platform offers bound anywhere on the geo chain for the drop location.
+ * Levels to query for geo-bound offers/coupons, closest node first. Every level the
+ * caller actually resolved is the customer's genuine ancestor, so querying each one and
+ * unioning the results can only ADD correctly-inherited bindings — it never over-broadens.
  *
- * Queries the DB function for both the pincode level (which walks the full chain when
- * pincode_post_offices is complete) AND the state level directly (so state-bound offers
- * are found even when the chain is broken and state was resolved via name fallback).
+ * Why query each resolved level rather than relying on the pincode chain alone:
+ *   - `geo_pricing_chain_steps('pincode', …)` re-walks pincode_post_offices with `LIMIT 1`
+ *     and no ORDER BY, so for a pincode spanning several post offices it may pick a
+ *     different division/district than `resolveDropGeoRefsFromPincode` did — a
+ *     district-/region-only-bound offer could then be silently missed.
+ *   - When the pincode→post_office chain is incomplete, the intermediate refs may still be
+ *     known (e.g. district resolved elsewhere); querying them directly keeps those bindings
+ *     visible instead of collapsing to pincode + state only.
  */
-export async function resolvePlatformOfferGeoBindingEffectiveIds(
+const GEO_BINDING_LOOKUP_LEVELS = [
+  "pincode",
+  "post_office",
+  "division",
+  "district",
+  "region",
+  "state",
+] as const;
+
+type GeoBindingLevel = (typeof GEO_BINDING_LOOKUP_LEVELS)[number];
+
+/** (level, refId) pairs present in refs, closest node first. */
+function geoBindingLookupTargets(
   refs: DropGeoRefByLevel | null
-): Promise<ReadonlySet<number>> {
-  if (refs == null) return new Set();
-
-  const pinId = refs.pincode;
-  const stateId = refs.state;
-  if (!pinId && !stateId) return new Set();
-
-  const sql = getSql();
-  const queries: Promise<{ ids: unknown }[]>[] = [];
-
-  if (pinId && String(pinId).trim()) {
-    queries.push(
-      sql<{ ids: unknown }[]>`
-        SELECT geo_platform_offer_ids_effective_for_location('pincode'::geo_pricing_level, ${pinId}::uuid) AS ids
-      `
-    );
+): { level: GeoBindingLevel; id: string }[] {
+  if (refs == null) return [];
+  const out: { level: GeoBindingLevel; id: string }[] = [];
+  for (const level of GEO_BINDING_LOOKUP_LEVELS) {
+    const id = refs[level];
+    if (id && String(id).trim()) out.push({ level, id: String(id).trim() });
   }
-  // Query state level directly: ensures state-bound offers are found even when the
-  // pincode→post_office chain in pincode_post_offices is incomplete.
-  if (stateId && String(stateId).trim()) {
-    queries.push(
-      sql<{ ids: unknown }[]>`
-        SELECT geo_platform_offer_ids_effective_for_location('state'::geo_pricing_level, ${stateId}::uuid) AS ids
-      `
-    );
-  }
+  return out;
+}
 
+function collectEffectiveIds(
+  results: PromiseSettledResult<{ ids: unknown }[]>[]
+): Set<number> {
   const out = new Set<number>();
-  try {
-    const results = await Promise.allSettled(queries);
-    for (const result of results) {
-      if (result.status !== "fulfilled") continue;
-      const raw = result.value[0]?.ids;
-      if (!Array.isArray(raw)) continue;
-      for (const x of raw) {
-        const n = typeof x === "bigint" ? Number(x) : typeof x === "number" ? x : parseInt(String(x), 10);
-        if (Number.isInteger(n) && n > 0) out.add(n);
-      }
+  for (const result of results) {
+    if (result.status !== "fulfilled") continue;
+    const raw = result.value[0]?.ids;
+    if (!Array.isArray(raw)) continue;
+    for (const x of raw) {
+      const n = typeof x === "bigint" ? Number(x) : typeof x === "number" ? x : parseInt(String(x), 10);
+      if (Number.isInteger(n) && n > 0) out.add(n);
     }
-  } catch {
-    // ignore errors, return partial set
   }
-
   return out;
 }
 
 /**
+ * IDs of active platform offers bound anywhere on the geo chain for the drop location.
+ *
+ * Queries `geo_platform_offer_ids_effective_for_location` at EVERY hierarchy level the
+ * customer resolved to (pincode → post_office → division → district → region → state) and
+ * unions the effective sets. Each level's function walks up to the state, applying
+ * closest-binding-wins within its own chain, so the union is exactly the offers bound at
+ * this location or any of its ancestors — robust to an incomplete or ambiguous
+ * pincode→post_office linkage.
+ */
+export async function resolvePlatformOfferGeoBindingEffectiveIds(
+  refs: DropGeoRefByLevel | null
+): Promise<ReadonlySet<number>> {
+  const targets = geoBindingLookupTargets(refs);
+  if (targets.length === 0) return new Set();
+
+  const sql = getSql();
+  try {
+    const results = await Promise.allSettled(
+      targets.map(
+        (t) =>
+          sql<{ ids: unknown }[]>`
+            SELECT geo_platform_offer_ids_effective_for_location(${t.level}::geo_pricing_level, ${t.id}::uuid) AS ids
+          `
+      )
+    );
+    return collectEffectiveIds(results);
+  } catch {
+    // ignore errors, return empty set (offers stay hidden — the safe direction)
+    return new Set();
+  }
+}
+
+/**
  * IDs of active checkout coupons bound on the geo chain for the drop location.
- * Same visibility model as platform offers — unmapped coupons never surface.
+ * Same multi-level visibility model as platform offers — unmapped coupons never surface.
  */
 export async function resolveCheckoutCouponGeoBindingEffectiveIds(
   refs: DropGeoRefByLevel | null
 ): Promise<ReadonlySet<number>> {
-  if (refs == null) return new Set();
-
-  const pinId = refs.pincode;
-  const stateId = refs.state;
-  if (!pinId && !stateId) return new Set();
+  const targets = geoBindingLookupTargets(refs);
+  if (targets.length === 0) return new Set();
 
   const sql = getSql();
-  const queries: Promise<{ ids: unknown }[]>[] = [];
-
-  if (pinId && String(pinId).trim()) {
-    queries.push(
-      sql<{ ids: unknown }[]>`
-        SELECT geo_billing_discount_ids_effective_for_location('pincode'::geo_pricing_level, ${pinId}::uuid) AS ids
-      `
-    );
-  }
-  if (stateId && String(stateId).trim()) {
-    queries.push(
-      sql<{ ids: unknown }[]>`
-        SELECT geo_billing_discount_ids_effective_for_location('state'::geo_pricing_level, ${stateId}::uuid) AS ids
-      `
-    );
-  }
-
-  const out = new Set<number>();
   try {
-    const results = await Promise.allSettled(queries);
-    for (const result of results) {
-      if (result.status !== "fulfilled") continue;
-      const raw = result.value[0]?.ids;
-      if (!Array.isArray(raw)) continue;
-      for (const x of raw) {
-        const n = typeof x === "bigint" ? Number(x) : typeof x === "number" ? x : parseInt(String(x), 10);
-        if (Number.isInteger(n) && n > 0) out.add(n);
-      }
-    }
+    const results = await Promise.allSettled(
+      targets.map(
+        (t) =>
+          sql<{ ids: unknown }[]>`
+            SELECT geo_billing_discount_ids_effective_for_location(${t.level}::geo_pricing_level, ${t.id}::uuid) AS ids
+          `
+      )
+    );
+    return collectEffectiveIds(results);
   } catch {
-    // ignore errors, return partial set
+    // ignore errors, return empty set (coupons stay hidden — the safe direction)
+    return new Set();
   }
-
-  return out;
 }
