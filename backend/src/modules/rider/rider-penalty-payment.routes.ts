@@ -64,7 +64,7 @@ export function registerRiderPenaltyPaymentRoutes(app: FastifyInstance) {
       success: true,
       creditedAmount: result.creditedAmount,
       totalBalance: result.totalBalance,
-      reactivatedServices: result.reactivatedServices ?? [],
+      reactivatedServices: "reactivatedServices" in result ? result.reactivatedServices : [],
       idempotent: result.idempotent,
     });
   });
