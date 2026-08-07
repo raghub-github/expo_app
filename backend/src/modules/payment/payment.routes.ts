@@ -198,6 +198,42 @@ export async function paymentRoutes(app: FastifyInstance) {
             return reply.send({ ok: activation.ok, handler: "merchant_subscription" });
           }
 
+          // Rider negative-wallet settlement safety net — orders created with
+          // notes.type = "rider_negative_wallet_recovery". Covers "app died / lost
+          // network between capture and verify-payment": the money is captured but
+          // the client never confirmed. Idempotent with the client verify path
+          // (shared wallet-row-locked settle keyed on razorpay_payment_id).
+          if (notes && String(notes.type ?? "") === "rider_negative_wallet_recovery") {
+            const { finalizeRiderWalletPaymentFromWebhook } = await import(
+              "../../lib/rider-penalty-payment.service.js"
+            );
+            const settle = await finalizeRiderWalletPaymentFromWebhook({
+              razorpayOrderId,
+              razorpayPaymentId,
+              amountPaise: Number(paymentEntity?.amount ?? 0) || undefined,
+              notes,
+            });
+            await markWebhookProcessed(db, eventId);
+            await logPaymentEvent(db, {
+              eventType: settle.ok ? "WEBHOOK_HANDLED_OK" : "WEBHOOK_HANDLER_FAILED",
+              source: "webhook",
+              razorpayOrderId,
+              razorpayPaymentId,
+              payload: {
+                event,
+                eventId,
+                handler: "rider_negative_wallet",
+                ok: settle.ok,
+                idempotent: settle.ok ? settle.idempotent : null,
+                creditedAmount: settle.ok ? settle.creditedAmount : null,
+                errorCode: settle.ok ? null : settle.error,
+                durationMs: Date.now() - startedAtMs,
+              },
+            });
+            // ALWAYS 200 so Razorpay stops retrying — the error is logged for ops.
+            return reply.send({ ok: settle.ok, handler: "rider_negative_wallet" });
+          }
+
           const result = await finalizePendingOrderFromWebhook(db, {
             razorpayOrderId,
             razorpayPaymentId,

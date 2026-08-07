@@ -1,4 +1,4 @@
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
 import { ulid } from "ulid";
 import { getDb } from "../db/client.js";
 import {
@@ -387,16 +387,54 @@ export async function verifyRiderPenaltyPayment(args: {
     return { ok: false as const, status: 400, error: "invalid_signature" };
   }
 
+  return settleRiderWalletPayment({
+    riderId: args.riderId,
+    razorpayOrderId: args.razorpayOrderId,
+    razorpayPaymentId: args.razorpayPaymentId,
+    expectedPaise,
+    method: allowSimulated ? "simulated" : "razorpay",
+    razorpaySignature: args.razorpaySignature,
+    source: "client",
+  });
+}
+
+/**
+ * Shared, concurrency-safe money movement for a negative-wallet settlement.
+ * Used by BOTH the client verify path and the Razorpay webhook path. A
+ * `SELECT … FOR UPDATE` on the rider's wallet row serialises a racing
+ * verify + webhook (which fire within seconds of each other), and the
+ * wallet_ledger `ref = razorpayPaymentId` is the shared idempotency key so the
+ * credit is applied at most once. Safe to call repeatedly.
+ */
+async function settleRiderWalletPayment(args: {
+  riderId: number;
+  razorpayOrderId: string;
+  razorpayPaymentId: string;
+  expectedPaise: number;
+  method: "razorpay" | "simulated";
+  razorpaySignature?: string;
+  source: "client" | "webhook";
+}) {
+  const db = getDb();
   await ensureWalletRow(args.riderId);
 
   // Snapshot penalty blocks BEFORE the credit so we can diff for history.
   const blocksBefore = await readNegativeWalletBlocks(args.riderId);
 
-  // Atomic money update: credit (capped so balance never exceeds 0), ledger,
-  // audit row → success. Any failure rolls the whole thing back.
-  let result: { balanceBefore: number; balanceAfter: number; creditApplied: number };
+  // Atomic money update: lock wallet → dedupe → credit (capped so balance never
+  // exceeds 0), ledger, audit row → success. Any failure rolls the whole thing back.
+  let result: {
+    balanceBefore: number;
+    balanceAfter: number;
+    creditApplied: number;
+    idempotent: boolean;
+  };
   try {
     result = await db.transaction(async (tx) => {
+      // Serialise concurrent verify + webhook on this rider's wallet row so the
+      // credit can never be applied twice.
+      await tx.execute(sql`SELECT 1 FROM rider_wallet WHERE rider_id = ${args.riderId} FOR UPDATE`);
+
       const [w] = await tx
         .select({ totalBalance: riderWallet.totalBalance })
         .from(riderWallet)
@@ -404,7 +442,19 @@ export async function verifyRiderPenaltyPayment(args: {
         .limit(1);
       const balanceBefore = round2(Number(w?.totalBalance ?? 0));
 
-      const amountPaid = round2(expectedPaise / 100);
+      // Idempotency (inside the lock): this exact payment already credited?
+      const [ledgerDup] = await tx
+        .select({ id: walletLedger.id })
+        .from(walletLedger)
+        .where(
+          and(eq(walletLedger.riderId, args.riderId), eq(walletLedger.ref, args.razorpayPaymentId))
+        )
+        .limit(1);
+      if (ledgerDup) {
+        return { balanceBefore, balanceAfter: balanceBefore, creditApplied: 0, idempotent: true };
+      }
+
+      const amountPaid = round2(args.expectedPaise / 100);
       // Never let the wallet go positive — cap the credit to the outstanding.
       const balanceAfter = round2(Math.min(0, balanceBefore + amountPaid));
       const creditApplied = round2(balanceAfter - balanceBefore);
@@ -420,7 +470,7 @@ export async function verifyRiderPenaltyPayment(args: {
         metadata: {
           razorpayOrderId: args.razorpayOrderId,
           razorpayPaymentId: args.razorpayPaymentId,
-          source: "rider_app",
+          source: args.source === "webhook" ? "razorpay_webhook" : "rider_app",
         },
       });
 
@@ -435,11 +485,11 @@ export async function verifyRiderPenaltyPayment(args: {
           status: "success",
           walletAfter: balanceAfter.toFixed(2),
           razorpayPaymentId: args.razorpayPaymentId,
-          razorpaySignature: args.razorpaySignature,
-          method: allowSimulated ? "simulated" : "razorpay",
+          ...(args.razorpaySignature ? { razorpaySignature: args.razorpaySignature } : {}),
+          method: args.method,
           remarks: "Negative wallet settlement",
           updatedAt: new Date(),
-          updatedBy: "rider",
+          updatedBy: args.source === "webhook" ? "webhook" : "rider",
         })
         .where(
           and(
@@ -448,11 +498,33 @@ export async function verifyRiderPenaltyPayment(args: {
           )
         );
 
-      return { balanceBefore, balanceAfter, creditApplied };
+      return { balanceBefore, balanceAfter, creditApplied, idempotent: false };
     });
   } catch (err) {
-    await markVerificationFailed((err as Error)?.message ?? "wallet_update_failed");
+    try {
+      await logPaymentEvent(db, {
+        eventType: "NEG_WALLET_PAYMENT_VERIFICATION_FAILED",
+        source: args.source,
+        razorpayOrderId: args.razorpayOrderId,
+        razorpayPaymentId: args.razorpayPaymentId,
+        failureMessage: (err as Error)?.message ?? "wallet_update_failed",
+        payload: { riderId: args.riderId },
+      });
+    } catch {
+      /* best-effort */
+    }
     return { ok: false as const, status: 500, error: "wallet_update_failed" };
+  }
+
+  // Already credited by a racing verify/webhook — return the settled balance.
+  if (result.idempotent) {
+    return {
+      ok: true as const,
+      success: true,
+      creditedAmount: 0,
+      totalBalance: result.balanceAfter,
+      idempotent: true,
+    };
   }
 
   // Post-commit (money is safe now): recompute penalty blocks + duty, record
@@ -470,7 +542,7 @@ export async function verifyRiderPenaltyPayment(args: {
     await syncRiderDutyWithRestrictions(args.riderId);
     await logPaymentEvent(db, {
       eventType: "NEG_WALLET_PAYMENT_SUCCESS",
-      source: "client",
+      source: args.source,
       razorpayOrderId: args.razorpayOrderId,
       razorpayPaymentId: args.razorpayPaymentId,
       payload: {
@@ -486,7 +558,7 @@ export async function verifyRiderPenaltyPayment(args: {
     try {
       await logPaymentEvent(db, {
         eventType: "NEG_WALLET_POST_COMMIT_WARN",
-        source: "client",
+        source: args.source,
         razorpayOrderId: args.razorpayOrderId,
         razorpayPaymentId: args.razorpayPaymentId,
         failureMessage: (err as Error)?.message ?? "post_commit_failed",
@@ -507,6 +579,62 @@ export async function verifyRiderPenaltyPayment(args: {
     reactivatedServices: reactivated,
     idempotent: false,
   };
+}
+
+/**
+ * Razorpay webhook path for negative-wallet settlements. Fires on
+ * payment.captured / order.paid for orders created with
+ * notes.type = "rider_negative_wallet_recovery". Safety net for the "app died /
+ * lost network between capture and verify-payment" case — the money is captured
+ * at Razorpay but the client never confirmed. Shares the concurrency-safe settle
+ * path with the client verify, so it is fully idempotent with it.
+ */
+export async function finalizeRiderWalletPaymentFromWebhook(args: {
+  razorpayOrderId: string;
+  razorpayPaymentId: string;
+  amountPaise?: number;
+  notes?: Record<string, unknown>;
+}) {
+  const db = getDb();
+
+  // Source of truth = the `initiated` audit row written at order creation.
+  const [row] = await db
+    .select()
+    .from(riderWalletPayments)
+    .where(eq(riderWalletPayments.razorpayOrderId, args.razorpayOrderId))
+    .orderBy(desc(riderWalletPayments.createdAt))
+    .limit(1);
+
+  if (!row) {
+    // No initiated row → not a known rider-wallet order (or amount untrusted).
+    return { ok: false as const, status: 404, error: "unknown_rider_wallet_order" };
+  }
+  const riderId = row.riderId;
+
+  // Idempotency shortcut (the settle tx re-checks under the wallet lock).
+  if (await findSettledPayment(riderId, args.razorpayPaymentId)) {
+    return {
+      ok: true as const,
+      success: true,
+      creditedAmount: 0,
+      totalBalance: await readWalletBalance(riderId),
+      idempotent: true,
+    };
+  }
+
+  const expectedPaise = row.amountPaise ?? args.amountPaise ?? 0;
+  if (!(expectedPaise >= 100)) {
+    return { ok: false as const, status: 400, error: "invalid_amount" };
+  }
+
+  return settleRiderWalletPayment({
+    riderId,
+    razorpayOrderId: args.razorpayOrderId,
+    razorpayPaymentId: args.razorpayPaymentId,
+    expectedPaise,
+    method: "razorpay",
+    source: "webhook",
+  });
 }
 
 /** Rider's own negative-wallet payment history (latest first). */
