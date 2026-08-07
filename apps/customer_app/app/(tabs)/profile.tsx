@@ -26,7 +26,7 @@ import { ProfilePhotoSourceSheet } from "@/components/profile/ProfilePhotoSource
 import { ProfilePhotoViewerSheet } from "@/components/profile/ProfilePhotoViewerSheet";
 import { useScreenChromeStore } from "@/store/screenChromeStore";
 import { STATUS_BAR_TO_HEADER_GAP } from "@/constants/layout";
-import { profileService } from "@/services/profile.service";
+import { profileService, type UserProfile } from "@/services/profile.service";
 import { invalidateProfileCache, PROFILE_QUERY_KEY, writeCachedProfile } from "@/lib/profileCache";
 import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
 
@@ -152,7 +152,7 @@ export default function ProfileScreen() {
           mimeType,
         });
 
-        queryClient.setQueryData(PROFILE_QUERY_KEY, (prev) => {
+        queryClient.setQueryData<UserProfile>(PROFILE_QUERY_KEY, (prev) => {
           if (!prev || typeof prev !== "object") return prev;
           const next = { ...prev, profile_image_url };
           void writeCachedProfile(next);
