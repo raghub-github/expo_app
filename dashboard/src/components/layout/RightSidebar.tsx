@@ -25,6 +25,7 @@ import {
   getMerchantSubRoutesForPath,
   adminPortalMerchantRoutes,
   merchantPortalSidebarRoutes,
+  filterSidebarRoutesForStoreContext,
   notificationDashboardRoutes,
   type DashboardSubRoute,
   type AreaManagerTypeFilter,
@@ -134,9 +135,15 @@ export function RightSidebar({
     }
     const dashboard = getCurrentDashboard(cleanPathname);
     if (dashboard?.href === "/dashboard/merchants") {
-      const isStorePath = /^\/dashboard\/merchants\/stores\/\d+/.test(cleanPathname);
-      if (isStorePath) return getMerchantSubRoutesForPath(cleanPathname);
-      if (portal === "merchant") return merchantPortalSidebarRoutes;
+      const storeMatch = cleanPathname.match(/^\/dashboard\/merchants\/stores\/(\d+)/);
+      if (storeMatch) return getMerchantSubRoutesForPath(cleanPathname);
+      if (portal === "merchant") {
+        // No store open yet: hide the entries whose pages only exist under
+        // /dashboard/merchants/stores/{id}/…. Rendering them here produced
+        // <Link> prefetches to non-existent routes (404s in the console) and
+        // dead sidebar items that went nowhere when clicked.
+        return filterSidebarRoutesForStoreContext(merchantPortalSidebarRoutes, null);
+      }
       return adminPortalMerchantRoutes;
     }
     return getCurrentDashboardSubRoutes(cleanPathname);
