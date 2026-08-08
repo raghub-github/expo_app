@@ -33,7 +33,7 @@ Supabase Dashboard → **Authentication** → **Hooks** → **Send SMS** → set
 
 The hook:
 
-1. Validates the Supabase hook secret (if `SUPABASE_SEND_SMS_HOOK_SECRET` is set)
+1. Validates the Supabase hook secret. `SUPABASE_SEND_SMS_HOOK_SECRET` is **required** — without it the route returns 500 and sends nothing.
 2. Extracts `phone` and `otp` from the request body (Supabase sends `user.phone` and `sms.otp`)
 3. Sends the OTP via MSG91 **Text SMS API** — passes the Supabase OTP in the message body
 4. Returns 200 on success
@@ -49,7 +49,7 @@ MSG91_TEMPLATE_ID=69983b0ad2e6de8cf20da602   # optional; from MSG91 Templates (o
 # MSG91_FLOW_ID=...                 # optional; use if your dashboard uses Flow ID instead of Template ID
 # MSG91_OTP_VAR_NAME=OTP            # optional; if OTP is blank in SMS, try VAR1 or the variable name in your template
 MSG91_OTP_TEMPLATE_CONTENT=...     # fallback v2/sendsms only; not used when Flow API is used
-SUPABASE_SEND_SMS_HOOK_SECRET=xxx   # optional; validates Supabase hook calls
+SUPABASE_SEND_SMS_HOOK_SECRET=xxx   # REQUIRED; without it the hook refuses to send
 ```
 
 **India DLT (Flow API):** For India you must use the **Flow API**. Use either:
@@ -99,4 +99,4 @@ Restart the Next.js dev server.
 | OTP verification | Supabase |
 | SMS delivery | MSG91 Text SMS API (via `/api/auth/send-sms`) |
 | MSG91 Auth Key | `.env.local` / deployment env |
-| Hook secret | Optional; `SUPABASE_SEND_SMS_HOOK_SECRET` |
+| Hook secret | **Required**; `SUPABASE_SEND_SMS_HOOK_SECRET` |

@@ -117,30 +117,36 @@ export async function POST(req: NextRequest) {
       req.headers.get("webhook-signature") &&
       req.headers.get("webhook-timestamp");
 
-    if (SEND_SMS_HOOK_SECRET && hasWebhookHeaders) {
-      try {
-        // Library expects "whsec_<base64>" and strips "whsec_". Supabase sends "v1,whsec_<base64>".
-        const secret = SEND_SMS_HOOK_SECRET.trim().replace(/^v1,/i, "");
-        const wh = new Webhook(secret);
-        body = wh.verify(rawBody, getHeadersMap(req)) as Record<string, unknown>;
-      } catch (err) {
-        if (err instanceof WebhookVerificationError) {
-          console.warn("[send-sms] Standard Webhooks verification failed:", err.message);
-          return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-        }
-        throw err;
-      }
-    } else if (SEND_SMS_HOOK_SECRET && !hasWebhookHeaders) {
+    // Signature verification is mandatory — this route spends money. An
+    // unverified request would let anyone send an MSG91 SMS to any number with
+    // any code: billable SMS bombing, and a phishing OTP that appears to come
+    // from us. It used to fall through to `JSON.parse(rawBody)` when the secret
+    // was unset, so the protection silently depended on an env var the docs
+    // describe as optional. A missing secret is now a misconfiguration to fix,
+    // not a bypass.
+    if (!SEND_SMS_HOOK_SECRET) {
+      console.error(
+        "[send-sms] SUPABASE_SEND_SMS_HOOK_SECRET is not set — refusing to send unverified OTP SMS."
+      );
+      return NextResponse.json({ error: "SMS hook not configured" }, { status: 500 });
+    }
+    if (!hasWebhookHeaders) {
       return NextResponse.json(
         { error: "Hook requires authorization token" },
         { status: 401 }
       );
-    } else {
-      try {
-        body = rawBody ? (JSON.parse(rawBody) as Record<string, unknown>) : {};
-      } catch {
-        return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
+    }
+    try {
+      // Library expects "whsec_<base64>" and strips "whsec_". Supabase sends "v1,whsec_<base64>".
+      const secret = SEND_SMS_HOOK_SECRET.trim().replace(/^v1,/i, "");
+      const wh = new Webhook(secret);
+      body = wh.verify(rawBody, getHeadersMap(req)) as Record<string, unknown>;
+    } catch (err) {
+      if (err instanceof WebhookVerificationError) {
+        console.warn("[send-sms] Standard Webhooks verification failed:", err.message);
+        return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
       }
+      throw err;
     }
 
     const phone = (body?.user as { phone?: string } | undefined)?.phone ?? (body?.phone as string | undefined) ?? "";
