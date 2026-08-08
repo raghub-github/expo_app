@@ -4,7 +4,6 @@ import React from "react";
 import { TableSkeleton, CardSkeleton } from "@/components/ui/SkeletonLoader";
 import { TicketsPageSkeleton } from "@/components/skeletons/TicketsPageSkeleton";
 import { MerchantsPageSkeleton } from "@/components/skeletons/MerchantsPageSkeleton";
-import { DashboardPageLoader } from "@/components/ui/DashboardPageLoader";
 
 export { TicketsPageSkeleton };
 
@@ -211,6 +210,17 @@ function DefaultTableSkeleton() {
 }
 
 /** Returns the section loading UI for the given href (target path). */
-export function getSectionSkeletonForHref(_href: string): React.ReactNode {
-  return <DashboardPageLoader className="relative inset-auto z-0 min-h-0 flex-1" />;
+export function getSectionSkeletonForHref(href: string): React.ReactNode {
+  const path = href.split("?")[0].split("#")[0];
+  if (path === "/dashboard" || path === "/dashboard/") return <HomeSkeleton />;
+  if (path.startsWith("/dashboard/super-admin")) return <SuperAdminSkeleton />;
+  if (path.startsWith("/dashboard/customers")) return <CustomersSkeleton />;
+  if (path.startsWith("/dashboard/riders")) return <RidersSkeleton />;
+  if (path.startsWith("/dashboard/merchants")) return <MerchantsSkeleton />;
+  if (path.startsWith("/dashboard/orders")) return <OrdersSkeleton />;
+  if (path.startsWith("/dashboard/area-managers")) return <AreaManagersSkeleton />;
+  if (path.startsWith("/dashboard/tickets")) return <TicketsSkeleton />;
+  if (path.startsWith("/dashboard/system")) return <SystemSkeleton />;
+  if (path.startsWith("/dashboard/analytics")) return <AnalyticsSkeleton />;
+  return <DefaultTableSkeleton />;
 }

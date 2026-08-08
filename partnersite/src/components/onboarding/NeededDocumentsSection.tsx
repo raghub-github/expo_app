@@ -1,42 +1,7 @@
 'use client';
 
-import {
-  FileCheck,
-  CheckCircle2,
-  CreditCard,
-  Landmark,
-  LayoutList,
-  Image,
-  type LucideIcon,
-} from 'lucide-react';
-
-const DOCUMENTS: { icon: LucideIcon; title: string; detail: string }[] = [
-  {
-    icon: CreditCard,
-    title: 'PAN Card',
-    detail: 'Only valid adult PAN cards are accepted.',
-  },
-  {
-    icon: FileCheck,
-    title: 'Business license',
-    detail: 'As applicable: e.g. FSSAI for food, drug license for pharmacy, or other trade license.',
-  },
-  {
-    icon: Landmark,
-    title: 'Bank Details',
-    detail: 'Copy of cancelled cheque or bank passbook.',
-  },
-  {
-    icon: LayoutList,
-    title: 'Product / Menu catalog',
-    detail: 'Complete catalog or menu you want to list for online orders.',
-  },
-  {
-    icon: Image,
-    title: 'Store cover image',
-    detail: "Used as your store's cover image on GatiMitra.",
-  },
-];
+import { CheckCircle2, FileCheck } from 'lucide-react';
+import { ONBOARDING_DOCUMENTS } from '@/lib/onboarding-documents';
 
 export function NeededDocumentsSection() {
   return (
@@ -55,7 +20,7 @@ export function NeededDocumentsSection() {
         </div>
       </div>
       <div className="grid gap-4 sm:grid-cols-2">
-        {DOCUMENTS.map(({ icon: Icon, title, detail }) => (
+        {ONBOARDING_DOCUMENTS.map(({ icon: Icon, title, detail }) => (
           <div
             key={title}
             className="group flex items-start gap-4 rounded-2xl border-2 border-slate-200/90 bg-white p-5 shadow-sm transition-all duration-300 hover:border-emerald-300 hover:shadow-lg hover:shadow-emerald-100/50 hover:ring-2 hover:ring-emerald-200/50"

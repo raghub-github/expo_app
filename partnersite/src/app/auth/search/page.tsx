@@ -39,7 +39,7 @@ export default function SearchPage() {
   useEffect(() => {
     if (!isLoadingAuth && !isAuthenticated) {
       setIsRedirecting(true);
-      router.push("/auth/login");
+      router.push("/auth");
     }
   }, [isLoadingAuth, isAuthenticated, router]);
 
@@ -117,7 +117,7 @@ export default function SearchPage() {
 
   const handleLogout = async () => {
     await merchantSession?.logout?.();
-    router.push('/auth/login');
+    router.push('/auth');
   }
 
   // Show loading state

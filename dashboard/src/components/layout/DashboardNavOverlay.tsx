@@ -1,6 +1,6 @@
 "use client";
 
-import { DashboardPageLoader } from "@/components/ui/DashboardPageLoader";
+import { GatiSpinner } from "@/components/ui/GatiSpinner";
 
 type Props = {
   visible: boolean;
@@ -21,8 +21,8 @@ export function DashboardNavOverlay({
 
   const className =
     scope === "main"
-      ? "pointer-events-auto absolute inset-0 z-[80] flex min-h-0 flex-col overflow-hidden bg-white"
-      : `pointer-events-auto fixed inset-y-0 right-0 z-[70] flex min-h-0 flex-col overflow-hidden bg-white ${leftOffsetClass}`;
+      ? "pointer-events-auto absolute inset-0 z-[80] flex flex-col items-center justify-center bg-[#F3F7FA]"
+      : `pointer-events-auto fixed inset-y-0 right-0 z-[70] flex flex-col items-center justify-center bg-[#F3F7FA] ${leftOffsetClass}`;
 
   return (
     <div
@@ -31,7 +31,7 @@ export function DashboardNavOverlay({
       aria-live="polite"
       aria-label="Loading module"
     >
-      <DashboardPageLoader className="relative inset-auto z-0 min-h-0 flex-1" />
+      <GatiSpinner />
     </div>
   );
 }

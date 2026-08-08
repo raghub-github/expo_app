@@ -36,7 +36,7 @@ export function LoginInputField({
   return (
     <div className="space-y-1.5">
       {label && (
-        <label htmlFor={fieldId} className="block text-sm font-medium text-slate-700">
+        <label htmlFor={fieldId} className="block text-sm font-semibold text-slate-800">
           {label}
         </label>
       )}
@@ -55,7 +55,7 @@ export function LoginInputField({
             inputMode={inputMode}
             autoComplete={autoComplete}
             disabled={disabled}
-            className={`w-full pl-11 pr-4 py-3 rounded-xl border border-slate-200 bg-slate-50/50 text-slate-900 placeholder:text-slate-400 text-sm transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:bg-white hover:border-slate-300 disabled:opacity-50 disabled:cursor-not-allowed ${GM_FOCUS_RING}`}
+            className={`w-full pl-11 pr-4 py-3 rounded-xl border border-slate-200 bg-slate-50/50 text-slate-900 placeholder:text-slate-500 text-sm transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:bg-white hover:border-slate-300 disabled:opacity-50 disabled:cursor-not-allowed ${GM_FOCUS_RING}`}
           />
         ) : (
           <input
@@ -68,7 +68,7 @@ export function LoginInputField({
             inputMode={inputMode}
             autoComplete={autoComplete}
             disabled={disabled}
-            className={`w-full pl-11 pr-4 py-3 rounded-xl border border-slate-200 bg-slate-50/50 text-slate-900 placeholder:text-slate-400 text-sm transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:bg-white hover:border-slate-300 disabled:opacity-50 disabled:cursor-not-allowed ${GM_FOCUS_RING}`}
+            className={`w-full pl-11 pr-4 py-3 rounded-xl border border-slate-200 bg-slate-50/50 text-slate-900 placeholder:text-slate-500 text-sm transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:bg-white hover:border-slate-300 disabled:opacity-50 disabled:cursor-not-allowed ${GM_FOCUS_RING}`}
           />
         )}
       </div>

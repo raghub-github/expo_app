@@ -1,4 +1,9 @@
 import { supabase } from "../supabase/client";
+import {
+  clearStaleClientAuthStorage,
+  readClientSessionFromStorage,
+  readUsableClientSessionFromStorage,
+} from "./client-session-storage";
 import { isInvalidRefreshToken, signOutIfSessionDead } from "./session-errors";
 
 export interface LoginCredentials {
@@ -160,24 +165,17 @@ export async function logout(): Promise<AuthResponse> {
 }
 
 /**
- * Get current session.
- * On invalid/expired refresh token, signs out and returns null so the app can redirect to login.
+ * Get current session from localStorage only — never triggers Supabase refresh.
  */
 export async function getSession() {
-  const {
-    data: { session },
-    error,
-  } = await supabase.auth.getSession();
+  const session = readUsableClientSessionFromStorage();
+  if (session) return session;
 
-  if (error && isInvalidRefreshToken(error)) {
-    await signOutIfSessionDead(supabase, error);
-    return null;
+  const stale = readClientSessionFromStorage();
+  if (stale && !stale.access_token) {
+    clearStaleClientAuthStorage();
   }
-  if (error) {
-    throw error;
-  }
-
-  return session;
+  return null;
 }
 
 /**

@@ -120,8 +120,9 @@ export function MerchantSessionProvider({ children }: { children: React.ReactNod
       setUser(null);
       setSessionStatus(null);
       setParent(null);
-      if (!window.location.pathname.startsWith("/auth/login")) {
-        window.location.href = "/auth/login";
+      const path = window.location.pathname.replace(/\/$/, "") || "/";
+      if (path !== "/auth" && path !== "/auth/login") {
+        window.location.href = "/auth";
       }
     };
     window.addEventListener("storage", onStorage);

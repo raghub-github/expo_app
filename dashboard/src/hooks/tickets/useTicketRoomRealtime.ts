@@ -17,6 +17,7 @@ import {
   ticketPresenceRealtimeTopic,
 } from "@/lib/tickets/ticket-realtime-topics";
 import { hydrateBrowserSupabaseFromCookies } from "@/lib/auth/hydrate-browser-supabase";
+import { readUsableClientSessionFromStorage } from "@/lib/auth/client-session-storage";
 import { patchTicketFromPostgresRow } from "@/lib/tickets/patch-ticket-list-cache";
 
 /** Batch rapid postgres_events into one refetch (status + multi-message bursts). */
@@ -230,7 +231,7 @@ export function useTicketRoomRealtime(options: {
 
       // Wait briefly for setSession after cookie hydrate so Realtime joins with a JWT (not anon).
       for (let attempt = 0; attempt < 8; attempt++) {
-        const tok = (await supabase.auth.getSession()).data.session?.access_token;
+        const tok = readUsableClientSessionFromStorage()?.access_token;
         if (tok) break;
         await new Promise((r) => window.setTimeout(r, 120 * (attempt + 1)));
         if (cancelled) return;

@@ -66,7 +66,7 @@ export function PartnerStoreAccessGate({ children }: { children: React.ReactNode
           if (res.status === 401 || FATAL_AUTH_CODES.has(String(data.code || ''))) {
             if (!cancelled) {
               clearPartnerStoreSelection();
-              window.location.href = '/auth/login';
+              window.location.href = '/auth';
             }
             return;
           }

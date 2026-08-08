@@ -4,7 +4,7 @@ import { useLayoutEffect } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { merchantKeys } from '@/lib/query-keys';
 import { readPartnerSelectedStoreId } from '@/lib/partner-selected-store';
-import { warmDashboardWalletCache } from '@/lib/partner-dashboard-cache';
+import { warmDashboardCardCaches } from '@/lib/partner-dashboard-cache';
 import { warmLivePreviewCache } from '@/lib/merchant-growth/growth-insights-cache';
 import { prefetchPartnerRouteData } from '@/lib/partner-route-prefetch';
 
@@ -17,7 +17,7 @@ export function PartnerShellWarmup() {
   useLayoutEffect(() => {
     const storeId = readPartnerSelectedStoreId();
     if (storeId) {
-      warmDashboardWalletCache(storeId);
+      warmDashboardCardCaches(storeId);
       warmLivePreviewCache(storeId, 'today');
     }
 

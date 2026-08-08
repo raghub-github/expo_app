@@ -58,10 +58,14 @@ export async function createServerSupabaseClient() {
           cookiesToSet.forEach(({ name, value, options }) =>
             cookieStore.set(name, value, options)
           );
-        } catch {
-          // The `setAll` method was called from a Server Component.
-          // This can be ignored if you have middleware refreshing
-          // user sessions.
+        } catch (err) {
+          // Route Handlers can always set cookies; Server Components cannot.
+          if (process.env.NODE_ENV === "development") {
+            console.warn(
+              "[createServerSupabaseClient] Failed to persist auth cookies:",
+              err instanceof Error ? err.message : err
+            );
+          }
         }
       },
     },

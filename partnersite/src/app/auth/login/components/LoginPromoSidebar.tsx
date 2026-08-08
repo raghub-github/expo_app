@@ -2,11 +2,14 @@
 
 import { useEffect, useState } from 'react';
 import Image from 'next/image';
-import { ArrowRight, Banknote, Bell, Landmark, ScrollText, ShoppingBag, Store, UtensilsCrossed, Wallet } from 'lucide-react';
+import { ArrowLeft, ArrowRight, Banknote, Bell, ChevronDown, Landmark, ScrollText, ShoppingBag, Store, UtensilsCrossed, Wallet } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { GM, GatiMitraWord, GM_POPPINS } from './gatimitra-brand';
+import { ONBOARDING_DOCUMENTS } from '@/lib/onboarding-documents';
+import { ONBOARDING_FAQ_ITEMS } from '@/lib/onboarding-faq';
 
 export type AuthSidebarVariant = 'login' | 'signup';
+export type SignupSidebarPanel = 'benefits' | 'documents' | 'faq';
 
 type LoginSlidePill = {
   label: string;
@@ -258,7 +261,118 @@ function LoginPreviewFrame({ activeIndex }: { activeIndex: number }) {
   );
 }
 
-function SignupSidebarContent() {
+function SignupDocumentsPanel({ onBack }: { onBack: () => void }) {
+  return (
+    <>
+      <button
+        type="button"
+        onClick={onBack}
+        className="mb-5 inline-flex items-center gap-1.5 text-sm font-medium text-white/70 transition-colors hover:text-white"
+      >
+        <ArrowLeft className="h-4 w-4 shrink-0" aria-hidden />
+        Back
+      </button>
+      <h2 className="text-lg font-bold leading-snug tracking-tight text-white xl:text-xl">
+        Documents you need
+      </h2>
+      <p className="mt-2 text-sm leading-relaxed xl:text-[15px]" style={{ color: GM.secondary }}>
+        Keep these ready for a smooth onboarding
+      </p>
+      <ul className="mt-6 space-y-5">
+        {ONBOARDING_DOCUMENTS.map(({ icon: Icon, title, detail }) => (
+          <li key={title} className="flex gap-3.5">
+            <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-white/10 text-white">
+              <Icon className="h-4 w-4" aria-hidden />
+            </span>
+            <div className="min-w-0">
+              <p className="text-sm font-semibold leading-snug text-white">{title}</p>
+              <p className="mt-1 text-xs leading-relaxed xl:text-sm" style={{ color: GM.secondary }}>
+                {detail}
+              </p>
+            </div>
+          </li>
+        ))}
+      </ul>
+    </>
+  );
+}
+
+function SignupFaqPanel({ onBack }: { onBack: () => void }) {
+  const [openIndex, setOpenIndex] = useState<number | null>(null);
+
+  return (
+    <>
+      <button
+        type="button"
+        onClick={onBack}
+        className="mb-5 inline-flex items-center gap-1.5 text-sm font-medium text-white/70 transition-colors hover:text-white"
+      >
+        <ArrowLeft className="h-4 w-4 shrink-0" aria-hidden />
+        Back
+      </button>
+      <h2 className="text-lg font-bold leading-snug tracking-tight text-white xl:text-xl">
+        Frequently asked questions
+      </h2>
+      <p className="mt-2 text-sm leading-relaxed xl:text-[15px]" style={{ color: GM.secondary }}>
+        Quick answers to common questions
+      </p>
+      <ul className="mt-6 space-y-3">
+        {ONBOARDING_FAQ_ITEMS.map((item, index) => {
+          const isOpen = openIndex === index;
+          return (
+            <li
+              key={item.question}
+              className="overflow-hidden rounded-xl border border-white/10 bg-white/5"
+            >
+              <button
+                type="button"
+                onClick={() => setOpenIndex(isOpen ? null : index)}
+                className="flex w-full items-center justify-between gap-2 px-3.5 py-3 text-left"
+                aria-expanded={isOpen}
+              >
+                <span className="text-sm font-semibold leading-snug text-white">{item.question}</span>
+                <ChevronDown
+                  className={`h-4 w-4 shrink-0 text-white/60 transition-transform ${isOpen ? 'rotate-180' : ''}`}
+                  aria-hidden
+                />
+              </button>
+              {isOpen ? (
+                <p
+                  className="border-t border-white/10 px-3.5 pb-3.5 pt-2 text-xs leading-relaxed xl:text-sm"
+                  style={{ color: GM.secondary }}
+                >
+                  {item.answer}
+                </p>
+              ) : null}
+            </li>
+          );
+        })}
+      </ul>
+    </>
+  );
+}
+
+function SignupSidebarContent({
+  panel,
+  onPanelChange,
+}: {
+  panel: SignupSidebarPanel;
+  onPanelChange: (panel: SignupSidebarPanel) => void;
+}) {
+  if (panel === 'documents' || panel === 'faq') {
+    return (
+      <div className={`flex min-h-0 flex-1 flex-col ${GM_POPPINS}`}>
+        <div className="min-h-0 flex-1 overflow-y-auto overscroll-y-contain px-6 py-8 xl:px-7 xl:py-9">
+          {panel === 'documents' ? (
+            <SignupDocumentsPanel onBack={() => onPanelChange('benefits')} />
+          ) : (
+            <SignupFaqPanel onBack={() => onPanelChange('benefits')} />
+          )}
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className={`flex min-h-0 flex-1 flex-col ${GM_POPPINS}`}>
       <div className="min-h-0 flex-1 overflow-y-auto overscroll-y-contain px-6 py-8 xl:px-7 xl:py-9">
@@ -285,10 +399,14 @@ function SignupSidebarContent() {
         </ul>
       </div>
       <div className="shrink-0 border-t border-white/10 px-6 py-4 xl:px-7 xl:py-5">
-        <span className={`${sidebarCtaClass} w-fit max-w-full`}>
-          Learn about partner benefits
+        <button
+          type="button"
+          onClick={() => onPanelChange('documents')}
+          className={`${sidebarCtaClass} w-fit max-w-full transition-colors hover:border-white/30 hover:bg-white/10`}
+        >
+          Documents you need
           <ArrowRight className="h-4 w-4 shrink-0" aria-hidden />
-        </span>
+        </button>
       </div>
     </div>
   );
@@ -354,20 +472,39 @@ function LoginSidebarCarousel() {
 
 interface LoginPromoSidebarProps {
   variant?: AuthSidebarVariant;
+  signupPanel?: SignupSidebarPanel;
+  onSignupPanelChange?: (panel: SignupSidebarPanel) => void;
 }
 
-export function LoginPromoSidebar({ variant = 'login' }: LoginPromoSidebarProps) {
+export function LoginPromoSidebar({
+  variant = 'login',
+  signupPanel = 'benefits',
+  onSignupPanelChange,
+}: LoginPromoSidebarProps) {
   const isSignup = variant === 'signup';
+  const setSignupPanel = onSignupPanelChange ?? (() => {});
 
   return (
     <aside
       className={`relative hidden h-dvh min-h-0 shrink-0 flex-col overflow-x-hidden overflow-y-hidden ${GM_POPPINS} lg:flex lg:w-[320px] xl:w-[340px]`}
       style={{ backgroundColor: GM.sidebar, color: GM.white }}
-      aria-label={isSignup ? 'Why choose GatiMitra' : 'Partner login benefits'}
+      aria-label={
+        isSignup
+          ? signupPanel === 'faq'
+            ? 'Frequently asked questions'
+            : signupPanel === 'documents'
+              ? 'Documents you need'
+              : 'Why choose GatiMitra'
+          : 'Partner login benefits'
+      }
     >
       <SidebarWave />
       <div className="relative z-10 flex min-h-0 flex-1 flex-col">
-        {isSignup ? <SignupSidebarContent /> : <LoginSidebarCarousel />}
+        {isSignup ? (
+          <SignupSidebarContent panel={signupPanel} onPanelChange={setSignupPanel} />
+        ) : (
+          <LoginSidebarCarousel />
+        )}
       </div>
     </aside>
   );

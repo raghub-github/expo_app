@@ -1,6 +1,7 @@
 'use client'
 
 import React, { useState, useEffect, useMemo, useRef } from 'react'
+import { createPortal } from 'react-dom'
 import { Dialog } from '@headlessui/react'
 import Link from 'next/link'
 import { useRouter, useSearchParams, usePathname } from 'next/navigation'
@@ -20,8 +21,6 @@ import { OutsideOperatingHoursModal } from '@/components/OutsideOperatingHoursMo
 import {
   Power,
   Loader2,
-  Wallet,
-  Truck,
   Store,
   BarChart3,
   Star,
@@ -50,11 +49,18 @@ import { formatStoreActionSourceLabel } from '@/lib/storeActionSource'
 import { MerchantMarketInsightsCard } from '@/components/merchant/MerchantMarketInsightsCard';
 import { MerchantWeatherBanner } from '@/components/merchant/MerchantWeatherBanner';
 import { LivePreviewInsightsPanel, mapInsightsDatePreset } from '@/components/merchant/LivePreviewInsightsPanel';
+import { PartnerDashboardDeliveryCard } from '@/components/merchant/PartnerDashboardDeliveryCard';
+import { PartnerDashboardStoreOverviewCard } from '@/components/merchant/PartnerDashboardStoreOverviewCard';
+import { PartnerDashboardStoreStatusSkeleton } from '@/components/merchant/PartnerDashboardCardSkeletons';
+import {
+  PARTNER_DASHBOARD_TOP_CARD_CLASS,
+  PARTNER_DASHBOARD_TOP_CARD_SECTION_CLASS,
+} from '@/components/merchant/partner-dashboard-card-styles';
 import { BusinessReportsPanel } from '@/components/merchant/BusinessReportsPanel';
 import { prefetchBusinessInsights, warmLivePreviewCache } from '@/lib/merchant-growth/growth-insights-cache';
 import { warmDashboardWalletCache } from '@/lib/partner-dashboard-cache';
 import { createClient } from '@/lib/supabase/client';
-import { useMerchantWallet, useSelfDeliveryRiders, useStoreOperations } from '@/hooks/useMerchantApi'
+import { useMerchantWallet, useStoreOperations } from '@/hooks/useMerchantApi'
 import { merchantKeys } from '@/lib/query-keys'
 import { useQueryClient } from '@tanstack/react-query';
 import { PlanExpiredWarningModal } from '@/components/merchant/PlanExpiredWarningModal';
@@ -223,10 +229,8 @@ function DashboardContent() {
   const storeOpsReady = storeOpsPainted || !!storeOpsData
   const boundarySyncInFlightRef = useRef(false)
   const boundarySyncAttemptsRef = useRef(0)
-  const [isStoreOpen, setIsStoreOpen] = useState(false)
   const [mxDeliveryEnabled, setMxDeliveryEnabled] = useState(false)
-  const { data: selfDeliveryRidersData = [], isLoading: selfDeliveryRidersLoading } = useSelfDeliveryRiders(storeId, mxDeliveryEnabled)
-  const selfDeliveryRiders = selfDeliveryRidersData
+  const [isStoreOpen, setIsStoreOpen] = useState(false)
   const [todaySlots, setTodaySlots] = useState<{ start: string; end: string }[]>([])
   const [openingTime, setOpeningTime] = useState<string | null>(null)
   const [closingTime, setClosingTime] = useState<string | null>(null)
@@ -467,13 +471,6 @@ function DashboardContent() {
     enabled: queriesEnabled,
     lite: true,
   })
-  const walletSnapshot = walletPending ? null : walletData ?? null
-  const walletAvailableBalance =
-    walletSnapshot?.withdrawable_balance ??
-    Number(walletSnapshot?.available_balance ?? 0)
-  const walletTodayEarning = walletSnapshot?.today_earning ?? 0
-  const walletYesterdayEarning = walletSnapshot?.yesterday_earning ?? 0
-  const walletPendingBalance = walletSnapshot?.pending_balance ?? 0
 
   const [showPlanExpiredWarning, setShowPlanExpiredWarning] = useState(false)
   const [expiredPlanMeta, setExpiredPlanMeta] = useState<{
@@ -1270,7 +1267,15 @@ function DashboardContent() {
       const data = await res.json()
       if (res.ok && data.success) {
         setMxDeliveryEnabled(newValue)
-        toast.success(newValue ? '✅ Self Delivery enabled' : '✅ GatiMitra Delivery enabled')
+        if (newValue) {
+          toast.success('✅ Self Delivery enabled')
+          const deliverySettingsUrl = storeId
+            ? `/mx/store-settings?storeId=${encodeURIComponent(storeId)}&tab=delivery`
+            : '/mx/store-settings?tab=delivery'
+          router.push(deliverySettingsUrl)
+        } else {
+          toast.success('✅ GatiMitra Delivery enabled')
+        }
       } else {
         toast.error(data.error || 'Failed to update delivery mode')
       }
@@ -1525,94 +1530,31 @@ function DashboardContent() {
           )
         })()}
         <MerchantWeatherBanner storeId={storeId} />
-        <div className="flex-1 flex flex-col min-h-0 bg-[#f8fafc] overflow-hidden w-full">
-          <div className="dashboard-scroll hide-scrollbar flex-1 min-h-0 overflow-y-auto overflow-x-hidden px-3 sm:px-5 lg:px-8 py-3 sm:py-4">
+        <div className="bg-[#f8fafc] w-full">
+          <div className="px-3 sm:px-5 lg:px-8 pt-3 sm:pt-4 pb-4">
             <div className="max-w-[1600px] mx-auto">
-              {/* Wallet | Store | Delivery — flat on page bg, column dividers on large screens */}
-              <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 items-stretch pb-1">
-                {/* Wallet & Earnings */}
-                <section className="min-w-0 flex flex-col h-full">
-                  <div className="relative flex flex-1 flex-col min-h-[240px] sm:min-h-[252px] overflow-hidden rounded-xl border-2 border-teal-500 bg-white/40 p-3 sm:p-3.5">
-                    <VerificationLockedCardOverlay locked={opsCardsLockedUntilVerified} />
-                    <div className="flex items-start gap-2 mb-3 shrink-0">
-                      <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-emerald-500/[0.08] text-emerald-600 ring-1 ring-emerald-500/15">
-                        <Wallet className="h-4 w-4" strokeWidth={2} />
-                      </span>
-                      <div className="min-w-0 pt-0.5">
-                        <h2 className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">Wallet &amp; earnings</h2>
-                        <p className="text-[11px] text-slate-400 mt-0.5 leading-snug">Balances at a glance</p>
-                      </div>
-                    </div>
-                    <div className="flex-1 flex flex-col justify-center min-h-0">
-                      {!walletSnapshot ? (
-                        <div className="grid grid-cols-2 gap-2.5">
-                          {[1, 2, 3, 4].map((i) => (
-                            <div key={i} className="h-9 rounded-md bg-slate-200/50 animate-pulse" />
-                          ))}
-                        </div>
-                      ) : (
-                        <div className="grid grid-cols-2 gap-x-4 gap-y-3">
-                          <div className="min-w-0">
-                            <p className="text-[9px] font-medium uppercase tracking-wide text-slate-500">Available</p>
-                            <p className="mt-0.5 text-base sm:text-lg font-semibold tabular-nums tracking-tight text-emerald-700">
-                              ₹{Number(walletAvailableBalance).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                            </p>
-                          </div>
-                          <div className="min-w-0">
-                            <p className="text-[9px] font-medium uppercase tracking-wide text-slate-500">Today</p>
-                            <p className="mt-0.5 text-base sm:text-lg font-semibold tabular-nums tracking-tight text-orange-600">
-                              ₹{Number(walletTodayEarning).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                            </p>
-                          </div>
-                          <div className="min-w-0">
-                            <p className="text-[9px] font-medium uppercase tracking-wide text-slate-500">Yesterday</p>
-                            <p className="mt-0.5 text-sm font-semibold tabular-nums text-slate-800">
-                              ₹{Number(walletYesterdayEarning).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                            </p>
-                          </div>
-                          <div className="min-w-0">
-                            <p className="text-[9px] font-medium uppercase tracking-wide text-slate-500">Pending</p>
-                            <p className="mt-0.5 text-sm font-semibold tabular-nums text-violet-600">
-                              ₹{Number(walletPendingBalance).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                            </p>
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                </section>
-
-                {/* Store status — full border; color reflects state when closed */}
-                <section className="min-w-0 flex flex-col h-full">
+              <div className="grid grid-cols-1 xl:grid-cols-12 gap-3 items-stretch pb-1">
+                {/* Store status — primary card (reference layout) */}
+                <section className={PARTNER_DASHBOARD_TOP_CARD_SECTION_CLASS}>
+                  {!storeId || (!storeOpsReady && storeOpsFetching) ? (
+                    <PartnerDashboardStoreStatusSkeleton />
+                  ) : (
                   <div
-                    className={`relative flex flex-1 flex-col min-h-[240px] sm:min-h-[252px] overflow-hidden rounded-xl border-2 bg-white/40 p-3 sm:p-3.5 ${
+                    className={`${PARTNER_DASHBOARD_TOP_CARD_CLASS} ${
                       isStoreOpen
-                        ? 'border-teal-500'
+                        ? 'border-emerald-200/70'
                         : restrictionType === 'MANUAL_HOLD'
-                          ? 'border-amber-500'
-                          : 'border-red-500'
+                          ? 'border-amber-200/70'
+                          : 'border-red-200/70'
                     }`}
                   >
                     <VerificationLockedCardOverlay locked={opsCardsLockedUntilVerified} />
-                    {!storeOpsReady && storeOpsFetching ? (
-                      <div className="flex flex-1 flex-col gap-3 animate-pulse min-h-[200px]">
-                        <div className="flex items-start justify-between gap-2">
-                          <div className="space-y-2 flex-1">
-                            <div className="h-8 w-44 rounded-md bg-slate-200/70" />
-                            <div className="h-4 w-36 rounded bg-slate-200/60" />
-                          </div>
-                          <div className="h-10 w-10 rounded-full bg-slate-200/70 shrink-0" />
-                        </div>
-                        <div className="flex-1 rounded-lg bg-slate-200/40" />
-                        <div className="h-10 rounded-md bg-slate-200/50 mt-auto" />
-                      </div>
-                    ) : (
                     <>
                     <div className="flex items-start justify-between gap-2 shrink-0">
                       <div className="min-w-0">
-                        <div className="flex flex-wrap items-center gap-1.5 mb-0.5">
-                          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-slate-800/[0.06] text-slate-700 ring-1 ring-slate-900/10">
-                            <Store className="h-[15px] w-[15px]" strokeWidth={2} />
+                        <div className="flex flex-wrap items-center gap-1.5 mb-1">
+                          <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-emerald-500 text-white shadow-sm">
+                            <Store className="h-[16px] w-[16px]" strokeWidth={2} />
                           </span>
                           <h2 className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">Store status</h2>
                           <span
@@ -1635,11 +1577,18 @@ function DashboardContent() {
                           </span>
                         </div>
                         {cardDisplaySlots.length === 0 ? (
-                          <p className="text-sm font-semibold text-slate-500">—</p>
+                          <div className="rounded-lg bg-slate-50/90 px-2.5 py-2 ring-1 ring-slate-200/70">
+                            <p className="text-sm font-semibold text-slate-500">—</p>
+                          </div>
                         ) : cardDisplaySlots.length === 1 ? (
-                          <p className="text-sm font-semibold text-slate-900 tabular-nums leading-tight">
-                            {formatTimeHMS(cardDisplaySlots[0].start)} – {formatTimeHMS(cardDisplaySlots[0].end)}
-                          </p>
+                          <div className="rounded-lg bg-slate-50/90 px-2.5 py-2 ring-1 ring-slate-200/70">
+                            <p className="text-[9px] font-medium uppercase tracking-wide text-slate-500 mb-0.5">
+                              Today&apos;s hours
+                            </p>
+                            <p className="text-lg sm:text-xl font-bold text-slate-900 tabular-nums leading-tight tracking-tight">
+                              {formatTimeHMS(cardDisplaySlots[0].start)} – {formatTimeHMS(cardDisplaySlots[0].end)}
+                            </p>
+                          </div>
                         ) : (
                           <div className="mt-1 space-y-1">
                             {cardDisplaySlots.map((slot, idx) => (
@@ -1684,7 +1633,7 @@ function DashboardContent() {
                         <Power size={18} strokeWidth={2.25} />
                       </button>
                     </div>
-                    <div className="flex-1 min-h-0 flex flex-col gap-1.5 mt-2">
+                    <div className="flex flex-col gap-1.5 mt-2">
                       {scheduledTimeOffs.length > 0 && (
                         <div className="rounded-lg bg-amber-50/95 px-2.5 py-2 ring-1 ring-amber-200/80">
                           <div className="flex items-start gap-2">
@@ -1785,39 +1734,43 @@ function DashboardContent() {
                         </p>
                       )}
                       {(lastToggledByName || lastToggleBy || lastToggleType) && lastToggledAt && (
-                        <p className="text-[11px] text-slate-500 leading-snug">
-                          Last:{' '}
-                          {(() => {
-                            const typeUp = String(lastToggleType || '').toUpperCase()
-                            const toggledAtDate = new Date(lastToggledAt)
-                            const timeStr = toggledAtDate.toLocaleTimeString('en-IN', {
-                              hour: '2-digit',
-                              minute: '2-digit',
-                              second: '2-digit',
-                              hour12: true,
-                            })
-                            const dateStr = toggledAtDate.toLocaleDateString('en-IN', {
-                              day: 'numeric',
-                              month: 'short',
-                              year: 'numeric',
-                            })
-                            const email = lastToggleBy || ''
-                            const emailNorm = String(email).toLowerCase()
-                            const isGatiMitraAgent =
-                              emailNorm.includes('gatimitra') || emailNorm.endsWith('@gatimitra.in') || emailNorm.endsWith('@gatimitra.com')
-                            if (typeUp.startsWith('AUTO')) {
-                              return `${isStoreOpen ? 'Auto on' : 'Auto closed'} · ${timeStr} · ${dateStr}`
-                            }
-                            if (isGatiMitraAgent) {
-                              return `${isStoreOpen ? 'Opened' : 'Closed'} by GatiMitra (agent: ${email || 'unknown'}) · ${timeStr} · ${dateStr}`
-                            }
-                            const who = lastToggledByName || lastToggleBy || 'Owner'
-                            return `${isStoreOpen ? 'Opened' : 'Closed'} by ${who}${storeId ? ` (ID: ${storeId})` : ''} · ${timeStr} · ${dateStr}`
-                          })()}
-                        </p>
+                        <div className="rounded-lg bg-slate-50/90 px-2.5 py-2 ring-1 ring-slate-200/70">
+                          <p className="text-[9px] font-medium uppercase tracking-wide text-slate-500 mb-0.5">
+                            Last activity
+                          </p>
+                          <p className="text-[11px] text-slate-600 leading-snug">
+                            {(() => {
+                              const typeUp = String(lastToggleType || '').toUpperCase()
+                              const toggledAtDate = new Date(lastToggledAt)
+                              const timeStr = toggledAtDate.toLocaleTimeString('en-IN', {
+                                hour: '2-digit',
+                                minute: '2-digit',
+                                second: '2-digit',
+                                hour12: true,
+                              })
+                              const dateStr = toggledAtDate.toLocaleDateString('en-IN', {
+                                day: 'numeric',
+                                month: 'short',
+                                year: 'numeric',
+                              })
+                              const email = lastToggleBy || ''
+                              const emailNorm = String(email).toLowerCase()
+                              const isGatiMitraAgent =
+                                emailNorm.includes('gatimitra') || emailNorm.endsWith('@gatimitra.in') || emailNorm.endsWith('@gatimitra.com')
+                              if (typeUp.startsWith('AUTO')) {
+                                return `${isStoreOpen ? 'Auto on' : 'Auto closed'} · ${timeStr} · ${dateStr}`
+                              }
+                              if (isGatiMitraAgent) {
+                                return `${isStoreOpen ? 'Opened' : 'Closed'} by GatiMitra (agent: ${email || 'unknown'}) · ${timeStr} · ${dateStr}`
+                              }
+                              const who = lastToggledByName || lastToggleBy || 'Owner'
+                              return `${isStoreOpen ? 'Opened' : 'Closed'} by ${who}${storeId ? ` (ID: ${storeId})` : ''} · ${timeStr} · ${dateStr}`
+                            })()}
+                          </p>
+                        </div>
                       )}
                     </div>
-                    <div className="mt-auto flex items-center justify-between gap-2 pt-2.5 border-t border-slate-200/80 shrink-0">
+                    <div className="mt-3 flex items-center justify-between gap-2 pt-2.5 border-t border-slate-200/80 shrink-0">
                       <div className="min-w-0">
                         <p className="text-[11px] font-semibold text-slate-800">Manual activation lock</p>
                         <p className="text-[10px] text-slate-500 mt-0.5 leading-snug">
@@ -1852,79 +1805,26 @@ function DashboardContent() {
                       </label>
                     </div>
                     </>
-                    )}
                   </div>
+                  )}
                 </section>
 
-                {/* Delivery */}
-                <section className="min-w-0 flex flex-col h-full">
-                  <div className="relative flex flex-1 flex-col min-h-[240px] sm:min-h-[252px] overflow-hidden rounded-xl border-2 border-teal-500 bg-white/40 p-3 sm:p-3.5">
-                    <VerificationLockedCardOverlay locked={opsCardsLockedUntilVerified} />
-                    <div className="flex items-start gap-2 mb-2 shrink-0">
-                      <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-orange-500/[0.08] text-orange-600 ring-1 ring-orange-500/15">
-                        <Truck className="h-4 w-4" strokeWidth={2} />
-                      </span>
-                      <div className="min-w-0 pt-0.5">
-                        <h2 className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">Delivery mode</h2>
-                        <p className="text-[11px] text-slate-400 mt-0.5">{mxDeliveryEnabled ? 'Your riders' : 'Platform riders'}</p>
-                      </div>
-                    </div>
-                    <div className="flex flex-wrap items-center gap-2 shrink-0">
-                      <span className={`text-xs font-semibold transition-colors ${!mxDeliveryEnabled ? 'text-violet-700' : 'text-slate-400'}`}>GatiMitra</span>
-                      <button
-                        type="button"
-                        onClick={handleMXDeliveryToggle}
-                        className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-orange-400 focus-visible:ring-offset-2 ${mxDeliveryEnabled ? 'bg-orange-500' : 'bg-slate-300'}`}
-                        aria-label={mxDeliveryEnabled ? 'Switch to GatiMitra delivery' : 'Switch to Self delivery'}
-                      >
-                        <span className={`inline-block h-3.5 w-3.5 rounded-full bg-white shadow-sm transition-transform ${mxDeliveryEnabled ? 'translate-x-[18px]' : 'translate-x-[3px]'}`} />
-                      </button>
-                      <span className={`text-xs font-semibold transition-colors ${mxDeliveryEnabled ? 'text-orange-600' : 'text-slate-400'}`}>Self</span>
-                    </div>
-                    {mxDeliveryEnabled ? (
-                      <div className="mt-3 flex flex-1 min-h-0 flex-col border-t border-slate-200/80 pt-2.5">
-                        {selfDeliveryRidersLoading ? (
-                          <p className="text-[11px] text-slate-500">Loading riders…</p>
-                        ) : selfDeliveryRiders.length === 0 ? (
-                          <div className="flex flex-1 flex-col gap-2">
-                            <p className="text-xs text-amber-800 leading-snug">Add your first rider to use self delivery.</p>
-                            <Link
-                              href={storeId ? `/mx/store-settings?storeId=${encodeURIComponent(storeId)}&tab=delivery` : '/mx/store-settings'}
-                              className="text-xs font-semibold text-orange-600 hover:text-orange-700 mt-auto"
-                            >
-                              Add rider in Settings →
-                            </Link>
-                          </div>
-                        ) : (
-                          <div className="flex flex-1 min-h-0 flex-col gap-2">
-                            <ul className="space-y-1.5">
-                              {selfDeliveryRiders.slice(0, 2).map((r) => (
-                                <li
-                                  key={r.id}
-                                  className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-xs text-slate-800"
-                                >
-                                  <span className="font-mono text-[10px] font-medium text-slate-400 tabular-nums">#{r.id}</span>
-                                  <span className="font-semibold text-slate-900">{r.rider_name}</span>
-                                  <span className="text-slate-500 tabular-nums">{r.rider_mobile}</span>
-                                </li>
-                              ))}
-                            </ul>
-                            {selfDeliveryRiders.length > 2 && (
-                              <p className="text-[11px] text-slate-500">+{selfDeliveryRiders.length - 2} more</p>
-                            )}
-                            <Link
-                              href={storeId ? `/mx/store-settings?storeId=${encodeURIComponent(storeId)}&tab=delivery` : '/mx/store-settings'}
-                              className="inline-flex items-center text-xs font-semibold text-orange-600 hover:text-orange-700 mt-auto"
-                            >
-                              Manage all riders →
-                            </Link>
-                          </div>
-                        )}
-                      </div>
-                    ) : (
-                      <div className="flex-1 min-h-[1px]" aria-hidden />
-                    )}
-                  </div>
+                <section className={PARTNER_DASHBOARD_TOP_CARD_SECTION_CLASS}>
+                  <PartnerDashboardDeliveryCard
+                    storeId={storeId}
+                    mxDeliveryEnabled={mxDeliveryEnabled}
+                    onToggle={handleMXDeliveryToggle}
+                    locked={opsCardsLockedUntilVerified}
+                    overlay={<VerificationLockedCardOverlay locked={opsCardsLockedUntilVerified} />}
+                  />
+                </section>
+
+                <section className={PARTNER_DASHBOARD_TOP_CARD_SECTION_CLASS}>
+                  <PartnerDashboardStoreOverviewCard
+                    storeId={storeId}
+                    wallet={walletData ?? null}
+                    walletLoading={walletPending && !walletData}
+                  />
                 </section>
               </div>
 
@@ -2050,8 +1950,6 @@ function DashboardContent() {
                   <LivePreviewInsightsPanel
                     storeId={storeId}
                     periodPreset={appliedDatePreset}
-                    userInsightsHref="/mx/user-insights"
-                    paymentsHref="/mx/payments"
                   />
                 ) : null}
 
@@ -2081,16 +1979,23 @@ function DashboardContent() {
         />
       ) : null}
 
-      {filterSheetOpen && (
-        <div className="fixed inset-0 z-[220] flex justify-end" role="dialog" aria-modal="true" aria-labelledby="mx-filter-sheet-title">
-          <button
-            type="button"
+      {filterSheetOpen &&
+        typeof document !== 'undefined' &&
+        createPortal(
+        <div className="fixed inset-0 z-[1100] flex justify-end" role="presentation">
+          <div
             className="absolute inset-0 bg-black/40 backdrop-blur-[1px]"
-            aria-label="Close filters"
+            aria-hidden
             onClick={() => setFilterSheetOpen(false)}
           />
-          <div className="relative flex h-full w-full max-w-md flex-col bg-white shadow-2xl ring-1 ring-slate-200/80">
-            <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3 shrink-0">
+          <aside
+            className="relative flex h-dvh min-h-0 w-full max-w-md flex-col border-l border-slate-200/80 bg-white shadow-2xl"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="mx-filter-sheet-title"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex shrink-0 items-center justify-between border-b border-slate-200 px-4 py-3">
               <h2 id="mx-filter-sheet-title" className="text-sm font-semibold text-slate-900">
                 Filter
               </h2>
@@ -2305,8 +2210,9 @@ function DashboardContent() {
                 Apply
               </button>
             </div>
-          </div>
-        </div>
+          </aside>
+        </div>,
+        document.body,
       )}
     </>
   )

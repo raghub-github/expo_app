@@ -1,9 +1,13 @@
 'use client';
 
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import Image from 'next/image';
-import { LoginPromoSidebar, type AuthSidebarVariant } from './LoginPromoSidebar';
+import {
+  LoginPromoSidebar,
+  type AuthSidebarVariant,
+  type SignupSidebarPanel,
+} from './LoginPromoSidebar';
 import { GM_LINK } from './gatimitra-brand';
 import { PartnerPlatformAgreementNotice } from '@/components/legal/PartnerPlatformAgreementNotice';
 
@@ -26,6 +30,12 @@ export function LoginPageShell({
   sidebarVariant = 'login',
 }: LoginPageShellProps) {
   const isWide = contentMaxWidthClass === 'max-w-none';
+  const isSignup = sidebarVariant === 'signup';
+  const [signupPanel, setSignupPanel] = useState<SignupSidebarPanel>('benefits');
+
+  useEffect(() => {
+    if (!isSignup) setSignupPanel('benefits');
+  }, [isSignup]);
 
   // Prevent page-level scroll; only the middle pane may scroll if content truly overflows
   useEffect(() => {
@@ -76,23 +86,27 @@ export function LoginPageShell({
           }`}
         >
           <div
-            className={`min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-y-contain ${
+            className={`min-h-0 flex-1 overflow-x-hidden ${
               isWide
-                ? 'px-6 py-3 sm:px-8 sm:py-4 lg:px-10'
-                : 'px-4 sm:px-8 lg:px-10'
+                ? 'overflow-hidden px-6 py-4 sm:px-8 sm:py-5 lg:px-10'
+                : 'overflow-y-auto overscroll-y-contain px-4 sm:px-8 lg:px-10'
             }`}
           >
             <div
               className={`mx-auto w-full ${
                 isWide
-                  ? 'flex min-h-full flex-col pb-4'
-                  : 'flex min-h-full flex-col justify-center py-6 sm:py-8'
+                  ? 'flex h-full flex-col items-center justify-center'
+                  : `flex min-h-full flex-col justify-center ${isSignup ? 'py-4 sm:py-5' : 'py-6 sm:py-8'}`
               } ${contentMaxWidthClass}`}
             >
               {isWide ? (
                 children
               ) : (
-                <div className="w-full rounded-2xl border-2 border-slate-200 bg-white px-6 py-6 sm:px-10 sm:py-8">
+                <div
+                  className={`w-full rounded-2xl border-2 border-slate-200 bg-white shadow-sm ${
+                    isSignup ? 'px-5 py-5 sm:px-8 sm:py-6' : 'px-6 py-6 sm:px-10 sm:py-8'
+                  }`}
+                >
                   {children}
                 </div>
               )}
@@ -106,15 +120,25 @@ export function LoginPageShell({
           }`}
         >
           <PartnerPlatformAgreementNotice className={isWide ? 'leading-snug' : ''} />
-          <p className={`text-center text-xs text-slate-400 ${isWide ? 'mt-1' : 'mt-2'}`}>
-            <Link href="/auth" className="hover:text-slate-600 hover:underline">
-              Back to home
-            </Link>
-          </p>
+          {isSignup ? (
+            <p className={`text-center text-xs text-slate-400 ${isWide ? 'mt-1' : 'mt-2'}`}>
+              <button
+                type="button"
+                onClick={() => setSignupPanel('faq')}
+                className="font-medium hover:text-slate-600 hover:underline"
+              >
+                FAQ
+              </button>
+            </p>
+          ) : null}
         </footer>
       </div>
 
-      <LoginPromoSidebar variant={sidebarVariant} />
+      <LoginPromoSidebar
+        variant={sidebarVariant}
+        signupPanel={signupPanel}
+        onSignupPanelChange={setSignupPanel}
+      />
     </div>
   );
 }

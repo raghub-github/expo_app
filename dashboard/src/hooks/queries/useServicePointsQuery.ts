@@ -3,6 +3,7 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { queryKeys } from "@/lib/queryKeys";
 import { getCacheConfig, CacheTier } from "@/lib/cache-strategies";
+import { isHardSessionDeathCode } from "@/lib/auth/session-errors";
 
 /** Message thrown when the API returns 401 (session expired). Used for no-retry and UI. */
 export const SESSION_EXPIRED_MESSAGE = "Your session has expired. Please log in again to continue.";
@@ -23,6 +24,7 @@ interface ServicePointsResponse {
   success: boolean;
   data?: ServicePoint[] | ServicePoint | { message: string; id: number };
   error?: string;
+  code?: string;
 }
 
 async function parseJsonResponse<T>(response: Response): Promise<T> {
@@ -50,13 +52,20 @@ async function fetchServicePoints(): Promise<ServicePoint[]> {
     });
     clearTimeout(timeoutId);
 
-    if (response.status === 401) {
-      const { redirectToLoginOnSessionExpired } = await import("@/lib/auth/redirect-to-login");
-      redirectToLoginOnSessionExpired({ reason: "session_expired" });
-      throw new Error(SESSION_EXPIRED_MESSAGE);
-    }
-
     const result = await parseJsonResponse<ServicePointsResponse>(response);
+
+    if (response.status === 401) {
+      const code =
+        result && typeof result === "object"
+          ? String((result as { code?: unknown }).code ?? "").toUpperCase()
+          : "";
+      if (isHardSessionDeathCode(code)) {
+        const { redirectToLoginOnSessionExpired } = await import("@/lib/auth/redirect-to-login");
+        redirectToLoginOnSessionExpired({ reason: code });
+        throw new Error(SESSION_EXPIRED_MESSAGE);
+      }
+      throw new Error(result.error || "Not authenticated");
+    }
 
     if (!result.success || !result.data) {
       throw new Error(result.error || "Failed to fetch service points");

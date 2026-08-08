@@ -1,7 +1,3 @@
-"use client";
+import DashboardRouteLoading from "@/components/ui/DashboardRouteLoading";
 
-import { DashboardPageLoader } from "@/components/ui/DashboardPageLoader";
-
-export default function DashboardLoading() {
-  return <DashboardPageLoader />;
-}
+export default DashboardRouteLoading;

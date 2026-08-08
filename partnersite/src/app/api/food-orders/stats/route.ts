@@ -164,10 +164,11 @@ export async function GET(req: NextRequest) {
       (o) => effectiveUiForFood(o as { order_id: number; order_status?: string | null }) === 'OUT_FOR_DELIVERY'
     ).length;
     const deliveredTodayCount = deliveredToday.length;
-    const cancelledTodayCount = placedToday.filter((o) =>
-      ['CANCELLED', 'RTO'].includes(
-        effectiveUiForFood(o as { order_id: number; order_status?: string | null })
-      )
+    const cancelledTodayCount = placedToday.filter(
+      (o) => effectiveUiForFood(o as { order_id: number; order_status?: string | null }) === 'CANCELLED',
+    ).length;
+    const returnFailedTodayCount = placedToday.filter(
+      (o) => effectiveUiForFood(o as { order_id: number; order_status?: string | null }) === 'RTO',
     ).length;
 
     const { data: activeCoreRows, error: activeCoreError } = await db
@@ -233,6 +234,8 @@ export async function GET(req: NextRequest) {
       outForDeliveryCount,
       deliveredTodayCount,
       cancelledTodayCount,
+      returnFailedTodayCount,
+      rtoTodayCount: returnFailedTodayCount,
       avgPreparationTimeMinutes: avgPrepTime,
       totalRevenueToday: totalRevenue,
       completionRatePercent: completionRate,

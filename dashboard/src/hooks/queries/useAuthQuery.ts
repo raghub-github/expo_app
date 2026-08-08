@@ -5,6 +5,7 @@ import { queryKeys } from "@/lib/queryKeys";
 import { authCacheConfig, sessionStatusCacheConfig } from "@/lib/cache-strategies";
 import { safeParseJson } from "@/lib/utils";
 import { clearDashboardAuthCaches } from "@/lib/dashboard-auth-client-state";
+import { isHardSessionDeathCode } from "@/lib/auth/session-errors";
 import { supabase } from "@/lib/supabase/client";
 
 interface SessionData {
@@ -92,11 +93,11 @@ async function fetchSession(): Promise<SessionData> {
     if (response.status === 503 && result.code === "SERVICE_UNAVAILABLE") {
       throw new Error(SESSION_SERVICE_UNAVAILABLE);
     }
-    if (response.status === 401) {
+    if (response.status === 401 && isHardSessionDeathCode(result.code)) {
       if (typeof window !== "undefined") {
         const { redirectToLoginOnSessionExpired } = await import("@/lib/auth/redirect-to-login");
         redirectToLoginOnSessionExpired({
-          reason: result.code || "not_authenticated",
+          reason: result.code || "session_expired",
         });
         return new Promise(() => {});
       }
@@ -135,15 +136,6 @@ async function fetchSessionStatus(): Promise<SessionStatus> {
       }
     }
     throw new Error(result.error || "Failed to fetch session status");
-  }
-
-  // App session TTL expired while Supabase cookie may still look valid.
-  if (result.expired) {
-    if (typeof window !== "undefined") {
-      const { redirectToLoginOnSessionExpired } = await import("@/lib/auth/redirect-to-login");
-      redirectToLoginOnSessionExpired({ reason: result.reason || "session_expired" });
-      return new Promise<SessionStatus>(() => {});
-    }
   }
 
   return {

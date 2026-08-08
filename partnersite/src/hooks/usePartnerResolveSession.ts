@@ -8,6 +8,7 @@ export type PartnerResolveSessionStore = {
   id: number;
   store_id: string;
   store_name: string;
+  owner_full_name?: string | null;
   full_address?: string | null;
   approval_status?: string | null;
   banner_url?: string | null;

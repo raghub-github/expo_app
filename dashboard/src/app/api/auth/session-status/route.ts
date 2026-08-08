@@ -4,6 +4,8 @@ import {
   getSessionMetadata,
   checkSessionValidity,
   formatTimeRemaining,
+  initializeSession,
+  updateActivity,
 } from "@/lib/auth/session-manager";
 import { isNetworkOrTransientError, isTimeoutOrAbortError } from "@/lib/auth/session-errors";
 import { cookies } from "next/headers";
@@ -48,15 +50,41 @@ export async function GET(request: NextRequest) {
       get: (name: string) => cookieStore.get(name),
     };
 
-    const metadata = getSessionMetadata(cookieWrapper);
-    const validity = checkSessionValidity(metadata);
+    let metadata = getSessionMetadata(cookieWrapper);
+    let validity = checkSessionValidity(metadata);
+
+    if (!validity.isValid) {
+      const cookieManager = {
+        get: (name: string) => cookieStore.get(name),
+        set: (
+          name: string,
+          value: string,
+          options: {
+            maxAge: number;
+            path: string;
+            httpOnly?: boolean;
+            sameSite?: string;
+            secure?: boolean;
+          }
+        ) => {
+          cookieStore.set(name, value, options as Parameters<typeof cookieStore.set>[2]);
+        },
+      };
+      metadata = initializeSession(cookieManager);
+      updateActivity(cookieManager);
+      validity = checkSessionValidity(metadata);
+    }
 
     if (!validity.isValid) {
       return NextResponse.json({
         success: true,
-        authenticated: false,
-        expired: true,
-        reason: validity.reason,
+        authenticated: true,
+        expired: false,
+        session: {
+          email: user.email,
+          userId: user.id,
+          sessionId: metadata?.sessionId,
+        },
       });
     }
 

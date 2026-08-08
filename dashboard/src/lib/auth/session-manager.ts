@@ -1,14 +1,14 @@
 /**
  * Session Management Utilities
  *
- * Session rules (cookie-based, validated in middleware on every request):
+ * Session rules (cookie-based, validated in proxy on every request):
  *
  * 1. On login: session is valid for 24 hours from that moment (session_start_time
  *    and last_activity_time are set to now).
  *
  * 2. Activity-based renewal: if the user accesses any protected page/API again
  *    within 24 hours, last_activity_time is updated to now (updateActivity in
- *    middleware). That effectively renews the session for another 24 hours from
+ *    proxy). That effectively renews the session for another 24 hours from
  *    that visit. This renewal happens on every request while the session is valid.
  *
  * 3. Maximum lifetime: no matter how often they visit, the session expires 7 days
@@ -18,8 +18,8 @@
  * 4. Inactivity expiry: if the user does NOT access the app for 24 hours, the
  *    session expires (timeSinceLastActivity > 24h). No renewal; they must log in again.
  *
- * 5. Logout / expire: expireSession() clears session cookies; middleware calls it
- *    when validity fails or on explicit logout.
+ * 5. Logout / expire: expireSession() clears session cookies; proxy re-inits stale
+ *    metadata instead of wiping sb-* auth cookies.
  *
  * Cookie management: only POST /api/auth/set-cookie sets these cookies (on login).
  * Middleware only reads them and updates last_activity_time. Logout and

@@ -34,6 +34,13 @@ export async function proxy(request: NextRequest) {
   const pathname = request.nextUrl.pathname;
   const response = NextResponse.next();
 
+  // Legacy /auth/login — canonical sign-in URL is /auth.
+  if (pathname === "/auth/login" || pathname === "/auth/login/") {
+    const nextUrl = request.nextUrl.clone();
+    nextUrl.pathname = "/auth";
+    return NextResponse.redirect(nextUrl);
+  }
+
   // Permanent route migration: /mx/* → /partners/* (preserve querystring).
   if (pathname === "/mx" || pathname.startsWith("/mx/")) {
     const nextUrl = request.nextUrl.clone();
@@ -77,7 +84,7 @@ export async function proxy(request: NextRequest) {
   /** Redirect AND clear auth cookies on the same response (otherwise clears are lost). */
   const redirectToLogin = (reason: string, redirectPath?: string) => {
     const redirectUrl = request.nextUrl.clone();
-    redirectUrl.pathname = "/auth/login";
+    redirectUrl.pathname = "/auth";
     redirectUrl.search = "";
     if (redirectPath) redirectUrl.searchParams.set("redirect", redirectPath);
     redirectUrl.searchParams.set("reason", reason);
@@ -120,7 +127,11 @@ export async function proxy(request: NextRequest) {
 
     const publicRoutes = ["/auth", "/api/auth"];
     const isPublicRoute = publicRoutes.some((r) => pathname.startsWith(r));
-    const isLoginPage = pathname === "/auth/login" || pathname === "/auth/login-store" || pathname === "/auth/login-store/list";
+    const isLoginPage =
+      pathname === "/auth" ||
+      pathname === "/auth/login" ||
+      pathname === "/auth/login-store" ||
+      pathname === "/auth/login-store/list";
     const isRegisterPage = pathname === "/auth/register" || pathname.startsWith("/auth/register-");
     const isPublic = isPublicRoute || pathname === "/" || pathname.startsWith("/auth/search");
     const isAllStoresPage = pathname === "/partners/all-stores" || pathname === "/auth/post-login";
@@ -214,7 +225,7 @@ export async function proxy(request: NextRequest) {
 
     if (isAllStoresPage && !session) {
       const redirectUrl = request.nextUrl.clone();
-      redirectUrl.pathname = "/auth/login";
+      redirectUrl.pathname = "/auth";
       return NextResponse.redirect(redirectUrl);
     }
 
@@ -229,7 +240,7 @@ export async function proxy(request: NextRequest) {
         );
       }
       const redirectUrl = request.nextUrl.clone();
-      redirectUrl.pathname = "/auth/login";
+      redirectUrl.pathname = "/auth";
       const fullPath = redirectPathWithoutOAuthParams(pathname, request.nextUrl.search || "");
       redirectUrl.searchParams.set("redirect", fullPath);
       return NextResponse.redirect(redirectUrl);
@@ -263,6 +274,22 @@ export async function proxy(request: NextRequest) {
           // Stay on login and clear cookies on THIS response so the loop stops.
           clearAuthCookiesOn(response);
           return response;
+        }
+
+        // Mid parent registration: Supabase session exists but merchant_parents row not created yet.
+        if (pathNorm === "/auth/register") {
+          try {
+            const validation = await validateMerchantFromSession({
+              id: session.user.id,
+              email: session.user.email ?? null,
+              phone: session.user.phone ?? null,
+            });
+            if (!validation.isValid && validation.merchantParentId == null) {
+              return response;
+            }
+          } catch {
+            return response;
+          }
         }
 
         return NextResponse.redirect(new URL("/partners/all-stores", request.url));

@@ -135,7 +135,7 @@ export const MXSidebar: React.FC<MXSidebarProps> = ({
     setIsLoggingOut(true)
     try {
       await fetch('/api/auth/logout', { method: 'POST' })
-      router.push('/auth/login')
+      router.push('/auth')
     } catch (error) {
       console.error('Logout error:', error)
     } finally {

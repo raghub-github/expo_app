@@ -97,16 +97,36 @@ export function redirectIfUnauthenticatedError(
   if (window.__gatiRedirectingToLogin) return true;
 
   if (typeof error === "string" && isUnauthenticatedErrorMessage(error)) {
-    redirectToLoginOnSessionExpired({ reason });
-    return true;
+    if (
+      error.toLowerCase().includes("expired") ||
+      error.toLowerCase().includes("invalid")
+    ) {
+      redirectToLoginOnSessionExpired({ reason });
+      return true;
+    }
+    return false;
   }
   if (error instanceof Error && isUnauthenticatedErrorMessage(error.message)) {
+    const msg = error.message.toLowerCase();
+    if (msg.includes("expired") || msg.includes("invalid")) {
+      redirectToLoginOnSessionExpired({ reason });
+      return true;
+    }
+    return false;
+  }
+  if (isSessionExpiredApiError(error)) {
     redirectToLoginOnSessionExpired({ reason });
     return true;
   }
-  if (isSessionExpiredApiError(error) || isUnauthenticatedApiPayload(error)) {
-    redirectToLoginOnSessionExpired({ reason });
-    return true;
+  if (isUnauthenticatedApiPayload(error)) {
+    const code =
+      error && typeof error === "object"
+        ? String((error as { code?: unknown }).code ?? "").toUpperCase()
+        : "";
+    if (isHardSessionDeathCode(code)) {
+      redirectToLoginOnSessionExpired({ reason: code || reason });
+      return true;
+    }
   }
   return false;
 }
@@ -215,12 +235,10 @@ export function installDashboardAuthFetchGuard(): void {
       }
 
       if (isAuthProbe) {
-        if (
-          isHardSessionDeathCode(code) ||
-          code === "SESSION_REQUIRED" ||
-          (response.status === 401 && isUnauthenticatedApiPayload(payload))
-        ) {
-          redirectToLoginOnSessionExpired({ reason: code || "not_authenticated" });
+        // SESSION_REQUIRED on bootstrap/session probes is often a transient race right
+        // after set-cookie or during parallel ticket-detail loads — never hard-logout for it.
+        if (isHardSessionDeathCode(code)) {
+          redirectToLoginOnSessionExpired({ reason: code });
         }
         return response;
       }

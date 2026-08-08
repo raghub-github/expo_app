@@ -94,9 +94,13 @@ export function PartnersAllStoresPage() {
             }
           }
           const errMsg = result.error;
+          if (code === "MERCHANT_NOT_FOUND") {
+            window.location.href = "/auth/register";
+            return;
+          }
           const query =
-            code === "MERCHANT_NOT_FOUND" && errMsg ? `?error=${encodeURIComponent(errMsg)}` : "";
-          window.location.href = `/auth/login${query}`;
+            errMsg ? `?error=${encodeURIComponent(errMsg)}` : "";
+          window.location.href = `/auth${query}`;
           return;
         }
 
@@ -314,7 +318,7 @@ export function PartnersAllStoresPage() {
       await partnerLogoutLocal({ redirectToLogin: true, clearStoreSelection: true });
     } catch (error) {
       console.error("Logout error:", error);
-      window.location.href = "/auth/login";
+      window.location.href = "/auth";
     } finally {
       setIsLoggingOut(false);
       setShowLogoutModal(false);

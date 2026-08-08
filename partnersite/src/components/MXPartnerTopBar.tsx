@@ -484,6 +484,13 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
   const ownerName = resolveSessionData?.ownerName ?? null;
   const parentName = resolveSessionData?.parentName ?? null;
   const ownerEmailResolved = resolveSessionData?.ownerEmail ?? null;
+  const activeStoreOwnerFullName = useMemo(() => {
+    const sid = resolvedStoreId.trim();
+    if (!sid) return null;
+    const store = approvedStores.find((s) => String(s.store_id) === sid);
+    const name = store?.owner_full_name;
+    return typeof name === 'string' && name.trim() ? name.trim() : null;
+  }, [approvedStores, resolvedStoreId]);
   const [brokenAvatarSrc, setBrokenAvatarSrc] = useState<string | null>(null);
 
   const [sheet, setSheet] = useState<PartnerHeaderSheet | null>(null);
@@ -859,8 +866,15 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
     setProfileHydrated(true);
   }, []);
 
+  useEffect(() => {
+    setLocalOwnerName(null);
+    setEditingOwnerName(false);
+    setOwnerNameDraft('');
+  }, [resolvedStoreId]);
+
   const resolvedDisplayName =
     (localOwnerName && localOwnerName.trim()) ||
+    (activeStoreOwnerFullName && activeStoreOwnerFullName.trim()) ||
     (merchantSession?.user?.name && merchantSession.user.name.trim()) ||
     (ownerName && ownerName.trim()) ||
     (parentName && parentName.trim()) ||
@@ -886,13 +900,18 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
       toast.error('Owner name must be at least 2 characters.');
       return;
     }
+    const storeId = resolvedStoreId.trim();
+    if (!storeId) {
+      toast.error('Select an active store first.');
+      return;
+    }
     setOwnerNameSaving(true);
     try {
       const res = await fetch('/api/merchant-auth/owner-name', {
         method: 'PATCH',
         credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ owner_name: trimmed }),
+        body: JSON.stringify({ store_id: storeId, owner_full_name: trimmed }),
       });
       const data = (await res.json().catch(() => ({}))) as { success?: boolean; error?: string };
       if (!res.ok || !data.success) {
@@ -904,6 +923,7 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
       setOwnerNameDraft('');
       toast.success('Owner name updated');
       await queryClient.invalidateQueries({ queryKey: merchantKeys.resolveSession() });
+      await queryClient.invalidateQueries({ queryKey: merchantKeys.storeRecord(storeId) });
       void refetchResolveSession();
       merchantSession?.refetch?.();
     } catch {
@@ -911,7 +931,7 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
     } finally {
       setOwnerNameSaving(false);
     }
-  }, [ownerNameDraft, queryClient, refetchResolveSession, merchantSession]);
+  }, [ownerNameDraft, queryClient, refetchResolveSession, merchantSession, resolvedStoreId]);
 
   const sessionAvatarUrl = merchantSession?.user?.avatar_url?.trim() || null;
   const parentBrandLogoRaw = merchantSession?.parent?.store_logo?.trim() || null;
@@ -1436,9 +1456,9 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
     try {
       clearPartnerLocalStorage();
       if (merchantSession?.logout) await merchantSession.logout();
-      else router.push('/auth/login');
+      else router.push('/auth');
     } catch {
-      router.push('/auth/login');
+      router.push('/auth');
     } finally {
       setIsLoggingOut(false);
       setShowLogoutModal(false);
@@ -1462,7 +1482,7 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
       }
       if (res.ok) {
         toast.success('Signed out from all devices');
-        router.push('/auth/login');
+        router.push('/auth');
       } else {
         toast.error('Could not sign out everywhere. Try again.');
       }
@@ -2548,11 +2568,11 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
         );
       case 'status':
         return (
-          <div className="space-y-5">
-            <div className="flex rounded-2xl bg-slate-100/90 p-1 ring-1 ring-slate-200/70">
+          <div className="space-y-3">
+            <div className="flex rounded-xl bg-slate-100/90 p-0.5 ring-1 ring-slate-200/70">
               <button
                 type="button"
-                className={`flex-1 rounded-xl py-2 text-[11px] sm:text-sm font-semibold transition-all ${
+                className={`flex-1 rounded-lg py-1.5 text-[11px] sm:text-xs font-semibold transition-all ${
                   statusTab === 'manage'
                     ? 'bg-white text-slate-900 shadow-sm ring-1 ring-slate-200/60'
                     : 'text-slate-500 hover:text-slate-800'
@@ -2563,7 +2583,7 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
               </button>
               <button
                 type="button"
-                className={`flex-1 rounded-xl py-2 text-[11px] sm:text-sm font-semibold transition-all ${
+                className={`flex-1 rounded-lg py-1.5 text-[11px] sm:text-xs font-semibold transition-all ${
                   statusTab === 'schedule'
                     ? 'bg-white text-slate-900 shadow-sm ring-1 ring-slate-200/60'
                     : 'text-slate-500 hover:text-slate-800'
@@ -2574,7 +2594,7 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
               </button>
               <button
                 type="button"
-                className={`flex-1 rounded-xl py-2 text-[11px] sm:text-sm font-semibold transition-all ${
+                className={`flex-1 rounded-lg py-1.5 text-[11px] sm:text-xs font-semibold transition-all ${
                   statusTab === 'rush'
                     ? 'bg-white text-slate-900 shadow-sm ring-1 ring-slate-200/60'
                     : 'text-slate-500 hover:text-slate-800'
@@ -2586,12 +2606,12 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
             </div>
 
             {statusTab === 'manage' ? (
-              <div className="space-y-4">
+              <div className="space-y-2.5">
                 {/* Merchant-app parity: Manage Order (multi-select) | Switch Outlet (radio) */}
-                <div className="flex rounded-xl bg-[#EFEFEF] p-1">
+                <div className="flex rounded-lg bg-[#EFEFEF] p-0.5">
                   <button
                     type="button"
-                    className={`flex-1 rounded-lg py-2.5 text-[12px] font-semibold transition ${
+                    className={`flex-1 rounded-md py-2 text-[11px] font-semibold transition ${
                       outletOrdersTab === 'manage'
                         ? 'bg-white text-slate-900 shadow-sm'
                         : 'text-slate-500 hover:text-slate-800'
@@ -2602,7 +2622,7 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
                   </button>
                   <button
                     type="button"
-                    className={`flex-1 rounded-lg py-2.5 text-[12px] font-semibold transition ${
+                    className={`flex-1 rounded-md py-2 text-[11px] font-semibold transition ${
                       outletOrdersTab === 'switch'
                         ? 'bg-white text-slate-900 shadow-sm'
                         : 'text-slate-500 hover:text-slate-800'
@@ -2613,7 +2633,7 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
                   </button>
                 </div>
 
-                <p className="text-[12px] leading-snug text-slate-500">
+                <p className="text-[11px] leading-snug text-slate-500">
                   {outletOrdersTab === 'manage'
                     ? 'Tick one or more outlets to receive incoming orders on this device. You can select every linked store.'
                     : 'Choose the active outlet for this device. Dashboard, menu, reports, and settings load for that outlet.'}
@@ -2621,7 +2641,7 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
 
                 <button
                   type="button"
-                  className="flex w-full items-center justify-center gap-2 rounded-2xl border border-slate-200/90 bg-white py-3 text-sm font-semibold text-slate-800 shadow-sm ring-1 ring-slate-100 transition hover:border-sky-200/80 hover:bg-sky-50/60 hover:text-sky-950"
+                  className="flex w-full items-center justify-center gap-1.5 rounded-xl border border-slate-200/90 bg-white py-2 text-xs font-semibold text-slate-800 shadow-sm ring-1 ring-slate-100 transition hover:border-sky-200/80 hover:bg-sky-50/60 hover:text-sky-950"
                   onClick={() => {
                     setSheet(null);
                     router.push('/partners/all-stores?picker=1');
@@ -2631,8 +2651,8 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
                   <ChevronRight className="h-4 w-4 text-sky-600" aria-hidden />
                 </button>
 
-                <div className="overflow-hidden rounded-2xl border border-slate-200/70 bg-gradient-to-b from-white to-slate-50/40 p-3 shadow-[0_2px_8px_rgba(15,23,42,0.06)] ring-1 ring-slate-100/90">
-                  <div className="relative mb-3">
+                <div className="overflow-hidden rounded-xl border border-slate-200/70 bg-gradient-to-b from-white to-slate-50/40 p-2 shadow-[0_2px_8px_rgba(15,23,42,0.06)] ring-1 ring-slate-100/90">
+                  <div className="relative mb-2">
                     <Search
                       className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400"
                       aria-hidden
@@ -2642,7 +2662,7 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
                       value={outletSearchQuery}
                       onChange={(e) => setOutletSearchQuery(e.target.value)}
                       placeholder="Search restaurant name or ID"
-                      className="w-full rounded-xl border border-slate-200 bg-white py-2.5 pl-9 pr-3 text-sm text-slate-900 shadow-sm outline-none placeholder:text-slate-400 focus:border-sky-400 focus:ring-1 focus:ring-sky-400"
+                      className="w-full rounded-lg border border-slate-200 bg-white py-2 pl-9 pr-3 text-sm text-slate-900 shadow-sm outline-none placeholder:text-slate-400 focus:border-sky-400 focus:ring-1 focus:ring-sky-400"
                     />
                   </div>
 
@@ -2664,7 +2684,7 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
                   {outletsOrderedForStatus.length === 0 ? (
                     <p className="py-4 text-center text-xs text-gray-500">No approved stores yet.</p>
                   ) : (
-                    <ul className="scrollbar-hide max-h-[min(48vh,300px)] overflow-y-auto">
+                    <ul className="scrollbar-hide max-h-[min(40vh,220px)] overflow-y-auto">
                       {filteredOutletsForStatus.map((s, index) => {
                         const row = storeOpsById[s.store_id];
                         const isOn = row?.open;
@@ -2700,7 +2720,7 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
                               <div className="my-1 border-t border-dashed border-slate-200" />
                             ) : null}
                             <div
-                              className={`flex items-start gap-2.5 rounded-lg border bg-white px-2.5 py-2.5 shadow-sm transition-colors ${
+                              className={`flex items-start gap-2 rounded-lg border bg-white px-2 py-2 shadow-sm transition-colors ${
                                 isManageTab
                                   ? isChecked
                                     ? 'border-sky-200/90 ring-1 ring-sky-100'
@@ -2825,7 +2845,7 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
                       type="button"
                       disabled={checkedOutletIds.size === 0}
                       onClick={confirmManagedOutlets}
-                      className="mt-3 w-full rounded-xl bg-sky-100 py-3 text-sm font-bold text-sky-950 shadow-sm transition hover:bg-sky-200/80 disabled:cursor-not-allowed disabled:opacity-45"
+                      className="mt-2 w-full rounded-lg bg-sky-100 py-2.5 text-xs font-bold text-sky-950 shadow-sm transition hover:bg-sky-200/80 disabled:cursor-not-allowed disabled:opacity-45"
                     >
                       {checkedOutletIds.size <= 1
                         ? 'Receive orders from this outlet'
@@ -3278,7 +3298,7 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
               <div
                 className={`mx-sheet-header items-start justify-between gap-2 !h-auto ${
                   sheet === 'status'
-                    ? '!min-h-0 border-b border-slate-200/80 !bg-white/85 !px-5 !py-4 backdrop-blur-md sm:!py-4'
+                    ? '!min-h-0 border-b border-slate-200/80 !bg-white/85 !px-4 !py-3 backdrop-blur-md'
                     : sheet === 'notifications'
                       ? '!min-h-0 !px-4 !py-2 items-center gap-2'
                       : '!px-4 !py-3 min-h-[var(--mx-partner-topbar-h)] gap-3'
@@ -3308,7 +3328,7 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
               </div>
               <div
                 className={`min-h-0 flex-1 overflow-y-auto hide-scrollbar ${
-                  sheet === 'status' ? 'px-5 py-2 pb-6 md:py-3' : sheet === 'notifications' ? 'px-4 pt-2 pb-4' : 'p-4'
+                  sheet === 'status' ? 'px-4 py-1.5 pb-4' : sheet === 'notifications' ? 'px-4 pt-2 pb-4' : 'p-4'
                 }`}
               >
                 {sheetBody()}
@@ -3388,14 +3408,14 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
               }}
             />
             <div
-              className="px-5 pb-5 pt-8"
+              className="px-4 pb-4 pt-6"
               onMouseDown={(e) => e.stopPropagation()}
             >
-              <div className="flex flex-col items-center border-b border-gray-100 pb-4">
-                <div className="relative mb-3">
+              <div className="flex flex-col items-center border-b border-gray-100 pb-3">
+                <div className="relative mb-2">
                   <button
                     type="button"
-                    className="relative flex h-20 w-20 items-center justify-center overflow-hidden rounded-full bg-gradient-to-br from-sky-500 to-blue-600 text-2xl font-bold text-white outline-none ring-offset-2 hover:opacity-95 focus-visible:ring-2 focus-visible:ring-sky-400"
+                    className="relative flex h-16 w-16 items-center justify-center overflow-hidden rounded-full bg-gradient-to-br from-sky-500 to-blue-600 text-xl font-bold text-white outline-none ring-offset-2 hover:opacity-95 focus-visible:ring-2 focus-visible:ring-sky-400"
                     aria-label="Profile photo options"
                     aria-expanded={photoActionMenuOpen}
                     aria-haspopup="menu"
@@ -3569,10 +3589,10 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
                   {merchantSession?.user?.email ?? ownerEmailResolved ?? ''}
                 </p>
               </div>
-              <div className="space-y-2.5 border-b border-gray-100 py-4">
+              <div className="space-y-2 border-b border-gray-100 py-3">
                 <button
                   type="button"
-                  className="w-full rounded-xl bg-[#ff5a5f] py-3 text-sm font-semibold text-white hover:bg-[#f04a50]"
+                  className="w-full rounded-xl bg-[#00A88F] py-2.5 text-sm font-semibold text-white hover:bg-[#009078]"
                   onClick={() => {
                     setProfileDropdownOpen(false);
                     setPhotoActionMenuOpen(false);
@@ -3583,7 +3603,7 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
                 </button>
                 <button
                   type="button"
-                  className="w-full rounded-xl border-2 border-[#ff5a5f] py-3 text-sm font-semibold text-[#ff5a5f] hover:bg-rose-50"
+                  className="w-full rounded-xl border-2 border-[#00A88F] py-2.5 text-sm font-semibold text-[#00A88F] hover:bg-[#E5F5F0]"
                   disabled={isLoggingOut}
                   onClick={() => {
                     setProfileDropdownOpen(false);

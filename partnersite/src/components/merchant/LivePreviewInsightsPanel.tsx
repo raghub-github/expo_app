@@ -1,11 +1,9 @@
 "use client";
 
 import React from "react";
-import Link from "next/link";
 import {
   BarChart3,
   Star,
-  ArrowRight,
   Info,
   TrendingDown,
   TrendingUp,
@@ -95,11 +93,9 @@ function DeltaBadge({ pct }: { pct: number | null }) {
 function MetricRow({
   label,
   metric,
-  link,
 }: {
   label: string;
   metric: InsightMetric;
-  link?: { href: string; text: string };
 }) {
   return (
     <div className="grid grid-cols-1 sm:grid-cols-12 gap-2 sm:gap-3 items-center py-3.5">
@@ -110,11 +106,6 @@ function MetricRow({
       <div className="sm:col-span-4 flex flex-wrap items-center justify-start sm:justify-end gap-2">
         <span className="text-sm font-semibold tabular-nums text-slate-900">{metric.display}</span>
         <DeltaBadge pct={metric.pct_change} />
-        {link ? (
-          <Link href={link.href} className="text-xs font-semibold text-blue-600 hover:text-blue-700">
-            {link.text}
-          </Link>
-        ) : null}
       </div>
     </div>
   );
@@ -123,16 +114,12 @@ function MetricRow({
 type Props = {
   storeId: string | null;
   periodPreset?: string;
-  userInsightsHref?: string;
-  paymentsHref?: string;
   marketStoreId?: string | number;
 };
 
 export function LivePreviewInsightsPanel({
   storeId,
   periodPreset = "today",
-  userInsightsHref = "/mx/user-insights",
-  paymentsHref = "/mx/payments",
   marketStoreId,
 }: Props) {
   const period = mapInsightsDatePreset(periodPreset);
@@ -187,8 +174,6 @@ export function LivePreviewInsightsPanel({
     return <LivePreviewSkeleton />;
   }
 
-  const reportsLink = { href: userInsightsHref, text: "View business reports" };
-
   return (
     <>
       <div className="mb-10">
@@ -198,10 +183,6 @@ export function LivePreviewInsightsPanel({
           <span className="text-slate-400" title="Info">
             <Info size={15} strokeWidth={2} aria-hidden />
           </span>
-          <Link href={paymentsHref} className="ml-auto inline-flex items-center gap-1 text-xs font-semibold text-blue-600 hover:text-blue-700">
-            View details
-            <ArrowRight size={14} aria-hidden />
-          </Link>
         </div>
         <p className="text-[11px] text-slate-500 mt-1 mb-2">{data.compare_header}</p>
         <div className="divide-y divide-slate-200/70">
@@ -211,7 +192,7 @@ export function LivePreviewInsightsPanel({
         </div>
       </div>
 
-      <div className="mb-10 flex flex-col lg:flex-row gap-4 lg:gap-6 items-stretch lg:min-h-[420px]">
+      <div className="mb-8 flex flex-col lg:flex-row gap-4 lg:gap-6 items-start">
         <div className="w-full lg:w-[60%] min-w-0 flex flex-col">
           <div className="flex flex-wrap items-center gap-2 gap-y-1 pb-3 border-b border-slate-200/80">
             <Star className="text-amber-500 shrink-0" size={18} strokeWidth={2} aria-hidden />
@@ -221,7 +202,7 @@ export function LivePreviewInsightsPanel({
             </span>
           </div>
           <div className="divide-y divide-slate-200/70">
-            <MetricRow label="Ratings" metric={data.ratings} link={reportsLink} />
+            <MetricRow label="Ratings" metric={data.ratings} />
             <div className="py-2">
               <p className="text-[11px] font-semibold text-slate-500 uppercase tracking-wide mb-2 pl-0.5">Bad orders</p>
               <div className="divide-y divide-slate-200/60">
@@ -248,19 +229,19 @@ export function LivePreviewInsightsPanel({
                 ))}
               </div>
             </div>
-            <MetricRow label="Total complaints" metric={data.complaints} link={reportsLink} />
+            <MetricRow label="Total complaints" metric={data.complaints} />
             <MetricRow label="Lost sales" metric={data.lost_sales} />
-            <MetricRow label="Online %" metric={data.online_pct} link={reportsLink} />
+            <MetricRow label="Online %" metric={data.online_pct} />
           </div>
         </div>
         {marketId ? (
           <div className="w-full lg:w-[40%] min-w-0 flex flex-col">
-            <MerchantMarketInsightsCard storeId={String(marketId)} className="flex-1" />
+            <MerchantMarketInsightsCard storeId={String(marketId)} />
           </div>
         ) : null}
       </div>
 
-      <div className="pb-4">
+      <div>
         <div className="flex flex-wrap items-center gap-2 gap-y-1 pb-3 border-b border-slate-200/80">
           <Funnel className="text-violet-600 shrink-0" size={18} strokeWidth={2} aria-hidden />
           <h2 className="text-sm font-bold text-slate-900 tracking-tight">Customer funnel</h2>

@@ -92,7 +92,7 @@ export async function GET() {
     const { data: stores, error: storesError } = await db
       .from("merchant_stores")
       .select(
-        "id, store_id, store_name, full_address, store_phones, approval_status, is_active, current_onboarding_step, onboarding_completed, banner_url"
+        "id, store_id, store_name, owner_full_name, full_address, store_phones, approval_status, is_active, current_onboarding_step, onboarding_completed, banner_url"
       )
       .eq("parent_id", parentId);
 

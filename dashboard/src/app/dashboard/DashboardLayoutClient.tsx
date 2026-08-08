@@ -33,6 +33,7 @@ import { prefetchDashboardSection } from "@/lib/dashboard-prefetch";
 import {
   cleanDashboardHref,
   isDashboardNavAlreadyAtTarget,
+  shouldShowDashboardNavOverlay,
 } from "@/lib/navigation/dashboard-nav-transition";
 import { TicketFilters } from "@/components/tickets/TicketFilters";
 import { DashboardNavOverlay } from "@/components/layout/DashboardNavOverlay";
@@ -644,8 +645,13 @@ function DashboardLayoutContent({
       // Already navigating to this exact target — keep overlay; let <Link> proceed.
       // A different target replaces pending via startNavigation (latest click wins).
       const alreadyPendingSameTarget = currentRouteCtx?.pendingNavHref === cleanTarget;
-      if (!alreadyPendingSameTarget) {
+      const showNavOverlay = shouldShowDashboardNavOverlay(cleanPathname, cleanTarget);
+
+      if (!isDashboardNavAlreadyAtTarget(cleanPathname, cleanTarget)) {
         prefetchDashboardSection(queryClient, cleanTarget);
+      }
+
+      if (showNavOverlay && !alreadyPendingSameTarget) {
         currentRouteCtx?.startNavigation(cleanTarget);
         cancelInFlightPageQueries();
       }
