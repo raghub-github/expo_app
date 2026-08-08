@@ -4,6 +4,21 @@ const REGISTERED_KEY = "partner_browser_push_token_ok";
 const PENDING_KEY = "partner_browser_push_registration_pending";
 const SOFT_DISMISS_COOLDOWN_MS = 7 * 24 * 60 * 60 * 1000;
 
+/** Cleared on full page reload / new tab — survives in-app client navigation. */
+let pushModalSessionDismissed = false;
+
+export function isPushSessionDismissed(): boolean {
+  return pushModalSessionDismissed;
+}
+
+export function markPushSessionDismissed() {
+  pushModalSessionDismissed = true;
+}
+
+export function clearPushSessionDismissed() {
+  pushModalSessionDismissed = false;
+}
+
 export function isPushPermanentlyDismissed(): boolean {
   if (typeof window === "undefined") return true;
   try {
@@ -27,14 +42,11 @@ export function isPushSoftDismissedRecently(): boolean {
 }
 
 export function markPushSoftDismissed() {
-  try {
-    localStorage.setItem(SOFT_DISMISS_KEY, String(Date.now()));
-  } catch {
-    /* ignore */
-  }
+  markPushSessionDismissed();
 }
 
 export function markPushPermanentlyDismissed() {
+  markPushSessionDismissed();
   try {
     localStorage.setItem(DISMISS_KEY, "1");
   } catch {
@@ -49,6 +61,7 @@ export function clearPushDismissFlags() {
   } catch {
     /* ignore */
   }
+  clearPushSessionDismissed();
 }
 
 export function markPushRegistered() {

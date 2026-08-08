@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { assertStoreAccess } from "@/lib/auth/assert-store-access";
 import { client as sql } from "@/lib/drizzle";
 import { getCachedLivePreviewInsights } from "@/lib/merchant-growth/cached-growth-insights";
+import { emptyLivePreviewInsights } from "@/lib/merchant-growth/live-preview-insights";
 import { withRouteTimeout, RouteTimeoutError } from "@/lib/route-timeout";
 import { peekGrowthCache } from "@/lib/growth-insights-cache";
 
@@ -27,7 +28,7 @@ export async function GET(req: NextRequest) {
   const cacheKey = `live-preview-v3:${gate.storeIdNum}:${period}:${lite ? "lite" : "full"}`;
 
   try {
-    return await withRouteTimeout("merchant.growth.live-preview", 20_000, async () => {
+    return await withRouteTimeout("merchant.growth.live-preview", 45_000, async () => {
       const body = await getCachedLivePreviewInsights(sql, gate.storeIdNum, period, { lite });
       return NextResponse.json(body);
     });
@@ -38,8 +39,8 @@ export async function GET(req: NextRequest) {
         console.warn("[merchant/growth/live-preview] timeout — serving stale cache");
         return NextResponse.json(stale);
       }
-      console.warn("[merchant/growth/live-preview] timeout after", e.ms, "ms");
-      return NextResponse.json({ error: "timeout" }, { status: 504 });
+      console.warn("[merchant/growth/live-preview] timeout after", e.ms, "ms — serving empty payload");
+      return NextResponse.json(emptyLivePreviewInsights(period));
     }
     console.error("[merchant/growth/live-preview]", e);
     return NextResponse.json({ error: "Failed to load live preview insights" }, { status: 500 });

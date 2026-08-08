@@ -46,12 +46,11 @@ export function PartnerWaitingOrderSync({
     void (async () => {
       try {
         if (!isOnline) {
-          await fetch('/api/merchant/store-notifications', {
-            method: 'POST',
-            credentials: 'include',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ action: 'delete_waiting', store_id: storeId }),
-          }).catch(() => undefined);
+          // API expects DELETE ?kind=waiting (POST action "delete_waiting" is invalid → 400).
+          await fetch(
+            `/api/merchant/store-notifications?store_id=${encodeURIComponent(storeId)}&kind=waiting`,
+            { method: 'DELETE', credentials: 'include' },
+          ).catch(() => undefined);
           if (!cancelled) onListChangeRef.current?.();
         } else if (prevOnlineRef.current === false) {
           // Backend ensure already ran on open — refresh inbox only.

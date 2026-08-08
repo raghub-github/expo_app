@@ -16,6 +16,9 @@ import { getMessaging, getToken, onMessage, type Messaging, type MessagePayload 
 
 let cachedApp: FirebaseApp | null = null;
 let cachedMessaging: Messaging | null = null;
+let cachedRegistration: ServiceWorkerRegistration | null = null;
+let messagingInitPromise: Promise<Messaging | null> | null = null;
+let errorGuardInstalled = false;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
@@ -37,22 +40,22 @@ function ensureConfigured(): boolean {
   return Boolean(c.apiKey && c.projectId && c.messagingSenderId && c.appId);
 }
 
-function getMessagingSafe(): Messaging | null {
-  if (typeof window === "undefined") return null;
-  if (!("serviceWorker" in navigator) || !("Notification" in window)) return null;
-  if (!ensureConfigured()) {
-    console.warn("[browser-push] Firebase env vars not set; skipping messaging init.");
-    return null;
-  }
-  if (cachedMessaging) return cachedMessaging;
-  try {
-    cachedApp ??= initializeApp(config() as never);
-    cachedMessaging = getMessaging(cachedApp);
-    return cachedMessaging;
-  } catch (e) {
-    console.warn("[browser-push] messaging init failed:", (e as Error).message);
-    return null;
-  }
+/** Swallow Firebase HMR/controllerchange deleteToken races in dev. */
+export function installFirebasePushErrorGuard(): void {
+  if (typeof window === "undefined" || errorGuardInstalled) return;
+  errorGuardInstalled = true;
+
+  window.addEventListener("unhandledrejection", (event) => {
+    const reason = event.reason as Error | undefined;
+    const msg = String(reason?.message ?? reason ?? "");
+    if (
+      msg.includes("pushManager") ||
+      (msg.includes("Cannot read properties of undefined") && msg.includes("push"))
+    ) {
+      event.preventDefault();
+      console.debug("[browser-push] ignored Firebase SW token cleanup race");
+    }
+  });
 }
 
 async function waitForActiveServiceWorker(
@@ -90,6 +93,86 @@ async function waitForActiveServiceWorker(
   });
 }
 
+/** Wait until the registration exposes pushManager (required for FCM tokens). */
+async function waitForPushManager(
+  registration: ServiceWorkerRegistration,
+  timeoutMs = 12_000,
+): Promise<ServiceWorkerRegistration | null> {
+  if (registration.pushManager) return registration;
+
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    await sleep(200);
+    if (registration.pushManager) return registration;
+  }
+  return registration.pushManager ? registration : null;
+}
+
+/** Register and activate the FCM service worker before messaging init. */
+export async function ensureFirebaseServiceWorker(): Promise<ServiceWorkerRegistration | null> {
+  if (typeof window === "undefined" || !("serviceWorker" in navigator)) return null;
+  if (cachedRegistration?.pushManager) return cachedRegistration;
+
+  try {
+    const registration = await navigator.serviceWorker.register("/firebase-messaging-sw.js", {
+      scope: "/firebase-cloud-messaging-push-scope",
+    });
+    const active = await waitForActiveServiceWorker(registration);
+    if (!active) return null;
+    const ready = await waitForPushManager(active);
+    cachedRegistration = ready;
+    return ready;
+  } catch (e) {
+    console.warn("[browser-push] service worker registration failed:", (e as Error).message);
+    return null;
+  }
+}
+
+async function primeMessagingRegistration(messaging: Messaging, registration: ServiceWorkerRegistration): Promise<void> {
+  const vapidKey = process.env.NEXT_PUBLIC_FIREBASE_VAPID_KEY;
+  if (!vapidKey || Notification.permission !== "granted") return;
+  try {
+    await getToken(messaging, { vapidKey, serviceWorkerRegistration: registration });
+  } catch {
+    /* token may not exist yet — binding SW registration is enough */
+  }
+}
+
+async function getMessagingSafeAsync(): Promise<Messaging | null> {
+  if (typeof window === "undefined") return null;
+  if (!("serviceWorker" in navigator) || !("Notification" in window)) return null;
+  if (Notification.permission !== "granted") return null;
+  if (!ensureConfigured()) {
+    console.warn("[browser-push] Firebase env vars not set; skipping messaging init.");
+    return null;
+  }
+  if (cachedMessaging) return cachedMessaging;
+
+  installFirebasePushErrorGuard();
+
+  if (!messagingInitPromise) {
+    messagingInitPromise = (async () => {
+      const registration = await ensureFirebaseServiceWorker();
+      if (!registration?.pushManager) {
+        messagingInitPromise = null;
+        return null;
+      }
+      try {
+        cachedApp ??= initializeApp(config() as never);
+        cachedMessaging = getMessaging(cachedApp);
+        await primeMessagingRegistration(cachedMessaging, registration);
+        return cachedMessaging;
+      } catch (e) {
+        messagingInitPromise = null;
+        console.warn("[browser-push] messaging init failed:", (e as Error).message);
+        return null;
+      }
+    })();
+  }
+
+  return messagingInitPromise;
+}
+
 export async function requestBrowserPushPermission(): Promise<NotificationPermission> {
   if (typeof window === "undefined" || !("Notification" in window)) return "denied";
   if (Notification.permission === "granted") return "granted";
@@ -98,7 +181,9 @@ export async function requestBrowserPushPermission(): Promise<NotificationPermis
 }
 
 async function registerBrowserPushTokenOnce(_userId: string): Promise<string | null> {
-  const messaging = getMessagingSafe();
+  if (Notification.permission !== "granted") return null;
+
+  const messaging = await getMessagingSafeAsync();
   if (!messaging) return null;
   const vapidKey = process.env.NEXT_PUBLIC_FIREBASE_VAPID_KEY;
   if (!vapidKey) {
@@ -108,20 +193,15 @@ async function registerBrowserPushTokenOnce(_userId: string): Promise<string | n
     return null;
   }
 
-  if (Notification.permission !== "granted") return null;
-
-  const registration = await navigator.serviceWorker.register("/firebase-messaging-sw.js", {
-    scope: "/",
-  });
-  const activeRegistration = await waitForActiveServiceWorker(registration);
-  if (!activeRegistration) {
+  const registration = (await ensureFirebaseServiceWorker()) ?? cachedRegistration;
+  if (!registration?.pushManager) {
     console.warn("[browser-push] service worker did not become active in time");
     return null;
   }
 
   const token = await getToken(messaging, {
     vapidKey,
-    serviceWorkerRegistration: activeRegistration,
+    serviceWorkerRegistration: registration,
   });
   if (!token) return null;
 
@@ -182,8 +262,46 @@ export async function registerBrowserPushToken(
   return null;
 }
 
+/** Drop this browser's FCM token from the backend before logout. */
+export async function unregisterBrowserPushToken(): Promise<void> {
+  if (typeof window === "undefined") return;
+  if (Notification.permission !== "granted") return;
+  try {
+    const messaging = await getMessagingSafeAsync();
+    const registration = cachedRegistration ?? (await ensureFirebaseServiceWorker());
+    if (!messaging || !registration?.pushManager) return;
+
+    const vapidKey = process.env.NEXT_PUBLIC_FIREBASE_VAPID_KEY;
+    const token = await getToken(messaging, {
+      vapidKey,
+      serviceWorkerRegistration: registration,
+    }).catch(() => null);
+    if (!token) return;
+
+    await fetch("/api/notifications/browser-tokens", {
+      method: "DELETE",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token }),
+    }).catch(() => undefined);
+  } catch {
+    /* ignore — firebase may be unavailable */
+  }
+}
+
 export function onBrowserPushForeground(cb: (payload: MessagePayload) => void): () => void {
-  const messaging = getMessagingSafe();
-  if (!messaging) return () => undefined;
-  return onMessage(messaging, cb);
+  if (typeof window === "undefined" || Notification.permission !== "granted") {
+    return () => undefined;
+  }
+
+  installFirebasePushErrorGuard();
+
+  let unsub: (() => void) | undefined;
+  void getMessagingSafeAsync().then((messaging) => {
+    if (!messaging) return;
+    unsub = onMessage(messaging, cb);
+  });
+  return () => {
+    unsub?.();
+  };
 }

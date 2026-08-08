@@ -32,7 +32,7 @@ export function PartnerPlatformAgreementNotice({
             className={
               isDark
                 ? 'font-medium text-white/95 underline underline-offset-2 hover:text-white'
-                : 'font-medium text-orange-600 underline underline-offset-2 hover:text-orange-700'
+                : 'font-medium text-[#00A88F] underline underline-offset-2 hover:text-[#009078]'
             }
           >
             {link.label}

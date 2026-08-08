@@ -309,13 +309,21 @@ function LoginPageContent() {
     lastVerifiedOtpRef.current = '';
   };
 
+  useEffect(() => {
+    if (!otpSent) return;
+    const timer = window.setTimeout(() => {
+      document.getElementById('otp-input-section')?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }, 80);
+    return () => window.clearTimeout(timer);
+  }, [otpSent]);
+
   return (
     <LoginPageShell>
-      <LoginFormHeader />
+      <LoginFormHeader compact={otpSent} />
 
-      <div className="mt-8 max-w-sm mx-auto">
+      <div className={`w-full ${otpSent ? 'mt-5' : 'mt-8'}`}>
         {registered === '1' && (
-          <div className="mb-4 p-3.5 rounded-xl bg-emerald-50 border border-emerald-200/80 text-emerald-800 text-sm font-medium">
+          <div className="mb-4 p-3.5 rounded-xl bg-[#E5F5F0] border border-[#00A88F]/25 text-[#006B4F] text-sm font-medium">
             Registration successful. Sign in below.
           </div>
         )}
@@ -355,11 +363,11 @@ function LoginPageContent() {
           )}
         </div>
 
-        <p className="mt-8 text-center text-sm text-slate-600 lg:hidden">
+        <p className={`text-center text-sm text-slate-600 lg:hidden ${otpSent ? 'mt-5' : 'mt-8'}`}>
           Don&apos;t have an account?{' '}
           <Link
             href="/auth/register"
-            className="font-semibold text-orange-600 hover:text-orange-700 hover:underline"
+            className="font-semibold text-[#00A88F] hover:text-[#009078] hover:underline"
           >
             Sign Up
           </Link>
@@ -373,8 +381,8 @@ function LoginPageFallback() {
   return (
     <LoginPageShell>
       <LoginFormHeader />
-      <div className="text-center py-12 max-w-sm mx-auto">
-        <Loader2 className="h-8 w-8 animate-spin text-orange-500 mx-auto" />
+      <div className="text-center py-12 w-full">
+        <Loader2 className="h-8 w-8 animate-spin text-[#00A88F] mx-auto" />
         <p className="mt-4 text-sm text-slate-500">Loading login…</p>
       </div>
     </LoginPageShell>

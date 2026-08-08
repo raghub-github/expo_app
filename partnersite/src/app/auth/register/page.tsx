@@ -4,7 +4,15 @@ import { useState, useEffect } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Mail, Phone, User, Loader2, ArrowRight, MapPin, Image } from "lucide-react";
-import { requestEmailOTP, verifyEmailOTP, requestPhoneOTP, verifyPhoneOTP } from "@/lib/auth/supabase-client";
+import {
+  OTP_RATE_LIMIT_USER_MESSAGE,
+  requestEmailOTP,
+  verifyEmailOTP,
+  requestPhoneOTP,
+  verifyPhoneOTP,
+} from "@/lib/auth/supabase-client";
+import { formatCountdownMmSs } from "@/lib/auth/format-countdown";
+import { PARTNER_AUTH_TOAST_MS } from "@/lib/auth/partner-auth-toast";
 import { ENABLE_PHONE_OTP_REGISTER } from "@/lib/auth/phone-otp-config";
 import { supabase } from "@/lib/supabase";
 import { LoginPageShell } from "@/app/auth/login/components/LoginPageShell";
@@ -19,11 +27,11 @@ type Step = 1 | 2 | 3;
 const RESEND_OTP_COOLDOWN_SEC = 60;
 
 const FIELD_CLASS =
-  "w-full px-4 py-3 rounded-xl border border-slate-200 bg-slate-50/50 text-slate-900 placeholder:text-slate-400 text-sm transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-orange-500/40 focus:ring-offset-2 focus:border-orange-400 focus:bg-white hover:border-slate-300";
+  "w-full px-4 py-3 rounded-xl border border-slate-200 bg-slate-50/50 text-slate-900 placeholder:text-slate-400 text-sm transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-emerald-500/40 focus:ring-offset-2 focus:border-emerald-400 focus:bg-white hover:border-slate-300";
 
 /** Compact fields for step-3 profile — polished inputs that fill the white area. */
 const FIELD_CLASS_COMPACT =
-  "auth-field w-full px-3.5 py-2.5 rounded-xl border border-slate-200/90 bg-white text-slate-900 placeholder:text-slate-400 text-sm shadow-[0_1px_2px_rgba(15,23,42,0.05)] transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-orange-500/25 focus:border-orange-400 hover:border-orange-200 hover:shadow-[0_4px_14px_rgba(249,115,22,0.08)]";
+  "auth-field w-full px-3.5 py-2.5 rounded-xl border border-slate-200/90 bg-white text-slate-900 placeholder:text-slate-400 text-sm shadow-[0_1px_2px_rgba(15,23,42,0.05)] transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-emerald-500/25 focus:border-emerald-400 hover:border-emerald-200 hover:shadow-[0_4px_14px_rgba(16,185,129,0.08)]";
 
 const LABEL_COMPACT = "block text-xs font-medium text-slate-600 mb-1 tracking-wide";
 
@@ -31,17 +39,21 @@ const SECONDARY_BTN =
   "py-2.5 px-4 rounded-xl border border-slate-200 text-slate-600 text-sm font-medium hover:bg-slate-50 hover:border-slate-300 transition-colors disabled:opacity-50 disabled:cursor-not-allowed";
 
 const RESEND_BTN =
-  "py-2.5 px-4 rounded-xl border border-orange-200 bg-orange-50 text-orange-700 text-sm font-medium hover:bg-orange-100 hover:border-orange-300 transition-colors disabled:opacity-50 disabled:cursor-not-allowed";
+  "py-2.5 px-4 rounded-xl border border-emerald-200 bg-emerald-50 text-emerald-700 text-sm font-medium hover:bg-emerald-100 hover:border-emerald-300 transition-colors disabled:opacity-50 disabled:cursor-not-allowed";
 
 function normalizePhone(input: string): string {
   const digits = input.replace(/\D/g, "");
   return digits.length > 10 ? digits.slice(-10) : digits;
 }
 
+function otpSentMessage(email: string) {
+  return `Verification code sent to ${email}. Check your inbox and spam folder.`;
+}
+
 /** Errors go to top-right toast — never inline in the form. */
 function setError(msg: string) {
   if (!msg) return;
-  toast.error(msg);
+  toast.error(msg, { duration: PARTNER_AUTH_TOAST_MS });
 }
 
 export default function RegisterPage() {
@@ -83,7 +95,7 @@ export default function RegisterPage() {
     if (step !== 3) return;
     toast.success(
       ENABLE_PHONE_OTP_REGISTER ? "Email & mobile verified" : "Email verified, mobile added",
-      { duration: 2000 }
+      { duration: PARTNER_AUTH_TOAST_MS }
     );
   }, [step]);
   // Step 1: email OTP
@@ -133,9 +145,7 @@ export default function RegisterPage() {
       const result = await requestEmailOTP(em);
       if (!result.success) {
         if (result.error === "EMAIL_RATE_LIMIT_EXCEEDED") {
-          setError(
-            "Email rate limit exceeded. Supabase limits email OTP requests to prevent spam. Please wait 5 minutes before requesting a new code, or try again later."
-          );
+          setError(OTP_RATE_LIMIT_USER_MESSAGE);
           setResendCooldown(300); // 5 minute cooldown to prevent hitting Supabase rate limits
           setSuccessMessage("");
         } else {
@@ -146,10 +156,10 @@ export default function RegisterPage() {
         return;
       }
       setEmailOtpSent(true);
-      setSuccessMessage("");
+      setSuccessMessage(otpSentMessage(em));
       setError("");
       setResendCooldown(RESEND_OTP_COOLDOWN_SEC);
-      toast.success(`Code sent to ${em}`);
+      toast.success(`Code sent to ${em}`, { duration: PARTNER_AUTH_TOAST_MS });
     } catch {
       setError("Something went wrong. Please try again.");
     } finally {
@@ -185,7 +195,7 @@ export default function RegisterPage() {
       }
       setEmailUserId(uid);
       setVerifiedEmail(em);
-      toast.success(`Email verified: ${em}`, { duration: 2000 });
+      toast.success(`Email verified: ${em}`, { duration: PARTNER_AUTH_TOAST_MS });
       setStep(2);
     } catch {
       setError("Something went wrong. Please try again.");
@@ -424,7 +434,7 @@ export default function RegisterPage() {
 
   return (
     <LoginPageShell
-      contentMaxWidthClass={step === 3 ? "max-w-none" : "max-w-md"}
+      contentMaxWidthClass={step === 3 ? 'max-w-none' : undefined}
       headerPrompt="Have an account?"
       headerLinkLabel="Log In"
       headerLinkHref="/auth/login"
@@ -433,7 +443,7 @@ export default function RegisterPage() {
       <div className={step === 3 ? "flex min-h-0 flex-1 flex-col" : ""}>
         <RegisterFormHeader step={step} subtitle={stepSubtitle} compact={step === 3} />
 
-        <div className={step === 3 ? "mt-4 flex min-h-0 flex-1 flex-col" : "mt-8 max-w-sm mx-auto"}>
+        <div className={step === 3 ? 'mt-4 flex min-h-0 flex-1 flex-col' : 'mt-6 w-full'}>
         {/* Step 1: Email → OTP */}
         {step === 1 && (
           <div className="space-y-5">
@@ -453,11 +463,19 @@ export default function RegisterPage() {
                   loading={loading}
                   disabled={resendCooldown > 0}
                 >
-                  {resendCooldown > 0 ? `Wait ${resendCooldown}s` : "Send OTP to email"}
+                  {resendCooldown > 0 ? `Wait ${formatCountdownMmSs(resendCooldown)}` : "Send OTP to email"}
                 </PrimaryButton>
               </form>
             ) : (
               <form onSubmit={handleVerifyEmailOtp} className="space-y-5">
+                {successMessage ? (
+                  <p
+                    role="status"
+                    className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm leading-snug text-emerald-900"
+                  >
+                    {successMessage}
+                  </p>
+                ) : null}
                 <div>
                   <label className="block text-sm font-medium text-slate-700 mb-2">Verification code</label>
                   <input
@@ -498,9 +516,7 @@ export default function RegisterPage() {
                         const result = await requestEmailOTP(em);
                         if (!result.success) {
                           if (result.error === "EMAIL_RATE_LIMIT_EXCEEDED") {
-                            setError(
-                              "Email rate limit exceeded. Please wait 5 minutes before requesting a new code."
-                            );
+                            setError(OTP_RATE_LIMIT_USER_MESSAGE);
                             setResendCooldown(300);
                             setSuccessMessage("");
                           } else {
@@ -511,7 +527,8 @@ export default function RegisterPage() {
                         }
                         setError("");
                         setResendCooldown(RESEND_OTP_COOLDOWN_SEC);
-                        toast.success(`Code sent to ${em}`);
+                        setSuccessMessage(otpSentMessage(em));
+                        toast.success(`Code sent to ${em}`, { duration: PARTNER_AUTH_TOAST_MS });
                       } catch {
                         setError("Something went wrong. Please try again.");
                         setSuccessMessage("");
@@ -528,7 +545,7 @@ export default function RegisterPage() {
                         Sending…
                       </span>
                     ) : resendCooldown > 0 ? (
-                      `Resend OTP in ${resendCooldown}s`
+                      `Resend OTP in ${formatCountdownMmSs(resendCooldown)}`
                     ) : (
                       "Resend OTP"
                     )}
@@ -544,7 +561,8 @@ export default function RegisterPage() {
                 </div>
                 {resendCooldown > 0 && (
                   <p className="text-xs text-slate-500 text-center">
-                    You can request a new code in <span className="font-medium text-slate-700">{resendCooldown}</span> seconds.
+                    You can request a new code in{' '}
+                    <span className="font-medium text-slate-700">{formatCountdownMmSs(resendCooldown)}</span>.
                   </p>
                 )}
               </form>
@@ -641,7 +659,7 @@ export default function RegisterPage() {
                       type="button"
                       onClick={handleResendMobileOtp}
                       disabled={loading}
-                      className="text-orange-600 hover:underline font-medium disabled:opacity-50"
+                      className="text-emerald-600 hover:underline font-medium disabled:opacity-50"
                     >
                       Resend SMS
                     </button>
@@ -742,7 +760,7 @@ export default function RegisterPage() {
               </div>
 
               <div className="sm:col-span-2 lg:col-span-3 flex items-center gap-1.5 text-slate-700 font-semibold text-sm pt-1 border-t border-slate-100">
-                <MapPin className="w-4 h-4 text-orange-500" /> Address
+                <MapPin className="w-4 h-4 text-emerald-500" /> Address
               </div>
               <div className="sm:col-span-2 lg:col-span-3">
                 <label className={LABEL_COMPACT}>Address line</label>
@@ -787,11 +805,11 @@ export default function RegisterPage() {
               </div>
 
               <div className="sm:col-span-2 lg:col-span-3">
-                <div className="flex flex-wrap items-center gap-3 rounded-xl border border-dashed border-orange-200/80 bg-orange-50/30 px-4 py-3">
+                <div className="flex flex-wrap items-center gap-3 rounded-xl border border-dashed border-emerald-200/80 bg-emerald-50/30 px-4 py-3">
                   <div className="flex items-center gap-1.5 text-slate-700 font-medium text-sm shrink-0">
-                    <Image className="w-4 h-4 text-orange-500" /> Parent / Store logo
+                    <Image className="w-4 h-4 text-emerald-500" /> Parent / Store logo
                   </div>
-                  <label className="cursor-pointer inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs text-slate-600 shadow-sm hover:border-orange-400 hover:text-orange-700 transition-colors">
+                  <label className="cursor-pointer inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs text-slate-600 shadow-sm hover:border-emerald-400 hover:text-emerald-700 transition-colors">
                     <input
                       type="file"
                       accept="image/jpeg,image/png,image/webp"
@@ -838,7 +856,7 @@ export default function RegisterPage() {
           Have an account?{" "}
           <Link
             href="/auth/login"
-            className="font-semibold text-orange-600 hover:text-orange-700 hover:underline"
+            className="font-semibold text-emerald-600 hover:text-emerald-700 hover:underline"
           >
             Log In
           </Link>

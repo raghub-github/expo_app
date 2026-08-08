@@ -14,6 +14,7 @@ let unlocked = false;
 let listening = false;
 let audioContext: AudioContext | null = null;
 let blockedRetry: (() => void) | null = null;
+let cachedBlobUrl: string | null = null;
 const blockedSubscribers = new Set<(blocked: boolean) => void>();
 
 const GESTURE_EVENTS = ['pointerdown', 'keydown', 'touchstart'] as const;
@@ -37,10 +38,30 @@ function resolveAudioContext(): AudioContext | null {
   return audioContext;
 }
 
+/**
+ * Load the alert sound as a blob URL so Chrome/OneDrive cache quirks
+ * (ERR_CACHE_OPERATION_NOT_SUPPORTED) never block the chime.
+ */
+export async function resolveAlertSoundSrc(src = PRIME_SOURCE): Promise<string> {
+  if (typeof window === 'undefined') return src;
+  if (src !== PRIME_SOURCE) return src;
+  if (cachedBlobUrl) return cachedBlobUrl;
+  try {
+    const res = await fetch(PRIME_SOURCE, { cache: 'no-store', credentials: 'same-origin' });
+    if (!res.ok) return PRIME_SOURCE;
+    const blob = await res.blob();
+    cachedBlobUrl = URL.createObjectURL(blob);
+    return cachedBlobUrl;
+  } catch {
+    return PRIME_SOURCE;
+  }
+}
+
 async function primePlayback(): Promise<void> {
   if (typeof window === 'undefined') return;
   try {
-    const probe = new Audio(PRIME_SOURCE);
+    const src = await resolveAlertSoundSrc();
+    const probe = new Audio(src);
     probe.muted = true;
     probe.volume = 0;
     await probe.play();

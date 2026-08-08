@@ -1,6 +1,7 @@
 'use client';
 
 import React from 'react';
+import { GM_BTN } from './gatimitra-brand';
 
 interface PrimaryButtonProps {
   type?: 'button' | 'submit';
@@ -26,12 +27,10 @@ export function PrimaryButton({
       onClick={onClick}
       className={`
         w-full py-3.5 px-4 rounded-xl font-semibold text-sm text-white
-        bg-orange-600
+        ${GM_BTN}
         transition-all duration-200 ease-out
-        hover:bg-orange-700
-        active:bg-orange-800
         disabled:opacity-50 disabled:cursor-not-allowed
-        focus:outline-none focus-visible:ring-2 focus-visible:ring-orange-500 focus-visible:ring-offset-2
+        focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-2
         ${className}
       `.trim()}
     >

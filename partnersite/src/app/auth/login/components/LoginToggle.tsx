@@ -35,7 +35,7 @@ export function LoginToggle({ value, onChange, disabled }: LoginToggleProps) {
           aria-selected={value === opt.value}
           disabled={disabled}
           onClick={() => onChange(opt.value)}
-          className={`relative z-10 flex-1 py-2.5 px-3 text-sm font-medium rounded-md transition-colors duration-200 disabled:opacity-50 disabled:cursor-not-allowed focus:outline-none focus-visible:ring-2 focus-visible:ring-orange-500 focus-visible:ring-offset-2 ${
+          className={`relative z-10 flex-1 py-2.5 px-3 text-sm font-medium rounded-md transition-colors duration-200 disabled:opacity-50 disabled:cursor-not-allowed focus:outline-none focus-visible:ring-2 focus-visible:ring-[#00A88F]/40 focus-visible:ring-offset-2 ${
             value === opt.value ? 'text-slate-900' : 'text-slate-500'
           }`}
         >

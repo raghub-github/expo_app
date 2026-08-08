@@ -4,6 +4,7 @@ import { useEffect } from 'react';
 import Link from 'next/link';
 import Image from 'next/image';
 import { LoginPromoSidebar, type AuthSidebarVariant } from './LoginPromoSidebar';
+import { GM_LINK } from './gatimitra-brand';
 import { PartnerPlatformAgreementNotice } from '@/components/legal/PartnerPlatformAgreementNotice';
 
 interface LoginPageShellProps {
@@ -18,13 +19,13 @@ interface LoginPageShellProps {
 
 export function LoginPageShell({
   children,
-  contentMaxWidthClass = 'max-w-md',
+  contentMaxWidthClass = 'max-w-2xl',
   headerPrompt = "Don\u2019t have an account?",
   headerLinkLabel = 'Sign Up',
   headerLinkHref = '/auth/register',
   sidebarVariant = 'login',
 }: LoginPageShellProps) {
-  const isWide = contentMaxWidthClass !== 'max-w-md';
+  const isWide = contentMaxWidthClass === 'max-w-none';
 
   // Prevent page-level scroll; only the middle pane may scroll if content truly overflows
   useEffect(() => {
@@ -41,10 +42,10 @@ export function LoginPageShell({
   }, []);
 
   return (
-    <div className="flex h-dvh max-h-dvh overflow-hidden bg-white">
+    <div className="flex h-dvh max-h-dvh overflow-hidden bg-slate-50">
       <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
         <header
-          className={`flex shrink-0 items-center justify-between gap-4 border-b border-slate-100 px-6 sm:px-8 lg:px-10 ${
+          className={`flex shrink-0 items-center justify-between gap-4 border-b border-slate-200/60 bg-white/80 px-6 backdrop-blur-sm sm:px-8 lg:px-10 ${
             isWide ? 'py-2.5' : 'py-4'
           }`}
         >
@@ -62,7 +63,7 @@ export function LoginPageShell({
             {headerPrompt}{' '}
             <Link
               href={headerLinkHref}
-              className="font-semibold text-orange-600 hover:text-orange-700 hover:underline"
+              className={`font-semibold hover:underline ${GM_LINK}`}
             >
               {headerLinkLabel}
             </Link>
@@ -70,20 +71,34 @@ export function LoginPageShell({
         </header>
 
         <div
-          className={`flex min-h-0 flex-1 overflow-x-hidden bg-white px-6 sm:px-8 lg:px-10 ${
-            isWide
-              ? 'items-stretch justify-stretch overflow-y-auto overscroll-y-contain py-3 sm:py-4'
-              : 'items-center justify-center overflow-y-auto overscroll-y-contain py-4 sm:py-6'
+          className={`flex min-h-0 flex-1 flex-col overflow-hidden ${
+            isWide ? 'bg-white' : 'bg-gradient-to-br from-slate-50 via-white to-[#E5F5F0]/50'
           }`}
         >
-          <div className={`w-full ${isWide ? 'flex min-h-full flex-col' : ''} ${contentMaxWidthClass}`}>
-            {children}
+          <div
+            className={`min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-y-contain ${
+              isWide
+                ? 'px-6 py-3 sm:px-8 sm:py-4 lg:px-10'
+                : 'px-4 py-5 sm:px-8 sm:py-6 lg:px-10'
+            }`}
+          >
+            <div
+              className={`mx-auto w-full ${isWide ? 'flex min-h-full flex-col pb-4' : 'pb-6 sm:pb-8'} ${contentMaxWidthClass}`}
+            >
+              {isWide ? (
+                children
+              ) : (
+                <div className="w-full rounded-2xl border-2 border-slate-200 bg-white px-6 py-6 sm:px-10 sm:py-8">
+                  {children}
+                </div>
+              )}
+            </div>
           </div>
         </div>
 
         <footer
-          className={`shrink-0 border-t border-slate-100 px-6 sm:px-8 lg:px-10 ${
-            isWide ? 'py-2' : 'py-3 sm:py-4'
+          className={`shrink-0 border-t border-slate-200/60 bg-white px-6 sm:px-8 lg:px-10 ${
+            isWide ? 'py-2.5' : 'py-3 sm:py-4'
           }`}
         >
           <PartnerPlatformAgreementNotice className={isWide ? 'leading-snug' : ''} />

@@ -35,19 +35,51 @@ export async function POST(req: NextRequest) {
     }
 
     const merchant = await validateMerchantFromSession(user);
-    if (!merchant.isValid || !merchant.parentMerchantId) {
-      return NextResponse.json(
-        { error: merchant.error ?? "merchant_required" },
-        { status: 403 }
-      );
-    }
+    let parentMerchantId =
+      merchant.isValid && merchant.parentMerchantId
+        ? String(merchant.parentMerchantId)
+        : null;
 
     let storeId: number | null = null;
     const storeParam =
       body.store_id != null ? String(body.store_id).trim() : "";
     if (storeParam) {
       const gate = await assertStoreAccess(storeParam);
-      if (gate.ok) storeId = gate.storeIdNum;
+      if (gate.ok) {
+        storeId = gate.storeIdNum;
+        // Platform staff / AM may pass store access without a merchant_parents session.
+        // Register the token against the store's parent so campaigns still resolve.
+        if (!parentMerchantId) {
+          const { createClient } = await import("@supabase/supabase-js");
+          const admin = createClient(
+            process.env.NEXT_PUBLIC_SUPABASE_URL || "",
+            process.env.SUPABASE_SERVICE_ROLE_KEY || "",
+            { auth: { autoRefreshToken: false, persistSession: false } },
+          );
+          const { data: storeParent } = await admin
+            .from("merchant_stores")
+            .select("parent_id")
+            .eq("id", gate.storeIdNum)
+            .maybeSingle();
+          if (storeParent?.parent_id != null) {
+            const { data: parent } = await admin
+              .from("merchant_parents")
+              .select("parent_merchant_id")
+              .eq("id", storeParent.parent_id)
+              .maybeSingle();
+            if (parent?.parent_merchant_id) {
+              parentMerchantId = String(parent.parent_merchant_id);
+            }
+          }
+        }
+      }
+    }
+
+    if (!parentMerchantId) {
+      return NextResponse.json(
+        { error: merchant.error ?? "merchant_required" },
+        { status: 403 },
+      );
     }
 
     const secret = process.env.BACKEND_SCHEDULE_TICK_SECRET?.trim();
@@ -70,7 +102,7 @@ export async function POST(req: NextRequest) {
       body: JSON.stringify({
         token,
         platform: body.platform ?? "web",
-        user_id: merchant.parentMerchantId,
+        user_id: parentMerchantId,
         role: "merchant",
         store_id: storeId,
         source: body.source ?? "partnersite",
