@@ -79,11 +79,15 @@ export function LoginPageShell({
             className={`min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-y-contain ${
               isWide
                 ? 'px-6 py-3 sm:px-8 sm:py-4 lg:px-10'
-                : 'px-4 py-5 sm:px-8 sm:py-6 lg:px-10'
+                : 'px-4 sm:px-8 lg:px-10'
             }`}
           >
             <div
-              className={`mx-auto w-full ${isWide ? 'flex min-h-full flex-col pb-4' : 'pb-6 sm:pb-8'} ${contentMaxWidthClass}`}
+              className={`mx-auto w-full ${
+                isWide
+                  ? 'flex min-h-full flex-col pb-4'
+                  : 'flex min-h-full flex-col justify-center py-6 sm:py-8'
+              } ${contentMaxWidthClass}`}
             >
               {isWide ? (
                 children

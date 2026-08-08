@@ -8,10 +8,11 @@
  *
  * Supabase Dashboard > Authentication > URL Configuration (for partner app at partner.gatimitra.com):
  * - Site URL: use https://partner.gatimitra.com (not gatimitra.com or localhost) so cookies and redirects use the correct domain.
- * - Redirect URLs: must include https://partner.gatimitra.com/auth/callback and http://localhost:3002/auth/callback.
+ * - Redirect URLs: must include https://partner.gatimitra.com/api/auth/callback and http://localhost:3002/api/auth/callback.
  */
 
 import { createClient } from "@/lib/supabase/client";
+import { getPartnerOAuthCallbackUrl } from "@/lib/auth/auth-redirect-url";
 
 export interface AuthResponse {
   success: boolean;
@@ -27,30 +28,6 @@ export interface AuthResponse {
 export const OTP_RATE_LIMIT_USER_MESSAGE =
   "OTP generation failed. Try again after 5 min.";
 
-/**
- * Base URL for OAuth redirect. Prefer the browser origin, but never use 0.0.0.0
- * (non-routable — causes ERR_ADDRESS_INVALID + PKCE cookie loss after Google/phone auth).
- */
-function getAuthRedirectBaseUrl(): string {
-  const sanitize = (raw: string): string => {
-    try {
-      const u = new URL(raw);
-      if (u.hostname === "0.0.0.0" || u.hostname === "::") {
-        u.hostname = "localhost";
-      }
-      return u.origin;
-    } catch {
-      return "http://localhost:3002";
-    }
-  };
-  if (typeof window !== "undefined") {
-    return sanitize(window.location.origin);
-  }
-  const fromEnv = (process.env.NEXT_PUBLIC_APP_URL || process.env.NEXT_PUBLIC_PARTNER_SITE_URL || "").trim();
-  if (fromEnv) return sanitize(fromEnv);
-  return "http://localhost:3002";
-}
-
 /** Redirect to Google sign-in (Supabase OAuth). Configure Google in Supabase Dashboard > Authentication > Providers. */
 export async function signInWithGoogle(redirectTo?: string): Promise<AuthResponse> {
   try {
@@ -58,8 +35,7 @@ export async function signInWithGoogle(redirectTo?: string): Promise<AuthRespons
       return { success: false, error: "Must be called from the client" };
     }
     const supabase = createClient();
-    const baseUrl = getAuthRedirectBaseUrl();
-    const redirectUrl = redirectTo || `${baseUrl}/auth/callback`;
+    const redirectUrl = redirectTo || getPartnerOAuthCallbackUrl();
     if (typeof window !== "undefined") {
       const existing = sessionStorage.getItem("auth_redirect");
       if (!existing) sessionStorage.setItem("auth_redirect", "/partners/all-stores");

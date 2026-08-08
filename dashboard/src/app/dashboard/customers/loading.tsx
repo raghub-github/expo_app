@@ -1,3 +1,5 @@
+import { DashboardPageLoader } from "@/components/ui/DashboardPageLoader";
+
 export default function CustomersLoading() {
-  return null;
+  return <DashboardPageLoader />;
 }

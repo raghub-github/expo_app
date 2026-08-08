@@ -8,7 +8,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { CheckCircle2, RefreshCw, Filter, User, Car } from "lucide-react";
 import { normalizePersonRideSearchType } from "@/lib/orders/person-ride-search";
 import { formatRiderOrderStatusDisplayLabel } from "@/lib/riders/rider-order-status-display";
-import { PersonRideTableRowsSkeleton } from "@/components/skeletons/PersonRideOrdersPageSkeleton";
+import { DashboardCenterSpinner } from "@/components/ui/DashboardPageLoader";
 import { loadClientSnapshot, saveClientSnapshot } from "@/lib/client-route-snapshot";
 
 const PAGE_BG = "#f3f5f7";
@@ -455,7 +455,11 @@ export default function PersonRideOrdersClient() {
           </thead>
           <tbody className="divide-y divide-gray-200" style={{ backgroundColor: CONTENT_BG }}>
             {showTableLoading ? (
-              <PersonRideTableRowsSkeleton rows={8} />
+              <tr>
+                <td colSpan={9}>
+                  <DashboardCenterSpinner className="min-h-[240px]" />
+                </td>
+              </tr>
             ) : isError ? (
               <tr>
                 <td colSpan={9} className="px-2 py-4 text-center text-xs text-red-600">

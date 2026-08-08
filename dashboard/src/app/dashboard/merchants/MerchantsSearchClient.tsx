@@ -4,8 +4,7 @@ import React, { useCallback, useEffect, useLayoutEffect, useRef, useState, useMe
 import { useAppSearchParams } from "@/hooks/useAppSearchParams";
 import { useRouter } from "next/navigation";
 import { Store, ChevronRight, CheckCircle, Clock, XCircle, Sparkles, Ban, Pencil, Building2 } from "lucide-react";
-import { StoreDashboardSkeleton } from "./stores/[id]/StoreDashboardSkeleton";
-import { MerchantParentSkeleton } from "./MerchantParentSkeleton";
+import { DashboardCenterSpinner } from "@/components/ui/DashboardPageLoader";
 import { useMerchantsSearch } from "@/context/MerchantsSearchContext";
 import { useMerchantStoresStatsQuery } from "@/hooks/queries/useMerchantStoreQueries";
 import {
@@ -845,9 +844,7 @@ export function MerchantsSearchClient({
         <>
       {/* Merchant portal + list search: show skeleton only while loading; no border, no "Not Found" until API completes */}
       {showSkeleton ? (
-        <div className="rounded-lg min-w-0 border-0 border-none shadow-none outline-none ring-0">
-          {filter === "child" ? <StoreDashboardSkeleton /> : <MerchantParentSkeleton />}
-        </div>
+        <DashboardCenterSpinner />
       ) : (
         <div className="rounded-lg border border-gray-200 bg-white p-4">
         <>
@@ -912,14 +909,7 @@ export function MerchantsSearchClient({
           {/* Stats cards row - below the filter */}
           <>
             {statsLoading ? (
-              <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-7">
-                {[1, 2, 3, 4, 5, 6, 7].map((i) => (
-                  <div
-                    key={i}
-                    className={`animate-pulse rounded-lg border border-gray-200 bg-gray-100 ${CARD_MIN_HEIGHT}`}
-                  />
-                ))}
-              </div>
+              <DashboardCenterSpinner className="mt-2 min-h-[120px]" />
             ) : (
               <StatCardsRow cards={statCards} category={category} onCategoryClick={handleCategoryClick} />
             )}

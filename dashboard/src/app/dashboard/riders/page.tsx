@@ -25,6 +25,7 @@ import type { RiderSummaryParams } from '@/lib/queryKeys';
 import Link from 'next/link';
 import { CheckCircle, Circle, Filter, ChevronDown, ChevronUp, ChevronLeft, ChevronRight, ShieldCheck, ShieldOff, Clock, User, Wallet, Lock, Unlock, History, Plus, RotateCcw, RefreshCw, MoreVertical, Banknote, Trash2, Check, X, ClipboardList, Search, Download, ShoppingBag, Package } from 'lucide-react';
 import { LoadingSpinner } from '@/components/ui/LoadingSpinner';
+import { DashboardCenterSpinner } from '@/components/ui/DashboardPageLoader';
 import { TablePagination } from '@/components/riders/TablePagination';
 import { AddAmountModal } from '@/components/riders/AddAmountModal';
 import { RiderLogoutSessionInline } from '@/components/riders/RiderLogoutSessionInline';
@@ -1258,7 +1259,7 @@ export default function RidersPage() {
 
           {/* Recent Data Sections: Orders, Tickets, Penalties = full width; Withdrawals and rest = two per row. Use displaySummary (query cache ?? context) for smooth back-navigation. */}
           {!displaySummary && effectiveSummaryLoading ? (
-            <RiderSummarySectionsSkeleton />
+            <DashboardCenterSpinner className="min-h-[320px]" />
           ) : displaySummary && (() => {
             type SectionId = 'orders' | 'withdrawals' | 'tickets' | 'penalties' | 'blacklist' | 'metrics' | 'walletFreeze';
             const summary = displaySummary;
@@ -2958,38 +2959,6 @@ export default function RidersPage() {
           })()}
         </div>
       )}
-    </div>
-  );
-}
-
-function RiderSummarySectionsSkeleton() {
-  const block = (key: string, tall = false) => (
-    <div
-      key={key}
-      className="rounded-2xl border border-gray-200/90 bg-white p-4 sm:p-5 lg:p-6 shadow-sm ring-1 ring-gray-900/5 animate-pulse"
-    >
-      <div className="flex items-center gap-2 mb-4">
-        <div className="h-5 w-36 bg-gray-200 rounded" />
-        <div className="h-7 w-7 bg-gray-100 rounded border border-gray-200" />
-      </div>
-      <div className={`space-y-2 ${tall ? "min-h-[12rem]" : "min-h-[8rem]"}`}>
-        {[1, 2, 3].map((i) => (
-          <div key={i} className="h-10 bg-gray-100 rounded-lg" />
-        ))}
-      </div>
-    </div>
-  );
-
-  return (
-    <div className="flex flex-col gap-4 sm:gap-5 lg:gap-6 w-full min-w-0">
-      {block("orders", true)}
-      {block("tickets", true)}
-      {block("penalties", true)}
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 sm:gap-5 lg:gap-6">
-        {block("withdrawals")}
-        {block("blacklist")}
-        <div className="sm:col-span-2">{block("metrics", true)}</div>
-      </div>
     </div>
   );
 }

@@ -12,8 +12,8 @@ import {
 import type { CustomerAddressRow, CustomerActivityDay, CustomerOrderStats } from "@/lib/db/operations/customers";
 import {
   CustomerDetailPremiumView,
-  CustomerDetailSkeleton,
 } from "@/components/customers/CustomerDetailPremiumView";
+import { DashboardCenterSpinner } from "@/components/ui/DashboardPageLoader";
 import { CustomerBlockSideSheet } from "@/components/customers/CustomerBlockSideSheet";
 import type {
   CustomerServiceBlockHistoryRow,
@@ -577,7 +577,7 @@ function CustomerDetailsContent() {
   }, [customerTxns, panelSearchNeedle]);
 
   if (loading) {
-    return <CustomerDetailSkeleton />;
+    return <DashboardCenterSpinner className="min-h-[320px]" />;
   }
 
   if (error || !customer) {
@@ -771,7 +771,7 @@ function CustomerDetailsContent() {
 
 export default function CustomerDetailsPage() {
   return (
-    <Suspense fallback={<CustomerDetailSkeleton />}>
+    <Suspense fallback={<DashboardCenterSpinner className="min-h-[320px]" />}>
       <CustomerDetailsContent />
     </Suspense>
   );

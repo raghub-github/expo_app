@@ -82,7 +82,7 @@ function LoginPageContent() {
 
   useEffect(() => {
     if (typeof window === 'undefined' || !oauthCode) return;
-    const callbackUrl = new URL('/auth/callback', window.location.origin);
+    const callbackUrl = new URL('/api/auth/callback', window.location.origin);
     searchParams?.forEach((value, key) => callbackUrl.searchParams.set(key, value));
     router.replace(callbackUrl.pathname + '?' + callbackUrl.searchParams.toString());
   }, [oauthCode, router, searchParams]);

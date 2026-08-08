@@ -6,7 +6,7 @@ import { useGeoChildrenQuery, useGeoToggleMutation } from "@/store/api/geoAdminA
 import type { GeoChildRow } from "@/lib/geo/geo-shared";
 import type { GeoHierarchyLevel } from "@/store/api/geoAdminApi";
 import { RefreshCw } from "lucide-react";
-import { TreeSkeletonBlock } from "./Loader";
+import { DashboardCenterSpinner } from "@/components/ui/DashboardPageLoader";
 import { cn } from "@/lib/utils";
 
 export type GeoTreeFilters = {
@@ -73,7 +73,7 @@ function GeoTreeNode(props: {
       />
       {expanded && props.row.has_children && (
         <div className="relative ml-3 border-l-2 border-teal-100/80 pl-1 sm:ml-4">
-          {showChildLoader && <TreeSkeletonBlock rows={5} depth={props.depth + 1} />}
+          {showChildLoader ? <DashboardCenterSpinner className="min-h-[160px] py-4" /> : null}
           {data?.rows.map((child: GeoChildRow) => (
             <GeoTreeNode
               key={`${child.kind}-${child.id}`}
@@ -142,7 +142,7 @@ export const GeoTree = React.memo(function GeoTree(props: {
       <div className="relative max-h-[min(70vh,720px)] overflow-auto">
         <div className="p-2 sm:p-3">
           {rootLoading ? (
-            <TreeSkeletonBlock rows={10} depth={0} />
+            <DashboardCenterSpinner className="min-h-[320px]" />
           ) : (
             data?.rows.map((row: GeoChildRow) => (
               <GeoTreeNode

@@ -4,24 +4,19 @@ import { validateMerchantFromSession } from "@/lib/auth/validate-merchant";
 import { initializeSession } from "@/lib/auth/session-manager";
 import { deviceIdCookie } from "@/lib/auth/auth-cookie-names";
 import { generateDeviceId, replaceSessionForDevice, clientIpFromRequest, deviceLabelFromUserAgent } from "@/lib/auth/merchant-session-db";
+import {
+  getPartnerAuthRedirectOriginFromRequest,
+  safeSameOriginPath,
+} from "@/lib/auth/auth-redirect-url";
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder.supabase.co";
 const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "placeholder-anon-key";
 
 const isProduction = process.env.NODE_ENV === "production";
 
-/** Browsers cannot open 0.0.0.0 — map to localhost so post-auth redirects work. */
-function sanitizeOrigin(origin: string): string {
-  try {
-    const u = new URL(origin);
-    if (u.hostname === "0.0.0.0" || u.hostname === "::") {
-      u.hostname = "localhost";
-    }
-    return u.origin;
-  } catch {
-    return "http://localhost:3002";
-  }
-}
+// The 0.0.0.0 -> localhost mapping this file used to do locally now lives in
+// sanitizeAuthOrigin() inside lib/auth/auth-redirect-url.ts, which
+// getPartnerAuthRedirectOriginFromRequest() already applies to `origin` below.
 
 /**
  * Production-safe cookie options so cookies work on HTTPS and are sent on same-site requests.
@@ -52,21 +47,9 @@ function applyCookieOptions(
  */
 export async function GET(request: NextRequest) {
   const url = new URL(request.url);
-  const origin = sanitizeOrigin(url.origin);
+  const origin = getPartnerAuthRedirectOriginFromRequest(request.url, request.headers);
   const code = url.searchParams.get("code");
-  let next = url.searchParams.get("next") || "/partners/all-stores";
-
-  // Ensure next is same-origin path (no open redirect)
-  if (next.startsWith("http")) {
-    try {
-      const nextUrl = new URL(next);
-      if (sanitizeOrigin(nextUrl.origin) !== origin) next = "/partners/all-stores";
-      else next = nextUrl.pathname + nextUrl.search;
-    } catch {
-      next = "/partners/all-stores";
-    }
-  }
-  if (!next.startsWith("/")) next = "/partners/all-stores";
+  const next = safeSameOriginPath(url.searchParams.get("next"), origin);
 
   if (!code) {
     console.warn("[auth/callback] GET called without code");

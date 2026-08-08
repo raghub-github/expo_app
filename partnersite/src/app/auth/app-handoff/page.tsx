@@ -4,6 +4,7 @@ import { Suspense, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { getOrCreateDeviceId } from "@/lib/auth/device-id-client";
 import { Loader2 } from "lucide-react";
+import { safeSameOriginPath } from "@/lib/auth/auth-redirect-url";
 
 function AppHandoffContent() {
   const searchParams = useSearchParams();
@@ -55,7 +56,7 @@ function AppHandoffContent() {
           throw new Error(cookieJson.error || "Could not start partner session.");
         }
 
-        const next = redeemJson.next?.startsWith("/") ? redeemJson.next : "/partners/all-stores";
+        const next = safeSameOriginPath(redeemJson.next, window.location.origin);
         window.location.replace(next);
       } catch (e) {
         setError(e instanceof Error ? e.message : "Could not open partner portal.");

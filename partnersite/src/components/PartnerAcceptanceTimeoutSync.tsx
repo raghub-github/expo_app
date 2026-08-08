@@ -10,19 +10,24 @@ import {
   usePartnerSelectedStore,
 } from '@/lib/partner-selected-store';
 import { invalidatePartnerPendingCountCache } from '@/lib/partner-pending-count-fetch';
+import { useMerchantSession } from '@/context/MerchantSessionContext';
 
 const SYNC_SESSION_PREFIX = 'partner-acceptance-sync-v2:';
-const MAX_AUTH_RETRIES = 3;
+const MAX_AUTH_RETRIES = 5;
 
 function syncSessionKey(storeId: string): string {
   return `${SYNC_SESSION_PREFIX}${storeId.trim()}`;
 }
 
 function PartnerAcceptanceTimeoutSyncInner({ restaurantId }: { restaurantId?: string }) {
+  const merchantSession = useMerchantSession();
   const { storeId, ready: storeReady } = usePartnerSelectedStore(restaurantId);
   const runningRef = useRef(false);
+  const sessionReady =
+    !!merchantSession && !merchantSession.isLoading && merchantSession.isAuthenticated;
 
   const runSync = useCallback(async () => {
+    if (!sessionReady) return;
     const sid = storeId || readPartnerSelectedStoreId(restaurantId);
     if (!isValidPartnerStoreId(sid)) return;
     if (runningRef.current) return;
@@ -36,7 +41,7 @@ function PartnerAcceptanceTimeoutSyncInner({ restaurantId }: { restaurantId?: st
       for (let attempt = 0; attempt < MAX_AUTH_RETRIES; attempt += 1) {
         if (attempt > 0) {
           // Auth cookies / merchant session can lag right after login or handoff.
-          await new Promise((r) => window.setTimeout(r, 700 * attempt));
+          await new Promise((r) => window.setTimeout(r, 900 * attempt));
         }
 
         const res = await fetch(
@@ -90,16 +95,16 @@ function PartnerAcceptanceTimeoutSyncInner({ restaurantId }: { restaurantId?: st
     } finally {
       runningRef.current = false;
     }
-  }, [restaurantId, storeId]);
+  }, [restaurantId, sessionReady, storeId]);
 
   useEffect(() => {
-    if (!storeReady) return;
+    if (!storeReady || !sessionReady) return;
     // Defer slightly so auth cookies from OTP / handoff settle before the gate runs.
     const t = window.setTimeout(() => {
       void runSync();
-    }, 800);
+    }, 1200);
     return () => window.clearTimeout(t);
-  }, [storeReady, runSync]);
+  }, [storeReady, sessionReady, runSync]);
 
   useEffect(() => {
     const onStore = () => {

@@ -175,12 +175,25 @@ export async function assertStoreAccess(storeIdParam: string | null): Promise<As
   // Canonical ownership: session merchant parent owns this store.
   // Prefer parent_id match over re-joining auth fields (avoids false 403s when
   // email/phone formatting differs but supabase_user_id already resolved the parent).
-  if (
-    validation.isValid &&
-    validation.merchantParentId != null &&
-    Number(storeRow.parent_id) === Number(validation.merchantParentId)
-  ) {
-    return { ok: true, storeIdNum }
+  if (validation.isValid && validation.merchantParentId != null) {
+    const parentId = Number(validation.merchantParentId);
+    if (Number(storeRow.parent_id) === parentId) {
+      return { ok: true, storeIdNum };
+    }
+
+    // Belt-and-suspenders: confirm ownership with a direct parent+store query.
+    const { data: ownedRow } = await getSupabase()
+      .from('merchant_stores')
+      .select('id')
+      .eq('store_id', storePublicId)
+      .eq('parent_id', parentId)
+      .maybeSingle();
+    if (ownedRow?.id != null) {
+      const ownedId = Number(ownedRow.id);
+      if (Number.isFinite(ownedId) && ownedId > 0) {
+        return { ok: true, storeIdNum: ownedId };
+      }
+    }
   }
 
   // Assigned area manager (same rule as getMerchantStoreById).
