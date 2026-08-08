@@ -11,7 +11,8 @@ import {
 } from '@/lib/partner-selected-store';
 import { invalidatePartnerPendingCountCache } from '@/lib/partner-pending-count-fetch';
 
-const SYNC_SESSION_PREFIX = 'partner-acceptance-sync:';
+const SYNC_SESSION_PREFIX = 'partner-acceptance-sync-v2:';
+const MAX_AUTH_RETRIES = 3;
 
 function syncSessionKey(storeId: string): string {
   return `${SYNC_SESSION_PREFIX}${storeId.trim()}`;
@@ -29,40 +30,60 @@ function PartnerAcceptanceTimeoutSyncInner({ restaurantId }: { restaurantId?: st
 
     runningRef.current = true;
     try {
-      const res = await fetch(
-        `/api/merchant/sync-acceptance-timeout?store_id=${encodeURIComponent(sid)}`,
-        { method: 'POST', credentials: 'include', cache: 'no-store' }
-      );
-      const data = (await res.json().catch(() => ({}))) as {
-        cancelled?: number;
-        error?: string;
-      };
+      let lastStatus = 0;
+      let data: { cancelled?: number; error?: string } = {};
 
-      // Always mark attempted for this tab — avoids 403 spam when the session
-      // cannot own the store (staff preview / stale cookie) while the dashboard
-      // still works via service-role store-operations.
+      for (let attempt = 0; attempt < MAX_AUTH_RETRIES; attempt += 1) {
+        if (attempt > 0) {
+          // Auth cookies / merchant session can lag right after login or handoff.
+          await new Promise((r) => window.setTimeout(r, 700 * attempt));
+        }
+
+        const res = await fetch(
+          `/api/merchant/sync-acceptance-timeout?store_id=${encodeURIComponent(sid)}`,
+          { method: 'POST', credentials: 'include', cache: 'no-store' },
+        );
+        data = (await res.json().catch(() => ({}))) as {
+          cancelled?: number;
+          error?: string;
+        };
+        lastStatus = res.status;
+
+        if (res.ok) {
+          if (typeof window !== 'undefined') {
+            sessionStorage.setItem(syncSessionKey(sid), String(Date.now()));
+          }
+          const cancelled = Number(data.cancelled ?? 0);
+          if (cancelled > 0) {
+            const msg =
+              cancelled === 1
+                ? '1 order was auto-cancelled (acceptance window expired)'
+                : `${cancelled} orders were auto-cancelled (acceptance window expired)`;
+            toast.info(msg, { duration: 8000 });
+            invalidatePartnerPendingCountCache();
+            window.dispatchEvent(new CustomEvent(PARTNER_PENDING_ORDERS_REFRESH));
+            window.dispatchEvent(new CustomEvent('partner-incoming-order-rescan'));
+            window.dispatchEvent(new CustomEvent('partner-food-orders-refresh'));
+          }
+          return;
+        }
+
+        // Retry auth/ownership races; permanent denials after retries still mark
+        // the tab so we do not spam the console every focus.
+        if (res.status !== 401 && res.status !== 403) {
+          console.warn('[acceptance-timeout-sync]', res.status, data.error ?? 'failed');
+          if (typeof window !== 'undefined') {
+            sessionStorage.setItem(syncSessionKey(sid), String(Date.now()));
+          }
+          return;
+        }
+      }
+
       if (typeof window !== 'undefined') {
         sessionStorage.setItem(syncSessionKey(sid), String(Date.now()));
       }
-
-      if (!res.ok) {
-        if (res.status !== 401 && res.status !== 403) {
-          console.warn('[acceptance-timeout-sync]', res.status, data.error ?? 'failed');
-        }
-        return;
-      }
-
-      const cancelled = Number(data.cancelled ?? 0);
-      if (cancelled > 0) {
-        const msg =
-          cancelled === 1
-            ? '1 order was auto-cancelled (acceptance window expired)'
-            : `${cancelled} orders were auto-cancelled (acceptance window expired)`;
-        toast.info(msg, { duration: 8000 });
-        invalidatePartnerPendingCountCache();
-        window.dispatchEvent(new CustomEvent(PARTNER_PENDING_ORDERS_REFRESH));
-        window.dispatchEvent(new CustomEvent('partner-incoming-order-rescan'));
-        window.dispatchEvent(new CustomEvent('partner-food-orders-refresh'));
+      if (lastStatus !== 401 && lastStatus !== 403) {
+        console.warn('[acceptance-timeout-sync]', lastStatus, data.error ?? 'failed');
       }
     } catch {
       /* ignore */

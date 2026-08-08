@@ -4,13 +4,14 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { usePathname } from "next/navigation";
 import { toast } from "sonner";
 import {
+  installFirebasePushErrorGuard,
   onBrowserPushForeground,
   registerBrowserPushToken,
 } from "@/lib/browser-push/firebase-web";
 import {
   isPushPermanentlyDismissed,
   isPushRegistered,
-  isPushSoftDismissedRecently,
+  isPushSessionDismissed,
   markPushRegistered,
 } from "@/lib/browser-push/partner-push-state";
 import { PARTNER_SELECTED_STORE_CHANGED } from "@/lib/partner-selected-store";
@@ -57,17 +58,18 @@ export function PartnerBrowserPushBootstrap() {
 
   const evaluateModalState = useCallback(async () => {
     if (typeof window === "undefined" || !("Notification" in window)) return;
+    if (isPushSessionDismissed()) return;
 
     if (Notification.permission === "granted") {
       const ok = await tryRegister();
       if (ok) return;
+      if (isPushSessionDismissed()) return;
 
-      // Permission is already on — always offer completion so reload does not strand the user.
       setModalMode("registration");
       return;
     }
 
-    if (isPushPermanentlyDismissed() || isPushSoftDismissedRecently()) return;
+    if (isPushPermanentlyDismissed()) return;
     setModalMode("permission");
   }, [tryRegister]);
 
@@ -79,6 +81,8 @@ export function PartnerBrowserPushBootstrap() {
       return;
     }
 
+    installFirebasePushErrorGuard();
+
     if (!registerAttemptRef.current) {
       registerAttemptRef.current = true;
       window.setTimeout(() => {
@@ -87,6 +91,7 @@ export function PartnerBrowserPushBootstrap() {
     }
 
     const onStoreChange = () => {
+      if (Notification.permission !== "granted") return;
       void tryRegister();
     };
     window.addEventListener(PARTNER_SELECTED_STORE_CHANGED, onStoreChange);
@@ -94,12 +99,15 @@ export function PartnerBrowserPushBootstrap() {
     const onFocus = () => {
       if (Notification.permission !== "granted") return;
       if (isPushRegistered()) return;
+      if (isPushSessionDismissed()) return;
       void evaluateModalState();
     };
     window.addEventListener("focus", onFocus);
     document.addEventListener("visibilitychange", onFocus);
 
-    const unsub = onBrowserPushForeground((payload) => {
+    let unsub: () => void = () => {};
+    if (Notification.permission === "granted") {
+      unsub = onBrowserPushForeground((payload) => {
       const title =
         payload.notification?.title ||
         (typeof payload.data?.title === "string" ? payload.data.title : null) ||
@@ -131,7 +139,8 @@ export function PartnerBrowserPushBootstrap() {
           },
         },
       });
-    });
+      });
+    }
 
     return () => {
       window.removeEventListener(PARTNER_SELECTED_STORE_CHANGED, onStoreChange);

@@ -13,6 +13,14 @@
 importScripts("https://www.gstatic.com/firebasejs/10.13.2/firebase-app-compat.js");
 importScripts("https://www.gstatic.com/firebasejs/10.13.2/firebase-messaging-compat.js");
 
+self.addEventListener("install", () => {
+  self.skipWaiting();
+});
+
+self.addEventListener("activate", (event) => {
+  event.waitUntil(self.clients.claim());
+});
+
 // Placeholder-substituted at build time. If you see the literal strings below
 // in prod, the build step didn't replace them — check your env vars.
 firebase.initializeApp({

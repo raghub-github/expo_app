@@ -61,6 +61,7 @@ import {
   isAlertAudioBlocked,
   playFallbackBeep,
   queueBlockedChime,
+  resolveAlertSoundSrc,
   subscribeAlertAudioBlocked,
   unlockAlertAudioNow,
 } from '@/lib/partner-alert-audio';
@@ -191,7 +192,8 @@ type ChimeOutcome = 'played' | 'error' | 'blocked' | 'cancelled';
 
 async function playChimeOnce(src: string, opts: ChimeOpts): Promise<ChimeOutcome> {
   if (opts.getRunId() !== opts.runId) return 'cancelled';
-  const audio = new Audio(src);
+  const resolvedSrc = await resolveAlertSoundSrc(src);
+  const audio = new Audio(resolvedSrc);
   audio.loop = false;
   audio.setAttribute('playsinline', '');
   audio.preload = 'auto';

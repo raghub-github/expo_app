@@ -29,21 +29,8 @@ export async function partnerLogoutLocal(options?: {
   }
 
   try {
-    // Best-effort: drop this browser's FCM web token from backend before cookies clear.
-    const { getMessaging, getToken, isSupported } = await import("firebase/messaging");
-    const { getApps } = await import("firebase/app");
-    if (getApps().length > 0 && (await isSupported())) {
-      const messaging = getMessaging();
-      const token = await getToken(messaging).catch(() => null);
-      if (token) {
-        await fetch("/api/notifications/browser-tokens", {
-          method: "DELETE",
-          credentials: "include",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ token }),
-        }).catch(() => undefined);
-      }
-    }
+    const { unregisterBrowserPushToken } = await import("@/lib/browser-push/firebase-web");
+    await unregisterBrowserPushToken();
   } catch {
     /* ignore — firebase may be unavailable */
   }

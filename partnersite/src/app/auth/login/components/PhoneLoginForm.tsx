@@ -1,6 +1,7 @@
 'use client';
 
 import { Loader2, MessageSquare, PencilLine, ArrowRight } from 'lucide-react';
+import { formatCountdownMmSs } from '@/lib/auth/format-countdown';
 import { PhoneNumberInput } from './PhoneNumberInput';
 import { PrimaryButton } from './PrimaryButton';
 import { OTPInputComponent } from './OTPInputComponent';
@@ -75,21 +76,21 @@ export function PhoneLoginForm({
   }
 
   return (
-    <form onSubmit={(e) => e.preventDefault()} className="space-y-5">
-      <div className="rounded-xl border border-orange-100 bg-orange-50/60 px-4 py-3.5">
+    <form onSubmit={(e) => e.preventDefault()} className="space-y-4">
+      <div className="rounded-xl border border-[#00A88F]/20 bg-[#E5F5F0]/80 px-4 py-3">
         <div className="flex items-start gap-3">
-          <span className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-orange-100 text-orange-600">
+          <span className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[#00A88F]/15 text-[#00A88F]">
             <MessageSquare className="h-4 w-4" aria-hidden />
           </span>
           <div className="min-w-0 flex-1">
             <p className="text-sm font-semibold text-slate-800">OTP sent to +91 {maskPhone(phone)}</p>
-            <p className="mt-0.5 text-xs text-slate-500">Enter the 6-digit code</p>
+            <p className="mt-0.5 text-xs text-slate-500">Enter the 6-digit code below</p>
           </div>
           <button
             type="button"
             onClick={onChangeNumber}
             disabled={loading}
-            className="inline-flex shrink-0 items-center gap-1 text-xs font-semibold text-orange-600 hover:text-orange-700 disabled:opacity-50"
+            className="inline-flex shrink-0 items-center gap-1 text-xs font-semibold text-[#00A88F] hover:text-[#009078] disabled:opacity-50"
           >
             <PencilLine className="h-3.5 w-3.5" aria-hidden />
             Edit
@@ -97,8 +98,7 @@ export function PhoneLoginForm({
         </div>
       </div>
 
-      <div className="space-y-3">
-        <p className="text-center text-sm font-medium text-slate-700">Enter OTP</p>
+      <div id="otp-input-section" className="space-y-2.5 scroll-mt-4">
         <OTPInputComponent
           value={otp}
           onChange={onOtpChange}
@@ -108,22 +108,22 @@ export function PhoneLoginForm({
       </div>
 
       {loading ? (
-        <div className="flex items-center justify-center gap-2 rounded-xl bg-orange-50 py-3.5 text-sm font-medium text-orange-700">
+        <div className="flex items-center justify-center gap-2 rounded-xl bg-[#E5F5F0] py-3 text-sm font-medium text-[#006B4F]">
           <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
           Verifying OTP…
         </div>
       ) : null}
 
-      <p className="text-center text-sm text-slate-600">
+      <p className="pt-0.5 text-center text-sm text-slate-600">
         Didn&apos;t receive the code?{' '}
         {resendCooldown > 0 ? (
-          <span className="text-slate-500">Resend in {resendCooldown}s</span>
+          <span className="text-slate-500">Resend in {formatCountdownMmSs(resendCooldown)}</span>
         ) : (
           <button
             type="button"
             onClick={onResendOtp}
             disabled={loading}
-            className="font-semibold text-orange-600 hover:text-orange-700 hover:underline disabled:opacity-50"
+            className="font-semibold text-[#00A88F] hover:text-[#009078] hover:underline disabled:opacity-50"
           >
             Resend OTP
           </button>

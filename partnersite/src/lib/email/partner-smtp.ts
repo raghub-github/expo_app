@@ -2,6 +2,11 @@
  * Shared Zoho/SMTP helpers for partner registration emails.
  */
 
+import {
+  buildPartnerRegisterOtpEmailHtml,
+  partnerOtpEmailSubject,
+} from '@/lib/email/partner-auth-otp-email-template';
+
 export type PartnerSmtpConfig = {
   smtpUser: string;
   smtpPass: string;
@@ -155,6 +160,57 @@ export async function sendParentAccountCreatedEmail(args: {
   } catch (err) {
     console.error("[auth/register] Parent welcome email failed:", err);
     return { sent: false, reason: "send_failed" };
+  }
+}
+
+/** OTP email for partner signup / login (Supabase Send Email hook or direct send). */
+export async function sendPartnerRegisterOtpEmail(args: {
+  toEmail: string;
+  token: string;
+  emailActionType?: string;
+}): Promise<{ sent: boolean; reason?: string }> {
+  const to = (args.toEmail || '').trim().toLowerCase();
+  const token = (args.token || '').trim();
+  if (!to || !to.includes('@')) {
+    return { sent: false, reason: 'missing_email' };
+  }
+  if (!token) {
+    return { sent: false, reason: 'missing_token' };
+  }
+
+  const cfg = getPartnerSmtpConfig();
+  if (!cfg) {
+    console.warn('[send-email] SMTP not configured; skipping custom OTP email');
+    return { sent: false, reason: 'smtp_not_configured' };
+  }
+
+  const subject = partnerOtpEmailSubject(args.emailActionType);
+  const htmlBody = buildPartnerRegisterOtpEmailHtml(token, args.emailActionType);
+  const textBody = [
+    subject,
+    '',
+    `Your verification code: ${token.replace(/\s/g, '')}`,
+    '',
+    'Enter this code on the GatiMitra Partner registration page.',
+    'Do not share this code with anyone.',
+    '',
+    'Need help? support@gatimitra.com',
+  ].join('\n');
+
+  try {
+    const transporter = await createPartnerMailTransport(cfg);
+    await transporter.sendMail({
+      from: cfg.fromName ? `${cfg.fromName} <${cfg.fromEmail}>` : cfg.fromEmail,
+      to,
+      replyTo: cfg.fromEmail,
+      subject,
+      text: textBody,
+      html: htmlBody,
+    });
+    return { sent: true };
+  } catch (err) {
+    console.error('[send-email] Partner OTP email failed:', err);
+    return { sent: false, reason: 'send_failed' };
   }
 }
 

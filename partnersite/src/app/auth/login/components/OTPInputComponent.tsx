@@ -91,7 +91,7 @@ export function OTPInputComponent({
           onPaste={handlePaste}
           onKeyDown={(e) => handleKeyDown(index, e)}
           onInput={(e) => handleInput(index, e)}
-          className="w-10 h-12 sm:w-11 sm:h-[3.25rem] text-center text-lg font-semibold rounded-xl border border-slate-200 bg-white text-slate-900 shadow-sm transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-orange-500/30 focus:border-orange-400 disabled:opacity-50"
+          className="w-10 h-12 sm:w-11 sm:h-[3.25rem] text-center text-lg font-semibold rounded-xl border border-slate-200 bg-white text-slate-900 shadow-sm transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-[#00A88F]/30 focus:border-[#00A88F] disabled:opacity-50"
           aria-label={`Digit ${index + 1} of 6`}
         />
       ))}

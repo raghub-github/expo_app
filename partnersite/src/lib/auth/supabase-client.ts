@@ -23,6 +23,10 @@ export interface AuthResponse {
   };
 }
 
+/** Shown to merchants when Supabase email OTP rate limit is hit. */
+export const OTP_RATE_LIMIT_USER_MESSAGE =
+  "OTP generation failed. Try again after 5 min.";
+
 /**
  * Base URL for OAuth redirect. Prefer the browser origin, but never use 0.0.0.0
  * (non-routable — causes ERR_ADDRESS_INVALID + PKCE cookie loss after Google/phone auth).

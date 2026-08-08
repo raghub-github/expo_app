@@ -143,16 +143,27 @@ export async function assertStoreAccess(storeIdParam: string | null): Promise<As
     return { ok: false, error: 'Not authenticated', status: 401 }
   }
 
-  // Super-admins / admins / support / managers can browse any store — resolve
-  // the internal id directly.
-  if (await findSystemUserOverride(user.email ?? null)) {
-    const { data: storeRow } = await getSupabase()
-      .from('merchant_stores')
-      .select('id')
-      .eq('store_id', String(storeIdParam).trim())
-      .maybeSingle()
-    if (storeRow?.id) return { ok: true, storeIdNum: Number(storeRow.id), isPlatformStaff: true }
+  const storePublicId = String(storeIdParam).trim()
+  const { data: storeRow, error: storeError } = await getSupabase()
+    .from('merchant_stores')
+    .select('id, parent_id, area_manager_id')
+    .eq('store_id', storePublicId)
+    .maybeSingle()
+
+  if (storeError) {
+    return { ok: false, error: 'Store lookup failed', status: 500 }
+  }
+  if (!storeRow?.id) {
     return { ok: false, error: 'Store not found', status: 404 }
+  }
+  const storeIdNum = Number(storeRow.id)
+  if (!Number.isFinite(storeIdNum) || storeIdNum < 1) {
+    return { ok: false, error: 'Store not found', status: 404 }
+  }
+
+  // Super-admins / admins / support / managers can browse any store.
+  if (await findSystemUserOverride(user.email ?? null)) {
+    return { ok: true, storeIdNum, isPlatformStaff: true }
   }
 
   const validation = await validateMerchantFromSession({
@@ -160,26 +171,41 @@ export async function assertStoreAccess(storeIdParam: string | null): Promise<As
     email: user.email ?? null,
     phone: user.phone ?? null,
   })
-  if (!validation.isValid) {
-    return { ok: false, error: validation.error ?? 'Merchant not found', status: 403 }
+
+  // Canonical ownership: session merchant parent owns this store.
+  // Prefer parent_id match over re-joining auth fields (avoids false 403s when
+  // email/phone formatting differs but supabase_user_id already resolved the parent).
+  if (
+    validation.isValid &&
+    validation.merchantParentId != null &&
+    Number(storeRow.parent_id) === Number(validation.merchantParentId)
+  ) {
+    return { ok: true, storeIdNum }
   }
-  const owned = await findStoreOwnedBySessionUser(String(storeIdParam), user)
+
+  // Assigned area manager (same rule as getMerchantStoreById).
+  try {
+    const { getAreaManagerRecordIdForAuthUser } = await import(
+      '@/lib/merchant/get-merchant-store'
+    )
+    const amId = await getAreaManagerRecordIdForAuthUser(getSupabase(), user.email ?? null)
+    const storeAmId =
+      storeRow.area_manager_id != null ? Number(storeRow.area_manager_id) : null
+    if (amId != null && storeAmId != null && amId === storeAmId) {
+      return { ok: true, storeIdNum }
+    }
+  } catch {
+    /* ignore AM lookup failures */
+  }
+
+  // Legacy ownership join (phone / email edge cases).
+  const owned = await findStoreOwnedBySessionUser(storePublicId, user)
   if (owned) {
     return { ok: true, storeIdNum: owned.id }
   }
 
-  const { data: storeExists, error: storeError } = await getSupabase()
-    .from('merchant_stores')
-    .select('id')
-    .eq('store_id', String(storeIdParam).trim())
-    .maybeSingle()
-
-  if (storeError) {
-    return { ok: false, error: 'Store lookup failed', status: 500 }
-  }
-
-  if (!storeExists?.id) {
-    return { ok: false, error: 'Store not found', status: 404 }
+  if (!validation.isValid) {
+    return { ok: false, error: validation.error ?? 'Merchant not found', status: 403 }
   }
 
   return { ok: false, error: 'Store does not belong to this merchant', status: 403 }

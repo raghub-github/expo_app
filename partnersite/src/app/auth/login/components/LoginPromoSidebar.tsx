@@ -1,33 +1,106 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import Link from 'next/link';
-import { ArrowRight } from 'lucide-react';
+import Image from 'next/image';
+import { ArrowRight, Banknote, Bell, Landmark, ScrollText, ShoppingBag, Store, UtensilsCrossed, Wallet } from 'lucide-react';
+import type { LucideIcon } from 'lucide-react';
+import { GM, GatiMitraWord, GM_POPPINS } from './gatimitra-brand';
 
 export type AuthSidebarVariant = 'login' | 'signup';
 
-const LOGIN_SLIDES = [
-  {
-    title: 'Welcome back, partner',
-    body: 'Sign in to manage live orders, update your menu, and keep your store running smoothly from one dashboard.',
-    cta: 'Open partner dashboard',
-    href: '/auth/login',
-  },
-  {
-    title: 'Track every order in real time',
-    body: 'Accept orders, monitor prep time, and coordinate deliveries — all from your GatiMitra merchant portal.',
-    cta: 'See how it works',
-    href: '/auth',
-  },
-  {
-    title: 'Clear earnings & fast settlements',
-    body: 'View wallet balance, payout cycles, and settlement breakdowns so you always know what you earned.',
-    cta: 'Explore payouts',
-    href: '/auth',
-  },
-] as const;
+type LoginSlidePill = {
+  label: string;
+  icon: LucideIcon;
+  toneClass: string;
+  positionClass: string;
+};
 
-/** Signup sidebar — static “Why choose us” highlights (Cashfree-style). */
+/** Bump when replacing files under public/auth/ so browsers pick up the new asset. */
+const AUTH_SIDEBAR_ASSET_VERSION = '20260808-v3';
+
+function sidebarPreviewAsset(filename: string) {
+  return `/auth/${filename}?v=${AUTH_SIDEBAR_ASSET_VERSION}`;
+}
+
+const LOGIN_SLIDES: Array<{
+  eyebrow: string;
+  headline: [string, string];
+  accentLine: 1 | 2;
+  body: string;
+  previewSrc: string;
+  previewAlt: string;
+  pills: LoginSlidePill[];
+}> = [
+  {
+    eyebrow: 'Partner Dashboard',
+    headline: ['Welcome back,', 'Partner'],
+    accentLine: 2,
+    body: 'Sign in to manage live orders, update your menu, track store performance, and keep everything running smoothly — all from one powerful dashboard built for busy merchants.',
+    previewSrc: sidebarPreviewAsset('login-sidebar-dashboard.png'),
+    previewAlt: 'GatiMitra partner dashboard preview',
+    pills: [
+      {
+        label: 'Live Orders',
+        icon: ShoppingBag,
+        toneClass: 'bg-white text-slate-800',
+        positionClass: 'left-0 top-[14%]',
+      },
+      {
+        label: 'Store Status',
+        icon: Store,
+        toneClass: 'bg-[#E5F5F0] text-[#006B4F]',
+        positionClass: 'right-0 top-[18%]',
+      },
+      {
+        label: 'Menu Updates',
+        icon: UtensilsCrossed,
+        toneClass: 'bg-[#FCEFD8] text-[#9A5B00]',
+        positionClass: 'left-3 top-[42%]',
+      },
+      {
+        label: 'Instant Alerts',
+        icon: Bell,
+        toneClass: 'bg-white/95 text-[#006B4F]',
+        positionClass: 'right-1 bottom-[4%]',
+      },
+    ],
+  },
+  {
+    eyebrow: 'Payments & Ledger',
+    headline: ['Clear earnings', '& fast settlements'],
+    accentLine: 2,
+    body: 'Track wallet balance, request payouts, manage bank accounts, and review every settlement in your ledger — everything you need for transparent, fast payments in one hub.',
+    previewSrc: sidebarPreviewAsset('login-sidebar-payments.png'),
+    previewAlt: 'GatiMitra payments and ledger preview',
+    pills: [
+      {
+        label: 'Wallet & Earnings',
+        icon: Wallet,
+        toneClass: 'bg-white text-slate-800',
+        positionClass: 'left-0 top-[14%]',
+      },
+      {
+        label: 'Fast Payouts',
+        icon: Banknote,
+        toneClass: 'bg-[#FCEFD8] text-[#9A5B00]',
+        positionClass: 'right-0 top-[20%]',
+      },
+      {
+        label: 'Bank Accounts',
+        icon: Landmark,
+        toneClass: 'bg-[#E5F5F0] text-[#006B4F]',
+        positionClass: 'left-2 top-[44%]',
+      },
+      {
+        label: 'Payout Ledger',
+        icon: ScrollText,
+        toneClass: 'bg-white/95 text-[#006B4F]',
+        positionClass: 'right-1 bottom-[4%]',
+      },
+    ],
+  },
+];
+
 const SIGNUP_HIGHLIGHTS = [
   {
     stat: '1000+',
@@ -46,69 +119,177 @@ const SIGNUP_HIGHLIGHTS = [
   },
 ] as const;
 
-const SLIDE_INTERVAL_MS = 5500;
+const SLIDE_INTERVAL_MS = 6000;
+
+/** Fixed heights so carousel swaps never shift layout. */
+const LOGIN_COPY_MIN_H = 'min-h-[168px]';
+const LOGIN_PREVIEW_H = 'h-[172px]';
+const LOGIN_VISUAL_BLOCK_H = 'h-[172px]';
+const LOGIN_PILLS_MIN_H = 'min-h-[96px]';
 
 function SidebarWave() {
   return (
-    <div className="absolute inset-x-0 top-0 h-48 overflow-hidden pointer-events-none" aria-hidden>
+    <div className="pointer-events-none absolute inset-x-0 top-0 h-40 overflow-hidden" aria-hidden>
       <svg
-        className="absolute -top-2 left-0 w-full h-full opacity-30"
+        className="absolute -top-2 left-0 h-full w-full"
         viewBox="0 0 400 200"
         preserveAspectRatio="none"
         fill="none"
       >
         <path
           d="M-20 80 C 80 20, 180 140, 280 70 S 420 30, 480 90"
-          stroke="white"
+          stroke={GM.wave}
           strokeWidth="1.5"
+          opacity="0.55"
         />
         <path
           d="M-40 110 C 60 50, 160 170, 260 100 S 400 60, 500 120"
-          stroke="white"
+          stroke={GM.wave}
           strokeWidth="1"
-          opacity="0.7"
+          opacity="0.4"
         />
         <path
           d="M0 140 C 100 80, 200 200, 300 130 S 440 90, 520 150"
-          stroke="white"
+          stroke={GM.wave}
           strokeWidth="0.75"
-          opacity="0.5"
+          opacity="0.28"
         />
       </svg>
     </div>
   );
 }
 
+const sidebarCtaClass =
+  'inline-flex items-center gap-2 rounded-lg border border-white/15 bg-white/5 px-3 py-2.5 text-sm font-semibold text-white';
+
+function FloatingPill({ label, icon: Icon, toneClass, positionClass }: LoginSlidePill) {
+  return (
+    <span
+      className={`absolute z-10 inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[10px] font-semibold shadow-md xl:text-[11px] ${positionClass} ${toneClass}`}
+    >
+      <Icon className="h-3 w-3 shrink-0" aria-hidden />
+      {label}
+    </span>
+  );
+}
+
+function LoginSlideHeading({
+  eyebrow,
+  headline,
+  accentLine,
+  body,
+}: Pick<(typeof LOGIN_SLIDES)[number], 'eyebrow' | 'headline' | 'accentLine' | 'body'>) {
+  const [line1, line2] = headline;
+
+  return (
+    <header className="space-y-3">
+      <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-white/55 xl:text-[11px]">
+        {eyebrow}
+      </p>
+
+      <h2 className="text-[1.35rem] font-bold leading-[1.12] tracking-tight text-white xl:text-[1.45rem]">
+        <span className="block">{accentLine === 1 ? <AccentLine text={line1} /> : line1}</span>
+        <span className="mt-0.5 block">
+          {accentLine === 2 ? <AccentLine text={line2} /> : line2}
+        </span>
+      </h2>
+
+      <p
+        className="min-h-[5.25rem] text-[13px] leading-[1.65] xl:text-sm"
+        style={{ color: GM.secondary }}
+      >
+        {body}
+      </p>
+    </header>
+  );
+}
+
+function AccentLine({ text }: { text: string }) {
+  return <span style={{ color: GM.mitra }}>{text}</span>;
+}
+
+function LoginMiddlePills({ activeIndex }: { activeIndex: number }) {
+  return (
+    <div className={`relative ${LOGIN_PILLS_MIN_H} flex-1 shrink basis-0`}>
+      {LOGIN_SLIDES.map((slide, index) => (
+        <div
+          key={slide.previewSrc}
+          className={`absolute inset-0 transition-opacity duration-500 ${
+            index === activeIndex ? 'opacity-100' : 'pointer-events-none opacity-0'
+          }`}
+          aria-hidden={index !== activeIndex}
+        >
+          {slide.pills.map((pill) => (
+            <FloatingPill key={pill.label} {...pill} />
+          ))}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function LoginPreviewFrame({ activeIndex }: { activeIndex: number }) {
+  return (
+    <div className={`relative shrink-0 ${LOGIN_VISUAL_BLOCK_H} w-full`}>
+      {LOGIN_SLIDES.map((slide, index) => (
+        <div
+          key={slide.previewSrc}
+          className={`absolute inset-0 transition-opacity duration-500 ${
+            index === activeIndex ? 'opacity-100' : 'pointer-events-none opacity-0'
+          }`}
+          aria-hidden={index !== activeIndex}
+        >
+          <div
+            className={`absolute bottom-0 left-0 right-0 -mr-7 ${LOGIN_PREVIEW_H} overflow-hidden rounded-tl-2xl border border-white/20 border-b-0 border-r-0 bg-white shadow-[0_12px_36px_rgba(0,0,0,0.32)]`}
+          >
+            <Image
+              src={slide.previewSrc}
+              alt={slide.previewAlt}
+              fill
+              unoptimized
+              className="object-cover object-left-top"
+              sizes="340px"
+              priority={index === 0}
+            />
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function SignupSidebarContent() {
   return (
-    <div className="relative z-10 flex flex-1 flex-col justify-center px-8 xl:px-9 py-14">
-      <h2 className="text-2xl xl:text-[1.75rem] font-bold leading-snug tracking-tight">
-        Why choose GatiMitra?
-      </h2>
-      <ul className="mt-8 space-y-7">
-        {SIGNUP_HIGHLIGHTS.map((item) => (
-          <li key={item.stat} className="flex gap-4">
-            <span className="shrink-0 text-xl xl:text-2xl font-bold text-white tabular-nums min-w-[4.5rem]">
-              {item.stat}
-            </span>
-            <div>
-              <p className="text-sm xl:text-[15px] font-semibold text-white leading-snug">
-                {item.title}
-              </p>
-              <p className="mt-1 text-xs xl:text-sm text-orange-50/85 leading-relaxed">
-                {item.body}
-              </p>
-            </div>
-          </li>
-        ))}
-      </ul>
-      <Link
-        href="/auth"
-        className="inline-flex items-center gap-2 mt-10 text-sm font-semibold text-white/95 hover:text-white transition-colors group"
-      >
-        Learn about partner benefits
-        <ArrowRight className="h-4 w-4 transition-transform group-hover:translate-x-0.5" />
-      </Link>
+    <div className={`flex min-h-0 flex-1 flex-col ${GM_POPPINS}`}>
+      <div className="min-h-0 flex-1 overflow-y-auto overscroll-y-contain px-6 py-8 xl:px-7 xl:py-9">
+        <h2 className="whitespace-nowrap text-lg xl:text-xl font-bold leading-snug tracking-tight text-white">
+          Why choose <GatiMitraWord />?
+        </h2>
+        <p className="mt-3 text-sm xl:text-[15px] leading-relaxed" style={{ color: GM.secondary }}>
+          Join merchants who manage orders, grow sales, and get paid — all from one dashboard.
+        </p>
+        <ul className="mt-6 space-y-5">
+          {SIGNUP_HIGHLIGHTS.map((item) => (
+            <li key={item.stat} className="flex gap-3.5">
+              <span className="shrink-0 min-w-[4rem] text-lg xl:text-xl font-bold text-white tabular-nums">
+                {item.stat}
+              </span>
+              <div className="min-w-0">
+                <p className="text-sm font-semibold text-white leading-snug">{item.title}</p>
+                <p className="mt-1 text-xs xl:text-sm leading-relaxed" style={{ color: GM.secondary }}>
+                  {item.body}
+                </p>
+              </div>
+            </li>
+          ))}
+        </ul>
+      </div>
+      <div className="shrink-0 border-t border-white/10 px-6 py-4 xl:px-7 xl:py-5">
+        <span className={`${sidebarCtaClass} w-fit max-w-full`}>
+          Learn about partner benefits
+          <ArrowRight className="h-4 w-4 shrink-0" aria-hidden />
+        </span>
+      </div>
     </div>
   );
 }
@@ -123,42 +304,51 @@ function LoginSidebarCarousel() {
     return () => clearInterval(timer);
   }, []);
 
-  const slide = LOGIN_SLIDES[activeIndex];
-
   return (
-    <>
-      <div className="relative z-10 flex flex-1 flex-col justify-center px-8 xl:px-9 py-14">
-        <div key={activeIndex} className="animate-in fade-in duration-500">
-          <h2 className="text-2xl xl:text-[1.75rem] font-bold leading-snug tracking-tight">
-            {slide.title}
-          </h2>
-          <p className="mt-4 text-sm xl:text-[15px] text-orange-50/90 leading-relaxed">
-            {slide.body}
-          </p>
-          <Link
-            href={slide.href}
-            className="inline-flex items-center gap-2 mt-6 text-sm font-semibold text-white/95 hover:text-white transition-colors group"
-          >
-            {slide.cta}
-            <ArrowRight className="h-4 w-4 transition-transform group-hover:translate-x-0.5" />
-          </Link>
+    <div className={`flex min-h-0 flex-1 flex-col ${GM_POPPINS}`}>
+      <div className="flex min-h-0 flex-1 flex-col px-7 pt-10">
+        {/* Copy — fixed height, opacity crossfade (no jump) */}
+        <div className={`relative shrink-0 ${LOGIN_COPY_MIN_H}`}>
+          {LOGIN_SLIDES.map((item, index) => (
+            <div
+              key={item.previewSrc}
+              className={`transition-opacity duration-500 ${
+                index === activeIndex
+                  ? 'relative opacity-100'
+                  : 'pointer-events-none absolute inset-0 opacity-0'
+              }`}
+              aria-hidden={index !== activeIndex}
+            >
+              <LoginSlideHeading
+                eyebrow={item.eyebrow}
+                headline={item.headline}
+                accentLine={item.accentLine}
+                body={item.body}
+              />
+            </div>
+          ))}
         </div>
-      </div>
 
-      <div className="relative z-10 flex items-center gap-2 px-8 xl:px-9 pb-8">
-        {LOGIN_SLIDES.map((_, index) => (
-          <button
-            key={index}
-            type="button"
-            aria-label={`Show slide ${index + 1}`}
-            onClick={() => setActiveIndex(index)}
-            className={`h-1 rounded-full transition-all duration-300 ${
-              index === activeIndex ? 'w-8 bg-white' : 'w-5 bg-white/35 hover:bg-white/55'
-            }`}
-          />
-        ))}
+        <div className="mt-4 flex shrink-0 items-center gap-1.5">
+          {LOGIN_SLIDES.map((_, index) => (
+            <button
+              key={index}
+              type="button"
+              aria-label={`Show slide ${index + 1}`}
+              aria-current={index === activeIndex ? 'true' : undefined}
+              onClick={() => setActiveIndex(index)}
+              className={`h-[3px] rounded-full transition-all ${
+                index === activeIndex ? 'w-7 bg-white' : 'w-4 bg-white/35 hover:bg-white/55'
+              }`}
+            />
+          ))}
+        </div>
+
+        <LoginMiddlePills activeIndex={activeIndex} />
+
+        <LoginPreviewFrame activeIndex={activeIndex} />
       </div>
-    </>
+    </div>
   );
 }
 
@@ -171,11 +361,14 @@ export function LoginPromoSidebar({ variant = 'login' }: LoginPromoSidebarProps)
 
   return (
     <aside
-      className="relative hidden h-dvh lg:flex lg:w-80 xl:w-[340px] shrink-0 flex-col justify-between overflow-hidden bg-gradient-to-br from-orange-600 via-orange-700 to-orange-800 text-white"
+      className={`relative hidden h-dvh min-h-0 shrink-0 flex-col overflow-x-hidden overflow-y-hidden ${GM_POPPINS} lg:flex lg:w-[320px] xl:w-[340px]`}
+      style={{ backgroundColor: GM.sidebar, color: GM.white }}
       aria-label={isSignup ? 'Why choose GatiMitra' : 'Partner login benefits'}
     >
       <SidebarWave />
-      {isSignup ? <SignupSidebarContent /> : <LoginSidebarCarousel />}
+      <div className="relative z-10 flex min-h-0 flex-1 flex-col">
+        {isSignup ? <SignupSidebarContent /> : <LoginSidebarCarousel />}
+      </div>
     </aside>
   );
 }

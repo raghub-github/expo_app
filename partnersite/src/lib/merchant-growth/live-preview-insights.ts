@@ -72,6 +72,44 @@ function metricFromSeries(
   };
 }
 
+function zeroMetric(format: (v: number) => string = (v) => String(Math.round(v))): InsightMetric {
+  return { value: 0, display: format(0), pct_change: 0, sparkline: [0] };
+}
+
+/** Safe fallback when analytics queries time out — keeps the dashboard usable. */
+export function emptyLivePreviewInsights(period: string): LivePreviewInsights {
+  const z = zeroMetric;
+  return {
+    period,
+    compare_header: "Compared to previous period",
+    sales: {
+      sales: z(fmtInr),
+      delivered_orders: z(),
+      aov: z(fmtInr),
+    },
+    ratings: z((v) => v.toFixed(1)),
+    bad_orders: {
+      rejected: z((v) => `${v.toFixed(1)}%`),
+      delayed: z((v) => `${v.toFixed(1)}%`),
+      poor_rated: z((v) => `${v.toFixed(1)}%`),
+    },
+    complaints: z(),
+    lost_sales: z(fmtInr),
+    online_pct: z((v) => `${v.toFixed(1)}%`),
+    funnel: {
+      impressions: z(),
+      impressions_to_menu: z((v) => `${v.toFixed(1)}%`),
+      menu_to_cart: z((v) => `${v.toFixed(1)}%`),
+      cart_to_order: z((v) => `${v.toFixed(1)}%`),
+    },
+    user_segments: {
+      new_users: z(),
+      repeat_users: z(),
+      lapsed_users: z(),
+    },
+  };
+}
+
 function istTodayYmd(): string {
   return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Kolkata" }).format(new Date());
 }

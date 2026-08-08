@@ -74,7 +74,7 @@ export async function GET(req: NextRequest) {
   }
 }
 
-/** POST { store_id, action: "ensure_waiting" | "mark_read" | "mark_all_read" | "clear_all", notification_id? } */
+/** POST { store_id, action: "ensure_waiting" | "delete_waiting" | "mark_read" | "mark_all_read" | "clear_all", notification_id? } */
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json().catch(() => ({}));
@@ -85,6 +85,19 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: gate.error }, { status: gate.status });
     }
     const db = getDb();
+
+    if (action === 'delete_waiting') {
+      const { error } = await db
+        .from('merchant_store_notifications')
+        .delete()
+        .eq('store_id', gate.storeIdNum)
+        .eq('title', WAITING_FOR_ORDER_TITLE);
+      if (error) {
+        console.error('[store-notifications POST] delete_waiting', error);
+        return NextResponse.json({ error: 'delete_failed' }, { status: 500 });
+      }
+      return NextResponse.json({ ok: true });
+    }
 
     if (action === 'mark_all_read') {
       const { error } = await db

@@ -1,6 +1,7 @@
 'use client';
 
 import { Phone } from 'lucide-react';
+import { GM_FOCUS_RING_SOFT } from './gatimitra-brand';
 
 interface PhoneNumberInputProps {
   value: string;
@@ -22,8 +23,8 @@ export function PhoneNumberInput({
       <label htmlFor={id} className="block text-sm font-medium text-slate-700">
         Mobile number
       </label>
-      <div className="group flex items-stretch overflow-hidden rounded-xl border border-slate-200 bg-white transition-all duration-200 hover:border-slate-300 focus-within:border-orange-400 focus-within:ring-2 focus-within:ring-orange-500/25">
-        <span className="flex items-center pl-3.5 text-orange-500 pointer-events-none">
+      <div className={`group flex items-stretch overflow-hidden rounded-xl border border-slate-200 bg-white transition-all duration-200 hover:border-slate-300 focus-within:ring-2 ${GM_FOCUS_RING_SOFT}`}>
+        <span className="flex items-center pl-3.5 text-[#00A88F] pointer-events-none">
           <Phone className="h-5 w-5" aria-hidden />
         </span>
         <div className="flex flex-1 items-center min-w-0 pl-2 pr-4 py-3">

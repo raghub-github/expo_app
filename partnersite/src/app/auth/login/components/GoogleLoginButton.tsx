@@ -25,7 +25,7 @@ export function GoogleLoginButton({
       className={`
         flex w-full items-center justify-center gap-3 rounded-xl font-semibold text-sm text-slate-700
         transition-all duration-200 ease-out
-        focus:outline-none focus-visible:ring-2 focus-visible:ring-orange-500 focus-visible:ring-offset-2
+        focus:outline-none focus-visible:ring-2 focus-visible:ring-[#00A88F]/40 focus-visible:ring-offset-2
         disabled:opacity-50 disabled:cursor-not-allowed
         ${
           primary
@@ -36,8 +36,8 @@ export function GoogleLoginButton({
     >
       {loading ? (
         <>
-          <Loader2 className="h-5 w-5 animate-spin text-orange-500" />
-          <span className="text-orange-600">Connecting...</span>
+          <Loader2 className="h-5 w-5 animate-spin text-[#00A88F]" />
+          <span className="text-[#00A88F]">Connecting...</span>
         </>
       ) : (
         <>

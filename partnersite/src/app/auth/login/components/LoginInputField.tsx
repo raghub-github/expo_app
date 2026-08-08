@@ -2,7 +2,7 @@
 
 import React from 'react';
 import { ClientMountInput } from '@/components/auth/ClientMountInput';
-
+import { GM_FOCUS_RING } from './gatimitra-brand';
 interface LoginInputFieldProps {
   type: 'tel' | 'email' | 'text' | 'password';
   value: string;
@@ -41,7 +41,7 @@ export function LoginInputField({
         </label>
       )}
       <div className="relative group">
-        <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none transition-colors duration-200 group-focus-within:text-orange-500">
+        <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none transition-colors duration-200 group-focus-within:text-[#00A88F]">
           {icon}
         </span>
         {type === 'email' ? (
@@ -55,7 +55,7 @@ export function LoginInputField({
             inputMode={inputMode}
             autoComplete={autoComplete}
             disabled={disabled}
-            className="w-full pl-11 pr-4 py-3 rounded-xl border border-slate-200 bg-slate-50/50 text-slate-900 placeholder:text-slate-400 text-sm transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-orange-500/40 focus:ring-offset-2 focus:border-orange-400 focus:bg-white hover:border-slate-300 disabled:opacity-50 disabled:cursor-not-allowed"
+            className={`w-full pl-11 pr-4 py-3 rounded-xl border border-slate-200 bg-slate-50/50 text-slate-900 placeholder:text-slate-400 text-sm transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:bg-white hover:border-slate-300 disabled:opacity-50 disabled:cursor-not-allowed ${GM_FOCUS_RING}`}
           />
         ) : (
           <input
@@ -68,7 +68,7 @@ export function LoginInputField({
             inputMode={inputMode}
             autoComplete={autoComplete}
             disabled={disabled}
-            className="w-full pl-11 pr-4 py-3 rounded-xl border border-slate-200 bg-slate-50/50 text-slate-900 placeholder:text-slate-400 text-sm transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-orange-500/40 focus:ring-offset-2 focus:border-orange-400 focus:bg-white hover:border-slate-300 disabled:opacity-50 disabled:cursor-not-allowed"
+            className={`w-full pl-11 pr-4 py-3 rounded-xl border border-slate-200 bg-slate-50/50 text-slate-900 placeholder:text-slate-400 text-sm transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:bg-white hover:border-slate-300 disabled:opacity-50 disabled:cursor-not-allowed ${GM_FOCUS_RING}`}
           />
         )}
       </div>

@@ -21,6 +21,7 @@ import {
   ChevronRight,
   ChevronDown,
   ChevronUp,
+  Check,
   Clock,
   Loader2,
   Mail,
@@ -468,7 +469,8 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
 
   /** SSR-safe: empty until mount — never treat layout placeholders like "No ID" as store_id. */
   const [resolvedStoreId, setResolvedStoreId] = useState('');
-  const { data: resolveSessionData, approvedStores } = useApprovedPartnerStores();
+  const { data: resolveSessionData, approvedStores, refetch: refetchResolveSession } =
+    useApprovedPartnerStores();
   const storeList = useMemo(
     () =>
       approvedStores.map((s) => ({
@@ -528,6 +530,11 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
   const [pendingToggle, setPendingToggle] = useState<PendingOutletToggle | null>(null);
   const [toggleConfirmLoading, setToggleConfirmLoading] = useState(false);
   const [parentPhotoBusy, setParentPhotoBusy] = useState(false);
+  const [editingOwnerName, setEditingOwnerName] = useState(false);
+  const [ownerNameDraft, setOwnerNameDraft] = useState('');
+  const [ownerNameSaving, setOwnerNameSaving] = useState(false);
+  const [localOwnerName, setLocalOwnerName] = useState<string | null>(null);
+  const ownerNameInputRef = useRef<HTMLInputElement>(null);
   const [outletSearchQuery, setOutletSearchQuery] = useState('');
   const [checkedOutletIds, setCheckedOutletIds] = useState<Set<string>>(() => new Set());
   const [pendingStoreSwitch, setPendingStoreSwitch] = useState<{
@@ -824,6 +831,13 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
   }, [resolvedStoreId, partnerNotifications, fetchPartnerNotifications]);
 
   useEffect(() => {
+    if (!profileDropdownOpen) {
+      setEditingOwnerName(false);
+      setOwnerNameDraft('');
+    }
+  }, [profileDropdownOpen]);
+
+  useEffect(() => {
     const sync = () => {
       const id = readPartnerSelectedStoreId(restaurantId);
       setResolvedStoreId(isValidPartnerStoreId(id) ? id : '');
@@ -846,6 +860,7 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
   }, []);
 
   const resolvedDisplayName =
+    (localOwnerName && localOwnerName.trim()) ||
     (merchantSession?.user?.name && merchantSession.user.name.trim()) ||
     (ownerName && ownerName.trim()) ||
     (parentName && parentName.trim()) ||
@@ -853,6 +868,50 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
     'Account';
 
   const displayName = profileHydrated ? resolvedDisplayName : 'Account';
+
+  const startEditingOwnerName = useCallback(() => {
+    setOwnerNameDraft(displayName === 'Account' ? '' : displayName);
+    setEditingOwnerName(true);
+    window.setTimeout(() => ownerNameInputRef.current?.focus(), 0);
+  }, [displayName]);
+
+  const cancelEditingOwnerName = useCallback(() => {
+    setEditingOwnerName(false);
+    setOwnerNameDraft('');
+  }, []);
+
+  const saveOwnerName = useCallback(async () => {
+    const trimmed = ownerNameDraft.trim();
+    if (trimmed.length < 2) {
+      toast.error('Owner name must be at least 2 characters.');
+      return;
+    }
+    setOwnerNameSaving(true);
+    try {
+      const res = await fetch('/api/merchant-auth/owner-name', {
+        method: 'PATCH',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ owner_name: trimmed }),
+      });
+      const data = (await res.json().catch(() => ({}))) as { success?: boolean; error?: string };
+      if (!res.ok || !data.success) {
+        toast.error(data.error || 'Could not save owner name');
+        return;
+      }
+      setLocalOwnerName(trimmed);
+      setEditingOwnerName(false);
+      setOwnerNameDraft('');
+      toast.success('Owner name updated');
+      await queryClient.invalidateQueries({ queryKey: merchantKeys.resolveSession() });
+      void refetchResolveSession();
+      merchantSession?.refetch?.();
+    } catch {
+      toast.error('Could not save owner name');
+    } finally {
+      setOwnerNameSaving(false);
+    }
+  }, [ownerNameDraft, queryClient, refetchResolveSession, merchantSession]);
 
   const sessionAvatarUrl = merchantSession?.user?.avatar_url?.trim() || null;
   const parentBrandLogoRaw = merchantSession?.parent?.store_logo?.trim() || null;
@@ -1777,7 +1836,6 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
 
   const q = resolvedStoreId ? `?storeId=${encodeURIComponent(resolvedStoreId)}` : '';
   const settingsHref = `/partners/store-settings${q}`;
-  const profileHref = `/partners/profile${q}`;
 
   const resolvedHeaderTitle = (
     partnerShellHeader?.header.title?.trim() ||
@@ -3441,21 +3499,68 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
                     </div>
                   ) : null}
                 </div>
-                <div className="flex items-center gap-2">
-                  <h2 id="partner-profile-title" className="text-center text-lg font-bold text-gray-900">
-                    {displayName}
-                  </h2>
-                  <Link
-                    href={profileHref}
-                    className="text-sky-600 hover:text-sky-700"
-                    aria-label="Edit profile"
-                    onClick={() => {
-                      setProfileDropdownOpen(false);
-                      setPhotoActionMenuOpen(false);
-                    }}
-                  >
-                    <Pencil size={16} strokeWidth={2} />
-                  </Link>
+                <div className="flex items-center justify-center gap-2">
+                  {editingOwnerName ? (
+                    <>
+                      <input
+                        ref={ownerNameInputRef}
+                        type="text"
+                        value={ownerNameDraft}
+                        onChange={(e) => setOwnerNameDraft(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            e.preventDefault();
+                            void saveOwnerName();
+                          }
+                          if (e.key === 'Escape') {
+                            e.preventDefault();
+                            cancelEditingOwnerName();
+                          }
+                        }}
+                        maxLength={120}
+                        disabled={ownerNameSaving}
+                        placeholder="Store owner name"
+                        className="w-full max-w-[220px] rounded-lg border border-gray-200 px-2.5 py-1.5 text-center text-base font-bold text-gray-900 focus:border-sky-500 focus:outline-none focus:ring-2 focus:ring-sky-500/25 disabled:opacity-60"
+                        aria-label="Edit owner name"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => void saveOwnerName()}
+                        disabled={ownerNameSaving}
+                        className="rounded-lg p-1.5 text-emerald-600 hover:bg-emerald-50 disabled:opacity-50"
+                        aria-label="Save owner name"
+                      >
+                        {ownerNameSaving ? (
+                          <Loader2 size={16} className="animate-spin" />
+                        ) : (
+                          <Check size={16} strokeWidth={2.5} />
+                        )}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={cancelEditingOwnerName}
+                        disabled={ownerNameSaving}
+                        className="rounded-lg p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-600 disabled:opacity-50"
+                        aria-label="Cancel editing owner name"
+                      >
+                        <X size={16} />
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <h2 id="partner-profile-title" className="text-center text-lg font-bold text-gray-900">
+                        {displayName}
+                      </h2>
+                      <button
+                        type="button"
+                        onClick={startEditingOwnerName}
+                        className="rounded-lg p-1 text-sky-600 hover:bg-sky-50 hover:text-sky-700"
+                        aria-label="Edit owner name"
+                      >
+                        <Pencil size={16} strokeWidth={2} />
+                      </button>
+                    </>
+                  )}
                 </div>
                 {merchantSession?.user?.phone ? (
                   <p className="mt-2 text-center text-sm text-gray-500">{merchantSession.user.phone}</p>
