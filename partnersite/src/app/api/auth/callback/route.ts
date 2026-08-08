@@ -4,6 +4,7 @@ import { validateMerchantFromSession } from "@/lib/auth/validate-merchant";
 import { initializeSession } from "@/lib/auth/session-manager";
 import { deviceIdCookie } from "@/lib/auth/auth-cookie-names";
 import { generateDeviceId, replaceSessionForDevice, clientIpFromRequest, deviceLabelFromUserAgent } from "@/lib/auth/merchant-session-db";
+import { getPartnerAuthRedirectOriginFromRequest } from "@/lib/auth/auth-redirect-url";
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder.supabase.co";
 const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "placeholder-anon-key";
@@ -52,7 +53,7 @@ function applyCookieOptions(
  */
 export async function GET(request: NextRequest) {
   const url = new URL(request.url);
-  const origin = sanitizeOrigin(url.origin);
+  const origin = getPartnerAuthRedirectOriginFromRequest(request.url, request.headers);
   const code = url.searchParams.get("code");
   let next = url.searchParams.get("next") || "/partners/all-stores";
 

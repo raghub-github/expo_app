@@ -1,5 +1,5 @@
-import { PersonRideOrdersPageSkeleton } from "@/components/skeletons/PersonRideOrdersPageSkeleton";
+import { DashboardPageLoader } from "@/components/ui/DashboardPageLoader";
 
 export default function PersonRideOrdersLoading() {
-  return <PersonRideOrdersPageSkeleton />;
+  return <DashboardPageLoader />;
 }

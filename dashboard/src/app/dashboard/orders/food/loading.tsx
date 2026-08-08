@@ -1,5 +1,5 @@
-import { FoodOrdersPageSkeleton } from "@/components/skeletons/FoodOrdersPageSkeleton";
+import { DashboardPageLoader } from "@/components/ui/DashboardPageLoader";
 
 export default function FoodOrdersLoading() {
-  return <FoodOrdersPageSkeleton />;
+  return <DashboardPageLoader />;
 }

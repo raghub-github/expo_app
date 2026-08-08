@@ -1,3 +1,5 @@
+import { DashboardPageLoader } from "@/components/ui/DashboardPageLoader";
+
 export default function AreaManagersLoading() {
-  return null;
+  return <DashboardPageLoader />;
 }

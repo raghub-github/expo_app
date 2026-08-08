@@ -1,5 +1,5 @@
-import { CustomerDetailSkeleton } from "@/components/customers/CustomerDetailPremiumView";
+import { DashboardPageLoader } from "@/components/ui/DashboardPageLoader";
 
 export default function CustomerDetailLoading() {
-  return <CustomerDetailSkeleton />;
+  return <DashboardPageLoader />;
 }

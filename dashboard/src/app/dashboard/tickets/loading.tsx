@@ -1,9 +1,5 @@
-import { TicketsPageSkeleton } from "@/components/skeletons/TicketsPageSkeleton";
+import { DashboardPageLoader } from "@/components/ui/DashboardPageLoader";
 
 export default function TicketsLoading() {
-  return (
-    <div className="flex h-full min-h-0 flex-1 flex-col overflow-hidden">
-      <TicketsPageSkeleton />
-    </div>
-  );
+  return <DashboardPageLoader />;
 }

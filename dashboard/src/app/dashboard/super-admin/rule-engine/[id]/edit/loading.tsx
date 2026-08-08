@@ -1,5 +1,5 @@
-import { GmRuleFormSkeleton } from "@/components/rules/gm-rule-form-ui";
+import { DashboardPageLoader } from "@/components/ui/DashboardPageLoader";
 
-export default function EditRuleLoading() {
-  return <GmRuleFormSkeleton />;
+export default function RuleEngineEditLoading() {
+  return <DashboardPageLoader />;
 }

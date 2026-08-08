@@ -54,7 +54,7 @@ export async function proxy(request: NextRequest) {
 
   const oauthCode = request.nextUrl.searchParams.get("code");
   if (oauthCode && pathname !== "/auth/callback" && pathname !== "/api/auth/callback") {
-    const callbackUrl = new URL("/auth/callback", request.url);
+    const callbackUrl = new URL("/api/auth/callback", request.url);
     request.nextUrl.searchParams.forEach((value, key) => callbackUrl.searchParams.set(key, value));
     return NextResponse.redirect(callbackUrl);
   }

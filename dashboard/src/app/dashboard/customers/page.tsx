@@ -7,6 +7,7 @@ import { CustomerTable } from "@/components/customers/CustomerTable";
 import { SummaryCards } from "@/components/customers/SummaryCards";
 import { UserCategoryCards } from "@/components/customers/UserCategoryCards";
 import { HorizontalFilters } from "@/components/customers/HorizontalFilters";
+import { DashboardCenterSpinner } from "@/components/ui/DashboardPageLoader";
 import { useCustomersQuery } from "@/hooks/queries/useCustomersQuery";
 import { useCustomerDashboardStats, DashboardStatsFilters } from "@/hooks/queries/useCustomerDashboardStats";
 import { usePermissions } from "@/hooks/queries/usePermissionsQuery";
@@ -17,22 +18,7 @@ const AnalyticsCharts = dynamic(
   () => import("@/components/customers/AnalyticsCharts").then((m) => m.AnalyticsCharts),
   {
     ssr: false,
-    loading: () => (
-      <div className="space-y-6">
-        <div className="h-6 w-48 bg-gray-200 rounded animate-pulse" />
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          {[1, 2, 3, 4].map((i) => (
-            <div
-              key={i}
-              className="bg-white rounded-lg border border-gray-200 p-6 shadow-sm min-h-[260px]"
-            >
-              <div className="h-6 w-32 bg-gray-200 rounded animate-pulse mb-4" />
-              <div className="h-40 bg-gray-100 rounded animate-pulse" />
-            </div>
-          ))}
-        </div>
-      </div>
-    ),
+    loading: () => <DashboardCenterSpinner className="min-h-[260px]" />,
   }
 );
 
@@ -40,19 +26,7 @@ const ActivityGraphs = dynamic(
   () => import("@/components/customers/ActivityGraphs").then((m) => m.ActivityGraphs),
   {
     ssr: false,
-    loading: () => (
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {[1, 2].map((i) => (
-          <div
-            key={i}
-            className="bg-white rounded-lg border border-gray-200 p-6 shadow-sm min-h-[260px]"
-          >
-            <div className="h-6 w-32 bg-gray-200 rounded animate-pulse mb-4" />
-            <div className="h-40 bg-gray-100 rounded animate-pulse" />
-          </div>
-        ))}
-      </div>
-    ),
+    loading: () => <DashboardCenterSpinner className="min-h-[260px]" />,
   }
 );
 
@@ -136,15 +110,7 @@ function CustomersPageContent() {
 
   // Show loading until mounted + permissions settle (avoids hydration mismatch)
   if (!hasMounted || permissionsLoading) {
-    return (
-      <div className="space-y-6 w-full max-w-full overflow-x-hidden">
-        <div className="rounded-lg border border-gray-200 bg-white p-6">
-          <div className="flex items-center justify-center py-8">
-            <div className="text-gray-500">Loading...</div>
-          </div>
-        </div>
-      </div>
-    );
+    return <DashboardCenterSpinner className="min-h-[320px]" />;
   }
 
   // Non–super-admin: same empty state as rider dashboard until user searches
@@ -210,37 +176,14 @@ function CustomersPageContent() {
           {stats ? (
             <AnalyticsCharts stats={stats} loading={statsLoading} />
           ) : statsLoading ? (
-            <div className="space-y-6">
-              <h2 className="text-2xl font-semibold text-gray-900">
-                Analytics & Insights
-              </h2>
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                {[1, 2, 3, 4].map((i) => (
-                  <div
-                    key={i}
-                    className="bg-white rounded-lg border border-gray-200 p-6 shadow-sm"
-                  >
-                    <div className="h-64 bg-gray-100 rounded animate-pulse" />
-                  </div>
-                ))}
-              </div>
-            </div>
+            <DashboardCenterSpinner className="min-h-[320px]" />
           ) : null}
 
           {/* Activity Graphs - Below all cards */}
           {stats ? (
             <ActivityGraphs stats={stats} loading={statsLoading} />
           ) : statsLoading ? (
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-              {[1, 2].map((i) => (
-                <div
-                  key={i}
-                  className="bg-white rounded-lg border border-gray-200 p-6 shadow-sm"
-                >
-                  <div className="h-64 bg-gray-100 rounded animate-pulse" />
-                </div>
-              ))}
-            </div>
+            <DashboardCenterSpinner className="min-h-[280px]" />
           ) : null}
         </>
       )}
