@@ -42,6 +42,6 @@ export async function partnerLogoutLocal(options?: {
   }
 
   if (redirectToLogin && typeof window !== "undefined") {
-    window.location.href = "/auth/login";
+    window.location.href = "/auth";
   }
 }

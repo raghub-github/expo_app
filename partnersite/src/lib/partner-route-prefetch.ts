@@ -8,7 +8,11 @@ import { prefetchLivePreview } from '@/lib/merchant-growth/growth-insights-cache
 import { prefetchStoreOperationsPanel } from '@/lib/store-operations-panel-cache';
 import { prefetchMerchantProfile } from '@/lib/merchant-profile-cache';
 import { prefetchPlanUsage } from '@/lib/plan-usage-cache';
-import { writeDashboardWalletCache } from '@/lib/partner-dashboard-cache';
+import {
+  writeDashboardDeliveryStatsCache,
+  writeDashboardStoreOverviewCache,
+  writeDashboardWalletCache,
+} from '@/lib/partner-dashboard-cache';
 import type { WalletSummary } from '@/hooks/useMerchantApi';
 
 async function fetchWalletForStore(storeId: string, lite = true): Promise<WalletSummary> {
@@ -93,6 +97,39 @@ export function prefetchPartnerRouteData(
       staleTime: 3 * 60 * 1000,
     });
     prefetchLivePreview(storeId, mapInsightsDatePreset('today'));
+    void fetch(`/api/food-orders/stats?store_id=${encodeURIComponent(storeId)}`, {
+      credentials: 'include',
+    })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((body) => {
+        if (!body || typeof body !== 'object') return;
+        writeDashboardDeliveryStatsCache(storeId, {
+          activeOrders: Number(body.activeOrders) || 0,
+          avgPreparationTimeMinutes: Number(body.avgPreparationTimeMinutes) || 0,
+          completionRatePercent: Number(body.completionRatePercent) || 0,
+          deliveredTodayCount: Number(body.deliveredTodayCount) || 0,
+          cancelledTodayCount: Number(body.cancelledTodayCount) || 0,
+          rtoTodayCount: Number(body.returnFailedTodayCount ?? body.rtoTodayCount) || 0,
+        });
+      })
+      .catch(() => {
+        /* ignore */
+      });
+    void fetch(`/api/merchant/store-overview?store_id=${encodeURIComponent(storeId)}`, {
+      credentials: 'include',
+    })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((body) => {
+        if (!body || typeof body !== 'object') return;
+        writeDashboardStoreOverviewCache(storeId, {
+          total_products: Number(body.total_products) || 0,
+          out_of_stock: Number(body.out_of_stock) || 0,
+          pending_orders: Number(body.pending_orders) || 0,
+        });
+      })
+      .catch(() => {
+        /* ignore */
+      });
     return;
   }
 

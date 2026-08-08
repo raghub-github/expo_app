@@ -71,6 +71,8 @@ export function TicketCard({ ticket, variant = "list" }: TicketCardProps) {
       href={`/dashboard/tickets/${ticket.id}`}
       scroll={false}
       onPointerEnter={prefetchThisTicket}
+      onFocus={prefetchThisTicket}
+      onClick={prefetchThisTicket}
       className={`block transition-colors ${
         isGrid
           ? "rounded-lg border border-gray-200 bg-white p-4 shadow-sm hover:border-gray-300 hover:shadow-md"

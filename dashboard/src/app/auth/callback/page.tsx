@@ -7,6 +7,7 @@ import { supabase } from "@/lib/supabase/client";
 import { Logo } from "@/components/brand/Logo";
 import { isInvalidRefreshToken, signOutIfSessionDead } from "@/lib/auth/session-errors";
 import { postSetCookieWithTokens } from "@/lib/auth/sync-server-session";
+import { readUsableClientSessionFromStorage } from "@/lib/auth/client-session-storage";
 import { markDashboardFreshLogin } from "@/lib/dashboard-auth-client-state";
 
 function parseHashParams(hash: string): Record<string, string> {
@@ -189,32 +190,10 @@ function AuthCallbackContent() {
         return;
       }
 
-      // 4) Existing session (e.g. return visit)
-      let session: { access_token: string; refresh_token: string } | null = null;
-      let sessionError: { message?: string } | null = null;
-      try {
-        const result = await supabase.auth.getSession();
-        session = result.data?.session ?? null;
-        sessionError = result.error ?? null;
-      } catch (err) {
-        if (isInvalidRefreshToken(err)) {
-          await signOutIfSessionDead(supabase, err);
-          router.push("/login?reason=session_invalid");
-          return;
-        }
-        sessionError = err as { message?: string };
-      }
-      if (sessionError) {
-        if (isInvalidRefreshToken(sessionError)) {
-          await signOutIfSessionDead(supabase, sessionError);
-          router.push("/login?reason=session_invalid");
-          return;
-        }
-        router.push(`/login?error=${encodeURIComponent(sessionError.message ?? "Session error")}`);
-        return;
-      }
-      if (session) {
-        const result = await syncCookiesFromSession(session);
+      // 4) Existing session (e.g. return visit) — read storage only, no refresh
+      const stored = readUsableClientSessionFromStorage();
+      if (stored?.access_token && stored.refresh_token) {
+        const result = await syncCookiesFromSession(stored);
         if (!result.ok) {
           await supabase.auth.signOut();
           router.push(`/login?error=${encodeURIComponent(result.error)}`);

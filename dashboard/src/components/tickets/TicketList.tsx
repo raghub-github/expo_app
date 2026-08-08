@@ -12,7 +12,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { playQueueAssignmentSound } from "@/lib/tickets/play-queue-assignment-sound";
 import { TicketListRow } from "./TicketListRow";
 import { TicketGridCard } from "./TicketGridCard";
-import { DashboardCenterSpinner } from "@/components/ui/DashboardPageLoader";
+import { TicketsPageSkeleton } from "@/components/skeletons/TicketsPageSkeleton";
 import { useTicketFilters } from "@/hooks/tickets/useTicketFilters";
 import { useTicketUpdate } from "@/hooks/tickets/useTicketUpdate";
 import {
@@ -775,7 +775,7 @@ export function TicketList({ hideExportAndSidebarToggle = false }: { hideExportA
     return (
       <div className="tickets-typo flex h-full min-h-0 w-full flex-1 flex-col overflow-hidden bg-white">
         {ticketsFetchErrorModal}
-        <DashboardCenterSpinner className="min-h-0 flex-1" />
+        <TicketsPageSkeleton />
       </div>
     );
   }

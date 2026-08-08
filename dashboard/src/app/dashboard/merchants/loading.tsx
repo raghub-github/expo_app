@@ -1,5 +1,3 @@
-import { DashboardPageLoader } from "@/components/ui/DashboardPageLoader";
+import DashboardRouteLoading from "@/components/ui/DashboardRouteLoading";
 
-export default function MerchantsLoading() {
-  return <DashboardPageLoader />;
-}
+export default DashboardRouteLoading;

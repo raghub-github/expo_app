@@ -1,7 +1,12 @@
 "use client";
 
 import { supabase } from "@/lib/supabase/client";
-import { shouldClearAuthSession } from "@/lib/auth/session-errors";
+import {
+  clearStaleClientAuthStorage,
+  readClientSessionFromStorage,
+  readUsableClientSessionFromStorage,
+} from "@/lib/auth/client-session-storage";
+import { isInvalidRefreshToken, isRefreshTokenNotFound } from "@/lib/auth/session-errors";
 
 let inFlight: Promise<boolean> | null = null;
 
@@ -12,26 +17,26 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function readPersistedSession() {
-  try {
-    const { data, error } = await supabase.auth.getSession();
-    if (error && shouldClearAuthSession(error)) {
-      await supabase.auth.signOut();
-      return null;
+async function applyServerTokensToClient(
+  accessToken: string,
+  refreshToken: string
+): Promise<boolean> {
+  const { error } = await supabase.auth.setSession({
+    access_token: accessToken,
+    refresh_token: refreshToken,
+  });
+  if (error) {
+    if (isRefreshTokenNotFound(error) || isInvalidRefreshToken(error)) {
+      clearStaleClientAuthStorage();
     }
-    return data.session ?? null;
-  } catch (err) {
-    if (shouldClearAuthSession(err)) {
-      await supabase.auth.signOut();
-    }
-    return null;
+    return false;
   }
+  return true;
 }
 
 /**
  * Mirror cookie-based Supabase session into the JS client so Realtime uses the same JWT as RLS.
- * Coordinates across tabs so opening order/ticket in a new tab does not rotate refresh tokens
- * and invalidate the dashboard tab.
+ * Never calls getSession() on a stale localStorage refresh token — reads storage or server bridge.
  */
 export function hydrateBrowserSupabaseFromCookies(): Promise<boolean> {
   if (typeof window === "undefined") return Promise.resolve(false);
@@ -39,19 +44,18 @@ export function hydrateBrowserSupabaseFromCookies(): Promise<boolean> {
 
   inFlight = (async () => {
     try {
-      let session = await readPersistedSession();
+      let session = readUsableClientSessionFromStorage();
       if (session?.access_token) return true;
 
-      // New tab: Supabase may still be reading shared localStorage session from the first tab.
       await sleep(80);
-      session = await readPersistedSession();
+      session = readUsableClientSessionFromStorage();
       if (session?.access_token) return true;
 
       const lockRaw = window.localStorage.getItem(HYDRATE_LOCK_KEY);
       const lockTs = lockRaw ? Number(lockRaw) : NaN;
       if (Number.isFinite(lockTs) && Date.now() - lockTs < HYDRATE_LOCK_MS) {
         await sleep(250);
-        session = await readPersistedSession();
+        session = readUsableClientSessionFromStorage();
         if (session?.access_token) return true;
       }
 
@@ -61,7 +65,12 @@ export function hydrateBrowserSupabaseFromCookies(): Promise<boolean> {
           credentials: "include",
           cache: "no-store",
         });
-        if (!res.ok) return false;
+        if (!res.ok) {
+          if (res.status === 401) {
+            clearStaleClientAuthStorage();
+          }
+          return false;
+        }
 
         const body = (await res.json()) as {
           success?: boolean;
@@ -70,14 +79,10 @@ export function hydrateBrowserSupabaseFromCookies(): Promise<boolean> {
         };
         if (!body.success || !body.access_token || !body.refresh_token) return false;
 
-        session = await readPersistedSession();
+        session = readUsableClientSessionFromStorage();
         if (session?.access_token) return true;
 
-        const { error } = await supabase.auth.setSession({
-          access_token: body.access_token,
-          refresh_token: body.refresh_token,
-        });
-        return !error;
+        return applyServerTokensToClient(body.access_token, body.refresh_token);
       } finally {
         try {
           window.localStorage.removeItem(HYDRATE_LOCK_KEY);
@@ -93,4 +98,36 @@ export function hydrateBrowserSupabaseFromCookies(): Promise<boolean> {
   })();
 
   return inFlight;
+}
+
+/** After login set-cookie, align localStorage with the server session (best-effort). */
+export async function syncClientStorageFromServerSession(): Promise<boolean> {
+  if (typeof window === "undefined") return false;
+  if (readUsableClientSessionFromStorage()) return true;
+
+  try {
+    const res = await fetch("/api/auth/supabase-browser-session", {
+      credentials: "include",
+      cache: "no-store",
+    });
+    if (!res.ok) return false;
+    const body = (await res.json()) as {
+      success?: boolean;
+      access_token?: string;
+      refresh_token?: string;
+    };
+    if (!body.success || !body.access_token || !body.refresh_token) return false;
+    return applyServerTokensToClient(body.access_token, body.refresh_token);
+  } catch {
+    return false;
+  }
+}
+
+/** Drop expired localStorage session without hitting Supabase refresh endpoint. */
+export function clearExpiredClientStorageIfNeeded(): void {
+  const session = readClientSessionFromStorage();
+  if (!session) return;
+  if (!session.access_token || !session.refresh_token) {
+    clearStaleClientAuthStorage();
+  }
 }

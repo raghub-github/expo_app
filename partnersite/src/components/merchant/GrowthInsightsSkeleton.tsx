@@ -42,7 +42,7 @@ export function LivePreviewSkeleton() {
   return (
     <>
       <SectionSkeleton rows={3} />
-      <div className="mb-10 flex flex-col lg:flex-row gap-4 lg:gap-6">
+      <div className="mb-10 flex flex-col lg:flex-row gap-4 lg:gap-6 items-start">
         <div className="w-full lg:w-[60%]">
           <SectionSkeleton rows={5} />
         </div>

@@ -263,11 +263,11 @@ export const MXSidebarWhite: React.FC<MXSidebarWhiteProps> = ({
         await merchantSession.logout()
         return
       }
-      router.push('/auth/login')
+      router.push('/auth')
     } catch (error: unknown) {
       const errorMessage = error instanceof Error ? error.message : String(error)
       console.error('Error logging out:', errorMessage)
-      router.push('/auth/login')
+      router.push('/auth')
     } finally {
       setIsLoggingOut(false)
       setShowLogoutModal(false)

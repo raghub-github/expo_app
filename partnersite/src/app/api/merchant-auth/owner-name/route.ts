@@ -33,7 +33,7 @@ async function requireMerchantParentPk(): Promise<
   return { ok: true, parentPk: v.merchantParentId };
 }
 
-/** PATCH — update merchant_parents.owner_name (profile dropdown display name). */
+/** PATCH — update merchant_stores.owner_full_name for the active outlet. */
 export async function PATCH(request: NextRequest) {
   try {
     const auth = await requireMerchantParentPk();
@@ -41,15 +41,26 @@ export async function PATCH(request: NextRequest) {
       return NextResponse.json({ success: false, error: auth.message }, { status: auth.status });
     }
 
-    const body = (await request.json().catch(() => ({}))) as { owner_name?: unknown };
-    const ownerName = typeof body.owner_name === 'string' ? body.owner_name.trim() : '';
-    if (ownerName.length < 2) {
+    const body = (await request.json().catch(() => ({}))) as {
+      store_id?: unknown;
+      owner_full_name?: unknown;
+      owner_name?: unknown;
+    };
+    const storeId = typeof body.store_id === 'string' ? body.store_id.trim() : '';
+    const ownerFullName =
+      (typeof body.owner_full_name === 'string' ? body.owner_full_name.trim() : '') ||
+      (typeof body.owner_name === 'string' ? body.owner_name.trim() : '');
+
+    if (!storeId) {
+      return NextResponse.json({ success: false, error: 'Store id is required.' }, { status: 400 });
+    }
+    if (ownerFullName.length < 2) {
       return NextResponse.json(
         { success: false, error: 'Owner name must be at least 2 characters.' },
         { status: 400 },
       );
     }
-    if (ownerName.length > 120) {
+    if (ownerFullName.length > 120) {
       return NextResponse.json(
         { success: false, error: 'Owner name is too long.' },
         { status: 400 },
@@ -57,17 +68,36 @@ export async function PATCH(request: NextRequest) {
     }
 
     const db = getSupabaseAdmin();
+    const { data: storeRow, error: storeErr } = await db
+      .from('merchant_stores')
+      .select('id, store_id, parent_id')
+      .eq('store_id', storeId)
+      .eq('parent_id', auth.parentPk)
+      .maybeSingle();
+
+    if (storeErr) {
+      console.error('[owner-name] store lookup:', storeErr);
+      return NextResponse.json({ success: false, error: 'Could not verify store.' }, { status: 500 });
+    }
+    if (!storeRow) {
+      return NextResponse.json({ success: false, error: 'Store not found.' }, { status: 404 });
+    }
+
     const { error: upErr } = await db
-      .from('merchant_parents')
-      .update({ owner_name: ownerName, updated_at: new Date().toISOString() })
-      .eq('id', auth.parentPk);
+      .from('merchant_stores')
+      .update({ owner_full_name: ownerFullName, updated_at: new Date().toISOString() })
+      .eq('id', storeRow.id);
 
     if (upErr) {
       console.error('[owner-name] update:', upErr);
       return NextResponse.json({ success: false, error: 'Could not save owner name.' }, { status: 500 });
     }
 
-    return NextResponse.json({ success: true, owner_name: ownerName });
+    return NextResponse.json({
+      success: true,
+      store_id: storeRow.store_id,
+      owner_full_name: ownerFullName,
+    });
   } catch (e) {
     console.error('[owner-name] PATCH:', e);
     return NextResponse.json(

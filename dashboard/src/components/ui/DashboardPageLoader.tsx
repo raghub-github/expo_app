@@ -10,7 +10,7 @@ type DashboardPageLoaderProps = {
 /** Full-page GM spinner — matches dashboard home initial load. */
 export function DashboardPageLoader({
   className = "",
-  backgroundClassName = "bg-white",
+  backgroundClassName = "bg-[#F3F7FA]",
 }: DashboardPageLoaderProps) {
   return (
     <div

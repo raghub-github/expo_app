@@ -22,8 +22,7 @@ const authPoppins = Poppins({
 /** Routes where Help button should be shown (after user is in a logged-in flow). */
 function showHelpOnRoute(pathname: string): boolean {
   const p = (pathname ?? "").replace(/\/$/, "") || "/";
-  if (p === "/auth") return false;
-  if (p.startsWith("/auth/login")) return false;
+  if (p === "/auth" || p === "/auth/login") return false;
   if (p.startsWith("/auth/register") && !p.includes("register-store")) return false;
   if (p.includes("register-store")) return false;
   if (p.startsWith("/auth/search")) return false;

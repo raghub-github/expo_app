@@ -122,7 +122,7 @@ function AuthCallbackContent() {
 
     const fail = (msg: string) => {
       setFatal(msg);
-      router.replace(`/auth/login?error=${encodeURIComponent(msg)}`);
+      router.replace(`/auth?error=${encodeURIComponent(msg)}`);
     };
 
     const run = async () => {
@@ -275,7 +275,7 @@ function AuthCallbackContent() {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center gap-3 px-6 bg-[#F4F7F8]">
         <p className="text-sm text-slate-700 text-center max-w-md">{fatal}</p>
-        <a href="/auth/login" className="text-sm font-semibold text-teal-700 underline">
+        <a href="/auth" className="text-sm font-semibold text-teal-700 underline">
           Go to login
         </a>
       </div>

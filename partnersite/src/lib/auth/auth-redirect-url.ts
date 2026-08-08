@@ -1,4 +1,5 @@
 import { getPartnerSiteBaseUrl } from "@/lib/legal/partner-site-url";
+import { normalizeAuthRedirect } from "@/lib/auth/normalize-auth-redirect";
 
 const PRODUCTION_PARTNER_HOST = "partner.gatimitra.com";
 
@@ -82,7 +83,7 @@ export function safeSameOriginPath(
     return fallback;
   }
   if (resolved.origin !== origin) return fallback;
-  return `${resolved.pathname}${resolved.search}${resolved.hash}`;
+  return normalizeAuthRedirect(`${resolved.pathname}${resolved.search}${resolved.hash}`);
 }
 
 /**

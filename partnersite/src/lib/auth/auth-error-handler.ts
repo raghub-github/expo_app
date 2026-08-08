@@ -43,14 +43,14 @@ export function shouldClearSession(error: AuthError | null): boolean {
 
 export function getErrorRedirectPath(error: AuthError | null, currentPath: string): string {
   if (isRefreshTokenError(error)) {
-    return `/auth/login?reason=session_invalid&redirect=${encodeURIComponent(currentPath)}`;
+    return `/auth?reason=session_invalid&redirect=${encodeURIComponent(currentPath)}`;
   }
   
   if (isSessionExpiredError(error)) {
-    return `/auth/login?reason=session_expired&redirect=${encodeURIComponent(currentPath)}`;
+    return `/auth?reason=session_expired&redirect=${encodeURIComponent(currentPath)}`;
   }
   
-  return `/auth/login?error=${encodeURIComponent(error?.message || 'Authentication failed')}&redirect=${encodeURIComponent(currentPath)}`;
+  return `/auth?error=${encodeURIComponent(error?.message || 'Authentication failed')}&redirect=${encodeURIComponent(currentPath)}`;
 }
 
 export function logAuthError(context: string, error: AuthError | null, additionalInfo?: any) {

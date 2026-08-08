@@ -9,6 +9,7 @@ import { safeParseJson } from "@/lib/utils";
 import { Mail, Lock, ArrowRight, Loader2 } from "lucide-react";
 import { saveBootstrapToStorage } from "@/lib/dashboard-bootstrap-storage";
 import { postSetCookieWithTokens } from "@/lib/auth/sync-server-session";
+import { clearStaleClientAuthStorage, readClientSessionFromStorage } from "@/lib/auth/client-session-storage";
 import { markDashboardFreshLogin } from "@/lib/dashboard-auth-client-state";
 
 const OTP_LENGTH = 8;
@@ -79,9 +80,13 @@ export default function LoginPage() {
           }
         }
         sessionStorage.removeItem("gm_login_autoredirect");
-        const { data } = await supabase.auth.getSession();
-        if (data?.session) {
-          await supabase.auth.signOut({ scope: "local" });
+        if (readClientSessionFromStorage()) {
+          clearStaleClientAuthStorage();
+          try {
+            await supabase.auth.signOut({ scope: "local" });
+          } catch {
+            // ignore
+          }
         }
       } catch {
         // stay on login

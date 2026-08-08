@@ -12,7 +12,6 @@ import {
   type TicketMessageSentPayload,
 } from "@/hooks/tickets/useTicketDetail";
 import { queryKeys } from "@/lib/queryKeys";
-import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
 import { isImageUrl } from "./AttachmentModal";
 import {
   isCorporateEnquiryTicket,
@@ -32,6 +31,18 @@ import { useAuth } from "@/providers/AuthProvider";
 import { useTicketRoomRealtime, type TicketRoomPresenceIdentity } from "@/hooks/tickets/useTicketRoomRealtime";
 
 const STORAGE_KEY_PREFIX = "ticket-last-viewed-";
+
+function TicketDetailLoadingShell() {
+  return (
+    <div className="flex h-full min-h-0 w-full flex-1 flex-col animate-pulse bg-[#f5f7f9]">
+      <div className="h-12 shrink-0 border-b border-gray-200 bg-white" />
+      <div className="flex min-h-0 flex-1 flex-col gap-3 p-4">
+        <div className="h-20 rounded-lg bg-white/90" />
+        <div className="min-h-0 flex-1 rounded-lg bg-white/80" />
+      </div>
+    </div>
+  );
+}
 
 const IMAGE_FILENAME = /\.(jpe?g|png|gif|webp|bmp|svg)(\?|#|$)/i;
 
@@ -159,7 +170,7 @@ export function TicketViewClient({ ticketId }: { ticketId: number | string }) {
   const setTicketPanel = useTicketPanelNavigation(pathname, router);
   const rightSidebar = useRightSidebar();
   const { user: authUser, systemUser } = useAuth();
-  const { data: ticket, isLoading, isError, error } = useTicketDetail(ticketId);
+  const { data: ticket, isPending, isError, error } = useTicketDetail(ticketId);
 
   const showActivities = urlPanel === "activities";
   const showCsatPanel = urlPanel === "csat";
@@ -323,8 +334,8 @@ export function TicketViewClient({ ticketId }: { ticketId: number | string }) {
     setNewUpdatesCount(0);
   }, [ticket]);
 
-  /** No ticket yet and query hasn't failed — show skeleton. Do not tie to `isFetching` or background refetch flashes the full-page loader. */
-  const stillLoading = !ticket && !isError && isLoading;
+  /** No ticket yet and query hasn't failed — light skeleton only (never GM spinner). */
+  const stillLoading = !ticket && !isError && isPending;
   const raisedType = String(ticket?.sourceRole || ticket?.ticketSource || "").toUpperCase();
   const contactLabel = raisedType === "RIDER" ? "Rider" : raisedType === "CUSTOMER" ? "Customer" : raisedType === "MERCHANT" ? "Merchant" : null;
   const corporateFields = useMemo(
@@ -376,15 +387,7 @@ export function TicketViewClient({ ticketId }: { ticketId: number | string }) {
   }, [stillLoading, rightSidebar]);
 
   if (stillLoading) {
-    return (
-      <div className="flex h-full min-h-0 w-full flex-1 items-center justify-center bg-[#f5f7f9] px-4">
-        <div className="flex w-full max-w-sm flex-col items-center gap-3 rounded-xl border border-gray-200 bg-white/85 px-6 py-6 text-center shadow-sm">
-          <LoadingSpinner />
-          <p className="text-sm font-medium text-gray-700">Getting everything ready...</p>
-          <p className="text-xs text-gray-500">Loading ticket details and properties</p>
-        </div>
-      </div>
-    );
+    return <TicketDetailLoadingShell />;
   }
 
   if (isError || (error && !ticket)) {
@@ -399,15 +402,7 @@ export function TicketViewClient({ ticketId }: { ticketId: number | string }) {
   }
 
   if (!ticket) {
-    return (
-      <div className="flex h-full min-h-0 w-full flex-1 items-center justify-center bg-[#f5f7f9] px-4">
-        <div className="flex w-full max-w-sm flex-col items-center gap-3 rounded-xl border border-gray-200 bg-white/85 px-6 py-6 text-center shadow-sm">
-          <LoadingSpinner />
-          <p className="text-sm font-medium text-gray-700">Getting everything ready...</p>
-          <p className="text-xs text-gray-500">Loading ticket details and properties</p>
-        </div>
-      </div>
-    );
+    return <TicketDetailLoadingShell />;
   }
 
   const getPhoneLastTenDigits = (phone: string | null): string => {

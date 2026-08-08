@@ -978,7 +978,7 @@ const StoreRegistrationForm = () => {
           if (payload.code === 'SESSION_INVALID' || res.status === 401) {
             console.log('User not authenticated, redirecting to login');
             if (typeof window !== 'undefined') {
-              window.location.href = '/auth/login?redirect=' + encodeURIComponent(window.location.pathname + window.location.search);
+              window.location.href = '/auth?redirect=' + encodeURIComponent(window.location.pathname + window.location.search);
             }
             return;
           }
@@ -987,7 +987,7 @@ const StoreRegistrationForm = () => {
             const msg = String(payload.error || 'No merchant account found for this login.');
             if (typeof window !== 'undefined') {
               window.location.href =
-                '/auth/login?redirect=' +
+                '/auth?redirect=' +
                 encodeURIComponent(window.location.pathname + window.location.search) +
                 '&error=' +
                 encodeURIComponent(msg);
@@ -2890,7 +2890,7 @@ const StoreRegistrationForm = () => {
             if (progressPayload.code === 'SESSION_INVALID' || progressRes.status === 401) {
               console.log('User not authenticated, redirecting to login');
               if (typeof window !== 'undefined') {
-                window.location.href = '/auth/login?redirect=' + encodeURIComponent(window.location.pathname + window.location.search);
+                window.location.href = '/auth?redirect=' + encodeURIComponent(window.location.pathname + window.location.search);
               }
               return { success: false, error: 'Authentication required' };
             }
@@ -2968,7 +2968,7 @@ const StoreRegistrationForm = () => {
             const errorPayload = await res.json();
             if (errorPayload.code === 'SESSION_INVALID' || res.status === 401) {
               if (typeof window !== 'undefined') {
-                window.location.href = '/auth/login?redirect=' + encodeURIComponent(window.location.pathname + window.location.search);
+                window.location.href = '/auth?redirect=' + encodeURIComponent(window.location.pathname + window.location.search);
               }
               return { success: false, error: 'Authentication required' };
             }
@@ -4303,7 +4303,7 @@ const StoreRegistrationForm = () => {
                 type="button"
                 onClick={async () => {
                   await fetch("/api/auth/logout", { method: "POST" });
-                  window.location.href = "/auth/login";
+                  window.location.href = "/auth";
                 }}
                 className="flex-1 py-2.5 rounded-lg bg-slate-800 text-white font-medium hover:bg-slate-700"
               >

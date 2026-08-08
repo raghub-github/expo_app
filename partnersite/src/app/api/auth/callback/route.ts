@@ -53,7 +53,7 @@ export async function GET(request: NextRequest) {
 
   if (!code) {
     console.warn("[auth/callback] GET called without code");
-    return NextResponse.redirect(new URL("/auth/login?error=missing_code", origin));
+    return NextResponse.redirect(new URL("/auth?error=missing_code", origin));
   }
 
   const redirectUrl = new URL(next, origin);
@@ -77,13 +77,13 @@ export async function GET(request: NextRequest) {
   if (error) {
     console.error("[auth/callback] exchangeCodeForSession error:", error.message);
     return NextResponse.redirect(
-      new URL(`/auth/login?error=${encodeURIComponent(error.message)}`, origin)
+      new URL(`/auth?error=${encodeURIComponent(error.message)}`, origin)
     );
   }
 
   if (!data.session?.user) {
     console.warn("[auth/callback] No session after exchange");
-    return NextResponse.redirect(new URL("/auth/login?error=no_session", origin));
+    return NextResponse.redirect(new URL("/auth?error=no_session", origin));
   }
 
   const validation = await validateMerchantFromSession(data.session.user);
@@ -92,7 +92,7 @@ export async function GET(request: NextRequest) {
     console.warn("[auth/callback] Merchant validation failed:", validation.error);
     return NextResponse.redirect(
       new URL(
-        `/auth/login?error=${encodeURIComponent(validation.error ?? "Not authorized for merchant dashboard")}`,
+        `/auth?error=${encodeURIComponent(validation.error ?? "Not authorized for merchant dashboard")}`,
         origin
       )
     );

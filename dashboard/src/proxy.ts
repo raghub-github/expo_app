@@ -1,12 +1,11 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
-import type { ResponseCookie } from "next/dist/compiled/@edge-runtime/cookies";
 import { createServerClient } from "@supabase/ssr";
 import {
   getSessionMetadata,
   checkSessionValidity,
   updateActivity,
-  expireSession,
+  initializeSession,
 } from "@/lib/auth/session-manager";
 
 /** Normalize cookie options so `sameSite` matches Next.js ResponseCookie (not plain string). */
@@ -32,48 +31,21 @@ function setSafeResponseCookie(
 }
 
 // Throttle audit tracking per route to avoid spamming /api/audit/track.
-// Keyed by pathname + method; value is last-sent timestamp (ms).
 const auditLastSent = new Map<string, number>();
 const AUDIT_MIN_INTERVAL_MS = 5000;
-// Note: User validation is done in /api/auth/set-cookie, not in middleware
-// Middleware runs in Edge Runtime which doesn't support database connections
-
-function toResponseCookieOptions(options: {
-  maxAge: number;
-  path: string;
-  httpOnly?: boolean;
-  sameSite?: string;
-  secure?: boolean;
-}): Partial<ResponseCookie> {
-  const same =
-    options.sameSite === "strict" ||
-    options.sameSite === "lax" ||
-    options.sameSite === "none"
-      ? options.sameSite
-      : "lax";
-  return {
-    maxAge: options.maxAge,
-    path: options.path,
-    httpOnly: options.httpOnly,
-    secure: options.secure,
-    sameSite: same,
-  };
-}
 
 /** Pass the (possibly cookie-mutated) request through — required for direct URL hits in Next 16 dev. */
 function continueRequest(request: NextRequest): NextResponse {
   return NextResponse.next({ request });
 }
 
-export async function middleware(request: NextRequest) {
+export async function proxy(request: NextRequest) {
   const pathname = request.nextUrl.pathname;
-  /** After login, redirect users back to /dashboard instead of "/" to avoid extra root round-trips on hosts. */
   const normalizedRedirectPath = pathname === "/" ? "/dashboard" : pathname;
   const canTogglePortal = request.cookies.get("gm_portal_toggle_access")?.value === "1";
-  // Set NEXT_PUBLIC_DEBUG_PROXY=true in .env.local to log [middleware] Path and redirect messages (off by default to reduce console noise).
-  const debugMiddleware = process.env.NEXT_PUBLIC_DEBUG_PROXY === "true";
-  if (debugMiddleware && !pathname.startsWith("/_next") && !pathname.startsWith("/api/audit")) {
-    console.log("[middleware] Path:", pathname);
+  const debugProxy = process.env.NEXT_PUBLIC_DEBUG_PROXY === "true";
+  if (debugProxy && !pathname.startsWith("/_next") && !pathname.startsWith("/api/audit")) {
+    console.log("[proxy] Path:", pathname);
   }
 
   const response = continueRequest(request);
@@ -83,121 +55,94 @@ export async function middleware(request: NextRequest) {
     const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
     if (!supabaseUrl || !supabaseAnonKey) {
-      console.error("[middleware] Missing NEXT_PUBLIC_SUPABASE_URL or NEXT_PUBLIC_SUPABASE_ANON_KEY");
+      console.error("[proxy] Missing NEXT_PUBLIC_SUPABASE_URL or NEXT_PUBLIC_SUPABASE_ANON_KEY");
       return response;
     }
 
-    // Create Supabase client for middleware
-    // Note: Disable autoRefreshToken in middleware to avoid Edge Runtime fetch failures
-    // Token refresh should happen in Server Components/API routes, not middleware
     const supabase = createServerClient(supabaseUrl, supabaseAnonKey, {
-        cookies: {
-          getAll() {
-            return request.cookies.getAll();
-          },
-          setAll(cookiesToSet) {
-            cookiesToSet.forEach(({ name, value, options }) => {
-              // Parallel Auth races can ask middleware to blank sb-* cookies.
-              // Never wipe auth cookies here — explicit logout clears them.
-              if (name.startsWith("sb-") && (!value || value.length === 0)) {
-                return;
-              }
-              request.cookies.set(name, value);
-              if (options) {
-                setSafeResponseCookie(response, name, value, {
-                  maxAge: options.maxAge ?? 0,
-                  path: options.path ?? "/",
-                  httpOnly: options.httpOnly,
-                  sameSite: options.sameSite as string | undefined,
-                  secure: options.secure,
-                });
-              }
-            });
-          },
+      cookies: {
+        getAll() {
+          return request.cookies.getAll();
         },
-        auth: {
-          autoRefreshToken: false, // Disabled in middleware to prevent Edge Runtime fetch failures
-          persistSession: true,
-          detectSessionInUrl: false, // Middleware doesn't handle OAuth redirects
+        setAll(cookiesToSet) {
+          cookiesToSet.forEach(({ name, value, options }) => {
+            if (name.startsWith("sb-") && (!value || value.length === 0)) {
+              return;
+            }
+            request.cookies.set(name, value);
+            if (options) {
+              setSafeResponseCookie(response, name, value, {
+                maxAge: options.maxAge ?? 0,
+                path: options.path ?? "/",
+                httpOnly: options.httpOnly,
+                sameSite: options.sameSite as string | undefined,
+                secure: options.secure,
+              });
+            }
+          });
         },
-      }
-    );
+      },
+      auth: {
+        autoRefreshToken: false,
+        persistSession: true,
+        detectSessionInUrl: false,
+      },
+    });
 
-    // Use getUser() instead of getSession() to avoid triggering token refresh in middleware.
-    // getSession() can refresh the token; multiple parallel calls (middleware + session-status + APIs)
-    // cause "refresh_token_already_used". getUser() only validates the access token and does not refresh.
-    const hasAuthCookie = request.cookies.has("sb-access-token") ||
-                          request.cookies.has("sb-refresh-token") ||
-                          request.cookies.getAll().some(c => c.name.startsWith("sb-"));
+    const hasAuthCookie =
+      request.cookies.has("sb-access-token") ||
+      request.cookies.has("sb-refresh-token") ||
+      request.cookies.getAll().some((c) => c.name.startsWith("sb-"));
 
-    // Prefer cookie-based pass-through: Edge Runtime often cannot reach Supabase
-    // (ConnectTimeout / fetch failed). API routes and Server Components authenticate in Node.
-    // Calling getUser() here also leaves a racing promise that rejects after ~10s and floods logs.
+    // Let auth API routes handle their own session exchange / cookie writes.
+    if (
+      pathname.startsWith("/api/auth/set-cookie") ||
+      pathname.startsWith("/api/auth/callback")
+    ) {
+      return response;
+    }
+
+    // sb-* cookies present: pass through to Node route handlers for getUser() auth.
+    // Never expire partner metadata cookies here — stale metadata is re-init'd, not wiped.
     if (hasAuthCookie) {
       const cookieWrapper = {
         get: (name: string) => request.cookies.get(name) ?? undefined,
       };
+      const cookieManager = {
+        get: (name: string) => request.cookies.get(name) ?? undefined,
+        set: (
+          name: string,
+          value: string,
+          options: {
+            maxAge: number;
+            path: string;
+            httpOnly?: boolean;
+            sameSite?: string;
+            secure?: boolean;
+          }
+        ) => {
+          setSafeResponseCookie(response, name, value, options);
+        },
+      };
+
       const metadata = getSessionMetadata(cookieWrapper);
-      if (metadata) {
-        const validity = checkSessionValidity(metadata);
-        if (!validity.isValid) {
-          const cookieSetter = {
-            set: (
-              name: string,
-              value: string,
-              options: {
-                maxAge: number;
-                path: string;
-                httpOnly?: boolean;
-                sameSite?: string;
-                secure?: boolean;
-              }
-            ) => {
-              setSafeResponseCookie(response, name, value, options);
-            },
-          };
-          expireSession(cookieSetter);
-          if (pathname.startsWith("/api/")) {
-            return NextResponse.json(
-              { success: false, error: "Session expired", code: "SESSION_EXPIRED" },
-              { status: 401, headers: { "Content-Type": "application/json" } }
-            );
-          }
-          if (!pathname.startsWith("/login") && !pathname.startsWith("/auth/callback")) {
-            const redirectUrl = request.nextUrl.clone();
-            redirectUrl.pathname = "/login";
-            redirectUrl.searchParams.set("expired", validity.reason || "unknown");
-            redirectUrl.searchParams.set("redirect", normalizedRedirectPath);
-            return NextResponse.redirect(redirectUrl);
-          }
-          return response;
+      const validity = checkSessionValidity(metadata);
+
+      if (!metadata || !validity.isValid) {
+        if (debugProxy) {
+          console.log("[proxy] Partner session metadata stale — re-init:", validity.reason);
         }
-        const cookieManager = {
-          get: (name: string) => request.cookies.get(name) ?? undefined,
-          set: (
-            name: string,
-            value: string,
-            options: {
-              maxAge: number;
-              path: string;
-              httpOnly?: boolean;
-              sameSite?: string;
-              secure?: boolean;
-            }
-          ) => {
-            setSafeResponseCookie(response, name, value, options);
-          },
-        };
+        initializeSession(cookieManager);
+      } else {
         updateActivity(cookieManager);
       }
-      // Auth cookies present: never call Supabase from Edge middleware.
+
       return response;
     }
 
     let session: { user: { id: string; email?: string }; [key: string]: unknown } | null = null;
     let sessionError: { message?: string; code?: string } | null = null;
 
-    // No auth cookies — optional lightweight check (still swallow network failures).
     try {
       type AuthUserResult = {
         data?: { user?: { id: string; email?: string } | null };
@@ -266,9 +211,6 @@ export async function middleware(request: NextRequest) {
       }
     }
 
-    // Invalid refresh token: only clear cookies when the token is truly dead.
-    // refresh_token_already_used is a parallel-refresh race — signing out here
-    // wipes cookies another request just rotated (dashboard auto-logout).
     if (sessionError) {
       const isRefreshTokenNotFound =
         sessionError.code === "refresh_token_not_found" ||
@@ -276,11 +218,9 @@ export async function middleware(request: NextRequest) {
       const isAlreadyUsed =
         sessionError.code === "refresh_token_already_used" ||
         sessionError.message?.includes("refresh_token_already_used");
-      const isInvalidRefresh =
-        (sessionError.message ?? "").toLowerCase().includes("invalid refresh token");
+      const isInvalidRefresh = (sessionError.message ?? "").toLowerCase().includes("invalid refresh token");
 
       if (isAlreadyUsed) {
-        // Pass through; browser may already have the rotated cookies from the winning request.
         sessionError = null;
       } else if (isRefreshTokenNotFound || isInvalidRefresh) {
         try {
@@ -306,17 +246,12 @@ export async function middleware(request: NextRequest) {
       }
     }
 
-    // Public routes: login, auth (including callback), all /api/auth/*, and
-    // /api/health so the Docker healthcheck (`wget -qO- /api/health`) doesn't
-    // get a 401 SESSION_REQUIRED back. Containers were going UNHEALTHY because
-    // middleware was gating the healthcheck behind a Supabase session.
     const publicRoutes = ["/login", "/auth", "/api/auth", "/api/health"];
     const isPublicRoute = publicRoutes.some((route) => pathname.startsWith(route));
 
-    // If no Supabase session and trying to access protected route
     if (!session && !isPublicRoute) {
-      if (debugMiddleware) {
-        console.log("[middleware] No Supabase session, redirecting to login");
+      if (debugProxy) {
+        console.log("[proxy] No Supabase session, redirecting to login");
       }
       if (pathname.startsWith("/api/")) {
         return NextResponse.json(
@@ -330,19 +265,15 @@ export async function middleware(request: NextRequest) {
       return NextResponse.redirect(redirectUrl);
     }
 
-    // If Supabase session exists and trying to access login, redirect to dashboard
     if (session && pathname === "/login") {
-      if (debugMiddleware) console.log("[middleware] Session exists, redirecting from login to dashboard");
-      // 303 + Location so Back from dashboard does not re-show login content.
+      if (debugProxy) console.log("[proxy] Session exists, redirecting from login to dashboard");
       return NextResponse.redirect(new URL("/dashboard", request.url), 303);
     }
 
-    // Authenticated users hitting "/" — send to dashboard (stable first load on hosted setups).
     if (session && pathname === "/") {
       return NextResponse.redirect(new URL("/dashboard", request.url));
     }
 
-    // For protected routes, check custom session management and user validation
     if (session && !isPublicRoute) {
       const requestedPortal = request.nextUrl.searchParams.get("portal");
       const isAdminPortalRequest =
@@ -366,7 +297,6 @@ export async function middleware(request: NextRequest) {
         return NextResponse.redirect(redirectUrl);
       }
 
-      // Get session metadata from cookies
       const cookieWrapper = {
         get: (name: string) => request.cookies.get(name),
       };
@@ -374,41 +304,24 @@ export async function middleware(request: NextRequest) {
       const metadata = getSessionMetadata(cookieWrapper);
       const validity = checkSessionValidity(metadata);
 
-      if (!validity.isValid) {
-        if (debugMiddleware) console.log("[middleware] Session expired:", validity.reason);
-        const cookieSetter = {
-          set: (name: string, value: string, options: { maxAge: number; path: string; httpOnly?: boolean; sameSite?: string; secure?: boolean }) => {
-            setSafeResponseCookie(response, name, value, options);
-          },
-        };
-        expireSession(cookieSetter);
-        await supabase.auth.signOut();
-
-        if (pathname.startsWith("/api/")) {
-          return NextResponse.json(
-            { success: false, error: "Session expired", code: "SESSION_EXPIRED" },
-            { status: 401, headers: { "Content-Type": "application/json" } }
-          );
-        }
-        const redirectUrl = request.nextUrl.clone();
-        redirectUrl.pathname = "/login";
-        redirectUrl.searchParams.set("expired", validity.reason || "unknown");
-        return NextResponse.redirect(redirectUrl);
-      }
-
-      // Note: User validation (checking system_users table) is done in /api/auth/set-cookie
-      // We don't validate here because:
-      // 1. Middleware runs in Edge Runtime which doesn't support database connections
-      // 2. Validation is already done when session is set via set-cookie endpoint
-      // 3. If session exists and is valid (time-wise), we trust it was validated during login
-
-      // Session is valid - update last activity time
       const cookieManager = {
         get: (name: string) => request.cookies.get(name),
-        set: (name: string, value: string, options: { maxAge: number; path: string; httpOnly?: boolean; sameSite?: string; secure?: boolean }) => {
+        set: (
+          name: string,
+          value: string,
+          options: { maxAge: number; path: string; httpOnly?: boolean; sameSite?: string; secure?: boolean }
+        ) => {
           setSafeResponseCookie(response, name, value, options);
         },
       };
+
+      if (!validity.isValid) {
+        if (debugProxy) {
+          console.log("[proxy] Partner session metadata stale — re-init:", validity.reason);
+        }
+        initializeSession(cookieManager);
+      }
+
       updateActivity(cookieManager);
 
       const shouldTrack =
@@ -448,7 +361,6 @@ export async function middleware(request: NextRequest) {
         };
 
         const dashboardType = resolveDashboardType(pathname);
-
         const throttleKey = `${pathname}:${request.method}`;
         const now = Date.now();
         const last = auditLastSent.get(throttleKey) ?? 0;
@@ -456,8 +368,6 @@ export async function middleware(request: NextRequest) {
         if (now - last >= AUDIT_MIN_INTERVAL_MS) {
           auditLastSent.set(throttleKey, now);
 
-          // Fire-and-forget audit tracking
-          // Don't block the request if audit tracking fails or times out
           fetch(new URL("/api/audit/track", request.url), {
             method: "POST",
             headers: {
@@ -480,14 +390,12 @@ export async function middleware(request: NextRequest) {
               requestMethod: request.method,
             }),
           }).catch((error) => {
-            // Silently ignore timeout, network, and fetch failures - audit tracking should never block requests
-            // Edge/sandbox can fail with "fetch failed" for same-origin calls; don't log these
             const isExpected =
               error.name === "HeadersTimeoutError" ||
               error.message?.includes("timeout") ||
               error.message?.includes("fetch failed");
             if (!isExpected) {
-              console.error("[middleware] Audit tracking failed:", error);
+              console.error("[proxy] Audit tracking failed:", error);
             }
           });
         }
@@ -496,20 +404,13 @@ export async function middleware(request: NextRequest) {
 
     return response;
   } catch (error) {
-    console.error("[middleware] FATAL ERROR:", error);
+    console.error("[proxy] FATAL ERROR:", error);
     return continueRequest(request);
   }
 }
 
 export const config = {
   matcher: [
-    /*
-     * Match all request paths except for the ones starting with:
-     * - _next/static (static files)
-     * - _next/image (image optimization files)
-     * - favicon.ico (favicon file)
-     * - public folder
-     */
     "/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)",
   ],
 };

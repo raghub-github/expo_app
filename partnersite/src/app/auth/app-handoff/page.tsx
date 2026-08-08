@@ -69,7 +69,7 @@ function AppHandoffContent() {
       <div className="min-h-screen flex flex-col items-center justify-center gap-4 px-6 bg-[#F4F7F8]">
         <p className="text-center text-slate-700 max-w-md text-sm leading-relaxed">{error}</p>
         <a
-          href="/auth/login"
+          href="/auth"
           className="text-sm font-semibold text-teal-700 underline underline-offset-2"
         >
           Sign in on partner portal
