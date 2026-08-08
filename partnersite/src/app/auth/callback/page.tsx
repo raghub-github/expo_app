@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { getOrCreateDeviceId } from "@/lib/auth/device-id-client";
 import { Store } from "lucide-react";
+import { safeSameOriginPath } from "@/lib/auth/auth-redirect-url";
 
 function parseHashParams(hash: string): Record<string, string> {
   const params: Record<string, string> = {};
@@ -82,7 +83,7 @@ async function redeemAppHandoff(handoffToken: string): Promise<{
       ok: true,
       access_token: data.access_token,
       refresh_token: data.refresh_token,
-      next: data.next?.startsWith("/") ? data.next : "/partners/all-stores",
+      next: safeSameOriginPath(data.next, window.location.origin),
     };
   } catch (e) {
     const msg = e instanceof Error ? e.message : "Handoff failed";
@@ -132,8 +133,10 @@ function AuthCallbackContent() {
       try {
         const redirectParam =
           searchParams?.get("redirect")?.trim() || searchParams?.get("next")?.trim() || "";
+        // safeSameOriginPath rejects protocol-relative targets like "//evil.com",
+        // which startsWith("/") happily accepts and the browser treats as off-site.
         let next =
-          (redirectParam.startsWith("/") ? redirectParam : "") ||
+          safeSameOriginPath(redirectParam, window.location.origin, "") ||
           (typeof window !== "undefined" ? sessionStorage.getItem("auth_redirect") || "" : "") ||
           "/partners/all-stores";
         if (next === "/auth" || next === "/auth/") next = "/partners/all-stores";
@@ -164,7 +167,7 @@ function AuthCallbackContent() {
             fail(redeemed.error);
             return;
           }
-          next = redeemed.next.startsWith("/") ? redeemed.next : next;
+          next = safeSameOriginPath(redeemed.next, window.location.origin, next);
           const supabase = createClient();
           await supabase.auth.setSession({
             access_token: redeemed.access_token,
@@ -181,7 +184,7 @@ function AuthCallbackContent() {
             return;
           }
           sessionStorage.removeItem("auth_redirect");
-          window.location.replace(next.startsWith("/") ? next : `/${next.replace(/^\//, "")}`);
+          window.location.replace(safeSameOriginPath(next, window.location.origin));
           return;
         }
 
@@ -192,7 +195,8 @@ function AuthCallbackContent() {
           const accessToken = hash.access_token;
           const refreshToken = hash.refresh_token;
           const hashNext = hash.redirect || hash.next;
-          if (hashNext?.startsWith("/")) next = hashNext;
+          const safeHashNext = safeSameOriginPath(hashNext, window.location.origin, "");
+          if (safeHashNext) next = safeHashNext;
           if (accessToken && refreshToken) {
             const { error: setError } = await supabase.auth.setSession({
               access_token: accessToken,
@@ -209,7 +213,7 @@ function AuthCallbackContent() {
               return;
             }
             sessionStorage.removeItem("auth_redirect");
-            window.location.replace(next.startsWith("/") ? next : `/${next.replace(/^\//, "")}`);
+            window.location.replace(safeSameOriginPath(next, window.location.origin));
             return;
           }
         }
@@ -254,7 +258,7 @@ function AuthCallbackContent() {
             return;
           }
           sessionStorage.removeItem("auth_redirect");
-          window.location.replace(next.startsWith("/") ? next : `/${next.replace(/^\//, "")}`);
+          window.location.replace(safeSameOriginPath(next, window.location.origin));
           return;
         }
 

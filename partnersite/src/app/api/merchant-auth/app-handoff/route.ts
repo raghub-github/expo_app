@@ -1,4 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
+import {
+  getPartnerAuthRedirectOriginFromRequest,
+  safeSameOriginPath,
+} from "@/lib/auth/auth-redirect-url";
 
 /**
  * POST /api/merchant-auth/app-handoff
@@ -69,7 +73,11 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const next = data.next.startsWith("/") ? data.next : "/partners/all-stores";
+    // startsWith("/") lets "//evil.com" through; resolve against our own origin instead.
+    const next = safeSameOriginPath(
+      data.next,
+      getPartnerAuthRedirectOriginFromRequest(request.url, request.headers)
+    );
     return NextResponse.json({
       success: true,
       access_token: data.access_token,

@@ -52,6 +52,39 @@ export function getPartnerOAuthCallbackUrl(): string {
   return `${getPartnerAuthRedirectBaseUrl()}/api/auth/callback`;
 }
 
+export const DEFAULT_POST_AUTH_PATH = "/partners/all-stores";
+
+/**
+ * Reduce an untrusted post-login target to a path guaranteed to stay on `origin`.
+ *
+ * The obvious guard — reject if it `startsWith("http")`, otherwise require it to
+ * `startsWith("/")` — does not hold. A protocol-relative target such as
+ * `//evil.com` (also `////evil.com`, `/\/evil.com`) passes both tests, yet both
+ * `new URL("//evil.com", origin)` and `window.location.replace("//evil.com")`
+ * navigate to `https://evil.com`. Because these redirects happen immediately
+ * after the session cookies are issued, that hands a freshly authenticated user
+ * to an attacker page — ideal for a "session expired, sign in again" phish, with
+ * our own domain in the referrer.
+ *
+ * Resolving against the origin and comparing the result is the only check that
+ * holds, because it asks the URL parser exactly what the browser will do.
+ */
+export function safeSameOriginPath(
+  raw: string | null | undefined,
+  origin: string,
+  fallback: string = DEFAULT_POST_AUTH_PATH
+): string {
+  if (!raw) return fallback;
+  let resolved: URL;
+  try {
+    resolved = new URL(raw, origin);
+  } catch {
+    return fallback;
+  }
+  if (resolved.origin !== origin) return fallback;
+  return `${resolved.pathname}${resolved.search}${resolved.hash}`;
+}
+
 /**
  * Resolve redirect origin on the server (API routes behind reverse proxies).
  * Prefer x-forwarded-host, then env, then request URL.
