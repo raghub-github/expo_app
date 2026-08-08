@@ -293,26 +293,32 @@ export async function authRoutes(app: FastifyInstance) {
         );
         const headerMap = headersToRecord(request.headers as Record<string, unknown>);
 
-        if (env.SUPABASE_SEND_SMS_HOOK_SECRET && hasWebhookHeaders) {
-          try {
-            const secret = env.SUPABASE_SEND_SMS_HOOK_SECRET.trim().replace(/^v1,/i, "");
-            const wh = new Webhook(secret);
-            body = wh.verify(raw, headerMap) as Record<string, unknown>;
-          } catch (err) {
-            if (err instanceof WebhookVerificationError) {
-              request.log.warn({ err: err.message }, "[supabase-send-sms] webhook verify failed");
-              return reply.code(401).send({ error: "Unauthorized" });
-            }
-            throw err;
-          }
-        } else if (env.SUPABASE_SEND_SMS_HOOK_SECRET && !hasWebhookHeaders) {
+        // Signature verification is mandatory — this route spends money. An
+        // unverified request would let anyone send an MSG91 SMS to any number
+        // with any code: billable SMS bombing, and a phishing OTP that appears
+        // to come from us. It used to fall through to `JSON.parse(raw)` when the
+        // secret was unset, so the protection silently depended on an env var
+        // declared `.optional()` in config/env.ts. A missing secret is now a
+        // misconfiguration to fix, not a bypass.
+        if (!env.SUPABASE_SEND_SMS_HOOK_SECRET) {
+          request.log.error(
+            "[supabase-send-sms] SUPABASE_SEND_SMS_HOOK_SECRET is not set — refusing to send unverified OTP SMS."
+          );
+          return reply.code(500).send({ error: "SMS hook not configured" });
+        }
+        if (!hasWebhookHeaders) {
           return reply.code(401).send({ error: "Hook requires Standard Webhooks headers" });
-        } else {
-          try {
-            body = JSON.parse(raw) as Record<string, unknown>;
-          } catch {
-            return reply.code(400).send({ error: "Invalid JSON" });
+        }
+        try {
+          const secret = env.SUPABASE_SEND_SMS_HOOK_SECRET.trim().replace(/^v1,/i, "");
+          const wh = new Webhook(secret);
+          body = wh.verify(raw, headerMap) as Record<string, unknown>;
+        } catch (err) {
+          if (err instanceof WebhookVerificationError) {
+            request.log.warn({ err: err.message }, "[supabase-send-sms] webhook verify failed");
+            return reply.code(401).send({ error: "Unauthorized" });
           }
+          throw err;
         }
 
         const phone =
