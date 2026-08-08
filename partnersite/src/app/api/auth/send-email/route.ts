@@ -40,26 +40,35 @@ export async function POST(req: NextRequest) {
       req.headers.get('webhook-signature') &&
       req.headers.get('webhook-timestamp');
 
-    if (SEND_EMAIL_HOOK_SECRET && hasWebhookHeaders) {
-      try {
-        const secret = SEND_EMAIL_HOOK_SECRET.trim().replace(/^v1,/i, '');
-        const wh = new Webhook(secret);
-        body = wh.verify(rawBody, getHeadersMap(req)) as HookPayload;
-      } catch (err) {
-        if (err instanceof WebhookVerificationError) {
-          console.warn('[send-email] webhook verification failed:', err.message);
-          return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-        }
-        throw err;
-      }
-    } else if (SEND_EMAIL_HOOK_SECRET && !hasWebhookHeaders) {
+    // Signature verification is mandatory. This route sends a GatiMitra-branded
+    // OTP mail to whatever address the payload names, so an unverified request
+    // is an open relay: anyone could mail our template, with an arbitrary code,
+    // to an arbitrary recipient — phishing under our brand plus a fast way to
+    // burn the sending domain's reputation.
+    //
+    // It previously fell through to `JSON.parse(rawBody)` whenever the secret
+    // was unset, which made the protection silently depend on an env var that
+    // `.env.example` ships empty and the docs describe as optional. A missing
+    // secret is now a misconfiguration to fix, not a bypass.
+    if (!SEND_EMAIL_HOOK_SECRET) {
+      console.error(
+        '[send-email] SUPABASE_SEND_EMAIL_HOOK_SECRET is not set — refusing to send unverified OTP mail.'
+      );
+      return NextResponse.json({ error: 'Email hook not configured' }, { status: 500 });
+    }
+    if (!hasWebhookHeaders) {
       return NextResponse.json({ error: 'Hook requires authorization token' }, { status: 401 });
-    } else {
-      try {
-        body = rawBody ? (JSON.parse(rawBody) as HookPayload) : {};
-      } catch {
-        return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
+    }
+    try {
+      const secret = SEND_EMAIL_HOOK_SECRET.trim().replace(/^v1,/i, '');
+      const wh = new Webhook(secret);
+      body = wh.verify(rawBody, getHeadersMap(req)) as HookPayload;
+    } catch (err) {
+      if (err instanceof WebhookVerificationError) {
+        console.warn('[send-email] webhook verification failed:', err.message);
+        return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
       }
+      throw err;
     }
 
     const email = String(body.user?.email || '').trim().toLowerCase();

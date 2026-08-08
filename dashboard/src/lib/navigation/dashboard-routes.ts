@@ -52,6 +52,13 @@ export interface DashboardSubRoute {
   description?: string;
   /** Only for Area Manager dashboard: limit to this manager type (BOTH = show to all). */
   areaManagerType?: AreaManagerTypeFilter;
+  /**
+   * This page only exists under `/dashboard/merchants/stores/{id}/…`, so the entry
+   * must be hidden until a store is selected. Without the flag the merchant portal
+   * rendered `<Link href="/dashboard/merchants/menu">`, which Next.js prefetched
+   * and the router 404'd — dead links in the sidebar and 404 noise in the console.
+   */
+  requiresStore?: boolean;
 }
 
 export interface DashboardConfig {
@@ -185,24 +192,28 @@ export const merchantDashboardRoutes: DashboardSubRoute[] = [
     href: "/dashboard/merchants/stores",
     icon: Store,
     description: "Store detail and dashboard",
+    requiresStore: true,
   },
   {
     name: "Merchant Details",
     href: "/dashboard/merchants/details",
     icon: User,
     description: "Merchant information",
+    requiresStore: true,
   },
   {
     name: "Orders",
     href: "/dashboard/merchants/orders",
     icon: ShoppingCart,
     description: "Merchant orders",
+    requiresStore: true,
   },
   {
     name: "Menu Items",
     href: "/dashboard/merchants/menu",
     icon: UtensilsCrossed,
     description: "Menu management",
+    requiresStore: true,
   },
   {
     name: "Subscription Plans",
@@ -215,18 +226,21 @@ export const merchantDashboardRoutes: DashboardSubRoute[] = [
     href: "/dashboard/merchants/tickets",
     icon: Ticket,
     description: "Support tickets",
+    requiresStore: true,
   },
   {
     name: "Payments",
     href: "/dashboard/merchants/payments",
     icon: CreditCard,
     description: "Payment history",
+    requiresStore: true,
   },
   {
     name: "Analytics",
     href: "/dashboard/merchants/analytics",
     icon: BarChart3,
     description: "Performance analytics",
+    requiresStore: true,
   },
 ];
 
@@ -236,17 +250,40 @@ export const adminPortalMerchantRoutes: DashboardSubRoute[] = [
   { name: "Verifications", href: "/dashboard/merchants/verifications", icon: CheckCircle, description: "Verify store documents and approve/reject merchants" },
 ];
 
-/** Merchant portal: sidebar from reference (Dashboard, Orders, Menu, Subscription Plans, Payments, User Insights, Settings, Profile). */
+/**
+ * Merchant portal sidebar (Dashboard, Orders, Menu, Subscription Plans, Payments,
+ * User Insights, Settings, Profile).
+ *
+ * Entries marked `requiresStore` have no page of their own — the real routes live
+ * under `/dashboard/merchants/stores/{id}/…` and are produced by
+ * `getStoreScopedMerchantRoutes()` once a store is open. Listing them with a bare
+ * `/dashboard/merchants/<x>` href made the sidebar render links to routes that do
+ * not exist; Next.js prefetched them on render and each one 404'd. Use
+ * `filterSidebarRoutesForStoreContext()` when rendering this list.
+ */
 export const merchantPortalSidebarRoutes: DashboardSubRoute[] = [
   { name: "Dashboard", href: "/dashboard/merchants", icon: LayoutDashboard, description: "Order overview and store dashboard" },
-  { name: "Orders", href: "/dashboard/merchants/orders", icon: ClipboardList, description: "Merchant orders" },
-  { name: "Menu", href: "/dashboard/merchants/menu", icon: UtensilsCrossed, description: "Menu management" },
+  { name: "Orders", href: "/dashboard/merchants/orders", icon: ClipboardList, description: "Merchant orders", requiresStore: true },
+  { name: "Menu", href: "/dashboard/merchants/menu", icon: UtensilsCrossed, description: "Menu management", requiresStore: true },
   { name: "Subscription Plans", href: "/dashboard/merchants/offers", icon: Zap, description: "Merchant subscription plans" },
-  { name: "Payments", href: "/dashboard/merchants/payments", icon: CreditCard, description: "Payment history" },
-  { name: "User Insights", href: "/dashboard/merchants/analytics", icon: UserCircle, description: "Performance analytics" },
+  { name: "Payments", href: "/dashboard/merchants/payments", icon: CreditCard, description: "Payment history", requiresStore: true },
+  { name: "User Insights", href: "/dashboard/merchants/analytics", icon: UserCircle, description: "Performance analytics", requiresStore: true },
   { name: "Settings", href: "/dashboard/merchants/settings", icon: Settings, description: "Settings" },
-  { name: "Profile", href: "/dashboard/merchants/details", icon: User, description: "Merchant profile" },
+  { name: "Profile", href: "/dashboard/merchants/details", icon: User, description: "Merchant profile", requiresStore: true },
 ];
+
+/**
+ * Drop entries whose page only exists under a store. Called with the store id when
+ * one is open (store pages already get fully-scoped routes from
+ * `getStoreScopedMerchantRoutes`, so in practice this is the no-store filter).
+ */
+export function filterSidebarRoutesForStoreContext(
+  routes: DashboardSubRoute[],
+  storeId: string | null
+): DashboardSubRoute[] {
+  if (storeId) return routes;
+  return routes.filter((r) => !r.requiresStore);
+}
 
 /**
  * Merchant Portal section (shown below existing merchant sidebar items when portal=admin).
@@ -290,7 +327,11 @@ export function getMerchantSubRoutesForPath(pathname: string): DashboardSubRoute
     const storeId = storeMatch[1];
     return getStoreScopedMerchantRoutes(storeId);
   }
-  return merchantDashboardRoutes;
+  // No store in the path, so anything store-scoped would render a link to a route
+  // that does not exist. `merchantDashboardRoutes` still lists several of those
+  // (Orders / Menu / Payments / Analytics / Profile / Store Dashboard / Tickets),
+  // so filter before returning rather than trusting the caller.
+  return filterSidebarRoutesForStoreContext(merchantDashboardRoutes, null);
 }
 
 /**
