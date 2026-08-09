@@ -14,6 +14,7 @@ const SESSION_OUTSIDE_PROVIDER: MerchantSessionContextValue = {
   sessionStatus: null,
   parent: null,
   isLoading: true,
+  isRefreshing: false,
   isAuthenticated: false,
   logout: async () => {},
   refetch: () => {},

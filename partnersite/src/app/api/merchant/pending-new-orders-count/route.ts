@@ -6,6 +6,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { assertStoreAccess } from '@/lib/auth/assert-store-access';
+import { isNetworkOrTransientError } from '@/lib/auth/session-errors';
 import { resolvePartnerPipeline } from '@/lib/partner-orders-unify';
 import {
   isWithinAcceptanceDeadline,
@@ -128,6 +129,12 @@ export async function GET(req: NextRequest) {
       }
     );
   } catch (e) {
+    if (isNetworkOrTransientError(e)) {
+      return NextResponse.json(
+        { count: 0, store_id: null, error: 'Auth service unavailable' },
+        { status: 503, headers: { 'Cache-Control': 'private, no-store, max-age=0' } },
+      );
+    }
     console.error('[pending-new-orders-count]', e);
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }

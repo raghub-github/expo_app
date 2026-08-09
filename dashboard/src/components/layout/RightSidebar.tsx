@@ -68,6 +68,7 @@ import { shouldShowDashboardNavOverlay } from "@/lib/navigation/dashboard-nav-tr
 import { EXPIRED_RESUBMITTED_DOCS_LABEL } from "@/lib/merchants/expired-resubmitted-docs-label";
 import { MERCHANT_RESUBMITTED_DOCS_REFRESH_EVENT } from "@/lib/merchants/merchant-resubmitted-docs-refresh";
 import { MERCHANT_MENU_REVIEW_QUEUE_REFRESH_EVENT } from "@/lib/merchant/menu-review-queue";
+import { useTicketsNavPendingOptional } from "@/context/TicketsNavPendingContext";
 
 interface RightSidebarProps {
   isOpen: boolean;
@@ -283,6 +284,8 @@ export function RightSidebar({
 
   // Ticket identifier from path (supports numeric id and ticket number like TKT-2026-910001)
   const ticketIdFromPath = useMemo(() => ticketsPathTicketId(cleanPathname), [cleanPathname]);
+  const ticketsNavPending = useTicketsNavPendingOptional();
+  const activeTicketId = ticketIdFromPath ?? ticketsNavPending?.pendingTicketId ?? null;
 
   // Store ID when on a merchant store page (for Store Information Card in sidebar)
   const storeIdFromPath = useMemo(() => {
@@ -345,7 +348,9 @@ export function RightSidebar({
   }, [merchantsSearch?.searchResultStore, isMerchantsListPage, portal, showRightSidebarStoreCard]);
 
   const isTicketsDashboard = currentDashboard?.href === "/dashboard/tickets";
-  const isTicketDetailPage = isTicketsAppDetailPath(cleanPathname);
+  const isTicketDetailPage =
+    isTicketsAppDetailPath(cleanPathname) ||
+    (isTicketsDashboard && activeTicketId != null && !cleanPathname.startsWith("/dashboard/tickets/queue"));
   const queueDetailFromHome = isTicketDetailPage && ticketDetailHasQueueContext(searchParams);
   /** Queue routes or ticket detail opened from queue home (`?fromQueue=1`). */
   const isTicketsQueuePath =
@@ -357,7 +362,7 @@ export function RightSidebar({
     isTicketDetailPage && dockLeft && queueLeftRail;
   const showQueueDetailPropertiesPanel =
     queueDetailFromHome &&
-    ticketIdFromPath != null &&
+    activeTicketId != null &&
     (ticketPropertiesRailOpen !== undefined ? ticketPropertiesRailOpen : isOpen);
 
   /** Light right-rail nav (Merchants / Riders / etc.) — matches left sidebar language on #F3F7FA. */
@@ -588,12 +593,12 @@ export function RightSidebar({
               isTicketDetailPage && !ticketDetailQueueLeftRail ? "overflow-y-hidden" : "overflow-y-auto"
             }`}
           >
-            {isTicketsDashboard && ticketIdFromPath != null && isOpen && !queueDetailFromHome ? (
+            {isTicketsDashboard && activeTicketId != null && isOpen && !queueDetailFromHome ? (
               <div className="h-full min-h-0">
                 {rightSidebarCtx?.ticketRightSidebarPanel === "settings" ? (
                   <TicketRightSidebarSettingsPanel />
                 ) : (
-                  <TicketPropertiesPanel ticketId={ticketIdFromPath} />
+                  <TicketPropertiesPanel ticketId={activeTicketId} />
                 )}
               </div>
             ) : isTicketsDashboard && isTicketsQueuePath && isOpen ? (
@@ -744,7 +749,7 @@ export function RightSidebar({
                     {rightSidebarCtx?.ticketRightSidebarPanel === "settings" ? (
                       <TicketRightSidebarSettingsPanel />
                     ) : (
-                      <TicketPropertiesPanel ticketId={ticketIdFromPath} />
+                      <TicketPropertiesPanel ticketId={activeTicketId!} />
                     )}
                   </div>
                 ) : null}
@@ -1122,7 +1127,7 @@ export function RightSidebar({
             {rightSidebarCtx?.ticketRightSidebarPanel === "settings" ? (
               <TicketRightSidebarSettingsPanel />
             ) : (
-              <TicketPropertiesPanel ticketId={ticketIdFromPath} />
+              <TicketPropertiesPanel ticketId={activeTicketId!} />
             )}
           </div>
         </aside>

@@ -247,6 +247,17 @@ export function MenuPageSkeleton() {
   );
 }
 
+/** Store settings loading skeleton — fills the inner scroll slot (no min-h-screen). */
+export function StoreSettingsPageSkeleton() {
+  return (
+    <div className="mx-auto w-full max-w-6xl space-y-4" aria-busy="true" aria-label="Loading store settings">
+      <div className="h-36 rounded-xl bg-white border border-gray-200 shadow-sm animate-pulse" />
+      <div className="h-48 rounded-xl bg-white border border-gray-200 shadow-sm animate-pulse" />
+      <div className="h-56 rounded-xl bg-white border border-gray-200 shadow-sm animate-pulse" />
+    </div>
+  )
+}
+
 /** Generic page skeleton - works for settings, payments, etc. */
 export function PageSkeletonGeneric() {
   return (

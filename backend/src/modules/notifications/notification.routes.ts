@@ -955,6 +955,59 @@ export const notificationRoutes: FastifyPluginAsync = async (app) => {
       },
     );
 
+    admin.post<{
+      Body: {
+        permission?: string;
+        token?: string;
+        user_id?: string;
+      };
+    }>("/browser-tokens/sync-permission", async (req, reply) => {
+      const permission = String(req.body?.permission ?? "").trim().toLowerCase();
+      const userId = String(req.body?.user_id ?? req.auth?.sub ?? "").trim();
+      const token = String(req.body?.token ?? "").trim();
+
+      if (!userId) {
+        return reply.code(400).send({ error: "user_id_required" });
+      }
+      if (permission !== "denied" && permission !== "granted") {
+        return reply.code(400).send({ error: "invalid_permission" });
+      }
+
+      const sql = getSql();
+      const deactivatedAt = "1970-01-01T00:00:00.000Z";
+
+      if (permission === "denied") {
+        try {
+          if (token) {
+            await sql`
+              UPDATE public.native_device_push_tokens
+              SET last_seen_at = ${deactivatedAt}::timestamptz,
+                  updated_at = NOW()
+              WHERE native_token = ${token}
+                AND user_id = ${userId}
+                AND lower(coalesce(platform, '')) = 'web'
+                AND token_type = 'fcm'
+            `;
+          }
+          const rows = (await sql`
+            UPDATE public.native_device_push_tokens
+            SET last_seen_at = ${deactivatedAt}::timestamptz,
+                updated_at = NOW()
+            WHERE user_id = ${userId}
+              AND lower(coalesce(platform, '')) = 'web'
+              AND token_type = 'fcm'
+            RETURNING id
+          `) as unknown as Array<{ id: number }>;
+          return reply.send({ ok: true, deactivated: rows.length, permission: "denied" });
+        } catch (e) {
+          req.log.error({ err: e }, "browser_token_permission_denied_sync_failed");
+          return reply.code(500).send({ error: "deactivate_failed" });
+        }
+      }
+
+      return reply.send({ ok: true, permission: "granted" });
+    });
+
     // --- devices: list registered push tokens for a user_id ---
     // Powers the "Devices" super-admin page. Returns tokens across roles
     // (customer / merchant / rider) so support can confirm which apps a user

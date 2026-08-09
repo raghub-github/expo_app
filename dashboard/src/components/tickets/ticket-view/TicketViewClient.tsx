@@ -33,8 +33,12 @@ import { useTicketRoomRealtime, type TicketRoomPresenceIdentity } from "@/hooks/
 const STORAGE_KEY_PREFIX = "ticket-last-viewed-";
 
 function TicketDetailLoadingShell() {
+  const rightSidebar = useRightSidebar();
+  const rightPaddingClass = rightSidebar?.isOpen ? "lg:pr-64" : "lg:pr-14";
   return (
-    <div className="flex h-full min-h-0 w-full flex-1 flex-col animate-pulse bg-[#f5f7f9]">
+    <div
+      className={`flex h-full min-h-0 w-full flex-1 flex-col animate-pulse bg-[#f5f7f9] transition-[padding] duration-200 ${rightPaddingClass}`}
+    >
       <div className="h-12 shrink-0 border-b border-gray-200 bg-white" />
       <div className="flex min-h-0 flex-1 flex-col gap-3 p-4">
         <div className="h-20 rounded-lg bg-white/90" />
@@ -178,7 +182,6 @@ export function TicketViewClient({ ticketId }: { ticketId: number | string }) {
   const [quickComposeAction, setQuickComposeAction] = useState<{ type: "reply" | "forward" | "note_private" | "note_public"; nonce: number } | null>(null);
   const [newUpdatesCount, setNewUpdatesCount] = useState(0);
   const [copiedPhone, setCopiedPhone] = useState(false);
-  const sidebarStateBeforeLoadingRef = useRef<boolean | null>(null);
   const queryClient = useQueryClient();
   /** Same string id as useTicketDetail / list caches — avoids setQueryData missing the active query. */
   const ticketCacheId = String(ticketId).trim();
@@ -370,21 +373,6 @@ export function TicketViewClient({ ticketId }: { ticketId: number | string }) {
     if (!em || !em.includes("@")) return null;
     return em;
   }, [ticket?.group, corporateFields.corporateEntityEmail]);
-
-  useEffect(() => {
-    if (!rightSidebar?.setOpen) return;
-    if (stillLoading) {
-      if (sidebarStateBeforeLoadingRef.current == null) {
-        sidebarStateBeforeLoadingRef.current = Boolean(rightSidebar.isOpen);
-      }
-      rightSidebar.setOpen(false);
-      return;
-    }
-    if (sidebarStateBeforeLoadingRef.current != null) {
-      rightSidebar.setOpen(sidebarStateBeforeLoadingRef.current);
-      sidebarStateBeforeLoadingRef.current = null;
-    }
-  }, [stillLoading, rightSidebar]);
 
   if (stillLoading) {
     return <TicketDetailLoadingShell />;

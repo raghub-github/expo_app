@@ -10,7 +10,6 @@ import React, {
   useState,
 } from 'react';
 import { createPortal } from 'react-dom';
-import Image from 'next/image';
 import Link from 'next/link';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import {
@@ -41,7 +40,11 @@ import { merchantKeys } from '@/lib/query-keys';
 import { fetchStoreOperations } from '@/hooks/useMerchantApi';
 import { formatStoreActionSourceLabel } from '@/lib/storeActionSource';
 import { MobileHamburgerButton } from '@/components/MobileHamburgerButton';
-import { useMerchantSession } from '@/context/MerchantSessionContext';
+import {
+  isPartnerSessionBackgroundRefreshPending,
+  waitForPartnerSessionBackgroundRefresh,
+} from '@/lib/auth/partner-session-focus-gate';
+import { useMerchantSession, usePartnerMerchantQueriesEnabled } from '@/context/MerchantSessionContext';
 import { useApprovedPartnerStores } from '@/hooks/usePartnerResolveSession';
 import { usePartnerShellHeader } from '@/context/PartnerShellHeaderContext';
 import LogoutConfirmModal from '@/components/LogoutConfirmModal';
@@ -469,6 +472,7 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
 
   /** SSR-safe: empty until mount — never treat layout placeholders like "No ID" as store_id. */
   const [resolvedStoreId, setResolvedStoreId] = useState('');
+  const merchantQueriesReady = usePartnerMerchantQueriesEnabled(resolvedStoreId);
   const { data: resolveSessionData, approvedStores, refetch: refetchResolveSession } =
     useApprovedPartnerStores();
   const storeList = useMemo(
@@ -707,12 +711,18 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
   const partnerNotifInFlightRef = useRef(false);
 
   const fetchPartnerNotifications = useCallback(async () => {
-    if (!resolvedStoreId) {
-      setPartnerNotifications([]);
-      partnerNotifFetchedOnceRef.current = false;
+    if (!resolvedStoreId || !merchantQueriesReady) {
+      if (!resolvedStoreId) {
+        setPartnerNotifications([]);
+        partnerNotifFetchedOnceRef.current = false;
+      }
       return;
     }
     if (partnerNotifInFlightRef.current) return;
+    if (isPartnerSessionBackgroundRefreshPending()) {
+      await waitForPartnerSessionBackgroundRefresh();
+    }
+    if (!resolvedStoreId || !merchantQueriesReady) return;
     partnerNotifInFlightRef.current = true;
     // Only the first load shows the full-panel spinner — background polls / realtime
     // must not flash "Loading notifications…" every few seconds.
@@ -736,6 +746,8 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
       };
       if (res.ok && Array.isArray(data.notifications)) {
         setPartnerNotifications(data.notifications);
+      } else if (res.status === 401 || res.status === 503) {
+        // Session refresh in flight or transient auth outage — keep existing list.
       } else if (!partnerNotifFetchedOnceRef.current) {
         setPartnerNotifications([]);
       }
@@ -747,7 +759,7 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
       partnerNotifInFlightRef.current = false;
       if (showSpinner) setPartnerNotifLoading(false);
     }
-  }, [resolvedStoreId]);
+  }, [resolvedStoreId, merchantQueriesReady]);
 
   const hasWaitingPartner = useMemo(
     () => notificationListHasWaiting(partnerNotifications),
@@ -1197,15 +1209,17 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
   }, [resolvedStoreId]);
 
   useEffect(() => {
-    if (!resolvedStoreId) return;
+    if (!resolvedStoreId || !merchantQueriesReady || merchantSession?.isRefreshing) return;
     void fetchPartnerNotifications();
     const t = window.setInterval(() => void fetchPartnerNotifications(), 60_000);
     return () => window.clearInterval(t);
-  }, [resolvedStoreId, fetchPartnerNotifications]);
+  }, [resolvedStoreId, merchantQueriesReady, merchantSession?.isRefreshing, fetchPartnerNotifications]);
 
   useEffect(() => {
-    if (sheet === 'notifications' && resolvedStoreId) void fetchPartnerNotifications();
-  }, [sheet, resolvedStoreId, fetchPartnerNotifications]);
+    if (sheet === 'notifications' && resolvedStoreId && merchantQueriesReady) {
+      void fetchPartnerNotifications();
+    }
+  }, [sheet, resolvedStoreId, merchantQueriesReady, fetchPartnerNotifications]);
 
   useEffect(() => {
     const onChanged = () => void fetchPartnerNotifications();
@@ -1274,25 +1288,6 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
       ro.disconnect();
     };
   }, []);
-
-  // Extra safety: re-measure after header title changes (some browsers/fonts
-  // can miss a ResizeObserver tick during fast route transitions).
-  useEffect(() => {
-    const el = topbarRef.current;
-    if (!el || typeof document === 'undefined') return;
-    const root = document.documentElement;
-    const setVars = () => {
-      const h = Math.max(0, Math.ceil(el.getBoundingClientRect().height));
-      root.style.setProperty('--mx-partner-topbar-h', `${h}px`);
-      root.style.setProperty('--mx-toast-top', `${h + 12}px`);
-    };
-    const t = window.setTimeout(setVars, 0);
-    return () => window.clearTimeout(t);
-  }, [
-    partnerShellHeader?.header.title,
-    partnerShellHeader?.header.breadcrumbs,
-    headerTitle,
-  ]);
 
   useEffect(() => {
     if (sheet !== 'status') {
@@ -1837,7 +1832,6 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
     await refetchAllStoreOps();
   }, [refetchAllStoreOps]);
 
-  const leftW = sidebarCollapsed ? 'md:w-14 md:min-w-[13rem]' : 'md:w-52';
   const resolvedOpsRow = resolvedStoreId ? storeOpsById[resolvedStoreId] : undefined;
   const onlineLabel =
     storeOpen === null
@@ -1909,6 +1903,27 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
     }
     return crumbs;
   }, [headerTitle, pathname, partnerShellHeader?.header.breadcrumbs, resolvedHeaderTitle, searchParams]);
+
+  const headerMeasureKey = useMemo(
+    () =>
+      JSON.stringify({
+        title: resolvedHeaderTitle,
+        crumbs: resolvedHeaderBreadcrumbs,
+        path: pathname,
+        q: searchParams?.toString() ?? '',
+      }),
+    [resolvedHeaderTitle, resolvedHeaderBreadcrumbs, pathname, searchParams],
+  );
+
+  // Re-measure synchronously when title/breadcrumbs grow the fixed header (e.g. store settings tabs).
+  useLayoutEffect(() => {
+    const el = topbarRef.current;
+    if (!el || typeof document === 'undefined') return;
+    const root = document.documentElement;
+    const h = Math.max(0, Math.ceil(el.getBoundingClientRect().height));
+    root.style.setProperty('--mx-partner-topbar-h', `${h}px`);
+    root.style.setProperty('--mx-toast-top', `${h + 12}px`);
+  }, [headerMeasureKey]);
 
   const sheetTitle: Record<PartnerHeaderSheet, string> = {
     notifications: 'Notifications',
@@ -3119,64 +3134,49 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
       />
       <header
         ref={(n) => { topbarRef.current = n; }}
-        className="fixed top-0 left-0 right-0 z-[1000] flex min-h-14 w-full shrink-0 border-b border-[#e8e8e8] bg-white py-1"
+        className="fixed top-0 right-0 z-[1000] flex min-h-[4.5rem] w-full shrink-0 items-stretch bg-[#F8F9FA] left-0 md:left-[var(--mx-partner-sidebar-w,14rem)] md:w-[calc(100%-var(--mx-partner-sidebar-w,14rem))]"
       >
-        {/* Left: logo — contained so artwork cannot overlap the title column */}
-        <div
-          className={`flex h-full shrink-0 items-center justify-start gap-1.5 overflow-hidden border-r border-[#e8e8e8] px-2 md:px-2.5 ${leftW}`}
-        >
-          <MobileHamburgerButton className="shrink-0 md:hidden" />
-          <Link
-            href="/partners/dashboard"
-            className="flex min-w-0 max-w-full items-center overflow-hidden py-1 hover:opacity-90"
-          >
-            <Image
-              src="/logo.png"
-              alt="GatiMitra"
-              width={200}
-              height={48}
-              className="h-8 w-auto max-h-8 max-w-[min(148px,100%)] object-contain object-left sm:h-9 sm:max-h-9 sm:max-w-[168px] md:h-10 md:max-h-10 md:max-w-[188px]"
-              priority
-            />
-          </Link>
-        </div>
-
-        {/* Page title (center) — own stacking context so title stays above any stray logo pixels */}
-        <div className="relative z-[1] min-w-0 flex-1 bg-white pl-3 pr-2 sm:pl-4 sm:pr-4 flex flex-col justify-center isolate">
+        {/* Page title — sits beside the full-height left rail (logo lives in sidebar, like control dashboard) */}
+        <div className="relative z-[1] flex min-w-0 flex-1 flex-col justify-center border-b border-gray-200/80 bg-[#F8F9FA] px-2 py-2 isolate sm:px-4 sm:pr-4">
+          <MobileHamburgerButton dark className="absolute left-2 top-1/2 z-[2] -translate-y-1/2 md:hidden" />
+          <div className="min-w-0 pl-9 md:pl-0">
+          {resolvedHeaderBreadcrumbs.length > 0 ? (
+            <nav aria-label="Breadcrumb" className="flex min-w-0 items-center gap-1 overflow-hidden text-[11px] text-gray-500 sm:text-xs">
+              {resolvedHeaderBreadcrumbs.map((crumb, index) => {
+                const isLast = index === resolvedHeaderBreadcrumbs.length - 1;
+                return (
+                  <React.Fragment key={`${crumb.label}-${index}`}>
+                    {index > 0 ? <ChevronRight size={12} className="shrink-0 text-gray-300" aria-hidden /> : null}
+                    {crumb.href && !isLast ? (
+                      <Link href={crumb.href} className="truncate hover:text-gray-700">
+                        {crumb.label}
+                      </Link>
+                    ) : (
+                      <span className={`truncate ${isLast ? 'font-medium text-gray-700' : ''}`}>
+                        {crumb.label}
+                      </span>
+                    )}
+                  </React.Fragment>
+                );
+              })}
+            </nav>
+          ) : null}
           {resolvedHeaderTitle ? (
-            <>
-              <h1 className="truncate text-sm font-bold text-gray-900 sm:text-base md:text-lg">
-                {resolvedHeaderTitle}
-              </h1>
-              {resolvedHeaderBreadcrumbs.length > 0 ? (
-                <nav aria-label="Breadcrumb" className="mt-0.5 flex min-w-0 items-center gap-1 overflow-hidden text-[11px] text-gray-500 sm:text-xs">
-                  {resolvedHeaderBreadcrumbs.map((crumb, index) => {
-                    const isLast = index === resolvedHeaderBreadcrumbs.length - 1;
-                    return (
-                      <React.Fragment key={`${crumb.label}-${index}`}>
-                        {index > 0 ? <ChevronRight size={12} className="shrink-0 text-gray-300" aria-hidden /> : null}
-                        {crumb.href && !isLast ? (
-                          <Link href={crumb.href} className="truncate hover:text-gray-700">
-                            {crumb.label}
-                          </Link>
-                        ) : (
-                          <span className={`truncate ${isLast ? 'font-medium text-gray-700' : ''}`}>
-                            {crumb.label}
-                          </span>
-                        )}
-                      </React.Fragment>
-                    );
-                  })}
-                </nav>
-              ) : null}
-            </>
-          ) : (
+            <h1
+              className={`truncate text-sm font-bold text-gray-900 sm:text-base md:text-lg ${
+                resolvedHeaderBreadcrumbs.length > 0 ? 'mt-0.5' : ''
+              }`}
+            >
+              {resolvedHeaderTitle}
+            </h1>
+          ) : resolvedHeaderBreadcrumbs.length === 0 ? (
             <span className="hidden sm:block sm:h-4" aria-hidden />
-          )}
+          ) : null}
+          </div>
         </div>
 
         {/* Right actions → open sheets */}
-        <div className="flex shrink-0 items-center gap-1 sm:gap-2 md:gap-4 px-2 sm:px-3 md:px-5">
+        <div className="flex shrink-0 items-center self-stretch border-b border-gray-200/80 bg-[#F8F9FA] gap-1 px-2 sm:gap-2 sm:px-3 md:gap-4 md:px-5">
           {storeOpen === true ? (
             <div className="flex items-center pr-0.5" title="Live" aria-hidden>
               <RadarLiveIndicator />

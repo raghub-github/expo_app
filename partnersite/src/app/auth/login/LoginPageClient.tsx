@@ -313,6 +313,11 @@ function LoginPageContent() {
     [runVerifyOtp]
   );
 
+  const handleVerifyOtp = async (e: React.FormEvent) => {
+    e.preventDefault();
+    await runVerifyOtp(otp);
+  };
+
   const handleChangeNumber = () => {
     setOtpSent(false);
     setOtp('');
@@ -360,6 +365,7 @@ function LoginPageContent() {
               loading={loading}
               resendCooldown={resendCooldown}
               onSendOtp={handleSendOtp}
+              onVerifyOtp={handleVerifyOtp}
               onOtpComplete={handleOtpComplete}
               onResendOtp={handleResendOtp}
               onChangeNumber={handleChangeNumber}

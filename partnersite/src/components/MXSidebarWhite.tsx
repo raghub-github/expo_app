@@ -6,6 +6,7 @@ import { useApprovedPartnerStores } from '@/hooks/usePartnerResolveSession'
 import { prefetchPartnerRouteData } from '@/lib/partner-route-prefetch'
 import { readPartnerSelectedStoreId } from '@/lib/partner-selected-store'
 import Link from 'next/link'
+import Image from 'next/image'
 import { usePathname, useRouter, useSearchParams } from 'next/navigation'
 import { useQueryClient } from '@tanstack/react-query'
 import {
@@ -28,8 +29,16 @@ import {
   Inbox
 } from 'lucide-react'
 import LogoutConfirmModal from './LogoutConfirmModal'
+import { DarkSidebarMeshBackground } from '@/components/layout/DarkSidebarMeshBackground'
 
 const MOBILE_BREAKPOINT = 767
+
+const PARTNER_DARK_NAV_ACTIVE =
+  'bg-white/10 text-white font-medium rounded-[10px]';
+const PARTNER_DARK_NAV_IDLE =
+  'text-slate-300 hover:bg-white/[0.06] hover:text-white rounded-[10px]';
+const PARTNER_SHELL_NAV_ITEM =
+  'group relative flex h-11 w-full items-center rounded-[10px] outline-none transition-[background-color,color] duration-[220ms] ease-in-out focus-visible:ring-2 focus-visible:ring-white/30';
 
 interface SidebarItem {
   id: string
@@ -276,6 +285,53 @@ export const MXSidebarWhite: React.FC<MXSidebarWhiteProps> = ({
 
   const NavLinkWithTooltip = ({ item }: { item: SidebarItem }) => {
     const isItemActive = isActive(item.href);
+
+    if (partnerShell) {
+      const link = (
+        <Link
+          href={item.href}
+          prefetch
+          onMouseEnter={() => prefetchPartnerRouteData(queryClient, item.href, activeStoreId)}
+          onFocus={() => prefetchPartnerRouteData(queryClient, item.href, activeStoreId)}
+          onClick={() => setMobileMenuOpen(false)}
+          className={`${PARTNER_SHELL_NAV_ITEM} ${isItemActive ? PARTNER_DARK_NAV_ACTIVE : PARTNER_DARK_NAV_IDLE}`}
+          title={effectiveCollapsed ? item.label : undefined}
+        >
+          <span className="flex size-10 shrink-0 items-center justify-center">
+            <span
+              className={`flex shrink-0 items-center justify-center transition-colors duration-[220ms] ${
+                isItemActive ? 'text-white' : 'text-slate-300 group-hover:text-white'
+              }`}
+            >
+              {item.icon}
+            </span>
+          </span>
+          <span
+            className={`min-w-0 flex-1 truncate text-[14px] font-medium tracking-wide whitespace-nowrap transition-[opacity,max-width] duration-[220ms] ease-in-out ${
+              effectiveCollapsed
+                ? 'max-w-0 overflow-hidden opacity-0'
+                : 'max-w-[140px] pr-2 opacity-100'
+            }`}
+          >
+            {item.label}
+          </span>
+          {!effectiveCollapsed && item.badge ? (
+            <span className="bg-red-600 text-white text-xs font-bold px-2 py-0.5 rounded-full">
+              {item.badge}
+            </span>
+          ) : null}
+          {effectiveCollapsed ? (
+            <div
+              className="pointer-events-none absolute left-full z-50 ml-3 whitespace-nowrap rounded-lg border border-white/10 bg-[#011222] px-2.5 py-1.5 text-xs font-medium text-white opacity-0 shadow-xl transition-opacity duration-[220ms] group-hover:opacity-100 [@media(hover:none)]:hidden"
+            >
+              {item.label}
+            </div>
+          ) : null}
+        </Link>
+      );
+      return <div key={item.id}>{link}</div>;
+    }
+
     const link = (
       <Link
         href={item.href}
@@ -283,21 +339,23 @@ export const MXSidebarWhite: React.FC<MXSidebarWhiteProps> = ({
         onMouseEnter={() => prefetchPartnerRouteData(queryClient, item.href, activeStoreId)}
         onFocus={() => prefetchPartnerRouteData(queryClient, item.href, activeStoreId)}
         onClick={() => setMobileMenuOpen(false)}
-        className={`flex items-center rounded-lg transition-all duration-200 font-medium text-sm outline-none focus-visible:ring-2 focus-visible:ring-gray-400 focus-visible:ring-offset-0 ${
+        className={`flex items-center transition-all duration-150 font-medium text-sm outline-none focus-visible:ring-2 focus-visible:ring-offset-0 ${
+          partnerShell ? 'focus-visible:ring-white/30' : 'focus-visible:ring-gray-400'
+        } ${
           effectiveCollapsed
-            ? 'justify-center w-9 h-9'
+            ? 'justify-center w-9 h-9 rounded-[10px]'
             : 'w-full gap-2.5 px-3 py-2.5'
         } ${
           isItemActive
             ? partnerShell
-              ? 'bg-gray-200/90 text-gray-900 border-l-4 border-gray-800 font-semibold'
-              : 'bg-orange-50 text-orange-600 border-l-4 border-orange-600'
+              ? PARTNER_DARK_NAV_ACTIVE
+              : 'bg-orange-50 text-orange-600 border-l-4 border-orange-600 rounded-lg'
             : partnerShell
-              ? 'text-gray-700 hover:bg-gray-200/60 hover:text-gray-900 border-l-4 border-transparent'
-              : 'text-gray-700 hover:bg-gray-100 hover:text-gray-900'
+              ? PARTNER_DARK_NAV_IDLE
+              : 'text-gray-700 hover:bg-gray-100 hover:text-gray-900 rounded-lg'
         }`}
       >
-        <span className={`flex-shrink-0 ${isItemActive ? (partnerShell ? 'text-gray-800' : 'text-orange-600') : 'text-gray-500'}`}>
+        <span className={`flex-shrink-0 ${isItemActive ? (partnerShell ? 'text-white' : 'text-orange-600') : partnerShell ? 'text-slate-400' : 'text-gray-500'}`}>
           {item.icon}
         </span>
         {!effectiveCollapsed && (
@@ -318,7 +376,11 @@ export const MXSidebarWhite: React.FC<MXSidebarWhiteProps> = ({
           {link}
           {/* Floating card-style tooltip beside icon - only on hover-capable devices */}
           <div className="absolute left-full top-1/2 -translate-y-1/2 ml-2 opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-opacity duration-200 z-[100] pointer-events-none [@media(hover:none)]:hidden">
-            <span className="inline-block px-3 py-2 bg-gray-100/95 backdrop-blur-sm border border-gray-200/80 text-gray-800 text-xs font-medium rounded-xl shadow-md whitespace-nowrap">
+            <span className={`inline-block px-3 py-2 backdrop-blur-sm text-xs font-medium rounded-xl shadow-md whitespace-nowrap ${
+              partnerShell
+                ? 'bg-[#011222]/95 border border-white/10 text-slate-100'
+                : 'bg-gray-100/95 border border-gray-200/80 text-gray-800'
+            }`}>
               {item.label}
             </span>
           </div>
@@ -431,41 +493,60 @@ export const MXSidebarWhite: React.FC<MXSidebarWhiteProps> = ({
       )}
 
       {/* Navigation Menu */}
-      <nav className={`flex-1 overflow-y-auto overflow-x-hidden hide-scrollbar ${effectiveCollapsed ? 'px-3 py-4 flex flex-col items-center gap-1' : `p-4 space-y-0.5 ${partnerShell ? 'pt-3' : ''}`}`}>
-        {/* Main Menu Items */}
-        <div className={effectiveCollapsed ? '' : 'space-y-0.5'}>
-          {navigationItems.map((item) => (
-            <NavLinkWithTooltip key={item.id} item={item} />
-          ))}
-        </div>
-
-        {/* Store Settings Section */}
-        {!effectiveCollapsed && (
-          <>
-            <div className="py-3 px-1">
-              <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Store Settings</p>
+      <nav className={`${partnerShell ? 'dark-sidebar-chrome__nav' : ''} flex-1 overflow-y-auto overflow-x-hidden hide-scrollbar ${partnerShell ? 'px-3 pb-3 pt-2' : effectiveCollapsed ? 'px-3 py-4 flex flex-col items-center gap-1' : 'p-4 space-y-0.5'}`}>
+        {partnerShell ? (
+          <div className="space-y-1.5">
+            {navigationItems.map((item) => (
+              <NavLinkWithTooltip key={item.id} item={item} />
+            ))}
+            <div className="h-9 shrink-0 overflow-hidden px-1" aria-hidden={effectiveCollapsed}>
+              <p
+                className={`pt-3 text-xs font-semibold uppercase tracking-wider text-white/40 transition-opacity duration-[220ms] ease-in-out ${
+                  effectiveCollapsed ? 'opacity-0' : 'opacity-100'
+                }`}
+              >
+                Store Settings
+              </p>
             </div>
-            <div className="space-y-0.5">
-              {storeSettingsItems.map((item) => (
-                <NavLinkWithTooltip key={item.id} item={item} />
-              ))}
-            </div>
-          </>
-        )}
-
-        {/* Store Settings Section - Collapsed */}
-        {effectiveCollapsed && (
-          <div className="flex flex-col items-center gap-1">
             {storeSettingsItems.map((item) => (
               <NavLinkWithTooltip key={item.id} item={item} />
             ))}
           </div>
+        ) : (
+          <>
+            <div className={effectiveCollapsed ? '' : 'space-y-0.5'}>
+              {navigationItems.map((item) => (
+                <NavLinkWithTooltip key={item.id} item={item} />
+              ))}
+            </div>
+
+            {!effectiveCollapsed && (
+              <>
+                <div className="py-3 px-1">
+                  <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Store Settings</p>
+                </div>
+                <div className="space-y-0.5">
+                  {storeSettingsItems.map((item) => (
+                    <NavLinkWithTooltip key={item.id} item={item} />
+                  ))}
+                </div>
+              </>
+            )}
+
+            {effectiveCollapsed && (
+              <div className="flex flex-col items-center gap-1">
+                {storeSettingsItems.map((item) => (
+                  <NavLinkWithTooltip key={item.id} item={item} />
+                ))}
+              </div>
+            )}
+          </>
         )}
       </nav>
 
       {/* Sidebar Filters - shown when not collapsed */}
       {sidebarFilters && !effectiveCollapsed && (
-        <div className="px-4 pb-3 border-t border-gray-200">
+        <div className={`px-4 pb-3 border-t ${partnerShell ? 'border-white/10' : 'border-gray-200'}`}>
           <div className="pt-3">
             {sidebarFilters}
           </div>
@@ -474,14 +555,40 @@ export const MXSidebarWhite: React.FC<MXSidebarWhiteProps> = ({
 
       {/* Collapse/Expand – just above profile */}
       {onCollapsedChange && isDesktopSidebar && (
-        <div className={`border-t border-gray-200 ${effectiveCollapsed ? 'flex justify-center py-2' : 'px-4 py-2'}`}>
-          <button
-            onClick={() => onCollapsedChange(!effectiveCollapsed)}
-            className={`p-1.5 rounded-lg hover:bg-gray-100 text-gray-500 hover:text-gray-900 ${effectiveCollapsed ? '' : 'w-full flex items-center justify-center'}`}
-            title={effectiveCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-          >
-            {effectiveCollapsed ? <ChevronRight size={18} /> : <ChevronLeft size={18} />}
-          </button>
+        <div className={`mt-auto shrink-0 flex flex-col ${partnerShell ? '' : `border-t ${effectiveCollapsed ? 'flex justify-center py-2' : 'px-4 py-2'}`}`}>
+          {partnerShell ? (
+            <>
+              <div className="mx-3 h-px bg-white/[0.08]" aria-hidden />
+              <div className="p-3">
+                <button
+                  type="button"
+                  onClick={() => onCollapsedChange(!effectiveCollapsed)}
+                  className={`flex h-10 w-full items-center justify-center rounded-[10px] border border-white/10 bg-transparent text-white transition-colors duration-[220ms] hover:bg-white/[0.04] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/30 ${
+                    effectiveCollapsed ? '' : 'gap-2'
+                  }`}
+                  title={effectiveCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+                  aria-label={effectiveCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+                >
+                  <ChevronLeft
+                    className={`h-4 w-4 shrink-0 transition-transform duration-[220ms] ${
+                      effectiveCollapsed ? 'rotate-180' : ''
+                    }`}
+                  />
+                  {!effectiveCollapsed ? (
+                    <span className="text-[13px] font-medium tracking-wide whitespace-nowrap">Collapse</span>
+                  ) : null}
+                </button>
+              </div>
+            </>
+          ) : (
+            <button
+              onClick={() => onCollapsedChange(!effectiveCollapsed)}
+              className={`p-1.5 rounded-lg hover:bg-gray-100 text-gray-500 hover:text-gray-900 ${effectiveCollapsed ? '' : 'w-full flex items-center justify-center'}`}
+              title={effectiveCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+            >
+              {effectiveCollapsed ? <ChevronRight size={18} /> : <ChevronLeft size={18} />}
+            </button>
+          )}
         </div>
       )}
 
@@ -534,17 +641,60 @@ export const MXSidebarWhite: React.FC<MXSidebarWhiteProps> = ({
     <>
       {/* Desktop: fixed sidebar — hidden on viewport < 768px so never visible on mobile load */}
       <aside
-        className={`hidden md:flex flex-col fixed z-40 shrink-0 transition-all duration-200 ${effectiveCollapsed ? 'w-14' : 'w-52'} ${
+        className={`hidden md:flex flex-col fixed z-40 shrink-0 transition-[width] duration-[220ms] ease-in-out inset-y-0 left-0 h-screen ${effectiveCollapsed ? 'w-16' : 'w-56'} ${
           partnerShell && !isRight
-            ? 'bg-[#f5f5f5] border-r border-[#e8e8e8] left-0'
+            ? 'dark-sidebar-chrome overflow-hidden'
             : `bg-white ${isRight ? 'right-0 border-l border-gray-200 shadow-lg' : 'left-0 border-r border-gray-200 shadow-lg'}`
-        } ${
-          partnerShell && !isRight
-            ? "top-[var(--mx-partner-topbar-h)] h-[calc(100dvh-var(--mx-partner-topbar-h))]"
-            : "top-0 h-dvh"
         }`}
+        style={
+          partnerShell && !isRight
+            ? { scrollbarWidth: 'thin', scrollbarColor: 'rgba(255,255,255,0.2) transparent' }
+            : undefined
+        }
       >
-        <SidebarContent />
+        {partnerShell && !isRight ? <DarkSidebarMeshBackground /> : null}
+        <div className="relative z-10 flex min-h-0 flex-1 flex-col">
+          {partnerShell && !isRight ? (
+            <div className="hidden md:flex h-[72px] min-h-[72px] shrink-0 items-center px-3">
+              <Link
+                href="/partners/dashboard"
+                scroll={false}
+                className="flex min-w-0 flex-1 items-center overflow-hidden rounded-xl outline-none focus-visible:ring-2 focus-visible:ring-white/30 [font-family:var(--font-site-poppins),ui-sans-serif,system-ui,sans-serif]"
+                title="GatiMitra"
+              >
+                <span
+                  className="flex size-10 shrink-0 items-center justify-center rounded-[12px] ring-1 ring-white/10"
+                  style={{ background: '#011222' }}
+                >
+                  <Image
+                    src="/onlylogo.png"
+                    alt="GatiMitra"
+                    width={32}
+                    height={32}
+                    className="size-8 object-contain"
+                    priority
+                  />
+                </span>
+                <span
+                  className={`min-w-0 flex flex-col overflow-hidden transition-[opacity,margin,width] duration-[220ms] ease-in-out ${
+                    effectiveCollapsed
+                      ? 'pointer-events-none ml-0 w-0 opacity-0'
+                      : 'ml-3 w-auto opacity-100'
+                  }`}
+                  aria-hidden={effectiveCollapsed}
+                >
+                  <span className="truncate text-[15px] font-semibold leading-tight tracking-wide text-white whitespace-nowrap">
+                    GatiMitra
+                  </span>
+                  <span className="mt-0.5 truncate text-[10px] font-medium leading-tight tracking-[0.06em] uppercase text-slate-400 whitespace-nowrap">
+                    Partner Dashboard
+                  </span>
+                </span>
+              </Link>
+            </div>
+          ) : null}
+          <SidebarContent />
+        </div>
       </aside>
 
       {/* Mobile: hamburger + overlay only — visible on viewport < 768px from first paint */}
@@ -557,7 +707,13 @@ export const MXSidebarWhite: React.FC<MXSidebarWhiteProps> = ({
               onClick={() => setMobileMenuOpen(false)}
               aria-hidden
             />
-            <aside className="fixed left-0 top-0 bottom-0 w-72 max-w-[85vw] bg-white border-r border-gray-200 shadow-xl z-[1100] overflow-y-auto">
+            <aside className={`fixed left-0 top-0 bottom-0 w-72 max-w-[85vw] z-[1100] overflow-y-auto ${
+              partnerShell
+                ? 'dark-sidebar-chrome'
+                : 'bg-white border-r border-gray-200 shadow-xl'
+            }`}>
+              {partnerShell ? <DarkSidebarMeshBackground /> : null}
+              <div className={`relative z-10 ${partnerShell ? '' : ''}`}>
               <div className="mx-shell-header w-full justify-between gap-2">
                 <div className="flex items-center gap-3 min-w-0 flex-1">
                   <div className="w-9 h-9 rounded-lg bg-gradient-to-br from-orange-500 to-orange-600 flex items-center justify-center flex-shrink-0">
@@ -631,17 +787,19 @@ export const MXSidebarWhite: React.FC<MXSidebarWhiteProps> = ({
                         setMobileMenuOpen(false);
                         router.push(item.href);
                       }}
-                      className={`flex items-center gap-3 px-4 py-3 rounded-lg transition-all duration-200 font-medium text-sm outline-none focus-visible:ring-2 focus-visible:ring-gray-400 focus-visible:ring-offset-0 ${
+                      className={`flex items-center gap-3 px-3 py-2.5 transition-all duration-150 font-medium text-sm outline-none focus-visible:ring-2 focus-visible:ring-offset-0 ${
+                        partnerShell ? 'focus-visible:ring-white/30' : 'focus-visible:ring-gray-400'
+                      } ${
                         active
                           ? partnerShell
-                            ? 'bg-gray-200/90 text-gray-900 border-l-4 border-gray-800 font-semibold'
-                            : 'bg-orange-50 text-orange-600 border-l-4 border-orange-600'
+                            ? PARTNER_DARK_NAV_ACTIVE
+                            : 'bg-orange-50 text-orange-600 border-l-4 border-orange-600 rounded-lg'
                           : partnerShell
-                            ? 'text-gray-700 hover:bg-gray-200/60 border-l-4 border-transparent'
-                            : 'text-gray-700 hover:bg-gray-100 hover:text-gray-900'
+                            ? PARTNER_DARK_NAV_IDLE
+                            : 'text-gray-700 hover:bg-gray-100 hover:text-gray-900 rounded-lg'
                       }`}
                     >
-                      <span className={active ? (partnerShell ? 'text-gray-800' : 'text-orange-600') : 'text-gray-500'}>{item.icon}</span>
+                      <span className={active ? (partnerShell ? 'text-white' : 'text-orange-600') : partnerShell ? 'text-slate-400' : 'text-gray-500'}>{item.icon}</span>
                       <span>{item.label}</span>
                       {item.badge != null && (
                         <span className="ml-auto bg-red-600 text-white text-xs font-bold px-2 py-0.5 rounded-full">
@@ -654,7 +812,7 @@ export const MXSidebarWhite: React.FC<MXSidebarWhiteProps> = ({
 
                 {/* Store Settings Divider */}
                 <div className="py-3 px-1 mt-2">
-                  <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Store Settings</p>
+                  <p className={`text-xs font-semibold uppercase tracking-wider ${partnerShell ? 'text-white/40' : 'text-gray-500'}`}>Store Settings</p>
                 </div>
 
                 {/* Store Settings Items */}
@@ -669,17 +827,19 @@ export const MXSidebarWhite: React.FC<MXSidebarWhiteProps> = ({
                         setMobileMenuOpen(false);
                         router.push(item.href);
                       }}
-                      className={`flex items-center gap-3 px-4 py-3 rounded-lg transition-all duration-200 font-medium text-sm outline-none focus-visible:ring-2 focus-visible:ring-gray-400 focus-visible:ring-offset-0 ${
+                      className={`flex items-center gap-3 px-3 py-2.5 transition-all duration-150 font-medium text-sm outline-none focus-visible:ring-2 focus-visible:ring-offset-0 ${
+                        partnerShell ? 'focus-visible:ring-white/30' : 'focus-visible:ring-gray-400'
+                      } ${
                         active
                           ? partnerShell
-                            ? 'bg-gray-200/90 text-gray-900 border-l-4 border-gray-800 font-semibold'
-                            : 'bg-orange-50 text-orange-600 border-l-4 border-orange-600'
+                            ? PARTNER_DARK_NAV_ACTIVE
+                            : 'bg-orange-50 text-orange-600 border-l-4 border-orange-600 rounded-lg'
                           : partnerShell
-                            ? 'text-gray-700 hover:bg-gray-200/60 border-l-4 border-transparent'
-                            : 'text-gray-700 hover:bg-gray-100 hover:text-gray-900'
+                            ? PARTNER_DARK_NAV_IDLE
+                            : 'text-gray-700 hover:bg-gray-100 hover:text-gray-900 rounded-lg'
                       }`}
                     >
-                      <span className={active ? (partnerShell ? 'text-gray-800' : 'text-orange-600') : 'text-gray-500'}>{item.icon}</span>
+                      <span className={active ? (partnerShell ? 'text-white' : 'text-orange-600') : partnerShell ? 'text-slate-400' : 'text-gray-500'}>{item.icon}</span>
                       <span>{item.label}</span>
                     </Link>
                   );
@@ -713,6 +873,7 @@ export const MXSidebarWhite: React.FC<MXSidebarWhiteProps> = ({
                   <LogOut size={18} />
                   Sign Out
                 </button>
+              </div>
               </div>
             </aside>
           </>

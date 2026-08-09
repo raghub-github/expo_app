@@ -129,7 +129,7 @@ input:not([disabled]), textarea:not([disabled]), select:not([disabled]) {
 html, body {
   background: #fff !important;
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: var(--font-site-lora), Georgia, "Times New Roman", serif;
   height: 100%;
   width: 100%;
   margin: 0;
@@ -145,6 +145,16 @@ html::-webkit-scrollbar, body::-webkit-scrollbar {
 /* Add cursor pointer to all buttons globally */
 button {
   cursor: pointer !important;
+}
+
+/* Site-wide typography — Lora for copy, Poppins for numeric UI */
+input[type="tel"],
+input[type="number"],
+input[inputmode="numeric"],
+.tabular-nums,
+[class*="tabular-nums"] {
+  font-family: var(--font-site-poppins), ui-sans-serif, system-ui, sans-serif;
+  font-variant-numeric: tabular-nums;
 }
 
 /* Blur sidebar when modal is open */
@@ -285,15 +295,31 @@ body.modal-open-blur aside * {
   /* Fixed partner shell header band (critical for strict dashboards like Support Inbox) */
   --mx-shell-header-min-h: 3.5rem; /* 56px */
   --mx-shell-header-pad-y: 0.5rem;
-  /* Partner top bar (fixed 56px) */
-  --mx-partner-topbar-h: 3.5rem;
+  /* Partner top bar — grows with breadcrumbs; 4.5rem avoids overlap before JS measure on settings pages */
+  --mx-partner-topbar-h: 4.5rem;
+  --mx-partner-sidebar-w: 14rem;
 }
 
 /** Store settings fills the partner main slot without leaving a white band below content. */
 .mx-store-settings-root {
-  flex: 1 1 auto;
+  flex: 1 1 0%;
+  height: 0;
   min-height: 0;
+  display: flex;
+  flex-direction: column;
   background-color: rgb(249 250 251);
+}
+
+.mx-main-scroll:has(.mx-store-settings-root) {
+  flex: 1 1 0%;
+  height: 0;
+  min-height: 0;
+  overflow: hidden;
+  background-color: rgb(249 250 251);
+}
+
+.mx-main-scroll:has(.mx-store-settings-root) > *:not(.mx-settings-sidebar-rail) {
+  min-height: 100%;
 }
 
 html.mx-no-page-scroll,
@@ -525,14 +551,14 @@ body.mx-no-page-scroll .mx-main-scroll {
 
 /* Auth register — Lora body; Poppins + Lora Bold for numbers */
 .auth-register-page {
-  font-family: var(--font-auth-lora), Georgia, "Times New Roman", serif;
+  font-family: var(--font-site-lora, var(--font-auth-lora)), Georgia, "Times New Roman", serif;
   color: #0f172a;
 }
 .auth-register-page input[type="tel"],
 .auth-register-page input[type="number"],
 .auth-register-page input[inputmode="numeric"],
 .auth-register-page .auth-num {
-  font-family: var(--font-auth-poppins), ui-sans-serif, system-ui, sans-serif;
+  font-family: var(--font-site-poppins, var(--font-auth-poppins)), ui-sans-serif, system-ui, sans-serif;
   font-variant-numeric: tabular-nums;
   font-weight: 600;
 }
@@ -611,6 +637,88 @@ body.mx-no-page-scroll .mx-main-scroll {
 }
 .partner-incoming-modal .incoming-order-slide-prev {
   animation: incoming-order-slide-from-left 0.28s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+/* Partner shell dark sidebar — matches control dashboard queue rail (#011222) */
+.dark-sidebar-chrome {
+  background-color: #011222;
+}
+
+.dark-sidebar-chrome__mesh {
+  pointer-events: none;
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+}
+
+.dark-sidebar-chrome__glow {
+  position: absolute;
+  bottom: -12%;
+  left: -22%;
+  width: 85%;
+  height: 48%;
+  background: radial-gradient(
+    ellipse at center,
+    rgba(45, 212, 191, 0.22) 0%,
+    rgba(13, 148, 136, 0.1) 40%,
+    transparent 70%
+  );
+}
+
+.dark-sidebar-chrome__mesh-art {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  width: 100%;
+  height: min(46%, 280px);
+  max-width: 220px;
+  background-image: url("/bg.png");
+  background-repeat: no-repeat;
+  background-position: left bottom;
+  background-size: 620px auto;
+  opacity: 0.55;
+  filter: brightness(0.45) saturate(1.1);
+  -webkit-mask-image: linear-gradient(to top, #000 0%, #000 22%, transparent 92%);
+  mask-image: linear-gradient(to top, #000 0%, #000 22%, transparent 92%);
+}
+
+.dark-sidebar-chrome__mesh-fade {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    to top,
+    #011222 0%,
+    #011222 12%,
+    rgba(1, 18, 34, 0.96) 28%,
+    rgba(1, 18, 34, 0.88) 42%,
+    rgba(1, 18, 34, 0.72) 56%,
+    rgba(1, 18, 34, 0.45) 72%,
+    transparent 90%
+  );
+}
+
+.dark-sidebar-chrome__nav {
+  position: relative;
+  z-index: 10;
+}
+
+.dark-sidebar-chrome__nav::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 62%;
+  pointer-events: none;
+  background: linear-gradient(
+    to top,
+    rgba(1, 18, 34, 0.98) 0%,
+    rgba(1, 18, 34, 0.9) 35%,
+    rgba(1, 18, 34, 0.55) 60%,
+    transparent 100%
+  );
+  z-index: -1;
 }
 
 @media print {

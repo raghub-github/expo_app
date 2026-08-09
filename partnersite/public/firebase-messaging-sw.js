@@ -34,9 +34,21 @@ firebase.initializeApp({
 
 const messaging = firebase.messaging();
 
+// Firebase sw-listeners invoke deleteTokenInternal using messaging.swRegistration.
+// In the SW context that property is not set automatically — bind it explicitly.
+(function bindSwRegistration() {
+  const target = messaging._delegate ?? messaging;
+  if (target && !target.swRegistration) {
+    target.swRegistration = self.registration;
+  }
+})();
+
 // Background notification (tab closed / minimised). Foreground goes via
 // firebase.messaging().onMessage() in the app bundle.
 messaging.onBackgroundMessage((payload) => {
+  if (self.Notification && self.Notification.permission === "denied") {
+    return;
+  }
   const notif = payload.notification ?? {};
   const data = payload.data ?? {};
   const title = notif.title || data.title || "Gatimitra";

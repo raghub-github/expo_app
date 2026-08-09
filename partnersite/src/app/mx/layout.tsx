@@ -5,6 +5,7 @@ import { PartnerPendingNewOrdersBar } from "@/components/PartnerPendingNewOrders
 import { PartnerIncomingOrderModal } from "@/components/PartnerIncomingOrderModal";
 import { PartnerAcceptanceTimeoutSync } from "@/components/PartnerAcceptanceTimeoutSync";
 import { PartnerShellWarmup } from "@/components/PartnerShellWarmup";
+import { PartnerMerchantQueryFocusSync } from "@/components/PartnerMerchantQueryFocusSync";
 import { GlobalToaster } from "@/components/GlobalToaster";
 import { PartnerBrowserPushBootstrap } from "@/components/PartnerBrowserPushBootstrap";
 
@@ -21,6 +22,7 @@ export default function MXLayout({ children }: { children: React.ReactNode }) {
       <PartnerBrowserPushBootstrap />
       <GlobalToaster />
       <PartnerShellWarmup />
+      <PartnerMerchantQueryFocusSync />
       <PartnerAcceptanceTimeoutSync />
       <Suspense fallback={null}>
         <PartnerPendingNewOrdersBar />

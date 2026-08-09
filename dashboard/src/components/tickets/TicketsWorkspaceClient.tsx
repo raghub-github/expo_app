@@ -3,7 +3,7 @@ import { useAppParams, useAppPathname } from "@/hooks/useAppSearchParams";
 
 import { useEffect } from "react";
 
-import { TicketsNavPendingProvider, useTicketsNavPending } from "@/context/TicketsNavPendingContext";
+import { useTicketsNavPending } from "@/context/TicketsNavPendingContext";
 import { ticketsPathTicketId } from "@/lib/tickets/ticket-path-utils";
 import { TicketDashboardClient } from "./TicketDashboardClient";
 import { TicketDetailLoader } from "./ticket-view/TicketDetailLoader";
@@ -14,11 +14,7 @@ import { TicketDetailLoader } from "./ticket-view/TicketDetailLoader";
  * and reset scroll/state). The list stays mounted (hidden) while a ticket is open.
  */
 export function TicketsWorkspaceClient() {
-  return (
-    <TicketsNavPendingProvider>
-      <TicketsWorkspaceClientInner />
-    </TicketsNavPendingProvider>
-  );
+  return <TicketsWorkspaceClientInner />;
 }
 
 function TicketsWorkspaceClientInner() {

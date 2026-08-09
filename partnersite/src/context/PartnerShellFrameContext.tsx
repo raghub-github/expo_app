@@ -8,6 +8,12 @@ export type PartnerShellRegistration = {
   restaurantId?: string;
   sidebarPosition?: 'left' | 'right';
   leftSidebarCollapsed?: boolean;
+  /** Store settings (and similar): right rail present — coordinate with left rail. */
+  dualSidebarRail?: boolean;
+  /** Left rail expanded (user opened labels) while dualSidebarRail is active. */
+  onDualSidebarLeftExpanded?: () => void;
+  /** Left rail collapsed to icons while dualSidebarRail is active. */
+  onDualSidebarLeftCollapsed?: () => void;
   mobileMenuExtra?: React.ReactNode;
   sidebarFilters?: React.ReactNode;
   hideHelpBadge?: boolean;
@@ -19,6 +25,9 @@ type PartnerShellFrameContextValue = {
   registerPartnerShell: (token: symbol, next: PartnerShellRegistration) => void;
   /** Drop the registration, but only if `token` is still the active one. */
   unregisterPartnerShell: (token: symbol) => void;
+  /** Left nav collapsed (icon-only). Only available inside {@link PartnerShellFrame}. */
+  partnerLeftSidebarCollapsed: boolean;
+  setPartnerLeftSidebarCollapsed: (collapsed: boolean) => void;
 };
 
 const PartnerShellFrameContext = createContext<PartnerShellFrameContextValue | null>(null);
@@ -37,6 +46,7 @@ const REGISTRATION_KEYS: ReadonlyArray<keyof PartnerShellRegistration> = [
   'restaurantId',
   'sidebarPosition',
   'leftSidebarCollapsed',
+  'dualSidebarRail',
   'mobileMenuExtra',
   'sidebarFilters',
   'hideHelpBadge',

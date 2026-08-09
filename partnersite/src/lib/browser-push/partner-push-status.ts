@@ -1,7 +1,7 @@
 "use client";
 
+import { getEffectiveNotificationPermission, syncBrowserPushPermissionWithBackend } from "@/lib/browser-push/firebase-web";
 import { isPushRegistered, isPushRegistrationPending } from "@/lib/browser-push/partner-push-state";
-
 export type PartnerPushStatus =
   | "unsupported"
   | "default"
@@ -21,6 +21,17 @@ export type PartnerPushStatusSnapshot = {
 let cachedBackendRegistered: boolean | null = null;
 let backendCheckPromise: Promise<boolean> | null = null;
 
+async function fetchBackendRegistered(storeQuery: string): Promise<boolean> {
+  const res = await fetch(`/api/notifications/browser-tokens${storeQuery}`, {
+    method: "GET",
+    credentials: "include",
+    cache: "no-store",
+  });
+  if (!res.ok) return false;
+  const data = (await res.json().catch(() => ({}))) as { registered?: boolean };
+  return data.registered === true;
+}
+
 async function checkBackendRegistration(): Promise<boolean> {
   if (cachedBackendRegistered != null) return cachedBackendRegistered;
   if (backendCheckPromise) return backendCheckPromise;
@@ -28,26 +39,23 @@ async function checkBackendRegistration(): Promise<boolean> {
   backendCheckPromise = (async () => {
     try {
       let storeQuery = "";
+      let storeId = "";
       try {
         const { readPartnerSelectedStoreId } = await import("@/lib/partner-selected-store");
-        const storeId = readPartnerSelectedStoreId();
+        storeId = readPartnerSelectedStoreId();
         if (storeId) storeQuery = `?store_id=${encodeURIComponent(storeId)}`;
       } catch {
         /* ignore */
       }
 
-      const res = await fetch(`/api/notifications/browser-tokens${storeQuery}`, {
-        method: "GET",
-        credentials: "include",
-        cache: "no-store",
-      });
-      if (!res.ok) {
-        cachedBackendRegistered = false;
-        return false;
+      let registered = await fetchBackendRegistered(storeQuery);
+      // Token may exist at user level before store association — avoid a false "not registered".
+      if (!registered && storeId) {
+        registered = await fetchBackendRegistered("");
       }
-      const data = (await res.json().catch(() => ({}))) as { registered?: boolean };
-      cachedBackendRegistered = data.registered === true;
-      return cachedBackendRegistered;
+
+      cachedBackendRegistered = registered;
+      return registered;
     } catch {
       cachedBackendRegistered = false;
       return false;
@@ -84,16 +92,17 @@ export async function getPartnerPushStatus(options?: {
     };
   }
 
-  const permission = Notification.permission;
+  const permission = await getEffectiveNotificationPermission();
 
-  if (permission === "denied") {
-    return {
-      status: "denied",
-      permission,
-      backendRegistered: false,
-      hasValidToken: false,
-    };
-  }
+    if (permission === "denied") {
+      await syncBrowserPushPermissionWithBackend();
+      return {
+        status: "denied" as const,
+        permission,
+        backendRegistered: false,
+        hasValidToken: false,
+      };
+    }
 
   if (permission === "default") {
     return {
