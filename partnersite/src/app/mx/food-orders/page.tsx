@@ -6,6 +6,7 @@ import { useSearchParams, useRouter } from 'next/navigation';
 import { useQueryClient } from '@tanstack/react-query';
 import { MXLayoutWhite } from '@/components/MXLayoutWhite';
 import { PartnerPageHeader } from '@/context/PartnerShellHeaderContext';
+import { PARTNER_PAGE_HEADERS } from '@/lib/partner-page-headers';
 import { toast } from 'sonner';
 import { showFoodOrderStatusToast } from '@/lib/showFoodOrderStatusToast';
 import {
@@ -166,6 +167,7 @@ const FOOD_ORDERS_SIDEBAR_FILTERS = [
   { id: 'READY_FOR_PICKUP', label: 'Ready' },
   { id: 'OUT_FOR_DELIVERY', label: 'Picked up' },
   { id: 'RTO', label: 'RTO' },
+  { id: 'SCHEDULED', label: 'Scheduled' },
 ] as const;
 
 type FoodOrdersSidebarFilterId = (typeof FOOD_ORDERS_SIDEBAR_FILTERS)[number]['id'];
@@ -258,7 +260,7 @@ function OrdersPageContent() {
   // SSR-safe defaults only — reading sessionStorage/React Query in useState causes hydration mismatches.
   const [orders, setOrders] = useState<OrdersFoodRow[]>([]);
   const [stats, setStats] = useState<FoodOrderStats>(DEFAULT_FOOD_ORDER_STATS);
-  const [filter, setFilter] = useState<string>('PREPARING');
+  const [filter, setFilter] = useState<string>('NEW_ORDERS');
   const [selectedOrder, setSelectedOrder] = useState<OrdersFoodRow | null>(null);
   const [rightPanelOpen, setRightPanelOpen] = useState(false);
   const [rejectModal, setRejectModal] = useState<OrdersFoodRow | null>(null);
@@ -545,12 +547,12 @@ function OrdersPageContent() {
 
   useEffect(() => {
     const f = searchParams?.get('filter');
-    const valid = new Set<string>(['NEW_ORDERS', 'PREPARING', 'READY_FOR_PICKUP', 'OUT_FOR_DELIVERY', 'RTO']);
+    const valid = new Set<string>(['NEW_ORDERS', 'SCHEDULED', 'PREPARING', 'READY_FOR_PICKUP', 'OUT_FOR_DELIVERY', 'RTO']);
     if (f && valid.has(f)) {
       setFilter(f);
     } else {
-      setFilter('PREPARING');
-      updateUrlParams({ filter: 'PREPARING' });
+      setFilter('NEW_ORDERS');
+      updateUrlParams({ filter: 'NEW_ORDERS' });
     }
   }, [searchParams?.toString(), updateUrlParams]);
 
@@ -1596,6 +1598,7 @@ function OrdersPageContent() {
 
   const sidebarFilterCounts: Record<FoodOrdersSidebarFilterId, number> = {
     NEW_ORDERS: orders.filter((o) => orderMatchesFoodOrdersSidebar(o, 'NEW_ORDERS')).length,
+    SCHEDULED: orders.filter((o) => orderMatchesFoodOrdersSidebar(o, 'SCHEDULED')).length,
     PREPARING: orders.filter((o) => orderMatchesFoodOrdersSidebar(o, 'PREPARING')).length,
     READY_FOR_PICKUP: orders.filter((o) => orderMatchesFoodOrdersSidebar(o, 'READY_FOR_PICKUP')).length,
     OUT_FOR_DELIVERY: orders.filter((o) => orderMatchesFoodOrdersSidebar(o, 'OUT_FOR_DELIVERY')).length,
@@ -1612,6 +1615,7 @@ function OrdersPageContent() {
     if (filteredOrders.length > 0 && displayOrders.length === 0) return 'search' as const;
     if (
       filter === 'NEW_ORDERS' ||
+      filter === 'SCHEDULED' ||
       filter === 'PREPARING' ||
       filter === 'READY_FOR_PICKUP' ||
       filter === 'OUT_FOR_DELIVERY' ||
@@ -1619,7 +1623,7 @@ function OrdersPageContent() {
     ) {
       return filter;
     }
-    return 'PREPARING' as const;
+    return 'NEW_ORDERS' as const;
   }, [filteredOrders.length, displayOrders.length, filter]);
 
   const displayStats = stats;
@@ -1710,7 +1714,7 @@ function OrdersPageContent() {
   return (
     <>
     <MXLayoutWhite restaurantName={store?.store_name} restaurantId={storeId || ''} mobileMenuExtra={mobileStatsExtra}>
-      <PartnerPageHeader title="Orders" subtitle={store?.store_name || undefined} />
+      <PartnerPageHeader {...PARTNER_PAGE_HEADERS.orders} />
       <MerchantWeatherBanner storeId={storeId || null} />
       <div className="flex h-full min-h-0 overflow-hidden bg-gray-50 relative flex-col">
         <header id="food-orders-header" className="shrink-0 z-20 bg-white">
@@ -1738,9 +1742,20 @@ function OrdersPageContent() {
                     accent
                   />
                 </div>
-                <div className="hidden md:flex items-center gap-2 sm:gap-3 shrink-0">
+                <div className="hidden md:flex items-center gap-2 sm:gap-3 shrink-0 flex-1 min-w-0">
                   <StatBadge label="Avg Prep" value={`${displayStats.avgPreparationTimeMinutes}m`} />
                   <StatBadge label="Completion" value={`${displayStats.completionRatePercent}%`} />
+                  <div className="relative ml-1 min-w-0 flex-1 max-w-[280px] lg:max-w-[340px]">
+                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 pointer-events-none" aria-hidden />
+                    <input
+                      type="search"
+                      inputMode="numeric"
+                      placeholder="Search with order id  ..............."
+                      value={orderIdSearch}
+                      onChange={(e) => setOrderIdSearch(e.target.value)}
+                      className="w-full pl-9 pr-3 py-1.5 rounded-lg border border-gray-200 bg-white text-sm text-gray-900 placeholder:text-gray-400 shadow-sm"
+                    />
+                  </div>
                 </div>
               </div>
               <div className="flex items-center justify-end gap-1.5 sm:gap-2 shrink-0">
@@ -1831,7 +1846,7 @@ function OrdersPageContent() {
                     key={id}
                     type="button"
                     onClick={() => handleFilterChange(id)}
-                    className={`inline-flex items-center gap-1.5 px-3.5 py-2 rounded-full text-sm font-semibold border transition-colors shrink-0 ${
+                    className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-semibold border transition-colors shrink-0 ${
                       filter === id ? SIDEBAR_ACTIVE_CLASS : SIDEBAR_INACTIVE_CLASS
                     }`}
                   >
@@ -1862,7 +1877,7 @@ function OrdersPageContent() {
                   </select>
                   <ChevronDown className="absolute right-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-orange-500 pointer-events-none" aria-hidden />
                 </div>
-                <div className="relative flex-1 sm:min-w-[220px] lg:min-w-[300px]">
+                <div className="relative flex-1 sm:min-w-[220px] lg:min-w-[300px] md:hidden">
                   <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 pointer-events-none" aria-hidden />
                   <input
                     type="search"

@@ -178,6 +178,7 @@ import { toast } from 'sonner'
 import { Plus, Edit2, Trash2, X, Upload, Package, ChevronDown, ChevronUp, ChevronLeft, ChevronRight, Image as ImageIcon, Info, Search, FileText, Eye, LayoutGrid, ListTree, SlidersHorizontal, Lock } from 'lucide-react'
 import { MXLayoutWhite } from '@/components/MXLayoutWhite'
 import { PartnerPageHeader } from '@/context/PartnerShellHeaderContext'
+import { PARTNER_PAGE_HEADERS } from '@/lib/partner-page-headers'
 import { MobileHamburgerButton } from '@/components/MobileHamburgerButton'
 import { 
   fetchStoreById, 
@@ -4038,9 +4039,9 @@ function MenuContent() {
 
   return (
     <MXLayoutWhite restaurantName={store?.store_name || "Loading..."} restaurantId={storeId ?? undefined}>
-      <PartnerPageHeader title="Menu Management" subtitle={menuPageSubtitle} />
+      <PartnerPageHeader {...PARTNER_PAGE_HEADERS.menu} />
 
-      <div className="flex h-full min-h-0 flex-col overflow-hidden bg-white">
+      <div className="flex h-full min-h-0 flex-col overflow-hidden bg-gray-50">
       <div id="mx-menu-toolbar" className="shrink-0 z-20 bg-white shadow-sm">
         <div className="border-b border-gray-200">
         <div className="mx-shell-header !px-3 sm:!px-4 lg:!px-6 flex items-center gap-2 justify-between flex-nowrap py-2">

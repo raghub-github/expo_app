@@ -228,14 +228,24 @@ export const MXSidebarWhite: React.FC<MXSidebarWhiteProps> = ({
       return true;
     }
 
-    // Prevent both "User Insights" and "Support Inbox" being active together.
+    // Dedicated inbox route should activate Support Inbox only.
+    if (href === '/partners/support-inbox') {
+      if (p === '/partners/support-inbox' || p === '/mx/support-inbox') return true;
+      const current = new URLSearchParams(q);
+      if (
+        (p === '/partners/user-insights' || p === '/mx/user-insights') &&
+        current.get('view') === 'inbox'
+      ) {
+        return true;
+      }
+      return false;
+    }
+
     if (href === '/partners/user-insights') {
       const current = new URLSearchParams(q);
       if (current.get('view') === 'inbox') return false;
+      if (p === '/partners/support-inbox' || p === '/mx/support-inbox') return false;
     }
-
-    // Dedicated inbox route should activate Support Inbox only.
-    if (href === '/partners/support-inbox') return p === '/partners/support-inbox';
 
     if (href === '/partners/order-history') return p === href || p.startsWith(`${href}/`);
     return full === href || p === href || p.startsWith(`${href}?`) || p.startsWith(`${href}/`);
@@ -558,12 +568,11 @@ export const MXSidebarWhite: React.FC<MXSidebarWhiteProps> = ({
         <div className={`mt-auto shrink-0 flex flex-col ${partnerShell ? '' : `border-t ${effectiveCollapsed ? 'flex justify-center py-2' : 'px-4 py-2'}`}`}>
           {partnerShell ? (
             <>
-              <div className="mx-3 h-px bg-white/[0.08]" aria-hidden />
-              <div className="p-3">
+              <div className="p-3 pt-2">
                 <button
                   type="button"
                   onClick={() => onCollapsedChange(!effectiveCollapsed)}
-                  className={`flex h-10 w-full items-center justify-center rounded-[10px] border border-white/10 bg-transparent text-white transition-colors duration-[220ms] hover:bg-white/[0.04] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/30 ${
+                  className={`flex h-10 w-full items-center justify-center rounded-[10px] bg-white/[0.04] text-white transition-colors duration-[220ms] hover:bg-white/[0.08] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/30 ${
                     effectiveCollapsed ? '' : 'gap-2'
                   }`}
                   title={effectiveCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}

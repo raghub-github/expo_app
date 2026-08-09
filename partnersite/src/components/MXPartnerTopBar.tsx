@@ -1857,62 +1857,23 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
     headerTitle ||
     ''
   ).trim();
+  const resolvedHeaderSubtitle = (partnerShellHeader?.header.subtitle?.trim() || '').trim();
   const resolvedHeaderBreadcrumbs = useMemo(() => {
     const overrideBreadcrumbs = partnerShellHeader?.header.breadcrumbs ?? [];
     if (overrideBreadcrumbs.length > 0) return overrideBreadcrumbs;
-
-    const parts = (pathname ?? '').split('/').filter(Boolean);
-    const appRoute = parts[0] === 'partners' ? parts[1] ?? '' : parts[0] ?? '';
-    const storeSettingsTab = (searchParams?.get('tab') || '').trim();
-    const sectionLabelMap: Record<string, string> = {
-      dashboard: 'Dashboard',
-      orders: 'Orders',
-      'store-settings': 'Settings',
-      'order-history': 'Order History',
-      'food-orders': 'Orders',
-      menu: 'Menu',
-      offers: 'Offers',
-      payments: 'Payments',
-      profile: 'Profile',
-      'audit-logs': 'Audit & Activity',
-      customizations: 'Customizations',
-      'refund-policy': 'Refund & Cancellation Policy',
-      'user-insights': 'User Insights',
-      'support-inbox': 'Support Inbox',
-    };
-    const sectionLabel =
-      sectionLabelMap[appRoute] ||
-      (appRoute
-        ? appRoute
-            .split('-')
-            .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
-            .join(' ')
-        : '');
-    const pageLabel =
-      appRoute === 'store-settings' && storeSettingsTab
-        ? STORE_SETTINGS_TAB_LABELS[storeSettingsTab] || 'Store Settings'
-        : resolvedHeaderTitle || headerTitle || sectionLabel;
-    const rootCrumb = { label: 'Partner', href: '/partners/dashboard' };
-    const sectionHref = parts.length >= 2 ? `/${parts.slice(0, 2).join('/')}` : '/partners/dashboard';
-    const crumbs: Array<{ label: string; href?: string }> = [rootCrumb];
-    if (sectionLabel && sectionLabel.toLowerCase() !== pageLabel.toLowerCase()) {
-      crumbs.push({ label: sectionLabel, href: sectionHref });
-    }
-    if (pageLabel && pageLabel.toLowerCase() !== sectionLabel.toLowerCase()) {
-      crumbs.push({ label: pageLabel });
-    }
-    return crumbs;
-  }, [headerTitle, pathname, partnerShellHeader?.header.breadcrumbs, resolvedHeaderTitle, searchParams]);
+    return [];
+  }, [partnerShellHeader?.header.breadcrumbs]);
 
   const headerMeasureKey = useMemo(
     () =>
       JSON.stringify({
         title: resolvedHeaderTitle,
+        subtitle: resolvedHeaderSubtitle,
         crumbs: resolvedHeaderBreadcrumbs,
         path: pathname,
         q: searchParams?.toString() ?? '',
       }),
-    [resolvedHeaderTitle, resolvedHeaderBreadcrumbs, pathname, searchParams],
+    [resolvedHeaderTitle, resolvedHeaderSubtitle, resolvedHeaderBreadcrumbs, pathname, searchParams],
   );
 
   // Re-measure synchronously when title/breadcrumbs grow the fixed header (e.g. store settings tabs).
@@ -3134,14 +3095,26 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
       />
       <header
         ref={(n) => { topbarRef.current = n; }}
-        className="fixed top-0 right-0 z-[1000] flex min-h-[4.5rem] w-full shrink-0 items-stretch bg-[#F8F9FA] left-0 md:left-[var(--mx-partner-sidebar-w,14rem)] md:w-[calc(100%-var(--mx-partner-sidebar-w,14rem))]"
+        className="fixed top-0 right-0 z-[1000] grid min-h-[3.5rem] w-full shrink-0 grid-cols-[minmax(0,1fr)_auto] items-stretch bg-[#F8F9FA] left-0 md:left-[var(--mx-partner-sidebar-w,14rem)] md:w-[calc(100%-var(--mx-partner-sidebar-w,14rem))]"
       >
-        {/* Page title — sits beside the full-height left rail (logo lives in sidebar, like control dashboard) */}
-        <div className="relative z-[1] flex min-w-0 flex-1 flex-col justify-center border-b border-gray-200/80 bg-[#F8F9FA] px-2 py-2 isolate sm:px-4 sm:pr-4">
+        {/* Page title — main heading first, subtext below */}
+        <div className="relative z-[1] flex min-w-0 flex-col justify-center border-b border-gray-200/80 bg-[#F8F9FA] px-2 py-2 isolate sm:px-4 sm:pr-4">
           <MobileHamburgerButton dark className="absolute left-2 top-1/2 z-[2] -translate-y-1/2 md:hidden" />
-          <div className="min-w-0 pl-9 md:pl-0">
+          <div className="flex min-h-[2.75rem] min-w-0 flex-col justify-center pl-9 md:pl-0">
+          {resolvedHeaderTitle ? (
+            <h1 className="truncate text-sm font-bold leading-snug text-gray-900 sm:text-[15px] md:text-base">
+              {resolvedHeaderTitle}
+            </h1>
+          ) : resolvedHeaderBreadcrumbs.length === 0 ? (
+            <span className="hidden sm:block sm:h-4" aria-hidden />
+          ) : null}
           {resolvedHeaderBreadcrumbs.length > 0 ? (
-            <nav aria-label="Breadcrumb" className="flex min-w-0 items-center gap-1 overflow-hidden text-[11px] text-gray-500 sm:text-xs">
+            <nav
+              aria-label="Breadcrumb"
+              className={`flex min-w-0 items-center gap-1 overflow-hidden text-[10px] leading-tight text-gray-500 sm:text-[11px] ${
+                resolvedHeaderTitle ? 'mt-1' : ''
+              }`}
+            >
               {resolvedHeaderBreadcrumbs.map((crumb, index) => {
                 const isLast = index === resolvedHeaderBreadcrumbs.length - 1;
                 return (
@@ -3161,22 +3134,20 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
               })}
             </nav>
           ) : null}
-          {resolvedHeaderTitle ? (
-            <h1
-              className={`truncate text-sm font-bold text-gray-900 sm:text-base md:text-lg ${
-                resolvedHeaderBreadcrumbs.length > 0 ? 'mt-0.5' : ''
-              }`}
-            >
-              {resolvedHeaderTitle}
-            </h1>
-          ) : resolvedHeaderBreadcrumbs.length === 0 ? (
-            <span className="hidden sm:block sm:h-4" aria-hidden />
+          {resolvedHeaderSubtitle ? (
+            <p className="mt-1 truncate text-[10px] leading-snug text-gray-500 sm:text-[11px]">
+              {resolvedHeaderSubtitle}
+            </p>
+          ) : resolvedHeaderTitle ? (
+            <p className="mt-1 min-h-[0.875rem] truncate text-[10px] leading-snug text-transparent sm:text-[11px]" aria-hidden>
+              &nbsp;
+            </p>
           ) : null}
           </div>
         </div>
 
         {/* Right actions → open sheets */}
-        <div className="flex shrink-0 items-center self-stretch border-b border-gray-200/80 bg-[#F8F9FA] gap-1 px-2 sm:gap-2 sm:px-3 md:gap-4 md:px-5">
+        <div className="flex max-w-[min(100%,520px)] shrink-0 items-center self-stretch overflow-x-auto border-b border-gray-200/80 bg-[#F8F9FA] hide-scrollbar gap-0.5 px-1.5 sm:max-w-none sm:gap-1.5 sm:px-2 md:gap-2 md:px-4 lg:gap-3 lg:px-5">
           {storeOpen === true ? (
             <div className="flex items-center pr-0.5" title="Live" aria-hidden>
               <RadarLiveIndicator />
@@ -3237,7 +3208,7 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
             <ChevronDown size={14} className="text-gray-500 sm:w-4" />
           </button>
 
-          <div className="border-l border-gray-200 pl-2 md:pl-3">
+          <div className="shrink-0 border-l border-gray-200 pl-1.5 md:pl-2">
             <button
               ref={profileTriggerRef}
               type="button"
@@ -3245,7 +3216,7 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
                 setProfileDropdownOpen((o) => !o);
                 setPhotoActionMenuOpen(false);
               }}
-              className="flex items-center gap-1.5 rounded-lg border border-sky-200 bg-white px-1.5 py-1 shadow-sm hover:bg-sky-50/80 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-300 sm:gap-2 sm:px-2 sm:py-1.5"
+              className="flex items-center gap-1 rounded-lg bg-white px-1 py-1 shadow-sm hover:bg-sky-50/80 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-300 sm:gap-1.5 sm:px-1.5 sm:py-1 md:px-2 md:py-1.5"
               aria-expanded={profileDropdownOpen}
               aria-haspopup="dialog"
             >
@@ -3264,7 +3235,7 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
                   displayName.charAt(0).toUpperCase()
                 )}
               </div>
-              <span className="hidden max-w-[88px] truncate text-xs font-medium text-sky-800 sm:max-w-[100px] md:inline md:text-sm">
+              <span className="hidden max-w-[72px] truncate text-xs font-medium text-sky-800 lg:max-w-[100px] lg:inline lg:text-sm">
                 {displayName}
               </span>
               {profileDropdownOpen ? (

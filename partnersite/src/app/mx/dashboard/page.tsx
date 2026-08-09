@@ -7,6 +7,7 @@ import Link from 'next/link'
 import { useRouter, useSearchParams, usePathname } from 'next/navigation'
 import { MXLayoutWhite } from '@/components/MXLayoutWhite'
 import { PartnerPageHeader } from '@/context/PartnerShellHeaderContext'
+import { PARTNER_PAGE_HEADERS } from '@/lib/partner-page-headers'
 import { MerchantStore } from '@/lib/merchantStore'
 import { usePartnerStoreRecord } from '@/hooks/usePartnerStoreRecord'
 import { useApprovedPartnerStores } from '@/hooks/usePartnerResolveSession'
@@ -1527,7 +1528,7 @@ function DashboardContent() {
         restaurantName={store?.store_name || 'Dashboard'}
         restaurantId={storeId || ''}
       >
-        <PartnerPageHeader title="Dashboard" subtitle="GatiMitra · Operations command center" />
+        <PartnerPageHeader {...PARTNER_PAGE_HEADERS.dashboard} />
         {(() => {
           const approval = String(store?.approval_status || modalStatus.status || '').toUpperCase()
           const showMarquee =

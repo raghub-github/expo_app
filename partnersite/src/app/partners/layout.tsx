@@ -44,9 +44,6 @@ export default function PartnersLayout({ children }: { children: React.ReactNode
     <>
       <div
         className="min-h-dvh"
-        style={{
-          paddingBottom: "max(5.5rem, calc(env(safe-area-inset-bottom, 0px) + 5.5rem))",
-        }}
       >
         {usesPartnerShell(pathname) ? (
           <PartnerShellFrame>{content}</PartnerShellFrame>

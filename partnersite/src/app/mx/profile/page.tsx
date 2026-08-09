@@ -3,6 +3,7 @@
 import React, { useEffect, useLayoutEffect, useState, useRef, useMemo, useCallback } from "react";
 import { MXLayoutWhite } from "@/components/MXLayoutWhite";
 import { PartnerPageHeader } from "@/context/PartnerShellHeaderContext";
+import { PARTNER_PAGE_HEADERS } from "@/lib/partner-page-headers";
 import { R2Image } from "@/components/R2Image";
 import { fetchRestaurantById as fetchStoreById, updateStoreInfo } from "@/lib/database";
 import { MerchantStore } from "@/lib/merchantStore";
@@ -1151,11 +1152,10 @@ export default function ProfilePage() {
         restaurantName={store.store_name}
         restaurantId={store.store_id}
       >
-        <PartnerPageHeader title="Merchant Profile" subtitle="Manage your restaurant details" />
-        <div className="bg-gray-50 flex-1 flex flex-col min-h-0 overflow-hidden">
-          {/* MAIN CONTENT — no duplicate strip under shell header (avoids large white gap) */}
-          <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden hide-scrollbar" style={{ scrollBehavior: 'smooth' }}>
-            <div className="px-4 pt-2 pb-3">
+        <PartnerPageHeader {...PARTNER_PAGE_HEADERS.profile} />
+        <div className="flex flex-1 flex-col min-h-0 overflow-hidden bg-gray-50 h-full">
+          <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden hide-scrollbar pb-4" style={{ scrollBehavior: 'smooth' }}>
+            <div className="px-4 pt-2 pb-2">
               <div className="w-full">
 
                 {/* MAIN CARD */}
@@ -2236,8 +2236,6 @@ export default function ProfilePage() {
                   </div>
                 </div>
               </div>
-              {/* Minimal bottom padding - only 5-10px, no extra space */}
-              <div className="pb-2"></div>
             </div>
           </div>
         </div>

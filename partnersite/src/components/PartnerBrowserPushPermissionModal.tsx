@@ -186,9 +186,11 @@ export function PartnerBrowserPushPermissionModal({
 
       if (isRegistrationMode) {
         if (permission !== "granted") {
-          if (permission === "denied") {
-            dismissForSession();
-          }
+          toast.error(
+            permission === "denied"
+              ? "Notifications are still blocked. Enable them in browser settings, then tap Retry."
+              : "Please allow notifications in your browser prompt first.",
+          );
           return;
         }
         const ok = await completeRegistration();
@@ -199,7 +201,9 @@ export function PartnerBrowserPushPermissionModal({
       }
 
       if (permission === "denied") {
-        dismissForSession();
+        toast.error(
+          "Notifications are still blocked. Follow the steps above, then tap I've Enabled It again.",
+        );
         return;
       }
 
@@ -209,13 +213,14 @@ export function PartnerBrowserPushPermissionModal({
           return;
         }
         if (next === "denied") {
-          dismissForSession();
+          toast.error("Notifications were blocked. You can enable them in browser settings.");
           return;
         }
       }
 
       const afterPrompt = await getEffectiveNotificationPermission();
       if (afterPrompt !== "granted") {
+        toast.error("Notification permission is not granted yet. Please try again.");
         return;
       }
 
@@ -228,7 +233,7 @@ export function PartnerBrowserPushPermissionModal({
     } finally {
       setBusy(false);
     }
-  }, [completeRegistration, dismissForSession, isRegistrationMode]);
+  }, [completeRegistration, isRegistrationMode]);
 
   const primaryLabel = busy
     ? isRegistrationMode
@@ -241,7 +246,7 @@ export function PartnerBrowserPushPermissionModal({
         : "Enable Notifications";
 
   return (
-    <div className="fixed inset-0 z-[80] flex items-center justify-center bg-slate-900/50 p-3 backdrop-blur-[3px] dark:bg-black/60 sm:p-4">
+    <div className="fixed inset-0 z-[1200] flex items-center justify-center bg-slate-900/50 p-3 backdrop-blur-[3px] dark:bg-black/60 sm:p-4">
       <div
         role="dialog"
         aria-modal="true"

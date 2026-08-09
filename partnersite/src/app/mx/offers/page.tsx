@@ -6,6 +6,7 @@ import { useSearchParams } from 'next/navigation'
 import { MXLayoutWhite } from '@/components/MXLayoutWhite'
 import { PageSkeletonGeneric } from '@/components/PageSkeleton'
 import { PartnerPageHeader } from '@/context/PartnerShellHeaderContext'
+import { PARTNER_PAGE_HEADERS } from '@/lib/partner-page-headers'
 import type { Offer as DbOffer, OfferType, ApplicabilityType } from '@/lib/database'
 import { fetchStoreById, fetchStoreByName, fetchMenuCategories } from '@/lib/database'
 import { usePartnerStoreRecord } from '@/hooks/usePartnerStoreRecord'
@@ -2025,17 +2026,17 @@ function OffersContent() {
   return (
     <>
       <MXLayoutWhite restaurantName={displayStoreName || store?.store_name || "Offers"} restaurantId={storeId || ""}>
-        <PartnerPageHeader title="Offers" breadcrumbs={offerHeaderBreadcrumbs} />
+        <PartnerPageHeader {...PARTNER_PAGE_HEADERS.offers} />
         <div className="flex h-full min-h-0 flex-col bg-gray-50 overflow-hidden">
           <div className="shrink-0 border-b border-gray-200 bg-white px-4 pt-4 sm:px-5 sm:pt-5 md:px-6 md:pt-6">
-            <div className="mt-1 flex gap-8 text-sm">
+            <div className="mt-1 flex flex-wrap gap-2 pb-4">
               <button
                 type="button"
                 onClick={() => setPageTab("create")}
-                className={`pb-3 border-b-2 transition-colors ${
+                className={`rounded-lg border px-4 py-2 text-sm font-semibold transition-colors ${
                   pageTab === "create"
-                    ? "border-blue-600 text-blue-700 font-medium"
-                    : "border-transparent text-gray-500 hover:text-gray-700"
+                    ? "border-[#2ecc9b] bg-[#2ecc9b] text-white shadow-sm"
+                    : "border-gray-300 bg-white text-gray-700 hover:border-gray-400 hover:bg-gray-50"
                 }`}
               >
                 Create offers
@@ -2043,10 +2044,10 @@ function OffersContent() {
               <button
                 type="button"
                 onClick={() => setPageTab("track")}
-                className={`pb-3 border-b-2 transition-colors ${
+                className={`rounded-lg border px-4 py-2 text-sm font-semibold transition-colors ${
                   pageTab === "track"
-                    ? "border-blue-600 text-blue-700 font-medium"
-                    : "border-transparent text-gray-500 hover:text-gray-700"
+                    ? "border-[#2ecc9b] bg-[#2ecc9b] text-white shadow-sm"
+                    : "border-gray-300 bg-white text-gray-700 hover:border-gray-400 hover:bg-gray-50"
                 }`}
               >
                 Track offers
