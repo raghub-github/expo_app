@@ -20,11 +20,12 @@ import {
 } from "@/lib/browser-push/firebase-web";
 import {
   clearPushDismissFlags,
-  markPushPermanentlyDismissed,
   markPushRegistrationPending,
   markPushRegistered,
-  markPushSoftDismissed,
+  markPushSessionDismissed,
 } from "@/lib/browser-push/partner-push-state";
+import type { PartnerPushStatus } from "@/lib/browser-push/partner-push-status";
+import { invalidatePartnerPushBackendCache } from "@/lib/browser-push/partner-push-status";
 import { toast } from "sonner";
 
 const BENEFITS: Array<{ icon: typeof ShoppingCart; label: string; tone: string }> = [
@@ -38,6 +39,8 @@ const RELOAD_MESSAGE = "Please reload your site and then try again.";
 
 type Props = {
   mode: "permission" | "registration";
+  pushStatus?: PartnerPushStatus | null;
+  merchantUserId?: string | null;
   onClose: () => void;
   onRegistered?: () => void;
 };
@@ -45,7 +48,13 @@ type Props = {
 /**
  * Permission education modal OR post-permission registration completion modal.
  */
-export function PartnerBrowserPushPermissionModal({ mode, onClose, onRegistered }: Props) {
+export function PartnerBrowserPushPermissionModal({
+  mode,
+  pushStatus,
+  merchantUserId,
+  onClose,
+  onRegistered,
+}: Props) {
   const [busy, setBusy] = useState(false);
   const [blocked, setBlocked] = useState(() =>
     typeof window !== "undefined" && "Notification" in window
@@ -58,19 +67,16 @@ export function PartnerBrowserPushPermissionModal({ mode, onClose, onRegistered 
 
   const isRegistrationMode = mode === "registration";
 
-  const closeSoft = useCallback(() => {
-    markPushSoftDismissed();
+  const dismissForSession = useCallback(() => {
+    markPushSessionDismissed(merchantUserId);
     onClose();
-  }, [onClose]);
+  }, [merchantUserId, onClose]);
+
+  const closeSoft = dismissForSession;
 
   const closePermanent = useCallback(() => {
-    if (isRegistrationMode) {
-      closeSoft();
-      return;
-    }
-    markPushPermanentlyDismissed();
-    onClose();
-  }, [closeSoft, isRegistrationMode, onClose]);
+    dismissForSession();
+  }, [dismissForSession]);
 
   const completeRegistration = useCallback(async () => {
     await navigator.serviceWorker?.ready.catch(() => undefined);
@@ -79,10 +85,11 @@ export function PartnerBrowserPushPermissionModal({ mode, onClose, onRegistered 
 
     clearPushDismissFlags();
     markPushRegistered();
+    invalidatePartnerPushBackendCache();
     setSuccess(true);
     setBlocked(false);
     setNeedsReloadHint(false);
-    toast.success("Notifications enabled");
+    toast.success("Notifications enabled successfully.");
     onRegistered?.();
     window.setTimeout(() => onClose(), 2200);
     return true;
@@ -144,13 +151,14 @@ export function PartnerBrowserPushPermissionModal({ mode, onClose, onRegistered 
     }
   }, [completeRegistration, isRegistrationMode]);
 
+  const isBlocked = blocked || pushStatus === "denied";
   const primaryLabel = busy
     ? isRegistrationMode
       ? "Connecting…"
       : "Enabling…"
     : isRegistrationMode
       ? "Retry"
-      : Notification.permission === "denied" || blocked
+      : isBlocked
         ? "I've Enabled It"
         : "Enable Notifications";
 
@@ -166,7 +174,7 @@ export function PartnerBrowserPushPermissionModal({ mode, onClose, onRegistered 
           type="button"
           onClick={closePermanent}
           className="absolute right-2.5 top-2.5 z-10 rounded-lg p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-700 dark:hover:bg-slate-800 dark:hover:text-slate-200"
-          aria-label={isRegistrationMode ? "Dismiss for now" : "Dismiss permanently"}
+          aria-label="Dismiss for this session"
         >
           <X className="h-4 w-4" />
         </button>
@@ -189,7 +197,7 @@ export function PartnerBrowserPushPermissionModal({ mode, onClose, onRegistered 
               <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br from-sky-500/15 to-indigo-500/15 text-sky-700 dark:from-sky-400/20 dark:to-indigo-400/20 dark:text-sky-300">
                 {isRegistrationMode ? (
                   <RefreshCw className="h-5 w-5" />
-                ) : blocked ? (
+                ) : isBlocked ? (
                   <BellOff className="h-5 w-5" />
                 ) : (
                   <Bell className="h-5 w-5" />
@@ -229,7 +237,7 @@ export function PartnerBrowserPushPermissionModal({ mode, onClose, onRegistered 
                 </ul>
               ) : null}
 
-              {!isRegistrationMode && blocked ? (
+              {!isRegistrationMode && isBlocked ? (
                 <div className="mt-2">
                   <button
                     type="button"

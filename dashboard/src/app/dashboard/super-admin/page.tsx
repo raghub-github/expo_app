@@ -31,11 +31,6 @@ const OffersIcon = dynamic(async () => {
   return (props: { className?: string }) => <Gift {...props} />;
 });
 
-const AgentsIcon = dynamic(async () => {
-  const { UserCog } = await import("lucide-react");
-  return (props: { className?: string }) => <UserCog {...props} />;
-});
-
 const TicketSettingsIcon = dynamic(async () => {
   const { FolderGit2 } = await import("lucide-react");
   return (props: { className?: string }) => <FolderGit2 {...props} />;
@@ -147,14 +142,6 @@ const adminOptions: AdminOption[] = [
     description: "Manage subscription plans for merchants, users, and riders",
     color: "text-purple-600",
     bgColor: "bg-purple-50 hover:bg-purple-100",
-  },
-  {
-    name: "Agents",
-    href: "/dashboard/agents",
-    Icon: AgentsIcon,
-    description: "Track all agent actions and performance metrics",
-    color: "text-orange-600",
-    bgColor: "bg-orange-50 hover:bg-orange-100",
   },
   {
     name: "Ticket settings",

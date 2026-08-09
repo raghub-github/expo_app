@@ -6,6 +6,7 @@ import { createClient } from "@/lib/supabase/client";
 import { getOrCreateDeviceId } from "@/lib/auth/device-id-client";
 import { Store } from "lucide-react";
 import { safeSameOriginPath } from "@/lib/auth/auth-redirect-url";
+import { clearPushSessionDismissed } from "@/lib/browser-push/partner-push-state";
 
 function parseHashParams(hash: string): Record<string, string> {
   const params: Record<string, string> = {};
@@ -34,7 +35,10 @@ async function setCookieAndRedirect(
       signal: controller.signal,
     });
     const text = await res.text();
-    if (res.ok) return { ok: true };
+    if (res.ok) {
+      clearPushSessionDismissed();
+      return { ok: true };
+    }
     let err = "Authentication failed";
     if (text.trim()) {
       try {

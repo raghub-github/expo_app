@@ -3,6 +3,7 @@ import { getAuthenticatedApiUser, authFailureResponse } from "@/lib/auth/api-ses
 import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine";
 import { getSql } from "@/lib/db/client";
 import { backendFetch } from "@/lib/notif-backend";
+import { AUTO_ONLY_ADMIN_CX_CODES } from "@/lib/notifications/admin-cx-templates";
 
 export const runtime = "nodejs";
 
@@ -36,19 +37,7 @@ const FALLBACK_LABELS: Record<string, string> = {
 };
 
 /** Lifecycle events sent automatically by the system — not for manual admin push. */
-const AUTO_ONLY_ADMIN_CX_CODES = new Set([
-  "ADMIN_CX_DELIVERY_OTP",
-  "ADMIN_CX_PICKUP_OTP",
-  "ADMIN_CX_ORDER_DELIVERED",
-  "ADMIN_CX_PICKUP_COMPLETED",
-  "ADMIN_CX_REFUND_COMPLETED",
-  "ADMIN_CX_REFUND_INITIATED",
-  "ADMIN_CX_RIDER_ASSIGNED",
-  "ADMIN_CX_RIDER_REASSIGNED",
-  "ADMIN_CX_RIDER_NEAR_DELIVERY",
-  "ADMIN_CX_RIDER_NEAR_PICKUP",
-  "ADMIN_CX_SUPPORT_WORKING",
-]);
+const AUTO_ONLY = AUTO_ONLY_ADMIN_CX_CODES;
 
 
 function labelFor(code: string, labels: Record<string, string>): string {
@@ -91,7 +80,7 @@ async function loadTemplatesFromDb() {
   const items = [];
   for (const t of rows) {
     if (seen.has(t.code)) continue;
-    if (AUTO_ONLY_ADMIN_CX_CODES.has(t.code)) continue;
+    if (AUTO_ONLY.has(t.code)) continue;
     seen.add(t.code);
     items.push({
       code: t.code,

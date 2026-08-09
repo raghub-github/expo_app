@@ -7,6 +7,69 @@ import { fetchBackend } from "@/lib/fetch-backend";
 export const runtime = "nodejs";
 
 /**
+ * GET /api/notifications/browser-tokens?store_id=GMMC1001
+ * Returns whether this merchant has an active web push token registered recently.
+ */
+export async function GET(req: NextRequest) {
+  try {
+    const supabase = await createServerSupabaseClient();
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+    if (!user) {
+      return NextResponse.json({ registered: false, error: "unauthorized" }, { status: 401 });
+    }
+
+    const merchant = await validateMerchantFromSession(user);
+    if (!merchant.isValid || !merchant.parentMerchantId) {
+      return NextResponse.json(
+        { registered: false, error: merchant.error ?? "merchant_required" },
+        { status: 403 },
+      );
+    }
+
+    const storeParam = new URL(req.url).searchParams.get("store_id")?.trim() ?? "";
+    let storeId: number | null = null;
+    if (storeParam) {
+      const gate = await assertStoreAccess(storeParam);
+      if (gate.ok) storeId = gate.storeIdNum;
+    }
+
+    const { createClient } = await import("@supabase/supabase-js");
+    const admin = createClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL || "",
+      process.env.SUPABASE_SERVICE_ROLE_KEY || "",
+      { auth: { autoRefreshToken: false, persistSession: false } },
+    );
+
+    const parentMerchantId = merchant.parentMerchantId;
+    let query = admin
+      .from("native_device_push_tokens")
+      .select("id")
+      .eq("user_id", parentMerchantId)
+      .eq("platform", "web")
+      .eq("token_type", "fcm")
+      .gte("last_seen_at", new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString())
+      .limit(1);
+
+    if (storeId != null) {
+      query = query.eq("store_id", storeId);
+    }
+
+    const { data: rows, error } = await query;
+    if (error) {
+      console.warn("[browser-tokens GET] lookup failed:", error.message);
+      return NextResponse.json({ registered: false, error: "lookup_failed" }, { status: 503 });
+    }
+
+    return NextResponse.json({ registered: Array.isArray(rows) && rows.length > 0 });
+  } catch (e) {
+    console.error("[browser-tokens GET]", e);
+    return NextResponse.json({ registered: false, error: "internal_error" }, { status: 500 });
+  }
+}
+
+/**
  * Partnersite browser FCM registration → backend native_device_push_tokens.
  * Super Admin merchant campaigns can then reach the open partnersite session.
  *

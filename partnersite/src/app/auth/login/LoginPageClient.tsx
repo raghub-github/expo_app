@@ -9,6 +9,7 @@ import { clearSupabaseClientSession } from '@/lib/auth/clear-auth-storage';
 import { getOrCreateDeviceId } from '@/lib/auth/device-id-client';
 import { ENABLE_PHONE_OTP_LOGIN } from '@/lib/auth/phone-otp-config';
 import { clearPartnerStoreSelection } from '@/lib/partner-selected-store';
+import { clearPushSessionDismissed } from '@/lib/browser-push/partner-push-state';
 import { LoginPageShell } from './components/LoginPageShell';
 import { LoginFormHeader } from './components/LoginFormHeader';
 import { LoginToggle, type LoginTab } from './components/LoginToggle';
@@ -66,11 +67,21 @@ function LoginPageContent() {
     if (typeof window === "undefined") return;
     // Never reuse another account's store selection across logins
     clearPartnerStoreSelection();
+    clearPushSessionDismissed();
     // If opened via non-routable 0.0.0.0 (common after bad OAuth Site URL), bounce to localhost.
-    if (window.location.hostname === "0.0.0.0" || window.location.hostname === "[::]") {
+    const host = window.location.hostname;
+    if (host === "0.0.0.0" || host === "[::]") {
       const fixed = new URL(window.location.href);
       fixed.hostname = "localhost";
       window.location.replace(fixed.toString());
+      return;
+    }
+    // Supabase Site URL misconfig can land OAuth codes on gatimitra.com — bounce to partner portal.
+    if (host === "gatimitra.com" || host === "www.gatimitra.com") {
+      const partner = new URL(window.location.href);
+      partner.hostname = "partner.gatimitra.com";
+      partner.protocol = "https:";
+      window.location.replace(partner.toString());
       return;
     }
     sessionStorage.setItem('auth_redirect', redirectTo);
@@ -153,6 +164,7 @@ function LoginPageContent() {
           if (typeof next === 'string' && next.startsWith('/partners/') && !next.startsWith('/partners/all-stores')) {
             next = '/partners/all-stores';
           }
+          clearPushSessionDismissed();
           window.location.replace(next.startsWith('/') ? next : '/partners/all-stores');
           return;
         }
@@ -173,6 +185,7 @@ function LoginPageContent() {
     if (typeof next === 'string' && next.startsWith('/partners/') && !next.startsWith('/partners/all-stores')) {
       next = '/partners/all-stores';
     }
+    clearPushSessionDismissed();
     // Replace so browser Back cannot return to Login/OTP while session is valid.
     window.location.replace(next.startsWith('/') ? next : '/partners/all-stores');
   };

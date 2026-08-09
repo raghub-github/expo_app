@@ -40,7 +40,7 @@ export default function AnalyticsPage() {
 
   return (
     <div className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden bg-slate-50 px-3 pb-3 pt-1 sm:px-5 sm:pt-2 xl:px-6">
-      <div className="mx-auto flex h-full min-h-0 w-full min-w-0 max-w-7xl flex-col">
+      <div className="mx-auto flex h-full min-h-0 w-full min-w-0 max-w-7xl flex-col overflow-hidden">
         <div className="shrink-0 flex flex-wrap items-center justify-between gap-3">
           <p className="max-w-2xl text-sm text-slate-500">
             Today's delivery snapshot plus the templates and campaigns doing the heavy lifting.
@@ -48,8 +48,9 @@ export default function AnalyticsPage() {
           </p>
         </div>
 
+        <div className="mt-3 min-h-0 flex-1 overflow-y-auto overscroll-y-contain pr-0.5">
         {/* Today's counts */}
-        <div className="mt-3 shrink-0">
+        <div className="shrink-0">
           <div className="mb-2 flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
             <TrendingUp className="h-3.5 w-3.5" /> Today (midnight → now)
           </div>
@@ -104,9 +105,9 @@ export default function AnalyticsPage() {
         ) : null}
 
         {/* Top templates + campaigns */}
-        <div className="mt-4 grid min-h-0 flex-1 grid-cols-1 gap-3 overflow-auto lg:grid-cols-2">
+        <div className="mt-4 grid grid-cols-1 gap-3 lg:grid-cols-2">
           {/* Templates */}
-          <div className="min-h-0 overflow-auto rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+          <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
             <div className="mb-3 flex items-center gap-2">
               <FileText className="h-4 w-4 text-teal-700" />
               <div className="font-semibold text-slate-900">Top templates · last 7 days</div>
@@ -128,7 +129,7 @@ export default function AnalyticsPage() {
           </div>
 
           {/* Campaigns */}
-          <div className="min-h-0 overflow-auto rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+          <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
             <div className="mb-3 flex items-center gap-2">
               <Megaphone className="h-4 w-4 text-teal-700" />
               <div className="font-semibold text-slate-900">Top campaigns · last 30 days</div>
@@ -156,9 +157,10 @@ export default function AnalyticsPage() {
           </div>
         </div>
 
-        <p className="mt-2 shrink-0 text-xs text-slate-500">
+        <p className="mt-2 pb-1 text-xs text-slate-500">
           Funnel metrics (CTR, failure rate, latency) and daily/platform/role splits come from notification_dispatch_logs.
         </p>
+        </div>
       </div>
     </div>
   );

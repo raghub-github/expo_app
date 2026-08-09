@@ -50,6 +50,7 @@ import { MerchantMarketInsightsCard } from '@/components/merchant/MerchantMarket
 import { MerchantWeatherBanner } from '@/components/merchant/MerchantWeatherBanner';
 import { LivePreviewInsightsPanel, mapInsightsDatePreset } from '@/components/merchant/LivePreviewInsightsPanel';
 import { PartnerDashboardDeliveryCard } from '@/components/merchant/PartnerDashboardDeliveryCard';
+import { PartnerSelfDeliveryRidersSheet } from '@/components/merchant/PartnerSelfDeliveryRidersSheet';
 import { PartnerDashboardStoreOverviewCard } from '@/components/merchant/PartnerDashboardStoreOverviewCard';
 import { PartnerDashboardStoreStatusSkeleton } from '@/components/merchant/PartnerDashboardCardSkeletons';
 import {
@@ -60,7 +61,7 @@ import { BusinessReportsPanel } from '@/components/merchant/BusinessReportsPanel
 import { prefetchBusinessInsights, warmLivePreviewCache } from '@/lib/merchant-growth/growth-insights-cache';
 import { warmDashboardWalletCache } from '@/lib/partner-dashboard-cache';
 import { createClient } from '@/lib/supabase/client';
-import { useMerchantWallet, useStoreOperations } from '@/hooks/useMerchantApi'
+import { useMerchantWallet, useStoreOperations, useStoreSettings, useSelfDeliveryRiders, fetchSelfDeliveryRiders } from '@/hooks/useMerchantApi'
 import { merchantKeys } from '@/lib/query-keys'
 import { useQueryClient } from '@tanstack/react-query';
 import { PlanExpiredWarningModal } from '@/components/merchant/PlanExpiredWarningModal';
@@ -229,7 +230,14 @@ function DashboardContent() {
   const storeOpsReady = storeOpsPainted || !!storeOpsData
   const boundarySyncInFlightRef = useRef(false)
   const boundarySyncAttemptsRef = useRef(0)
-  const [mxDeliveryEnabled, setMxDeliveryEnabled] = useState(false)
+  const [deliveryToggleLoading, setDeliveryToggleLoading] = useState(false)
+  const [ridersSheetOpen, setRidersSheetOpen] = useState(false)
+  const { data: storeSettingsData, refetch: refetchStoreSettings } = useStoreSettings(storeId, {
+    enabled: queriesEnabled,
+  })
+  const mxDeliveryEnabled = storeSettingsData?.self_delivery === true
+  const { data: selfDeliveryRiders = [], isFetching: selfDeliveryRidersLoading, refetch: refetchSelfDeliveryRiders } =
+    useSelfDeliveryRiders(storeId, { enabled: queriesEnabled })
   const [isStoreOpen, setIsStoreOpen] = useState(false)
   const [todaySlots, setTodaySlots] = useState<{ start: string; end: string }[]>([])
   const [openingTime, setOpeningTime] = useState<string | null>(null)
@@ -939,21 +947,7 @@ function DashboardContent() {
     activeCountdownAt,
   ])
 
-  // Delivery mode from merchant_store_settings (self_delivery)
-  const fetchDeliverySettings = React.useCallback(async () => {
-    if (!storeId) return
-    try {
-      const res = await fetch(`/api/merchant/store-settings?storeId=${encodeURIComponent(storeId)}`)
-      const data = await res.json()
-      if (res.ok) setMxDeliveryEnabled(data.self_delivery === true)
-    } catch {
-      // keep default false
-    }
-  }, [storeId])
-
-  useEffect(() => {
-    fetchDeliverySettings()
-  }, [fetchDeliverySettings])
+  // Delivery mode stays in sync via useStoreSettings (refetches on focus / mount).
 
   // Save manual activation lock to database
   const saveManualActivationLock = React.useCallback(async (enabled: boolean) => {
@@ -1256,31 +1250,77 @@ function DashboardContent() {
     setCloseReasonOther('')
   }
 
-  const handleMXDeliveryToggle = async () => {
-    const newValue = !mxDeliveryEnabled
-    try {
+  const selfDeliveryRidersSettingsUrl = React.useCallback(() => {
+    return storeId
+      ? `/mx/store-settings?storeId=${encodeURIComponent(storeId)}&tab=delivery#self-delivery-riders`
+      : '/mx/store-settings?tab=delivery#self-delivery-riders'
+  }, [storeId])
+
+  const patchDeliveryMode = React.useCallback(
+    async (selfDelivery: boolean) => {
+      if (!storeId) return false
       const res = await fetch('/api/merchant/store-settings', {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ storeId: storeId || '', self_delivery: newValue }),
+        body: JSON.stringify({
+          storeId,
+          self_delivery: selfDelivery,
+          platform_delivery: !selfDelivery,
+        }),
       })
-      const data = await res.json()
-      if (res.ok && data.success) {
-        setMxDeliveryEnabled(newValue)
-        if (newValue) {
-          toast.success('✅ Self Delivery enabled')
-          const deliverySettingsUrl = storeId
-            ? `/mx/store-settings?storeId=${encodeURIComponent(storeId)}&tab=delivery`
-            : '/mx/store-settings?tab=delivery'
-          router.push(deliverySettingsUrl)
-        } else {
-          toast.success('✅ GatiMitra Delivery enabled')
-        }
-      } else {
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok || data.success === false) {
         toast.error(data.error || 'Failed to update delivery mode')
+        return false
       }
-    } catch {
-      toast.error('Failed to update delivery mode')
+      await queryClient.invalidateQueries({ queryKey: merchantKeys.storeSettings(storeId) })
+      void refetchStoreSettings()
+      return true
+    },
+    [storeId, queryClient, refetchStoreSettings],
+  )
+
+  const handleMXDeliveryToggle = async () => {
+    if (deliveryToggleLoading || opsCardsLockedUntilVerified) return
+
+    if (mxDeliveryEnabled) {
+      setDeliveryToggleLoading(true)
+      try {
+        const ok = await patchDeliveryMode(false)
+        if (ok) toast.success('GatiMitra delivery enabled')
+      } finally {
+        setDeliveryToggleLoading(false)
+      }
+      return
+    }
+
+    setDeliveryToggleLoading(true)
+    try {
+      let riders = selfDeliveryRiders
+      if (storeId) {
+        riders = await queryClient.fetchQuery({
+          queryKey: merchantKeys.selfDeliveryRiders(storeId),
+          queryFn: () => fetchSelfDeliveryRiders(storeId),
+        })
+      }
+
+      if (riders.length === 0) {
+        toast.info('Add at least one self-delivery rider before turning this on.')
+        router.push(selfDeliveryRidersSettingsUrl())
+        return
+      }
+
+      const hasActiveRider = riders.some((r) => r.is_active !== false)
+      if (!hasActiveRider) {
+        toast.info('Activate at least one rider before enabling self delivery.')
+        router.push(selfDeliveryRidersSettingsUrl())
+        return
+      }
+
+      const ok = await patchDeliveryMode(true)
+      if (ok) toast.success('Self delivery enabled')
+    } finally {
+      setDeliveryToggleLoading(false)
     }
   }
 
@@ -1813,6 +1853,12 @@ function DashboardContent() {
                   <PartnerDashboardDeliveryCard
                     storeId={storeId}
                     mxDeliveryEnabled={mxDeliveryEnabled}
+                    toggleLoading={deliveryToggleLoading}
+                    showViewRiders={mxDeliveryEnabled && selfDeliveryRiders.length > 0}
+                    onViewRiders={() => {
+                      void refetchSelfDeliveryRiders()
+                      setRidersSheetOpen(true)
+                    }}
                     onToggle={handleMXDeliveryToggle}
                     locked={opsCardsLockedUntilVerified}
                     overlay={<VerificationLockedCardOverlay locked={opsCardsLockedUntilVerified} />}
@@ -1978,6 +2024,14 @@ function DashboardContent() {
           expiredAt={expiredPlanMeta.expiredAt}
         />
       ) : null}
+
+      <PartnerSelfDeliveryRidersSheet
+        open={ridersSheetOpen}
+        onClose={() => setRidersSheetOpen(false)}
+        riders={selfDeliveryRiders}
+        loading={selfDeliveryRidersLoading}
+        storeName={store?.store_name ?? undefined}
+      />
 
       {filterSheetOpen &&
         typeof document !== 'undefined' &&

@@ -41,6 +41,18 @@ export async function proxy(request: NextRequest) {
     return NextResponse.redirect(nextUrl);
   }
 
+  // Legacy login-store flow — redirect to modern auth / store picker.
+  if (pathname === "/auth/login-store" || pathname === "/auth/login-store/") {
+    const nextUrl = request.nextUrl.clone();
+    nextUrl.pathname = "/auth";
+    return NextResponse.redirect(nextUrl);
+  }
+  if (pathname === "/auth/login-store/list" || pathname === "/auth/login-store/list/") {
+    const nextUrl = request.nextUrl.clone();
+    nextUrl.pathname = "/partners/all-stores";
+    return NextResponse.redirect(nextUrl);
+  }
+
   // Permanent route migration: /mx/* → /partners/* (preserve querystring).
   if (pathname === "/mx" || pathname.startsWith("/mx/")) {
     const nextUrl = request.nextUrl.clone();

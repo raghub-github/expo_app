@@ -2,6 +2,7 @@
 
 import { GmRuleEngineClient } from "@/components/rules/GmRuleEngineClient";
 import { readGmRuleEngineCache } from "@/components/rules/gm-rule-engine-cache";
+import { DashboardContentSkeleton } from "@/components/ui/DashboardRouteLoading";
 
 /** During RSC auth, show cached list instantly when returning from edit/new save. */
 export default function RuleEngineLoading() {
@@ -19,5 +20,5 @@ export default function RuleEngineLoading() {
     );
   }
 
-  return null;
+  return <DashboardContentSkeleton />;
 }

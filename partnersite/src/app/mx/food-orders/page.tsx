@@ -744,23 +744,6 @@ function OrdersPageContent() {
 
   useEffect(() => {
     if (!storeId) return;
-    const syncKey = `partner-acceptance-sync-v2:${storeId.trim()}`;
-    if (typeof window !== 'undefined' && !sessionStorage.getItem(syncKey)) {
-      void fetch(
-        `/api/merchant/sync-acceptance-timeout?store_id=${encodeURIComponent(storeId)}`,
-        { method: 'POST', credentials: 'include', cache: 'no-store' }
-      )
-        .then(async (res) => {
-          // Only lock the tab after success — early 401/403 auth races should retry later.
-          if (!res.ok) return;
-          try {
-            sessionStorage.setItem(syncKey, String(Date.now()));
-          } catch {
-            /* ignore */
-          }
-        })
-        .catch(() => {});
-    }
     void fetchOrders();
     void fetchStats();
   }, [fetchOrders, fetchStats, storeId, managedStoreIds.join(',')]);

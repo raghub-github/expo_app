@@ -111,6 +111,10 @@ export interface SelfDeliveryRider {
   id: number;
   rider_name: string;
   rider_mobile: string;
+  rider_email?: string | null;
+  vehicle_number?: string | null;
+  is_primary?: boolean;
+  is_active: boolean;
   has_active_orders: boolean;
 }
 
@@ -345,14 +349,20 @@ async function fetchStoreSettings(storeId: string): Promise<StoreSettingsData> {
   return data;
 }
 
-async function fetchSelfDeliveryRiders(storeId: string): Promise<SelfDeliveryRider[]> {
-  const res = await fetch(`/api/merchant/self-delivery-riders?storeId=${encodeURIComponent(storeId)}`);
+export async function fetchSelfDeliveryRiders(storeId: string): Promise<SelfDeliveryRider[]> {
+  const res = await fetch(`/api/merchant/self-delivery-riders?storeId=${encodeURIComponent(storeId)}`, {
+    credentials: 'include',
+  });
   const data = await res.json();
-  if (!res.ok || !data.riders) return [];
+  if (!res.ok || !Array.isArray(data.riders)) return [];
   return data.riders.map((r: Record<string, unknown>) => ({
     id: r.id as number,
-    rider_name: r.rider_name as string,
-    rider_mobile: r.rider_mobile as string,
+    rider_name: String(r.rider_name ?? ''),
+    rider_mobile: String(r.rider_mobile ?? ''),
+    rider_email: typeof r.rider_email === 'string' ? r.rider_email : null,
+    vehicle_number: typeof r.vehicle_number === 'string' ? r.vehicle_number : null,
+    is_primary: r.is_primary === true,
+    is_active: r.is_active !== false,
     has_active_orders: !!r.has_active_orders,
   }));
 }
@@ -504,17 +514,21 @@ export function useStoreSettings(storeId: string | null, options?: { enabled?: b
     queryKey: merchantKeys.storeSettings(storeId ?? ''),
     queryFn: () => fetchStoreSettings(storeId!),
     enabled,
+    staleTime: 15 * 1000,
+    refetchOnMount: 'always',
+    refetchOnWindowFocus: true,
   });
 }
 
-/** Self-delivery riders list; only when self-delivery is on. */
-export function useSelfDeliveryRiders(storeId: string | null, enabled: boolean) {
-  const shouldFetch = !!storeId && enabled;
+/** Self-delivery riders for the active outlet. */
+export function useSelfDeliveryRiders(storeId: string | null, options?: { enabled?: boolean }) {
+  const enabled = (options?.enabled ?? true) && !!storeId;
   return useQuery({
     queryKey: merchantKeys.selfDeliveryRiders(storeId ?? ''),
     queryFn: () => fetchSelfDeliveryRiders(storeId!),
-    enabled: shouldFetch,
+    enabled,
     staleTime: 30 * 1000,
+    refetchOnWindowFocus: true,
   });
 }
 
@@ -579,5 +593,12 @@ export function useInvalidateSelfDeliveryRiders() {
   const queryClient = useQueryClient();
   return (storeId: string) => {
     queryClient.invalidateQueries({ queryKey: merchantKeys.selfDeliveryRiders(storeId) });
+  };
+}
+
+export function useInvalidateStoreSettings() {
+  const queryClient = useQueryClient();
+  return (storeId: string) => {
+    queryClient.invalidateQueries({ queryKey: merchantKeys.storeSettings(storeId) });
   };
 }

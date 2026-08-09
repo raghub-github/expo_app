@@ -166,6 +166,13 @@ export async function assertStoreAccess(storeIdParam: string | null): Promise<As
     return { ok: true, storeIdNum, isPlatformStaff: true }
   }
 
+  // Direct ownership join first — handles multi-parent accounts where session
+  // resolves to a different merchant_parents row than the selected store.
+  const ownedDirect = await findStoreOwnedBySessionUser(storePublicId, user)
+  if (ownedDirect) {
+    return { ok: true, storeIdNum: ownedDirect.id }
+  }
+
   const validation = await validateMerchantFromSession({
     id: user.id,
     email: user.email ?? null,
@@ -211,7 +218,7 @@ export async function assertStoreAccess(storeIdParam: string | null): Promise<As
     /* ignore AM lookup failures */
   }
 
-  // Legacy ownership join (phone / email edge cases).
+  // Legacy ownership join (phone / email edge cases) — belt-and-suspenders.
   const owned = await findStoreOwnedBySessionUser(storePublicId, user)
   if (owned) {
     return { ok: true, storeIdNum: owned.id }

@@ -632,11 +632,6 @@ export default function OrderRightSidebar({
   const [selectedTemplateCode, setSelectedTemplateCode] = useState("");
   const [templateMenuOpen, setTemplateMenuOpen] = useState(false);
   const templateMenuRef = useRef<HTMLDivElement | null>(null);
-  const [notificationTitle, setNotificationTitle] = useState("");
-  const [notificationText, setNotificationText] = useState("");
-  /** Message editor collapsed by default; expand only when agent wants to override. */
-  const [notificationBodyOpen, setNotificationBodyOpen] = useState(false);
-  const notificationBodyRef = useRef<HTMLTextAreaElement | null>(null);
   const [isLoadingNotifications, setIsLoadingNotifications] = useState(false);
   const [isSavingNotification, setIsSavingNotification] = useState(false);
   const [showNotificationsModal, setShowNotificationsModal] = useState(false);
@@ -1016,7 +1011,8 @@ export default function OrderRightSidebar({
               !!t &&
               typeof t === "object" &&
               typeof (t as { code?: unknown }).code === "string" &&
-              typeof (t as { label?: unknown }).label === "string"
+              typeof (t as { label?: unknown }).label === "string" &&
+              (t as { code?: string }).code !== "ADMIN_CX_CUSTOM"
           )
         );
       } catch (err) {
@@ -1046,50 +1042,6 @@ export default function OrderRightSidebar({
       document.removeEventListener("keydown", onKeyDown);
     };
   }, [templateMenuOpen]);
-
-  useEffect(() => {
-    const el = notificationBodyRef.current;
-    if (!el) return;
-    if (!notificationBodyOpen && selectedTemplateCode !== "ADMIN_CX_CUSTOM") return;
-    el.style.height = "auto";
-    el.style.height = `${Math.max(el.scrollHeight, 72)}px`;
-  }, [notificationText, notificationBodyOpen, selectedTemplateCode]);
-
-  const applyTemplatePreview = useCallback(
-    (code: string) => {
-      const tmpl = cxTemplates.find((t) => t.code === code);
-      if (!tmpl) {
-        setNotificationTitle("");
-        setNotificationText("");
-        return;
-      }
-      if (tmpl.is_custom) {
-        setNotificationTitle("Order Update");
-        setNotificationText("");
-        return;
-      }
-      const orderIdText =
-        order.formattedOrderId ??
-        order.orderId ??
-        `GMF${order.id.toString().padStart(6, "0")}`;
-      const vars: Record<string, string> = {
-        orderId: orderIdText,
-        orderShortId: orderIdText,
-        customerName: order.customerName ?? "Customer",
-        merchantName: "the restaurant",
-        riderName: order.riderName ?? "Your delivery partner",
-        pickupOtp: "",
-        deliveryOtp: "",
-        title: "",
-        body: "",
-      };
-      const fill = (s: string) =>
-        s.replace(/\{\{(\w+)\}\}/g, (_, key: string) => vars[key] ?? "");
-      setNotificationTitle(fill(tmpl.title_template || ""));
-      setNotificationText(fill(tmpl.body_template || ""));
-    },
-    [cxTemplates, order.customerName, order.formattedOrderId, order.id, order.orderId, order.riderName]
-  );
 
   const loadRecons = useCallback(
     async (signal?: AbortSignal) => {
@@ -1367,12 +1319,6 @@ export default function OrderRightSidebar({
 
   const addNotification = async () => {
     if (!selectedTemplateCode || isSavingNotification) return;
-    const isCustom = selectedTemplateCode === "ADMIN_CX_CUSTOM";
-    const title = notificationTitle.trim();
-    const body = notificationText.trim();
-    // Custom requires a typed body; templates may send with preview filled even if editor is collapsed.
-    if (isCustom && !body) return;
-    if (!isCustom && !title && !body) return;
 
     setIsSavingNotification(true);
     try {
@@ -1381,11 +1327,6 @@ export default function OrderRightSidebar({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           templateCode: selectedTemplateCode,
-          // Always pass filled title/body so backend override path is consistent
-          // whether the editor was expanded or left collapsed.
-          overrideTitle: title || undefined,
-          overrideBody: body || undefined,
-          customMessage: isCustom ? body : undefined,
         }),
       });
       const json = await res.json().catch(() => ({}));
@@ -1398,9 +1339,6 @@ export default function OrderRightSidebar({
         return;
       }
       setSelectedTemplateCode("");
-      setNotificationTitle("");
-      setNotificationText("");
-      setNotificationBodyOpen(false);
       await loadNotifications();
       const routedEmail =
         typeof json?.routedToEmail === "string" && json.routedToEmail.trim()
@@ -2113,8 +2051,6 @@ export default function OrderRightSidebar({
                     aria-selected={!selectedTemplateCode}
                     onClick={() => {
                       setSelectedTemplateCode("");
-                      applyTemplatePreview("");
-                      setNotificationBodyOpen(false);
                       setTemplateMenuOpen(false);
                     }}
                     className={`block w-full whitespace-normal break-words px-2.5 py-1.5 text-left text-[11px] leading-snug hover:bg-emerald-50 ${
@@ -2134,9 +2070,6 @@ export default function OrderRightSidebar({
                       aria-selected={selectedTemplateCode === t.code}
                       onClick={() => {
                         setSelectedTemplateCode(t.code);
-                        applyTemplatePreview(t.code);
-                        // Custom needs a body; other templates stay collapsed until Edit.
-                        setNotificationBodyOpen(Boolean(t.is_custom));
                         setTemplateMenuOpen(false);
                       }}
                       className={`block w-full whitespace-normal break-words px-2.5 py-1.5 text-left text-[11px] leading-snug hover:bg-emerald-50 ${
@@ -2153,55 +2086,10 @@ export default function OrderRightSidebar({
             ) : null}
           </div>
 
-          {selectedTemplateCode ? (
-            <div className="space-y-1.5">
-              {selectedTemplateCode !== "ADMIN_CX_CUSTOM" ? (
-                <button
-                  type="button"
-                  onClick={() => setNotificationBodyOpen((open) => !open)}
-                  className="flex w-full items-center justify-between rounded border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-left text-[11px] font-medium text-slate-600 hover:bg-slate-100 cursor-pointer"
-                >
-                  <span>{notificationBodyOpen ? "Edit Alert !" : "Show Alert !"}</span>
-                  <i
-                    className={`bi bi-chevron-down text-[10px] text-slate-400 transition ${
-                      notificationBodyOpen ? "rotate-180" : ""
-                    }`}
-                  />
-                </button>
-              ) : null}
-
-              {notificationBodyOpen || selectedTemplateCode === "ADMIN_CX_CUSTOM" ? (
-                <textarea
-                  ref={notificationBodyRef}
-                  value={notificationText}
-                  onChange={(e) => {
-                    setNotificationText(e.target.value);
-                    const el = e.currentTarget;
-                    el.style.height = "auto";
-                    el.style.height = `${Math.max(el.scrollHeight, 72)}px`;
-                  }}
-                  placeholder={
-                    selectedTemplateCode === "ADMIN_CX_CUSTOM"
-                      ? "Enter custom notification message..."
-                      : "Message body (optional override)"
-                  }
-                  rows={1}
-                  className="min-h-[72px] w-full resize-none overflow-hidden rounded border border-slate-200 bg-white p-2 text-[12px] leading-snug text-slate-700 focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
-                />
-              ) : null}
-            </div>
-          ) : null}
-
           <button
             type="button"
             onClick={() => void addNotification()}
-            disabled={
-              isSavingNotification ||
-              !selectedTemplateCode ||
-              (selectedTemplateCode === "ADMIN_CX_CUSTOM"
-                ? !notificationText.trim()
-                : !notificationTitle.trim() && !notificationText.trim())
-            }
+            disabled={isSavingNotification || !selectedTemplateCode}
             className="flex w-full items-center justify-center gap-1.5 rounded-lg bg-emerald-500 px-4 py-2 text-[12px] font-medium text-white shadow-sm transition hover:bg-emerald-600 cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
           >
             {isSavingNotification ? (

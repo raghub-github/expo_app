@@ -15,6 +15,8 @@ import { DEMO_RESTAURANT_ID as DEMO_STORE_ID } from '@/lib/constants'
 import { Clock, Phone, Save, AlertCircle, CheckCircle2, X, Zap, Shield, BarChart3, Bell, Crown, Star, Check, MapPin, Calendar, Copy, Power, Plus, Trash2, ChevronDown, ChevronUp, ChevronLeft, ChevronRight, Gift, Target, Globe, Users, Package, CreditCard, Sparkles, Smartphone, Lock, Unlock, Activity, FileText, Mail, MessageSquare, Radio, TrendingUp, Database, Eye, EyeOff, ShoppingBag, ChefHat, CheckCircle, XCircle, Image, Layers, BarChart2, Headphones, UserCheck, Filter } from 'lucide-react'
 import { PageSkeletonGeneric } from '@/components/PageSkeleton'
 import { toast } from 'sonner'
+import { useQueryClient } from '@tanstack/react-query'
+import { merchantKeys } from '@/lib/query-keys'
 import { normalizeWallTimeToHHMM } from '@/lib/wallTimeHHMM'
 import { toastStoreOperationsPostFailure } from '@/lib/storeOperationsPostFeedback'
 import { SettingsSidebarRail, settingsRailMainPaddingClass } from './components/SettingsSidebarRail'
@@ -196,12 +198,15 @@ function isLowerPlanTier(candidate: PlanTierLike, current: PlanTierLike): boolea
 
 function StoreSettingsContent() {
   const searchParams = useSearchParams()
+  const queryClient = useQueryClient()
   const [store, setStore] = useState<MerchantStore | null>(null)
   const [timingsLoading, setTimingsLoading] = useState(false)
   const [timingsLoaded, setTimingsLoaded] = useState(false)
   const timingsFetchGenRef = React.useRef(0)
   const [storeId, setStoreId] = useState<string | null>(null)
   const [isSaving, setIsSaving] = useState(false)
+  const [isSavingDelivery, setIsSavingDelivery] = useState(false)
+  const [isSavingPackaging, setIsSavingPackaging] = useState(false)
   const [activeTab, setActiveTab] = useState<'plans' | 'premium' | 'timings' | 'operations' | 'menu-capacity' | 'delivery' | 'address' | 'pos' | 'notifications' | 'audit' | 'gatimitra'>(() => {
     if (typeof window !== 'undefined') {
       const urlTab = new URLSearchParams(window.location.search).get('tab')
@@ -1456,6 +1461,15 @@ function StoreSettingsContent() {
       .finally(() => setRidersLoading(false))
   }, [storeId, activeTab])
 
+  useEffect(() => {
+    if (activeTab !== 'delivery' || typeof window === 'undefined') return
+    if (window.location.hash !== '#self-delivery-riders') return
+    const timer = window.setTimeout(() => {
+      document.getElementById('self-delivery-riders')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    }, 350)
+    return () => window.clearTimeout(timer)
+  }, [activeTab, ridersLoading, riders.length])
+
   const fetchRiders = () => {
     if (!storeId) return
     setRidersLoading(true)
@@ -1463,6 +1477,28 @@ function StoreSettingsContent() {
       .then((res) => res.json())
       .then((data) => { if (data.riders) setRiders(data.riders) })
       .finally(() => setRidersLoading(false))
+  }
+
+  const normalizeVehicleNumber = (raw: string) => raw.toUpperCase().replace(/\s+/g, ' ').trim()
+
+  const updateRiderActiveStatus = async (riderId: number, nextActive: boolean) => {
+    if (!storeId) return
+    try {
+      const res = await fetch(`/api/merchant/self-delivery-riders/${riderId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ storeId, is_active: nextActive }),
+      })
+      const data = await res.json()
+      if (res.ok && data.success) {
+        toast.success(nextActive ? 'Rider marked active' : 'Rider marked inactive')
+        fetchRiders()
+      } else {
+        toast.error(data.error || 'Failed to update rider status')
+      }
+    } catch {
+      toast.error('Request failed')
+    }
   }
 
   const saveRider = async (editId: number | null) => {
@@ -1473,13 +1509,14 @@ function StoreSettingsContent() {
       toast.error('Name and mobile are required')
       return
     }
+    const vehicle = normalizeVehicleNumber(riderForm.vehicle_number)
     setRiderSaving(true)
     try {
       if (editId !== null) {
         const res = await fetch(`/api/merchant/self-delivery-riders/${editId}`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ storeId, rider_name: name, rider_mobile: mobile, rider_email: riderForm.rider_email.trim() || undefined, vehicle_number: riderForm.vehicle_number.trim() || undefined }),
+          body: JSON.stringify({ storeId, rider_name: name, rider_mobile: mobile, rider_email: riderForm.rider_email.trim() || undefined, vehicle_number: vehicle || undefined }),
         })
         const data = await res.json()
         if (res.ok && data.success) {
@@ -1494,7 +1531,7 @@ function StoreSettingsContent() {
         const res = await fetch('/api/merchant/self-delivery-riders', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ storeId, rider_name: name, rider_mobile: mobile, rider_email: riderForm.rider_email.trim() || undefined, vehicle_number: riderForm.vehicle_number.trim() || undefined }),
+          body: JSON.stringify({ storeId, rider_name: name, rider_mobile: mobile, rider_email: riderForm.rider_email.trim() || undefined, vehicle_number: vehicle || undefined }),
         })
         const data = await res.json()
         if (res.ok && data.success) {
@@ -1688,7 +1725,7 @@ function StoreSettingsContent() {
       toast.error('Packaging charge must be between ₹5 and ₹15.')
       return
     }
-    setIsSaving(true)
+    setIsSavingPackaging(true)
     try {
       const res = await fetch('/api/merchant/store-settings', {
         method: 'PATCH',
@@ -1706,7 +1743,56 @@ function StoreSettingsContent() {
       setCanEditPackagingCharge(false)
       setNextPackagingEditableAt(data.next_editable_at || new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString())
     } finally {
-      setIsSaving(false)
+      setIsSavingPackaging(false)
+    }
+  }
+
+  const handleSaveDelivery = async () => {
+    if (!storeId) return
+    setIsSavingDelivery(true)
+    try {
+      const payload: Record<string, unknown> = {
+        storeId,
+        self_delivery: selfDeliveryEnabled,
+        platform_delivery: gatimitraDeliveryEnabled,
+        delivery_radius_km: typeof deliveryRadiusKm === 'number' && !isNaN(deliveryRadiusKm) ? deliveryRadiusKm : 5,
+      }
+      const perKmStr = deliveryChargePerKm.trim()
+      if (perKmStr !== '') {
+        const perKm = parseFloat(perKmStr)
+        if (isNaN(perKm) || perKm < 10 || perKm > 15) {
+          toast.error('Delivery charge per km must be between ₹10 and ₹15.')
+          return
+        }
+        payload.delivery_charge_per_km = perKm
+      }
+      const res = await fetch('/api/merchant/store-settings', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        toast.error(data.error || '❌ Failed to save delivery settings')
+        return
+      }
+      if (payload.delivery_charge_per_km != null) {
+        setDeliveryChargePerKmLastUpdatedAt(new Date().toISOString())
+        setCanEditDeliveryChargePerKm(false)
+        setNextDeliveryChargeEditableAt(data.next_editable_at || new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString())
+      }
+      toast.success('✅ Delivery settings saved successfully!')
+      await queryClient.invalidateQueries({ queryKey: merchantKeys.storeSettings(storeId) })
+      initialDeliverySettingsRef.current = {
+        gatimitraDeliveryEnabled,
+        selfDeliveryEnabled,
+        deliveryRadiusKm,
+        deliveryChargePerKm: deliveryChargePerKm.trim(),
+      }
+    } catch {
+      toast.error('❌ Failed to save delivery settings')
+    } finally {
+      setIsSavingDelivery(false)
     }
   }
 
@@ -1747,46 +1833,6 @@ function StoreSettingsContent() {
           thermalPrinterWidthMm,
         })
         toast.success('✅ Store operations saved successfully!')
-        return
-      }
-      if (activeTab === 'delivery' && storeId) {
-        const payload: Record<string, unknown> = {
-          storeId,
-          self_delivery: selfDeliveryEnabled,
-          platform_delivery: gatimitraDeliveryEnabled,
-          delivery_radius_km: typeof deliveryRadiusKm === 'number' && !isNaN(deliveryRadiusKm) ? deliveryRadiusKm : 5,
-        }
-        const perKmStr = deliveryChargePerKm.trim()
-        if (perKmStr !== '') {
-          const perKm = parseFloat(perKmStr)
-          if (isNaN(perKm) || perKm < 10 || perKm > 15) {
-            toast.error('Delivery charge per km must be between ₹10 and ₹15.')
-            return
-          }
-          payload.delivery_charge_per_km = perKm
-        }
-        const res = await fetch('/api/merchant/store-settings', {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload),
-        })
-        const data = await res.json().catch(() => ({}))
-        if (!res.ok) {
-          toast.error(data.error || '❌ Failed to save delivery settings')
-          return
-        }
-        if (payload.delivery_charge_per_km != null) {
-          setDeliveryChargePerKmLastUpdatedAt(new Date().toISOString())
-          setCanEditDeliveryChargePerKm(false)
-          setNextDeliveryChargeEditableAt(data.next_editable_at || new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString())
-        }
-        toast.success('✅ Delivery settings saved successfully!')
-        initialDeliverySettingsRef.current = {
-          gatimitraDeliveryEnabled,
-          selfDeliveryEnabled,
-          deliveryRadiusKm,
-          deliveryChargePerKm: deliveryChargePerKm.trim(),
-        }
         return
       }
       if (activeTab === 'address' && storeId) {
@@ -3390,18 +3436,18 @@ function StoreSettingsContent() {
           breadcrumbs={settingsHeaderBreadcrumbs}
         />
         <div
-          className={`flex flex-1 min-h-0 overflow-hidden bg-gray-50 ${settingsRailMainPaddingClass(settingsSidebarCollapsed)}`}
+          className={`mx-store-settings-root flex flex-1 min-h-0 flex-col overflow-hidden bg-gray-50 ${settingsRailMainPaddingClass(settingsSidebarCollapsed)}`}
         >
           {/* Main content scrolls; right settings rail is fixed (see SettingsSidebarRail). */}
           <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
             <div
-              className={`min-h-0 flex-1 hide-scrollbar ${
+              className={`min-h-0 flex-1 hide-scrollbar bg-gray-50 ${
                 activeTab === 'timings'
                   ? 'flex flex-col overflow-hidden'
-                  : 'overflow-x-hidden overflow-y-auto'
+                  : 'overflow-x-hidden overflow-y-auto overscroll-y-contain'
               }`}
             >
-            <div className={`px-4 sm:px-6 lg:px-8 pt-2 pb-4 sm:pb-5 ${activeTab === 'timings' ? 'flex min-h-0 flex-1 flex-col' : ''}`}>
+            <div className={`px-4 sm:px-6 lg:px-8 pt-1 pb-2 sm:pb-3 ${activeTab === 'timings' ? 'flex min-h-0 flex-1 flex-col' : ''}`}>
               <div className={`mx-auto w-full max-w-6xl ${activeTab === 'timings' ? 'flex min-h-0 flex-1 flex-col' : ''}`}>
               {/* Mobile Tabs */}
               <div className="lg:hidden mb-4 -mx-4 sm:-mx-6 lg:-mx-8 px-4 sm:px-6 lg:px-8">
@@ -4207,12 +4253,12 @@ function StoreSettingsContent() {
                   <div className="mb-3 flex items-center justify-between gap-3">
                     <h3 className="text-base font-bold text-gray-900 sm:text-lg">Delivery Settings</h3>
                     <button
-                      onClick={handleSaveSettings}
-                      disabled={isSaving || !hasDeliveryChanges}
+                      onClick={handleSaveDelivery}
+                      disabled={isSavingDelivery || !hasDeliveryChanges}
                       className="inline-flex shrink-0 items-center gap-1.5 rounded-lg bg-orange-600 px-3 py-1.5 text-xs font-semibold text-white transition-all hover:bg-orange-700 disabled:cursor-not-allowed disabled:opacity-50 sm:px-4 sm:py-2 sm:text-sm"
                     >
                       <Save size={14} />
-                      {isSaving ? 'Saving...' : 'Save'}
+                      {isSavingDelivery ? 'Saving...' : 'Save'}
                     </button>
                   </div>
 
@@ -4317,12 +4363,12 @@ function StoreSettingsContent() {
                     <h3 className="text-lg font-bold text-gray-900">Packaging Charge</h3>
                     <button
                       onClick={handleSavePackaging}
-                      disabled={isSaving || !canEditPackagingCharge || !hasPackagingChanges}
+                      disabled={isSavingPackaging || !canEditPackagingCharge || !hasPackagingChanges}
                       title={!canEditPackagingCharge && nextPackagingEditableAt ? `Editable again from ${new Date(nextPackagingEditableAt).toLocaleDateString('en-IN')}` : undefined}
                       className="px-4 py-2 bg-orange-600 text-white rounded-lg hover:bg-orange-700 transition-all font-semibold text-sm disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
                     >
                       <Save size={16} />
-                      {isSaving ? 'Saving...' : 'Save'}
+                      {isSavingPackaging ? 'Saving...' : 'Save'}
                     </button>
                   </div>
                   <p className="text-sm text-gray-600 mb-4">
@@ -4355,10 +4401,11 @@ function StoreSettingsContent() {
                       )}
                     </div>
                   </div>
+                </div>
 
-                  <div className="mt-8 border-t border-gray-200 pt-6">
-                    <h4 className="text-base font-bold text-gray-900 mb-2">Self-Delivery Riders</h4>
-                    <p className="text-sm text-gray-600 mb-4">Add and manage riders for self delivery. Edit and delete are disabled when a rider has an active order.</p>
+                <div id="self-delivery-riders" className="scroll-mt-[calc(var(--mx-partner-topbar-h,3.5rem)+0.75rem)] rounded-xl border border-gray-200 bg-white p-4 sm:p-6 shadow-sm">
+                  <h4 className="text-base font-bold text-gray-900 mb-2">Self-Delivery Riders</h4>
+                  <p className="text-sm text-gray-600 mb-4">Add and manage riders for self delivery. Edit and delete are disabled when a rider has an active order.</p>
                     <div className="mb-4 p-4 bg-gray-50 rounded-lg space-y-3">
                       <p className="text-sm font-semibold text-gray-800">{riderEditId !== null ? 'Edit rider' : 'Add new rider'}</p>
                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -4387,8 +4434,10 @@ function StoreSettingsContent() {
                           type="text"
                           placeholder="Vehicle number (optional)"
                           value={riderForm.vehicle_number}
-                          onChange={(e) => setRiderForm((f) => ({ ...f, vehicle_number: e.target.value }))}
-                          className="px-3 py-2 border border-gray-300 rounded-lg text-sm"
+                          onChange={(e) => setRiderForm((f) => ({ ...f, vehicle_number: normalizeVehicleNumber(e.target.value) }))}
+                          className="px-3 py-2 border border-gray-300 rounded-lg text-sm uppercase"
+                          autoCapitalize="characters"
+                          spellCheck={false}
                         />
                       </div>
                       <div className="flex gap-2">
@@ -4436,12 +4485,21 @@ function StoreSettingsContent() {
                                 <td className="py-2 pr-4">{r.rider_mobile}</td>
                                 <td className="py-2 pr-4 text-gray-600">{r.rider_email || '—'}</td>
                                 <td className="py-2 pr-4">
-                                  {r.has_active_orders ? <span className="text-amber-600 font-medium">Active order</span> : <span className="text-gray-500">—</span>}
+                                  <select
+                                    value={r.is_active ? 'active' : 'inactive'}
+                                    disabled={r.has_active_orders}
+                                    onChange={(e) => void updateRiderActiveStatus(r.id, e.target.value === 'active')}
+                                    className="rounded-lg border border-gray-300 bg-white px-2 py-1 text-xs font-medium text-gray-800 disabled:cursor-not-allowed disabled:bg-gray-100"
+                                    aria-label={`Status for ${r.rider_name}`}
+                                  >
+                                    <option value="active">Active</option>
+                                    <option value="inactive">Inactive</option>
+                                  </select>
                                 </td>
                                 <td className="py-2 text-right">
                                   <button
                                     type="button"
-                                    onClick={() => { setRiderEditId(r.id); setRiderForm({ rider_name: r.rider_name, rider_mobile: r.rider_mobile, rider_email: r.rider_email || '', vehicle_number: r.vehicle_number || '' }); }}
+                                    onClick={() => { setRiderEditId(r.id); setRiderForm({ rider_name: r.rider_name, rider_mobile: r.rider_mobile, rider_email: r.rider_email || '', vehicle_number: normalizeVehicleNumber(r.vehicle_number || '') }); }}
                                     disabled={r.has_active_orders}
                                     className="mr-2 text-orange-600 hover:text-orange-700 disabled:opacity-50 disabled:cursor-not-allowed text-xs font-medium"
                                   >
@@ -4486,7 +4544,6 @@ function StoreSettingsContent() {
                       </div>
                     )}
                   </div>
-                </div>
               </div>
             )}
 

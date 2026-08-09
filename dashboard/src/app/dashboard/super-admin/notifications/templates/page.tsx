@@ -4,6 +4,13 @@ import useSWR from "swr";
 import { useEffect, useMemo, useState } from "react";
 import { Pencil, Plus, Search, Send, X, Bell, CheckCircle2, AlertCircle, Eye } from "lucide-react";
 import Link from "next/link";
+import {
+  AUTO_ONLY_ADMIN_CX_CODES,
+  isAppNotificationTemplate,
+  isManualAdminCxTemplate,
+  normalizeManualTemplateCode,
+  templateSourceLabel,
+} from "@/lib/notifications/admin-cx-templates";
 
 type Template = {
   id: number;
@@ -39,6 +46,8 @@ const CATEGORY_TAGS = [
 
 const ROLE_TAGS = ["customer", "merchant", "rider", "admin", "all"];
 const PRIORITY_TAGS = ["low", "normal", "high", "critical"];
+
+type SourceFilter = "" | "manual" | "app";
 
 const PRIORITY_COLORS: Record<string, string> = {
   low: "bg-slate-100 text-slate-700 border-slate-200",
@@ -84,6 +93,7 @@ export default function TemplatesPage() {
   const [category, setCategory] = useState<string | "">("");
   const [role, setRole] = useState<string | "">("");
   const [query, setQuery] = useState("");
+  const [sourceFilter, setSourceFilter] = useState<SourceFilter>("");
   const [editing, setEditing] = useState<Template | null>(null);
   const [testing, setTesting] = useState<Template | null>(null);
   const [creating, setCreating] = useState(false);
@@ -100,14 +110,17 @@ export default function TemplatesPage() {
   const filtered = useMemo(() => {
     const items = data?.items ?? [];
     const q = query.trim().toLowerCase();
-    if (!q) return items;
-    return items.filter(
-      (t) =>
+    return items.filter((t) => {
+      if (sourceFilter === "manual" && !isManualAdminCxTemplate(t.code)) return false;
+      if (sourceFilter === "app" && !isAppNotificationTemplate(t.code)) return false;
+      if (!q) return true;
+      return (
         t.code.toLowerCase().includes(q) ||
         t.title_template.toLowerCase().includes(q) ||
-        t.body_template.toLowerCase().includes(q),
-    );
-  }, [data, query]);
+        t.body_template.toLowerCase().includes(q)
+      );
+    });
+  }, [data, query, sourceFilter]);
 
   return (
     <div className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden bg-slate-50 px-3 pb-3 pt-1 sm:px-5 sm:pt-2 xl:px-6">
@@ -157,6 +170,36 @@ export default function TemplatesPage() {
             <option value="">All roles</option>
             {ROLE_TAGS.map((r) => <option key={r} value={r}>{r}</option>)}
           </select>
+          <div
+            className="inline-flex rounded-lg border border-slate-200 bg-white p-0.5"
+            role="group"
+            aria-label="Filter by template source"
+          >
+            {(
+              [
+                { value: "", label: "All" },
+                { value: "manual", label: "Manual" },
+                { value: "app", label: "App" },
+              ] as const
+            ).map(({ value, label }) => {
+              const active = sourceFilter === value;
+              return (
+                <button
+                  key={value || "all"}
+                  type="button"
+                  onClick={() => setSourceFilter(value)}
+                  className={
+                    "rounded-md px-3 py-1.5 text-sm font-medium transition " +
+                    (active
+                      ? "bg-teal-600 text-white shadow-sm"
+                      : "text-slate-600 hover:bg-slate-50")
+                  }
+                >
+                  {label}
+                </button>
+              );
+            })}
+          </div>
           <div className="ml-auto text-xs text-slate-500">
             {filtered.length} template{filtered.length === 1 ? "" : "s"}
           </div>
@@ -595,8 +638,18 @@ function EditTemplate({
           <div>
             <div className="text-[11px] font-semibold uppercase tracking-wide text-teal-700">Edit template</div>
             <div className="font-mono text-sm text-slate-900">{template.code}</div>
-            <div className="mt-0.5 text-[11px] text-slate-500">
-              {template.role} · {template.category} · v{template.version}
+            <div className="mt-0.5 flex flex-wrap items-center gap-2 text-[11px] text-slate-500">
+              <span>{template.role} · {template.category} · v{template.version}</span>
+              <span
+                className={
+                  "rounded-md border px-1.5 py-0.5 font-medium " +
+                  (templateSourceLabel(template.code) === "Manual"
+                    ? "border-amber-200 bg-amber-50 text-amber-800"
+                    : "border-slate-200 bg-slate-50 text-slate-600")
+                }
+              >
+                {templateSourceLabel(template.code)}
+              </span>
             </div>
           </div>
           <button onClick={onClose} className="rounded-md p-1.5 text-slate-500 hover:bg-slate-100"><X className="h-5 w-5" /></button>
@@ -648,6 +701,7 @@ function EditTemplate({
 }
 
 function CreateTemplate({ onClose, onSaved }: { onClose: () => void; onSaved: () => void }) {
+  const [templateSource, setTemplateSource] = useState<"app" | "manual">("app");
   const [code, setCode] = useState("");
   const [category, setCategory] = useState("marketing");
   const [role, setRole] = useState("customer");
@@ -659,15 +713,37 @@ function CreateTemplate({ onClose, onSaved }: { onClose: () => void; onSaved: ()
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  useEffect(() => {
+    if (templateSource === "manual") {
+      setCategory("operational");
+      setRole("customer");
+    }
+  }, [templateSource]);
+
   const save = async () => {
     setSaving(true);
     setError(null);
     try {
+      const finalCode =
+        templateSource === "manual"
+          ? normalizeManualTemplateCode(code)
+          : code.trim().toUpperCase().replace(/\s+/g, "_");
+
+      if (!finalCode) {
+        throw new Error("Template code is required.");
+      }
+      if (templateSource === "manual" && AUTO_ONLY_ADMIN_CX_CODES.has(finalCode)) {
+        throw new Error("This code is reserved for automatic app notifications.");
+      }
+      if (templateSource === "app" && finalCode.startsWith("ADMIN_CX_")) {
+        throw new Error("ADMIN_CX_ codes are for manual order-page templates. Switch to Manual.");
+      }
+
       const res = await fetch("/api/super-admin/notifications/templates", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          code: code.trim().toUpperCase(),
+          code: finalCode,
           category,
           role,
           channel,
@@ -700,8 +776,71 @@ function CreateTemplate({ onClose, onSaved }: { onClose: () => void; onSaved: ()
           <button onClick={onClose} className="rounded-md p-1.5 text-slate-500 hover:bg-slate-100"><X className="h-5 w-5" /></button>
         </div>
         <div className="flex-1 space-y-4 overflow-y-auto p-6">
-          <Field label="Code (unique)" hint="ALL_CAPS_UNDERSCORE. e.g. FESTIVE_DIWALI_OFFER">
-            <input className="w-full rounded-md border border-slate-200 px-3 py-2 text-sm font-mono outline-none focus:border-teal-600 focus:ring-1 focus:ring-teal-600" value={code} onChange={(e) => setCode(e.target.value)} />
+          <Field
+            label="Template type"
+            hint={
+              templateSource === "manual"
+                ? "Manual templates appear on the order page dropdown for agents to send."
+                : "App templates are sent automatically by the system (orders, wallet, etc.)."
+            }
+          >
+            <div
+              className="inline-flex rounded-lg border border-slate-200 bg-white p-0.5"
+              role="group"
+              aria-label="Template type"
+            >
+              {(
+                [
+                  { value: "app", label: "App (automatic)" },
+                  { value: "manual", label: "Manual (order page)" },
+                ] as const
+              ).map(({ value, label }) => {
+                const active = templateSource === value;
+                return (
+                  <button
+                    key={value}
+                    type="button"
+                    onClick={() => setTemplateSource(value)}
+                    className={
+                      "rounded-md px-3 py-1.5 text-sm font-medium transition " +
+                      (active
+                        ? "bg-teal-600 text-white shadow-sm"
+                        : "text-slate-600 hover:bg-slate-50")
+                    }
+                  >
+                    {label}
+                  </button>
+                );
+              })}
+            </div>
+          </Field>
+          <Field
+            label="Code (unique)"
+            hint={
+              templateSource === "manual"
+                ? "Uses ADMIN_CX_ prefix. e.g. POST_PICKUP_CUSTOM_DELAY → ADMIN_CX_POST_PICKUP_CUSTOM_DELAY"
+                : "ALL_CAPS_UNDERSCORE. e.g. FESTIVE_DIWALI_OFFER"
+            }
+          >
+            {templateSource === "manual" ? (
+              <div className="flex overflow-hidden rounded-md border border-slate-200 focus-within:border-teal-600 focus-within:ring-1 focus-within:ring-teal-600">
+                <span className="shrink-0 border-r border-slate-200 bg-slate-50 px-3 py-2 font-mono text-xs text-slate-500">
+                  ADMIN_CX_
+                </span>
+                <input
+                  className="min-w-0 flex-1 px-3 py-2 text-sm font-mono outline-none"
+                  value={code.replace(/^ADMIN_CX_/i, "")}
+                  onChange={(e) => setCode(e.target.value.toUpperCase().replace(/\s+/g, "_"))}
+                  placeholder="POST_PICKUP_EXAMPLE"
+                />
+              </div>
+            ) : (
+              <input
+                className="w-full rounded-md border border-slate-200 px-3 py-2 text-sm font-mono outline-none focus:border-teal-600 focus:ring-1 focus:ring-teal-600"
+                value={code}
+                onChange={(e) => setCode(e.target.value)}
+              />
+            )}
           </Field>
           <div className="grid grid-cols-3 gap-3">
             <Field label="Category">

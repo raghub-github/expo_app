@@ -6,6 +6,7 @@ import {
   PARTNER_CROSS_TAB_LOGOUT_KEY,
   partnerLogoutLocal,
 } from "@/lib/auth/partner-logout";
+import { clearPushSessionDismissed } from "@/lib/browser-push/partner-push-state";
 
 interface MerchantSessionUser {
   id: string;
@@ -117,6 +118,7 @@ export function MerchantSessionProvider({ children }: { children: React.ReactNod
     const onStorage = (e: StorageEvent) => {
       if (e.key !== PARTNER_CROSS_TAB_LOGOUT_KEY || e.newValue == null) return;
       clearPartnerStoreSelection();
+      clearPushSessionDismissed();
       setUser(null);
       setSessionStatus(null);
       setParent(null);

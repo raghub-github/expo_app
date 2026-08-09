@@ -119,7 +119,7 @@ const MXLayoutWhiteStandalone: React.FC<MXLayoutWhiteProps> = ({
         )}
         <div
           className={`flex flex-1 min-h-0 overflow-hidden relative ${
-            !isRight ? "pt-14" : ""
+            !isRight ? "pt-[var(--mx-partner-topbar-h,3.5rem)]" : ""
           }`}
         >
           <MXSidebarWhite
