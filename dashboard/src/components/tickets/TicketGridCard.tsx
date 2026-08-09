@@ -6,6 +6,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { AlertCircle } from "lucide-react";
 import { Ticket } from "@/hooks/tickets/useTickets";
 import { prefetchTicketDetail } from "@/hooks/tickets/useTicketDetail";
+import { useTicketsNavPendingOptional } from "@/context/TicketsNavPendingContext";
 import { buildTicketDetailHref } from "@/lib/tickets/ticket-path-utils";
 import { formatTicketDisplaySubject } from "@/lib/tickets/ticket-display-subject";
 import { InlineSearchableSelect, type Option } from "./InlineSearchableSelect";
@@ -105,9 +106,13 @@ export function TicketGridCard({
   const detailLink = detailHref ?? buildTicketDetailHref(ticket.id, "");
   const displaySubject = formatTicketDisplaySubject(ticket);
   const queryClient = useQueryClient();
+  const ticketsNavPending = useTicketsNavPendingOptional();
   const prefetchThisTicket = useCallback(() => {
     prefetchTicketDetail(queryClient, ticket.id);
   }, [queryClient, ticket.id]);
+  const beginDetailNav = useCallback(() => {
+    ticketsNavPending?.beginDetailNav(ticket.id);
+  }, [ticketsNavPending, ticket.id]);
 
   const isResolvedOrClosed = ["closed", "resolved"].includes(ticket.status);
   const isSlaBreached =
@@ -192,6 +197,7 @@ export function TicketGridCard({
           <Link
             href={detailLink}
             scroll={false}
+            onClick={beginDetailNav}
             className="shrink-0 w-7 h-7 rounded-[9px] bg-[#121212] flex items-center justify-center text-white text-[11px] font-semibold leading-none tickets-num shadow-sm group-hover/card:scale-[1.02] transition-transform"
             aria-label={`Open ticket ${ticket.ticketNumber}${sourceLabel ? ` (${sourceLabel})` : ""}`}
           >
@@ -240,6 +246,7 @@ export function TicketGridCard({
         <Link
           href={detailLink}
           scroll={false}
+          onClick={beginDetailNav}
           className="group/title inline-flex w-fit max-w-full min-w-0 text-left rounded-sm px-0.5 -mx-0.5 transition-colors duration-150 hover:bg-blue-50/80"
         >
           <TicketMixedText className="font-medium text-[#121212] group-hover/title:text-blue-700 transition-colors duration-150 text-[12px] leading-snug line-clamp-2 [overflow-wrap:anywhere]">

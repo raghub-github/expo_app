@@ -2,25 +2,55 @@ const DISMISS_KEY = "partner_browser_push_modal_dismissed_permanently";
 const SOFT_DISMISS_KEY = "partner_browser_push_modal_dismissed_at";
 const REGISTERED_KEY = "partner_browser_push_token_ok";
 const PENDING_KEY = "partner_browser_push_registration_pending";
-const SOFT_DISMISS_COOLDOWN_MS = 7 * 24 * 60 * 60 * 1000;
 
-/** Cleared on full page reload / new tab — survives in-app client navigation. */
+/** Tab session — survives refresh & in-app navigation; cleared on logout / new login entry. */
+const SESSION_DISMISS_USER_KEY = "partner_browser_push_modal_session_dismissed_user";
+
+/** In-memory fast path (same document lifecycle). */
 let pushModalSessionDismissed = false;
 
-export function isPushSessionDismissed(): boolean {
-  return pushModalSessionDismissed;
+/**
+ * True when the merchant dismissed the push modal for this login session.
+ * Scoped to userId when provided so account switches are handled correctly.
+ */
+export function isPushSessionDismissed(userId?: string | null): boolean {
+  if (pushModalSessionDismissed) return true;
+  if (typeof window === "undefined") return false;
+  try {
+    const stored = sessionStorage.getItem(SESSION_DISMISS_USER_KEY);
+    if (!stored) return false;
+    if (userId) return stored === userId;
+    return stored.length > 0;
+  } catch {
+    return false;
+  }
 }
 
-export function markPushSessionDismissed() {
+/** Persist skip for the current authenticated session (Not Now / close). */
+export function markPushSessionDismissed(userId?: string | null) {
   pushModalSessionDismissed = true;
+  if (typeof window === "undefined") return;
+  try {
+    sessionStorage.setItem(SESSION_DISMISS_USER_KEY, userId?.trim() || "1");
+  } catch {
+    /* ignore */
+  }
 }
 
+/** Call on logout and when starting a fresh login flow. */
 export function clearPushSessionDismissed() {
   pushModalSessionDismissed = false;
+  if (typeof window === "undefined") return;
+  try {
+    sessionStorage.removeItem(SESSION_DISMISS_USER_KEY);
+  } catch {
+    /* ignore */
+  }
 }
 
+/** @deprecated Legacy permanent flag — no longer used for modal skip. */
 export function isPushPermanentlyDismissed(): boolean {
-  if (typeof window === "undefined") return true;
+  if (typeof window === "undefined") return false;
   try {
     return localStorage.getItem(DISMISS_KEY) === "1";
   } catch {
@@ -28,40 +58,29 @@ export function isPushPermanentlyDismissed(): boolean {
   }
 }
 
+/** @deprecated Legacy soft dismiss — use markPushSessionDismissed instead. */
 export function isPushSoftDismissedRecently(): boolean {
-  if (typeof window === "undefined") return true;
-  try {
-    const raw = localStorage.getItem(SOFT_DISMISS_KEY);
-    if (!raw) return false;
-    const ts = Number(raw);
-    if (!Number.isFinite(ts)) return false;
-    return Date.now() - ts < SOFT_DISMISS_COOLDOWN_MS;
-  } catch {
-    return false;
-  }
+  return isPushSessionDismissed();
 }
 
-export function markPushSoftDismissed() {
-  markPushSessionDismissed();
+/** Not Now / skip — session only, not localStorage. */
+export function markPushSoftDismissed(userId?: string | null) {
+  markPushSessionDismissed(userId);
 }
 
-export function markPushPermanentlyDismissed() {
-  markPushSessionDismissed();
-  try {
-    localStorage.setItem(DISMISS_KEY, "1");
-  } catch {
-    /* ignore */
-  }
+/** @deprecated Use markPushSessionDismissed — no permanent skip. */
+export function markPushPermanentlyDismissed(userId?: string | null) {
+  markPushSessionDismissed(userId);
 }
 
 export function clearPushDismissFlags() {
+  clearPushSessionDismissed();
   try {
     localStorage.removeItem(DISMISS_KEY);
     localStorage.removeItem(SOFT_DISMISS_KEY);
   } catch {
     /* ignore */
   }
-  clearPushSessionDismissed();
 }
 
 export function markPushRegistered() {

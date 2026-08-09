@@ -9,11 +9,15 @@ import {
   registerBrowserPushToken,
 } from "@/lib/browser-push/firebase-web";
 import {
-  isPushPermanentlyDismissed,
-  isPushRegistered,
   isPushSessionDismissed,
   markPushRegistered,
+  markPushRegistrationPending,
 } from "@/lib/browser-push/partner-push-state";
+import {
+  getPartnerPushStatus,
+  invalidatePartnerPushBackendCache,
+  type PartnerPushStatus,
+} from "@/lib/browser-push/partner-push-status";
 import { PARTNER_SELECTED_STORE_CHANGED } from "@/lib/partner-selected-store";
 import { PartnerBrowserPushPermissionModal } from "@/components/PartnerBrowserPushPermissionModal";
 import { useMerchantSession } from "@/context/MerchantSessionContext";
@@ -39,39 +43,61 @@ export function PartnerBrowserPushBootstrap() {
   const session = useMerchantSession();
   const registerAttemptRef = useRef(false);
   const [modalMode, setModalMode] = useState<ModalMode | null>(null);
+  const [pushStatus, setPushStatus] = useState<PartnerPushStatus | null>(null);
 
   const onDashboard = isPartnerDashboardPath(pathname);
   const ready = !!session && !session.isLoading;
   const authenticated = !!session?.isAuthenticated;
+  const merchantUserId = session?.user?.id ?? null;
 
   const tryRegister = useCallback(async (): Promise<boolean> => {
     if (typeof window === "undefined" || !("Notification" in window)) return false;
     if (Notification.permission !== "granted") return false;
 
+    markPushRegistrationPending();
     const token = await registerBrowserPushToken("merchant", { retries: 4 });
-    if (!token) return false;
+    if (!token) {
+      invalidatePartnerPushBackendCache();
+      const snap = await getPartnerPushStatus();
+      setPushStatus(snap.status);
+      return false;
+    }
 
+    invalidatePartnerPushBackendCache();
     markPushRegistered();
     setModalMode(null);
+    const snap = await getPartnerPushStatus();
+    setPushStatus(snap.status);
     return true;
   }, []);
 
   const evaluateModalState = useCallback(async () => {
     if (typeof window === "undefined" || !("Notification" in window)) return;
-    if (isPushSessionDismissed()) return;
+    if (isPushSessionDismissed(merchantUserId)) return;
 
-    if (Notification.permission === "granted") {
+    const snap = await getPartnerPushStatus();
+    setPushStatus(snap.status);
+
+    if (snap.status === "enabled") {
+      setModalMode(null);
+      return;
+    }
+
+    if (snap.status === "denied") {
+      setModalMode("permission");
+      return;
+    }
+
+    if (snap.status === "granted" || snap.status === "registration_failed") {
       const ok = await tryRegister();
       if (ok) return;
-      if (isPushSessionDismissed()) return;
-
+      if (isPushSessionDismissed(merchantUserId)) return;
       setModalMode("registration");
       return;
     }
 
-    if (isPushPermanentlyDismissed()) return;
     setModalMode("permission");
-  }, [tryRegister]);
+  }, [merchantUserId, tryRegister]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -92,14 +118,15 @@ export function PartnerBrowserPushBootstrap() {
 
     const onStoreChange = () => {
       if (Notification.permission !== "granted") return;
+      invalidatePartnerPushBackendCache();
       void tryRegister();
     };
     window.addEventListener(PARTNER_SELECTED_STORE_CHANGED, onStoreChange);
 
     const onFocus = () => {
       if (Notification.permission !== "granted") return;
-      if (isPushRegistered()) return;
-      if (isPushSessionDismissed()) return;
+      if (isPushSessionDismissed(merchantUserId)) return;
+      invalidatePartnerPushBackendCache();
       void evaluateModalState();
     };
     window.addEventListener("focus", onFocus);
@@ -148,7 +175,7 @@ export function PartnerBrowserPushBootstrap() {
       document.removeEventListener("visibilitychange", onFocus);
       unsub();
     };
-  }, [onDashboard, ready, authenticated, evaluateModalState, tryRegister]);
+  }, [onDashboard, ready, authenticated, merchantUserId, evaluateModalState, tryRegister]);
 
   if (!onDashboard || !ready || !authenticated || !modalMode) {
     return null;
@@ -157,9 +184,13 @@ export function PartnerBrowserPushBootstrap() {
   return (
     <PartnerBrowserPushPermissionModal
       mode={modalMode}
+      pushStatus={pushStatus}
+      merchantUserId={merchantUserId}
       onClose={() => setModalMode(null)}
       onRegistered={() => {
         markPushRegistered();
+        invalidatePartnerPushBackendCache();
+        setPushStatus("enabled");
         setModalMode(null);
       }}
     />

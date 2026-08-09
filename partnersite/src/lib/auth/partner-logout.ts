@@ -1,4 +1,5 @@
 import { clearPartnerStoreSelection } from "@/lib/partner-selected-store";
+import { clearPushSessionDismissed } from "@/lib/browser-push/partner-push-state";
 
 /** localStorage key — other tabs listen via `storage` and redirect to login. */
 export const PARTNER_CROSS_TAB_LOGOUT_KEY = "partner_auth_logged_out_at";
@@ -20,6 +21,12 @@ export async function partnerLogoutLocal(options?: {
     } catch {
       /* ignore */
     }
+  }
+
+  try {
+    clearPushSessionDismissed();
+  } catch {
+    /* ignore */
   }
 
   try {

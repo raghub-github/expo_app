@@ -1,8 +1,10 @@
 "use client";
-import { useAppParams } from "@/hooks/useAppSearchParams";
+import { useAppParams, useAppPathname } from "@/hooks/useAppSearchParams";
 
 import { useEffect } from "react";
 
+import { TicketsNavPendingProvider, useTicketsNavPending } from "@/context/TicketsNavPendingContext";
+import { ticketsPathTicketId } from "@/lib/tickets/ticket-path-utils";
 import { TicketDashboardClient } from "./TicketDashboardClient";
 import { TicketDetailLoader } from "./ticket-view/TicketDetailLoader";
 
@@ -12,8 +14,19 @@ import { TicketDetailLoader } from "./ticket-view/TicketDetailLoader";
  * and reset scroll/state). The list stays mounted (hidden) while a ticket is open.
  */
 export function TicketsWorkspaceClient() {
+  return (
+    <TicketsNavPendingProvider>
+      <TicketsWorkspaceClientInner />
+    </TicketsNavPendingProvider>
+  );
+}
+
+function TicketsWorkspaceClientInner() {
   const params = useAppParams();
+  const pathname = useAppPathname();
+  const { pendingTicketId } = useTicketsNavPending();
   const slug = (params?.slug as string[] | undefined) ?? [];
+  const cleanPath = pathname.split("?")[0].split("#")[0];
 
   // Strict: the Tickets workspace should never scroll the main window.
   // Only inner panes should scroll.
@@ -48,20 +61,22 @@ export function TicketsWorkspaceClient() {
     );
   }
 
-  const rawSegment = slug.length === 1 ? slug[0].trim() : "";
-  const showDetail = rawSegment !== "";
+  const slugSegment = slug.length === 1 ? slug[0].trim() : "";
+  const pathTicketId = ticketsPathTicketId(cleanPath);
+  const resolvedTicketId =
+    pathTicketId ?? (slugSegment !== "" ? slugSegment : null) ?? pendingTicketId;
+  const showDetail = Boolean(resolvedTicketId?.trim());
 
   return (
     <div className="flex h-full min-h-0 flex-1 flex-col overflow-hidden tickets-typo">
       <div className={showDetail ? "hidden" : "flex min-h-0 flex-1 flex-col"} aria-hidden={showDetail}>
         <TicketDashboardClient />
       </div>
-      {showDetail ? (
+      {showDetail && resolvedTicketId ? (
         <div className="flex min-h-0 flex-1 flex-col">
-          <TicketDetailLoader ticketId={rawSegment} />
+          <TicketDetailLoader ticketId={resolvedTicketId} />
         </div>
       ) : null}
     </div>
   );
 }
-

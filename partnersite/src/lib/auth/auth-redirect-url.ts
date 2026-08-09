@@ -2,6 +2,30 @@ import { getPartnerSiteBaseUrl } from "@/lib/legal/partner-site-url";
 import { normalizeAuthRedirect } from "@/lib/auth/normalize-auth-redirect";
 
 const PRODUCTION_PARTNER_HOST = "partner.gatimitra.com";
+const PRODUCTION_PARTNER_ORIGIN = "https://partner.gatimitra.com";
+const APEX_GATIMITRA_HOSTS = new Set(["gatimitra.com", "www.gatimitra.com"]);
+
+function isLocalDevHost(hostname: string): boolean {
+  return (
+    hostname === "localhost" ||
+    hostname === "127.0.0.1" ||
+    hostname === "0.0.0.0" ||
+    hostname === "[::]"
+  );
+}
+
+function mapToPartnerOrigin(hostname: string, origin: string): string {
+  if (hostname === PRODUCTION_PARTNER_HOST || hostname.endsWith(".gatimitra.com")) {
+    return sanitizeAuthOrigin(origin);
+  }
+  if (APEX_GATIMITRA_HOSTS.has(hostname)) {
+    return PRODUCTION_PARTNER_ORIGIN;
+  }
+  if (isLocalDevHost(hostname)) {
+    return sanitizeAuthOrigin(origin);
+  }
+  return sanitizeAuthOrigin(origin);
+}
 
 function sanitizeAuthOrigin(raw: string): string {
   try {
@@ -32,18 +56,23 @@ function originFromEnv(): string | null {
 export function getPartnerAuthRedirectBaseUrl(): string {
   if (typeof window !== "undefined") {
     const { origin, hostname } = window.location;
-    if (hostname === PRODUCTION_PARTNER_HOST || hostname.endsWith(".gatimitra.com")) {
-      return sanitizeAuthOrigin(origin);
-    }
-    if (hostname === "localhost" || hostname === "127.0.0.1") {
-      return sanitizeAuthOrigin(origin);
-    }
-    const envOrigin = originFromEnv();
-    if (envOrigin) return envOrigin;
-    return sanitizeAuthOrigin(origin);
+    return mapToPartnerOrigin(hostname, origin);
   }
 
   const envOrigin = originFromEnv();
+  if (envOrigin) {
+    try {
+      const host = new URL(envOrigin).hostname;
+      if (isLocalDevHost(host)) return envOrigin;
+    } catch {
+      /* fall through */
+    }
+  }
+
+  if (process.env.NODE_ENV === "production") {
+    return PRODUCTION_PARTNER_ORIGIN;
+  }
+
   if (envOrigin) return envOrigin;
   return getPartnerSiteBaseUrl();
 }
@@ -94,13 +123,33 @@ export function getPartnerAuthRedirectOriginFromRequest(requestUrl: string, head
   const forwardedHost = headers.get("x-forwarded-host")?.split(",")[0]?.trim();
   const forwardedProto = headers.get("x-forwarded-proto")?.split(",")[0]?.trim() || "https";
   if (forwardedHost) {
+    if (APEX_GATIMITRA_HOSTS.has(forwardedHost) || forwardedHost === PRODUCTION_PARTNER_HOST) {
+      return PRODUCTION_PARTNER_ORIGIN;
+    }
     return sanitizeAuthOrigin(`${forwardedProto}://${forwardedHost}`);
+  }
+
+  try {
+    const { hostname, origin } = new URL(requestUrl);
+    if (process.env.NODE_ENV === "production" && !isLocalDevHost(hostname)) {
+      if (APEX_GATIMITRA_HOSTS.has(hostname) || hostname === PRODUCTION_PARTNER_HOST) {
+        return PRODUCTION_PARTNER_ORIGIN;
+      }
+    }
+    return mapToPartnerOrigin(hostname, origin);
+  } catch {
+    /* fall through */
   }
 
   const envOrigin = originFromEnv();
   if (envOrigin && process.env.NODE_ENV === "production") {
-    return envOrigin;
+    try {
+      const host = new URL(envOrigin).hostname;
+      if (!isLocalDevHost(host)) return PRODUCTION_PARTNER_ORIGIN;
+    } catch {
+      return PRODUCTION_PARTNER_ORIGIN;
+    }
   }
 
-  return sanitizeAuthOrigin(new URL(requestUrl).origin);
+  return getPartnerSiteBaseUrl();
 }

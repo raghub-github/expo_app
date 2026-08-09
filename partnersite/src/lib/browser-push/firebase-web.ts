@@ -234,6 +234,12 @@ async function registerBrowserPushTokenOnce(_userId: string): Promise<string | n
   }
 
   console.info("[browser-push] partnersite FCM token registered");
+  try {
+    const { invalidatePartnerPushBackendCache } = await import("@/lib/browser-push/partner-push-status");
+    invalidatePartnerPushBackendCache();
+  } catch {
+    /* ignore */
+  }
   return token;
 }
 

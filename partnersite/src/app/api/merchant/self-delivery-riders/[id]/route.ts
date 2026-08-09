@@ -66,9 +66,24 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
     if (!existing) return NextResponse.json({ error: 'Rider not found' }, { status: 404 });
 
     const hasActive = await riderHasActiveOrders(db, riderId);
-    if (hasActive) {
+    const statusOnlyUpdate =
+      body.is_active !== undefined &&
+      body.rider_name === undefined &&
+      body.rider_mobile === undefined &&
+      body.rider_email === undefined &&
+      body.vehicle_number === undefined &&
+      body.is_primary === undefined;
+
+    if (hasActive && !statusOnlyUpdate) {
       return NextResponse.json(
         { error: 'Cannot edit rider while they have an active order', code: 'RIDER_HAS_ACTIVE_ORDER' },
+        { status: 403 }
+      );
+    }
+
+    if (hasActive && body.is_active === false) {
+      return NextResponse.json(
+        { error: 'Cannot deactivate rider while they have an active order', code: 'RIDER_HAS_ACTIVE_ORDER' },
         { status: 403 }
       );
     }
@@ -77,7 +92,10 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
     if (body.rider_name !== undefined) payload.rider_name = String(body.rider_name).trim();
     if (body.rider_mobile !== undefined) payload.rider_mobile = String(body.rider_mobile).trim();
     if (body.rider_email !== undefined) payload.rider_email = body.rider_email?.trim() || null;
-    if (body.vehicle_number !== undefined) payload.vehicle_number = body.vehicle_number?.trim() || null;
+    if (body.vehicle_number !== undefined) {
+      const v = body.vehicle_number?.trim();
+      payload.vehicle_number = v ? v.toUpperCase() : null;
+    }
     if (body.is_primary !== undefined) payload.is_primary = !!body.is_primary;
     if (body.is_active !== undefined) payload.is_active = !!body.is_active;
 

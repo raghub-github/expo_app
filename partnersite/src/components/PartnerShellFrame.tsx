@@ -95,7 +95,7 @@ export function PartnerShellFrame({ children }: { children: React.ReactNode }) {
         <div className="flex flex-col bg-white h-dvh min-h-0 overflow-hidden">
           <Suspense fallback={null}>{topBar}</Suspense>
           <div
-            className={`flex flex-1 min-h-0 overflow-hidden relative ${!isRight ? 'pt-14' : ''}`}
+            className={`flex flex-1 min-h-0 overflow-hidden relative ${!isRight ? 'pt-[var(--mx-partner-topbar-h,3.5rem)]' : ''}`}
           >
             <Suspense fallback={null}>
               <MXSidebarWhite

@@ -35,7 +35,12 @@ export async function signInWithGoogle(redirectTo?: string): Promise<AuthRespons
       return { success: false, error: "Must be called from the client" };
     }
     const supabase = createClient();
-    const redirectUrl = redirectTo || getPartnerOAuthCallbackUrl();
+    // Always use the canonical partner callback — Supabase falls back to Site URL
+    // (often gatimitra.com) when redirectTo is missing or not whitelisted.
+    const redirectUrl = redirectTo?.trim() || getPartnerOAuthCallbackUrl();
+    if (process.env.NODE_ENV !== "production") {
+      console.info("[auth] OAuth redirectTo:", redirectUrl);
+    }
     if (typeof window !== "undefined") {
       const existing = sessionStorage.getItem("auth_redirect");
       if (!existing) sessionStorage.setItem("auth_redirect", "/partners/all-stores");

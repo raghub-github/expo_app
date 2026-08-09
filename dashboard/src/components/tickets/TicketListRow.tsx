@@ -7,6 +7,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { AlertCircle, FolderGit2, ChevronDown, X, Search } from "lucide-react";
 import { Ticket } from "@/hooks/tickets/useTickets";
 import { prefetchTicketDetail } from "@/hooks/tickets/useTicketDetail";
+import { useTicketsNavPendingOptional } from "@/context/TicketsNavPendingContext";
 import { buildTicketDetailHref } from "@/lib/tickets/ticket-path-utils";
 import { formatTicketDisplaySubject } from "@/lib/tickets/ticket-display-subject";
 import { InlineSearchableSelect, type Option } from "./InlineSearchableSelect";
@@ -147,9 +148,13 @@ export const TicketListRow = React.memo(function TicketListRow({
   const groupAgentRef = useRef<HTMLDivElement>(null);
   const groupAgentMenuPortalRef = useRef<HTMLDivElement>(null);
   const queryClient = useQueryClient();
+  const ticketsNavPending = useTicketsNavPendingOptional();
   const prefetchThisTicket = useCallback(() => {
     prefetchTicketDetail(queryClient, ticket.id);
   }, [queryClient, ticket.id]);
+  const beginDetailNav = useCallback(() => {
+    ticketsNavPending?.beginDetailNav(ticket.id);
+  }, [ticketsNavPending, ticket.id]);
 
   useEffect(() => {
     setGroupAgentOpen(false);
@@ -457,6 +462,8 @@ export const TicketListRow = React.memo(function TicketListRow({
       <Link
         href={detailLink}
         scroll={false}
+        onClick={beginDetailNav}
+        onMouseEnter={prefetchThisTicket}
         className="shrink-0 w-8 h-8 rounded-[10px] bg-[#121212] flex items-center justify-center text-white text-xs font-semibold leading-none tickets-num shadow-sm hover:bg-black hover:scale-[1.02] transition-all"
         aria-label={`Open ticket ${ticket.ticketNumber}${sourceLabel ? ` (${sourceLabel})` : ""}`}
         title={sourceLabel ? `Type: ${sourceLabel}` : undefined}
@@ -506,6 +513,8 @@ export const TicketListRow = React.memo(function TicketListRow({
         <Link
           href={detailLink}
           scroll={false}
+          onClick={beginDetailNav}
+          onMouseEnter={prefetchThisTicket}
           // Only the subject + ticket id text should be clickable.
           // Avoid `w-full` here because it makes the whole row width clickable (including blank space).
           className="group/title inline-flex w-fit max-w-full min-w-0 text-left rounded-sm px-0.5 -mx-0.5 transition-colors duration-150 hover:bg-blue-50/80"

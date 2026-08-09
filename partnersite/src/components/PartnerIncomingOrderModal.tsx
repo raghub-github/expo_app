@@ -28,6 +28,7 @@ import {
 } from '@/lib/partner-device-order-alerts';
 import { resolvePartnerPipeline } from '@/lib/partner-orders-unify';
 import { fetchPartnerPendingNewOrdersCount, invalidatePartnerPendingCountCache } from '@/lib/partner-pending-count-fetch';
+import { requestPartnerAcceptanceTimeoutSync } from '@/lib/partner-acceptance-timeout-sync-client';
 import {
   hasShownPartnerOrderActionToast,
   markPartnerOrderActionToastShown,
@@ -1252,14 +1253,7 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
       const fallbackDeadline = new Date(open.created_at).getTime() + acceptWindowMs;
       const deadline = Number.isFinite(snapDeadline) ? snapDeadline : fallbackDeadline;
       if (Number.isFinite(deadline) && Date.now() >= deadline) {
-        try {
-          await fetch(
-            `/api/merchant/sync-acceptance-timeout?store_id=${encodeURIComponent(storeId)}`,
-            { method: 'POST', credentials: 'include', cache: 'no-store' }
-          );
-        } catch {
-          /* backend cron owns cancel */
-        }
+        void requestPartnerAcceptanceTimeoutSync(storeId);
       }
 
       const full = await fetchByCoreId(syncCoreId);

@@ -112,12 +112,13 @@ export async function POST(req: NextRequest) {
     const storeInternalId = await resolveStoreInternalId(db, storeId);
     if (storeInternalId === null) return NextResponse.json({ error: 'Store not found' }, { status: 404 });
 
+    const vehicleRaw = body.vehicle_number?.trim();
     const payload: Record<string, unknown> = {
       store_id: storeInternalId,
       rider_name,
       rider_mobile,
       rider_email: body.rider_email?.trim() || null,
-      vehicle_number: body.vehicle_number?.trim() || null,
+      vehicle_number: vehicleRaw ? vehicleRaw.toUpperCase() : null,
       is_primary: false,
       is_active: true,
       updated_at: new Date().toISOString(),

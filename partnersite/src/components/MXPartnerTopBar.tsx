@@ -1290,6 +1290,7 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
     return () => window.clearTimeout(t);
   }, [
     partnerShellHeader?.header.title,
+    partnerShellHeader?.header.breadcrumbs,
     headerTitle,
   ]);
 
@@ -3118,7 +3119,7 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
       />
       <header
         ref={(n) => { topbarRef.current = n; }}
-        className="fixed top-0 left-0 right-0 z-[1000] flex h-14 w-full shrink-0 border-b border-[#e8e8e8] bg-white"
+        className="fixed top-0 left-0 right-0 z-[1000] flex min-h-14 w-full shrink-0 border-b border-[#e8e8e8] bg-white py-1"
       >
         {/* Left: logo — contained so artwork cannot overlap the title column */}
         <div
