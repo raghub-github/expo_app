@@ -6,6 +6,7 @@ import Link from 'next/link'
 import { useSearchParams, usePathname } from 'next/navigation'
 import { MXLayoutWhite } from '@/components/MXLayoutWhite'
 import { PartnerPageHeader } from '@/context/PartnerShellHeaderContext'
+import { PARTNER_PAGE_HEADERS } from '@/lib/partner-page-headers'
 import { Restaurant } from '@/lib/types'
 import { usePartnerStoreRecord } from '@/hooks/usePartnerStoreRecord'
 import { DEMO_RESTAURANT_ID } from '@/lib/constants'
@@ -838,7 +839,7 @@ function PaymentsContent() {
   return (
     <>
       <MXLayoutWhite restaurantName={displayName} restaurantId={storeId || DEMO_RESTAURANT_ID}>
-        <PartnerPageHeader title="Payments & Ledger" subtitle="Wallet balance and full transaction history" />
+        <PartnerPageHeader {...PARTNER_PAGE_HEADERS.payments} />
         <div className="mx-payments-page flex flex-1 flex-col min-h-0 h-0 w-full bg-[#f8fafc]">
           <div className="flex-1 min-h-0 h-0 overflow-y-auto overflow-x-hidden overscroll-contain hide-scrollbar bg-[#f8fafc]">
           <div className="bg-white">

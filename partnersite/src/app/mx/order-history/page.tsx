@@ -16,6 +16,7 @@ import {
 } from 'lucide-react';
 import { MXLayoutWhite } from '@/components/MXLayoutWhite';
 import { PartnerPageHeader } from '@/context/PartnerShellHeaderContext';
+import { PARTNER_PAGE_HEADERS } from '@/lib/partner-page-headers';
 import { PageSkeletonOrders } from '@/components/PageSkeleton';
 import { MerchantStore } from '@/lib/merchantStore';
 import { isValidPartnerStoreId } from '@/lib/partner-store-id-shared';
@@ -603,7 +604,7 @@ function OrderHistoryInner() {
 
   return (
     <MXLayoutWhite restaurantName={store?.store_name} restaurantId={storeId || ''}>
-      <PartnerPageHeader title="Order History" subtitle={store?.store_name || undefined} />
+      <PartnerPageHeader {...PARTNER_PAGE_HEADERS.orderHistory} />
       <div className="flex flex-col h-full min-h-0 bg-gray-50 overflow-hidden">
         <header className="mx-shell-header sticky top-0 z-30 !px-3 sm:!px-4 lg:!px-6">
           <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between w-full min-w-0">
@@ -860,7 +861,7 @@ function OrderHistoryInner() {
           document.body
         )}
 
-        <div className="flex flex-1 min-h-0 flex-col lg:flex-row overflow-hidden">
+        <div className="flex flex-1 min-h-0 flex-col lg:flex-row overflow-hidden bg-white">
           <aside className="w-full lg:w-[380px] shrink-0 border-b lg:border-b-0 lg:border-r border-gray-200 bg-white flex flex-col min-h-0 max-h-[45vh] lg:max-h-none">
             <div className="flex-1 overflow-y-auto min-h-0 p-2 space-y-2 hide-scrollbar">
               {loading && (
@@ -918,9 +919,9 @@ function OrderHistoryInner() {
             </div>
           </aside>
 
-          <main className="flex-1 min-w-0 flex flex-col min-h-0 overflow-hidden bg-gray-50/80">
+          <main className="flex-1 min-w-0 flex flex-col min-h-0 overflow-hidden bg-gray-50">
             {!selected || !selectedOrderPricing ? (
-              <div className="flex-1 flex flex-col items-center justify-center text-gray-500 text-sm gap-2 min-h-[280px] p-4">
+              <div className="flex-1 flex flex-col items-center justify-center text-gray-500 text-sm gap-2 p-4">
                 <span className="text-4xl opacity-40" aria-hidden>
                   🍽
                 </span>
@@ -929,9 +930,9 @@ function OrderHistoryInner() {
                   : 'Select an order to view details'}
               </div>
             ) : (
-              <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden p-3 sm:p-4 hide-scrollbar">
+              <div className="flex flex-1 min-h-0 flex-col overflow-hidden">
               <OrderPanel
-                className="w-full max-w-none min-h-[min(520px,calc(100dvh-12rem))] max-h-none"
+                className="w-full h-full min-h-0 flex-1 max-w-none max-h-none rounded-none border-0 shadow-none"
                 panelMode="history"
                 order={selected}
                 pricing={selectedOrderPricing}

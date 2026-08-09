@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, useCallback, useMemo } from "react";
 import { useRouter } from "next/navigation";
-import { X, Loader2, ChevronRight, ChevronLeft, CheckCircle2, Headphones } from "lucide-react";
+import { X, Loader2, ChevronRight, ChevronLeft, CheckCircle2, Headphones, Search } from "lucide-react";
 import { useMerchantSession, type MerchantSessionContextValue } from "@/context/MerchantSessionContext";
 import {
   MX_OPEN_NEED_HELP_EVENT,
@@ -20,7 +20,7 @@ const SESSION_OUTSIDE_PROVIDER: MerchantSessionContextValue = {
   refetch: () => {},
 };
 
-const badgeColor = "#2ecc9b";
+const ORDER_PICK_PAGE_SIZE = 5;
 const HELP_SECTIONS_CACHE_KEY = "mx_help_sections_cache_v1";
 const HELP_SECTIONS_CACHE_TTL_MS = 1000 * 60 * 60 * 12; // 12h
 
@@ -35,9 +35,25 @@ type HelpSection = {
   help_hub_icon: string | null;
 };
 
-type SheetStep = "topics" | "options" | "compose" | "success";
+type SheetStep = "topics" | "options" | "orderPick" | "compose" | "success";
 
 type CreatedTicketSummary = { id: number; ticket_id: string };
+
+type PendingTicketDraft = {
+  ticketTitleId: number;
+  subject: string;
+  description: string;
+};
+
+type OrderPickRow = {
+  id: number;
+  order_id: number;
+  formatted_order_id?: string | null;
+  customer_name?: string | null;
+  order_status?: string | null;
+  created_at: string;
+  grand_total?: number | string | null;
+};
 
 function readSelectedStoreId(): string {
   if (typeof window === "undefined") return "";
@@ -62,6 +78,14 @@ const NeedHelpBadge: React.FC<{
   const [message, setMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
   const [createdTicket, setCreatedTicket] = useState<CreatedTicketSummary | null>(null);
   const [orderHelpContext, setOrderHelpContext] = useState<MxNeedHelpOpenDetail | null>(null);
+  const [pendingTicket, setPendingTicket] = useState<PendingTicketDraft | null>(null);
+  const [orderPickRows, setOrderPickRows] = useState<OrderPickRow[]>([]);
+  const [orderPickSearch, setOrderPickSearch] = useState("");
+  const [orderPickVisibleCount, setOrderPickVisibleCount] = useState(ORDER_PICK_PAGE_SIZE);
+  const [loadingOrders, setLoadingOrders] = useState(false);
+  const [ordersError, setOrdersError] = useState<string | null>(null);
+
+  const selectedStoreId = readSelectedStoreId();
 
   const readCachedSections = useCallback((): HelpSection[] | null => {
     if (typeof window === "undefined") return null;
@@ -158,6 +182,11 @@ const NeedHelpBadge: React.FC<{
     setSelectedTopic(null);
     setMessage(null);
     setCreatedTicket(null);
+    setPendingTicket(null);
+    setOrderPickRows([]);
+    setOrderPickSearch("");
+    setOrderPickVisibleCount(ORDER_PICK_PAGE_SIZE);
+    setOrdersError(null);
   }, [open]);
 
   useEffect(() => {
@@ -216,7 +245,12 @@ const NeedHelpBadge: React.FC<{
   }, [sections, selectedTopic]);
 
   const createTicket = useCallback(
-    async (ticketTitleId: number, description: string, subject: string) => {
+    async (
+      ticketTitleId: number,
+      description: string,
+      subject: string,
+      orderOverride?: { formattedOrderId?: string; coreOrderId?: number },
+    ) => {
       const storeId = readSelectedStoreId();
       if (!session.isAuthenticated) {
         setMessage({ type: "error", text: "Please sign in to contact support." });
@@ -238,8 +272,10 @@ const NeedHelpBadge: React.FC<{
       setLoading(true);
       setMessage(null);
       try {
-        const formattedOid = orderHelpContext?.formattedOrderId?.trim();
-        const coreOid = orderHelpContext?.coreOrderId;
+        const formattedOid =
+          orderOverride?.formattedOrderId?.trim() ||
+          orderHelpContext?.formattedOrderId?.trim();
+        const coreOid = orderOverride?.coreOrderId ?? orderHelpContext?.coreOrderId;
         const orderPrefix =
           formattedOid != null && formattedOid !== ""
             ? `Order ID: ${formattedOid}`
@@ -291,7 +327,84 @@ const NeedHelpBadge: React.FC<{
         setLoading(false);
       }
     },
-    [session.isAuthenticated, orderHelpContext]
+    [session.isAuthenticated, orderHelpContext],
+  );
+
+  const loadOrdersForPick = useCallback(async () => {
+    const storeId = readSelectedStoreId();
+    if (!storeId) {
+      setOrdersError("Select a store from the header switcher first.");
+      setOrderPickRows([]);
+      return;
+    }
+    setLoadingOrders(true);
+    setOrdersError(null);
+    try {
+      const res = await fetch(
+        `/api/food-orders?store_id=${encodeURIComponent(storeId)}&limit=50`,
+        { cache: "no-store" },
+      );
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setOrdersError("Could not load orders. Try again.");
+        setOrderPickRows([]);
+        return;
+      }
+      const rows = Array.isArray(data.orders) ? (data.orders as OrderPickRow[]) : [];
+      setOrderPickRows(rows);
+      if (rows.length === 0) {
+        setOrdersError("No recent orders found for this store.");
+      }
+    } catch {
+      setOrdersError("Could not load orders. Try again.");
+      setOrderPickRows([]);
+    } finally {
+      setLoadingOrders(false);
+    }
+  }, []);
+
+  const beginOrderPick = useCallback(
+    (draft: PendingTicketDraft) => {
+      setPendingTicket(draft);
+      setOrderPickSearch("");
+      setOrderPickVisibleCount(ORDER_PICK_PAGE_SIZE);
+      setSheetStep("orderPick");
+      void loadOrdersForPick();
+    },
+    [loadOrdersForPick],
+  );
+
+  const filteredOrderPickRows = useMemo(() => {
+    const q = orderPickSearch.trim().toLowerCase();
+    if (!q) return orderPickRows;
+    return orderPickRows.filter((order) => {
+      const label = (order.formatted_order_id?.trim() || String(order.order_id)).toLowerCase();
+      const customer = (order.customer_name ?? "").toLowerCase();
+      const status = (order.order_status ?? "").toLowerCase();
+      return label.includes(q) || customer.includes(q) || status.includes(q);
+    });
+  }, [orderPickRows, orderPickSearch]);
+
+  const visibleOrderPickRows = useMemo(
+    () => filteredOrderPickRows.slice(0, orderPickVisibleCount),
+    [filteredOrderPickRows, orderPickVisibleCount],
+  );
+
+  const hasMoreOrderPickRows = filteredOrderPickRows.length > orderPickVisibleCount;
+
+  const onSelectOrderForTicket = useCallback(
+    (order: OrderPickRow) => {
+      if (!pendingTicket) return;
+      const formattedOid =
+        order.formatted_order_id?.trim() || String(order.order_id);
+      void createTicket(
+        pendingTicket.ticketTitleId,
+        pendingTicket.description,
+        pendingTicket.subject,
+        { formattedOrderId: formattedOid, coreOrderId: order.order_id },
+      );
+    },
+    [pendingTicket, createTicket],
   );
 
   const onTopicClick = (topic: HelpSection) => {
@@ -308,14 +421,24 @@ const NeedHelpBadge: React.FC<{
 
   const onPickChild = (child: HelpSection) => {
     const subject = `${selectedTopic?.title ?? "Support"} · ${child.title}`;
-    const description = [selectedTopic?.title, child.title, child.subtitle].filter(Boolean).join(" — ");
-    void createTicket(child.ticket_title_id, description, subject);
+    const description = [selectedTopic?.title, child.title, child.subtitle]
+      .filter(Boolean)
+      .join(" — ");
+    beginOrderPick({
+      ticketTitleId: child.ticket_title_id,
+      subject,
+      description,
+    });
   };
 
   const onPickQuick = (text: string) => {
     if (!selectedTopic) return;
     const subject = `${selectedTopic.title} · ${text.slice(0, 80)}`;
-    void createTicket(selectedTopic.ticket_title_id, text, subject);
+    beginOrderPick({
+      ticketTitleId: selectedTopic.ticket_title_id,
+      subject,
+      description: text,
+    });
   };
 
   const onComposeSubmit = (e: React.FormEvent) => {
@@ -326,11 +449,20 @@ const NeedHelpBadge: React.FC<{
   };
 
   const goBack = () => {
+    if (sheetStep === "orderPick") {
+      setSheetStep("options");
+      setPendingTicket(null);
+      setOrderPickRows([]);
+      setOrdersError(null);
+      setMessage(null);
+      return;
+    }
     if (sheetStep === "compose" || sheetStep === "options") {
       setSheetStep("topics");
       setSelectedTopic(null);
       setComposeText("");
       setMessage(null);
+      setPendingTicket(null);
     }
   };
 
@@ -342,9 +474,9 @@ const NeedHelpBadge: React.FC<{
       /* ignore */
     }
     const sid = readSelectedStoreId();
-    const q = new URLSearchParams({ view: "inbox", ticket: String(createdTicket.id) });
+    const q = new URLSearchParams({ ticket: String(createdTicket.id) });
     if (sid) q.set("storeId", sid);
-    router.push(`/mx/user-insights?${q.toString()}`);
+    router.push(`/partners/support-inbox?${q.toString()}`);
     setOpen(false);
   };
 
@@ -373,9 +505,9 @@ const NeedHelpBadge: React.FC<{
           <div className="absolute inset-0 bg-black/50 backdrop-blur-[1px]" aria-hidden />
 
           <div className="absolute inset-y-0 right-0 z-[2201] flex h-full w-full max-w-md flex-col bg-white shadow-2xl border-l border-slate-200 animate-in slide-in-from-right duration-300">
-            <div className="flex shrink-0 items-center justify-between border-b border-slate-200 px-5 py-4">
-              <div className="flex min-w-0 items-center gap-2">
-                {(sheetStep === "options" || sheetStep === "compose") && (
+            <div className="flex shrink-0 items-start justify-between border-b border-slate-200 px-5 py-4">
+              <div className="flex min-w-0 items-start gap-2">
+                {(sheetStep === "options" || sheetStep === "compose" || sheetStep === "orderPick") && (
                   <button
                     type="button"
                     onClick={goBack}
@@ -385,9 +517,21 @@ const NeedHelpBadge: React.FC<{
                     <ChevronLeft className="h-5 w-5" />
                   </button>
                 )}
-                <h3 id="help-sheet-title" className="truncate text-lg font-bold text-slate-900">
-                  {sheetStep === "success" ? "Ticket created" : "Help and Support"}
-                </h3>
+                <div className="min-w-0">
+                  <h3 id="help-sheet-title" className="truncate text-lg font-bold text-slate-900">
+                    {sheetStep === "success"
+                      ? "Ticket created"
+                      : sheetStep === "orderPick"
+                        ? "Select order"
+                        : "Help and Support"}
+                  </h3>
+                  {selectedStoreId && sheetStep !== "success" ? (
+                    <p className="mt-0.5 text-xs text-slate-500">
+                      Store:{" "}
+                      <span className="font-mono font-medium text-slate-700">{selectedStoreId}</span>
+                    </p>
+                  ) : null}
+                </div>
               </div>
               <button type="button" onClick={() => setOpen(false)} className="shrink-0 rounded-lg p-2 text-slate-500 hover:bg-slate-100">
                 <X className="h-5 w-5" />
@@ -426,16 +570,6 @@ const NeedHelpBadge: React.FC<{
                       <span className="font-mono font-semibold">{orderHelpContext.formattedOrderId}</span>
                     </p>
                   ) : null}
-                  {readSelectedStoreId() ? (
-                    <p className="mb-3 text-xs text-slate-500">
-                      Store: <span className="font-mono font-medium text-slate-700">{readSelectedStoreId()}</span>
-                    </p>
-                  ) : (
-                    <p className="mb-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
-                      Select a store from the header switcher.
-                    </p>
-                  )}
-
                   {message && message.type === "error" && (
                     <p className="mb-3 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">{message.text}</p>
                   )}
@@ -479,6 +613,107 @@ const NeedHelpBadge: React.FC<{
                         </li>
                       ))}
                     </ul>
+                  ) : sheetStep === "orderPick" ? (
+                    <div className="space-y-3 pb-4">
+                      <p className="text-sm text-slate-600">
+                        Choose the order this ticket is about.
+                      </p>
+                      {!selectedStoreId ? (
+                        <p className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                          Select a store from the header switcher.
+                        </p>
+                      ) : loadingOrders ? (
+                        <div className="flex items-center justify-center gap-2 py-10 text-slate-500">
+                          <Loader2 className="h-5 w-5 animate-spin" />
+                          <span className="text-sm">Loading orders…</span>
+                        </div>
+                      ) : ordersError ? (
+                        <div className="space-y-2">
+                          <p className="text-sm text-red-600">{ordersError}</p>
+                          <button
+                            type="button"
+                            onClick={() => void loadOrdersForPick()}
+                            className="text-sm font-medium text-[#2ecc9b] hover:underline"
+                          >
+                            Retry
+                          </button>
+                        </div>
+                      ) : (
+                        <>
+                          <div className="relative">
+                            <Search
+                              className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400"
+                              aria-hidden
+                            />
+                            <input
+                              type="search"
+                              value={orderPickSearch}
+                              onChange={(e) => {
+                                setOrderPickSearch(e.target.value);
+                                setOrderPickVisibleCount(ORDER_PICK_PAGE_SIZE);
+                              }}
+                              placeholder="Search by order ID, customer, or status"
+                              className="w-full rounded-lg border border-slate-200 bg-white py-2.5 pl-9 pr-3 text-sm text-slate-900 outline-none placeholder:text-slate-400 focus:border-[#2ecc9b] focus:ring-2 focus:ring-[#2ecc9b]/20"
+                            />
+                          </div>
+                          {filteredOrderPickRows.length === 0 ? (
+                            <p className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-6 text-center text-sm text-slate-500">
+                              No orders match your search.
+                            </p>
+                          ) : (
+                            <>
+                              <ul className="divide-y divide-slate-200 overflow-hidden rounded-lg border border-slate-200 bg-white">
+                                {visibleOrderPickRows.map((order) => {
+                            const label =
+                              order.formatted_order_id?.trim() || `#${order.order_id}`;
+                            const when = order.created_at
+                              ? new Date(order.created_at).toLocaleString("en-IN", {
+                                  day: "numeric",
+                                  month: "short",
+                                  hour: "2-digit",
+                                  minute: "2-digit",
+                                })
+                              : "";
+                            return (
+                              <li key={order.id}>
+                                <button
+                                  type="button"
+                                  disabled={loading}
+                                  onClick={() => onSelectOrderForTicket(order)}
+                                  className="flex w-full items-center justify-between gap-3 px-3 py-3.5 text-left hover:bg-emerald-50/60 disabled:opacity-50"
+                                >
+                                  <span className="min-w-0">
+                                    <span className="block font-mono text-sm font-semibold text-slate-900">
+                                      {label}
+                                    </span>
+                                    <span className="mt-0.5 block text-xs text-slate-500">
+                                      {[order.customer_name, order.order_status, when]
+                                        .filter(Boolean)
+                                        .join(" · ")}
+                                    </span>
+                                  </span>
+                                  <ChevronRight className="h-4 w-4 shrink-0 text-slate-400" aria-hidden />
+                                </button>
+                              </li>
+                            );
+                          })}
+                              </ul>
+                              {hasMoreOrderPickRows ? (
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setOrderPickVisibleCount((n) => n + ORDER_PICK_PAGE_SIZE)
+                                  }
+                                  className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm font-medium text-[#2ecc9b] transition hover:bg-emerald-50/50"
+                                >
+                                  View past orders
+                                </button>
+                              ) : null}
+                            </>
+                          )}
+                        </>
+                      )}
+                    </div>
                   ) : sheetStep === "options" && selectedTopic ? (
                     <div className="overflow-hidden rounded-lg border border-slate-200">
                       <div className="bg-slate-100 px-3 py-2.5">
@@ -537,7 +772,7 @@ const NeedHelpBadge: React.FC<{
                       <button
                         type="submit"
                         disabled={loading || !composeText.trim()}
-                        className="flex w-full items-center justify-center gap-2 rounded-xl bg-blue-600 py-2.5 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-50"
+                        className="flex w-full items-center justify-center gap-2 rounded-xl bg-[#2ecc9b] py-2.5 text-sm font-semibold text-white hover:bg-[#26b888] disabled:opacity-50"
                       >
                         {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : "Create ticket"}
                       </button>
@@ -564,7 +799,7 @@ const NeedHelpBadge: React.FC<{
                 <button
                   type="button"
                   onClick={goToTicketDashboard}
-                  className="w-full rounded-xl bg-blue-600 py-3 text-sm font-semibold text-white hover:bg-blue-700"
+                  className="w-full rounded-xl bg-[#2ecc9b] py-3 text-sm font-semibold text-white hover:bg-[#26b888]"
                 >
                   Go to ticket dashboard
                 </button>

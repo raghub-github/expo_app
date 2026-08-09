@@ -709,16 +709,20 @@ body.mx-no-page-scroll .mx-main-scroll {
   left: 0;
   right: 0;
   bottom: 0;
-  height: 62%;
+  height: 38%;
   pointer-events: none;
   background: linear-gradient(
     to top,
     rgba(1, 18, 34, 0.98) 0%,
-    rgba(1, 18, 34, 0.9) 35%,
-    rgba(1, 18, 34, 0.55) 60%,
+    rgba(1, 18, 34, 0.75) 40%,
     transparent 100%
   );
   z-index: -1;
+}
+
+/* Operational partner pages — main canvas matches dark sidebar (#011222). */
+.mx-partner-dark-main {
+  background-color: #011222;
 }
 
 @media print {

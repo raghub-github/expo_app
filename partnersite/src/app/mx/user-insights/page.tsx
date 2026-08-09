@@ -1,8 +1,10 @@
 "use client";
-import React, { useState, useEffect, Suspense, useRef, useMemo } from "react";
+import React, { useState, useEffect, Suspense, useRef, useMemo, useCallback } from "react";
+import { createPortal } from "react-dom";
 import { useSearchParams, useRouter, usePathname } from "next/navigation";
+import { PartnerPageHeader } from "@/context/PartnerShellHeaderContext";
+import { PARTNER_PAGE_HEADERS } from "@/lib/partner-page-headers";
 import { MXLayoutWhite } from "@/components/MXLayoutWhite";
-import { PartnerShellHeaderSync } from "@/context/PartnerShellHeaderContext";
 import { fetchRestaurantById as fetchStoreById } from "@/lib/database";
 import { MerchantStore } from "@/lib/merchantStore";
 import { DEMO_RESTAURANT_ID as DEMO_STORE_ID } from "@/lib/constants";
@@ -40,6 +42,15 @@ import { getTicketAttachmentViewUrl } from "@/lib/ticket-attachment-url";
 import { MobileHamburgerButton } from "@/components/MobileHamburgerButton";
 import { createClient } from "@/lib/supabase/client";
 import { toast } from "sonner";
+
+const INBOX_PANEL =
+  "rounded-xl border border-gray-200 bg-white shadow-sm";
+const INBOX_PANEL_HEADER = "border-b border-gray-200";
+const INBOX_TEXT_PRIMARY = "text-gray-900";
+const INBOX_TEXT_MUTED = "text-gray-500";
+const INBOX_BRAND_BTN =
+  "bg-[#2ecc9b] text-white hover:bg-[#26b888] shadow-md";
+const INBOX_BRAND_RING = "border-[#2ecc9b] ring-2 ring-[#2ecc9b]/20 bg-emerald-50/50";
 
 interface Review {
   id: number;
@@ -903,6 +914,46 @@ const UserInsightsContent = () => {
     }
   };
 
+  /** Merge ticket row into list + open chat (status, rating, resolution, etc.). */
+  const applyTicketSnapshot = useCallback((ticket: Record<string, unknown>) => {
+    const ticketId = Number(ticket.id);
+    if (!ticketId || Number.isNaN(ticketId)) return;
+    const fresh = {
+      ...ticket,
+      status: normalizedTicketStatus(ticket.status as string) || ticket.status,
+    } as Record<string, unknown> & { status: string };
+    setSelectedTicket((prev: { id: number } | null) =>
+      prev && prev.id === ticketId ? { ...prev, ...fresh } : prev,
+    );
+    setTickets((prev) =>
+      prev.map((t) => (t.id === ticketId ? { ...t, ...fresh } : t)),
+    );
+    if (
+      normalizedTicketStatus(fresh.status) === "RESOLVED" &&
+      fresh.satisfaction_rating
+    ) {
+      setTicketRating(Number(fresh.satisfaction_rating));
+      setTicketRatingFeedback(String(fresh.satisfaction_feedback ?? ""));
+    }
+  }, []);
+
+  const syncSelectedTicket = useCallback(
+    async (ticketId: number) => {
+      try {
+        const res = await fetch(`/api/merchant/tickets/${ticketId}`, {
+          cache: "no-store",
+        });
+        const data = await res.json();
+        if (data.success && data.ticket) {
+          applyTicketSnapshot(data.ticket as Record<string, unknown>);
+        }
+      } catch {
+        /* polling / realtime fallback */
+      }
+    },
+    [applyTicketSnapshot],
+  );
+
   // Load tickets when queue view is shown
   useEffect(() => {
     if (effectiveShowQueueView) {
@@ -1005,6 +1056,7 @@ const UserInsightsContent = () => {
             );
             return next;
           });
+          void syncSelectedTicket(ticketId);
         },
       )
       .on(
@@ -1016,17 +1068,7 @@ const UserInsightsContent = () => {
           filter: `id=eq.${ticketId}`,
         },
         (payload) => {
-          const updated = payload.new as Record<string, unknown>;
-          const normalized = {
-            ...updated,
-            status: normalizedTicketStatus((updated.status as string) || ""),
-          };
-          setSelectedTicket((prev: { id: number } | null) =>
-            prev && prev.id === ticketId ? { ...prev, ...normalized } : prev,
-          );
-          setTickets((prev) =>
-            prev.map((t) => (t.id === ticketId ? { ...t, ...normalized } : t)),
-          );
+          applyTicketSnapshot(payload.new as Record<string, unknown>);
         },
       )
       .subscribe();
@@ -1034,13 +1076,14 @@ const UserInsightsContent = () => {
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [selectedTicket?.id]);
+  }, [selectedTicket?.id, syncSelectedTicket, applyTicketSnapshot]);
 
-  // Polling fallback: refetch messages periodically so chat updates even without Realtime
+  // Polling fallback: refetch messages + ticket status so chat/resolution stay in sync
   useEffect(() => {
     if (!selectedTicket?.id) return;
     const ticketId = selectedTicket.id;
-    const interval = setInterval(() => {
+    const poll = () => {
+      void syncSelectedTicket(ticketId);
       fetch(`/api/merchant/tickets/messages?ticket_id=${ticketId}`)
         .then((res) => res.json())
         .then((data) => {
@@ -1053,14 +1096,19 @@ const UserInsightsContent = () => {
               );
               if (newOnly.length === 0 && data.messages.length === prev.length)
                 return prev;
+              if (newOnly.length > 0) {
+                void syncSelectedTicket(ticketId);
+              }
               return data.messages;
             });
           }
         })
         .catch(() => {});
-    }, 4000);
+    };
+    poll();
+    const interval = setInterval(poll, 4000);
     return () => clearInterval(interval);
-  }, [selectedTicket?.id]);
+  }, [selectedTicket?.id, syncSelectedTicket]);
 
   const handleQueueOpen = () => {
     setShowQueueView(true);
@@ -2113,170 +2161,212 @@ const UserInsightsContent = () => {
     </div>
   ) : null;
 
-  const partnerShellTitle = effectiveShowQueueView ? "Support Inbox" : "User Insights";
-
-  const partnerShellSubtitle = effectiveShowQueueView
-    ? "Manage and reply to your support tickets"
-    : "Monitor customer feedback and respond to reviews";
-
   return (
     <MXLayoutWhite
       restaurantName={store?.store_name}
       restaurantId={storeId || DEMO_STORE_ID}
       sidebarFilters={ticketFilterCards}
     >
-      <PartnerShellHeaderSync title={partnerShellTitle} subtitle={partnerShellSubtitle} />
+      {effectiveShowQueueView ? (
+        <PartnerPageHeader {...PARTNER_PAGE_HEADERS.supportInbox} />
+      ) : (
+        <PartnerPageHeader {...PARTNER_PAGE_HEADERS.userInsights} />
+      )}
       <div
-        className={`w-full flex-1 min-h-0 flex flex-col overflow-hidden ${
-          effectiveShowQueueView
-            ? "p-2 sm:p-3 lg:p-4"
-            : "relative p-3 sm:p-4 lg:p-5"
+        className={`w-full flex-1 min-h-0 flex flex-col overflow-hidden h-full ${
+          effectiveShowQueueView ? "bg-gray-50" : "relative bg-gray-50"
         }`}
       >
         {/* Show Queue View or User Insights */}
         {effectiveShowQueueView ? (
-          showTicketDetail && selectedTicket ? (
-            /* Ticket Detail Panel — full-height split; scroll only inside columns */
-            <React.Fragment>
-              <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden md:flex-row md:gap-4">
-                {/* Desktop: left ticket list */}
-                <div className="hidden h-full min-h-0 md:flex md:w-[420px] md:shrink-0 md:flex-col md:overflow-hidden rounded-lg border border-gray-200 bg-white">
-                  <div className="px-4 py-3 border-b border-gray-200">
-                    <div className="flex items-center justify-between gap-3">
-                      <div className="min-w-0">
-                        <h3 className="text-sm font-semibold text-gray-900 truncate">
-                          All tickets
-                        </h3>
-                        <p className="text-xs text-gray-500 truncate">
-                          Support Inbox
-                        </p>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setShowTicketDetail(false);
-                          setSelectedTicket(null);
-                          if (typeof window !== "undefined")
-                            localStorage.removeItem(
-                              "userInsights_selectedTicketId",
-                            );
-                          router.replace(
-                            `${pathname ?? "/mx/user-insights"}?view=inbox`,
-                          );
-                        }}
-                        className="text-xs font-medium text-orange-700 hover:underline"
-                      >
-                        Back
-                      </button>
-                    </div>
-                    <div className="mt-3">
-                      <div className="inline-flex items-center gap-2 rounded-lg border border-gray-200 px-2.5 py-1.5 text-xs text-gray-700 bg-white">
-                        <Calendar size={14} className="text-gray-500" />
-                        <select
-                          value={datePreset}
-                          onChange={(e) => {
-                            const v = e.target.value as
-                              | "7d"
-                              | "15d"
-                              | "1m"
-                              | "3m"
-                              | "365d"
-                              | "custom";
-                            if (v === "custom") {
-                              openCustomDatePicker();
-                            } else {
-                              applyDatePreset(v);
-                            }
-                          }}
-                          className="bg-transparent outline-none text-xs font-medium text-gray-800"
-                          aria-label="Select date range preset"
-                        >
-                          <option value="7d">Last 7 days</option>
-                          <option value="15d">Last 15 days</option>
-                          <option value="1m">Last 1 month</option>
-                          <option value="3m">Last 3 months</option>
-                          <option value="365d">Last 365 days</option>
-                          <option value="custom">Custom</option>
-                        </select>
-                        <span className="text-gray-400">•</span>
-                        <span className="whitespace-nowrap text-gray-600">
-                          {formatRangeSummary(dateFrom, dateTo)}
-                        </span>
-                      </div>
+            <div className="flex min-h-0 flex-1 flex-col overflow-hidden md:flex-row md:gap-3">
+              {/* Left: ticket list — full width on mobile until a ticket is selected */}
+              <div
+                className={`${selectedTicket ? "hidden md:flex" : "flex"} h-full min-h-0 w-full shrink-0 flex-col md:w-[380px] lg:w-[420px] ${INBOX_PANEL}`}
+              >
+                <div className={`p-3 ${INBOX_PANEL_HEADER}`}>
+                  <div className="flex items-center gap-2">
+                    <MobileHamburgerButton />
+                    <div className="flex-1 min-w-0">
+                      <input
+                        value={ticketSearch}
+                        onChange={(e) => setTicketSearch(e.target.value)}
+                        placeholder="Search your issue"
+                        className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm outline-none focus:border-[#2ecc9b] focus:ring-2 focus:ring-[#2ecc9b]/20"
+                      />
                     </div>
                   </div>
-
-                  <div className="flex-1 overflow-y-auto scrollbar-hide p-3 space-y-2">
-                    {filteredTickets.length > 0 ? (
-                      filteredTickets.map((ticket) => (
-                        <button
-                          key={ticket.id}
-                          onClick={() => handleTicketClick(ticket)}
-                          className={`w-full text-left rounded-lg border p-3 transition-all hover:shadow-md ${
-                            selectedTicket?.id === ticket.id
-                              ? "border-orange-500 ring-2 ring-orange-500/20 bg-orange-50/40"
-                              : "border-gray-200 bg-white"
-                          }`}
-                        >
-                          <div className="flex items-start justify-between gap-2 mb-1">
-                            <span className="text-xs text-gray-500 font-mono">
-                              #{ticket.ticket_id}
-                            </span>
-                            <span className="text-xs text-gray-500">
-                              {new Date(ticket.created_at).toLocaleDateString(
-                                "en-IN",
-                                { day: "numeric", month: "short" },
-                              )}
-                            </span>
-                          </div>
-                          <div className="flex items-center gap-2 flex-wrap mb-1">
-                            <span
-                              className={`px-2 py-0.5 rounded-full text-xs font-semibold ${
-                                ticket.status === "OPEN"
-                                  ? "bg-blue-50 text-blue-700"
-                                  : ticket.status === "IN_PROGRESS"
-                                    ? "bg-yellow-50 text-yellow-700"
-                                    : ticket.status === "PENDING"
-                                      ? "bg-amber-50 text-amber-700"
-                                      : ticket.status === "REOPENED"
-                                        ? "bg-purple-50 text-purple-700"
-                                        : ticket.status === "RESOLVED"
-                                          ? "bg-green-50 text-green-700"
-                                          : "bg-gray-50 text-gray-700"
-                              }`}
-                            >
-                              {ticket.status || "OPEN"}
-                            </span>
-                            <span className="text-xs text-gray-700 font-medium line-clamp-1">
-                              {ticket.subject}
-                            </span>
-                          </div>
-                          <p className="text-xs text-gray-600 line-clamp-2">
-                            {ticket.description}
-                          </p>
-                        </button>
-                      ))
-                    ) : (
-                      <div className="text-center py-10">
-                        <div className="w-14 h-14 bg-gray-100 rounded-full flex items-center justify-center mx-auto mb-3">
-                          <Inbox className="text-gray-400" size={28} />
-                        </div>
-                        <h3 className="text-base font-semibold text-gray-700 mb-1">
-                          No tickets yet
-                        </h3>
-                        <p className="text-sm text-gray-500">
-                          Your store tickets will appear here
-                        </p>
-                      </div>
-                    )}
+                  <div className="mt-3 flex items-center justify-between gap-3">
+                    <div className="min-w-0">
+                      <h3 className={`text-sm font-semibold truncate ${INBOX_TEXT_PRIMARY}`}>
+                        All tickets
+                      </h3>
+                      <p className={`text-xs truncate ${INBOX_TEXT_MUTED}`}>
+                        Support Inbox
+                      </p>
+                    </div>
+                    <div className="inline-flex items-center gap-2 rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-xs text-gray-700 shrink-0">
+                      <Calendar size={14} className="text-gray-500" />
+                      <select
+                        value={datePreset}
+                        onChange={(e) => {
+                          const v = e.target.value as
+                            | "7d"
+                            | "15d"
+                            | "1m"
+                            | "3m"
+                            | "365d"
+                            | "custom";
+                          if (v === "custom") {
+                            openCustomDatePicker();
+                          } else {
+                            applyDatePreset(v);
+                          }
+                        }}
+                        className="bg-transparent outline-none text-xs font-medium text-gray-800"
+                        aria-label="Select date range preset"
+                      >
+                        <option value="7d">Last 7 days</option>
+                        <option value="15d">Last 15 days</option>
+                        <option value="1m">Last 1 month</option>
+                        <option value="3m">Last 3 months</option>
+                        <option value="365d">Last 365 days</option>
+                        <option value="custom">Custom</option>
+                      </select>
+                      <span className="text-gray-400">•</span>
+                      <span className="whitespace-nowrap text-gray-600">
+                        {formatRangeSummary(dateFrom, dateTo)}
+                      </span>
+                    </div>
                   </div>
                 </div>
 
-                {/* Right: ticket detail */}
-                <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
-                    <div className="flex h-full min-h-0 w-full flex-1 flex-col overflow-hidden rounded-lg border border-gray-200 bg-white">
+                {datePopoverOpen && (
+                  <DateRangePopover
+                    calMonth={calMonth}
+                    setCalMonth={setCalMonth}
+                    rangeSel={rangeSel}
+                    setRangeSel={setRangeSel}
+                    onClose={() => setDatePopoverOpen(false)}
+                    onApply={() => {
+                      if (rangeSel.a && rangeSel.b) {
+                        const t1 = parseYmd(rangeSel.a).getTime();
+                        const t2 = parseYmd(rangeSel.b).getTime();
+                        const [from, to] =
+                          t1 <= t2
+                            ? [rangeSel.a, rangeSel.b]
+                            : [rangeSel.b, rangeSel.a];
+                        setDateFrom(from);
+                        setDateTo(to);
+                        setDatePreset("custom");
+                      }
+                      setDatePopoverOpen(false);
+                    }}
+                  />
+                )}
+
+                <div className="flex-1 min-h-0 overflow-y-auto p-3 space-y-2 scrollbar-hide">
+                  {ticketsLoading ? (
+                    Array.from({ length: 6 }).map((_, i) => (
+                      <div
+                        key={i}
+                        className="animate-pulse rounded-lg border border-gray-200 bg-white p-3"
+                      >
+                        <div className="mb-2 h-3 w-1/3 rounded bg-gray-200" />
+                        <div className="mb-1 h-2.5 w-full rounded bg-gray-200" />
+                        <div className="h-2.5 w-2/3 rounded bg-gray-200" />
+                      </div>
+                    ))
+                  ) : filteredTickets.length > 0 ? (
+                    filteredTickets.map((ticket) => (
+                      <button
+                        key={ticket.id}
+                        type="button"
+                        onClick={() => handleTicketClick(ticket)}
+                        className={`w-full rounded-lg border p-3 text-left transition-all hover:shadow-md ${
+                          selectedTicket?.id === ticket.id
+                            ? INBOX_BRAND_RING
+                            : "border-gray-200 bg-white hover:border-emerald-200"
+                        }`}
+                      >
+                        <div className="mb-1 flex items-start justify-between gap-2">
+                          <span className="font-mono text-xs text-gray-500">
+                            #{ticket.ticket_id}
+                          </span>
+                          <span className="text-xs text-gray-500">
+                            {new Date(ticket.created_at).toLocaleDateString(
+                              "en-IN",
+                              { day: "numeric", month: "short" },
+                            )}
+                          </span>
+                        </div>
+                        <div className="mb-1 flex flex-wrap items-center gap-2">
+                          <span
+                            className={`rounded-full px-2 py-0.5 text-xs font-semibold ${
+                              ticket.status === "OPEN"
+                                ? "bg-blue-50 text-blue-700"
+                                : ticket.status === "IN_PROGRESS"
+                                  ? "bg-yellow-50 text-yellow-700"
+                                  : ticket.status === "PENDING"
+                                    ? "bg-amber-50 text-amber-700"
+                                    : ticket.status === "REOPENED"
+                                      ? "bg-purple-50 text-purple-700"
+                                      : ticket.status === "RESOLVED"
+                                        ? "bg-green-50 text-green-700"
+                                        : "bg-gray-50 text-gray-700"
+                            }`}
+                          >
+                            {ticket.status || "OPEN"}
+                          </span>
+                          <span className="line-clamp-1 text-xs font-medium text-gray-700">
+                            {ticket.subject}
+                          </span>
+                        </div>
+                        <p className="line-clamp-2 text-xs text-gray-600">
+                          {ticket.description}
+                        </p>
+                      </button>
+                    ))
+                  ) : (
+                    <div className="py-10 text-center">
+                      <div className="mx-auto mb-3 flex h-14 w-14 items-center justify-center rounded-full bg-gray-100">
+                        <Inbox className="text-gray-400" size={28} />
+                      </div>
+                      <h3 className="mb-1 text-base font-semibold text-gray-700">
+                        No tickets yet
+                      </h3>
+                      <p className="text-sm text-gray-500">
+                        Your store tickets will appear here
+                      </p>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Right: conversation or empty state */}
+              <div
+                className={`${selectedTicket ? "flex" : "hidden md:flex"} min-h-0 min-w-0 flex-1 flex-col overflow-hidden`}
+              >
+                {!selectedTicket ? (
+                  <div className={`flex h-full min-h-0 flex-1 items-center justify-center ${INBOX_PANEL}`}>
+                    <div className="px-8 py-10 text-center">
+                      <div className="relative mx-auto mb-4 flex h-20 w-20 items-center justify-center rounded-full bg-gray-100">
+                        <Inbox className="text-gray-400" size={34} />
+                        <span className="absolute -right-1 -top-1 h-3 w-3 rounded-full bg-[#2ecc9b] shadow-sm" />
+                      </div>
+                      <h3 className={`text-base font-semibold ${INBOX_TEXT_PRIMARY}`}>
+                        Select a ticket
+                      </h3>
+                      <p className={`mt-1 max-w-sm text-sm ${INBOX_TEXT_MUTED}`}>
+                        Choose a ticket from the list to view the conversation.
+                      </p>
+                    </div>
+                  </div>
+                ) : (
+                  <>
+                    <div className={`flex h-full min-h-0 w-full flex-1 flex-col overflow-hidden ${INBOX_PANEL}`}>
                     {/* Chat Header (reference-like, compact) */}
-                    <div className="flex-shrink-0 bg-white border-b border-gray-200 px-3 py-2">
+                    <div className={`flex-shrink-0 px-3 py-2 ${INBOX_PANEL_HEADER} bg-white`}>
                       <div className="flex items-center justify-between gap-3">
                         <div className="flex items-center gap-3 min-w-0">
                           <button
@@ -2288,7 +2378,7 @@ const UserInsightsContent = () => {
                           >
                             <ChevronLeft size={20} className="text-gray-700" />
                           </button>
-                          <div className="h-11 w-11 rounded-full bg-orange-100 flex items-center justify-center text-orange-700 font-bold flex-shrink-0">
+                          <div className="h-11 w-11 rounded-full bg-emerald-100 flex items-center justify-center text-emerald-700 font-bold flex-shrink-0">
                             {twoLetterInitials(store?.store_name || "St")}
                           </div>
                           <div className="min-w-0">
@@ -2299,7 +2389,7 @@ const UserInsightsContent = () => {
                               <span className="inline-flex items-center rounded-full border border-gray-200 bg-white px-2 py-0.5 text-[10px] font-semibold text-gray-700">
                                 {selectedTicket?.status || "OPEN"}
                               </span>
-                              <span className="inline-flex items-center rounded-full border border-orange-200 bg-orange-50 px-2 py-0.5 text-[10px] font-semibold text-orange-700">
+                              <span className="inline-flex items-center rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[10px] font-semibold text-emerald-700">
                                 {selectedTicket?.priority || "MEDIUM"}
                               </span>
                             </div>
@@ -2318,11 +2408,11 @@ const UserInsightsContent = () => {
                     {/* Chat Messages (reference-like) */}
                     <div
                       ref={chatContainerRef}
-                      className="flex-1 min-h-0 overflow-y-auto bg-gradient-to-b from-white to-orange-50/40 p-3 sm:p-4 scrollbar-hide"
+                      className="flex-1 min-h-0 overflow-y-auto bg-gradient-to-b from-white to-emerald-50/30 p-3 sm:p-4 scrollbar-hide"
                     >
                       {messagesLoading ? (
                         <div className="flex items-center justify-center py-8">
-                          <Loader2 className="animate-spin h-6 w-6 text-orange-600" />
+                          <Loader2 className="animate-spin h-6 w-6 text-[#2ecc9b]" />
                         </div>
                       ) : (
                         <>
@@ -2388,7 +2478,7 @@ const UserInsightsContent = () => {
                                   <div
                                     className={`min-w-0 w-full break-words rounded-2xl px-3 py-2 shadow-sm sm:px-3.5 sm:py-2 ${
                                       outbound
-                                        ? "rounded-br-sm bg-orange-600 text-white"
+                                        ? "rounded-br-sm bg-[#2ecc9b] text-white"
                                         : "rounded-bl-sm bg-gray-100 text-gray-900"
                                     }`}
                                   >
@@ -2438,7 +2528,7 @@ const UserInsightsContent = () => {
                                   <ThreadAvatarBubble
                                     imageUrl={null}
                                     labelName={store?.store_name || "St"}
-                                    className="bg-gradient-to-br from-orange-500 to-orange-600"
+                                    className="bg-gradient-to-br from-emerald-500 to-[#2ecc9b]"
                                     textClassName="text-white"
                                   />
                                 ) : null}
@@ -2556,7 +2646,7 @@ const UserInsightsContent = () => {
                                     <div
                                       className={`min-w-0 w-full break-words rounded-2xl px-3 py-2 shadow-sm ${
                                         isMerchant
-                                          ? "rounded-br-sm bg-orange-600 text-white"
+                                          ? "rounded-br-sm bg-[#2ecc9b] text-white"
                                           : "rounded-bl-sm bg-gray-100 text-gray-900"
                                       }`}
                                     >
@@ -2666,7 +2756,7 @@ const UserInsightsContent = () => {
                                   <ThreadAvatarBubble
                                     imageUrl={null}
                                     labelName={store?.store_name || "St"}
-                                    className="bg-gradient-to-br from-orange-500 to-orange-600"
+                                    className="bg-gradient-to-br from-emerald-500 to-[#2ecc9b]"
                                     textClassName="text-white"
                                   />
                                 )}
@@ -2857,7 +2947,7 @@ const UserInsightsContent = () => {
                                         handleReopenTicket(selectedTicket.id)
                                       }
                                       disabled={reopenInProgress}
-                                      className="w-full px-3 py-1.5 bg-orange-600 text-white rounded-lg font-medium text-[10px] sm:text-xs hover:bg-orange-700 transition-all duration-200 flex items-center justify-center gap-1.5 shadow-md disabled:opacity-70 disabled:cursor-not-allowed"
+                                      className={`w-full px-3 py-1.5 rounded-lg font-medium text-[10px] sm:text-xs transition-all duration-200 flex items-center justify-center gap-1.5 shadow-md disabled:opacity-70 disabled:cursor-not-allowed ${INBOX_BRAND_BTN}`}
                                     >
                                       {reopenInProgress ? (
                                         <>
@@ -2894,16 +2984,16 @@ const UserInsightsContent = () => {
                         </>
                       )}
                     </div>
-                  </div>
 
-                  {/* Chat Input - right pane only */}
-                  {normalizedTicketStatus(selectedTicket.status) !==
-                    "CLOSED" && (
+                  {/* Chat Input — active tickets only (not resolved/closed) */}
+                  {["OPEN", "IN_PROGRESS", "PENDING", "REOPENED"].includes(
+                    normalizedTicketStatus(selectedTicket.status),
+                  ) && (
                     <div
-                      className="flex-shrink-0 bg-white/90 backdrop-blur border-t border-gray-200 p-2 sm:p-3"
+                      className="flex-shrink-0 border-t border-gray-200 bg-white p-2 sm:p-3"
                       style={{
                         paddingBottom:
-                          "env(safe-area-inset-bottom, 0px)",
+                          "max(0.5rem, env(safe-area-inset-bottom, 0px))",
                       }}
                     >
                       <div className="w-full">
@@ -2971,7 +3061,7 @@ const UserInsightsContent = () => {
                         )}
 
                         {/* Input Area */}
-                        <div className="flex items-end gap-1.5 bg-white rounded-3xl px-2 sm:px-2.5 py-1 sm:py-1.5 shadow-sm border border-gray-200">
+                        <div className="flex items-end gap-2 rounded-2xl border border-gray-200 bg-gray-50 px-2 py-1.5 shadow-sm focus-within:border-[#2ecc9b] focus-within:ring-2 focus-within:ring-[#2ecc9b]/20">
                           <input
                             ref={ticketReplyFileInputRef}
                             type="file"
@@ -3007,13 +3097,10 @@ const UserInsightsContent = () => {
                               e.target.style.height = "auto";
                               e.target.style.height = `${Math.min(e.target.scrollHeight, 100)}px`;
                             }}
-                            placeholder="Type a message"
+                            placeholder="Type a message…"
                             rows={1}
-                            disabled={
-                              normalizedTicketStatus(selectedTicket.status) ===
-                              "CLOSED"
-                            }
-                            className="flex-1 min-h-[24px] px-2 sm:px-2.5 py-1.5 text-sm sm:text-base bg-transparent border-none focus:outline-none resize-none max-h-[100px] scrollbar-hide disabled:opacity-60 disabled:cursor-not-allowed"
+                            disabled={replyLoading}
+                            className="flex-1 min-h-[36px] max-h-[100px] resize-none border-none bg-transparent px-2 py-2 text-sm text-gray-900 placeholder:text-gray-400 focus:outline-none scrollbar-hide disabled:opacity-60 disabled:cursor-not-allowed"
                             onKeyDown={(e) => {
                               if (e.key === "Enter" && !e.shiftKey) {
                                 e.preventDefault();
@@ -3038,17 +3125,15 @@ const UserInsightsContent = () => {
                               handleSendReply();
                             }}
                             disabled={
-                              normalizedTicketStatus(selectedTicket.status) ===
-                                "CLOSED" ||
                               (!ticketReply.trim() &&
                                 ticketReplyImages.length === 0) ||
                               replyLoading
                             }
-                            className={`p-1.5 rounded-full flex-shrink-0 transition-all ${
+                            className={`flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-full transition-all ${
                               (ticketReply.trim() ||
                                 ticketReplyImages.length > 0) &&
                               !replyLoading
-                                ? "bg-[#25D366] text-white hover:bg-[#20BA5A] shadow-md"
+                                ? `${INBOX_BRAND_BTN} shadow-md`
                                 : "bg-gray-200 text-gray-400 cursor-not-allowed"
                             }`}
                             title="Send message"
@@ -3067,34 +3152,35 @@ const UserInsightsContent = () => {
                     </div>
                   )}
                 </div>
+                  </>
+                )}
               </div>
-              {showRatingModal && selectedTicket ? (
-                <div
-                  className="fixed left-0 right-0 bottom-0 top-14 z-[999] flex justify-end"
-                  role="presentation"
-                >
+
+              {showRatingModal && selectedTicket && typeof document !== "undefined"
+                ? createPortal(
+                <div className="fixed inset-0 z-[1100] flex justify-end" role="presentation">
                   <button
                     type="button"
-                    className="absolute inset-0 bg-black/30 backdrop-blur-[1px]"
+                    className="absolute inset-0 bg-black/40 backdrop-blur-[1px]"
                     aria-label="Close feedback"
                     onClick={() => setShowRatingModal(false)}
                   />
                   <aside
-                    className="relative h-full w-full max-w-md border-l border-gray-200 bg-white shadow-2xl flex flex-col"
+                    className="relative flex h-dvh min-h-0 w-full max-w-md flex-col border-l border-gray-200 bg-white shadow-2xl"
                     role="dialog"
                     aria-modal="true"
                     aria-label="Rate your experience"
                     onClick={(e) => e.stopPropagation()}
                   >
-                    <div className="flex items-center justify-between gap-3 px-4 py-3 border-b border-gray-200 flex-shrink-0">
+                    <div className={`flex flex-shrink-0 items-center justify-between gap-3 px-4 py-3 ${INBOX_PANEL_HEADER}`}>
                       <div className="min-w-0">
-                        <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">
+                        <p className={`text-xs font-semibold uppercase tracking-wide ${INBOX_TEXT_MUTED}`}>
                           Ticket feedback
                         </p>
-                        <h2 className="text-base font-bold text-gray-900 truncate">
+                        <h2 className={`text-base font-bold truncate ${INBOX_TEXT_PRIMARY}`}>
                           Rate your experience
                         </h2>
-                        <p className="text-xs text-gray-500 truncate">
+                        <p className={`text-xs truncate ${INBOX_TEXT_MUTED}`}>
                           #{selectedTicket.ticket_id}
                         </p>
                       </div>
@@ -3108,11 +3194,11 @@ const UserInsightsContent = () => {
                       </button>
                     </div>
 
-                    <div className="flex-1 min-h-0 overflow-y-auto p-4">
-                      <h3 className="text-lg font-semibold text-gray-900 text-center">
+                    <div className="min-h-0 flex-1 overflow-y-auto p-4">
+                      <h3 className={`text-lg font-semibold text-center ${INBOX_TEXT_PRIMARY}`}>
                         How was your overall experience?
                       </h3>
-                      <p className="mt-1 text-sm text-gray-600 text-center">
+                      <p className={`mt-1 text-sm text-center ${INBOX_TEXT_MUTED}`}>
                         How well were we able to solve your problem?
                       </p>
 
@@ -3214,25 +3300,25 @@ const UserInsightsContent = () => {
                           onChange={(e) => setTicketRatingFeedback(e.target.value)}
                           placeholder="Share your feedback (optional)..."
                           rows={4}
-                          className="w-full px-4 py-3 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-orange-500 resize-none transition-all"
+                          className="w-full px-4 py-3 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#2ecc9b]/30 resize-none transition-all"
                         />
                       </div>
                     </div>
 
-                    <div className="flex-shrink-0 border-t border-gray-200 p-4 bg-white">
+                    <div className="flex-shrink-0 border-t border-gray-200 bg-white p-4">
                       <button
                         type="button"
                         onClick={() => void handleSubmitRating()}
                         disabled={ratingLoading || !ticketRating}
-                        className={`w-full px-6 py-3 rounded-lg font-medium text-base transition-all duration-200 flex items-center justify-center gap-2 ${
+                        className={`flex w-full items-center justify-center gap-2 rounded-lg px-6 py-3 text-base font-medium transition-all duration-200 ${
                           ratingLoading || !ticketRating
-                            ? "bg-gray-100 text-gray-400 cursor-not-allowed"
-                            : "bg-orange-600 text-white hover:bg-orange-700 shadow-md"
+                            ? "cursor-not-allowed bg-gray-100 text-gray-400"
+                            : INBOX_BRAND_BTN
                         }`}
                       >
                         {ratingLoading ? (
                           <>
-                            <Loader2 className="animate-spin h-5 w-5" />
+                            <Loader2 className="h-5 w-5 animate-spin" />
                             Submitting...
                           </>
                         ) : (
@@ -3241,207 +3327,20 @@ const UserInsightsContent = () => {
                       </button>
                     </div>
                   </aside>
-                </div>
-              ) : null}
-            </React.Fragment>
-          ) : (
-            /* Queue View - Full Page */
-            <div className="flex min-h-0 flex-1 flex-col overflow-hidden md:flex-row">
-              {/* Left: filtered ticket list */}
-              <div className="flex h-full min-h-0 w-full shrink-0 flex-col border-r border-gray-200 bg-white md:h-auto md:w-[420px]">
-                <div className="p-3 border-b border-gray-200">
-                  <div className="flex items-center gap-2">
-                    <MobileHamburgerButton />
-                    <div className="flex-1 min-w-0">
-                      <input
-                        value={ticketSearch}
-                        onChange={(e) => setTicketSearch(e.target.value)}
-                        placeholder="Search your issue"
-                        className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm outline-none focus:border-orange-500 focus:ring-2 focus:ring-orange-500/20"
-                      />
-                    </div>
-                  </div>
-                  <div className="mt-3 flex items-center justify-between gap-3">
-                    <h3 className="text-sm font-semibold text-gray-900">
-                      All tickets
-                    </h3>
-                    <div className="inline-flex items-center gap-2 rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-xs text-gray-700">
-                      <Calendar size={14} className="text-gray-500" />
-                      <select
-                        value={datePreset}
-                        onChange={(e) => {
-                          const v = e.target.value as
-                            | "7d"
-                            | "15d"
-                            | "1m"
-                            | "3m"
-                            | "365d"
-                            | "custom";
-                          if (v === "custom") {
-                            openCustomDatePicker();
-                          } else {
-                            applyDatePreset(v);
-                          }
-                        }}
-                        className="bg-transparent outline-none text-xs font-medium text-gray-800"
-                        aria-label="Select date range preset"
-                      >
-                        <option value="7d">Last 7 days</option>
-                        <option value="15d">Last 15 days</option>
-                        <option value="1m">Last 1 month</option>
-                        <option value="3m">Last 3 months</option>
-                        <option value="365d">Last 365 days</option>
-                        <option value="custom">Custom</option>
-                      </select>
-                      <span className="text-gray-400">•</span>
-                      <span className="whitespace-nowrap text-gray-600">
-                        {formatRangeSummary(dateFrom, dateTo)}
-                      </span>
-                      <ChevronDown size={14} className="text-gray-500" />
-                    </div>
-                  </div>
-                </div>
-
-                {datePopoverOpen && (
-                  <DateRangePopover
-                    calMonth={calMonth}
-                    setCalMonth={setCalMonth}
-                    rangeSel={rangeSel}
-                    setRangeSel={setRangeSel}
-                    onClose={() => setDatePopoverOpen(false)}
-                    onApply={() => {
-                      if (rangeSel.a && rangeSel.b) {
-                        const t1 = parseYmd(rangeSel.a).getTime();
-                        const t2 = parseYmd(rangeSel.b).getTime();
-                        const [from, to] =
-                          t1 <= t2
-                            ? [rangeSel.a, rangeSel.b]
-                            : [rangeSel.b, rangeSel.a];
-                        setDateFrom(from);
-                        setDateTo(to);
-                        setDatePreset("custom");
-                      }
-                      setDatePopoverOpen(false);
-                    }}
-                  />
-                )}
-
-                <div className="flex-1 min-h-0 overflow-y-auto p-3 space-y-2">
-                  {ticketsLoading ? (
-                    Array.from({ length: 6 }).map((_, i) => (
-                      <div
-                        key={i}
-                        className="animate-pulse bg-white rounded-lg border border-gray-200 p-3"
-                      >
-                        <div className="h-3 bg-gray-200 rounded w-1/3 mb-2" />
-                        <div className="h-2.5 bg-gray-200 rounded w-full mb-1" />
-                        <div className="h-2.5 bg-gray-200 rounded w-2/3" />
-                      </div>
-                    ))
-                  ) : filteredTickets.length > 0 ? (
-                    filteredTickets.map((ticket) => (
-                      <button
-                        key={ticket.id}
-                        type="button"
-                        onClick={() => handleTicketClick(ticket)}
-                        className="w-full text-left bg-white rounded-lg border border-gray-200 p-3 hover:shadow-md hover:border-orange-300 transition-all"
-                      >
-                        <div className="flex items-start justify-between mb-2">
-                          <div className="flex items-center gap-1.5 flex-wrap">
-                            <span
-                              className={`px-2 py-0.5 rounded-full text-xs font-semibold ${
-                                ticket.status === "REOPENED"
-                                  ? "bg-purple-50 text-purple-700"
-                                  : ticket.status === "OPEN"
-                                    ? "bg-blue-50 text-blue-700"
-                                    : ticket.status === "IN_PROGRESS"
-                                      ? "bg-yellow-50 text-yellow-700"
-                                      : ticket.status === "RESOLVED"
-                                        ? "bg-green-50 text-green-700"
-                                        : "bg-gray-50 text-gray-700"
-                              }`}
-                            >
-                              {ticket.status || "OPEN"}
-                            </span>
-                            <span
-                              className={`px-2 py-0.5 rounded-full text-xs font-semibold ${
-                                ticket.priority === "HIGH"
-                                  ? "bg-red-50 text-red-700"
-                                  : ticket.priority === "URGENT"
-                                    ? "bg-red-100 text-red-800"
-                                    : ticket.priority === "MEDIUM"
-                                      ? "bg-orange-50 text-orange-700"
-                                      : "bg-gray-50 text-gray-600"
-                              }`}
-                            >
-                              {ticket.priority || "MEDIUM"}
-                            </span>
-                            <span className="text-xs text-gray-500 font-mono">
-                              #{ticket.ticket_id}
-                            </span>
-                          </div>
-                          <div className="text-xs text-gray-500">
-                            {new Date(ticket.created_at).toLocaleDateString(
-                              "en-IN",
-                              { day: "numeric", month: "short" },
-                            )}
-                          </div>
-                        </div>
-                        <div className="font-semibold text-gray-900 text-sm line-clamp-1">
-                          {ticket.subject}
-                        </div>
-                        <div className="text-xs text-gray-600 line-clamp-2 mt-0.5">
-                          {ticket.description}
-                        </div>
-                      </button>
-                    ))
-                  ) : (
-                    <div className="h-full flex items-center justify-center p-8 text-center">
-                      <div>
-                        <div className="mx-auto mb-4 h-20 w-20 rounded-full bg-gray-100 flex items-center justify-center relative">
-                          <Inbox className="text-gray-400" size={34} />
-                          <span className="absolute -top-1 -right-1 h-3 w-3 rounded-full bg-orange-400 shadow-sm" />
-                          <span className="absolute -bottom-1 -left-1 h-2.5 w-2.5 rounded-full bg-amber-300 shadow-sm" />
-                        </div>
-                        <h3 className="text-base font-semibold text-gray-900">
-                          You have no tickets
-                        </h3>
-                        <p className="mt-1 text-sm text-gray-500 max-w-sm">
-                          Your store tickets will appear here
-                        </p>
-                      </div>
-                    </div>
-                  )}
-                </div>
-              </div>
-
-              {/* Right: empty state until user opens ticket */}
-              <div className="hidden md:flex flex-1 min-w-0 min-h-0 items-center justify-center bg-white">
-                <div className="text-center px-8 py-10">
-                  <div className="mx-auto mb-4 h-20 w-20 rounded-full bg-gray-100 flex items-center justify-center relative">
-                    <Inbox className="text-gray-400" size={34} />
-                    <span className="absolute -top-1 -right-1 h-3 w-3 rounded-full bg-orange-400 shadow-sm" />
-                    <span className="absolute -bottom-1 -left-1 h-2.5 w-2.5 rounded-full bg-amber-300 shadow-sm" />
-                  </div>
-                  <h3 className="text-base font-semibold text-gray-900">
-                    You have no tickets
-                  </h3>
-                  <p className="mt-1 text-sm text-gray-500 max-w-sm">
-                    Select a ticket from the left to view the conversation.
-                  </p>
-                </div>
-              </div>
+                </div>,
+                document.body,
+              )
+                : null}
             </div>
-          )
         ) : (
           /* User Insights View — 2-column layout like Reviews screen */
           <div className="flex h-full min-h-0 flex-col overflow-hidden">
             {/* Main 2-panel layout */}
-            <div className="flex flex-1 min-h-0 overflow-hidden rounded-lg border border-gray-200 bg-white">
+            <div className={`flex flex-1 min-h-0 overflow-hidden ${INBOX_PANEL}`}>
               {/* Left panel: list */}
-              <div className="w-full md:w-[360px] shrink-0 border-b md:border-b-0 md:border-r border-gray-200 flex flex-col min-h-0">
+              <div className="flex w-full min-h-0 shrink-0 flex-col border-b border-gray-200 bg-white md:w-[360px] md:border-b-0 md:border-r">
                 {/* Sticky header with shared bottom border (list scrolls under it) */}
-                <div className="sticky top-0 z-10 bg-white border-b border-gray-200">
+                <div className="sticky top-0 z-10 border-b border-gray-200 bg-white">
                   <div className="p-3 flex items-center gap-2">
                     <MobileHamburgerButton />
                     <input

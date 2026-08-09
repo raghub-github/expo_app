@@ -7,6 +7,7 @@ import Link from 'next/link'
 import { useSearchParams } from 'next/navigation'
 import { MXLayoutWhite } from '@/components/MXLayoutWhite'
 import { PartnerPageHeader } from '@/context/PartnerShellHeaderContext'
+import { PARTNER_PAGE_HEADERS } from '@/lib/partner-page-headers'
 import { usePartnerShellFrame } from '@/context/PartnerShellFrameContext'
 import { RefundPolicyContent } from '@/components/RefundPolicyContent'
 import { supabase } from '@/lib/supabase';
@@ -3486,8 +3487,7 @@ function StoreSettingsContent() {
     return (
       <MXLayoutWhite restaurantName={store?.store_name} restaurantId="" {...storeSettingsShellProps}>
         <PartnerPageHeader
-          title="Store Settings"
-          subtitle="Manage store configuration and preferences"
+          {...PARTNER_PAGE_HEADERS.storeSettings}
           breadcrumbs={settingsHeaderBreadcrumbs}
         />
         <div
@@ -3517,8 +3517,7 @@ function StoreSettingsContent() {
         {...storeSettingsShellProps}
       >
         <PartnerPageHeader
-          title="Store Settings"
-          subtitle="Manage store configuration and preferences"
+          {...PARTNER_PAGE_HEADERS.storeSettings}
           breadcrumbs={settingsHeaderBreadcrumbs}
         />
         <div
