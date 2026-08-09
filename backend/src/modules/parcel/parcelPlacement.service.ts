@@ -12,6 +12,7 @@ import { generateFourDigitOtp } from "../../lib/food-order-otps.js";
 import { recordOrderCancellation } from "../../lib/record-order-cancellation.js";
 import { customerOrderRefWhere } from "../../lib/order-ref-resolve.js";
 import { quoteParcelVehicleFare } from "./parcelQuote.service.js";
+import { computeBillForParcel } from "../billing/parcelBilling.service.js";
 import type { RideVehiclePricingType } from "../rider-payout-pricing/types.js";
 import {
   assertCustomerServiceNotBlocked,
@@ -222,6 +223,34 @@ export async function placeParcelOrder(input: PlaceParcelOrderInput): Promise<Pl
 
   const db = getDb();
 
+  // Backend-authoritative bill: run the PARCEL charge/tax/offer pipeline over the slab fare.
+  // The slab `fare` is the base; grandTotal = pipeline final_amount (platform/booking fee,
+  // surge, GST, and geo-mapped platform offers/coupons). The offer discount is computed
+  // server-side here — never trusted from the client.
+  let grandTotal = fare;
+  let backendOfferDiscount = appliedOfferDiscount;
+  let billingSnapshot: Record<string, unknown> | null = null;
+  try {
+    const bill = await computeBillForParcel(db, {
+      customerId: input.customerPk,
+      parcelFare: fare,
+      distanceKm,
+      pickupLat: input.pickupLat,
+      pickupLng: input.pickupLng,
+      couponCode,
+      selectedPlatformOfferId: platformOfferId,
+      vehicleType: category,
+      paymentMode: paymentMethod,
+    });
+    if (bill.ok) {
+      grandTotal = Math.max(0, Math.round(Number(bill.billing.final_amount) * 100) / 100);
+      backendOfferDiscount = Math.max(0, Math.round(Number(bill.billing.discount_total) * 100) / 100);
+      billingSnapshot = bill.snapshot;
+    }
+  } catch {
+    /* fail-open: keep the slab fare as the total if the billing pipeline errors */
+  }
+
   const [customerRow] = await db
     .select({
       name: customers.fullName,
@@ -302,7 +331,7 @@ export async function placeParcelOrder(input: PlaceParcelOrderInput): Promise<Pl
           deliveryPrimaryContactPhone: receiverMobile,
           distanceKm: String(distanceKm),
           fareAmount: String(fare),
-          grandTotal: String(fare),
+          grandTotal: String(grandTotal),
           tipAmount: "0",
           itemTotal: String(fare),
           addonTotal: "0",
@@ -316,6 +345,7 @@ export async function placeParcelOrder(input: PlaceParcelOrderInput): Promise<Pl
             dropFullAddress: dropAddress,
             routeDistanceKm: distanceKm,
             offerSnapshot,
+            billingSnapshot,
           },
         })
         .returning({
@@ -364,16 +394,16 @@ export async function placeParcelOrder(input: PlaceParcelOrderInput): Promise<Pl
       paymentMethod,
       payAt,
       isCod: paymentMethod === "cash",
-      codAmount: paymentMethod === "cash" ? String(fare) : null,
+      codAmount: paymentMethod === "cash" ? String(grandTotal) : null,
       estimatedFare: String(fare),
-      finalFare: String(fare),
+      finalFare: String(grandTotal),
       tripDistanceKm: String(distanceKm),
       currency: "INR",
       amountCollected: "0",
       couponCode,
       platformOfferId,
       offerSnapshot,
-      appliedOfferDiscount: String(appliedOfferDiscount),
+      appliedOfferDiscount: String(backendOfferDiscount),
       pickupOtp,
       deliveryOtp,
       searchStartedAt: now,
@@ -413,7 +443,7 @@ export async function placeParcelOrder(input: PlaceParcelOrderInput): Promise<Pl
       formattedOrderId: insertedCore?.formattedOrderId ?? null,
       coreOrderId: orderCorePk,
       status: "SEARCHING_RIDER",
-      totalAmount: fare,
+      totalAmount: grandTotal,
       searchTimeoutSec,
       searchExpiresAt: searchExpiresAt.toISOString(),
       createdAt: toIso(insertedCore?.createdAt, now),
