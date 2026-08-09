@@ -4,14 +4,18 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { usePathname } from "next/navigation";
 import { toast } from "sonner";
 import {
-  installFirebasePushErrorGuard,
+  getEffectiveNotificationPermission,
   onBrowserPushForeground,
   registerBrowserPushToken,
+  syncBrowserPushPermissionWithBackend,
 } from "@/lib/browser-push/firebase-web";
 import {
+  clearPushRegistrationPending,
   isPushSessionDismissed,
   markPushRegistered,
   markPushRegistrationPending,
+  markPushSessionDismissed,
+  notePushPermissionObserved,
 } from "@/lib/browser-push/partner-push-state";
 import {
   getPartnerPushStatus,
@@ -33,10 +37,11 @@ type ModalMode = "permission" | "registration";
 
 /**
  * When a merchant is on /mx or /partners (after login):
- *  1. If permission already granted → register FCM web token (with retries)
- *  2. If permission blocked / not asked → show permission modal
- *  3. If permission granted but token not registered → show registration completion modal
- *  4. Foreground toasts for campaigns while the tab is open
+ *  1. Sync browser permission with backend (deactivate tokens when blocked)
+ *  2. If permission already granted → register FCM web token (with retries)
+ *  3. If permission blocked / not asked → show permission modal
+ *  4. If permission granted but token not registered → show registration completion modal
+ *  5. Foreground toasts for campaigns while the tab is open and permission is granted
  */
 export function PartnerBrowserPushBootstrap() {
   const pathname = usePathname() ?? "";
@@ -52,11 +57,15 @@ export function PartnerBrowserPushBootstrap() {
 
   const tryRegister = useCallback(async (): Promise<boolean> => {
     if (typeof window === "undefined" || !("Notification" in window)) return false;
-    if (Notification.permission !== "granted") return false;
+
+    await syncBrowserPushPermissionWithBackend();
+    const permission = await getEffectiveNotificationPermission();
+    if (permission !== "granted") return false;
 
     markPushRegistrationPending();
     const token = await registerBrowserPushToken("merchant", { retries: 4 });
     if (!token) {
+      clearPushRegistrationPending();
       invalidatePartnerPushBackendCache();
       const snap = await getPartnerPushStatus();
       setPushStatus(snap.status);
@@ -64,7 +73,7 @@ export function PartnerBrowserPushBootstrap() {
     }
 
     invalidatePartnerPushBackendCache();
-    markPushRegistered();
+    markPushRegistered(token);
     setModalMode(null);
     const snap = await getPartnerPushStatus();
     setPushStatus(snap.status);
@@ -73,7 +82,26 @@ export function PartnerBrowserPushBootstrap() {
 
   const evaluateModalState = useCallback(async () => {
     if (typeof window === "undefined" || !("Notification" in window)) return;
-    if (isPushSessionDismissed(merchantUserId)) return;
+    if (isPushSessionDismissed(merchantUserId)) {
+      setModalMode(null);
+      return;
+    }
+
+    await syncBrowserPushPermissionWithBackend();
+
+    const permission = await getEffectiveNotificationPermission();
+    if (notePushPermissionObserved(permission)) {
+      markPushSessionDismissed(merchantUserId);
+      setPushStatus("denied");
+      setModalMode(null);
+      return;
+    }
+
+    if (permission === "denied") {
+      setPushStatus("denied");
+      setModalMode("permission");
+      return;
+    }
 
     const snap = await getPartnerPushStatus();
     setPushStatus(snap.status);
@@ -83,12 +111,16 @@ export function PartnerBrowserPushBootstrap() {
       return;
     }
 
-    if (snap.status === "denied") {
+    if (snap.status === "default") {
       setModalMode("permission");
       return;
     }
 
-    if (snap.status === "granted" || snap.status === "registration_failed") {
+    if (
+      snap.status === "granted" ||
+      snap.status === "registration_failed" ||
+      snap.status === "registering"
+    ) {
       const ok = await tryRegister();
       if (ok) return;
       if (isPushSessionDismissed(merchantUserId)) return;
@@ -107,8 +139,6 @@ export function PartnerBrowserPushBootstrap() {
       return;
     }
 
-    installFirebasePushErrorGuard();
-
     if (!registerAttemptRef.current) {
       registerAttemptRef.current = true;
       window.setTimeout(() => {
@@ -117,14 +147,17 @@ export function PartnerBrowserPushBootstrap() {
     }
 
     const onStoreChange = () => {
-      if (Notification.permission !== "granted") return;
-      invalidatePartnerPushBackendCache();
-      void tryRegister();
+      void (async () => {
+        await syncBrowserPushPermissionWithBackend();
+        const permission = await getEffectiveNotificationPermission();
+        if (permission !== "granted") return;
+        invalidatePartnerPushBackendCache();
+        await tryRegister();
+      })();
     };
     window.addEventListener(PARTNER_SELECTED_STORE_CHANGED, onStoreChange);
 
     const onFocus = () => {
-      if (Notification.permission !== "granted") return;
       if (isPushSessionDismissed(merchantUserId)) return;
       invalidatePartnerPushBackendCache();
       void evaluateModalState();
@@ -132,9 +165,38 @@ export function PartnerBrowserPushBootstrap() {
     window.addEventListener("focus", onFocus);
     document.addEventListener("visibilitychange", onFocus);
 
-    let unsub: () => void = () => {};
-    if (Notification.permission === "granted") {
-      unsub = onBrowserPushForeground((payload) => {
+    let permissionStatus: PermissionStatus | null = null;
+    const onPermissionChange = () => {
+      void (async () => {
+        await syncBrowserPushPermissionWithBackend();
+        const permission = await getEffectiveNotificationPermission();
+        if (notePushPermissionObserved(permission)) {
+          markPushSessionDismissed(merchantUserId);
+          setPushStatus("denied");
+          setModalMode(null);
+          return;
+        }
+        if (isPushSessionDismissed(merchantUserId)) {
+          setModalMode(null);
+          return;
+        }
+        void evaluateModalState();
+      })();
+    };
+    void (async () => {
+      try {
+        if ("permissions" in navigator) {
+          permissionStatus = await navigator.permissions.query({
+            name: "notifications" as PermissionName,
+          });
+          permissionStatus.addEventListener("change", onPermissionChange);
+        }
+      } catch {
+        /* ignore */
+      }
+    })();
+
+    const unsub = onBrowserPushForeground((payload) => {
       const title =
         payload.notification?.title ||
         (typeof payload.data?.title === "string" ? payload.data.title : null) ||
@@ -166,13 +228,13 @@ export function PartnerBrowserPushBootstrap() {
           },
         },
       });
-      });
-    }
+    });
 
     return () => {
       window.removeEventListener(PARTNER_SELECTED_STORE_CHANGED, onStoreChange);
       window.removeEventListener("focus", onFocus);
       document.removeEventListener("visibilitychange", onFocus);
+      permissionStatus?.removeEventListener("change", onPermissionChange);
       unsub();
     };
   }, [onDashboard, ready, authenticated, merchantUserId, evaluateModalState, tryRegister]);
@@ -188,7 +250,6 @@ export function PartnerBrowserPushBootstrap() {
       merchantUserId={merchantUserId}
       onClose={() => setModalMode(null)}
       onRegistered={() => {
-        markPushRegistered();
         invalidatePartnerPushBackendCache();
         setPushStatus("enabled");
         setModalMode(null);

@@ -1,12 +1,21 @@
 import type { Metadata } from "next";
 import { MerchantSessionProvider } from "@/context/MerchantSessionContext";
 import { QueryProvider } from "@/components/QueryProvider";
-import { Geist, Geist_Mono } from "next/font/google";
+import { Geist_Mono, Lora, Poppins } from "next/font/google";
 import "./globals.css";
 
-const geistSans = Geist({
-  variable: "--font-geist-sans",
+const siteLora = Lora({
   subsets: ["latin"],
+  weight: ["400", "500", "600", "700"],
+  variable: "--font-site-lora",
+  display: "swap",
+});
+
+const sitePoppins = Poppins({
+  subsets: ["latin"],
+  weight: ["500", "600", "700", "800"],
+  variable: "--font-site-poppins",
+  display: "swap",
 });
 
 const geistMono = Geist_Mono({
@@ -51,7 +60,7 @@ export default function RootLayout({
         <link rel="apple-touch-icon" href="/logo.png" />
       </head>
       <body
-        className={`${geistSans.variable} ${geistMono.variable} antialiased bg-white`}
+        className={`${siteLora.variable} ${sitePoppins.variable} ${geistMono.variable} antialiased bg-white`}
         style={{ background: '#fff', minHeight: '100%', width: '100%', overflowX: 'hidden' }}
       >
         <QueryProvider>

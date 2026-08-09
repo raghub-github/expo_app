@@ -46,6 +46,10 @@ import {
 } from "@/lib/tickets/ticket-path-utils";
 import { isCustomerDetailOpenedFromOrder } from "@/lib/navigation/customer-dashboard-from-order";
 import type { TicketOtherAgentViewer } from "@/lib/tickets/ticket-presence";
+import {
+  TicketsNavPendingProvider,
+  useTicketsNavPendingOptional,
+} from "@/context/TicketsNavPendingContext";
 
 const SIDEBAR_STATE_KEY = "dashboard-sidebar-open";
 
@@ -118,7 +122,9 @@ function DashboardLayoutClient({
   return (
     <DashboardSearchParamsProvider>
       <Toaster position="top-right" richColors closeButton />
-      <DashboardLayoutClientInner>{children}</DashboardLayoutClientInner>
+      <TicketsNavPendingProvider>
+        <DashboardLayoutClientInner>{children}</DashboardLayoutClientInner>
+      </TicketsNavPendingProvider>
     </DashboardSearchParamsProvider>
   );
 }
@@ -465,8 +471,14 @@ function DashboardLayoutContent({
   const searchParams = useDashboardSearchParams();
   const queryClient = useQueryClient();
   const filterSidebar = useTicketFilterSidebar();
+  const ticketsNavPending = useTicketsNavPendingOptional();
   const cleanPathname = useMemo(() => pathname.split("?")[0].split("#")[0], [pathname]);
-  const isTicketDetailPage = useMemo(() => isTicketsAppDetailPath(cleanPathname), [cleanPathname]);
+  const isTicketDetailPage = useMemo(
+    () =>
+      isTicketsAppDetailPath(cleanPathname) ||
+      (cleanPathname === "/dashboard/tickets" && Boolean(ticketsNavPending?.pendingTicketId)),
+    [cleanPathname, ticketsNavPending?.pendingTicketId]
+  );
   const isTicketsQueueWorkspace = useMemo(
     () => isTicketsQueueLayoutExperience(cleanPathname, searchParams),
     [cleanPathname, searchParams.toString()]

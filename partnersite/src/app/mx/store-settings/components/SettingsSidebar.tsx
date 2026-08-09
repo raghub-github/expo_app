@@ -10,7 +10,10 @@ interface SettingsSidebarProps {
   collapsed?: boolean
 }
 
-/** Matches {@link MXSidebarWhite} `partnerShell` nav links: gray active bar; width set by parent (e.g. w-56). */
+const SETTINGS_NAV_ITEM =
+  'group relative flex h-11 w-full items-center rounded-[10px] outline-none transition-[background-color,color] duration-[220ms] ease-in-out focus-visible:ring-2 focus-visible:ring-gray-400/40'
+
+/** Matches {@link MXSidebarWhite} partnerShell nav spacing. */
 export function SettingsSidebar({ activeTab, onTabChange, collapsed = false }: SettingsSidebarProps) {
   const tabs = [
     { id: 'plans', label: 'Plans & Subscription', icon: Crown },
@@ -26,61 +29,63 @@ export function SettingsSidebar({ activeTab, onTabChange, collapsed = false }: S
 
   return (
     <nav
-      className={`flex flex-col flex-1 min-h-0 overflow-y-auto overflow-x-hidden hide-scrollbar space-y-0.5 ${
-        collapsed ? 'px-2 py-3 items-center gap-1' : 'p-4 pt-3'
+      className={`flex flex-col ${
+        collapsed ? 'space-y-1.5 px-3 py-2' : 'space-y-0.5 px-3 py-3'
       }`}
     >
-      {!collapsed && (
-        <div className="px-3 mb-2 text-xs font-semibold text-gray-500 uppercase tracking-wider">
-          Settings
-        </div>
-      )}
-      {tabs.map((tab) => {
-        const Icon = tab.icon
-        const isActive = activeTab === tab.id
-        const btn = (
-          <button
-            type="button"
-            title={tab.label}
-            aria-label={tab.label}
-            onClick={() => onTabChange(tab.id)}
-            className={`flex items-center rounded-lg transition-all duration-200 font-medium text-sm outline-none focus-visible:ring-2 focus-visible:ring-gray-400 focus-visible:ring-offset-0 ${
-              collapsed ? 'justify-center w-9 h-9 shrink-0' : 'w-full gap-2.5 px-3 py-2.5'
-            } ${
-              isActive
-                ? collapsed
-                  ? 'bg-gray-200/90 text-gray-900 ring-2 ring-gray-800'
-                  : 'bg-gray-200/90 text-gray-900 border-l-4 border-gray-800 font-semibold'
-                : collapsed
-                  ? 'text-gray-700 hover:bg-gray-200/60 hover:text-gray-900'
-                  : 'text-gray-700 hover:bg-gray-200/60 hover:text-gray-900 border-l-4 border-transparent'
-            }`}
-          >
-            <span className={`flex-shrink-0 ${isActive ? 'text-gray-800' : 'text-gray-500'}`}>
-              {Icon ? (
-                <Icon size={collapsed ? 18 : 20} />
-              ) : (
-                // eslint-disable-next-line @next/next/no-img-element
-                <img src="/gstore.png" alt="" className={collapsed ? 'w-[18px] h-[18px] opacity-90' : 'w-5 h-5 opacity-90'} />
-              )}
-            </span>
-            {!collapsed && <span className="flex-1 min-w-0 text-left leading-snug truncate">{tab.label}</span>}
-          </button>
-        )
-        if (collapsed) {
-          return (
-            <div key={tab.id} className="relative group flex w-full justify-center">
-              {btn}
-              <div className="absolute right-full top-1/2 -translate-y-1/2 mr-2 opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-opacity duration-200 z-[100] pointer-events-none [@media(hover:none)]:hidden">
-                <span className="inline-block px-3 py-2 bg-gray-100/95 backdrop-blur-sm border border-gray-200/80 text-gray-800 text-xs font-medium rounded-xl shadow-md whitespace-nowrap max-w-[220px]">
+      <div className={`${collapsed ? 'space-y-1.5' : 'space-y-0.5'}`}>
+        {tabs.map((tab) => {
+          const Icon = tab.icon
+          const isActive = activeTab === tab.id
+          const btn = (
+            <button
+              type="button"
+              title={tab.label}
+              aria-label={tab.label}
+              aria-current={isActive ? 'page' : undefined}
+              onClick={() => onTabChange(tab.id)}
+              className={`${SETTINGS_NAV_ITEM} group ${
+                collapsed ? '' : 'gap-2.5 px-3 py-2.5'
+              } ${
+                isActive
+                  ? collapsed
+                    ? 'bg-gray-200/90 text-gray-900'
+                    : 'border-l-4 border-gray-800 bg-gray-200/90 font-semibold text-gray-900'
+                  : collapsed
+                    ? 'text-gray-600 hover:bg-gray-200/60 hover:text-gray-900'
+                    : 'border-l-4 border-transparent text-gray-700 hover:bg-gray-200/60 hover:text-gray-900'
+              }`}
+            >
+              <span className="flex size-10 shrink-0 items-center justify-center">
+                <span className={`flex shrink-0 items-center justify-center ${isActive ? 'text-gray-800' : 'text-gray-500'}`}>
+                  {Icon ? (
+                    <Icon size={20} strokeWidth={1.75} />
+                  ) : (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img src="/gstore.png" alt="" className="size-5 opacity-90" />
+                  )}
+                </span>
+              </span>
+              {!collapsed && (
+                <span className="min-w-0 flex-1 truncate text-left text-sm font-medium leading-snug">
                   {tab.label}
                 </span>
-              </div>
-            </div>
+              )}
+            </button>
           )
-        }
-        return <React.Fragment key={tab.id}>{btn}</React.Fragment>
-      })}
+          if (collapsed) {
+            return (
+              <div key={tab.id} className="relative flex w-full justify-center">
+                {btn}
+                <div className="pointer-events-none absolute right-full top-1/2 z-[100] mr-2 -translate-y-1/2 whitespace-nowrap rounded-lg border border-gray-200/80 bg-gray-100/95 px-2.5 py-1.5 text-xs font-medium text-gray-800 opacity-0 shadow-xl transition-opacity duration-[220ms] group-hover:opacity-100 [@media(hover:none)]:hidden">
+                  {tab.label}
+                </div>
+              </div>
+            )
+          }
+          return <React.Fragment key={tab.id}>{btn}</React.Fragment>
+        })}
+      </div>
     </nav>
   )
 }

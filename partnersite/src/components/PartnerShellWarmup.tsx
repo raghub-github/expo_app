@@ -36,7 +36,6 @@ export function PartnerShellWarmup() {
       prefetchPartnerRouteData(queryClient, '/partners/dashboard', storeId);
       prefetchPartnerRouteData(queryClient, '/partners/payments', storeId);
       prefetchPartnerRouteData(queryClient, '/partners/orders', storeId);
-      prefetchPartnerRouteData(queryClient, '/partners/order-history', storeId);
       prefetchPartnerRouteData(queryClient, '/partners/store-settings?tab=operations', storeId);
       prefetchPartnerRouteData(queryClient, '/partners/profile', storeId);
     }

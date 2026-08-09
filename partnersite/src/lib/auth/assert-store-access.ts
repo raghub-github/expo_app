@@ -104,6 +104,61 @@ async function findSystemUserOverride(
   }
 }
 
+async function resolveAuthenticatedUser(
+  supabaseServer: Awaited<ReturnType<typeof createServerSupabaseClient>>,
+): Promise<
+  | { ok: true; user: { id: string; email?: string | null; phone?: string | null } }
+  | { ok: false; error: string; status: number }
+> {
+  const maxAttempts = 3;
+
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    try {
+      if (attempt > 0) {
+        await new Promise((resolve) => setTimeout(resolve, 120 * attempt));
+        try {
+          await supabaseServer.auth.getSession();
+        } catch {
+          /* ignore */
+        }
+      }
+
+      let {
+        data: { user: sessionUser },
+        error: userError,
+      } = await supabaseServer.auth.getUser();
+
+      if ((!sessionUser || userError) && attempt === 0) {
+        try {
+          await supabaseServer.auth.getSession();
+        } catch {
+          /* ignore */
+        }
+        const retry = await supabaseServer.auth.getUser();
+        sessionUser = retry.data.user;
+        userError = retry.error;
+      }
+
+      if (sessionUser && !userError) {
+        return { ok: true, user: sessionUser };
+      }
+
+      if (userError && isNetworkOrTransientError(userError)) {
+        if (attempt < maxAttempts - 1) continue;
+        return { ok: false, error: 'Auth service unavailable', status: 503 };
+      }
+    } catch (e) {
+      if (isNetworkOrTransientError(e)) {
+        if (attempt < maxAttempts - 1) continue;
+        return { ok: false, error: 'Auth service unavailable', status: 503 };
+      }
+      throw e;
+    }
+  }
+
+  return { ok: false, error: 'Not authenticated', status: 401 };
+}
+
 export async function assertStoreAccess(storeIdParam: string | null): Promise<AssertStoreResult> {
   if (!storeIdParam || String(storeIdParam).trim() === '') {
     return { ok: false, error: 'storeId required', status: 400 }
@@ -115,22 +170,11 @@ export async function assertStoreAccess(storeIdParam: string | null): Promise<As
   let user: { id: string; email?: string | null; phone?: string | null } | null = null
   try {
     const supabaseServer = await createServerSupabaseClient()
-    let { data: { user: sessionUser }, error: userError } = await supabaseServer.auth.getUser()
-    if (userError || !sessionUser) {
-      // Cookie session can lag after OTP/set-cookie — refresh once then retry.
-      try {
-        await supabaseServer.auth.getSession()
-      } catch {
-        /* ignore */
-      }
-      const retry = await supabaseServer.auth.getUser()
-      sessionUser = retry.data.user
-      userError = retry.error
+    const resolved = await resolveAuthenticatedUser(supabaseServer)
+    if (!resolved.ok) {
+      return { ok: false, error: resolved.error, status: resolved.status }
     }
-    if (userError || !sessionUser) {
-      return { ok: false, error: 'Not authenticated', status: 401 }
-    }
-    user = sessionUser
+    user = resolved.user
   } catch (e) {
     // DNS blips / connect timeouts to Supabase throw TypeError: fetch failed
     // instead of returning an AuthError — surface a clean status, don't crash the route.

@@ -1,7 +1,6 @@
 'use client';
 
-import { Loader2, MessageSquare, PencilLine, ArrowRight } from 'lucide-react';
-import { formatCountdownMmSs } from '@/lib/auth/format-countdown';
+import { ArrowRight } from 'lucide-react';
 import { PhoneNumberInput } from './PhoneNumberInput';
 import { PrimaryButton } from './PrimaryButton';
 import { OTPInputComponent } from './OTPInputComponent';
@@ -15,17 +14,17 @@ export interface PhoneLoginFormProps {
   loading: boolean;
   resendCooldown: number;
   onSendOtp: (e: React.FormEvent) => void;
+  onVerifyOtp: (e: React.FormEvent) => void;
   onOtpComplete?: (otp: string) => void;
   onResendOtp: () => void;
   onChangeNumber: () => void;
   phoneOtpEnabled: boolean;
 }
 
-function maskPhone(phone: string): string {
-  const digits = phone.replace(/\D/g, '').slice(-10);
-  if (digits.length < 10) return digits;
-  return `${digits.slice(0, 2)}******${digits.slice(-2)}`;
-}
+const OTP_LABEL_CLASS = 'block text-center text-sm font-semibold text-slate-800 mb-3';
+
+const SECONDARY_BTN =
+  'py-2.5 px-4 rounded-xl border border-slate-200 bg-white text-slate-600 text-sm font-medium shadow-sm hover:bg-slate-50 hover:border-slate-300 transition-colors disabled:opacity-50 disabled:cursor-not-allowed';
 
 export function PhoneLoginForm({
   phone,
@@ -36,6 +35,7 @@ export function PhoneLoginForm({
   loading,
   resendCooldown,
   onSendOtp,
+  onVerifyOtp,
   onOtpComplete,
   onResendOtp,
   onChangeNumber,
@@ -76,29 +76,9 @@ export function PhoneLoginForm({
   }
 
   return (
-    <form onSubmit={(e) => e.preventDefault()} className="space-y-4">
-      <div className="rounded-xl border border-[#00A88F]/20 bg-[#E5F5F0]/80 px-4 py-3">
-        <div className="flex items-start gap-3">
-          <span className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[#00A88F]/15 text-[#00A88F]">
-            <MessageSquare className="h-4 w-4" aria-hidden />
-          </span>
-          <div className="min-w-0 flex-1">
-            <p className="text-sm font-semibold text-slate-800">OTP sent to +91 {maskPhone(phone)}</p>
-            <p className="mt-0.5 text-xs text-slate-500">Enter the 6-digit code below</p>
-          </div>
-          <button
-            type="button"
-            onClick={onChangeNumber}
-            disabled={loading}
-            className="inline-flex shrink-0 items-center gap-1 text-xs font-semibold text-[#00A88F] hover:text-[#009078] disabled:opacity-50"
-          >
-            <PencilLine className="h-3.5 w-3.5" aria-hidden />
-            Edit
-          </button>
-        </div>
-      </div>
-
-      <div id="otp-input-section" className="space-y-2.5 scroll-mt-4">
+    <form onSubmit={onVerifyOtp} className="space-y-4">
+      <div id="otp-input-section" className="scroll-mt-4">
+        <label className={OTP_LABEL_CLASS}>Mobile OTP</label>
         <OTPInputComponent
           value={otp}
           onChange={onOtpChange}
@@ -107,25 +87,37 @@ export function PhoneLoginForm({
         />
       </div>
 
-      {loading ? (
-        <div className="flex items-center justify-center gap-2 rounded-xl bg-[#E5F5F0] py-3 text-sm font-medium text-[#006B4F]">
-          <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
-          Verifying OTP…
-        </div>
-      ) : null}
+      <div className="flex flex-wrap gap-2">
+        <button
+          type="button"
+          onClick={onChangeNumber}
+          disabled={loading}
+          className={SECONDARY_BTN}
+        >
+          Change number
+        </button>
+        <PrimaryButton
+          type="submit"
+          loading={loading}
+          disabled={otp.replace(/\D/g, '').length < 6}
+          className="flex-1 min-w-[140px]"
+        >
+          Verify &amp; continue
+        </PrimaryButton>
+      </div>
 
-      <p className="pt-0.5 text-center text-sm text-slate-600">
-        Didn&apos;t receive the code?{' '}
+      <p className="text-sm text-slate-600 text-center">
+        Didn&apos;t receive OTP?{' '}
         {resendCooldown > 0 ? (
-          <span className="text-slate-500">Resend in {formatCountdownMmSs(resendCooldown)}</span>
+          <span className="text-slate-500">Resend SMS in {resendCooldown}s</span>
         ) : (
           <button
             type="button"
             onClick={onResendOtp}
             disabled={loading}
-            className="font-semibold text-[#00A88F] hover:text-[#009078] hover:underline disabled:opacity-50"
+            className="font-medium text-[#00A88F] hover:text-[#009078] hover:underline disabled:opacity-50"
           >
-            Resend OTP
+            Resend SMS
           </button>
         )}
       </p>

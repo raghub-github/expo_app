@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 import { PartnerPendingNewOrdersBar } from "@/components/PartnerPendingNewOrdersBar";
 import { PartnerAcceptanceTimeoutSync } from "@/components/PartnerAcceptanceTimeoutSync";
 import { PartnerShellWarmup } from "@/components/PartnerShellWarmup";
+import { PartnerMerchantQueryFocusSync } from "@/components/PartnerMerchantQueryFocusSync";
 import { GlobalToaster } from "@/components/GlobalToaster";
 import { PartnerStoreAccessGate } from "@/components/PartnerStoreAccessGate";
 import { PartnerShellFrame } from "@/components/PartnerShellFrame";
@@ -56,6 +57,7 @@ export default function PartnersLayout({ children }: { children: React.ReactNode
       <GlobalToaster />
       <PartnerBrowserPushBootstrap />
       <PartnerShellWarmup />
+      <PartnerMerchantQueryFocusSync />
       <PartnerAcceptanceTimeoutSync />
       <Suspense fallback={null}>
         <PartnerPendingNewOrdersBar />

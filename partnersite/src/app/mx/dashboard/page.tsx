@@ -1250,12 +1250,6 @@ function DashboardContent() {
     setCloseReasonOther('')
   }
 
-  const selfDeliveryRidersSettingsUrl = React.useCallback(() => {
-    return storeId
-      ? `/mx/store-settings?storeId=${encodeURIComponent(storeId)}&tab=delivery#self-delivery-riders`
-      : '/mx/store-settings?tab=delivery#self-delivery-riders'
-  }, [storeId])
-
   const patchDeliveryMode = React.useCallback(
     async (selfDelivery: boolean) => {
       if (!storeId) return false
@@ -1305,15 +1299,13 @@ function DashboardContent() {
       }
 
       if (riders.length === 0) {
-        toast.info('Add at least one self-delivery rider before turning this on.')
-        router.push(selfDeliveryRidersSettingsUrl())
+        toast.error('Please add rider first, then turn on toggle')
         return
       }
 
       const hasActiveRider = riders.some((r) => r.is_active !== false)
       if (!hasActiveRider) {
-        toast.info('Activate at least one rider before enabling self delivery.')
-        router.push(selfDeliveryRidersSettingsUrl())
+        toast.error('Please activate a rider first, then turn on toggle')
         return
       }
 

@@ -7,13 +7,14 @@ import Link from 'next/link'
 import { useSearchParams } from 'next/navigation'
 import { MXLayoutWhite } from '@/components/MXLayoutWhite'
 import { PartnerPageHeader } from '@/context/PartnerShellHeaderContext'
+import { usePartnerShellFrame } from '@/context/PartnerShellFrameContext'
 import { RefundPolicyContent } from '@/components/RefundPolicyContent'
 import { supabase } from '@/lib/supabase';
 import { fetchRestaurantById as fetchStoreById, fetchRestaurantByName as fetchStoreByName } from '@/lib/database'
 import { MerchantStore } from '@/lib/merchantStore'
 import { DEMO_RESTAURANT_ID as DEMO_STORE_ID } from '@/lib/constants'
 import { Clock, Phone, Save, AlertCircle, CheckCircle2, X, Zap, Shield, BarChart3, Bell, Crown, Star, Check, MapPin, Calendar, Copy, Power, Plus, Trash2, ChevronDown, ChevronUp, ChevronLeft, ChevronRight, Gift, Target, Globe, Users, Package, CreditCard, Sparkles, Smartphone, Lock, Unlock, Activity, FileText, Mail, MessageSquare, Radio, TrendingUp, Database, Eye, EyeOff, ShoppingBag, ChefHat, CheckCircle, XCircle, Image, Layers, BarChart2, Headphones, UserCheck, Filter } from 'lucide-react'
-import { PageSkeletonGeneric } from '@/components/PageSkeleton'
+import { PageSkeletonGeneric, StoreSettingsPageSkeleton } from '@/components/PageSkeleton'
 import { toast } from 'sonner'
 import { useQueryClient } from '@tanstack/react-query'
 import { merchantKeys } from '@/lib/query-keys'
@@ -219,6 +220,54 @@ function StoreSettingsContent() {
 
   /** Desktop right settings rail: icon-only vs full labels (matches partner left sidebar behaviour). */
   const [settingsSidebarCollapsed, setSettingsSidebarCollapsed] = useState(false)
+  const partnerShell = usePartnerShellFrame()
+
+  const handleDualSidebarLeftExpanded = useCallback(() => {
+    setSettingsSidebarCollapsed(true)
+  }, [])
+
+  const handleSettingsRailCollapsedChange = useCallback(
+    (nextCollapsed: boolean) => {
+      setSettingsSidebarCollapsed(nextCollapsed)
+      // Expanding right → collapse left. Collapsing right → both may stay icon-only (control dash allows both closed).
+      if (!nextCollapsed) {
+        partnerShell?.setPartnerLeftSidebarCollapsed(true)
+      }
+    },
+    [partnerShell],
+  )
+
+  const settingsDualInitRef = React.useRef(false)
+  useLayoutEffect(() => {
+    if (typeof window === 'undefined') return
+    if (!window.matchMedia('(min-width: 1024px)').matches) return
+    if (!partnerShell) return
+    if (settingsDualInitRef.current) return
+    settingsDualInitRef.current = true
+    partnerShell.setPartnerLeftSidebarCollapsed(true)
+    setSettingsSidebarCollapsed(false)
+  }, [partnerShell])
+
+  useEffect(() => {
+    return () => {
+      settingsDualInitRef.current = false
+    }
+  }, [])
+
+  // Never keep both rails fully expanded — prefer keeping the settings (right) rail open.
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    if (!window.matchMedia('(min-width: 1024px)').matches) return
+    const leftCollapsed = partnerShell?.partnerLeftSidebarCollapsed ?? true
+    if (!settingsSidebarCollapsed && !leftCollapsed) {
+      partnerShell?.setPartnerLeftSidebarCollapsed(true)
+    }
+  }, [settingsSidebarCollapsed, partnerShell?.partnerLeftSidebarCollapsed, partnerShell])
+
+  const storeSettingsShellProps = {
+    dualSidebarRail: true as const,
+    onDualSidebarLeftExpanded: handleDualSidebarLeftExpanded,
+  }
 
   // Lock shell scroll before paint: only the center column scrolls.
   useLayoutEffect(() => {
@@ -1461,14 +1510,11 @@ function StoreSettingsContent() {
       .finally(() => setRidersLoading(false))
   }, [storeId, activeTab])
 
+  // Strip legacy hash links so toggles/navigation never auto-jump the delivery page.
   useEffect(() => {
-    if (activeTab !== 'delivery' || typeof window === 'undefined') return
-    if (window.location.hash !== '#self-delivery-riders') return
-    const timer = window.setTimeout(() => {
-      document.getElementById('self-delivery-riders')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
-    }, 350)
-    return () => window.clearTimeout(timer)
-  }, [activeTab, ridersLoading, riders.length])
+    if (typeof window === 'undefined' || !window.location.hash) return
+    window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}`)
+  }, [])
 
   const fetchRiders = () => {
     if (!storeId) return
@@ -1716,6 +1762,23 @@ function StoreSettingsContent() {
     } else {
       toast.success('✅ GatiMitra Delivery will handle all deliveries')
     }
+  }
+
+  const requestSelfDeliveryEnable = () => {
+    if (ridersLoading) {
+      toast.info('Loading riders…')
+      return
+    }
+    if (riders.length === 0) {
+      toast.error('Please add rider first, then turn on toggle')
+      return
+    }
+    const hasActiveRider = riders.some((r) => r.is_active !== false)
+    if (!hasActiveRider) {
+      toast.error('Please activate a rider first, then turn on toggle')
+      return
+    }
+    setShowSelfDeliveryConfirm(true)
   }
 
   const handleSavePackaging = async () => {
@@ -3421,15 +3484,38 @@ function StoreSettingsContent() {
 
   if (!storeId) {
     return (
-      <MXLayoutWhite restaurantName={store?.store_name} restaurantId="">
-        <PageSkeletonGeneric />
+      <MXLayoutWhite restaurantName={store?.store_name} restaurantId="" {...storeSettingsShellProps}>
+        <PartnerPageHeader
+          title="Store Settings"
+          subtitle="Manage store configuration and preferences"
+          breadcrumbs={settingsHeaderBreadcrumbs}
+        />
+        <div
+          className={`mx-store-settings-root flex flex-1 min-h-0 flex-col overflow-hidden bg-gray-50 ${settingsRailMainPaddingClass(settingsSidebarCollapsed)}`}
+        >
+          <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+            <div className="min-h-0 flex-1 overflow-hidden bg-gray-50 px-4 sm:px-6 lg:px-8 py-4">
+              <StoreSettingsPageSkeleton />
+            </div>
+          </div>
+        </div>
+        <SettingsSidebarRail
+          activeTab={activeTab}
+          onTabChange={(tab: string) => setActiveTab(tab as typeof activeTab)}
+          collapsed={settingsSidebarCollapsed}
+          onCollapsedChange={handleSettingsRailCollapsedChange}
+        />
       </MXLayoutWhite>
     )
   }
 
   return (
     <>
-      <MXLayoutWhite restaurantName={store?.store_name ?? 'Store'} restaurantId={storeId || DEMO_STORE_ID}>
+      <MXLayoutWhite
+        restaurantName={store?.store_name ?? 'Store'}
+        restaurantId={storeId || DEMO_STORE_ID}
+        {...storeSettingsShellProps}
+      >
         <PartnerPageHeader
           title="Store Settings"
           subtitle="Manage store configuration and preferences"
@@ -3447,7 +3533,7 @@ function StoreSettingsContent() {
                   : 'overflow-x-hidden overflow-y-auto overscroll-y-contain'
               }`}
             >
-            <div className={`px-4 sm:px-6 lg:px-8 pt-1 pb-2 sm:pb-3 ${activeTab === 'timings' ? 'flex min-h-0 flex-1 flex-col' : ''}`}>
+            <div className={`px-4 sm:px-6 lg:px-8 pt-2 pb-8 sm:pb-10 ${activeTab === 'timings' ? 'flex min-h-0 flex-1 flex-col' : ''}`}>
               <div className={`mx-auto w-full max-w-6xl ${activeTab === 'timings' ? 'flex min-h-0 flex-1 flex-col' : ''}`}>
               {/* Mobile Tabs */}
               <div className="lg:hidden mb-4 -mx-4 sm:-mx-6 lg:-mx-8 px-4 sm:px-6 lg:px-8">
@@ -4295,7 +4381,7 @@ function StoreSettingsContent() {
                           checked={selfDeliveryEnabled}
                           onChange={(e) => {
                             if (e.target.checked) {
-                              setShowSelfDeliveryConfirm(true)
+                              requestSelfDeliveryEnable()
                             } else {
                               setSelfDeliveryEnabled(false)
                               setGatimitraDeliveryEnabled(true)
@@ -4403,7 +4489,7 @@ function StoreSettingsContent() {
                   </div>
                 </div>
 
-                <div id="self-delivery-riders" className="scroll-mt-[calc(var(--mx-partner-topbar-h,3.5rem)+0.75rem)] rounded-xl border border-gray-200 bg-white p-4 sm:p-6 shadow-sm">
+                <div id="self-delivery-riders" className="scroll-mt-3 rounded-xl border border-gray-200 bg-white p-4 sm:p-6 shadow-sm">
                   <h4 className="text-base font-bold text-gray-900 mb-2">Self-Delivery Riders</h4>
                   <p className="text-sm text-gray-600 mb-4">Add and manage riders for self delivery. Edit and delete are disabled when a rider has an active order.</p>
                     <div className="mb-4 p-4 bg-gray-50 rounded-lg space-y-3">
@@ -5606,7 +5692,7 @@ function StoreSettingsContent() {
           activeTab={activeTab}
           onTabChange={(tab: string) => setActiveTab(tab as typeof activeTab)}
           collapsed={settingsSidebarCollapsed}
-          onCollapsedChange={setSettingsSidebarCollapsed}
+          onCollapsedChange={handleSettingsRailCollapsedChange}
         />
 
         {/* Main Toggle Warning Modal */}
@@ -5946,6 +6032,17 @@ function StoreSettingsContent() {
                     <div className="space-y-2">
                       <button
                         onClick={() => {
+                          if (riders.length === 0) {
+                            toast.error('Please add rider first, then turn on toggle')
+                            setShowSelfDeliveryConfirm(false)
+                            return
+                          }
+                          const hasActiveRider = riders.some((r) => r.is_active !== false)
+                          if (!hasActiveRider) {
+                            toast.error('Please activate a rider first, then turn on toggle')
+                            setShowSelfDeliveryConfirm(false)
+                            return
+                          }
                           setSelfDeliveryEnabled(true);
                           setGatimitraDeliveryEnabled(false);
                           setShowSelfDeliveryConfirm(false);

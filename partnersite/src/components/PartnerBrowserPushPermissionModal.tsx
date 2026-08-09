@@ -1,6 +1,21 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useSyncExternalStore, useState } from "react";
+import {
+  getEffectiveNotificationPermission,
+  getLastBrowserPushRegisterError,
+  registerBrowserPushToken,
+  requestBrowserPushPermission,
+} from "@/lib/browser-push/firebase-web";
+import {
+  clearPushDismissFlags,
+  clearPushRegistrationPending,
+  markPushRegistrationPending,
+  markPushRegistered,
+  markPushSessionDismissed,
+} from "@/lib/browser-push/partner-push-state";
+import { invalidatePartnerPushBackendCache } from "@/lib/browser-push/partner-push-status";
+import { toast } from "sonner";
 import {
   Bell,
   BellOff,
@@ -14,19 +29,6 @@ import {
   Truck,
   X,
 } from "lucide-react";
-import {
-  registerBrowserPushToken,
-  requestBrowserPushPermission,
-} from "@/lib/browser-push/firebase-web";
-import {
-  clearPushDismissFlags,
-  markPushRegistrationPending,
-  markPushRegistered,
-  markPushSessionDismissed,
-} from "@/lib/browser-push/partner-push-state";
-import type { PartnerPushStatus } from "@/lib/browser-push/partner-push-status";
-import { invalidatePartnerPushBackendCache } from "@/lib/browser-push/partner-push-status";
-import { toast } from "sonner";
 
 const BENEFITS: Array<{ icon: typeof ShoppingCart; label: string; tone: string }> = [
   { icon: ShoppingCart, label: "New orders, cancellations & refunds", tone: "text-emerald-600 dark:text-emerald-400" },
@@ -35,11 +37,60 @@ const BENEFITS: Array<{ icon: typeof ShoppingCart; label: string; tone: string }
   { icon: ShieldAlert, label: "Campaigns, store status & critical alerts", tone: "text-amber-600 dark:text-amber-400" },
 ];
 
-const RELOAD_MESSAGE = "Please reload your site and then try again.";
+const REGISTRATION_FAILURE_MESSAGE =
+  "Notifications are allowed, but we couldn't register this device. Please try again.";
+
+function registrationFailureMessage(): string {
+  const code = getLastBrowserPushRegisterError();
+  if (code === "backend_failed") {
+    return "Notifications are allowed, but we couldn't save this device to the server. Please try again.";
+  }
+  if (code === "service_worker_failed" || code === "token_fetch_failed") {
+    return REGISTRATION_FAILURE_MESSAGE;
+  }
+  return REGISTRATION_FAILURE_MESSAGE;
+}
+
+function subscribeToNotificationPermission(onStoreChange: () => void): () => void {
+  if (typeof window === "undefined" || !("Notification" in window)) return () => undefined;
+
+  let permissionStatus: PermissionStatus | null = null;
+
+  const attachPermissionsListener = async () => {
+    try {
+      if ("permissions" in navigator) {
+        permissionStatus = await navigator.permissions.query({ name: "notifications" as PermissionName });
+        permissionStatus.addEventListener("change", onStoreChange);
+      }
+    } catch {
+      /* ignore */
+    }
+  };
+
+  void attachPermissionsListener();
+
+  const onVisibility = () => {
+    if (document.visibilityState === "visible") onStoreChange();
+  };
+
+  window.addEventListener("focus", onStoreChange);
+  document.addEventListener("visibilitychange", onVisibility);
+
+  return () => {
+    permissionStatus?.removeEventListener("change", onStoreChange);
+    window.removeEventListener("focus", onStoreChange);
+    document.removeEventListener("visibilitychange", onVisibility);
+  };
+}
+
+function getNotificationPermissionSnapshot(): NotificationPermission {
+  if (typeof window === "undefined" || !("Notification" in window)) return "denied";
+  return Notification.permission;
+}
 
 type Props = {
   mode: "permission" | "registration";
-  pushStatus?: PartnerPushStatus | null;
+  pushStatus?: string | null;
   merchantUserId?: string | null;
   onClose: () => void;
   onRegistered?: () => void;
@@ -50,45 +101,77 @@ type Props = {
  */
 export function PartnerBrowserPushPermissionModal({
   mode,
-  pushStatus,
   merchantUserId,
   onClose,
   onRegistered,
 }: Props) {
   const [busy, setBusy] = useState(false);
-  const [blocked, setBlocked] = useState(() =>
-    typeof window !== "undefined" && "Notification" in window
-      ? Notification.permission === "denied"
-      : false,
-  );
   const [success, setSuccess] = useState(false);
   const [showHowTo, setShowHowTo] = useState(false);
-  const [needsReloadHint, setNeedsReloadHint] = useState(false);
+
+  const livePermission = useSyncExternalStore(
+    subscribeToNotificationPermission,
+    getNotificationPermissionSnapshot,
+    () => "default" as NotificationPermission,
+  );
+
+  const [effectivePermission, setEffectivePermission] = useState<NotificationPermission>(livePermission);
+
+  useEffect(() => {
+    const sync = () => {
+      void getEffectiveNotificationPermission().then(setEffectivePermission);
+    };
+    sync();
+    window.addEventListener("focus", sync);
+    document.addEventListener("visibilitychange", sync);
+    let permissionStatus: PermissionStatus | null = null;
+    void (async () => {
+      try {
+        if ("permissions" in navigator) {
+          permissionStatus = await navigator.permissions.query({ name: "notifications" as PermissionName });
+          permissionStatus.addEventListener("change", sync);
+        }
+      } catch {
+        /* ignore */
+      }
+    })();
+    return () => {
+      window.removeEventListener("focus", sync);
+      document.removeEventListener("visibilitychange", sync);
+      permissionStatus?.removeEventListener("change", sync);
+    };
+  }, []);
+
+  useEffect(() => {
+    setEffectivePermission(livePermission);
+  }, [livePermission]);
 
   const isRegistrationMode = mode === "registration";
+  const isBlocked = effectivePermission === "denied";
 
   const dismissForSession = useCallback(() => {
     markPushSessionDismissed(merchantUserId);
     onClose();
   }, [merchantUserId, onClose]);
 
-  const closeSoft = dismissForSession;
-
-  const closePermanent = useCallback(() => {
-    dismissForSession();
-  }, [dismissForSession]);
-
   const completeRegistration = useCallback(async () => {
-    await navigator.serviceWorker?.ready.catch(() => undefined);
+    const permission = await getEffectiveNotificationPermission();
+    if (permission !== "granted") {
+      return false;
+    }
+
+    markPushRegistrationPending();
     const token = await registerBrowserPushToken("merchant", { retries: 4 });
-    if (!token) return false;
+    if (!token) {
+      clearPushRegistrationPending();
+      return false;
+    }
 
     clearPushDismissFlags();
-    markPushRegistered();
+    clearPushRegistrationPending();
+    markPushRegistered(token);
     invalidatePartnerPushBackendCache();
     setSuccess(true);
-    setBlocked(false);
-    setNeedsReloadHint(false);
     toast.success("Notifications enabled successfully.");
     onRegistered?.();
     window.setTimeout(() => onClose(), 2200);
@@ -97,61 +180,56 @@ export function PartnerBrowserPushPermissionModal({
 
   const onPrimary = useCallback(async () => {
     setBusy(true);
-    setNeedsReloadHint(false);
 
     try {
+      const permission = await getEffectiveNotificationPermission();
+
       if (isRegistrationMode) {
+        if (permission !== "granted") {
+          if (permission === "denied") {
+            dismissForSession();
+          }
+          return;
+        }
         const ok = await completeRegistration();
         if (!ok) {
-          markPushRegistrationPending();
-          setNeedsReloadHint(true);
-          toast.error(RELOAD_MESSAGE);
+          toast.error(registrationFailureMessage());
         }
         return;
       }
 
-      let perm = Notification.permission;
-
-      if (perm === "denied") {
-        setBlocked(true);
-        toast.error(
-          "Still blocked for this site. Allow notifications in browser settings, refresh this page, then tap I've Enabled It again.",
-        );
+      if (permission === "denied") {
+        dismissForSession();
         return;
       }
 
-      if (perm === "default") {
-        perm = await requestBrowserPushPermission();
+      if (permission === "default") {
+        const next = await requestBrowserPushPermission();
+        if (next === "default") {
+          return;
+        }
+        if (next === "denied") {
+          dismissForSession();
+          return;
+        }
       }
 
-      if (perm !== "granted") {
-        setBlocked(perm === "denied");
-        toast.error(
-          perm === "denied"
-            ? "Permission denied. Follow How to Enable, allow notifications, refresh, then tap I've Enabled It."
-            : "Permission was not granted. You can try again anytime.",
-        );
+      const afterPrompt = await getEffectiveNotificationPermission();
+      if (afterPrompt !== "granted") {
         return;
       }
-
-      // Give the browser a moment to propagate permission to the service worker.
-      await navigator.serviceWorker?.ready.catch(() => undefined);
-      await new Promise((resolve) => window.setTimeout(resolve, 400));
 
       const ok = await completeRegistration();
       if (!ok) {
-        markPushRegistrationPending();
-        setNeedsReloadHint(true);
-        toast.error(RELOAD_MESSAGE);
+        toast.error(registrationFailureMessage());
       }
     } catch (e) {
       toast.error((e as Error)?.message || "Failed to enable notifications");
     } finally {
       setBusy(false);
     }
-  }, [completeRegistration, isRegistrationMode]);
+  }, [completeRegistration, dismissForSession, isRegistrationMode]);
 
-  const isBlocked = blocked || pushStatus === "denied";
   const primaryLabel = busy
     ? isRegistrationMode
       ? "Connecting…"
@@ -172,7 +250,7 @@ export function PartnerBrowserPushPermissionModal({
       >
         <button
           type="button"
-          onClick={closePermanent}
+          onClick={dismissForSession}
           className="absolute right-2.5 top-2.5 z-10 rounded-lg p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-700 dark:hover:bg-slate-800 dark:hover:text-slate-200"
           aria-label="Dismiss for this session"
         >
@@ -216,12 +294,6 @@ export function PartnerBrowserPushPermissionModal({
                   : "Never miss important updates from the GatiMitra Partner Portal. Enable browser notifications for faster store operations."}
               </p>
 
-              {needsReloadHint ? (
-                <p className="mt-2 rounded-lg border border-amber-200/80 bg-amber-50 px-3 py-2 text-xs leading-snug text-amber-950 dark:border-amber-800/60 dark:bg-amber-950/40 dark:text-amber-100">
-                  {RELOAD_MESSAGE}
-                </p>
-              ) : null}
-
               {!isRegistrationMode ? (
                 <ul className="mt-3 grid gap-1.5 rounded-xl border border-slate-100 bg-slate-50/80 p-2.5 dark:border-slate-700/80 dark:bg-slate-800/50">
                   {BENEFITS.map(({ icon: Icon, label, tone }) => (
@@ -251,7 +323,7 @@ export function PartnerBrowserPushPermissionModal({
                     <ol className="mt-1.5 list-decimal space-y-0.5 rounded-lg border border-amber-200/80 bg-amber-50 px-3 py-2 pl-6 text-[11px] leading-snug text-amber-950 dark:border-amber-800/60 dark:bg-amber-950/40 dark:text-amber-100">
                       <li>Click the lock icon in the address bar.</li>
                       <li>Site settings → Notifications → Allow.</li>
-                      <li>Refresh, then tap I&apos;ve Enabled It.</li>
+                      <li>Return here and tap I&apos;ve Enabled It.</li>
                     </ol>
                   ) : null}
                 </div>
@@ -268,7 +340,7 @@ export function PartnerBrowserPushPermissionModal({
           <div className="flex flex-col-reverse gap-2 px-5 pb-4 pt-3 sm:flex-row sm:justify-end sm:px-5">
             <button
               type="button"
-              onClick={closeSoft}
+              onClick={dismissForSession}
               className="rounded-xl px-4 py-2 text-sm font-semibold text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800"
               disabled={busy}
             >

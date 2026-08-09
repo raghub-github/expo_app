@@ -11,6 +11,10 @@ import { merchantKeys } from '@/lib/query-keys';
 import { mapPayoutSettlementApiResponse } from '@/lib/merchant-payout-utils';
 import { isValidPartnerStoreId } from '@/lib/partner-store-id-shared';
 import { readDashboardWalletCache, writeDashboardWalletCache } from '@/lib/partner-dashboard-cache';
+import { usePartnerMerchantQueriesEnabled } from '@/context/MerchantSessionContext';
+import {
+  waitForPartnerSessionBackgroundRefresh,
+} from '@/lib/auth/partner-session-focus-gate';
 import { useHydrated } from '@/hooks/useHydrated';
 import {
   readStoreOperationsCache,
@@ -158,6 +162,7 @@ export interface StoreSettingsData {
 
 // ---------- Fetchers ----------
 async function fetchWallet(storeId: string, options?: { lite?: boolean }): Promise<WalletSummary> {
+  await waitForPartnerSessionBackgroundRefresh();
   const lite = options?.lite !== false;
   const res = await fetch(
     `/api/merchant/wallet?storeId=${encodeURIComponent(storeId)}${lite ? '&lite=1' : '&lite=0'}`,
@@ -336,6 +341,7 @@ export async function fetchStoreOperations(storeId: string): Promise<StoreOperat
 }
 
 async function fetchStoreSettings(storeId: string): Promise<StoreSettingsData> {
+  await waitForPartnerSessionBackgroundRefresh();
   const res = await fetch(`/api/merchant/store-settings?storeId=${encodeURIComponent(storeId)}`, {
     credentials: 'include',
   });
@@ -350,6 +356,7 @@ async function fetchStoreSettings(storeId: string): Promise<StoreSettingsData> {
 }
 
 export async function fetchSelfDeliveryRiders(storeId: string): Promise<SelfDeliveryRider[]> {
+  await waitForPartnerSessionBackgroundRefresh();
   const res = await fetch(`/api/merchant/self-delivery-riders?storeId=${encodeURIComponent(storeId)}`, {
     credentials: 'include',
   });
@@ -374,7 +381,8 @@ export function useMerchantWallet(
   storeId: string | null,
   options?: { enabled?: boolean; lite?: boolean },
 ) {
-  const enabled = (options?.enabled ?? true) && !!storeId;
+  const authReady = usePartnerMerchantQueriesEnabled(storeId);
+  const enabled = (options?.enabled ?? true) && authReady;
   const lite = options?.lite !== false;
   const hydrated = useHydrated();
   const cached = hydrated && enabled && storeId ? readDashboardWalletCache(storeId) : null;
@@ -390,7 +398,7 @@ export function useMerchantWallet(
     gcTime: 30 * 60 * 1000,
     placeholderData: cached ?? keepPreviousData,
     refetchOnMount: 'always',
-    refetchOnWindowFocus: true,
+    refetchOnWindowFocus: false,
   });
 }
 
@@ -509,26 +517,28 @@ export function useStoreOperations(
 
 /** Self-delivery toggle; used by dashboard. */
 export function useStoreSettings(storeId: string | null, options?: { enabled?: boolean }) {
-  const enabled = (options?.enabled ?? true) && !!storeId;
+  const authReady = usePartnerMerchantQueriesEnabled(storeId);
+  const enabled = (options?.enabled ?? true) && authReady;
   return useQuery({
     queryKey: merchantKeys.storeSettings(storeId ?? ''),
     queryFn: () => fetchStoreSettings(storeId!),
     enabled,
     staleTime: 15 * 1000,
     refetchOnMount: 'always',
-    refetchOnWindowFocus: true,
+    refetchOnWindowFocus: false,
   });
 }
 
 /** Self-delivery riders for the active outlet. */
 export function useSelfDeliveryRiders(storeId: string | null, options?: { enabled?: boolean }) {
-  const enabled = (options?.enabled ?? true) && !!storeId;
+  const authReady = usePartnerMerchantQueriesEnabled(storeId);
+  const enabled = (options?.enabled ?? true) && authReady;
   return useQuery({
     queryKey: merchantKeys.selfDeliveryRiders(storeId ?? ''),
     queryFn: () => fetchSelfDeliveryRiders(storeId!),
     enabled,
     staleTime: 30 * 1000,
-    refetchOnWindowFocus: true,
+    refetchOnWindowFocus: false,
   });
 }
 

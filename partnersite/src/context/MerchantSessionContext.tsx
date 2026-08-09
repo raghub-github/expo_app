@@ -1,12 +1,17 @@
 "use client";
 
-import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { clearPartnerStoreSelection } from "@/lib/partner-selected-store";
 import {
   PARTNER_CROSS_TAB_LOGOUT_KEY,
   partnerLogoutLocal,
 } from "@/lib/auth/partner-logout";
 import { clearPushSessionDismissed } from "@/lib/browser-push/partner-push-state";
+import {
+  beginPartnerSessionBackgroundRefresh,
+  endPartnerSessionBackgroundRefresh,
+  isPartnerSessionBackgroundRefreshPending,
+} from "@/lib/auth/partner-session-focus-gate";
 
 interface MerchantSessionUser {
   id: string;
@@ -40,6 +45,8 @@ export interface MerchantSessionContextValue {
   sessionStatus: MerchantSessionStatus | null;
   parent: MerchantParentSummary | null;
   isLoading: boolean;
+  /** True while re-validating session after tab focus / visibility restore. */
+  isRefreshing: boolean;
   isAuthenticated: boolean;
   logout: () => Promise<void>;
   refetch: () => void;
@@ -54,8 +61,12 @@ export function MerchantSessionProvider({ children }: { children: React.ReactNod
   const [sessionStatus, setSessionStatus] = useState<MerchantSessionStatus | null>(null);
   const [parent, setParent] = useState<MerchantParentSummary | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const initialLoadRef = useRef(true);
 
-  const fetchSession = useCallback(async () => {
+  const fetchSession = useCallback(async (options?: { background?: boolean }) => {
+    const background = options?.background === true;
+    if (background) setIsRefreshing(true);
     try {
       // Single bootstrap call — avoids parallel getUser()/refresh-token races.
       const sessionRes = await fetch("/api/merchant-auth/merchant-session", {
@@ -105,12 +116,44 @@ export function MerchantSessionProvider({ children }: { children: React.ReactNod
     } catch {
       // Network blip — do not clear an existing session.
     } finally {
-      setIsLoading(false);
+      if (initialLoadRef.current) {
+        setIsLoading(false);
+        initialLoadRef.current = false;
+      }
+      if (background) {
+        setIsRefreshing(false);
+        endPartnerSessionBackgroundRefresh();
+      }
     }
   }, []);
 
   useEffect(() => {
-    fetchSession();
+    void fetchSession();
+  }, [fetchSession]);
+
+  // Re-validate session when the tab regains focus so downstream queries don't
+  // hit /api/* with stale cookies while Supabase refresh is still in flight.
+  useEffect(() => {
+    const refresh = () => {
+      void fetchSession({ background: true });
+    };
+    const onFocusCapture = () => {
+      beginPartnerSessionBackgroundRefresh();
+    };
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") {
+        beginPartnerSessionBackgroundRefresh();
+        refresh();
+      }
+    };
+    window.addEventListener("focus", onFocusCapture, true);
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      window.removeEventListener("focus", onFocusCapture, true);
+      window.removeEventListener("focus", refresh);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
   }, [fetchSession]);
 
   // Synchronize logout across tabs (storage event fires in other tabs only).
@@ -144,12 +187,15 @@ export function MerchantSessionProvider({ children }: { children: React.ReactNod
       sessionStatus,
       parent,
       isLoading,
+      isRefreshing,
       // Prefer user presence; sessionStatus.authenticated is soft partner_* metadata.
       isAuthenticated: !!user && sessionStatus?.authenticated !== false,
       logout,
-      refetch: fetchSession,
+      refetch: () => {
+        void fetchSession({ background: true });
+      },
     }),
-    [user, sessionStatus, parent, isLoading, logout, fetchSession]
+    [user, sessionStatus, parent, isLoading, isRefreshing, logout, fetchSession]
   );
 
   return (
@@ -159,4 +205,14 @@ export function MerchantSessionProvider({ children }: { children: React.ReactNod
 
 export function useMerchantSession(): MerchantSessionContextValue | null {
   return useContext(MerchantSessionContext);
+}
+
+/** Gate store-scoped React Query hooks until merchant session is ready (avoids focus 401s). */
+export function usePartnerMerchantQueriesEnabled(storeId?: string | null): boolean {
+  const session = useMerchantSession();
+  if (!storeId) return false;
+  if (!session) return false;
+  if (session.isLoading || session.isRefreshing) return false;
+  if (isPartnerSessionBackgroundRefreshPending()) return false;
+  return session.isAuthenticated;
 }

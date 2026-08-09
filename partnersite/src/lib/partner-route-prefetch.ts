@@ -15,11 +15,29 @@ import {
 } from '@/lib/partner-dashboard-cache';
 import type { WalletSummary } from '@/hooks/useMerchantApi';
 
+const PREFETCH_FETCH_TIMEOUT_MS = 18_000;
+
+async function prefetchFetch(input: string, init?: RequestInit): Promise<Response | null> {
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), PREFETCH_FETCH_TIMEOUT_MS);
+  try {
+    return await fetch(input, {
+      ...init,
+      credentials: init?.credentials ?? 'include',
+      signal: controller.signal,
+    });
+  } catch {
+    return null;
+  } finally {
+    window.clearTimeout(timer);
+  }
+}
+
 async function fetchWalletForStore(storeId: string, lite = true): Promise<WalletSummary> {
-  const res = await fetch(
+  const res = await prefetchFetch(
     `/api/merchant/wallet?storeId=${encodeURIComponent(storeId)}&lite=${lite ? '1' : '0'}`,
-    { credentials: 'include' },
   );
+  if (!res?.ok) throw new Error('Failed to prefetch wallet');
   const data = await res.json();
   if (data.error) throw new Error(data.error);
   const summary: WalletSummary = {
@@ -43,28 +61,22 @@ async function fetchWalletForStore(storeId: string, lite = true): Promise<Wallet
 }
 
 async function fetchFoodOrdersForStore(storeId: string) {
-  const res = await fetch(
+  const res = await prefetchFetch(
     `/api/food-orders?store_id=${encodeURIComponent(storeId)}&limit=200&skip_compensation=1`,
-    {
-    credentials: 'include',
-  });
+  );
+  if (!res?.ok) return [];
   const data = await res.json().catch(() => ({}));
-  if (!res.ok || !Array.isArray(data.orders)) {
-    throw new Error(data.error ?? 'Failed to prefetch orders');
-  }
+  if (!Array.isArray(data.orders)) return [];
   return data.orders;
 }
 
 async function fetchOrderHistoryForStore(storeId: string) {
-  const res = await fetch(
-    `/api/food-orders?store_id=${encodeURIComponent(storeId)}&limit=500&skip_compensation=1`,
-    {
-    credentials: 'include',
-  });
+  const res = await prefetchFetch(
+    `/api/food-orders?store_id=${encodeURIComponent(storeId)}&limit=200&skip_compensation=1`,
+  );
+  if (!res?.ok) return [];
   const data = await res.json().catch(() => ({}));
-  if (!res.ok || !Array.isArray(data.orders)) {
-    throw new Error(data.error ?? 'Failed to prefetch order history');
-  }
+  if (!Array.isArray(data.orders)) return [];
   return data.orders;
 }
 
@@ -97,10 +109,8 @@ export function prefetchPartnerRouteData(
       staleTime: 3 * 60 * 1000,
     });
     prefetchLivePreview(storeId, mapInsightsDatePreset('today'));
-    void fetch(`/api/food-orders/stats?store_id=${encodeURIComponent(storeId)}`, {
-      credentials: 'include',
-    })
-      .then((res) => (res.ok ? res.json() : null))
+    void prefetchFetch(`/api/food-orders/stats?store_id=${encodeURIComponent(storeId)}`)
+      .then((res) => (res?.ok ? res.json() : null))
       .then((body) => {
         if (!body || typeof body !== 'object') return;
         writeDashboardDeliveryStatsCache(storeId, {
@@ -115,10 +125,8 @@ export function prefetchPartnerRouteData(
       .catch(() => {
         /* ignore */
       });
-    void fetch(`/api/merchant/store-overview?store_id=${encodeURIComponent(storeId)}`, {
-      credentials: 'include',
-    })
-      .then((res) => (res.ok ? res.json() : null))
+    void prefetchFetch(`/api/merchant/store-overview?store_id=${encodeURIComponent(storeId)}`)
+      .then((res) => (res?.ok ? res.json() : null))
       .then((body) => {
         if (!body || typeof body !== 'object') return;
         writeDashboardStoreOverviewCache(storeId, {
@@ -138,6 +146,7 @@ export function prefetchPartnerRouteData(
       queryKey: merchantKeys.foodOrders(storeId),
       queryFn: () => fetchFoodOrdersForStore(storeId),
       staleTime: 15 * 1000,
+      retry: false,
     });
     return;
   }
@@ -147,6 +156,7 @@ export function prefetchPartnerRouteData(
       queryKey: merchantKeys.orderHistory(storeId),
       queryFn: () => fetchOrderHistoryForStore(storeId),
       staleTime: 30 * 1000,
+      retry: false,
     });
     return;
   }
@@ -168,11 +178,12 @@ export function prefetchPartnerRouteData(
     void queryClient.prefetchQuery({
       queryKey: merchantKeys.payoutRequests(storeId, 5),
       queryFn: async () => {
-        const res = await fetch(
+        const res = await prefetchFetch(
           `/api/merchant/payout-requests?storeId=${encodeURIComponent(storeId)}&limit=5`,
         );
+        if (!res?.ok) throw new Error('Failed to load payouts');
         const data = await res.json();
-        if (!res.ok || data.error) throw new Error(data.error ?? 'Failed to load payouts');
+        if (data.error) throw new Error(data.error ?? 'Failed to load payouts');
         return {
           summary: data.summary ?? { paid: 0, in_process: 0, pending: 0, failed: 0, total: 0 },
           recent: Array.isArray(data.recent) ? data.recent : [],

@@ -109,6 +109,26 @@ function TicketOtherAgentsViewerIndicator({ viewers }: { viewers: TicketOtherAge
   );
 }
 
+function TicketPropertiesPanelSkeleton() {
+  return (
+    <div className="flex h-full flex-col overflow-hidden bg-[#f3f5f7] animate-pulse">
+      <div className="shrink-0 bg-gradient-to-b from-white to-[#f3f5f7] px-3 pb-2 pt-2.5">
+        <div className="h-5 w-28 rounded bg-gray-200" />
+        <div className="mt-1.5 h-3 w-36 rounded bg-gray-200" />
+      </div>
+      <div className="min-h-0 flex-1 space-y-2.5 overflow-hidden px-3 pb-2 pt-2">
+        <div className="h-2.5 w-16 rounded bg-gray-200" />
+        {Array.from({ length: 6 }, (_, i) => (
+          <div key={i} className="rounded-lg border border-gray-200 bg-white px-2.5 py-2.5">
+            <div className="mb-2 h-2.5 w-20 rounded bg-gray-100" />
+            <div className="h-8 w-full rounded bg-gray-100" />
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export function TicketPropertiesPanel({ ticketId }: { ticketId: number | string }) {
   const { data: ticket, isLoading, error } = useTicketDetail(ticketId);
   const updateTicket = useTicketUpdate();
@@ -382,9 +402,19 @@ export function TicketPropertiesPanel({ ticketId }: { ticketId: number | string 
     });
   };
 
-  if (isLoading || error || !ticket) {
-    // Keep sidebar silent; main ticket area handles centralized loader / fallback.
-    return null;
+  if (isLoading || (!ticket && !error)) {
+    return <TicketPropertiesPanelSkeleton />;
+  }
+
+  if (error || !ticket) {
+    return (
+      <div className="flex h-full flex-col items-center justify-center px-4 text-center">
+        <p className="text-xs font-medium text-gray-600">Could not load ticket properties</p>
+        <p className="mt-1 text-[11px] text-gray-500">
+          {error instanceof Error ? error.message : "Try refreshing the page."}
+        </p>
+      </div>
+    );
   }
 
   const statusTime = ticket.closedAt || ticket.resolvedAt || ticket.updatedAt;

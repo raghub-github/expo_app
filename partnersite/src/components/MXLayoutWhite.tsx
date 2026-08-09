@@ -18,6 +18,10 @@ interface MXLayoutWhiteProps {
   sidebarPosition?: 'left' | 'right'
   /** When true, left sidebar collapses to icons only (e.g. when right filter panel is open) */
   leftSidebarCollapsed?: boolean
+  /** Page has a right settings rail — shell coordinates expand/collapse with left nav. */
+  dualSidebarRail?: boolean
+  onDualSidebarLeftExpanded?: () => void
+  onDualSidebarLeftCollapsed?: () => void
   /** Optional content shown inside the mobile hamburger menu (e.g. stats for food-orders) */
   mobileMenuExtra?: React.ReactNode
   /** Optional filters/stats content shown in sidebar (desktop and mobile) */
@@ -45,6 +49,9 @@ const MXLayoutWhiteInFrame: React.FC<MXLayoutWhiteProps> = ({
   restaurantId,
   sidebarPosition,
   leftSidebarCollapsed,
+  dualSidebarRail,
+  onDualSidebarLeftExpanded,
+  onDualSidebarLeftCollapsed,
   mobileMenuExtra,
   sidebarFilters,
   hideHelpBadge,
@@ -60,6 +67,9 @@ const MXLayoutWhiteInFrame: React.FC<MXLayoutWhiteProps> = ({
     restaurantId,
     sidebarPosition,
     leftSidebarCollapsed,
+    dualSidebarRail,
+    onDualSidebarLeftExpanded,
+    onDualSidebarLeftCollapsed,
     mobileMenuExtra,
     sidebarFilters,
     hideHelpBadge,
@@ -118,8 +128,10 @@ const MXLayoutWhiteStandalone: React.FC<MXLayoutWhiteProps> = ({
           />
         )}
         <div
-          className={`flex flex-1 min-h-0 overflow-hidden relative ${
-            !isRight ? "pt-[var(--mx-partner-topbar-h,3.5rem)]" : ""
+          className={`flex min-h-0 w-full overflow-hidden ${
+            !isRight
+              ? 'mt-[var(--mx-partner-topbar-h,3.5rem)] h-[calc(100dvh-var(--mx-partner-topbar-h,3.5rem))]'
+              : 'flex-1'
           }`}
         >
           <MXSidebarWhite
