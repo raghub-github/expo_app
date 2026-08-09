@@ -4,6 +4,7 @@ import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useSta
 import { toast } from "sonner";
 import { Layers, Loader2, Plus } from "lucide-react";
 import { RiderPayoutRulesPanel } from "./RiderPayoutRulesPanel";
+import { PrePickupCompensationPanel } from "./PrePickupCompensationPanel";
 import { VEHICLE_OPTIONS, PARCEL_VEHICLE_OPTIONS, type VehicleType } from "./rideVehicleTypes";
 import { RideCustomerPricingPanel } from "./RideCustomerPricingPanel";
 import { ParcelCustomerPricingPanel } from "./ParcelCustomerPricingPanel";
@@ -558,12 +559,19 @@ export function GeoNodePricingContent(props: { level: GeoNodeLevel; refId: strin
           ) : null}
 
           {pricingTab === "rider" ? (
-            <RiderPayoutRulesPanel
-              level={level}
-              refId={refId}
-              service={riderService as "food" | "parcel" | "ride"}
-              surgeRefreshKey={surgeRefreshKey}
-            />
+            <>
+              <RiderPayoutRulesPanel
+                level={level}
+                refId={refId}
+                service={riderService as "food" | "parcel" | "ride"}
+                surgeRefreshKey={surgeRefreshKey}
+              />
+              <PrePickupCompensationPanel
+                level={level}
+                refId={refId}
+                service={riderService as "food" | "parcel" | "ride"}
+              />
+            </>
           ) : serviceType === "person_ride" ? (
             <RideCustomerPricingPanel level={level} refId={refId} vehicleType={rideVehicleType} />
           ) : serviceType === "parcel" ? (
