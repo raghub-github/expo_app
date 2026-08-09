@@ -28,6 +28,10 @@ import {
 } from "./checkoutCouponEligibility.js";
 import { executeBillingPipeline } from "./executeBillingPipeline.js";
 import {
+  applyDynamicSurchargesToBilling,
+  resolveActiveDynamicSurchargesFromRefs,
+} from "../../lib/dynamic-pricing.js";
+import {
   customerHasSubscriptionOfferAccess,
   listEligiblePlatformOffersForCheckout,
   platformOfferConditionsPass,
@@ -675,6 +679,19 @@ export async function computeBillForOrder(
     });
   }
 
+  // Dynamic pricing (night/rain/peak/festival/…): customer portion → bill, company portion recorded.
+  const dynFood = await resolveActiveDynamicSurchargesFromRefs({
+    refs: calcGeo.refs,
+    service: "food",
+    base: adjustedBilling.items_net_after_discounts,
+    distanceKm,
+    now: input.now,
+  }).catch(() => null);
+  let companyDynamicSubsidy = 0;
+  if (dynFood) {
+    companyDynamicSubsidy = applyDynamicSurchargesToBilling(adjustedBilling, dynFood).companySubsidy;
+  }
+
   const serviceable = quote.serviceable;
   const serviceRadiusKm = quote.service_radius_km;
 
@@ -735,6 +752,9 @@ export async function computeBillForOrder(
     deliveryType: input.deliveryType ?? "delivery",
     /** Pre-benefit delivery fee from billing pipeline (matches deliveryFeeBeforeBenefitsInr). */
     deliveryFeeQuotedInr,
+    ...(dynFood && dynFood.surcharges.length > 0
+      ? { dynamic_surcharges: dynFood.surcharges, company_dynamic_subsidy: companyDynamicSubsidy }
+      : {}),
   } as Record<string, unknown>;
 
   return { ok: true, billing: adjustedBilling, snapshot };

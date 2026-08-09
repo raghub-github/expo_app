@@ -15,6 +15,10 @@ import {
   loadPlatformOfferUsageCountsForUser,
 } from "./platformOfferUsage.service.js";
 import { platformOfferCouponCodesMatch } from "./platformOfferCouponCode.js";
+import {
+  applyDynamicSurchargesToBilling,
+  resolveActiveDynamicSurchargesFromRefs,
+} from "../../lib/dynamic-pricing.js";
 
 function sanitizePlaceholder(v: string | null | undefined): string | null {
   if (v == null) return null;
@@ -286,10 +290,26 @@ export async function computeBillForParcel(
   }
 
   const billing = executeBillingPipeline(ctx, dataset);
+
+  // Dynamic pricing (night/rain/peak/festival/…): customer portion → bill, company portion recorded.
+  const dyn = await resolveActiveDynamicSurchargesFromRefs({
+    refs: calcGeo.refs,
+    service: "parcel",
+    base: billing.items_net_after_discounts,
+    distanceKm,
+    now: input.now,
+  }).catch(() => null);
+  let companyDynamicSubsidy = 0;
+  if (dyn) companyDynamicSubsidy = applyDynamicSurchargesToBilling(billing, dyn).companySubsidy;
+
   const snapshot = enrichParcelBillingSnapshot(
     { ...(billing as unknown as Record<string, unknown>) },
     { parcelFare, distanceKm }
   );
+  if (dyn && dyn.surcharges.length > 0) {
+    snapshot.dynamic_surcharges = dyn.surcharges;
+    snapshot.company_dynamic_subsidy = companyDynamicSubsidy;
+  }
 
   return { ok: true, billing, snapshot };
 }

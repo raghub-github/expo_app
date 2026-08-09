@@ -5,6 +5,7 @@ import { toast } from "sonner";
 import { Layers, Loader2, Plus } from "lucide-react";
 import { RiderPayoutRulesPanel } from "./RiderPayoutRulesPanel";
 import { PrePickupCompensationPanel } from "./PrePickupCompensationPanel";
+import { DynamicPricingPanel } from "./DynamicPricingPanel";
 import { VEHICLE_OPTIONS, PARCEL_VEHICLE_OPTIONS, type VehicleType } from "./rideVehicleTypes";
 import { RideCustomerPricingPanel } from "./RideCustomerPricingPanel";
 import { ParcelCustomerPricingPanel } from "./ParcelCustomerPricingPanel";
@@ -828,6 +829,14 @@ export function GeoNodePricingContent(props: { level: GeoNodeLevel; refId: strin
               </div>
             </>
           )}
+
+          {pricingTab !== "rider" ? (
+            <DynamicPricingPanel
+              level={level}
+              refId={refId}
+              service={riderService as "food" | "parcel" | "ride"}
+            />
+          ) : null}
         </div>
       </div>
       {level === "state" ? (
