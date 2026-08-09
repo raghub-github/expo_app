@@ -2805,6 +2805,7 @@ async function acceptRideOrderForRider(
       id: ordersCore.id,
       pickupLat: ordersCore.pickupLat,
       pickupLon: ordersCore.pickupLon,
+      checkoutMetadata: ordersCore.checkoutMetadata,
     })
     .from(ordersCore)
     .where(
@@ -2837,13 +2838,17 @@ async function acceptRideOrderForRider(
   }
 
   // First-mile allowance snapshot (Phase 4b): rate/km × rider→pickup distance at accept.
+  // Geo-aware: a per-location pre-pickup override (geo_pre_pickup_compensation) takes
+  // precedence over the global rate when the pickup pincode/state is known.
+  const rideAcceptGeo = rideGeoFromCheckoutMetadata(preCheck.checkoutMetadata);
   const ridePrePickup = rideAcceptCtx
     ? await computePrePickupAllowanceForPickup(
         "person_ride",
         rideAcceptCtx.lat,
         rideAcceptCtx.lng,
         parseCoord(preCheck.pickupLat),
-        parseCoord(preCheck.pickupLon)
+        parseCoord(preCheck.pickupLon),
+        { pincode: rideAcceptGeo.pickupPincode, state: rideAcceptGeo.pickupState }
       ).catch(() => null)
     : null;
 

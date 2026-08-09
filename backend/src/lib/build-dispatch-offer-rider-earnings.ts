@@ -177,7 +177,8 @@ export async function buildDispatchOfferRiderEarnings(args: {
   // is configured.
   const prePickup = await computePrePickupAllowance(
     args.serviceType,
-    args.pickupDistanceMeters
+    args.pickupDistanceMeters,
+    { pincode: rideGeo.pickupPincode, state: rideGeo.pickupState }
   ).catch(() => null);
   const prePickupEarning = prePickup && prePickup.amount > 0 ? prePickup.amount : 0;
 
