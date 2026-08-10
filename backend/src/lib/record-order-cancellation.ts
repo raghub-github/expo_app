@@ -1,5 +1,6 @@
 import type { Sql } from "postgres";
 import { resolveOrderCancellationRefund } from "./order-cancellation-refund.js";
+import { maybeCreditRiderPrePickupOnCancel } from "./credit-rider-pre-pickup-on-cancel.js";
 
 export type OrderCancellationActorType =
   | "store"
@@ -182,6 +183,11 @@ export async function recordOrderCancellation(
       /* non-fatal */
     }
     await releasePlatformOfferUsageForCorePk(sql, input.orderCorePk);
+    await maybeCreditRiderPrePickupOnCancel(sql, {
+      orderCorePk: input.orderCorePk,
+      cancelledByType: input.cancelledByType,
+      attribute: input.attribute ?? null,
+    }).catch(() => undefined);
     return existingReasonId;
   }
 
@@ -311,6 +317,13 @@ export async function recordOrderCancellation(
   // Restore platform offer usage for merchant/system/admin cancels (idempotent).
   // Customer cancel also calls this explicitly; duplicate release is a no-op.
   await releasePlatformOfferUsageForCorePk(sql, input.orderCorePk);
+
+  // Pay the rider's first mile when a non-rider-fault cancellation happens after arrival.
+  await maybeCreditRiderPrePickupOnCancel(sql, {
+    orderCorePk: input.orderCorePk,
+    cancelledByType: input.cancelledByType,
+    attribute: input.attribute ?? null,
+  }).catch(() => undefined);
 
   return cancellationReasonId;
 }
