@@ -296,10 +296,12 @@ export function DispatchCoveragePanel() {
           <h2 className="text-sm font-bold text-slate-900">Global dispatch defaults</h2>
         </div>
         <p className="mb-4 text-xs text-slate-500">
-          Applied everywhere unless a location override below says otherwise. Service
-          radius = how far a customer may place a delivery order (separate from the wave
-          search radius). Pre-pickup rate pays the rider ₹/km of pickup distance; the
-          customer price never changes.
+          Applied everywhere unless a location override says otherwise. Service radius = how
+          far a customer may place a delivery order (separate from the wave search radius).
+          The pre-pickup <b>₹/km rate</b> is set per location on the Geo &amp; coverage page
+          (state → district → pincode, inherits down the tree); here you only set the default
+          <b>funding</b> (who bears it) used when a location has no override. The customer
+          price never changes.
         </p>
         <div className="grid gap-3 lg:grid-cols-3">
           {globals.map((g) => (
@@ -345,21 +347,7 @@ export function DispatchCoveragePanel() {
                   </select>
                 </label>
                 <label className="flex flex-col gap-1">
-                  <span className={labelCls}>Pre-pickup ₹/km</span>
-                  <input
-                    type="number"
-                    step="0.5"
-                    className={inputCls}
-                    value={g.pre_pickup_rate_per_km}
-                    onChange={(e) =>
-                      updateGlobal(g.service_type, {
-                        pre_pickup_rate_per_km: Number(e.target.value),
-                      })
-                    }
-                  />
-                </label>
-                <label className="flex flex-col gap-1">
-                  <span className={labelCls}>Funding</span>
+                  <span className={labelCls}>Pre-pickup funding (default)</span>
                   <select
                     className={inputCls}
                     value={g.pre_pickup_funding}

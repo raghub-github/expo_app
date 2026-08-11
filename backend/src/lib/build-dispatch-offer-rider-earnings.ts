@@ -179,10 +179,18 @@ export async function buildDispatchOfferRiderEarnings(args: {
   // First-mile allowance estimate — SAME computation persisted at accept + paid on
   // delivery, so the offer never promises more than the rider is paid. 0 unless a rate
   // is configured.
+  // Geo-aware for ALL services: ride carries pickup pincode/state in checkout metadata;
+  // food (store) / parcel (drop-off) fall back to the pickup lat/lng via the cached
+  // reverse-geocoder. So every service resolves the per-location pre-pickup rate + funding.
   const prePickup = await computePrePickupAllowance(
     args.serviceType,
     args.pickupDistanceMeters,
-    { pincode: rideGeo.pickupPincode, state: rideGeo.pickupState }
+    {
+      pincode: rideGeo.pickupPincode,
+      state: rideGeo.pickupState,
+      latitude: pickupLat,
+      longitude: pickupLng,
+    }
   ).catch(() => null);
   const prePickupEarning = prePickup && prePickup.amount > 0 ? prePickup.amount : 0;
 

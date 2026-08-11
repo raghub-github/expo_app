@@ -17,12 +17,20 @@ import { getSql } from "../db/client.js";
 import type { DispatchServiceType } from "./order-assignment-engine.js";
 import type { PrePickupFunding } from "./dispatch-strategy-config.js";
 import { resolveDropGeoRefsFromPincode } from "../modules/billing/geoRefFromPincode.js";
+import { resolveGeoLocation } from "../modules/billing/geoLocationResolver.js";
 import type { DropGeoRefByLevel } from "../modules/billing/types.js";
 
-/** Pickup location as text — pincode string ("800001") + state name ("BIHAR"). */
+/**
+ * Pickup location. Prefer pincode/state text (ride carries it in checkout metadata); when
+ * absent (food = store, parcel = drop-off address), fall back to the pickup lat/lng, which
+ * every order has — resolved to a pincode via the cached reverse-geocoder. This makes
+ * pre-pickup geo-aware for ALL services, not just ride.
+ */
 export type PrePickupGeoRefs = {
   pincode?: string | null;
   state?: string | null;
+  latitude?: number | null;
+  longitude?: number | null;
 };
 
 export type GeoPrePickupOverride = {
@@ -103,11 +111,22 @@ export async function resolveGeoPrePickupOverride(
   if (!input) return null;
   const pincode = input.pincode ? String(input.pincode).trim() : null;
   const state = input.state ? String(input.state).trim() : null;
-  if (!pincode && !state) return null;
+  const lat = input.latitude == null ? NaN : Number(input.latitude);
+  const lng = input.longitude == null ? NaN : Number(input.longitude);
+  const hasCoords = Number.isFinite(lat) && Number.isFinite(lng) && !(lat === 0 && lng === 0);
+  if (!pincode && !state && !hasCoords) return null;
 
   let refs: DropGeoRefByLevel | null = null;
   try {
-    refs = await resolveDropGeoRefsFromPincode(pincode, state);
+    if (pincode || state) {
+      refs = await resolveDropGeoRefsFromPincode(pincode, state);
+    }
+    // Fall back to the pickup coordinates (food = store, parcel = drop-off) via the cached
+    // reverse-geocoder, so pre-pickup resolves geo for every service — not just ride.
+    if (!refs && hasCoords) {
+      const geo = await resolveGeoLocation({ latitude: lat, longitude: lng });
+      refs = geo.refs;
+    }
   } catch {
     return null;
   }
