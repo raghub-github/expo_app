@@ -37,12 +37,14 @@ interface WatchGeoState {
   acWarnRule?: WatchdogRule;
   acLastWarnedAtMs?: number;
   acFirstBreachAtMs?: number;
+  acAutoCancelledAtMs?: number;
   [k: string]: unknown;
 }
 
 type SessionRow = {
   session_id: number;
   order_id: string;
+  order_core_id: number | null;
   rider_id: number | null;
   service_type: string | null;
   assignment_id: number | null;
@@ -152,7 +154,94 @@ async function persistState(sessionId: number, state: WatchGeoState): Promise<vo
   }
 }
 
-async function processSession(row: SessionRow, nowMs: number): Promise<"warned" | "cleared" | "skip"> {
+/**
+ * Auto-cancel a sustained pre-pickup breach: penalise (if configured) then unassign +
+ * re-dispatch (which excludes this rider from re-offer). FOOD only for now — it has the
+ * reusable unassign path; parcel/ride stay warn-only. Returns true when the order was
+ * actually unassigned. Best-effort.
+ */
+async function performAutoCancel(
+  row: SessionRow,
+  cfg: RiderAutoCancelConfig,
+  breach: Breach
+): Promise<boolean> {
+  const orderType = String(row.order_type ?? "").trim().toLowerCase();
+  const orderCorePk = Number(row.order_core_id);
+  const riderId = Number(row.rider_id);
+  if (!Number.isFinite(orderCorePk) || orderCorePk <= 0 || !Number.isFinite(riderId) || riderId <= 0) {
+    return false;
+  }
+  if (orderType !== "food") return false; // parcel/ride: warn-only until their unassign path is wired
+
+  const serviceType = normalizeServiceType(row.service_type ?? row.order_type);
+  const reasonCode = `auto_cancel_${breach.rule}`;
+  const message = warnMessage(breach.rule, cfg, breach.detail);
+
+  try {
+    // Penalty first (idempotent), then unassign + restart matching.
+    if (cfg.penaltyAmount > 0) {
+      const { applyAutoCancelRiderPenalty } = await import("./rider-auto-cancel-penalty.service.js");
+      await applyAutoCancelRiderPenalty({
+        orderCoreId: orderCorePk,
+        riderId,
+        orderType,
+        amount: cfg.penaltyAmount,
+        rule: breach.rule,
+        ledgerTitle: cfg.ledgerTitle,
+        ledgerDescription: cfg.ledgerDescription,
+        orderPublicId: row.order_id,
+      }).catch(() => undefined);
+    }
+
+    const { unassignFoodRiderAndRestartDispatch } = await import("./food-rider-unassign.service.js");
+    await unassignFoodRiderAndRestartDispatch({
+      orderCorePk,
+      orderIdText: row.order_id,
+      riderId,
+      reasonCode,
+      reasonText: `Auto-cancelled: ${message}`,
+      removedBy: null,
+      actorType: "system",
+    });
+
+    void recordTrackingEvent({
+      orderId: row.order_id,
+      riderId,
+      sessionId: row.session_id,
+      assignmentId: row.assignment_id,
+      serviceType,
+      eventType: WARN_EVENT_TYPE[breach.rule],
+      severity: "violation",
+      latitude: row.last_lat ?? undefined,
+      longitude: row.last_lng ?? undefined,
+      message: `Auto-cancelled: ${message}`,
+      metadata: {
+        rule: breach.rule,
+        detail: breach.detail,
+        source: "auto_cancel_watchdog",
+        action: "auto_cancel",
+        penaltyAmount: cfg.penaltyAmount,
+      },
+    }).catch(() => {});
+
+    const autoCancelEvent = {
+      type: "tracking.autocancel.v1",
+      rule: breach.rule,
+      orderId: row.order_id,
+      riderId,
+      serviceType,
+      message: `Order auto-cancelled — ${message}`,
+    } as const;
+    void publishRiderEvent(riderId, autoCancelEvent).catch(() => {});
+    void publishOrderEvent(row.order_id, { ...autoCancelEvent, orderIdText: row.order_id }).catch(() => {});
+
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function processSession(row: SessionRow, nowMs: number): Promise<"warned" | "cleared" | "skip" | "cancelled"> {
   if (row.rider_id == null) return "skip";
   // Pre-pickup only (product decision). Skip anything already picked up / terminal.
   if (isPickedUp(String(row.core_status ?? ""), String(row.current_status ?? ""))) return "skip";
@@ -196,6 +285,17 @@ async function processSession(row: SessionRow, nowMs: number): Promise<"warned" 
     state.acLastWarnedAtMs = undefined;
   }
   if (state.acFirstBreachAtMs == null) state.acFirstBreachAtMs = nowMs;
+
+  // Auto-cancel takes precedence once the breach is sustained past grace (opt-in). Requires a
+  // prior warning (acLastWarnedAtMs), so the rider always gets a chance first.
+  if (shouldAutoCancelNow(cfg, state, nowMs)) {
+    const cancelled = await performAutoCancel(row, cfg, breach);
+    if (cancelled) {
+      state.acAutoCancelledAtMs = nowMs;
+      await persistState(row.session_id, state);
+      return "cancelled";
+    }
+  }
 
   const intervalMs = Math.max(1, cfg.warningIntervalMinutes) * 60_000;
   const due = state.acLastWarnedAtMs == null || nowMs - state.acLastWarnedAtMs >= intervalMs;
@@ -242,14 +342,33 @@ export type WatchdogTickResult = {
   scanned: number;
   warned: number;
   cleared: number;
+  cancelled: number;
 };
+
+/**
+ * Should a sustained breach auto-cancel now? Only when explicitly opted in, at least one
+ * warning has been sent, the breach has persisted past grace_minutes, and it hasn't already
+ * been auto-cancelled. Pure + testable.
+ */
+export function shouldAutoCancelNow(
+  cfg: { autoCancelEnabled: boolean; graceMinutes: number },
+  state: { acFirstBreachAtMs?: number; acLastWarnedAtMs?: number; acAutoCancelledAtMs?: number },
+  nowMs: number
+): boolean {
+  if (!cfg.autoCancelEnabled) return false;
+  if (state.acAutoCancelledAtMs) return false;
+  if (state.acFirstBreachAtMs == null) return false;
+  if (state.acLastWarnedAtMs == null) return false; // rider must have been warned first
+  const graceMs = Math.max(0, cfg.graceMinutes) * 60_000;
+  return nowMs - state.acFirstBreachAtMs >= graceMs;
+}
 
 /** One watchdog sweep. Registered on an interval (with lock) in index.ts. */
 export async function runRiderTrackingWatchdogTick(log?: {
   info?: (o: unknown, m?: string) => void;
   error?: (o: unknown, m?: string) => void;
 }): Promise<WatchdogTickResult> {
-  const result: WatchdogTickResult = { scanned: 0, warned: 0, cleared: 0 };
+  const result: WatchdogTickResult = { scanned: 0, warned: 0, cleared: 0, cancelled: 0 };
   try {
     const sql = getSql();
     const rows = await sql.unsafe<SessionRow[]>(
@@ -257,6 +376,7 @@ export async function runRiderTrackingWatchdogTick(log?: {
         SELECT
           ts.id                    AS session_id,
           ts.order_id,
+          oc.id                    AS order_core_id,
           ts.rider_id,
           ts.service_type,
           ts.assignment_id,
@@ -285,6 +405,7 @@ export async function runRiderTrackingWatchdogTick(log?: {
         const outcome = await processSession(row, nowMs);
         if (outcome === "warned") result.warned += 1;
         else if (outcome === "cleared") result.cleared += 1;
+        else if (outcome === "cancelled") result.cancelled += 1;
       } catch (e) {
         log?.error?.({ err: (e as Error).message, sessionId: row.session_id }, "watchdog session failed");
       }
