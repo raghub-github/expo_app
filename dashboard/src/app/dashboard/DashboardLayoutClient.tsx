@@ -48,7 +48,6 @@ import { isCustomerDetailOpenedFromOrder } from "@/lib/navigation/customer-dashb
 import type { TicketOtherAgentViewer } from "@/lib/tickets/ticket-presence";
 import {
   TicketsNavPendingProvider,
-  useTicketsNavPendingOptional,
 } from "@/context/TicketsNavPendingContext";
 
 const SIDEBAR_STATE_KEY = "dashboard-sidebar-open";
@@ -206,14 +205,17 @@ function DashboardLayoutClientInner({
     });
   }, [pathname, queryClient]);
 
-  // When navigating away from merchant dashboard (e.g. via left sidebar to Customers/Riders), clear store result/cache so it doesn’t persist
+  // When leaving merchants, cancel in-flight store fetches but keep cache so
+  // returning to a store does not flash a full reload (keys are per storeId).
   const isOnMerchantDashboard = useMemo(
     () => /^\/dashboard\/merchants(\/|$)/.test(pathname.split("?")[0].split("#")[0]),
     [pathname]
   );
   useEffect(() => {
     if (!isOnMerchantDashboard) {
-      queryClient.removeQueries({ predicate: (query) => query.queryKey[0] === "store" });
+      queryClient.cancelQueries({
+        predicate: (query) => query.queryKey[0] === "store",
+      });
     }
   }, [isOnMerchantDashboard, queryClient]);
 
@@ -321,10 +323,9 @@ function DashboardLayoutClientInner({
     return true;
   });
 
-  // Apply sidebar state on navigation:
-  // - Right rail active → left collapsed, right expanded
-  // - Right rail absent or not yet active → left expanded
-  useEffect(() => {
+  // Apply sidebar state on navigation before paint (avoids margin CLS flash).
+  // Single layout effect owns route-driven rail state — no competing post-paint effects.
+  useLayoutEffect(() => {
     if (isCustomerDetailFromOrder || isAmStoreWizardPage) {
       setIsLeftSidebarOpen(false);
       setIsRightSidebarOpen(false);
@@ -350,27 +351,10 @@ function DashboardLayoutClientInner({
       setIsLeftSidebarOpen(true);
       return;
     }
-    // Right sidebar is active: left collapsed, right expanded
+    // Right sidebar is active: left collapsed, right expanded (never both).
     setIsLeftSidebarOpen(false);
     setIsRightSidebarOpen(true);
   }, [shellSidebarRouteKey]);
-
-  // Enforce: never leave left collapsed while the right rail is inactive.
-  useEffect(() => {
-    if (rightSidebarActive) return;
-    if (isCustomerDetailFromOrder || isAmStoreWizardPage) return;
-    if (!isLeftSidebarOpen) {
-      setIsLeftSidebarOpen(true);
-      setIsRightSidebarOpen(false);
-    }
-  }, [rightSidebarActive, isLeftSidebarOpen, isCustomerDetailFromOrder, isAmStoreWizardPage]);
-
-  // Enforce only one sidebar open at a time (never both expanded)
-  useEffect(() => {
-    if (rightSidebarActive && isLeftSidebarOpen && isRightSidebarOpen) {
-      setIsRightSidebarOpen(false);
-    }
-  }, [rightSidebarActive, isLeftSidebarOpen, isRightSidebarOpen]);
 
   /** Notify Home map (and others) to reflow after sidebar width/margin animation. */
   const notifyDashboardLayoutChange = () => {
@@ -471,13 +455,10 @@ function DashboardLayoutContent({
   const searchParams = useDashboardSearchParams();
   const queryClient = useQueryClient();
   const filterSidebar = useTicketFilterSidebar();
-  const ticketsNavPending = useTicketsNavPendingOptional();
   const cleanPathname = useMemo(() => pathname.split("?")[0].split("#")[0], [pathname]);
   const isTicketDetailPage = useMemo(
-    () =>
-      isTicketsAppDetailPath(cleanPathname) ||
-      (cleanPathname === "/dashboard/tickets" && Boolean(ticketsNavPending?.pendingTicketId)),
-    [cleanPathname, ticketsNavPending?.pendingTicketId]
+    () => isTicketsAppDetailPath(cleanPathname),
+    [cleanPathname]
   );
   const isTicketsQueueWorkspace = useMemo(
     () => isTicketsQueueLayoutExperience(cleanPathname, searchParams),
@@ -638,44 +619,41 @@ function DashboardLayoutContent({
   const pendingNavHref = currentRouteCtx?.pendingNavHref ?? null;
 
   const cancelInFlightPageQueries = useCallback(() => {
+    const clean = cleanPathname;
+    const roots: string[] = (() => {
+      if (clean === "/dashboard") return [];
+      if (clean.startsWith("/dashboard/customers")) return ["customers"];
+      if (clean.startsWith("/dashboard/tickets")) return ["tickets", "unified-tickets"];
+      if (clean.startsWith("/dashboard/orders")) return ["orders"];
+      if (clean.startsWith("/dashboard/riders")) return ["rider"];
+      if (clean.startsWith("/dashboard/merchants"))
+        return ["merchant-stores", "merchant-store", "merchant-wallet-requests-summary", "store"];
+      return [];
+    })();
+    if (roots.length === 0) return;
+
     queryClient.cancelQueries({
       predicate: (query) => {
         const key = query.queryKey as readonly unknown[];
         const root = key?.[0];
         if (key.includes("auth") || key.includes("bootstrap")) return false;
         if (root === "permissions" || root === "dashboard-access") return false;
-        return true;
+        return typeof root === "string" && roots.includes(root);
       },
     });
-  }, [queryClient]);
+  }, [queryClient, cleanPathname]);
 
   const handleSidebarNavigationStart = useCallback(
     (targetHref: string) => {
       const cleanTarget = cleanDashboardHref(targetHref);
       if (isDashboardNavAlreadyAtTarget(cleanPathname, cleanTarget)) return;
 
-      // Already navigating to this exact target — keep overlay; let <Link> proceed.
-      // A different target replaces pending via startNavigation (latest click wins).
-      const alreadyPendingSameTarget = currentRouteCtx?.pendingNavHref === cleanTarget;
-      const showNavOverlay = shouldShowDashboardNavOverlay(cleanPathname, cleanTarget);
-
-      if (!isDashboardNavAlreadyAtTarget(cleanPathname, cleanTarget)) {
-        prefetchDashboardSection(queryClient, cleanTarget);
-      }
-
-      if (showNavOverlay && !alreadyPendingSameTarget) {
-        currentRouteCtx?.startNavigation(cleanTarget);
+      // Latest click wins. Cross-module left-sidebar jumps show GM overlay while
+      // the destination RSC/data loads. Do not pre-toggle rails (margin CLS).
+      currentRouteCtx?.startNavigation(cleanTarget);
+      prefetchDashboardSection(queryClient, cleanTarget);
+      if (shouldShowDashboardNavOverlay(cleanPathname, cleanTarget)) {
         cancelInFlightPageQueries();
-      }
-
-      // Instantly clear the right rail from the main area when leaving via left nav
-      // to a left-only / not-yet-active-right page (no collapsed strip during load).
-      if (pathRightSidebarActive(cleanTarget, null)) {
-        setLeftSidebarOpen(false);
-        setRightSidebarOpen(true);
-      } else {
-        setRightSidebarOpen(false);
-        setLeftSidebarOpen(true);
       }
     },
     [
@@ -683,8 +661,6 @@ function DashboardLayoutContent({
       currentRouteCtx,
       cleanPathname,
       cancelInFlightPageQueries,
-      setLeftSidebarOpen,
-      setRightSidebarOpen,
     ]
   );
 
@@ -696,9 +672,8 @@ function DashboardLayoutContent({
   const hasRightSidebarEligible =
     hasRightSidebar && (!isRiderDashboardLayout || hasRiderSidebarContent);
 
-  /** While left-nav is in flight to a page without an active right rail, hide right immediately. */
-  const pendingSuppressesRight =
-    pendingNavHref != null && !pathRightSidebarActive(pendingNavHref, null);
+  /** Never hide right rail from pending nav — wait for settled pathname (no width jump). */
+  const pendingSuppressesRight = false;
   const isStoreVerificationDetail = isStoreVerificationDetailPath(
     cleanPathname,
     searchParams
@@ -722,7 +697,10 @@ function DashboardLayoutContent({
     (hasRightSidebarEligible || isTicketDetailPage) &&
     !pendingSuppressesRight;
 
-  const showWorkspaceOverlay = isNavigating;
+  const showWorkspaceOverlay =
+    isNavigating &&
+    pendingNavHref != null &&
+    shouldShowDashboardNavOverlay(cleanPathname, pendingNavHref);
 
   const mainLgMarginLeft = isCustomerDetailFromOrder || isAddChildPage
     ? ""
@@ -745,6 +723,18 @@ function DashboardLayoutContent({
           ? "lg:mr-[28rem]"
           : "lg:mr-56"
         : "lg:mr-14";
+
+  /** Fixed left edge for nav overlay — mirrors main column margin, covers main + right rail. */
+  const overlayLeftClass =
+    isCustomerDetailFromOrder || isAddChildPage
+      ? "left-0"
+      : isTicketsQueueWorkspace
+        ? isRightSidebarOpen
+          ? "left-0 lg:left-56"
+          : "left-0 lg:left-14"
+        : isLeftSidebarOpen
+          ? "left-0 lg:left-56"
+          : "left-0 lg:left-16";
 
   /** Left sidebar stays visible; overlay sits above fixed right rail (z-40). */
 
@@ -808,11 +798,6 @@ function DashboardLayoutContent({
                       }`}
                     >
                       {children}
-                      <DashboardNavOverlay
-                        visible={showWorkspaceOverlay}
-                        scope="main"
-                        pendingHref={pendingNavHref}
-                      />
                     </div>
                   </main>
                 </div>
@@ -831,6 +816,13 @@ function DashboardLayoutContent({
                   }
                 />
               )}
+
+              <DashboardNavOverlay
+                visible={showWorkspaceOverlay}
+                scope="main"
+                leftOffsetClass={overlayLeftClass}
+                pendingHref={pendingNavHref}
+              />
 
               <div
                 id="gm-map-stash"

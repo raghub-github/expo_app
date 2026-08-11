@@ -2,6 +2,7 @@
 
 import React from 'react'
 import { Crown, Clock, Power, ChefHat, Package, Smartphone, Bell, Activity, Store } from 'lucide-react'
+import { MerchantAppAssetImage, MX_ASSET } from '@/components/MerchantAppAssetImage'
 
 interface SettingsSidebarProps {
   activeTab: string
@@ -61,8 +62,11 @@ export function SettingsSidebar({ activeTab, onTabChange, collapsed = false }: S
                   {Icon ? (
                     <Icon size={20} strokeWidth={1.75} />
                   ) : (
-                    // eslint-disable-next-line @next/next/no-img-element
-                    <img src="/gstore.png" alt="" className="size-5 opacity-90" />
+                    <MerchantAppAssetImage
+                      assetKey={MX_ASSET.partnerManageStores}
+                      alt=""
+                      className="size-5 opacity-90 object-contain"
+                    />
                   )}
                 </span>
               </span>

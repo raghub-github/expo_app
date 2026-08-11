@@ -1,6 +1,6 @@
 // Authenticated chrome (AuthProvider + HierarchicalSidebar + Header) lives in
-// root `ControlAppShell` for `/dashboard/*` only. Standalone `/order/*` uses
-// its own layout shell (logo header, no left sidebar).
+// root `ControlAppShell` for `/dashboard/*`. Auth also covers `/order/*` so
+// cross-navigation does not remount bootstrap; order pages omit the left rail.
 
 // Every page under /dashboard/* requires an authenticated session and calls
 // Supabase server-side (`getRequiredSupabaseEnv()` throws when env is unset).

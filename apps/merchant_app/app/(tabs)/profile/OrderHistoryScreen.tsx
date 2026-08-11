@@ -1,6 +1,6 @@
 import { AppText as Text } from "@/components/AppText";
 import { View, StyleSheet, Pressable, Platform } from "react-native";
-import { useRouter } from "expo-router";
+import { useMerchantGoBack } from "@/lib/merchantNavigation";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { GatiMitraMerchant, H_PADDING, SAFE_AREA_TOP_MIN } from "@/constants/theme";
@@ -8,7 +8,7 @@ import { useSelectedStore } from "@/context/SelectedStoreContext";
 import { OrdersListScreen } from "../orders";
 
 export default function OrderHistoryScreen() {
-  const router = useRouter();
+  const goBack = useMerchantGoBack("/(tabs)/orders");
   const insets = useSafeAreaInsets();
   const { selectedStore } = useSelectedStore();
   const topPad = Math.max(insets.top, SAFE_AREA_TOP_MIN);
@@ -18,12 +18,12 @@ export default function OrderHistoryScreen() {
     <View style={styles.screen}>
       <View style={[styles.header, { paddingTop: topPad + 6 }]}>
         <Pressable
-          onPress={() => router.back()}
+          onPress={goBack}
           style={({ pressed }) => [styles.backBtn, pressed && { opacity: 0.7 }]}
           hitSlop={8}
           accessibilityLabel="Go back"
         >
-          <Ionicons name="arrow-back" size={22} color={GatiMitraMerchant.textPrimary} />
+          <Ionicons name="chevron-back" size={20} color={GatiMitraMerchant.textPrimary} />
         </Pressable>
         <View style={styles.headerCenter}>
           <Text style={styles.screenTitle}>Order history</Text>

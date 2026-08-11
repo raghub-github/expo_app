@@ -1,7 +1,10 @@
 "use client";
 
-import { useAppSearchParams } from "@/lib/navigation/use-app-search-params";
 import { useSyncExternalStore, useCallback, useMemo } from "react";
+import {
+  readLocationSearch,
+  subscribeLocationSearch,
+} from "@/lib/navigation/history-location-sync";
 
 export type TicketUrlPanel = "conversation" | "activities" | "csat";
 
@@ -10,62 +13,6 @@ function parsePanel(search: string): TicketUrlPanel {
   if (q === "activities") return "activities";
   if (q === "csat") return "csat";
   return "conversation";
-}
-
-const locationSearchListeners = new Set<() => void>();
-let historyPatched = false;
-/** Pending macrotask so we coalesce multiple push/replace in one frame. */
-let notifyTimeout: number | null = null;
-
-function flushLocationSearchListeners() {
-  notifyTimeout = null;
-  const fns = Array.from(locationSearchListeners);
-  for (const fn of fns) {
-    try {
-      fn();
-    } catch {
-      /* ignore subscriber errors */
-    }
-  }
-}
-
-function notifyLocationSearchListeners() {
-  if (typeof window === "undefined") return;
-  if (notifyTimeout != null) return;
-  notifyTimeout = window.setTimeout(flushLocationSearchListeners, 0);
-}
-
-function patchHistoryForSearchSync() {
-  if (typeof window === "undefined" || historyPatched) return;
-  historyPatched = true;
-  const origPush = history.pushState.bind(history);
-  const origReplace = history.replaceState.bind(history);
-  history.pushState = (...args: Parameters<History["pushState"]>) => {
-    origPush(...args);
-    notifyLocationSearchListeners();
-  };
-  history.replaceState = (...args: Parameters<History["replaceState"]>) => {
-    origReplace(...args);
-    notifyLocationSearchListeners();
-  };
-  window.addEventListener("popstate", notifyLocationSearchListeners);
-}
-
-function getSearchSnapshot(): string {
-  return typeof window !== "undefined" ? window.location.search : "";
-}
-
-function getServerSearchSnapshot(): string {
-  return "";
-}
-
-function subscribeSearch(onStoreChange: () => void) {
-  if (typeof window === "undefined") return () => {};
-  patchHistoryForSearchSync();
-  locationSearchListeners.add(onStoreChange);
-  return () => {
-    locationSearchListeners.delete(onStoreChange);
-  };
 }
 
 /**
@@ -77,13 +24,13 @@ function subscribeSearch(onStoreChange: () => void) {
  * synchronously from patched `history.replaceState` during `useInsertionEffect` (Next 16).
  */
 export function useTicketUrlPanel(): TicketUrlPanel {
-  const search = useSyncExternalStore(subscribeSearch, getSearchSnapshot, getServerSearchSnapshot);
+  const search = useSyncExternalStore(subscribeLocationSearch, readLocationSearch, () => "");
   return useMemo(() => parsePanel(search), [search]);
 }
 
 /** Raw `window.location.search` (including `?`) for building links without `useAppSearchParams()`. */
 export function useTicketLocationSearch(): string {
-  return useSyncExternalStore(subscribeSearch, getSearchSnapshot, getServerSearchSnapshot);
+  return useSyncExternalStore(subscribeLocationSearch, readLocationSearch, () => "");
 }
 
 export function useTicketPanelNavigation(pathname: string | null, router: { replace: (href: string, opts?: { scroll?: boolean }) => void }) {

@@ -7,16 +7,17 @@ import { useEffect, useRef } from "react";
 import { AppText as Text } from "@/components/AppText";
 import { View, Pressable, StyleSheet, Animated, Platform } from "react-native";
 import { GatiMitraMerchant } from "@/constants/theme";
+import { RadarLiveIndicator } from "@/components/RadarLiveIndicator";
 
-const PILL_HEIGHT = 30;
-const KNOB_SIZE = 22;
-const KNOB_RADIUS = 6;
+const PILL_HEIGHT = 34;
+const KNOB_SIZE = 24;
+const KNOB_RADIUS = 7;
 const PILL_PADDING = 6;
-const PILL_WIDTH = 92;
+const PILL_WIDTH = 104;
 const KNOB_TRAVEL = PILL_WIDTH - PILL_PADDING * 2 - KNOB_SIZE;
 
-const ONLINE_GREEN = "#22C55E";
-const OFFLINE_RED = "#EF4444";
+const ONLINE_GREEN = "#16A34A";
+const OFFLINE_RED = "#DC2626";
 
 export function OnlineOfflineToggle({
   isOnline,
@@ -68,7 +69,13 @@ export function OnlineOfflineToggle({
         </View>
         <Animated.View
           style={[styles.knob, { transform: [{ translateX: knobTranslateX }] }]}
-        />
+        >
+          {isOnline ? (
+            <RadarLiveIndicator compact />
+          ) : (
+            <View style={styles.offlineKnobDot} />
+          )}
+        </Animated.View>
       </Animated.View>
     </Pressable>
   );
@@ -109,7 +116,7 @@ const styles = StyleSheet.create({
     zIndex: 1,
   },
   label: {
-    fontSize: 11,
+    fontSize: 12,
     fontWeight: "700",
     color: "#FFFFFF",
     letterSpacing: 0.3,
@@ -121,6 +128,9 @@ const styles = StyleSheet.create({
     height: KNOB_SIZE,
     borderRadius: KNOB_RADIUS,
     backgroundColor: "#FFFFFF",
+    alignItems: "center",
+    justifyContent: "center",
+    overflow: "hidden",
     ...Platform.select({
       ios: {
         shadowColor: "#000",
@@ -130,5 +140,11 @@ const styles = StyleSheet.create({
       },
       android: { elevation: 2 },
     }),
+  },
+  offlineKnobDot: {
+    width: 9,
+    height: 9,
+    borderRadius: 4.5,
+    backgroundColor: OFFLINE_RED,
   },
 });

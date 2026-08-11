@@ -95,6 +95,8 @@ export const queryKeys = {
     /** Always string id so URL slug + numeric `ticket.id` share one cache entry (avoids duplicate refetches / “reload”). */
     detail: (id: number | string) => ["tickets", "detail", String(id).trim()] as const,
     activities: (id: number | string) => ["tickets", "activities", String(id).trim()] as const,
+    mergeCandidates: (id: number | string) =>
+      ["tickets", "merge-candidates", String(id).trim()] as const,
     agents: (includePresence?: boolean, accessApprovedOnly?: boolean) =>
       [
         "tickets",

@@ -9,12 +9,15 @@ import {
   useState,
 } from "react";
 import { useAppPathname } from "@/hooks/useAppSearchParams";
+import { useBrowserPathname } from "@/hooks/tickets/useBrowserPathname";
 import { ticketsPathTicketId } from "@/lib/tickets/ticket-path-utils";
 
 type TicketsNavPendingContextValue = {
   /** Ticket id the user clicked before the App Router segment commits. */
   pendingTicketId: string | null;
   beginDetailNav: (ticketId: string | number) => void;
+  /** Clear optimistic detail shell (e.g. user clicked All / back to list). */
+  clearPendingNav: () => void;
 };
 
 const TicketsNavPendingContext = createContext<TicketsNavPendingContextValue | null>(
@@ -36,19 +39,21 @@ export function TicketsNavPendingProvider({
   children: React.ReactNode;
 }) {
   const pathname = useAppPathname();
+  const browserPathname = useBrowserPathname();
   const clean = cleanPathname(pathname);
+  const browserClean = browserPathname || clean;
   const [pendingTicketId, setPendingTicketId] = useState<string | null>(null);
 
   useEffect(() => {
-    const onPath = ticketsPathTicketId(clean);
+    const onPath = ticketsPathTicketId(clean) ?? ticketsPathTicketId(browserClean);
     if (onPath != null) {
       setPendingTicketId(null);
       return;
     }
-    if (clean === "/dashboard/tickets") {
+    if (clean === "/dashboard/tickets" || browserClean === "/dashboard/tickets") {
       setPendingTicketId(null);
     }
-  }, [clean]);
+  }, [clean, browserClean]);
 
   useEffect(() => {
     const onPopState = () => {
@@ -67,9 +72,13 @@ export function TicketsNavPendingProvider({
     setPendingTicketId(id);
   }, []);
 
+  const clearPendingNav = useCallback(() => {
+    setPendingTicketId(null);
+  }, []);
+
   const value = useMemo(
-    () => ({ pendingTicketId, beginDetailNav }),
-    [pendingTicketId, beginDetailNav]
+    () => ({ pendingTicketId, beginDetailNav, clearPendingNav }),
+    [pendingTicketId, beginDetailNav, clearPendingNav]
   );
 
   return (

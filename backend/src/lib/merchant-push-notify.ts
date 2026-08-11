@@ -137,6 +137,72 @@ export async function notifyMerchantStoreOnline(sql: Sql, storeId: number): Prom
   });
 }
 
+async function merchantStoreDisplayName(sql: Sql, storeId: number): Promise<string> {
+  const rows = await sql`
+    SELECT store_name FROM merchant_stores WHERE id = ${storeId} LIMIT 1
+  `;
+  const name = (rows[0] as { store_name?: string } | undefined)?.store_name?.trim();
+  return name && name.length > 0 ? name : "Your restaurant";
+}
+
+/** Outside scheduled delivery slot — opens restaurant status screen. */
+export async function notifyMerchantOutsideDeliveryTimings(sql: Sql, storeId: number): Promise<void> {
+  const storeName = await merchantStoreDisplayName(sql, storeId);
+  const title = `🔴 ${storeName} is out of delivery timings`;
+  const body = "Go online now to receive orders";
+  const recent = await sql`
+    SELECT 1 FROM merchant_store_notifications
+    WHERE store_id = ${storeId}
+      AND title = ${title}
+      AND created_at > now() - interval '12 hours'
+    LIMIT 1
+  `;
+  if (recent.length > 0) return;
+  await notifyMerchantStore(sql, {
+    storeId,
+    type: "store",
+    title,
+    body,
+    actionUrl: "/restaurant-status",
+    pushData: {
+      type: "merchant_outside_delivery",
+      screen: "restaurant_status",
+      url: "/restaurant-status",
+      template_code: "MERCHANT_OUTSIDE_DELIVERY_TIMINGS",
+    },
+    channelId: "merchant_online",
+  });
+}
+
+/** Delivery slot is active but store is still offline — prompt merchant to go online. */
+export async function notifyMerchantGoOnlinePrompt(sql: Sql, storeId: number): Promise<void> {
+  const storeName = await merchantStoreDisplayName(sql, storeId);
+  const title = `🔴 ${storeName} is out of delivery timings`;
+  const body = "Go online now to receive orders";
+  const recent = await sql`
+    SELECT 1 FROM merchant_store_notifications
+    WHERE store_id = ${storeId}
+      AND title = ${title}
+      AND created_at > now() - interval '6 hours'
+    LIMIT 1
+  `;
+  if (recent.length > 0) return;
+  await notifyMerchantStore(sql, {
+    storeId,
+    type: "store",
+    title,
+    body,
+    actionUrl: "/restaurant-status",
+    pushData: {
+      type: "merchant_go_online",
+      screen: "restaurant_status",
+      url: "/restaurant-status",
+      template_code: "MERCHANT_GO_ONLINE_PROMPT",
+    },
+    channelId: "merchant_online",
+  });
+}
+
 export async function notifyMerchantNewRating(
   sql: Sql,
   args: {

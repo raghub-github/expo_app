@@ -141,7 +141,7 @@ export function PartnerContentSkeleton() {
     pathname.startsWith('/partners/food-orders') ||
     pathname.startsWith('/partners/order-history')
   ) {
-    return <PageSkeletonOrders />;
+    return <div className="flex flex-1 min-h-0 bg-gray-50" aria-busy="true" aria-label="Loading orders" />;
   }
   if (pathname.startsWith('/partners/menu')) return <MenuPageSkeleton />;
   if (pathname.startsWith('/partners/profile')) return <PageSkeletonProfile />;

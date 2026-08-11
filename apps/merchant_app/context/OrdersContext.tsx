@@ -9,8 +9,10 @@ import {
   type ReactNode,
 } from "react";
 import { AppState, type AppStateStatus } from "react-native";
+import { isAppForeground } from "@/lib/appForeground";
 import { useAuth } from "@/context/AuthContext";
 import { useSelectedStore } from "@/context/SelectedStoreContext";
+import { useActiveTab } from "@/context/ActiveTabContext";
 import {
   fetchFoodOrder,
   fetchFoodOrders,
@@ -37,6 +39,22 @@ import { shortLocalityFromAddress } from "@/lib/selectedStoreStorage";
 const POLL_FAST_MS = 15_000;
 const POLL_NORMAL_MS = 25_000;
 const POLL_BACKOFF_MS = 45_000;
+/** Avoid stampeding the API when managing many outlets at once. */
+const ORDERS_FETCH_CONCURRENCY = 4;
+
+async function mapInBatches<T, R>(
+  items: T[],
+  concurrency: number,
+  fn: (item: T) => Promise<R>
+): Promise<R[]> {
+  const out: R[] = [];
+  for (let i = 0; i < items.length; i += concurrency) {
+    const chunk = items.slice(i, i + concurrency);
+    const batch = await Promise.all(chunk.map(fn));
+    out.push(...batch);
+  }
+  return out;
+}
 
 type OrdersContextValue = {
   orders: OrderRecord[];
@@ -90,6 +108,7 @@ function formatRelativeTime(iso: string): string {
 
 export function OrdersProvider({ children }: { children: ReactNode }) {
   const { token } = useAuth();
+  const { activeTab } = useActiveTab();
   const { selectedStore, managedStores } = useSelectedStore();
   const orderStoreIds = useMemo(() => {
     const fromManaged = managedStores.map((s) => s.id).filter((id) => Number.isFinite(id) && id > 0);
@@ -178,13 +197,11 @@ export function OrdersProvider({ children }: { children: ReactNode }) {
         if (__DEV__) {
           console.log(`[orders] fetching food-orders stores=${orderStoreIds.join(",")}`);
         }
-        const batches = await Promise.all(
-          orderStoreIds.map(async (sid) => {
-            const list = await fetchFoodOrders(sid, token, { limit: 40 });
-            cacheFoodOrders(sid, list);
-            return list.map((row) => mapWithStore(row, sid));
-          })
-        );
+        const batches = await mapInBatches(orderStoreIds, ORDERS_FETCH_CONCURRENCY, async (sid) => {
+          const list = await fetchFoodOrders(sid, token, { limit: 40 });
+          cacheFoodOrders(sid, list);
+          return list.map((row) => mapWithStore(row, sid));
+        });
         const merged = batches.flat();
         // Newest first across stores
         merged.sort(
@@ -325,11 +342,6 @@ export function OrdersProvider({ children }: { children: ReactNode }) {
     });
   }, []);
 
-  useEffect(() => {
-    setLoading(true);
-    void refetch();
-  }, [refetch]);
-
   const hasPendingAccept = useMemo(
     () => orders.some((o) => o.status === "created" && !o.id.startsWith("core-")),
     [orders]
@@ -340,6 +352,18 @@ export function OrdersProvider({ children }: { children: ReactNode }) {
     [orders]
   );
 
+  const ordersTabHot =
+    activeTab === "index" || activeTab === "orders" || hasPendingAccept || hasActivePipeline;
+
+  useEffect(() => {
+    if (!ordersTabHot) {
+      setLoading(false);
+      return;
+    }
+    setLoading(true);
+    void refetch();
+  }, [refetch, ordersTabHot]);
+
   const pollIntervalMs =
     pollFailStreak >= 2
       ? POLL_BACKOFF_MS
@@ -349,7 +373,7 @@ export function OrdersProvider({ children }: { children: ReactNode }) {
 
   useMerchantOrdersRealtime({
     storeIds: orderStoreIds,
-    enabled: Boolean(token && orderStoreIds.length > 0),
+    enabled: Boolean(token && orderStoreIds.length > 0 && ordersTabHot),
     authToken: token,
     onOrdersStale: () => {
       void refetch();
@@ -361,10 +385,12 @@ export function OrdersProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     const id = setInterval(() => {
+      if (!isAppForeground()) return;
+      if (!ordersTabHot) return;
       void refetch();
     }, pollIntervalMs);
     return () => clearInterval(id);
-  }, [pollIntervalMs, refetch]);
+  }, [pollIntervalMs, refetch, ordersTabHot]);
 
   // Read-only freshness sync when app is resumed.
   useEffect(() => {

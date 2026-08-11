@@ -7,6 +7,12 @@ import {
   updateActivity,
   initializeSession,
 } from "@/lib/auth/session-manager";
+import {
+  isRefreshTokenAlreadyUsed,
+  isRefreshTokenNotFound,
+  isTimeoutOrAbortError,
+} from "@/lib/auth/session-errors";
+import { fetchWithTimeout } from "@/lib/supabase/fetch-timeout";
 
 /** Normalize cookie options so `sameSite` matches Next.js ResponseCookie (not plain string). */
 function setSafeResponseCookie(
@@ -39,6 +45,141 @@ function continueRequest(request: NextRequest): NextResponse {
   return NextResponse.next({ request });
 }
 
+function clearSupabaseAuthCookies(response: NextResponse, request: NextRequest): void {
+  for (const c of request.cookies.getAll()) {
+    if (c.name.startsWith("sb-")) {
+      response.cookies.set(c.name, "", { path: "/", maxAge: 0 });
+    }
+  }
+}
+
+function deadSessionRedirect(
+  request: NextRequest,
+  normalizedRedirectPath: string,
+  pathname: string
+): NextResponse {
+  if (pathname.startsWith("/api/")) {
+    const res = NextResponse.json(
+      { success: false, error: "Session invalid", code: "SESSION_INVALID" },
+      { status: 401, headers: { "Content-Type": "application/json" } }
+    );
+    clearSupabaseAuthCookies(res, request);
+    return res;
+  }
+  if (!pathname.startsWith("/login") && !pathname.startsWith("/auth/callback")) {
+    const redirectUrl = request.nextUrl.clone();
+    redirectUrl.pathname = "/login";
+    redirectUrl.searchParams.set("redirect", normalizedRedirectPath);
+    redirectUrl.searchParams.set("reason", "session_invalid");
+    redirectUrl.searchParams.set("expired", "1");
+    const res = NextResponse.redirect(redirectUrl);
+    clearSupabaseAuthCookies(res, request);
+    return res;
+  }
+  const res = continueRequest(request);
+  clearSupabaseAuthCookies(res, request);
+  return res;
+}
+
+async function probeAuthUser(
+  supabase: ReturnType<typeof createServerClient>
+): Promise<{ user: { id: string; email?: string } | null; error: { message?: string; code?: string } | null }> {
+  type AuthUserResult = {
+    data?: { user?: { id: string; email?: string } | null };
+    error?: { message?: string; code?: string } | null;
+  };
+  try {
+    const getUserPromise = supabase.auth.getUser().then(
+      (r: AuthUserResult) => ({ user: r.data?.user ?? null, error: r.error ?? null }),
+      (err: unknown) => {
+        if (isTimeoutOrAbortError(err)) {
+          return { user: null, error: { message: "Auth probe timeout", code: "TIMEOUT" } };
+        }
+        const e = err as { message?: string; code?: string };
+        return {
+          user: null,
+          error: { message: e?.message ?? "fetch failed", code: e?.code ?? "FETCH_FAILED" },
+        };
+      }
+    );
+    // Timeout may win — swallow late AbortError / AuthFetchTimeoutError permanently.
+    void getUserPromise.catch(() => undefined);
+
+    return await Promise.race([
+      getUserPromise,
+      new Promise<{ user: null; error: { message: string; code: string } }>((resolve) =>
+        setTimeout(
+          () => resolve({ user: null, error: { message: "Session check timeout", code: "TIMEOUT" } }),
+          2500
+        )
+      ),
+    ]);
+  } catch (err) {
+    if (isTimeoutOrAbortError(err)) {
+      return { user: null, error: { message: "Auth probe timeout", code: "TIMEOUT" } };
+    }
+    const e = err as { message?: string; code?: string };
+    return { user: null, error: { message: e?.message ?? "Session check failed", code: e?.code ?? "FETCH_FAILED" } };
+  }
+}
+
+/** Avoid calling Auth getUser on every HTML navigation within a short window. */
+let pageAuthProbeOkUntil = 0;
+let pageAuthProbeNetworkDownUntil = 0;
+const PAGE_AUTH_PROBE_OK_MS = 60_000;
+const PAGE_AUTH_PROBE_NETWORK_COOLDOWN_MS = 60_000;
+
+function isProbeNetworkError(error: { message?: string; code?: string } | null): boolean {
+  if (!error) return false;
+  const code = (error.code ?? "").toUpperCase();
+  const msg = (error.message ?? "").toLowerCase();
+  return (
+    code === "TIMEOUT" ||
+    code === "FETCH_FAILED" ||
+    code === "ABORT" ||
+    code === "ABORT_ERR" ||
+    code.includes("CONNECT") ||
+    msg.includes("timeout") ||
+    msg.includes("fetch failed") ||
+    msg.includes("connect") ||
+    msg.includes("aborted") ||
+    msg.includes("abort")
+  );
+}
+
+async function probeAuthUserForPageNavigation(
+  supabase: ReturnType<typeof createServerClient>
+): Promise<{ user: { id: string; email?: string } | null; error: { message?: string; code?: string } | null }> {
+  const now = Date.now();
+  if (now < pageAuthProbeNetworkDownUntil) {
+    // Soft-pass: do not treat Auth outage as dead session.
+    return { user: { id: "network-cooldown" }, error: null };
+  }
+  if (now < pageAuthProbeOkUntil) {
+    return { user: { id: "probe-cached" }, error: null };
+  }
+
+  const probe = await probeAuthUser(supabase);
+  if (probe.user) {
+    pageAuthProbeOkUntil = now + PAGE_AUTH_PROBE_OK_MS;
+    return probe;
+  }
+  if (isProbeNetworkError(probe.error)) {
+    pageAuthProbeNetworkDownUntil = now + PAGE_AUTH_PROBE_NETWORK_COOLDOWN_MS;
+    // Soft-pass on ConnectTimeout — API routes authenticate themselves.
+    return { user: { id: "network-soft" }, error: null };
+  }
+  return probe;
+}
+
+function isDeadRefreshError(error: { message?: string; code?: string } | null): boolean {
+  if (!error) return false;
+  if (isRefreshTokenAlreadyUsed(error)) return false;
+  if (isRefreshTokenNotFound(error)) return true;
+  const msg = (error.message ?? "").toLowerCase();
+  return msg.includes("invalid refresh token");
+}
+
 export async function proxy(request: NextRequest) {
   const pathname = request.nextUrl.pathname;
   const normalizedRedirectPath = pathname === "/" ? "/dashboard" : pathname;
@@ -46,6 +187,11 @@ export async function proxy(request: NextRequest) {
   const debugProxy = process.env.NEXT_PUBLIC_DEBUG_PROXY === "true";
   if (debugProxy && !pathname.startsWith("/_next") && !pathname.startsWith("/api/audit")) {
     console.log("[proxy] Path:", pathname);
+  }
+
+  // Client cancelled (React Query / badge poll) — exit quietly, never AbortError spam.
+  if (request.signal.aborted) {
+    return continueRequest(request);
   }
 
   const response = continueRequest(request);
@@ -60,6 +206,9 @@ export async function proxy(request: NextRequest) {
     }
 
     const supabase = createServerClient(supabaseUrl, supabaseAnonKey, {
+      global: {
+        fetch: fetchWithTimeout,
+      },
       cookies: {
         getAll() {
           return request.cookies.getAll();
@@ -102,9 +251,20 @@ export async function proxy(request: NextRequest) {
       return response;
     }
 
-    // sb-* cookies present: pass through to Node route handlers for getUser() auth.
-    // Never expire partner metadata cookies here — stale metadata is re-init'd, not wiped.
+    // sb-* cookies present.
+    // IMPORTANT: Do NOT call Auth getUser() on every /api/* request — that was the
+    // root cause of ConnectTimeoutError storms to *.supabase.co while tickets polled.
+    // API routes authenticate via resolveSupabaseUser (cookie-first). Page navigations
+    // still probe occasionally (cached) to catch dead refresh tokens.
     if (hasAuthCookie) {
+      const isApiRoute = pathname.startsWith("/api/");
+      if (!isApiRoute) {
+        const probe = await probeAuthUserForPageNavigation(supabase);
+        if (!probe.user && isDeadRefreshError(probe.error)) {
+          return deadSessionRedirect(request, normalizedRedirectPath, pathname);
+        }
+      }
+
       const cookieWrapper = {
         get: (name: string) => request.cookies.get(name) ?? undefined,
       };
@@ -151,6 +311,12 @@ export async function proxy(request: NextRequest) {
       const getUserSafe = supabase.auth.getUser().then(
         (r) => r as AuthUserResult,
         (err: unknown) => {
+          if (isTimeoutOrAbortError(err)) {
+            return {
+              data: { user: null },
+              error: { message: "Session check timeout", code: "TIMEOUT" },
+            } satisfies AuthUserResult;
+          }
           const e = err as { message?: string; code?: string; name?: string };
           return {
             data: { user: null },
@@ -161,6 +327,7 @@ export async function proxy(request: NextRequest) {
           } satisfies AuthUserResult;
         }
       );
+      void getUserSafe.catch(() => undefined);
       const userResult = (await Promise.race([
         getUserSafe,
         new Promise<AuthUserResult>((resolve) =>
@@ -223,26 +390,7 @@ export async function proxy(request: NextRequest) {
       if (isAlreadyUsed) {
         sessionError = null;
       } else if (isRefreshTokenNotFound || isInvalidRefresh) {
-        try {
-          await supabase.auth.signOut();
-        } catch {
-          // ignore
-        }
-        session = null;
-        sessionError = null;
-        if (pathname.startsWith("/api/")) {
-          return NextResponse.json(
-            { success: false, error: "Session invalid", code: "SESSION_INVALID" },
-            { status: 401, headers: { "Content-Type": "application/json" } }
-          );
-        }
-        if (!pathname.startsWith("/login") && !pathname.startsWith("/auth/callback")) {
-          const redirectUrl = request.nextUrl.clone();
-          redirectUrl.pathname = "/login";
-          redirectUrl.searchParams.set("redirect", normalizedRedirectPath);
-          redirectUrl.searchParams.set("reason", "session_invalid");
-          return NextResponse.redirect(redirectUrl);
-        }
+        return deadSessionRedirect(request, normalizedRedirectPath, pathname);
       }
     }
 
@@ -404,6 +552,9 @@ export async function proxy(request: NextRequest) {
 
     return response;
   } catch (error) {
+    if (isTimeoutOrAbortError(error) || request.signal.aborted) {
+      return continueRequest(request);
+    }
     console.error("[proxy] FATAL ERROR:", error);
     return continueRequest(request);
   }

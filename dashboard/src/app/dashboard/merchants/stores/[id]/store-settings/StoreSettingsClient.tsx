@@ -21,7 +21,7 @@ import {
   AlertTriangle,
   Loader2,
 } from "lucide-react";
-import { Toaster, toast } from "sonner";
+import { toast } from "sonner";
 import { UI_STRINGS } from "@/lib/localStoreStatusEngineStore";
 import {
   MERCHANT_PORTAL_CLOSE_REASONS,
@@ -664,7 +664,6 @@ export function StoreSettingsClient({ storeId }: { storeId: string }) {
 
   return (
     <div className="flex flex-col min-h-0 w-full">
-      <Toaster position="top-right" richColors />
       {engine.scheduleEndModalOpen && (
         <div className="fixed inset-0 z-[120] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
           <div className="w-full max-w-sm rounded-2xl bg-white p-6 shadow-2xl border border-gray-200">

@@ -10,6 +10,7 @@ import { prefetchTicketDetail } from "@/hooks/tickets/useTicketDetail";
 import { useTicketsNavPendingOptional } from "@/context/TicketsNavPendingContext";
 import { buildTicketDetailHref } from "@/lib/tickets/ticket-path-utils";
 import { formatTicketDisplaySubject } from "@/lib/tickets/ticket-display-subject";
+import { ticketMergedPill } from "@/lib/tickets/ticket-merged-pill";
 import { InlineSearchableSelect, type Option } from "./InlineSearchableSelect";
 import { TicketMixedText, TicketNum } from "./tickets-typography";
 
@@ -140,6 +141,7 @@ export const TicketListRow = React.memo(function TicketListRow({
 }: TicketListRowProps) {
   const detailLink = detailHref ?? buildTicketDetailHref(ticket.id, "");
   const displaySubject = formatTicketDisplaySubject(ticket);
+  const mergedPill = ticketMergedPill(ticket);
   const [groupAgentOpen, setGroupAgentOpen] = useState(false);
   const [groupAgentTab, setGroupAgentTab] = useState<"group" | "agent">("group");
   const [searchGroup, setSearchGroup] = useState("");
@@ -443,7 +445,7 @@ export const TicketListRow = React.memo(function TicketListRow({
   return (
     <>
     <div
-      className="flex items-center gap-2 border-b border-gray-200 bg-white pl-2 pr-1 py-2 hover:bg-slate-50/80 transition-colors min-h-0 relative group"
+      className="ticket-list-row flex items-center gap-2 border-b border-gray-200 bg-white pl-2 pr-1 py-2.5 min-h-0 relative group"
       style={{ overflow: "visible" }}
       onPointerEnter={prefetchThisTicket}
     >
@@ -488,6 +490,14 @@ export const TicketListRow = React.memo(function TicketListRow({
               {ticketTypeLabel}
             </span>
           )}
+          {mergedPill ? (
+            <span
+              className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-fuchsia-50 text-fuchsia-800 border border-fuchsia-200"
+              title={mergedPill.title}
+            >
+              {mergedPill.label}
+            </span>
+          ) : null}
           {sourceLabel && (
             <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-violet-50 text-violet-800 border border-violet-100">
               {sourceLabel}
@@ -517,13 +527,13 @@ export const TicketListRow = React.memo(function TicketListRow({
           onMouseEnter={prefetchThisTicket}
           // Only the subject + ticket id text should be clickable.
           // Avoid `w-full` here because it makes the whole row width clickable (including blank space).
-          className="group/title inline-flex w-fit max-w-full min-w-0 text-left rounded-sm px-0.5 -mx-0.5 transition-colors duration-150 hover:bg-blue-50/80"
+          className="ticket-subject-link group/title inline-flex w-fit max-w-full min-w-0 items-baseline text-left"
           title={`${displaySubject} · #${ticket.ticketNumber || ticket.id}`}
         >
-          <TicketMixedText className="font-medium text-[#121212] group-hover/title:text-blue-700 transition-colors duration-150 text-[12.5px] leading-snug [overflow-wrap:anywhere]">
+          <TicketMixedText className="ticket-subject-text font-medium text-[#121212] text-[12.5px] leading-snug [overflow-wrap:anywhere]">
             {displaySubject}
           </TicketMixedText>
-          <TicketNum className="text-[11px] text-[#121212]/55 group-hover/title:text-blue-600/75 font-medium whitespace-nowrap align-baseline ml-2 transition-colors duration-150">
+          <TicketNum className="ticket-subject-id text-[11px] text-[#121212]/55 font-medium whitespace-nowrap align-baseline ml-2">
             #{ticket.ticketNumber || ticket.id}
           </TicketNum>
         </Link>

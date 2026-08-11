@@ -26,6 +26,7 @@ import { TICKETS_QUEUE_HOME_PATH, isTicketsQueueWorkspacePath } from "@/lib/tick
 import {
   cleanDashboardHref,
   isDashboardNavAlreadyAtTarget,
+  resolveSidebarActivePath,
 } from "@/lib/navigation/dashboard-nav-transition";
 import { poppinsUi as sidebarFont } from "@/lib/fonts/tickets-fonts";
 
@@ -211,7 +212,8 @@ export function HierarchicalSidebar({
 
   // Cold-load skeleton only once per browser-tab session after login. Never re-skeleton on remount/nav.
   const showSkeleton = !leftSidebarSessionPrimed && isLoading;
-  const isNavigating = currentRouteCtx?.isNavigating ?? false;
+  const pendingNavHref = currentRouteCtx?.pendingNavHref ?? null;
+  const activePath = resolveSidebarActivePath(cleanPathname, pendingNavHref);
   const mobileTranslate = isMobileMenuOpen ? "max-lg:translate-x-0" : "max-lg:-translate-x-full";
 
   // Scroll nav only when items don't fit the viewport; hide overflow when they do.
@@ -234,10 +236,10 @@ export function HierarchicalSidebar({
     };
   }, [filteredNavigation, isOpen, showSkeleton, isMobileMenuOpen]);
 
-  /** Skip width animation while skeleton mounts or nav is in-flight so the rail doesn't flash collapsed→expand. */
+  /** Skip width animation while skeleton mounts so the rail doesn't flash collapsed→expand. */
   const sidebarBase =
     `fixed inset-y-0 left-0 z-40 flex h-screen max-lg:w-72 flex-col shrink-0 overflow-hidden lg:translate-x-0 ${mobileTranslate} ${isOpen ? "lg:w-56" : "lg:w-16"} ${sidebarFont.className} ${
-      showSkeleton || isNavigating ? "" : "transition-[transform,width] duration-[220ms] ease-in-out"
+      showSkeleton ? "" : "transition-[transform,width] duration-[220ms] ease-in-out"
     }${shellHidden ? " !hidden" : ""}`;
 
   /** Full-bleed sidebar chrome — 100% width & height of allocated rail. */
@@ -382,12 +384,12 @@ export function HierarchicalSidebar({
                     : item.href === "/dashboard/tickets" && inQueueWorkspace
                       ? TICKETS_QUEUE_HOME_PATH
                       : item.href;
-                // Active state is always derived from the live router pathname — never pending UI state.
+                // Active = settled URL, or in-flight pending target for instant click feedback.
                 const isActive =
-                  cleanPathname === moduleRootHref ||
-                  (item.href !== "/dashboard" && cleanPathname.startsWith(item.href + "/")) ||
-                  (item.dashboardType === "ORDER_FOOD" && isOrdersSectionPath(cleanPathname)) ||
-                  (item.href === "/dashboard/super-admin" && isSuperAdminNavPath(cleanPathname));
+                  activePath === moduleRootHref ||
+                  (item.href !== "/dashboard" && activePath.startsWith(item.href + "/")) ||
+                  (item.dashboardType === "ORDER_FOOD" && isOrdersSectionPath(activePath)) ||
+                  (item.href === "/dashboard/super-admin" && isSuperAdminNavPath(activePath));
                 const Icon = item.icon;
                 return (
                   <Link

@@ -52,7 +52,15 @@ export async function getAuthenticatedApiUser(
     return { ok: true, user, supabase };
   }
 
-  if (userError && (isRefreshTokenAlreadyUsed(userError) || isRefreshTokenNotFound(userError))) {
+  if (userError && isRefreshTokenNotFound(userError)) {
+    return {
+      ok: false,
+      status: 401,
+      body: { success: false, error: "Session invalid", code: "SESSION_INVALID" },
+    };
+  }
+
+  if (userError && isRefreshTokenAlreadyUsed(userError)) {
     // Parallel refresh races — do not force logout; client should retry.
     return {
       ok: false,
@@ -66,6 +74,7 @@ export async function getAuthenticatedApiUser(
   }
 
   if (userError && isTransientAuthError(userError)) {
+    // Quiet 503 — do not console.error AbortError/timeout objects here.
     return {
       ok: false,
       status: 503,

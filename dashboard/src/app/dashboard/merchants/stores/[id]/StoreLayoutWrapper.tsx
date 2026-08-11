@@ -1,7 +1,6 @@
 "use client";
 
 import { useLayoutEffect } from "react";
-import { QueryClientProvider } from "@tanstack/react-query";
 import { getQueryClient } from "@/lib/react-query";
 import { STORE_KEY } from "@/hooks/useStore";
 import type { StoreProfile } from "@/hooks/useStore";
@@ -9,8 +8,9 @@ import { StoreLayoutShell } from "./StoreLayoutShell";
 import type { StoreInfo } from "./StoreLayoutShell";
 
 /**
- * Wraps the store layout with QueryClientProvider and primes the store cache
- * so useStore(storeId) has data on first render (no loading flash).
+ * Primes the store cache so useStore(storeId) has data on first paint (no loading flash).
+ * Uses the root PersistQueryClientProvider — do not nest another QueryClientProvider here
+ * (nested providers caused intermittent "No QueryClient set" and remount thrash).
  */
 export function StoreLayoutWrapper({
   storeId,
@@ -29,10 +29,8 @@ export function StoreLayoutWrapper({
   }, [storeId, store]);
 
   return (
-    <QueryClientProvider client={getQueryClient()}>
-      <StoreLayoutShell storeId={storeId} store={store}>
-        {children}
-      </StoreLayoutShell>
-    </QueryClientProvider>
+    <StoreLayoutShell storeId={storeId} store={store}>
+      {children}
+    </StoreLayoutShell>
   );
 }

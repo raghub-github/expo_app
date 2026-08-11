@@ -1,5 +1,6 @@
 "use client";
 import { useAppPathname } from "@/hooks/useAppSearchParams";
+import { useBrowserPathname } from "@/hooks/tickets/useBrowserPathname";
 
 import {
   createContext,
@@ -43,6 +44,8 @@ function browserPathname(): string {
 
 export function CurrentRouteProvider({ children }: { children: React.ReactNode }) {
   const pathname = useAppPathname();
+  /** Live window.location pathname — settles overlays when usePathname lags. */
+  const liveBrowserPathname = useBrowserPathname();
   const [pendingNavHref, setPendingNavHref] = useState<string | null>(null);
   /** Pathname when the current pending intent started. */
   const navFromPathRef = useRef<string | null>(null);
@@ -105,10 +108,11 @@ export function CurrentRouteProvider({ children }: { children: React.ReactNode }
     [pathname]
   );
 
-  // Resolve / abandon pending state from the live App Router pathname.
+  // Resolve / abandon pending state from App Router pathname and live browser URL.
   useLayoutEffect(() => {
-    settlePendingIfResolved(pathname);
-  }, [pathname, pendingNavHref, settlePendingIfResolved]);
+    if (settlePendingIfResolved(pathname)) return;
+    if (liveBrowserPathname) settlePendingIfResolved(liveBrowserPathname);
+  }, [pathname, liveBrowserPathname, pendingNavHref, settlePendingIfResolved]);
 
   // Browser back/forward must never leave a stuck overlay.
   useEffect(() => {
@@ -122,16 +126,6 @@ export function CurrentRouteProvider({ children }: { children: React.ReactNode }
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
   }, [clearNavigation, settlePendingIfResolved]);
-
-  // While pending, periodically reconcile with window.location in case React's
-  // pathname hook lags behind a completed soft navigation (common under RSC load).
-  useEffect(() => {
-    if (!pendingNavHref) return;
-    const id = window.setInterval(() => {
-      settlePendingIfResolved(browserPathname());
-    }, 250);
-    return () => window.clearInterval(id);
-  }, [pendingNavHref, settlePendingIfResolved]);
 
   // Soft-nav failures / hung RSC: drop overlay so UI never stays inconsistent.
   // Do not abort <Link> navigation — only clear pending UI state.

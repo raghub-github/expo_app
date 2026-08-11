@@ -1,9 +1,8 @@
 "use client";
 
 import { useState, useRef, useEffect, useMemo } from "react";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { createPortal } from "react-dom";
-import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
   Reply,
@@ -37,11 +36,26 @@ import {
   buildTicketsListHrefPreservingFilters,
   ticketDetailHasQueueContext,
 } from "@/lib/tickets/ticket-path-utils";
+import { useTicketsNavPending } from "@/context/TicketsNavPendingContext";
+import { useCurrentRoute } from "@/context/CurrentRouteContext";
 import { queryKeys } from "@/lib/queryKeys";
+import { sanitizeTicketDisplayText } from "@/lib/tickets/ticket-display-subject";
+
+type MergeCandidate = {
+  id: number;
+  ticketNumber: string;
+  subject: string;
+  status: string;
+  parentTicketId: number | null;
+  isSameAsPrimary: boolean;
+  isAlreadyMerged: boolean;
+};
 
 interface TicketActionBarProps {
   ticketId: number;
   ticketNumber: string;
+  orderId?: number | null;
+  orderFormattedId?: string | null;
   mergedTickets?: Array<{ id: number; ticketNumber: string; status: string | null }>;
   mergedIntoTicketId?: number | null;
   mergedIntoTicketNumber?: string | null;
@@ -62,6 +76,8 @@ interface TicketActionBarProps {
 export function TicketActionBar({
   ticketId,
   ticketNumber,
+  orderId: _orderIdProp = null,
+  orderFormattedId = null,
   mergedTickets = [],
   mergedIntoTicketId = null,
   mergedIntoTicketNumber = null,
@@ -83,12 +99,8 @@ export function TicketActionBar({
   const [mergeOpen, setMergeOpen] = useState(false);
   const [mergeQuery, setMergeQuery] = useState("");
   const [mergeSearchLoading, setMergeSearchLoading] = useState(false);
-  const [mergeSearchResults, setMergeSearchResults] = useState<
-    Array<{ id: number; ticketNumber: string; subject: string; status: string; parentTicketId: number | null; isSameAsPrimary: boolean; isAlreadyMerged: boolean }>
-  >([]);
-  const [selectedMergeTickets, setSelectedMergeTickets] = useState<
-    Array<{ id: number; ticketNumber: string; subject: string; status: string; parentTicketId: number | null; isSameAsPrimary: boolean; isAlreadyMerged: boolean }>
-  >([]);
+  const [mergeSearchResults, setMergeSearchResults] = useState<MergeCandidate[]>([]);
+  const [selectedMergeTickets, setSelectedMergeTickets] = useState<MergeCandidate[]>([]);
   const [mergeReason, setMergeReason] = useState("");
   const [mergeSubmitting, setMergeSubmitting] = useState(false);
   const [spamConfirmOpen, setSpamConfirmOpen] = useState(false);
@@ -106,11 +118,18 @@ export function TicketActionBar({
   const rightSidebar = useRightSidebar();
   const router = useRouter();
   const locationSearch = useTicketLocationSearch();
+  const { clearPendingNav } = useTicketsNavPending();
+  const currentRoute = useCurrentRoute();
   const fromQueue = useMemo(() => ticketDetailHasQueueContext(locationSearch), [locationSearch]);
   const allTicketsHref = useMemo(
     () => buildTicketsListHrefPreservingFilters(locationSearch),
     [locationSearch]
   );
+  const goToTicketList = () => {
+    clearPendingNav();
+    currentRoute?.clearNavigation();
+    router.push(allTicketsHref, { scroll: false });
+  };
   const pushTicketPreservingListContext = (id: number) => {
     router.push(buildTicketDetailHref(id, locationSearch), { scroll: false });
   };
@@ -186,6 +205,9 @@ export function TicketActionBar({
     }
   };
 
+  const ticketIdNum = Number(ticketId);
+  const mergeCandidatesEnabled = Number.isFinite(ticketIdNum) && ticketIdNum > 0;
+
   const parsedDuplicateIds = useMemo(
     () =>
       Array.from(
@@ -193,11 +215,61 @@ export function TicketActionBar({
           selectedMergeTickets
             .filter((t) => !t.isSameAsPrimary && !t.isAlreadyMerged)
             .map((t) => t.id)
-            .filter((id) => id > 0 && id !== ticketId)
+            .filter((id) => id > 0 && id !== ticketIdNum)
         )
       ),
-    [selectedMergeTickets, ticketId]
+    [selectedMergeTickets, ticketIdNum]
   );
+
+  /** Prefetch while ticket is open so Merge modal opens with data already ready. */
+  const mergeCandidatesQuery = useQuery({
+    queryKey: queryKeys.tickets.mergeCandidates(mergeCandidatesEnabled ? ticketIdNum : "invalid"),
+    queryFn: async ({ signal }) => {
+      const res = await fetch(`/api/tickets/${ticketIdNum}/merge-candidates`, {
+        credentials: "include",
+        signal,
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data?.success === false) {
+        throw new Error(
+          typeof data?.error === "string" ? data.error : "Failed to load related tickets"
+        );
+      }
+      const items = Array.isArray(data?.data) ? data.data : [];
+      const mapped: MergeCandidate[] = items
+        .map((t: Record<string, unknown>) => {
+          const id = Number(t.id);
+          return {
+            id,
+            ticketNumber: String(t.ticketNumber ?? t.ticket_id ?? ""),
+            subject: sanitizeTicketDisplayText(String(t.subject ?? "")),
+            status: String(t.status ?? "").toUpperCase(),
+            parentTicketId: t.parentTicketId != null ? Number(t.parentTicketId) : null,
+            isSameAsPrimary: id === ticketIdNum,
+            isAlreadyMerged: t.parentTicketId != null,
+          };
+        })
+        .filter((t: MergeCandidate) => Number.isFinite(t.id) && t.id > 0 && Boolean(t.ticketNumber));
+      return {
+        tickets: mapped,
+        orderFormattedId:
+          typeof data?.orderFormattedId === "string" ? data.orderFormattedId : null,
+        orderId: data?.orderId != null ? Number(data.orderId) : null,
+      };
+    },
+    enabled: mergeCandidatesEnabled,
+    staleTime: 60_000,
+    refetchOnWindowFocus: false,
+  });
+
+  const sameOrderTickets = mergeCandidatesQuery.data?.tickets ?? [];
+  /** Only show loading when we have no cached candidates yet. */
+  const sameOrderLoading =
+    mergeCandidatesEnabled &&
+    (mergeCandidatesQuery.isLoading || mergeCandidatesQuery.isFetching) &&
+    sameOrderTickets.length === 0;
+  const sameOrderOrderLabel =
+    mergeCandidatesQuery.data?.orderFormattedId ?? orderFormattedId ?? null;
 
   useEffect(() => {
     if (!mergeOpen) return;
@@ -216,11 +288,11 @@ export function TicketActionBar({
           .map((t: Record<string, unknown>) => ({
             id: Number(t.id),
             ticketNumber: String(t.ticketId ?? ""),
-            subject: String(t.subject ?? ""),
+            subject: sanitizeTicketDisplayText(String(t.subject ?? "")),
             status: String(t.status ?? "").toUpperCase(),
             parentTicketId: t.parentTicketId != null ? Number(t.parentTicketId) : null,
             isSameAsPrimary:
-              Number(t.id) === ticketId ||
+              Number(t.id) === ticketIdNum ||
               String(t.ticketId ?? "").trim().toUpperCase() === String(ticketNumber ?? "").trim().toUpperCase(),
             isAlreadyMerged: t.parentTicketId != null,
           }))
@@ -233,9 +305,9 @@ export function TicketActionBar({
       }
     }, 250);
     return () => window.clearTimeout(timer);
-  }, [mergeOpen, mergeQuery, ticketId]);
+  }, [mergeOpen, mergeQuery, ticketIdNum, ticketNumber]);
 
-  const addMergeTicket = (ticket: { id: number; ticketNumber: string; subject: string; status: string; parentTicketId: number | null; isSameAsPrimary: boolean; isAlreadyMerged: boolean }) => {
+  const addMergeTicket = (ticket: MergeCandidate) => {
     if (ticket.isSameAsPrimary) {
       toast("Primary ticket cannot be merged into itself", "error");
       return;
@@ -397,7 +469,7 @@ export function TicketActionBar({
         headers: { "Content-Type": "application/json" },
         credentials: "include",
         body: JSON.stringify({
-          targetTicketId: ticketId,
+          targetTicketId: ticketIdNum,
           sourceTicketIds: parsedDuplicateIds,
           reason: mergeReason.trim() || undefined,
         }),
@@ -414,6 +486,7 @@ export function TicketActionBar({
       setMergeSearchResults([]);
       setSelectedMergeTickets([]);
       setMergeReason("");
+      void queryClient.invalidateQueries({ queryKey: queryKeys.tickets.mergeCandidates(ticketIdNum) });
       onMergeSuccess?.();
     } catch {
       toast("Failed to merge tickets", "error");
@@ -589,6 +662,10 @@ export function TicketActionBar({
               type="button"
               onClick={() => {
                 if (composeLocked) return;
+                setSelectedMergeTickets([]);
+                setMergeQuery("");
+                setMergeSearchResults([]);
+                setMergeReason("");
                 setMergeOpen(true);
               }}
               className={`inline-flex h-7.5 items-center gap-1 border border-gray-300 bg-white px-2.5 text-[12px] font-medium text-gray-700 ${
@@ -816,15 +893,15 @@ export function TicketActionBar({
       >
         <ChevronLeft className="h-4 w-4" />
       </button>
-      <Link
-        href={allTicketsHref}
-        scroll={false}
+      <button
+        type="button"
+        onClick={goToTicketList}
         className="inline-flex h-7.5 max-w-[76px] cursor-pointer items-center rounded-md border border-gray-300 bg-white px-2.5 text-[12px] font-medium text-gray-700 hover:bg-gray-50 sm:max-w-none"
         aria-label={fromQueue ? "Back to queue" : "Back to ticket list"}
         title={fromQueue ? "Queue" : "All"}
       >
         <span className="block truncate">{fromQueue ? "Queue" : "All"}</span>
-      </Link>
+      </button>
       <button
         type="button"
         onClick={() => void handleAdjacentOpen("next")}
@@ -855,14 +932,75 @@ export function TicketActionBar({
           aria-labelledby="merge-ticket-title"
           onClick={(e) => e.target === e.currentTarget && !mergeSubmitting && setMergeOpen(false)}
         >
-          <div className="w-full max-w-lg rounded-xl border border-gray-200 bg-white p-5 shadow-xl" onClick={(e) => e.stopPropagation()}>
+          <div className="w-full max-w-3xl rounded-xl border border-gray-200 bg-white p-5 shadow-xl" onClick={(e) => e.stopPropagation()}>
             <h2 id="merge-ticket-title" className="text-base font-semibold text-gray-900">Merge duplicate tickets</h2>
             <p className="mt-1 text-sm text-gray-500">
               Primary ticket: <span className="font-medium text-gray-700">#{ticketNumber || ticketId}</span>
             </p>
             <div className="mt-4 space-y-3">
               <div>
-                <label className="mb-1 block text-xs font-medium text-gray-600">Search duplicate tickets</label>
+                <label className="mb-1 block text-xs font-medium text-gray-600">
+                  Same order tickets
+                  {sameOrderOrderLabel ? (
+                    <span className="ml-1 font-normal text-gray-500">(Order #{sameOrderOrderLabel})</span>
+                  ) : null}
+                </label>
+                {sameOrderLoading ? (
+                  <p className="px-1 py-2 text-xs text-gray-500">Loading related tickets...</p>
+                ) : sameOrderTickets.length > 0 ? (
+                  <div className="max-h-52 overflow-y-auto rounded-lg border border-gray-200 bg-gray-50/60 p-2">
+                    <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                    {sameOrderTickets.map((t) => (
+                      <label
+                        key={t.id}
+                        className={`flex items-start gap-2 rounded-lg border border-gray-100 bg-white px-3 py-2.5 ${
+                          t.isSameAsPrimary || t.isAlreadyMerged
+                            ? "cursor-not-allowed opacity-60"
+                            : "cursor-pointer hover:border-blue-200 hover:bg-blue-50/30"
+                        }`}
+                      >
+                        <input
+                          type="checkbox"
+                          className="mt-0.5 h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                          checked={
+                            t.isSameAsPrimary || selectedMergeTickets.some((x) => x.id === t.id)
+                          }
+                          disabled={t.isSameAsPrimary || t.isAlreadyMerged}
+                          onChange={(e) => {
+                            if (t.isSameAsPrimary || t.isAlreadyMerged) return;
+                            if (e.target.checked) addMergeTicket(t);
+                            else removeMergeTicket(t.id);
+                          }}
+                        />
+                        <span className="min-w-0">
+                          <span className="block text-xs font-medium text-gray-800">
+                            #{t.ticketNumber}
+                            <span className="ml-1 rounded bg-gray-100 px-1.5 py-0.5 text-[10px] font-medium text-gray-600">
+                              {t.status || "OPEN"}
+                            </span>
+                            {t.isAlreadyMerged ? (
+                              <span className="ml-1 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-700">
+                                MERGED
+                              </span>
+                            ) : null}
+                            {t.isSameAsPrimary ? (
+                              <span className="ml-1 rounded bg-blue-100 px-1.5 py-0.5 text-[10px] font-medium text-blue-700">
+                                PRIMARY
+                              </span>
+                            ) : null}
+                          </span>
+                          <span className="block truncate text-[11px] text-gray-500">
+                            {t.subject || "No subject"}
+                          </span>
+                        </span>
+                      </label>
+                    ))}
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+              <div>
+                <label className="mb-1 block text-xs font-medium text-gray-600">Search other duplicates</label>
                 <div className="relative">
                   <Search className="pointer-events-none absolute left-2.5 top-2.5 h-4 w-4 text-gray-400" />
                   <input

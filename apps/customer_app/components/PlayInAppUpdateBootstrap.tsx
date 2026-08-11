@@ -23,10 +23,19 @@ export function PlayInAppUpdateBootstrap() {
   return <PlayInAppUpdateBootstrapInner />;
 }
 
+function resolveAndroidVersionCode(): string {
+  const fromNative = Application.nativeBuildVersion;
+  if (fromNative && /^\d+$/.test(String(fromNative))) return String(fromNative);
+  const fromConfig = Constants.expoConfig?.android?.versionCode;
+  if (typeof fromConfig === "number" && Number.isFinite(fromConfig)) return String(fromConfig);
+  if (typeof fromConfig === "string" && /^\d+$/.test(fromConfig)) return fromConfig;
+  return "0";
+}
+
 function compareAndroidVersionCodes(storeVersion: string, curVersion: string): -1 | 0 | 1 {
   const store = Number.parseInt(storeVersion, 10);
   const cur = Number.parseInt(curVersion, 10);
-  if (!Number.isFinite(store) || !Number.isFinite(cur)) return 1;
+  if (!Number.isFinite(store) || !Number.isFinite(cur)) return 0;
   if (store === cur) return 0;
   return store > cur ? 1 : -1;
 }
@@ -40,7 +49,7 @@ function openPlayStoreListing() {
 function PlayInAppUpdateBootstrapInner() {
   const [sheetVisible, setSheetVisible] = useState(false);
   const [storeVersionHint, setStoreVersionHint] = useState<string | null>(null);
-  const promptedRef = useRef(false);
+  const dismissedRef = useRef(false);
   const clientRef = useRef<InstanceType<
     typeof import("sp-react-native-in-app-updates").default
   > | null>(null);
@@ -67,9 +76,9 @@ function PlayInAppUpdateBootstrapInner() {
     let statusListener: ((event: { status: number }) => void) | null = null;
 
     const promptIfNeeded = async () => {
-      if (cancelled || promptedRef.current || !clientRef.current) return;
+      if (cancelled || dismissedRef.current || !clientRef.current) return;
 
-      const curVersionCode = Application.nativeBuildVersion ?? "0";
+      const curVersionCode = resolveAndroidVersionCode();
       const result = await clientRef.current.checkNeedsUpdate({
         curVersion: curVersionCode,
         customVersionComparator: compareAndroidVersionCodes,
@@ -92,7 +101,6 @@ function PlayInAppUpdateBootstrapInner() {
 
       if (!playSaysAvailable) return;
 
-      promptedRef.current = true;
       if (storeVersion) {
         setStoreVersionHint(`Update available · v${storeVersion}`);
       } else {
@@ -113,7 +121,7 @@ function PlayInAppUpdateBootstrapInner() {
         availableStatusRef.current = IAUAvailabilityStatus.AVAILABLE;
         downloadedStatusRef.current = IAUInstallStatus.DOWNLOADED;
 
-        const client = new mod.default(__DEV__);
+        const client = new mod.default(false);
         clientRef.current = client;
 
         statusListener = (event) => {
@@ -161,7 +169,10 @@ function PlayInAppUpdateBootstrapInner() {
       appIcon={APP_ICON}
       versionHint={storeVersionHint}
       primaryColor={GatiMitraColors.splashMint}
-      onDismiss={() => setSheetVisible(false)}
+      onDismiss={() => {
+        dismissedRef.current = true;
+        setSheetVisible(false);
+      }}
       onUpdate={() => void startNativeUpdate()}
       onLearnMore={openPlayStoreListing}
     />

@@ -4,6 +4,8 @@ import { useQueryClient } from "@tanstack/react-query";
 import { queryKeys } from "@/lib/queryKeys";
 import { safeParseJson } from "@/lib/utils";
 import { saveBootstrapToStorage } from "@/lib/dashboard-bootstrap-storage";
+import { isHardSessionDeathCode } from "@/lib/auth/session-errors";
+import { redirectToLoginOnSessionExpired } from "@/lib/auth/redirect-to-login";
 
 export const BOOTSTRAP_QUERY_KEY = ["auth", "bootstrap"] as const;
 
@@ -62,6 +64,16 @@ export async function fetchBootstrapAndSeedCache(
     const isJson = (response.headers.get("content-type") ?? "").includes("application/json");
 
     if (!response.ok) {
+      if (response.status === 401 && isJson && text.trim()) {
+        try {
+          const errBody = safeParseJson<{ code?: string }>(text, "Bootstrap error");
+          if (isHardSessionDeathCode(errBody?.code)) {
+            redirectToLoginOnSessionExpired({ reason: errBody.code ?? "session_invalid" });
+          }
+        } catch {
+          /* non-JSON 401 */
+        }
+      }
       if (response.status === 401 || response.status === 404) return false;
       return false;
     }

@@ -726,8 +726,24 @@ export async function GET(
       // Optional: enterprise ratings table may reference tickets.id only or be absent.
     }
 
+    const metaFormattedOrderId = (() => {
+      const meta =
+        row.metadata != null && typeof row.metadata === "object" && !Array.isArray(row.metadata)
+          ? (row.metadata as Record<string, unknown>)
+          : null;
+      if (!meta) return null;
+      const top = meta.formatted_order_id;
+      if (typeof top === "string" && top.trim()) return top.trim();
+      const live = meta.live_order_support;
+      if (live != null && typeof live === "object" && !Array.isArray(live)) {
+        const nested = (live as Record<string, unknown>).formatted_order_id;
+        if (typeof nested === "string" && nested.trim()) return nested.trim();
+      }
+      return null;
+    })();
+
     const ticket = {
-      id: row.id,
+      id: Number(row.id),
       ticket_number: row.ticket_id,
       ticket_id: row.ticket_id,
       ticket_type: row.ticket_type,
@@ -737,11 +753,11 @@ export async function GET(
       service_type: row.service_type,
       ticket_title: row.ticket_title,
       ticket_category: row.ticket_category,
-      order_id: row.order_id,
+      order_id: row.order_id != null ? Number(row.order_id) : null,
       order_formatted_id:
         typeof row.formatted_order_id === "string" && row.formatted_order_id.trim() !== ""
           ? row.formatted_order_id.trim()
-          : null,
+          : metaFormattedOrderId,
       order_service_type: row.order_type,
       raised_by_type: row.raised_by_type,
       raised_by_name:

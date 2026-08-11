@@ -4,7 +4,7 @@
  * Navigation / handlers unchanged — UI shell only.
  */
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef, type ReactNode } from "react";
 import {
   View,
   ScrollView,
@@ -16,10 +16,15 @@ import {
   Linking,
   Alert,
   ActivityIndicator,
+  Image,
 } from "react-native";
 import { AppText as Text } from "@/components/AppText";
+import { AuthProxyImage } from "@/components/AuthProxyImage";
+import { profileSectionTitle } from "@/constants/profileTypography";
+import { resolveImageUrl } from "@/services/outletApi";
 import { LogoutConfirmModal } from "@/components/LogoutConfirmModal";
 import { useRouter, useFocusEffect } from "expo-router";
+import { useMerchantNavigate } from "@/lib/merchantNavigation";
 import { Ionicons } from "@expo/vector-icons";
 import {
   GatiMitraMerchant,
@@ -31,16 +36,17 @@ import { getActivePlanDisplayName } from "@/lib/activePlan";
 import { fetchSubscription, type SubscriptionPlan } from "@/services/api";
 import { useSelectedStore } from "@/context/SelectedStoreContext";
 import { useAuth } from "@/context/AuthContext";
-import { useProfileNav } from "@/context/ProfileNavContext";
 import { getRushStatus } from "@/services/rushApi";
 import { prefetchOperatingHours, prefetchOutlet } from "@/services/outletApi";
 import { getPartnerLegalUrls } from "@/lib/partnerLegalUrls";
 import { openPartnerRegisterStoreHandoff } from "@/lib/partnerRegisterStoreHandoff";
+import { OffersPercentBadgeIcon } from "@/components/OffersPercentBadgeIcon";
 import { isMerchantAuthError } from "@/services/auth.service";
 
 const CONTENT_TOP = 12;
 const TILE_GAP = 12;
-const TILE_ICON_RADIUS = 14;
+/** Profile grid icon tiles — perfect circles (50% radius). */
+const TILE_ICON_SIZE = 56;
 /**
  * 4-up grid on phones (reference layout). Tablets get one extra column so
  * tiles do not stretch too wide.
@@ -48,31 +54,49 @@ const TILE_ICON_RADIUS = 14;
 const TABLET_WIDTH = 600;
 const GRID_COLS_PHONE = 4;
 
+/** Reference-style section separator — visible band, full-bleed, equal vertical gap. */
+const SECTION_DIVIDER_HEIGHT = 8;
+const SECTION_DIVIDER_GAP = 16;
+
+function SectionDivider() {
+  return (
+    <View
+      style={[
+        styles.sectionDivider,
+        {
+          height: SECTION_DIVIDER_HEIGHT,
+          marginVertical: SECTION_DIVIDER_GAP,
+        },
+      ]}
+    />
+  );
+}
+
 function GridCard({
   icon,
+  customIcon,
   label,
   onPress,
   badge,
   tileWidth,
-  active,
 }: {
-  icon: keyof typeof Ionicons.glyphMap;
+  icon?: keyof typeof Ionicons.glyphMap;
+  customIcon?: ReactNode;
   label: string;
   onPress: () => void;
   badge?: string;
   tileWidth: number;
-  active?: boolean;
 }) {
-  const boxSize = Math.min(64, Math.max(52, tileWidth - 4));
-  const iconColor = active ? GatiMitraMerchant.primary : GatiMitraMerchant.textPrimary;
+  const boxSize = Math.min(TILE_ICON_SIZE, Math.max(52, tileWidth - 4));
   const badgeOn = badge != null && String(badge).toUpperCase() === "ON";
 
   return (
     <Pressable
       onPress={onPress}
+      android_ripple={{ color: "transparent" }}
       style={({ pressed }) => [
         styles.tile,
-        { width: tileWidth, opacity: pressed ? 0.75 : 1 },
+        { width: tileWidth, opacity: pressed ? 0.85 : 1 },
         GatiMitraMerchant.cursorPointer,
       ]}
       accessibilityRole="button"
@@ -84,12 +108,13 @@ function GridCard({
           {
             width: boxSize,
             height: boxSize,
-            borderRadius: TILE_ICON_RADIUS,
+            borderRadius: boxSize / 2,
           },
-          active ? styles.tileIconBoxActive : null,
         ]}
       >
-        <Ionicons name={icon} size={26} color={iconColor} />
+        {customIcon ?? (
+          <Ionicons name={icon!} size={26} color={GatiMitraMerchant.textPrimary} />
+        )}
         {badge != null && (
           <View style={[styles.tileBadge, badgeOn ? styles.tileBadgeOn : styles.tileBadgeOff]}>
             <Text style={styles.tileBadgeText} numberOfLines={1}>
@@ -98,10 +123,7 @@ function GridCard({
           </View>
         )}
       </View>
-      <Text
-        style={[styles.tileLabel, active ? styles.tileLabelActive : null]}
-        numberOfLines={2}
-      >
+      <Text style={styles.tileLabel} numberOfLines={2}>
         {label}
       </Text>
     </Pressable>
@@ -110,11 +132,11 @@ function GridCard({
 
 export default function ProfileScreen() {
   const router = useRouter();
+  const { push: navPush } = useMerchantNavigate();
   const { width } = useWindowDimensions();
   const scrollBottomPadding = TAB_BAR_SCROLL_CONTENT_PADDING;
   const { selectedStore } = useSelectedStore();
   const { signOut, token, partner, isAuthenticated, supabaseUserId } = useAuth();
-  const { lastProfileSlug, setLastProfileSlug } = useProfileNav();
 
   const isTablet = width >= TABLET_WIDTH;
   const gridCols = GRID_COLS_PHONE + (isTablet ? 1 : 0);
@@ -130,6 +152,7 @@ export default function ProfileScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [logoutModalVisible, setLogoutModalVisible] = useState(false);
   const [addingChild, setAddingChild] = useState(false);
+  const navLockRef = useRef(false);
   const legalUrls = getPartnerLegalUrls();
   const showAddAnotherChild = (partner?.childStores?.length ?? 0) === 1;
 
@@ -147,9 +170,6 @@ export default function ProfileScreen() {
 
   useFocusEffect(
     useCallback(() => {
-      // Do not clear lastProfileSlug here: when user comes back via back button from
-      // an inner page, we keep the last-clicked tile active. Slug is cleared only
-      // when Profile tab is pressed (in FloatingTabBar).
       let cancelled = false;
       const run = async () => {
         try {
@@ -171,12 +191,26 @@ export default function ProfileScreen() {
       return () => {
         cancelled = true;
       };
-    }, [selectedStore?.id, token, setLastProfileSlug])
+    }, [selectedStore?.id, token])
   );
 
-  const navigate = (slug: string) => () => router.push(`/(tabs)/profile/${slug}` as any);
+  const navigate = (slug: string) => () => {
+    if (navLockRef.current) return;
+    navLockRef.current = true;
+    router.push(`/(tabs)/profile/${slug}` as any);
+    setTimeout(() => {
+      navLockRef.current = false;
+    }, 700);
+  };
 
-  const isActive = (slug: string): boolean => lastProfileSlug === slug;
+  const guardedNavPush = (href: string) => {
+    if (navLockRef.current) return;
+    navLockRef.current = true;
+    navPush(href);
+    setTimeout(() => {
+      navLockRef.current = false;
+    }, 700);
+  };
 
   const handleAddAnotherChild = async () => {
     if (!isAuthenticated || !token || !partner?.parent?.id) {
@@ -215,6 +249,9 @@ export default function ProfileScreen() {
     : selectedStore
       ? `Store ID: ${selectedStore.store_id}`
       : "No store selected";
+  const storeLogoUrl = resolveImageUrl(
+    selectedStore?.parent_logo_url ?? partner?.parent?.store_logo ?? null
+  );
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
@@ -285,9 +322,26 @@ export default function ProfileScreen() {
           GatiMitraMerchant.cursorPointer,
         ]}
       >
-        <View style={styles.outletIconWrap}>
-          <Ionicons name="business-outline" size={24} color={GatiMitraMerchant.primary} />
-        </View>
+        {storeLogoUrl ? (
+          <View style={styles.outletIconWrap}>
+            {token ? (
+              <AuthProxyImage
+                uri={storeLogoUrl}
+                token={token}
+                style={styles.outletLogoImage}
+                resizeMode="cover"
+                accessibilityLabel="Store logo"
+              />
+            ) : (
+              <Image
+                source={{ uri: storeLogoUrl }}
+                style={styles.outletLogoImage}
+                resizeMode="cover"
+                accessibilityLabel="Store logo"
+              />
+            )}
+          </View>
+        ) : null}
         <View style={styles.outletTextWrap}>
           <Text style={styles.outletName} numberOfLines={2}>{storeName}</Text>
           <Text style={styles.outletSubtitle} numberOfLines={1}>{storeSubtitle}</Text>
@@ -304,61 +358,78 @@ export default function ProfileScreen() {
         </View>
       )}
 
+      <SectionDivider />
+
       {/* Manage outlet — quick settings grid */}
       <View style={styles.section}>
-        <Text style={styles.sectionTitle}>Manage outlet</Text>
+        <Text variant="brand" style={[styles.sectionTitle, profileSectionTitle]}>Manage outlet</Text>
         <View style={[styles.tileGrid, { gap: TILE_GAP }]}>
-          <GridCard icon="information-circle-outline" label="Outlet info" onPress={navigate("edit-store")} tileWidth={settingsTileWidth} active={isActive("edit-store")} />
-          <GridCard icon="time-outline" label="Outlet timings" onPress={navigate("hours")} tileWidth={settingsTileWidth} active={isActive("hours")} />
-          <GridCard icon="call-outline" label="Phone numbers" onPress={navigate("business-details")} tileWidth={settingsTileWidth} active={isActive("business-details")} />
-          <GridCard icon="people-outline" label="Manage staff" onPress={navigate("staff")} tileWidth={settingsTileWidth} active={isActive("staff")} />
+          <GridCard icon="information-circle-outline" label="Outlet info" onPress={navigate("edit-store")} tileWidth={settingsTileWidth} />
+          <GridCard icon="time-outline" label="Outlet timings" onPress={navigate("hours")} tileWidth={settingsTileWidth} />
+          <GridCard icon="call-outline" label="Phone numbers" onPress={navigate("business-details")} tileWidth={settingsTileWidth} />
+          <GridCard icon="people-outline" label="Manage staff" onPress={navigate("staff")} tileWidth={settingsTileWidth} />
         </View>
       </View>
+
+      <SectionDivider />
 
       {/* Settings — quick settings grid */}
       <View style={styles.section}>
-        <Text style={styles.sectionTitle}>Settings</Text>
+        <Text variant="brand" style={[styles.sectionTitle, profileSectionTitle]}>Settings</Text>
         <View style={[styles.tileGrid, { gap: TILE_GAP }]}>
-          <GridCard icon="settings-outline" label="Preferences" onPress={navigate("preferences")} tileWidth={settingsTileWidth} active={isActive("preferences")} />
-          <GridCard icon="notifications-outline" label="Manage communication" onPress={navigate("communications")} tileWidth={settingsTileWidth} active={isActive("communications")} />
-          <GridCard icon="storefront-outline" label="Delivery settings" onPress={navigate("address")} tileWidth={settingsTileWidth} active={isActive("address")} />
-          <GridCard icon="flash-outline" label="Rush hour" onPress={navigate("preparation-time")} badge={rushBadge} tileWidth={settingsTileWidth} active={isActive("preparation-time")} />
-          <GridCard icon="print-outline" label="Thermal printer" onPress={navigate("printer-settings")} tileWidth={settingsTileWidth} active={isActive("printer-settings")} />
-          <GridCard icon="calendar-outline" label="Schedule off" onPress={navigate("vacation")} tileWidth={settingsTileWidth} active={isActive("vacation")} />
+          <GridCard icon="settings-outline" label="Preferences" onPress={navigate("preferences")} tileWidth={settingsTileWidth} />
+          <GridCard icon="notifications-outline" label="Manage communication" onPress={navigate("communications")} tileWidth={settingsTileWidth} />
+          <GridCard icon="storefront-outline" label="Delivery settings" onPress={navigate("address")} tileWidth={settingsTileWidth} />
+          <GridCard icon="flash-outline" label="Rush hour" onPress={navigate("preparation-time")} badge={rushBadge} tileWidth={settingsTileWidth} />
+          <GridCard icon="print-outline" label="Thermal printer" onPress={navigate("printer-settings")} tileWidth={settingsTileWidth} />
+          <GridCard icon="calendar-outline" label="Schedule off" onPress={navigate("vacation")} tileWidth={settingsTileWidth} />
         </View>
       </View>
+
+      <SectionDivider />
 
       {/* Marketing — offers & promotions */}
       <View style={styles.section}>
-        <Text style={styles.sectionTitle}>Marketing</Text>
+        <Text variant="brand" style={[styles.sectionTitle, profileSectionTitle]}>Marketing</Text>
         <View style={[styles.tileGrid, { gap: TILE_GAP }]}>
-          <GridCard icon="pricetag-outline" label="Offers & Promotions" onPress={navigate("offers")} tileWidth={settingsTileWidth} active={isActive("offers")} />
-          <GridCard icon="time-outline" label="Recent Activity" onPress={navigate("activity-feed")} tileWidth={settingsTileWidth} active={isActive("activity-feed")} />
+          <GridCard
+            customIcon={<OffersPercentBadgeIcon size={26} color={GatiMitraMerchant.textPrimary} />}
+            label="Offers & Promotions"
+            onPress={navigate("offers")}
+            tileWidth={settingsTileWidth}
+          />
+          <GridCard icon="time-outline" label="Recent Activity" onPress={navigate("activity-feed")} tileWidth={settingsTileWidth} />
         </View>
       </View>
 
+      <SectionDivider />
+
       {/* Orders — quick settings grid */}
       <View style={styles.section}>
-        <Text style={styles.sectionTitle}>Orders</Text>
+        <Text variant="brand" style={[styles.sectionTitle, profileSectionTitle]}>Orders</Text>
         <View style={[styles.tileGrid, { gap: TILE_GAP }]}>
-          <GridCard icon="list-outline" label="Order history" onPress={() => router.push("/order-history")} tileWidth={ordersTileWidth} />
+          <GridCard icon="list-outline" label="Order history" onPress={() => guardedNavPush("/order-history")} tileWidth={ordersTileWidth} />
           <GridCard icon="alert-circle-outline" label="Complaints" onPress={() => router.push("/(tabs)/profile/complaints")} tileWidth={ordersTileWidth} />
           <GridCard icon="chatbubble-outline" label="Reviews" onPress={() => router.push("/(tabs)/profile/reviews")} tileWidth={ordersTileWidth} />
         </View>
       </View>
 
+      <SectionDivider />
+
       {/* Support — quick settings grid */}
       <View style={styles.section}>
-        <Text style={styles.sectionTitle}>Support</Text>
+        <Text variant="brand" style={[styles.sectionTitle, profileSectionTitle]}>Support</Text>
         <View style={[styles.tileGrid, { gap: TILE_GAP }]}>
-          <GridCard icon="help-circle-outline" label="Help & support" onPress={navigate("contact")} tileWidth={settingsTileWidth} active={isActive("contact")} />
-          <GridCard icon="chatbubbles-outline" label="My tickets" onPress={navigate("tickets")} tileWidth={settingsTileWidth} active={isActive("tickets")} />
+          <GridCard icon="help-circle-outline" label="Help & support" onPress={navigate("contact")} tileWidth={settingsTileWidth} />
+          <GridCard icon="chatbubbles-outline" label="My tickets" onPress={navigate("tickets")} tileWidth={settingsTileWidth} />
         </View>
       </View>
 
+      <SectionDivider />
+
       {/* Subscription & Plan */}
       <View style={styles.section}>
-        <Text style={styles.sectionTitle}>Plan</Text>
+        <Text variant="brand" style={[styles.sectionTitle, profileSectionTitle]}>Plan</Text>
         <View style={styles.planCard}>
           <View style={styles.planRow}>
             <Text style={styles.planLabel}>Current Plan</Text>
@@ -386,7 +457,7 @@ export default function ProfileScreen() {
 
       {/* Account & more — compact list */}
       <View style={styles.section}>
-        <Text style={styles.sectionTitle}>Account & support</Text>
+        <Text variant="brand" style={[styles.sectionTitle, profileSectionTitle]}>Account & support</Text>
         <View style={styles.menuCard}>
           <Pressable onPress={navigate("bank")} style={({ pressed }) => [styles.menuRow, pressed && styles.menuRowPressed, GatiMitraMerchant.cursorPointer]}>
             <Ionicons name="card-outline" size={20} color={GatiMitraMerchant.primary} />
@@ -398,7 +469,7 @@ export default function ProfileScreen() {
             <Text style={styles.menuLabel}>Store Status</Text>
             <Ionicons name="chevron-forward" size={18} color={GatiMitraMerchant.textTertiary} />
           </Pressable>
-          <Pressable onPress={() => router.push("/(tabs)/earnings")} style={({ pressed }) => [styles.menuRow, styles.menuRowLast, pressed && styles.menuRowPressed, GatiMitraMerchant.cursorPointer]}>
+          <Pressable onPress={() => navPush("/(tabs)/earnings")} style={({ pressed }) => [styles.menuRow, styles.menuRowLast, pressed && styles.menuRowPressed, GatiMitraMerchant.cursorPointer]}>
             <Ionicons name="wallet-outline" size={20} color={GatiMitraMerchant.primary} />
             <Text style={styles.menuLabel}>Earnings Summary</Text>
             <Ionicons name="chevron-forward" size={18} color={GatiMitraMerchant.textTertiary} />
@@ -491,7 +562,9 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     marginRight: 12,
+    overflow: "hidden",
   },
+  outletLogoImage: { width: 40, height: 40 },
   outletTextWrap: { flex: 1, minWidth: 0 },
   outletName: { fontSize: 15, fontWeight: "700", color: GatiMitraMerchant.textPrimary },
   outletSubtitle: { fontSize: 12, color: GatiMitraMerchant.textSecondary, marginTop: 2 },
@@ -509,7 +582,13 @@ const styles = StyleSheet.create({
   },
   warningText: { flex: 1, fontSize: 12, fontWeight: "500", color: "#92400E" },
 
-  section: { marginBottom: 22 },
+  sectionDivider: {
+    marginHorizontal: -H_PADDING,
+    backgroundColor: "#E5E7EB",
+    alignSelf: "stretch",
+  },
+
+  section: { marginBottom: 0 },
   sectionTitle: {
     fontSize: 16,
     fontWeight: "700",
@@ -528,18 +607,11 @@ const styles = StyleSheet.create({
   tileIconBox: {
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "#F3F4F6",
+    backgroundColor: GatiMitraMerchant.cardBg,
     borderWidth: 1,
-    borderColor: GatiMitraMerchant.border,
+    borderColor: "#E5E7EB",
     marginBottom: 8,
     overflow: "visible",
-    ...(Platform.OS === "ios"
-      ? { shadowColor: "#000", shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.04, shadowRadius: 2 }
-      : { elevation: 1 }),
-  },
-  tileIconBoxActive: {
-    backgroundColor: "#E8F5E9",
-    borderColor: "#C8E6C9",
   },
   tileLabel: {
     fontSize: 11,
@@ -549,10 +621,6 @@ const styles = StyleSheet.create({
     lineHeight: 14,
     paddingHorizontal: 2,
     minHeight: 28,
-  },
-  tileLabelActive: {
-    color: GatiMitraMerchant.primary,
-    fontWeight: "700",
   },
   tileBadge: {
     position: "absolute",

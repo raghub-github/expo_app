@@ -250,7 +250,7 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
               ? String(parentRow.store_logo).trim()
               : null;
           const storeRows = await sql`
-            SELECT ms.id, ms.store_id, ms.store_name, ms.full_address, ms.approval_status,
+            SELECT ms.id, ms.store_id, ms.store_name, ms.full_address, ms.city, ms.approval_status,
                    ms.banner_url,
                    msrp.current_step, msrp.total_steps, msrp.registration_status
             FROM merchant_stores ms
@@ -281,6 +281,7 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
               store_id: s?.store_id,
               store_name: s?.store_name,
               full_address: s?.full_address ?? "",
+              city: s?.city != null ? String(s.city).trim() : "",
               approval_status: s?.approval_status ?? "DRAFT",
               banner_url: s?.banner_url ?? null,
               parent_logo_url: parentLogoUrl,
@@ -2511,6 +2512,190 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
         return reply.send({ ok: true });
       });
 
+      /** GET /merchant-partner/verification-modes — Policy Center modes for merchant_store docs. */
+      protectedApp.get("/verification-modes", async (req, reply) => {
+        if (req.auth?.role !== "merchant" || !req.auth?.sub) {
+          return reply.code(401).send({ error: "merchant_required" });
+        }
+        try {
+          const { resolveEffectivePolicy } = await import("../verification/policy/engine.js");
+          const kinds = ["bank_account", "upi_penny_drop", "pan", "gstin"] as const;
+          const modes: Record<string, string> = {};
+          for (const documentKind of kinds) {
+            const policy = await resolveEffectivePolicy({
+              subjectType: "merchant_store",
+              documentKind,
+            });
+            modes[documentKind] = policy.mode;
+          }
+          if (modes.bank_account) modes.bank = modes.bank_account;
+          return reply.send({ success: true, modes });
+        } catch {
+          return reply.send({ success: true, modes: {} });
+        }
+      });
+
+      /**
+       * POST /merchant-partner/stores/:storeId/bank-accounts/electronic-verify
+       * Cashfree pennyless verify before adding an account (hybrid/auto flow).
+       */
+      protectedApp.post<{
+        Params: { storeId: string };
+        Body: {
+          account_number: string;
+          ifsc_code: string;
+          account_holder_name?: string;
+        };
+      }>("/stores/:storeId/bank-accounts/electronic-verify", async (req, reply) => {
+        if (req.auth?.role !== "merchant" || !req.auth?.sub) {
+          return reply.code(401).send({ error: "merchant_required" });
+        }
+        const storeId = Number(req.params.storeId);
+        if (!Number.isInteger(storeId) || storeId < 1) {
+          return reply.code(400).send({ error: "invalid_store_id" });
+        }
+        const sql = getSql();
+        const parentId = await getPartnerParentId(sql, req.auth.sub);
+        if (parentId == null) return reply.code(404).send({ error: "partner_not_found" });
+        const storeRows = await sql`
+          SELECT id, store_phones, store_name FROM merchant_stores
+          WHERE id = ${storeId} AND parent_id = ${parentId} AND deleted_at IS NULL LIMIT 1
+        `;
+        if (storeRows.length === 0) return reply.code(404).send({ error: "store_not_found" });
+
+        const body = (req.body || {}) as Record<string, unknown>;
+        const bankAccount = String(body.account_number || "").replace(/\D/g, "");
+        const ifsc = String(body.ifsc_code || "").trim().toUpperCase();
+        const holderFallback = String(body.account_holder_name || "").trim();
+        if (!/^\d{6,20}$/.test(bankAccount) || !/^[A-Z]{4}0[A-Z0-9]{6}$/.test(ifsc)) {
+          return reply.code(400).send({
+            error: "invalid_bank_details",
+            message: "Enter a valid account number and IFSC code.",
+          });
+        }
+
+        const storePhones = (storeRows[0] as { store_phones?: unknown })?.store_phones;
+        const phone =
+          (Array.isArray(storePhones) ? String(storePhones[0] || "") : typeof storePhones === "string" ? storePhones : "")
+            .replace(/\D/g, "")
+            .slice(-10) || undefined;
+        const storeName = String((storeRows[0] as { store_name?: string })?.store_name || "").trim();
+
+        try {
+          const { submitBankAccount } = await import("../verification/service.js");
+          const outcome = await submitBankAccount({
+            subjectType: "merchant_store",
+            subjectId: storeId,
+            bankAccount,
+            ifsc,
+            name: holderFallback || storeName || undefined,
+            phone,
+          });
+
+          if (outcome.kind === "manual") {
+            return reply.send({
+              success: true,
+              verified: false,
+              status: "processing",
+              message:
+                "We could not verify instantly. Enter full details and upload bank proof to continue.",
+            });
+          }
+
+          const status = String(outcome.result.status || "").toLowerCase();
+          if (status === "verified") {
+            const nameAtBank =
+              typeof outcome.result.verifiedData?.name_at_bank === "string"
+                ? outcome.result.verifiedData.name_at_bank
+                : typeof outcome.result.verifiedData?.account_name === "string"
+                  ? outcome.result.verifiedData.account_name
+                  : null;
+            const bankName =
+              typeof outcome.result.verifiedData?.bank_name === "string"
+                ? outcome.result.verifiedData.bank_name
+                : ifsc.slice(0, 4);
+            return reply.send({
+              success: true,
+              verified: true,
+              status: "verified",
+              message: "Account verified — confirm account type and save.",
+              name_at_bank: nameAtBank,
+              bank_name: bankName,
+            });
+          }
+
+          return reply.send({
+            success: true,
+            verified: false,
+            status: "failed",
+            message:
+              outcome.result.statusReason ||
+              "Account could not be verified instantly. Try manual verification with bank proof.",
+          });
+        } catch (e: any) {
+          req.log.error(e, "electronic_bank_verify_failed");
+          return reply.code(500).send({
+            success: false,
+            verified: false,
+            error: e?.message || "Verification failed",
+          });
+        }
+      });
+
+      /** POST /merchant-partner/stores/:storeId/bank-proof/upload — bank proof document for manual/hybrid fallback. */
+      protectedApp.post<{ Params: { storeId: string } }>(
+        "/stores/:storeId/bank-proof/upload",
+        async (req, reply) => {
+          if (req.auth?.role !== "merchant" || !req.auth?.sub) {
+            return reply.code(401).send({ error: "merchant_required" });
+          }
+          const storeId = Number(req.params.storeId);
+          if (!Number.isInteger(storeId) || storeId < 1) {
+            return reply.code(400).send({ error: "invalid_store_id" });
+          }
+          const sql = getSql();
+          const parentId = await getPartnerParentId(sql, req.auth.sub);
+          if (parentId == null) return reply.code(404).send({ error: "partner_not_found" });
+          const storeCheck = await sql`
+            SELECT ms.id, ms.store_id AS store_code, mp.parent_merchant_id AS parent_code
+            FROM merchant_stores ms
+            LEFT JOIN merchant_parents mp ON mp.id = ms.parent_id
+            WHERE ms.id = ${storeId} AND ms.parent_id = ${parentId} AND ms.deleted_at IS NULL
+            LIMIT 1
+          `;
+          if ((storeCheck as any[]).length === 0) return reply.code(404).send({ error: "store_not_found" });
+
+          const data = await (req as any).file?.();
+          if (!data) return reply.code(400).send({ error: "no_file" });
+          const buffer = await data.toBuffer();
+          if (buffer.length > 10 * 1024 * 1024) return reply.code(400).send({ error: "file_too_large" });
+
+          const filename = String(data.filename || "");
+          const extMatch = /\.(webp|jpe?g|png|pdf)$/i.exec(filename);
+          const ext = extMatch?.[1]?.toLowerCase() || "jpg";
+          const safeExt = ext === "jpeg" ? "jpg" : ext;
+          const mime = data.mimetype || (safeExt === "pdf" ? "application/pdf" : "image/jpeg");
+
+          const storeCode = String((storeCheck[0] as any).store_code ?? storeId);
+          const parentCode = String((storeCheck[0] as any).parent_code ?? parentId);
+          const key = `docs/merchants/${parentCode}/stores/${storeCode}/onboarding/bank_proof/proof_${Date.now()}.${safeExt}`;
+
+          const { uploadToR2 } = await import("../../services/r2/r2Service.js");
+          try {
+            const result = await uploadToR2(buffer, key, mime);
+            const fileUrl = `/v1/attachments/proxy?key=${encodeURIComponent(result.key)}`;
+            return reply.code(201).send({
+              success: true,
+              file_url: fileUrl,
+              r2_key: result.key,
+            });
+          } catch (e: any) {
+            req.log.error(e, "bank_proof_upload_failed");
+            return reply.code(500).send({ error: "upload_failed", message: e?.message });
+          }
+        }
+      );
+
       /** GET /merchant-partner/stores/:storeId/bank-accounts — list ALL bank/UPI accounts (including disabled). */
       protectedApp.get<{ Params: { storeId: string } }>(
         "/stores/:storeId/bank-accounts",
@@ -2576,6 +2761,8 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
           account_type?: string | null;
           upi_id?: string | null;
           beneficiary_name?: string | null;
+          bank_proof_type?: string | null;
+          bank_proof_file_url?: string | null;
         };
       }>("/stores/:storeId/bank-accounts", async (req, reply) => {
         if (req.auth?.role !== "merchant" || !req.auth?.sub) {
@@ -2626,6 +2813,7 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
             store_id, payout_method, account_holder_name, account_number,
             ifsc_code, bank_name, branch_name, account_type,
             upi_id, beneficiary_name,
+            bank_proof_type, bank_proof_file_url,
             is_primary, is_active, is_disabled, verification_status
           ) VALUES (
             ${storeId}, ${payoutMethod}, ${holderName}, ${accNum},
@@ -2635,6 +2823,8 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
             ${body.account_type ? String(body.account_type).trim() : null},
             ${null},
             ${body.beneficiary_name ? String(body.beneficiary_name).trim() : holderName},
+            ${body.bank_proof_type ? String(body.bank_proof_type).trim() : null},
+            ${body.bank_proof_file_url ? String(body.bank_proof_file_url).trim() : null},
             ${isFirst}, true, false, 'pending'
           ) RETURNING id, account_holder_name, is_primary, payout_method, created_at
         `;
@@ -3582,6 +3772,153 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
         }
       );
 
+      /**
+       * POST /merchant-partner/stores/:storeId/upload-store-logo
+       * Multipart: file — updates merchant_parents.store_logo (shared brand logo).
+       */
+      protectedApp.post<{ Params: { storeId: string } }>(
+        "/stores/:storeId/upload-store-logo",
+        async (req, reply) => {
+          if (req.auth?.role !== "merchant" || !req.auth?.sub) {
+            return reply.code(401).send({ error: "merchant_required" });
+          }
+          const storeId = Number(req.params.storeId);
+          if (!Number.isInteger(storeId) || storeId < 1) return reply.code(400).send({ error: "invalid_store_id" });
+
+          const sql = getSql();
+          const parentId = await getPartnerParentId(sql, req.auth.sub);
+          if (parentId == null) return reply.code(404).send({ error: "partner_not_found" });
+          const storeCheck = await sql`
+            SELECT ms.id, ms.store_id AS store_code, mp.parent_merchant_id AS parent_code
+            FROM merchant_stores ms
+            LEFT JOIN merchant_parents mp ON mp.id = ms.parent_id
+            WHERE ms.id = ${storeId} AND ms.parent_id = ${parentId} AND ms.deleted_at IS NULL
+            LIMIT 1
+          `;
+          if ((storeCheck as any[]).length === 0) return reply.code(404).send({ error: "store_not_found" });
+
+          const data = await (req as any).file?.();
+          if (!data) return reply.code(400).send({ error: "no_file" });
+          const buffer = await data.toBuffer();
+          if (buffer.length > 10 * 1024 * 1024) return reply.code(400).send({ error: "file_too_large" });
+
+          const filename = String(data.filename || "");
+          const ext = (filename && /\.(webp|jpe?g|png)$/i.exec(filename)?.[1]) || "jpg";
+          const safeExt = ext.toLowerCase() === "jpeg" ? "jpg" : ext.toLowerCase();
+
+          const storeCode = String((storeCheck[0] as any).store_code ?? storeId);
+          const parentCode = String((storeCheck[0] as any).parent_code ?? parentId);
+          const key = `docs/merchants/${parentCode}/stores/${storeCode}/onboarding/assets/logo/logo_${Date.now()}.${safeExt}`;
+
+          const { uploadToR2, deleteFromR2 } = await import("../../services/r2/r2Service.js");
+          let uploadedKey: string | null = null;
+          try {
+            const result = await uploadToR2(buffer, key, data.mimetype || "image/jpeg");
+            uploadedKey = result.key;
+          } catch (e: any) {
+            req.log.error(e, "store_logo_upload_failed");
+            return reply.code(500).send({ error: "upload_failed", message: e?.message });
+          }
+
+          const imageUrl = `/v1/attachments/proxy?key=${encodeURIComponent(uploadedKey)}`;
+
+          try {
+            const prevRows = await sql`
+              SELECT store_logo FROM merchant_parents WHERE id = ${parentId} LIMIT 1
+            `;
+            const prevUrl = String((prevRows[0] as any)?.store_logo || "");
+            const m = /key=([^&]+)/.exec(prevUrl);
+            const prevKey = m?.[1] ? decodeURIComponent(m[1]) : null;
+            if (prevKey && prevKey !== uploadedKey) {
+              deleteFromR2(prevKey).catch(() => undefined);
+            }
+          } catch {
+            /* ignore */
+          }
+
+          await sql`
+            UPDATE merchant_parents
+            SET store_logo = ${imageUrl}, updated_at = NOW()
+            WHERE id = ${parentId}
+          `;
+
+          try {
+            await logStoreActivity({
+              storeId,
+              section: "profile",
+              action: "logo_update",
+              summary: "Updated store brand logo",
+              diff: { parent_logo_url: imageUrl, r2_key: uploadedKey },
+              actorType: "merchant",
+              source: "merchant_app",
+            });
+          } catch {}
+
+          return reply.code(201).send({
+            success: true,
+            parent_logo_url: imageUrl,
+            logo_url: imageUrl,
+            r2_key: uploadedKey,
+          });
+        },
+      );
+
+      /** DELETE /merchant-partner/stores/:storeId/store-logo — clear parent brand logo. */
+      protectedApp.delete<{ Params: { storeId: string } }>(
+        "/stores/:storeId/store-logo",
+        async (req, reply) => {
+          if (req.auth?.role !== "merchant" || !req.auth?.sub) {
+            return reply.code(401).send({ error: "merchant_required" });
+          }
+          const storeId = Number(req.params.storeId);
+          if (!Number.isInteger(storeId) || storeId < 1) return reply.code(400).send({ error: "invalid_store_id" });
+
+          const sql = getSql();
+          const parentId = await getPartnerParentId(sql, req.auth.sub);
+          if (parentId == null) return reply.code(404).send({ error: "partner_not_found" });
+          const storeCheck = await sql`
+            SELECT id FROM merchant_stores
+            WHERE id = ${storeId} AND parent_id = ${parentId} AND deleted_at IS NULL
+            LIMIT 1
+          `;
+          if ((storeCheck as any[]).length === 0) return reply.code(404).send({ error: "store_not_found" });
+
+          try {
+            const prevRows = await sql`
+              SELECT store_logo FROM merchant_parents WHERE id = ${parentId} LIMIT 1
+            `;
+            const prevUrl = String((prevRows[0] as any)?.store_logo || "");
+            const m = /key=([^&]+)/.exec(prevUrl);
+            const prevKey = m?.[1] ? decodeURIComponent(m[1]) : null;
+            if (prevKey) {
+              const { deleteFromR2 } = await import("../../services/r2/r2Service.js");
+              deleteFromR2(prevKey).catch(() => undefined);
+            }
+          } catch {
+            /* ignore */
+          }
+
+          await sql`
+            UPDATE merchant_parents
+            SET store_logo = NULL, updated_at = NOW()
+            WHERE id = ${parentId}
+          `;
+
+          try {
+            await logStoreActivity({
+              storeId,
+              section: "profile",
+              action: "logo_remove",
+              summary: "Removed store brand logo",
+              actorType: "merchant",
+              source: "merchant_app",
+            });
+          } catch {}
+
+          return reply.send({ success: true, parent_logo_url: null });
+        },
+      );
+
       /** DELETE /merchant-partner/stores/:storeId/offers/:offerId — soft-delete (set is_active=false). */
       protectedApp.delete<{ Params: { storeId: string; offerId: string } }>(
         "/stores/:storeId/offers/:offerId",
@@ -3799,7 +4136,7 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
       );
 
       /** GET /merchant-partner/stores/:storeId/activity-feed — recent activity for this store with filters. */
-      protectedApp.get<{ Params: { storeId: string }; Querystring: { limit?: string; section?: string; source?: string; actor_type?: string; action?: string } }>(
+      protectedApp.get<{ Params: { storeId: string }; Querystring: { limit?: string; section?: string; source?: string; actor_type?: string; action?: string; since?: string } }>(
         "/stores/:storeId/activity-feed",
         async (req, reply) => {
           if (req.auth?.role !== "merchant" || !req.auth?.sub) {
@@ -3820,6 +4157,13 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
           const source = req.query.source || null;
           const actorType = req.query.actor_type || null;
           const action = req.query.action || null;
+          const sinceRaw = (req.query as { since?: string }).since;
+          const since =
+            typeof sinceRaw === "string" && sinceRaw.trim()
+              ? new Date(sinceRaw.trim())
+              : null;
+          const sinceValid =
+            since != null && !Number.isNaN(since.getTime()) ? since : null;
 
           const rows = await sql`
             SELECT * FROM store_activity_feed
@@ -3828,11 +4172,22 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
               AND (${source}::text IS NULL OR source = ${source})
               AND (${actorType}::text IS NULL OR actor_type = ${actorType})
               AND (${action}::text IS NULL OR action = ${action})
+              AND (${sinceValid}::timestamptz IS NULL OR created_at >= ${sinceValid})
             ORDER BY created_at DESC
             LIMIT ${limit}
           `;
 
-          return reply.send({ success: true, activities: rows });
+          const activities = (Array.isArray(rows) ? rows : [rows]).map((r: Record<string, unknown>) => ({
+            ...r,
+            created_at:
+              r.created_at instanceof Date
+                ? r.created_at.toISOString()
+                : r.created_at != null
+                  ? String(r.created_at)
+                  : null,
+          }));
+
+          return reply.send({ success: true, activities });
         }
       );
 
@@ -6130,6 +6485,60 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
         }
       );
 
+      /** DELETE /merchant-partner/stores/:storeId/push-token — remove Expo token for this store. */
+      protectedApp.delete<{ Params: { storeId: string }; Body: { token?: string } }>(
+        "/stores/:storeId/push-token",
+        async (req, reply) => {
+          if (req.auth?.role !== "merchant" || !req.auth?.sub) {
+            return reply.code(401).send({ error: "merchant_required" });
+          }
+          const storeId = Number(req.params.storeId);
+          if (!Number.isInteger(storeId) || storeId < 1) {
+            return reply.code(400).send({ error: "invalid_store_id" });
+          }
+          const token = String(req.body?.token ?? "").trim();
+          if (!token) return reply.code(400).send({ error: "invalid_body", message: "token is required" });
+          const sql = getSql();
+          const parentId = await getPartnerParentId(sql, req.auth.sub);
+          if (parentId == null) return reply.code(404).send({ error: "partner_not_found" });
+          const storeRows = await sql`
+            SELECT id FROM merchant_stores
+            WHERE id = ${storeId} AND parent_id = ${parentId} AND deleted_at IS NULL
+            LIMIT 1
+          `;
+          if (storeRows.length === 0) return reply.code(404).send({ error: "store_not_found" });
+          await sql`
+            DELETE FROM merchant_store_push_tokens
+            WHERE store_id = ${storeId} AND token = ${token}
+          `;
+          return reply.send({ ok: true });
+        }
+      );
+
+      /** POST /merchant-partner/push-token/unregister-all — drop token from every mapped store. */
+      protectedApp.post<{ Body: { token?: string } }>(
+        "/push-token/unregister-all",
+        async (req, reply) => {
+          if (req.auth?.role !== "merchant" || !req.auth?.sub) {
+            return reply.code(401).send({ error: "merchant_required" });
+          }
+          const token = String(req.body?.token ?? "").trim();
+          if (!token) return reply.code(400).send({ error: "invalid_body", message: "token is required" });
+          const sql = getSql();
+          const parentId = await getPartnerParentId(sql, req.auth.sub);
+          if (parentId == null) return reply.code(404).send({ error: "partner_not_found" });
+          await sql`
+            DELETE FROM merchant_store_push_tokens mspt
+            USING merchant_stores ms
+            WHERE mspt.store_id = ms.id
+              AND ms.parent_id = ${parentId}
+              AND ms.deleted_at IS NULL
+              AND mspt.token = ${token}
+          `;
+          return reply.send({ ok: true });
+        }
+      );
+
       /** DELETE /merchant-partner/stores/:storeId/notifications/:notificationId — delete a notification. */
       protectedApp.delete<{ Params: { storeId: string; notificationId: string } }>(
         "/stores/:storeId/notifications/:notificationId",
@@ -7106,6 +7515,11 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
             priority: row.priority,
             subject: row.subject ?? null,
             description: row.description ?? null,
+            order_id: orderIdForInsert,
+            formatted_order_id:
+              body.formatted_order_id != null && String(body.formatted_order_id).trim()
+                ? String(body.formatted_order_id).trim()
+                : null,
             created_at:
               row.created_at instanceof Date ? row.created_at.toISOString() : String(row.created_at),
             created_at_display: row.created_at_ist ?? undefined,
@@ -7213,22 +7627,26 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
         }
 
         const ticketRows = await sql`
-          SELECT id,
-                 ticket_id,
-                 status,
-                 priority,
-                 subject,
-                 description,
-                 created_at,
-                 satisfaction_rating,
-                 satisfaction_feedback,
-                 satisfaction_collected_at,
-                 snoozed_until,
-                 snooze_reason
-          FROM unified_tickets
-          WHERE id = ${ticketIdNum}
-            AND merchant_store_id = ${storeId}
-            AND merchant_parent_id = ${parentId}
+          SELECT ut.id,
+                 ut.ticket_id,
+                 ut.status,
+                 ut.priority,
+                 ut.subject,
+                 ut.description,
+                 ut.created_at,
+                 ut.order_id,
+                 ut.metadata,
+                 oc.formatted_order_id AS core_formatted_order_id,
+                 ut.satisfaction_rating,
+                 ut.satisfaction_feedback,
+                 ut.satisfaction_collected_at,
+                 ut.snoozed_until,
+                 ut.snooze_reason
+          FROM unified_tickets ut
+          LEFT JOIN orders_core oc ON oc.id = ut.order_id
+          WHERE ut.id = ${ticketIdNum}
+            AND ut.merchant_store_id = ${storeId}
+            AND ut.merchant_parent_id = ${parentId}
           LIMIT 1
         `;
         if (ticketRows.length === 0) return reply.code(404).send({ error: "ticket_not_found" });
@@ -7244,6 +7662,36 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
           const d = new Date(s);
           return Number.isFinite(d.getTime()) ? d.toISOString() : null;
         };
+        const extractFormattedOrderIdFromMetadata = (metadata: unknown): string | null => {
+          if (metadata == null) return null;
+          let obj: Record<string, unknown>;
+          if (typeof metadata === "string") {
+            try {
+              obj = JSON.parse(metadata) as Record<string, unknown>;
+            } catch {
+              return null;
+            }
+          } else if (typeof metadata === "object") {
+            obj = metadata as Record<string, unknown>;
+          } else {
+            return null;
+          }
+          const liveOrder = obj.live_order_support;
+          if (liveOrder != null && typeof liveOrder === "object") {
+            const fid = (liveOrder as Record<string, unknown>).formatted_order_id;
+            if (typeof fid === "string" && fid.trim()) return fid.trim();
+          }
+          return null;
+        };
+        const orderIdRaw = rawTicket.order_id;
+        const orderIdNum =
+          orderIdRaw != null && orderIdRaw !== "" && Number.isInteger(Number(orderIdRaw)) && Number(orderIdRaw) > 0
+            ? Number(orderIdRaw)
+            : null;
+        const formattedOrderId =
+          typeof rawTicket.core_formatted_order_id === "string" && rawTicket.core_formatted_order_id.trim()
+            ? rawTicket.core_formatted_order_id.trim()
+            : extractFormattedOrderIdFromMetadata(rawTicket.metadata);
         const ticketPayload = {
           id: Number(rawTicket.id),
           ticket_id: String(rawTicket.ticket_id ?? ""),
@@ -7252,6 +7700,8 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
           subject: rawTicket.subject ?? null,
           description: rawTicket.description ?? null,
           created_at: toIsoOrNull(rawTicket.created_at) ?? new Date().toISOString(),
+          order_id: orderIdNum,
+          formatted_order_id: formattedOrderId,
           satisfaction_rating: rawTicket.satisfaction_rating ?? null,
           satisfaction_feedback: rawTicket.satisfaction_feedback ?? null,
           satisfaction_collected_at: toIsoOrNull(rawTicket.satisfaction_collected_at),

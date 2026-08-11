@@ -6,6 +6,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AppText as Text } from "@/components/AppText";
 import { View, StyleSheet, ScrollView, Pressable, ActivityIndicator } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
+import { useMerchantGoBack } from "@/lib/merchantNavigation";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { useAuth } from "@/context/AuthContext";
@@ -50,8 +51,11 @@ import { useOrdersContext } from "@/context/OrdersContext";
 import {
   apiFoodOrderToRiderLog,
   isInactiveRiderAssignment,
+  orderHasAssignedRider,
   resolveActiveRiderFromLog,
   resolveCancelledRidersFromLog,
+  hasMeaningfulRiderRecord,
+  orderEverHadRiderAssignment,
 } from "@/lib/orderAssignedRider";
 import {
   isPostPickupCancellation,
@@ -122,6 +126,7 @@ function ActionButton({
 export default function OrderDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
+  const goBack = useMerchantGoBack("/(tabs)/orders");
   const insets = useSafeAreaInsets();
   const { token } = useAuth();
   const { selectedStore } = useSelectedStore();
@@ -164,12 +169,18 @@ export default function OrderDetailScreen() {
   const [eta, setEta] = useState<OrderEtaResponse | null>(null);
 
   const etaOrderIdText = (order?.formatted_order_id ?? "").trim() || null;
+  const refreshEtaOnResume = useCallback(async () => {
+    if (!etaOrderIdText) return;
+    const next = await fetchOrderEta(etaOrderIdText);
+    if (next) setEta(next);
+  }, [etaOrderIdText]);
   useOrderEtaRealtime({
     enabled: Boolean(token && etaOrderIdText),
     orderIdText: etaOrderIdText,
     token,
     eta,
     setEta,
+    onResume: refreshEtaOnResume,
   });
 
   // Late board arrival (poll finished after mount) — paint immediately, never blank.
@@ -357,19 +368,11 @@ export default function OrderDetailScreen() {
 
   const showDeliveryPartner = useMemo(() => {
     if (!order || !isGatiMitraDelivery) return false;
-    if (hasActiveDisplayRider) return true;
-    if (cancelledRiders.length > 0) return true;
     if (showPendingAssign) return true;
-    if (isPostPickupCancellation(order, ridersLog)) return true;
-    return false;
-  }, [
-    cancelledRiders.length,
-    hasActiveDisplayRider,
-    isGatiMitraDelivery,
-    order,
-    ridersLog,
-    showPendingAssign,
-  ]);
+    const isTerminal = stage === "delivered" || stage === "rejected" || stage === "rto";
+    if (isTerminal) return hasMeaningfulRiderRecord(order, ridersLog);
+    return orderEverHadRiderAssignment(order, ridersLog);
+  }, [isGatiMitraDelivery, order, ridersLog, showPendingAssign, stage]);
 
   const headerSubtitle = useMemo(() => {
     if (!order) return "";
@@ -415,7 +418,11 @@ export default function OrderDetailScreen() {
       )
         ? displayRider
         : null;
-    if (!active) return withBoard;
+    if (!active) {
+      const isTerminal = stage === "rejected" || stage === "rto";
+      if (isTerminal) return null;
+      return orderHasAssignedRider(withBoard) ? withBoard : null;
+    }
     return {
       ...withBoard,
       riderId: active.rider_id || withBoard.riderId,
@@ -436,6 +443,7 @@ export default function OrderDetailScreen() {
     ordersFoodId,
     selectedStore?.id,
     selectedStore?.store_name,
+    stage,
   ]);
 
   const runAction = async (nextApiStatus: string) => {
@@ -503,8 +511,8 @@ export default function OrderDetailScreen() {
   if (!routeId) {
     return (
       <View style={[styles.container, { paddingTop: insets.top + 16 }]}>
-        <Pressable onPress={() => router.back()} style={[styles.backBtn, GatiMitraMerchant.cursorPointer]}>
-          <Ionicons name="arrow-back" size={24} color={GatiMitraMerchant.textPrimary} />
+        <Pressable onPress={goBack} style={[styles.backBtn, GatiMitraMerchant.cursorPointer]}>
+          <Ionicons name="chevron-back" size={20} color={GatiMitraMerchant.textPrimary} />
         </Pressable>
         <Text style={styles.empty}>Order not found.</Text>
       </View>
@@ -515,10 +523,10 @@ export default function OrderDetailScreen() {
     <View style={[styles.container, { paddingTop: insets.top }]}>
       <View style={styles.header}>
         <Pressable
-          onPress={() => router.back()}
+          onPress={goBack}
           style={({ pressed }) => [styles.backBtn, pressed && { opacity: 0.7 }, GatiMitraMerchant.cursorPointer]}
         >
-          <Ionicons name="arrow-back" size={24} color={GatiMitraMerchant.textPrimary} />
+          <Ionicons name="chevron-back" size={20} color={GatiMitraMerchant.textPrimary} />
         </Pressable>
         <View style={styles.headerTitles}>
           <Text style={styles.headerTitle}>Order details</Text>

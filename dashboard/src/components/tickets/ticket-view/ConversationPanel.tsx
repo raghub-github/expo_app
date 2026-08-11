@@ -1371,7 +1371,11 @@ export function ConversationPanel({
             toast("Message saved, but the customer email could not be sent. Check SMTP credentials.", "error");
           }
         }
-        if (showResponseSuccessToast) {
+        const outboundWakesSnooze = !composeAsInternalNote;
+        const activeSnooze = isTicketActivelySnoozed(ticketStatus, snoozedUntil);
+        const statusPatch =
+          outboundWakesSnooze && activeSnooze ? (statusToSet ?? "OPEN") : statusToSet;
+        if (showResponseSuccessToast && !statusPatch) {
           toast("Response successfully Updated");
         }
         let ticketStatusAfterSend: string | undefined;
@@ -1398,10 +1402,6 @@ export function ConversationPanel({
         });
         onCloseReply?.();
         // Do status patch after UI is responsive (avoid keeping "Sending..." for the extra PATCH).
-        const outboundWakesSnooze = !composeAsInternalNote;
-        const activeSnooze = isTicketActivelySnoozed(ticketStatus, snoozedUntil);
-        const statusPatch =
-          outboundWakesSnooze && activeSnooze ? (statusToSet ?? "OPEN") : statusToSet;
         if (statusPatch) {
           void (async () => {
             try {
@@ -1418,7 +1418,11 @@ export function ConversationPanel({
                 const statusLabel =
                   SEND_STATUS_OPTIONS.find((o) => o.value === statusPatch)?.label?.replace(/^Send and set as /i, "") ??
                   (statusPatch === "OPEN" ? "Open" : statusPatch.replace(/_/g, " "));
-                toast(`Status updated to ${statusLabel}`);
+                toast(
+                  showResponseSuccessToast
+                    ? `Response updated · Status set to ${statusLabel}`
+                    : `Status updated to ${statusLabel}`
+                );
               }
             } catch {
               toast("Message sent but status update failed");

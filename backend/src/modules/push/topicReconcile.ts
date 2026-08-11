@@ -37,7 +37,7 @@ export async function reconcileFcmTopics(input: {
   tokenType: "fcm" | "apns";
   currentTopics: string[];
   desiredTopics: string[];
-  log?: { warn: (obj: unknown, msg?: string) => void; info?: (obj: unknown, msg?: string) => void };
+  log?: { warn?: (obj: unknown, msg?: string) => void; info?: (obj: unknown, msg?: string) => void };
 }): Promise<string[]> {
   if (input.tokenType !== "fcm") {
     return [];

@@ -189,6 +189,19 @@ export function TicketViewClient({ ticketId }: { ticketId: number | string }) {
     const parsed = Number(ticketCacheId);
     return Number.isFinite(parsed) ? parsed : null;
   }, [ticketCacheId]);
+  const mountedRef = useRef(true);
+  const copyPhoneTimeoutRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      if (copyPhoneTimeoutRef.current != null) {
+        window.clearTimeout(copyPhoneTimeoutRef.current);
+        copyPhoneTimeoutRef.current = null;
+      }
+    };
+  }, [ticketCacheId]);
 
   const [agentPresenceIdentity, setAgentPresenceIdentity] = useState<TicketRoomPresenceIdentity | null>(null);
 
@@ -231,6 +244,7 @@ export function TicketViewClient({ ticketId }: { ticketId: number | string }) {
     const setLive = rightSidebar?.setTicketCopresenceLive;
     const setViewers = rightSidebar?.setTicketOtherAgentViewers;
     if (!setLive && !setViewers) return;
+    if (!mountedRef.current) return;
     setLive?.(copresenceLive);
     setViewers?.(otherAgentViewers);
     return () => {
@@ -278,7 +292,7 @@ export function TicketViewClient({ ticketId }: { ticketId: number | string }) {
     if (!Number.isFinite(idNum)) return;
     void queryClient.prefetchQuery({
       queryKey: queryKeys.tickets.activities(ticketCacheId),
-      queryFn: () => fetchTicketActivities(idNum),
+      queryFn: ({ signal }) => fetchTicketActivities(idNum, signal),
       staleTime: TICKET_ACTIVITIES_STALE_MS,
       retry: false,
     });
@@ -406,7 +420,13 @@ export function TicketViewClient({ ticketId }: { ticketId: number | string }) {
     try {
       await navigator.clipboard.writeText(value);
       setCopiedPhone(true);
-      window.setTimeout(() => setCopiedPhone(false), 1500);
+      if (copyPhoneTimeoutRef.current != null) {
+        window.clearTimeout(copyPhoneTimeoutRef.current);
+      }
+      copyPhoneTimeoutRef.current = window.setTimeout(() => {
+        copyPhoneTimeoutRef.current = null;
+        if (mountedRef.current) setCopiedPhone(false);
+      }, 1500);
     } catch {
       setCopiedPhone(false);
     }
@@ -481,6 +501,8 @@ export function TicketViewClient({ ticketId }: { ticketId: number | string }) {
           <TicketActionBar
             ticketId={ticket.id}
             ticketNumber={ticket.ticketNumber || String(ticket.id)}
+            orderId={ticket.orderId}
+            orderFormattedId={ticket.orderFormattedId}
             mergedTickets={ticket.mergedTickets ?? []}
             mergedIntoTicketId={ticket.mergedIntoTicketId ?? null}
             mergedIntoTicketNumber={ticket.mergedIntoTicketNumber ?? null}

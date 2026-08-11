@@ -65,5 +65,15 @@ export type PushControllerOptions = {
     accessToken: string;
     platform: string;
   }) => Promise<void>;
+  /** Logout: remove Expo token from all merchant stores for this partner. */
+  unregisterStoreExpoToken?: (args: {
+    expoPushToken: string;
+    accessToken: string;
+  }) => Promise<void>;
   log?: (message: string, extra?: Record<string, unknown>) => void;
+};
+
+export type UnregisterPushOptions = {
+  /** Use when auth is already cleared locally but token is still valid for one request. */
+  accessToken?: string;
 };

@@ -265,6 +265,11 @@ export function RaiseTicketWizard({
                       <AppText style={styles.orderStore} numberOfLines={1}>
                         {o.merchant_store_name ?? "Order"}
                       </AppText>
+                      {o.item_preview || o.customer_name ? (
+                        <AppText style={styles.orderItems} numberOfLines={1}>
+                          {[o.customer_name, o.item_preview].filter(Boolean).join(" · ")}
+                        </AppText>
+                      ) : null}
                       <View style={styles.orderFooter}>
                         <AppText style={styles.orderWhen}>{whenPlaced(o.placed_at)}</AppText>
                         {o.grand_total != null ? (
@@ -566,6 +571,7 @@ const styles = StyleSheet.create({
     letterSpacing: 0.4,
   },
   orderStore: { fontSize: 13, fontFamily: StoreFonts.loraRegular, color: GatiMitraColors.textSecondary, marginTop: 4 },
+  orderItems: { fontSize: 12, fontFamily: StoreFonts.poppinsSemiBold, color: GatiMitraColors.textSecondary, marginTop: 2 },
   orderFooter: { flexDirection: "row", justifyContent: "space-between", marginTop: 8 },
   orderWhen: { fontSize: 12, fontFamily: StoreFonts.loraRegular, color: GatiMitraColors.textSecondary },
   orderTotal: { fontSize: 13, fontFamily: StoreFonts.poppinsBold, color: GatiMitraColors.textPrimary },

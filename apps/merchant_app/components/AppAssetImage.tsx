@@ -1,42 +1,49 @@
 import type { ImageSourcePropType, ImageStyle, StyleProp } from "react-native";
-import { Image } from "react-native";
-import { getAppAssetUrl, getAppAssetProxyUrl, useAppAssetUrl } from "@/store/appAssetsStore";
-import { resolveImageUrl } from "@/services/outletApi";
+import { Image as RNImage, StyleSheet } from "react-native";
+import { getAppAssetUrl, useAppAssetUrl } from "@/store/appAssetsStore";
 
 type Props = {
   assetKey: string;
-  /** Used when `assetKey` has no uploaded URL yet. */
-  fallbackAssetKey?: string;
-  /** Bundled image when neither CMS key has a URL (e.g. splash before assets load). */
-  fallbackSource?: ImageSourcePropType | null;
   style?: StyleProp<ImageStyle>;
   resizeMode?: "cover" | "contain" | "stretch" | "repeat" | "center";
   accessibilityLabel?: string;
 };
 
+function resizeModeToRn(mode: Props["resizeMode"]): "cover" | "contain" | "stretch" | "repeat" | "center" {
+  return mode === "cover" || mode === "stretch" || mode === "repeat" || mode === "center"
+    ? mode
+    : "contain";
+}
+
+/** Renders super-admin CMS image from R2 signed URL only (no bundled fallbacks). */
 export function AppAssetImage({
   assetKey,
-  fallbackAssetKey,
-  fallbackSource = null,
   style,
   resizeMode = "contain",
   accessibilityLabel,
 }: Props) {
-  const primary = useAppAssetUrl(assetKey);
-  const fallback = useAppAssetUrl(fallbackAssetKey ?? "");
-  const url = primary || fallback;
-  const resolved = url ? resolveImageUrl(url) : null;
-  const source = resolved ? { uri: resolved } : fallbackSource;
-  if (!source) return null;
+  const url = useAppAssetUrl(assetKey);
+
+  if (!url) {
+    return null;
+  }
+
   return (
-    <Image
-      source={source}
-      style={style}
-      resizeMode={resizeMode}
+    <RNImage
+      key={`${assetKey}:${url}`}
+      source={{ uri: url }}
+      style={[style, styles.transparent]}
+      resizeMode={resizeModeToRn(resizeMode)}
       accessibilityLabel={accessibilityLabel}
     />
   );
 }
+
+const styles = StyleSheet.create({
+  transparent: {
+    backgroundColor: "transparent",
+  },
+});
 
 export function appAssetSource(assetKey: string): ImageSourcePropType | null {
   const url = getAppAssetUrl(assetKey);
@@ -44,8 +51,5 @@ export function appAssetSource(assetKey: string): ImageSourcePropType | null {
 }
 
 export function appAssetAbsoluteUrl(assetKey: string): string | null {
-  const fromStore = getAppAssetUrl(assetKey);
-  if (fromStore) return resolveImageUrl(fromStore);
-  const proxy = getAppAssetProxyUrl(assetKey);
-  return proxy ? resolveImageUrl(proxy) : null;
+  return getAppAssetUrl(assetKey);
 }

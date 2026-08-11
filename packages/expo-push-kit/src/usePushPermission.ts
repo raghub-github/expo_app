@@ -31,6 +31,9 @@ export function usePushPermissionController(
       registerStoreExpoToken: options.registerStoreExpoToken
         ? (args) => optionsRef.current.registerStoreExpoToken!(args)
         : undefined,
+      unregisterStoreExpoToken: options.unregisterStoreExpoToken
+        ? (args) => optionsRef.current.unregisterStoreExpoToken!(args)
+        : undefined,
     });
     // Recreate when API base changes (rare).
     // eslint-disable-next-line react-hooks/exhaustive-deps

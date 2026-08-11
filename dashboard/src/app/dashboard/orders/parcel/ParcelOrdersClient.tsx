@@ -8,7 +8,6 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { CheckCircle2, RefreshCw, Filter, User, Package } from "lucide-react";
 import { normalizeParcelSearchType } from "@/lib/orders/parcel-search";
 import { formatRiderOrderStatusDisplayLabel } from "@/lib/riders/rider-order-status-display";
-import { DashboardCenterSpinner } from "@/components/ui/DashboardPageLoader";
 import { loadClientSnapshot, saveClientSnapshot } from "@/lib/client-route-snapshot";
 
 const PAGE_BG = "#f3f5f7";
@@ -489,8 +488,8 @@ export default function ParcelOrdersClient() {
           <tbody className="divide-y divide-gray-200" style={{ backgroundColor: CONTENT_BG }}>
             {showTableLoading ? (
               <tr>
-                <td colSpan={10}>
-                  <DashboardCenterSpinner className="min-h-[240px]" />
+                <td colSpan={10} className="px-2 py-8 text-center text-xs text-gray-500">
+                  Loading orders…
                 </td>
               </tr>
             ) : isError ? (

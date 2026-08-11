@@ -86,13 +86,16 @@ export function orderPickerTitle(order: RecentOrder): string {
 
 export function orderPickerSubtitle(order: RecentOrder, itemHint?: string | null): string {
   const when = formatOrderPickerWhen(order.placed_at ?? order.delivered_at);
-  const item = itemHint?.trim();
-  if (when && item) return `${when} | ${item}`;
+  const item = (itemHint ?? order.item_preview)?.trim();
+  const customer = order.customer_name?.trim();
+  const detailParts = [customer, item].filter(Boolean);
+  const detail = detailParts.join(" · ");
+  if (when && detail) return `${when} | ${detail}`;
   if (when && order.grand_total != null) {
     return `${when} | ₹${Math.round(order.grand_total)}`;
   }
   if (when) return when;
-  return item ?? "";
+  return detail || item || "";
 }
 
 export function buildIssueOptionsFromSections(sections: HelpSection[]): SupportChatOption[] {

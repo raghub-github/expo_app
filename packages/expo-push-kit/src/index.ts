@@ -48,6 +48,7 @@ export type {
   PushAuthContext,
   PushDeviceMetadata,
   PushControllerOptions,
+  UnregisterPushOptions,
 } from "./types";
 
 // Enterprise notification system (v2) — inbox + preferences.

@@ -31,12 +31,16 @@ export function hasReachedNavTarget(pathname: string, target: string): boolean {
   return false;
 }
 
-/** Whether the layout navigation overlay should run for this in-app route change. */
+/**
+ * Whether the main-content GM overlay should show during left-sidebar soft-nav.
+ * Cross-module jumps show the spinner while RSC/data catches up; same-module
+ * routes (tickets hub, orders, riders) keep their own page loaders.
+ */
 export function shouldShowDashboardNavOverlay(fromPath: string, toHref: string): boolean {
   const cleanPath = cleanDashboardHref(fromPath);
   const cleanTarget = cleanDashboardHref(toHref);
   if (isDashboardNavAlreadyAtTarget(cleanPath, cleanTarget)) return false;
-  // Cross-module jumps always get the global overlay (sidebar must win).
+  // Cross-module left-sidebar jumps — show GM while destination loads.
   if (isCrossModuleNavigation(cleanPath, cleanTarget)) return true;
   // Tickets hub + queue share one app shell; let client routes load their own loaders.
   if (
@@ -60,4 +64,17 @@ export function shouldShowDashboardNavOverlay(fromPath: string, toHref: string):
     return false;
   }
   return true;
+}
+
+/**
+ * Path used for left-rail active highlight.
+ * Prefer in-flight target so the clicked item lights up immediately; URL remains
+ * the settled source of truth once navigation completes.
+ */
+export function resolveSidebarActivePath(
+  pathname: string,
+  pendingNavHref: string | null | undefined
+): string {
+  if (pendingNavHref) return cleanDashboardHref(pendingNavHref);
+  return cleanDashboardHref(pathname);
 }

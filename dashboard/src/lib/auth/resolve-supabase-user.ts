@@ -2,7 +2,7 @@
  * Resolve the current Supabase user for Node (Server Components / Route Handlers).
  *
  * Production strategy (cookie-first):
- * 1. Prefer the cookie JWT via getSession() when the access token is still usable.
+ * 1. Prefer the cookie JWT via local cookie parse (NOT getSession — that warns and may refresh).
  *    Order Details fires 10+ parallel APIs — calling Auth getUser() on each causes
  *    AbortError (8s timeout), refresh_token races, and logout loops.
  * 2. Only call Auth getUser() when the cookie is missing or the access token is
@@ -11,6 +11,7 @@
  * 4. On Auth unreachable / abort / refresh race: keep serving the cookie user.
  */
 import type { Session, User } from "@supabase/supabase-js";
+import { cookies } from "next/headers";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import {
   isInvalidRefreshToken,
@@ -19,6 +20,11 @@ import {
   isRefreshTokenNotFound,
   isTimeoutOrAbortError,
 } from "@/lib/auth/session-errors";
+import {
+  isCookieAccessTokenUsable,
+  readCookieAccessSession,
+  type CookieAccessSession,
+} from "@/lib/auth/read-cookie-access-session";
 
 export type ResolvedSupabaseAuth = {
   user: User | null;
@@ -34,9 +40,6 @@ type ServerSupabase = Awaited<ReturnType<typeof createServerSupabaseClient>>;
 let authNetworkDownUntil = 0;
 const AUTH_NETWORK_COOLDOWN_MS = 60_000;
 
-/** Refresh skew: treat token as expired this many ms before real expiry. */
-const ACCESS_TOKEN_SKEW_MS = 60_000;
-
 /** Single-flight refresh so parallel API routes don't rotate the same refresh token. */
 let refreshInFlight: Promise<ResolvedSupabaseAuth> | null = null;
 
@@ -48,8 +51,22 @@ function isAuthNetworkCoolingDown(): boolean {
   return Date.now() < authNetworkDownUntil;
 }
 
-async function readCookieSession(supabase: ServerSupabase): Promise<Session | null> {
+async function readLocalCookieSession(): Promise<CookieAccessSession | null> {
   try {
+    const store = await cookies();
+    return readCookieAccessSession({
+      get: (name) => store.get(name),
+      getAll: () => store.getAll(),
+    });
+  } catch {
+    return null;
+  }
+}
+
+/** Fallback when local parse fails — still avoid trusting session.user for remote auth. */
+async function readCookieSessionViaSupabase(supabase: ServerSupabase): Promise<Session | null> {
+  try {
+    // getSession is only a last-resort cookie decode when local parse fails.
     const { data, error } = await supabase.auth.getSession();
     if (error) return null;
     return data.session ?? null;
@@ -58,23 +75,60 @@ async function readCookieSession(supabase: ServerSupabase): Promise<Session | nu
   }
 }
 
-function isAccessTokenUsable(session: Session | null | undefined): boolean {
-  if (!session?.user?.email) return false;
-  const expiresAtSec = session.expires_at;
-  if (expiresAtSec == null || !Number.isFinite(expiresAtSec)) {
-    // No expiry metadata — still usable for dashboard API gating.
-    return true;
-  }
-  return expiresAtSec * 1000 > Date.now() + ACCESS_TOKEN_SKEW_MS;
-}
-
 async function getUserSafe(
   supabase: ServerSupabase
 ): Promise<{ user: User | null; error: unknown }> {
   try {
-    const result = await supabase.auth.getUser();
+    type AuthResult = Awaited<ReturnType<ServerSupabase["auth"]["getUser"]>>;
+    const getUserPromise = supabase.auth.getUser().then(
+      (r) => r,
+      (err: unknown) => {
+        // Convert AbortError → plain sentinel so nothing AbortError-shaped escapes.
+        if (isTimeoutOrAbortError(err)) {
+          return {
+            data: { user: null },
+            error: { name: "TimeoutError", message: "Auth probe aborted", code: "TIMEOUT" },
+          } as AuthResult;
+        }
+        if (isNetworkOrTransientError(err)) {
+          const msg = err instanceof Error ? err.message : "Auth network error";
+          return {
+            data: { user: null },
+            error: { name: "NetworkError", message: msg, code: "FETCH_FAILED" },
+          } as AuthResult;
+        }
+        throw err;
+      }
+    );
+    // Race timeout may win first — keep orphan quiet forever.
+    void getUserPromise.catch(() => undefined);
+
+    const result = (await Promise.race([
+      getUserPromise,
+      new Promise<AuthResult>((resolve) => {
+        setTimeout(() => {
+          resolve({
+            data: { user: null },
+            error: { name: "TimeoutError", message: "Auth probe timeout", code: "TIMEOUT" },
+          } as AuthResult);
+        }, 2500);
+      }),
+    ])) as AuthResult;
     return { user: result.data?.user ?? null, error: result.error ?? null };
   } catch (err) {
+    if (isTimeoutOrAbortError(err)) {
+      return {
+        user: null,
+        error: { name: "TimeoutError", message: "Auth probe aborted", code: "TIMEOUT" },
+      };
+    }
+    if (isNetworkOrTransientError(err)) {
+      const msg = err instanceof Error ? err.message : "Auth network error";
+      return {
+        user: null,
+        error: { name: "NetworkError", message: msg, code: "FETCH_FAILED" },
+      };
+    }
     return { user: null, error: err };
   }
 }
@@ -106,11 +160,10 @@ async function resolveWithRemoteValidation(
     }
 
     if (lastError && isRefreshTokenAlreadyUsed(lastError) && attempt < maxAttempts) {
-      // Another request won the rotation — re-read cookies and retry briefly.
       await new Promise((r) => setTimeout(r, 350));
-      const session = await readCookieSession(supabase);
-      if (session?.user?.email && isAccessTokenUsable(session)) {
-        return ok(session.user, supabase, true);
+      const local = await readLocalCookieSession();
+      if (local && isCookieAccessTokenUsable(local)) {
+        return ok(local.user, supabase, true);
       }
       continue;
     }
@@ -137,35 +190,38 @@ async function resolveWithRemoteValidation(
     }
   }
 
-  // Prefer cookie JWT over killing the session on Auth races / outages.
-  const session = await readCookieSession(supabase);
-  if (session?.user?.email) {
+  if (lastError && isRefreshTokenNotFound(lastError)) {
+    return { user: null, error: lastError, usedSessionFallback: false, supabase };
+  }
+
+  const local = await readLocalCookieSession();
+  // Prefer id — some JWTs omit email in claims but still identify the user.
+  if (local?.user?.id) {
     if (
       lastError &&
       (isTimeoutOrAbortError(lastError) ||
         isNetworkOrTransientError(lastError) ||
-        isRefreshTokenAlreadyUsed(lastError) ||
-        isRefreshTokenNotFound(lastError))
+        isRefreshTokenAlreadyUsed(lastError))
     ) {
       if (isTimeoutOrAbortError(lastError) || isNetworkOrTransientError(lastError)) {
         markAuthNetworkDown();
       }
-      if (process.env.NODE_ENV === "development") {
-        console.warn(
-          "[auth] Auth API failed; using cookie session for",
-          session.user.email,
-          lastError instanceof Error ? lastError.message : lastError
-        );
-      }
-      return ok(session.user, supabase, true);
+      return ok(local.user, supabase, true);
     }
-    // Access may be expired but cookie still has identity — allow soft use.
-    if (isAccessTokenUsable(session) || session.user.email) {
+    if (isCookieAccessTokenUsable(local)) {
+      return ok(local.user, supabase, true);
+    }
+  }
+
+  // Last resort: supabase cookie decode (may warn once) when local parse failed.
+  // Skip on abort/timeout — getSession() would abort again and spam the terminal.
+  if (!(lastError && (isTimeoutOrAbortError(lastError) || isNetworkOrTransientError(lastError)))) {
+    const session = await readCookieSessionViaSupabase(supabase);
+    if (session?.user?.id) {
       return ok(session.user, supabase, true);
     }
   }
 
-  // Do NOT signOut here. Parallel losers must not wipe the winner's cookies.
   return {
     user: null,
     error: lastError,
@@ -186,32 +242,31 @@ export async function resolveSupabaseUser(options?: {
   const forceRemote = options?.forceRemote === true;
   const supabase = await createServerSupabaseClient();
 
-  const cookieSession = await readCookieSession(supabase);
+  const cookieSession = await readLocalCookieSession();
 
-  // Fast path: usable cookie access token — no Auth network call.
-  if (!forceRemote && cookieSession && isAccessTokenUsable(cookieSession)) {
+  // Fast path: usable cookie access token — no Auth network call, no getSession warning.
+  if (!forceRemote && cookieSession && isCookieAccessTokenUsable(cookieSession)) {
     return ok(cookieSession.user, supabase, true);
   }
 
-  // Auth recently timed out — stay on cookie to avoid AbortError storms.
-  if (!forceRemote && isAuthNetworkCoolingDown() && cookieSession?.user?.email) {
+  // Auth recently timed out / aborted — stay on cookie (even if access JWT expired)
+  // so list↔detail navigations after idle do not AbortError-loop.
+  if (!forceRemote && isAuthNetworkCoolingDown() && cookieSession?.user?.id) {
     return ok(cookieSession.user, supabase, true);
   }
 
-  // Need remote validation / refresh — single-flight across concurrent route handlers.
   if (refreshInFlight) {
     try {
       const shared = await refreshInFlight;
-      // Re-bind supabase for this request's cookie store.
-      if (shared.user?.email) {
-        const latest = await readCookieSession(supabase);
-        if (latest?.user?.email) {
+      if (shared.user?.id) {
+        const latest = await readLocalCookieSession();
+        if (latest?.user?.id) {
           return ok(latest.user, supabase, true);
         }
         return ok(shared.user, supabase, shared.usedSessionFallback);
       }
     } catch {
-      /* fall through to own attempt */
+      /* fall through */
     }
   }
 

@@ -23,3 +23,17 @@ export async function registerStorePushToken(
   }
 }
 
+export async function unregisterAllStorePushTokens(
+  token: string,
+  authToken: string
+): Promise<void> {
+  const res = await authFetch(`${getBase()}/v1/merchant-partner/push-token/unregister-all`, authToken, {
+    method: "POST",
+    body: JSON.stringify({ token }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error((err as any).error || (err as any).message || "Failed to unregister store push token");
+  }
+}
+

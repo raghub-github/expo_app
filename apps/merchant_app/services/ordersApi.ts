@@ -162,20 +162,12 @@ export async function fetchFoodOrders(
   const q = new URLSearchParams();
   if (opts?.limit) q.set("limit", String(opts.limit));
   const qs = q.toString();
-  const HARD_TIMEOUT_MS = 12_000;
-  const res = await Promise.race([
-    authFetch(
-      `${getBase()}/v1/merchant-partner/stores/${storeId}/food-orders${qs ? `?${qs}` : ""}`,
-      token,
-      { timeoutMs: HARD_TIMEOUT_MS }
-    ),
-    new Promise<never>((_, reject) => {
-      setTimeout(
-        () => reject(new Error("Request timed out. Pull to refresh and try again.")),
-        HARD_TIMEOUT_MS
-      );
-    }),
-  ]);
+  const HARD_TIMEOUT_MS = 20_000;
+  const res = await authFetch(
+    `${getBase()}/v1/merchant-partner/stores/${storeId}/food-orders${qs ? `?${qs}` : ""}`,
+    token,
+    { timeoutMs: HARD_TIMEOUT_MS }
+  );
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
     const code = (err as { error?: string }).error;
@@ -210,17 +202,12 @@ export async function fetchFoodOrder(
   ordersFoodId: number,
   token: string
 ): Promise<ApiFoodOrder> {
-  const HARD_TIMEOUT_MS = 12_000;
-  const res = await Promise.race([
-    authFetch(
-      `${getBase()}/v1/merchant-partner/stores/${storeId}/food-orders/${ordersFoodId}`,
-      token,
-      { timeoutMs: HARD_TIMEOUT_MS }
-    ),
-    new Promise<never>((_, reject) => {
-      setTimeout(() => reject(new Error("Request timed out. Pull to refresh and try again.")), HARD_TIMEOUT_MS);
-    }),
-  ]);
+  const HARD_TIMEOUT_MS = 20_000;
+  const res = await authFetch(
+    `${getBase()}/v1/merchant-partner/stores/${storeId}/food-orders/${ordersFoodId}`,
+    token,
+    { timeoutMs: HARD_TIMEOUT_MS }
+  );
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
     const code = (err as { error?: string }).error;

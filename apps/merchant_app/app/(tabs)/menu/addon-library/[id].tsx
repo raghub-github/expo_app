@@ -175,7 +175,7 @@ export default function AddonGroupEditScreen() {
     <View style={styles.container}>
       <View style={[styles.header, { paddingTop: insets.top + 8 }]}>
         <TouchableOpacity onPress={() => router.back()} style={styles.backBtn} hitSlop={8}>
-          <Ionicons name="arrow-back" size={24} color={GatiMitraMerchant.textPrimary} />
+          <Ionicons name="chevron-back" size={20} color={GatiMitraMerchant.textPrimary} />
         </TouchableOpacity>
         <Text style={styles.title} numberOfLines={1}>{group.title}</Text>
         <View style={styles.headerRight} />

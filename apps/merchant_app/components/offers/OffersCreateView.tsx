@@ -1,11 +1,18 @@
+import { useState, useCallback } from "react";
 import { AppText as Text } from "@/components/AppText";
 import { View, StyleSheet, ScrollView, Pressable, RefreshControl } from "react-native";
+import { useFocusEffect } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
+import { LinearGradient } from "expo-linear-gradient";
+import { AppAssetImage } from "@/components/AppAssetImage";
+import { MX } from "@/lib/appAssetKeys";
+import { reloadMerchantAppAssets } from "@/store/appAssetsStore";
 import type { OfferType } from "@/services/offersApi";
 import { countOffersForTrackFilter } from "@/lib/offers/offer-lifecycle";
 import type { Offer } from "@/services/offersApi";
 import { OFFER_PROMO_CHOICES, type OfferCreatePath } from "@/lib/offers/offer-form-constants";
 import { OFFERS_UI, offersSharedStyles } from "./offers-theme";
+import { PromosLearnMoreSheet } from "./PromosLearnMoreSheet";
 import { GatiMitraMerchant, H_PADDING } from "@/constants/theme";
 
 type Props = {
@@ -27,8 +34,16 @@ export function OffersCreateView({
 }: Props) {
   const activeCount = countOffersForTrackFilter(offers, "active");
   const hasActive = activeCount > 0;
+  const [learnMoreVisible, setLearnMoreVisible] = useState(false);
+
+  useFocusEffect(
+    useCallback(() => {
+      void reloadMerchantAppAssets();
+    }, [])
+  );
 
   return (
+    <>
     <ScrollView
       style={styles.scroll}
       contentContainerStyle={[offersSharedStyles.scrollContent, { paddingBottom: 32 }]}
@@ -43,42 +58,61 @@ export function OffersCreateView({
         ) : undefined
       }
     >
-      <View style={[offersSharedStyles.card, styles.featuredCard]}>
-        <View style={styles.featuredTop}>
-          <View style={styles.featuredIcon}>
-            <Ionicons name="sparkles" size={22} color={GatiMitraMerchant.primary} />
-          </View>
-          <View style={styles.featuredTitles}>
-            <View style={styles.titleRow}>
-              <Text style={styles.featuredTitle}>GatiMitra Promos</Text>
+      <View style={styles.featuredCard}>
+        <View style={styles.featuredHeroWrap}>
+          <LinearGradient
+            colors={["#2563EB", "#38BDF8", "#7DD3FC"]}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 1 }}
+            style={styles.featuredHero}
+          >
+            <View style={styles.heroBadgeLeft}>
+              <Text style={styles.heroPct}>%</Text>
             </View>
-          </View>
-          {hasActive ? (
-            <View style={styles.liveBadge}>
-              <View style={styles.liveDot} />
-              <Text style={styles.liveText}>Live</Text>
+            <View style={styles.heroBadgeRight}>
+              <Text style={styles.heroPct}>%</Text>
             </View>
-          ) : null}
+            <View style={styles.heroTag}>
+              <Text style={styles.heroTagText}>GATIMITRA{"\n"}PROMOS</Text>
+            </View>
+          </LinearGradient>
+          <AppAssetImage
+            assetKey={MX.offers.promoBanner}
+            style={styles.featuredHeroImage}
+            resizeMode="cover"
+            accessibilityLabel="GatiMitra Promos banner"
+          />
         </View>
-        <Text style={styles.featuredBody}>
-          {hasActive
-            ? `Great! ${activeCount} offer${activeCount === 1 ? "" : "s"} running at ${storeName ?? "your store"}.`
-            : `Start a promo for ${storeName ?? "your store"} to attract more orders.`}
-        </Text>
-        <View style={styles.featuredActions}>
-          <Pressable
-            onPress={() => onCreate()}
-            style={({ pressed }) => [styles.outlineBtn, pressed && { opacity: 0.85 }]}
-          >
-            <Text style={styles.outlineBtnText}>Create offer</Text>
-          </Pressable>
-          <Pressable
-            onPress={onGoToTrack}
-            style={({ pressed }) => [styles.filledBtn, pressed && { opacity: 0.9 }]}
-          >
-            <Text style={styles.filledBtnText}>Track</Text>
-            <Ionicons name="arrow-forward" size={16} color="#fff" />
-          </Pressable>
+
+        <View style={styles.featuredBodyBlock}>
+          <View style={styles.featuredTitleRow}>
+            <Text style={styles.featuredTitle}>Earn more with GatiMitra Promos</Text>
+            {hasActive ? (
+              <View style={styles.liveBadge}>
+                <View style={styles.liveDot} />
+                <Text style={styles.liveText}>Live</Text>
+              </View>
+            ) : null}
+          </View>
+          <Text style={styles.featuredSub}>
+            {hasActive
+              ? `${activeCount} offer${activeCount === 1 ? "" : "s"} running at ${storeName ?? "your store"}.`
+              : "Get up to 15-20% more sales with same budget"}
+          </Text>
+          <View style={styles.featuredActions}>
+            <Pressable
+              onPress={() => setLearnMoreVisible(true)}
+              style={({ pressed }) => [styles.outlineBtn, pressed && { opacity: 0.85 }]}
+            >
+              <Text style={styles.outlineBtnText}>Learn more</Text>
+            </Pressable>
+            <Pressable
+              onPress={() => onCreate()}
+              style={({ pressed }) => [styles.filledBtn, pressed && { opacity: 0.9 }]}
+            >
+              <Text style={styles.filledBtnText}>Create now</Text>
+            </Pressable>
+          </View>
         </View>
       </View>
 
@@ -120,38 +154,98 @@ export function OffersCreateView({
           );
         })}
       </View>
-
-      <View style={styles.tipBanner}>
-        <Ionicons name="bulb-outline" size={18} color={GatiMitraMerchant.navy} />
-        <Text style={styles.tipText}>
-          Same flow as Partner Site — pick Precision, BOGO, or Percentage (Boost). Precision skips
-          item selection; Percentage is Boost-only.
-        </Text>
-      </View>
     </ScrollView>
+
+    <PromosLearnMoreSheet
+      visible={learnMoreVisible}
+      onClose={() => setLearnMoreVisible(false)}
+      onCreateNow={() => onCreate()}
+    />
+    </>
   );
 }
 
 const styles = StyleSheet.create({
   scroll: { flex: 1 },
   featuredCard: {
-    padding: 16,
+    marginHorizontal: H_PADDING,
+    borderRadius: 16,
+    overflow: "hidden",
     borderWidth: 1,
-    borderColor: "#BBF7D0",
-    backgroundColor: "#FAFFFE",
+    borderColor: OFFERS_UI.cardBorder,
+    backgroundColor: "#fff",
   },
-  featuredTop: { flexDirection: "row", alignItems: "flex-start", gap: 12 },
-  featuredIcon: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    backgroundColor: OFFERS_UI.accentSoft,
+  featuredHeroWrap: {
+    height: 132,
+    overflow: "hidden",
+  },
+  featuredHero: {
+    ...StyleSheet.absoluteFillObject,
     alignItems: "center",
     justifyContent: "center",
   },
-  featuredTitles: { flex: 1 },
-  titleRow: { flexDirection: "row", alignItems: "center", gap: 6 },
-  featuredTitle: { fontSize: 16, fontWeight: "800", color: OFFERS_UI.text },
+  featuredHeroImage: {
+    ...StyleSheet.absoluteFillObject,
+  },
+  heroBadgeLeft: {
+    position: "absolute",
+    left: 18,
+    top: 28,
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: "rgba(250, 204, 21, 0.95)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  heroBadgeRight: {
+    position: "absolute",
+    right: 18,
+    top: 22,
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: "rgba(250, 204, 21, 0.9)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  heroPct: {
+    fontSize: 14,
+    fontWeight: "900",
+    color: "#1E3A8A",
+  },
+  heroTag: {
+    paddingHorizontal: 18,
+    paddingVertical: 10,
+    borderRadius: 12,
+    backgroundColor: "rgba(255,255,255,0.22)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.35)",
+  },
+  heroTagText: {
+    fontSize: 22,
+    fontWeight: "900",
+    color: "#FFFFFF",
+    textAlign: "center",
+    letterSpacing: 1,
+    lineHeight: 26,
+  },
+  featuredBodyBlock: {
+    padding: 16,
+    backgroundColor: "#fff",
+  },
+  featuredTitleRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 8,
+  },
+  featuredTitle: {
+    flex: 1,
+    fontSize: 16,
+    fontWeight: "800",
+    color: OFFERS_UI.text,
+  },
   liveBadge: {
     flexDirection: "row",
     alignItems: "center",
@@ -163,8 +257,13 @@ const styles = StyleSheet.create({
   },
   liveDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: OFFERS_UI.liveGreen },
   liveText: { fontSize: 11, fontWeight: "700", color: "#166534" },
-  featuredBody: { fontSize: 13, color: OFFERS_UI.textMuted, marginTop: 12, lineHeight: 20 },
-  featuredActions: { flexDirection: "row", gap: 10, marginTop: 16 },
+  featuredSub: {
+    fontSize: 13,
+    color: OFFERS_UI.textMuted,
+    marginTop: 8,
+    lineHeight: 20,
+  },
+  featuredActions: { flexDirection: "row", gap: 10, marginTop: 14 },
   outlineBtn: {
     flex: 1,
     paddingVertical: 12,
@@ -217,17 +316,4 @@ const styles = StyleSheet.create({
   promoText: { flex: 1, minWidth: 0 },
   promoTitle: { fontSize: 14, fontWeight: "800", color: OFFERS_UI.text },
   promoDesc: { fontSize: 12, color: OFFERS_UI.textMuted, marginTop: 3, lineHeight: 17 },
-  tipBanner: {
-    flexDirection: "row",
-    alignItems: "flex-start",
-    gap: 10,
-    marginHorizontal: H_PADDING,
-    marginTop: 16,
-    padding: 14,
-    borderRadius: 12,
-    backgroundColor: OFFERS_UI.accentSoft,
-    borderWidth: 1,
-    borderColor: "#BBF7D0",
-  },
-  tipText: { flex: 1, fontSize: 12, color: GatiMitraMerchant.navy, lineHeight: 18 },
 });

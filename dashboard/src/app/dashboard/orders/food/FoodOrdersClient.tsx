@@ -10,7 +10,6 @@ import { X, RefreshCw, Filter, CheckCircle2, ChevronDown, ArrowUpDown } from "lu
 import { type CSSProperties } from "react";
 import { loadClientSnapshot, saveClientSnapshot } from "@/lib/client-route-snapshot";
 import { queryKeys } from "@/lib/queryKeys";
-import { DashboardCenterSpinner } from "@/components/ui/DashboardPageLoader";
 import { OrderMixedText, OrderNum } from "@/components/orders/orders-typography";
 import {
   DELAYED_ROW_BG,
@@ -1150,8 +1149,8 @@ export default function FoodOrdersClient() {
           <tbody className="divide-y divide-gray-200" style={{ backgroundColor: CONTENT_BG }}>
             {showTableLoading ? (
               <tr>
-                <td colSpan={9}>
-                  <DashboardCenterSpinner className="min-h-[240px]" />
+                <td colSpan={9} className="px-2 py-8 text-center text-xs" style={{ color: TABLE_TEXT }}>
+                  Loading orders…
                 </td>
               </tr>
             ) : orders.length === 0 ? (

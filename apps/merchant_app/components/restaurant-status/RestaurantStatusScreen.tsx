@@ -17,6 +17,7 @@ import {
   Alert,
 } from "react-native";
 import { useRouter } from "expo-router";
+import { useMerchantGoBack, useMerchantNavigate } from "@/lib/merchantNavigation";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { useAuth, type ChildStore } from "@/context/AuthContext";
@@ -38,6 +39,7 @@ import { RestaurantStatusFilterSheet } from "@/components/restaurant-status/Rest
 import {
   deliveryStatusLabel,
   formatCurrentDeliverySlot,
+  isOutsideDeliverySlot,
   matchesRestaurantStatusFilter,
   type RestaurantStatusFilterId,
   type RestaurantStatusSnapshot,
@@ -201,6 +203,15 @@ function RestaurantCard({
           <Text style={styles.detailsLink}>Details ›</Text>
         </Pressable>
       </View>
+
+      {isOutsideDeliverySlot(snap) ? (
+        <View style={styles.outsideSlotBanner}>
+          <Ionicons name="alert-circle" size={16} color="#FFFFFF" />
+          <Text style={styles.outsideSlotText}>
+            You are currently outside your scheduled delivery timings
+          </Text>
+        </View>
+      ) : null}
     </Pressable>
   );
 }
@@ -208,6 +219,8 @@ function RestaurantCard({
 export default function RestaurantStatusScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
+  const goBack = useMerchantGoBack("/(tabs)");
+  const { push: navPush } = useMerchantNavigate();
   const { token, partner } = useAuth();
   const { selectedStore, setSelectedStore } = useSelectedStore();
   const { refresh: refreshActiveStoreStatus } = useStoreStatus();
@@ -293,9 +306,9 @@ export default function RestaurantStatusScreen() {
       dest: "status" | "edit-store" | "preparation-time" | "auto-accept" | "hours" = "status"
     ) => {
       setSelectedStore(store);
-      router.push(`/(tabs)/profile/${dest}` as never);
+      navPush(`/(tabs)/profile/${dest}`);
     },
-    [router, setSelectedStore]
+    [navPush, setSelectedStore]
   );
 
   /** Gear → select that store, then open its Profile / Preferences settings page. */
@@ -408,16 +421,13 @@ export default function RestaurantStatusScreen() {
     <View style={[styles.screen, { paddingTop: insets.top }]}>
       <View style={styles.header}>
         <Pressable
-          onPress={() => {
-            if (router.canGoBack()) router.back();
-            else router.replace("/(tabs)" as never);
-          }}
+          onPress={goBack}
           hitSlop={12}
           style={({ pressed }) => [styles.backBtn, pressed && styles.pressed]}
           accessibilityRole="button"
           accessibilityLabel="Back"
         >
-          <Ionicons name="arrow-back" size={22} color={GatiMitraMerchant.textPrimary} />
+          <Ionicons name="chevron-back" size={20} color={GatiMitraMerchant.textPrimary} />
         </Pressable>
         <View style={styles.headerTextWrap}>
           <Text style={styles.headerTitle}>Store status</Text>
@@ -585,6 +595,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "#E5E7EB",
     padding: 14,
+    overflow: "hidden",
   },
   cardHeader: {
     flexDirection: "row",
@@ -673,6 +684,26 @@ const styles = StyleSheet.create({
     fontFamily: FONT_LORA_BOLD,
     fontSize: 13,
     color: "#2563EB",
+  },
+  outsideSlotBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    backgroundColor: "#DC2626",
+    marginTop: 12,
+    marginHorizontal: -14,
+    marginBottom: -14,
+    paddingHorizontal: 14,
+    paddingVertical: 11,
+    borderBottomLeftRadius: CARD_RADIUS,
+    borderBottomRightRadius: CARD_RADIUS,
+  },
+  outsideSlotText: {
+    flex: 1,
+    fontFamily: FONT_POPPINS,
+    fontSize: 12,
+    color: "#FFFFFF",
+    lineHeight: 17,
   },
   centered: {
     flex: 1,

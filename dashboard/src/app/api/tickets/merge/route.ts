@@ -14,6 +14,15 @@ type MergeBody = {
   reason?: string;
 };
 
+/**
+ * postgres.js + prepare:false can pass JS arrays as Objects into Buffer.byteLength
+ * (ERR_INVALID_ARG_TYPE). Use a braced bigint[] literal instead.
+ */
+function pgBigintArrayLiteral(ids: number[]): string {
+  if (ids.length === 0) return "{}";
+  return `{${ids.map((n) => String(Math.trunc(n))).join(",")}}`;
+}
+
 async function ensureMergeTable(sql: ReturnType<typeof getSql>) {
   await sql`
     CREATE TABLE IF NOT EXISTS public.unified_ticket_merges (
@@ -88,12 +97,14 @@ export async function POST(request: NextRequest) {
     }
 
     const allIds = [targetTicketId, ...sourceTicketIds];
+    const allIdsLiteral = pgBigintArrayLiteral(allIds);
+    const sourceIdsLiteral = pgBigintArrayLiteral(sourceTicketIds);
     const sql = getSql();
     await ensureMergeTable(sql);
     const rows = await sql`
       SELECT id, ticket_id, status, parent_ticket_id
       FROM public.unified_tickets
-      WHERE id = ANY(${allIds}::bigint[])
+      WHERE id = ANY(${allIdsLiteral}::bigint[])
     `;
     if (!Array.isArray(rows) || rows.length !== allIds.length) {
       return NextResponse.json({ success: false, error: "One or more tickets were not found" }, { status: 404 });
@@ -124,6 +135,17 @@ export async function POST(request: NextRequest) {
 
     const actorName = systemUser.fullName ?? systemUser.email ?? "Agent";
     const actorEmail = systemUser.email ?? null;
+    // Pass JSON text — do NOT pass a JS array/object into jsonb helpers (postgres.js
+    // ERR_INVALID_ARG_TYPE: Received an instance of Object).
+    const mergedIdsJson = JSON.stringify(sourceTicketIds);
+    const targetIdJson = JSON.stringify(targetTicketId);
+    const mergedAtJson = JSON.stringify(new Date().toISOString());
+    const mergedByJson = JSON.stringify(actorEmail ?? "");
+    const sourceTicketNumbers = sourceTicketIds
+      .map((id) => byId.get(id)?.ticket_id || String(id))
+      .join(", ");
+    const targetTicketNumber = target.ticket_id ?? String(targetTicketId);
+    const mergeNote = `Merged duplicate tickets: ${sourceTicketNumbers}${reason ? ` | Reason: ${reason}` : ""}`;
 
     await sql.begin(async (trx) => {
       const run = trx as unknown as typeof sql;
@@ -131,9 +153,9 @@ export async function POST(request: NextRequest) {
       await run`
         INSERT INTO public.unified_ticket_merges
           (primary_ticket_id, merged_ticket_id, merged_by_user_id, merged_by_email, reason)
-        SELECT ${targetTicketId}, s.id, ${systemUser.id}, ${actorEmail}, ${reason || null}
+        SELECT ${targetTicketId}::bigint, s.id, ${systemUser.id}::bigint, ${actorEmail}, ${reason.length > 0 ? reason : null}
         FROM public.unified_tickets s
-        WHERE s.id = ANY(${sourceTicketIds}::bigint[])
+        WHERE s.id = ANY(${sourceIdsLiteral}::bigint[])
         ON CONFLICT (merged_ticket_id) DO UPDATE SET
           primary_ticket_id = EXCLUDED.primary_ticket_id,
           merged_by_user_id = EXCLUDED.merged_by_user_id,
@@ -145,7 +167,7 @@ export async function POST(request: NextRequest) {
       await run`
         UPDATE public.unified_tickets
         SET
-          parent_ticket_id = ${targetTicketId},
+          parent_ticket_id = ${targetTicketId}::bigint,
           status = 'CLOSED',
           closed_at = COALESCE(closed_at, NOW()),
           updated_at = NOW(),
@@ -154,18 +176,18 @@ export async function POST(request: NextRequest) {
               jsonb_set(
                 jsonb_set(COALESCE(metadata, '{}'::jsonb), '{merged}', 'true'::jsonb, true),
                 '{merged_into_ticket_id}',
-                to_jsonb(${targetTicketId}::bigint),
+                ${targetIdJson}::jsonb,
                 true
               ),
               '{merged_at}',
-              to_jsonb(NOW()::text),
+              ${mergedAtJson}::jsonb,
               true
             ),
             '{merged_by}',
-            to_jsonb(${actorEmail ?? ""}::text),
+            ${mergedByJson}::jsonb,
             true
           )
-        WHERE id = ANY(${sourceTicketIds}::bigint[])
+        WHERE id = ANY(${sourceIdsLiteral}::bigint[])
       `;
 
       await run`
@@ -175,61 +197,57 @@ export async function POST(request: NextRequest) {
           metadata = jsonb_set(
             COALESCE(metadata, '{}'::jsonb),
             '{merged_ticket_ids}',
-            to_jsonb(${sourceTicketIds.map(String)}::text[]),
+            ${mergedIdsJson}::jsonb,
             true
           )
-        WHERE id = ${targetTicketId}
+        WHERE id = ${targetTicketId}::bigint
       `;
-
-      const sourceTicketNumbers = sourceTicketIds
-        .map((id) => byId.get(id)?.ticket_id || String(id))
-        .join(", ");
-      const targetTicketNumber = target.ticket_id ?? String(targetTicketId);
 
       await run`
         INSERT INTO public.unified_ticket_messages
           (ticket_id, message_text, message_type, sender_type, sender_id, sender_name, sender_email, is_internal_note)
         VALUES (
-          ${targetTicketId},
-          ${`Merged duplicate tickets: ${sourceTicketNumbers}${reason ? ` | Reason: ${reason}` : ""}`},
+          ${targetTicketId}::bigint,
+          ${mergeNote},
           'INTERNAL_NOTE',
           'AGENT',
-          ${systemUser.id},
+          ${systemUser.id}::bigint,
           ${actorName},
           ${actorEmail},
           true
         )
       `;
+    });
 
-      const auditSql = run as unknown as import("@/lib/db/operations/ticket-activity-audit").TicketAuditSqlClient;
+    // Audits are best-effort after commit (avoid trx.unsafe Object serialization issues).
+    const auditSql = sql as unknown as import("@/lib/db/operations/ticket-activity-audit").TicketAuditSqlClient;
+    await insertTicketActivityAudit(auditSql, {
+      ticket_id: targetTicketId,
+      activity_type: "ticket_merge_target",
+      activity_category: "merge",
+      activity_description: `Merged tickets into #${targetTicketNumber}: ${sourceTicketNumbers}`,
+      actor_user_id: systemUser.id,
+      actor_name: actorName,
+      actor_email: actorEmail,
+      actor_type: "AGENT",
+      old_value: null,
+      new_value: { merged_ticket_ids: sourceTicketIds, reason: reason.length > 0 ? reason : null },
+    });
+
+    for (const sourceId of sourceTicketIds) {
       await insertTicketActivityAudit(auditSql, {
-        ticket_id: targetTicketId,
-        activity_type: "ticket_merge_target",
+        ticket_id: sourceId,
+        activity_type: "ticket_merged",
         activity_category: "merge",
-        activity_description: `Merged tickets into #${targetTicketNumber}: ${sourceTicketNumbers}`,
+        activity_description: `Merged into #${targetTicketNumber}`,
         actor_user_id: systemUser.id,
         actor_name: actorName,
         actor_email: actorEmail,
         actor_type: "AGENT",
         old_value: null,
-        new_value: { merged_ticket_ids: sourceTicketIds, reason: reason || null },
+        new_value: { merged_into_ticket_id: targetTicketId, reason: reason.length > 0 ? reason : null },
       });
-
-      for (const sourceId of sourceTicketIds) {
-        await insertTicketActivityAudit(auditSql, {
-          ticket_id: sourceId,
-          activity_type: "ticket_merged",
-          activity_category: "merge",
-          activity_description: `Merged into #${targetTicketNumber}`,
-          actor_user_id: systemUser.id,
-          actor_name: actorName,
-          actor_email: actorEmail,
-          actor_type: "AGENT",
-          old_value: null,
-          new_value: { merged_into_ticket_id: targetTicketId, reason: reason || null },
-        });
-      }
-    });
+    }
 
     return NextResponse.json({
       success: true,
@@ -247,4 +265,3 @@ export async function POST(request: NextRequest) {
     );
   }
 }
-

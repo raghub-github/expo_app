@@ -1,7 +1,7 @@
 /**
  * GatiMitra Merchant — Premium multi-layer header.
- * Layout: [Logo + Store selector] ---- [Radar] ---- [Share Restaurant]
- * Left = Identity, center-right = Live radar, far right = Share store link.
+ * Layout: [Store selector] ---- [ONLINE toggle / radar]
+ * 3-line menu only on Flow hub (Earnings, Growth, Offers, Reviews).
  */
 
 import { useEffect, useState, useMemo } from "react";
@@ -10,21 +10,21 @@ import { AppText as Text } from "@/components/AppText";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useSegments, usePathname, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
-import { GatiMitraMerchant, H_PADDING, HEADER_RIGHT_EDGE, CARD_RADIUS, CARD_PADDING, BUTTON_RADIUS, SAFE_AREA_TOP_MIN } from "@/constants/theme";
+import { GatiMitraMerchant, H_PADDING, HEADER_RIGHT_EDGE, CARD_RADIUS, CARD_PADDING, BUTTON_RADIUS } from "@/constants/theme";
 import { getConfig } from "@/config/env";
 import { OnlineOfflineToggle } from "@/components/OnlineOfflineToggle";
-import { ManageOrdersStoresSheet } from "@/components/ManageOrdersStoresSheet";
 import { RadarLiveIndicator } from "@/components/RadarLiveIndicator";
+import { ManageOrdersStoresSheet } from "@/components/ManageOrdersStoresSheet";
 import { TimePickerModal } from "@/components/TimePickerModal";
 import { useStoreStatus } from "@/context/StoreStatusContext";
 import { useSelectedStore } from "@/context/SelectedStoreContext";
 import { useActiveTab } from "@/context/ActiveTabContext";
 import { useAuth } from "@/context/AuthContext";
-import { useNotifications } from "@/context/NotificationContext";
-import { AppAssetImage } from "@/components/AppAssetImage";
+import { useProfileNav } from "@/context/ProfileNavContext";
 import { AuthProxyImage } from "@/components/AuthProxyImage";
-import { MX } from "@/lib/appAssetKeys";
-import { getOperatingHours, resolveImageUrl, type OperatingHours, type DaySlots } from "@/services/outletApi";
+import { MerchantBackButton } from "@/components/MerchantBackButton";
+import { useMerchantGoBack, useMerchantNavigate, merchantPush } from "@/lib/merchantNavigation";
+import { getOperatingHours, getCachedOutlet, getOutlet, prefetchOutlet, prefetchOperatingHours, peekOperatingHoursCache, resolveImageUrl, type OperatingHours, type DaySlots } from "@/services/outletApi";
 import {
   getNextOpenDayStartIso,
   getNextOpenIsoAfterIstCalendarDay,
@@ -35,6 +35,10 @@ import {
 import { formatCloseReasonForCard } from "@/lib/formatCloseReasonForCard";
 import { formatStoreActionSourceLabel } from "@/lib/storeActionSource";
 import type { ChildStore } from "@/context/AuthContext";
+import {
+  formatStoreHeaderSubtitle,
+  resolveStoreLocationLabel,
+} from "@/lib/selectedStoreStorage";
 
 const DAY_KEYS = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"] as const;
 type DayKey = (typeof DAY_KEYS)[number];
@@ -64,9 +68,8 @@ function formatSlotTime(t: string | null): string {
 function getTodayHoursLabel(hours: OperatingHours | null): string | null {
   if (!hours) return null;
   if (hours.is_24_hours) return "Today: 24 hours";
-  const now = new Date();
-  const dayIndex = now.getDay();
-  const dayKey: DayKey = DAY_KEYS[dayIndex];
+  const { dayOfWeek } = nowInStoreTz();
+  const dayKey: DayKey = DAY_KEYS[dayOfWeek];
   const closed = Array.isArray(hours.closed_days) && hours.closed_days.includes(dayKey);
   if (closed) return "Today: Closed";
   const sourceKey = hours.same_for_all_days ? "monday" : dayKey;
@@ -111,9 +114,57 @@ const PAGE_TITLES: Record<string, string> = {
 
 function resolveProfileSubPage(pathname: string | undefined): string | null {
   if (!pathname) return null;
+  if (!pathname.includes("/profile") && !pathname.includes("/support/chat")) return null;
   if (pathname.includes("offer-insights")) return "Detailed performance";
   if (pathname.includes("order-history")) return "Order history";
-  if (pathname.includes("/offers")) return "Offers";
+  if (pathname.includes("/offers")) return "Offers & Promotions";
+  if (pathname.includes("edit-store")) return "Outlet info";
+  if (pathname.includes("change-history")) return "Change history";
+  if (pathname.includes("business-details")) return "Phone numbers";
+  if (pathname.includes("/address")) return "Delivery settings";
+  if (pathname.includes("/hours")) return "Outlet timings";
+  if (pathname.includes("/bank")) return "Bank account";
+  if (pathname.includes("/staff")) return "Manage staff";
+  if (pathname.includes("/status")) return "Store status";
+  if (pathname.includes("preparation-time")) return "Rush hour";
+  if (pathname.includes("auto-accept")) return "Auto accept";
+  if (pathname.includes("printer-settings")) return "Thermal printer";
+  if (pathname.includes("/vacation")) return "Schedule off";
+  if (pathname.includes("/preferences")) return "Preferences";
+  if (pathname.includes("/communications")) return "Manage communication";
+  if (pathname.includes("activity-feed")) return "Recent activity";
+  if (pathname.includes("/contact")) return "Contact us";
+  if (pathname.includes("/tickets")) return "My tickets";
+  if (pathname.includes("/help") || pathname.includes("/support/chat")) return "Support chat";
+  if (pathname.includes("/complaints")) return "Complaints";
+  if (pathname.includes("/reviews")) return "Reviews";
+  if (pathname.includes("/plans")) return "Plans & Subscription";
+  return null;
+}
+
+function resolveProfileSubPageSubtitle(pathname: string | undefined): string | null {
+  if (!pathname) return null;
+  if (pathname.includes("/plans")) return "Choose a plan that works best for your restaurant.";
+  if (pathname.includes("activity-feed")) return "Track changes across app, partner site, and dashboard.";
+  if (pathname.includes("preparation-time")) return "Tell us when your kitchen needs more prep time for orders.";
+  if (pathname.includes("/vacation")) return "Choose a reason and when the store will reopen.";
+  if (pathname.includes("/bank")) return "Add and verify bank accounts with Cashfree.";
+  if (pathname.includes("auto-accept")) return "Automatically accept new orders after your configured delay.";
+  if (pathname.includes("printer-settings")) return "Set receipt width for kitchen order tickets (KOT).";
+  if (pathname.includes("/preferences")) return "Alerts, delivery radius, and store defaults.";
+  if (pathname.includes("/communications")) return "Control WhatsApp alerts and business reports.";
+  if (pathname.includes("/contact")) return "Tell us what you need — we'll get back on WhatsApp or phone.";
+  if (pathname.includes("/tickets")) return "View and track your support tickets.";
+  if (pathname.includes("/complaints")) return "See customer complaints and respond.";
+  if (pathname.includes("/reviews")) return "Read and reply to customer reviews.";
+  if (pathname.includes("order-history")) return "Browse past orders for this store.";
+  if (pathname.includes("edit-store")) return "Update outlet name, logo, and basic details.";
+  if (pathname.includes("/address")) return "Delivery radius and pickup settings.";
+  if (pathname.includes("/hours")) return "Set when your outlet accepts orders.";
+  if (pathname.includes("/staff")) return "Add staff and manage access.";
+  if (pathname.includes("/status")) return "Control online/offline and store availability.";
+  if (pathname.includes("/offers")) return "Create and manage offers for customers.";
+  if (pathname.includes("offer-insights")) return "See how your offers are performing.";
   return null;
 }
 
@@ -131,7 +182,13 @@ function isMenuStandaloneHeaderRoute(pathname: string | undefined): boolean {
   );
 }
 
-/** Parent brand logo in the header (falls back to bundled GatiMitra mark). */
+/** Full-screen headers (chat, etc.) — hide the tab-level MerchantHeader entirely. */
+function isStandaloneScreenHeaderRoute(pathname: string | undefined): boolean {
+  if (!pathname) return false;
+  return pathname.includes("/help") || pathname.includes("/support/chat");
+}
+
+/** Parent brand logo in the header — hidden when no store logo is configured. */
 function StoreHeaderLogo({
   logoUrl,
   token,
@@ -140,7 +197,8 @@ function StoreHeaderLogo({
   token: string | null;
 }) {
   const resolved = resolveImageUrl(logoUrl);
-  if (resolved && token) {
+  if (!resolved) return null;
+  if (token) {
     return (
       <View style={styles.logo}>
         <AuthProxyImage
@@ -153,26 +211,13 @@ function StoreHeaderLogo({
       </View>
     );
   }
-  if (resolved) {
-    return (
-      <View style={styles.logo}>
-        <Image
-          source={{ uri: resolved }}
-          style={styles.logoImage}
-          resizeMode="cover"
-          accessibilityLabel="Store logo"
-        />
-      </View>
-    );
-  }
   return (
     <View style={styles.logo}>
-      <AppAssetImage
-        assetKey={MX.brand.appIcon}
-        fallbackAssetKey={MX.auth.logo}
+      <Image
+        source={{ uri: resolved }}
         style={styles.logoImage}
         resizeMode="cover"
-        accessibilityLabel="GatiMitra"
+        accessibilityLabel="Store logo"
       />
     </View>
   );
@@ -184,12 +229,16 @@ function MainHeader({
   setPickerVisible,
   onRequestSwitchStore,
   pathname,
+  showHeaderToggle,
+  onToggleRequest,
 }: {
   compact?: boolean;
   pickerVisible: boolean;
   setPickerVisible: (v: boolean) => void;
   onRequestSwitchStore: (store: ChildStore) => void;
   pathname?: string;
+  showHeaderToggle?: boolean;
+  onToggleRequest?: () => void;
 }) {
   const { isOnline, scheduledClosure, manualCloseUntil, restrictionType } = useStoreStatus();
   const {
@@ -198,7 +247,6 @@ function MainHeader({
     manageAllStores,
     setManagedStores,
   } = useSelectedStore();
-  const { unreadCount } = useNotifications();
   const hasScheduledClosure =
     scheduledClosure != null ||
     restrictionType === "PERMANENT_SHUT" ||
@@ -207,14 +255,27 @@ function MainHeader({
       manualCloseUntil !== "" &&
       new Date(manualCloseUntil).getTime() > Date.now());
   const { partner, token } = useAuth();
+  const { returnRoute, setReturnRoute } = useProfileNav();
   const router = useRouter();
+  const [storeLocationLabel, setStoreLocationLabel] = useState("");
+  const goBack = useMerchantGoBack();
   const segments = useSegments();
   const tab = segments[segments.length - 1] ?? "index";
   const isProfileSection = segments.includes("profile");
   const profileSubPageTitle = isProfileSection ? resolveProfileSubPage(pathname) : null;
+  const profileSubPageSubtitle = isProfileSection ? resolveProfileSubPageSubtitle(pathname) : null;
+  const isProfileRootWithReturn =
+    isProfileSection && !profileSubPageTitle && returnRoute != null && returnRoute.length > 0;
   const isEarningsSection = segments.includes("earnings");
   const earningsSubPageTitle = isEarningsSection ? resolveEarningsSubPage(pathname) : null;
-  const subPageTitle = profileSubPageTitle ?? earningsSubPageTitle;
+  const subPageTitle =
+    profileSubPageTitle ?? earningsSubPageTitle ?? (isProfileRootWithReturn ? "Profile" : null);
+  /** 3-line menu only on Flow hub (Earnings / Growth / Offers / Reviews) — not Zone/Home tabs. */
+  const showFlowMenuButton =
+    segments.includes("earnings") ||
+    segments.includes("growth") ||
+    segments.includes("reviews") ||
+    (typeof pathname === "string" && pathname.includes("/offers"));
   const pageTitle = PAGE_TITLES[String(tab)] ?? "Dashboard";
   const stores = (partner?.childStores ?? []).filter(
     (s) => String(s.approval_status || "").toUpperCase() === "APPROVED"
@@ -233,36 +294,80 @@ function MainHeader({
     }
   }, [isOnline]);
 
+  useEffect(() => {
+    if (!selectedStore?.id || !token) {
+      setStoreLocationLabel("");
+      return;
+    }
+    let cancelled = false;
+    const applyLocation = (outlet?: { landmark?: string | null; city?: string | null } | null) => {
+      if (cancelled) return;
+      setStoreLocationLabel(
+        resolveStoreLocationLabel(
+          selectedStore.full_address,
+          outlet ?? null,
+          selectedStore.city
+        )
+      );
+    };
+    applyLocation(getCachedOutlet(selectedStore.id, token));
+    prefetchOutlet(selectedStore.id, token);
+    void getOutlet(selectedStore.id, token)
+      .then((outlet) => applyLocation(outlet))
+      .catch(() => applyLocation(null));
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedStore?.id, selectedStore?.full_address, selectedStore?.city, token]);
+
+  const singleStoreSubtitle = selectedStore
+    ? formatStoreHeaderSubtitle(
+        selectedStore.store_id,
+        storeLocationLabel ||
+          resolveStoreLocationLabel(selectedStore.full_address, null, selectedStore.city)
+      )
+    : pageTitle;
+
+  const openProfileFromMenu = () => {
+    if (!pathname) return;
+    merchantPush(router, "/(tabs)/profile", {
+      fromPath: pathname,
+      setReturnRoute,
+    });
+  };
+
 
   return (
     <View style={[styles.mainHeader, compact && styles.mainHeaderCompact]}>
-      <View style={styles.mainHeaderInner}>
-        <View style={styles.leftSection}>
+      <View
+        style={[
+          styles.mainHeaderInner,
+          showFlowMenuButton
+            ? styles.mainHeaderInnerFlowMenuFlush
+            : styles.mainHeaderInnerFlushRight,
+        ]}
+      >
+        <View style={[styles.leftSection, subPageTitle && styles.leftSectionSubPage]}>
           {subPageTitle ? (
-            <Pressable
-              onPress={() => router.back()}
-              style={({ pressed }) => [styles.headerBackBtn, pressed && styles.pressed]}
-              hitSlop={10}
-              accessibilityRole="button"
-              accessibilityLabel="Go back"
-            >
-              <Ionicons name="chevron-back" size={26} color={GatiMitraMerchant.textPrimary} />
-            </Pressable>
+            <>
+              <MerchantBackButton onPress={goBack} />
+              <View style={styles.subPageTitleBlock}>
+                <Text style={styles.subPageTitle} numberOfLines={1} ellipsizeMode="tail">
+                  {subPageTitle}
+                </Text>
+                {profileSubPageSubtitle ? (
+                  <Text style={styles.subPageSubtitle} numberOfLines={2}>
+                    {profileSubPageSubtitle}
+                  </Text>
+                ) : null}
+              </View>
+            </>
           ) : (
-            <StoreHeaderLogo
-              logoUrl={
-                selectedStore?.parent_logo_url ??
-                partner?.parent?.store_logo ??
-                null
-              }
-              token={token}
-            />
-          )}
+            <>
           <Pressable
-            disabled={subPageTitle ? false : stores.length === 0}
+            disabled={stores.length === 0}
             onPress={() => {
-              if (subPageTitle) router.back();
-              else if (stores.length > 0) setPickerVisible(true);
+              if (stores.length > 0) setPickerVisible(true);
             }}
             style={({ pressed }) => [
               styles.greetingBlock,
@@ -272,9 +377,9 @@ function MainHeader({
           >
             <View style={styles.greetingRow}>
               <Text style={styles.greeting} numberOfLines={1} ellipsizeMode="clip">
-                {subPageTitle ?? headerTitle}
+                {headerTitle}
               </Text>
-              {!subPageTitle && stores.length > 0 && (
+              {stores.length > 0 && (
                 <Ionicons
                   name={pickerVisible ? "chevron-up" : "chevron-down"}
                   size={16}
@@ -283,34 +388,36 @@ function MainHeader({
               )}
             </View>
             <Text style={styles.subtitle} numberOfLines={1}>
-              {subPageTitle
-                ? ""
-                : isMultiStoreMode
-                  ? manageAllStores
-                    ? `Managing all stores · Active: ${truncateStoreNameForHeader(
-                        selectedStore?.store_name ?? "Outlet",
-                        18
-                      )}`
-                    : `${managedStores.length} outlets on board`
-                  : selectedStore
-                    ? `Store ID: ${selectedStore.store_id}`
-                    : pageTitle}
+              {isMultiStoreMode
+                ? manageAllStores
+                  ? `Managing all stores · Active: ${truncateStoreNameForHeader(
+                      selectedStore?.store_name ?? "Outlet",
+                      18
+                    )}`
+                  : `${managedStores.length} outlets on board`
+                : selectedStore
+                  ? singleStoreSubtitle
+                  : pageTitle}
             </Text>
           </Pressable>
+            </>
+          )}
         </View>
         <View style={styles.rightSection}>
-          {isOnline && (
-            <Pressable
-              onPress={() => router.push("/restaurant-status" as never)}
-              style={({ pressed }) => [styles.radarWrap, pressed && styles.pressed]}
-              hitSlop={8}
-              accessibilityRole="button"
-              accessibilityLabel="Open store status"
+          {isOnline && !showHeaderToggle && !isProfileSection ? (
+            <View style={styles.radarWrap} accessibilityLabel="Store is live">
+              <RadarLiveIndicator compact />
+            </View>
+          ) : null}
+          {showHeaderToggle && onToggleRequest ? (
+            <View
+              style={styles.headerToggleWrap}
+              onStartShouldSetResponder={() => true}
             >
-              <RadarLiveIndicator />
-            </Pressable>
-          )}
-          {isProfileSection && !profileSubPageTitle ? (
+              <OnlineOfflineToggle isOnline={isOnline} onToggle={onToggleRequest} />
+            </View>
+          ) : null}
+          {isProfileSection && !profileSubPageTitle && !showFlowMenuButton ? (
             <Pressable
               onPress={async () => {
                 const store = selectedStore;
@@ -338,32 +445,21 @@ function MainHeader({
                 color={GatiMitraMerchant.textPrimary}
               />
             </Pressable>
-          ) : !isProfileSection && !isEarningsSection ? (
-            <View style={styles.bellWrap}>
-              <Pressable
-                onPress={() => router.push("/notifications")}
-                style={({ pressed }) => [
-                  styles.bellPressable,
-                  pressed && styles.pressed,
-                  GatiMitraMerchant.cursorPointer,
-                ]}
-                accessibilityRole="button"
-                accessibilityLabel="Notifications"
-              >
-                <Ionicons
-                  name="notifications-outline"
-                  size={BELL_SIZE}
-                  color={GatiMitraMerchant.textPrimary}
-                />
-                {unreadCount > 0 ? (
-                  <View style={styles.notificationCountBadge}>
-                    <Text style={styles.notificationCountText}>
-                      {unreadCount > 99 ? "99+" : String(unreadCount)}
-                    </Text>
-                  </View>
-                ) : null}
-              </Pressable>
-            </View>
+          ) : null}
+          {showFlowMenuButton ? (
+            <Pressable
+              onPress={openProfileFromMenu}
+              style={({ pressed }) => [
+                styles.bellWrap,
+                styles.headerMenuWrap,
+                pressed && styles.pressed,
+                GatiMitraMerchant.cursorPointer,
+              ]}
+              accessibilityRole="button"
+              accessibilityLabel="Open profile menu"
+            >
+              <Ionicons name="menu" size={BELL_SIZE} color={GatiMitraMerchant.textPrimary} />
+            </Pressable>
           ) : null}
         </View>
       </View>
@@ -439,7 +535,6 @@ function normalizeIso(v: string | null | undefined): string | null {
 }
 
 function StoreStatusCard({
-  onToggleRequest,
   onPressCard,
   onPressTodayHours,
   offlineSubtitle,
@@ -455,7 +550,6 @@ function StoreStatusCard({
   scheduledTimeOffLines,
   activeRushLine,
 }: {
-  onToggleRequest: () => void;
   onPressCard?: () => void;
   /** Opens operating hours for the active store (does not open store-status list). */
   onPressTodayHours?: () => void;
@@ -548,75 +642,96 @@ function StoreStatusCard({
         </View>
       ) : null}
       <View style={styles.statusCardInner}>
-        <View style={styles.statusCardLeft}>
-          <View style={styles.statusCardTitleRow}>
-            <Text style={styles.statusCardTitle}>Store Status</Text>
-            {showAutoOpenTag && (
-              <View style={styles.autoOpenTag}>
-                <Ionicons name="time-outline" size={10} color={GatiMitraMerchant.primary} />
-                <Text style={styles.autoOpenTagText}>Auto open</Text>
-              </View>
-            )}
+        <View style={styles.statusCardMainRow}>
+          <View style={styles.statusCardLeft}>
+            <View style={styles.statusCardTitleRow}>
+              <Text style={[styles.statusCardTitle, styles.statusBannerText]}>Store Status</Text>
+              {showAutoOpenTag && (
+                <View style={styles.autoOpenTagBanner}>
+                  <Ionicons name="time-outline" size={9} color="#FFFFFF" />
+                  <Text style={styles.autoOpenTagTextBanner}>Auto open</Text>
+                </View>
+              )}
+            </View>
+            <Text style={[styles.statusCardSubtitle, styles.statusBannerSubtext]} numberOfLines={1}>
+              {isOnline ? "You are receiving orders" : (offlineSubtitle ?? "Closed: Manual close")}
+            </Text>
           </View>
-          <Text style={styles.statusCardSubtitle} numberOfLines={2}>
-            {isOnline ? "You are receiving orders" : (offlineSubtitle ?? "Closed: Manual close")}
-          </Text>
-          {isOnline && lastOpenedLine && (
-            <Text style={styles.statusCardMeta} numberOfLines={1}>
-              {lastOpenedLine}
-            </Text>
-          )}
-          {!isOnline && lastClosedLine && (
-            <Text style={styles.statusCardMeta} numberOfLines={1}>
-              {lastClosedLine}
-            </Text>
-          )}
-          {!isOnline && autoReopenLabel && (
-            <Text style={styles.statusCardMeta} numberOfLines={1}>
-              {autoReopenLabel}
-            </Text>
-          )}
-          {scheduleLabel && (
-            <Text style={styles.statusCardMeta} numberOfLines={1}>
-              {scheduleLabel}
-            </Text>
-          )}
-          {todayHoursLabel && (
-            <Pressable
-              onPress={(e) => {
-                e.stopPropagation?.();
-                onPressTodayHours?.();
-              }}
-              disabled={!onPressTodayHours}
-              hitSlop={6}
-              accessibilityRole={onPressTodayHours ? "button" : undefined}
-              accessibilityLabel="Open operating hours"
-            >
-              <Text
-                style={[
-                  styles.statusCardMeta,
-                  onPressTodayHours ? styles.statusCardHoursLink : null,
-                ]}
-                numberOfLines={1}
+          <View style={styles.statusCardRightMeta}>
+            {isOnline && lastOpenedLine ? (
+              <Text style={[styles.statusCardMetaRight, styles.statusBannerMeta]} numberOfLines={1}>
+                {lastOpenedLine}
+              </Text>
+            ) : null}
+            {!isOnline && lastClosedLine ? (
+              <Text style={[styles.statusCardMetaRight, styles.statusBannerMeta]} numberOfLines={1}>
+                {lastClosedLine}
+              </Text>
+            ) : null}
+            {!isOnline && autoReopenLabel ? (
+              <Text style={[styles.statusCardMetaRight, styles.statusBannerMeta]} numberOfLines={1}>
+                {autoReopenLabel}
+              </Text>
+            ) : null}
+            {isOnline && (todayHoursLabel || scheduleLabel) ? (
+              <Pressable
+                onPress={(e) => {
+                  e.stopPropagation?.();
+                  onPressTodayHours?.();
+                }}
+                disabled={!onPressTodayHours}
+                hitSlop={6}
+                accessibilityRole={onPressTodayHours ? "button" : undefined}
+                accessibilityLabel="Open operating hours"
               >
-                {todayHoursLabel}
+                <Text
+                  style={[
+                    styles.statusCardMetaRight,
+                    styles.statusBannerMeta,
+                    onPressTodayHours ? styles.statusBannerHoursLink : null,
+                  ]}
+                  numberOfLines={2}
+                >
+                  {todayHoursLabel ?? scheduleLabel}
+                </Text>
+              </Pressable>
+            ) : scheduleLabel ? (
+              <Text style={[styles.statusCardMetaRight, styles.statusBannerMeta]} numberOfLines={1}>
+                {scheduleLabel}
               </Text>
-            </Pressable>
-          )}
-        </View>
-        <View
-          style={styles.statusCardRight}
-          onStartShouldSetResponder={() => true}
-        >
-          {!isOnline && (
-            <Text style={styles.statusCardCountdownAboveToggle} numberOfLines={1}>
-              {countdownPrefix}{" "}
-              <Text style={styles.statusCardCountdownBold}>
-                {countdownTime ?? reopenLabel ?? (reopenAtIso ? "Next open" : "When you open")}
+            ) : null}
+            {!isOnline && todayHoursLabel ? (
+              <Pressable
+                onPress={(e) => {
+                  e.stopPropagation?.();
+                  onPressTodayHours?.();
+                }}
+                disabled={!onPressTodayHours}
+                hitSlop={6}
+                accessibilityRole={onPressTodayHours ? "button" : undefined}
+                accessibilityLabel="Open operating hours"
+              >
+                <Text
+                  style={[
+                    styles.statusCardMetaRight,
+                    styles.statusBannerMeta,
+                    onPressTodayHours ? styles.statusBannerHoursLink : null,
+                  ]}
+                  numberOfLines={2}
+                >
+                  {todayHoursLabel}
+                </Text>
+              </Pressable>
+            ) : null}
+            {!isOnline ? (
+              <Text style={[styles.statusCardCountdownRight, styles.statusBannerCountdown]} numberOfLines={1}>
+                {countdownPrefix}{" "}
+                <Text style={styles.statusBannerCountdownBold}>
+                  {countdownTime ?? reopenLabel ?? (reopenAtIso ? "Next open" : "When you open")}
+                </Text>
               </Text>
-            </Text>
-          )}
-          <OnlineOfflineToggle isOnline={isOnline} onToggle={onToggleRequest} />
+            ) : null}
+          </View>
         </View>
       </View>
     </Pressable>
@@ -629,6 +744,7 @@ export function MerchantCustomHeader() {
   const insets = useSafeAreaInsets();
   const pathname = usePathname();
   const router = useRouter();
+  const { push: merchantNavPush } = useMerchantNavigate();
   const segments = useSegments();
 
   const tab = segments[segments.length - 1] ?? "index";
@@ -710,7 +826,7 @@ export function MerchantCustomHeader() {
       pathname === "/(tabs)" ||
       pathname === "/(tabs)/" ||
       tab === "index");
-  const topPadding = Math.max(insets.top, SAFE_AREA_TOP_MIN);
+  const topPadding = insets.top;
 
   // Refetch when store, auth, or route changes (e.g. back from profile/hours). Do not tie to status poll —
   // lastRefreshedAt updated every few seconds caused duplicate GET operating-hours + status storms.
@@ -720,6 +836,12 @@ export function MerchantCustomHeader() {
       setOperatingHours(null);
       return;
     }
+    const cached = peekOperatingHoursCache(selectedStore.id);
+    if (cached) {
+      setOperatingHours(cached);
+      setTodayHoursLabel(getTodayHoursLabel(cached));
+    }
+    prefetchOperatingHours(selectedStore.id, token);
     let cancelled = false;
     getOperatingHours(selectedStore.id, token)
       .then((hours) => {
@@ -1014,6 +1136,17 @@ export function MerchantCustomHeader() {
     }
   }
 
+  const resolvedTodayHoursLabel = useMemo((): string | null => {
+    if (todayHoursLabel) return todayHoursLabel;
+    if (!isOnline) return null;
+    if (nextOpenTime && nextCloseTime) {
+      return `Today: ${formatSlotTime(nextOpenTime)} – ${formatSlotTime(nextCloseTime)}`;
+    }
+    if (nextCloseTime) return `Today: until ${formatSlotTime(nextCloseTime)}`;
+    if (nextOpenTime) return `Today: from ${formatSlotTime(nextOpenTime)}`;
+    return null;
+  }, [todayHoursLabel, isOnline, nextOpenTime, nextCloseTime]);
+
   const formatScheduleWindow = (fromIso: string, toIso: string) => {
     const fromLabel = formatIstDateTimeCompact(fromIso);
     const toLabel = formatIstDateTimeCompact(toIso);
@@ -1107,11 +1240,12 @@ export function MerchantCustomHeader() {
     }
   }
 
-  if (isMenuStandaloneHeaderRoute(pathname)) {
+  if (isMenuStandaloneHeaderRoute(pathname) || isStandaloneScreenHeaderRoute(pathname)) {
     return null;
   }
 
   return (
+    <>
     <View style={[styles.wrapper, { paddingTop: topPadding }]}>
       <View style={[styles.mainSection, !isHomeScreen && styles.mainSectionNoCard]}>
         <MainHeader
@@ -1120,37 +1254,41 @@ export function MerchantCustomHeader() {
           setPickerVisible={setPickerVisible}
           onRequestSwitchStore={showSwitchStoreWarning}
           pathname={pathname}
+          showHeaderToggle={isHomeScreen}
+          onToggleRequest={showStoreStatusWarning}
         />
-        {isHomeScreen && (
-          <StoreStatusCard
-            onToggleRequest={showStoreStatusWarning}
-            onPressCard={() => router.push("/restaurant-status" as never)}
-            onPressTodayHours={() => {
-              if (!selectedStore) return;
-              router.push("/(tabs)/profile/hours" as never);
-            }}
-            offlineSubtitle={!isOnline ? closedReasonLine : undefined}
-            autoReopenLabel={autoReopenLabel}
-            scheduleLabel={scheduleLabel}
-            showAutoOpenTag={!isTempClose && autoOpenFromSchedule}
-            todayHoursLabel={(() => {
-              if (isTempClose) return null;
-              if (todayHoursLabel === "Today: Closed" && !isOnline) return null;
-              if (todayHoursLabel) return todayHoursLabel;
-              if (!isOnline && nextOpenTime) return `Today: Next open at ${nextOpenTime}`;
-              if (!isOnline && nextCloseTime) return `Today: Next close at ${nextCloseTime}`;
-              return null;
-            })()}
-            reopenAtIso={!isOnline ? primaryReopenIso : null}
-            reopenCountdownLabelPrefix={!isOnline && primaryReopenIso ? "Opens in" : undefined}
-            reopenAtFormatted={!isOnline ? formatIstDateTimeCompact(primaryReopenIso) : null}
-            lastOpenedLine={isOnline ? lastOpenedLine : null}
-            lastClosedLine={!isOnline ? lastClosedLine : null}
-            scheduledTimeOffLines={scheduledTimeOffLines}
-            activeRushLine={activeRushLine}
-          />
-        )}
       </View>
+    </View>
+    {isHomeScreen ? (
+      <View style={styles.statusCardSection}>
+        <StoreStatusCard
+          onPressCard={() => merchantNavPush("/restaurant-status")}
+          onPressTodayHours={() => {
+            if (!selectedStore) return;
+            merchantNavPush("/(tabs)/profile/hours");
+          }}
+          offlineSubtitle={!isOnline ? closedReasonLine : undefined}
+          autoReopenLabel={autoReopenLabel}
+          scheduleLabel={scheduleLabel}
+          showAutoOpenTag={!isTempClose && autoOpenFromSchedule}
+          todayHoursLabel={(() => {
+            if (isTempClose) return null;
+            if (resolvedTodayHoursLabel === "Today: Closed" && !isOnline) return null;
+            if (resolvedTodayHoursLabel) return resolvedTodayHoursLabel;
+            if (!isOnline && nextOpenTime) return `Today: Next open at ${formatSlotTime(nextOpenTime)}`;
+            if (!isOnline && nextCloseTime) return `Today: Next close at ${formatSlotTime(nextCloseTime)}`;
+            return null;
+          })()}
+          reopenAtIso={!isOnline ? primaryReopenIso : null}
+          reopenCountdownLabelPrefix={!isOnline && primaryReopenIso ? "Opens in" : undefined}
+          reopenAtFormatted={!isOnline ? formatIstDateTimeCompact(primaryReopenIso) : null}
+          lastOpenedLine={isOnline ? lastOpenedLine : null}
+          lastClosedLine={!isOnline ? lastClosedLine : null}
+          scheduledTimeOffLines={scheduledTimeOffLines}
+          activeRushLine={activeRushLine}
+        />
+      </View>
+    ) : null}
 
       <Modal
         visible={warningModal.visible}
@@ -1188,7 +1326,7 @@ export function MerchantCustomHeader() {
                   <Pressable
                     onPress={() => {
                       closeWarningModal();
-                      router.push("/(tabs)/profile/hours" as never);
+                      merchantNavPush("/(tabs)/profile/hours");
                     }}
                     style={({ pressed }) => [
                       styles.warningBtn,
@@ -1653,7 +1791,7 @@ export function MerchantCustomHeader() {
           onCancel={() => setShowCloseTimePicker(false)}
         />
       )}
-    </View>
+    </>
   );
 }
 
@@ -1708,8 +1846,8 @@ const styles = StyleSheet.create({
   },
   mainSection: {
     paddingHorizontal: H_PADDING,
-    paddingTop: 14,
-    paddingBottom: 14,
+    paddingTop: 6,
+    paddingBottom: 8,
     ...Platform.select({
       ios: {
         shadowColor: "#0F172A",
@@ -1721,10 +1859,16 @@ const styles = StyleSheet.create({
     }),
   },
   mainSectionNoCard: {
-    paddingBottom: 10,
+    paddingBottom: 8,
+  },
+  statusCardSection: {
+    paddingHorizontal: 0,
+    paddingTop: 0,
+    paddingBottom: 0,
+    backgroundColor: GatiMitraMerchant.surfaceWarm,
   },
   mainHeader: {
-    marginBottom: 14,
+    marginBottom: 0,
   },
   mainHeaderCompact: {
     marginBottom: 0,
@@ -1734,6 +1878,18 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "space-between",
     paddingRight: HEADER_RIGHT_EDGE,
+    minHeight: 44,
+  },
+  /** Zone/Home: no 3-line menu — pull ONLINE toggle flush to the right edge. */
+  mainHeaderInnerFlushRight: {
+    paddingRight: 2,
+  },
+  /** Flow hub: 3-line menu sits closer to the right edge. */
+  mainHeaderInnerFlowMenuFlush: {
+    paddingRight: 4,
+  },
+  headerMenuWrap: {
+    marginRight: -4,
   },
   leftSection: {
     flex: 1,
@@ -1742,15 +1898,27 @@ const styles = StyleSheet.create({
     minWidth: 0,
     gap: LOGO_TO_GREETING_GAP,
   },
+  leftSectionSubPage: {
+    gap: 2,
+  },
   rightSection: {
     flexDirection: "row",
     alignItems: "center",
+    justifyContent: "flex-end",
+    flexShrink: 0,
     gap: RADAR_TO_BELL_GAP,
     marginLeft: RADAR_LEFT_MARGIN,
   },
   radarWrap: {
+    width: 36,
+    height: 36,
     alignItems: "center",
     justifyContent: "center",
+  },
+  headerToggleWrap: {
+    alignItems: "center",
+    justifyContent: "center",
+    marginRight: -2,
   },
   logo: {
     width: LOGO_SIZE,
@@ -1766,11 +1934,27 @@ const styles = StyleSheet.create({
     borderRadius: 10,
   },
   headerBackBtn: {
-    width: LOGO_SIZE,
-    height: LOGO_SIZE,
+    width: 36,
+    height: 36,
     alignItems: "center",
     justifyContent: "center",
-    marginRight: 2,
+  },
+  subPageTitleBlock: {
+    flex: 1,
+    minWidth: 0,
+    gap: 2,
+  },
+  subPageTitle: {
+    fontSize: 16,
+    fontWeight: "600",
+    lineHeight: 20,
+    color: GatiMitraMerchant.textPrimary,
+  },
+  subPageSubtitle: {
+    fontSize: 12,
+    fontWeight: "500",
+    lineHeight: 16,
+    color: GatiMitraMerchant.textSecondary,
   },
   greetingBlock: {
     flex: 1,
@@ -1799,38 +1983,6 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     alignItems: "center",
     position: "relative",
-  },
-  bellPressable: {
-    width: 44,
-    height: 44,
-    justifyContent: "center",
-    alignItems: "center",
-  },
-  notificationBadge: {
-    position: "absolute",
-    top: 8,
-    right: 8,
-    width: 10,
-    height: 10,
-    borderRadius: 5,
-    backgroundColor: "#DC2626",
-  },
-  notificationCountBadge: {
-    position: "absolute",
-    top: 4,
-    right: 4,
-    minWidth: 18,
-    height: 18,
-    borderRadius: 9,
-    backgroundColor: "#DC2626",
-    alignItems: "center",
-    justifyContent: "center",
-    paddingHorizontal: 4,
-  },
-  notificationCountText: {
-    fontSize: 11,
-    fontWeight: "700",
-    color: "#FFFFFF",
   },
   pressed: {
     opacity: 0.7,
@@ -1913,28 +2065,18 @@ const styles = StyleSheet.create({
     color: GatiMitraMerchant.primary,
   },
   statusCard: {
-    borderRadius: CARD_RADIUS,
-    padding: CARD_PADDING,
-    backgroundColor: GatiMitraMerchant.cardBg,
-    borderWidth: 1,
-    borderColor: GatiMitraMerchant.border,
-    ...Platform.select({
-      ios: {
-        shadowColor: "#0F172A",
-        shadowOffset: { width: 0, height: 2 },
-        shadowOpacity: 0.06,
-        shadowRadius: 6,
-      },
-      android: { elevation: 3 },
-    }),
+    alignSelf: "stretch",
+    width: "100%",
+    borderRadius: 0,
+    paddingHorizontal: H_PADDING,
+    paddingVertical: 10,
+    borderWidth: 0,
   },
   statusCardOnline: {
-    borderLeftWidth: 4,
-    borderLeftColor: GatiMitraMerchant.storeOnline,
+    backgroundColor: "#15803D",
   },
   statusCardOffline: {
-    borderLeftWidth: 4,
-    borderLeftColor: GatiMitraMerchant.storeOffline,
+    backgroundColor: "#991B1B",
   },
   statusCardPressed: {
     opacity: 0.94,
@@ -1995,51 +2137,109 @@ const styles = StyleSheet.create({
     color: "#C2410C",
   },
   statusCardInner: {
+    width: "100%",
+  },
+  statusCardMainRow: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
+    gap: 10,
   },
   statusCardLeft: {
     flex: 1,
     minWidth: 0,
   },
+  statusCardRightMeta: {
+    flexShrink: 0,
+    maxWidth: "52%",
+    alignItems: "flex-end",
+    gap: 1,
+  },
+  statusCardMetaRight: {
+    fontSize: 10,
+    color: GatiMitraMerchant.textTertiary,
+    textAlign: "right",
+  },
+  statusBannerText: {
+    color: "#FFFFFF",
+  },
+  statusBannerSubtext: {
+    color: "rgba(255,255,255,0.9)",
+  },
+  statusBannerMeta: {
+    color: "rgba(255,255,255,0.82)",
+  },
+  statusBannerHoursLink: {
+    color: "#BFDBFE",
+    fontWeight: "600",
+    textDecorationLine: "underline",
+  },
+  statusBannerCountdown: {
+    color: "#FECACA",
+  },
+  statusBannerCountdownBold: {
+    fontWeight: "700",
+    color: "#FFFFFF",
+  },
+  autoOpenTagBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 2,
+    paddingHorizontal: 5,
+    paddingVertical: 1,
+    borderRadius: 5,
+    backgroundColor: "rgba(255,255,255,0.18)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.35)",
+  },
+  autoOpenTagTextBanner: {
+    fontSize: 9,
+    fontWeight: "600",
+    color: "#FFFFFF",
+    letterSpacing: 0.1,
+  },
   statusCardTitleRow: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 8,
+    gap: 6,
     flexWrap: "wrap",
   },
   statusCardTitle: {
-    fontSize: 15,
+    fontSize: 14,
     fontWeight: "600",
     color: GatiMitraMerchant.textPrimary,
   },
   autoOpenTag: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 4,
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 6,
+    gap: 2,
+    paddingHorizontal: 5,
+    paddingVertical: 1,
+    borderRadius: 5,
     backgroundColor: "rgba(22, 163, 74, 0.12)",
     borderWidth: 1,
     borderColor: "rgba(22, 163, 74, 0.3)",
   },
   autoOpenTagText: {
-    fontSize: 10,
+    fontSize: 9,
     fontWeight: "600",
     color: GatiMitraMerchant.primary,
   },
   statusCardSubtitle: {
-    fontSize: 13,
+    fontSize: 12,
     fontWeight: "400",
     color: GatiMitraMerchant.textSecondary,
-    marginTop: 2,
+    marginTop: 1,
+  },
+  statusCardTodayHours: {
+    fontSize: 12,
+    fontWeight: "600",
+    marginTop: 4,
   },
   statusCardMeta: {
     fontSize: 11,
     color: GatiMitraMerchant.textTertiary,
-    marginTop: 2,
+    marginTop: 1,
   },
   statusCardHoursLink: {
     color: "#2563EB",
@@ -2061,10 +2261,11 @@ const styles = StyleSheet.create({
     marginBottom: 6,
     textAlign: "center",
   },
-  statusCardRight: {
-    marginLeft: 12,
-    alignItems: "center",
-    justifyContent: "center",
+  statusCardCountdownRight: {
+    fontSize: 10,
+    color: "#DC2626",
+    fontWeight: "700",
+    textAlign: "right",
   },
   warningOverlay: {
     flex: 1,

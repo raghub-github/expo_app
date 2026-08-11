@@ -4,6 +4,8 @@
  */
 import { useEffect, useRef } from "react";
 import { getConfig } from "@/config/env";
+import { isAppForeground, subscribeAppForeground } from "@/lib/appForeground";
+import { perfAuditMark } from "@/lib/perfAuditLog";
 import {
   mergeEtaUpdatedEvent,
   type OrderEtaResponse,
@@ -26,12 +28,16 @@ export function useOrderEtaRealtime(args: {
   token: string | null;
   eta: OrderEtaResponse | null;
   setEta: (next: OrderEtaResponse | null) => void;
+  /** Refetch HTTP ETA after foreground resume (closes WS gap while backgrounded). */
+  onResume?: () => void | Promise<void>;
 }) {
-  const { enabled, orderIdText, token, eta, setEta } = args;
+  const { enabled, orderIdText, token, eta, setEta, onResume } = args;
   const etaRef = useRef(eta);
   etaRef.current = eta;
   const setEtaRef = useRef(setEta);
   setEtaRef.current = setEta;
+  const onResumeRef = useRef(onResume);
+  onResumeRef.current = onResume;
 
   useEffect(() => {
     const { wsEnabled, apiBaseUrl, wsBaseUrl } = getConfig();
@@ -42,9 +48,39 @@ export function useOrderEtaRealtime(args: {
     let ws: WebSocket | null = null;
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
     let failure = 0;
+    let foreground = isAppForeground();
+
+    const clearReconnect = () => {
+      if (reconnectTimer) {
+        clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+      }
+    };
+
+    const pauseWs = () => {
+      clearReconnect();
+      try {
+        ws?.close();
+      } catch {
+        /* ignore */
+      }
+      ws = null;
+      perfAuditMark("order_eta.ws_paused");
+    };
+
+    const scheduleReconnect = () => {
+      if (cancelled || !foreground) return;
+      clearReconnect();
+      failure += 1;
+      const delay = Math.min(2000 * 2 ** failure, 60_000);
+      perfAuditMark("order_eta.ws_reconnect_scheduled");
+      reconnectTimer = setTimeout(() => {
+        void connect();
+      }, delay);
+    };
 
     const connect = async () => {
-      if (cancelled) return;
+      if (cancelled || !foreground) return;
       try {
         const ticketRes = await fetch(`${apiBaseUrl.replace(/\/+$/, "")}/v1/auth/ws-ticket`, {
           method: "POST",
@@ -54,15 +90,16 @@ export function useOrderEtaRealtime(args: {
           },
           body: JSON.stringify({ orderIds: ids }),
         });
-        if (!ticketRes.ok || cancelled) {
-          failure += 1;
-          reconnectTimer = setTimeout(connect, Math.min(2000 * 2 ** failure, 60_000));
+        if (!ticketRes.ok || cancelled || !foreground) {
+          scheduleReconnect();
           return;
         }
         const json = (await ticketRes.json()) as { ticket?: string };
-        if (!json.ticket || cancelled) return;
+        if (!json.ticket || cancelled || !foreground) return;
 
+        pauseWs();
         ws = new WebSocket(`${wsBaseUrl}/v1/ws?ticket=${encodeURIComponent(json.ticket)}`);
+        perfAuditMark("order_eta.ws_connect");
         ws.onopen = () => {
           failure = 0;
         };
@@ -78,28 +115,37 @@ export function useOrderEtaRealtime(args: {
           }
         };
         ws.onclose = () => {
-          if (cancelled) return;
-          failure += 1;
-          reconnectTimer = setTimeout(connect, Math.min(2000 * 2 ** failure, 60_000));
+          ws = null;
+          if (cancelled || !foreground) return;
+          scheduleReconnect();
         };
       } catch {
-        if (!cancelled) {
-          failure += 1;
-          reconnectTimer = setTimeout(connect, Math.min(2000 * 2 ** failure, 60_000));
-        }
+        if (!cancelled && foreground) scheduleReconnect();
       }
     };
 
-    void connect();
+    let prevForeground = foreground;
+
+    const unsubForeground = subscribeAppForeground((active) => {
+      const resumed = !prevForeground && active;
+      prevForeground = active;
+      foreground = active;
+      if (!active) {
+        pauseWs();
+        return;
+      }
+      failure = 0;
+      if (resumed) {
+        perfAuditMark("order_eta.ws_resumed");
+        void onResumeRef.current?.();
+      }
+      void connect();
+    });
 
     return () => {
       cancelled = true;
-      if (reconnectTimer) clearTimeout(reconnectTimer);
-      try {
-        ws?.close();
-      } catch {
-        /* ignore */
-      }
+      unsubForeground();
+      pauseWs();
     };
   }, [enabled, orderIdText, token]);
 }

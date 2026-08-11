@@ -1,6 +1,7 @@
 /** Store status display + manual actions. Backend owns schedule / operational truth. */
 import { createContext, useContext, useState, useCallback, useEffect, useMemo, useRef, type ReactNode } from "react";
 import { Alert, AppState, type AppStateStatus } from "react-native";
+import { isAppForeground } from "@/lib/appForeground";
 import * as SecureStore from "expo-secure-store";
 import { useAuth } from "@/context/AuthContext";
 import { useSelectedStore } from "@/context/SelectedStoreContext";
@@ -16,7 +17,7 @@ import {
 const STATUS_CACHE_KEY_PREFIX = "merchant_store_status_";
 
 /** Poll interval for real-time status (schedule changes, auto open/close). */
-const STATUS_POLL_INTERVAL_MS = 8_000;
+const STATUS_POLL_INTERVAL_MS = 20_000;
 
 export type CloseStoreOptions = {
   manual_close_until?: string | null;
@@ -318,6 +319,7 @@ export function StoreStatusProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (!token || !storeId) return;
     const id = setInterval(() => {
+      if (!isAppForeground()) return;
       void refresh();
     }, STATUS_POLL_INTERVAL_MS);
     return () => clearInterval(id);
@@ -384,13 +386,23 @@ export function StoreStatusProvider({ children }: { children: ReactNode }) {
     const reopenAt = new Date(reopenAtIso).getTime();
     if (!Number.isFinite(reopenAt)) return;
 
-    const id = setInterval(() => {
-      if (Date.now() < reopenAt) return;
+    const delayMs = Math.max(0, reopenAt - Date.now());
+    if (delayMs === 0) {
+      if (!reopenExpiredTriggeredRef.current) {
+        reopenExpiredTriggeredRef.current = true;
+        void refresh();
+      }
+      return;
+    }
+
+    reopenExpiredTriggeredRef.current = false;
+    const timer = setTimeout(() => {
       if (reopenExpiredTriggeredRef.current) return;
       reopenExpiredTriggeredRef.current = true;
       void refresh();
-    }, 1000);
-    return () => clearInterval(id);
+    }, Math.min(delayMs, 86_400_000));
+
+    return () => clearTimeout(timer);
   }, [token, storeId, reopenAtIso, refresh]);
 
   const toggle = useCallback(async (closeOptions?: CloseStoreOptions) => {

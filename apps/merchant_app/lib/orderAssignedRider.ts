@@ -2,7 +2,56 @@ import type { OrderRecord } from "@/hooks/useOrders";
 import type { ApiFoodOrder, FoodOrderRiderLogEntry } from "@/services/ordersApi";
 
 export function orderHasAssignedRider(order: OrderRecord): boolean {
-  return order.riderId != null || !!(order.riderName?.trim());
+  const id = order.riderId;
+  if (id != null && Number(id) > 0) return true;
+  return !!(order.riderName?.trim());
+}
+
+function riderLogEntryIsMeaningful(r: FoodOrderRiderLogEntry): boolean {
+  const id = Number(r.rider_id);
+  if (Number.isFinite(id) && id > 0) return true;
+  if ((r.rider_name ?? "").trim()) return true;
+  if ((r.assigned_at ?? "").trim()) return true;
+  return false;
+}
+
+/** True when the order has a real rider identity (current or in riders-log). */
+export function hasMeaningfulRiderRecord(
+  order: ApiFoodOrder | null | undefined,
+  ridersLog: FoodOrderRiderLogEntry[] = []
+): boolean {
+  if (ridersLog.some(riderLogEntryIsMeaningful)) return true;
+  if (!order) return false;
+
+  const orderRiderId = order.rider_id != null ? Number(order.rider_id) : null;
+  if (orderRiderId != null && Number.isFinite(orderRiderId) && orderRiderId > 0) return true;
+  if ((order.rider_name ?? "").trim()) return true;
+
+  return false;
+}
+
+/** True when any rider was ever linked to this order (active, cancelled, or delivered). */
+export function orderEverHadRiderAssignment(
+  order: ApiFoodOrder | null | undefined,
+  ridersLog: FoodOrderRiderLogEntry[] = []
+): boolean {
+  if (!order) return false;
+
+  for (const r of ridersLog) {
+    const id = Number(r.rider_id);
+    if (Number.isFinite(id) && id > 0) return true;
+    if ((r.rider_name ?? "").trim()) return true;
+    if ((r.assigned_at ?? "").trim()) return true;
+  }
+
+  const orderRiderId = order.rider_id != null ? Number(order.rider_id) : null;
+  if (orderRiderId != null && Number.isFinite(orderRiderId) && orderRiderId > 0) return true;
+  if ((order.rider_name ?? "").trim()) return true;
+  if ((order.rider_reached_at ?? "").trim()) return true;
+  if ((order.rider_picked_up_at ?? "").trim()) return true;
+  if ((order.handed_over_to_rider_at ?? "").trim()) return true;
+
+  return false;
 }
 
 export function isOrderPastRiderAssignment(stage: OrderRecord["status"]): boolean {

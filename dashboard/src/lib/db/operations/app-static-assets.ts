@@ -55,6 +55,94 @@ export async function listAppStaticAssets(app: AppStaticAssetApp): Promise<AppSt
           'App icon',
           'In-app brand mark (login / header). Updates on next app open. Phone home-screen icon still needs a store rebuild.',
           10
+        ),
+        (
+          'merchant.offers.promo_banner',
+          'merchant',
+          'Offers',
+          'Promo offer banner',
+          'Hero image on Offers & Promotions → Create offers (GatiMitra Promos card).',
+          10
+        ),
+        (
+          'merchant.partner.manage_stores',
+          'merchant',
+          'Auth',
+          'Manage stores art',
+          'Partner home manage stores illustration; partnersite store settings empty state.',
+          40
+        ),
+        (
+          'merchant.orders.empty_new',
+          'merchant',
+          'Orders',
+          'New orders empty',
+          'Dashboard — New tab waiting for orders illustration.',
+          10
+        ),
+        (
+          'merchant.orders.empty_active',
+          'merchant',
+          'Orders',
+          'Active orders empty',
+          'Dashboard — Active tab no orders illustration.',
+          20
+        ),
+        (
+          'merchant.orders.empty_preparing',
+          'merchant',
+          'Orders',
+          'Preparing empty',
+          'Orders tab — Preparing stage empty illustration.',
+          30
+        ),
+        (
+          'merchant.orders.empty_ready',
+          'merchant',
+          'Orders',
+          'Ready empty',
+          'Orders tab — Ready stage empty illustration.',
+          40
+        ),
+        (
+          'merchant.orders.empty_picked_up',
+          'merchant',
+          'Orders',
+          'Picked up empty',
+          'Orders tab — Picked Up stage empty illustration.',
+          50
+        ),
+        (
+          'merchant.orders.empty_completed',
+          'merchant',
+          'Orders',
+          'Completed empty',
+          'Orders tab — Completed stage empty illustration.',
+          60
+        ),
+        (
+          'merchant.orders.empty_rto',
+          'merchant',
+          'Orders',
+          'RTO empty',
+          'Orders tab — RTO stage empty illustration.',
+          70
+        ),
+        (
+          'merchant.orders.empty_scheduled',
+          'merchant',
+          'Orders',
+          'Scheduled empty',
+          'Orders tab — Scheduled stage empty illustration.',
+          80
+        ),
+        (
+          'merchant.offers.empty_running',
+          'merchant',
+          'Offers',
+          'No running offers',
+          'Offers track — empty running offers illustration.',
+          20
         )
       ON CONFLICT (id) DO NOTHING
     `;

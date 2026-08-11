@@ -17,6 +17,12 @@ function throwCachedNotFound(): never {
   throw err;
 }
 
+function toNum(v: unknown): number | null {
+  if (v == null || v === "") return null;
+  const n = typeof v === "bigint" ? Number(v) : Number(v);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
 export interface TicketDetail {
   id: number;
   ticketNumber: string;
@@ -224,9 +230,12 @@ function normalizeTicket(raw: Record<string, unknown>): TicketDetail {
       ? Number(groupIdRaw)
       : null;
 
+  // postgres.js may return int8 ids as strings; coerce so Number.isFinite(id) works in UI queries.
+  const ticketPk = toNum(raw.id) ?? toNum(raw.ticket_id) ?? 0;
+
   return {
-    id: raw.id as number,
-    ticketNumber: (raw.ticket_number ?? raw.ticket_id ?? raw.id) as string,
+    id: ticketPk,
+    ticketNumber: String(raw.ticket_number ?? raw.ticket_id ?? ticketPk),
     serviceType: (raw.service_type ?? "") as string,
     ticketCategory: (raw.ticket_category ?? "") as string,
     ticketSection: (raw.ticket_section ?? "") as string,
@@ -247,7 +256,7 @@ function normalizeTicket(raw: Record<string, unknown>): TicketDetail {
     status,
     isSpam: Boolean(raw.is_spam ?? raw.isSpam),
     priority,
-    orderId: (raw.order_id ?? null) as number | null,
+    orderId: toNum(raw.order_id),
     orderFormattedId: (raw.order_formatted_id ?? null) as string | null,
     orderServiceType: (raw.order_service_type ?? raw.order_type ?? null) as string | null,
     is3plOrder: (raw.is_3pl_order ?? false) as boolean,
@@ -393,36 +402,52 @@ function normalizeTicket(raw: Record<string, unknown>): TicketDetail {
 }
 
 /** Shared fetch for `useTicketDetail`, hover prefetch, and nav warm-up (same cache key). */
-export async function fetchTicketDetailById(ticketId: string): Promise<TicketDetail> {
+export async function fetchTicketDetailById(
+  ticketId: string,
+  signal?: AbortSignal
+): Promise<TicketDetail> {
   const id = String(ticketId).trim();
   if (!id) throw new Error("Ticket ID is required");
   if (ticketDetailConfirmedNotFound.has(id)) {
     throwCachedNotFound();
   }
-  const response = await fetch(`/api/tickets/${encodeURIComponent(id)}`, { credentials: "include" });
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    if (response.status === 404) {
-      ticketDetailConfirmedNotFound.add(id);
-      const err = new Error("") as Error & { httpStatus?: number };
-      err.httpStatus = 404;
+  const timeoutController = new AbortController();
+  const timeoutId = setTimeout(() => timeoutController.abort(), 20_000);
+  const combined =
+    signal != null && typeof AbortSignal.any === "function"
+      ? AbortSignal.any([timeoutController.signal, signal])
+      : timeoutController.signal;
+  try {
+    const response = await fetch(`/api/tickets/${encodeURIComponent(id)}`, {
+      credentials: "include",
+      signal: combined,
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      if (response.status === 404) {
+        ticketDetailConfirmedNotFound.add(id);
+        const err = new Error("") as Error & { httpStatus?: number };
+        err.httpStatus = 404;
+        throw err;
+      }
+      const msg = typeof data?.error === "string" ? data.error : "Failed to fetch ticket detail";
+      const err = new Error(msg) as Error & { httpStatus?: number };
+      err.httpStatus = response.status;
       throw err;
     }
-    const msg = typeof data?.error === "string" ? data.error : "Failed to fetch ticket detail";
-    const err = new Error(msg) as Error & { httpStatus?: number };
-    err.httpStatus = response.status;
-    throw err;
+    const raw = data.data?.ticket;
+    if (!raw) {
+      const err = new Error(typeof data?.error === "string" ? data.error : "Invalid response") as Error & {
+        httpStatus?: number;
+      };
+      err.httpStatus = response.status;
+      throw err;
+    }
+    ticketDetailConfirmedNotFound.delete(id);
+    return normalizeTicket(raw);
+  } finally {
+    clearTimeout(timeoutId);
   }
-  const raw = data.data?.ticket;
-  if (!raw) {
-    const err = new Error(typeof data?.error === "string" ? data.error : "Invalid response") as Error & {
-      httpStatus?: number;
-    };
-    err.httpStatus = response.status;
-    throw err;
-  }
-  ticketDetailConfirmedNotFound.delete(id);
-  return normalizeTicket(raw);
 }
 
 export function prefetchTicketDetail(queryClient: QueryClient, ticketId: number | string): void {
@@ -430,7 +455,7 @@ export function prefetchTicketDetail(queryClient: QueryClient, ticketId: number 
   if (!id) return;
   void queryClient.prefetchQuery({
     queryKey: queryKeys.tickets.detail(id),
-    queryFn: () => fetchTicketDetailById(id),
+    queryFn: ({ signal }) => fetchTicketDetailById(id, signal),
     staleTime: 60 * 1000,
   });
 }
@@ -441,14 +466,18 @@ export function useTicketDetail(ticketId: number | string | null) {
 
   return useQuery<TicketDetail>({
     queryKey: queryKeys.tickets.detail(id ?? ""),
-    queryFn: () => fetchTicketDetailById(id!),
+    queryFn: ({ signal }) => fetchTicketDetailById(id!, signal),
     enabled: id != null,
     staleTime: 60 * 1000,
     /**
      * One HTTP call per cache entry unless something explicitly invalidates.
      * Global default retry:1 + refetchOnMount callbacks were still hammering 404s.
      */
-    retry: false,
+    retry: (failureCount, error) => {
+      const status = (error as { httpStatus?: number } | null)?.httpStatus;
+      if (status === 404 || status === 401 || status === 403) return false;
+      return failureCount < 1;
+    },
     refetchOnMount: false,
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,

@@ -1,25 +1,44 @@
 import { useEffect, useMemo, useState } from "react";
 import { AppText as Text } from "@/components/AppText";
-import { View, StyleSheet, ScrollView, Pressable, ActivityIndicator } from "react-native";
+import {
+  View,
+  StyleSheet,
+  ScrollView,
+  Pressable,
+  ActivityIndicator,
+} from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import { GatiMitraMerchant, H_PADDING, CARD_RADIUS } from "@/constants/theme";
+import { MerchantFonts } from "@/constants/typography";
+import { MerchantBottomSheetShell } from "@/components/order/MerchantBottomSheetShell";
 import { useAuth } from "@/context/AuthContext";
 import { useSelectedStore } from "@/context/SelectedStoreContext";
 import { fetchMerchantHelpSections } from "@/services/ticketApi";
+import { MerchantTicketOrderPickSheet } from "@/components/support/MerchantTicketOrderPickSheet";
+import type { ApiFoodOrder } from "@/services/ordersApi";
 
 type HelpSection = {
-  /** Stable list key / navigation id (ticket_titles.id). */
   id: string;
   ticketTitleId: number;
-  /** Help hub section code (`merchant_section_id`) for API + quick options. */
   sectionCode: string;
   icon: keyof typeof Ionicons.glyphMap;
   title: string;
   subtitle: string;
+  quickOptions: string[];
 };
 
-/** Icon comes from API (`merchant_help_icon_name`); only validate against Ionicons. */
+type PendingChatDraft = {
+  section: HelpSection;
+  selectedIssue: string;
+};
+
+/** Sections where ticket intake requires picking an order first (Partner Site parity). */
+function sectionNeedsOrderPick(section: HelpSection): boolean {
+  if (section.quickOptions.length > 0) return true;
+  return section.sectionCode === "order_timing" || section.sectionCode === "orders";
+}
+
 function resolveHelpHubIcon(fromDb: string | null): keyof typeof Ionicons.glyphMap {
   if (fromDb && fromDb in Ionicons.glyphMap) {
     return fromDb as keyof typeof Ionicons.glyphMap;
@@ -34,6 +53,9 @@ export default function ContactUsScreen() {
   const [sections, setSections] = useState<HelpSection[]>([]);
   const [loadingSections, setLoadingSections] = useState(false);
   const [loadError, setLoadError] = useState(false);
+  const [optionsSection, setOptionsSection] = useState<HelpSection | null>(null);
+  const [orderPickVisible, setOrderPickVisible] = useState(false);
+  const [pendingDraft, setPendingDraft] = useState<PendingChatDraft | null>(null);
 
   useEffect(() => {
     if (!token) {
@@ -55,6 +77,7 @@ export default function ContactUsScreen() {
             icon: resolveHelpHubIcon(r.helpHubIcon),
             title: r.title,
             subtitle: r.subtitle ?? "",
+            quickOptions: r.quickOptions ?? [],
           }))
         );
       })
@@ -78,10 +101,7 @@ export default function ContactUsScreen() {
     return [sections.slice(0, 2), sections.slice(2, 5), sections.slice(5)];
   }, [sections]);
 
-  const onSectionPress = async (section: HelpSection) => {
-    if (!token || !selectedStore?.id) {
-      return;
-    }
+  const openChat = (section: HelpSection, order?: ApiFoodOrder, selectedIssue?: string) => {
     router.push({
       pathname: "/support/chat/[ticketId]",
       params: {
@@ -91,112 +111,188 @@ export default function ContactUsScreen() {
           ? { ticketTitleId: String(section.ticketTitleId) }
           : {}),
         sectionTitle: section.title,
+        ...(order
+          ? {
+              orderCoreId: String(order.orders_core_id),
+              ...(order.orders_food_id
+                ? { ordersFoodId: String(order.orders_food_id) }
+                : {}),
+              formattedOrderId:
+                order.formatted_order_id?.trim() || String(order.orders_core_id),
+            }
+          : {}),
+        ...(selectedIssue ? { autoSendMessage: selectedIssue } : {}),
+        ...(section.quickOptions.length > 0
+          ? { quickOptionsJson: JSON.stringify(section.quickOptions) }
+          : {}),
       },
     });
   };
 
+  const onSectionPress = (section: HelpSection) => {
+    if (!token || !selectedStore?.id) return;
+    if (!sectionNeedsOrderPick(section)) {
+      openChat(section);
+      return;
+    }
+    if (section.quickOptions.length > 0) {
+      setOptionsSection(section);
+      return;
+    }
+    setPendingDraft({ section, selectedIssue: section.title });
+    setOrderPickVisible(true);
+  };
+
+  const onQuickOptionPress = (section: HelpSection, option: string) => {
+    setOptionsSection(null);
+    setPendingDraft({ section, selectedIssue: option });
+    setOrderPickVisible(true);
+  };
+
+  const onOrderPicked = (order: ApiFoodOrder) => {
+    if (!pendingDraft) return;
+    setOrderPickVisible(false);
+    openChat(pendingDraft.section, order, pendingDraft.selectedIssue);
+    setPendingDraft(null);
+  };
+
   return (
-    <ScrollView
-      style={styles.container}
-      contentContainerStyle={styles.content}
-      keyboardShouldPersistTaps="handled"
-    >
-      <View style={styles.headerCard}>
-        <Text style={styles.headerTitle}>How can we help you?</Text>
-        <Text style={styles.headerSubtitle}>
-          Tell us what you need help with. Our support team will review your
-          request and get back to you on WhatsApp or phone.
-        </Text>
-      </View>
-
-      {loadingSections ? (
-        <View style={styles.loadingRow}>
-          <ActivityIndicator color={GatiMitraMerchant.primary} />
-        </View>
-      ) : null}
-
-      {!token ? (
-        <View style={styles.emptyCard}>
-          <Text style={styles.emptyTitle}>Sign in to see help topics</Text>
-          <Text style={styles.emptySubtitle}>
-            Help options are loaded from your account after you log in.
-          </Text>
-        </View>
-      ) : loadError ? (
-        <View style={styles.emptyCard}>
-          <Ionicons
-            name="cloud-offline-outline"
-            size={28}
-            color={GatiMitraMerchant.textTertiary}
-            style={styles.emptyIcon}
-          />
-          <Text style={styles.emptyTitle}>Could not load help topics</Text>
-          <Text style={styles.emptySubtitle}>
-            Check your connection and try opening this screen again.
-          </Text>
-        </View>
-      ) : !loadingSections && sections.length === 0 ? (
-        <View style={styles.emptyCard}>
-          <Text style={styles.emptyTitle}>No help topics yet</Text>
-          <Text style={styles.emptySubtitle}>
-            Your administrator has not published any contact options. Please try
-            again later or reach out through another channel.
-          </Text>
-        </View>
-      ) : (
-        groups.map((group, idx) => (
-          <View key={idx} style={styles.sectionCard}>
-            {group.map((s, i) => (
-              <Pressable
-                key={s.id}
-                onPress={() => onSectionPress(s)}
-                style={({ pressed }) => [
-                  styles.row,
-                  i !== group.length - 1 && styles.rowDivider,
-                  pressed && styles.rowPressed,
-                ]}
-              >
-                <View style={styles.iconWrap}>
-                  <Ionicons
-                    name={s.icon}
-                    size={20}
-                    color={GatiMitraMerchant.primary}
-                  />
-                </View>
-                <View style={styles.textWrap}>
-                  <Text style={styles.rowTitle} numberOfLines={1}>
-                    {s.title}
-                  </Text>
-                  <Text style={styles.rowSubtitle} numberOfLines={1}>
-                    {s.subtitle}
-                  </Text>
-                </View>
-                <Ionicons
-                  name="chevron-forward"
-                  size={18}
-                  color={GatiMitraMerchant.textTertiary}
-                />
-              </Pressable>
-            ))}
+    <>
+      <ScrollView
+        style={styles.container}
+        contentContainerStyle={styles.content}
+        keyboardShouldPersistTaps="handled"
+      >
+        {loadingSections ? (
+          <View style={styles.loadingRow}>
+            <ActivityIndicator color={GatiMitraMerchant.primary} />
           </View>
-        ))
-      )}
+        ) : null}
 
-      <View style={styles.footerCard}>
-        <Ionicons
-          name="headset-outline"
-          size={20}
-          color={GatiMitraMerchant.primary}
-        />
-        <View style={styles.footerTextWrap}>
-          <Text style={styles.footerTitle}>Need urgent help?</Text>
-          <Text style={styles.footerSubtitle}>
-            For live order issues, use the Help option from the specific order
-            screen so we can assist you faster.
-          </Text>
+        {!token ? (
+          <View style={styles.emptyCard}>
+            <Text style={styles.emptyTitle}>Sign in to see help topics</Text>
+            <Text style={styles.emptySubtitle}>
+              Help options are loaded from your account after you log in.
+            </Text>
+          </View>
+        ) : loadError ? (
+          <View style={styles.emptyCard}>
+            <Ionicons
+              name="cloud-offline-outline"
+              size={28}
+              color={GatiMitraMerchant.textTertiary}
+              style={styles.emptyIcon}
+            />
+            <Text style={styles.emptyTitle}>Could not load help topics</Text>
+            <Text style={styles.emptySubtitle}>
+              Check your connection and try opening this screen again.
+            </Text>
+          </View>
+        ) : !loadingSections && sections.length === 0 ? (
+          <View style={styles.emptyCard}>
+            <Text style={styles.emptyTitle}>No help topics yet</Text>
+            <Text style={styles.emptySubtitle}>
+              Your administrator has not published any contact options. Please try
+              again later or reach out through another channel.
+            </Text>
+          </View>
+        ) : (
+          groups.map((group, idx) => (
+            <View key={idx} style={styles.sectionCard}>
+              {group.map((s, i) => (
+                <Pressable
+                  key={s.id}
+                  onPress={() => onSectionPress(s)}
+                  style={({ pressed }) => [
+                    styles.row,
+                    i !== group.length - 1 && styles.rowDivider,
+                    pressed && styles.rowPressed,
+                  ]}
+                >
+                  <View style={styles.iconWrap}>
+                    <Ionicons
+                      name={s.icon}
+                      size={20}
+                      color={GatiMitraMerchant.primary}
+                    />
+                  </View>
+                  <View style={styles.textWrap}>
+                    <Text style={styles.rowTitle} numberOfLines={1}>
+                      {s.title}
+                    </Text>
+                    <Text style={styles.rowSubtitle} numberOfLines={1}>
+                      {s.subtitle}
+                    </Text>
+                  </View>
+                  <Ionicons
+                    name="chevron-forward"
+                    size={18}
+                    color={GatiMitraMerchant.textTertiary}
+                  />
+                </Pressable>
+              ))}
+            </View>
+          ))
+        )}
+
+        <View style={styles.footerCard}>
+          <Ionicons
+            name="headset-outline"
+            size={20}
+            color={GatiMitraMerchant.primary}
+          />
+          <View style={styles.footerTextWrap}>
+            <Text style={styles.footerTitle}>Need urgent help?</Text>
+            <Text style={styles.footerSubtitle}>
+              For live order issues, use the Help option from the specific order
+              screen so we can assist you faster.
+            </Text>
+          </View>
         </View>
-      </View>
-    </ScrollView>
+      </ScrollView>
+
+      <MerchantBottomSheetShell
+        visible={optionsSection != null}
+        onClose={() => setOptionsSection(null)}
+        hideCloseFab
+        maxHeightPercent="70%"
+      >
+        <Text variant="brand" style={styles.optionsTitle}>
+          Select an option to proceed
+        </Text>
+        {optionsSection?.quickOptions.map((option, idx) => (
+          <Pressable
+            key={`${idx}-${option.slice(0, 24)}`}
+            onPress={() => onQuickOptionPress(optionsSection, option)}
+            style={({ pressed }) => [
+              styles.optionRow,
+              idx !== (optionsSection?.quickOptions.length ?? 0) - 1 &&
+                styles.optionRowDivider,
+              pressed && styles.rowPressed,
+            ]}
+          >
+            <Text style={styles.optionText}>{option}</Text>
+            <Ionicons
+              name="chevron-forward"
+              size={18}
+              color={GatiMitraMerchant.textTertiary}
+            />
+          </Pressable>
+        ))}
+      </MerchantBottomSheetShell>
+
+      <MerchantTicketOrderPickSheet
+        visible={orderPickVisible}
+        storeId={selectedStore?.id ?? null}
+        token={token}
+        onClose={() => {
+          setOrderPickVisible(false);
+          setPendingDraft(null);
+        }}
+        onSelectOrder={onOrderPicked}
+      />
+    </>
   );
 }
 
@@ -241,6 +337,7 @@ const styles = StyleSheet.create({
   headerTitle: {
     fontSize: 16,
     fontWeight: "700",
+    fontFamily: MerchantFonts.loraBold,
     color: GatiMitraMerchant.textPrimary,
     marginBottom: 4,
   },
@@ -315,5 +412,31 @@ const styles = StyleSheet.create({
     fontSize: 11,
     color: GatiMitraMerchant.textSecondary,
     lineHeight: 16,
+  },
+  optionsTitle: {
+    fontSize: 14,
+    fontWeight: "700",
+    fontFamily: MerchantFonts.loraBold,
+    color: GatiMitraMerchant.textPrimary,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    backgroundColor: GatiMitraMerchant.surfaceSubtle,
+  },
+  optionRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    gap: 8,
+  },
+  optionRowDivider: {
+    borderBottomWidth: 1,
+    borderBottomColor: GatiMitraMerchant.divider,
+  },
+  optionText: {
+    flex: 1,
+    fontSize: 14,
+    fontWeight: "500",
+    color: GatiMitraMerchant.textPrimary,
   },
 });

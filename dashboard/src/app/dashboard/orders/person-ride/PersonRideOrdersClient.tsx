@@ -8,7 +8,6 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { CheckCircle2, RefreshCw, Filter, User, Car } from "lucide-react";
 import { normalizePersonRideSearchType } from "@/lib/orders/person-ride-search";
 import { formatRiderOrderStatusDisplayLabel } from "@/lib/riders/rider-order-status-display";
-import { DashboardCenterSpinner } from "@/components/ui/DashboardPageLoader";
 import { loadClientSnapshot, saveClientSnapshot } from "@/lib/client-route-snapshot";
 
 const PAGE_BG = "#f3f5f7";
@@ -456,8 +455,8 @@ export default function PersonRideOrdersClient() {
           <tbody className="divide-y divide-gray-200" style={{ backgroundColor: CONTENT_BG }}>
             {showTableLoading ? (
               <tr>
-                <td colSpan={9}>
-                  <DashboardCenterSpinner className="min-h-[240px]" />
+                <td colSpan={9} className="px-2 py-8 text-center text-xs text-gray-500">
+                  Loading orders…
                 </td>
               </tr>
             ) : isError ? (

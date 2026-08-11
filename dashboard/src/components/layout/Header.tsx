@@ -796,6 +796,7 @@ function HeaderComponent() {
   }, [portalFromUrl, pendingPortal]);
 
   // Keep ?portal= in sync on Merchants sub-routes when the list omits it (e.g. old verification links).
+  // Depend on portalParam (stable string), not searchParams object identity — avoids replace storms.
   useEffect(() => {
     if (!isMerchantsArea || !canTogglePortal) return;
     if (portalFromUrl) {
@@ -804,12 +805,13 @@ function HeaderComponent() {
     }
     const target: MerchantsPortal = "admin";
     writeStoredMerchantsPortal(target);
+    if (portalParam === target) return;
     const next = new URLSearchParams(searchParams.toString());
-    if (next.get("portal") === target) return;
     next.set("portal", target);
     const qs = next.toString();
     router.replace(qs ? `${pathname}?${qs}` : `${pathname}?portal=${target}`);
-  }, [isMerchantsArea, canTogglePortal, portalFromUrl, pathname, router, searchParams]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- searchParams.toString() via portalParam
+  }, [isMerchantsArea, canTogglePortal, portalFromUrl, portalParam, pathname, router]);
 
   const setPortal = (value: MerchantsPortal) => {
     setPendingPortal(value);
@@ -850,16 +852,17 @@ function HeaderComponent() {
     if (canTogglePortal) return;
     if (portal === "merchant") return;
     writeStoredMerchantsPortal("merchant");
-    const next = new URLSearchParams(searchParams.toString());
-    if (next.get("portal") === "merchant") {
+    if (portalParam === "merchant") {
       setPendingPortal(null);
       return;
     }
+    const next = new URLSearchParams(searchParams.toString());
     next.set("portal", "merchant");
     const qs = next.toString();
     setPendingPortal("merchant");
     router.replace(qs ? `${pathname}?${qs}` : `${pathname}?portal=merchant`);
-  }, [isMerchantsArea, canTogglePortal, portal, pathname, router, searchParams]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- searchParams via portalParam
+  }, [isMerchantsArea, canTogglePortal, portal, portalParam, pathname, router]);
   const handleOpenRightPanel = () => {
     leftSidebarMobile?.setMobileMenuOpen(false);
     rightSidebar?.onToggle();

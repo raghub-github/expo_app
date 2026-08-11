@@ -2,6 +2,7 @@ import { useCallback } from "react";
 import { Stack, useRouter } from "expo-router";
 import { useFocusEffect } from "expo-router";
 import { useProfileNav } from "@/context/ProfileNavContext";
+import { TypographyVariantProvider } from "@/lib/typographyVariant";
 
 /**
  * Profile stack: ProfileHome (index) is always the root.
@@ -11,25 +12,28 @@ import { useProfileNav } from "@/context/ProfileNavContext";
  */
 export default function ProfileLayout() {
   const router = useRouter();
-  const { openProfileRootOnNextFocus, setOpenProfileRootOnNextFocus } = useProfileNav();
+  const { openProfileRootOnNextFocus, setOpenProfileRootOnNextFocus, setLastProfileSlug, clearReturnRoute } = useProfileNav();
 
   useFocusEffect(
     useCallback(() => {
       if (!openProfileRootOnNextFocus) return;
       setOpenProfileRootOnNextFocus(false);
-      // replace once — never push, so Profile root cannot stack.
+      setLastProfileSlug(null);
+      clearReturnRoute();
       if (router.canDismiss?.()) {
         router.dismissAll();
       }
       router.replace("/(tabs)/profile");
-    }, [openProfileRootOnNextFocus, setOpenProfileRootOnNextFocus, router])
+    }, [openProfileRootOnNextFocus, setOpenProfileRootOnNextFocus, setLastProfileSlug, clearReturnRoute, router])
   );
 
   return (
-    <Stack
-      screenOptions={{
-        headerShown: false,
-      }}
-    />
+    <TypographyVariantProvider variant="sans">
+      <Stack
+        screenOptions={{
+          headerShown: false,
+        }}
+      />
+    </TypographyVariantProvider>
   );
 }
