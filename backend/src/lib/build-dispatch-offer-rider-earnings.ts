@@ -17,6 +17,7 @@ import {
   type OrderRiderPayoutService,
 } from "./resolve-order-rider-payout.js";
 import { computePrePickupAllowance } from "./pre-pickup-pay.js";
+import { readDynamicRiderIncentiveFromSnapshot } from "./dynamic-pricing.js";
 import type { DispatchServiceType } from "./order-assignment-engine.js";
 
 export type DispatchOfferRiderEarnings = {
@@ -28,6 +29,8 @@ export type DispatchOfferRiderEarnings = {
   customerTipAmount?: number;
   /** First-mile allowance estimate for this pickup distance (Phase 4b). Company-funded. */
   prePickupEarning?: number;
+  /** Company-funded dynamic incentive (night/rain/peak/festival) from the customer bill. */
+  dynamicIncentiveEarning?: number;
   totalEarning: number;
   pickupDistanceKm: number;
   tripDistanceKm: number;
@@ -105,6 +108,7 @@ export async function buildDispatchOfferRiderEarnings(args: {
       distanceKm: ordersCore.distanceKm,
       tipAmount: ordersCore.tipAmount,
       checkoutMetadata: ordersCore.checkoutMetadata,
+      billingSnapshot: ordersCore.billingSnapshot,
     })
     .from(ordersCore)
     .where(eq(ordersCore.id, args.orderCoreId))
@@ -182,17 +186,32 @@ export async function buildDispatchOfferRiderEarnings(args: {
   ).catch(() => null);
   const prePickupEarning = prePickup && prePickup.amount > 0 ? prePickup.amount : 0;
 
+  // Company-funded dynamic incentive (night/rain/peak/festival) from the customer bill —
+  // paid to the rider on delivery, so the offer must show it too. Merged into appliedSurges
+  // so the rider app renders "Night ₹X" alongside any rider-side surge.
+  const dynIncentive = readDynamicRiderIncentiveFromSnapshot(core.billingSnapshot);
+  const dynamicIncentiveEarning = dynIncentive.amount > 0 ? dynIncentive.amount : 0;
+  const mergedSurges = [
+    ...payout.appliedSurges,
+    ...dynIncentive.lines.map((l) => ({ name: l.name, amount: l.amount })),
+  ];
+
   const tripDistanceKm = Math.max(0, bookingTripKm ?? 0);
-  const total = payout.finalAmount + tip + prePickupEarning;
+  const total =
+    Math.round((payout.finalAmount + tip + prePickupEarning + dynamicIncentiveEarning) * 100) / 100;
 
   return {
     estimatedEarning: total,
     baseEarning: payout.subtotalBeforeSurge,
     waitingEarning: payout.waitingAmount > 0 ? payout.waitingAmount : undefined,
-    surgeEarning: payout.surgeTotal > 0 ? payout.surgeTotal : undefined,
-    appliedSurges: payout.appliedSurges.length > 0 ? payout.appliedSurges : undefined,
+    surgeEarning:
+      payout.surgeTotal + dynamicIncentiveEarning > 0
+        ? Math.round((payout.surgeTotal + dynamicIncentiveEarning) * 100) / 100
+        : undefined,
+    appliedSurges: mergedSurges.length > 0 ? mergedSurges : undefined,
     customerTipAmount: tip > 0 ? tip : undefined,
     prePickupEarning: prePickupEarning > 0 ? prePickupEarning : undefined,
+    dynamicIncentiveEarning: dynamicIncentiveEarning > 0 ? dynamicIncentiveEarning : undefined,
     totalEarning: total,
     pickupDistanceKm,
     tripDistanceKm,

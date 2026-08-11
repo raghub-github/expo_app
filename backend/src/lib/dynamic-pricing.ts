@@ -292,6 +292,46 @@ export function applyDynamicSurchargesToBilling(
 }
 
 /* -------------------------------------------------------------------------- */
+/* Rider incentive from a persisted billing snapshot                          */
+/* -------------------------------------------------------------------------- */
+
+export type DynamicRiderIncentive = {
+  /** Company-funded dynamic total to pay the rider (night/rain/peak/…). */
+  amount: number;
+  /** Per-mode company-funded lines for the rider offer display. */
+  lines: { mode: string; name: string; amount: number }[];
+};
+
+/**
+ * Extract the COMPANY-funded dynamic surcharge that should be paid to / shown to the rider,
+ * from a persisted billing snapshot (computeBillForFood/Ride/Parcel wrote
+ * `company_dynamic_subsidy` + `dynamic_surcharges`). The customer-borne portion stays on the
+ * customer bill; only the company-funded portion is a rider incentive.
+ */
+export function readDynamicRiderIncentiveFromSnapshot(snapshot: unknown): DynamicRiderIncentive {
+  const empty: DynamicRiderIncentive = { amount: 0, lines: [] };
+  if (!snapshot || typeof snapshot !== "object") return empty;
+  const s = snapshot as Record<string, unknown>;
+  const amount = round2(Math.max(0, Number(s.company_dynamic_subsidy ?? 0)));
+  const lines: { mode: string; name: string; amount: number }[] = [];
+  const raw = s.dynamic_surcharges;
+  if (Array.isArray(raw)) {
+    for (const x of raw) {
+      if (!x || typeof x !== "object") continue;
+      const o = x as Record<string, unknown>;
+      const companyAmount = round2(Math.max(0, Number(o.companyAmount ?? 0)));
+      if (companyAmount <= 0) continue;
+      lines.push({
+        mode: String(o.mode ?? ""),
+        name: String(o.name ?? o.mode ?? "Surcharge"),
+        amount: companyAmount,
+      });
+    }
+  }
+  return { amount, lines };
+}
+
+/* -------------------------------------------------------------------------- */
 /* DB resolver                                                                */
 /* -------------------------------------------------------------------------- */
 

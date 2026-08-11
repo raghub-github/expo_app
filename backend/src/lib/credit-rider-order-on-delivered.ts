@@ -4,6 +4,7 @@ import { resolveOrderRiderPayoutAmount } from "./resolve-order-rider-payout.js";
 import type { OrderRiderPayoutService } from "./resolve-order-rider-payout.js";
 import { rideTripDistanceFromCheckoutMetadata, rideGeoFromCheckoutMetadata } from "./ride-address-display.js";
 import { readRideRiderPayoutSnapshot } from "./ride-rider-payout-snapshot.js";
+import { readDynamicRiderIncentiveFromSnapshot } from "./dynamic-pricing.js";
 
 export type RiderOrderWalletServiceType = "food" | "parcel" | "person_ride";
 
@@ -110,6 +111,10 @@ function tipRef(coreId: number): string {
   return `rider_earn:tip:${coreId}`;
 }
 
+function dynamicIncentiveRef(coreId: number): string {
+  return `rider_earn:dyn:${coreId}`;
+}
+
 async function ledgerRefExists(riderId: number, ref: string): Promise<boolean> {
   const sql = getSql();
   const rows = await sql`
@@ -144,7 +149,7 @@ async function readLedgerEarningTotal(riderId: number, coreId: number): Promise<
     SELECT COALESCE(SUM(amount::numeric), 0) AS total
     FROM wallet_ledger
     WHERE rider_id = ${riderId}
-      AND ref IN (${deliveryRef(coreId)}, ${tipRef(coreId)})
+      AND ref IN (${deliveryRef(coreId)}, ${tipRef(coreId)}, ${dynamicIncentiveRef(coreId)})
   `;
   return round2(Number((rows[0] as { total?: unknown })?.total ?? 0));
 }
@@ -406,7 +411,12 @@ export async function creditRiderOrderEarningOnDelivered(
   let deliveryCredited = false;
   let tipCredited = false;
 
-  if (deliveryFee <= 0 && tipAmount <= 0) {
+  // Company-funded dynamic incentive (night/rain/peak/festival) from the customer bill.
+  const dynamicIncentive = round2(
+    Math.max(0, readDynamicRiderIncentiveFromSnapshot(row.billing_snapshot).amount)
+  );
+
+  if (deliveryFee <= 0 && tipAmount <= 0 && dynamicIncentive <= 0) {
     return { credited: false, deliveryCredited: false, tipCredited: false, error: "zero_earning" };
   }
 
@@ -445,14 +455,33 @@ export async function creditRiderOrderEarningOnDelivered(
       tipCredited = true;
     }
 
-    const totalRiderEarning = round2(deliveryFee + tipAmount);
+    // Pay the company-funded dynamic incentive (computed above) as a distinct earning so it
+    // shows separately in the rider wallet and matches the dispatch offer. Idempotent;
+    // company-funded so the customer's price is unaffected.
+    if (dynamicIncentive > 0) {
+      const ref = dynamicIncentiveRef(coreId);
+      if (!(await ledgerRefExists(riderId, ref))) {
+        const balanceAfter = round2((await readWalletBalance(riderId)) + dynamicIncentive);
+        await insertEarning({
+          riderId,
+          amount: dynamicIncentive,
+          balanceAfter,
+          serviceType,
+          ref,
+          description: `Dynamic incentive (night/rain/peak) — Order #${displayId}`,
+          metadata: { ...baseMeta, component: "dynamic_incentive" },
+        });
+      }
+    }
+
+    const totalRiderEarning = round2(deliveryFee + tipAmount + dynamicIncentive);
     const ledgerTotal = await readLedgerEarningTotal(riderId, coreId);
     const earningToSync = ledgerTotal > 0 ? ledgerTotal : totalRiderEarning;
     if (earningToSync > 0) {
       await syncRiderEarningOnOrderCore(coreId, earningToSync);
     }
 
-    if (deliveryCredited || tipCredited) {
+    if (deliveryCredited || tipCredited || dynamicIncentive > 0) {
       const {
         touchRiderIncomeTimestamp,
         autoSettleSubscriptionDuesFromEarnings,
