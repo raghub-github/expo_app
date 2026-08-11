@@ -15,6 +15,9 @@ export interface RiderAutoCancelConfig {
   serviceType: AutoCancelServiceType;
   phase: AutoCancelPhase;
   isEnabled: boolean;
+  /** Opt-in: when false the watchdog only warns; when true a sustained breach past grace
+   * auto-unassigns the rider, penalises, and re-dispatches. Default false. */
+  autoCancelEnabled: boolean;
   penaltyAmount: number;
   oppositeDirectionKm: number;
   noMovementMinutes: number;
@@ -39,6 +42,7 @@ export function disabledAutoCancelConfig(
     serviceType,
     phase,
     isEnabled: false,
+    autoCancelEnabled: false,
     penaltyAmount: 0,
     oppositeDirectionKm: 7,
     noMovementMinutes: 15,
@@ -72,6 +76,7 @@ type Row = {
   service_type: string;
   phase: string;
   is_enabled: boolean;
+  auto_cancel_enabled: boolean | null;
   penalty_amount: string | null;
   opposite_direction_km: string | null;
   no_movement_minutes: number | null;
@@ -109,6 +114,7 @@ export async function getRiderAutoCancelConfig(
         serviceType,
         phase,
         isEnabled: r.is_enabled,
+        autoCancelEnabled: r.auto_cancel_enabled === true,
         penaltyAmount: Number(r.penalty_amount ?? 0),
         oppositeDirectionKm: Number(r.opposite_direction_km ?? 7),
         noMovementMinutes: Number(r.no_movement_minutes ?? 15),
