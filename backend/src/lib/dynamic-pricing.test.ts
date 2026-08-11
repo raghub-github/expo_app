@@ -7,6 +7,7 @@ import {
   isDynamicRuleActiveNow,
   resolveOneDynamicSurcharge,
   splitDynamicByFunding,
+  readDynamicRiderIncentiveFromSnapshot,
   type DynamicPricingRule,
 } from "./dynamic-pricing.js";
 import type { BillingResult } from "../modules/billing/types.js";
@@ -136,5 +137,30 @@ describe("dynamic-pricing apply to billing", () => {
     assert.equal(billing.final_amount, 223.6);
     assert.equal(companySubsidy, 20);
     assert.equal(billing.taxes_by_group.surge, 3.6);
+  });
+});
+
+describe("readDynamicRiderIncentiveFromSnapshot (rider offer/credit bridge)", () => {
+  it("extracts company-funded subsidy + per-mode lines", () => {
+    const snap = {
+      company_dynamic_subsidy: 30,
+      dynamic_surcharges: [
+        { mode: "NIGHT", name: "Night", companyAmount: 20, customerAmount: 0 },
+        { mode: "RAIN", name: "Rain", companyAmount: 10, customerAmount: 5 },
+      ],
+    };
+    const r = readDynamicRiderIncentiveFromSnapshot(snap);
+    assert.equal(r.amount, 30);
+    assert.equal(r.lines.length, 2);
+    assert.deepEqual(r.lines[0], { mode: "NIGHT", name: "Night", amount: 20 });
+  });
+
+  it("skips customer-only surcharges (companyAmount 0) and tolerates junk", () => {
+    const snap = { company_dynamic_subsidy: 0, dynamic_surcharges: [{ mode: "PEAK", name: "Peak", companyAmount: 0, customerAmount: 15 }] };
+    const r = readDynamicRiderIncentiveFromSnapshot(snap);
+    assert.equal(r.amount, 0);
+    assert.equal(r.lines.length, 0);
+    assert.deepEqual(readDynamicRiderIncentiveFromSnapshot(null), { amount: 0, lines: [] });
+    assert.deepEqual(readDynamicRiderIncentiveFromSnapshot("x"), { amount: 0, lines: [] });
   });
 });
