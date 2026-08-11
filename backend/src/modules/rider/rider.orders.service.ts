@@ -2380,7 +2380,9 @@ async function acceptFoodOrderForRider(
         foodAcceptCtx.lat,
         foodAcceptCtx.lng,
         parseCoord(preCheck.pickupLat),
-        parseCoord(preCheck.pickupLon)
+        parseCoord(preCheck.pickupLon),
+        // Geo-aware: resolve the store pickup location for the per-location pre-pickup rate.
+        { latitude: parseCoord(preCheck.pickupLat), longitude: parseCoord(preCheck.pickupLon) }
       ).catch(() => null)
     : null;
 
@@ -2664,7 +2666,9 @@ async function acceptParcelOrderForRider(
         parcelAcceptCtx.lat,
         parcelAcceptCtx.lng,
         parseCoord(preCheck.pickupLat),
-        parseCoord(preCheck.pickupLon)
+        parseCoord(preCheck.pickupLon),
+        // Geo-aware: resolve the parcel pickup location for the per-location pre-pickup rate.
+        { latitude: parseCoord(preCheck.pickupLat), longitude: parseCoord(preCheck.pickupLon) }
       ).catch(() => null)
     : null;
 
@@ -2848,7 +2852,12 @@ async function acceptRideOrderForRider(
         rideAcceptCtx.lng,
         parseCoord(preCheck.pickupLat),
         parseCoord(preCheck.pickupLon),
-        { pincode: rideAcceptGeo.pickupPincode, state: rideAcceptGeo.pickupState }
+        {
+          pincode: rideAcceptGeo.pickupPincode,
+          state: rideAcceptGeo.pickupState,
+          latitude: parseCoord(preCheck.pickupLat),
+          longitude: parseCoord(preCheck.pickupLon),
+        }
       ).catch(() => null)
     : null;
 
