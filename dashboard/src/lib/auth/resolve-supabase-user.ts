@@ -198,6 +198,17 @@ export async function resolveSupabaseUser(options?: {
     return ok(cookieSession.user, supabase, true);
   }
 
+  // Soft-trust the signed cookie identity even when the access token is expired.
+  // The BROWSER's supabase client owns token refresh. Refreshing server-side across a
+  // page's ~10 parallel API calls rotates the refresh token concurrently, races, can
+  // overwrite the cookie with a stale token, and wedges auth into sustained 504s.
+  // Serve the identity and let the client refresh out-of-band — same trust model as the
+  // usable-token fast path above. getUser() below now runs only for requests with NO
+  // cookie identity (login / truly unauthenticated), which return fast.
+  if (!forceRemote && cookieSession?.user?.email) {
+    return ok(cookieSession.user, supabase, true);
+  }
+
   // Need remote validation / refresh — single-flight across concurrent route handlers.
   if (refreshInFlight) {
     try {
