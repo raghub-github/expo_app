@@ -925,7 +925,8 @@ export function OrdersListScreen({ mode }: { mode: OrdersListMode }) {
                 </View>
               ) : (
                 (() => {
-                  const emptyStage = !isHistory ? liveFilterToEmptyStage(filterKey) : null;
+                  const emptyStage =
+                    !isHistory && filterKey !== "all" ? liveFilterToEmptyStage(filterKey) : null;
                   if (emptyStage && !search.trim()) {
                     const stageMessage =
                       filterKey === "completed"
