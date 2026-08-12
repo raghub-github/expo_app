@@ -5,6 +5,11 @@ import type { OrderRiderPayoutService } from "./resolve-order-rider-payout.js";
 import { rideTripDistanceFromCheckoutMetadata, rideGeoFromCheckoutMetadata } from "./ride-address-display.js";
 import { readRideRiderPayoutSnapshot } from "./ride-rider-payout-snapshot.js";
 import { readDynamicRiderIncentiveFromSnapshot } from "./dynamic-pricing.js";
+import {
+  composeRiderPayout,
+  defaultPrePickupFunding,
+  normalizePrePickupFunding,
+} from "./rider-payout-composition.js";
 
 export type RiderOrderWalletServiceType = "food" | "parcel" | "person_ride";
 
@@ -262,6 +267,7 @@ export async function creditRiderOrderEarningOnDelivered(
       c.order_type,
       c.rider_earning,
       c.rider_pre_pickup_allowance,
+      c.rider_pre_pickup_funding,
       c.fare_amount,
       c.tip_amount,
       c.billing_snapshot,
@@ -286,6 +292,7 @@ export async function creditRiderOrderEarningOnDelivered(
     order_type?: string | null;
     rider_earning?: unknown;
     rider_pre_pickup_allowance?: unknown;
+    rider_pre_pickup_funding?: unknown;
     fare_amount?: unknown;
     tip_amount?: unknown;
     billing_snapshot?: unknown;
@@ -380,18 +387,43 @@ export async function creditRiderOrderEarningOnDelivered(
   }
 
   deliveryFee = round2(Math.max(0, Number(deliveryFee ?? 0)));
-  // Phase 4b: pay the first-mile allowance snapshotted at accept (0 unless a pre-pickup
-  // rate was configured). Folded into the rider delivery credit so pickup + drop pay is
-  // one payout; the customer's price is never affected.
-  const prePickupAllowance = round2(Math.max(0, Number(row.rider_pre_pickup_allowance ?? 0)));
-  if (prePickupAllowance > 0) {
-    deliveryFee = round2(deliveryFee + prePickupAllowance);
-  }
   tipAmount = round2(Math.max(0, Number(tipAmount ?? 0)));
   displayId = displayId || orderIdText || String(coreId);
 
   const serviceType = input.orderType;
   const payoutSnap = readRideRiderPayoutSnapshot(row.billing_snapshot);
+
+  // Geo Delivery Pricing v3.1 — compose the first-mile (pre-pickup) allowance WITH the
+  // rider % pool instead of the legacy unconditional "add on top":
+  //   • funding "company"  → first-mile is a company top-up on top (default FOOD),
+  //   • funding "customer" → first-mile is carved out of the pool, capped at the pool
+  //                          (default PARCEL + PERSON RIDE),
+  //   • funding "shared"   → carved from the pool, company funds the overflow.
+  // The funding source is frozen at accept; historical/in-flight orders (null) fall back
+  // to the service default so no in-flight payout is retroactively changed.
+  const prePickupRaw = round2(Math.max(0, Number(row.rider_pre_pickup_allowance ?? 0)));
+  const settlementService: OrderRiderPayoutService =
+    serviceType === "person_ride" ? "ride" : serviceType === "parcel" ? "parcel" : "food";
+  const prePickupFunding = normalizePrePickupFunding(
+    row.rider_pre_pickup_funding,
+    defaultPrePickupFunding(settlementService)
+  );
+  // Decompose the pool from the accept snapshot when present; otherwise treat the
+  // already-resolved deliveryFee (= finalAmount) as the base pool with no separately
+  // tracked surge/waiting — the composition total is identical either way.
+  const snapSurge = round2(Math.max(0, Number(payoutSnap?.surgeEarning ?? 0)));
+  const snapWaiting = round2(Math.max(0, Number(payoutSnap?.waitingEarning ?? 0)));
+  const basePool = round2(Math.max(0, deliveryFee - snapSurge - snapWaiting));
+  const composition = composeRiderPayout({
+    basePool,
+    prePickupRaw,
+    surge: snapSurge,
+    waiting: snapWaiting,
+    funding: prePickupFunding,
+  });
+  // Single wallet delivery credit (tip + dynamic incentive credited separately below).
+  deliveryFee = composition.riderDeliveryCredit;
+
   const baseMeta = {
     ordersCoreId: coreId,
     orderIdText,
@@ -404,6 +436,18 @@ export async function creditRiderOrderEarningOnDelivered(
           baseEarning: payoutSnap.baseEarning,
           waitingEarning: payoutSnap.waitingEarning,
           surgeEarning: payoutSnap.surgeEarning,
+        }
+      : {}),
+    // v3.1 first-mile composition ledger (audit): pre/post split + two funding pools.
+    ...(prePickupRaw > 0
+      ? {
+          prePickupRaw,
+          prePickupFunding,
+          prePickupFromPool: composition.prePickupFromPool,
+          prePickupCompanyFunded: composition.prePickupCompanyFunded,
+          postPickup: composition.postPickup,
+          deliveryFeeFunded: composition.deliveryFeeFundedTotal,
+          companyFunded: composition.companyFundedTotal,
         }
       : {}),
   };

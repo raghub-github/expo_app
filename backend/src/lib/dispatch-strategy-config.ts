@@ -16,6 +16,7 @@ import {
   DispatchConfigurationError,
   type DispatchServiceType,
 } from "./order-assignment-engine.js";
+import { defaultPrePickupFunding } from "./rider-payout-composition.js";
 
 export type DispatchStrategy = "nearest" | "score" | "balanced" | "hybrid";
 export type PrePickupFunding = "company" | "customer" | "shared";
@@ -78,11 +79,14 @@ function normalizeStrategy(raw: unknown): DispatchStrategy {
     : "nearest";
 }
 
-function normalizeFunding(raw: unknown): PrePickupFunding {
+function normalizeFunding(
+  raw: unknown,
+  fallback: PrePickupFunding = "company"
+): PrePickupFunding {
   const s = String(raw ?? "").trim().toLowerCase();
   return VALID_FUNDING.has(s as PrePickupFunding)
     ? (s as PrePickupFunding)
-    : "company";
+    : fallback;
 }
 
 function normalizeScoreWeights(raw: unknown): DispatchScoreWeights {
@@ -199,7 +203,13 @@ export async function fetchDispatchStrategyConfig(
 
   const row = rows[0];
   if (!row) {
-    return { serviceType, ...DEFAULT_STRATEGY_CONFIG };
+    // Service-aware funding default: FOOD company-funded (on top), PARCEL + PERSON RIDE
+    // customer-funded (within the % pool). Rate stays 0 so this is a no-op until set.
+    return {
+      serviceType,
+      ...DEFAULT_STRATEGY_CONFIG,
+      prePickupFunding: defaultPrePickupFunding(serviceType),
+    };
   }
 
   const retryInterval = Number(row.retry_interval_seconds);
@@ -220,7 +230,10 @@ export async function fetchDispatchStrategyConfig(
         : DEFAULT_STRATEGY_CONFIG.maxRetryDurationSeconds,
     prePickupRatePerKm:
       Number.isFinite(prePickupRate) && prePickupRate >= 0 ? prePickupRate : 0,
-    prePickupFunding: normalizeFunding(row.pre_pickup_funding),
+    prePickupFunding: normalizeFunding(
+      row.pre_pickup_funding,
+      defaultPrePickupFunding(serviceType)
+    ),
     autoCancelOnExhaustion: row.auto_cancel_on_exhaustion === true,
     enabled: row.enabled !== false,
   };

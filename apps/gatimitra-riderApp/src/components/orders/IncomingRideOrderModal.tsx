@@ -61,6 +61,10 @@ export type IncomingDispatchOrder = {
   waitingEarning?: number;
   surgeEarning?: number;
   appliedSurges?: { name: string; amount: number }[];
+  /** First-mile (pre-pickup) allowance the rider actually receives (v3.1). */
+  prePickupEarning?: number;
+  /** Portion of the first-mile funded by the company on top of the pool (v3.1). */
+  prePickupCompanyFunded?: number;
   totalEarning?: number;
   higherDispatchPriority?: boolean;
   createdAt: string;
@@ -431,6 +435,12 @@ export function IncomingOrderModal({
     order.customerTipAmount != null && order.customerTipAmount > 0
       ? Math.round(order.customerTipAmount)
       : 0;
+  // v3.1: only the COMPANY-funded first-mile sits on top of the base pool; a
+  // customer-funded first-mile is already carved inside baseEarning (the % pool).
+  const firstMileOnTop =
+    order.prePickupCompanyFunded != null && order.prePickupCompanyFunded > 0
+      ? Math.round(order.prePickupCompanyFunded)
+      : 0;
   const totalEarning = Math.round(resolveRiderDisplayedEarning(order));
   const footerBottomInset = Math.max(insets.bottom, Platform.OS === "android" ? 24 : 12) + 8;
   const pickupKm = order.pickupDistanceKm;
@@ -559,6 +569,19 @@ export function IncomingOrderModal({
                       </Text>
                     </View>
                   ))}
+                  {firstMileOnTop > 0 ? (
+                    <View style={styles.earningsLine}>
+                      <View style={styles.tipLineLabel}>
+                        <Ionicons name="navigate-outline" size={13} color="#4F46E5" />
+                        <Text style={styles.earningsSubLabel}>
+                          {t("orders.incoming.firstMile", "First-mile allowance")}
+                        </Text>
+                      </View>
+                      <Text style={styles.earningsSubValue}>
+                        + ₹{firstMileOnTop.toLocaleString("en-IN")}
+                      </Text>
+                    </View>
+                  ) : null}
                   {tipAmount > 0 ? (
                     <View style={styles.earningsLine}>
                       <View style={styles.tipLineLabel}>

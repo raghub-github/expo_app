@@ -135,3 +135,75 @@ export function calcServicePayoutRuleSplit(input) {
         dropAmount,
     };
 }
+const VALID_PREPICKUP_FUNDING = new Set([
+    "company",
+    "customer",
+    "shared",
+]);
+export function normalizePrePickupFunding(raw, fallback = "company") {
+    const s = String(raw ?? "").trim().toLowerCase();
+    return VALID_PREPICKUP_FUNDING.has(s)
+        ? s
+        : fallback;
+}
+/**
+ * Service-aware default funding when no explicit config exists. FOOD → company-funded
+ * first-mile (on top); PARCEL + PERSON RIDE → customer-funded (within the pool).
+ */
+export function defaultPrePickupFunding(service) {
+    const s = String(service ?? "").trim().toLowerCase();
+    if (s === "parcel" || s === "ride" || s === "person_ride")
+        return "customer";
+    return "company";
+}
+/** Compose the rider payout — the ONE place that decides pool-vs-company first-mile. */
+export function composeRiderPayout(input) {
+    const funding = normalizePrePickupFunding(input.funding);
+    const nonNeg = (n) => {
+        const v = Number(n);
+        return Number.isFinite(v) && v > 0 ? v : 0;
+    };
+    const basePool = round2(nonNeg(input.basePool));
+    const prePickupRaw = round2(nonNeg(input.prePickupRaw));
+    const surge = round2(nonNeg(input.surge));
+    const waiting = round2(nonNeg(input.waiting));
+    const tip = round2(nonNeg(input.tip));
+    let prePickupFromPool = 0;
+    let prePickupCompanyFunded = 0;
+    if (funding === "company") {
+        prePickupFromPool = 0;
+        prePickupCompanyFunded = prePickupRaw;
+    }
+    else if (funding === "customer") {
+        prePickupFromPool = Math.min(prePickupRaw, basePool);
+        prePickupCompanyFunded = 0;
+    }
+    else {
+        prePickupFromPool = Math.min(prePickupRaw, basePool);
+        prePickupCompanyFunded = Math.max(0, round2(prePickupRaw - prePickupFromPool));
+    }
+    prePickupFromPool = round2(prePickupFromPool);
+    prePickupCompanyFunded = round2(prePickupCompanyFunded);
+    const postPickup = round2(Math.max(0, basePool - prePickupFromPool));
+    const prePickupPaid = round2(prePickupFromPool + prePickupCompanyFunded);
+    const deliveryFeeFundedTotal = round2(postPickup + prePickupFromPool + waiting);
+    const companyFundedTotal = round2(surge + prePickupCompanyFunded);
+    const riderDeliveryCredit = round2(deliveryFeeFundedTotal + companyFundedTotal);
+    const riderTotal = round2(riderDeliveryCredit + tip);
+    return {
+        funding,
+        basePool,
+        prePickupFromPool,
+        postPickup,
+        prePickupCompanyFunded,
+        prePickupPaid,
+        surge,
+        waiting,
+        tip,
+        deliveryFeeFundedTotal,
+        companyFundedTotal,
+        riderDeliveryCredit,
+        riderTotal,
+        prePickupCappedAtPool: funding === "customer" && prePickupRaw > basePool,
+    };
+}

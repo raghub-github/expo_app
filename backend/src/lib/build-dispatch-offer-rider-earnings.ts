@@ -18,6 +18,12 @@ import {
 } from "./resolve-order-rider-payout.js";
 import { computePrePickupAllowance } from "./pre-pickup-pay.js";
 import { readDynamicRiderIncentiveFromSnapshot } from "./dynamic-pricing.js";
+import {
+  composeRiderPayout,
+  defaultPrePickupFunding,
+  normalizePrePickupFunding,
+  type PrePickupFunding,
+} from "./rider-payout-composition.js";
 import type { DispatchServiceType } from "./order-assignment-engine.js";
 
 export type DispatchOfferRiderEarnings = {
@@ -27,8 +33,19 @@ export type DispatchOfferRiderEarnings = {
   surgeEarning?: number;
   appliedSurges?: { name: string; amount: number }[];
   customerTipAmount?: number;
-  /** First-mile allowance estimate for this pickup distance (Phase 4b). Company-funded. */
+  /**
+   * Total first-mile allowance the rider receives for this pickup distance (v3.1).
+   * Composed WITH the % pool — see prePickupFromPool / prePickupCompanyFunded.
+   */
   prePickupEarning?: number;
+  /** First-mile portion carved out of the % pool (customer/delivery-fee funded). */
+  prePickupFromPool?: number;
+  /** First-mile portion funded on top by the company. */
+  prePickupCompanyFunded?: number;
+  /** Post-pickup (drop) share of the pool after first-mile allocation. */
+  postPickupEarning?: number;
+  /** How the first-mile is funded for this service. */
+  prePickupFunding?: PrePickupFunding;
   /** Company-funded dynamic incentive (night/rain/peak/festival) from the customer bill. */
   dynamicIncentiveEarning?: number;
   totalEarning: number;
@@ -192,11 +209,26 @@ export async function buildDispatchOfferRiderEarnings(args: {
       longitude: pickupLng,
     }
   ).catch(() => null);
-  const prePickupEarning = prePickup && prePickup.amount > 0 ? prePickup.amount : 0;
+  const prePickupRaw = prePickup && prePickup.amount > 0 ? prePickup.amount : 0;
+  const prePickupFunding = normalizePrePickupFunding(
+    prePickup?.funding,
+    defaultPrePickupFunding(service)
+  );
+
+  // v3.1 — compose the first-mile WITH the % pool instead of adding it on top. The pure
+  // % pool is the subtotal minus the waiting add-on; surge + waiting stay separate.
+  const composition = composeRiderPayout({
+    basePool: Math.max(0, payout.subtotalBeforeSurge - payout.waitingAmount),
+    prePickupRaw,
+    surge: payout.surgeTotal,
+    waiting: payout.waitingAmount,
+    funding: prePickupFunding,
+  });
 
   // Company-funded dynamic incentive (night/rain/peak/festival) from the customer bill —
   // paid to the rider on delivery, so the offer must show it too. Merged into appliedSurges
-  // so the rider app renders "Night ₹X" alongside any rider-side surge.
+  // so the rider app renders "Night ₹X" alongside any rider-side surge. It stays ON TOP as a
+  // company-funded incentive (Ledger B), exactly like company-funded surge.
   const dynIncentive = readDynamicRiderIncentiveFromSnapshot(core.billingSnapshot);
   const dynamicIncentiveEarning = dynIncentive.amount > 0 ? dynIncentive.amount : 0;
   const mergedSurges = [
@@ -206,7 +238,7 @@ export async function buildDispatchOfferRiderEarnings(args: {
 
   const tripDistanceKm = Math.max(0, bookingTripKm ?? 0);
   const total =
-    Math.round((payout.finalAmount + tip + prePickupEarning + dynamicIncentiveEarning) * 100) / 100;
+    Math.round((composition.riderDeliveryCredit + tip + dynamicIncentiveEarning) * 100) / 100;
 
   return {
     estimatedEarning: total,
@@ -218,7 +250,13 @@ export async function buildDispatchOfferRiderEarnings(args: {
         : undefined,
     appliedSurges: mergedSurges.length > 0 ? mergedSurges : undefined,
     customerTipAmount: tip > 0 ? tip : undefined,
-    prePickupEarning: prePickupEarning > 0 ? prePickupEarning : undefined,
+    prePickupEarning: composition.prePickupPaid > 0 ? composition.prePickupPaid : undefined,
+    prePickupFromPool:
+      composition.prePickupFromPool > 0 ? composition.prePickupFromPool : undefined,
+    prePickupCompanyFunded:
+      composition.prePickupCompanyFunded > 0 ? composition.prePickupCompanyFunded : undefined,
+    postPickupEarning: composition.postPickup > 0 ? composition.postPickup : undefined,
+    prePickupFunding,
     dynamicIncentiveEarning: dynamicIncentiveEarning > 0 ? dynamicIncentiveEarning : undefined,
     totalEarning: total,
     pickupDistanceKm,

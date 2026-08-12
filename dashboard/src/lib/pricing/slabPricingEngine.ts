@@ -8,6 +8,9 @@ import {
   calcWaitingCharge,
   calcCumulativeDistanceCharge,
   calcServicePayoutRuleSplit,
+  composeRiderPayout,
+  normalizePrePickupFunding,
+  defaultPrePickupFunding,
   getActiveSortedSlabs,
   getFirstZeroKmSlab,
   normalizeKm,
@@ -19,6 +22,8 @@ import {
   type CumulativeSegment,
   type ServicePayoutRule,
   type ServicePayoutRuleSplit,
+  type PrePickupFunding,
+  type RiderPayoutComposition,
 } from "@gatimitra/slab-pricing";
 import {
   resolvePreviewSurges,
@@ -49,6 +54,9 @@ export {
   calcWaitingCharge,
   calcCumulativeDistanceCharge,
   calcGmitraMaxAdjustment,
+  composeRiderPayout,
+  normalizePrePickupFunding,
+  defaultPrePickupFunding,
   getActiveSortedSlabs,
   getFirstZeroKmSlab,
   normalizeKm,
@@ -56,6 +64,8 @@ export {
   normalizeNullableMaxKm,
   toSafeNumber,
 };
+
+export type { PrePickupFunding, RiderPayoutComposition };
 
 export function calcSurgeAmount(input: {
   service: "food" | "parcel" | "ride";
