@@ -2410,6 +2410,7 @@ async function acceptFoodOrderForRider(
           ? {
               riderPrePickupAllowance: String(foodPrePickup.amount),
               riderPickupDistanceMeters: foodPrePickup.pickupDistanceMeters,
+              riderPrePickupFunding: foodPrePickup.funding,
             }
           : {}),
         updatedAt: now,
@@ -2693,6 +2694,7 @@ async function acceptParcelOrderForRider(
           ? {
               riderPrePickupAllowance: String(parcelPrePickup.amount),
               riderPickupDistanceMeters: parcelPrePickup.pickupDistanceMeters,
+              riderPrePickupFunding: parcelPrePickup.funding,
             }
           : {}),
         updatedAt: now,
@@ -2912,6 +2914,7 @@ async function acceptRideOrderForRider(
           ? {
               riderPrePickupAllowance: String(ridePrePickup.amount),
               riderPickupDistanceMeters: ridePrePickup.pickupDistanceMeters,
+              riderPrePickupFunding: ridePrePickup.funding,
             }
           : {}),
         updatedAt: now,

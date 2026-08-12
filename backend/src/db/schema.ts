@@ -1675,6 +1675,8 @@ export const ordersCore = pgTable(
       .notNull()
       .default("0"),
     riderPickupDistanceMeters: integer("rider_pickup_distance_meters"),
+    /** First-mile funding frozen at accept: company | customer | shared. NULL = legacy on-top. */
+    riderPrePickupFunding: text("rider_pre_pickup_funding"),
     status: orderStatusTypeEnum("status").notNull().default("assigned"),
     currentStatus: text("current_status"),
     itemTotal: numeric("item_total", { precision: 12, scale: 2 }),

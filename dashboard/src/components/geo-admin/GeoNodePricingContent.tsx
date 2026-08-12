@@ -3,7 +3,7 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Layers, Loader2, Plus } from "lucide-react";
-import { RiderPayoutRulesPanel } from "./RiderPayoutRulesPanel";
+import { RiderPayoutRulesPanel, ProductionVerificationCard } from "./RiderPayoutRulesPanel";
 import { PrePickupCompensationPanel } from "./PrePickupCompensationPanel";
 import { DynamicPricingPanel } from "./DynamicPricingPanel";
 import { VEHICLE_OPTIONS, PARCEL_VEHICLE_OPTIONS, type VehicleType } from "./rideVehicleTypes";
@@ -572,6 +572,9 @@ export function GeoNodePricingContent(props: { level: GeoNodeLevel; refId: strin
                 refId={refId}
                 service={riderService as "food" | "parcel" | "ride"}
               />
+              {/* Production-engine status sits BELOW both the payout rules and the
+                  first-mile panel so the config editors come first, verification last. */}
+              <ProductionVerificationCard />
             </>
           ) : serviceType === "person_ride" ? (
             <RideCustomerPricingPanel level={level} refId={refId} vehicleType={rideVehicleType} />

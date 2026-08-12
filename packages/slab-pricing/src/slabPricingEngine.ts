@@ -240,3 +240,137 @@ export function calcServicePayoutRuleSplit(input: {
     dropAmount,
   };
 }
+
+// ─── Geo Delivery Pricing v3.1: first-mile (pre-pickup) composed WITH the pool ──
+//
+// SINGLE SOURCE OF TRUTH for how the first-mile allowance combines with the rider %
+// pool. Shared verbatim by the backend (offer estimate + wallet credit) and the
+// dashboard simulator so the offered, paid, and simulated numbers are identical.
+//
+// BEFORE (v3.0): first-mile was ALWAYS added on top → rider total exceeded 100% of the
+// delivery fee and was silently company-funded for every service.
+// NOW (v3.1): rider % of the GROSS eligible delivery fee is the "rider base pool";
+// first-mile is allocated FIRST from that pool (post-pickup = remainder). Two money
+// pools are tracked: (A) delivery-fee funded (≤100%), (B) company funded (may exceed
+// 100%: surge/incentives + any company-funded first-mile top-up).
+
+export type PrePickupFunding = "company" | "customer" | "shared";
+
+export type RiderPayoutCompositionInput = {
+  /** Rider % of the GROSS eligible delivery fee (subtotal before surge/waiting). */
+  basePool: number;
+  /** Raw first-mile allowance (rate ₹/km × pickup km). May be 0. */
+  prePickupRaw: number;
+  /** Surge/incentive on top of the pool (company-funded). */
+  surge?: number;
+  /** Rider waiting earning (customer/delivery-fee funded share). */
+  waiting?: number;
+  /** Customer tip — passthrough, never subject to the % or the pool. */
+  tip?: number;
+  /** How the first-mile is funded for this service. */
+  funding: PrePickupFunding;
+};
+
+export type RiderPayoutComposition = {
+  funding: PrePickupFunding;
+  basePool: number;
+  prePickupFromPool: number;
+  postPickup: number;
+  prePickupCompanyFunded: number;
+  prePickupPaid: number;
+  surge: number;
+  waiting: number;
+  tip: number;
+  /** Ledger A — customer / delivery-fee funded (≤100% of the delivery fee). */
+  deliveryFeeFundedTotal: number;
+  /** Ledger B — company funded (surge/incentives + company first-mile). May exceed 100%. */
+  companyFundedTotal: number;
+  /** Rider wallet delivery credit EXCLUDING tip (single number credited on delivery). */
+  riderDeliveryCredit: number;
+  /** Grand total the rider receives = delivery credit + tip. */
+  riderTotal: number;
+  /** True when a customer-funded first-mile could not fully fit in the pool. */
+  prePickupCappedAtPool: boolean;
+};
+
+const VALID_PREPICKUP_FUNDING = new Set<PrePickupFunding>([
+  "company",
+  "customer",
+  "shared",
+]);
+
+export function normalizePrePickupFunding(
+  raw: unknown,
+  fallback: PrePickupFunding = "company"
+): PrePickupFunding {
+  const s = String(raw ?? "").trim().toLowerCase();
+  return VALID_PREPICKUP_FUNDING.has(s as PrePickupFunding)
+    ? (s as PrePickupFunding)
+    : fallback;
+}
+
+/**
+ * Service-aware default funding when no explicit config exists. FOOD → company-funded
+ * first-mile (on top); PARCEL + PERSON RIDE → customer-funded (within the pool).
+ */
+export function defaultPrePickupFunding(service: string): PrePickupFunding {
+  const s = String(service ?? "").trim().toLowerCase();
+  if (s === "parcel" || s === "ride" || s === "person_ride") return "customer";
+  return "company";
+}
+
+/** Compose the rider payout — the ONE place that decides pool-vs-company first-mile. */
+export function composeRiderPayout(
+  input: RiderPayoutCompositionInput
+): RiderPayoutComposition {
+  const funding = normalizePrePickupFunding(input.funding);
+  const nonNeg = (n: unknown): number => {
+    const v = Number(n);
+    return Number.isFinite(v) && v > 0 ? v : 0;
+  };
+  const basePool = round2(nonNeg(input.basePool));
+  const prePickupRaw = round2(nonNeg(input.prePickupRaw));
+  const surge = round2(nonNeg(input.surge));
+  const waiting = round2(nonNeg(input.waiting));
+  const tip = round2(nonNeg(input.tip));
+
+  let prePickupFromPool = 0;
+  let prePickupCompanyFunded = 0;
+  if (funding === "company") {
+    prePickupFromPool = 0;
+    prePickupCompanyFunded = prePickupRaw;
+  } else if (funding === "customer") {
+    prePickupFromPool = Math.min(prePickupRaw, basePool);
+    prePickupCompanyFunded = 0;
+  } else {
+    prePickupFromPool = Math.min(prePickupRaw, basePool);
+    prePickupCompanyFunded = Math.max(0, round2(prePickupRaw - prePickupFromPool));
+  }
+
+  prePickupFromPool = round2(prePickupFromPool);
+  prePickupCompanyFunded = round2(prePickupCompanyFunded);
+  const postPickup = round2(Math.max(0, basePool - prePickupFromPool));
+  const prePickupPaid = round2(prePickupFromPool + prePickupCompanyFunded);
+
+  const deliveryFeeFundedTotal = round2(postPickup + prePickupFromPool + waiting);
+  const companyFundedTotal = round2(surge + prePickupCompanyFunded);
+  const riderDeliveryCredit = round2(deliveryFeeFundedTotal + companyFundedTotal);
+  const riderTotal = round2(riderDeliveryCredit + tip);
+
+  return {
+    funding,
+    basePool,
+    prePickupFromPool,
+    postPickup,
+    prePickupCompanyFunded,
+    prePickupPaid,
+    surge,
+    waiting,
+    tip,
+    deliveryFeeFundedTotal,
+    companyFundedTotal,
+    riderDeliveryCredit,
+    riderTotal,
+    prePickupCappedAtPool: funding === "customer" && prePickupRaw > basePool,
+  };
+}

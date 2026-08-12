@@ -16,7 +16,14 @@ import {
   servicePayoutRulesCacheKey,
 } from "@/lib/geo/servicePayoutRulesCache";
 import { fetchDeliveryRateSlabs } from "@/lib/geo/deliveryRateSlabsCache";
-import { calcCustomerPreviewBreakdown, type CustomerSlab } from "@/lib/pricing/slabPricingEngine";
+import {
+  calcCustomerPreviewBreakdown,
+  composeRiderPayout,
+  defaultPrePickupFunding,
+  normalizePrePickupFunding,
+  type CustomerSlab,
+  type PrePickupFunding,
+} from "@/lib/pricing/slabPricingEngine";
 import { parseDecimalOrZero } from "@/lib/pricing/slabInputUtils";
 import { SlabNumericInput } from "./SlabNumericInput";
 import { VEHICLE_OPTIONS, type VehicleType } from "./rideVehicleTypes";
@@ -198,6 +205,15 @@ export function RiderPayoutRulesPanel(props: {
   }>({ definitions: [], timeSlots: [], surgeWaitMaxOnly: false, maxTotalSurgeAmount: null });
   const [previewForceSurgeIds, setPreviewForceSurgeIds] = useState<number[]>([]);
 
+  // First-mile (pre-pickup) config for THIS service — pulled from the live dispatch
+  // strategy config so the calculator composes the first-mile exactly like production.
+  // Editable in the calculator so an admin can what-if a rate/funding before saving it.
+  const [prePickupRatePerKm, setPrePickupRatePerKm] = useState<string>("");
+  const [prePickupFunding, setPrePickupFunding] = useState<PrePickupFunding>(
+    defaultPrePickupFunding(props.service)
+  );
+  const [prePickupConfigLoaded, setPrePickupConfigLoaded] = useState(false);
+
   // Customer fare is computed from the same production Customer Slab Pricing Engine used at
   // checkout — never entered manually — so the preview always matches production exactly.
   const [customerSlabs, setCustomerSlabs] = useState<CustomerSlab[]>([]);
@@ -324,6 +340,35 @@ export function RiderPayoutRulesPanel(props: {
     void loadSurgeCatalog();
   }, [refresh, loadSurgeCatalog, props.surgeRefreshKey]);
 
+  // Pull the live first-mile rate + funding for this service (once) so the calculator
+  // seeds the same values production uses. Admin can override in the calculator.
+  const loadPrePickupConfig = useCallback(async () => {
+    try {
+      const res = await fetch("/api/super-admin/dispatch-strategy-config", { cache: "no-store" });
+      const json = await res.json();
+      if (!res.ok) return;
+      const configServiceType = props.service === "ride" ? "person_ride" : props.service;
+      const cfg = (json.strategy_configs ?? []).find(
+        (c: Record<string, unknown>) => String(c.service_type) === configServiceType
+      );
+      if (cfg) {
+        const rate = Number(cfg.pre_pickup_rate_per_km);
+        setPrePickupRatePerKm(Number.isFinite(rate) && rate > 0 ? String(rate) : "");
+        setPrePickupFunding(
+          normalizePrePickupFunding(cfg.pre_pickup_funding, defaultPrePickupFunding(props.service))
+        );
+      }
+    } catch {
+      /* keep defaults */
+    } finally {
+      setPrePickupConfigLoaded(true);
+    }
+  }, [props.service]);
+
+  useEffect(() => {
+    void loadPrePickupConfig();
+  }, [loadPrePickupConfig]);
+
   const effectiveRule = useMemo(() => rules.find((r) => r.isActive) ?? null, [rules]);
 
   // The calculator reflects whatever the admin is currently typing in the Add/Edit form —
@@ -369,6 +414,24 @@ export function RiderPayoutRulesPanel(props: {
     surgeCatalog,
     previewForceSurgeIds,
   ]);
+
+  // v3.1 first-mile composition — the SAME shared engine the backend uses to pay riders.
+  // basePool = the pure % pool (customerFare × rider%); surge/waiting are on-top add-ons.
+  const prePickupRaw = useMemo(() => {
+    const rate = parseDecimalOrZero(prePickupRatePerKm);
+    return rate > 0 && pickupKm > 0 ? Math.round(rate * pickupKm * 100) / 100 : 0;
+  }, [prePickupRatePerKm, pickupKm]);
+
+  const composition = useMemo(() => {
+    if (!previewBreakdown) return null;
+    return composeRiderPayout({
+      basePool: previewBreakdown.riderTotal,
+      prePickupRaw,
+      surge: previewBreakdown.surgeTotal,
+      waiting: previewBreakdown.waitingAmount,
+      funding: prePickupFunding,
+    });
+  }, [previewBreakdown, prePickupRaw, prePickupFunding]);
 
   async function submitAdd() {
     setBusyId("new");
@@ -553,6 +616,26 @@ export function RiderPayoutRulesPanel(props: {
               <PreviewField label="Waiting minutes">
                 <SlabNumericInput value={previewWaitMin} onChange={setPreviewWaitMin} kind="decimal" className={inputCls} />
               </PreviewField>
+              <PreviewField label="First-mile rate (₹/km)">
+                <SlabNumericInput
+                  value={prePickupRatePerKm}
+                  onChange={setPrePickupRatePerKm}
+                  kind="decimal"
+                  className={inputCls}
+                  placeholder="0"
+                />
+              </PreviewField>
+              <PreviewField label="First-mile funding">
+                <select
+                  className={inputCls}
+                  value={prePickupFunding}
+                  onChange={(e) => setPrePickupFunding(e.target.value as PrePickupFunding)}
+                >
+                  <option value="customer">Customer (within pool)</option>
+                  <option value="company">Company (on top)</option>
+                  <option value="shared">Shared (pool + company overflow)</option>
+                </select>
+              </PreviewField>
               <div className="flex items-end pb-2">
                 <ToggleSwitch checked={previewMaxRider} onChange={setPreviewMaxRider} label="GMitra Max" />
               </div>
@@ -577,12 +660,55 @@ export function RiderPayoutRulesPanel(props: {
                 <div className="mt-4 flex flex-wrap items-center justify-center gap-6 rounded-lg border border-teal-100 bg-white px-4 py-4">
                   <MiniStat label="Customer fare" value={`₹${customerFare.toFixed(2)}`} />
                   <span className="text-2xl text-teal-400">→</span>
-                  <MiniStat label={`Rider % (${calcRule.riderPercentage}%)`} value={`₹${previewBreakdown.riderTotal.toFixed(2)}`} />
+                  <MiniStat label={`Rider pool (${calcRule.riderPercentage}%)`} value={`₹${previewBreakdown.riderTotal.toFixed(2)}`} />
                   <span className="text-2xl text-teal-400">→</span>
-                  <MiniStat label="Final rider payout" value={`₹${previewBreakdown.finalAmount.toFixed(2)}`} emphasize />
+                  <MiniStat
+                    label="Rider gets"
+                    value={`₹${(composition?.riderDeliveryCredit ?? previewBreakdown.finalAmount).toFixed(2)}`}
+                    emphasize
+                  />
                   <span className="text-2xl text-teal-400">|</span>
                   <MiniStat label={`Platform revenue (${calcRule.platformPercentage}%)`} value={`₹${previewBreakdown.platformRevenue.toFixed(2)}`} />
                 </div>
+
+                {/* v3.1 First-mile composition — pre-pickup carved from the pool vs company top-up. */}
+                {composition && prePickupRaw > 0 ? (
+                  <div className="mt-4 rounded-lg border border-indigo-100 bg-indigo-50/40 px-4 py-3">
+                    <p className="text-xs font-semibold uppercase text-indigo-600">
+                      First-mile (pre-pickup) composition — {prePickupFunding} funded
+                    </p>
+                    <div className="mt-2 grid grid-cols-2 gap-x-6 gap-y-1.5 text-sm text-slate-700 sm:grid-cols-3">
+                      <span>First-mile (raw): <b>₹{prePickupRaw.toFixed(2)}</b></span>
+                      <span>From pool: <b>₹{composition.prePickupFromPool.toFixed(2)}</b></span>
+                      <span>Company-funded: <b>₹{composition.prePickupCompanyFunded.toFixed(2)}</b></span>
+                      <span>Pre-pickup paid: <b>₹{composition.prePickupPaid.toFixed(2)}</b></span>
+                      <span>Post-pickup (remainder): <b>₹{composition.postPickup.toFixed(2)}</b></span>
+                      <span>
+                        Rider base pool: <b>₹{composition.basePool.toFixed(2)}</b>
+                      </span>
+                      {composition.prePickupCappedAtPool ? (
+                        <span className="sm:col-span-3 text-amber-700">
+                          ⚠ First-mile exceeds the pool — capped at the pool (post-pickup = ₹0).
+                        </span>
+                      ) : null}
+                    </div>
+                    <div className="mt-2 grid grid-cols-2 gap-x-6 gap-y-1.5 border-t border-indigo-100 pt-2 text-sm text-slate-700 sm:grid-cols-3">
+                      <span>
+                        Ledger A — delivery-fee funded:{" "}
+                        <b className="text-teal-800">₹{composition.deliveryFeeFundedTotal.toFixed(2)}</b>
+                      </span>
+                      <span>
+                        Ledger B — company funded:{" "}
+                        <b className="text-indigo-800">₹{composition.companyFundedTotal.toFixed(2)}</b>
+                      </span>
+                      <span className="sm:col-span-3 border-t border-indigo-100 pt-1.5">
+                        Rider delivery credit:{" "}
+                        <b className="text-teal-800">₹{composition.riderDeliveryCredit.toFixed(2)}</b>
+                        {" "}(A + B)
+                      </span>
+                    </div>
+                  </div>
+                ) : null}
 
                 {/* Detailed Calculation Breakdown */}
                 <div className="mt-4 rounded-lg border border-teal-100 bg-white px-4 py-3">
@@ -602,8 +728,25 @@ export function RiderPayoutRulesPanel(props: {
                     <span>Drop payout: <b>₹{previewBreakdown.dropAmount.toFixed(2)}</b></span>
                     <span>Waiting charge: <b>₹{previewBreakdown.waitingAmount.toFixed(2)}</b></span>
                     <span>Surge: <b>₹{previewBreakdown.surgeTotal.toFixed(2)}</b></span>
+                    {prePickupRaw > 0 ? (
+                      <span>First-mile paid: <b>₹{(composition?.prePickupPaid ?? 0).toFixed(2)}</b></span>
+                    ) : null}
                     <span className="sm:col-span-3 border-t border-slate-100 pt-1.5">
-                      Final rider payout: <b className="text-teal-800">₹{previewBreakdown.finalAmount.toFixed(2)}</b>
+                      Rider gets:{" "}
+                      <b className="text-teal-800">
+                        ₹{(composition?.riderDeliveryCredit ?? previewBreakdown.finalAmount).toFixed(2)}
+                      </b>
+                      {prePickupRaw > 0 ? (
+                        <span className="ml-2 text-xs text-slate-500">
+                          (pool {previewBreakdown.riderTotal.toFixed(2)} + surge{" "}
+                          {previewBreakdown.surgeTotal.toFixed(2)} + waiting{" "}
+                          {previewBreakdown.waitingAmount.toFixed(2)}
+                          {prePickupFunding === "customer"
+                            ? ", first-mile within pool"
+                            : `, + company first-mile ${(composition?.prePickupCompanyFunded ?? 0).toFixed(2)}`}
+                          )
+                        </span>
+                      ) : null}
                     </span>
                   </div>
                 </div>
@@ -636,7 +779,6 @@ export function RiderPayoutRulesPanel(props: {
       </div>
 
       <FormulaFlow />
-      <ProductionVerificationCard />
     </div>
   );
 }
@@ -696,7 +838,7 @@ const VERIFICATION_ROWS: { label: string; status: string }[] = [
   { label: "Order Creation", status: "Same Production Engine" },
 ];
 
-function ProductionVerificationCard() {
+export function ProductionVerificationCard() {
   return (
     <div className="mt-4 rounded-xl border border-emerald-200 bg-emerald-50/60 px-5 py-4">
       <p className="text-xs font-bold uppercase tracking-wide text-emerald-800">Production engine status</p>
