@@ -28,18 +28,20 @@ export function OrderNotificationsDisabledBanner({ visible }: { visible: boolean
 
 const styles = StyleSheet.create({
   banner: {
-    marginHorizontal: -H_PADDING,
-    paddingVertical: 11,
+    marginHorizontal: 0,
+    paddingVertical: 8,
     paddingHorizontal: H_PADDING,
-    marginBottom: 12,
+    marginBottom: 0,
     backgroundColor: "#92600A",
     borderRadius: 0,
+    minHeight: 56,
+    justifyContent: "center",
   },
   text: {
-    fontSize: 13,
+    fontSize: 12,
     fontWeight: "600",
     color: "#FFFFFF",
-    lineHeight: 18,
+    lineHeight: 16,
   },
   link: {
     fontWeight: "800",

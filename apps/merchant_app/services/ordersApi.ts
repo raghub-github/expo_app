@@ -162,7 +162,9 @@ export async function fetchFoodOrders(
   const q = new URLSearchParams();
   if (opts?.limit) q.set("limit", String(opts.limit));
   const qs = q.toString();
-  const HARD_TIMEOUT_MS = 20_000;
+  // LAN + concurrent home fetches can queue behind slow wallet/ledger calls; keep this
+  // above typical board load so polls don't abort while the request is still in flight.
+  const HARD_TIMEOUT_MS = 45_000;
   const res = await authFetch(
     `${getBase()}/v1/merchant-partner/stores/${storeId}/food-orders${qs ? `?${qs}` : ""}`,
     token,

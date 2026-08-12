@@ -13,8 +13,9 @@
  * it NOOP for COD (nothing was paid).
  *
  * Safety properties:
- *  - Idempotent: if a non-failed refund already exists for the order, it does
- *    nothing (so re-running the cancel cron / double webhooks can't double-pay).
+ *  - Idempotent: if a refund row already exists for the order, it does not
+ *    insert another (so re-running the cancel cron / double webhooks can't
+ *    double-pay or explode order_refunds with duplicate FAILED rows).
  *  - Best-effort: callers should not let a refund failure abort the
  *    cancellation itself — wrap the call and log. The order_refunds row is left
  *    behind for ops to retry via /v1/internal/orders/:id/refund/execute.
@@ -44,11 +45,89 @@ export interface AutoRefundOutcome {
   triggered: boolean;
   skippedReason?:
     | "already_refunded"
+    | "prior_failed"
     | "nothing_paid"
     | "order_not_found"
     | "below_gateway_minimum";
   refundId?: number;
   result?: RefundExecutionResult;
+}
+
+type RefundProbeRow = {
+  id: number;
+  execution_status: string | null;
+  refund_status: string | null;
+  customer_wallet_ledger_id: number | null;
+  razorpay_refund_id: string | null;
+  refund_amount: unknown;
+  failure_reason: string | null;
+  refund_reference: string | null;
+};
+
+function trimRef(v: unknown): string | null {
+  if (typeof v !== "string") return null;
+  const t = v.trim();
+  return t ? t : null;
+}
+
+function isActiveRefundRow(row: RefundProbeRow): boolean {
+  const exec = String(row.execution_status ?? "").toUpperCase();
+  const status = String(row.refund_status ?? "").toLowerCase();
+  if (exec === "FAILED") return false;
+  if (status === "failed" || status === "cancelled" || status === "rejected") return false;
+  const wallet =
+    row.customer_wallet_ledger_id != null && Number(row.customer_wallet_ledger_id) > 0;
+  const razorpay = Boolean(trimRef(row.razorpay_refund_id));
+  return wallet || razorpay || exec === "PROCESSING";
+}
+
+function isHollowRefundRow(row: RefundProbeRow): boolean {
+  const wallet =
+    row.customer_wallet_ledger_id != null && Number(row.customer_wallet_ledger_id) > 0;
+  if (wallet) return false;
+  if (trimRef(row.razorpay_refund_id)) return false;
+  const amount = Number(row.refund_amount ?? 0);
+  if (!Number.isFinite(amount) || amount <= 0) return false;
+
+  const status = String(row.refund_status ?? "").toLowerCase();
+  const exec = String(row.execution_status ?? "").toUpperCase();
+  const failure = String(row.failure_reason ?? "");
+  const missingPayId = /razorpay_payment_id_missing/i.test(failure);
+  const statusOk =
+    !["failed", "cancelled", "rejected"].includes(status) || (exec === "FAILED" && missingPayId);
+  if (!statusOk) return false;
+
+  const ref = String(row.refund_reference ?? "").trim();
+  return (
+    ["COMPLETED", "NOOP", "INITIATED", "PROCESSING"].includes(exec) ||
+    /^RFND-\d+$/i.test(ref) ||
+    (["completed", "refunded", "pending"].includes(status) &&
+      (!exec || ["COMPLETED", "NOOP", "INITIATED", "PROCESSING"].includes(exec))) ||
+    (exec === "FAILED" && missingPayId)
+  );
+}
+
+/** Latest refund row for an order — index-friendly top-N, never a created_at walk. */
+async function loadLatestRefund(
+  sql: Sql,
+  orderCoreId: number
+): Promise<RefundProbeRow | null> {
+  const rows = await sql<RefundProbeRow[]>`
+    SELECT
+      id,
+      execution_status,
+      refund_status,
+      customer_wallet_ledger_id,
+      razorpay_refund_id,
+      refund_amount,
+      failure_reason,
+      refund_reference
+    FROM order_refunds
+    WHERE order_id = ${orderCoreId}
+    ORDER BY created_at DESC
+    LIMIT 1
+  `;
+  return rows[0] ?? null;
 }
 
 /** Payment gateways (Razorpay) reject refunds below ₹1. */
@@ -146,73 +225,12 @@ async function resolvePaidAmount(sql: Sql, orderCoreId: number): Promise<number>
   return gross > 0.005 ? round2(gross) : 0;
 }
 
-/** True when this order already has a non-failed refund (any prior attempt that moved / is moving money). */
-async function hasActiveRefund(sql: Sql, orderCoreId: number): Promise<boolean> {
-  const rows = await sql`
-    SELECT 1
-    FROM order_refunds
-    WHERE order_id = ${orderCoreId}
-      AND UPPER(COALESCE(execution_status, '')) <> 'FAILED'
-      AND LOWER(COALESCE(refund_status, '')) NOT IN ('failed', 'cancelled', 'rejected')
-      AND (
-        -- Real money movement, or in-flight gateway refund.
-        -- INITIATED/pending hollow rows are reclaimed above — do not block here.
-        customer_wallet_ledger_id IS NOT NULL
-        OR NULLIF(TRIM(COALESCE(razorpay_refund_id, '')), '') IS NOT NULL
-        OR UPPER(COALESCE(execution_status, '')) = 'PROCESSING'
-      )
-    LIMIT 1
-  `;
-  return rows.length > 0;
-}
-
 /**
- * Completed/NOOP refund rows that never credited wallet or gateway (legacy COD_NOOP
- * mis-route / RFND-* placeholders). Clear the execution lock so executeOrderRefund
- * can restore funds.
+ * Clear the execution lock on a known hollow row so executeOrderRefund can
+ * restore funds. Updates by primary key only — never scans created_at.
  */
-async function reclaimHollowRefund(
-  sql: Sql,
-  orderCoreId: number
-): Promise<number | null> {
-  // Legacy COD_NOOP / 0483 RFND-{id} / stuck INITIATED rows marked done without
-  // wallet/gateway movement. Do NOT reclaim PROCESSING gateway refunds that already
-  // have a razorpay_refund_id.
-  const rows = await sql`
-    SELECT id
-    FROM order_refunds
-    WHERE order_id = ${orderCoreId}
-      AND customer_wallet_ledger_id IS NULL
-      AND NULLIF(TRIM(COALESCE(razorpay_refund_id, '')), '') IS NULL
-      AND COALESCE(refund_amount, 0) > 0
-      AND (
-        LOWER(COALESCE(refund_status, '')) NOT IN ('failed', 'cancelled', 'rejected')
-        OR (
-          UPPER(COALESCE(execution_status, '')) = 'FAILED'
-          AND COALESCE(failure_reason, '') ~* 'razorpay_payment_id_missing'
-        )
-      )
-      AND (
-        UPPER(COALESCE(execution_status, '')) IN ('COMPLETED', 'NOOP', 'INITIATED', 'PROCESSING')
-        OR TRIM(COALESCE(refund_reference, '')) ~* '^RFND-\\d+$'
-        OR (
-          LOWER(COALESCE(refund_status, '')) IN ('completed', 'refunded', 'pending')
-          AND (
-            NULLIF(TRIM(COALESCE(execution_status, '')), '') IS NULL
-            OR UPPER(COALESCE(execution_status, '')) IN ('COMPLETED', 'NOOP', 'INITIATED', 'PROCESSING')
-          )
-        )
-        OR (
-          UPPER(COALESCE(execution_status, '')) = 'FAILED'
-          AND COALESCE(failure_reason, '') ~* 'razorpay_payment_id_missing'
-        )
-      )
-    ORDER BY created_at DESC
-    LIMIT 1
-  `;
-  const id = rows[0] != null ? Number((rows[0] as { id: number }).id) : NaN;
-  if (!Number.isFinite(id) || id <= 0) return null;
-
+async function resetHollowRefundRow(sql: Sql, refundId: number): Promise<number | null> {
+  if (!Number.isFinite(refundId) || refundId <= 0) return null;
   await sql`
     UPDATE order_refunds
     SET execution_key = NULL,
@@ -226,9 +244,9 @@ async function reclaimHollowRefund(
             THEN NULL
           ELSE refund_reference
         END
-    WHERE id = ${id}
+    WHERE id = ${refundId}
   `;
-  return id;
+  return refundId;
 }
 
 export async function autoRefundOnCancellation(
@@ -240,9 +258,14 @@ export async function autoRefundOnCancellation(
     return { triggered: false, skippedReason: "order_not_found" };
   }
 
-  // Repair hollow legacy rows (marked completed without wallet/gateway movement).
-  const hollowId = await reclaimHollowRefund(sql, orderCoreId);
-  if (hollowId != null) {
+  // One index probe for the latest row. Do not walk created_at or seq-scan
+  // order_refunds — that was the Disk I/O storm on duplicate FAILED rows.
+  const latest = await loadLatestRefund(sql, orderCoreId);
+  if (latest && isHollowRefundRow(latest)) {
+    const hollowId = await resetHollowRefundRow(sql, Number(latest.id));
+    if (hollowId == null) {
+      return { triggered: false, skippedReason: "order_not_found" };
+    }
     const paidAmount = await resolvePaidAmount(sql, orderCoreId);
     if (paidAmount < 0) return { triggered: false, skippedReason: "order_not_found" };
     let amount =
@@ -275,9 +298,16 @@ export async function autoRefundOnCancellation(
     return { triggered: true, refundId: hollowId, result };
   }
 
-  // Idempotency: never create a second refund for an order that already has one.
-  if (await hasActiveRefund(sql, orderCoreId)) {
+  if (latest && isActiveRefundRow(latest)) {
     return { triggered: false, skippedReason: "already_refunded" };
+  }
+
+  // A refund row already exists (almost always FAILED gateway). Inserting
+  // another row was creating ~88k duplicates per stuck accept-timeout order.
+  // Retry remains available via /v1/internal/orders/:id/refund/execute on the
+  // existing row; this path must not mint a new financial record.
+  if (latest) {
+    return { triggered: false, skippedReason: "prior_failed" };
   }
 
   const paidAmount = await resolvePaidAmount(sql, orderCoreId);

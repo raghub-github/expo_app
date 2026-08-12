@@ -964,6 +964,7 @@ export function StoreSettingsClient({ storeId }: { storeId: string }) {
             apiBase={base}
             active
             readOnly={!canEditSettings}
+            storeId={storeId}
             storeTimezone={
               typeof effectiveStore?.timezone === "string" ? effectiveStore.timezone : null
             }

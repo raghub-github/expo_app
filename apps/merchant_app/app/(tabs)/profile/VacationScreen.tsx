@@ -2,9 +2,8 @@ import { useState, useCallback, useEffect, useRef } from "react";
 import { AppText as Text } from "@/components/AppText";
 import { View, StyleSheet, Pressable, ScrollView, ActivityIndicator, Alert, Modal, Platform, TextInput, KeyboardAvoidingView, RefreshControl } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { useFocusEffect } from "expo-router";
+import { useFocusEffect, useLocalSearchParams } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
-import { LinearGradient } from "expo-linear-gradient";
 import {
   GatiMitraMerchant,
   H_PADDING,
@@ -15,10 +14,14 @@ import {
   FONT_PAGE_TITLE,
   FONT_LABEL,
   TAB_BAR_SCROLL_CONTENT_PADDING,
+  FONT_LORA,
+  FONT_LORA_BOLD,
+  FONT_POPPINS,
 } from "@/constants/theme";
 import { useSelectedStore } from "@/context/SelectedStoreContext";
 import { useAuth } from "@/context/AuthContext";
 import { useStoreStatus } from "@/context/StoreStatusContext";
+import { useProfileNav } from "@/context/ProfileNavContext";
 import { cancelScheduledOff, scheduleStoreOff } from "@/services/storeVacationApi";
 import { getScheduledOffHolidays, type StoreHoliday } from "@/services/storeHolidaysApi";
 import { formatStoreActionSourceLabel } from "@/lib/storeActionSource";
@@ -95,12 +98,17 @@ function formatScheduledOffDateAndTime(value: string | null | undefined): string
 
 export default function VacationScreen() {
   const insets = useSafeAreaInsets();
+  const params = useLocalSearchParams<{ tab?: string | string[] }>();
   const { selectedStore } = useSelectedStore();
   const { token } = useAuth();
-  const { manualCloseUntil, restrictionType, scheduledClosure, upcomingScheduledClosure, refresh } = useStoreStatus();
+  const { isOnline, manualCloseUntil, restrictionType, scheduledClosure, upcomingScheduledClosure, refresh } =
+    useStoreStatus();
+  const { setVacationHeader } = useProfileNav();
   const footerBottomPadding = TAB_BAR_SCROLL_CONTENT_PADDING;
 
-  const [activeTab, setActiveTab] = useState<"schedule" | "slots">("schedule");
+  const initialTab =
+    (Array.isArray(params.tab) ? params.tab[0] : params.tab) === "slots" ? "slots" : "schedule";
+  const [activeTab, setActiveTab] = useState<"schedule" | "slots">(initialTab);
   const [selectedReason, setSelectedReason] = useState<string | null>(null);
   const [otherReason, setOtherReason] = useState("");
   const [saving, setSaving] = useState(false);
@@ -163,6 +171,27 @@ export default function VacationScreen() {
       void reloadStatusAndHolidays();
     }, [reloadStatusAndHolidays])
   );
+
+  useEffect(() => {
+    const t = Array.isArray(params.tab) ? params.tab[0] : params.tab;
+    if (t === "slots") setActiveTab("slots");
+    if (t === "schedule") setActiveTab("schedule");
+  }, [params.tab]);
+
+  useEffect(() => {
+    if (activeTab === "slots") {
+      setVacationHeader({
+        title: "Scheduled slots",
+        subtitle: "Active and upcoming closures for this outlet.",
+      });
+    } else {
+      setVacationHeader({
+        title: "Schedule time off",
+        subtitle: "Choose a reason and when the store will reopen.",
+      });
+    }
+    return () => setVacationHeader(null);
+  }, [activeTab, setVacationHeader]);
 
   const isScheduledOffActive =
     scheduledClosure != null ||
@@ -293,72 +322,73 @@ export default function VacationScreen() {
 
   return (
     <View style={styles.container}>
+      {!isOnline ? (
+        <View style={styles.closedHeroBanner}>
+          <Ionicons name="storefront-outline" size={18} color="#FFFFFF" />
+          <View style={{ flex: 1 }}>
+            <Text style={styles.closedHeroTitle}>Store is closed</Text>
+            <Text style={styles.closedHeroSub} numberOfLines={2}>
+              {restrictionType === "PERMANENT_SHUT"
+                ? "Marked permanently shut"
+                : scheduledClosure
+                  ? `Scheduled off · ${formatScheduledOffDateAndTime(scheduledClosure.from)} – ${formatScheduledOffDateAndTime(scheduledClosure.to)}`
+                  : "Not receiving new orders right now"}
+            </Text>
+          </View>
+        </View>
+      ) : null}
       <View style={styles.header}>
-        <View style={styles.headerAccent} />
         <View style={styles.tabsRow}>
           <Pressable
             onPress={() => setActiveTab("schedule")}
             style={({ pressed }) => [
               styles.tabChip,
+              activeTab === "schedule" && styles.tabChipOn,
               pressed && styles.tabChipPressed,
             ]}
           >
-            {activeTab === "schedule" ? (
-              <LinearGradient
-                colors={GatiMitraMerchant.primaryGradient}
-                start={{ x: 0, y: 0 }}
-                end={{ x: 1, y: 1 }}
-                style={styles.tabChipGradient}
-              >
-                <Text style={[styles.tabChipLabel, styles.tabChipLabelActive]}>
-                  Schedule time off
-                </Text>
-              </LinearGradient>
-            ) : (
-              <View style={styles.tabChipInner}>
-                <Text style={styles.tabChipLabel}>Schedule time off</Text>
-              </View>
-            )}
+            <Ionicons
+              name="calendar-outline"
+              size={15}
+              color={activeTab === "schedule" ? "#FFFFFF" : GatiMitraMerchant.textSecondary}
+            />
+            <Text style={[styles.tabChipLabel, activeTab === "schedule" && styles.tabChipLabelActive]}>
+              Schedule time off
+            </Text>
           </Pressable>
           <Pressable
             onPress={() => setActiveTab("slots")}
             style={({ pressed }) => [
               styles.tabChip,
+              activeTab === "slots" && styles.tabChipOn,
               pressed && styles.tabChipPressed,
             ]}
           >
-            {activeTab === "slots" ? (
-              <LinearGradient
-                colors={GatiMitraMerchant.primaryGradient}
-                start={{ x: 0, y: 0 }}
-                end={{ x: 1, y: 1 }}
-                style={styles.tabChipGradient}
-              >
-                <Text style={[styles.tabChipLabel, styles.tabChipLabelActive]}>
-                  Scheduled slots
-                </Text>
-              </LinearGradient>
-            ) : (
-              <View style={styles.tabChipInner}>
-                <Text style={styles.tabChipLabel}>Scheduled slots</Text>
-              </View>
-            )}
+            <Ionicons
+              name="list-outline"
+              size={15}
+              color={activeTab === "slots" ? "#FFFFFF" : GatiMitraMerchant.textSecondary}
+            />
+            <Text style={[styles.tabChipLabel, activeTab === "slots" && styles.tabChipLabelActive]}>
+              Scheduled slots
+            </Text>
           </Pressable>
         </View>
       </View>
       {activeTab === "slots" && isScheduledOffActive && (
         <View style={styles.currentOffBanner}>
           <View style={styles.currentOffIconWrap}>
-            <Ionicons name="calendar" size={20} color={GatiMitraMerchant.primary} />
+            <Ionicons name="calendar" size={20} color="#FFFFFF" />
           </View>
           <View style={{ flex: 1 }}>
+            <Text style={styles.currentOffEyebrow}>Active now</Text>
             <Text style={styles.currentOffText}>
               {restrictionType === "PERMANENT_SHUT"
                 ? "Store is marked permanently closed."
                 : scheduledClosure
-                  ? `Store is closed from ${formatScheduledOffDateAndTime(scheduledClosure.from)} to ${formatScheduledOffDateAndTime(scheduledClosure.to)}.\nReason: ${scheduledClosure.reason}`
+                  ? `Closed from ${formatScheduledOffDateAndTime(scheduledClosure.from)} to ${formatScheduledOffDateAndTime(scheduledClosure.to)}.\nReason: ${scheduledClosure.reason}`
                   : manualCloseUntil
-                    ? `Store closed on ${formatScheduledOffDateAndTime(manualCloseUntil)}`
+                    ? `Store closed until ${formatScheduledOffDateAndTime(manualCloseUntil)}`
                     : "Store is currently scheduled off."}
             </Text>
 
@@ -394,11 +424,17 @@ export default function VacationScreen() {
                   }}
                   style={({ pressed }) => [
                     styles.modalSecondaryBtn,
-                    { borderWidth: 1, borderColor: GatiMitraMerchant.border },
+                    {
+                      borderWidth: 1,
+                      borderColor: "rgba(255,255,255,0.45)",
+                      backgroundColor: "rgba(255,255,255,0.12)",
+                    },
                     pressed && styles.pressed,
                   ]}
                 >
-                  <Text style={styles.modalSecondaryText}>Remove scheduled off</Text>
+                  <Text style={[styles.modalSecondaryText, { color: "#FFFFFF" }]}>
+                    Remove scheduled off
+                  </Text>
                 </Pressable>
               </View>
             )}
@@ -547,7 +583,7 @@ export default function VacationScreen() {
             >
               <Text style={styles.sectionLabel}>Reason for time off</Text>
               <Text style={styles.sectionHint}>
-                Pick why your store will be closed. You’ll set the date and time next.
+                Choose why you need to pause orders — date and time come next.
               </Text>
               <View style={styles.reasonCard}>
                 {REASONS.map((label) => {
@@ -580,11 +616,9 @@ export default function VacationScreen() {
                       >
                         {label}
                       </Text>
-                      {active && (
-                        <View style={styles.reasonCheckWrap}>
-                          <Ionicons name="checkmark" size={16} color="#FFFFFF" />
-                        </View>
-                      )}
+                      {active ? (
+                        <Ionicons name="checkmark-circle" size={20} color={GatiMitraMerchant.primary} />
+                      ) : null}
                     </Pressable>
                   );
                 })}
@@ -654,10 +688,6 @@ export default function VacationScreen() {
               />
             }
           >
-            <Text style={styles.sectionLabel}>Scheduled slots</Text>
-            <Text style={styles.sectionHint}>
-              View all active and upcoming schedule-off windows for this store.
-            </Text>
             {!isScheduledOffActive &&
               upcomingHolidays.length === 0 &&
               !(isScheduledOffUpcoming && upcomingScheduledClosure) && (
@@ -675,7 +705,6 @@ export default function VacationScreen() {
                   </Text>
                 </View>
               )}
-            {/* The banners above already show active and upcoming slots in card form */}
           </ScrollView>
         )}
       </KeyboardAvoidingView>
@@ -826,7 +855,7 @@ const styles = StyleSheet.create({
     paddingTop: 16,
     paddingHorizontal: H_PADDING,
     paddingBottom: 8,
-    backgroundColor: GatiMitraMerchant.background,
+    backgroundColor: GatiMitraMerchant.surfaceWarm,
     position: "relative",
     overflow: "hidden",
   },
@@ -838,6 +867,43 @@ const styles = StyleSheet.create({
     height: 3,
     backgroundColor: GatiMitraMerchant.primary,
     opacity: 0.35,
+  },
+  closedHeroBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    marginHorizontal: H_PADDING,
+    marginTop: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    borderRadius: CARD_RADIUS,
+    backgroundColor: "#991B1B",
+  },
+  closedHeroTitle: {
+    fontFamily: FONT_LORA_BOLD,
+    fontSize: 14,
+    color: "#FFFFFF",
+  },
+  closedHeroSub: {
+    fontFamily: FONT_POPPINS,
+    fontSize: 11,
+    color: "rgba(255,255,255,0.88)",
+    marginTop: 2,
+    lineHeight: 15,
+  },
+  pageIntroTitle: {
+    fontFamily: FONT_LORA_BOLD,
+    fontSize: 18,
+    color: GatiMitraMerchant.navy,
+    letterSpacing: -0.2,
+  },
+  pageIntroSub: {
+    fontFamily: FONT_POPPINS,
+    fontSize: 12,
+    color: GatiMitraMerchant.textSecondary,
+    marginTop: 4,
+    lineHeight: 17,
+    marginBottom: 12,
   },
   title: {
     fontSize: 20,
@@ -854,17 +920,24 @@ const styles = StyleSheet.create({
   tabsRow: {
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: GatiMitraMerchant.surfaceSubtle,
-    borderRadius: 999,
-    padding: 2,
-    marginTop: 10,
+    backgroundColor: "#EEF2F7",
+    borderRadius: 14,
+    padding: 4,
+    gap: 4,
   },
   tabChip: {
     flex: 1,
-    borderRadius: 999,
-    paddingVertical: 0,
+    flexDirection: "row",
+    gap: 6,
+    borderRadius: 11,
+    paddingVertical: 10,
+    paddingHorizontal: 8,
     alignItems: "center",
     justifyContent: "center",
+    backgroundColor: "transparent",
+  },
+  tabChipOn: {
+    backgroundColor: GatiMitraMerchant.navy,
   },
   tabChipPressed: {
     opacity: 0.9,
@@ -884,8 +957,9 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   tabChipLabel: {
+    fontFamily: FONT_POPPINS,
     fontSize: 12,
-    fontWeight: "500",
+    fontWeight: "600",
     color: GatiMitraMerchant.textSecondary,
   },
   tabChipLabelActive: {
@@ -897,30 +971,37 @@ const styles = StyleSheet.create({
     alignItems: "flex-start",
     flexShrink: 1,
     gap: 10,
-    paddingVertical: 10,
+    paddingVertical: 12,
     paddingHorizontal: H_PADDING,
     marginHorizontal: H_PADDING,
     marginTop: 10,
     marginBottom: 10,
-    backgroundColor: GatiMitraMerchant.cardBg,
+    backgroundColor: "#991B1B",
     borderRadius: CARD_RADIUS,
-    borderLeftWidth: 4,
-    borderLeftColor: GatiMitraMerchant.primary,
-    ...GatiMitraMerchant.shadowCard,
   },
   currentOffIconWrap: {
     width: 36,
     height: 36,
     borderRadius: 18,
-    backgroundColor: "rgba(62, 180, 137, 0.2)",
+    backgroundColor: "rgba(255,255,255,0.18)",
     alignItems: "center",
     justifyContent: "center",
   },
+  currentOffEyebrow: {
+    fontFamily: FONT_POPPINS,
+    fontSize: 10,
+    fontWeight: "700",
+    color: "rgba(255,255,255,0.75)",
+    textTransform: "uppercase",
+    letterSpacing: 0.6,
+    marginBottom: 3,
+  },
   currentOffText: {
+    fontFamily: FONT_LORA,
     fontSize: 13,
     fontWeight: "600",
-    color: GatiMitraMerchant.navy,
-    lineHeight: 20,
+    color: "#FFFFFF",
+    lineHeight: 19,
   },
   keyboardWrap: {
     flex: 1,
@@ -977,16 +1058,17 @@ const styles = StyleSheet.create({
   reasonRow: {
     flexDirection: "row",
     alignItems: "center",
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-    borderRadius: 10,
-    marginVertical: 1,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    borderRadius: 12,
+    marginVertical: 3,
     gap: 12,
-    borderWidth: 2,
-    borderColor: "transparent",
+    borderWidth: 1.5,
+    borderColor: "#E8EEF5",
+    backgroundColor: "#FAFBFC",
   },
   reasonRowActive: {
-    backgroundColor: "rgba(62, 180, 137, 0.12)",
+    backgroundColor: "rgba(62, 180, 137, 0.1)",
     borderColor: GatiMitraMerchant.primary,
   },
   reasonRadioOuter: {

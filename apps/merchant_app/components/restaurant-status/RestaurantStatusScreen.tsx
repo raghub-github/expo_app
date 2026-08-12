@@ -56,13 +56,6 @@ type RowState = {
   toggling?: "delivery" | "auto" | "rush" | null;
 };
 
-function localityFromAddress(fullAddress: string | null | undefined): string {
-  if (!fullAddress?.trim()) return "";
-  const parts = fullAddress.split(",").map((p) => p.trim()).filter(Boolean);
-  if (parts.length >= 2) return `${parts[parts.length - 2]}, ${parts[parts.length - 1]}`;
-  return parts[parts.length - 1] ?? fullAddress.trim();
-}
-
 function toSnapshot(row: RowState): RestaurantStatusSnapshot {
   const s = row.status;
   return {
@@ -97,7 +90,6 @@ function RestaurantCard({
 }) {
   const snap = toSnapshot(row);
   const online = snap.isOpen;
-  const locality = localityFromAddress(row.store.full_address);
   const slot = formatCurrentDeliverySlot(
     row.hours,
     row.status?.next_open_time,
@@ -116,10 +108,6 @@ function RestaurantCard({
         <View style={styles.cardHeaderText}>
           <Text style={styles.storeName} numberOfLines={2}>
             {row.store.store_name}
-          </Text>
-          <Text style={styles.storeMeta} numberOfLines={1}>
-            ID: {row.store.store_id}
-            {locality ? ` | ${locality}` : ""}
           </Text>
         </View>
         <Pressable
@@ -209,6 +197,13 @@ function RestaurantCard({
           <Ionicons name="alert-circle" size={16} color="#FFFFFF" />
           <Text style={styles.outsideSlotText}>
             You are currently outside your scheduled delivery timings
+          </Text>
+        </View>
+      ) : !online ? (
+        <View style={styles.closedStoreBanner}>
+          <Ionicons name="storefront-outline" size={16} color="#FFFFFF" />
+          <Text style={styles.outsideSlotText}>
+            Store closed — {deliveryStatusLabel(snap)}
           </Text>
         </View>
       ) : null}
@@ -418,8 +413,8 @@ export default function RestaurantStatusScreen() {
   }, [rows]);
 
   return (
-    <View style={[styles.screen, { paddingTop: insets.top }]}>
-      <View style={styles.header}>
+    <View style={[styles.screen, { paddingTop: insets.top, backgroundColor: GatiMitraMerchant.surfaceWarm }]}>
+      <View style={[styles.header, { backgroundColor: GatiMitraMerchant.surfaceWarm }]}>
         <Pressable
           onPress={goBack}
           hitSlop={12}
@@ -690,6 +685,19 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: 8,
     backgroundColor: "#DC2626",
+    marginTop: 12,
+    marginHorizontal: -14,
+    marginBottom: -14,
+    paddingHorizontal: 14,
+    paddingVertical: 11,
+    borderBottomLeftRadius: CARD_RADIUS,
+    borderBottomRightRadius: CARD_RADIUS,
+  },
+  closedStoreBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    backgroundColor: "#991B1B",
     marginTop: 12,
     marginHorizontal: -14,
     marginBottom: -14,

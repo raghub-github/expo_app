@@ -10,6 +10,28 @@ import { MerchantPendingNewOrdersBar } from "@/components/merchant/MerchantPendi
 import { MerchantAcceptanceTimeoutSync } from "@/components/merchant/MerchantAcceptanceTimeoutSync";
 import { useStore } from "@/hooks/useStore";
 import type { StoreProfile } from "@/hooks/useStore";
+import { loadMerchantAppAssets, MX_ASSET, getMerchantAppAssetUrl } from "@/lib/merchantAppAssets";
+
+const EMPTY_ORDER_KEYS = [
+  MX_ASSET.ordersEmptyNew,
+  MX_ASSET.ordersEmptyActive,
+  MX_ASSET.ordersEmptyPreparing,
+  MX_ASSET.ordersEmptyReady,
+  MX_ASSET.ordersEmptyPickedUp,
+  MX_ASSET.ordersEmptyCompleted,
+  MX_ASSET.ordersEmptyRto,
+  MX_ASSET.ordersEmptyScheduled,
+] as const;
+
+function prefetchEmptyOrderImages(): void {
+  if (typeof window === "undefined") return;
+  for (const key of EMPTY_ORDER_KEYS) {
+    const url = getMerchantAppAssetUrl(key);
+    if (!url) continue;
+    const img = new window.Image();
+    img.src = url;
+  }
+}
 
 export type StoreInfo = {
   id: number;
@@ -22,11 +44,11 @@ export type StoreInfo = {
   onboarding_completed?: boolean | null;
   store_email?: string | null;
   created_at?: string | null;
-   delisted_at?: string | null;
-   delist_reason?: string | null;
-   delisted_by_name?: string | null;
-   delisted_by_email?: string | null;
-   delisted_by_role?: string | null;
+  delisted_at?: string | null;
+  delist_reason?: string | null;
+  delisted_by_name?: string | null;
+  delisted_by_email?: string | null;
+  delisted_by_role?: string | null;
 } | null;
 
 /** When layout has no store (e.g. slow server or client nav), use React Query cache or fetch once; show skeleton or not found. */
@@ -111,6 +133,12 @@ export function StoreLayoutShell({
   useEffect(() => {
     if (fromAdmin) setShowAdminPopup(true);
   }, [fromAdmin]);
+
+  useEffect(() => {
+    void loadMerchantAppAssets()
+      .then(() => prefetchEmptyOrderImages())
+      .catch(() => undefined);
+  }, []);
 
   useEffect(() => {
     if (!store) return;

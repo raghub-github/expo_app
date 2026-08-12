@@ -427,8 +427,10 @@ async function processAutoAcceptTargets(
 }
 
 /**
- * Repair auto-cancelled orders that never got a settled customer refund
+ * Repair auto-cancelled orders that never got an order_refunds row
  * (e.g. dashboard sync cancelled but HTTP auto-refund hop failed).
+ * Orders that already have a refund row (including FAILED) are left for the
+ * existing execute endpoint — they must not be re-selected every tick.
  */
 async function repairUnrefundedAcceptTimeoutCancels(
   sql: Sql,
@@ -459,16 +461,6 @@ async function repairUnrefundedAcceptTimeoutCancels(
         SELECT 1
         FROM order_refunds r
         WHERE r.order_id = c.id
-          AND UPPER(COALESCE(r.execution_status, '')) <> 'FAILED'
-          AND LOWER(COALESCE(r.refund_status, '')) NOT IN ('failed', 'cancelled', 'rejected')
-          AND (
-            r.customer_wallet_ledger_id IS NOT NULL
-            OR NULLIF(TRIM(COALESCE(r.razorpay_refund_id, '')), '') IS NOT NULL
-            OR (
-              UPPER(COALESCE(r.execution_status, '')) = 'PROCESSING'
-              AND NULLIF(TRIM(COALESCE(r.razorpay_refund_id, '')), '') IS NOT NULL
-            )
-          )
       )
     ORDER BY c.id DESC
     LIMIT ${limit}
@@ -502,6 +494,10 @@ async function repairUnrefundedAcceptTimeoutCancels(
   return repaired;
 }
 
+/** Repair is for missed HTTP auto-refund hops, not a 10s retry of FAILED rows. */
+const REPAIR_EVERY_MS = 5 * 60 * 1000;
+let lastRepairAtMs = 0;
+
 /**
  * Auto-cancel unaccepted orders after the configured acceptance window per store.
  * Writes orders_food / orders_core + order_timelines "Cancelled" (idempotent).
@@ -518,7 +514,12 @@ export async function runOrderAcceptanceTimeoutTick(log: TimeoutLog): Promise<vo
       const cancelledRows = await fetchExpiredAcceptanceTargets(sql, { limit: 200 });
       await finalizeCancelledRows(sql, cancelledRows, log);
 
-      const repaired = await repairUnrefundedAcceptTimeoutCancels(sql, log, { limit: 40 });
+      let repaired = 0;
+      const nowMs = Date.now();
+      if (nowMs - lastRepairAtMs >= REPAIR_EVERY_MS) {
+        repaired = await repairUnrefundedAcceptTimeoutCancels(sql, log, { limit: 40 });
+        lastRepairAtMs = nowMs;
+      }
 
       const cancelled = cancelledRows.length;
       if (cancelled > 0 || autoAccepted > 0 || repaired > 0) {
@@ -551,15 +552,10 @@ export async function syncOrderAcceptanceTimeoutForStore(
     });
     await finalizeCancelledRows(sql, cancelledRows, log);
 
-    const repaired = await repairUnrefundedAcceptTimeoutCancels(sql, log, {
-      merchantStoreId,
-      limit: 40,
-    });
-
     const cancelled = cancelledRows.length;
-    if (cancelled > 0 || autoAccepted > 0 || repaired > 0) {
+    if (cancelled > 0 || autoAccepted > 0) {
       log.info(
-        { cancelled, autoAccepted, repaired, merchantStoreId, now },
+        { cancelled, autoAccepted, merchantStoreId, now },
         "order_acceptance_timeout_store_sync"
       );
     }

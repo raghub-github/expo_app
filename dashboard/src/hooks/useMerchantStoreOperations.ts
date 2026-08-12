@@ -239,6 +239,14 @@ export function useMerchantStoreOperations({ storeId, poll = false, syncEngine =
         setCloseReason("");
         setCloseReasonOther("");
         toast.success("Store closed.");
+        setIsStoreOpen(false);
+        if (syncEngine) {
+          useLocalStoreStatusEngineStore.getState().syncFromStoreOperations({
+            operationalOpen: false,
+            manualCloseUntil: manualCloseUntilIso,
+            manualCloseReason: reasonText,
+          });
+        }
         await refreshOperations();
       } else {
         toast.error(data.error || "Failed to close store");
@@ -258,6 +266,7 @@ export function useMerchantStoreOperations({ storeId, poll = false, syncEngine =
     closeReasonOther,
     storeId,
     refreshOperations,
+    syncEngine,
   ]);
 
   const handleClosePopupConfirm = useCallback(() => {

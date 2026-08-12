@@ -567,7 +567,7 @@ function MenuItemCard({
           activeOpacity={0.75}
           accessibilityLabel="Edit item"
         >
-          <Ionicons name="pencil-outline" size={15} color={GatiMitraMerchant.textSecondary} />
+          <Ionicons name="pencil" size={12} color={GatiMitraMerchant.textPrimary} />
           <Text style={styles.catalogEditText}>Edit</Text>
         </TouchableOpacity>
       </View>

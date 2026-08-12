@@ -169,7 +169,7 @@ export async function POST(req: NextRequest) {
         title: 'Store marked permanently closed',
         body: 'Your store has been marked as permanently closed.',
         read: false,
-        action_url: '/(tabs)/profile/vacation',
+        action_url: '/partners/store-settings?tab=operations',
       });
       return NextResponse.json({
         store_id: storeIdNum,
@@ -231,7 +231,7 @@ export async function POST(req: NextRequest) {
       title: 'Scheduled store closure set',
       body: 'Your store closure schedule has been set successfully.',
       read: false,
-      action_url: '/(tabs)/profile/vacation',
+      action_url: '/partners/store-settings?tab=operations',
     });
 
     const audit = await loadAuditContext(db, storeIdNum);
@@ -320,7 +320,7 @@ export async function DELETE(req: NextRequest) {
       title: 'Scheduled closure cancelled',
       body: 'Your scheduled store closure has been cancelled.',
       read: false,
-      action_url: '/(tabs)/profile/vacation',
+      action_url: '/partners/store-settings?tab=operations',
     });
 
     return NextResponse.json({ ok: true });
@@ -394,7 +394,7 @@ export async function PATCH(req: NextRequest) {
       title: 'Scheduled time-off updated',
       body: 'Your scheduled store closure was updated.',
       read: false,
-      action_url: '/(tabs)/profile/vacation',
+      action_url: '/partners/store-settings?tab=operations',
     });
 
     return NextResponse.json({

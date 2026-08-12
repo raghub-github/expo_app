@@ -7,7 +7,6 @@ import { prefetchPartnerRouteData } from '@/lib/partner-route-prefetch'
 import { readPartnerSelectedStoreId } from '@/lib/partner-selected-store'
 import Link from 'next/link'
 import Image from 'next/image'
-import { MerchantAppAssetImage, MX_ASSET } from '@/components/MerchantAppAssetImage'
 import { usePathname, useRouter, useSearchParams } from 'next/navigation'
 import { useQueryClient } from '@tanstack/react-query'
 import {
@@ -676,8 +675,9 @@ export const MXSidebarWhite: React.FC<MXSidebarWhiteProps> = ({
                   className="flex size-10 shrink-0 items-center justify-center rounded-[12px] ring-1 ring-white/10"
                   style={{ background: '#011222' }}
                 >
-                  <MerchantAppAssetImage
-                    assetKey={MX_ASSET.authLogo}
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    src="/onlylogo.png"
                     alt="GatiMitra"
                     className="size-8 object-contain"
                   />

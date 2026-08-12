@@ -38,6 +38,8 @@ import { toast } from 'sonner';
 import { useQueryClient } from '@tanstack/react-query';
 import { merchantKeys } from '@/lib/query-keys';
 import { fetchStoreOperations } from '@/hooks/useMerchantApi';
+import { readCachedStoreOpenFromEngine } from '@/lib/applyStoreOperationsResponse';
+import { partnerSurfaceOnlineFromStoreOperationsBody } from '@/lib/partnerStoreSurfaceOnline';
 import { formatStoreActionSourceLabel } from '@/lib/storeActionSource';
 import { MobileHamburgerButton } from '@/components/MobileHamburgerButton';
 import {
@@ -79,8 +81,8 @@ import {
   readPartnerSelectedStoreId,
   switchPartnerActiveOutlet,
 } from '@/lib/partner-selected-store';
-import { partnerSurfaceOnlineFromStoreOperationsBody } from '@/lib/partnerStoreSurfaceOnline';
 import { emitPartnerStoreOperationsRefresh, PARTNER_STORE_OPERATIONS_REFRESH_EVENT } from '@/lib/partnerStoreOperationsRefresh';
+import { mapMerchantAppDeepLinkToPartnersite } from '@/lib/mapMerchantAppDeepLink';
 import { STORE_SETTINGS_TAB_LABELS } from '@/lib/store-settings-tabs';
 import {
   migrateDeviceOrderAlertsFromServer,
@@ -334,6 +336,9 @@ type StoreOpRow = {
   todayScheduledClosed?: boolean | null;
   /** Merchant store approval — online/offline locked until APPROVED. */
   approvalStatus?: string | null;
+  /** ISO reopen / next-open target for exact wake refresh (matches dashboard countdown). */
+  countdownAt?: string | null;
+  countdownKind?: string | null;
 };
 
 
@@ -796,13 +801,20 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
         if (/^https?:\/\//i.test(href)) {
           const u = new URL(href);
           if (u.origin === window.location.origin) {
-            router.push(`${u.pathname}${u.search}${u.hash}`);
+            router.push(
+              mapMerchantAppDeepLinkToPartnersite(`${u.pathname}${u.search}${u.hash}`, {
+                preferMx: window.location.pathname.startsWith('/mx'),
+              })
+            );
             return;
           }
           window.location.assign(href);
           return;
         }
-        router.push(href.startsWith('/') ? href : `/${href}`);
+        const mapped = mapMerchantAppDeepLinkToPartnersite(href, {
+          preferMx: window.location.pathname.startsWith('/mx'),
+        });
+        router.push(mapped.startsWith('/') ? mapped : `/${mapped}`);
       } catch {
         /* ignore */
       }
@@ -1012,6 +1024,8 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
         const todayClosed =
           typeof data.is_today_scheduled_closed === 'boolean' ? data.is_today_scheduled_closed : null;
         const schedulePhase = typeof data.schedule_phase === 'string' ? data.schedule_phase : null;
+        const countdownAt = typeof data.countdown_at === 'string' ? data.countdown_at : null;
+        const countdownKind = typeof data.countdown_kind === 'string' ? data.countdown_kind : null;
         const surfOnline = partnerSurfaceOnlineFromStoreOperationsBody(data as unknown as Record<string, unknown>);
         clientStoreOpsDebugLog('refreshStoreOperations', {
           storeId: resolvedStoreId,
@@ -1022,30 +1036,33 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
           schedule_phase: schedulePhase,
           surface_online: surfOnline,
           is_today_scheduled_closed: todayClosed,
+          countdown_at: countdownAt,
         });
         const autoOpenEnabled = data.auto_open_from_schedule !== false;
         const approvalStatus =
           typeof data.approval_status === 'string' ? data.approval_status : null;
-        setStoreOpen(surfOnline);
+        // Never leave chip as blank "Status" when we have an operational answer.
+        setStoreOpen(surfOnline === null ? false : surfOnline);
         setAutoOpenFromSchedule(autoOpenEnabled);
         setManualLock(data.block_auto_open === true);
         setStoreOpsById((prev) => ({
           ...prev,
           [resolvedStoreId]: {
-            open: surfOnline,
+            open: surfOnline === null ? false : surfOnline,
             autoOpen: autoOpenEnabled,
             manualLock: data.block_auto_open === true,
             withinOperatingHours: withinH,
             schedulePhase,
             todayScheduledClosed: todayClosed,
             approvalStatus,
+            countdownAt,
+            countdownKind,
           },
         }));
-      } else {
-        setStoreOpen(null);
       }
+      // Incomplete payload / network: keep last known open/closed (don't flash empty "Status").
     } catch {
-      setStoreOpen(null);
+      /* keep last known */
     }
   }, [resolvedStoreId, applyLicenseFieldsFromStoreOps, queryClient]);
 
@@ -1076,7 +1093,7 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
           is_today_scheduled_closed: todayClosed,
         });
         const row: StoreOpRow = {
-          open: surfOnline,
+          open: surfOnline === null ? false : surfOnline,
           autoOpen: data.auto_open_from_schedule !== false,
           manualLock: data.block_auto_open === true,
           withinOperatingHours: withinH,
@@ -1084,6 +1101,8 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
           todayScheduledClosed: todayClosed,
           approvalStatus:
             typeof data.approval_status === 'string' ? data.approval_status : null,
+          countdownAt: typeof data.countdown_at === 'string' ? data.countdown_at : null,
+          countdownKind: typeof data.countdown_kind === 'string' ? data.countdown_kind : null,
         };
         setStoreOpsById((prev) => ({ ...prev, [storeId]: row }));
         if (storeId === resolvedStoreId) {
@@ -1155,10 +1174,44 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
 
   useEffect(() => {
     if (!resolvedStoreId) return;
+    // Instant chip paint from last local engine write (avoid empty "Status" while first GET runs).
+    const cachedOpen = readCachedStoreOpenFromEngine(resolvedStoreId);
+    if (cachedOpen !== null) {
+      setStoreOpen((prev) => (prev === null ? cachedOpen : prev));
+    }
     refreshStoreOperations();
     const t = window.setInterval(refreshStoreOperations, 30_000);
     return () => window.clearInterval(t);
   }, [refreshStoreOperations, resolvedStoreId]);
+
+  // Exact wake at reopen/break end — same idea as merchant app StoreStatusContext.
+  const headerCountdownAt =
+    resolvedStoreId && storeOpen !== true
+      ? storeOpsById[resolvedStoreId]?.countdownAt ?? null
+      : null;
+  useEffect(() => {
+    if (!resolvedStoreId || storeOpen === true || !headerCountdownAt) return;
+    const targetMs = new Date(headerCountdownAt).getTime();
+    if (!Number.isFinite(targetMs)) return;
+    const delay = Math.max(0, targetMs - Date.now());
+    const timers: number[] = [];
+    const kick = () => {
+      void refreshStoreOperations();
+    };
+    if (delay === 0) {
+      kick();
+      timers.push(window.setTimeout(kick, 1_500));
+      timers.push(window.setTimeout(kick, 3_500));
+    } else {
+      timers.push(window.setTimeout(kick, Math.min(delay + 250, 86_400_000)));
+      if (delay > 1_500) {
+        timers.push(window.setTimeout(kick, Math.max(0, delay - 400)));
+      }
+    }
+    return () => {
+      for (const id of timers) window.clearTimeout(id);
+    };
+  }, [resolvedStoreId, storeOpen, headerCountdownAt, refreshStoreOperations]);
 
   useEffect(() => {
     if (!resolvedStoreId || typeof window === 'undefined') return;
@@ -1828,9 +1881,14 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
     }
   };
 
-  const handleOperationalFlowSuccess = useCallback(async () => {
-    await refetchAllStoreOps();
-  }, [refetchAllStoreOps]);
+  const handleOperationalFlowSuccess = useCallback(
+    async (result?: { operational_status?: 'OPEN' | 'CLOSED' }) => {
+      if (result?.operational_status === 'CLOSED') setStoreOpen(false);
+      if (result?.operational_status === 'OPEN') setStoreOpen(true);
+      await refetchAllStoreOps();
+    },
+    [refetchAllStoreOps]
+  );
 
   const resolvedOpsRow = resolvedStoreId ? storeOpsById[resolvedStoreId] : undefined;
   const onlineLabel =
@@ -1840,9 +1898,11 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
         ? 'Online'
         : resolvedOpsRow?.todayScheduledClosed === true
           ? 'Offline · Closed today'
-          : resolvedOpsRow?.schedulePhase === 'BREAK'
+          : resolvedOpsRow?.schedulePhase === 'BREAK' ||
+              resolvedOpsRow?.countdownKind === 'reopens_in'
             ? 'Offline · Break'
-            : resolvedOpsRow?.withinOperatingHours === false
+            : resolvedOpsRow?.schedulePhase === 'OUTSIDE_HOURS' ||
+                resolvedOpsRow?.withinOperatingHours === false
               ? 'Offline · Outside hours'
               : 'Offline';
   const onlineGreen = storeOpen === true;

@@ -29,11 +29,11 @@ export const metadata: Metadata = {
   icons: {
     icon: [
       { url: "/favicon.png", sizes: "any" },
-      { url: "/logo.png", sizes: "32x32", type: "image/png" },
+      { url: "/onlylogo.png", sizes: "32x32", type: "image/png" },
     ],
     apple: [
-      { url: "/logo.png" },
-      { url: "/logo.png", sizes: "180x180", type: "image/png" },
+      { url: "/onlylogo.png" },
+      { url: "/onlylogo.png", sizes: "180x180", type: "image/png" },
     ],
     shortcut: "/favicon.png",
   },
@@ -57,7 +57,7 @@ export default function RootLayout({
       <head>
         <link rel="icon" href="/favicon.png" type="image/png" />
         <link rel="icon" href="/favicon.ico" sizes="any" />
-        <link rel="apple-touch-icon" href="/logo.png" />
+        <link rel="apple-touch-icon" href="/onlylogo.png" />
       </head>
       <body
         className={`${siteLora.variable} ${sitePoppins.variable} ${geistMono.variable} antialiased bg-white`}

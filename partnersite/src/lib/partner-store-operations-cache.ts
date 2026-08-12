@@ -49,3 +49,18 @@ export function writeStoreOperationsCache(storeId: string, data: StoreOperations
   if (!id) return;
   writeLayer(`${SESSION_PREFIX}${id}`, `${LOCAL_PREFIX}${id}`, data);
 }
+
+export function clearStoreOperationsCache(storeId: string) {
+  const id = storeId.trim();
+  if (!id || typeof window === 'undefined') return;
+  try {
+    sessionStorage.removeItem(`${SESSION_PREFIX}${id}`);
+  } catch {
+    /* ignore */
+  }
+  try {
+    localStorage.removeItem(`${LOCAL_PREFIX}${id}`);
+  } catch {
+    /* ignore */
+  }
+}

@@ -4,9 +4,12 @@
  */
 
 import { createClient } from "@supabase/supabase-js";
+import { createFetchWithTimeout } from "@/lib/auth/fetch-with-timeout";
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder.supabase.co";
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "placeholder-service-role-key";
+
+const adminFetch = createFetchWithTimeout(5_000);
 
 export interface MerchantValidationResult {
   isValid: boolean;
@@ -23,6 +26,7 @@ export interface MerchantValidationResult {
 function getSupabaseAdmin() {
   return createClient(supabaseUrl, supabaseServiceKey, {
     auth: { autoRefreshToken: false, persistSession: false },
+    global: { fetch: adminFetch },
   });
 }
 
@@ -187,8 +191,10 @@ export async function validateMerchantByPhone(phone: string): Promise<MerchantVa
         [
           `registered_phone.eq.${e164}`,
           `registered_phone.eq.${tenDigit}`,
+          `registered_phone.eq.91${tenDigit}`,
           `registered_phone_normalized.eq.${tenDigit}`,
           `registered_phone_normalized.eq.${e164}`,
+          `registered_phone_normalized.eq.91${tenDigit}`,
         ].join(",")
       )
       .order("id", { ascending: false })

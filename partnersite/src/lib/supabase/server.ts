@@ -5,7 +5,7 @@ import { createFetchWithTimeout } from "@/lib/auth/fetch-with-timeout";
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder.supabase.co";
 const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "placeholder-anon-key";
 
-const serverFetch = createFetchWithTimeout(12_000);
+const serverFetch = createFetchWithTimeout(5_000);
 
 export async function createServerSupabaseClient() {
   const cookieStore = await cookies();

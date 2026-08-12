@@ -138,6 +138,27 @@ export function invalidateOperatingHoursCache(storeId: number): void {
   const sid = typeof storeId === "number" && Number.isFinite(storeId) ? storeId : Number(storeId);
   if (!Number.isInteger(sid) || sid < 1) return;
   operatingHoursCache.delete(sid);
+  emitOperatingHoursUpdated(sid);
+}
+
+type OperatingHoursUpdatedListener = (storeId: number) => void;
+const operatingHoursUpdatedListeners = new Set<OperatingHoursUpdatedListener>();
+
+export function subscribeOperatingHoursUpdated(listener: OperatingHoursUpdatedListener): () => void {
+  operatingHoursUpdatedListeners.add(listener);
+  return () => {
+    operatingHoursUpdatedListeners.delete(listener);
+  };
+}
+
+function emitOperatingHoursUpdated(storeId: number): void {
+  for (const listener of operatingHoursUpdatedListeners) {
+    try {
+      listener(storeId);
+    } catch {
+      /* ignore */
+    }
+  }
 }
 
 export function peekOperatingHoursCache(storeId: number): OperatingHours | null | undefined {

@@ -7,6 +7,7 @@ import { GatiMitraMerchant, H_PADDING, CARD_RADIUS } from "@/constants/theme";
 import { useAuth } from "@/context/AuthContext";
 import { useSelectedStore } from "@/context/SelectedStoreContext";
 import { getStoreTickets, type TicketSummary } from "@/services/ticketApi";
+import { useLiveSupportTicket } from "@/context/LiveSupportTicketContext";
 
 function formatTicketDate(input: string): string {
   try {
@@ -33,6 +34,7 @@ export default function MyTicketsScreen() {
   const router = useRouter();
   const { token } = useAuth();
   const { selectedStore } = useSelectedStore();
+  const { revealLiveSupportFab } = useLiveSupportTicket();
 
   const [tickets, setTickets] = useState<TicketSummary[]>([]);
   const [loading, setLoading] = useState(true);
@@ -197,12 +199,14 @@ export default function MyTicketsScreen() {
                 {bucket.map((t) => (
                   <Pressable
                     key={t.id}
-                    onPress={() =>
+                    onPress={() => {
+                      // Dropped FAB stays hidden across tabs until merchant opens a ticket here.
+                      revealLiveSupportFab();
                       router.push({
                         pathname: "/support/chat/[ticketId]",
                         params: { ticketId: String(t.id) },
-                      })
-                    }
+                      });
+                    }}
                     style={({ pressed }) => [
                       styles.ticketRow,
                       pressed && styles.ticketRowPressed,

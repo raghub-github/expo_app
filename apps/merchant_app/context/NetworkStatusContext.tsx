@@ -1,5 +1,11 @@
 /**
  * App-wide connectivity — drives red offline bar + local system notification.
+ *
+ * Android (dev client / production): native OfflineConnectivityMonitor
+ * (NetworkCallback via ContentProvider) owns the tray alert while the process
+ * is alive in foreground OR background — same pattern Zomato uses.
+ *
+ * JS still posts the tray alert on iOS and Expo Go (no native monitor there).
  */
 import React, {
   createContext,
@@ -11,6 +17,7 @@ import React, {
   useState,
 } from "react";
 import { AppState, Platform, type AppStateStatus } from "react-native";
+import Constants from "expo-constants";
 import NetInfo, { type NetInfoState } from "@react-native-community/netinfo";
 
 const OFFLINE_NOTIF_ID = "mx_offline_network_v1";
@@ -29,6 +36,16 @@ const NetworkContext = createContext<NetworkContextValue>({
   refresh: async () => {},
 });
 
+function isExpoGo(): boolean {
+  return Constants.appOwnership === "expo";
+}
+
+/** Native Android monitor posts the tray alert — avoid duplicate JS notifications. */
+function jsOwnsTrayNotification(): boolean {
+  if (Platform.OS === "ios") return true;
+  return isExpoGo();
+}
+
 function isConnectedState(state: NetInfoState): boolean {
   // Treat null as online to avoid flashing the bar before the first real read.
   if (state.isConnected == null) return true;
@@ -44,24 +61,75 @@ async function ensureOfflineChannel(): Promise<void> {
     const Notifications = await import("expo-notifications");
     await Notifications.setNotificationChannelAsync(OFFLINE_CHANNEL, {
       name: "Connectivity",
+      description: "Alerts when the device has no internet",
       importance: Notifications.AndroidImportance.HIGH,
       vibrationPattern: [0, 120],
       lightColor: "#B91C1C",
       bypassDnd: false,
+      showBadge: false,
+      enableVibrate: true,
     });
   } catch {
     /* Expo Go / module missing */
   }
 }
 
-async function showOfflineSystemNotification(): Promise<void> {
+/** Allow the offline tray alert even while the app is in the foreground. */
+async function ensureForegroundPresentation(): Promise<void> {
   try {
+    const Notifications = await import("expo-notifications");
+    Notifications.setNotificationHandler({
+      handleNotification: async (notification) => {
+        const type = (notification.request.content.data as { type?: string } | undefined)?.type;
+        const isOffline = type === "offline_network";
+        return {
+          shouldShowAlert: true,
+          shouldPlaySound: !isOffline,
+          shouldSetBadge: !isOffline,
+          shouldShowBanner: true,
+          shouldShowList: true,
+        };
+      },
+    });
+  } catch {
+    /* ignore */
+  }
+}
+
+async function hasNotificationPermission(): Promise<boolean> {
+  try {
+    const Notifications = await import("expo-notifications");
+    const perm = await Notifications.getPermissionsAsync();
+    return perm.granted === true || perm.status === "granted";
+  } catch {
+    return false;
+  }
+}
+
+/** @returns true when the tray notification was posted successfully. */
+async function showOfflineSystemNotification(): Promise<boolean> {
+  if (!jsOwnsTrayNotification()) {
+    // Native OfflineConnectivityMonitor handles Android background/foreground tray.
+    return true;
+  }
+  try {
+    const allowed = await hasNotificationPermission();
+    if (!allowed) return false;
+
+    await ensureForegroundPresentation();
     await ensureOfflineChannel();
     const Notifications = await import("expo-notifications");
+
+    try {
+      await Notifications.dismissNotificationAsync(OFFLINE_NOTIF_ID);
+    } catch {
+      /* ignore */
+    }
+
     await Notifications.scheduleNotificationAsync({
       identifier: OFFLINE_NOTIF_ID,
       content: {
-        title: "Oops, no network available!",
+        title: "🚫 Oops, no network available!",
         body: "Please check your internet connection and try again",
         data: { type: "offline_network" },
         sound: false,
@@ -77,12 +145,14 @@ async function showOfflineSystemNotification(): Promise<void> {
       },
       trigger: null,
     });
+    return true;
   } catch {
-    /* Expo Go may log; ignore */
+    return false;
   }
 }
 
 async function dismissOfflineSystemNotification(): Promise<void> {
+  if (!jsOwnsTrayNotification()) return;
   try {
     const Notifications = await import("expo-notifications");
     await Notifications.dismissNotificationAsync(OFFLINE_NOTIF_ID);
@@ -105,8 +175,8 @@ export function NetworkStatusProvider({ children }: { children: React.ReactNode 
     if (!online) {
       wasOfflineRef.current = true;
       if (!notifShownRef.current) {
-        notifShownRef.current = true;
-        await showOfflineSystemNotification();
+        const ok = await showOfflineSystemNotification();
+        if (ok) notifShownRef.current = true;
       }
       return;
     }
@@ -130,6 +200,12 @@ export function NetworkStatusProvider({ children }: { children: React.ReactNode 
     });
     const appSub = AppState.addEventListener("change", (s: AppStateStatus) => {
       if (s === "active") void refresh();
+      if (s === "background" && wasOfflineRef.current && !notifShownRef.current) {
+        void (async () => {
+          const ok = await showOfflineSystemNotification();
+          if (ok) notifShownRef.current = true;
+        })();
+      }
     });
     return () => {
       unsub();

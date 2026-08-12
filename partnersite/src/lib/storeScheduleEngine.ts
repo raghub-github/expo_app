@@ -581,9 +581,11 @@ export function computeScheduleCountdown(args: {
   schedule: ScheduleEvaluation;
   displayOperational: 'OPEN' | 'CLOSED';
   opensAtIso: string | null;
+  /** When set, countdown is a manual temp-close reopen (not next schedule slot). */
+  manualTempClose?: boolean;
   refNow?: Date;
 }): { at: string | null; kind: ScheduleCountdownKind; wallLabel: string | null } {
-  const { schedule, displayOperational, opensAtIso } = args;
+  const { schedule, displayOperational, opensAtIso, manualTempClose } = args;
   const tz = normalizeStoreTimezone(args.storeTimezone);
   const oh = args.oh && Object.keys(args.oh).length > 0 ? args.oh : null;
 
@@ -621,7 +623,12 @@ export function computeScheduleCountdown(args: {
   if (displayOperational === 'CLOSED' && opensAtIso) {
     return {
       at: opensAtIso,
-      kind: schedule.schedulePhase === 'OFF_DAY' ? 'next_online_in' : 'opens_in',
+      kind:
+        manualTempClose === true
+          ? 'reopens_in'
+          : schedule.schedulePhase === 'OFF_DAY'
+            ? 'next_online_in'
+            : 'opens_in',
       wallLabel: wallClockLabelFromIso(opensAtIso, tz),
     };
   }

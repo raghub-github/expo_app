@@ -19,6 +19,7 @@ import {
 } from '@/lib/partnerStoreOperationsRefresh'
 import { toastStoreOperationsPostFailure, isOutsideOperatingHoursStoreOpsError } from '@/lib/storeOperationsPostFeedback'
 import { OutsideOperatingHoursModal } from '@/components/OutsideOperatingHoursModal'
+import { CloseStoreSidesheet } from '@/components/CloseStoreSidesheet'
 import {
   Power,
   Loader2,
@@ -62,7 +63,7 @@ import { BusinessReportsPanel } from '@/components/merchant/BusinessReportsPanel
 import { prefetchBusinessInsights, warmLivePreviewCache } from '@/lib/merchant-growth/growth-insights-cache';
 import { warmDashboardWalletCache } from '@/lib/partner-dashboard-cache';
 import { createClient } from '@/lib/supabase/client';
-import { useMerchantWallet, useStoreOperations, useStoreSettings, useSelfDeliveryRiders, fetchSelfDeliveryRiders } from '@/hooks/useMerchantApi'
+import { useMerchantWallet, useStoreOperations, useStoreSettings, useSelfDeliveryRiders, fetchSelfDeliveryRiders, fetchStoreOperations as fetchStoreOperationsApi } from '@/hooks/useMerchantApi'
 import { merchantKeys } from '@/lib/query-keys'
 import { useQueryClient } from '@tanstack/react-query';
 import { PlanExpiredWarningModal } from '@/components/merchant/PlanExpiredWarningModal';
@@ -299,8 +300,13 @@ function DashboardContent() {
     return null
   }, [cardDisplaySlots])
 
-  /** Prefer server countdown; fallback to opens_at, then next_schedule_transition_at so closed stores always get a target when the API provides one. */
-  const activeCountdownAt = countdownAt ?? opensAt ?? nextScheduleTransitionAt ?? null
+  const activeCountdownAt =
+    countdownAt ??
+    opensAt ??
+    (withinOperatingHours === true || withinHoursButRestricted
+      ? null
+      : nextScheduleTransitionAt) ??
+    null
 
   const showScheduleCountdown =
     !isStoreOpen && !withinHoursButRestricted && !!activeCountdownAt
@@ -735,11 +741,19 @@ function DashboardContent() {
   /** Hard refresh at schedule boundaries — invalidate + refetch so countdown 0 flips Open without a page reload. */
   const forceStoreOperationsSync = React.useCallback(async () => {
     if (!storeId) return
-    await queryClient.invalidateQueries({ queryKey: merchantKeys.storeOperations(storeId) })
-    await queryClient.refetchQueries({
-      queryKey: merchantKeys.storeOperations(storeId),
-      type: 'active',
-    })
+    try {
+      await queryClient.fetchQuery({
+        queryKey: merchantKeys.storeOperations(storeId),
+        queryFn: () => fetchStoreOperationsApi(storeId),
+        staleTime: 0,
+      })
+    } catch {
+      await queryClient.invalidateQueries({ queryKey: merchantKeys.storeOperations(storeId) })
+      await queryClient.refetchQueries({
+        queryKey: merchantKeys.storeOperations(storeId),
+        type: 'active',
+      })
+    }
     // Keep header Offline/Online chip in sync; skip our own listener (already refetched).
     skipRefreshEventRef.current = true
     emitPartnerStoreOperationsRefresh(storeId)
@@ -1175,8 +1189,9 @@ function DashboardContent() {
         toast.error('Please select date and time for reopening')
         return
       }
-      const closedUntil = new Date(`${closureDate}T${closureTime}:00`)
-      if (closedUntil.getTime() <= Date.now()) {
+      const timeNorm = /^\d{2}:\d{2}:\d{2}$/.test(closureTime) ? closureTime : `${closureTime}:00`
+      const closedUntil = new Date(`${closureDate}T${timeNorm}+05:30`)
+      if (Number.isNaN(closedUntil.getTime()) || closedUntil.getTime() <= Date.now()) {
         toast.error('Reopening date and time must be in the future')
         return
       }
@@ -1198,8 +1213,9 @@ function DashboardContent() {
 
     let manualCloseUntilIso: string | undefined
     if (toggleClosureType === 'temporary') {
-      const closedUntil = new Date(`${closureDate}T${closureTime}:00`)
-      manualCloseUntilIso = closedUntil.toISOString()
+      // Bare IST wall clock — partnersite POST parses as Asia/Kolkata (+05:30), same as dashboard portal.
+      const timeNorm = /^\d{2}:\d{2}:\d{2}$/.test(closureTime) ? closureTime : `${closureTime}:00`
+      manualCloseUntilIso = `${closureDate}T${timeNorm}`
     }
 
     const reasonText = closeReason === 'Other' ? (closeReasonOther?.trim() || 'Other') : closeReason
@@ -1230,7 +1246,17 @@ function DashboardContent() {
         setCloseReason('')
         setCloseReasonOther('')
         toast.success('Store closed.')
-        await fetchStoreOperations()
+        // Paint closed immediately — do not wait for a full page reload.
+        setIsStoreOpen(false)
+        useLocalStoreStatusEngineStore.getState().syncFromStoreOperations({
+          operationalOpen: false,
+          manualCloseUntil:
+            typeof (result as { manual_close_until?: string | null }).manual_close_until === 'string'
+              ? (result as { manual_close_until: string }).manual_close_until
+              : null,
+          manualCloseReason: reasonText,
+        })
+        await forceStoreOperationsSync()
       } else {
         toast.error((result as { error?: string }).error || 'Failed to close store')
       }
@@ -1365,111 +1391,22 @@ function DashboardContent() {
           </div>
         </Dialog>
       )}
-      {/* Store close options – popup; z-[100] so overlay covers and blurs sidebar */}
-      {showClosePopup && (
-        <Dialog open={showClosePopup} onClose={handleCancelClosePopup} className="relative z-[100]">
-          <div className="fixed inset-0 bg-black/50 backdrop-blur-md" aria-hidden="true" />
-          <div className="fixed inset-0 flex items-center justify-center p-4">
-            <Dialog.Panel className="mx-auto max-w-md rounded-2xl bg-white p-6 shadow-2xl border border-gray-200">
-              <Dialog.Title className="text-lg font-bold text-gray-900 mb-4">How would you like to close your store?</Dialog.Title>
-              <div className="space-y-3">
-                <label className={`flex items-center gap-3 p-3 rounded-lg cursor-pointer border-2 ${toggleClosureType === 'temporary' ? 'bg-orange-50 border-orange-400' : 'border-gray-200 hover:border-orange-200'}`}>
-                  <input type="radio" name="closureType" checked={toggleClosureType === 'temporary'} onChange={() => setToggleClosureType('temporary')} className="w-4 h-4" />
-                  <div className="flex-1">
-                    <p className="text-sm font-semibold text-gray-900">Temporary Closed</p>
-                    <p className="text-xs text-gray-600">Close until a specific date and time. Reopens automatically then, or turn ON manually anytime.</p>
-                  </div>
-                </label>
-                {toggleClosureType === 'temporary' && (
-                  <div className="ml-7 space-y-3 p-3 rounded-lg bg-orange-50/50 border border-orange-200">
-                    <p className="text-xs font-semibold text-gray-700">Reopen on (date and time):</p>
-                    <div className="grid grid-cols-2 gap-3">
-                      <div>
-                        <label className="text-[10px] font-medium text-gray-500 block mb-1">Date</label>
-                        <input
-                          type="date"
-                          value={closureDate}
-                          onChange={(e) => setClosureDate(e.target.value)}
-                          min={(() => {
-                            const n = new Date()
-                            return `${n.getFullYear()}-${(n.getMonth() + 1).toString().padStart(2, '0')}-${n.getDate().toString().padStart(2, '0')}`
-                          })()}
-                          className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm text-gray-900"
-                        />
-                      </div>
-                      <div>
-                        <label className="text-[10px] font-medium text-gray-500 block mb-1">Time</label>
-                        <input
-                          type="time"
-                          value={closureTime}
-                          onChange={(e) => setClosureTime(e.target.value)}
-                          className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm text-gray-900"
-                        />
-                      </div>
-                    </div>
-                    <p className="text-[10px] text-gray-600">Store stays closed until this date & time, or until you turn it ON manually.</p>
-                  </div>
-                )}
-                <label className={`flex items-center gap-3 p-3 rounded-lg cursor-pointer border-2 ${toggleClosureType === 'today' ? 'bg-red-50 border-red-400' : 'border-gray-200 hover:border-red-200'}`}>
-                  <input type="radio" name="closureType" checked={toggleClosureType === 'today'} onChange={() => setToggleClosureType('today')} className="w-4 h-4" />
-                  <div className="flex-1">
-                    <p className="text-sm font-semibold text-gray-900">Close for Today</p>
-                    <p className="text-xs text-gray-600">Closed until end of today (India time). Schedule can resume tomorrow.</p>
-                  </div>
-                </label>
-                <label className={`flex items-center gap-3 p-3 rounded-lg cursor-pointer border-2 ${toggleClosureType === 'manual_hold' ? 'bg-amber-50 border-amber-400' : 'border-gray-200 hover:border-amber-200'}`}>
-                  <input type="radio" name="closureType" checked={toggleClosureType === 'manual_hold'} onChange={() => setToggleClosureType('manual_hold')} className="w-4 h-4" />
-                  <div className="flex-1">
-                    <p className="text-sm font-semibold text-gray-900">Until I manually turn it ON</p>
-                    <p className="text-xs text-gray-600">Store stays OFF even during operating hours until you turn it ON</p>
-                  </div>
-                </label>
-              </div>
-              {/* Reason for closing (mandatory when manually closing) */}
-              <div className="mt-4 space-y-2">
-                <label className="text-xs font-semibold text-gray-700 block">
-                  Reason for closing <span className="text-red-500">*</span>
-                </label>
-                <select
-                  value={closeReason}
-                  onChange={(e) => setCloseReason(e.target.value)}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm text-gray-900 bg-white"
-                >
-                  <option value="">Select reason</option>
-                  <option value="Staff shortage">Staff shortage</option>
-                  <option value="Inventory restock">Inventory restock</option>
-                  <option value="Device issue / electricity">Device issue / electricity</option>
-                  <option value="Run out of Gas">Run out of Gas</option>
-                  <option value="Payment issue">Payment issue</option>
-                  <option value="Rush of offline orders">Rush of offline orders</option>
-                  <option value="Equipment issue">Equipment issue</option>
-                  <option value="Holiday / Off">Holiday / Off</option>
-                  <option value="Maintenance">Maintenance</option>
-                  <option value="Personal / Emergency">Personal / Emergency</option>
-                  <option value="Kitchen / Prep area issue">Kitchen / Prep area issue</option>
-                  <option value="Supplier delay">Supplier delay</option>
-                  <option value="Other">Other</option>
-                </select>
-                {closeReason === 'Other' && (
-                  <input
-                    type="text"
-                    value={closeReasonOther}
-                    onChange={(e) => setCloseReasonOther(e.target.value)}
-                    placeholder="Enter reason"
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm text-gray-900"
-                  />
-                )}
-              </div>
-              <div className="flex gap-3 mt-5">
-                <button type="button" onClick={handleCancelClosePopup} disabled={closeConfirmLoading} className="flex-1 px-4 py-2.5 border border-gray-300 rounded-xl text-gray-700 font-medium hover:bg-gray-50 disabled:opacity-50">Cancel</button>
-                <button type="button" onClick={handleClosePopupConfirm} disabled={!toggleClosureType || !closeReason?.trim() || (closeReason === 'Other' && !closeReasonOther?.trim()) || (toggleClosureType === 'temporary' && (!closureDate || !closureTime)) || closeConfirmLoading} className="flex-1 px-4 py-2.5 bg-red-600 text-white rounded-xl font-medium hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed inline-flex items-center justify-center gap-2">
-                  {closeConfirmLoading ? <><Loader2 size={18} className="animate-spin" /> Confirming...</> : 'Confirm'}
-                </button>
-              </div>
-            </Dialog.Panel>
-          </div>
-        </Dialog>
-      )}
+      <CloseStoreSidesheet
+        open={showClosePopup}
+        toggleClosureType={toggleClosureType}
+        setToggleClosureType={setToggleClosureType}
+        closureDate={closureDate}
+        setClosureDate={setClosureDate}
+        closureTime={closureTime}
+        setClosureTime={setClosureTime}
+        closeReason={closeReason}
+        setCloseReason={setCloseReason}
+        closeReasonOther={closeReasonOther}
+        setCloseReasonOther={setCloseReasonOther}
+        loading={closeConfirmLoading}
+        onCancel={handleCancelClosePopup}
+        onConfirm={handleClosePopupConfirm}
+      />
       {/* Turn Store ON modal: outside layout so overlay covers full viewport (including sidebar) */}
       {showToggleOnWarning && (
         <div className="fixed inset-0 bg-black/50 backdrop-blur-md flex items-center justify-center z-[100] p-4" aria-hidden="true">

@@ -204,7 +204,8 @@ export async function GET(
     }
 
     await ensureAvailabilityRow(storeId);
-    await triggerStoreScheduleTick(storeId);
+    // Non-blocking: partnersite paints from cache; awaiting tick made dashboard status lag.
+    void triggerStoreScheduleTick(storeId).catch(() => undefined);
 
     store = (await getMerchantStoreById(storeId, areaManagerId)) ?? store;
 
@@ -762,7 +763,32 @@ export async function POST(
         VALUES (${storeId}, 'manual_close', ${logRestrictionBefore}, ${closeReasonText}, ${togglerEmail})
       `;
 
+      // Sync live columns; schedule engine must keep the store CLOSED while manual hold is active.
       await triggerStoreScheduleTick(storeId);
+
+      try {
+        await insertActivityLog({
+          storeId,
+          agentId,
+          changedSection: "store_operations",
+          fieldName: "operational_status",
+          oldValue: store.operational_status ?? null,
+          newValue: action,
+          changeReason: body?.close_reason ?? body?.change_reason ?? null,
+          actionType: "update",
+        });
+      } catch (logErr) {
+        console.warn("[POST store-operations] activity log insert failed:", logErr);
+      }
+
+      return NextResponse.json({
+        success: true,
+        operational_status: "CLOSED",
+        surface_online: false,
+        is_open: false,
+        manual_close_until: manualUntilIso,
+        block_auto_open: blockAutoOpenForManualHold,
+      });
     } else if (action === "update_manual_lock") {
       const block = body?.block_auto_open === true;
       await sql`

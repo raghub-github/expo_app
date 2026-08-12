@@ -24,7 +24,7 @@ import { useProfileNav } from "@/context/ProfileNavContext";
 import { AuthProxyImage } from "@/components/AuthProxyImage";
 import { MerchantBackButton } from "@/components/MerchantBackButton";
 import { useMerchantGoBack, useMerchantNavigate, merchantPush } from "@/lib/merchantNavigation";
-import { getOperatingHours, getCachedOutlet, getOutlet, prefetchOutlet, prefetchOperatingHours, peekOperatingHoursCache, resolveImageUrl, type OperatingHours, type DaySlots } from "@/services/outletApi";
+import { getOperatingHours, getCachedOutlet, getOutlet, prefetchOutlet, prefetchOperatingHours, peekOperatingHoursCache, resolveImageUrl, subscribeOperatingHoursUpdated, type OperatingHours, type DaySlots } from "@/services/outletApi";
 import {
   getNextOpenDayStartIso,
   getNextOpenIsoAfterIstCalendarDay,
@@ -33,7 +33,6 @@ import {
   operatingHoursToFlatRow,
 } from "@/lib/merchantStoreNextOpenIso";
 import { formatCloseReasonForCard } from "@/lib/formatCloseReasonForCard";
-import { formatStoreActionSourceLabel } from "@/lib/storeActionSource";
 import type { ChildStore } from "@/context/AuthContext";
 import {
   formatStoreHeaderSubtitle,
@@ -231,6 +230,8 @@ function MainHeader({
   pathname,
   showHeaderToggle,
   onToggleRequest,
+  reopenAtIso: reopenAtIsoProp,
+  reopenCountdownLabelPrefix,
 }: {
   compact?: boolean;
   pickerVisible: boolean;
@@ -239,8 +240,29 @@ function MainHeader({
   pathname?: string;
   showHeaderToggle?: boolean;
   onToggleRequest?: () => void;
+  /** Offline reopen target — shown as countdown under the ONLINE/OFFLINE toggle. */
+  reopenAtIso?: string | null;
+  reopenCountdownLabelPrefix?: string;
 }) {
   const { isOnline, scheduledClosure, manualCloseUntil, restrictionType } = useStoreStatus();
+  const reopenAtIso = normalizeIso(reopenAtIsoProp);
+  const countdownPrefix = reopenCountdownLabelPrefix ?? "Opens in";
+  const [countdownTime, setCountdownTime] = useState<string | null>(() =>
+    reopenAtIso && !isOnline ? formatNextReopenCountdown(reopenAtIso) : null
+  );
+
+  useEffect(() => {
+    if (isOnline || !reopenAtIso || !showHeaderToggle) {
+      setCountdownTime(null);
+      return;
+    }
+    const tick = () => {
+      setCountdownTime(formatNextReopenCountdown(reopenAtIso));
+    };
+    tick();
+    const id = setInterval(tick, 1000);
+    return () => clearInterval(id);
+  }, [isOnline, reopenAtIso, showHeaderToggle]);
   const {
     selectedStore,
     managedStores,
@@ -255,15 +277,24 @@ function MainHeader({
       manualCloseUntil !== "" &&
       new Date(manualCloseUntil).getTime() > Date.now());
   const { partner, token } = useAuth();
-  const { returnRoute, setReturnRoute } = useProfileNav();
+  const { returnRoute, setReturnRoute, vacationHeader } = useProfileNav();
   const router = useRouter();
   const [storeLocationLabel, setStoreLocationLabel] = useState("");
   const goBack = useMerchantGoBack();
   const segments = useSegments();
   const tab = segments[segments.length - 1] ?? "index";
   const isProfileSection = segments.includes("profile");
-  const profileSubPageTitle = isProfileSection ? resolveProfileSubPage(pathname) : null;
-  const profileSubPageSubtitle = isProfileSection ? resolveProfileSubPageSubtitle(pathname) : null;
+  const isVacationPage = isProfileSection && (pathname?.includes("/vacation") ?? false);
+  const profileSubPageTitle = isProfileSection
+    ? isVacationPage && vacationHeader?.title
+      ? vacationHeader.title
+      : resolveProfileSubPage(pathname)
+    : null;
+  const profileSubPageSubtitle = isProfileSection
+    ? isVacationPage && vacationHeader?.subtitle
+      ? vacationHeader.subtitle
+      : resolveProfileSubPageSubtitle(pathname)
+    : null;
   const isProfileRootWithReturn =
     isProfileSection && !profileSubPageTitle && returnRoute != null && returnRoute.length > 0;
   const isEarningsSection = segments.includes("earnings");
@@ -415,6 +446,12 @@ function MainHeader({
               onStartShouldSetResponder={() => true}
             >
               <OnlineOfflineToggle isOnline={isOnline} onToggle={onToggleRequest} />
+              {!isOnline && countdownTime ? (
+                <Text style={styles.headerToggleCountdown} numberOfLines={1}>
+                  {countdownPrefix}{" "}
+                  <Text style={styles.headerToggleCountdownBold}>{countdownTime}</Text>
+                </Text>
+              ) : null}
             </View>
           ) : null}
           {isProfileSection && !profileSubPageTitle && !showFlowMenuButton ? (
@@ -542,13 +579,11 @@ function StoreStatusCard({
   scheduleLabel,
   showAutoOpenTag,
   todayHoursLabel,
-  reopenAtIso: reopenAtIsoProp,
-  reopenAtFormatted,
-  reopenCountdownLabelPrefix,
+  reopenAtIso: _reopenAtIsoProp,
+  reopenAtFormatted: _reopenAtFormatted,
+  reopenCountdownLabelPrefix: _reopenCountdownLabelPrefix,
   lastOpenedLine,
   lastClosedLine,
-  scheduledTimeOffLines,
-  activeRushLine,
 }: {
   onPressCard?: () => void;
   /** Opens operating hours for the active store (does not open store-status list). */
@@ -566,21 +601,8 @@ function StoreStatusCard({
   lastOpenedLine?: string | null;
   /** "Last: Closed by Name (ID: id) · 11:56:12 am" when temp close */
   lastClosedLine?: string | null;
-  scheduledTimeOffLines?: Array<{
-    phase: "active" | "upcoming";
-    windowText: string;
-    reason?: string | null;
-    sourceLabel: string | null;
-  }>;
-  activeRushLine?: { remainingMinutes: number; sourceLabel: string | null } | null;
 }) {
   const { isOnline } = useStoreStatus();
-  const countdownPrefix = reopenCountdownLabelPrefix ?? "Reopen at:";
-  const reopenAtIso = normalizeIso(reopenAtIsoProp);
-  const [countdownTime, setCountdownTime] = useState<string | null>(() =>
-    reopenAtIso ? formatNextReopenCountdown(reopenAtIso) : null
-  );
-  const reopenLabel = reopenAtFormatted ?? (reopenAtIso ? formatReopenAtLabel(reopenAtIso) : null);
 
   useEffect(() => {
     if (Platform.OS !== "web") {
@@ -588,18 +610,6 @@ function StoreStatusCard({
       LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
     }
   }, [isOnline]);
-
-  // Dynamic countdown updating every second (server-synced reopen time).
-  useEffect(() => {
-    if (!reopenAtIso) {
-      setCountdownTime(null);
-      return;
-    }
-    const update = () => setCountdownTime(formatNextReopenCountdown(reopenAtIso));
-    update();
-    const id = setInterval(update, 1000);
-    return () => clearInterval(id);
-  }, [reopenAtIso]);
 
   return (
     <Pressable
@@ -613,34 +623,6 @@ function StoreStatusCard({
       accessibilityRole={onPressCard ? "button" : undefined}
       accessibilityLabel="Open store status"
     >
-      {scheduledTimeOffLines && scheduledTimeOffLines.length > 0 ? (
-        <View style={styles.scheduleOffBanner}>
-          <Text style={styles.scheduleOffBannerTitle}>Scheduled time-off</Text>
-          {scheduledTimeOffLines.map((row, idx) => (
-            <Text key={`sched-${idx}`} style={styles.scheduleOffBannerLine} numberOfLines={3}>
-              <Text style={row.phase === "active" ? styles.scheduleOffPhaseActive : styles.scheduleOffPhaseUpcoming}>
-                {row.phase === "active" ? "Active" : "Upcoming"}
-              </Text>
-              {" · "}
-              {row.windowText}
-              {row.reason ? ` · ${row.reason}` : ""}
-              {row.sourceLabel ? ` · via ${row.sourceLabel}` : ""}
-            </Text>
-          ))}
-        </View>
-      ) : null}
-      {activeRushLine && activeRushLine.remainingMinutes > 0 ? (
-        <View style={styles.rushBanner}>
-          <Text style={styles.rushBannerTitle}>Rush hour</Text>
-          <Text style={styles.rushBannerLine} numberOfLines={2}>
-            <Text style={styles.rushBannerActive}>Active</Text>
-            {" · ~"}
-            {activeRushLine.remainingMinutes}
-            {" min left"}
-            {activeRushLine.sourceLabel ? ` · via ${activeRushLine.sourceLabel}` : ""}
-          </Text>
-        </View>
-      ) : null}
       <View style={styles.statusCardInner}>
         <View style={styles.statusCardMainRow}>
           <View style={styles.statusCardLeft}>
@@ -669,7 +651,7 @@ function StoreStatusCard({
               </Text>
             ) : null}
             {!isOnline && autoReopenLabel ? (
-              <Text style={[styles.statusCardMetaRight, styles.statusBannerMeta]} numberOfLines={1}>
+              <Text style={[styles.statusCardMetaRight, styles.statusBannerMeta]} numberOfLines={2}>
                 {autoReopenLabel}
               </Text>
             ) : null}
@@ -723,20 +705,13 @@ function StoreStatusCard({
                 </Text>
               </Pressable>
             ) : null}
-            {!isOnline ? (
-              <Text style={[styles.statusCardCountdownRight, styles.statusBannerCountdown]} numberOfLines={1}>
-                {countdownPrefix}{" "}
-                <Text style={styles.statusBannerCountdownBold}>
-                  {countdownTime ?? reopenLabel ?? (reopenAtIso ? "Next open" : "When you open")}
-                </Text>
-              </Text>
-            ) : null}
           </View>
         </View>
       </View>
     </Pressable>
   );
 }
+
 
 type WarningModalType = "store-status" | "switch-store" | "outside-hours";
 
@@ -759,14 +734,12 @@ export function MerchantCustomHeader() {
     autoOpenFromSchedule,
     manualActivationLock,
     upcomingScheduledClosure,
-    activeRush,
     statusReason,
     unavailableReason,
     reopenAtIso: reopenAtIsoFromContext,
     nextOpenIso,
     nextOpenTime,
     nextCloseTime,
-    manualCloseStartAt,
     closedBy,
     closedById,
     lastToggleType,
@@ -782,6 +755,13 @@ export function MerchantCustomHeader() {
       new Date(manualCloseUntil).getTime() > Date.now()) ||
     upcomingScheduledClosure != null;
   const { switchActiveOutlet } = useSelectedStore();
+
+  const [nowTick, setNowTick] = useState(() => Date.now());
+  useEffect(() => {
+    if (isOnline) return;
+    const id = setInterval(() => setNowTick(Date.now()), 30_000);
+    return () => clearInterval(id);
+  }, [isOnline]);
 
   const [pickerVisible, setPickerVisible] = useState(false);
   const [warningModal, setWarningModal] = useState<{
@@ -836,19 +816,19 @@ export function MerchantCustomHeader() {
       setOperatingHours(null);
       return;
     }
-    const cached = peekOperatingHoursCache(selectedStore.id);
-    if (cached) {
-      setOperatingHours(cached);
-      setTodayHoursLabel(getTodayHoursLabel(cached));
-    }
-    prefetchOperatingHours(selectedStore.id, token);
+    const storeIdNum = selectedStore.id;
+    const applyHours = (hours: OperatingHours | null) => {
+      setOperatingHours(hours);
+      setTodayHoursLabel(getTodayHoursLabel(hours));
+    };
+    const cached = peekOperatingHoursCache(storeIdNum);
+    if (cached) applyHours(cached);
+    prefetchOperatingHours(storeIdNum, token);
     let cancelled = false;
-    getOperatingHours(selectedStore.id, token)
+    getOperatingHours(storeIdNum, token)
       .then((hours) => {
         if (cancelled) return;
-        const h = hours ?? null;
-        setOperatingHours(h);
-        setTodayHoursLabel(getTodayHoursLabel(h));
+        applyHours(hours ?? null);
       })
       .catch(() => {
         if (!cancelled) {
@@ -856,8 +836,18 @@ export function MerchantCustomHeader() {
           setOperatingHours(null);
         }
       });
+    const unsub = subscribeOperatingHoursUpdated((sid) => {
+      if (sid !== storeIdNum || cancelled) return;
+      void getOperatingHours(storeIdNum, token)
+        .then((hours) => {
+          if (cancelled) return;
+          applyHours(hours ?? null);
+        })
+        .catch(() => undefined);
+    });
     return () => {
       cancelled = true;
+      unsub();
     };
   }, [selectedStore?.id, token, pathname]);
 
@@ -1016,24 +1006,6 @@ export function MerchantCustomHeader() {
     }).format(d);
   };
 
-  const formatRemainingShort = (targetIso: string | null | undefined): string | null => {
-    if (!targetIso) return null;
-    const target = new Date(targetIso);
-    const now = new Date();
-    const diffMs = target.getTime() - now.getTime();
-    if (!Number.isFinite(diffMs) || diffMs <= 0) return null;
-    const totalMinutes = Math.round(diffMs / 60000);
-    const days = Math.floor(totalMinutes / (60 * 24));
-    const hours = Math.floor((totalMinutes - days * 24 * 60) / 60);
-    const minutes = totalMinutes - days * 24 * 60 - hours * 60;
-    const parts: string[] = [];
-    if (days > 0) parts.push(`${days}d`);
-    if (hours > 0) parts.push(`${hours}h`);
-    if (minutes > 0 && days === 0) parts.push(`${minutes}m`);
-    if (parts.length === 0) return null;
-    return `in ${parts.join(" ")}`;
-  };
-
   let autoReopenLabel: string | null = null;
   let scheduleLabel: string | null = null;
 
@@ -1106,22 +1078,28 @@ export function MerchantCustomHeader() {
                 : "Closed: Manual close";
 
   let tempClosedDurationLabel: string | null = null;
-  if (isTempClose && manualCloseStartAt) {
-    const start = new Date(manualCloseStartAt).getTime();
-    const now = Date.now();
-    if (Number.isFinite(start) && now > start) {
-      const min = Math.floor((now - start) / 60000);
+  if (isTempClose && primaryReopenIso) {
+    // "Closed for" = remaining time until reopen (not elapsed since toggle).
+    const untilMs = new Date(primaryReopenIso).getTime();
+    const leftMs = untilMs - nowTick;
+    if (Number.isFinite(leftMs) && leftMs > 0) {
+      const min = Math.max(1, Math.round(leftMs / 60000));
       if (min < 60) tempClosedDurationLabel = `Closed for ${min} min`;
-      else tempClosedDurationLabel = `Closed for ${Math.floor(min / 60)}h ${min % 60}m`;
+      else {
+        const h = Math.floor(min / 60);
+        const m = min % 60;
+        tempClosedDurationLabel = m > 0 ? `Closed for ${h}h ${m}m` : `Closed for ${h}h`;
+      }
     }
   }
 
   if (!isOnline) {
     if (isTempClose && primaryReopenIso) {
       const when = formatIstDateTimeCompact(primaryReopenIso);
-      const remaining = formatRemainingShort(primaryReopenIso);
       if (when) {
-        autoReopenLabel = `${tempClosedDurationLabel ? `${tempClosedDurationLabel} • ` : ""}Reopening at ${when}${remaining ? ` (${remaining})` : ""}`;
+        autoReopenLabel = tempClosedDurationLabel
+          ? `${tempClosedDurationLabel} • Reopening at ${when}`
+          : `Reopening at ${when}`;
       }
     } else if (manualActivationLock) {
       autoReopenLabel = "Force Keep Store Closed is ON";
@@ -1147,50 +1125,6 @@ export function MerchantCustomHeader() {
     return null;
   }, [todayHoursLabel, isOnline, nextOpenTime, nextCloseTime]);
 
-  const formatScheduleWindow = (fromIso: string, toIso: string) => {
-    const fromLabel = formatIstDateTimeCompact(fromIso);
-    const toLabel = formatIstDateTimeCompact(toIso);
-    if (fromLabel && toLabel) return `${fromLabel} – ${toLabel}`;
-    return fromLabel || toLabel || "";
-  };
-
-  const scheduledTimeOffLines: Array<{
-    phase: "active" | "upcoming";
-    windowText: string;
-    reason?: string | null;
-    sourceLabel: string | null;
-  }> = [];
-  if (upcomingScheduledClosure) {
-    const w = formatScheduleWindow(upcomingScheduledClosure.from, upcomingScheduledClosure.to);
-    if (w) {
-      scheduledTimeOffLines.push({
-        phase: "upcoming",
-        windowText: w,
-        reason: upcomingScheduledClosure.reason,
-        sourceLabel: formatStoreActionSourceLabel(upcomingScheduledClosure.marked_from),
-      });
-    }
-  }
-  if (scheduledClosure && !isOnline) {
-    const w = formatScheduleWindow(scheduledClosure.from, scheduledClosure.to);
-    if (w) {
-      scheduledTimeOffLines.push({
-        phase: "active",
-        windowText: w,
-        reason: scheduledClosure.reason,
-        sourceLabel: formatStoreActionSourceLabel(scheduledClosure.marked_from),
-      });
-    }
-  }
-
-  const activeRushLine =
-    activeRush && activeRush.is_active && activeRush.remaining_minutes > 0
-      ? {
-          remainingMinutes: activeRush.remaining_minutes,
-          sourceLabel: formatStoreActionSourceLabel(activeRush.marked_from),
-        }
-      : null;
-
   const isGatiMitraActor = (emailOrName: string | null | undefined): boolean => {
     const v = emailOrName != null ? String(emailOrName).toLowerCase() : "";
     return v.includes("gatimitra") || v.endsWith("@gatimitra.in") || v.endsWith("@gatimitra.com");
@@ -1207,14 +1141,13 @@ export function MerchantCustomHeader() {
       timeZone: "Asia/Calcutta",
     }).format(new Date(lastToggledAt));
     const tType = lastToggleType != null ? String(lastToggleType).toUpperCase() : "";
-    const storePublicId = selectedStore?.store_id ? String(selectedStore.store_id) : null;
     if (tType.startsWith("AUTO")) {
       lastClosedLine = `Last: Auto closed · ${timeStr}`;
     } else if (isGatiMitraActor(lastToggledByEmail) || isGatiMitraActor(lastToggledByName)) {
       lastClosedLine = `Last: Closed by GatiMitra (agent: ${lastToggledByEmail || "unknown"}) · ${timeStr}`;
     } else {
       const who = lastToggledByName || lastToggledById || "Owner";
-      lastClosedLine = `Last: Closed by ${who}${storePublicId ? ` (ID: ${storePublicId})` : ""} · ${timeStr}`;
+      lastClosedLine = `Last: Closed by ${who} · ${timeStr}`;
     }
   }
 
@@ -1256,6 +1189,8 @@ export function MerchantCustomHeader() {
           pathname={pathname}
           showHeaderToggle={isHomeScreen}
           onToggleRequest={showStoreStatusWarning}
+          reopenAtIso={!isOnline ? primaryReopenIso : null}
+          reopenCountdownLabelPrefix={!isOnline && primaryReopenIso ? "Opens in" : undefined}
         />
       </View>
     </View>
@@ -1284,8 +1219,6 @@ export function MerchantCustomHeader() {
           reopenAtFormatted={!isOnline ? formatIstDateTimeCompact(primaryReopenIso) : null}
           lastOpenedLine={isOnline ? lastOpenedLine : null}
           lastClosedLine={!isOnline ? lastClosedLine : null}
-          scheduledTimeOffLines={scheduledTimeOffLines}
-          activeRushLine={activeRushLine}
         />
       </View>
     ) : null}
@@ -1293,11 +1226,33 @@ export function MerchantCustomHeader() {
       <Modal
         visible={warningModal.visible}
         transparent
-        animationType="fade"
+        animationType={
+          warningModal.type === "store-status" && warningModal.goingOffline ? "slide" : "fade"
+        }
         onRequestClose={closeWarningModal}
       >
-        <Pressable style={styles.warningOverlay} onPress={closeWarningModal}>
-          <Pressable style={[styles.warningCard, warningModal.type === "outside-hours" && styles.outsideHoursCard]} onPress={(e) => e.stopPropagation()}>
+        <Pressable
+          style={[
+            styles.warningOverlay,
+            warningModal.type === "store-status" && warningModal.goingOffline
+              ? styles.warningOverlayBottomSheet
+              : null,
+          ]}
+          onPress={closeWarningModal}
+        >
+          <Pressable
+            style={[
+              styles.warningCard,
+              warningModal.type === "outside-hours" && styles.outsideHoursCard,
+              warningModal.type === "store-status" && warningModal.goingOffline
+                ? [styles.warningCardBottomSheet, { paddingBottom: Math.max(insets.bottom, 16) }]
+                : null,
+            ]}
+            onPress={(e) => e.stopPropagation()}
+          >
+            {warningModal.type === "store-status" && warningModal.goingOffline ? (
+              <View style={styles.bottomSheetHandle} />
+            ) : null}
             {warningModal.type === "outside-hours" ? (
               <>
                 <View style={styles.storeOnIconWrap}>
@@ -1432,10 +1387,17 @@ export function MerchantCustomHeader() {
                           }}
                           style={({ pressed }) => [
                             styles.closeScheduleFieldBox,
+                            !!closeTempDate && styles.closeScheduleFieldBoxActive,
                             pressed && styles.pressed,
                           ]}
                         >
-                          <Text style={styles.closeScheduleFieldPlaceholder}>
+                          <Text
+                            style={
+                              closeTempDate
+                                ? styles.closeScheduleFieldValue
+                                : styles.closeScheduleFieldPlaceholder
+                            }
+                          >
                             {closeTempDate
                               ? closeTempDate.toLocaleDateString("en-IN", {
                                   day: "2-digit",
@@ -1447,7 +1409,11 @@ export function MerchantCustomHeader() {
                           <Ionicons
                             name="calendar-outline"
                             size={16}
-                            color={GatiMitraMerchant.textTertiary}
+                            color={
+                              closeTempDate
+                                ? GatiMitraMerchant.navy
+                                : GatiMitraMerchant.textTertiary
+                            }
                           />
                         </Pressable>
                       </View>
@@ -1457,18 +1423,17 @@ export function MerchantCustomHeader() {
                           onPress={() => setShowCloseTimePicker(true)}
                           style={({ pressed }) => [
                             styles.closeScheduleFieldBox,
+                            styles.closeScheduleFieldBoxActive,
                             pressed && styles.pressed,
                           ]}
                         >
-                          <Text style={styles.closeScheduleFieldPlaceholder}>
-                            {closeTempDate
-                              ? closeTempTime.toLocaleTimeString("en-IN", {
-                                  hour: "2-digit",
-                                  minute: "2-digit",
-                                })
-                              : "Select time"}
+                          <Text style={styles.closeScheduleFieldValue}>
+                            {closeTempTime.toLocaleTimeString("en-IN", {
+                              hour: "2-digit",
+                              minute: "2-digit",
+                            })}
                           </Text>
-                          <Ionicons name="time-outline" size={16} color={GatiMitraMerchant.textTertiary} />
+                          <Ionicons name="time-outline" size={16} color={GatiMitraMerchant.navy} />
                         </Pressable>
                       </View>
                     </View>
@@ -1839,7 +1804,7 @@ export function MerchantHeaderNotification({ onPress }: { onPress?: () => void }
 
 const styles = StyleSheet.create({
   wrapper: {
-    backgroundColor: GatiMitraMerchant.cardBg,
+    backgroundColor: GatiMitraMerchant.surfaceWarm,
     paddingHorizontal: 0,
     borderBottomWidth: 1,
     borderBottomColor: GatiMitraMerchant.divider,
@@ -2081,8 +2046,33 @@ const styles = StyleSheet.create({
   statusCardPressed: {
     opacity: 0.94,
   },
-  scheduleOffBanner: {
+  statusCardInnerPressable: {
+    borderRadius: 0,
+  },
+  statusBannerCarousel: {
     marginBottom: 10,
+  },
+  statusBannerSlide: {
+    paddingRight: 0,
+  },
+  statusBannerDots: {
+    flexDirection: "row",
+    justifyContent: "center",
+    alignItems: "center",
+    gap: 5,
+    marginTop: 6,
+  },
+  statusBannerDot: {
+    width: 5,
+    height: 5,
+    borderRadius: 2.5,
+    backgroundColor: "rgba(255,255,255,0.35)",
+  },
+  statusBannerDotActive: {
+    width: 14,
+    backgroundColor: "rgba(255,255,255,0.9)",
+  },
+  scheduleOffBanner: {
     padding: 10,
     borderRadius: 10,
     backgroundColor: "#FFFBEB",
@@ -2112,7 +2102,6 @@ const styles = StyleSheet.create({
     color: "#92400E",
   },
   rushBanner: {
-    marginBottom: 10,
     padding: 10,
     borderRadius: 10,
     backgroundColor: "#FFF7ED",
@@ -2170,9 +2159,9 @@ const styles = StyleSheet.create({
     color: "rgba(255,255,255,0.82)",
   },
   statusBannerHoursLink: {
-    color: "#BFDBFE",
+    color: "#FEF3C7",
     fontWeight: "600",
-    textDecorationLine: "underline",
+    textDecorationLine: "none",
   },
   statusBannerCountdown: {
     color: "#FECACA",
@@ -2180,6 +2169,18 @@ const styles = StyleSheet.create({
   statusBannerCountdownBold: {
     fontWeight: "700",
     color: "#FFFFFF",
+  },
+  headerToggleCountdown: {
+    marginTop: 4,
+    fontSize: 10,
+    fontWeight: "600",
+    color: GatiMitraMerchant.textSecondary,
+    textAlign: "center",
+    maxWidth: 120,
+  },
+  headerToggleCountdownBold: {
+    fontWeight: "800",
+    color: GatiMitraMerchant.textPrimary,
   },
   autoOpenTagBanner: {
     flexDirection: "row",
@@ -2274,6 +2275,11 @@ const styles = StyleSheet.create({
     alignItems: "center",
     padding: 24,
   },
+  warningOverlayBottomSheet: {
+    justifyContent: "flex-end",
+    alignItems: "stretch",
+    padding: 0,
+  },
   warningCard: {
     width: "100%",
     maxWidth: 340,
@@ -2290,6 +2296,24 @@ const styles = StyleSheet.create({
       },
       android: { elevation: 8 },
     }),
+  },
+  warningCardBottomSheet: {
+    maxWidth: "100%",
+    maxHeight: "92%",
+    borderRadius: 0,
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    paddingTop: 10,
+    paddingHorizontal: 20,
+    alignItems: "stretch",
+  },
+  bottomSheetHandle: {
+    alignSelf: "center",
+    width: 40,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: GatiMitraMerchant.border,
+    marginBottom: 12,
   },
   warningIconWrap: {
     marginBottom: 12,
@@ -2416,7 +2440,8 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
   storeOffScroll: {
-    maxHeight: 420,
+    maxHeight: 520,
+    width: "100%",
   },
   closeModeLabel: {
     fontSize: 12,
@@ -2512,9 +2537,18 @@ const styles = StyleSheet.create({
     paddingVertical: 6,
     backgroundColor: "#FFFFFF",
   },
+  closeScheduleFieldBoxActive: {
+    borderColor: GatiMitraMerchant.navy,
+    backgroundColor: "#F8FAFC",
+  },
   closeScheduleFieldPlaceholder: {
     fontSize: 12,
     color: GatiMitraMerchant.textTertiary,
+  },
+  closeScheduleFieldValue: {
+    fontSize: 12,
+    fontWeight: "600",
+    color: GatiMitraMerchant.textPrimary,
   },
   closeScheduleHint: {
     marginTop: 6,

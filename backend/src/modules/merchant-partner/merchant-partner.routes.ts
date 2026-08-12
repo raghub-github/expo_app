@@ -5094,8 +5094,24 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
           }
         } else if (closingStore && body.manual_close_until != null && String(body.manual_close_until).trim() !== "") {
           const raw = String(body.manual_close_until).trim();
-          const d = new Date(raw);
-          mergedManualCloseUntil = Number.isNaN(d.getTime()) ? null : d.toISOString();
+          const normalized = raw.replace(" ", "T");
+          // Bare datetimes are IST wall time (parity with Partner Site + dashboard portal).
+          const parsed =
+            !/[zZ]$/.test(normalized) &&
+            !/[+-]\d{2}:?\d{2}$/.test(normalized) &&
+            /^\d{4}-\d{2}-\d{2}T/.test(normalized)
+              ? new Date(`${normalized}+05:30`)
+              : new Date(normalized);
+          mergedManualCloseUntil = Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
+        } else if (
+          closingStore &&
+          Object.prototype.hasOwnProperty.call(body, "manual_close_until") &&
+          (body.manual_close_until == null || String(body.manual_close_until).trim() === "")
+        ) {
+          // Explicit indefinite / "until I turn ON" — do not invent next-open until.
+          mergedManualCloseUntil = null;
+        } else if (closingStore && String((body as { closure_type?: string }).closure_type || "") === "manual_hold") {
+          mergedManualCloseUntil = null;
         } else if (availRow?.manual_close_until != null) {
           const raw = availRow.manual_close_until instanceof Date ? availRow.manual_close_until.toISOString() : String(availRow.manual_close_until).trim();
           mergedManualCloseUntil = raw || null;
@@ -5159,7 +5175,16 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
         // When only closing (no auto_open_from_schedule in body), never turn off automation toggle.
         const mergedAutoOpen =
           closingStore && !hasAutoOpen ? currentAutoOpen : (nextAutoOpen ?? currentAutoOpen);
-        const mergedBlockAutoOpen = nextBlockAutoOpen ?? currentBlockAutoOpen;
+        const explicitIndefiniteClose =
+          closingStore &&
+          !mergedManualCloseUntil &&
+          (Object.prototype.hasOwnProperty.call(body, "manual_close_until") ||
+            String((body as { closure_type?: string }).closure_type || "") === "manual_hold");
+        // Partner Site "Until I manually turn it ON" sets block_auto_open; merchant app MANUAL close
+        // sends manual_close_until: null — same hold semantics.
+        const mergedBlockAutoOpen = openingStore
+          ? false
+          : (nextBlockAutoOpen ?? (explicitIndefiniteClose ? true : currentBlockAutoOpen));
 
         const nowIso = new Date().toISOString();
         const updatedBy = (parentRow?.owner_email ?? "Store owner") as string;
@@ -5199,6 +5224,7 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
                     unavailable_reason = ${unavailReason}, close_reason = ${closeReasonText},
                     auto_unavailable_at = ${nowIso}, auto_available_at = NULL,
                     manual_close_until = ${mergedManualCloseUntil}, last_toggle_type = 'MANUAL_CLOSE', restriction_type = 'manual',
+                    block_auto_open = ${mergedBlockAutoOpen},
                     is_manual_override = FALSE, manual_override_at = NULL,
                     schedule_end_prompted_at = NULL, schedule_end_prompt_expires_at = NULL,
                     auto_off_reason = NULL, last_auto_action_at = NULL,
@@ -5298,6 +5324,11 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
             }
           } catch (e) {
             req.log.warn({ err: e, storeId }, "waiting_for_order_inbox_sync_failed");
+          }
+          try {
+            await runStoreScheduleTickForStore(storeId, req.log);
+          } catch (e) {
+            req.log.warn({ err: e, storeId }, "store_schedule_tick_after_status_patch_failed");
           }
         }
         const auditCtx = getAuditContext(req, parentRow, parentId);
@@ -8321,7 +8352,7 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
           const limit = Math.min(Math.max(Number.isFinite(limitRaw) ? limitRaw : 50, 1), 60);
           try {
             const { loadMerchantFoodOrders } = await import("./merchant-food-orders.service.js");
-            const FOOD_ORDERS_DEADLINE_MS = 7_000;
+            const FOOD_ORDERS_DEADLINE_MS = 12_000;
             const started = Date.now();
             const orders = await Promise.race([
               loadMerchantFoodOrders(sql, storeId, { limit }),

@@ -76,4 +76,6 @@ export type PushControllerOptions = {
 export type UnregisterPushOptions = {
   /** Use when auth is already cleared locally but token is still valid for one request. */
   accessToken?: string;
+  /** When getAuth() is already cleared on logout. */
+  role?: "customer" | "rider" | "merchant";
 };

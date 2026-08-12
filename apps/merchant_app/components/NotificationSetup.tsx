@@ -31,10 +31,14 @@ import {
 } from "@/lib/merchantPushDispatch";
 import { PermissionBottomSheetShell } from "@/components/permissions/PermissionBottomSheetShell";
 import { useNotificationPermissionGate } from "@/context/NotificationPermissionGateContext";
+import type { PartnerData } from "@/context/AuthContext";
+import * as SecureStore from "expo-secure-store";
 
 const LORA = "Lora_400Regular";
 const LORA_BOLD = "Lora_700Bold";
 const MERCHANT_TEAL = "#0D9488";
+/** Survives remount so logout can scrub store tokens even if controller snapshot is empty. */
+const CACHED_EXPO_PUSH_TOKEN_KEY = "merchant_cached_expo_push_token_v1";
 
 function isExpoGo(): boolean {
   return Constants.appOwnership === "expo";
@@ -57,7 +61,7 @@ export default function NotificationSetup() {
 function NotificationSetupImpl() {
   const router = useRouter();
   const pathname = usePathname();
-  const { token: authToken, isAuthenticated } = useAuth();
+  const { token: authToken, isAuthenticated, partner } = useAuth();
   const { selectedStore } = useSelectedStore();
   const storeId = selectedStore?.id ?? null;
   const { refresh: refreshNotifications, applyIncomingPush } = useNotifications();
@@ -65,6 +69,8 @@ function NotificationSetupImpl() {
   refreshNotificationsRef.current = refreshNotifications;
   const applyIncomingPushRef = useRef(applyIncomingPush);
   applyIncomingPushRef.current = applyIncomingPush;
+  const partnerRef = useRef<PartnerData | null>(partner);
+  partnerRef.current = partner;
   const { orders, upsertOrder } = useOrders();
   const { openIncomingOrderSheet } = useIncomingOrderSheet();
   const { forceOpen, closePermissionGate, signalNotificationsGranted, setNotificationsGranted } =
@@ -211,7 +217,27 @@ function NotificationSetupImpl() {
         accessToken: string;
         platform: string;
       }) => {
-        await registerStorePushToken(sid, expoPushToken, accessToken, platform);
+        try {
+          await SecureStore.setItemAsync(CACHED_EXPO_PUSH_TOKEN_KEY, expoPushToken);
+        } catch {
+          /* ignore */
+        }
+        // Fan-out to every child store so background new-order pushes work even if
+        // this device's selected outlet changes / app stays closed after login.
+        const ids = new Set<number>();
+        if (Number.isInteger(sid) && sid > 0) ids.add(sid);
+        for (const child of partnerRef.current?.childStores ?? []) {
+          const id = Number(child.id);
+          if (Number.isInteger(id) && id > 0) ids.add(id);
+        }
+        if (ids.size === 0) return;
+        await Promise.all(
+          [...ids].map((id) =>
+            registerStorePushToken(id, expoPushToken, accessToken, platform).catch(() => {
+              /* one store failure must not block others */
+            })
+          )
+        );
       },
       unregisterStoreExpoToken: async ({
         expoPushToken,
@@ -221,6 +247,11 @@ function NotificationSetupImpl() {
         accessToken: string;
       }) => {
         await unregisterAllStorePushTokens(expoPushToken, accessToken);
+        try {
+          await SecureStore.deleteItemAsync(CACHED_EXPO_PUSH_TOKEN_KEY);
+        } catch {
+          /* ignore */
+        }
       },
       onNotificationOpen: (payload: PushNotificationOpenPayload) => {
         dispatchMerchantNotificationResponse(payload);
@@ -257,14 +288,18 @@ function NotificationSetupImpl() {
   });
 
   useEffect(() => {
-    setMerchantPushUnregister(() => controller.unregisterCurrent());
+    setMerchantPushUnregister(async (opts) => {
+      await controller.unregisterCurrent({ ...opts, role: "merchant" });
+    });
     return () => setMerchantPushUnregister(null);
   }, [controller]);
 
+  // Login / store change: restart listeners (logout calls stopLifecycle) and re-sync tokens.
   useEffect(() => {
     if (!authToken) return;
+    controller.startLifecycle();
     void controller.refresh({ syncIfGranted: !expoGo });
-  }, [authToken, storeId, controller, expoGo]);
+  }, [authToken, storeId, partner?.childStores?.length, controller, expoGo]);
 
   // Source of truth for the sheet: Android POST_NOTIFICATIONS / Settings toggle.
   useEffect(() => {

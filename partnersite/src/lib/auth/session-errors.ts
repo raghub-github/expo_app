@@ -41,7 +41,8 @@ export function isFatalRefreshTokenError(err: unknown): boolean {
 export function isNetworkOrTransientError(err: unknown): boolean {
   if (!err || typeof err !== "object") return false;
   if (isRefreshTokenAlreadyUsed(err)) return true;
-  const e = err as { message?: string; code?: string; cause?: unknown };
+  const e = err as { message?: string; code?: string; status?: number; cause?: unknown };
+  if (e.status === 408 || e.status === 0) return true;
   const msg = (e.message ?? "").toLowerCase();
   if (
     msg.includes("fetch failed") ||
@@ -52,7 +53,9 @@ export function isNetworkOrTransientError(err: unknown): boolean {
     msg.includes("connect timeout") ||
     msg.includes("timeout") ||
     msg.includes("abort") ||
-    msg.includes("the operation was aborted")
+    msg.includes("the operation was aborted") ||
+    msg.includes("request_timeout") ||
+    msg.includes("upstream timeout")
   )
     return true;
   let current: unknown = err;

@@ -11,21 +11,25 @@ import {
   initializeSession,
 } from "@/lib/auth/session-manager";
 import { cookies } from "next/headers";
+import { createFetchWithTimeout, runWithQuietAuthTimeoutErrors } from "@/lib/auth/fetch-with-timeout";
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder.supabase.co";
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "placeholder-service-role-key";
 
+const adminFetch = createFetchWithTimeout(5_000);
+
 function getSupabaseAdmin() {
   return createClient(supabaseUrl, supabaseServiceKey, {
     auth: { autoRefreshToken: false, persistSession: false },
+    global: { fetch: adminFetch },
   });
 }
 
-const maxGetUserAttempts = 3;
-const retryDelaysMs = [800, 1600];
+const maxGetUserAttempts = 1;
 
 /** GET /api/merchant-auth/merchant-session — Supabase-based merchant session. */
 export async function GET() {
+  return runWithQuietAuthTimeoutErrors(async () => {
   try {
     const supabase = await createServerSupabaseClient();
     let user: {
@@ -38,43 +42,45 @@ export async function GET() {
     let userError: unknown = null;
 
     for (let attempt = 1; attempt <= maxGetUserAttempts; attempt++) {
-      const result = await supabase.auth.getUser();
-      const u = result.data?.user;
-      const meta = (u?.user_metadata ?? {}) as Record<string, unknown>;
-      const avatarRaw = meta.avatar_url ?? meta.picture;
-      const nameRaw = meta.full_name ?? meta.name;
-      user = u
-        ? {
-            id: u.id,
-            email: u.email ?? undefined,
-            phone: u.phone ?? undefined,
-            name: typeof nameRaw === 'string' && nameRaw.trim() ? nameRaw.trim() : undefined,
-            avatar_url:
-              typeof avatarRaw === 'string' && avatarRaw.trim() ? avatarRaw.trim() : undefined,
-          }
-        : null;
-      userError = result.error ?? null;
-      if (!userError && user) break;
-      if (userError && isRefreshTokenAlreadyUsed(userError)) {
-        // Race: wait briefly and retry once so we can pick up rotated cookies if available.
-        if (attempt < maxGetUserAttempts) {
-          await new Promise((r) => setTimeout(r, retryDelaysMs[attempt - 1] ?? 1000));
-          continue;
-        }
-        break;
+      try {
+        const result = await supabase.auth.getUser();
+        const u = result.data?.user;
+        const meta = (u?.user_metadata ?? {}) as Record<string, unknown>;
+        const avatarRaw = meta.avatar_url ?? meta.picture;
+        const nameRaw = meta.full_name ?? meta.name;
+        user = u
+          ? {
+              id: u.id,
+              email: u.email ?? undefined,
+              phone: u.phone ?? undefined,
+              name: typeof nameRaw === "string" && nameRaw.trim() ? nameRaw.trim() : undefined,
+              avatar_url:
+                typeof avatarRaw === "string" && avatarRaw.trim() ? avatarRaw.trim() : undefined,
+            }
+          : null;
+        userError = result.error ?? null;
+      } catch (err) {
+        user = null;
+        userError = err;
       }
+
+      if (!userError && user) break;
+      if (userError && isRefreshTokenAlreadyUsed(userError)) break;
       if (userError && isFatalRefreshTokenError(userError)) break;
       if (userError && isNetworkOrTransientError(userError)) break;
-      if (userError && attempt < maxGetUserAttempts) {
-        await new Promise((r) => setTimeout(r, retryDelaysMs[attempt - 1] ?? 1000));
-        continue;
-      }
-      if (!user && !userError && attempt < maxGetUserAttempts) {
-        await new Promise((r) => setTimeout(r, 400));
-        continue;
-      }
       break;
     }
+
+    // Treat timeout / empty 408-style auth failures as unavailable (not logged-out).
+    const errMsg =
+      userError && typeof userError === "object" && "message" in userError
+        ? String((userError as { message?: unknown }).message ?? "").toLowerCase()
+        : "";
+    const looksLikeTimeout =
+      errMsg.includes("timeout") ||
+      errMsg.includes("abort") ||
+      errMsg.includes("408") ||
+      errMsg.includes("request_timeout");
 
     if (userError || !user) {
       if (userError && isRefreshTokenAlreadyUsed(userError)) {
@@ -84,13 +90,12 @@ export async function GET() {
         );
       }
       if (userError && isFatalRefreshTokenError(userError)) {
-        // Clear cookies only via client logout path — do not revoke refresh globally here.
         return NextResponse.json(
           { success: false, error: "Session invalid", code: "SESSION_INVALID" },
           { status: 401 }
         );
       }
-      if (userError && isNetworkOrTransientError(userError)) {
+      if ((userError && isNetworkOrTransientError(userError)) || looksLikeTimeout) {
         return NextResponse.json(
           { success: false, error: "Service temporarily unavailable", code: "SERVICE_UNAVAILABLE" },
           { status: 503 }
@@ -218,4 +223,5 @@ export async function GET() {
       { status: 500 }
     );
   }
+  });
 }

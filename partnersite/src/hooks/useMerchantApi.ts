@@ -145,6 +145,12 @@ export interface StoreOperationsData {
   schedule_end_prompt_active?: boolean;
   schedule_end_prompt_expires_at?: string | null;
   next_schedule_transition_at?: string | null;
+  countdown_at?: string | null;
+  countdown_kind?: string | null;
+  countdown_wall_label?: string | null;
+  close_reason?: string | null;
+  manual_close_until?: string | null;
+  license_blocked?: boolean;
   approval_status?: string | null;
   scheduled_time_offs?: Array<{
     id: number;
@@ -154,6 +160,11 @@ export interface StoreOperationsData {
     status: string;
     phase: 'active' | 'upcoming';
   }>;
+  active_rush?: {
+    is_active: true;
+    remaining_minutes: number;
+    marked_from: string | null;
+  } | null;
 }
 
 export interface StoreSettingsData {

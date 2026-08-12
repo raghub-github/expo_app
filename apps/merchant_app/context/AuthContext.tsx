@@ -163,8 +163,41 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const signOut = useCallback(async () => {
     const { runMerchantPushUnregister } = await import("@/lib/merchantPushUnregister");
+    const { unregisterPushTokenOnBackend } = await import("@gatimitra/expo-push-kit");
+    const { unregisterAllStorePushTokens } = await import("@/services/pushTokenApi");
     const accessToken = token ?? (await readMerchantAccessToken());
+
+    // 1) Controller path (listeners + dual-token scrub) while JWT is still valid.
     await runMerchantPushUnregister(accessToken);
+
+    // 2) Belt-and-suspenders: always hit /v1/push/unregister with empty body so the
+    //    backend purges every expo/native row for this merchant (even if the
+    //    NotificationSetup controller was unmounted or never synced).
+    if (accessToken) {
+      try {
+        const { apiBaseUrl } = getConfig();
+        await unregisterPushTokenOnBackend(apiBaseUrl, accessToken, {
+          expo_push_token: null,
+          native_push_token: null,
+        });
+      } catch {
+        /* best-effort */
+      }
+      try {
+        const cached = await SecureStore.getItemAsync("merchant_cached_expo_push_token_v1");
+        if (cached?.trim()) {
+          await unregisterAllStorePushTokens(cached.trim(), accessToken);
+        }
+      } catch {
+        /* best-effort */
+      }
+      try {
+        await SecureStore.deleteItemAsync("merchant_cached_expo_push_token_v1");
+      } catch {
+        /* ignore */
+      }
+    }
+
     await clearMerchantSessionToken();
     await SecureStore.deleteItemAsync(PARTNER_KEY);
     await clearLastSelectedStore();
