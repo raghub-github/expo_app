@@ -1,47 +1,50 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { AppText as Text } from "@/components/AppText";
-import { View, StyleSheet, Pressable, ImageBackground, Dimensions, Animated, ImageSourcePropType, Linking } from "react-native";
+import { View, StyleSheet, Pressable, ImageBackground, Dimensions, Animated, Linking } from "react-native";
 import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { LinearGradient } from "expo-linear-gradient";
 import { GatiMitraMerchant, BUTTON_RADIUS, SAFE_AREA_TOP_MIN } from "@/constants/theme";
 import { getPartnerLegalUrls } from "@/lib/partnerLegalUrls";
-import { useAppAssetSource } from "@/store/appAssetsStore";
-import { MX } from "@/lib/appAssetKeys";
+import { useAppAssetUrl } from "@/store/appAssetsStore";
+import { MX_WELCOME_SLIDE_KEYS } from "@/lib/appAssetKeys";
 
 const { width, height } = Dimensions.get("window");
 const SLIDE_INTERVAL_MS = 4000;
 const BOTTOM_SECTION_HEIGHT = 140;
-const TOTAL_IMAGES = 6;
-
-// First cover from CMS app assets (merchant.auth.welcome)
-const REMOTE_IMAGES = [
-  "https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=800",
-  "https://images.unsplash.com/photo-1604719312566-8912e9227c6a?w=800",
-  "https://images.unsplash.com/photo-1534723452862-4c874018d66d?w=800",
-  "https://images.unsplash.com/photo-1584308666744-24d5c474f2ae?w=800",
-  "https://images.unsplash.com/photo-1556742049-0cfed4f6a45d?w=800",
-];
 
 export default function WelcomeScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const welcomeImage = useAppAssetSource(MX.auth.welcome);
+  const slide0 = useAppAssetUrl(MX_WELCOME_SLIDE_KEYS[0]);
+  const slide1 = useAppAssetUrl(MX_WELCOME_SLIDE_KEYS[1]);
+  const slide2 = useAppAssetUrl(MX_WELCOME_SLIDE_KEYS[2]);
+  const slide3 = useAppAssetUrl(MX_WELCOME_SLIDE_KEYS[3]);
+  const slide4 = useAppAssetUrl(MX_WELCOME_SLIDE_KEYS[4]);
+  const slide5 = useAppAssetUrl(MX_WELCOME_SLIDE_KEYS[5]);
+  const slideSources = useMemo(
+    () => [slide0, slide1, slide2, slide3, slide4, slide5].filter((u): u is string => Boolean(u)),
+    [slide0, slide1, slide2, slide3, slide4, slide5]
+  );
   const [currentIndex, setCurrentIndex] = useState(0);
   const loginScale = useRef(new Animated.Value(1)).current;
   const signupScale = useRef(new Animated.Value(1)).current;
 
-  const backgroundSource: ImageSourcePropType | null =
-    currentIndex === 0
-      ? welcomeImage
-      : { uri: REMOTE_IMAGES[currentIndex - 1] };
+  const slideCount = slideSources.length;
 
   useEffect(() => {
+    if (slideCount <= 1) return;
     const id = setInterval(() => {
-      setCurrentIndex((prev) => (prev + 1) % TOTAL_IMAGES);
+      setCurrentIndex((prev) => (prev + 1) % slideCount);
     }, SLIDE_INTERVAL_MS);
     return () => clearInterval(id);
-  }, []);
+  }, [slideCount]);
+
+  useEffect(() => {
+    if (currentIndex >= slideCount && slideCount > 0) setCurrentIndex(0);
+  }, [currentIndex, slideCount]);
+
+  const backgroundUri = slideCount > 0 ? slideSources[currentIndex] ?? slideSources[0] : null;
 
   const animatePressIn = (anim: Animated.Value) => {
     Animated.spring(anim, {
@@ -66,8 +69,8 @@ export default function WelcomeScreen() {
   return (
     <View style={[styles.container, { paddingTop: Math.max(insets.top, SAFE_AREA_TOP_MIN) }]}>
       <ImageBackground
-        source={backgroundSource ?? { uri: REMOTE_IMAGES[0] }}
-        style={styles.background}
+        source={backgroundUri ? { uri: backgroundUri } : undefined}
+        style={[styles.background, !backgroundUri && styles.backgroundFallback]}
         resizeMode="cover"
       >
         <LinearGradient
@@ -80,14 +83,16 @@ export default function WelcomeScreen() {
           <Text style={styles.tagline}>
             Your orders, your catalog — all in one place
           </Text>
-          <View style={styles.dots}>
-            {Array.from({ length: TOTAL_IMAGES }, (_, i) => (
-              <View
-                key={i}
-                style={[styles.dot, i === currentIndex && styles.dotActive]}
-              />
-            ))}
-          </View>
+          {slideCount > 1 ? (
+            <View style={styles.dots}>
+              {slideSources.map((_, i) => (
+                <View
+                  key={i}
+                  style={[styles.dot, i === currentIndex && styles.dotActive]}
+                />
+              ))}
+            </View>
+          ) : null}
         </View>
       </ImageBackground>
 
@@ -158,6 +163,9 @@ const styles = StyleSheet.create({
     flex: 1,
     width,
     height: height - BOTTOM_SECTION_HEIGHT,
+  },
+  backgroundFallback: {
+    backgroundColor: "#1a3d34",
   },
   gradient: {
     ...StyleSheet.absoluteFillObject,

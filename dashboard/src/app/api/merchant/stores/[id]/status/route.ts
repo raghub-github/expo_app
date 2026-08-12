@@ -15,10 +15,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { getMerchantAccess, requireMerchantPermission, PermissionDeniedError } from "@/lib/permissions/merchant-access";
-import { getMerchantStoreById } from "@/lib/db/operations/merchant-stores";
-import { getAreaManagerByUserId } from "@/lib/area-manager/auth";
-import { getSystemUserByEmail } from "@/lib/auth/user-mapping";
-import { isSuperAdmin } from "@/lib/permissions/engine";
 import { logActionByAuth, getIpAddress, getUserAgent } from "@/lib/audit/logger";
 import { getSql } from "@/lib/db/client";
 

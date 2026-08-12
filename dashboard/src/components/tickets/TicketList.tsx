@@ -27,7 +27,7 @@ import { patchTicketInListCaches, invalidateTicketListCaches } from "@/lib/ticke
 import type { Option } from "./InlineSearchableSelect";
 import { BulkUpdateModal } from "./BulkUpdateModal";
 import { ExportTicketsModal } from "./ExportTicketsModal";
-import { buildTicketDetailHref, TICKET_FROM_QUEUE_PARAM } from "@/lib/tickets/ticket-path-utils";
+import { buildTicketDetailHref, TICKET_FROM_QUEUE_PARAM, ticketsPathTicketId } from "@/lib/tickets/ticket-path-utils";
 import { useAuth } from "@/providers/AuthProvider";
 import { TicketNum } from "./tickets-typography";
 
@@ -86,11 +86,15 @@ export function TicketList({ hideExportAndSidebarToggle = false }: { hideExportA
   const { toast } = useToast();
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(30);
-  const [viewMode, setViewModeState] = useState<TicketViewMode>(() => {
-    if (typeof window === "undefined") return "list";
-    const s = localStorage.getItem("dashboard-tickets-view-mode");
-    return s === "grid" || s === "list" ? s : "list";
-  });
+  const [viewMode, setViewModeState] = useState<TicketViewMode>("list");
+  useEffect(() => {
+    try {
+      const s = localStorage.getItem("dashboard-tickets-view-mode");
+      if (s === "grid" || s === "list") setViewModeState(s);
+    } catch {
+      /* ignore */
+    }
+  }, []);
   const setViewMode = useCallback((mode: TicketViewMode) => {
     setViewModeState(mode);
     try { localStorage.setItem("dashboard-tickets-view-mode", mode); } catch {}
@@ -267,23 +271,26 @@ export function TicketList({ hideExportAndSidebarToggle = false }: { hideExportA
       offset: 0,
     };
   }, [queryFilters]);
+  const cleanPath = useMemo(() => pathname.split("?")[0].split("#")[0], [pathname]);
+  /** List stays mounted under detail — pause polling/realtime while hidden. */
+  const listVisible = ticketsPathTicketId(cleanPath) == null;
   const { data: activeCountData } = useQuery({
     queryKey: [...queryKeys.tickets.list(compactTicketFilters(activeCountFilters)), "countOnly"],
     queryFn: ({ signal }) => fetchTickets(activeCountFilters, signal),
     // Defer tab counts until the main list has data so cold load isn't 3x DB work.
-    enabled: queueHomeTicketsEnabled && Boolean(data),
+    enabled: queueHomeTicketsEnabled && Boolean(data) && listVisible,
     staleTime: 15_000,
-    refetchInterval: 20_000,
-    refetchIntervalInBackground: true,
+    refetchInterval: listVisible ? 45_000 : false,
+    refetchIntervalInBackground: false,
     retry: 1,
   });
   const { data: snoozedCountData } = useQuery({
     queryKey: [...queryKeys.tickets.list(compactTicketFilters(snoozedCountFilters)), "countOnly"],
     queryFn: ({ signal }) => fetchTickets(snoozedCountFilters, signal),
-    enabled: queueHomeTicketsEnabled && Boolean(data),
+    enabled: queueHomeTicketsEnabled && Boolean(data) && listVisible,
     staleTime: 15_000,
-    refetchInterval: 20_000,
-    refetchIntervalInBackground: true,
+    refetchInterval: listVisible ? 45_000 : false,
+    refetchIntervalInBackground: false,
     retry: 1,
   });
   const currentTotal = data?.total ?? 0;
@@ -291,7 +298,11 @@ export function TicketList({ hideExportAndSidebarToggle = false }: { hideExportA
   const snoozedCountDisplay = Number(snoozedCountData?.total ?? 0);
   const listReadyForUpdates =
     Boolean(data) && !isLoading && !isPending && queueHomeTicketsEnabled;
-  const { hasNewTickets, newTicketsCount, clearNewTickets } = useTicketsRealtime(updatesPollBase, listReadyForUpdates);
+  const { hasNewTickets, newTicketsCount, clearNewTickets } = useTicketsRealtime(
+    updatesPollBase,
+    listReadyForUpdates,
+    listVisible
+  );
 
   const { data: queueSoundCfg } = useQuery({
     queryKey: ["queueAssignmentSound"],

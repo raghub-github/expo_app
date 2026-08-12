@@ -6,12 +6,12 @@
  * Body: same_for_all_days?, is_24_hours?, closed_days?, and per-day: {day}_open, {day}_slot1_start, {day}_slot1_end, {day}_slot2_start?, {day}_slot2_end?
  */
 import { NextRequest, NextResponse } from "next/server";
-import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine";
+import { resolveMerchantListAreaManagerId } from "@/lib/merchants/resolve-merchant-list-scope";
+import { resolveMerchantApiActor } from "@/lib/merchant-food-orders/store-access";
 import { getMerchantAccess } from "@/lib/permissions/merchant-access";
 import { logActionByAuth, getIpAddress, getUserAgent } from "@/lib/audit/logger";
 import { getSystemUserByEmail } from "@/lib/auth/user-mapping";
-import { getAreaManagerByUserId } from "@/lib/area-manager/auth";
 import { getMerchantStoreById } from "@/lib/db/operations/merchant-stores";
 import { getSql } from "@/lib/db/client";
 import { insertActivityLog } from "@/lib/db/operations/merchant-portal-activity-logs";
@@ -21,11 +21,7 @@ export const runtime = "nodejs";
 const DAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"] as const;
 
 async function getAreaManagerId(userId: string, email: string) {
-  if (await isSuperAdmin(userId, email)) return null;
-  const systemUser = await getSystemUserByEmail(email);
-  if (!systemUser) return null;
-  const am = await getAreaManagerByUserId(systemUser.id);
-  return am?.id ?? null;
+  return resolveMerchantListAreaManagerId({ supabaseAuthId: userId, email });
 }
 
 /** Return "HH:mm" for API response (UI expects 5 chars). Postgres may return "HH:mm:ss". */
@@ -165,11 +161,11 @@ export async function GET(
     if (!Number.isFinite(storeId)) {
       return NextResponse.json({ success: false, error: "Invalid store id" }, { status: 400 });
     }
-    const supabase = await createServerSupabaseClient();
-    const { data: { user }, error } = await supabase.auth.getUser();
-    if (error || !user?.email) {
-      return NextResponse.json({ success: false, error: "Not authenticated" }, { status: 401 });
+    const actor = await resolveMerchantApiActor();
+    if (!actor.ok) {
+      return NextResponse.json({ success: false, error: actor.error }, { status: actor.status });
     }
+    const user = { id: actor.id, email: actor.email };
     const allowed =
       (await isSuperAdmin(user.id, user.email)) ||
       (await hasDashboardAccessByAuth(user.id, user.email, "MERCHANT"));
@@ -246,11 +242,11 @@ export async function PATCH(
     if (!Number.isFinite(storeId)) {
       return NextResponse.json({ success: false, error: "Invalid store id" }, { status: 400 });
     }
-    const supabase = await createServerSupabaseClient();
-    const { data: { user }, error } = await supabase.auth.getUser();
-    if (error || !user?.email) {
-      return NextResponse.json({ success: false, error: "Not authenticated" }, { status: 401 });
+    const actor = await resolveMerchantApiActor();
+    if (!actor.ok) {
+      return NextResponse.json({ success: false, error: actor.error }, { status: actor.status });
     }
+    const user = { id: actor.id, email: actor.email };
     const allowed =
       (await isSuperAdmin(user.id, user.email)) ||
       (await hasDashboardAccessByAuth(user.id, user.email, "MERCHANT"));

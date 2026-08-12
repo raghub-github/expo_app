@@ -295,8 +295,6 @@ export default function VacationScreen() {
     <View style={styles.container}>
       <View style={styles.header}>
         <View style={styles.headerAccent} />
-        <Text style={styles.title}>Schedule time off</Text>
-        <Text style={styles.subtitle}>Choose a reason and when the store will reopen.</Text>
         <View style={styles.tabsRow}>
           <Pressable
             onPress={() => setActiveTab("schedule")}

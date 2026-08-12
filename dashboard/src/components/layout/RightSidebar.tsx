@@ -24,8 +24,6 @@ import {
   getCurrentDashboardSubRoutes,
   getMerchantSubRoutesForPath,
   adminPortalMerchantRoutes,
-  merchantPortalSidebarRoutes,
-  filterSidebarRoutesForStoreContext,
   notificationDashboardRoutes,
   type DashboardSubRoute,
   type AreaManagerTypeFilter,
@@ -52,6 +50,7 @@ import {
 import { queueSupervisorHref } from "@/lib/tickets/queue-supervisor-paths";
 import { usePermission } from "@/hooks/usePermission";
 import { usePermissions } from "@/hooks/usePermissions";
+import { useMerchantDashboardAccess } from "@/hooks/useMerchantDashboardAccess";
 import {
   parsePortalParam,
   readStoredMerchantsPortal,
@@ -64,12 +63,12 @@ import { OnboardingFailedSummarySidebar } from "@/components/area-manager/Onboar
 import { useStore } from "@/hooks/useStore";
 import { useMerchantsSearch } from "@/context/MerchantsSearchContext";
 import { useCurrentRoute } from "@/context/CurrentRouteContext";
-import { shouldShowDashboardNavOverlay } from "@/lib/navigation/dashboard-nav-transition";
+import {
+  isDashboardNavAlreadyAtTarget,
+} from "@/lib/navigation/dashboard-nav-transition";
 import { EXPIRED_RESUBMITTED_DOCS_LABEL } from "@/lib/merchants/expired-resubmitted-docs-label";
 import { MERCHANT_RESUBMITTED_DOCS_REFRESH_EVENT } from "@/lib/merchants/merchant-resubmitted-docs-refresh";
 import { MERCHANT_MENU_REVIEW_QUEUE_REFRESH_EVENT } from "@/lib/merchant/menu-review-queue";
-import { useTicketsNavPendingOptional } from "@/context/TicketsNavPendingContext";
-
 interface RightSidebarProps {
   isOpen: boolean;
   onToggle: () => void;
@@ -98,6 +97,10 @@ export function RightSidebar({
   const rightSidebarCtx = useRightSidebar();
   const { hasDashboardAccess, isSuperAdmin, canPerformAction } = usePermission();
   const { canTogglePortal = false } = usePermissions();
+  const {
+    hasAdminMerchantAccess,
+    filterStoreRoutes,
+  } = useMerchantDashboardAccess();
   
   // Remove query parameters for comparison
   const cleanPathname = useMemo(() => pathname.split('?')[0].split('#')[0], [pathname]);
@@ -110,8 +113,9 @@ export function RightSidebar({
       const rawHref = anchor.getAttribute("href");
       if (!rawHref || rawHref.startsWith("http") || rawHref.startsWith("#")) return;
       // Intent only — never preventDefault; <Link> owns navigation.
-      if (!shouldShowDashboardNavOverlay(cleanPathname, rawHref)) return;
-      currentRoute?.startNavigation(rawHref.split("?")[0].split("#")[0]);
+      const target = rawHref.split("?")[0].split("#")[0];
+      if (isDashboardNavAlreadyAtTarget(cleanPathname, target)) return;
+      currentRoute?.startNavigation(target);
     },
     [cleanPathname, currentRoute]
   );
@@ -125,11 +129,13 @@ export function RightSidebar({
   const isStorePath = /^\/dashboard\/merchants\/stores\/\d+/.test(cleanPathname);
   const portal = resolveMerchantsPortal({
     portalFromUrl: parsePortalParam(searchParams.get("portal")),
-    canTogglePortal,
+    canTogglePortal: hasAdminMerchantAccess || canTogglePortal,
     storedPortal: typeof window !== "undefined" ? readStoredMerchantsPortal() : null,
   });
+  const effectiveMerchantPortal =
+    hasAdminMerchantAccess || isSuperAdmin ? portal : "merchant";
 
-  // Sub-routes for current dashboard. When on merchants: admin portal = only All Merchants + Verifications; merchant portal = Dashboard, Orders, Menu, etc. When on a store page, show store-scoped links.
+  // Sub-routes for current dashboard. When on merchants: admin portal = only All Merchants + Verifications; merchant portal = store-scoped after search. When on a store page, show access-filtered store links.
   const rawSubRoutes = useMemo(() => {
     if (cleanPathname.startsWith("/dashboard/super-admin/notifications")) {
       return notificationDashboardRoutes;
@@ -137,18 +143,23 @@ export function RightSidebar({
     const dashboard = getCurrentDashboard(cleanPathname);
     if (dashboard?.href === "/dashboard/merchants") {
       const storeMatch = cleanPathname.match(/^\/dashboard\/merchants\/stores\/(\d+)/);
-      if (storeMatch) return getMerchantSubRoutesForPath(cleanPathname);
-      if (portal === "merchant") {
-        // No store open yet: hide the entries whose pages only exist under
-        // /dashboard/merchants/stores/{id}/…. Rendering them here produced
-        // <Link> prefetches to non-existent routes (404s in the console) and
-        // dead sidebar items that went nowhere when clicked.
-        return filterSidebarRoutesForStoreContext(merchantPortalSidebarRoutes, null);
+      if (storeMatch) {
+        return filterStoreRoutes(getMerchantSubRoutesForPath(cleanPathname));
+      }
+      if (effectiveMerchantPortal === "merchant" || !hasAdminMerchantAccess) {
+        // No store open: do not show Dashboard / Subscription / Settings / Wallet.
+        // Store-scoped links appear only after a store is opened.
+        return [];
       }
       return adminPortalMerchantRoutes;
     }
     return getCurrentDashboardSubRoutes(cleanPathname);
-  }, [cleanPathname, portal]);
+  }, [
+    cleanPathname,
+    effectiveMerchantPortal,
+    filterStoreRoutes,
+    hasAdminMerchantAccess,
+  ]);
   const isAreaManagerDashboard =
     currentDashboard?.dashboardType === "AREA_MANAGER";
   const isOrderDashboard =
@@ -193,7 +204,9 @@ export function RightSidebar({
     const storeMatch = cleanPathname.match(/^\/dashboard\/merchants\/stores\/(\d+)/);
     const storeId = storeMatch ? storeMatch[1] : null;
     const isAdminMerchantsArea =
-      cleanPathname.startsWith("/dashboard/merchants") && portal === "admin";
+      cleanPathname.startsWith("/dashboard/merchants") &&
+      hasAdminMerchantAccess &&
+      effectiveMerchantPortal === "admin";
 
     if (isAdminMerchantsArea) {
       fetch("/api/merchant-menu/review-queue-summary")
@@ -222,7 +235,12 @@ export function RightSidebar({
     } else {
       setStoreMenuReviewPendingCount(0);
     }
-  }, [cleanPathname, portal, refreshResubmittedDocsCount]);
+  }, [
+    cleanPathname,
+    effectiveMerchantPortal,
+    hasAdminMerchantAccess,
+    refreshResubmittedDocsCount,
+  ]);
 
   useEffect(() => {
     refreshReviewQueueSummary();
@@ -243,14 +261,21 @@ export function RightSidebar({
   // Partner resubmits from another app — poll so the sidebar badge updates without a hard refresh.
   useEffect(() => {
     const isAdminMerchantsArea =
-      cleanPathname.startsWith("/dashboard/merchants") && portal === "admin";
+      cleanPathname.startsWith("/dashboard/merchants") &&
+      hasAdminMerchantAccess &&
+      effectiveMerchantPortal === "admin";
     if (!isAdminMerchantsArea) return;
     const id = window.setInterval(() => {
       if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
       refreshResubmittedDocsCount();
     }, 12_000);
     return () => window.clearInterval(id);
-  }, [cleanPathname, portal, refreshResubmittedDocsCount]);
+  }, [
+    cleanPathname,
+    effectiveMerchantPortal,
+    hasAdminMerchantAccess,
+    refreshResubmittedDocsCount,
+  ]);
 
   const currentSubRoutes = useMemo((): DashboardSubRoute[] => {
     let filtered = rawSubRoutes;
@@ -282,10 +307,8 @@ export function RightSidebar({
   // Check if we're in a specific dashboard (not on home)
   const isInSpecificDashboard = Boolean(currentDashboard && cleanPathname !== "/dashboard");
 
-  // Ticket identifier from path (supports numeric id and ticket number like TKT-2026-910001)
   const ticketIdFromPath = useMemo(() => ticketsPathTicketId(cleanPathname), [cleanPathname]);
-  const ticketsNavPending = useTicketsNavPendingOptional();
-  const activeTicketId = ticketIdFromPath ?? ticketsNavPending?.pendingTicketId ?? null;
+  const isTicketDetailPage = isTicketsAppDetailPath(cleanPathname);
 
   // Store ID when on a merchant store page (for Store Information Card in sidebar)
   const storeIdFromPath = useMemo(() => {
@@ -323,18 +346,18 @@ export function RightSidebar({
   const isMerchantsListPage = cleanPathname === "/dashboard/merchants";
   /** Merchants home (search list only): never show `useStore` cache here — it can be stale from a previous store page and desync from search. */
   const isMerchantsSearchListRoot =
-    isMerchantsListPage && portal === "merchant" && !storeIdFromPath;
+    isMerchantsListPage && effectiveMerchantPortal === "merchant" && !storeIdFromPath;
   const showMerchantSearchSkeleton =
     showRightSidebarStoreCard &&
     isMerchantsListPage &&
-    portal === "merchant" &&
+    effectiveMerchantPortal === "merchant" &&
     Boolean(merchantsSearch?.isLoading);
   const merchantSearchResultStore: StoreInfoCardData | null = useMemo(() => {
     if (
       !showRightSidebarStoreCard ||
       !merchantsSearch?.searchResultStore ||
       !isMerchantsListPage ||
-      portal !== "merchant"
+      effectiveMerchantPortal !== "merchant"
     )
       return null;
     const s = merchantsSearch.searchResultStore;
@@ -345,12 +368,14 @@ export function RightSidebar({
       full_address: s.full_address ?? null,
       approval_status: s.approval_status ?? null,
     };
-  }, [merchantsSearch?.searchResultStore, isMerchantsListPage, portal, showRightSidebarStoreCard]);
+  }, [
+    merchantsSearch?.searchResultStore,
+    isMerchantsListPage,
+    effectiveMerchantPortal,
+    showRightSidebarStoreCard,
+  ]);
 
   const isTicketsDashboard = currentDashboard?.href === "/dashboard/tickets";
-  const isTicketDetailPage =
-    isTicketsAppDetailPath(cleanPathname) ||
-    (isTicketsDashboard && activeTicketId != null && !cleanPathname.startsWith("/dashboard/tickets/queue"));
   const queueDetailFromHome = isTicketDetailPage && ticketDetailHasQueueContext(searchParams);
   /** Queue routes or ticket detail opened from queue home (`?fromQueue=1`). */
   const isTicketsQueuePath =
@@ -362,7 +387,7 @@ export function RightSidebar({
     isTicketDetailPage && dockLeft && queueLeftRail;
   const showQueueDetailPropertiesPanel =
     queueDetailFromHome &&
-    activeTicketId != null &&
+    ticketIdFromPath != null &&
     (ticketPropertiesRailOpen !== undefined ? ticketPropertiesRailOpen : isOpen);
 
   /** Light right-rail nav (Merchants / Riders / etc.) — matches left sidebar language on #F3F7FA. */
@@ -426,16 +451,24 @@ export function RightSidebar({
   const isRiderDashboard =
     cleanPathname === "/dashboard/riders" ||
     cleanPathname.startsWith("/dashboard/riders/");
+  const isMerchantsDashboard = currentDashboard?.href === "/dashboard/merchants";
 
   const selectedRiderSearch = (searchParams.get("search") || "").trim();
+  const merchantsRailHasContent =
+    isMerchantsDashboard &&
+    (currentSubRoutes.length > 0 ||
+      Boolean(storeIdFromPath) ||
+      (hasAdminMerchantAccess && effectiveMerchantPortal === "admin") ||
+      Boolean(merchantSearchResultStore) ||
+      Boolean(showMerchantSearchSkeleton));
 
   // Don't show right sidebar if not in a specific dashboard.
-  // For rider dashboard, allow sidebar even when there are no sub-routes,
-  // but only after a rider search value is present.
+  // Riders: only after search. Merchants: only when admin CTAs, store nav, or search card exist.
   if (
     !isInSpecificDashboard ||
-    (!isRiderDashboard && !currentSubRoutes.length) ||
-    (isRiderDashboard && !selectedRiderSearch)
+    (isRiderDashboard && !selectedRiderSearch) ||
+    (isMerchantsDashboard && !merchantsRailHasContent) ||
+    (!isRiderDashboard && !isMerchantsDashboard && !currentSubRoutes.length)
   ) {
     return null;
   }
@@ -448,9 +481,8 @@ export function RightSidebar({
     return `${href}?search=${encodeURIComponent(selectedRiderId)}`;
   };
 
-  const isMerchantsDashboard = currentDashboard?.href === "/dashboard/merchants";
   const appendMerchantPortal = (href: string) => {
-    if (!isMerchantsDashboard || portal !== "merchant") return href;
+    if (!isMerchantsDashboard || effectiveMerchantPortal !== "merchant") return href;
     const sep = href.includes("?") ? "&" : "?";
     return `${href}${sep}portal=merchant`;
   };
@@ -593,12 +625,12 @@ export function RightSidebar({
               isTicketDetailPage && !ticketDetailQueueLeftRail ? "overflow-y-hidden" : "overflow-y-auto"
             }`}
           >
-            {isTicketsDashboard && activeTicketId != null && isOpen && !queueDetailFromHome ? (
+            {isTicketsDashboard && ticketIdFromPath != null && isOpen && !queueDetailFromHome ? (
               <div className="h-full min-h-0">
                 {rightSidebarCtx?.ticketRightSidebarPanel === "settings" ? (
                   <TicketRightSidebarSettingsPanel />
                 ) : (
-                  <TicketPropertiesPanel ticketId={activeTicketId} />
+                  <TicketPropertiesPanel ticketId={ticketIdFromPath} />
                 )}
               </div>
             ) : isTicketsDashboard && isTicketsQueuePath && isOpen ? (
@@ -749,7 +781,7 @@ export function RightSidebar({
                     {rightSidebarCtx?.ticketRightSidebarPanel === "settings" ? (
                       <TicketRightSidebarSettingsPanel />
                     ) : (
-                      <TicketPropertiesPanel ticketId={activeTicketId!} />
+                      <TicketPropertiesPanel ticketId={ticketIdFromPath!} />
                     )}
                   </div>
                 ) : null}
@@ -931,7 +963,15 @@ export function RightSidebar({
                   (merchantSearchResultStore?.storeId != null
                     ? String(merchantSearchResultStore.storeId)
                     : null);
-                const showWalletRequests = isMerchantsDashboard && !effectiveStoreId;
+                const showWalletRequests =
+                  isMerchantsDashboard &&
+                  !effectiveStoreId &&
+                  hasAdminMerchantAccess &&
+                  effectiveMerchantPortal === "admin";
+                const showAdminMerchantCtas =
+                  isMerchantsDashboard &&
+                  hasAdminMerchantAccess &&
+                  effectiveMerchantPortal === "admin";
                 const isMenuRequestsActive = cleanPathname === "/dashboard/merchants/menu-requests";
                 const isResubmittedActive =
                   cleanPathname === "/dashboard/merchants" &&
@@ -948,7 +988,7 @@ export function RightSidebar({
                       </div>
                     )}
                     {/* Assign AM link for admin portal merchants dashboard (shown open and collapsed) */}
-                    {isMerchantsDashboard && portal === "admin" && (
+                    {showAdminMerchantCtas && (
                       isOpen ? (
                         <Link
                           href="/dashboard/merchants/assign-am"
@@ -984,7 +1024,7 @@ export function RightSidebar({
                       </div>
                     )}
                     {/* Menu change requests CTA in right sidebar (admin portal) - placed below Assign AM + Wallet Requests */}
-                    {isMerchantsDashboard && portal === "admin" && (
+                    {showAdminMerchantCtas && (
                       isOpen ? (
                         <Link
                           href="/dashboard/merchants/menu-requests"
@@ -1025,7 +1065,7 @@ export function RightSidebar({
                         </Link>
                       )
                     )}
-                    {isMerchantsDashboard && portal === "admin" && (
+                    {showAdminMerchantCtas && (
                       isOpen ? (
                         <Link
                           href="/dashboard/merchants?portal=admin&category=resubmitted"
@@ -1072,7 +1112,7 @@ export function RightSidebar({
                 );
               })()}
               </nav>
-              {isOpen && portal === "merchant" && showRightSidebarStoreCard ? (
+              {isOpen && effectiveMerchantPortal === "merchant" && showRightSidebarStoreCard ? (
                 <div className="relative z-10 flex shrink-0 items-center border-t border-gray-300/50 bg-[#F3F7FA] px-2 py-2.5">
                   {showMerchantSearchSkeleton ? (
                     <StoreInfoCardSkeleton />
@@ -1127,7 +1167,7 @@ export function RightSidebar({
             {rightSidebarCtx?.ticketRightSidebarPanel === "settings" ? (
               <TicketRightSidebarSettingsPanel />
             ) : (
-              <TicketPropertiesPanel ticketId={activeTicketId!} />
+              <TicketPropertiesPanel ticketId={ticketIdFromPath!} />
             )}
           </div>
         </aside>

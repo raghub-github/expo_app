@@ -1,10 +1,6 @@
-import { Toaster } from "sonner";
-
+/**
+ * Rule-engine segment layout — toaster lives in DashboardLayoutClient (singleton).
+ */
 export default function RuleEngineLayout({ children }: { children: React.ReactNode }) {
-  return (
-    <>
-      {children}
-      <Toaster position="top-right" richColors closeButton />
-    </>
-  );
+  return children;
 }

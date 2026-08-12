@@ -58,11 +58,24 @@ export function useTicketRoomRealtime(options: {
   const debounceRef = useRef<number | null>(null);
   const subscribedRef = useRef(false);
   const probeRef = useRef<number | null>(null);
+  const mountedRef = useRef(true);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
+  const safeSetSyncState = useCallback((next: TicketRoomSyncState) => {
+    if (mountedRef.current) setSyncState(next);
+  }, []);
 
   const scheduleInvalidate = useCallback(() => {
     if (debounceRef.current) window.clearTimeout(debounceRef.current);
     debounceRef.current = window.setTimeout(() => {
       debounceRef.current = null;
+      if (!mountedRef.current) return;
       void queryClient.invalidateQueries({
         queryKey: queryKeys.tickets.detail(ticketCacheId),
         refetchType: "all",
@@ -78,6 +91,7 @@ export function useTicketRoomRealtime(options: {
 
   const refreshCopresence = useCallback(
     (ch: RealtimeChannel, selfRole: TicketPresenceRole, selfUserId: string) => {
+      if (!mountedRef.current) return;
       const state = ch.presenceState() as Record<string, unknown[]>;
       setCopresenceLive(computeTicketCopresenceLive(state, selfRole));
       setDistinctRoleCount(countDistinctTicketPresenceRoles(state));
@@ -98,18 +112,18 @@ export function useTicketRoomRealtime(options: {
 
   useEffect(() => {
     if (ticketNumericId == null || !Number.isInteger(ticketNumericId) || ticketNumericId < 1) {
-      setSyncState("idle");
+      safeSetSyncState("idle");
       return;
     }
 
     let cancelled = false;
     subscribedRef.current = false;
-    setSyncState("connecting");
+    safeSetSyncState("connecting");
 
     if (probeRef.current) window.clearTimeout(probeRef.current);
     probeRef.current = window.setTimeout(() => {
-      if (!subscribedRef.current) {
-        setSyncState("polling");
+      if (!subscribedRef.current && !cancelled && mountedRef.current) {
+        safeSetSyncState("polling");
       }
     }, SUBSCRIBE_PROBE_MS);
 
@@ -179,17 +193,18 @@ export function useTicketRoomRealtime(options: {
         );
 
       ch.subscribe((status) => {
+        if (cancelled || !mountedRef.current) return;
         if (status === "SUBSCRIBED") {
           subscribedRef.current = true;
           if (probeRef.current) {
             window.clearTimeout(probeRef.current);
             probeRef.current = null;
           }
-          setSyncState("live");
+          safeSetSyncState("live");
         }
         if (status === "CHANNEL_ERROR" || status === "TIMED_OUT") {
           subscribedRef.current = false;
-          setSyncState("polling");
+          safeSetSyncState("polling");
         }
       });
     })();
@@ -202,10 +217,11 @@ export function useTicketRoomRealtime(options: {
       probeRef.current = null;
       if (channel) void supabase.removeChannel(channel);
     };
-  }, [ticketNumericId, ticketCacheId, scheduleInvalidate]);
+  }, [ticketNumericId, ticketCacheId, scheduleInvalidate, safeSetSyncState]);
 
   useEffect(() => {
     if (ticketNumericId == null || !Number.isInteger(ticketNumericId) || ticketNumericId < 1) {
+      if (!mountedRef.current) return;
       setCopresenceLive(false);
       setDistinctRoleCount(0);
       otherAgentsSerializedRef.current = serializeOtherAgentViewers([]);
@@ -213,6 +229,7 @@ export function useTicketRoomRealtime(options: {
       return;
     }
     if (!hasPresenceConfig || !presenceRole) {
+      if (!mountedRef.current) return;
       setCopresenceLive(false);
       setDistinctRoleCount(0);
       otherAgentsSerializedRef.current = serializeOtherAgentViewers([]);
@@ -278,12 +295,14 @@ export function useTicketRoomRealtime(options: {
       unsubscribeAuth = () => authSubscription.unsubscribe();
 
       ch.subscribe(async (status) => {
+        if (cancelled || !mountedRef.current) return;
         if (status === "SUBSCRIBED") {
           presenceSubscribed = true;
           await doTrack();
         }
         if (status === "CHANNEL_ERROR" || status === "TIMED_OUT") {
           presenceSubscribed = false;
+          if (!mountedRef.current) return;
           setCopresenceLive(false);
           setDistinctRoleCount(0);
           otherAgentsSerializedRef.current = serializeOtherAgentViewers([]);
@@ -298,6 +317,7 @@ export function useTicketRoomRealtime(options: {
       unsubscribeAuth?.();
       unsubscribeAuth = null;
       if (channel) void supabase.removeChannel(channel);
+      if (!mountedRef.current) return;
       setCopresenceLive(false);
       setDistinctRoleCount(0);
       otherAgentsSerializedRef.current = serializeOtherAgentViewers([]);
@@ -330,14 +350,14 @@ export function useTicketRoomRealtime(options: {
     return () => window.clearInterval(id);
   }, [ticketNumericId, ticketCacheId, syncState, queryClient]);
 
-  /** Safety net: poll even when Realtime shows SUBSCRIBED (RLS/publication gaps used to stall updates). */
+  /** Safety net while Realtime is live — much slower than fallback polling to avoid request storms. */
   useEffect(() => {
     if (ticketNumericId == null || !Number.isInteger(ticketNumericId) || ticketNumericId < 1) return;
     if (syncState !== "live") return;
 
     const id = window.setInterval(() => {
       scheduleInvalidate();
-    }, TICKET_ROOM_FALLBACK_POLL_MS);
+    }, 30_000);
 
     return () => window.clearInterval(id);
   }, [ticketNumericId, syncState, scheduleInvalidate]);

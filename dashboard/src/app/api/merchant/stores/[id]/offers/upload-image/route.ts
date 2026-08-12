@@ -13,8 +13,7 @@ import { getMerchantAccess } from "@/lib/permissions/merchant-access";
 import { getSql } from "@/lib/db/client";
 import { uploadWithKey, deleteDocument } from "@/lib/services/r2";
 import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine";
-import { getSystemUserByEmail } from "@/lib/auth/user-mapping";
-import { getAreaManagerByUserId } from "@/lib/area-manager/auth";
+import { resolveMerchantListAreaManagerId } from "@/lib/merchants/resolve-merchant-list-scope";
 import { getMerchantStoreById } from "@/lib/db/operations/merchant-stores";
 import { logStoreActivity } from "@/lib/db/operations/store-activity-feed";
 import { logActionByAuth, getIpAddress, getUserAgent } from "@/lib/audit/logger";
@@ -72,14 +71,10 @@ async function assertStoreAccess(storeId: number) {
   if (!allowed) {
     return { ok: false as const, status: 403, error: "Merchant dashboard access required" };
   }
-  let areaManagerId: number | null = null;
-  if (!(await isSuperAdmin(user.id, user.email))) {
-    const systemUser = await getSystemUserByEmail(user.email);
-    if (systemUser) {
-      const am = await getAreaManagerByUserId(systemUser.id);
-      if (am) areaManagerId = am.id;
-    }
-  }
+  const areaManagerId = await resolveMerchantListAreaManagerId({
+      supabaseAuthId: user.id,
+      email: user.email,
+    });
   const store = await getMerchantStoreById(storeId, areaManagerId);
   if (!store) {
     return { ok: false as const, status: 404, error: "Store not found" };

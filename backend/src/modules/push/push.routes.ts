@@ -17,6 +17,7 @@ import { auth } from "../../plugins/auth.js";
 import { countTicketOutcomes, sendExpoPushWithRetry, type ExpoPushMessage } from "./expoPushSend.js";
 import { desiredFcmTopics, reconcileFcmTopics } from "./topicReconcile.js";
 import { getPartnerParentId } from "../merchant-partner/merchant-subscription.routes.helpers.js";
+import { purgeUserPushTokens } from "../../lib/purge-user-push-tokens.js";
 
 const registerBodySchema = PushRegisterBodySchema;
 const unregisterBodySchema = PushUnregisterBodySchema;
@@ -402,76 +403,16 @@ export async function pushRoutes(app: FastifyInstance) {
           return reply.code(400).send({ error: "invalid_body" });
         }
         const userId = req.auth!.sub;
-        const db = getDb();
         const expo = parsed.data.expo_push_token?.trim() || null;
         const native = parsed.data.native_push_token?.trim() || null;
 
-        if (expo) {
-          await db
-            .delete(expoPushTokens)
-            .where(
-              and(eq(expoPushTokens.expoPushToken, expo), eq(expoPushTokens.userId, userId))
-            );
-        }
-
-        if (native && !isExpoPushTokenString(native)) {
-          const rows = await db
-            .select()
-            .from(nativeDevicePushTokens)
-            .where(
-              and(
-                eq(nativeDevicePushTokens.nativeToken, native),
-                eq(nativeDevicePushTokens.userId, userId)
-              )
-            )
-            .limit(1);
-          const row = rows[0];
-          if (row) {
-            const topics = (row.subscribedTopics as string[] | undefined) ?? [];
-            if (row.tokenType === "fcm" && topics.length > 0) {
-              await reconcileFcmTopics({
-                nativeToken: native,
-                tokenType: "fcm",
-                currentTopics: topics,
-                desiredTopics: [],
-                log: req.log,
-              });
-            }
-            await db
-              .delete(nativeDevicePushTokens)
-              .where(eq(nativeDevicePushTokens.nativeToken, native));
-          }
-        }
-
-        // If no specific tokens provided, clear all tokens for this user+role.
-        if (!expo && !native) {
-          const nativeRows = await db
-            .select()
-            .from(nativeDevicePushTokens)
-            .where(
-              and(eq(nativeDevicePushTokens.userId, userId), eq(nativeDevicePushTokens.role, role))
-            );
-          for (const row of nativeRows) {
-            const topics = (row.subscribedTopics as string[] | undefined) ?? [];
-            if (row.tokenType === "fcm" && topics.length > 0 && !isExpoPushTokenString(row.nativeToken)) {
-              await reconcileFcmTopics({
-                nativeToken: row.nativeToken,
-                tokenType: "fcm",
-                currentTopics: topics,
-                desiredTopics: [],
-                log: req.log,
-              });
-            }
-          }
-          await db
-            .delete(nativeDevicePushTokens)
-            .where(
-              and(eq(nativeDevicePushTokens.userId, userId), eq(nativeDevicePushTokens.role, role))
-            );
-          await db
-            .delete(expoPushTokens)
-            .where(and(eq(expoPushTokens.userId, userId), eq(expoPushTokens.role, role)));
-        }
+        await purgeUserPushTokens({
+          userId,
+          role,
+          expoToken: expo,
+          nativeToken: native,
+          log: req.log,
+        });
 
         return reply.send({ ok: true });
       }

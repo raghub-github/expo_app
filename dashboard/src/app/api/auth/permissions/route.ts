@@ -18,7 +18,7 @@ export async function GET(request: NextRequest) {
     }
     const { user } = auth;
 
-    const userPerms = await getUserPermissions(user.id, user.email);
+    const userPerms = await getUserPermissions(user.id, user.email ?? "");
 
     if (!userPerms) {
       const response = NextResponse.json({

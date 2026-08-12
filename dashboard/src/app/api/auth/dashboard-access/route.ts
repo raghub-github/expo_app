@@ -116,6 +116,9 @@ export async function GET(request: NextRequest) {
       systemUserId: mapped.id,
       count: allAccessPoints.length,
       hasStatusToggleInAccessPoints,
+      groups: allAccessPoints.map(
+        (ap) => `${String(ap.dashboardType).toUpperCase()}:${String(ap.accessPointGroup).toUpperCase()}`
+      ),
     });
 
     return NextResponse.json({

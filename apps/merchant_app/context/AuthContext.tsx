@@ -41,6 +41,8 @@ export type ChildStore = {
   store_id: string;
   store_name: string;
   full_address: string;
+  /** From merchant_stores.city — shown in header after store ID. */
+  city?: string | null;
   approval_status: string;
   banner_url?: string | null;
   /** Same as parent store_logo — preferred for header logo. */
@@ -161,7 +163,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const signOut = useCallback(async () => {
     const { runMerchantPushUnregister } = await import("@/lib/merchantPushUnregister");
-    await runMerchantPushUnregister();
+    const accessToken = token ?? (await readMerchantAccessToken());
+    await runMerchantPushUnregister(accessToken);
     await clearMerchantSessionToken();
     await SecureStore.deleteItemAsync(PARTNER_KEY);
     await clearLastSelectedStore();
@@ -173,7 +176,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setTokenState(null);
     setPartnerState(null);
     setSupabaseUserIdState(null);
-  }, []);
+  }, [token]);
 
   const refreshPartner = useCallback(async () => {
     const t = token ?? (await readMerchantAccessToken());

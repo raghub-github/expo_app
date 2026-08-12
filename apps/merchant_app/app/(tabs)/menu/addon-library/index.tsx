@@ -128,7 +128,7 @@ export default function AddonLibraryScreen() {
     <View style={styles.container}>
       <View style={[styles.header, { paddingTop: insets.top + 8 }]}>
         <TouchableOpacity onPress={() => router.back()} style={styles.backBtn} hitSlop={8}>
-          <Ionicons name="arrow-back" size={24} color={GatiMitraMerchant.textPrimary} />
+          <Ionicons name="chevron-back" size={20} color={GatiMitraMerchant.textPrimary} />
         </TouchableOpacity>
         <Text style={styles.title}>Addon Library</Text>
         <TouchableOpacity onPress={() => setCreateModalVisible(true)} style={styles.addBtn}>

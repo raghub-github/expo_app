@@ -3,7 +3,7 @@
  * One active card centered; next/prev partially visible. Snap, compact cards, pagination dots.
  */
 
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import {
   View,
   StyleSheet,
@@ -22,7 +22,6 @@ import {
 } from "react-native";
 import { AppText as Text } from "@/components/AppText";
 import { Ionicons } from "@expo/vector-icons";
-import { LinearGradient } from "expo-linear-gradient";
 import { API_BASE_URL } from "@/services/api";
 import {
   GatiMitraMerchant,
@@ -38,6 +37,8 @@ import {
   updateSubscriptionAutoRenew,
 } from "@/services/subscriptionPaymentApi";
 import { SubscriptionCheckoutModal } from "@/components/subscription/SubscriptionCheckoutModal";
+import { PlanCompareSheet } from "@/components/subscription/PlanCompareSheet";
+import { PlanBenefitsSheet } from "@/components/subscription/PlanBenefitsSheet";
 import { SubscriptionSuccessSheet } from "@/components/subscription/SubscriptionSuccessSheet";
 import { SubscriptionHistoryList } from "@/components/subscription/SubscriptionHistoryList";
 import { useSelectedStore } from "@/context/SelectedStoreContext";
@@ -47,7 +48,6 @@ import { billingCycleLabel, formatPlanPrice } from "@/lib/billingCycleLabel";
 
 const LORA = "Lora_400Regular";
 const LORA_BOLD = "Lora_700Bold";
-const POPPINS_BOLD = "Poppins_700Bold";
 
 const { width: SCREEN_WIDTH } = Dimensions.get("window");
 
@@ -78,13 +78,12 @@ export type MerchantPlan = {
 
 const CONTENT_TOP = 14;
 const CARD_STACK_TOP = 20;
-const PEEK = 36;
+const PEEK = 28;
 const CARD_WIDTH = SCREEN_WIDTH - PEEK * 2;
-const CARD_HEIGHT = 360;
-const CARD_RADIUS = 22;
-const CARD_PADDING = 18;
-const SIDE_SCALE = 0.92;
-const SIDE_OPACITY = 0.9;
+const CARD_RADIUS = 12;
+const CARD_PADDING = 16;
+const SIDE_SCALE = 0.96;
+const SIDE_OPACITY = 0.92;
 
 const DEFAULT_PLANS: MerchantPlan[] = [
   {
@@ -152,11 +151,6 @@ const DEFAULT_PLANS: MerchantPlan[] = [
   },
 ];
 
-function isPremiumPlan(plan: MerchantPlan): boolean {
-  const code = (plan.plan_code || "").toUpperCase();
-  return code === "PREMIUM" || (plan.is_popular && plan.price > 0 && plan.price < 300);
-}
-
 function normalizeGstPercent(pct: unknown): number {
   const n = Number(pct ?? 0);
   if (!Number.isFinite(n) || n < 0 || n > 100) return 0;
@@ -194,6 +188,42 @@ function getAllPlanFeatures(plan: MerchantPlan): { label: string; value: string 
   ];
 }
 
+/** First five rows shown on card — full list opens in bottom sheet. */
+function getPlanPreviewFeatures(plan: MerchantPlan): { label: string; value: string }[] {
+  const all = getAllPlanFeatures(plan);
+  const imageIdx = all.findIndex((f) => f.label === "Image uploads");
+  if (imageIdx >= 0) return all.slice(0, imageIdx + 1);
+  return all.slice(0, 5);
+}
+
+function getPlanVisual(plan: MerchantPlan): {
+  icon: keyof typeof Ionicons.glyphMap;
+  accent: string;
+} {
+  const code = (plan.plan_code || "").toUpperCase();
+  if (code === "FREE" || plan.price === 0) {
+    return { icon: "leaf-outline", accent: "#64748b" };
+  }
+  if (code === "ENTERPRISE" || code === "PRO" || plan.price >= 250) {
+    return { icon: "rocket-outline", accent: "#7c3aed" };
+  }
+  if (plan.is_popular || code === "PREMIUM" || code === "GROWTH") {
+    return { icon: "trending-up-outline", accent: GatiMitraMerchant.primary };
+  }
+  return { icon: "diamond-outline", accent: GatiMitraMerchant.navy };
+}
+
+function PlanCardGraphic({ plan }: { plan: MerchantPlan }) {
+  const { icon, accent } = getPlanVisual(plan);
+  return (
+    <View style={styles.cardGraphicWrap}>
+      <View style={[styles.cardGraphicArrow, { backgroundColor: accent + "22" }]}>
+        <Ionicons name={icon} size={22} color={accent} />
+      </View>
+    </View>
+  );
+}
+
 const ACTIVE_SHADOW = Platform.select({
   ios: {
     shadowColor: "#0F172A",
@@ -218,9 +248,11 @@ function StackCard({
   plan,
   index,
   currentIndex,
-  total,
   isCurrentPlan,
+  activePlanPrice,
   onSelect,
+  onCompare,
+  onSeeMore,
   autoRenew,
   onAutoRenewChange,
   autoRenewLoading,
@@ -230,7 +262,10 @@ function StackCard({
   currentIndex: number;
   total: number;
   isCurrentPlan: boolean;
+  activePlanPrice: number;
   onSelect: () => void;
+  onCompare: () => void;
+  onSeeMore: () => void;
   autoRenew?: boolean;
   onAutoRenewChange?: (value: boolean) => void;
   autoRenewLoading?: boolean;
@@ -239,158 +274,149 @@ function StackCard({
   const isCenter = distance === 0;
   const scale = isCenter ? 1 : SIDE_SCALE;
   const opacity = isCenter ? 1 : SIDE_OPACITY;
-  const rotationDeg = isCenter ? 0 : Math.max(-4, Math.min(4, distance * 3));
+  const previewFeatures = getPlanPreviewFeatures(plan);
   const allFeatures = getAllPlanFeatures(plan);
-  const isPremium = isPremiumPlan(plan) && plan.price > 0;
+  const hasMoreBenefits = allFeatures.length > previewFeatures.length;
   const gstPercent = normalizeGstPercent(plan.gst_percent);
   const totalWithTax = computeTotalWithGst(plan.price, gstPercent);
+  const canUpgrade = !isCurrentPlan && plan.price > activePlanPrice;
 
-  const cardStyle = [
-    styles.cardBase,
-    {
-      width: CARD_WIDTH,
-      height: CARD_HEIGHT,
-      borderRadius: CARD_RADIUS,
-      padding: CARD_PADDING,
-      transform: [{ scale }, { rotate: `${rotationDeg}deg` }],
-      opacity,
-      ...(isCenter ? ACTIVE_SHADOW : SIDE_SHADOW),
-    },
-    isCenter && isCurrentPlan && styles.cardActiveDoubleBorder,
-    isCenter && isPremium && styles.cardPremiumGradient,
-  ];
-
-  const content = (
-    <>
-      <View style={styles.cardTop}>
-        <View>
-          <Text style={[styles.planName, isPremium && styles.textWhite]} numberOfLines={1}>
-            {plan.plan_name}
-          </Text>
-          <Text style={[styles.price, isPremium && styles.textWhite]} numberOfLines={1}>
-            {formatPlanPrice(plan.price, plan.billing_cycle)}
-          </Text>
-          {plan.price > 0 ? (
-            <Text style={[styles.cycleChip, isPremium && styles.cycleChipPremium]} numberOfLines={1}>
-              {billingCycleLabel(plan.billing_cycle)}
-            </Text>
-          ) : null}
-          {plan.price > 0 && (
-            <Text style={[styles.taxLine, isPremium && styles.textWhiteMuted]} numberOfLines={1}>
-              Tax: {gstPercent.toFixed(2)}% · Total ₹{totalWithTax.toFixed(2)}
-            </Text>
-          )}
-        </View>
-        {isCenter && (plan.is_popular || isPremium) && (
-          <View style={[styles.badge, isPremium && styles.badgePremium]}>
-            <Text style={styles.badgeText}>{isPremium ? "Premium" : "Recommended"}</Text>
-          </View>
-        )}
-        {isCenter && isCurrentPlan && (
-          <View style={[styles.currentBadge, isPremium && styles.currentBadgePremium]}>
-            <Text style={[styles.currentBadgeText, isPremium && styles.textWhite]}>Current Plan</Text>
-          </View>
-        )}
-      </View>
-      {plan.description ? (
-        <Text style={[styles.description, isPremium && styles.textWhite]} numberOfLines={2}>
-          {plan.description}
-        </Text>
-      ) : null}
-      <View style={styles.featuresWrap}>
-        <Text style={[styles.featuresTitle, isPremium && styles.textWhite]}>Includes</Text>
-        <ScrollView
-          style={styles.featuresScroll}
-          showsVerticalScrollIndicator={false}
-          nestedScrollEnabled
-        >
-          {allFeatures.map((f, i) => (
-            <View key={i} style={styles.benefitRow}>
-              <Ionicons
-                name={f.value !== "No" && f.value !== "—" ? "checkmark-circle" : "ellipse-outline"}
-                size={12}
-                color={f.value !== "No" && f.value !== "—" ? (isPremium ? "rgba(255,255,255,0.9)" : GatiMitraMerchant.primary) : (isPremium ? "rgba(255,255,255,0.5)" : GatiMitraMerchant.textTertiary)}
-              />
-              <Text style={[styles.benefitLabel, isPremium && styles.textWhite]} numberOfLines={1}>{f.label}</Text>
-              <Text style={[styles.benefitValue, isPremium && styles.textWhite]} numberOfLines={1}>{f.value}</Text>
-            </View>
-          ))}
-        </ScrollView>
-      </View>
-      {isCurrentPlan && plan.price > 0 && onAutoRenewChange && (
-        <View style={[styles.autoRenewRow, isPremium && styles.autoRenewRowPremium]}>
-          <View style={styles.autoRenewTextWrap}>
-            <Text style={[styles.autoRenewTitle, isPremium && styles.textWhite]}>Auto Renew</Text>
-            <Text style={[styles.autoRenewSubtitle, isPremium && styles.textWhite]}>
-              Deduct from wallet on renewal
-            </Text>
-          </View>
-          <Switch
-            value={autoRenew === true}
-            onValueChange={onAutoRenewChange}
-            disabled={autoRenewLoading}
-            trackColor={{ false: "#CBD5E1", true: isPremium ? "rgba(255,255,255,0.45)" : GatiMitraMerchant.primary }}
-            thumbColor={autoRenew ? "#FFFFFF" : "#F8FAFC"}
-          />
-        </View>
-      )}
-      {plan.price > 0 && (
-        <Pressable
-          onPress={onSelect}
-          disabled={isCurrentPlan}
-          style={({ pressed }) => [
-            styles.cta,
-            isPremium && styles.ctaPremium,
-            isCurrentPlan && styles.ctaActive,
-            pressed && !isCurrentPlan && styles.ctaPressed,
-          ]}
-        >
-          <Text
-            style={[
-              styles.ctaText,
-              isPremium && styles.ctaTextPremium,
-              isCurrentPlan && styles.ctaTextActive,
-            ]}
-          >
-            {isCurrentPlan ? "Active Plan" : "Upgrade"}
-          </Text>
-        </Pressable>
-      )}
-      {plan.price === 0 && (
-        <View
-          style={[
-            styles.cta,
-            styles.ctaActive,
-          ]}
-        >
-          <Text style={[styles.ctaText, styles.ctaTextActive]}>
-            {isCurrentPlan ? "Your Current Plan" : "Free Plan"}
-          </Text>
-        </View>
-      )}
-    </>
-  );
-
-  if (isPremium) {
-    return (
-      <View style={[isCenter && isCurrentPlan && styles.cardActiveOuterWrap]}>
-        <View style={[cardStyle, isCenter && isCurrentPlan && styles.cardActiveInnerBorderLight]}>
-          <LinearGradient
-          colors={[GatiMitraMerchant.primary, GatiMitraMerchant.primaryDark]}
-          start={{ x: 0, y: 0 }}
-          end={{ x: 1, y: 1 }}
-          style={StyleSheet.absoluteFill}
-        />
-          <View style={styles.cardInner}>{content}</View>
-        </View>
-      </View>
-    );
-  }
+  const primaryLabel = isCurrentPlan
+    ? plan.price === 0
+      ? "Your Current Plan"
+      : "Active Plan"
+    : canUpgrade
+      ? plan.price === 0
+        ? "Switch to Free"
+        : "Upgrade"
+      : "Included";
 
   return (
-    <View style={[isCenter && isCurrentPlan && styles.cardActiveOuterWrap]}>
-      <View style={cardStyle}>
-        <View style={styles.cardInner}>{content}</View>
+    <View
+      style={[
+        isCenter && isCurrentPlan && styles.cardActiveOuterWrap,
+        { transform: [{ scale }], opacity },
+      ]}
+    >
+      <View
+        style={[
+          styles.cardBase,
+          { width: CARD_WIDTH, borderRadius: CARD_RADIUS },
+          isCenter ? ACTIVE_SHADOW : SIDE_SHADOW,
+        ]}
+      >
+        <View style={styles.cardTopSection}>
+          <View style={styles.cardTopLeft}>
+            {isCurrentPlan ? (
+              <View style={styles.statusBadgeActive}>
+                <Text style={styles.statusBadgeActiveText}>ACTIVE</Text>
+              </View>
+            ) : plan.is_popular ? (
+              <View style={styles.statusBadgePopular}>
+                <Text style={styles.statusBadgePopularText}>POPULAR</Text>
+              </View>
+            ) : null}
+            <Text style={styles.planName} numberOfLines={2}>
+              {plan.plan_name}
+            </Text>
+            <Text style={styles.metaLine}>
+              Billing · {billingCycleLabel(plan.billing_cycle)}
+            </Text>
+            <Text style={styles.metaLine}>
+              Price · {formatPlanPrice(plan.price, plan.billing_cycle)}
+            </Text>
+            {plan.price > 0 ? (
+              <Text style={styles.metaLine}>
+                Total · ₹{totalWithTax.toFixed(2)} incl. {gstPercent.toFixed(0)}% tax
+              </Text>
+            ) : null}
+            {plan.description ? (
+              <Text style={styles.metaLineMuted} numberOfLines={2}>
+                {plan.description}
+              </Text>
+            ) : null}
+          </View>
+          <PlanCardGraphic plan={plan} />
+        </View>
+
+        <View style={styles.cardDivider} />
+
+        <Text style={styles.includesTitle}>What you get</Text>
+        <View style={styles.statsSection}>
+          {previewFeatures.map((row) => (
+            <View key={row.label} style={styles.statRow}>
+              <Text style={styles.statLabel} numberOfLines={2}>
+                {row.label}
+              </Text>
+              <Text style={styles.statValue} numberOfLines={2}>
+                {row.value}
+              </Text>
+            </View>
+          ))}
+        </View>
+
+        {hasMoreBenefits ? (
+          <Pressable
+            onPress={onSeeMore}
+            style={({ pressed }) => [styles.seeMoreBtn, pressed && styles.btnPressed]}
+          >
+            <Text style={styles.seeMoreText}>See More</Text>
+            <Ionicons name="arrow-forward" size={14} color={GatiMitraMerchant.primary} />
+          </Pressable>
+        ) : null}
+
+        {isCurrentPlan && plan.price > 0 && onAutoRenewChange ? (
+          <>
+            <View style={styles.cardDivider} />
+            <View style={styles.autoRenewRow}>
+              <View style={styles.autoRenewTextWrap}>
+                <Text style={styles.autoRenewTitle}>Auto Renew</Text>
+                <Text style={styles.autoRenewSubtitle}>Deduct from wallet on renewal</Text>
+              </View>
+              <Switch
+                value={autoRenew === true}
+                onValueChange={onAutoRenewChange}
+                disabled={autoRenewLoading}
+                trackColor={{ false: "#E5E7EB", true: GatiMitraMerchant.primary }}
+                thumbColor="#FFFFFF"
+              />
+            </View>
+          </>
+        ) : null}
+
+        <View style={styles.cardDivider} />
+
+        <View style={styles.buttonRow}>
+          <Pressable
+            onPress={onCompare}
+            style={({ pressed }) => [styles.btnOutline, pressed && styles.btnPressed]}
+          >
+            <Text style={styles.btnOutlineText}>Compare</Text>
+            <Ionicons name="arrow-forward" size={14} color={GatiMitraMerchant.textPrimary} />
+          </Pressable>
+
+          <Pressable
+            onPress={onSelect}
+            disabled={isCurrentPlan || !canUpgrade}
+            style={({ pressed }) => [
+              styles.btnSolid,
+              (isCurrentPlan || !canUpgrade) && styles.btnSolidMuted,
+              pressed && canUpgrade && styles.btnPressed,
+            ]}
+          >
+            <Text
+              style={[
+                styles.btnSolidText,
+                (isCurrentPlan || !canUpgrade) && styles.btnSolidTextMuted,
+              ]}
+            >
+              {primaryLabel}
+            </Text>
+            {canUpgrade ? (
+              <Ionicons name="arrow-forward" size={14} color="#FFFFFF" />
+            ) : null}
+          </Pressable>
+        </View>
       </View>
     </View>
   );
@@ -409,9 +435,18 @@ export default function PlansScreen() {
   const [activePlanCode, setActivePlanCode] = useState(FALLBACK_ACTIVE_PLAN_CODE);
   const [autoRenew, setAutoRenew] = useState(false);
   const [autoRenewLoading, setAutoRenewLoading] = useState(false);
+  const [compareOpen, setCompareOpen] = useState(false);
+  const [benefitsPlan, setBenefitsPlan] = useState<MerchantPlan | null>(null);
 
   const { selectedStore } = useSelectedStore();
   const { token } = useAuth();
+
+  const activePlanPrice = useMemo(() => {
+    const active = plans.find(
+      (p) => (p.plan_code || "").toUpperCase() === activePlanCode.toUpperCase()
+    );
+    return Number(active?.price) || 0;
+  }, [plans, activePlanCode]);
 
   // Sort plans to show active plan first
   const sortedPlans = [...plans].sort((a, b) => {
@@ -568,7 +603,10 @@ export default function PlansScreen() {
             currentIndex={currentIndex}
             total={realCount}
             isCurrentPlan={(item.plan_code || "").toUpperCase() === activePlanCode.toUpperCase()}
+            activePlanPrice={activePlanPrice}
             onSelect={() => handleUpgrade(item)}
+            onCompare={() => setCompareOpen(true)}
+            onSeeMore={() => setBenefitsPlan(item)}
             autoRenew={autoRenew}
             onAutoRenewChange={handleAutoRenewChange}
             autoRenewLoading={autoRenewLoading}
@@ -576,7 +614,15 @@ export default function PlansScreen() {
         </View>
       );
     },
-    [currentIndex, activePlanCode, realCount, autoRenew, autoRenewLoading, handleAutoRenewChange]
+    [
+      currentIndex,
+      activePlanCode,
+      activePlanPrice,
+      realCount,
+      autoRenew,
+      autoRenewLoading,
+      handleAutoRenewChange,
+    ]
   );
 
   const [checkoutPlan, setCheckoutPlan] = useState<MerchantPlan | null>(null);
@@ -690,12 +736,7 @@ export default function PlansScreen() {
 
   return (
     <View style={[styles.container, { paddingBottom: scrollBottomPadding }]}>
-      <View style={[styles.header, { paddingTop: CONTENT_TOP }]}>
-        <Text style={styles.title}>Plans & Subscription</Text>
-        <Text style={styles.subtitle}>Choose a plan that works best for your restaurant</Text>
-      </View>
-
-      <View style={[styles.listWrap, { marginTop: CARD_STACK_TOP }]}>
+      <View style={[styles.listWrap, { marginTop: CONTENT_TOP }]}>
         <FlatList
           ref={listRef}
           data={displayData}
@@ -835,6 +876,26 @@ export default function PlansScreen() {
         }
         onClose={() => setSuccessSheet(null)}
       />
+
+      <PlanCompareSheet
+        visible={compareOpen}
+        plans={sortedPlans}
+        activePlanCode={activePlanCode}
+        getFeatures={getAllPlanFeatures}
+        onClose={() => setCompareOpen(false)}
+      />
+
+      <PlanBenefitsSheet
+        visible={!!benefitsPlan}
+        plan={benefitsPlan}
+        isActive={
+          benefitsPlan
+            ? (benefitsPlan.plan_code || "").toUpperCase() === activePlanCode.toUpperCase()
+            : false
+        }
+        features={benefitsPlan ? getAllPlanFeatures(benefitsPlan) : []}
+        onClose={() => setBenefitsPlan(null)}
+      />
     </View>
   );
 }
@@ -914,19 +975,6 @@ const styles = StyleSheet.create({
   sheetBodyContent: { paddingHorizontal: H_PADDING, paddingTop: 12, paddingBottom: 24 },
 
   container: { flex: 1, backgroundColor: "#F8FAFC" },
-  header: { paddingHorizontal: H_PADDING, marginBottom: 12 },
-  title: {
-    fontSize: 24,
-    fontFamily: LORA_BOLD,
-    color: GatiMitraMerchant.textPrimary,
-  },
-  subtitle: {
-    fontSize: 13,
-    fontFamily: LORA,
-    color: GatiMitraMerchant.textTertiary,
-    marginTop: 4,
-    lineHeight: 18,
-  },
   subheading: {
     fontSize: 12,
     fontFamily: LORA_BOLD,
@@ -939,162 +987,208 @@ const styles = StyleSheet.create({
   },
   cell: {
     width: CARD_WIDTH,
-    height: CARD_HEIGHT + 24,
     justifyContent: "center",
     alignItems: "center",
+    paddingVertical: 8,
   },
   listWrap: { flex: 1, justifyContent: "center" },
   cardBase: {
     backgroundColor: "#FFFFFF",
     borderWidth: 1,
-    borderColor: "#E2E8F0",
+    borderColor: "#EEEEEE",
     overflow: "hidden",
-    shadowColor: "#0F172A",
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.1,
-    shadowRadius: 18,
-    elevation: 6,
+    padding: CARD_PADDING,
+    ...Platform.select({
+      ios: {
+        shadowColor: "#0F172A",
+        shadowOffset: { width: 0, height: 4 },
+        shadowOpacity: 0.08,
+        shadowRadius: 12,
+      },
+      android: { elevation: 4 },
+    }),
   },
   cardActiveOuterWrap: {
-    borderWidth: 2.5,
+    borderWidth: 2,
     borderColor: GatiMitraMerchant.primary,
-    borderRadius: CARD_RADIUS + 4,
-    padding: 3,
-    shadowColor: GatiMitraMerchant.primary,
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.28,
-    shadowRadius: 16,
-    elevation: 10,
+    borderRadius: CARD_RADIUS + 3,
+    padding: 2,
   },
-  cardActiveDoubleBorder: {
-    borderWidth: 0,
-  },
-  cardActiveInnerBorderLight: {
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.45)",
-  },
-  cardPremiumGradient: {
-    borderWidth: 0,
-  },
-  cardInner: { flex: 1, justifyContent: "space-between" },
-  cardTop: {
+  cardTopSection: {
     flexDirection: "row",
     alignItems: "flex-start",
     justifyContent: "space-between",
     gap: 8,
+    paddingBottom: 14,
+  },
+  cardTopLeft: { flex: 1, minWidth: 0, gap: 4 },
+  cardGraphicWrap: {
+    width: 56,
+    height: 56,
+    alignItems: "flex-end",
+    justifyContent: "flex-start",
+  },
+  cardGraphicArrow: {
+    width: 52,
+    height: 44,
+    borderTopLeftRadius: 22,
+    borderBottomLeftRadius: 22,
+    borderTopRightRadius: 8,
+    borderBottomRightRadius: 8,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  statusBadgeActive: {
+    alignSelf: "flex-start",
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 4,
+    backgroundColor: "#E8F5E9",
+    marginBottom: 6,
+  },
+  statusBadgeActiveText: {
+    fontSize: 10,
+    fontWeight: "800",
+    letterSpacing: 0.6,
+    color: "#2E7D32",
+  },
+  statusBadgePopular: {
+    alignSelf: "flex-start",
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 4,
+    backgroundColor: "#E3F2FD",
+    marginBottom: 6,
+  },
+  statusBadgePopularText: {
+    fontSize: 10,
+    fontWeight: "800",
+    letterSpacing: 0.6,
+    color: "#1565C0",
   },
   planName: {
-    fontSize: 18,
+    fontSize: 22,
     fontFamily: LORA_BOLD,
-    color: GatiMitraMerchant.textPrimary,
+    fontWeight: "800",
+    color: "#1A1A1A",
+    lineHeight: 28,
     marginBottom: 2,
   },
-  textWhite: { color: "#fff" },
-  textWhiteMuted: { color: "rgba(255,255,255,0.82)" },
-  price: {
-    fontSize: 28,
-    fontFamily: POPPINS_BOLD,
-    color: GatiMitraMerchant.primary,
-    marginTop: 6,
-    marginBottom: 2,
-  },
-  cycleChip: {
-    alignSelf: "flex-start",
-    marginTop: 6,
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 999,
-    overflow: "hidden",
-    backgroundColor: "rgba(62, 180, 137, 0.12)",
-    color: GatiMitraMerchant.primaryDark,
-    fontSize: 11,
-    fontFamily: LORA_BOLD,
-  },
-  cycleChipPremium: {
-    backgroundColor: "rgba(255,255,255,0.22)",
-    color: "#FFFFFF",
-  },
-  taxLine: {
-    fontSize: 11,
+  metaLine: {
+    fontSize: 13,
     fontFamily: LORA,
-    color: GatiMitraMerchant.textSecondary,
-    marginTop: 4,
+    color: "#757575",
+    lineHeight: 18,
   },
-  badge: {
-    paddingVertical: 5,
-    paddingHorizontal: 10,
-    borderRadius: 999,
-    backgroundColor: GatiMitraMerchant.primary,
-  },
-  badgePremium: { backgroundColor: "rgba(255,255,255,0.28)" },
-  badgeText: { fontSize: 10, fontFamily: LORA_BOLD, color: "#fff" },
-  currentBadge: {
-    paddingVertical: 4,
-    paddingHorizontal: 8,
-    borderRadius: 999,
-    backgroundColor: GatiMitraMerchant.statusCompletedBg,
-  },
-  currentBadgePremium: { backgroundColor: "rgba(255,255,255,0.2)" },
-  currentBadgeText: {
-    fontSize: 10,
-    fontFamily: LORA_BOLD,
-    color: GatiMitraMerchant.statusCompleted,
-  },
-  description: {
+  metaLineMuted: {
     fontSize: 12,
-    color: GatiMitraMerchant.textSecondary,
-    marginBottom: 10,
-    lineHeight: 17,
     fontFamily: LORA,
+    color: "#9CA3AF",
+    lineHeight: 17,
+    marginTop: 2,
   },
-  featuresWrap: { flex: 1, minHeight: 0, marginTop: 4 },
-  featuresScroll: { flex: 1, minHeight: 0 },
-  featuresTitle: {
-    fontSize: 10,
-    fontFamily: LORA_BOLD,
+  cardDivider: {
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: "#EEEEEE",
+    marginVertical: 10,
+  },
+  includesTitle: {
+    fontSize: 11,
+    fontWeight: "700",
     color: GatiMitraMerchant.textTertiary,
-    marginBottom: 6,
     textTransform: "uppercase",
     letterSpacing: 0.5,
+    marginBottom: 6,
   },
-  benefitRow: {
+  statsSection: { gap: 8, marginBottom: 4 },
+  seeMoreBtn: {
     flexDirection: "row",
     alignItems: "center",
+    justifyContent: "center",
     gap: 6,
-    marginBottom: 4,
+    paddingVertical: 8,
+    marginBottom: 2,
   },
-  benefitLabel: {
-    fontSize: 11,
-    fontFamily: LORA,
-    color: GatiMitraMerchant.textSecondary,
-    flex: 1,
-  },
-  benefitValue: {
-    fontSize: 11,
+  seeMoreText: {
+    fontSize: 13,
     fontFamily: LORA_BOLD,
-    color: GatiMitraMerchant.textPrimary,
-    minWidth: 44,
-    textAlign: "right",
+    fontWeight: "700",
+    color: GatiMitraMerchant.primary,
   },
-  cta: {
-    paddingVertical: 13,
-    paddingHorizontal: 16,
-    borderRadius: 14,
-    backgroundColor: GatiMitraMerchant.primary,
+  statRow: {
+    flexDirection: "row",
     alignItems: "center",
-    marginTop: 12,
-    shadowColor: GatiMitraMerchant.primary,
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.22,
-    shadowRadius: 8,
-    elevation: 4,
+    justifyContent: "space-between",
+    gap: 12,
   },
-  ctaPremium: { backgroundColor: "rgba(255,255,255,0.28)" },
-  ctaActive: { backgroundColor: GatiMitraMerchant.surfaceSubtle, shadowOpacity: 0 },
-  ctaPressed: { opacity: 0.9 },
-  ctaText: { fontSize: 14, fontFamily: LORA_BOLD, color: "#fff", letterSpacing: 0.3 },
-  ctaTextPremium: { color: "#fff" },
-  ctaTextActive: { color: GatiMitraMerchant.textSecondary },
+  statLabel: {
+    flex: 1,
+    fontSize: 14,
+    fontFamily: LORA,
+    color: "#757575",
+  },
+  statValue: {
+    fontSize: 14,
+    fontFamily: LORA_BOLD,
+    fontWeight: "700",
+    color: "#1A1A1A",
+    textAlign: "right",
+    maxWidth: "48%",
+  },
+  buttonRow: {
+    flexDirection: "row",
+    gap: 10,
+    paddingTop: 4,
+  },
+  btnOutline: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    paddingVertical: 12,
+    paddingHorizontal: 10,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "#1A1A1A",
+    backgroundColor: "#FFFFFF",
+  },
+  btnOutlineMuted: {
+    borderColor: "#D1D5DB",
+  },
+  btnOutlineText: {
+    fontSize: 13,
+    fontFamily: LORA_BOLD,
+    fontWeight: "700",
+    color: "#1A1A1A",
+  },
+  btnOutlineTextMuted: {
+    color: "#9CA3AF",
+  },
+  btnSolid: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    paddingVertical: 12,
+    paddingHorizontal: 10,
+    borderRadius: 8,
+    backgroundColor: "#1A1A1A",
+  },
+  btnSolidMuted: {
+    backgroundColor: "#F3F4F6",
+  },
+  btnSolidText: {
+    fontSize: 13,
+    fontFamily: LORA_BOLD,
+    fontWeight: "700",
+    color: "#FFFFFF",
+  },
+  btnSolidTextMuted: {
+    color: "#9CA3AF",
+  },
+  btnPressed: { opacity: 0.88 },
   dots: {
     flexDirection: "row",
     justifyContent: "center",
@@ -1119,21 +1213,10 @@ const styles = StyleSheet.create({
     opacity: 1,
   },
   autoRenewRow: {
-    marginBottom: 10,
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: "#E2E8F0",
-    backgroundColor: "#F8FAFC",
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
     gap: 8,
-  },
-  autoRenewRowPremium: {
-    borderColor: "rgba(255,255,255,0.25)",
-    backgroundColor: "rgba(255,255,255,0.12)",
   },
   autoRenewTextWrap: {
     flex: 1,

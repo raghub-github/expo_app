@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { Plus, Edit2, Trash2, X, ChevronDown, ChevronRight, Package } from "lucide-react";
 import { useToast } from "@/context/ToastContext";
+import { useMerchantDashboardAccess } from "@/hooks/useMerchantDashboardAccess";
 
 type ModifierGroup = {
   id: number;
@@ -31,6 +32,8 @@ type InlineOption = { name: string; price: string };
 
 export function AddonLibraryClient({ storeId }: { storeId: string }) {
   const { toast } = useToast();
+  const { canManageStore, isViewOnly, canMutate } = useMerchantDashboardAccess();
+  const readOnly = isViewOnly || !canManageStore || !canMutate;
   const [groups, setGroups] = useState<ModifierGroup[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
@@ -308,6 +311,7 @@ export function AddonLibraryClient({ storeId }: { storeId: string }) {
             value={search}
             onChange={(e) => setSearch(e.target.value)}
           />
+          {!readOnly ? (
           <button
             type="button"
             onClick={() => {
@@ -325,11 +329,12 @@ export function AddonLibraryClient({ storeId }: { storeId: string }) {
             <Plus size={18} />
             New group
           </button>
+          ) : null}
         </div>
       </div>
 
       {/* Create / Edit form */}
-      {(showForm || editingGroup) && (
+      {!readOnly && (showForm || editingGroup) && (
         <div className="mx-4 mt-4 p-5 rounded-xl border border-orange-200 bg-gradient-to-b from-orange-50/80 to-white shadow-sm">
           <h3 className="text-base font-semibold text-gray-900 mb-4">
             {editingGroup ? "Edit group" : "New addon group"}
@@ -477,6 +482,7 @@ export function AddonLibraryClient({ storeId }: { storeId: string }) {
             <p className="text-sm text-gray-500 mt-1 text-center max-w-sm">
               Create a group (e.g. Toppings), add options with prices, then link it to menu items from the item edit screen.
             </p>
+            {!readOnly ? (
             <button
               type="button"
               onClick={() => {
@@ -493,6 +499,7 @@ export function AddonLibraryClient({ storeId }: { storeId: string }) {
             >
               <Plus size={18} /> New group
             </button>
+            ) : null}
           </div>
         ) : (
           <div className="space-y-2">
@@ -533,6 +540,7 @@ export function AddonLibraryClient({ storeId }: { storeId: string }) {
                       </div>
                     </div>
                   </div>
+                  {!readOnly ? (
                   <div className="flex items-center gap-1 shrink-0" onClick={(e) => e.stopPropagation()}>
                     <button
                       type="button"
@@ -551,10 +559,12 @@ export function AddonLibraryClient({ storeId }: { storeId: string }) {
                       <Trash2 size={16} />
                     </button>
                   </div>
+                  ) : null}
                 </div>
 
                 {expandedId === g.id && (
                   <div className="border-t border-gray-100 bg-gray-50/50 p-4">
+                    {!readOnly ? (
                     <div className="flex flex-wrap items-end gap-2 mb-4">
                       <div className="flex-1 min-w-[160px]">
                         <label className="block text-xs font-medium text-gray-600 mb-1">Option name</label>
@@ -589,6 +599,7 @@ export function AddonLibraryClient({ storeId }: { storeId: string }) {
                         {addingOptionFor === g.id ? "Adding…" : "Add option"}
                       </button>
                     </div>
+                    ) : null}
                     {optionsLoading[g.id] ? (
                       <div className="text-sm text-gray-500 py-2">Loading options…</div>
                     ) : (

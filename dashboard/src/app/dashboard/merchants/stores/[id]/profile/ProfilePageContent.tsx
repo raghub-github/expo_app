@@ -94,6 +94,15 @@ export type ProfilePageContentProps = {
   handleSaveField: (field: string) => Promise<void>;
   revertAlternatePhone: () => void;
   canStoreVerify: boolean;
+  /** Store management / banner / address / phone edits */
+  canEditProfile?: boolean;
+  /** Bank account create/update */
+  canEditBank?: boolean;
+  /**
+   * View-only viewer on a store not linked to their Area Manager —
+   * blur legal docs + agreement (API already redacts payloads).
+   */
+  legalDocsRestricted?: boolean;
   openDocumentsVerification: () => void;
   openBankVerification: () => void;
   openProfileMediaVerification: () => void;
@@ -127,6 +136,9 @@ export function ProfilePageContent(props: ProfilePageContentProps) {
     handleSaveField,
     revertAlternatePhone,
     canStoreVerify,
+    canEditProfile = false,
+    canEditBank = false,
+    legalDocsRestricted = false,
     openDocumentsVerification,
     openBankVerification,
     openProfileMediaVerification,
@@ -243,34 +255,41 @@ export function ProfilePageContent(props: ProfilePageContentProps) {
                             <div className="text-[10px] text-gray-500">
                               Cuisine types
                             </div>
-                            <StoreCuisineManagerSection storeId={storeId} />
+                            <StoreCuisineManagerSection storeId={storeId} readOnly={!canEditProfile} />
                           </div>
                           <CompactLockedRow label="Store Email" value={displayStore.store_email ?? null} />
                           <CompactLockedRow
                             label="Primary Store Phone"
                             value={displayStore.store_phones?.[0] ?? null}
                           />
-                          <CompactEditableRow
-                            label="Alternate Store Phone"
-                            value={editData?.store_phones?.[1] ?? ""}
-                            isEditing={editingField === "store_phones_alternate"}
-                            onEdit={() => startEditing("store_phones_alternate")}
-                            onSave={stopEditing}
-                            onCancel={revertAlternatePhone}
-                            onChange={(v) => {
-                              const primary = displayStore.store_phones?.[0];
-                              const next = v.trim()
-                                ? primary
-                                  ? [primary, v.trim()]
-                                  : [v.trim()]
-                                : primary
-                                  ? [primary]
-                                  : [];
-                              setEditData((d) => (d ? { ...d, store_phones: next } : d));
-                            }}
-                            onSaveClick={() => handleSaveField("store_phones_alternate")}
-                            saving={savingField === "store_phones_alternate"}
-                          />
+                          {canEditProfile ? (
+                            <CompactEditableRow
+                              label="Alternate Store Phone"
+                              value={editData?.store_phones?.[1] ?? ""}
+                              isEditing={editingField === "store_phones_alternate"}
+                              onEdit={() => startEditing("store_phones_alternate")}
+                              onSave={stopEditing}
+                              onCancel={revertAlternatePhone}
+                              onChange={(v) => {
+                                const primary = displayStore.store_phones?.[0];
+                                const next = v.trim()
+                                  ? primary
+                                    ? [primary, v.trim()]
+                                    : [v.trim()]
+                                  : primary
+                                    ? [primary]
+                                    : [];
+                                setEditData((d) => (d ? { ...d, store_phones: next } : d));
+                              }}
+                              onSaveClick={() => handleSaveField("store_phones_alternate")}
+                              saving={savingField === "store_phones_alternate"}
+                            />
+                          ) : (
+                            <CompactLockedRow
+                              label="Alternate Store Phone"
+                              value={displayStore.store_phones?.[1] ?? null}
+                            />
+                          )}
                           <CompactLockedRow
                             label="Description"
                             value={displayStore.store_description ?? null}
@@ -293,14 +312,16 @@ export function ProfilePageContent(props: ProfilePageContentProps) {
                             <MapPin size={16} className="text-blue-600" />
                             Location
                           </h3>
-                          <button
-                            type="button"
-                            onClick={onChangeAddress}
-                            className="inline-flex items-center gap-1 rounded-md border border-gray-200 bg-white px-2 py-0.5 text-[11px] font-semibold text-gray-800 hover:bg-gray-50"
-                          >
-                            <MapPin size={12} />
-                            Change
-                          </button>
+                          {canEditProfile ? (
+                            <button
+                              type="button"
+                              onClick={onChangeAddress}
+                              className="inline-flex items-center gap-1 rounded-md border border-gray-200 bg-white px-2 py-0.5 text-[11px] font-semibold text-gray-800 hover:bg-gray-50"
+                            >
+                              <MapPin size={12} />
+                              Change
+                            </button>
+                          ) : null}
                         </div>
                         <div className="grid grid-cols-2 gap-x-2 gap-y-1 flex-1 min-h-0 overflow-y-auto content-start">
                           <div className="col-span-2 min-w-0">
@@ -420,12 +441,15 @@ export function ProfilePageContent(props: ProfilePageContentProps) {
 
                   {/* Right column */}
                   <div className="space-y-3 min-w-0">
-                    <div className="bg-gray-50 rounded-lg p-3 border border-gray-200">
+                    <div className="relative bg-gray-50 rounded-lg p-3 border border-gray-200 overflow-hidden">
                       <h3 className="text-sm font-semibold text-gray-900 mb-2 flex items-center gap-2">
                         <Shield size={16} className="text-blue-600" />
                         Legal Documents
                       </h3>
-                      <div className="space-y-2">
+                      <div
+                        className={`space-y-2 ${legalDocsRestricted ? "select-none blur-[6px] pointer-events-none" : ""}`}
+                        aria-hidden={legalDocsRestricted || undefined}
+                      >
                         {PROFILE_LEGAL_DOC_CONFIG.map((cfg) => {
                           const num = doc[cfg.numberKey];
                           if (!num || String(num).trim() === "") return null;
@@ -453,10 +477,14 @@ export function ProfilePageContent(props: ProfilePageContentProps) {
                                   : null
                               }
                               expiryDate={(doc[cfg.expiryKey] as string | null) ?? null}
-                              documentUrl={(doc[cfg.urlKey] as string | null) ?? null}
+                              documentUrl={
+                                legalDocsRestricted
+                                  ? null
+                                  : ((doc[cfg.urlKey] as string | null) ?? null)
+                              }
                               isVerified={docVerified}
                               onVerify={openDocumentsVerification}
-                              canVerify={canStoreVerify && !isVerified}
+                              canVerify={!legalDocsRestricted && canStoreVerify && !isVerified}
                             />
                           );
                         })}
@@ -467,78 +495,124 @@ export function ProfilePageContent(props: ProfilePageContentProps) {
                           <p className="text-xs text-gray-500 text-center py-2">No documents found</p>
                         )}
                       </div>
+                      {legalDocsRestricted ? (
+                        <div className="absolute inset-0 z-10 flex items-center justify-center bg-white/55 px-3">
+                          <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-center text-[11px] font-medium text-amber-900 shadow-sm">
+                            Legal documents are visible only for stores assigned to you as Area Manager.
+                          </p>
+                        </div>
+                      ) : null}
                     </div>
 
-                    <div className="bg-gray-50 rounded-lg p-3 border border-gray-200">
+                    <div className="relative bg-gray-50 rounded-lg p-3 border border-gray-200 overflow-hidden">
                       <h3 className="text-sm font-semibold text-gray-900 mb-2 flex items-center gap-2">
                         <FileCheck size={16} className="text-blue-600" />
                         Agreement contract
                       </h3>
-                      <p className="text-xs text-gray-600 mb-3">
-                        Partner agreement signed during onboarding.
-                      </p>
-                      {agreement.signer_name || agreement.accepted_at ? (
-                        <div className="space-y-3">
-                          <div className="bg-white rounded p-2 border border-gray-200 text-xs">
-                            <div className="flex justify-between gap-2">
-                              <span className="text-gray-600">Signed by</span>
-                              <span className="font-medium text-gray-900">
-                                {String(agreement.signer_name ?? "—")}
-                              </span>
+                      <div
+                        className={legalDocsRestricted ? "select-none blur-[6px] pointer-events-none" : ""}
+                        aria-hidden={legalDocsRestricted || undefined}
+                      >
+                        <p className="text-xs text-gray-600 mb-3">
+                          Partner agreement signed during onboarding.
+                        </p>
+                        {agreement.signer_name || agreement.accepted_at ? (
+                          <div className="space-y-3">
+                            <div className="bg-white rounded p-2 border border-gray-200 text-xs">
+                              <div className="flex justify-between gap-2">
+                                <span className="text-gray-600">Signed by</span>
+                                <span className="font-medium text-gray-900">
+                                  {String(agreement.signer_name ?? "—")}
+                                </span>
+                              </div>
+                              <div className="flex justify-between gap-2 mt-1">
+                                <span className="text-gray-600">Accepted on</span>
+                                <span className="text-gray-900">
+                                  {agreement.accepted_at
+                                    ? formatDate(String(agreement.accepted_at))
+                                    : "—"}
+                                </span>
+                              </div>
                             </div>
-                            <div className="flex justify-between gap-2 mt-1">
-                              <span className="text-gray-600">Accepted on</span>
-                              <span className="text-gray-900">
-                                {agreement.accepted_at
-                                  ? formatDate(String(agreement.accepted_at))
-                                  : "—"}
-                              </span>
-                            </div>
+                            {!legalDocsRestricted && agreement.contract_pdf_url ? (
+                              <div className="flex flex-wrap gap-2">
+                                <a
+                                  href={String(agreement.contract_pdf_url)}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-600 text-white text-xs font-medium hover:bg-blue-700"
+                                >
+                                  <ExternalLink size={14} />
+                                  View contract
+                                </a>
+                                <a
+                                  href={String(agreement.contract_pdf_url)}
+                                  download="partner-agreement-signed.pdf"
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-gray-300 bg-white text-gray-700 text-xs font-medium hover:bg-gray-50"
+                                >
+                                  <Download size={14} />
+                                  Download
+                                </a>
+                              </div>
+                            ) : !legalDocsRestricted ? (
+                              <p className="text-xs text-amber-600">PDF not available.</p>
+                            ) : (
+                              <div className="flex flex-wrap gap-2 opacity-70">
+                                <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-600 text-white text-xs font-medium">
+                                  <ExternalLink size={14} />
+                                  View contract
+                                </span>
+                                <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-gray-300 bg-white text-gray-700 text-xs font-medium">
+                                  <Download size={14} />
+                                  Download
+                                </span>
+                              </div>
+                            )}
                           </div>
-                          {agreement.contract_pdf_url ? (
-                            <div className="flex flex-wrap gap-2">
-                              <a
-                                href={String(agreement.contract_pdf_url)}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-600 text-white text-xs font-medium hover:bg-blue-700"
-                              >
-                                <ExternalLink size={14} />
-                                View contract
-                              </a>
-                              <a
-                                href={String(agreement.contract_pdf_url)}
-                                download="partner-agreement-signed.pdf"
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-gray-300 bg-white text-gray-700 text-xs font-medium hover:bg-gray-50"
-                              >
-                                <Download size={14} />
-                                Download
-                              </a>
-                            </div>
-                          ) : (
-                            <p className="text-xs text-amber-600">PDF not available.</p>
-                          )}
+                        ) : (
+                          <p className="text-xs text-gray-500">No agreement record found for this store.</p>
+                        )}
+                      </div>
+                      {legalDocsRestricted ? (
+                        <div className="absolute inset-0 z-10 flex items-center justify-center bg-white/55 px-3">
+                          <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-center text-[11px] font-medium text-amber-900 shadow-sm">
+                            Agreement is visible only for stores assigned to you as Area Manager.
+                          </p>
                         </div>
-                      ) : (
-                        <p className="text-xs text-gray-500">No agreement record found for this store.</p>
-                      )}
+                      ) : null}
                     </div>
 
-                    <div className="bg-gray-50 rounded-lg p-2 border border-gray-200">
-                      <BankAccountsSection
-                        storeId={storeId}
-                        initialAccounts={bankAccounts}
-                        onVerify={openBankVerification}
-                        canStoreVerify={canStoreVerify}
-                        storeName={
-                          (displayStore.store_display_name as string | undefined) ||
-                          (displayStore.store_name as string | undefined) ||
-                          (displayStore.owner_full_name as string | undefined) ||
-                          null
+                    <div className="relative bg-gray-50 rounded-lg p-2 border border-gray-200 overflow-hidden">
+                      <div
+                        className={
+                          legalDocsRestricted ? "select-none blur-[6px] pointer-events-none" : ""
                         }
-                      />
+                        aria-hidden={legalDocsRestricted || undefined}
+                      >
+                        <BankAccountsSection
+                          storeId={storeId}
+                          initialAccounts={bankAccounts}
+                          onVerify={openBankVerification}
+                          canStoreVerify={!legalDocsRestricted && canStoreVerify}
+                          canEditBank={!legalDocsRestricted && canEditBank}
+                          readOnlyRestricted={legalDocsRestricted}
+                          storeName={
+                            (displayStore.store_display_name as string | undefined) ||
+                            (displayStore.store_name as string | undefined) ||
+                            (displayStore.owner_full_name as string | undefined) ||
+                            null
+                          }
+                        />
+                      </div>
+                      {legalDocsRestricted ? (
+                        <div className="absolute inset-0 z-10 flex items-center justify-center bg-white/55 px-3">
+                          <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-center text-[11px] font-medium text-amber-900 shadow-sm">
+                            Bank details are visible only for stores assigned to you as Area Manager.
+                          </p>
+                        </div>
+                      ) : null}
                     </div>
                   </div>
                 </div>
@@ -550,21 +624,25 @@ export function ProfilePageContent(props: ProfilePageContentProps) {
                         <h3 className="text-sm font-semibold text-gray-900 mb-1">Store Banner</h3>
                         <p className="text-xs text-gray-600">Upload your store banner image</p>
                       </div>
-                      <button
-                        type="button"
-                        className="flex items-center gap-1.5 bg-blue-600 hover:bg-blue-700 text-white px-3 py-1.5 rounded-lg text-xs font-medium"
-                        onClick={() => bannerInputRef.current?.click()}
-                      >
-                        <Upload size={12} />
-                        Upload Banner
-                      </button>
-                      <input
-                        type="file"
-                        accept="image/*"
-                        ref={bannerInputRef}
-                        className="hidden"
-                        onChange={onBannerUpload}
-                      />
+                      {canEditProfile ? (
+                        <>
+                          <button
+                            type="button"
+                            className="flex items-center gap-1.5 bg-blue-600 hover:bg-blue-700 text-white px-3 py-1.5 rounded-lg text-xs font-medium"
+                            onClick={() => bannerInputRef.current?.click()}
+                          >
+                            <Upload size={12} />
+                            Upload Banner
+                          </button>
+                          <input
+                            type="file"
+                            accept="image/*"
+                            ref={bannerInputRef}
+                            className="hidden"
+                            onChange={onBannerUpload}
+                          />
+                        </>
+                      ) : null}
                     </div>
                     {(editData?.banner_url ?? displayStore.banner_url) ? (
                       <img
@@ -597,23 +675,27 @@ export function ProfilePageContent(props: ProfilePageContentProps) {
                           </button>
                         )}
                       </div>
-                      <button
-                        type="button"
-                        className="flex items-center gap-1.5 bg-green-600 hover:bg-green-700 text-white px-3 py-1.5 rounded-lg text-xs font-medium disabled:opacity-50"
-                        onClick={() => galleryInputRef.current?.click()}
-                        disabled={gallery.length >= 5}
-                      >
-                        <Upload size={12} />
-                        Upload
-                      </button>
-                      <input
-                        type="file"
-                        accept="image/*"
-                        multiple
-                        ref={galleryInputRef}
-                        className="hidden"
-                        onChange={onGalleryUpload}
-                      />
+                      {canEditProfile ? (
+                        <>
+                          <button
+                            type="button"
+                            className="flex items-center gap-1.5 bg-green-600 hover:bg-green-700 text-white px-3 py-1.5 rounded-lg text-xs font-medium disabled:opacity-50"
+                            onClick={() => galleryInputRef.current?.click()}
+                            disabled={gallery.length >= 5}
+                          >
+                            <Upload size={12} />
+                            Upload
+                          </button>
+                          <input
+                            type="file"
+                            accept="image/*"
+                            multiple
+                            ref={galleryInputRef}
+                            className="hidden"
+                            onChange={onGalleryUpload}
+                          />
+                        </>
+                      ) : null}
                     </div>
                     <div className="grid grid-cols-5 gap-2 mt-3">
                       {Array.from({ length: 5 }).map((_, index) => {
@@ -637,13 +719,15 @@ export function ProfilePageContent(props: ProfilePageContentProps) {
                                   alt={`Gallery ${index + 1}`}
                                   className="w-full h-full object-cover"
                                 />
-                                <button
-                                  type="button"
-                                  onClick={() => onRemoveGalleryImage(index)}
-                                  className="absolute top-1 right-1 bg-red-500 hover:bg-red-600 text-white w-5 h-5 rounded-full flex items-center justify-center text-sm opacity-0 group-hover:opacity-100 transition-opacity"
-                                >
-                                  ×
-                                </button>
+                                {canEditProfile ? (
+                                  <button
+                                    type="button"
+                                    onClick={() => onRemoveGalleryImage(index)}
+                                    className="absolute top-1 right-1 bg-red-500 hover:bg-red-600 text-white w-5 h-5 rounded-full flex items-center justify-center text-sm opacity-0 group-hover:opacity-100 transition-opacity"
+                                  >
+                                    ×
+                                  </button>
+                                ) : null}
                               </>
                             ) : preview ? (
                               <div className="relative w-full h-full">

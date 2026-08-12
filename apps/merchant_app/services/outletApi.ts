@@ -149,6 +149,49 @@ export function peekOperatingHoursCache(storeId: number): OperatingHours | null 
   return hit.data;
 }
 
+export function invalidateOutletCache(storeId?: number): void {
+  if (outletCache && (storeId == null || outletCache.storeId === storeId)) {
+    outletCache = null;
+  }
+  if (outletPromise && (storeId == null || outletPromise.storeId === storeId)) {
+    outletPromise = null;
+  }
+}
+
+export async function uploadStoreLogo(
+  storeId: number,
+  token: string,
+  file: { uri: string; type: string; name: string },
+): Promise<{ parent_logo_url: string }> {
+  const formData = new FormData();
+  formData.append("file", { uri: file.uri, type: file.type, name: file.name } as any);
+  const res = await authFetch(
+    `${getBase()}/v1/merchant-partner/stores/${storeId}/upload-store-logo`,
+    token,
+    { method: "POST", body: formData },
+  );
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error((err as any).error || (err as any).message || "Failed to upload store photo");
+  }
+  const data = (await res.json()) as { parent_logo_url?: string; logo_url?: string };
+  invalidateOutletCache(storeId);
+  return { parent_logo_url: data.parent_logo_url ?? data.logo_url ?? "" };
+}
+
+export async function removeStoreLogo(storeId: number, token: string): Promise<void> {
+  const res = await authFetch(
+    `${getBase()}/v1/merchant-partner/stores/${storeId}/store-logo`,
+    token,
+    { method: "DELETE" },
+  );
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error((err as any).error || (err as any).message || "Failed to remove store photo");
+  }
+  invalidateOutletCache(storeId);
+}
+
 export async function getOutlet(
   storeId: number,
   token: string
@@ -172,7 +215,8 @@ export async function getOutlet(
   const promise = (async () => {
     const res = await authFetch(
       `${getBase()}/v1/merchant-partner/stores/${storeId}`,
-      token
+      token,
+      { timeoutMs: 20_000 }
     );
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
@@ -191,6 +235,17 @@ export async function getOutlet(
     }
   });
   return promise;
+}
+
+export function getCachedOutlet(storeId: number, token: string): OutletInfo | null {
+  if (
+    outletCache &&
+    outletCache.storeId === storeId &&
+    outletCache.token === token
+  ) {
+    return outletCache.data;
+  }
+  return null;
 }
 
 export function prefetchOutlet(storeId: number, token: string): void {

@@ -130,11 +130,19 @@ function getCauseCode(err: unknown): string | undefined {
 /** True if error is timeout/abort (do not retry – Supabase unreachable). */
 export function isTimeoutOrAbortError(err: unknown): boolean {
   if (!err || typeof err !== "object") return false;
-  const e = err as { message?: string; code?: string; name?: string };
+  const e = err as { message?: string; code?: string | number; name?: string };
   const name = (e.name ?? "").toLowerCase();
   const msg = (e.message ?? "").toLowerCase();
-  if (name === "aborterror" || msg.includes("aborted")) return true;
-  const code = getCauseCode(err) ?? e.code;
+  if (name === "aborterror" || name === "authfetchtimeouterror" || name === "timeouterror") {
+    return true;
+  }
+  if (msg.includes("aborted") || msg.includes("auth fetch timeout") || msg.includes("auth probe")) {
+    return true;
+  }
+  if (e.code === 20 || e.code === "ABORT_ERR" || e.code === "ABORT" || e.code === "TIMEOUT") {
+    return true;
+  }
+  const code = getCauseCode(err) ?? (typeof e.code === "string" ? e.code : undefined);
   return (
     code === "UND_ERR_CONNECT_TIMEOUT" ||
     code === "UND_ERR_SOCKET_TIMEOUT" ||

@@ -15,6 +15,7 @@ import { StoreStatusProvider } from "@/context/StoreStatusContext";
 import { AuthProvider } from "@/context/AuthContext";
 import { SelectedStoreProvider } from "@/context/SelectedStoreContext";
 import { StoreSettingsProvider } from "@/context/StoreSettingsContext";
+import { ActiveTabProvider } from "@/context/ActiveTabContext";
 import { OrdersProvider } from "@/context/OrdersContext";
 import { ProfileNavProvider } from "@/context/ProfileNavContext";
 import { NotificationProvider } from "@/context/NotificationContext";
@@ -35,7 +36,8 @@ import NotificationSetup from "../components/NotificationSetup";
 import BackgroundOrderPermissionsGate from "../components/BackgroundOrderPermissionsGate";
 import NewOrderAutoOpenHandler from "../components/NewOrderAutoOpenHandler";
 import { fetchMerchantAppAssets } from "@/services/appAssets.service";
-import { isAppAssetsLoaded, setAppAssets } from "@/store/appAssetsStore";
+import { setAppAssets } from "@/store/appAssetsStore";
+import { AppAssetsPrefetch } from "@/components/AppAssetsPrefetch";
 import OrderAlertPushHandler from "../components/OrderAlertPushHandler";
 import WaitingForOrderNotifier from "../components/WaitingForOrderNotifier";
 import StoreOnlineStatusNotifier from "../components/StoreOnlineStatusNotifier";
@@ -66,7 +68,7 @@ const queryClient = new QueryClient({
   },
 });
 
-const ASSETS_FETCH_TIMEOUT_MS = 2500;
+const ASSETS_FETCH_TIMEOUT_MS = 8000;
 /** Don't hold splash forever if font download/cache stalls (common with --offline). */
 const FONTS_READY_FALLBACK_MS = 8000;
 /** Keep the branded splash on screen long enough to actually be read. */
@@ -119,7 +121,7 @@ export default function RootLayout() {
     void fetchMerchantAppAssets(controller.signal)
       .then((res) => setAppAssets(res.assets ?? {}))
       .catch(() => {
-        if (!isAppAssetsLoaded()) setAppAssets({});
+        /* Do not mark loaded — AppAssetsPrefetch / screen focus will retry. */
       })
       .finally(() => clearTimeout(timeout));
     return () => {
@@ -161,6 +163,7 @@ export default function RootLayout() {
               <LiveSupportTicketProvider>
                 <StoreStatusProvider>
                   <StoreSettingsProvider>
+                    <ActiveTabProvider>
                     <OrdersProvider>
                       <ProfileNavProvider>
                         <NotificationProvider>
@@ -174,6 +177,7 @@ export default function RootLayout() {
                             />
                             <IncomingOrderSheetProvider>
                               <NotificationSetup />
+                              <AppAssetsPrefetch />
                               <BackgroundOrderPermissionsGate />
                               <NewOrderAutoOpenHandler />
                               <OrderAlertPushHandler />
@@ -200,8 +204,6 @@ export default function RootLayout() {
                                 <Stack.Screen name="(tabs)" />
                                 <Stack.Screen name="order/[id]" options={{ headerShown: false }} />
                                 <Stack.Screen name="order-history" options={{ headerShown: false }} />
-                                <Stack.Screen name="notifications/index" options={{ headerShown: false }} />
-                                <Stack.Screen name="notifications/[id]" options={{ headerShown: false }} />
                                 <Stack.Screen name="restaurant-status" options={{ headerShown: false }} />
                               </Stack>
                               <OfflineNetworkChrome />
@@ -212,6 +214,7 @@ export default function RootLayout() {
                         </NotificationProvider>
                       </ProfileNavProvider>
                     </OrdersProvider>
+                    </ActiveTabProvider>
                   </StoreSettingsProvider>
                 </StoreStatusProvider>
               </LiveSupportTicketProvider>

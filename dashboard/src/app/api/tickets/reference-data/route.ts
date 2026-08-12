@@ -4,12 +4,9 @@
  * for status, service, priority, source for use in filters and super-admin.
  */
 
-import { NextResponse } from "next/server";
-import { createServerSupabaseClient } from "@/lib/supabase/server";
-import { getSystemUserByEmail } from "@/lib/db/operations/users";
-import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine";
+import { NextRequest, NextResponse } from "next/server";
+import { requireTicketApiUser } from "@/lib/tickets/require-ticket-api-user";
 import { getSql } from "@/lib/db/client";
-import { isInvalidRefreshToken, signOutIfSessionDead } from "@/lib/auth/session-errors";
 import { getCached, setCached, CACHE_KEYS } from "@/lib/server-cache";
 
 export const runtime = "nodejs";
@@ -52,33 +49,10 @@ const SOURCE_OPTIONS = [
   { value: "system", label: "System" },
 ];
 
-export async function GET() {
+export async function GET(request: NextRequest) {
   try {
-    const supabase = await createServerSupabaseClient();
-    const { data: { user }, error: userError } = await supabase.auth.getUser();
-
-    if (userError) {
-      if (isInvalidRefreshToken(userError)) {
-        await signOutIfSessionDead(supabase, userError);
-        return NextResponse.json({ success: false, error: "Session invalid", code: "SESSION_INVALID" }, { status: 401 });
-      }
-      return NextResponse.json({ success: false, error: "Not authenticated" }, { status: 401 });
-    }
-    if (!user) {
-      return NextResponse.json({ success: false, error: "Not authenticated" }, { status: 401 });
-    }
-
-    const systemUser = await getSystemUserByEmail(user.email!);
-    if (!systemUser) {
-      return NextResponse.json({ success: false, error: "User not found" }, { status: 404 });
-    }
-
-    const userIsSuperAdmin = await isSuperAdmin(user.id, user.email!);
-    const hasTicketAccess = await hasDashboardAccessByAuth(user.id, user.email!, "TICKET");
-
-    if (!userIsSuperAdmin && !hasTicketAccess) {
-      return NextResponse.json({ success: false, error: "Insufficient permissions" }, { status: 403 });
-    }
+    const auth = await requireTicketApiUser(request);
+    if ("error" in auth) return auth.error;
 
     const cached = getCached<{ groups: unknown[]; tags: unknown[] }>(CACHE_KEYS.TICKETS_REFERENCE_DATA);
     if (cached) {

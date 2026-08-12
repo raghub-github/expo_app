@@ -13,6 +13,7 @@ import { StoreProfileSkeleton } from "./StoreProfileSkeleton";
 import { ProfilePageContent } from "./ProfilePageContent";
 import { useStoreVerificationSheet } from "@/context/StoreVerificationSheetContext";
 import { useCanStoreVerify } from "@/hooks/useCanStoreVerify";
+import { useMerchantDashboardAccess } from "@/hooks/useMerchantDashboardAccess";
 
 export function StoreProfileClient({ storeId }: { storeId: string }) {
   const { toast } = useToast();
@@ -25,11 +26,15 @@ export function StoreProfileClient({ storeId }: { storeId: string }) {
     agreementAcceptance,
     bankAccounts,
     areaManager,
+    legalDocsRestricted,
     isLoading: profileLoading,
   } = useStoreProfileFull(storeId);
   const { agreementAcceptance: verificationAgreement } = useStoreVerificationData(storeId);
   const { openVerificationSheet } = useStoreVerificationSheet();
   const { canStoreVerify } = useCanStoreVerify();
+  const { canManageStore, canManageBank, isViewOnly } = useMerchantDashboardAccess();
+  const canEditProfile = canManageStore && !isViewOnly;
+  const canEditBank = canManageBank && !isViewOnly;
   const updateStore = useStoreMutation(storeId);
 
   const openDocumentsVerification = () => openVerificationSheet(storeId, 4);
@@ -66,6 +71,10 @@ export function StoreProfileClient({ storeId }: { storeId: string }) {
   const stopEditing = () => setEditingField(null);
 
   const handleSaveField = async (field: string) => {
+    if (!canEditProfile) {
+      toast("View-only access — editing is disabled");
+      return;
+    }
     if (!storeId || !editData) return;
     setSavingField(field);
     try {
@@ -103,6 +112,10 @@ export function StoreProfileClient({ storeId }: { storeId: string }) {
   };
 
   const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>, type: "banner" | "gallery") => {
+    if (!canEditProfile) {
+      toast("View-only access — uploads are disabled");
+      return;
+    }
     const files = Array.from(e.target.files || []);
     if (!files.length || !storeId || !editData) return;
     e.target.value = "";
@@ -138,6 +151,10 @@ export function StoreProfileClient({ storeId }: { storeId: string }) {
   };
 
   const handleRemoveGalleryImage = async (index: number) => {
+    if (!canEditProfile) {
+      toast("View-only access — changes are disabled");
+      return;
+    }
     if (!editData?.gallery_images) return;
     const next = [...(editData.gallery_images as string[])];
     next.splice(index, 1);
@@ -200,10 +217,19 @@ export function StoreProfileClient({ storeId }: { storeId: string }) {
         handleSaveField={handleSaveField}
         revertAlternatePhone={revertAlternatePhone}
         canStoreVerify={canStoreVerify}
+        canEditProfile={canEditProfile}
+        canEditBank={canEditBank}
+        legalDocsRestricted={legalDocsRestricted}
         openDocumentsVerification={openDocumentsVerification}
         openBankVerification={openBankVerification}
         openProfileMediaVerification={openProfileMediaVerification}
-        onChangeAddress={() => setAddressModalOpen(true)}
+        onChangeAddress={() => {
+          if (!canEditProfile) {
+            toast("View-only access — address changes are disabled");
+            return;
+          }
+          setAddressModalOpen(true);
+        }}
         bannerInputRef={bannerInputRef}
         galleryInputRef={galleryInputRef}
         onBannerUpload={(e) => handleImageUpload(e, "banner")}
@@ -213,7 +239,7 @@ export function StoreProfileClient({ storeId }: { storeId: string }) {
       />
 
       <ChangeAddressModal
-        open={addressModalOpen}
+        open={addressModalOpen && canEditProfile}
         onClose={() => setAddressModalOpen(false)}
         storeId={storeId}
         initialAddress={{

@@ -55,6 +55,7 @@ export async function GET(
       subject: string;
       created_at: string;
       raised_by_type: string;
+      parent_ticket_id: number | null;
       resolved_by: number | null;
       resolved_by_name: string | null;
       resolver_name: string | null;
@@ -64,6 +65,7 @@ export async function GET(
     try {
       const result = await sqlClient`
         SELECT ut.id, ut.ticket_id, ut.status, ut.subject, ut.created_at, ut.raised_by_type,
+          ut.parent_ticket_id,
           ut.resolved_by, ut.resolved_by_name,
           COALESCE(ut.resolved_by_name, su.full_name) AS resolver_name,
           su.email AS resolver_email
@@ -87,6 +89,7 @@ export async function GET(
       ticketNumber: t.ticket_id ?? "",
       status: (t.status ?? "").toLowerCase().replace(/_/g, " "),
       subject: t.subject ?? "",
+      parentTicketId: t.parent_ticket_id != null ? Number(t.parent_ticket_id) : null,
       createdAt: t.created_at ?? "",
       ticketSource: (t.raised_by_type ?? "").toLowerCase().replace(/_/g, " "),
       resolvedByName: t.resolved_by != null && t.resolver_name ? String(t.resolver_name).trim() : null,

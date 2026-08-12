@@ -4,8 +4,7 @@
  */
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { getMerchantAccess, type MerchantAccess } from "@/lib/permissions/merchant-access";
-import { getAreaManagerByUserId } from "@/lib/area-manager/auth";
-import { getSystemUserByEmail } from "@/lib/auth/user-mapping";
+import { resolveMerchantListAreaManagerId } from "@/lib/merchants/resolve-merchant-list-scope";
 import { getMerchantStoreById } from "@/lib/db/operations/merchant-stores";
 import crypto from "node:crypto";
 
@@ -20,14 +19,11 @@ export async function assertStoreAccess(storeId: number): Promise<
   const access = await getMerchantAccess(user.id, user.email);
   if (!access) return { ok: false as const, status: 403, error: "Merchant dashboard access required" };
 
-  let areaManagerId: number | null = null;
-  if (!access.isSuperAdmin && !access.isAdmin) {
-    const systemUser = await getSystemUserByEmail(user.email);
-    if (systemUser) {
-      const am = await getAreaManagerByUserId(systemUser.id);
-      if (am) areaManagerId = am.id;
-    }
-  }
+  // Org-wide when MERCHANT_VIEW / admin merchant access; otherwise AM assignment scope.
+  const areaManagerId = await resolveMerchantListAreaManagerId({
+    supabaseAuthId: user.id,
+    email: user.email,
+  });
   const store = await getMerchantStoreById(storeId, areaManagerId);
   if (!store) return { ok: false as const, status: 404, error: "Store not found" };
   return { ok: true as const, access, user: { id: user.id, email: user.email } };

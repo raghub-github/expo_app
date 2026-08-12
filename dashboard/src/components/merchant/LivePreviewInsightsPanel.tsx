@@ -1,18 +1,15 @@
 "use client";
 
 import React from "react";
-import Link from "next/link";
 import {
   BarChart3,
   Star,
-  ArrowRight,
   Info,
   TrendingDown,
   TrendingUp,
   ChevronDown,
   Check,
   Funnel,
-  Loader2,
 } from "lucide-react";
 import { MerchantMarketInsightsCard } from "@/components/merchant/MerchantMarketInsightsCard";
 
@@ -125,11 +122,9 @@ function DeltaBadge({ pct }: { pct: number | null }) {
 function MetricRow({
   label,
   metric,
-  link,
 }: {
   label: string;
   metric: InsightMetric;
-  link?: { href: string; text: string };
 }) {
   return (
     <div className="grid grid-cols-1 sm:grid-cols-12 gap-2 sm:gap-3 items-center py-3.5">
@@ -140,11 +135,6 @@ function MetricRow({
       <div className="sm:col-span-4 flex flex-wrap items-center justify-start sm:justify-end gap-2">
         <span className="text-sm font-semibold tabular-nums text-slate-900">{metric.display}</span>
         <DeltaBadge pct={metric.pct_change} />
-        {link ? (
-          <Link href={link.href} className="text-xs font-semibold text-blue-600 hover:text-blue-700">
-            {link.text}
-          </Link>
-        ) : null}
       </div>
     </div>
   );
@@ -154,8 +144,6 @@ type Props = {
   storeId?: string | null;
   storeInternalId?: number;
   periodPreset?: string;
-  userInsightsHref?: string;
-  paymentsHref?: string;
   marketStoreId?: string | number;
 };
 
@@ -163,8 +151,6 @@ export function LivePreviewInsightsPanel({
   storeId,
   storeInternalId,
   periodPreset = "today",
-  userInsightsHref = "/mx/user-insights",
-  paymentsHref = "/mx/payments",
   marketStoreId,
 }: Props) {
   const [data, setData] = React.useState<LivePreviewInsights | null>(null);
@@ -213,8 +199,17 @@ export function LivePreviewInsightsPanel({
 
   if (loading && !data) {
     return (
-      <div className="flex min-h-[240px] items-center justify-center text-slate-500">
-        <Loader2 className="h-6 w-6 animate-spin text-indigo-600" aria-hidden />
+      <div className="space-y-4 py-2" aria-busy aria-label="Loading live preview">
+        <div className="flex flex-wrap gap-3">
+          {[1, 2, 3, 4].map((i) => (
+            <div key={i} className="h-20 flex-1 min-w-[120px] rounded-xl bg-slate-100 animate-pulse" />
+          ))}
+        </div>
+        <div className="h-48 rounded-xl bg-slate-100/90 animate-pulse" />
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div className="h-28 rounded-xl bg-slate-100 animate-pulse" />
+          <div className="h-28 rounded-xl bg-slate-100 animate-pulse" />
+        </div>
       </div>
     );
   }
@@ -225,8 +220,6 @@ export function LivePreviewInsightsPanel({
 
   if (!data) return null;
 
-  const reportsLink = { href: userInsightsHref, text: "View business reports" };
-
   return (
     <>
       <div className="mb-5">
@@ -236,10 +229,6 @@ export function LivePreviewInsightsPanel({
           <span className="text-slate-400" title="Info">
             <Info size={15} strokeWidth={2} aria-hidden />
           </span>
-          <Link href={paymentsHref} className="ml-auto inline-flex items-center gap-1 text-xs font-semibold text-blue-600 hover:text-blue-700">
-            View details
-            <ArrowRight size={14} aria-hidden />
-          </Link>
         </div>
         <p className="text-[11px] text-slate-500 mt-1 mb-2">{data.compare_header}</p>
         <div className="divide-y divide-slate-200/70">
@@ -259,7 +248,7 @@ export function LivePreviewInsightsPanel({
             </span>
           </div>
           <div className="divide-y divide-slate-200/70">
-            <MetricRow label="Ratings" metric={data.ratings} link={reportsLink} />
+            <MetricRow label="Ratings" metric={data.ratings} />
             <div className="py-2">
               <p className="text-[11px] font-semibold text-slate-500 uppercase tracking-wide mb-2 pl-0.5">Bad orders</p>
               <div className="divide-y divide-slate-200/60">
@@ -286,9 +275,9 @@ export function LivePreviewInsightsPanel({
                 ))}
               </div>
             </div>
-            <MetricRow label="Total complaints" metric={data.complaints} link={reportsLink} />
+            <MetricRow label="Total complaints" metric={data.complaints} />
             <MetricRow label="Lost sales" metric={data.lost_sales} />
-            <MetricRow label="Online %" metric={data.online_pct} link={reportsLink} />
+            <MetricRow label="Online %" metric={data.online_pct} />
           </div>
         </div>
         {marketId ? (

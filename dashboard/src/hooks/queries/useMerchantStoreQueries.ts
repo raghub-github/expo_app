@@ -5,6 +5,10 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { queryKeys } from "@/lib/queryKeys";
 import { STORE_KEY } from "@/hooks/useStore";
 import { useAuthOptional } from "@/providers/AuthProvider";
+import {
+  readStoreOperationsCache,
+  writeStoreOperationsCache,
+} from "@/lib/merchants/partner-store-ops-cache";
 
 
 const STALE_MS = 10 * 60 * 1000; // 10 minutes
@@ -81,14 +85,23 @@ export function useStoreOperationsQuery(storeId: string | null) {
   const isAllowed = Boolean(authReady && sessionUser && permissions);
 
   const url = storeId ? `/api/merchant/stores/${storeId}/store-operations` : null;
+  const cachedOps = storeId ? readStoreOperationsCache(storeId) : null;
+
   return useQuery({
     queryKey: queryKeys.merchantStore.storeOperations(storeId ?? ""),
-    queryFn: () => fetchJson(url!),
+    queryFn: async () => {
+      const data = await fetchJson(url!);
+      if (storeId) writeStoreOperationsCache(storeId, data);
+      return data;
+    },
     enabled: Boolean(storeId && url) && isAllowed,
     ...SHARED_OPTIONS,
+    // Instant paint from session cache (partnersite-style) while network refreshes.
+    initialData: cachedOps ?? undefined,
+    initialDataUpdatedAt: cachedOps ? Date.now() - 60_000 : undefined,
     // Partner Site / merchant app toggles update DB; tab back to dashboard should resync even if Realtime missed.
     refetchOnWindowFocus: true,
-    refetchOnMount: false,
+    refetchOnMount: true,
   });
 }
 

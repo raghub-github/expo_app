@@ -47,17 +47,33 @@ type TimelineItem =
       actorEmail?: string | null;
     };
 
-export async function fetchTicketActivities(ticketId: number): Promise<TicketActivity[]> {
-  const res = await fetch(`/api/tickets/${ticketId}/activities?limit=80`, { credentials: "include" });
-  if (!res.ok) {
-    const err = new Error(
-      res.status === 404 ? "Activities not available for this ticket" : "Failed to load activities"
-    ) as Error & { httpStatus?: number };
-    err.httpStatus = res.status;
-    throw err;
+export async function fetchTicketActivities(
+  ticketId: number,
+  signal?: AbortSignal
+): Promise<TicketActivity[]> {
+  const timeoutController = new AbortController();
+  const timeoutId = setTimeout(() => timeoutController.abort(), 20_000);
+  const combined =
+    signal != null && typeof AbortSignal.any === "function"
+      ? AbortSignal.any([timeoutController.signal, signal])
+      : timeoutController.signal;
+  try {
+    const res = await fetch(`/api/tickets/${ticketId}/activities?limit=80`, {
+      credentials: "include",
+      signal: combined,
+    });
+    if (!res.ok) {
+      const err = new Error(
+        res.status === 404 ? "Activities not available for this ticket" : "Failed to load activities"
+      ) as Error & { httpStatus?: number };
+      err.httpStatus = res.status;
+      throw err;
+    }
+    const json = await res.json();
+    return (json.data?.activities ?? []) as TicketActivity[];
+  } finally {
+    clearTimeout(timeoutId);
   }
-  const json = await res.json();
-  return (json.data?.activities ?? []) as TicketActivity[];
 }
 
 function safeTimeMs(d: string): number {
@@ -299,7 +315,7 @@ export function ActivityTimeline({
   const activityCacheId = String(ticketId);
   const { data, isPending, isError, error } = useQuery({
     queryKey: queryKeys.tickets.activities(activityCacheId),
-    queryFn: () => fetchTicketActivities(ticketId),
+    queryFn: ({ signal }) => fetchTicketActivities(ticketId, signal),
     enabled: !!ticketId,
     staleTime: TICKET_ACTIVITIES_STALE_MS,
     retry: false,

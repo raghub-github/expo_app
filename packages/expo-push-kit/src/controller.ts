@@ -18,6 +18,7 @@ import type {
   PushControllerOptions,
   PushControllerSnapshot,
   PushNotificationOpenPayload,
+  UnregisterPushOptions,
 } from "./types";
 
 const DEFAULT_SNAPSHOT: PushControllerSnapshot = {
@@ -112,7 +113,7 @@ export type PushPermissionController = {
   startLifecycle: () => void;
   stopLifecycle: () => void;
   /** Logout: unregister current tokens from backend. */
-  unregisterCurrent: () => Promise<void>;
+  unregisterCurrent: (opts?: UnregisterPushOptions) => Promise<void>;
 };
 
 export function createPushPermissionController(
@@ -434,14 +435,38 @@ export function createPushPermissionController(
     receivedSub = null;
   };
 
-  const unregisterCurrent = async () => {
+  const unregisterCurrent = async (opts?: UnregisterPushOptions) => {
     const auth = options.getAuth();
-    if (!auth?.accessToken) return;
-    const body = {
-      expo_push_token: snapshot.expoPushToken,
-      native_push_token: snapshot.nativePushToken,
-    };
-    await unregisterPushTokenOnBackend(options.apiBaseUrl, auth.accessToken, body);
+    const accessToken = opts?.accessToken?.trim() || auth?.accessToken;
+    if (!accessToken) return;
+
+    const expoToken = snapshot.expoPushToken;
+    const nativeToken = snapshot.nativePushToken;
+    const role = auth?.role;
+
+    await unregisterPushTokenOnBackend(options.apiBaseUrl, accessToken, {
+      expo_push_token: expoToken,
+      native_push_token: nativeToken,
+    });
+
+    if (
+      role === "merchant" &&
+      expoToken &&
+      options.unregisterStoreExpoToken
+    ) {
+      try {
+        await options.unregisterStoreExpoToken({
+          expoPushToken: expoToken,
+          accessToken,
+        });
+      } catch (e) {
+        log("store expo token unregister failed (non-fatal)", {
+          error: (e as Error)?.message,
+        });
+      }
+    }
+
+    stopLifecycle();
     lastSyncedKey = null;
     emit({
       expoPushToken: null,

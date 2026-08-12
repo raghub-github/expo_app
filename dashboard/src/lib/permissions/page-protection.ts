@@ -225,6 +225,12 @@ export async function checkDashboardAccess(
   try {
     const { user, error } = await getAuthenticatedUser();
 
+    // Transient Auth blip after idle — do not treat as "no access" (that forces
+    // requireSuperAdminAccess → redirect and looks like a crash on All).
+    if ((!user?.email) && error && isTransientPageAuthFailure(error)) {
+      return true;
+    }
+
     if (error || !user?.email) {
       return false;
     }
@@ -243,6 +249,9 @@ export async function checkDashboardAccess(
 
     return hasDashboardAccess(userPerms.systemUserId, dashboardType);
   } catch (err) {
+    if (isTransientPageAuthFailure(err)) {
+      return true;
+    }
     console.error("Error checking dashboard access:", err);
     return false;
   }

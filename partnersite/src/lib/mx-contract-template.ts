@@ -124,6 +124,10 @@ export function getDefaultMxContractTemplate(): MxContractTemplateContent {
         title: "III. Payment Settlement",
         paragraphs: [
           "The Platform shall transfer the Order Value received to the Restaurant Partner, after deduction of Charges, on a weekly basis. Settlement shall be made to the bank account details provided in Annexure B. The payment settlement day for Orders serviced from Monday to Sunday shall be on or before Thursday of the following week. If the settlement day falls on a bank holiday, it shall be the next working day.",
+          "Transparent Payment Settlement: GatiMitra follows a transparent payout and settlement structure. The Merchant will be able to view the applicable Order Value, deductions, Charges, adjustments, taxes, and final payable amount through the Merchant App and/or Partner Portal.",
+          "No Hidden Charges: No hidden platform charges will be applied to the Merchant. Any applicable commission, fee, tax, adjustment, or other deduction shall be disclosed in the applicable commercial terms and/or reflected in the relevant order, settlement, or payout statement.",
+          "Settlement Details: The Merchant is responsible for reviewing the order, settlement, and payout details available on the Platform and may raise any genuine discrepancy through GatiMitra's official support channels.",
+          "Transparent Partnership: GatiMitra is committed to transparent settlements, clear charges, and fair communication with its Merchant Partners.",
         ],
       },
       {
@@ -133,6 +137,10 @@ export function getDefaultMxContractTemplate(): MxContractTemplateContent {
           "The Restaurant Partner will maintain equal or lower prices for products on the Platform as compared to its direct channels.",
           "The Restaurant Partner will not send marketing material with Orders that discourages Customers from ordering via the Platform.",
           "This Form and its annexures, together with the Terms, constitute the entire agreement between the Parties and are legally binding.",
+          "Merchant Terms & Acceptance: By registering and continuing to use the GatiMitra Platform, the Merchant acknowledges and agrees to the GatiMitra Merchant Terms & Conditions, including the applicable commercial terms, service charges, payout policies, and platform policies communicated by GatiMitra.",
+          "Updates to Terms: GatiMitra may update its terms, charges, policies, or operational guidelines from time to time. Applicable changes will be communicated through the Merchant App, Partner Portal, email, or other official communication channels. Continued use of the Platform after such changes are communicated will constitute acceptance of the updated terms, subject to applicable law.",
+          "Merchant Responsibility: The Merchant is responsible for reviewing the applicable terms, order statements, and payout details available on the Platform and for raising any genuine discrepancy through GatiMitra's official support channels.",
+          "Fair & Transparent Partnership: GatiMitra is committed to transparent settlements, clear charges, and fair communication with its Merchant Partners.",
         ],
       },
       {

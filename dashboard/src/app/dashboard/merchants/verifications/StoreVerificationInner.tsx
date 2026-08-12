@@ -43,7 +43,7 @@ import {
   buildStepRejectionDetailV2,
 } from "@/lib/merchants/step-rejection-fields";
 import { VerificationPageSkeleton } from "./VerificationPageSkeleton";
-import { Toaster, toast } from "sonner";
+import { toast } from "sonner";
 import { MenuReferenceReviewBlock } from "@/components/verification/MenuReferenceReviewBlock";
 import { MenuReferenceRejectionSnapshot } from "@/components/verification/MenuReferenceRejectionSnapshot";
 import {
@@ -7256,8 +7256,6 @@ export function StoreVerificationInner({
           )}
         </div>
       ) : null}
-
-      <Toaster position="top-right" richColors />
     </div>
   );
 }

@@ -45,6 +45,7 @@ import {
   refreshCustomerWallet,
 } from "@/lib/refreshCustomerWallet";
 import { useQueryClient } from "@tanstack/react-query";
+import { setCustomerPushUnregister } from "@/lib/customerPushUnregister";
 
 /**
  * Ride-only CX chime channel (sound is immutable after first Android create).
@@ -185,6 +186,11 @@ function PushNotificationBootstrapInner() {
   );
 
   const { controller } = usePushPermissionController(pushOptions);
+
+  useEffect(() => {
+    setCustomerPushUnregister((opts) => controller.unregisterCurrent(opts));
+    return () => setCustomerPushUnregister(null);
+  }, [controller]);
 
   // Foreground: we play CX sound ourselves — skip OS default chime (avoids double play).
   // Never import expo-notifications in Expo Go (SDK 53+ logs a hard error on import).

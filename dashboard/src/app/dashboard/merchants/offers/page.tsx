@@ -1,11 +1,9 @@
-import { requireDashboardAccess } from "@/lib/permissions/page-protection";
-import { OffersClient } from "@/components/offers/OffersClient";
+import { redirect } from "next/navigation";
 
-export default async function MerchantOffersPage() {
-  await requireDashboardAccess("MERCHANT");
-  return (
-    <div className="space-y-6 w-full max-w-full overflow-x-hidden">
-      <OffersClient />
-    </div>
-  );
+/**
+ * Top-level Subscription Plans entry was removed from the merchant portal rail.
+ * Store offers live under `/dashboard/merchants/stores/[id]/offers`.
+ */
+export default function MerchantOffersPage() {
+  redirect("/dashboard/merchants");
 }

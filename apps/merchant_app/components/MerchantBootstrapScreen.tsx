@@ -1,5 +1,5 @@
 /**
- * Branded boot splash — deep merchant green into mint (Partner identity).
+ * Branded boot splash — soft mint canvas, plain centered copy.
  * Tagline: Sell More . Earn More . Grow More
  */
 import { useCallback, useEffect, useRef } from "react";
@@ -20,11 +20,14 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 const LORA_BOLD = "Lora_700Bold";
 const LORA_REGULAR = "Lora_400Regular";
-/** Deep partner green → mint, matching the Partner Control mark and brand primary. */
-const GRADIENT_TOP = "#0B241C";
-const GRADIENT_MID = "#14543F";
-const GRADIENT_BOTTOM = "#2E9B6E";
-const ACCENT = "#5DD9A8";
+
+/** Soft mint-white canvas. */
+const GRADIENT_TOP = "#F6FBF9";
+const GRADIENT_MID = "#EFF8F4";
+const GRADIENT_BOTTOM = "#E3F2EB";
+const ACCENT = "#14B8A6";
+const TITLE_COLOR = "#0F172A";
+const SUBTITLE_COLOR = "#334155";
 /** Status/nav bar colour while the splash owns the screen. */
 export const MERCHANT_SPLASH_BG = GRADIENT_TOP;
 const SPINNER_BOTTOM_GAP = 28;
@@ -102,18 +105,33 @@ export function MerchantBootstrapScreen({
       accessibilityLabel="GatiMitra Partner loading"
       onLayout={handleSplashLayout}
     >
-      <StatusBar style="light" backgroundColor={GRADIENT_TOP} translucent={false} />
+      <StatusBar style="dark" backgroundColor={GRADIENT_TOP} translucent={false} />
       <LinearGradient
         colors={[GRADIENT_TOP, GRADIENT_MID, GRADIENT_BOTTOM]}
-        locations={[0, 0.5, 1]}
-        start={{ x: 0.15, y: 0 }}
-        end={{ x: 0.85, y: 1 }}
+        locations={[0, 0.45, 1]}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 1, y: 1 }}
         style={[styles.gradient, { top: bleedTop, height: bleedHeight }]}
       />
+      <LinearGradient
+        colors={["rgba(22,163,74,0.10)", "rgba(22,163,74,0)", "rgba(30,58,95,0.06)"]}
+        locations={[0, 0.55, 1]}
+        start={{ x: 0.1, y: 0 }}
+        end={{ x: 0.9, y: 1 }}
+        style={[styles.gradient, { top: bleedTop, height: bleedHeight }]}
+        pointerEvents="none"
+      />
+
+      <View pointerEvents="none" style={[styles.blob, styles.blobTopRight]} />
+      <View pointerEvents="none" style={[styles.blob, styles.blobBottomLeft]} />
+      <View pointerEvents="none" style={[styles.ring, styles.ringOuter]} />
+      <View pointerEvents="none" style={[styles.ring, styles.ringInner]} />
+
       <View
         pointerEvents="none"
         style={[styles.statusFill, { height: topBleed, backgroundColor: GRADIENT_TOP }]}
       />
+
       <View style={styles.center} pointerEvents="none">
         <Text style={styles.title}>GatiMitra Partner</Text>
         <View style={styles.divider} />
@@ -121,9 +139,10 @@ export function MerchantBootstrapScreen({
         <ActivityIndicator
           style={[styles.spinner, { bottom: spinnerBottom }]}
           size="small"
-          color="rgba(255,255,255,0.95)"
+          color={ACCENT}
         />
       </View>
+
       {statusMessage ? (
         <View
           pointerEvents="none"
@@ -155,6 +174,47 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
   },
+  blob: {
+    position: "absolute",
+    borderRadius: 999,
+    backgroundColor: "rgba(22, 163, 74, 0.07)",
+  },
+  blobTopRight: {
+    width: 220,
+    height: 220,
+    top: "8%",
+    right: -70,
+  },
+  blobBottomLeft: {
+    width: 180,
+    height: 180,
+    bottom: "14%",
+    left: -50,
+    backgroundColor: "rgba(30, 58, 95, 0.05)",
+  },
+  ring: {
+    position: "absolute",
+    borderRadius: 999,
+    borderWidth: 1,
+  },
+  ringOuter: {
+    width: 320,
+    height: 320,
+    top: "22%",
+    alignSelf: "center",
+    left: "50%",
+    marginLeft: -160,
+    borderColor: "rgba(22, 163, 74, 0.08)",
+  },
+  ringInner: {
+    width: 260,
+    height: 260,
+    top: "26%",
+    alignSelf: "center",
+    left: "50%",
+    marginLeft: -130,
+    borderColor: "rgba(30, 58, 95, 0.06)",
+  },
   statusFill: {
     position: "absolute",
     top: 0,
@@ -173,7 +233,7 @@ const styles = StyleSheet.create({
     fontFamily: LORA_BOLD,
     fontSize: 34,
     fontWeight: "700",
-    color: "#FFFFFF",
+    color: TITLE_COLOR,
     letterSpacing: 0.3,
     textAlign: "center",
   },
@@ -190,7 +250,7 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: "700",
     lineHeight: 18,
-    color: "#FFFFFF",
+    color: SUBTITLE_COLOR,
     letterSpacing: 1.3,
     textAlign: "center",
   },
@@ -208,22 +268,22 @@ const styles = StyleSheet.create({
     borderRadius: 18,
     paddingHorizontal: 16,
     paddingVertical: 12,
-    backgroundColor: "rgba(11, 36, 28, 0.45)",
+    backgroundColor: "rgba(255,255,255,0.92)",
     borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.2)",
+    borderColor: "rgba(15, 23, 42, 0.08)",
   },
   statusText: {
     fontFamily: LORA_BOLD,
     textAlign: "center",
     fontSize: 13,
     fontWeight: "700",
-    color: "#FFFFFF",
+    color: TITLE_COLOR,
   },
   statusSubtext: {
     fontFamily: LORA_REGULAR,
     marginTop: 4,
     textAlign: "center",
     fontSize: 12,
-    color: "rgba(255,255,255,0.88)",
+    color: SUBTITLE_COLOR,
   },
 });

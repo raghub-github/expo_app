@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
+import { useQueryClient } from "@tanstack/react-query";
 import { Save, X } from "lucide-react";
 import { LoadingButton } from "@/components/ui/LoadingButton";
 import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
@@ -13,6 +14,7 @@ import { hasSubroles } from "@/lib/roles/subrole-mapping";
 import { useToast } from "@/context/ToastContext";
 import { buildDashboardAccessPayload } from "@/lib/permissions/access-level";
 import { DashboardErrorBanner } from "@/components/ui/DashboardErrorBanner";
+import { queryKeys } from "@/lib/queryKeys";
 
 interface UserFormProps {
   userId?: number;
@@ -25,6 +27,7 @@ interface UserFormProps {
 
 export function UserForm({ userId, mode, onSuccess, onCancel, isSuperAdmin = false, currentUserId = null }: UserFormProps) {
   const router = useRouter();
+  const queryClient = useQueryClient();
   const { toast } = useToast();
   const normalizeRoleValue = (value: string) => value.replace(/\s+/g, " ").trim();
   const [loading, setLoading] = useState(false);
@@ -316,6 +319,13 @@ export function UserForm({ userId, mode, onSuccess, onCancel, isSuperAdmin = fal
 
       if (result.success) {
         toast(mode === "create" ? "User created successfully" : "User updated successfully", "success");
+        // Bust list cache so /dashboard/users shows the new/updated row without a hard reload.
+        // MEDIUM cache uses refetchOnMount:false — invalidate alone is not enough while list is unmounted.
+        await queryClient.invalidateQueries({ queryKey: queryKeys.users.lists() });
+        await queryClient.refetchQueries({ queryKey: queryKeys.users.lists() });
+        if (mode === "edit" && userId) {
+          await queryClient.invalidateQueries({ queryKey: queryKeys.users.detail(userId) });
+        }
         // When the parent provides `onSuccess`, it already handles refetching + closing edit mode.
         // Avoid double-refetching here to prevent the user form from briefly showing "Loading user..."
         // after a successful update.

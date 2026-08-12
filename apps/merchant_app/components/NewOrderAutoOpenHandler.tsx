@@ -8,6 +8,7 @@ import { useEffect, useRef } from "react";
 import { AppState, Platform } from "react-native";
 import Constants from "expo-constants";
 import { wakeMerchantAppForOrder } from "@/lib/androidBackgroundPermissions";
+import { registerMerchantForegroundPushHandler } from "@/lib/merchantPushDispatch";
 
 function isExpoGo(): boolean {
   return Constants.appOwnership === "expo";
@@ -40,14 +41,9 @@ export default function NewOrderAutoOpenHandler() {
   useEffect(() => {
     if (Platform.OS !== "android" || isExpoGo()) return;
 
-    let remove: (() => void) | undefined;
-    let cancelled = false;
-
     void (async () => {
       try {
         const Notifications = await import("expo-notifications");
-
-        // Dedicated MAX channel — heads-up even when shade is quiet.
         await Notifications.setNotificationChannelAsync("merchant_new_orders", {
           name: "New orders",
           importance: Notifications.AndroidImportance.MAX,
@@ -57,35 +53,25 @@ export default function NewOrderAutoOpenHandler() {
           lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
           enableVibrate: true,
         });
-
-        const sub = Notifications.addNotificationReceivedListener((notification) => {
-          if (cancelled) return;
-          const data = (notification.request.content.data ?? {}) as Record<string, unknown>;
-          if (!isNewOrderPush(data)) return;
-
-          const path = orderPathFromData(data);
-          if (!path) return;
-
-          const key = `${path}:${String(data.notification_id ?? "")}`;
-          if (lastWakeKeyRef.current === key) return;
-          lastWakeKeyRef.current = key;
-
-          // Only auto-wake when not already in foreground.
-          if (AppState.currentState === "active") return;
-
-          void wakeMerchantAppForOrder(path);
-        });
-
-        remove = () => sub.remove();
       } catch {
         /* expo-notifications unavailable */
       }
     })();
 
-    return () => {
-      cancelled = true;
-      remove?.();
-    };
+    return registerMerchantForegroundPushHandler(({ data }) => {
+      if (!isNewOrderPush(data)) return;
+
+      const path = orderPathFromData(data);
+      if (!path) return;
+
+      const key = `${path}:${String(data.notification_id ?? "")}`;
+      if (lastWakeKeyRef.current === key) return;
+      lastWakeKeyRef.current = key;
+
+      if (AppState.currentState === "active") return;
+
+      void wakeMerchantAppForOrder(path);
+    });
   }, []);
 
   return null;

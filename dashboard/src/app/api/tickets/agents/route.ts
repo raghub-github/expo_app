@@ -4,8 +4,8 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { createServerSupabaseClient } from "@/lib/supabase/server";
-import { getSystemUserByEmail } from "@/lib/db/operations/users";
+import { getAuthenticatedApiUser, authFailureResponse } from "@/lib/auth/api-session";
+import { resolveSystemUserForSupabaseAuth } from "@/lib/auth/user-mapping";
 import { isSuperAdmin, hasDashboardAccessByAuth } from "@/lib/permissions/engine";
 import { getDb, getSql } from "@/lib/db/client";
 import { dashboardAccess, dashboardAccessPoints, systemUsers } from "@/lib/db/schema";
@@ -24,24 +24,21 @@ export async function GET(request: NextRequest) {
     const accessApprovedOnly =
       request.nextUrl.searchParams.get("accessApprovedOnly") === "1" ||
       request.nextUrl.searchParams.get("accessApprovedOnly") === "true";
-    const supabase = await createServerSupabaseClient();
-    const { data: { user }, error: userError } = await supabase.auth.getUser();
 
-    if (userError || !user) {
-      return NextResponse.json({ success: false, error: "Not authenticated" }, { status: 401 });
+    const auth = await getAuthenticatedApiUser(request);
+    if (!auth.ok) {
+      return authFailureResponse(auth);
     }
+    const { user } = auth;
 
-    const systemUser = await getSystemUserByEmail(user.email!);
+    const systemUser = await resolveSystemUserForSupabaseAuth(user.id, user.email);
     if (!systemUser) {
       return NextResponse.json({ success: false, error: "User not found" }, { status: 404 });
     }
 
-    const userIsSuperAdmin = await isSuperAdmin(user.id, user.email!);
-    const hasTicketAccess = await hasDashboardAccessByAuth(
-      user.id,
-      user.email!,
-      "TICKET"
-    );
+    const email = user.email ?? systemUser.email;
+    const userIsSuperAdmin = await isSuperAdmin(user.id, email);
+    const hasTicketAccess = await hasDashboardAccessByAuth(user.id, email, "TICKET");
 
     if (!userIsSuperAdmin && !hasTicketAccess) {
       return NextResponse.json({ success: false, error: "Insufficient permissions" }, { status: 403 });
@@ -49,7 +46,7 @@ export async function GET(request: NextRequest) {
 
     const currentUser = {
       id: systemUser.id,
-      name: systemUser.fullName ?? systemUser.email ?? "Me",
+      name: systemUser.full_name ?? systemUser.email ?? "Me",
       email: systemUser.email ?? "",
     };
 

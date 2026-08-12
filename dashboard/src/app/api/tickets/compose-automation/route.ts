@@ -5,11 +5,8 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { createServerSupabaseClient } from "@/lib/supabase/server";
-import { getSystemUserByEmail } from "@/lib/db/operations/users";
-import { isSuperAdmin, hasDashboardAccessByAuth } from "@/lib/permissions/engine";
+import { requireTicketApiUser } from "@/lib/tickets/require-ticket-api-user";
 import { getSql } from "@/lib/db/client";
-import { isInvalidRefreshToken, signOutIfSessionDead } from "@/lib/auth/session-errors";
 import type { TicketAuditSqlClient } from "@/lib/db/operations/ticket-activity-audit";
 
 export const runtime = "nodejs";
@@ -78,38 +75,17 @@ function pickComposeRow(row: Record<string, unknown> | undefined): {
   };
 }
 
-async function requireTicketUser() {
-  const supabase = await createServerSupabaseClient();
-  const {
-    data: { user },
-    error: userError,
-  } = await supabase.auth.getUser();
-  if (userError) {
-    if (isInvalidRefreshToken(userError)) {
-      await signOutIfSessionDead(supabase, userError);
-      return {
-        error: NextResponse.json({ success: false, error: "Session invalid", code: "SESSION_INVALID" }, { status: 401 }),
-      };
-    }
-    return { error: NextResponse.json({ success: false, error: "Not authenticated" }, { status: 401 }) };
-  }
-  if (!user) {
-    return { error: NextResponse.json({ success: false, error: "Not authenticated" }, { status: 401 }) };
-  }
-  const systemUser = await getSystemUserByEmail(user.email!);
-  if (!systemUser) {
-    return { error: NextResponse.json({ success: false, error: "User not found" }, { status: 404 }) };
-  }
-  const userIsSuperAdmin = await isSuperAdmin(user.id, user.email!);
-  const hasTicketAccess = await hasDashboardAccessByAuth(user.id, user.email!, "TICKET");
-  if (!userIsSuperAdmin && !hasTicketAccess) {
-    return { error: NextResponse.json({ success: false, error: "Insufficient permissions" }, { status: 403 }) };
-  }
-  return { systemUser, userIsSuperAdmin };
+async function requireTicketUser(request?: NextRequest) {
+  const auth = await requireTicketApiUser(request);
+  if ("error" in auth) return { error: auth.error };
+  return {
+    systemUser: auth.systemUser,
+    userIsSuperAdmin: auth.isSuperAdmin,
+  };
 }
 
-export async function GET() {
-  const auth = await requireTicketUser();
+export async function GET(request: NextRequest) {
+  const auth = await requireTicketUser(request);
   if ("error" in auth && auth.error) return auth.error;
   const { userIsSuperAdmin } = auth;
 
@@ -176,7 +152,7 @@ export async function GET() {
 }
 
 export async function PUT(request: NextRequest) {
-  const auth = await requireTicketUser();
+  const auth = await requireTicketUser(request);
   if ("error" in auth && auth.error) return auth.error;
   const { systemUser, userIsSuperAdmin } = auth;
 

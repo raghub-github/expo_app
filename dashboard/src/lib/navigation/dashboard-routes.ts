@@ -216,12 +216,6 @@ export const merchantDashboardRoutes: DashboardSubRoute[] = [
     requiresStore: true,
   },
   {
-    name: "Subscription Plans",
-    href: "/dashboard/merchants/offers",
-    icon: Gift,
-    description: "Merchant subscription plans",
-  },
-  {
     name: "Tickets",
     href: "/dashboard/merchants/tickets",
     icon: Ticket,
@@ -251,26 +245,12 @@ export const adminPortalMerchantRoutes: DashboardSubRoute[] = [
 ];
 
 /**
- * Merchant portal sidebar (Dashboard, Orders, Menu, Subscription Plans, Payments,
- * User Insights, Settings, Profile).
- *
- * Entries marked `requiresStore` have no page of their own — the real routes live
- * under `/dashboard/merchants/stores/{id}/…` and are produced by
- * `getStoreScopedMerchantRoutes()` once a store is open. Listing them with a bare
- * `/dashboard/merchants/<x>` href made the sidebar render links to routes that do
- * not exist; Next.js prefetched them on render and each one 404'd. Use
- * `filterSidebarRoutesForStoreContext()` when rendering this list.
+ * Merchant portal top-level rail is intentionally empty.
+ * Nav appears only after a store is opened (store-scoped routes) or when the
+ * user has Admin Merchant access (admin CTAs). Kept as an empty list so older
+ * imports stay valid without rendering dead Dashboard/Settings/Subscription links.
  */
-export const merchantPortalSidebarRoutes: DashboardSubRoute[] = [
-  { name: "Dashboard", href: "/dashboard/merchants", icon: LayoutDashboard, description: "Order overview and store dashboard" },
-  { name: "Orders", href: "/dashboard/merchants/orders", icon: ClipboardList, description: "Merchant orders", requiresStore: true },
-  { name: "Menu", href: "/dashboard/merchants/menu", icon: UtensilsCrossed, description: "Menu management", requiresStore: true },
-  { name: "Subscription Plans", href: "/dashboard/merchants/offers", icon: Zap, description: "Merchant subscription plans" },
-  { name: "Payments", href: "/dashboard/merchants/payments", icon: CreditCard, description: "Payment history", requiresStore: true },
-  { name: "User Insights", href: "/dashboard/merchants/analytics", icon: UserCircle, description: "Performance analytics", requiresStore: true },
-  { name: "Settings", href: "/dashboard/merchants/settings", icon: Settings, description: "Settings" },
-  { name: "Profile", href: "/dashboard/merchants/details", icon: User, description: "Merchant profile", requiresStore: true },
-];
+export const merchantPortalSidebarRoutes: DashboardSubRoute[] = [];
 
 /**
  * Drop entries whose page only exists under a store. Called with the store id when
@@ -300,7 +280,10 @@ export const merchantPortalRoutes: DashboardSubRoute[] = [
 
 /** Store-scoped merchant portal sidebar (matches merchant portal: Dashboard, Orders, Menu, Offers, Payments, User Insights, Settings, Profile, Activity). */
 export function getStoreScopedMerchantRoutes(storeId: string): DashboardSubRoute[] {
-  const base = `/dashboard/merchants/stores/${storeId}`;
+  const id = String(storeId || "").trim();
+  // Never emit `/stores//…` — empty id breaks right-rail activation and hangs pages.
+  if (!/^\d+$/.test(id)) return [];
+  const base = `/dashboard/merchants/stores/${id}`;
   return [
     { name: "Dashboard", href: base, icon: LayoutDashboard, description: "Store overview" },
     { name: "Orders", href: `${base}/orders`, icon: ClipboardList, description: "Order history and status" },
@@ -327,11 +310,8 @@ export function getMerchantSubRoutesForPath(pathname: string): DashboardSubRoute
     const storeId = storeMatch[1];
     return getStoreScopedMerchantRoutes(storeId);
   }
-  // No store in the path, so anything store-scoped would render a link to a route
-  // that does not exist. `merchantDashboardRoutes` still lists several of those
-  // (Orders / Menu / Payments / Analytics / Profile / Store Dashboard / Tickets),
-  // so filter before returning rather than trusting the caller.
-  return filterSidebarRoutesForStoreContext(merchantDashboardRoutes, null);
+  // No store open: do not surface top-level merchant stubs (Settings / Offers / etc.).
+  return [];
 }
 
 /**

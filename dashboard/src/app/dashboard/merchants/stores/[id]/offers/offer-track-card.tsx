@@ -121,8 +121,8 @@ export function OfferTrackCard({
   storeName: string | null;
   expanded: boolean;
   onToggleExpand: () => void;
-  onEdit: () => void;
-  onDelete: () => void;
+  onEdit?: () => void;
+  onDelete?: () => void;
   onCopyCoupon?: (code: string) => void;
   getMenuItemName: (id: string) => string;
 }) {
@@ -230,24 +230,30 @@ export function OfferTrackCard({
               {dateRange}
             </p>
           </div>
-          <div className="flex items-center gap-0.5 shrink-0">
-            <button
-              type="button"
-              onClick={onEdit}
-              className="p-1.5 rounded-md text-blue-600 hover:bg-blue-50"
-              title="Edit offer"
-            >
-              <Edit2 size={15} />
-            </button>
-            <button
-              type="button"
-              onClick={onDelete}
-              className="p-1.5 rounded-md text-red-600 hover:bg-red-50"
-              title="Delete offer"
-            >
-              <Trash2 size={15} />
-            </button>
-          </div>
+          {onEdit || onDelete ? (
+            <div className="flex items-center gap-0.5 shrink-0">
+              {onEdit ? (
+                <button
+                  type="button"
+                  onClick={onEdit}
+                  className="p-1.5 rounded-md text-blue-600 hover:bg-blue-50"
+                  title="Edit offer"
+                >
+                  <Edit2 size={15} />
+                </button>
+              ) : null}
+              {onDelete ? (
+                <button
+                  type="button"
+                  onClick={onDelete}
+                  className="p-1.5 rounded-md text-red-600 hover:bg-red-50"
+                  title="Delete offer"
+                >
+                  <Trash2 size={15} />
+                </button>
+              ) : null}
+            </div>
+          ) : null}
         </div>
 
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5 sm:gap-2 mt-2.5">

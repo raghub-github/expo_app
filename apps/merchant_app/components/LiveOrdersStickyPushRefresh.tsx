@@ -15,14 +15,13 @@ import {
   applyLiveOrdersCountFromPush,
   refreshLiveOrdersOngoingNotification,
 } from "@/lib/liveOrdersOngoingNotification";
+import {
+  registerMerchantForegroundPushHandler,
+  registerMerchantNotificationResponseHandler,
+} from "@/lib/merchantPushDispatch";
 
 function isExpoGo(): boolean {
   return Constants.appOwnership === "expo";
-}
-
-function pushDataOf(content: { data?: unknown }): Record<string, unknown> {
-  const d = content.data;
-  return d && typeof d === "object" ? (d as Record<string, unknown>) : {};
 }
 
 function isLifecycleRefreshPush(data: Record<string, unknown>): boolean {
@@ -51,6 +50,15 @@ function countFromData(data: Record<string, unknown>): number | null {
   return Number.isFinite(n) && n >= 0 ? Math.floor(n) : null;
 }
 
+function stageNum(data: Record<string, unknown>, ...keys: string[]): number | null {
+  for (const k of keys) {
+    const raw = data[k];
+    const n = typeof raw === "number" ? raw : Number(raw);
+    if (Number.isFinite(n) && n >= 0) return Math.floor(n);
+  }
+  return null;
+}
+
 export default function LiveOrdersStickyPushRefresh() {
   const { token } = useAuth();
   const { selectedStore } = useSelectedStore();
@@ -70,18 +78,20 @@ export default function LiveOrdersStickyPushRefresh() {
   useEffect(() => {
     if (isExpoGo() || Platform.OS !== "android") return;
 
-    let removeReceived: (() => void) | undefined;
-    let removeResponse: (() => void) | undefined;
-    let cancelled = false;
-
-    function stageNum(data: Record<string, unknown>, ...keys: string[]): number | null {
-      for (const k of keys) {
-        const raw = data[k];
-        const n = typeof raw === "number" ? raw : Number(raw);
-        if (Number.isFinite(n) && n >= 0) return Math.floor(n);
+    void (async () => {
+      try {
+        const Notifications = await import("expo-notifications");
+        await Notifications.setNotificationChannelAsync("merchant_order_lifecycle", {
+          name: "Order updates",
+          importance: Notifications.AndroidImportance.DEFAULT,
+          vibrationPattern: [0, 250],
+          enableVibrate: true,
+          showBadge: true,
+        });
+      } catch {
+        /* expo-notifications unavailable */
       }
-      return null;
-    }
+    })();
 
     async function applyFromData(data: Record<string, unknown>) {
       if (!enabledRef.current) return;
@@ -113,33 +123,12 @@ export default function LiveOrdersStickyPushRefresh() {
       });
     }
 
-    void (async () => {
-      try {
-        const Notifications = await import("expo-notifications");
-
-        await Notifications.setNotificationChannelAsync("merchant_order_lifecycle", {
-          name: "Order updates",
-          importance: Notifications.AndroidImportance.DEFAULT,
-          vibrationPattern: [0, 250],
-          enableVibrate: true,
-          showBadge: true,
-        });
-
-        const sub = Notifications.addNotificationReceivedListener((notification) => {
-          if (cancelled) return;
-          void applyFromData(pushDataOf(notification.request.content));
-        });
-        removeReceived = () => sub.remove();
-
-        const sub2 = Notifications.addNotificationResponseReceivedListener((response) => {
-          if (cancelled) return;
-          void applyFromData(pushDataOf(response.notification.request.content));
-        });
-        removeResponse = () => sub2.remove();
-      } catch {
-        /* expo-notifications unavailable */
-      }
-    })();
+    const removeForeground = registerMerchantForegroundPushHandler(({ data }) => {
+      void applyFromData(data);
+    });
+    const removeResponse = registerMerchantNotificationResponseHandler(({ data }) => {
+      void applyFromData(data);
+    });
 
     const appSub = AppState.addEventListener("change", (s) => {
       if (s !== "active" || !enabledRef.current) return;
@@ -154,9 +143,8 @@ export default function LiveOrdersStickyPushRefresh() {
     });
 
     return () => {
-      cancelled = true;
-      removeReceived?.();
-      removeResponse?.();
+      removeForeground();
+      removeResponse();
       appSub.remove();
     };
   }, []);

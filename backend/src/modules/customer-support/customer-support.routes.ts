@@ -85,9 +85,30 @@ type ResolvedCustomerOrder = {
   cancelled_at: string | null;
   merchant_store_id: number | null;
   merchant_store_name: string | null;
+  customer_name: string | null;
+  item_preview: string | null;
 };
 
+function extractItemPreviewFromItemsJson(raw: unknown, max = 2): string | null {
+  if (!Array.isArray(raw)) return null;
+  const names = raw
+    .slice(0, max)
+    .map((row) => {
+      if (!row || typeof row !== "object") return "";
+      const r = row as Record<string, unknown>;
+      return String(r.item_name ?? r.name ?? "").trim();
+    })
+    .filter(Boolean);
+  if (!names.length) return null;
+  const extra = raw.length > max ? ` +${raw.length - max} more` : "";
+  return names.join(", ") + extra;
+}
+
 function mapResolvedOrder(r: Record<string, unknown>): ResolvedCustomerOrder {
+  const itemPreview =
+    r.item_preview != null && String(r.item_preview).trim()
+      ? String(r.item_preview).trim()
+      : extractItemPreviewFromItemsJson(r.items);
   return {
     id: Number(r.id),
     order_id: r.order_id != null ? String(r.order_id) : null,
@@ -101,6 +122,8 @@ function mapResolvedOrder(r: Record<string, unknown>): ResolvedCustomerOrder {
     cancelled_at: toIsoOrNull(r.cancelled_at),
     merchant_store_id: r.merchant_store_id != null ? Number(r.merchant_store_id) : null,
     merchant_store_name: r.merchant_store_name != null ? String(r.merchant_store_name) : null,
+    customer_name: r.customer_name != null ? String(r.customer_name) : null,
+    item_preview: itemPreview,
   };
 }
 
@@ -134,9 +157,12 @@ async function resolveCustomerOrderRef(
            oc.grand_total, oc.placed_at, oc.actual_delivery_time AS delivered_at,
            oc.cancelled_at,
            oc.merchant_store_id,
-           ms.store_name AS merchant_store_name
+           oc.items,
+           ms.store_name AS merchant_store_name,
+           of.customer_name
     FROM orders_core oc
     LEFT JOIN merchant_stores ms ON ms.id = oc.merchant_store_id
+    LEFT JOIN orders_food of ON of.core_order_id = oc.order_id
     WHERE oc.customer_id = ${customerPk}
       AND (
         oc.order_id = ${trimmed}
@@ -656,11 +682,14 @@ export async function customerSupportRoutes(app: FastifyInstance) {
       SELECT oc.id, oc.order_id, oc.formatted_order_id, oc.order_type::text AS order_type,
              oc.status::text AS status, oc.current_status,
              oc.grand_total, oc.placed_at, oc.actual_delivery_time AS delivered_at,
-           oc.cancelled_at,
+             oc.cancelled_at,
              oc.merchant_store_id,
-             ms.store_name AS merchant_store_name
+             oc.items,
+             ms.store_name AS merchant_store_name,
+             of.customer_name
       FROM orders_core oc
       LEFT JOIN merchant_stores ms ON ms.id = oc.merchant_store_id
+      LEFT JOIN orders_food of ON of.core_order_id = oc.order_id
       WHERE oc.customer_id = ${me.id}
       ORDER BY oc.placed_at DESC NULLS LAST, oc.id DESC
       LIMIT ${limit} OFFSET ${offset}

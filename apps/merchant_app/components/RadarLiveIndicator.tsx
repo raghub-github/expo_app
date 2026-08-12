@@ -8,9 +8,9 @@ import { useEffect, useRef } from "react";
 import { View, StyleSheet, Animated, Easing } from "react-native";
 
 const SIZE_DEFAULT = 32;
-const SIZE_COMPACT = 22;
+const SIZE_COMPACT = 24;
 const CENTER_DOT_DEFAULT = 8;
-const CENTER_DOT_COMPACT = 6;
+const CENTER_DOT_COMPACT = 7;
 const BRAND_GREEN = "#22C55E";
 const RING_PURPLE = "#7C3AED";
 const RING_BLUE = "#2563EB";

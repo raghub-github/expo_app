@@ -130,7 +130,7 @@ function BotBubble({
                     onPress={() => onOrderPress(order)}
                   >
                     <AppText style={styles.orderTitle}>{orderPickerTitle(order)}</AppText>
-                    <AppText style={styles.orderSub}>{orderPickerSubtitle(order, itemHint)}</AppText>
+                    <AppText style={styles.orderSub}>{orderPickerSubtitle(order)}</AppText>
                     <AppText
                       style={[
                         styles.orderStatus,

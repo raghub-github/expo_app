@@ -51,7 +51,7 @@ export default function NewComboScreen() {
     <View style={styles.container}>
       <View style={styles.header}>
         <TouchableOpacity onPress={() => router.back()} style={styles.backBtn} hitSlop={8}>
-          <Ionicons name="arrow-back" size={24} color={GatiMitraMerchant.textPrimary} />
+          <Ionicons name="chevron-back" size={20} color={GatiMitraMerchant.textPrimary} />
         </TouchableOpacity>
         <Text style={styles.title}>New combo</Text>
       </View>

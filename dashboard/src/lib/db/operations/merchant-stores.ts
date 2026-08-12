@@ -699,14 +699,31 @@ export async function listMerchantStores(params: {
     // Fall through to ILIKE search if exact match missed (e.g. wrong case stored)
   }
 
-  // Search: store_id, store_name, store_display_name, store_phones (number), parent_id (when numeric)
+  // Search: store_id, names, phones; numeric parent_id; or parent_merchant_id (GMMP…)
   let searchCondition = sql``;
   if (search) {
     const parentIdNum = /^\d+$/.test(searchRaw) ? parseInt(searchRaw, 10) : null;
     if (parentIdNum != null && !Number.isNaN(parentIdNum)) {
-      searchCondition = sql`AND (store_id ILIKE ${search} OR store_name ILIKE ${search} OR store_display_name ILIKE ${search} OR array_to_string(COALESCE(store_phones, ARRAY[]::text[]), ' ') ILIKE ${search} OR parent_id = ${parentIdNum})`;
+      searchCondition = sql`AND (
+        store_id ILIKE ${search}
+        OR store_name ILIKE ${search}
+        OR store_display_name ILIKE ${search}
+        OR array_to_string(COALESCE(store_phones, ARRAY[]::text[]), ' ') ILIKE ${search}
+        OR parent_id = ${parentIdNum}
+        OR parent_id IN (
+          SELECT id FROM merchant_parents WHERE parent_merchant_id ILIKE ${search}
+        )
+      )`;
     } else {
-      searchCondition = sql`AND (store_id ILIKE ${search} OR store_name ILIKE ${search} OR store_display_name ILIKE ${search} OR array_to_string(COALESCE(store_phones, ARRAY[]::text[]), ' ') ILIKE ${search})`;
+      searchCondition = sql`AND (
+        store_id ILIKE ${search}
+        OR store_name ILIKE ${search}
+        OR store_display_name ILIKE ${search}
+        OR array_to_string(COALESCE(store_phones, ARRAY[]::text[]), ' ') ILIKE ${search}
+        OR parent_id IN (
+          SELECT id FROM merchant_parents WHERE parent_merchant_id ILIKE ${search}
+        )
+      )`;
     }
   }
 

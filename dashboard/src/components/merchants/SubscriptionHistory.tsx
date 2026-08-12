@@ -114,6 +114,8 @@ type ApiResponse = {
 type Props = {
   storeId: number;
   pageSize?: number;
+  /** When false, hide refund CTA even if API grants canRefund (view-only). */
+  allowRefund?: boolean;
 };
 
 type EventTypeFilter = "ALL" | "PURCHASE" | "REFUND";
@@ -220,7 +222,7 @@ function daysRemainingChip(p: PurchaseEvent) {
   );
 }
 
-export function SubscriptionHistory({ storeId, pageSize = 25 }: Props) {
+export function SubscriptionHistory({ storeId, pageSize = 25, allowRefund = true }: Props) {
   const { toast } = useToast();
 
   const [rows, setRows] = useState<HistoryEvent[]>([]);
@@ -229,7 +231,8 @@ export function SubscriptionHistory({ storeId, pageSize = 25 }: Props) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [expandedKey, setExpandedKey] = useState<string | null>(null);
-  const [canRefund, setCanRefund] = useState(false);
+  const [canRefundApi, setCanRefundApi] = useState(false);
+  const canRefund = allowRefund && canRefundApi;
   const [callerIsSuperAdmin, setCallerIsSuperAdmin] = useState(false);
 
   // Filters
@@ -266,7 +269,7 @@ export function SubscriptionHistory({ storeId, pageSize = 25 }: Props) {
       }
       setRows(data.items);
       setTotal(Number(data.total ?? data.items.length));
-      if (typeof data.canRefund === "boolean") setCanRefund(data.canRefund);
+      if (typeof data.canRefund === "boolean") setCanRefundApi(data.canRefund);
       if (typeof data.callerIsSuperAdmin === "boolean") {
         setCallerIsSuperAdmin(data.callerIsSuperAdmin);
       }
@@ -777,7 +780,7 @@ export function SubscriptionHistory({ storeId, pageSize = 25 }: Props) {
           }}
           onError={(msg) => {
             if (msg.includes("refund_permission_required")) {
-              setCanRefund(false);
+              setCanRefundApi(false);
               setRefundTarget(null);
               toast("Refund permission was revoked. Please refresh.");
               return;

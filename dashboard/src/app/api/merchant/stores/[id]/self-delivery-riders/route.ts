@@ -6,19 +6,14 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine";
-import { getAreaManagerByUserId } from "@/lib/area-manager/auth";
-import { getSystemUserByEmail } from "@/lib/auth/user-mapping";
+import { resolveMerchantListAreaManagerId } from "@/lib/merchants/resolve-merchant-list-scope";
 import { getMerchantStoreById } from "@/lib/db/operations/merchant-stores";
 import { getSql } from "@/lib/db/client";
 
 export const runtime = "nodejs";
 
 async function getAreaManagerId(userId: string, email: string) {
-  if (await isSuperAdmin(userId, email)) return null;
-  const systemUser = await getSystemUserByEmail(email);
-  if (!systemUser) return null;
-  const am = await getAreaManagerByUserId(systemUser.id);
-  return am?.id ?? null;
+  return resolveMerchantListAreaManagerId({ supabaseAuthId: userId, email });
 }
 
 export async function GET(

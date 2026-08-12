@@ -6,6 +6,7 @@ import { useTicketDetail } from "@/hooks/tickets/useTicketDetail";
 import { useTicketUpdate } from "@/hooks/tickets/useTicketUpdate";
 import { useTicketsAgentsQuery } from "@/hooks/tickets/useTicketsAgentsQuery";
 import { useTicketsReferenceDataQuery } from "@/hooks/tickets/useTicketsReferenceDataQuery";
+import { useTicketDashboardAccess } from "@/hooks/useTicketDashboardAccess";
 import { useToast } from "@/context/ToastContext";
 import { useRightSidebar } from "@/context/RightSidebarContext";
 import type { TicketOtherAgentViewer } from "@/lib/tickets/ticket-presence";
@@ -132,6 +133,7 @@ function TicketPropertiesPanelSkeleton() {
 export function TicketPropertiesPanel({ ticketId }: { ticketId: number | string }) {
   const { data: ticket, isLoading, error } = useTicketDetail(ticketId);
   const updateTicket = useTicketUpdate();
+  const { canMutate: canActOnTickets } = useTicketDashboardAccess();
   const { toast } = useToast();
   const rightSidebar = useRightSidebar();
   const ticketCopresenceLive = Boolean(rightSidebar?.ticketCopresenceLive);
@@ -291,6 +293,35 @@ export function TicketPropertiesPanel({ ticketId }: { ticketId: number | string 
     setGroDetails((prev) => (prev === nextGroDetails ? prev : nextGroDetails));
   }, [ticket, currentUser, refData?.tags]);
 
+  const normalizeTagCodes = (arr: string[] | null | undefined): string[] => {
+    const ref = refData?.tags || [];
+    return [
+      ...new Set(
+        (arr ?? [])
+          .map((raw) => {
+            const s = String(raw).trim();
+            if (!s) return "";
+            const upper = s.toUpperCase();
+            const hit = ref.find((t) => {
+              const code = String(t.tagCode).trim().toUpperCase();
+              const name = String(t.tagName || "").trim().toUpperCase();
+              return code === upper || (name.length > 0 && name === upper);
+            });
+            return (hit ? String(hit.tagCode).trim() : s).toUpperCase();
+          })
+          .filter(Boolean)
+      ),
+    ].sort();
+  };
+
+  const normalizeIgmRefund = (v: string | null | undefined): string => {
+    const s = String(v ?? "").trim();
+    if (!s || s === "0" || s === "0.0" || s === "0.00") return "0.00";
+    const n = Number(s);
+    if (Number.isFinite(n) && n === 0) return "0.00";
+    return s;
+  };
+
   const hasPendingChanges = useMemo(() => {
     if (!ticket) return false;
     if ((ticket.status || "open") !== status) return true;
@@ -302,15 +333,14 @@ export function TicketPropertiesPanel({ ticketId }: { ticketId: number | string 
     if (currentAssigneeStr !== nextAssigneeStr) return true;
     const currentDueBy = ticket.slaDueAt ? new Date(ticket.slaDueAt).toISOString().slice(0, 16) : "";
     if (currentDueBy !== dueBy) return true;
-    const normalize = (arr: string[]) => [...arr].map((x) => x.trim()).filter(Boolean).sort();
-    if (JSON.stringify(normalize(ticket.tags ?? [])) !== JSON.stringify(normalize(tags))) return true;
+    if (JSON.stringify(normalizeTagCodes(ticket.tags)) !== JSON.stringify(normalizeTagCodes(tags))) return true;
     if ((ticket.buyerNpName ?? "") !== buyerNpName.trim()) return true;
     if ((ticket.sellerNpName ?? "") !== sellerNpName.trim()) return true;
     if ((ticket.logisticsNpName ?? "") !== logisticsNpName.trim()) return true;
     if ((ticket.igmActionTriggered ?? "") !== igmActionTriggered.trim()) return true;
     if ((ticket.igmShortResolution ?? "") !== igmShortResolution.trim()) return true;
     if ((ticket.igmLongResolution ?? "") !== igmLongResolution.trim()) return true;
-    if ((ticket.igmRefundAmount ?? "") !== igmRefundAmount.trim()) return true;
+    if (normalizeIgmRefund(ticket.igmRefundAmount) !== normalizeIgmRefund(igmRefundAmount)) return true;
     if ((ticket.groDetails ?? "") !== groDetails.trim()) return true;
     return false;
   }, [
@@ -330,6 +360,7 @@ export function TicketPropertiesPanel({ ticketId }: { ticketId: number | string 
     igmLongResolution,
     igmRefundAmount,
     groDetails,
+    refData?.tags,
   ]);
 
   const handleUpdate = () => {
@@ -352,52 +383,83 @@ export function TicketPropertiesPanel({ ticketId }: { ticketId: number | string 
       igmRefundAmount?: string | null;
       groDetails?: string | null;
     } = { ticketId: resolvedTicketId };
-    if (status) payload.status = status;
-    if (priority) payload.priority = priority;
-    const assigneeNum = agentId === "me" && currentUser ? currentUser.id : agentId ? parseInt(agentId, 10) : null;
-    if (assigneeNum !== undefined) payload.currentAssigneeUserId = Number.isNaN(assigneeNum as number) ? null : (assigneeNum as number);
-    if (groupId !== undefined) payload.groupId = groupId ? parseInt(groupId, 10) : null;
-    if (dueBy) {
-      try {
-        payload.slaDueAt = new Date(dueBy).toISOString();
-      } catch {
-        payload.slaDueAt = null;
-      }
-    } else payload.slaDueAt = null;
-    payload.tags = tags;
-    payload.buyerNpName = buyerNpName.trim() || null;
-    payload.sellerNpName = sellerNpName.trim() || null;
-    payload.logisticsNpName = logisticsNpName.trim() || null;
-    payload.igmActionTriggered = igmActionTriggered.trim() || null;
-    payload.igmShortResolution = igmShortResolution.trim() || null;
-    payload.igmLongResolution = igmLongResolution.trim() || null;
-    payload.igmRefundAmount = igmRefundAmount.trim() || null;
-    payload.groDetails = groDetails.trim() || null;
 
     const changedFields: string[] = [];
-    if ((ticket.status || "open") !== status) changedFields.push("Status");
-    if ((ticket.priority || "medium") !== priority) changedFields.push("Priority");
-    if ((ticket.group?.id != null ? String(ticket.group.id) : "") !== groupId) changedFields.push("Group");
+    if ((ticket.status || "open") !== status) {
+      changedFields.push("Status");
+      if (status) payload.status = status;
+    }
+    if ((ticket.priority || "medium") !== priority) {
+      changedFields.push("Priority");
+      if (priority) payload.priority = priority;
+    }
+    if ((ticket.group?.id != null ? String(ticket.group.id) : "") !== groupId) {
+      changedFields.push("Group");
+      payload.groupId = groupId ? parseInt(groupId, 10) : null;
+    }
     const currentAssigneeStr = ticket.assignee?.id != null ? String(ticket.assignee.id) : "";
     const nextAssigneeStr =
       agentId === "me" && currentUser ? String(currentUser.id) : agentId ? String(agentId) : "";
-    if (currentAssigneeStr !== nextAssigneeStr) changedFields.push("Assigned Agent");
+    if (currentAssigneeStr !== nextAssigneeStr) {
+      changedFields.push("Assigned Agent");
+      const assigneeNum = agentId === "me" && currentUser ? currentUser.id : agentId ? parseInt(agentId, 10) : null;
+      payload.currentAssigneeUserId = Number.isNaN(assigneeNum as number) ? null : (assigneeNum as number);
+    }
     const currentDueBy = ticket.slaDueAt ? new Date(ticket.slaDueAt).toISOString().slice(0, 16) : "";
-    if (currentDueBy !== dueBy) changedFields.push("Due By");
-    const normalize = (arr: string[]) => [...arr].map((x) => x.trim()).filter(Boolean).sort();
-    if (JSON.stringify(normalize(ticket.tags ?? [])) !== JSON.stringify(normalize(tags))) changedFields.push("Tags");
-    if ((ticket.buyerNpName ?? "") !== buyerNpName.trim()) changedFields.push("Buyer NP Name");
-    if ((ticket.sellerNpName ?? "") !== sellerNpName.trim()) changedFields.push("Seller NP Name");
-    if ((ticket.logisticsNpName ?? "") !== logisticsNpName.trim()) changedFields.push("Logistics NP Name");
-    if ((ticket.igmActionTriggered ?? "") !== igmActionTriggered.trim()) changedFields.push("IGM Action Triggered");
-    if ((ticket.igmShortResolution ?? "") !== igmShortResolution.trim()) changedFields.push("IGM Short Resolution");
-    if ((ticket.igmLongResolution ?? "") !== igmLongResolution.trim()) changedFields.push("IGM Long Resolution");
-    if ((ticket.igmRefundAmount ?? "") !== igmRefundAmount.trim()) changedFields.push("IGM Refund Amount");
-    if ((ticket.groDetails ?? "") !== groDetails.trim()) changedFields.push("GRO Details");
+    if (currentDueBy !== dueBy) {
+      changedFields.push("Due By");
+      if (dueBy) {
+        try {
+          payload.slaDueAt = new Date(dueBy).toISOString();
+        } catch {
+          payload.slaDueAt = null;
+        }
+      } else {
+        payload.slaDueAt = null;
+      }
+    }
+    if (JSON.stringify(normalizeTagCodes(ticket.tags)) !== JSON.stringify(normalizeTagCodes(tags))) {
+      changedFields.push("Tags");
+      payload.tags = tags;
+    }
+    if ((ticket.buyerNpName ?? "") !== buyerNpName.trim()) {
+      changedFields.push("Buyer NP Name");
+      payload.buyerNpName = buyerNpName.trim() || null;
+    }
+    if ((ticket.sellerNpName ?? "") !== sellerNpName.trim()) {
+      changedFields.push("Seller NP Name");
+      payload.sellerNpName = sellerNpName.trim() || null;
+    }
+    if ((ticket.logisticsNpName ?? "") !== logisticsNpName.trim()) {
+      changedFields.push("Logistics NP Name");
+      payload.logisticsNpName = logisticsNpName.trim() || null;
+    }
+    if ((ticket.igmActionTriggered ?? "") !== igmActionTriggered.trim()) {
+      changedFields.push("IGM Action Triggered");
+      payload.igmActionTriggered = igmActionTriggered.trim() || null;
+    }
+    if ((ticket.igmShortResolution ?? "") !== igmShortResolution.trim()) {
+      changedFields.push("IGM Short Resolution");
+      payload.igmShortResolution = igmShortResolution.trim() || null;
+    }
+    if ((ticket.igmLongResolution ?? "") !== igmLongResolution.trim()) {
+      changedFields.push("IGM Long Resolution");
+      payload.igmLongResolution = igmLongResolution.trim() || null;
+    }
+    if (normalizeIgmRefund(ticket.igmRefundAmount) !== normalizeIgmRefund(igmRefundAmount)) {
+      changedFields.push("IGM Refund Amount");
+      const normalized = normalizeIgmRefund(igmRefundAmount);
+      payload.igmRefundAmount = normalized === "0.00" ? null : normalized;
+    }
+    if ((ticket.groDetails ?? "") !== groDetails.trim()) {
+      changedFields.push("GRO Details");
+      payload.groDetails = groDetails.trim() || null;
+    }
+
+    if (changedFields.length === 0) return;
 
     updateTicket.mutate(payload, {
-      onSuccess: () =>
-        toast(changedFields.length > 0 ? `${changedFields.join(", ")} updated` : "Ticket updated"),
+      onSuccess: () => toast(`${changedFields.join(", ")} updated`),
       onError: (err) => toast(err instanceof Error ? err.message : "Failed to update ticket"),
     });
   };
@@ -770,6 +832,7 @@ export function TicketPropertiesPanel({ ticketId }: { ticketId: number | string 
         </div>
       </div>
 
+      {canActOnTickets ? (
       <div className="relative z-10 shrink-0 bg-[#f3f5f7] px-3 pb-2.5 pt-2.5">
         <button
           type="button"
@@ -784,6 +847,7 @@ export function TicketPropertiesPanel({ ticketId }: { ticketId: number | string 
           {updateTicket.isPending ? "Updating…" : "Update"}
         </button>
       </div>
+      ) : null}
     </div>
   );
 }

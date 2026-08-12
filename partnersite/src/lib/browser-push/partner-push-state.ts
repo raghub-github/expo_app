@@ -1,124 +1,66 @@
-const DISMISS_KEY = "partner_browser_push_modal_dismissed_permanently";
-const SOFT_DISMISS_KEY = "partner_browser_push_modal_dismissed_at";
 const REGISTERED_KEY = "partner_browser_push_token_ok";
 const PENDING_KEY = "partner_browser_push_registration_pending";
 const LAST_FCM_TOKEN_KEY = "partner_browser_push_fcm_token";
 const PERMISSION_SYNC_KEY = "partner_browser_push_last_permission_sync";
 
-/** Tab session — survives refresh & in-app navigation; cleared on logout / new login entry. */
-const SESSION_DISMISS_USER_KEY = "partner_browser_push_modal_session_dismissed_user";
-const SESSION_LAST_PERMISSION_KEY = "partner_browser_push_session_last_permission";
+/** Legacy modal dismiss keys — cleared on login/logout; never used for permission decisions. */
+const LEGACY_DISMISS_KEYS = [
+  "partner_browser_push_modal_dismissed_permanently",
+  "partner_browser_push_modal_dismissed_at",
+  "partner_browser_push_modal_session_dismissed_user",
+  "partner_browser_push_session_last_permission",
+] as const;
 
-/** In-memory fast path (same document lifecycle). */
-let pushModalSessionDismissed = false;
-let sessionLastPushPermission: NotificationPermission | null = null;
-
-/**
- * True when the merchant dismissed the push modal for this login session.
- * Scoped to userId when provided so account switches are handled correctly.
- */
-export function isPushSessionDismissed(userId?: string | null): boolean {
-  if (pushModalSessionDismissed) return true;
-  if (typeof window === "undefined") return false;
-  try {
-    const stored = sessionStorage.getItem(SESSION_DISMISS_USER_KEY);
-    if (!stored) return false;
-    if (userId) return stored === userId;
-    return stored.length > 0;
-  } catch {
-    return false;
-  }
+/** @deprecated Modal removed — always false. Browser Notification.permission is authoritative. */
+export function isPushSessionDismissed(_userId?: string | null): boolean {
+  return false;
 }
 
-/** Persist skip for the current authenticated session (Not Now / close). */
-export function markPushSessionDismissed(userId?: string | null) {
-  pushModalSessionDismissed = true;
-  if (typeof window === "undefined") return;
-  try {
-    sessionStorage.setItem(SESSION_DISMISS_USER_KEY, userId?.trim() || "1");
-  } catch {
-    /* ignore */
-  }
+/** @deprecated Modal removed — no-op. */
+export function markPushSessionDismissed(_userId?: string | null) {
+  /* intentionally empty */
 }
 
-function readSessionLastPushPermissionFromStorage(): NotificationPermission | null {
-  if (typeof window === "undefined") return null;
-  try {
-    const v = sessionStorage.getItem(SESSION_LAST_PERMISSION_KEY);
-    if (v === "granted" || v === "denied" || v === "default") return v;
-    return null;
-  } catch {
-    return null;
-  }
+/** @deprecated Modal removed — always false. */
+export function notePushPermissionObserved(_permission: NotificationPermission): boolean {
+  return false;
 }
 
-function writeSessionLastPushPermission(permission: NotificationPermission) {
-  sessionLastPushPermission = permission;
-  if (typeof window === "undefined") return;
-  try {
-    sessionStorage.setItem(SESSION_LAST_PERMISSION_KEY, permission);
-  } catch {
-    /* ignore */
-  }
-}
-
-/**
- * Track observed browser permission for this login session.
- * Returns true when permission transitions to denied mid-session (Allowed/Default → Blocked).
- */
-export function notePushPermissionObserved(permission: NotificationPermission): boolean {
-  const prev =
-    sessionLastPushPermission ?? readSessionLastPushPermissionFromStorage();
-  writeSessionLastPushPermission(permission);
-  return Boolean(prev && prev !== "denied" && permission === "denied");
-}
-
-/** Call on logout and when starting a fresh login flow. */
+/** Clear legacy modal/session flags on logout and fresh login. */
 export function clearPushSessionDismissed() {
-  pushModalSessionDismissed = false;
-  sessionLastPushPermission = null;
   if (typeof window === "undefined") return;
   try {
-    sessionStorage.removeItem(SESSION_DISMISS_USER_KEY);
-    sessionStorage.removeItem(SESSION_LAST_PERMISSION_KEY);
+    for (const key of LEGACY_DISMISS_KEYS) {
+      localStorage.removeItem(key);
+      sessionStorage.removeItem(key);
+    }
   } catch {
     /* ignore */
   }
 }
 
-/** @deprecated Legacy permanent flag — no longer used for modal skip. */
+/** @deprecated Legacy permanent flag — always false. */
 export function isPushPermanentlyDismissed(): boolean {
-  if (typeof window === "undefined") return false;
-  try {
-    return localStorage.getItem(DISMISS_KEY) === "1";
-  } catch {
-    return false;
-  }
+  return false;
 }
 
-/** @deprecated Legacy soft dismiss — use markPushSessionDismissed instead. */
+/** @deprecated Use markPushSessionDismissed — no-op. */
 export function isPushSoftDismissedRecently(): boolean {
-  return isPushSessionDismissed();
+  return false;
 }
 
-/** Not Now / skip — session only, not localStorage. */
-export function markPushSoftDismissed(userId?: string | null) {
-  markPushSessionDismissed(userId);
+/** @deprecated Modal removed — no-op. */
+export function markPushSoftDismissed(_userId?: string | null) {
+  /* intentionally empty */
 }
 
-/** @deprecated Use markPushSessionDismissed — no permanent skip. */
-export function markPushPermanentlyDismissed(userId?: string | null) {
-  markPushSessionDismissed(userId);
+/** @deprecated Modal removed — no-op. */
+export function markPushPermanentlyDismissed(_userId?: string | null) {
+  /* intentionally empty */
 }
 
 export function clearPushDismissFlags() {
   clearPushSessionDismissed();
-  try {
-    localStorage.removeItem(DISMISS_KEY);
-    localStorage.removeItem(SOFT_DISMISS_KEY);
-  } catch {
-    /* ignore */
-  }
 }
 
 export function savePushFcmToken(token: string) {
@@ -222,12 +164,7 @@ export function clearPushRegistrationState() {
   }
 }
 
-/** Clear all local push registration markers (keeps last FCM token for backend deactivation). */
+/** Clear local registration markers (keeps last FCM token for backend deactivation). */
 export function markPushLocallyDisabled() {
   clearPushRegistrationState();
-  try {
-    localStorage.removeItem(REGISTERED_KEY);
-  } catch {
-    /* ignore */
-  }
 }

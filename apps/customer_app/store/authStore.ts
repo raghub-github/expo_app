@@ -12,6 +12,7 @@ import type { Session } from "@gatimitra/contracts";
 import { authService } from "@/services/auth.service";
 import { clearCustomerScopedState } from "@/lib/clearCustomerScopedState";
 import { getActiveCustomerScopeId, setActiveCustomerScopeId } from "@/lib/customerScope";
+import { runCustomerPushUnregister } from "@/lib/customerPushUnregister";
 
 type AuthState = {
   hydrated: boolean;
@@ -41,9 +42,14 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
     const incomingCustomerId = customerIdOf(s);
     const previousCustomerId = customerIdOf(get().session) ?? getActiveCustomerScopeId();
+    const previousAccessToken = get().session?.accessToken ?? null;
     // Token refresh for the same customer must not wipe an in-flight cart; any
     // other transition (fresh login, account switch) crosses accounts and must.
     const crossesAccountBoundary = previousCustomerId !== incomingCustomerId;
+
+    if (crossesAccountBoundary && previousAccessToken) {
+      await runCustomerPushUnregister(previousAccessToken);
+    }
 
     await authService.persistSession(s);
     if (crossesAccountBoundary) {
@@ -86,17 +92,21 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   },
 
   logout: async () => {
+    const accessToken = get().session?.accessToken ?? null;
+    await runCustomerPushUnregister(accessToken);
     await authService.clearSession();
     await clearCustomerScopedState(null);
     set({ session: null });
   },
 
   logoutAllDevices: async () => {
+    const accessToken = get().session?.accessToken ?? null;
     try {
       await authService.logoutAllDevices();
     } catch {
       // Continue to clear local session even if API fails
     }
+    await runCustomerPushUnregister(accessToken);
     await authService.clearSession();
     await clearCustomerScopedState(null);
     set({ session: null });

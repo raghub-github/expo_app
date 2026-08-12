@@ -1,9 +1,9 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { AppText as Text } from "@/components/AppText";
 import { View, StyleSheet, ScrollView, ActivityIndicator, Pressable, RefreshControl, Image } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
-import { LinearGradient } from "expo-linear-gradient";
 import type { Offer } from "@/services/offersApi";
+import { OfferStorePickSheet } from "@/components/offers/OfferStorePickSheet";
 import { aggregateOffersPerformance, formatOfferInr } from "@/lib/offers/offer-analytics";
 import {
   countOffersForTrackFilter,
@@ -12,9 +12,10 @@ import {
 } from "@/lib/offers/offer-lifecycle";
 import { OfferTrackCard } from "./OfferTrackCard";
 import { OFFERS_UI, offersSharedStyles } from "./offers-theme";
+import type { ChildStore } from "@/context/AuthContext";
+import { AppAssetImage } from "@/components/AppAssetImage";
+import { MX } from "@/lib/appAssetKeys";
 import { GatiMitraMerchant, H_PADDING } from "@/constants/theme";
-
-const NO_OFFERS_TARGET = require("../../assets/no-running-offers-target.png");
 
 type TrackPill = { id: OfferTrackFilter; label: string };
 
@@ -29,6 +30,10 @@ type Props = {
   loading: boolean;
   refreshing: boolean;
   storeName: string | null;
+  stores: ChildStore[];
+  trackStoreFilter: number | "all";
+  onTrackStoreFilterChange: (filter: number | "all") => void;
+  storeNameById: Map<number, string>;
   trackFilter: OfferTrackFilter;
   onTrackFilterChange: (f: OfferTrackFilter) => void;
   onRefresh: () => void;
@@ -53,6 +58,10 @@ export function OffersTrackView({
   loading,
   refreshing,
   storeName,
+  stores,
+  trackStoreFilter,
+  onTrackStoreFilterChange,
+  storeNameById,
   trackFilter,
   onTrackFilterChange,
   onRefresh,
@@ -62,6 +71,7 @@ export function OffersTrackView({
   onToggle,
   onDelete,
 }: Props) {
+  const [storeSheetVisible, setStoreSheetVisible] = useState(false);
   const filtered = useMemo(
     () => offers.filter((o) => offerMatchesTrackFilter(o, trackFilter)),
     [offers, trackFilter]
@@ -86,29 +96,109 @@ export function OffersTrackView({
     );
   }
 
+  const storeFilterLabel =
+    trackStoreFilter === "all"
+      ? `All restaurants (${stores.length})`
+      : storeNameById.get(trackStoreFilter) ?? storeName ?? "Restaurant";
+
+  const performanceBlock = (
+    <>
+      {stores.length > 1 ? (
+        <Pressable
+          onPress={() => setStoreSheetVisible(true)}
+          style={({ pressed }) => [styles.storePicker, pressed && { opacity: 0.92 }]}
+        >
+          <View style={styles.storePickerIcon}>
+            <Ionicons name="storefront-outline" size={18} color={GatiMitraMerchant.textPrimary} />
+          </View>
+          <Text style={styles.storePickerText} numberOfLines={1}>
+            {storeFilterLabel}
+          </Text>
+          <Ionicons name="chevron-down" size={18} color={GatiMitraMerchant.textSecondary} />
+        </Pressable>
+      ) : null}
+
+      <View style={styles.sectionHead}>
+        <Text style={styles.sectionTitle}>Overall performance</Text>
+        <Text style={styles.sectionSub}>
+          {offers.length} campaign{offers.length === 1 ? "" : "s"}
+          {trackStoreFilter === "all" && stores.length > 1 ? " · all outlets" : ""}
+        </Text>
+      </View>
+
+      <View style={[offersSharedStyles.card, styles.perfCard]}>
+        <View style={styles.perfHeader}>
+          <View style={styles.perfHeaderIcon}>
+            <Ionicons name="stats-chart" size={18} color={GatiMitraMerchant.primary} />
+          </View>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.dateMain}>
+              {trackStoreFilter === "all" ? "All campaigns" : storeFilterLabel}
+            </Text>
+            <Text style={styles.dateSub}>Lifetime metrics from your offers</Text>
+          </View>
+        </View>
+
+        <PerformanceRow label="Gross sales from offers" value={formatOfferInr(overall.gross)} />
+        <PerformanceRow label="Orders from offers" value={String(overall.orders)} />
+        <PerformanceRow label="Discount given" value={formatOfferInr(overall.discount)} />
+        <PerformanceRow label="Effective discount" value={`${overall.effPct}%`} />
+
+        <Pressable
+          onPress={onOpenInsights}
+          style={({ pressed }) => [styles.detailPerfBtn, pressed && { opacity: 0.92 }]}
+        >
+          <Text style={styles.detailPerfText}>Detailed performance</Text>
+          <Ionicons name="arrow-forward" size={16} color={GatiMitraMerchant.primary} />
+        </Pressable>
+      </View>
+    </>
+  );
+
   if (offers.length === 0) {
     return (
-      <View style={styles.emptyWrap}>
-        <View style={styles.emptyHalo}>
-          <Image source={NO_OFFERS_TARGET} style={styles.emptyArt} resizeMode="contain" />
-        </View>
-        <Text style={styles.emptyTitle}>No Running Offers</Text>
-        <Text style={styles.emptySub}>
-          Create your first discount offer to get started and attract more customers!
-        </Text>
-        <Pressable
-          onPress={onCreatePress}
-          style={({ pressed }) => [styles.emptyBtnWrap, pressed && { opacity: 0.92 }]}
+      <View style={styles.flex}>
+        <ScrollView
+          style={styles.scroll}
+          contentContainerStyle={offersSharedStyles.scrollContent}
+          showsVerticalScrollIndicator={false}
+          refreshControl={
+            <RefreshControl
+              refreshing={refreshing}
+              onRefresh={onRefresh}
+              tintColor={GatiMitraMerchant.primary}
+              colors={[GatiMitraMerchant.primary]}
+            />
+          }
         >
-          <LinearGradient
-            colors={["#10B981", "#2DD4BF"]}
-            start={{ x: 0, y: 0.5 }}
-            end={{ x: 1, y: 0.5 }}
-            style={styles.emptyBtn}
-          >
-            <Text style={styles.emptyBtnText}>Create Your First Offer</Text>
-          </LinearGradient>
-        </Pressable>
+          {performanceBlock}
+          <View style={styles.emptyInline}>
+            <View style={styles.emptyHaloSm}>
+              <AppAssetImage
+                assetKey={MX.offers.emptyRunning}
+                style={styles.emptyArtSm}
+                resizeMode="contain"
+                accessibilityLabel="No running offers"
+              />
+            </View>
+            <Text style={styles.filterEmptyTitle}>There are no offers yet</Text>
+            <Text style={styles.filterEmptySub}>Create a promo to start tracking performance here.</Text>
+            <Pressable onPress={onCreatePress} style={styles.filterCta}>
+              <Text style={styles.filterCtaText}>Create offer</Text>
+            </Pressable>
+          </View>
+        </ScrollView>
+        <OfferStorePickSheet
+          visible={storeSheetVisible}
+          stores={stores}
+          initialStoreId={trackStoreFilter === "all" ? null : trackStoreFilter}
+          title="View offers for"
+          proceedLabel="Apply"
+          showAllRestaurants
+          onClose={() => setStoreSheetVisible(false)}
+          onPickAll={() => onTrackStoreFilterChange("all")}
+          onProceed={(store) => onTrackStoreFilterChange(store.id)}
+        />
       </View>
     );
   }
@@ -128,35 +218,7 @@ export function OffersTrackView({
           />
         }
       >
-        <View style={styles.sectionHead}>
-          <Text style={styles.sectionTitle}>Overall performance</Text>
-          <Text style={styles.sectionSub}>{offers.length} campaign{offers.length === 1 ? "" : "s"} total</Text>
-        </View>
-
-        <View style={[offersSharedStyles.card, styles.perfCard]}>
-          <View style={styles.perfHeader}>
-            <View style={styles.perfHeaderIcon}>
-              <Ionicons name="stats-chart" size={18} color={GatiMitraMerchant.primary} />
-            </View>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.dateMain}>All campaigns</Text>
-              <Text style={styles.dateSub}>Lifetime metrics from your offers</Text>
-            </View>
-          </View>
-
-          <PerformanceRow label="Gross sales from offers" value={formatOfferInr(overall.gross)} />
-          <PerformanceRow label="Orders from offers" value={String(overall.orders)} />
-          <PerformanceRow label="Discount given" value={formatOfferInr(overall.discount)} />
-          <PerformanceRow label="Effective discount" value={`${overall.effPct}%`} />
-
-          <Pressable
-            onPress={onOpenInsights}
-            style={({ pressed }) => [styles.detailPerfBtn, pressed && { opacity: 0.92 }]}
-          >
-            <Text style={styles.detailPerfText}>Detailed performance</Text>
-            <Ionicons name="arrow-forward" size={16} color={GatiMitraMerchant.primary} />
-          </Pressable>
-        </View>
+        {performanceBlock}
 
         <View style={[styles.sectionHead, styles.campaignSectionHead]}>
           <Text style={styles.sectionTitle}>Campaign performance</Text>
@@ -204,7 +266,11 @@ export function OffersTrackView({
               <OfferTrackCard
                 key={o.offer_id || String(o.id)}
                 offer={o}
-                storeName={storeName}
+                storeName={
+                  o.store_id != null
+                    ? storeNameById.get(o.store_id) ?? storeName
+                    : storeName
+                }
                 onEdit={() => onEdit(o)}
                 onToggle={() => onToggle(o)}
                 onDelete={() => onDelete(o)}
@@ -221,6 +287,18 @@ export function OffersTrackView({
       >
         <Ionicons name="add" size={26} color="#fff" />
       </Pressable>
+
+      <OfferStorePickSheet
+        visible={storeSheetVisible}
+        stores={stores}
+        initialStoreId={trackStoreFilter === "all" ? null : trackStoreFilter}
+        title="View offers for"
+        proceedLabel="Apply"
+        showAllRestaurants
+        onClose={() => setStoreSheetVisible(false)}
+        onPickAll={() => onTrackStoreFilterChange("all")}
+        onProceed={(store) => onTrackStoreFilterChange(store.id)}
+      />
     </View>
   );
 }
@@ -248,6 +326,33 @@ const styles = StyleSheet.create({
     color: OFFERS_UI.text,
   },
   sectionSub: { fontSize: 12, color: OFFERS_UI.textFaint, fontWeight: "500" },
+  storePicker: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    marginHorizontal: H_PADDING,
+    marginBottom: 14,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    borderRadius: 14,
+    backgroundColor: GatiMitraMerchant.cardBg,
+    borderWidth: 1,
+    borderColor: OFFERS_UI.cardBorder,
+  },
+  storePickerIcon: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: GatiMitraMerchant.surfaceSubtle,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  storePickerText: {
+    flex: 1,
+    fontSize: 14,
+    fontWeight: "700",
+    color: OFFERS_UI.text,
+  },
   perfCard: { padding: 0, overflow: "hidden", marginBottom: 4 },
   perfHeader: {
     flexDirection: "row",
@@ -349,54 +454,28 @@ const styles = StyleSheet.create({
     backgroundColor: GatiMitraMerchant.primary,
   },
   filterCtaText: { color: "#fff", fontWeight: "700", fontSize: 13 },
-  emptyWrap: {
-    flex: 1,
+  emptyInline: {
+    marginHorizontal: H_PADDING,
+    marginTop: 8,
+    padding: 24,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderStyle: "dashed",
+    borderColor: OFFERS_UI.cardBorder,
+    backgroundColor: GatiMitraMerchant.surfaceSubtle,
     alignItems: "center",
-    justifyContent: "center",
-    paddingHorizontal: H_PADDING + 8,
-    paddingBottom: 80,
-    backgroundColor: "#F9FAFB",
+    gap: 8,
   },
-  emptyHalo: {
-    width: 168,
-    height: 168,
-    borderRadius: 84,
+  emptyHaloSm: {
+    width: 96,
+    height: 96,
+    borderRadius: 48,
     backgroundColor: "#ECFDF5",
     alignItems: "center",
     justifyContent: "center",
-    marginBottom: 28,
+    marginBottom: 4,
   },
-  emptyArt: { width: 132, height: 132 },
-  emptyTitle: {
-    fontSize: 22,
-    fontWeight: "800",
-    color: "#111827",
-    textAlign: "center",
-    letterSpacing: -0.3,
-  },
-  emptySub: {
-    fontSize: 15,
-    color: "#6B7280",
-    textAlign: "center",
-    marginTop: 12,
-    marginBottom: 28,
-    maxWidth: 300,
-    lineHeight: 22,
-  },
-  emptyBtnWrap: {
-    borderRadius: 999,
-    overflow: "hidden",
-    ...GatiMitraMerchant.shadowSm,
-  },
-  emptyBtn: {
-    paddingHorizontal: 28,
-    paddingVertical: 15,
-    borderRadius: 999,
-    alignItems: "center",
-    justifyContent: "center",
-    minWidth: 220,
-  },
-  emptyBtnText: { color: "#fff", fontWeight: "700", fontSize: 15 },
+  emptyArtSm: { width: 72, height: 72 },
   fab: {
     position: "absolute",
     right: H_PADDING,

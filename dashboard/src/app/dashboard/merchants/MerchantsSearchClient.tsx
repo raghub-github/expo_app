@@ -16,6 +16,7 @@ import { MerchantsAdminHome, type AdminStoreRow } from "@/components/merchants/M
 import { EXPIRED_RESUBMITTED_DOCS_LABEL } from "@/lib/merchants/expired-resubmitted-docs-label";
 import { dispatchMerchantResubmittedDocsRefresh } from "@/lib/merchants/merchant-resubmitted-docs-refresh";
 import { useStoreVerificationSheetOptional } from "@/context/StoreVerificationSheetContext";
+import { useMerchantDashboardAccess } from "@/hooks/useMerchantDashboardAccess";
 
 type FilterMode = "child" | "parent";
 
@@ -155,6 +156,8 @@ function ChildActionButton({
   onNavigate,
   resubmittedDocReview = false,
   onReviewDocs,
+  canVerify = false,
+  viewOnly = false,
 }: {
   child: ChildRow;
   returnTo: string;
@@ -162,8 +165,10 @@ function ChildActionButton({
   onNavigate: () => void;
   resubmittedDocReview?: boolean;
   onReviewDocs?: () => void;
+  canVerify?: boolean;
+  viewOnly?: boolean;
 }) {
-  if (resubmittedDocReview && onReviewDocs) {
+  if (resubmittedDocReview && onReviewDocs && canVerify && !viewOnly) {
     return (
       <button
         type="button"
@@ -182,7 +187,7 @@ function ChildActionButton({
   const status = (child.approval_status || "").toUpperCase();
   const isVerified = status === "APPROVED";
   const isDelisted = status === "DELISTED";
-  const goesToDashboard = isVerified || isDelisted;
+  const goesToDashboard = viewOnly || !canVerify || isVerified || isDelisted;
 
   return (
     <button
@@ -200,7 +205,7 @@ function ChildActionButton({
       {goesToDashboard ? (
         <>
           <Store className="h-3.5 w-3.5" />
-          Dashboard
+          {viewOnly ? "View details" : "Dashboard"}
         </>
       ) : (
         <>
@@ -221,6 +226,8 @@ function ChildStoreRow({
   compact = false,
   resubmittedDocReview = false,
   onReviewDocs,
+  canVerify = false,
+  viewOnly = false,
 }: {
   child: ChildRow;
   returnTo: string;
@@ -229,6 +236,8 @@ function ChildStoreRow({
   compact?: boolean;
   resubmittedDocReview?: boolean;
   onReviewDocs?: () => void;
+  canVerify?: boolean;
+  viewOnly?: boolean;
 }) {
   const status = (child.approval_status || "").toUpperCase();
   const isUnread =
@@ -321,6 +330,8 @@ function ChildStoreRow({
           onNavigate={() => onChildClick(child)}
           resubmittedDocReview={resubmittedDocReview}
           onReviewDocs={onReviewDocs}
+          canVerify={canVerify}
+          viewOnly={viewOnly}
         />
       </div>
     </div>
@@ -396,23 +407,35 @@ function buildChildStoreTargetUrl(args: {
   child: ChildRow;
   returnTo: string;
   portal: "admin" | "merchant";
+  /** When false/view-only, always open store details instead of verify flow. */
+  canVerify?: boolean;
+  viewOnly?: boolean;
 }): string {
-  const { child, returnTo, portal } = args;
+  const { child, returnTo, portal, canVerify = true, viewOnly = false } = args;
+  const storePk = Number(child?.id);
+  if (!Number.isFinite(storePk) || storePk <= 0) {
+    const params = new URLSearchParams();
+    params.set("portal", portal);
+    if (child?.store_id) params.set("search", String(child.store_id));
+    params.set("child", "true");
+    return `/dashboard/merchants?${params.toString()}`;
+  }
   const status = (child.approval_status || "").toUpperCase();
   const isVerified = status === "APPROVED";
   const isDelisted = status === "DELISTED";
   const isRejectedLike = status === "REJECTED" || status === "BLOCKED" || status === "SUSPENDED";
+  const forceStoreDetails = viewOnly || !canVerify || isVerified || isDelisted;
 
-  if (isVerified || isDelisted) {
+  if (forceStoreDetails) {
     const params = new URLSearchParams();
     params.set("returnTo", returnTo);
     params.set("portal", "merchant");
     if (portal === "admin") params.set("fromAdmin", "1");
-    return `/dashboard/merchants/stores/${child.id}?${params.toString()}`;
+    return `/dashboard/merchants/stores/${storePk}?${params.toString()}`;
   }
 
   const vParams = new URLSearchParams();
-  vParams.set("storeId", String(child.id));
+  vParams.set("storeId", String(storePk));
   vParams.set("returnTo", returnTo);
   vParams.set("portal", portal);
   if (isRejectedLike) vParams.set("reviewRejected", "1");
@@ -428,6 +451,12 @@ export function MerchantsSearchClient({
   const router = useRouter();
   const merchantsSearch = useMerchantsSearch();
   const verificationSheet = useStoreVerificationSheetOptional();
+  const {
+    hasAdminMerchantAccess,
+    canOnboard,
+    isViewOnly,
+  } = useMerchantDashboardAccess();
+  const canVerifyStores = canOnboard && !isViewOnly;
   const [listRefreshKey, setListRefreshKey] = useState(0);
   const verificationSheetWasOpen = useRef(false);
 
@@ -512,19 +541,28 @@ export function MerchantsSearchClient({
 
   const portal = resolveMerchantsPortal({
     portalFromUrl: parsePortalParam(searchParams.get("portal")),
-    canTogglePortal,
+    canTogglePortal: hasAdminMerchantAccess || canTogglePortal,
     storedPortal: typeof window !== "undefined" ? readStoredMerchantsPortal() : null,
   });
+  const effectivePortal =
+    hasAdminMerchantAccess || canTogglePortal ? portal : "merchant";
 
-  const isExpiredResubmittedView = category === "resubmitted";
+  const isExpiredResubmittedView =
+    category === "resubmitted" && effectivePortal === "admin" && hasAdminMerchantAccess;
   const showAdminHome =
-    portal === "admin" && !hasSearchParams && !hasCategory && filter !== "parent";
+    effectivePortal === "admin" &&
+    hasAdminMerchantAccess &&
+    !hasSearchParams &&
+    !hasCategory &&
+    filter !== "parent";
 
   const buildAdminStoreUrl = (store: AdminStoreRow) =>
     buildChildStoreTargetUrl({
       child: { ...store, type: "child", parent_id: null, onboarding_step: null, onboarding_completed: null },
       returnTo,
-      portal,
+      portal: effectivePortal,
+      canVerify: canVerifyStores,
+      viewOnly: isViewOnly,
     });
 
   const portalQuery = useMemo(() => {
@@ -640,12 +678,24 @@ export function MerchantsSearchClient({
           setError((data as { error?: string })?.error || "Failed to fetch merchants");
           return;
         }
-        if (portal === "merchant" && data.filter === "child" && data.items.length === 1) {
+        if (effectivePortal === "merchant" && data.filter === "child" && data.items.length === 1) {
           const child = data.items[0];
+          if (!Number.isFinite(Number(child?.id)) || Number(child.id) <= 0) {
+            setParentItems(null);
+            setChildItems([]);
+            setError("Store found but missing id — refresh and try again");
+            return;
+          }
           setPendingSingleChildRedirect(true);
           setParentItems(null);
           setChildItems(null);
-          const targetUrl = buildChildStoreTargetUrl({ child, returnTo, portal });
+          const targetUrl = buildChildStoreTargetUrl({
+            child,
+            returnTo,
+            portal: effectivePortal,
+            canVerify: canVerifyStores,
+            viewOnly: isViewOnly,
+          });
           router.prefetch(targetUrl);
           router.replace(targetUrl);
           return;
@@ -681,7 +731,9 @@ export function MerchantsSearchClient({
     fromDate,
     toDate,
     storeTypeFilter,
-    portal,
+    effectivePortal,
+    canVerifyStores,
+    isViewOnly,
     returnTo,
     router,
     lastSearchTrigger,
@@ -697,13 +749,29 @@ export function MerchantsSearchClient({
 
   const handleChildClick = useCallback(
     (child: ChildRow) => {
-      if (isExpiredResubmittedView) {
+      if (isExpiredResubmittedView && canVerifyStores) {
         handleResubmittedDocReview(child);
         return;
       }
-      router.push(buildChildStoreTargetUrl({ child, returnTo, portal }));
+      router.push(
+        buildChildStoreTargetUrl({
+          child,
+          returnTo,
+          portal: effectivePortal,
+          canVerify: canVerifyStores,
+          viewOnly: isViewOnly,
+        })
+      );
     },
-    [isExpiredResubmittedView, handleResubmittedDocReview, router, returnTo, portal]
+    [
+      isExpiredResubmittedView,
+      canVerifyStores,
+      isViewOnly,
+      handleResubmittedDocReview,
+      router,
+      returnTo,
+      effectivePortal,
+    ]
   );
 
   useEffect(() => {
@@ -844,12 +912,12 @@ export function MerchantsSearchClient({
         <>
       {/* Merchant portal + list search: show skeleton only while loading; no border, no "Not Found" until API completes */}
       {showSkeleton ? (
-        <DashboardCenterSpinner />
+        <DashboardCenterSpinner className="min-h-[calc(100dvh-8rem)]" />
       ) : (
         <div className="rounded-lg border border-gray-200 bg-white p-4">
         <>
       {/* Main-area toggle removed: Admin/Merchant toggle stays only in header. Merchant portal: no sticky bar in main area. */}
-      {portal === "admin" && !isExpiredResubmittedView && (
+      {effectivePortal === "admin" && hasAdminMerchantAccess && !isExpiredResubmittedView && (
         <div className="sticky top-0 z-10 -mx-2 bg-white px-2 pb-2 pt-0.5 shadow-[0_1px_0_0_rgba(0,0,0,0.05)]">
           {/* Top row: Merchants / Assign AM title (left) + Date filter (right top, just above Rejected card area) - no bg, no shadow */}
           <div className="flex flex-wrap items-center justify-between gap-3">
@@ -971,10 +1039,12 @@ export function MerchantsSearchClient({
                     key={child.id}
                     child={child}
                     returnTo={returnTo}
-                    portal={portal}
+                    portal={effectivePortal}
                     onChildClick={handleChildClick}
                     resubmittedDocReview={isExpiredResubmittedView}
                     onReviewDocs={() => handleResubmittedDocReview(child)}
+                    canVerify={canVerifyStores}
+                    viewOnly={isViewOnly}
                   />
                 ))}
               </div>
@@ -1045,9 +1115,11 @@ export function MerchantsSearchClient({
                           <ChildStoreRow
                             child={child}
                             returnTo={returnTo}
-                            portal={portal}
+                            portal={effectivePortal}
                             onChildClick={handleChildClick}
                             compact
+                            canVerify={canVerifyStores}
+                            viewOnly={isViewOnly}
                           />
                         </li>
                       ))}
@@ -1085,8 +1157,10 @@ export function MerchantsSearchClient({
                 key={child.id}
                 child={child}
                 returnTo={returnTo}
-                portal={portal}
+                portal={effectivePortal}
                 onChildClick={handleChildClick}
+                canVerify={canVerifyStores}
+                viewOnly={isViewOnly}
               />
             ))}
           </div>

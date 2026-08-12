@@ -184,6 +184,8 @@ export type TicketSummary = {
   /** ISO timestamp when agent snooze ends (merchant-visible countdown). */
   snoozed_until?: string | null;
   snooze_reason?: string | null;
+  order_id?: number | null;
+  formatted_order_id?: string | null;
 };
 
 function assertUsableTicketSummary(t: TicketSummary): void {
@@ -258,6 +260,18 @@ export function mapMessagesApiTicket(raw: unknown): TicketSummary {
     satisfaction_collected_at: toIsoOrNull(satCollected),
     snoozed_until: toIsoOrNull(snoozed),
     snooze_reason: typeof reason === "string" && reason.trim() ? reason.trim() : null,
+    order_id:
+      r.order_id != null && r.order_id !== ""
+        ? Number(r.order_id)
+        : r.orderId != null && r.orderId !== ""
+          ? Number(r.orderId)
+          : null,
+    formatted_order_id:
+      typeof r.formatted_order_id === "string" && r.formatted_order_id.trim()
+        ? r.formatted_order_id.trim()
+        : typeof r.formattedOrderId === "string" && r.formattedOrderId.trim()
+          ? r.formattedOrderId.trim()
+          : null,
   };
 }
 

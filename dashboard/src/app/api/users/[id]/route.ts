@@ -678,6 +678,18 @@ export async function PUT(
     // Use the already imported function instead of dynamic import
     const refreshedUser = await getSystemUserById(userId);
 
+    // Bust target user's permission/bootstrap caches so UI updates promptly.
+    try {
+      const { invalidateUserAccessCaches } = await import("@/lib/auth/invalidate-user-access-caches");
+      const target = refreshedUser || updatedUser;
+      await invalidateUserAccessCaches({
+        supabaseAuthId: (target as { systemUserId?: string | null })?.systemUserId ?? null,
+        email: (target as { email?: string | null })?.email ?? null,
+      });
+    } catch {
+      // non-fatal
+    }
+
     return NextResponse.json({
       success: true,
       data: refreshedUser || updatedUser,

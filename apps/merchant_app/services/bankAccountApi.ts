@@ -35,6 +35,20 @@ export type BankAccountPayload = {
   account_type?: string | null;
   upi_id?: string | null;
   beneficiary_name?: string | null;
+  bank_proof_type?: "passbook" | "cancelled_cheque" | "bank_statement" | null;
+  bank_proof_file_url?: string | null;
+};
+
+export type BankPolicyMode = "manual" | "auto" | "hybrid" | "disabled";
+
+export type ElectronicVerifyResult = {
+  success: boolean;
+  verified: boolean;
+  status?: string;
+  message?: string;
+  name_at_bank?: string | null;
+  bank_name?: string | null;
+  error?: string;
 };
 
 export async function listBankAccounts(
@@ -146,6 +160,60 @@ export async function verifyBankAccount(
     message: data.message,
     name_at_bank: data.name_at_bank ?? null,
   };
+}
+
+/** Policy Center verification modes (bank_account, etc.). */
+export async function fetchVerificationModes(token: string): Promise<Record<string, string>> {
+  const res = await authFetch(`${getBase()}/v1/merchant-partner/verification-modes`, token);
+  const data = (await res.json().catch(() => ({}))) as { modes?: Record<string, string> };
+  if (!res.ok) return {};
+  return data.modes ?? {};
+}
+
+/** Cashfree electronic verify before adding account (hybrid/auto). */
+export async function verifyBankElectronic(
+  storeId: number,
+  payload: { account_number: string; ifsc_code: string; account_holder_name?: string },
+  token: string
+): Promise<ElectronicVerifyResult> {
+  const res = await authFetch(
+    `${getBase()}/v1/merchant-partner/stores/${storeId}/bank-accounts/electronic-verify`,
+    token,
+    { method: "POST", body: JSON.stringify(payload) }
+  );
+  const data = (await res.json().catch(() => ({}))) as ElectronicVerifyResult;
+  if (!res.ok && !data.message) {
+    throw new Error(data.error || "Verification failed");
+  }
+  return data;
+}
+
+/** Upload bank proof (passbook / cheque / statement) for manual/hybrid fallback. */
+export async function uploadBankProof(
+  storeId: number,
+  file: { uri: string; name: string; type: string },
+  token: string
+): Promise<string> {
+  const formData = new FormData();
+  formData.append("file", {
+    uri: file.uri,
+    name: file.name,
+    type: file.type,
+  } as unknown as Blob);
+  const res = await authFetch(
+    `${getBase()}/v1/merchant-partner/stores/${storeId}/bank-proof/upload`,
+    token,
+    { method: "POST", body: formData }
+  );
+  const data = (await res.json().catch(() => ({}))) as {
+    file_url?: string;
+    r2_key?: string;
+    error?: string;
+  };
+  if (!res.ok) {
+    throw new Error(data.error || "Upload failed");
+  }
+  return data.r2_key ?? data.file_url ?? "";
 }
 
 /** @deprecated Use listBankAccounts instead. Kept for backward compatibility. */

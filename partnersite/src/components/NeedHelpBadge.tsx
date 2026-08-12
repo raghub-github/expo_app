@@ -8,6 +8,7 @@ import {
   MX_OPEN_NEED_HELP_EVENT,
   type MxNeedHelpOpenDetail,
 } from "@/lib/openMxNeedHelp";
+import { formatMerchantOrderPickSubtitle } from "@/lib/formatOrderPickRow";
 
 const SESSION_OUTSIDE_PROVIDER: MerchantSessionContextValue = {
   user: null,
@@ -19,7 +20,6 @@ const SESSION_OUTSIDE_PROVIDER: MerchantSessionContextValue = {
   logout: async () => {},
   refetch: () => {},
 };
-
 const ORDER_PICK_PAGE_SIZE = 5;
 const HELP_SECTIONS_CACHE_KEY = "mx_help_sections_cache_v1";
 const HELP_SECTIONS_CACHE_TTL_MS = 1000 * 60 * 60 * 12; // 12h
@@ -53,6 +53,7 @@ type OrderPickRow = {
   order_status?: string | null;
   created_at: string;
   grand_total?: number | string | null;
+  items?: Array<{ name?: string | null; item_name?: string | null }> | null;
 };
 
 function readSelectedStoreId(): string {
@@ -666,14 +667,6 @@ const NeedHelpBadge: React.FC<{
                                 {visibleOrderPickRows.map((order) => {
                             const label =
                               order.formatted_order_id?.trim() || `#${order.order_id}`;
-                            const when = order.created_at
-                              ? new Date(order.created_at).toLocaleString("en-IN", {
-                                  day: "numeric",
-                                  month: "short",
-                                  hour: "2-digit",
-                                  minute: "2-digit",
-                                })
-                              : "";
                             return (
                               <li key={order.id}>
                                 <button
@@ -687,9 +680,7 @@ const NeedHelpBadge: React.FC<{
                                       {label}
                                     </span>
                                     <span className="mt-0.5 block text-xs text-slate-500">
-                                      {[order.customer_name, order.order_status, when]
-                                        .filter(Boolean)
-                                        .join(" · ")}
+                                      {formatMerchantOrderPickSubtitle(order)}
                                     </span>
                                   </span>
                                   <ChevronRight className="h-4 w-4 shrink-0 text-slate-400" aria-hidden />

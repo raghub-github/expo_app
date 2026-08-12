@@ -1,10 +1,6 @@
-import { Toaster } from "sonner";
-
+/**
+ * Payments segment layout — toaster lives in DashboardLayoutClient (singleton).
+ */
 export default function PaymentsLayout({ children }: { children: React.ReactNode }) {
-  return (
-    <>
-      {children}
-      <Toaster position="top-right" richColors closeButton expand={false} />
-    </>
-  );
+  return children;
 }

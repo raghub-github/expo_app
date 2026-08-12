@@ -54,10 +54,6 @@ export default function PrinterSettingsScreen() {
 
   return (
     <ScrollView style={styles.screen} contentContainerStyle={styles.content}>
-      <Text style={styles.title}>Thermal printer</Text>
-      <Text style={styles.sub}>
-        Kitchen order tickets (KOT) adapt to your receipt printer width. 80mm is the default for most thermal printers.
-      </Text>
       {loading ? (
         <ActivityIndicator color={GatiMitraMerchant.primary} style={{ marginTop: 24 }} />
       ) : (

@@ -245,6 +245,17 @@ export async function riderRoutes(app: FastifyInstance) {
         );
       }
 
+      try {
+        const { purgeUserPushTokens } = await import("../../lib/purge-user-push-tokens.js");
+        await purgeUserPushTokens({
+          userId,
+          role: "rider",
+          log: req.log,
+        });
+      } catch (pushErr) {
+        req.log?.warn?.({ err: pushErr, riderId }, "Rider logout: push token purge failed");
+      }
+
       return { success: true as const };
     },
   );

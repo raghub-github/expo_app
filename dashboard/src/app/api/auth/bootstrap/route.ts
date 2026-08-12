@@ -23,12 +23,13 @@ import { getRedisClient } from "@/lib/redis";
 import { getDb } from "@/lib/db/client";
 import { dashboardAccessPoints } from "@/lib/db/schema";
 import { and, eq } from "drizzle-orm";
+import {
+  bootstrapMemoryCache,
+  getBootstrapMemoryTtlMs,
+  getBootstrapRedisTtlSeconds,
+} from "@/lib/auth/bootstrap-cache";
 
 export const runtime = "nodejs";
-
-const BOOTSTRAP_CACHE_TTL_SECONDS = 60; // Redis TTL; in‑memory cache uses a shorter window
-const BOOTSTRAP_CACHE_TTL_MS = 10_000; // 10s — avoid duplicate work when client retries or multiple tabs
-const bootstrapCache = new Map<string, { body: unknown; ts: number }>();
 
 async function getCachedBootstrap(userId: string): Promise<unknown | null> {
   const redis = getRedisClient();
@@ -45,9 +46,10 @@ async function getCachedBootstrap(userId: string): Promise<unknown | null> {
     }
   }
 
-  const entry = bootstrapCache.get(userId);
-  if (!entry || Date.now() - entry.ts > BOOTSTRAP_CACHE_TTL_MS) {
-    if (entry) bootstrapCache.delete(userId);
+  const entry = bootstrapMemoryCache.get(userId);
+  const ttl = getBootstrapMemoryTtlMs();
+  if (!entry || Date.now() - entry.ts > ttl) {
+    if (entry) bootstrapMemoryCache.delete(userId);
     return null;
   }
   return entry.body;
@@ -56,18 +58,19 @@ async function getCachedBootstrap(userId: string): Promise<unknown | null> {
 async function setCachedBootstrap(userId: string, body: unknown): Promise<void> {
   const redis = getRedisClient();
   const cacheKey = `bootstrap_${userId}`;
+  const ttlMs = getBootstrapMemoryTtlMs();
 
-  bootstrapCache.set(userId, { body, ts: Date.now() });
-  if (bootstrapCache.size > 500) {
+  bootstrapMemoryCache.set(userId, { body, ts: Date.now() });
+  if (bootstrapMemoryCache.size > 500) {
     const now = Date.now();
-    for (const [k, v] of bootstrapCache.entries()) {
-      if (now - v.ts > BOOTSTRAP_CACHE_TTL_MS) bootstrapCache.delete(k);
+    for (const [k, v] of bootstrapMemoryCache.entries()) {
+      if (now - v.ts > ttlMs) bootstrapMemoryCache.delete(k);
     }
   }
 
   if (redis) {
     try {
-      await redis.set(cacheKey, JSON.stringify(body), "EX", BOOTSTRAP_CACHE_TTL_SECONDS);
+      await redis.set(cacheKey, JSON.stringify(body), "EX", getBootstrapRedisTtlSeconds());
     } catch {
       // Ignore Redis write errors; in-memory cache still works.
     }
@@ -127,7 +130,7 @@ export async function GET(request: NextRequest) {
     }
 
     // Single permissions call (engine caches per-request)
-    const userPerms = await getUserPermissions(user.id, user.email!);
+    const userPerms = await getUserPermissions(user.id, user.email ?? "");
 
     const permissionsPayload = userPerms
       ? {

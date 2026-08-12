@@ -11,30 +11,42 @@ import {
 } from "@/lib/tickets/patch-ticket-list-cache";
 import { fetchTickets, type TicketFilters } from "@/hooks/tickets/useTickets";
 
-const POLL_INTERVAL_MS = 12_000;
+/** New-ticket badge poll only (createdAfter cursor). */
+const BADGE_POLL_INTERVAL_MS = 30_000;
 const LIST_SYNC_DEBOUNCE_MS = 280;
-const LIST_SAFETY_POLL_MS = 8_000;
-/** Avoid stacking long-running process-jobs calls that exhaust the DB pool. */
+/**
+ * Safety refresh when Realtime is quiet — slower than before to avoid
+ * stacking process-jobs + limit=1 + full list invalidations every 8s.
+ */
+const LIST_SAFETY_POLL_MS = 45_000;
+/** Rare automation drain from the client (server list GET also drains in background). */
+const AUTOMATION_DRAIN_INTERVAL_MS = 90_000;
 const AUTOMATION_DRAIN_TIMEOUT_MS = 8_000;
 let automationDrainInFlight = false;
 
-async function drainTicketAutomationJobs(): Promise<void> {
+async function drainTicketAutomationJobs(signal?: AbortSignal): Promise<void> {
   if (automationDrainInFlight) return;
   automationDrainInFlight = true;
   const controller = new AbortController();
   const timeoutId = window.setTimeout(() => controller.abort(), AUTOMATION_DRAIN_TIMEOUT_MS);
+  const onAbort = () => controller.abort();
+  signal?.addEventListener("abort", onAbort, { once: true });
   try {
-    await fetch("/api/tickets/automation/process-jobs", {
+    const res = await fetch("/api/tickets/automation/process-jobs", {
       method: "POST",
       credentials: "include",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ limit: 10 }),
       signal: controller.signal,
     });
+    if (!res.ok && res.status !== 503) {
+      return;
+    }
   } catch {
-    // non-fatal; GET /api/tickets also drains jobs in background
+    // non-fatal
   } finally {
     window.clearTimeout(timeoutId);
+    signal?.removeEventListener("abort", onAbort);
     automationDrainInFlight = false;
   }
 }
@@ -42,15 +54,23 @@ async function drainTicketAutomationJobs(): Promise<void> {
 export type TicketsPollFilters = Omit<TicketFilters, "limit" | "offset">;
 
 /**
- * List sync: Supabase postgres_changes on unified_tickets + messages (status/assignee/last reply),
+ * List sync: Supabase postgres_changes on unified_tickets + messages,
  * plus “N new tickets” badge polling for INSERT-only counts.
+ *
+ * When `listVisible` is false (ticket detail open, list CSS-hidden), all
+ * polling and Realtime pause so detail navigation does not keep hammering APIs.
  */
-export function useTicketsRealtime(pollBase: TicketsPollFilters, listReady: boolean) {
+export function useTicketsRealtime(
+  pollBase: TicketsPollFilters,
+  listReady: boolean,
+  listVisible: boolean = true
+) {
   const queryClient = useQueryClient();
   const [newTicketsCount, setNewTicketsCount] = useState(0);
   const ackTimeIsoRef = useRef<string | null>(null);
   const pollBaseKeyRef = useRef<string>("");
   const listDebounceRef = useRef<number | null>(null);
+  const active = listReady && listVisible;
 
   const pollBaseKey = JSON.stringify(pollBase);
 
@@ -69,27 +89,36 @@ export function useTicketsRealtime(pollBase: TicketsPollFilters, listReady: bool
     }, LIST_SYNC_DEBOUNCE_MS);
   }, [queryClient]);
 
-  const runPoll = useCallback(async () => {
-    if (!listReady || ackTimeIsoRef.current == null) return;
-    try {
-      const res = await fetchTickets({
-        ...pollBase,
-        limit: 1,
-        offset: 0,
-        createdAfter: ackTimeIsoRef.current,
-      });
-      const n = Number(res.total ?? 0);
-      if (!Number.isFinite(n) || n <= 0) return;
-      setNewTicketsCount((prev) => Math.max(prev, n));
-    } catch {
-      // ignore
-    }
-  }, [pollBase, listReady]);
+  const runPoll = useCallback(
+    async (signal?: AbortSignal) => {
+      if (!active || ackTimeIsoRef.current == null) return;
+      try {
+        const res = await fetchTickets(
+          {
+            ...pollBase,
+            limit: 1,
+            offset: 0,
+            createdAfter: ackTimeIsoRef.current,
+          },
+          signal
+        );
+        if (signal?.aborted) return;
+        const n = Number(res.total ?? 0);
+        if (!Number.isFinite(n) || n <= 0) return;
+        setNewTicketsCount((prev) => Math.max(prev, n));
+      } catch {
+        // ignore aborted / transient
+      }
+    },
+    [pollBase, active]
+  );
 
   useEffect(() => {
-    if (!listReady) return;
-    void runPoll();
-  }, [listReady, pollBaseKey, runPoll]);
+    if (!active) return;
+    const controller = new AbortController();
+    void runPoll(controller.signal);
+    return () => controller.abort();
+  }, [active, pollBaseKey, runPoll]);
 
   const clearNewTickets = useCallback(() => {
     setNewTicketsCount(0);
@@ -97,9 +126,9 @@ export function useTicketsRealtime(pollBase: TicketsPollFilters, listReady: bool
     invalidateTicketListCaches(queryClient);
   }, [queryClient]);
 
-  /** Postgres sync — status/priority/assignee/last-message updates across tabs & detail view. */
+  /** Postgres sync — pause while list is hidden under detail. */
   useEffect(() => {
-    if (!listReady) return;
+    if (!active) return;
 
     let cancelled = false;
     let channel: RealtimeChannel | null = null;
@@ -141,29 +170,48 @@ export function useTicketsRealtime(pollBase: TicketsPollFilters, listReady: bool
       listDebounceRef.current = null;
       if (channel) void supabase.removeChannel(channel);
     };
-  }, [listReady, scheduleListRefresh]);
+  }, [active, scheduleListRefresh, queryClient]);
 
-  /** Safety poll — keeps list/card status fresh if Realtime is silent. */
+  /** Safety list refresh only — no process-jobs here (avoids double drain with GET /api/tickets). */
   useEffect(() => {
-    if (!listReady) return;
+    if (!active) return;
     const id = window.setInterval(() => {
-      void (async () => {
-        await drainTicketAutomationJobs();
-        void runPoll();
-        scheduleListRefresh();
-      })();
+      scheduleListRefresh();
     }, LIST_SAFETY_POLL_MS);
     return () => window.clearInterval(id);
-  }, [listReady, runPoll, scheduleListRefresh]);
+  }, [active, scheduleListRefresh]);
 
-  /** Slower poll for new-ticket badge only (createdAfter cursor). */
+  /** Badge poll for new tickets since ack cursor. */
   useEffect(() => {
-    if (!listReady) return;
+    if (!active) return;
+    const controllerRef = { current: null as AbortController | null };
     const id = window.setInterval(() => {
-      void runPoll();
-    }, POLL_INTERVAL_MS);
-    return () => window.clearInterval(id);
-  }, [listReady, runPoll]);
+      controllerRef.current?.abort();
+      const c = new AbortController();
+      controllerRef.current = c;
+      void runPoll(c.signal);
+    }, BADGE_POLL_INTERVAL_MS);
+    return () => {
+      window.clearInterval(id);
+      controllerRef.current?.abort();
+    };
+  }, [active, runPoll]);
+
+  /** Infrequent automation drain — single controlled lifecycle, not every safety tick. */
+  useEffect(() => {
+    if (!active) return;
+    const controllerRef = { current: null as AbortController | null };
+    const id = window.setInterval(() => {
+      controllerRef.current?.abort();
+      const c = new AbortController();
+      controllerRef.current = c;
+      void drainTicketAutomationJobs(c.signal);
+    }, AUTOMATION_DRAIN_INTERVAL_MS);
+    return () => {
+      window.clearInterval(id);
+      controllerRef.current?.abort();
+    };
+  }, [active]);
 
   return {
     hasNewTickets: newTicketsCount > 0,
