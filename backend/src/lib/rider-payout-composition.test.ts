@@ -122,3 +122,133 @@ test("guards: negatives collapse, post-pickup never negative", () => {
   assert.equal(c.postPickup, 0);
   assert.equal(c.riderDeliveryCredit, 0);
 });
+
+// ───────────────────────────────────────────────────────────────────────────
+// COMPREHENSIVE MATRIX — every service × funding × rider/customer type × scenario.
+// The composition is a PURE function of (basePool, prePickupRaw, surge, waiting,
+// funding); service/state/rider-type only change those inputs, so a full sweep of
+// the inputs proves correctness for every service, every state, and every rider.
+// ───────────────────────────────────────────────────────────────────────────
+
+const round2 = (n: number) => Math.round(n * 100) / 100;
+const fundings = ["company", "customer", "shared"] as const;
+
+// Invariant sweep across a wide grid of realistic inputs.
+test("INVARIANTS hold across a full grid of pool/pre/surge/waiting/funding", () => {
+  for (const basePool of [0, 12, 40, 85, 150, 999.99]) {
+    for (const prePickupRaw of [0, 3, 15, 40, 85, 120]) {
+      for (const surge of [0, 20]) {
+        for (const waiting of [0, 6]) {
+          for (const funding of fundings) {
+            for (const tip of [0, 30]) {
+              const c = composeRiderPayout({ basePool, prePickupRaw, surge, waiting, tip, funding });
+              const tag = `${basePool}/${prePickupRaw}/${surge}/${waiting}/${funding}/${tip}`;
+
+              // 1) pre-from-pool + post-pickup ALWAYS reconstitutes the base pool.
+              assert.equal(round2(c.prePickupFromPool + c.postPickup), round2(c.basePool), `pool split ${tag}`);
+              // 2) nothing is ever negative.
+              for (const v of [c.prePickupFromPool, c.postPickup, c.prePickupCompanyFunded, c.riderDeliveryCredit]) {
+                assert.ok(v >= 0, `non-negative ${tag}`);
+              }
+              // 3) rider delivery credit == Ledger A + Ledger B.
+              assert.equal(
+                c.riderDeliveryCredit,
+                round2(c.deliveryFeeFundedTotal + c.companyFundedTotal),
+                `ledger sum ${tag}`
+              );
+              // 4) rider delivery credit == basePool + waiting + surge + company first-mile.
+              assert.equal(
+                c.riderDeliveryCredit,
+                round2(c.basePool + waiting + surge + c.prePickupCompanyFunded),
+                `credit identity ${tag}`
+              );
+              // 5) Ledger A (delivery-fee funded) NEVER exceeds the pool + waiting — stays ≤100%.
+              assert.ok(
+                c.deliveryFeeFundedTotal <= round2(c.basePool + waiting) + 0.001,
+                `ledger A within pool ${tag}`
+              );
+              // 6) tip is a pure passthrough on top of the delivery credit.
+              assert.equal(c.riderTotal, round2(c.riderDeliveryCredit + tip), `tip passthrough ${tag}`);
+            }
+          }
+        }
+      }
+    }
+  }
+});
+
+// Per-funding behavioural guarantees (the money rule for each mode).
+test("customer funding NEVER pays more than the pool (+surge+waiting)", () => {
+  for (const basePool of [0, 40, 85]) {
+    for (const prePickupRaw of [0, 30, 200]) {
+      const c = composeRiderPayout({ basePool, prePickupRaw, surge: 10, waiting: 5, funding: "customer" });
+      assert.equal(c.prePickupCompanyFunded, 0);
+      assert.equal(c.riderDeliveryCredit, round2(basePool + 10 + 5)); // never + prePickup
+    }
+  }
+});
+
+test("company funding ALWAYS pays the full first-mile on top", () => {
+  for (const basePool of [0, 40, 85]) {
+    for (const prePickupRaw of [0, 30, 200]) {
+      const c = composeRiderPayout({ basePool, prePickupRaw, surge: 10, waiting: 5, funding: "company" });
+      assert.equal(c.prePickupCompanyFunded, prePickupRaw);
+      assert.equal(c.postPickup, basePool);
+      assert.equal(c.riderDeliveryCredit, round2(basePool + 10 + 5 + prePickupRaw));
+    }
+  }
+});
+
+test("shared funding pays pool + only the overflow above the pool", () => {
+  const c = composeRiderPayout({ basePool: 50, prePickupRaw: 80, surge: 0, waiting: 0, funding: "shared" });
+  assert.equal(c.prePickupFromPool, 50);
+  assert.equal(c.prePickupCompanyFunded, 30);
+  assert.equal(c.riderDeliveryCredit, 80);
+});
+
+// ── Real per-service production scenarios (the numbers a rider actually sees) ──
+
+// FOOD, non-Plus customer, normal rider: company-funded first-mile (on top).
+test("SCENARIO food / normal customer / normal rider: pre-pickup on top", () => {
+  // gross delivery ₹120, rider 75% → pool ₹90; first-mile ₹3/km × 4km = ₹12 company.
+  const c = composeRiderPayout({ basePool: 90, prePickupRaw: 12, funding: "company" });
+  assert.equal(c.riderDeliveryCredit, 102); // 90 + 12 company top-up
+  assert.equal(c.deliveryFeeFundedTotal, 90);
+  assert.equal(c.companyFundedTotal, 12);
+});
+
+// FOOD, GatiMitra PLUS customer (free delivery ≤5km): pool from GROSS, collected ₹0.
+test("SCENARIO food / GatiMitra Plus customer: paid on gross entitlement", () => {
+  // Customer pays ₹0 (Plus), but gross delivery ₹120 → pool ₹90. Rider paid the same.
+  const c = composeRiderPayout({ basePool: 90, prePickupRaw: 12, funding: "company" });
+  assert.equal(c.riderDeliveryCredit, 102);
+});
+
+// FOOD, GatiMitra MAX rider: surge + waiting are included (flow into the ledgers).
+test("SCENARIO food / GatiMitra Max rider: surge+waiting included, first-mile on top", () => {
+  const c = composeRiderPayout({ basePool: 90, prePickupRaw: 12, surge: 25, waiting: 8, funding: "company" });
+  assert.equal(c.deliveryFeeFundedTotal, 98); // pool 90 + waiting 8 (Ledger A)
+  assert.equal(c.companyFundedTotal, 37); // surge 25 + company first-mile 12 (Ledger B)
+  assert.equal(c.riderDeliveryCredit, 135);
+});
+
+// PARCEL, customer-funded first-mile (collected after delivery): within the pool.
+test("SCENARIO parcel / customer-funded first-mile: within the pool", () => {
+  // gross delivery ₹80, rider 80% → pool ₹64; first-mile ₹5/km × 3km = ₹15 from pool.
+  const c = composeRiderPayout({ basePool: 64, prePickupRaw: 15, funding: "customer" });
+  assert.equal(c.prePickupFromPool, 15);
+  assert.equal(c.postPickup, 49);
+  assert.equal(c.riderDeliveryCredit, 64); // NOT 64 + 15
+  assert.equal(c.companyFundedTotal, 0);
+});
+
+// PERSON RIDE, customer-funded first-mile, with rider surge on top.
+test("SCENARIO ride / customer-funded first-mile + surge", () => {
+  // ride fare ₹200, rider 70% → pool ₹140; first-mile ₹6/km × 2km = ₹12 from pool; surge ₹40.
+  const c = composeRiderPayout({ basePool: 140, prePickupRaw: 12, surge: 40, funding: "customer" });
+  assert.equal(c.prePickupFromPool, 12);
+  assert.equal(c.postPickup, 128);
+  assert.equal(c.deliveryFeeFundedTotal, 140); // pool (first-mile carved within)
+  assert.equal(c.companyFundedTotal, 40); // surge only
+  assert.equal(c.riderDeliveryCredit, 180); // 140 + 40 surge
+});

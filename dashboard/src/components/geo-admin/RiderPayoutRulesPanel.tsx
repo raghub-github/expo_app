@@ -779,7 +779,6 @@ export function RiderPayoutRulesPanel(props: {
       </div>
 
       <FormulaFlow />
-      <ProductionVerificationCard />
     </div>
   );
 }
@@ -839,7 +838,7 @@ const VERIFICATION_ROWS: { label: string; status: string }[] = [
   { label: "Order Creation", status: "Same Production Engine" },
 ];
 
-function ProductionVerificationCard() {
+export function ProductionVerificationCard() {
   return (
     <div className="mt-4 rounded-xl border border-emerald-200 bg-emerald-50/60 px-5 py-4">
       <p className="text-xs font-bold uppercase tracking-wide text-emerald-800">Production engine status</p>
