@@ -5,6 +5,7 @@ import { queryKeys } from "@/lib/queryKeys";
 import { getCacheConfig, CacheTier } from "@/lib/cache-strategies";
 import { safeParseJson } from "@/lib/utils";
 import type { DashboardType, AccessPointGroup } from "@/lib/db/schema";
+import { usePermissions } from "@/hooks/queries/usePermissionsQuery";
 
 const SERVICE_UNAVAILABLE = "SERVICE_UNAVAILABLE";
 
@@ -78,15 +79,17 @@ export async function fetchDashboardAccess(): Promise<DashboardAccessData> {
  */
 export function useDashboardAccessQuery() {
   const staticConfig = getCacheConfig(CacheTier.STATIC);
+  const { systemUserId } = usePermissions();
 
   return useQuery({
-    queryKey: queryKeys.dashboardAccess(),
+    queryKey: queryKeys.dashboardAccess(systemUserId),
     queryFn: fetchDashboardAccess,
     ...staticConfig,
-    staleTime: 10 * 60 * 1000,
-    refetchOnMount: false,
-    refetchOnWindowFocus: false,
-    placeholderData: (previousData) => previousData,
+    staleTime: 15 * 1000,
+    refetchOnMount: true,
+    refetchOnWindowFocus: true,
+    // Do not reuse another user's access payload across login switches.
+    placeholderData: undefined,
     retry: (failureCount, error) => {
       if (failureCount >= 3) return false;
       if (error instanceof Error) {

@@ -33,6 +33,7 @@ import {
   type WalletAnalyticsPeriod,
 } from "@/components/merchants/payments/PaymentsOverviewCharts";
 import { useToast } from "@/context/ToastContext";
+import { useMerchantDashboardAccess } from "@/hooks/useMerchantDashboardAccess";
 import { WalletRequestsSection } from "@/components/merchants/WalletRequestsSection";
 import {
   type WalletSummary,
@@ -137,6 +138,8 @@ export function StorePaymentsClient({
   initialRefundPolicyOpen?: boolean;
 }) {
   const { toast } = useToast();
+  const { canManageBank, isViewOnly } = useMerchantDashboardAccess();
+  const canEditBankAccounts = canManageBank && !isViewOnly;
   const { store } = useStore(storeId);
   const storeName = store?.store_name ?? store?.name ?? "";
   const [showRefundPolicy, setShowRefundPolicy] = useState(initialRefundPolicyOpen);
@@ -816,24 +819,37 @@ export function StorePaymentsClient({
                 </h3>
                 <p className="text-xs text-gray-600 mt-1">Manage bank and UPI accounts for receiving payouts</p>
               </div>
-              <button
-                type="button"
-                onClick={() => {
-                  setBankProofFile(null);
-                  setAddBankForm((f) => ({ ...f, bank_proof_type: "", bank_proof_file_url: "" }));
-                  setShowAddBank(true);
-                }}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-600 text-white text-xs font-medium hover:bg-emerald-700 transition-colors flex-shrink-0"
-              >
-                <Plus size={14} />
-                Add Bank / UPI
-              </button>
+              {canEditBankAccounts ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setBankProofFile(null);
+                    setAddBankForm((f) => ({ ...f, bank_proof_type: "", bank_proof_file_url: "" }));
+                    setShowAddBank(true);
+                  }}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-600 text-white text-xs font-medium hover:bg-emerald-700 transition-colors flex-shrink-0"
+                >
+                  <Plus size={14} />
+                  Add Bank / UPI
+                </button>
+              ) : null}
             </div>
             <div className="space-y-2">
               {bankAccountsLoading ? (
-                <div className="flex items-center justify-center py-6 text-gray-500">
-                  <Loader2 size={16} className="animate-spin mr-2" />
-                  <span className="text-xs">Loading accounts...</span>
+                <div className="space-y-2" aria-busy aria-label="Loading bank accounts">
+                  {[1, 2, 3].map((i) => (
+                    <div
+                      key={i}
+                      className="flex items-center gap-3 p-3 rounded-lg border border-gray-200 bg-white"
+                    >
+                      <div className="h-9 w-9 rounded-lg bg-gray-100 animate-pulse shrink-0" />
+                      <div className="flex-1 min-w-0 space-y-2">
+                        <div className="h-3.5 w-32 rounded bg-gray-200 animate-pulse" />
+                        <div className="h-3 w-48 max-w-full rounded bg-gray-100 animate-pulse" />
+                      </div>
+                      <div className="h-6 w-16 rounded-full bg-gray-100 animate-pulse shrink-0" />
+                    </div>
+                  ))}
                 </div>
               ) : bankAccounts.length === 0 ? (
                 <div className="flex flex-col items-center justify-center py-8 text-center bg-gray-50 rounded-lg">
@@ -877,40 +893,42 @@ export function StorePaymentsClient({
                         </div>
                       </div>
                     </div>
-                    <div className="flex items-center gap-1.5 flex-shrink-0 flex-wrap justify-end">
-                      {!acc.is_primary && !acc.is_disabled && (
-                        <button
-                          type="button"
-                          onClick={() => patchBankAccount(acc.id, { set_default: true })}
-                          disabled={bankActionLoading !== null}
-                          className="px-2 py-1 rounded-lg border border-gray-300 text-gray-700 text-[10px] font-medium hover:bg-gray-50 disabled:opacity-50"
-                        >
-                          Set default
-                        </button>
-                      )}
-                      {!acc.is_disabled ? (
-                        <button
-                          type="button"
-                          onClick={() => {
-                            if (!confirm("Disable this account?")) return;
-                            patchBankAccount(acc.id, { set_disabled: true });
-                          }}
-                          disabled={bankActionLoading !== null}
-                          className="px-2 py-1 rounded-lg border border-amber-200 text-amber-700 text-[10px] font-medium hover:bg-amber-50 disabled:opacity-50"
-                        >
-                          Disable
-                        </button>
-                      ) : (
-                        <button
-                          type="button"
-                          onClick={() => patchBankAccount(acc.id, { set_disabled: false })}
-                          disabled={bankActionLoading !== null}
-                          className="px-2 py-1 rounded-lg border border-gray-300 text-gray-700 text-[10px] font-medium hover:bg-gray-50 disabled:opacity-50"
-                        >
-                          Enable
-                        </button>
-                      )}
-                    </div>
+                    {canEditBankAccounts ? (
+                      <div className="flex items-center gap-1.5 flex-shrink-0 flex-wrap justify-end">
+                        {!acc.is_primary && !acc.is_disabled && (
+                          <button
+                            type="button"
+                            onClick={() => patchBankAccount(acc.id, { set_default: true })}
+                            disabled={bankActionLoading !== null}
+                            className="px-2 py-1 rounded-lg border border-gray-300 text-gray-700 text-[10px] font-medium hover:bg-gray-50 disabled:opacity-50"
+                          >
+                            Set default
+                          </button>
+                        )}
+                        {!acc.is_disabled ? (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (!confirm("Disable this account?")) return;
+                              patchBankAccount(acc.id, { set_disabled: true });
+                            }}
+                            disabled={bankActionLoading !== null}
+                            className="px-2 py-1 rounded-lg border border-amber-200 text-amber-700 text-[10px] font-medium hover:bg-amber-50 disabled:opacity-50"
+                          >
+                            Disable
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => patchBankAccount(acc.id, { set_disabled: false })}
+                            disabled={bankActionLoading !== null}
+                            className="px-2 py-1 rounded-lg border border-gray-300 text-gray-700 text-[10px] font-medium hover:bg-gray-50 disabled:opacity-50"
+                          >
+                            Enable
+                          </button>
+                        )}
+                      </div>
+                    ) : null}
                   </div>
                 ))
               )}
@@ -1041,9 +1059,27 @@ export function StorePaymentsClient({
 
           <div className="overflow-x-auto">
             {ledgerLoading ? (
-              <div className="flex items-center justify-center py-16 text-gray-500">
-                <Loader2 size={28} className="animate-spin mr-2" />
-                Loading ledger...
+              <div className="p-4 space-y-3" aria-busy aria-label="Loading ledger">
+                <div className="hidden sm:grid grid-cols-8 gap-3 px-2 pb-2 border-b border-gray-100">
+                  {[1, 2, 3, 4, 5, 6, 7, 8].map((i) => (
+                    <div key={i} className="h-3 rounded bg-gray-100 animate-pulse" />
+                  ))}
+                </div>
+                {[1, 2, 3, 4, 5, 6, 7, 8].map((i) => (
+                  <div
+                    key={i}
+                    className="flex items-center gap-3 px-2 py-3 border-b border-gray-50 last:border-0"
+                  >
+                    <div className="h-4 w-4 rounded bg-gray-100 animate-pulse shrink-0" />
+                    <div className="h-3.5 w-24 rounded bg-gray-200 animate-pulse shrink-0" />
+                    <div className="h-3 w-16 rounded bg-gray-100 animate-pulse shrink-0 hidden sm:block" />
+                    <div className="h-3 w-28 rounded bg-gray-100 animate-pulse shrink-0 hidden md:block" />
+                    <div className="h-3 flex-1 rounded bg-gray-100 animate-pulse min-w-0" />
+                    <div className="h-3.5 w-16 rounded bg-gray-200 animate-pulse shrink-0" />
+                    <div className="h-5 w-14 rounded-full bg-gray-100 animate-pulse shrink-0 hidden sm:block" />
+                    <div className="h-3 w-16 rounded bg-gray-100 animate-pulse shrink-0 hidden lg:block" />
+                  </div>
+                ))}
               </div>
             ) : ledger.length === 0 ? (
               <div className="flex flex-col items-center justify-center py-16 text-gray-500">
@@ -1140,9 +1176,18 @@ export function StorePaymentsClient({
                               <td colSpan={8} className="p-0">
                                 <div className="px-4 pb-4 pt-1">
                                   {payoutDetailsLoading === row.reference_id ? (
-                                    <div className="flex items-center justify-center py-8 text-slate-500">
-                                      <Loader2 size={24} className="animate-spin mr-2" />
-                                      Loading payout details...
+                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4" aria-busy aria-label="Loading payout details">
+                                      {[1, 2].map((i) => (
+                                        <div key={i} className="bg-white rounded-xl border border-slate-200 shadow-sm p-4 space-y-3">
+                                          <div className="h-4 w-36 rounded bg-gray-200 animate-pulse" />
+                                          {[1, 2, 3, 4].map((j) => (
+                                            <div key={j} className="flex justify-between gap-3">
+                                              <div className="h-3 w-20 rounded bg-gray-100 animate-pulse" />
+                                              <div className="h-3 w-24 rounded bg-gray-100 animate-pulse" />
+                                            </div>
+                                          ))}
+                                        </div>
+                                      ))}
                                     </div>
                                   ) : (
                                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -1268,9 +1313,19 @@ export function StorePaymentsClient({
                             <td colSpan={8} className="p-0">
                               <div className="px-4 pb-4 pt-1">
                                 {orderDetailsLoading === row.order_id ? (
-                                  <div className="flex items-center justify-center py-8 text-slate-500">
-                                    <Loader2 size={24} className="animate-spin mr-2" />
-                                    Loading details...
+                                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4" aria-busy aria-label="Loading order details">
+                                    {[1, 2].map((i) => (
+                                      <div key={i} className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+                                        <div className="px-4 py-3 bg-slate-100/80">
+                                          <div className="h-4 w-28 rounded bg-gray-200 animate-pulse" />
+                                        </div>
+                                        <div className="p-3 space-y-2">
+                                          {[1, 2, 3].map((j) => (
+                                            <div key={j} className="h-8 rounded-lg bg-gray-50 animate-pulse" />
+                                          ))}
+                                        </div>
+                                      </div>
+                                    ))}
                                   </div>
                                 ) : (
                                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">

@@ -29,6 +29,7 @@ import { Check, Copy, Download, Globe, Paperclip } from "lucide-react";
 import { useRightSidebar } from "@/context/RightSidebarContext";
 import { useAuth } from "@/providers/AuthProvider";
 import { useTicketRoomRealtime, type TicketRoomPresenceIdentity } from "@/hooks/tickets/useTicketRoomRealtime";
+import { useTicketDashboardAccess } from "@/hooks/useTicketDashboardAccess";
 
 const STORAGE_KEY_PREFIX = "ticket-last-viewed-";
 
@@ -175,6 +176,7 @@ export function TicketViewClient({ ticketId }: { ticketId: number | string }) {
   const rightSidebar = useRightSidebar();
   const { user: authUser, systemUser } = useAuth();
   const { data: ticket, isPending, isError, error } = useTicketDetail(ticketId);
+  const { canMutate: canActOnTickets } = useTicketDashboardAccess();
 
   const showActivities = urlPanel === "activities";
   const showCsatPanel = urlPanel === "csat";
@@ -517,14 +519,17 @@ export function TicketViewClient({ ticketId }: { ticketId: number | string }) {
               else setTicketPanel("csat");
             }}
             onReplyClick={() => {
+              if (!canActOnTickets) return;
               setQuickComposeAction({ type: "reply", nonce: Date.now() });
               setShowReplySection(true);
             }}
             onForwardClick={() => {
+              if (!canActOnTickets) return;
               setQuickComposeAction({ type: "forward", nonce: Date.now() });
               setShowReplySection(true);
             }}
             onAddNoteClick={(visibility) => {
+              if (!canActOnTickets) return;
               setQuickComposeAction({
                 type: visibility === "public" ? "note_public" : "note_private",
                 nonce: Date.now(),
@@ -786,9 +791,12 @@ export function TicketViewClient({ ticketId }: { ticketId: number | string }) {
                   recipientEmail={ticket.raisedByEmail ?? undefined}
                   defaultReplyToOverride={defaultReplyToOverride}
                   onMessageSent={onMessageSent}
-                  replyVisible={showReplySection}
-                  quickComposeAction={quickComposeAction}
-                  onOpenReply={() => setShowReplySection(true)}
+                  replyVisible={canActOnTickets && showReplySection}
+                  quickComposeAction={canActOnTickets ? quickComposeAction : null}
+                  onOpenReply={() => {
+                    if (!canActOnTickets) return;
+                    setShowReplySection(true);
+                  }}
                   onCloseReply={() => setShowReplySection(false)}
                   noScroll
                   embedded

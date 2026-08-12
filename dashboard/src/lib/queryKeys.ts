@@ -37,7 +37,11 @@ export const queryKeys = {
     sessionStatus: () => ["auth", "session-status"] as const,
   },
   permissions: () => ["permissions"] as const,
-  dashboardAccess: () => ["dashboard-access"] as const,
+  /** Prefer user-scoped key when systemUserId is known (avoids cross-user cache bleed). */
+  dashboardAccess: (systemUserId?: number | null) =>
+    systemUserId != null
+      ? (["dashboard-access", systemUserId] as const)
+      : (["dashboard-access"] as const),
   admin: {
     userAppCategories: (storeType: string) => ["admin", "user-app-categories", storeType] as const,
   },

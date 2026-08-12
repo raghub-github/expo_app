@@ -6,7 +6,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { getMerchantAccess } from "@/lib/permissions/merchant-access";
-import { getAreaManagerByUserId } from "@/lib/area-manager/auth";
+import { resolveMerchantListAreaManagerId } from "@/lib/merchants/resolve-merchant-list-scope";
 import { getSql } from "@/lib/db/client";
 
 export const runtime = "nodejs";
@@ -33,11 +33,10 @@ export async function GET(request: NextRequest) {
     const offset = Math.max(0, parseInt(request.nextUrl.searchParams.get("offset") ?? "0", 10) || 0);
 
     const sql = getSql();
-    let areaManagerId: number | null = null;
-    if (!access.isSuperAdmin && !access.isAdmin) {
-      const am = await getAreaManagerByUserId(access.systemUserId);
-      if (am) areaManagerId = am.id;
-    }
+    const areaManagerId = await resolveMerchantListAreaManagerId({
+      supabaseAuthId: user.id,
+      email: user.email,
+    });
 
     const storeFilter = areaManagerId != null
       ? sql`AND ms.area_manager_id = ${areaManagerId}`

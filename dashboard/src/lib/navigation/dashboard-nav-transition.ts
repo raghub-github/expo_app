@@ -63,6 +63,12 @@ export function shouldShowDashboardNavOverlay(fromPath: string, toHref: string):
   ) {
     return false;
   }
+  // Merchant store portal tabs share the right rail; page clients own their loaders.
+  // Overlay was covering z-40 RightSidebar and looked like the rail “hid” on every tab change.
+  const storePathRe = /^\/dashboard\/merchants\/stores\/\d+(\/|$)/;
+  if (storePathRe.test(cleanPath) && storePathRe.test(cleanTarget)) {
+    return false;
+  }
   return true;
 }
 

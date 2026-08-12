@@ -5,8 +5,8 @@
 import { NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine";
+import { resolveMerchantListAreaManagerId } from "@/lib/merchants/resolve-merchant-list-scope";
 import { getSystemUserByEmail } from "@/lib/auth/user-mapping";
-import { getAreaManagerByUserId } from "@/lib/area-manager/auth";
 import { getMerchantStoreById, updateMerchantStore } from "@/lib/db/operations/merchant-stores";
 import { insertActivityLog } from "@/lib/db/operations/merchant-portal-activity-logs";
 import { getSql } from "@/lib/db/client";
@@ -194,14 +194,10 @@ export async function GET(
     if (!allowed) {
       return NextResponse.json({ success: false, error: "Merchant dashboard access required" }, { status: 403 });
     }
-    let areaManagerId: number | null = null;
-    if (!(await isSuperAdmin(user.id, user.email))) {
-      const systemUser = await getSystemUserByEmail(user.email);
-      if (systemUser) {
-        const am = await getAreaManagerByUserId(systemUser.id);
-        if (am) areaManagerId = am.id;
-      }
-    }
+    const areaManagerId = await resolveMerchantListAreaManagerId({
+      supabaseAuthId: user.id,
+      email: user.email,
+    });
     let store = await getMerchantStoreById(storeId, areaManagerId);
     if (!store) {
       return NextResponse.json({ success: false, error: "Store not found" }, { status: 404 });
@@ -547,14 +543,10 @@ export async function POST(
     if (!allowed) {
       return NextResponse.json({ success: false, error: "Merchant dashboard access required" }, { status: 403 });
     }
-    let areaManagerId: number | null = null;
-    if (!(await isSuperAdmin(user.id, user.email))) {
-      const systemUser = await getSystemUserByEmail(user.email);
-      if (systemUser) {
-        const am = await getAreaManagerByUserId(systemUser.id);
-        if (am) areaManagerId = am.id;
-      }
-    }
+    const areaManagerId = await resolveMerchantListAreaManagerId({
+      supabaseAuthId: user.id,
+      email: user.email,
+    });
     const store = await getMerchantStoreById(storeId, areaManagerId);
     if (!store) {
       return NextResponse.json({ success: false, error: "Store not found" }, { status: 404 });

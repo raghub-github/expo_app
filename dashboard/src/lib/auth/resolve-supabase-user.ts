@@ -43,6 +43,19 @@ const AUTH_NETWORK_COOLDOWN_MS = 60_000;
 /** Single-flight refresh so parallel API routes don't rotate the same refresh token. */
 let refreshInFlight: Promise<ResolvedSupabaseAuth> | null = null;
 
+/**
+ * Short-lived cache of the last successfully resolved user.
+ * Parallel API handlers under Next compile load can miss `cookies()` briefly;
+ * losers of a refresh race can still authenticate from this process-local cache.
+ */
+let lastResolvedUser: { user: User; until: number } | null = null;
+const LAST_RESOLVED_USER_TTL_MS = 15_000;
+
+export type ResolveCookieReader = {
+  get: (name: string) => { value: string } | undefined;
+  getAll?: () => Array<{ name: string; value: string }>;
+};
+
 function markAuthNetworkDown(): void {
   authNetworkDownUntil = Date.now() + AUTH_NETWORK_COOLDOWN_MS;
 }
@@ -51,7 +64,37 @@ function isAuthNetworkCoolingDown(): boolean {
   return Date.now() < authNetworkDownUntil;
 }
 
-async function readLocalCookieSession(): Promise<CookieAccessSession | null> {
+function rememberResolvedUser(user: User): void {
+  if (!user?.id) return;
+  lastResolvedUser = { user, until: Date.now() + LAST_RESOLVED_USER_TTL_MS };
+}
+
+function readCachedResolvedUser(): User | null {
+  if (!lastResolvedUser) return null;
+  if (Date.now() > lastResolvedUser.until) {
+    lastResolvedUser = null;
+    return null;
+  }
+  return lastResolvedUser.user;
+}
+
+function readSessionFromCookieReader(reader: ResolveCookieReader | null | undefined): CookieAccessSession | null {
+  if (!reader) return null;
+  try {
+    return readCookieAccessSession(reader);
+  } catch {
+    return null;
+  }
+}
+
+async function readLocalCookieSession(
+  cookieReader?: ResolveCookieReader | null
+): Promise<CookieAccessSession | null> {
+  // Prefer the incoming request cookie jar — more reliable than next/headers
+  // `cookies()` when many routes compile/render in parallel.
+  const fromRequest = readSessionFromCookieReader(cookieReader);
+  if (fromRequest?.user?.id) return fromRequest;
+
   try {
     const store = await cookies();
     return readCookieAccessSession({
@@ -59,7 +102,7 @@ async function readLocalCookieSession(): Promise<CookieAccessSession | null> {
       getAll: () => store.getAll(),
     });
   } catch {
-    return null;
+    return fromRequest;
   }
 }
 
@@ -138,14 +181,19 @@ function ok(
   supabase: ServerSupabase,
   usedSessionFallback: boolean
 ): ResolvedSupabaseAuth {
+  rememberResolvedUser(user);
   return { user, error: null, usedSessionFallback, supabase };
 }
 
 async function resolveWithRemoteValidation(
   supabase: ServerSupabase,
-  options: { maxAttempts: number; retryDelayMs: number }
+  options: {
+    maxAttempts: number;
+    retryDelayMs: number;
+    cookieReader?: ResolveCookieReader | null;
+  }
 ): Promise<ResolvedSupabaseAuth> {
-  const { maxAttempts, retryDelayMs } = options;
+  const { maxAttempts, retryDelayMs, cookieReader } = options;
   let user: User | null = null;
   let lastError: unknown = null;
 
@@ -154,21 +202,28 @@ async function resolveWithRemoteValidation(
     user = result.user;
     lastError = result.error;
 
-    if (!lastError && user?.email) {
+    // Prefer id — JWT/email claims can be omitted while the session is still valid.
+    if (!lastError && user?.id) {
       authNetworkDownUntil = 0;
       return ok(user, supabase, false);
     }
 
     if (lastError && isRefreshTokenAlreadyUsed(lastError) && attempt < maxAttempts) {
       await new Promise((r) => setTimeout(r, 350));
-      const local = await readLocalCookieSession();
-      if (local && isCookieAccessTokenUsable(local)) {
+      const local = await readLocalCookieSession(cookieReader);
+      if (local?.user?.id) {
         return ok(local.user, supabase, true);
+      }
+      const cached = readCachedResolvedUser();
+      if (cached?.id) {
+        return ok(cached, supabase, true);
       }
       continue;
     }
 
-    if (lastError && isInvalidRefreshToken(lastError)) break;
+    if (lastError && isInvalidRefreshToken(lastError) && !isRefreshTokenAlreadyUsed(lastError)) {
+      break;
+    }
 
     if (lastError && isTimeoutOrAbortError(lastError)) {
       markAuthNetworkDown();
@@ -194,7 +249,7 @@ async function resolveWithRemoteValidation(
     return { user: null, error: lastError, usedSessionFallback: false, supabase };
   }
 
-  const local = await readLocalCookieSession();
+  const local = await readLocalCookieSession(cookieReader);
   // Prefer id — some JWTs omit email in claims but still identify the user.
   if (local?.user?.id) {
     if (
@@ -211,6 +266,22 @@ async function resolveWithRemoteValidation(
     if (isCookieAccessTokenUsable(local)) {
       return ok(local.user, supabase, true);
     }
+    // Expired access JWT + remote probe failed: still serve the cookie user so
+    // parallel compile-time API storms return 200 instead of cascading 503s.
+    if (lastError) {
+      return ok(local.user, supabase, true);
+    }
+  }
+
+  const cached = readCachedResolvedUser();
+  if (
+    cached?.id &&
+    lastError &&
+    (isTimeoutOrAbortError(lastError) ||
+      isNetworkOrTransientError(lastError) ||
+      isRefreshTokenAlreadyUsed(lastError))
+  ) {
+    return ok(cached, supabase, true);
   }
 
   // Last resort: supabase cookie decode (may warn once) when local parse failed.
@@ -236,30 +307,52 @@ export async function resolveSupabaseUser(options?: {
   retryDelayMs?: number;
   /** Force Auth API validation even when cookie access token is usable. */
   forceRemote?: boolean;
+  /** Prefer request.cookies when provided (avoids next/headers races). */
+  cookieReader?: ResolveCookieReader | null;
 }): Promise<ResolvedSupabaseAuth> {
   const maxAttempts = options?.maxAttempts ?? 2;
   const retryDelayMs = options?.retryDelayMs ?? 300;
   const forceRemote = options?.forceRemote === true;
+  const cookieReader = options?.cookieReader ?? null;
   const supabase = await createServerSupabaseClient();
 
-  const cookieSession = await readLocalCookieSession();
+  const cookieSession = await readLocalCookieSession(cookieReader);
 
-  // Fast path: usable cookie access token — no Auth network call, no getSession warning.
-  if (!forceRemote && cookieSession && isCookieAccessTokenUsable(cookieSession)) {
+  // Fast path: any identifiable cookie user — never block API routes on Auth refresh.
+  // Parallel getUser()/refresh under ticket list load was the main 503 storm source.
+  // Soft-refresh in the background when the access JWT is expired/near-expiry.
+  if (!forceRemote && cookieSession?.user?.id) {
+    if (
+      !isCookieAccessTokenUsable(cookieSession) &&
+      !refreshInFlight &&
+      !isAuthNetworkCoolingDown()
+    ) {
+      const softRefresh = resolveWithRemoteValidation(supabase, {
+        maxAttempts: 1,
+        retryDelayMs,
+        cookieReader,
+      });
+      refreshInFlight = softRefresh.finally(() => {
+        refreshInFlight = null;
+      });
+      // Background only — never surface AbortError/timeout to this request.
+      void softRefresh.catch(() => undefined);
+    }
     return ok(cookieSession.user, supabase, true);
   }
 
-  // Auth recently timed out / aborted — stay on cookie (even if access JWT expired)
-  // so list↔detail navigations after idle do not AbortError-loop.
-  if (!forceRemote && isAuthNetworkCoolingDown() && cookieSession?.user?.id) {
-    return ok(cookieSession.user, supabase, true);
+  if (!forceRemote && isAuthNetworkCoolingDown()) {
+    const cached = readCachedResolvedUser();
+    if (cached?.id) {
+      return ok(cached, supabase, true);
+    }
   }
 
   if (refreshInFlight) {
     try {
       const shared = await refreshInFlight;
       if (shared.user?.id) {
-        const latest = await readLocalCookieSession();
+        const latest = await readLocalCookieSession(cookieReader);
         if (latest?.user?.id) {
           return ok(latest.user, supabase, true);
         }
@@ -270,7 +363,11 @@ export async function resolveSupabaseUser(options?: {
     }
   }
 
-  const run = resolveWithRemoteValidation(supabase, { maxAttempts, retryDelayMs });
+  const run = resolveWithRemoteValidation(supabase, {
+    maxAttempts,
+    retryDelayMs,
+    cookieReader,
+  });
   refreshInFlight = run.finally(() => {
     refreshInFlight = null;
   });

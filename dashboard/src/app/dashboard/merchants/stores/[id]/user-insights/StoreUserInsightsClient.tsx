@@ -17,7 +17,6 @@ import {
   ChevronLeft,
   ChevronDown,
   ChevronRight,
-  Search,
 } from "lucide-react";
 import { SkeletonReviewRow } from "@/components/merchant/SkeletonReviewRow";
 import { UserInsightsOrderDetailsSidesheet } from "@/components/merchant/UserInsightsOrderDetailsSidesheet";
@@ -790,10 +789,8 @@ function UserInsightsContent({ storeId }: { storeId: string }) {
   const partnerShellSubtitle =
     "Monitor customer feedback and respond to reviews";
 
-  const headerSearchPlaceholder = "Search reviews…";
-
   const headerDateFilter = (
-    <div className="inline-flex h-8 min-w-0 shrink-0 items-center gap-1.5 rounded-md border border-gray-200 bg-gray-50 px-2 text-[11px] text-gray-700">
+    <div className="inline-flex h-8 min-w-0 shrink-0 items-center gap-1.5 rounded-md border border-gray-200 bg-white px-2 text-[11px] text-gray-700">
       <Calendar size={13} className="shrink-0 text-gray-500" aria-hidden />
       <select
         value={datePreset}
@@ -836,7 +833,7 @@ function UserInsightsContent({ storeId }: { storeId: string }) {
   );
 
   return (
-    <div className="flex h-full min-h-0 flex-col overflow-hidden bg-[#f8fafc]">
+    <div className="flex h-full min-h-0 flex-col overflow-hidden bg-gray-50">
       <header className="shrink-0 border-b border-gray-200 bg-white">
         <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1.5 px-3 py-2 sm:flex-nowrap sm:px-4">
           <div className="min-w-0 flex-1 sm:max-w-[min(100%,28rem)]">
@@ -847,20 +844,7 @@ function UserInsightsContent({ storeId }: { storeId: string }) {
               {partnerShellSubtitle}
             </p>
           </div>
-          <div className="flex w-full min-w-0 shrink-0 items-center gap-2 sm:w-auto sm:max-w-md">
-            <div className="relative min-w-0 flex-1 sm:max-w-[220px]">
-              <Search
-                className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-gray-400"
-                aria-hidden
-              />
-              <input
-                type="search"
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder={headerSearchPlaceholder}
-                className="h-8 w-full rounded-md border border-gray-200 bg-gray-50 py-0 pl-8 pr-2 text-xs text-gray-900 outline-none transition-colors placeholder:text-gray-400 focus:border-orange-400 focus:bg-white focus:ring-2 focus:ring-orange-500/20"
-              />
-            </div>
+          <div className="flex w-full min-w-0 shrink-0 items-center justify-end gap-2 sm:w-auto">
             {headerDateFilter}
           </div>
         </div>
@@ -888,15 +872,23 @@ function UserInsightsContent({ storeId }: { storeId: string }) {
           }}
         />
       ) : null}
-      <div className="flex min-h-0 w-full flex-1 flex-col overflow-hidden px-3 pb-2 pt-1.5">
+      <div className="flex min-h-0 w-full flex-1 flex-col overflow-hidden p-3 md:gap-3">
         <div className="flex h-full min-h-0 flex-col overflow-hidden">
-            {/* Main 2-panel layout */}
-            <div className="flex flex-1 min-h-0 overflow-hidden rounded-lg border border-gray-200 bg-white">
+            {/* Main 2-panel layout — partnersite INBOX_PANEL style */}
+            <div className="flex flex-1 min-h-0 overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm">
               {/* Left panel: list */}
-              <div className="w-full md:w-[360px] shrink-0 border-b md:border-b-0 md:border-r border-gray-200 flex flex-col min-h-0">
-                {/* Sticky header with shared bottom border (list scrolls under it) */}
-                <div className="sticky top-0 z-10 bg-white border-b border-gray-200">
-                  <div className="flex items-center justify-between gap-2 px-3 py-2.5">
+              <div className="flex w-full min-h-0 shrink-0 flex-col border-b border-gray-200 bg-white md:w-[360px] md:border-b-0 md:border-r">
+                <div className="sticky top-0 z-10 border-b border-gray-200 bg-white">
+                  <div className="p-3 flex items-center gap-2">
+                    <input
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      placeholder="Search reviews"
+                      className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm outline-none focus:border-orange-500 focus:ring-2 focus:ring-orange-500/20"
+                    />
+                  </div>
+
+                  <div className="px-3 pb-3 flex items-center justify-between gap-2">
                     <div className="flex gap-1">
                       <button
                         type="button"

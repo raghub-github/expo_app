@@ -78,7 +78,20 @@ const DEFAULT_KNOWLEDGE_BASE_SNIPPETS = [
   "If the issue continues after these steps, we will escalate to our logistics partner and follow up within one business day.",
 ];
 
-function formatMessageTime(createdAt: string): string {
+function formatAbsoluteMessageTime(createdAt: string): string {
+  return new Date(createdAt).toLocaleString("en-IN", {
+    weekday: "short",
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+  });
+}
+
+/** Relative label only when recent; null when older so we don't double-print a full date. */
+function formatRelativeMessageTime(createdAt: string): string | null {
   const date = new Date(createdAt);
   const now = new Date();
   const diffMs = now.getTime() - date.getTime();
@@ -89,22 +102,14 @@ function formatMessageTime(createdAt: string): string {
   if (diffMins < 60) return `${diffMins}m ago`;
   if (diffHours < 24) return `${diffHours}h ago`;
   if (diffDays < 7) return `${diffDays}d ago`;
-  return date.toLocaleString();
+  return null;
 }
 
 function formatMessageTimeLong(createdAt: string): string {
-  const date = new Date(createdAt);
-  const relative = formatMessageTime(createdAt);
-  const absolute = date.toLocaleString("en-IN", {
-    weekday: "short",
-    day: "numeric",
-    month: "short",
-    year: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-    hour12: true,
-  });
-  return `${relative} (${absolute})`;
+  const absolute = formatAbsoluteMessageTime(createdAt);
+  const relative = formatRelativeMessageTime(createdAt);
+  // Recent: "1d ago (Mon, 10 Aug, 2026, 3:01 pm)". Older: absolute only (no duplicate date).
+  return relative ? `${relative} (${absolute})` : absolute;
 }
 
 function senderDisplayName(msg: TicketMessage): string {

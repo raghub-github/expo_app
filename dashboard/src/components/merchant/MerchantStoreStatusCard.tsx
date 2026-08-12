@@ -2,6 +2,7 @@
 
 import { CalendarClock, ChefHat, Power, Store } from "lucide-react";
 import { MerchantStoreScheduleActions } from "@/components/merchant/MerchantStoreScheduleActions";
+import { PARTNER_DASHBOARD_TOP_CARD_CLASS } from "@/components/merchant/partner-dashboard-card-styles";
 import type { ActiveRushWindowRow, ScheduledTimeOffRow } from "@/lib/storeDashboardScheduledOff";
 import { formatStoreActionSourceLabel } from "@/lib/storeActionSource";
 import type { StoreStatusBadge } from "@/lib/storeStatusCardFormat";
@@ -41,6 +42,8 @@ export type MerchantStoreStatusCardProps = {
   scheduledOffStartsInMs?: number | null;
   onManualLockChange: (enabled: boolean) => void;
   onStoreToggle: () => void;
+  /** When false, power/lock stay visible but disabled (view-only — partnersite layout). */
+  canToggleStore?: boolean;
   /** Internal numeric store id — enables schedule-off / rush / close-today actions */
   storeInternalId?: string;
   onOperationsRefresh?: () => void | Promise<void>;
@@ -79,6 +82,7 @@ export function MerchantStoreStatusCard({
   scheduledOffStartsInMs = null,
   onManualLockChange,
   onStoreToggle,
+  canToggleStore = true,
   storeInternalId,
   onOperationsRefresh,
   className = "",
@@ -88,24 +92,27 @@ export function MerchantStoreStatusCard({
     (licenseBlockedForOps
       ? "Locked while licence is expired — upload & verify first"
       : "Prevents automatic opening");
+  const controlsLocked = !canToggleStore || licenseBlockedForOps;
 
   return (
     <div
-      className={`flex flex-1 flex-col min-h-[240px] sm:min-h-[252px] rounded-xl border-2 bg-white/40 p-3 sm:p-3.5 ${
+      className={`${PARTNER_DASHBOARD_TOP_CARD_CLASS} ${
         isStoreOpen
-          ? "border-teal-500"
+          ? "border-emerald-200/70"
           : restrictionType === "MANUAL_HOLD"
-            ? "border-amber-500"
-            : "border-red-500"
+            ? "border-amber-200/70"
+            : "border-red-200/70"
       } ${className}`}
     >
       <div className="flex items-start justify-between gap-2 shrink-0">
         <div className="min-w-0">
-          <div className="flex flex-wrap items-center gap-1.5 mb-0.5">
-            <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-slate-800/[0.06] text-slate-700 ring-1 ring-slate-900/10">
-              <Store className="h-[15px] w-[15px]" strokeWidth={2} />
+          <div className="flex flex-wrap items-center gap-1.5 mb-1">
+            <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-emerald-500 text-white shadow-sm">
+              <Store className="h-[16px] w-[16px]" strokeWidth={2} />
             </span>
-            <h2 className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">Store status</h2>
+            <h2 className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">
+              Store status
+            </h2>
             <span
               className={`inline-flex max-w-full flex-wrap items-center gap-x-2 gap-y-0.5 rounded-full px-2 py-0.5 text-[11px] font-semibold ${storeStatusBadge.pill}`}
             >
@@ -126,11 +133,18 @@ export function MerchantStoreStatusCard({
             </span>
           </div>
           {cardDisplaySlots.length === 0 ? (
-            <p className="text-sm font-semibold text-slate-500">—</p>
+            <div className="rounded-lg bg-slate-50/90 px-2.5 py-2 ring-1 ring-slate-200/70">
+              <p className="text-sm font-semibold text-slate-500">—</p>
+            </div>
           ) : cardDisplaySlots.length === 1 ? (
-            <p className="text-sm font-semibold text-slate-900 tabular-nums leading-tight">
-              {formatTimeHMS(cardDisplaySlots[0].start)} – {formatTimeHMS(cardDisplaySlots[0].end)}
-            </p>
+            <div className="rounded-lg bg-slate-50/90 px-2.5 py-2 ring-1 ring-slate-200/70">
+              <p className="text-[9px] font-medium uppercase tracking-wide text-slate-500 mb-0.5">
+                Today&apos;s hours
+              </p>
+              <p className="text-lg sm:text-xl font-bold text-slate-900 tabular-nums leading-tight tracking-tight">
+                {formatTimeHMS(cardDisplaySlots[0].start)} – {formatTimeHMS(cardDisplaySlots[0].end)}
+              </p>
+            </div>
           ) : (
             <div className="mt-1 space-y-1">
               {cardDisplaySlots.map((slot, idx) => (
@@ -147,7 +161,9 @@ export function MerchantStoreStatusCard({
                 </div>
               ))}
               {cardBreakGapLabel && (
-                <p className="text-[9px] font-medium text-amber-700 pl-0.5">Break {cardBreakGapLabel}</p>
+                <p className="text-[9px] font-medium text-amber-700 pl-0.5">
+                  Break {cardBreakGapLabel}
+                </p>
               )}
             </div>
           )}
@@ -155,7 +171,15 @@ export function MerchantStoreStatusCard({
         <button
           type="button"
           onClick={onStoreToggle}
-          className={`shrink-0 flex h-10 w-10 items-center justify-center rounded-full text-white shadow-sm transition-transform hover:scale-105 active:scale-95 focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 ${
+          disabled={!canToggleStore}
+          title={
+            !canToggleStore
+              ? "View-only access — store open/close locked"
+              : isStoreOpen
+                ? "Close store"
+                : "Open store"
+          }
+          className={`shrink-0 flex h-10 w-10 items-center justify-center rounded-full text-white shadow-sm transition-transform hover:scale-105 active:scale-95 focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-45 disabled:hover:scale-100 ${
             isStoreOpen
               ? "bg-emerald-500 hover:bg-emerald-600 focus-visible:ring-emerald-500"
               : restrictionType === "MANUAL_HOLD"
@@ -168,20 +192,27 @@ export function MerchantStoreStatusCard({
         </button>
       </div>
 
-      <div className="flex-1 min-h-0 flex flex-col gap-1.5 mt-2">
+      <div className="flex flex-col gap-1.5 mt-2">
         {scheduledTimeOffs.length > 0 && (
           <div className="rounded-lg bg-amber-50/95 px-2.5 py-2 ring-1 ring-amber-200/80">
             <div className="flex items-start gap-2">
               <CalendarClock className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-800" aria-hidden />
               <div className="min-w-0 flex-1">
-                <p className="text-[10px] font-bold uppercase tracking-wide text-amber-950">Scheduled time-off</p>
+                <p className="text-[10px] font-bold uppercase tracking-wide text-amber-950">
+                  Scheduled time-off
+                </p>
                 <ul className="mt-1.5 space-y-1.5">
                   {scheduledTimeOffs.map((row) => {
-                    const { primary, secondary } = formatScheduledTimeOffWindow(row.starts_at, row.ends_at);
+                    const { primary, secondary } = formatScheduledTimeOffWindow(
+                      row.starts_at,
+                      row.ends_at
+                    );
                     return (
                       <li key={row.id} className="text-[11px] leading-snug text-amber-950">
                         <span
-                          className={`font-semibold ${row.phase === "active" ? "text-rose-800" : "text-amber-900"}`}
+                          className={`font-semibold ${
+                            row.phase === "active" ? "text-rose-800" : "text-amber-900"
+                          }`}
                         >
                           {row.phase === "active" ? "Active" : "Upcoming"}
                         </span>
@@ -225,40 +256,42 @@ export function MerchantStoreStatusCard({
         {!isTodayScheduledClosed && scheduleStatusLabel && !isStoreOpen && schedulePhase !== "BREAK" && (
           <p className="text-[10px] font-medium text-slate-500">{scheduleStatusLabel}</p>
         )}
-        {showScheduleCountdown && activeCountdownAt && (() => {
-          void countdownTick;
-          const ms = new Date(activeCountdownAt).getTime() - Date.now();
-          const countdownText = formatHmsCountdown(ms);
-          const isPreBreak = countdownKind === "break_starts_in" || schedulePhase === "PRE_BREAK";
-          const boxClass = isPreBreak
-            ? "rounded-lg bg-amber-50/90 px-2.5 py-2 ring-1 ring-amber-200/80"
-            : "rounded-lg bg-red-50/90 px-2.5 py-2 ring-1 ring-red-200/80";
-          const textClass = isPreBreak ? "text-amber-900" : "text-red-800";
-          const subClass = isPreBreak ? "text-amber-700/90" : "text-red-600/90";
-          const dotClass = isPreBreak ? "text-amber-400/90" : "text-red-400/90";
-          return (
-            <div className={boxClass}>
-              <p className={`flex flex-nowrap items-center gap-x-2 text-[11px] ${textClass} leading-snug`}>
-                <span className="font-semibold shrink-0 whitespace-nowrap">
-                  {opensCountdownLabel}{" "}
-                  <span className="tabular-nums">{countdownText}</span>
-                </span>
-                {countdownSubtitleWallLabel && ms > 0 && (
-                  <>
-                    <span className={`${dotClass} shrink-0`} aria-hidden>
-                      ·
-                    </span>
-                    <span className={`text-[10px] font-medium whitespace-nowrap ${subClass}`}>
-                      {countdownKind === "reopens_in" || schedulePhase === "BREAK"
-                        ? `Next slot at ${countdownSubtitleWallLabel}`
-                        : `At ${countdownSubtitleWallLabel}`}
-                    </span>
-                  </>
-                )}
-              </p>
-            </div>
-          );
-        })()}
+        {showScheduleCountdown &&
+          activeCountdownAt &&
+          (() => {
+            void countdownTick;
+            const ms = new Date(activeCountdownAt).getTime() - Date.now();
+            const countdownText = formatHmsCountdown(ms);
+            const isPreBreak = countdownKind === "break_starts_in" || schedulePhase === "PRE_BREAK";
+            const boxClass = isPreBreak
+              ? "rounded-lg bg-amber-50/90 px-2.5 py-2 ring-1 ring-amber-200/80"
+              : "rounded-lg bg-red-50/90 px-2.5 py-2 ring-1 ring-red-200/80";
+            const textClass = isPreBreak ? "text-amber-900" : "text-red-800";
+            const subClass = isPreBreak ? "text-amber-700/90" : "text-red-600/90";
+            const dotClass = isPreBreak ? "text-amber-400/90" : "text-red-400/90";
+            return (
+              <div className={boxClass}>
+                <p className={`flex flex-nowrap items-center gap-x-2 text-[11px] ${textClass} leading-snug`}>
+                  <span className="font-semibold shrink-0 whitespace-nowrap">
+                    {opensCountdownLabel}{" "}
+                    <span className="tabular-nums">{countdownText}</span>
+                  </span>
+                  {countdownSubtitleWallLabel && ms > 0 && (
+                    <>
+                      <span className={`${dotClass} shrink-0`} aria-hidden>
+                        ·
+                      </span>
+                      <span className={`text-[10px] font-medium whitespace-nowrap ${subClass}`}>
+                        {countdownKind === "reopens_in" || schedulePhase === "BREAK"
+                          ? `Next slot at ${countdownSubtitleWallLabel}`
+                          : `At ${countdownSubtitleWallLabel}`}
+                      </span>
+                    </>
+                  )}
+                </p>
+              </div>
+            );
+          })()}
         {!isStoreOpen && closeReasonDisplay && (
           <p className="text-[11px] text-slate-600 leading-snug line-clamp-3" title={closeReasonDisplay}>
             <span className="font-semibold text-slate-700">Close reason: </span>
@@ -266,62 +299,74 @@ export function MerchantStoreStatusCard({
           </p>
         )}
         {(lastToggledByName || lastToggleBy || lastToggleType) && lastToggledAt && (
-          <p className="text-[11px] text-slate-500 leading-snug">
-            Last:{" "}
-            {(() => {
-              const typeUp = String(lastToggleType || "").toUpperCase();
-              const toggledAtDate = new Date(lastToggledAt);
-              const timeStr = toggledAtDate.toLocaleTimeString("en-IN", {
-                hour: "2-digit",
-                minute: "2-digit",
-                second: "2-digit",
-                hour12: true,
-              });
-              const dateStr = toggledAtDate.toLocaleDateString("en-IN", {
-                day: "numeric",
-                month: "short",
-                year: "numeric",
-              });
-              const email = lastToggleBy || "";
-              const emailNorm = String(email).toLowerCase();
-              const isGatiMitraAgent =
-                emailNorm.includes("gatimitra") ||
-                emailNorm.endsWith("@gatimitra.in") ||
-                emailNorm.endsWith("@gatimitra.com");
-              if (typeUp.startsWith("AUTO")) {
-                return `${isStoreOpen ? "Auto on" : "Auto closed"} · ${timeStr} · ${dateStr}`;
-              }
-              if (isGatiMitraAgent) {
-                return `${isStoreOpen ? "Opened" : "Closed"} by GatiMitra (agent: ${email || "unknown"}) · ${timeStr} · ${dateStr}`;
-              }
-              const who = lastToggledByName || lastToggleBy || "Owner";
-              return `${isStoreOpen ? "Opened" : "Closed"} by ${who}${storeIdLabel ? ` (ID: ${storeIdLabel})` : ""} · ${timeStr} · ${dateStr}`;
-            })()}
-          </p>
+          <div className="rounded-lg bg-slate-50/90 px-2.5 py-2 ring-1 ring-slate-200/70">
+            <p className="text-[9px] font-medium uppercase tracking-wide text-slate-500 mb-0.5">
+              Last activity
+            </p>
+            <p className="text-[11px] text-slate-600 leading-snug">
+              {(() => {
+                const typeUp = String(lastToggleType || "").toUpperCase();
+                const toggledAtDate = new Date(lastToggledAt);
+                const timeStr = toggledAtDate.toLocaleTimeString("en-IN", {
+                  hour: "2-digit",
+                  minute: "2-digit",
+                  second: "2-digit",
+                  hour12: true,
+                });
+                const dateStr = toggledAtDate.toLocaleDateString("en-IN", {
+                  day: "numeric",
+                  month: "short",
+                  year: "numeric",
+                });
+                const email = lastToggleBy || "";
+                const emailNorm = String(email).toLowerCase();
+                const isGatiMitraAgent =
+                  emailNorm.includes("gatimitra") ||
+                  emailNorm.endsWith("@gatimitra.in") ||
+                  emailNorm.endsWith("@gatimitra.com");
+                if (typeUp.startsWith("AUTO")) {
+                  return `${isStoreOpen ? "Auto on" : "Auto closed"} · ${timeStr} · ${dateStr}`;
+                }
+                if (isGatiMitraAgent) {
+                  return `${isStoreOpen ? "Opened" : "Closed"} by GatiMitra (agent: ${email || "unknown"}) · ${timeStr} · ${dateStr}`;
+                }
+                const who = lastToggledByName || lastToggleBy || "Owner";
+                return `${isStoreOpen ? "Opened" : "Closed"} by ${who}${storeIdLabel ? ` (ID: ${storeIdLabel})` : ""} · ${timeStr} · ${dateStr}`;
+              })()}
+            </p>
+          </div>
         )}
       </div>
 
-      {storeInternalId && onOperationsRefresh ? (
+      {canToggleStore && storeInternalId && onOperationsRefresh ? (
         <MerchantStoreScheduleActions storeId={storeInternalId} onRefresh={onOperationsRefresh} />
       ) : null}
 
-      <div className="mt-auto flex items-center justify-between gap-2 pt-2.5 border-t border-slate-200/80 shrink-0">
+      <div className="mt-3 flex items-center justify-between gap-2 pt-2.5 border-t border-slate-200/80 shrink-0">
         <div className="min-w-0">
           <p className="text-[11px] font-semibold text-slate-800">Manual activation lock</p>
-          <p className="text-[10px] text-slate-500 mt-0.5 leading-snug">{lockHelp}</p>
+          <p className="text-[10px] text-slate-500 mt-0.5 leading-snug">
+            {!canToggleStore ? "View-only — lock cannot be changed" : lockHelp}
+          </p>
         </div>
         <label
           className={`relative inline-flex shrink-0 items-center ${
-            licenseBlockedForOps ? "cursor-not-allowed opacity-50" : "cursor-pointer"
+            controlsLocked ? "cursor-not-allowed opacity-50" : "cursor-pointer"
           }`}
-          title={licenseBlockedForOps ? "Cannot change while store is closed due to expired licence" : undefined}
+          title={
+            !canToggleStore
+              ? "View-only access — manual lock disabled"
+              : licenseBlockedForOps
+                ? "Cannot change while store is closed due to expired licence"
+                : undefined
+          }
         >
           <input
             type="checkbox"
             checked={manualActivationLock}
-            disabled={licenseBlockedForOps}
+            disabled={controlsLocked}
             onChange={(e) => {
-              if (licenseBlockedForOps) return;
+              if (controlsLocked) return;
               onManualLockChange(e.target.checked);
             }}
             className="peer sr-only"

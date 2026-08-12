@@ -6,7 +6,7 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { getAuthenticatedApiUser, authFailureResponse } from "@/lib/auth/api-session";
-import { getSystemUserByEmail } from "@/lib/db/operations/users";
+import { resolveSystemUserForSupabaseAuth } from "@/lib/auth/user-mapping";
 import { isSuperAdmin, hasDashboardAccessByAuth } from "@/lib/permissions/engine";
 import { getSql } from "@/lib/db/client";
 import { insertTicketActivityAudit } from "@/lib/db/operations/ticket-activity-audit";
@@ -31,13 +31,17 @@ export async function GET(
     }
     const { user } = auth;
 
-    const systemUser = await getSystemUserByEmail(user.email!);
+    const systemUser = await resolveSystemUserForSupabaseAuth(user.id, user.email);
     if (!systemUser) {
       return NextResponse.json({ success: false, error: "User not found" }, { status: 404 });
     }
 
-    const userIsSuperAdmin = await isSuperAdmin(user.id, user.email!);
-    const hasTicketAccess = await hasDashboardAccessByAuth(user.id, user.email!, "TICKET");
+    const userIsSuperAdmin = await isSuperAdmin(user.id, user.email ?? systemUser.email);
+    const hasTicketAccess = await hasDashboardAccessByAuth(
+      user.id,
+      user.email ?? systemUser.email,
+      "TICKET"
+    );
 
     if (!userIsSuperAdmin && !hasTicketAccess) {
       return NextResponse.json({ success: false, error: "Insufficient permissions" }, { status: 403 });
@@ -858,7 +862,7 @@ export async function PATCH(
     }
     const { user } = auth;
 
-    const systemUser = await getSystemUserByEmail(user.email!);
+    const systemUser = await resolveSystemUserForSupabaseAuth(user.id, user.email);
     if (!systemUser) {
       return NextResponse.json({ success: false, error: "User not found" }, { status: 404 });
     }
@@ -885,7 +889,7 @@ export async function PATCH(
       body,
       {
         id: systemUser.id,
-        name: systemUser.fullName ?? systemUser.email ?? "Agent",
+        name: systemUser.full_name ?? systemUser.email ?? "Agent",
         email: systemUser.email ?? null,
       },
       { source: "manual_single" }

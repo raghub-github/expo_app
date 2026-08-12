@@ -30,9 +30,11 @@ type Props = {
   apiBase: string;
   active: boolean;
   storeTimezone?: string | null;
+  /** View-only / no store-manage: hide Edit/Save/Remove/toggles. */
+  readOnly?: boolean;
 };
 
-export function OutletTimingsPanel({ apiBase, active, storeTimezone }: Props) {
+export function OutletTimingsPanel({ apiBase, active, storeTimezone, readOnly = false }: Props) {
   const [applyMondayToAll, setApplyMondayToAll] = useState(false);
   const [showCopyMondayConfirm, setShowCopyMondayConfirm] = useState(false);
   const [copyMondayConfirmLoading, setCopyMondayConfirmLoading] = useState(false);
@@ -604,6 +606,7 @@ export function OutletTimingsPanel({ apiBase, active, storeTimezone }: Props) {
           <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2 mb-1">
             <div className="flex min-w-0 flex-wrap items-center gap-2">
               <h2 className="text-lg font-bold text-gray-900">Store Operating Hours</h2>
+              {!readOnly ? (
               <button
                 type="button"
                 onClick={() => setShowCopyMondayConfirm(true)}
@@ -612,12 +615,17 @@ export function OutletTimingsPanel({ apiBase, active, storeTimezone }: Props) {
                 <Copy size={12} className="shrink-0" />
                 <span className="whitespace-nowrap">Copy Monday to all days</span>
               </button>
+              ) : null}
             </div>
             <button
               type="button"
-              onClick={() => handleMainToggle(!storeIsOpen)}
-              disabled={isSaving}
-              className="inline-flex items-center gap-2 hover:opacity-80 transition disabled:opacity-50"
+              onClick={() => {
+                if (readOnly) return;
+                handleMainToggle(!storeIsOpen);
+              }}
+              disabled={isSaving || readOnly}
+              className="inline-flex items-center gap-2 hover:opacity-80 transition disabled:opacity-50 disabled:cursor-not-allowed"
+              title={readOnly ? "View-only access — store hours locked" : undefined}
             >
               <span className="text-xs font-semibold text-gray-700">Store is Open</span>
               <span
@@ -673,8 +681,9 @@ export function OutletTimingsPanel({ apiBase, active, storeTimezone }: Props) {
                   daySchedule.day === getCurrentDayKeyInTimeZone(storeTimezone);
                 const hasSlot2 = !!daySchedule.slots[1];
                 const isClosed = daySchedule.isOutletClosed || !daySchedule.isOpen;
+                const slotInputsLocked = readOnly || !daySchedule.isOpen;
                 const slotFieldClassName = `h-8 w-full rounded-md border pl-6 pr-5 text-xs appearance-none focus:outline-none focus:ring-2 [&::-webkit-calendar-picker-indicator]:opacity-0 ${
-                  daySchedule.isOpen
+                  !slotInputsLocked
                     ? "border-gray-200 bg-white text-gray-800 focus:border-emerald-400 focus:ring-emerald-100"
                     : "border-gray-200 bg-gray-100 text-gray-500 cursor-not-allowed opacity-60"
                 }`;
@@ -684,7 +693,8 @@ export function OutletTimingsPanel({ apiBase, active, storeTimezone }: Props) {
                   "inline-flex items-center rounded-md border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[10px] font-semibold text-emerald-800 hover:bg-emerald-100";
                 const slotActionRemove =
                   "inline-flex items-center rounded-md border border-rose-200 bg-rose-50 px-2 py-0.5 text-[10px] font-semibold text-rose-700 hover:bg-rose-100";
-                const canEditSlots = !isClosed && !daySchedule.is24Hours && daySchedule.isOpen;
+                const canEditSlots =
+                  !readOnly && !isClosed && !daySchedule.is24Hours && daySchedule.isOpen;
 
                 return (
                   <div
@@ -692,12 +702,19 @@ export function OutletTimingsPanel({ apiBase, active, storeTimezone }: Props) {
                     className="border-b border-gray-100 last:border-b-0 hover:bg-gray-50/40 transition-colors"
                   >
                     <div className={timingsRowGrid}>
-                      <label className="relative inline-flex items-center cursor-pointer justify-center pt-1">
+                      <label
+                        className={`relative inline-flex items-center justify-center pt-1 ${
+                          readOnly ? "cursor-not-allowed opacity-60" : "cursor-pointer"
+                        }`}
+                      >
                         <input
                           type="checkbox"
                           checked={daySchedule.isOpen && !daySchedule.isOutletClosed}
-                          onChange={() => void handleDayToggle(daySchedule.day)}
-                          disabled={isSaving}
+                          onChange={() => {
+                            if (readOnly) return;
+                            void handleDayToggle(daySchedule.day);
+                          }}
+                          disabled={isSaving || readOnly}
                           className="sr-only peer"
                         />
                         <span className="relative inline-flex h-4.5 w-8 items-center rounded-full bg-gray-200 transition peer-checked:bg-emerald-500 peer-disabled:opacity-50">
@@ -734,7 +751,8 @@ export function OutletTimingsPanel({ apiBase, active, storeTimezone }: Props) {
                                   daySchedule.slots[0] &&
                                   updateTimeSlot(daySchedule.day, daySchedule.slots[0].id, "openingTime", e.target.value)
                                 }
-                                disabled={!daySchedule.isOpen}
+                                disabled={slotInputsLocked}
+                                readOnly={readOnly}
                                 className={slotFieldClassName}
                               />
                               <ChevronDown
@@ -755,7 +773,8 @@ export function OutletTimingsPanel({ apiBase, active, storeTimezone }: Props) {
                                   daySchedule.slots[0] &&
                                   updateTimeSlot(daySchedule.day, daySchedule.slots[0].id, "closingTime", e.target.value)
                                 }
-                                disabled={!daySchedule.isOpen}
+                                disabled={slotInputsLocked}
+                                readOnly={readOnly}
                                 className={slotFieldClassName}
                               />
                               <ChevronDown
@@ -764,7 +783,7 @@ export function OutletTimingsPanel({ apiBase, active, storeTimezone }: Props) {
                               />
                             </div>
                           </div>
-                          {slotHasTimingData(daySchedule.slots[0]) && !daySchedule.isOutletClosed ? (
+                          {!readOnly && slotHasTimingData(daySchedule.slots[0]) && !daySchedule.isOutletClosed ? (
                             <div className="mt-1 flex flex-wrap items-center gap-1.5">
                               <button
                                 type="button"
@@ -838,7 +857,8 @@ export function OutletTimingsPanel({ apiBase, active, storeTimezone }: Props) {
                                   daySchedule.slots[1] &&
                                   updateTimeSlot(daySchedule.day, daySchedule.slots[1].id, "openingTime", e.target.value)
                                 }
-                                disabled={!daySchedule.isOpen}
+                                disabled={slotInputsLocked}
+                                readOnly={readOnly}
                                 className={slotFieldClassName}
                               />
                               <ChevronDown
@@ -859,7 +879,8 @@ export function OutletTimingsPanel({ apiBase, active, storeTimezone }: Props) {
                                   daySchedule.slots[1] &&
                                   updateTimeSlot(daySchedule.day, daySchedule.slots[1].id, "closingTime", e.target.value)
                                 }
-                                disabled={!daySchedule.isOpen}
+                                disabled={slotInputsLocked}
+                                readOnly={readOnly}
                                 className={slotFieldClassName}
                               />
                               <ChevronDown
@@ -868,7 +889,7 @@ export function OutletTimingsPanel({ apiBase, active, storeTimezone }: Props) {
                               />
                             </div>
                           </div>
-                          {slotHasTimingData(daySchedule.slots[1]) && !daySchedule.isOutletClosed ? (
+                          {!readOnly && slotHasTimingData(daySchedule.slots[1]) && !daySchedule.isOutletClosed ? (
                             <div className="mt-1 flex flex-wrap items-center gap-1.5">
                               <button
                                 type="button"
@@ -911,7 +932,7 @@ export function OutletTimingsPanel({ apiBase, active, storeTimezone }: Props) {
                       )}
 
                       <div className="flex items-start justify-center pt-1">
-                        {manualTimeChanges.has(daySchedule.day) ? (
+                        {!readOnly && manualTimeChanges.has(daySchedule.day) ? (
                           <button
                             type="button"
                             onClick={() => void saveSingleDayTimings(daySchedule.day)}

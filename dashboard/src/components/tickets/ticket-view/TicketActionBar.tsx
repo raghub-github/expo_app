@@ -38,6 +38,7 @@ import {
 } from "@/lib/tickets/ticket-path-utils";
 import { useTicketsNavPending } from "@/context/TicketsNavPendingContext";
 import { useCurrentRoute } from "@/context/CurrentRouteContext";
+import { useTicketDashboardAccess } from "@/hooks/useTicketDashboardAccess";
 import { queryKeys } from "@/lib/queryKeys";
 import { sanitizeTicketDisplayText } from "@/lib/tickets/ticket-display-subject";
 
@@ -324,7 +325,8 @@ export function TicketActionBar({
   };
 
   /** Reply / note / forward / merge are unavailable while Activity or C&D-SAT panel is open */
-  const composeLocked = showActivities || showCsat;
+  const { isViewOnly: ticketViewOnly } = useTicketDashboardAccess();
+  const composeLocked = showActivities || showCsat || ticketViewOnly;
 
   const spamMarked = ticketIsSpam === true;
   const spamDisabled =
@@ -497,6 +499,8 @@ export function TicketActionBar({
 
   return (
     <div className="flex flex-wrap items-center gap-1.5 py-0.5">
+      {!ticketViewOnly ? (
+      <>
       {/* Reply: shows reply section and scrolls to it */}
       <button
         type="button"
@@ -853,6 +857,8 @@ export function TicketActionBar({
           )}
         </div>
       )}
+      </>
+      ) : null}
       <div className="flex-1" />
 
       <button

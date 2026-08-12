@@ -395,6 +395,16 @@ export async function PUT(
       requestMethod: "PUT",
     });
 
+    try {
+      const { invalidateUserAccessCaches } = await import("@/lib/auth/invalidate-user-access-caches");
+      await invalidateUserAccessCaches({
+        supabaseAuthId: (user as { systemUserId?: string | null }).systemUserId ?? null,
+        email: user.email ?? null,
+      });
+    } catch {
+      // non-fatal
+    }
+
     return NextResponse.json({ success: true });
   } catch (error) {
     console.error("[PUT /api/users/[id]/access] Error:", error);

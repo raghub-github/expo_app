@@ -6,6 +6,7 @@ import { useTicketDetail } from "@/hooks/tickets/useTicketDetail";
 import { useTicketUpdate } from "@/hooks/tickets/useTicketUpdate";
 import { useTicketsAgentsQuery } from "@/hooks/tickets/useTicketsAgentsQuery";
 import { useTicketsReferenceDataQuery } from "@/hooks/tickets/useTicketsReferenceDataQuery";
+import { useTicketDashboardAccess } from "@/hooks/useTicketDashboardAccess";
 import { useToast } from "@/context/ToastContext";
 import { useRightSidebar } from "@/context/RightSidebarContext";
 import type { TicketOtherAgentViewer } from "@/lib/tickets/ticket-presence";
@@ -132,6 +133,7 @@ function TicketPropertiesPanelSkeleton() {
 export function TicketPropertiesPanel({ ticketId }: { ticketId: number | string }) {
   const { data: ticket, isLoading, error } = useTicketDetail(ticketId);
   const updateTicket = useTicketUpdate();
+  const { canMutate: canActOnTickets } = useTicketDashboardAccess();
   const { toast } = useToast();
   const rightSidebar = useRightSidebar();
   const ticketCopresenceLive = Boolean(rightSidebar?.ticketCopresenceLive);
@@ -830,6 +832,7 @@ export function TicketPropertiesPanel({ ticketId }: { ticketId: number | string 
         </div>
       </div>
 
+      {canActOnTickets ? (
       <div className="relative z-10 shrink-0 bg-[#f3f5f7] px-3 pb-2.5 pt-2.5">
         <button
           type="button"
@@ -844,6 +847,7 @@ export function TicketPropertiesPanel({ ticketId }: { ticketId: number | string 
           {updateTicket.isPending ? "Updating…" : "Update"}
         </button>
       </div>
+      ) : null}
     </div>
   );
 }

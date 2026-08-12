@@ -63,44 +63,76 @@ export function MerchantStoreScheduleActions({
   const [draft, setDraft] = useState(defaultScheduleDraft);
   const [rushPick, setRushPick] = useState(60);
 
-  const loadClosures = useCallback(async () => {
-    const res = await fetch(`/api/merchant/stores/${storeId}/schedule-off`, { credentials: "include" });
-    const data = await res.json().catch(() => ({}));
-    if (res.ok && Array.isArray(data.closures)) {
-      setClosures(data.closures as ClosureRow[]);
-    } else {
-      setClosures([]);
-    }
-  }, [storeId]);
-
-  const loadRush = useCallback(async () => {
-    const res = await fetch(`/api/merchant/stores/${storeId}/rush`, { credentials: "include" });
-    const data = await res.json().catch(() => ({}));
-    if (res.ok) {
-      setRush({
-        is_active: !!data.is_active,
-        duration_minutes:
-          typeof data.duration_minutes === "number" ? data.duration_minutes : null,
-        remaining_minutes: Number(data.remaining_minutes) || 0,
+  const loadClosures = useCallback(async (signal?: AbortSignal) => {
+    if (!storeId) return;
+    try {
+      const res = await fetch(`/api/merchant/stores/${storeId}/schedule-off`, {
+        credentials: "include",
+        signal,
       });
+      const data = await res.json().catch(() => ({}));
+      if (signal?.aborted) return;
+      if (res.ok && Array.isArray(data.closures)) {
+        setClosures(data.closures as ClosureRow[]);
+      } else {
+        setClosures([]);
+      }
+    } catch (e) {
+      if (signal?.aborted || (e instanceof DOMException && e.name === "AbortError")) return;
+      // Transient network / HMR — keep last known list
+    }
+  }, [storeId]);
+
+  const loadRush = useCallback(async (signal?: AbortSignal) => {
+    if (!storeId) return;
+    try {
+      const res = await fetch(`/api/merchant/stores/${storeId}/rush`, {
+        credentials: "include",
+        signal,
+      });
+      const data = await res.json().catch(() => ({}));
+      if (signal?.aborted) return;
+      if (res.ok) {
+        setRush({
+          is_active: !!data.is_active,
+          duration_minutes:
+            typeof data.duration_minutes === "number" ? data.duration_minutes : null,
+          remaining_minutes: Number(data.remaining_minutes) || 0,
+        });
+      }
+    } catch (e) {
+      if (signal?.aborted || (e instanceof DOMException && e.name === "AbortError")) return;
+      // Ignore Failed to fetch during Next compile/restart; UI keeps last status
     }
   }, [storeId]);
 
   useEffect(() => {
-    void loadRush();
-    const t = setInterval(() => void loadRush(), 60_000);
-    return () => clearInterval(t);
-  }, [loadRush]);
+    if (!storeId) return;
+    const ac = new AbortController();
+    void loadRush(ac.signal);
+    const t = setInterval(() => {
+      if (ac.signal.aborted) return;
+      void loadRush(ac.signal);
+    }, 60_000);
+    return () => {
+      ac.abort();
+      clearInterval(t);
+    };
+  }, [loadRush, storeId]);
 
   useEffect(() => {
-    if (scheduleModalOpen) {
-      setDraft(defaultScheduleDraft());
-      void loadClosures();
-    }
+    if (!scheduleModalOpen) return;
+    setDraft(defaultScheduleDraft());
+    const ac = new AbortController();
+    void loadClosures(ac.signal);
+    return () => ac.abort();
   }, [scheduleModalOpen, loadClosures]);
 
   useEffect(() => {
-    if (rushModalOpen) void loadRush();
+    if (!rushModalOpen) return;
+    const ac = new AbortController();
+    void loadRush(ac.signal);
+    return () => ac.abort();
   }, [rushModalOpen, loadRush]);
 
   const afterChange = async () => {

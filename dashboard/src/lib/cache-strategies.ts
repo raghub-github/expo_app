@@ -68,13 +68,14 @@ export const authCacheConfig: CacheConfig = {
 };
 
 /**
- * Permissions cache config (aggressive caching, safe to persist)
+ * Permissions cache config — short stale + focus refetch so superadmin access
+ * grants appear quickly on the target user's dashboard.
  */
 export const permissionsCacheConfig: CacheConfig = {
-  staleTime: 30 * 60 * 1000, // 30 minutes
+  staleTime: 15 * 1000, // 15 seconds
   gcTime: 24 * 60 * 60 * 1000, // 24 hours
-  refetchOnMount: false,
-  refetchOnWindowFocus: false,
+  refetchOnMount: true,
+  refetchOnWindowFocus: true,
   persist: true,
   persistMaxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
 };

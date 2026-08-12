@@ -21,12 +21,18 @@ export type ApiAuthSuccess = {
   supabase: Awaited<ReturnType<typeof createServerSupabaseClient>>;
 };
 
+/** Optional request handle for abort + cookie-first auth. `cookies` preferred when present. */
+export type ApiAuthRequest = Pick<NextRequest, "signal"> &
+  Partial<Pick<NextRequest, "cookies">>;
+
 /**
  * Canonical dashboard API auth.
  * Cookie-first via resolveSupabaseUser — safe under parallel Order Details loads.
+ * Pass the full NextRequest when available so we can read request.cookies
+ * (avoids next/headers `cookies()` misses during heavy compile/load).
  */
 export async function getAuthenticatedApiUser(
-  request?: Pick<NextRequest, "signal">
+  request?: ApiAuthRequest
 ): Promise<ApiAuthSuccess | ApiAuthFailure> {
   if (request?.signal.aborted) {
     return {
@@ -36,7 +42,18 @@ export async function getAuthenticatedApiUser(
     };
   }
 
-  const resolved = await resolveSupabaseUser({ maxAttempts: 2, retryDelayMs: 400 });
+  const cookieReader = request?.cookies
+    ? {
+        get: (name: string) => request.cookies!.get(name),
+        getAll: () => request.cookies!.getAll(),
+      }
+    : null;
+
+  const resolved = await resolveSupabaseUser({
+    maxAttempts: 2,
+    retryDelayMs: 400,
+    cookieReader,
+  });
 
   if (request?.signal.aborted) {
     return {
@@ -48,7 +65,9 @@ export async function getAuthenticatedApiUser(
 
   const { user, error: userError, supabase } = resolved;
 
-  if (user?.email) {
+  // Cookie/JWT may omit email while still identifying the user — prefer id.
+  // Requiring email alone caused intermittent 401s under parallel store loads.
+  if (user?.id) {
     return { ok: true, user, supabase };
   }
 

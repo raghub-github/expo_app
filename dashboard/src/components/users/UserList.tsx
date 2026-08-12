@@ -769,13 +769,32 @@ export function UserList({ onUserSelect, showActions = true }: UserListProps) {
         </div>
       )}
 
-      {/* Pagination */}
-      {listTab === "users" && pagination.totalPages > 0 && (
+      {/* Pagination + page size */}
+      {listTab === "users" && pagination.total > 0 && (
         <div className="flex flex-col sm:flex-row items-center justify-between gap-4 bg-white px-4 sm:px-6 py-4 rounded-lg border border-gray-200 shadow-sm">
-          <div className="text-xs sm:text-sm text-gray-700 text-center sm:text-left">
-            Showing <span className="font-semibold text-gray-900">{((pagination.page - 1) * pagination.limit) + 1}</span> to{" "}
-            <span className="font-semibold text-gray-900">{Math.min(pagination.page * pagination.limit, pagination.total)}</span> of{" "}
-            <span className="font-semibold text-gray-900">{pagination.total}</span> users
+          <div className="flex flex-col sm:flex-row items-center gap-3 sm:gap-4">
+            <div className="text-xs sm:text-sm text-gray-700 text-center sm:text-left">
+              Showing <span className="font-semibold text-gray-900">{((pagination.page - 1) * pagination.limit) + 1}</span> to{" "}
+              <span className="font-semibold text-gray-900">{Math.min(pagination.page * pagination.limit, pagination.total)}</span> of{" "}
+              <span className="font-semibold text-gray-900">{pagination.total}</span> users
+            </div>
+            <label className="inline-flex items-center gap-2 text-xs sm:text-sm text-gray-700">
+              <span className="whitespace-nowrap">Rows per page</span>
+              <select
+                value={pagination.limit}
+                onChange={(e) => {
+                  const limit = Number(e.target.value) || 20;
+                  setPagination((prev) => ({ ...prev, limit, page: 1 }));
+                }}
+                className="h-8 rounded-lg border-2 border-gray-300 bg-white px-2 text-sm font-medium text-gray-900 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-200"
+                aria-label="Rows per page"
+              >
+                <option value={10}>10</option>
+                <option value={20}>20</option>
+                <option value={50}>50</option>
+                <option value={100}>100</option>
+              </select>
+            </label>
           </div>
           <div className="flex items-center gap-1.5 flex-wrap justify-center">
             <button

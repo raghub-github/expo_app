@@ -3,6 +3,7 @@
 import { useEffect, useState, useCallback } from "react";
 import { Plus, Edit2, Trash2, X, ChevronDown, ChevronUp, Package } from "lucide-react";
 import { useToast } from "@/context/ToastContext";
+import { useMerchantDashboardAccess } from "@/hooks/useMerchantDashboardAccess";
 import { R2Image } from "@/components/ui/R2Image";
 import { ITEM_PLACEHOLDER_SVG } from "./menu-types";
 
@@ -35,6 +36,8 @@ type ComboDetail = Combo & {
 
 export function StoreCombosClient({ storeId }: { storeId: string }) {
   const { toast } = useToast();
+  const { canManageStore, isViewOnly, canMutate } = useMerchantDashboardAccess();
+  const readOnly = isViewOnly || !canManageStore || !canMutate;
   const [combos, setCombos] = useState<Combo[]>([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
@@ -249,6 +252,7 @@ export function StoreCombosClient({ storeId }: { storeId: string }) {
     <div className="flex flex-col h-full min-h-0">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 px-3 sm:px-4 py-3 border-b border-gray-200 bg-white">
         <h2 className="text-lg font-bold text-gray-900">Combos</h2>
+        {!readOnly ? (
         <button
           type="button"
           onClick={() => {
@@ -264,9 +268,10 @@ export function StoreCombosClient({ storeId }: { storeId: string }) {
           <Plus size={16} />
           New combo
         </button>
+        ) : null}
       </div>
 
-      {(showForm || editing) && (
+      {!readOnly && (showForm || editing) && (
         <div className="mx-3 sm:mx-4 mt-3 p-4 rounded-xl border border-orange-200 bg-orange-50/50">
           <h3 className="font-semibold text-gray-900 mb-3">{editing ? "Edit combo" : "New combo"}</h3>
           <div className="space-y-3">
@@ -354,6 +359,7 @@ export function StoreCombosClient({ storeId }: { storeId: string }) {
                       )}
                     </div>
                   </div>
+                  {!readOnly ? (
                   <div className="flex items-center gap-2 shrink-0" onClick={(e) => e.stopPropagation()}>
                     <button type="button" onClick={() => openEdit(c)} className="p-2 rounded-lg text-blue-600 hover:bg-blue-50" title="Edit combo">
                       <Edit2 size={16} />
@@ -362,6 +368,7 @@ export function StoreCombosClient({ storeId }: { storeId: string }) {
                       <Trash2 size={16} />
                     </button>
                   </div>
+                  ) : null}
                 </div>
 
                 {expandedId === c.id && (
@@ -450,6 +457,7 @@ export function StoreCombosClient({ storeId }: { storeId: string }) {
                                       </span>
                                     )}
                                   </span>
+                                {!readOnly ? (
                                 <button
                                   type="button"
                                   className="p-1.5 rounded text-red-600 hover:bg-red-50 text-xs"
@@ -476,6 +484,7 @@ export function StoreCombosClient({ storeId }: { storeId: string }) {
                                 >
                                   Remove
                                 </button>
+                                ) : null}
                               </li>
                               );
                             })}
@@ -486,7 +495,7 @@ export function StoreCombosClient({ storeId }: { storeId: string }) {
                           </p>
                         )}
 
-                        {detail.id && (
+                        {!readOnly && detail.id && (
                           <div className="mt-3 space-y-2">
                             <div className="flex items-center justify-between">
                               <h4 className="text-xs font-semibold text-gray-700">
@@ -608,7 +617,7 @@ export function StoreCombosClient({ storeId }: { storeId: string }) {
       </div>
 
       {/* Delete confirmation modal */}
-      {deleteConfirm && (
+      {!readOnly && deleteConfirm && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50" role="dialog" aria-modal="true" aria-labelledby="delete-combo-title">
           <div className="bg-white rounded-xl shadow-xl max-w-md w-full p-5">
             <h3 id="delete-combo-title" className="text-lg font-semibold text-gray-900">Delete combo?</h3>

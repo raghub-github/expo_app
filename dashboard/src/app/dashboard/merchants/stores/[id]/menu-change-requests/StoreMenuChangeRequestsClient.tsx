@@ -5,6 +5,7 @@ import { createPortal } from "react-dom";
 import { useQueryClient } from "@tanstack/react-query";
 import { FileText, ImageIcon, X } from "lucide-react";
 import { useToast } from "@/context/ToastContext";
+import { useMerchantDashboardAccess } from "@/hooks/useMerchantDashboardAccess";
 import { R2Image } from "@/components/ui/R2Image";
 import { useStoreMenuQuery } from "@/hooks/queries/useMerchantStoreQueries";
 import { queryKeys } from "@/lib/queryKeys";
@@ -35,6 +36,8 @@ const PHOTO_REJECT_PRESETS = [
 
 export function StoreMenuChangeRequestsClient({ storeId }: { storeId: string }) {
   const { toast } = useToast();
+  const { canApproveMenuItems, isViewOnly } = useMerchantDashboardAccess();
+  const canReviewMenu = canApproveMenuItems && !isViewOnly;
   const queryClient = useQueryClient();
   const menuQuery = useStoreMenuQuery(storeId);
   const data = menuQuery.data ?? null;
@@ -196,6 +199,10 @@ export function StoreMenuChangeRequestsClient({ storeId }: { storeId: string }) 
   }, [storePublicId, crStatus, crType]);
 
   const handleApproveCr = async (id: number) => {
+    if (!canReviewMenu) {
+      toast("View-only access — approve/reject is disabled");
+      return;
+    }
     setCrActionLoadingId(id);
     try {
       const res = await fetch(`/api/merchant-menu/change-requests/${id}/approve`, { method: "POST" });
@@ -232,6 +239,10 @@ export function StoreMenuChangeRequestsClient({ storeId }: { storeId: string }) 
   };
 
   const handleRejectCr = async (id: number, reviewedReason?: string) => {
+    if (!canReviewMenu) {
+      toast("View-only access — approve/reject is disabled");
+      return;
+    }
     const reason = (reviewedReason ?? crRejectReason).trim();
     if (reason.length < 3) {
       toast("Add a rejection reason (min 3 characters).");
@@ -383,6 +394,10 @@ export function StoreMenuChangeRequestsClient({ storeId }: { storeId: string }) 
   }, [crDetailModal, crShowAllFields, crAllKeys, crEditedKeysOnly]);
 
   const handleApprovePhoto = async (item: MenuItem) => {
+    if (!canReviewMenu) {
+      toast("View-only access — approve/reject is disabled");
+      return;
+    }
     setPhotoActionLoading("APPROVE");
     try {
       const res = await fetch(`/api/merchant/stores/${storeId}/menu/items/${item.id}/approval`, {
@@ -424,6 +439,10 @@ export function StoreMenuChangeRequestsClient({ storeId }: { storeId: string }) 
   };
 
   const handleRejectPhoto = async (item: MenuItem, reasonInput?: string) => {
+    if (!canReviewMenu) {
+      toast("View-only access — approve/reject is disabled");
+      return;
+    }
     const reason = (reasonInput ?? photoRejectReason).trim();
     if (reason.length < 3) {
       const message = "Rejection reason is required (min 3 characters).";
@@ -475,6 +494,17 @@ export function StoreMenuChangeRequestsClient({ storeId }: { storeId: string }) 
       setPhotoActionLoading(null);
     }
   };
+
+  if (isViewOnly) {
+    return (
+      <div className="flex flex-1 min-h-0 flex-col items-center justify-center bg-slate-50 px-6 py-16 text-center">
+        <h1 className="text-lg font-bold text-gray-900">Menu change requests</h1>
+        <p className="mt-2 max-w-md text-sm text-gray-500">
+          You don’t have permission to view or review menu change requests for this store.
+        </p>
+      </div>
+    );
+  }
 
   return (
     <div className="flex flex-1 min-h-0 flex-col bg-slate-50">
@@ -694,7 +724,7 @@ export function StoreMenuChangeRequestsClient({ storeId }: { storeId: string }) 
                           >
                             Review
                           </button>
-                          {r.status === "PENDING" ? (
+                          {r.status === "PENDING" && canReviewMenu ? (
                             <>
                               <button
                                 type="button"
@@ -882,7 +912,7 @@ export function StoreMenuChangeRequestsClient({ storeId }: { storeId: string }) 
                 )}
               </div>
 
-              {String(crDetailModal.status) === "PENDING" ? (
+              {String(crDetailModal.status) === "PENDING" && canReviewMenu ? (
                 <div className="shrink-0 space-y-3 border-t border-gray-100 bg-white px-4 py-3">
                   <div>
                     <label className="mb-1 block text-xs font-bold text-gray-700">
@@ -1002,24 +1032,30 @@ export function StoreMenuChangeRequestsClient({ storeId }: { storeId: string }) 
                   ) : null}
                 </div>
               </div>
-              <div className="px-4 py-3 border-t border-gray-200 flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => void handleRejectPhoto(photoReviewItem)}
-                  disabled={photoActionLoading !== null}
-                  className="flex-1 inline-flex items-center justify-center px-3 py-2 rounded-md border border-red-200 text-xs font-bold text-red-700 bg-red-50 hover:bg-red-100 disabled:opacity-50"
-                >
-                  {photoActionLoading === "REJECT" ? "Rejecting…" : "Reject photo"}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => void handleApprovePhoto(photoReviewItem)}
-                  disabled={photoActionLoading !== null}
-                  className="flex-1 inline-flex items-center justify-center px-3 py-2 rounded-md text-xs font-bold text-white bg-green-600 hover:bg-green-700 disabled:opacity-50"
-                >
-                  {photoActionLoading === "APPROVE" ? "Approving…" : "Approve photo"}
-                </button>
-              </div>
+              {canReviewMenu ? (
+                <div className="px-4 py-3 border-t border-gray-200 flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => void handleRejectPhoto(photoReviewItem)}
+                    disabled={photoActionLoading !== null}
+                    className="flex-1 inline-flex items-center justify-center px-3 py-2 rounded-md border border-red-200 text-xs font-bold text-red-700 bg-red-50 hover:bg-red-100 disabled:opacity-50"
+                  >
+                    {photoActionLoading === "REJECT" ? "Rejecting…" : "Reject photo"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void handleApprovePhoto(photoReviewItem)}
+                    disabled={photoActionLoading !== null}
+                    className="flex-1 inline-flex items-center justify-center px-3 py-2 rounded-md text-xs font-bold text-white bg-green-600 hover:bg-green-700 disabled:opacity-50"
+                  >
+                    {photoActionLoading === "APPROVE" ? "Approving…" : "Approve photo"}
+                  </button>
+                </div>
+              ) : (
+                <div className="px-4 py-3 border-t border-gray-200">
+                  <p className="text-xs font-medium text-gray-500">View only — photo approve/reject disabled</p>
+                </div>
+              )}
             </div>
           </div>,
           document.body

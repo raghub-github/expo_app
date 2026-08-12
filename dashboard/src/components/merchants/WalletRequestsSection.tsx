@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 import { useToast } from "@/context/ToastContext";
 import { usePermission } from "@/hooks/usePermission";
+import { useMerchantDashboardAccess } from "@/hooks/useMerchantDashboardAccess";
 import {
   useGetWalletRequestsQuery,
   useCreateWalletRequestMutation,
@@ -40,6 +41,7 @@ export function WalletRequestsSection({
 }) {
   const { toast } = useToast();
   const { isSuperAdmin, permissions } = usePermission();
+  const { canEditWallet, hasAdminMerchantAccess, isViewOnly } = useMerchantDashboardAccess();
   const [expanded, setExpanded] = useState(false);
   const [showForm, setShowForm] = useState(false);
   const [formDirection, setFormDirection] = useState<"CREDIT" | "DEBIT">("CREDIT");
@@ -48,8 +50,10 @@ export function WalletRequestsSection({
   const [formOrderId, setFormOrderId] = useState("");
   const [actioningId, setActioningId] = useState<number | null>(null);
 
-  const canApprove = isSuperAdmin || hasAdminRole(permissions?.roles);
-  const canRequest = true;
+  const canApprove =
+    !isViewOnly &&
+    (isSuperAdmin || hasAdminMerchantAccess || hasAdminRole(permissions?.roles));
+  const canRequest = !isViewOnly && canEditWallet;
 
   const {
     data: listData,

@@ -450,14 +450,45 @@ export async function fetchTicketDetailById(
   }
 }
 
+/** Cap parallel hover/list prefetches so they cannot 503-storm auth under load. */
+const PREFETCH_MAX_IN_FLIGHT = 2;
+let prefetchInFlight = 0;
+const prefetchQueue: Array<() => void> = [];
+
+function runPrefetchQueue(): void {
+  while (prefetchInFlight < PREFETCH_MAX_IN_FLIGHT && prefetchQueue.length > 0) {
+    const next = prefetchQueue.shift();
+    if (next) next();
+  }
+}
+
 export function prefetchTicketDetail(queryClient: QueryClient, ticketId: number | string): void {
   const id = String(ticketId).trim();
   if (!id) return;
-  void queryClient.prefetchQuery({
-    queryKey: queryKeys.tickets.detail(id),
-    queryFn: ({ signal }) => fetchTicketDetailById(id, signal),
-    staleTime: 60 * 1000,
-  });
+  if (queryClient.getQueryData(queryKeys.tickets.detail(id))) return;
+  if (queryClient.getQueryState(queryKeys.tickets.detail(id))?.fetchStatus === "fetching") return;
+
+  const start = () => {
+    prefetchInFlight += 1;
+    void queryClient
+      .prefetchQuery({
+        queryKey: queryKeys.tickets.detail(id),
+        queryFn: ({ signal }) => fetchTicketDetailById(id, signal),
+        staleTime: 60 * 1000,
+      })
+      .finally(() => {
+        prefetchInFlight = Math.max(0, prefetchInFlight - 1);
+        runPrefetchQueue();
+      });
+  };
+
+  if (prefetchInFlight >= PREFETCH_MAX_IN_FLIGHT) {
+    prefetchQueue.push(start);
+    // Drop oldest queued prefetches — hover intent is only for the latest rows.
+    while (prefetchQueue.length > 4) prefetchQueue.shift();
+    return;
+  }
+  start();
 }
 
 export function useTicketDetail(ticketId: number | string | null) {
@@ -470,14 +501,16 @@ export function useTicketDetail(ticketId: number | string | null) {
     enabled: id != null,
     staleTime: 60 * 1000,
     /**
-     * One HTTP call per cache entry unless something explicitly invalidates.
-     * Global default retry:1 + refetchOnMount callbacks were still hammering 404s.
+     * Avoid refetch storms on 404/401/403.
+     * Retry 503/502 (auth race / compile overload) a few times with backoff.
      */
     retry: (failureCount, error) => {
       const status = (error as { httpStatus?: number } | null)?.httpStatus;
       if (status === 404 || status === 401 || status === 403) return false;
+      if (status === 503 || status === 502) return failureCount < 3;
       return failureCount < 1;
     },
+    retryDelay: (attemptIndex) => Math.min(500 * 2 ** attemptIndex, 4000),
     refetchOnMount: false,
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,

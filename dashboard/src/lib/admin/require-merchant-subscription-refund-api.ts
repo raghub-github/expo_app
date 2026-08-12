@@ -16,8 +16,12 @@ import { NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { getSystemUserByAuthId, getSystemUserByEmail } from "@/lib/auth/user-mapping";
 import { isInvalidRefreshToken, signOutIfSessionDead } from "@/lib/auth/session-errors";
-import { hasDashboardAccess, isSuperAdmin } from "@/lib/permissions/engine";
+import { getUserAccessPoints, hasDashboardAccess, isSuperAdmin } from "@/lib/permissions/engine";
 import { canPerformActionByAuth } from "@/lib/permissions/actions";
+import {
+  isMerchantViewOnlyAccess,
+  merchantCanMutate,
+} from "@/lib/merchants/merchant-dashboard-access";
 
 type OkResult = {
   ok: true;
@@ -125,12 +129,20 @@ export async function requireMerchantSubscriptionViewApi(): Promise<OkResult | F
     };
   }
 
-  const canRefund = await canPerformActionByAuth(base.authId, base.email, "MERCHANT", "REFUND");
+  const accessPoints = await getUserAccessPoints(base.systemUserId, "MERCHANT");
+  const viewOnly =
+    isMerchantViewOnlyAccess({ accessPoints }) || !merchantCanMutate({ accessPoints });
+  const canRefundAction = await canPerformActionByAuth(
+    base.authId,
+    base.email,
+    "MERCHANT",
+    "REFUND"
+  );
   return {
     ok: true,
     systemUserId: base.systemUserId,
     isSuperAdmin: false,
-    canRefund,
+    canRefund: !viewOnly && canRefundAction,
     authId: base.authId,
     email: base.email,
   };

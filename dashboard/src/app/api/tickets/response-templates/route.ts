@@ -1,10 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createServerSupabaseClient } from "@/lib/supabase/server";
+import { getAuthenticatedApiUser, authFailureResponse } from "@/lib/auth/api-session";
 import { getSql } from "@/lib/db/client";
-import { getSystemUserByEmail } from "@/lib/db/operations/users";
+import { resolveSystemUserForSupabaseAuth } from "@/lib/auth/user-mapping";
 import { isSuperAdmin } from "@/lib/permissions/engine";
 import { canPerformActionByAuth } from "@/lib/permissions/actions";
-import { isInvalidRefreshToken, signOutIfSessionDead } from "@/lib/auth/session-errors";
 
 export const runtime = "nodejs";
 
@@ -15,41 +14,28 @@ function asTemplateType(v: unknown): TemplateType | null {
   return null;
 }
 
-async function requireAuth() {
-  const supabase = await createServerSupabaseClient();
-  const {
-    data: { user },
-    error: userError,
-  } = await supabase.auth.getUser();
-  if (userError) {
-    if (isInvalidRefreshToken(userError)) {
-      await signOutIfSessionDead(supabase, userError);
-      return {
-        error: NextResponse.json(
-          { success: false, error: "Session invalid", code: "SESSION_INVALID" },
-          { status: 401 }
-        ),
-      };
-    }
-    return { error: NextResponse.json({ success: false, error: "Not authenticated" }, { status: 401 }) };
+async function requireAuth(request?: NextRequest) {
+  const auth = await getAuthenticatedApiUser(request);
+  if (!auth.ok) {
+    return { error: authFailureResponse(auth) };
   }
-  if (!user?.email) {
-    return { error: NextResponse.json({ success: false, error: "Not authenticated" }, { status: 401 }) };
-  }
-  const systemUser = await getSystemUserByEmail(user.email);
+  const { user } = auth;
+
+  const systemUser = await resolveSystemUserForSupabaseAuth(user.id, user.email);
   if (!systemUser) {
     return { error: NextResponse.json({ success: false, error: "User not found" }, { status: 404 }) };
   }
 
+  const email = user.email ?? systemUser.email;
   const [superAdmin, canViewManager, canCreateManager, canUpdateManager] = await Promise.all([
-    isSuperAdmin(user.id, user.email),
-    canPerformActionByAuth(user.id, user.email, "TICKET", "VIEW", "TICKET", {
+    isSuperAdmin(user.id, email),
+    canPerformActionByAuth(user.id, email, "TICKET", "VIEW", "TICKET", {
       access_point_group: "TICKET_QUEUE_MANAGER",
     }),
-    canPerformActionByAuth(user.id, user.email, "TICKET", "CREATE", "TICKET", {
+    canPerformActionByAuth(user.id, email, "TICKET", "CREATE", "TICKET", {
       access_point_group: "TICKET_QUEUE_MANAGER",
     }),
-    canPerformActionByAuth(user.id, user.email, "TICKET", "UPDATE", "TICKET", {
+    canPerformActionByAuth(user.id, email, "TICKET", "UPDATE", "TICKET", {
       access_point_group: "TICKET_QUEUE_MANAGER",
     }),
   ]);
@@ -63,8 +49,8 @@ async function requireAuth() {
   return { user, systemUser, canManage };
 }
 
-export async function GET() {
-  const auth = await requireAuth();
+export async function GET(request: NextRequest) {
+  const auth = await requireAuth(request);
   if ("error" in auth && auth.error) return auth.error;
 
   try {
@@ -123,7 +109,7 @@ export async function GET() {
 }
 
 export async function POST(request: NextRequest) {
-  const auth = await requireAuth();
+  const auth = await requireAuth(request);
   if ("error" in auth && auth.error) return auth.error;
   if (!auth.canManage) {
     return NextResponse.json({ success: false, error: "Insufficient permissions" }, { status: 403 });

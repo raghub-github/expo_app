@@ -20,6 +20,12 @@ import {
   Star,
   AlertTriangle,
   Loader2,
+  Layers,
+  Image as ImageIcon,
+  BarChart2,
+  BarChart3,
+  Headphones,
+  UserCheck,
 } from "lucide-react";
 import { toast } from "sonner";
 import { UI_STRINGS } from "@/lib/localStoreStatusEngineStore";
@@ -36,6 +42,8 @@ import { SettingsNavBar } from "./SettingsSidebar";
 import { OutletTimingsPanel } from "./OutletTimingsPanel";
 import { useStoreContext } from "../StoreContext";
 import { useStore } from "@/hooks/useStore";
+import { useMerchantDashboardAccess } from "@/hooks/useMerchantDashboardAccess";
+import { billingCycleLabel, billingCycleSuffix } from "@/lib/billingCycleLabel";
 
 type StoreDetail = {
   id: number;
@@ -114,38 +122,62 @@ const FALLBACK_PLANS = [
   { id: 3, plan_name: "Pro Plan", plan_code: "ENTERPRISE", description: "For established businesses", price: 299, billing_cycle: "MONTHLY", max_menu_items: 70, max_cuisines: 35, max_menu_categories: 25, image_upload_allowed: true, max_image_uploads: 60, is_popular: false, analytics_access: true, priority_support: true, advanced_analytics: true, marketing_automation: true, custom_api_integrations: true, dedicated_account_manager: true },
 ];
 
-function getPlanBenefits(plan: {
-  max_menu_items?: number | null;
-  max_cuisines?: number | null;
-  max_menu_categories?: number | null;
-  image_upload_allowed?: boolean;
-  max_image_uploads?: number | null;
-  analytics_access?: boolean;
-  advanced_analytics?: boolean;
-  priority_support?: boolean;
-  marketing_automation?: boolean;
-  custom_api_integrations?: boolean;
-  dedicated_account_manager?: boolean;
-}): string[] {
-  const b: string[] = [];
-  if (plan.max_menu_items != null) b.push(`${plan.max_menu_items} menu items`);
-  if (plan.max_cuisines != null) b.push(`${plan.max_cuisines} cuisines`);
-  if (plan.max_menu_categories != null) b.push(`${plan.max_menu_categories} categories`);
-  if (plan.image_upload_allowed && plan.max_image_uploads != null) b.push(`${plan.max_image_uploads} image uploads`);
-  else if (plan.image_upload_allowed) b.push("Image uploads");
-  if (plan.analytics_access) b.push("Analytics");
-  if (plan.advanced_analytics) b.push("Advanced analytics");
-  if (plan.priority_support) b.push("Priority support");
-  if (plan.marketing_automation) b.push("Marketing automation");
-  if (plan.custom_api_integrations) b.push("API integrations");
-  if (plan.dedicated_account_manager) b.push("Dedicated manager");
-  return b;
+type PlanCardTier = "free" | "premium" | "enterprise";
+
+function resolvePlanCardTier(plan: { plan_code?: string | null; price?: number | null }): PlanCardTier {
+  const planCode = String(plan.plan_code || "").toUpperCase();
+  const isEnterprise = planCode === "ENTERPRISE" || planCode === "PRO";
+  const isPremium =
+    planCode === "PREMIUM" ||
+    planCode === "GROWTH" ||
+    (Number(plan.price ?? 0) > 0 && !isEnterprise);
+  return isEnterprise ? "enterprise" : isPremium ? "premium" : "free";
 }
+
+const PLAN_CARD_STYLES: Record<
+  PlanCardTier,
+  {
+    wrapper: string;
+    headerBg: string;
+    badge: string | null;
+    priceColor: string;
+    featureValue: string;
+  }
+> = {
+  free: {
+    wrapper:
+      "rounded-2xl border-2 bg-white border-gray-200 shadow-sm hover:shadow-md hover:border-gray-300 hover:-translate-y-0.5 transition-all duration-300 overflow-hidden",
+    headerBg: "bg-gradient-to-r from-slate-700 to-slate-600",
+    badge: null,
+    priceColor: "text-white",
+    featureValue: "text-gray-700 font-semibold",
+  },
+  premium: {
+    wrapper:
+      "rounded-2xl border-2 bg-white border-orange-300 shadow-md hover:shadow-lg hover:border-orange-400 hover:-translate-y-0.5 transition-all duration-300 overflow-hidden relative lg:-mt-3 lg:scale-[1.03] z-[1]",
+    headerBg: "bg-gradient-to-r from-orange-600 to-amber-500",
+    badge:
+      "inline-flex items-center px-3 py-1 rounded-full text-[10px] font-extrabold tracking-wide bg-white/20 text-white ring-1 ring-white/35 backdrop-blur-sm",
+    priceColor: "text-white",
+    featureValue: "text-orange-700 font-semibold",
+  },
+  enterprise: {
+    wrapper:
+      "rounded-2xl border-2 bg-white border-purple-300 shadow-sm hover:shadow-md hover:border-purple-400 hover:-translate-y-0.5 transition-all duration-300 overflow-hidden relative",
+    headerBg: "bg-gradient-to-r from-indigo-700 to-purple-700",
+    badge:
+      "inline-flex items-center px-3 py-1 rounded-full text-[10px] font-extrabold tracking-wide bg-white/20 text-white ring-1 ring-white/35 backdrop-blur-sm",
+    priceColor: "text-white",
+    featureValue: "text-purple-700 font-semibold",
+  },
+};
 
 export function StoreSettingsClient({ storeId }: { storeId: string }) {
   const searchParams = useAppSearchParams();
   const { store: layoutStore } = useStoreContext();
   const { store: queryStore } = useStore(storeId);
+  const { canOperateStore, canManageStore, isViewOnly } = useMerchantDashboardAccess();
+  const canEditSettings = !isViewOnly && (canOperateStore || canManageStore);
   const [loading, setLoading] = useState(() => !(layoutStore as StoreDetail));
   const [store, setStore] = useState<StoreDetail | null>(() => (layoutStore as StoreDetail) ?? null);
   const [activeTab, setActiveTab] = useState<string>(() => {
@@ -333,6 +365,10 @@ export function StoreSettingsClient({ storeId }: { storeId: string }) {
   };
 
   const handleDelistSubmit = async () => {
+    if (!canEditSettings) {
+      toast.error("View-only access — cannot delist store.");
+      return;
+    }
     if (!storeId || !delistType || !delistReasonCategory || delistRemarks.trim().length < 10 || !delistConfirmed) {
       toast.error("Please fill all delist fields, add a clear remark, and confirm the action.");
       return;
@@ -433,6 +469,10 @@ export function StoreSettingsClient({ storeId }: { storeId: string }) {
   }, [storeId, hasCachedStore, loadStore, loadSettings, loadPlans]);
 
   const handleSaveOperations = async () => {
+    if (!canEditSettings) {
+      toast.error("View-only access — cannot update store settings.");
+      return;
+    }
     setIsSaving(true);
     try {
       const res = await fetch(`${base}/store-settings`, {
@@ -456,6 +496,10 @@ export function StoreSettingsClient({ storeId }: { storeId: string }) {
   };
 
   const handleSaveDelivery = async () => {
+    if (!canEditSettings) {
+      toast.error("View-only access — cannot update store settings.");
+      return;
+    }
     const radiusNum = Number(deliveryRadiusKm);
     if (Number.isNaN(radiusNum) || radiusNum < 1 || radiusNum > 50) {
       toast.error("Delivery radius must be between 1 and 50 km.");
@@ -488,6 +532,12 @@ export function StoreSettingsClient({ storeId }: { storeId: string }) {
   };
 
   const handleConfirmDeliveryModeWarning = async () => {
+    if (!canEditSettings) {
+      setDeliveryModeWarningOpen(false);
+      setPendingDeliveryMode(null);
+      toast.error("View-only access — cannot update delivery mode.");
+      return;
+    }
     if (pendingDeliveryMode == null) {
       setDeliveryModeWarningOpen(false);
       setPendingDeliveryMode(null);
@@ -913,6 +963,7 @@ export function StoreSettingsClient({ storeId }: { storeId: string }) {
           <OutletTimingsPanel
             apiBase={base}
             active
+            readOnly={!canEditSettings}
             storeTimezone={
               typeof effectiveStore?.timezone === "string" ? effectiveStore.timezone : null
             }
@@ -955,6 +1006,7 @@ export function StoreSettingsClient({ storeId }: { storeId: string }) {
                     manualActivationLock={statusCard.manualActivationLock}
                     showScheduledOffStartsCountdown={statusCard.showScheduledOffStartsCountdown}
                     scheduledOffStartsInMs={statusCard.scheduledOffStartsInMs}
+                    canToggleStore={canEditSettings && canOperateStore}
                     onStoreToggle={() => handleStoreToggle({ isDelisted })}
                     onManualLockChange={(enabled) => {
                       statusCard.setManualActivationLock(enabled);
@@ -968,12 +1020,13 @@ export function StoreSettingsClient({ storeId }: { storeId: string }) {
                   <h3 className="text-sm font-semibold text-gray-900">Order handling</h3>
                   <p className="mt-0.5 text-xs text-gray-500 mb-3">Auto-accept and preparation buffer.</p>
                   <div className="space-y-3">
-                    <label className="flex items-center gap-2">
+                    <label className={`flex items-center gap-2 ${!canEditSettings ? "opacity-60" : ""}`}>
                       <input
                         type="checkbox"
                         checked={autoAcceptOrders}
                         onChange={(e) => setAutoAcceptOrders(e.target.checked)}
-                        className="rounded border-gray-300"
+                        disabled={!canEditSettings}
+                        className="rounded border-gray-300 disabled:cursor-not-allowed"
                       />
                       <span className="text-sm font-medium text-gray-900">Auto-accept orders</span>
                     </label>
@@ -987,9 +1040,11 @@ export function StoreSettingsClient({ storeId }: { storeId: string }) {
                           min={0}
                           value={preparationBufferMin}
                           onChange={(e) => setPreparationBufferMin(Number(e.target.value) || 0)}
-                          className="w-24 rounded-lg border border-gray-300 px-3 py-1.5 text-sm"
+                          disabled={!canEditSettings}
+                          className="w-24 rounded-lg border border-gray-300 px-3 py-1.5 text-sm disabled:bg-gray-50 disabled:cursor-not-allowed"
                         />
                       </div>
+                      {canEditSettings ? (
                       <button
                         type="button"
                         onClick={handleSaveOperations}
@@ -999,10 +1054,12 @@ export function StoreSettingsClient({ storeId }: { storeId: string }) {
                         <Save className="h-4 w-4" />
                         {isSaving ? "Saving..." : "Save changes"}
                       </button>
+                      ) : null}
                     </div>
                   </div>
                 </div>
 {/* Right: Delist / Relist card (depends on status) */}
+                {canEditSettings ? (
                 <div className="rounded-lg border border-red-200 bg-red-50 p-4">
                   <div className="flex items-start gap-2">
                     <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-red-100 text-red-700">
@@ -1140,10 +1197,11 @@ export function StoreSettingsClient({ storeId }: { storeId: string }) {
                     </div>
                   </div>
                 </div>
+                ) : null}
               </div>
 
               {/* Relist store modal */}
-              {relistModalOpen && (
+              {relistModalOpen && canEditSettings && (
                 <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
                   <div
                     className="absolute inset-0 bg-black/50"
@@ -1281,7 +1339,14 @@ export function StoreSettingsClient({ storeId }: { storeId: string }) {
                   <div className="mt-auto pt-2 border-t border-gray-100">
                     <Toggle
                       checked={gatimitraDelivery}
+                      disabled={!canEditSettings}
+                      title={
+                        !canEditSettings
+                          ? "View-only access — delivery mode locked"
+                          : undefined
+                      }
                       onChange={(on) => {
+                        if (!canEditSettings) return;
                         if (on) {
                           setPendingDeliveryMode({ gatimitra: true, self: false });
                           setDeliveryModeWarningOpen(true);
@@ -1329,13 +1394,16 @@ export function StoreSettingsClient({ storeId }: { storeId: string }) {
                   <div className="mt-auto pt-2 border-t border-gray-100">
                     <Toggle
                       checked={selfDelivery}
-                      disabled={!selfDelivery}
+                      disabled={!canEditSettings || !selfDelivery}
                       title={
-                        selfDelivery
-                          ? "Turn off self delivery to use GatiMitra riders"
-                          : "Self delivery cannot be enabled from the merchant portal"
+                        !canEditSettings
+                          ? "View-only access — delivery mode locked"
+                          : selfDelivery
+                            ? "Turn off self delivery to use GatiMitra riders"
+                            : "Self delivery cannot be enabled from the merchant portal"
                       }
                       onChange={(on) => {
+                        if (!canEditSettings) return;
                         if (on) {
                           toast.error(
                             "Self delivery cannot be turned on from the merchant portal. Contact support if you need it enabled."
@@ -1376,12 +1444,20 @@ export function StoreSettingsClient({ storeId }: { storeId: string }) {
                         min={1}
                         max={50}
                         value={deliveryRadiusKm}
+                        disabled={!canEditSettings}
+                        title={
+                          !canEditSettings
+                            ? "View-only access — delivery radius locked"
+                            : undefined
+                        }
                         onChange={(e) => {
+                          if (!canEditSettings) return;
                           const v = e.target.value === "" ? "" : Number(e.target.value);
                           if (v === "") setDeliveryRadiusKm(5);
                           else if (!Number.isNaN(v)) setDeliveryRadiusKm(v);
                         }}
                         onBlur={() => {
+                          if (!canEditSettings) return;
                           const n = Number(deliveryRadiusKm);
                           if (Number.isNaN(n) || n < 1) setDeliveryRadiusKm(1);
                           else if (n > 50) {
@@ -1389,34 +1465,36 @@ export function StoreSettingsClient({ storeId }: { storeId: string }) {
                             toast.error("Delivery radius must be between 1 and 50 km.");
                           }
                         }}
-                        className="w-20 rounded-lg border border-gray-300 px-2 py-1.5 text-sm focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500"
+                        className="w-20 rounded-lg border border-gray-300 px-2 py-1.5 text-sm focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 disabled:cursor-not-allowed disabled:bg-gray-50 disabled:opacity-60"
                       />
                     </div>
-                    <button
-                      type="button"
-                      onClick={handleSaveDelivery}
-                      disabled={
-                        isSaving ||
-                        deliveryRadiusKm === savedDeliveryRadiusKm ||
-                        (() => {
-                          const n = Number(deliveryRadiusKm);
-                          return Number.isNaN(n) || n < 1 || n > 50;
-                        })()
-                      }
-                      className="inline-flex items-center gap-2 rounded-lg bg-gradient-to-r from-emerald-500 to-teal-600 px-3 py-2 text-sm font-medium text-white shadow-sm hover:from-emerald-600 hover:to-teal-700 disabled:opacity-50 disabled:cursor-not-allowed"
-                    >
-                      {isSaving ? (
-                        <>
-                          <Loader2 className="h-4 w-4 animate-spin" />
-                          Saving...
-                        </>
-                      ) : (
-                        <>
-                          <Save className="h-4 w-4" />
-                          Save
-                        </>
-                      )}
-                    </button>
+                    {canEditSettings ? (
+                      <button
+                        type="button"
+                        onClick={handleSaveDelivery}
+                        disabled={
+                          isSaving ||
+                          deliveryRadiusKm === savedDeliveryRadiusKm ||
+                          (() => {
+                            const n = Number(deliveryRadiusKm);
+                            return Number.isNaN(n) || n < 1 || n > 50;
+                          })()
+                        }
+                        className="inline-flex items-center gap-2 rounded-lg bg-gradient-to-r from-emerald-500 to-teal-600 px-3 py-2 text-sm font-medium text-white shadow-sm hover:from-emerald-600 hover:to-teal-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        {isSaving ? (
+                          <>
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                            Saving...
+                          </>
+                        ) : (
+                          <>
+                            <Save className="h-4 w-4" />
+                            Save
+                          </>
+                        )}
+                      </button>
+                    ) : null}
                   </div>
                 </div>
               </div>
@@ -1499,16 +1577,19 @@ export function StoreSettingsClient({ storeId }: { storeId: string }) {
 
           {activeTab === "plans" && (
             <>
-              <h2 className="text-lg font-semibold text-gray-900 flex items-center gap-2">
-                <Crown className="h-5 w-5" />
-                Plans & Subscription
-              </h2>
+              <div className="bg-white rounded-xl border border-gray-200 p-4 sm:p-6 shadow-sm">
+                <div className="flex flex-wrap items-center justify-between gap-2 mb-4 sm:mb-6">
+                  <h2 className="text-lg sm:text-xl font-bold text-gray-900 flex items-center gap-2">
+                    <Crown className="h-5 w-5" />
+                    Available Plans
+                  </h2>
+                </div>
               {plansLoading ? (
                 <div className="flex items-center justify-center py-12">
-                  <div className="h-8 w-8 animate-spin rounded-full border-2 border-indigo-600 border-t-transparent" />
+                  <div className="h-8 w-8 animate-spin rounded-full border-2 border-orange-500 border-t-transparent" />
                 </div>
               ) : (
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 sm:gap-6">
                   {effectivePlans.map((plan) => {
                     const isFreePlan =
                       plan.price === 0 || String(plan.plan_code || "").toLowerCase().includes("free");
@@ -1518,94 +1599,205 @@ export function StoreSettingsClient({ storeId }: { storeId: string }) {
                         : isFreePlan;
                     const activeFrom = currentSubscription?.active_from;
                     const expiryDate = currentSubscription?.expiry_date;
-                    const benefits = getPlanBenefits(plan);
+                    const tier = resolvePlanCardTier(plan);
+                    const style = PLAN_CARD_STYLES[tier];
+                    const imageCount =
+                      plan.max_image_uploads != null
+                        ? plan.max_image_uploads
+                        : plan.image_upload_allowed
+                          ? "∞"
+                          : 0;
+                    const activeRing = isActive
+                      ? tier === "premium"
+                        ? " ring-2 ring-orange-500 ring-offset-2"
+                        : tier === "enterprise"
+                          ? " ring-2 ring-purple-500 ring-offset-2"
+                          : " ring-2 ring-gray-500 ring-offset-2"
+                      : "";
                     return (
                       <div
                         key={plan.id}
-                        className={`relative rounded-xl border-2 p-3 sm:p-4 flex flex-col transition-all duration-200 ${
-                          isActive
-                            ? "border-amber-400 bg-gradient-to-b from-amber-50/90 to-white shadow-md shadow-amber-500/15 ring-2 ring-amber-400 ring-offset-2"
-                            : "border-gray-200 bg-white hover:border-gray-300 hover:shadow shadow-sm"
-                        }`}
+                        className={`relative ${style.wrapper}${activeRing}`}
                       >
-                        {plan.is_popular && !isActive && (
-                          <div className="absolute -top-2 left-1/2 -translate-x-1/2">
-                            <span className="inline-flex items-center rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-medium text-amber-800 border border-amber-200">
-                              Popular
-                            </span>
-                          </div>
-                        )}
-                        <div className="flex items-start justify-between gap-2 mb-1.5">
-                          <div>
-                            <h3 className="font-bold text-gray-900 text-base">{plan.plan_name}</h3>
-                            <p className="text-[10px] text-gray-500 uppercase tracking-wide">{plan.plan_code}</p>
-                          </div>
-                          {isActive && (
-                            <span className="shrink-0 inline-flex items-center rounded-full bg-amber-500 px-2 py-0.5 text-[10px] font-semibold text-white">
-                              Active
-                            </span>
-                          )}
-                        </div>
-                        {plan.description && (
-                          <p className="text-xs text-gray-600 mb-2 line-clamp-2">{plan.description}</p>
-                        )}
-                        <p className="text-lg font-bold text-gray-900 mb-2">
-                          ₹{Number(plan.price).toFixed(2)}
-                          <span className="text-xs font-normal text-gray-500"> / {plan.billing_cycle?.toLowerCase() ?? "month"}</span>
-                        </p>
-                        <div className="mt-2 pt-2 border-t border-gray-100">
-                          <p className="text-[10px] font-semibold text-gray-500 uppercase tracking-wide mb-1.5">
-                            {benefits.length} benefit{benefits.length !== 1 ? "s" : ""}
-                          </p>
-                          <ul className="space-y-1 text-xs text-gray-600">
-                            {benefits.map((label, i) => (
-                              <li key={i} className="flex items-center gap-1.5">
-                                <CheckCircle className={`h-3.5 w-3.5 shrink-0 ${isActive ? "text-amber-600" : "text-gray-400"}`} />
-                                <span>{label}</span>
-                              </li>
-                            ))}
-                          </ul>
-                        </div>
-                        {isActive && (activeFrom || expiryDate) && (
-                          <div className="mt-2 pt-2 border-t border-amber-100 text-[11px] text-gray-600 space-y-0.5">
-                            {activeFrom && (
-                              <p>
-                                Active from:{" "}
-                                {new Date(activeFrom).toLocaleDateString("en-IN", {
-                                  day: "2-digit",
-                                  month: "short",
-                                  year: "numeric",
-                                })}
-                              </p>
+                        <div className={`relative px-4 pt-4 pb-10 sm:pb-11 ${style.headerBg}`}>
+                          <div className="absolute inset-x-0 bottom-0 h-10 bg-white rounded-t-[2.25rem]" />
+                          <div className="relative mb-2 flex flex-wrap items-center justify-between gap-2 min-h-6">
+                            {style.badge ? (
+                              <span className={style.badge}>
+                                {tier === "premium" ? "⭐ MOST POPULAR" : "🚀 ENTERPRISE"}
+                              </span>
+                            ) : (
+                              <span aria-hidden="true" className="h-0" />
                             )}
-                            {expiryDate ? (
+                            {isActive ? (
+                              <span className="inline-flex items-center px-2.5 py-1 rounded-full text-[10px] font-extrabold tracking-wide bg-white/20 text-white ring-1 ring-white/35 backdrop-blur-sm">
+                                ACTIVE
+                              </span>
+                            ) : null}
+                          </div>
+                          <div className="relative flex items-start justify-between gap-3">
+                            <div className="min-w-0">
+                              <h4 className="text-base font-extrabold tracking-tight text-white truncate">
+                                {plan.plan_name}
+                              </h4>
+                              <div className="mt-1.5 flex flex-wrap items-baseline gap-x-1.5 gap-y-0.5">
+                                <span
+                                  className={`text-2xl sm:text-[28px] leading-tight font-extrabold tracking-tight whitespace-nowrap ${style.priceColor}`}
+                                >
+                                  ₹{plan.price ?? 0}
+                                </span>
+                                <span className="text-[11px] text-white/85 font-semibold leading-tight whitespace-nowrap">
+                                  /{billingCycleSuffix(plan.billing_cycle)} ·{" "}
+                                  {billingCycleLabel(plan.billing_cycle)}
+                                </span>
+                              </div>
+                              {plan.description ? (
+                                <p className="mt-1.5 text-[11px] text-white/80 line-clamp-2">
+                                  {plan.description}
+                                </p>
+                              ) : null}
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="px-4 pb-4 pt-1">
+                          <div className="space-y-2 text-xs mb-4">
+                            <div className="flex items-center justify-between gap-2">
+                              <div className="flex items-center gap-1.5 min-w-0">
+                                <Layers className="w-3.5 h-3.5 text-gray-500 shrink-0" />
+                                <span className="text-gray-600 truncate">Menu items</span>
+                              </div>
+                              <span className={style.featureValue}>
+                                {plan.max_menu_items != null ? plan.max_menu_items : "∞"}
+                              </span>
+                            </div>
+                            <div className="flex items-center justify-between gap-2">
+                              <div className="flex items-center gap-1.5 min-w-0">
+                                <ChefHat className="w-3.5 h-3.5 text-gray-500 shrink-0" />
+                                <span className="text-gray-600 truncate">Cuisines</span>
+                              </div>
+                              <span className={style.featureValue}>
+                                {plan.max_cuisines != null ? plan.max_cuisines : "∞"}
+                              </span>
+                            </div>
+                            <div className="flex items-center justify-between gap-2">
+                              <div className="flex items-center gap-1.5 min-w-0">
+                                <Layers className="w-3.5 h-3.5 text-gray-500 shrink-0" />
+                                <span className="text-gray-600 truncate">Menu categories</span>
+                              </div>
+                              <span className={style.featureValue}>
+                                {plan.max_menu_categories != null ? plan.max_menu_categories : "∞"}
+                              </span>
+                            </div>
+                            <div className="flex items-center justify-between gap-2">
+                              <div className="flex items-center gap-1.5 min-w-0">
+                                <ImageIcon className="w-3.5 h-3.5 text-gray-500 shrink-0" />
+                                <span className="text-gray-600 truncate">Images</span>
+                              </div>
+                              <span
+                                className={`font-semibold ${
+                                  (plan.max_image_uploads ?? 0) > 0 || plan.image_upload_allowed
+                                    ? "text-green-600"
+                                    : "text-gray-500"
+                                }`}
+                              >
+                                {imageCount}
+                              </span>
+                            </div>
+                            <div className="flex items-center justify-between gap-2">
+                              <div className="flex items-center gap-1.5 min-w-0">
+                                <BarChart2 className="w-3.5 h-3.5 text-gray-500 shrink-0" />
+                                <span className="text-gray-600 truncate">Analytics</span>
+                              </div>
+                              {plan.analytics_access ? (
+                                <CheckCircle className="w-3.5 h-3.5 text-green-500 shrink-0" />
+                              ) : (
+                                <XCircle className="w-3.5 h-3.5 text-gray-400 shrink-0" />
+                              )}
+                            </div>
+                            <div className="flex items-center justify-between gap-2">
+                              <div className="flex items-center gap-1.5 min-w-0">
+                                <BarChart3 className="w-3.5 h-3.5 text-gray-500 shrink-0" />
+                                <span className="text-gray-600 truncate">Advanced Analytics</span>
+                              </div>
+                              {plan.advanced_analytics ? (
+                                <CheckCircle className="w-3.5 h-3.5 text-green-500 shrink-0" />
+                              ) : (
+                                <XCircle className="w-3.5 h-3.5 text-gray-400 shrink-0" />
+                              )}
+                            </div>
+                            <div className="flex items-center justify-between gap-2">
+                              <div className="flex items-center gap-1.5 min-w-0">
+                                <Headphones className="w-3.5 h-3.5 text-gray-500 shrink-0" />
+                                <span className="text-gray-600 truncate">Priority Support</span>
+                              </div>
+                              {plan.priority_support ? (
+                                <CheckCircle className="w-3.5 h-3.5 text-green-500 shrink-0" />
+                              ) : (
+                                <XCircle className="w-3.5 h-3.5 text-gray-400 shrink-0" />
+                              )}
+                            </div>
+                            <div className="flex items-center justify-between gap-2">
+                              <div className="flex items-center gap-1.5 min-w-0">
+                                <UserCheck className="w-3.5 h-3.5 text-gray-500 shrink-0" />
+                                <span className="text-gray-600 truncate">Dedicated Manager</span>
+                              </div>
+                              {plan.dedicated_account_manager ? (
+                                <CheckCircle className="w-3.5 h-3.5 text-green-500 shrink-0" />
+                              ) : (
+                                <XCircle className="w-3.5 h-3.5 text-gray-400 shrink-0" />
+                              )}
+                            </div>
+                          </div>
+
+                          {isActive && (activeFrom || expiryDate) ? (
+                            <div className="mb-3 rounded-xl border border-gray-200 bg-gray-50 px-3 py-2 text-[11px] text-gray-600 space-y-0.5">
+                              {activeFrom ? (
+                                <p>
+                                  Active from:{" "}
+                                  {new Date(activeFrom).toLocaleDateString("en-IN", {
+                                    day: "2-digit",
+                                    month: "short",
+                                    year: "numeric",
+                                  })}
+                                </p>
+                              ) : null}
                               <p>
                                 Expires:{" "}
-                                {new Date(expiryDate).toLocaleDateString("en-IN", {
-                                  day: "2-digit",
-                                  month: "short",
-                                  year: "numeric",
-                                })}
+                                {expiryDate
+                                  ? new Date(expiryDate).toLocaleDateString("en-IN", {
+                                      day: "2-digit",
+                                      month: "short",
+                                      year: "numeric",
+                                    })
+                                  : "—"}
                               </p>
-                            ) : (
-                              <p>Expires: —</p>
-                            )}
+                            </div>
+                          ) : null}
+
+                          <div
+                            className={`w-full py-2.5 rounded-xl font-semibold text-xs sm:text-sm flex items-center justify-center gap-2 ${
+                              isActive
+                                ? "bg-gray-100 text-gray-700 border border-gray-300"
+                                : tier === "premium"
+                                  ? "bg-gradient-to-r from-orange-600 to-amber-600 text-white"
+                                  : tier === "enterprise"
+                                    ? "bg-gradient-to-r from-indigo-700 to-purple-700 text-white"
+                                    : "bg-slate-100 text-slate-700 border border-slate-300"
+                            }`}
+                          >
+                            {isActive ? "Current Plan" : "Available"}
                           </div>
-                        )}
+                        </div>
                       </div>
                     );
                   })}
                 </div>
               )}
+              </div>
 
-              {/* Full subscription lifecycle for this store: every purchase +
-                  every refund, merged into one date-sorted timeline. Refund
-                  events include agent (actor) identity — this is the admin/
-                  agent view. Merchant-facing surfaces (partner site + merchant
-                  app) show the same data via a different endpoint that
-                  strips actor_*. */}
               <div className="mt-6">
-                <SubscriptionHistory storeId={Number(storeId)} />
+                <SubscriptionHistory storeId={Number(storeId)} allowRefund={canEditSettings} />
               </div>
             </>
           )}

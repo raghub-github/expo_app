@@ -9,7 +9,7 @@ import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine";
 import { getMerchantAccess } from "@/lib/permissions/merchant-access";
 import { getSystemUserByEmail } from "@/lib/auth/user-mapping";
-import { getAreaManagerByUserId } from "@/lib/area-manager/auth";
+import { resolveMerchantListAreaManagerId } from "@/lib/merchants/resolve-merchant-list-scope";
 import { getMerchantStoreById, updateMerchantStore } from "@/lib/db/operations/merchant-stores";
 import { logAreaManagerActivity } from "@/lib/area-manager/activity";
 import { logActionByAuth, getIpAddress, getUserAgent } from "@/lib/audit/logger";
@@ -110,16 +110,15 @@ export async function POST(
       }
     }
 
-    let areaManagerId: number | null = null;
     let systemUserId: number | null = null;
     const systemUser = await getSystemUserByEmail(user.email);
     if (systemUser) {
       systemUserId = systemUser.id;
-      if (!(await isSuperAdmin(user.id, user.email))) {
-        const am = await getAreaManagerByUserId(systemUser.id);
-        if (am) areaManagerId = am.id;
-      }
     }
+    const areaManagerId = await resolveMerchantListAreaManagerId({
+      supabaseAuthId: user.id,
+      email: user.email,
+    });
 
     const store = await getMerchantStoreById(storeId, areaManagerId);
     if (!store) {

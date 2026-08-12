@@ -33,7 +33,13 @@ function parseCuisineRows(rows: unknown): CuisineRow[] {
  * Manage store ↔ cuisine_master links (add from master list, remove when allowed).
  * Lives on the store profile; category modal only picks one linked cuisine per category.
  */
-export function StoreCuisineManagerSection({ storeId }: { storeId: string }) {
+export function StoreCuisineManagerSection({
+  storeId,
+  readOnly = false,
+}: {
+  storeId: string;
+  readOnly?: boolean;
+}) {
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const [linked, setLinked] = useState<CuisineRow[]>([]);
@@ -185,35 +191,39 @@ export function StoreCuisineManagerSection({ storeId }: { storeId: string }) {
               Plan: <span className="font-semibold">{linkedCount}</span> / {maxCuisines}
             </span>
           )}
-          <button
-            type="button"
-            onClick={() => {
-              setEditing((v) => !v);
-              setSearchQuery("");
-            }}
-            className="inline-flex items-center gap-1 rounded-md border border-gray-200 bg-white px-2 py-1 text-[10px] font-semibold text-gray-800 hover:bg-gray-50"
-          >
-            {editing ? (
-              <>
-                <Check size={12} className="text-green-600" />
-                Done
-              </>
-            ) : (
-              <>
-                <Pencil size={12} className="text-blue-600" />
-                Edit
-              </>
-            )}
-          </button>
+          {!readOnly ? (
+            <button
+              type="button"
+              onClick={() => {
+                setEditing((v) => !v);
+                setSearchQuery("");
+              }}
+              className="inline-flex items-center gap-1 rounded-md border border-gray-200 bg-white px-2 py-1 text-[10px] font-semibold text-gray-800 hover:bg-gray-50"
+            >
+              {editing ? (
+                <>
+                  <Check size={12} className="text-green-600" />
+                  Done
+                </>
+              ) : (
+                <>
+                  <Pencil size={12} className="text-blue-600" />
+                  Edit
+                </>
+              )}
+            </button>
+          ) : null}
         </div>
       </div>
 
       {loading ? (
         <p className="text-xs text-gray-500">Loading cuisines…</p>
-      ) : !editing ? (
+      ) : readOnly || !editing ? (
         <p className="text-sm text-gray-900 leading-relaxed">
           {viewText ?? (
-            <span className="text-gray-400 italic">No cuisines linked yet — click Edit to add from the master list.</span>
+            <span className="text-gray-400 italic">
+              {readOnly ? "No cuisines linked yet." : "No cuisines linked yet — click Edit to add from the master list."}
+            </span>
           )}
         </p>
       ) : (

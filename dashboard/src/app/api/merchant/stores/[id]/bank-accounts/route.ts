@@ -3,11 +3,15 @@
  * POST /api/merchant/stores/[id]/bank-accounts - Add new bank/UPI account
  */
 import { NextRequest, NextResponse } from "next/server";
-import { createServerSupabaseClient } from "@/lib/supabase/server";
-import { getMerchantAccess, type MerchantAccess } from "@/lib/permissions/merchant-access";
+import { resolveMerchantApiActor } from "@/lib/merchant-food-orders/store-access";
+import { getMerchantAccess } from "@/lib/permissions/merchant-access";
+import { resolveMerchantListAreaManagerId } from "@/lib/merchants/resolve-merchant-list-scope";
+import {
+  canRevealStoreBankDetails,
+  redactStoreBankAccounts,
+} from "@/lib/merchants/store-legal-docs-access";
 import { logActionByAuth, getIpAddress, getUserAgent } from "@/lib/audit/logger";
 import { getSystemUserByEmail } from "@/lib/auth/user-mapping";
-import { getAreaManagerByUserId } from "@/lib/area-manager/auth";
 import { getMerchantStoreById } from "@/lib/db/operations/merchant-stores";
 import { getStoreBankAccounts, addStoreBankAccount } from "@/lib/db/operations/merchant-store-bank-accounts";
 import { logStoreActivity } from "@/lib/db/operations/store-activity-feed";
@@ -15,24 +19,26 @@ import { logStoreActivity } from "@/lib/db/operations/store-activity-feed";
 export const runtime = "nodejs";
 
 async function assertStoreAccess(storeId: number) {
-  const supabase = await createServerSupabaseClient();
-  const { data: { user }, error } = await supabase.auth.getUser();
-  if (error || !user?.email) return { ok: false as const, status: 401, error: "Not authenticated" };
-
-  const access = await getMerchantAccess(user.id, user.email);
-  if (!access) return { ok: false as const, status: 403, error: "Merchant access required" };
-
-  let areaManagerId: number | null = null;
-  if (!access.isSuperAdmin && !access.isAdmin) {
-    const systemUser = await getSystemUserByEmail(user.email);
-    if (systemUser) {
-      const am = await getAreaManagerByUserId(systemUser.id);
-      if (am) areaManagerId = am.id;
-    }
+  const actor = await resolveMerchantApiActor();
+  if (!actor.ok) {
+    return { ok: false as const, status: actor.status, error: actor.error };
   }
+
+  const access = await getMerchantAccess(actor.id, actor.email);
+  if (!access) return { ok: false as const, status: 403 as const, error: "Merchant access required" };
+
+  const areaManagerId = await resolveMerchantListAreaManagerId({
+    supabaseAuthId: actor.id,
+    email: actor.email,
+  });
   const store = await getMerchantStoreById(storeId, areaManagerId);
-  if (!store) return { ok: false as const, status: 404, error: "Store not found" };
-  return { ok: true as const, store, access, user: { id: user.id, email: user.email } };
+  if (!store) return { ok: false as const, status: 404 as const, error: "Store not found" };
+  return {
+    ok: true as const,
+    store,
+    access,
+    user: { id: actor.id, email: actor.email },
+  };
 }
 
 export async function GET(
@@ -49,9 +55,29 @@ export async function GET(
     if (!access.ok) {
       return NextResponse.json({ success: false, error: access.error }, { status: access.status });
     }
-    const store = access.store as { id: number };
+    const store = access.store as {
+      id: number;
+      area_manager_id?: number | null;
+      parent_id?: number | null;
+    };
     const accounts = await getStoreBankAccounts(store.id);
-    return NextResponse.json({ success: true, accounts });
+    const canReveal = await canRevealStoreBankDetails({
+      supabaseAuthId: access.user.id,
+      email: access.user.email,
+      store: {
+        id: store.id,
+        area_manager_id: store.area_manager_id ?? null,
+        parent_id: store.parent_id ?? null,
+      },
+    });
+    const safeAccounts = canReveal
+      ? accounts
+      : redactStoreBankAccounts(accounts as unknown as Array<Record<string, unknown>>);
+    return NextResponse.json({
+      success: true,
+      accounts: safeAccounts,
+      legalDocsRestricted: !canReveal,
+    });
   } catch (e) {
     console.error("[GET /api/merchant/stores/[id]/bank-accounts]", e);
     return NextResponse.json({ success: false, error: "Internal error" }, { status: 500 });

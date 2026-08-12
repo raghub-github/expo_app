@@ -105,6 +105,14 @@ export function useBootstrapGate(queryClient: QueryClient): boolean {
             systemUser: systemUser ?? null,
           });
           queryClient.setQueryData(queryKeys.permissions(), permissions as unknown);
+          const seededUserId =
+            typeof (permissions as { systemUserId?: unknown })?.systemUserId === "number"
+              ? (permissions as { systemUserId: number }).systemUserId
+              : null;
+          queryClient.setQueryData(
+            queryKeys.dashboardAccess(seededUserId),
+            dashboardAccess as unknown
+          );
           queryClient.setQueryData(queryKeys.dashboardAccess(), dashboardAccess as unknown);
 
           const storedHasSystemUserId = Boolean(systemUser?.systemUserId?.trim());
@@ -178,6 +186,24 @@ export function useBootstrapGate(queryClient: QueryClient): boolean {
       window.clearTimeout(safetyTimer);
     };
   }, [queryClient, isStandaloneOrderRoute]);
+
+  // When the tab is focused again, soft-revalidate bootstrap so superadmin access
+  // changes show up without requiring a full re-login.
+  useEffect(() => {
+    if (!authReady || isStandaloneOrderRoute) return;
+    const onFocus = () => {
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
+      scheduleBootstrapRevalidate(queryClient);
+      void queryClient.invalidateQueries({ queryKey: queryKeys.permissions() });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.dashboardAccess() });
+    };
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onFocus);
+    return () => {
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onFocus);
+    };
+  }, [authReady, isStandaloneOrderRoute, queryClient]);
 
   return authReady;
 }

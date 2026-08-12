@@ -81,6 +81,36 @@ function pathRightSidebarActive(
   if (clean === "/dashboard/riders" || clean.startsWith("/dashboard/riders/")) {
     return Boolean((searchParams?.get("search") || "").trim());
   }
+  if (clean.startsWith("/dashboard/merchants")) {
+    // Dead / stub top-level pages — never reserve the rail.
+    if (
+      clean === "/dashboard/merchants/settings" ||
+      clean === "/dashboard/merchants/offers" ||
+      clean === "/dashboard/merchants/details" ||
+      clean === "/dashboard/merchants/menu" ||
+      clean === "/dashboard/merchants/orders" ||
+      clean === "/dashboard/merchants/payments" ||
+      clean === "/dashboard/merchants/analytics"
+    ) {
+      return false;
+    }
+    // Store-scoped pages always get the filtered store rail.
+    if (/^\/dashboard\/merchants\/stores\/\d+(\/|$)/.test(clean)) return true;
+    // Admin-only merchant tools (always use the admin rail).
+    if (
+      clean.startsWith("/dashboard/merchants/verifications") ||
+      clean.startsWith("/dashboard/merchants/assign-am") ||
+      clean.startsWith("/dashboard/merchants/menu-requests") ||
+      clean.startsWith("/dashboard/merchants/wallet-requests")
+    ) {
+      return true;
+    }
+    // Admin portal home / lists.
+    if (searchParams?.get("portal") === "admin") return true;
+    // Merchant portal home — full-width. Store rail appears after opening a store
+    // (or briefly via RightSidebar when a search result card is present).
+    return false;
+  }
   return true;
 }
 type PersistedSidebar = "left" | "right" | "none";
@@ -252,9 +282,14 @@ function DashboardLayoutClientInner({
   /** Right rail is showing real content — only then may the left rail collapse. */
   const rightSidebarActive = useMemo(
     () => pathRightSidebarActive(cleanPathname, searchParams),
-    // riders: search; store verification: storeId
+    // riders/merchants: search; store verification: storeId; merchants portal mode
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [cleanPathname, searchParams.get("search"), searchParams.get("storeId")]
+    [
+      cleanPathname,
+      searchParams.get("search"),
+      searchParams.get("storeId"),
+      searchParams.get("portal"),
+    ]
   );
 
   useEffect(() => {
@@ -272,9 +307,13 @@ function DashboardLayoutClientInner({
     [cleanPathname]
   );
 
-  // Settings page: right sidebar must remain open (exception)
+  // Store settings: right sidebar must remain open (exception). Top-level
+  // /dashboard/merchants/settings is a dead stub and must NOT force the rail open.
   const isSettingsPage = useMemo(
-    () => /\/settings(\/|$)/.test(cleanPathname) || /\/store-settings(\/|$)/.test(cleanPathname),
+    () =>
+      /\/store-settings(\/|$)/.test(cleanPathname) ||
+      (/\/settings(\/|$)/.test(cleanPathname) &&
+        !cleanPathname.startsWith("/dashboard/merchants/settings")),
     [cleanPathname]
   );
 
@@ -407,6 +446,7 @@ function DashboardLayoutClientInner({
           setLeftSidebarOpen={setIsLeftSidebarOpen}
           setRightSidebarOpen={setIsRightSidebarOpen}
           hasRightSidebar={hasRightSidebar}
+          rightSidebarActive={rightSidebarActive}
           handleRightSidebarToggle={handleRightSidebarToggle}
           handleLeftSidebarToggle={handleLeftSidebarToggle}
           isInSpecificDashboard={isInSpecificDashboard}
@@ -429,6 +469,7 @@ function DashboardLayoutContent({
   setLeftSidebarOpen,
   setRightSidebarOpen,
   hasRightSidebar,
+  rightSidebarActive,
   handleRightSidebarToggle,
   handleLeftSidebarToggle,
   isInSpecificDashboard,
@@ -443,6 +484,7 @@ function DashboardLayoutContent({
   setLeftSidebarOpen: (open: boolean) => void;
   setRightSidebarOpen: (open: boolean) => void;
   hasRightSidebar: boolean;
+  rightSidebarActive: boolean;
   handleRightSidebarToggle: () => void;
   handleLeftSidebarToggle: () => void;
   isInSpecificDashboard: boolean;
@@ -666,11 +708,9 @@ function DashboardLayoutContent({
 
   const isRiderDashboardLayout =
     cleanPathname === "/dashboard/riders" || cleanPathname.startsWith("/dashboard/riders/");
-  const hasRiderSidebarContent =
-    isRiderDashboardLayout && Boolean((searchParams.get("search") || "").trim());
 
-  const hasRightSidebarEligible =
-    hasRightSidebar && (!isRiderDashboardLayout || hasRiderSidebarContent);
+  /** Only mount/reserve the right rail when it has real content for this URL. */
+  const hasRightSidebarEligible = hasRightSidebar && rightSidebarActive;
 
   /** Never hide right rail from pending nav — wait for settled pathname (no width jump). */
   const pendingSuppressesRight = false;
@@ -821,6 +861,13 @@ function DashboardLayoutContent({
                 visible={showWorkspaceOverlay}
                 scope="main"
                 leftOffsetClass={overlayLeftClass}
+                rightOffsetClass={
+                  shouldRenderRightSidebar
+                    ? isRightSidebarOpen
+                      ? "lg:right-56"
+                      : "lg:right-14"
+                    : "right-0"
+                }
                 pendingHref={pendingNavHref}
               />
 

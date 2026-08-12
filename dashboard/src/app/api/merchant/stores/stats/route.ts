@@ -7,8 +7,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAuthenticatedApiUser } from "@/lib/auth/api-session";
 import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine";
-import { getSystemUserByEmail } from "@/lib/auth/user-mapping";
-import { getAreaManagerByUserId } from "@/lib/area-manager/auth";
+import { resolveMerchantListAreaManagerId } from "@/lib/merchants/resolve-merchant-list-scope";
 import { countMerchantStoresByStatus, countMerchantParents } from "@/lib/db/operations/merchant-stores";
 
 export const runtime = "nodejs";
@@ -42,14 +41,10 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    let areaManagerId: number | null = null;
-    if (!(await isSuperAdmin(user.id, user.email))) {
-      const systemUser = await getSystemUserByEmail(user.email);
-      if (systemUser) {
-        const am = await getAreaManagerByUserId(systemUser.id);
-        if (am) areaManagerId = am.id;
-      }
-    }
+    const areaManagerId = await resolveMerchantListAreaManagerId({
+      supabaseAuthId: user.id,
+      email: user.email,
+    });
 
     const fromDate = request.nextUrl.searchParams.get("fromDate")?.trim() || undefined;
     const toDate = request.nextUrl.searchParams.get("toDate")?.trim() || undefined;

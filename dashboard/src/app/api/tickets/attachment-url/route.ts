@@ -4,11 +4,8 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { createServerSupabaseClient } from "@/lib/supabase/server";
-import { getSystemUserByEmail } from "@/lib/db/operations/users";
-import { isSuperAdmin, hasDashboardAccessByAuth } from "@/lib/permissions/engine";
+import { requireTicketApiUser } from "@/lib/tickets/require-ticket-api-user";
 import { supabaseAdmin } from "@/lib/supabase/server";
-import { isInvalidRefreshToken, signOutIfSessionDead } from "@/lib/auth/session-errors";
 import { getSignedUrlFromKey } from "@/lib/services/r2";
 
 export const runtime = "nodejs";
@@ -22,29 +19,8 @@ function isR2TicketKey(key: string): boolean {
 
 export async function GET(request: NextRequest) {
   try {
-    const supabase = await createServerSupabaseClient();
-    const { data: { user }, error: userError } = await supabase.auth.getUser();
-    if (userError) {
-      if (isInvalidRefreshToken(userError)) {
-        await signOutIfSessionDead(supabase, userError);
-        return NextResponse.json({ success: false, error: "Session invalid", code: "SESSION_INVALID" }, { status: 401 });
-      }
-      return NextResponse.json({ success: false, error: "Not authenticated" }, { status: 401 });
-    }
-    if (!user) {
-      return NextResponse.json({ success: false, error: "Not authenticated" }, { status: 401 });
-    }
-
-    const systemUser = await getSystemUserByEmail(user.email!);
-    if (!systemUser) {
-      return NextResponse.json({ success: false, error: "User not found" }, { status: 404 });
-    }
-
-    const userIsSuperAdmin = await isSuperAdmin(user.id, user.email!);
-    const hasTicketAccess = await hasDashboardAccessByAuth(user.id, user.email!, "TICKET");
-    if (!userIsSuperAdmin && !hasTicketAccess) {
-      return NextResponse.json({ success: false, error: "Insufficient permissions" }, { status: 403 });
-    }
+    const auth = await requireTicketApiUser(request);
+    if ("error" in auth) return auth.error;
 
     const storageKey = request.nextUrl.searchParams.get("storageKey");
     if (!storageKey || typeof storageKey !== "string") {
