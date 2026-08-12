@@ -8,7 +8,6 @@ import { StoreProvider, type StoreContextStore } from "./StoreContext";
 import { MerchantIncomingOrderModal } from "@/components/merchant/MerchantIncomingOrderModal";
 import { MerchantPendingNewOrdersBar } from "@/components/merchant/MerchantPendingNewOrdersBar";
 import { MerchantAcceptanceTimeoutSync } from "@/components/merchant/MerchantAcceptanceTimeoutSync";
-import { Toaster } from "sonner";
 import { useStore } from "@/hooks/useStore";
 import type { StoreProfile } from "@/hooks/useStore";
 
@@ -71,7 +70,6 @@ function StoreLayoutFallback({
   return (
     <StoreProvider storeId={storeId} store={store as StoreContextStore}>
       <div className="flex min-h-0 flex-1 flex-col w-full max-w-full overflow-hidden">
-        <Toaster position="top-right" richColors closeButton />
         <StoreQueryHydrator storeId={storeId} store={store as StoreProfile} />
         <MerchantIncomingOrderModal />
         <MerchantAcceptanceTimeoutSync />
@@ -145,7 +143,6 @@ export function StoreLayoutShell({
   return (
     <StoreProvider storeId={storeId} store={store as StoreContextStore}>
       <div className="flex min-h-0 flex-1 flex-col w-full max-w-full overflow-hidden">
-        <Toaster position="top-right" richColors closeButton />
         <StoreQueryHydrator storeId={storeId} store={store as StoreProfile} />
         {showDelistedModal && (
           <div className="fixed inset-0 z-[90] flex items-center justify-center bg-black/40 p-4" aria-modal="true" role="dialog">

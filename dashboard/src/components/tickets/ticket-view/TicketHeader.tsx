@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { Ban, Globe, RefreshCw } from "lucide-react";
 import type { TicketDetail } from "@/hooks/tickets/useTicketDetail";
+import { sanitizeTicketDisplayText } from "@/lib/tickets/ticket-display-subject";
 import { loraDisplay as lora } from "@/lib/fonts/tickets-fonts";
 
 function formatSnoozeCountdown(snoozedUntil: string): { label: string; tone: "violet" | "amber" | "red" } | null {
@@ -43,8 +44,9 @@ export function TicketHeader({
         : "System";
   const showChip = newUpdatesCount > 0;
   const subjectRaw = ticket.subject && ticket.subject.trim() !== "" ? ticket.subject : "No subject";
-  const normalizedSubject =
-    subjectRaw.length > 0 ? `${subjectRaw.charAt(0).toUpperCase()}${subjectRaw.slice(1)}` : subjectRaw;
+  const normalizedSubject = sanitizeTicketDisplayText(
+    subjectRaw.length > 0 ? `${subjectRaw.charAt(0).toUpperCase()}${subjectRaw.slice(1)}` : subjectRaw
+  );
   const showSubject = variant !== "metaOnly";
   const showMeta = variant !== "subjectOnly";
   const [countdown, setCountdown] = useState<{ label: string; tone: "violet" | "amber" | "red" } | null>(

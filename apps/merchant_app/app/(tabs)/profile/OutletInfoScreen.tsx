@@ -13,10 +13,12 @@ import { useSafeAreaInsets, SafeAreaView } from "react-native-safe-area-context"
 import { Ionicons } from "@expo/vector-icons";
 import { WebView } from "react-native-webview";
 import { GatiMitraMerchant, H_PADDING, CARD_RADIUS, BUTTON_RADIUS } from "@/constants/theme";
+import { profileSectionTitle } from "@/constants/profileTypography";
 import { useSelectedStore } from "@/context/SelectedStoreContext";
 import { useAuth } from "@/context/AuthContext";
 import { getConfig } from "@/config/env";
-import { getOutlet, updateOutlet, updatePickupInstruction, resolveImageUrl, type OutletInfo, type OutletUpdateBody } from "@/services/outletApi";
+import { getOutlet, updateOutlet, updatePickupInstruction, resolveImageUrl, uploadStoreLogo, removeStoreLogo, type OutletInfo, type OutletUpdateBody } from "@/services/outletApi";
+import { StoreLogoPhotoOptionsSheet } from "@/components/StoreLogoPhotoOptionsSheet";
 import { AppAssetImage } from "@/components/AppAssetImage";
 import { MX } from "@/lib/appAssetKeys";
 import { reverseGeocode, forwardGeocode, type GeocodeAddress } from "@/services/geocoding";
@@ -92,12 +94,14 @@ export default function OutletInfoScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const { selectedStore, setSelectedStore } = useSelectedStore();
-  const { token } = useAuth();
+  const { token, refreshPartner } = useAuth();
   const [outlet, setOutlet] = useState<OutletInfo | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [bannerError, setBannerError] = useState(false);
   const [logoError, setLogoError] = useState(false);
+  const [logoPhotoSheetVisible, setLogoPhotoSheetVisible] = useState(false);
+  const [logoUploading, setLogoUploading] = useState(false);
   const [cuisineModalVisible, setCuisineModalVisible] = useState(false);
 
   // Separate edit modals per section
@@ -145,7 +149,7 @@ export default function OutletInfoScreen() {
 
   const storeId = selectedStore?.id ?? null;
 
-  useEffect(() => {
+  const loadOutlet = useCallback(() => {
     if (!storeId || !token) {
       setLoading(false);
       if (!token) setError("Not signed in.");
@@ -153,6 +157,8 @@ export default function OutletInfoScreen() {
       return;
     }
     let cancelled = false;
+    setLoading(true);
+    setError(null);
     getOutlet(storeId, token)
       .then((data) => {
         if (!cancelled) {
@@ -167,8 +173,15 @@ export default function OutletInfoScreen() {
       .finally(() => {
         if (!cancelled) setLoading(false);
       });
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, [storeId, token]);
+
+  useEffect(() => {
+    const cleanup = loadOutlet();
+    return cleanup;
+  }, [loadOutlet]);
 
   useEffect(() => () => {
     if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
@@ -488,6 +501,55 @@ export default function OutletInfoScreen() {
     Linking.openURL(mapUrl(outlet.latitude, outlet.longitude));
   };
 
+  const applyLogoUrlLocally = (logoUrl: string | null) => {
+    setLogoError(false);
+    setOutlet((prev) => (prev ? { ...prev, parent_logo_url: logoUrl } : null));
+    if (selectedStore) {
+      setSelectedStore({ ...selectedStore, parent_logo_url: logoUrl });
+    }
+  };
+
+  const handleLogoPhotoSelected = async (file: { uri: string; type: string; name: string }) => {
+    if (!storeId || !token) return;
+    setLogoUploading(true);
+    try {
+      const { parent_logo_url } = await uploadStoreLogo(storeId, token, file);
+      applyLogoUrlLocally(parent_logo_url || null);
+      await refreshPartner().catch(() => undefined);
+      showToast("Store photo updated");
+    } catch (e) {
+      Alert.alert("Upload failed", e instanceof Error ? e.message : "Could not upload photo.");
+    } finally {
+      setLogoUploading(false);
+    }
+  };
+
+  const handleRemoveLogoPhoto = () => {
+    if (!storeId || !token) return;
+    Alert.alert("Remove photo", "Remove the store brand photo?", [
+      { text: "Cancel", style: "cancel" },
+      {
+        text: "Remove",
+        style: "destructive",
+        onPress: () => {
+          void (async () => {
+            setLogoUploading(true);
+            try {
+              await removeStoreLogo(storeId, token);
+              applyLogoUrlLocally(null);
+              await refreshPartner().catch(() => undefined);
+              showToast("Store photo removed");
+            } catch (e) {
+              Alert.alert("Remove failed", e instanceof Error ? e.message : "Could not remove photo.");
+            } finally {
+              setLogoUploading(false);
+            }
+          })();
+        },
+      },
+    ]);
+  };
+
   if (loading) {
     return (
       <View style={styles.centered}>
@@ -502,6 +564,9 @@ export default function OutletInfoScreen() {
       <View style={styles.centered}>
         <Ionicons name="alert-circle-outline" size={48} color={GatiMitraMerchant.textTertiary} />
         <Text style={styles.errorText}>{error ?? "Outlet not found"}</Text>
+        <Pressable onPress={() => loadOutlet()} style={styles.retryBtn}>
+          <Text style={styles.retryBtnText}>Retry</Text>
+        </Pressable>
         <Pressable onPress={() => router.back()} style={styles.backBtn}>
           <Text style={styles.backBtnText}>Go back</Text>
         </Pressable>
@@ -560,14 +625,21 @@ export default function OutletInfoScreen() {
                 ) : (
                   <AppAssetImage
                     assetKey={MX.brand.appIcon}
-                    fallbackAssetKey={MX.auth.logo}
                     style={styles.logoImg}
                     resizeMode="contain"
                   />
                 )}
               </View>
-              <Pressable onPress={() => router.push("/(tabs)/profile/edit-store")} style={styles.editPhotoBtn}>
-                <Text style={styles.editPhotoText}>Edit photo</Text>
+              <Pressable
+                onPress={() => setLogoPhotoSheetVisible(true)}
+                style={styles.editPhotoBtn}
+                disabled={logoUploading}
+              >
+                {logoUploading ? (
+                  <ActivityIndicator size="small" color={GatiMitraMerchant.primary} />
+                ) : (
+                  <Text style={styles.editPhotoText}>Edit photo</Text>
+                )}
               </Pressable>
             </View>
           </View>
@@ -575,7 +647,7 @@ export default function OutletInfoScreen() {
         </View>
 
         {/* Restaurant information — single compact card (Zomato-style) */}
-        <Text style={styles.sectionTitle}>Restaurant information</Text>
+        <Text variant="brand" style={[styles.sectionTitle, profileSectionTitle]}>Restaurant information</Text>
         <View style={styles.infoCard}>
           <View style={styles.infoBlock}>
             <View style={styles.fieldRow}>
@@ -1143,6 +1215,14 @@ export default function OutletInfoScreen() {
         </Pressable>
       </Modal>
 
+      <StoreLogoPhotoOptionsSheet
+        visible={logoPhotoSheetVisible}
+        hasLogo={Boolean(outlet.parent_logo_url?.trim())}
+        onClose={() => setLogoPhotoSheetVisible(false)}
+        onPhotoSelected={handleLogoPhotoSelected}
+        onRemovePhoto={outlet.parent_logo_url?.trim() ? handleRemoveLogoPhoto : undefined}
+      />
+
       {/* Success toast */}
       {toast.visible && (
         <View style={styles.toastWrap}>
@@ -1161,8 +1241,16 @@ const styles = StyleSheet.create({
   centered: { flex: 1, justifyContent: "center", alignItems: "center", padding: H_PADDING },
   loadingText: { marginTop: 12, fontSize: 14, color: GatiMitraMerchant.textSecondary },
   errorText: { marginTop: 12, fontSize: 15, color: GatiMitraMerchant.textSecondary, textAlign: "center" },
-  backBtn: { marginTop: 20, paddingVertical: 12, paddingHorizontal: 20, backgroundColor: GatiMitraMerchant.surfaceSubtle, borderRadius: 10 },
+  backBtn: { marginTop: 12, paddingVertical: 12, paddingHorizontal: 20, backgroundColor: GatiMitraMerchant.surfaceSubtle, borderRadius: 10 },
   backBtnText: { fontSize: 15, fontWeight: "600", color: GatiMitraMerchant.primary },
+  retryBtn: {
+    marginTop: 16,
+    paddingVertical: 12,
+    paddingHorizontal: 24,
+    backgroundColor: GatiMitraMerchant.primary,
+    borderRadius: 10,
+  },
+  retryBtnText: { fontSize: 15, fontWeight: "600", color: "#fff" },
 
   scroll: { flex: 1 },
   scrollContent: { padding: H_PADDING, paddingBottom: 40 },

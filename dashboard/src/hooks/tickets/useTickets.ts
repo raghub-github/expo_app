@@ -136,6 +136,16 @@ export interface Ticket {
   satisfactionRating?: number | null;
   snoozedUntil?: string | null;
   snoozeReason?: string | null;
+  /** Set when this ticket was merged into another (child). */
+  parentTicketId?: number | null;
+  /** Display ticket number of the primary this child was merged into (e.g. TKT-2026-000016). */
+  mergedIntoTicketNumber?: string | null;
+  /** Count of tickets merged into this one (primary). */
+  mergedChildCount?: number;
+  /** True when this ticket absorbed duplicates (merge primary). */
+  isMergePrimary?: boolean;
+  /** True when this ticket is a merge child or a primary that absorbed duplicates. */
+  isMerged?: boolean;
   /** Populated only when listing with `forExport=1`. */
   exportMeta?: TicketExportMeta;
 }
@@ -166,7 +176,7 @@ export const DEFAULT_TICKETS_LIST_FILTERS: TicketFilters = {
   snoozedOnly: false,
 };
 
-const TICKETS_FETCH_TIMEOUT_MS = 60_000; // 60s so slow DB doesn't hang the UI forever
+const TICKETS_FETCH_TIMEOUT_MS = 20_000; // fail fast — do not hang UI for 60s
 
 export async function fetchTickets(filters: TicketFilters = {}, signal?: AbortSignal): Promise<TicketsResponse> {
   const params = new URLSearchParams();
@@ -220,12 +230,26 @@ export async function fetchTickets(filters: TicketFilters = {}, signal?: AbortSi
   }
 
   try {
-      const response = await fetch(`/api/tickets?${params.toString()}`, {
+    const url = `/api/tickets?${params.toString()}`;
+    let response: Response | null = null;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      if (controller.signal.aborted) {
+        throw new DOMException("Aborted", "AbortError");
+      }
+      response = await fetch(url, {
         signal: controller.signal,
         credentials: "include",
         cache: "no-store",
       });
+      if (response.status !== 503 && response.status !== 502) break;
+      if (attempt < 2) {
+        await new Promise((resolve) => setTimeout(resolve, 350 * (attempt + 1)));
+      }
+    }
     clearTimeout(timeoutId);
+    if (!response) {
+      throw new Error("Failed to fetch tickets");
+    }
     if (!response.ok) {
       const errorData = (await response.json().catch(() => ({}))) as { error?: string };
       const raw = errorData.error || `Failed to fetch tickets: ${response.status} ${response.statusText}`;

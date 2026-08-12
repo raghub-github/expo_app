@@ -13,7 +13,7 @@ const appJson = require("./app.json");
 const googleServicesFile = path.resolve(__dirname, "google-services.json");
 const hasGoogleServices = fs.existsSync(googleServicesFile);
 /** Match MerchantBootstrapScreen so the native-to-React handoff has no white flash. */
-const MERCHANT_SPLASH_BG = "#0B241C";
+const MERCHANT_SPLASH_BG = "#F6FBF9";
 
 module.exports = ({ config }) => ({
   ...appJson,

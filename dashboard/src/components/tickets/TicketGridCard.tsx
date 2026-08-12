@@ -9,6 +9,7 @@ import { prefetchTicketDetail } from "@/hooks/tickets/useTicketDetail";
 import { useTicketsNavPendingOptional } from "@/context/TicketsNavPendingContext";
 import { buildTicketDetailHref } from "@/lib/tickets/ticket-path-utils";
 import { formatTicketDisplaySubject } from "@/lib/tickets/ticket-display-subject";
+import { ticketMergedPill } from "@/lib/tickets/ticket-merged-pill";
 import { InlineSearchableSelect, type Option } from "./InlineSearchableSelect";
 import { TicketMixedText, TicketNum } from "./tickets-typography";
 import { TicketCardActionControls } from "./TicketCardActionControls";
@@ -105,6 +106,7 @@ export function TicketGridCard({
 }: TicketGridCardProps) {
   const detailLink = detailHref ?? buildTicketDetailHref(ticket.id, "");
   const displaySubject = formatTicketDisplaySubject(ticket);
+  const mergedPill = ticketMergedPill(ticket, { compact: true });
   const queryClient = useQueryClient();
   const ticketsNavPending = useTicketsNavPendingOptional();
   const prefetchThisTicket = useCallback(() => {
@@ -176,7 +178,7 @@ export function TicketGridCard({
 
   return (
     <div
-      className={`group/card rounded-xl border bg-white flex flex-col min-h-0 overflow-visible transition-all duration-200 ${
+      className={`ticket-grid-card group/card rounded-xl border bg-white flex flex-col min-h-0 overflow-visible transition-all duration-200 ${
         selected
           ? "border-blue-200 ring-2 ring-blue-500/15 shadow-md"
           : "border-gray-200/90 shadow-sm hover:border-gray-300/90 hover:shadow-md"
@@ -184,89 +186,94 @@ export function TicketGridCard({
       style={{ isolation: "isolate" }}
       onPointerEnter={prefetchThisTicket}
     >
-      <div className="p-2 flex flex-col gap-1 flex-1 min-h-0">
-        <div className="flex items-start gap-2 min-w-0">
+      <div className="px-3 pt-2.5 pb-3 flex flex-col gap-2 flex-1 min-h-0">
+        <div className="flex items-start gap-1 min-w-0">
+          <Link
+            href={detailLink}
+            scroll={false}
+            onClick={beginDetailNav}
+            className="shrink-0 size-[20px] rounded-md bg-[#121212] flex items-center justify-center text-white text-[9px] font-semibold leading-none tickets-num shadow-sm group-hover/card:scale-[1.02] transition-transform mt-px"
+            aria-label={`Open ticket ${ticket.ticketNumber}${sourceLabel ? ` (${sourceLabel})` : ""}`}
+          >
+            {typeAvatarLetter}
+          </Link>
+          {/* Pack chips edge-to-edge between avatar + checkbox; wrap to 2–3 rows only when needed. */}
+          <div className="min-w-0 flex-1 flex flex-wrap content-start items-center gap-x-1 gap-y-0.5">
+            {showOverdue && (
+              <span className="inline-flex items-center gap-0.5 px-1 py-0.5 rounded text-[10px] font-medium bg-red-100 text-red-800 max-w-full">
+                <AlertCircle className="h-2.5 w-2.5 shrink-0" />
+                <TicketMixedText>{overdueLabel}</TicketMixedText>
+              </span>
+            )}
+            {ticketTypeLabel && (
+              <span className="px-1 py-0.5 rounded text-[10px] font-medium bg-blue-50 text-blue-700 border border-blue-100">
+                {ticketTypeLabel}
+              </span>
+            )}
+            {mergedPill ? (
+              <span
+                className="px-1 py-0.5 rounded text-[10px] font-semibold bg-fuchsia-50 text-fuchsia-800 border border-fuchsia-200 max-w-[11rem] truncate"
+                title={mergedPill.title}
+              >
+                {mergedPill.label}
+              </span>
+            ) : null}
+            {sourceLabel && (
+              <span className="px-1 py-0.5 rounded text-[10px] font-medium bg-violet-50 text-violet-800 border border-violet-100">
+                {sourceLabel}
+              </span>
+            )}
+            {showSectionChip && (
+              <span className="px-1 py-0.5 rounded text-[10px] font-medium bg-indigo-50 text-indigo-700">
+                {sectionDisplay}
+              </span>
+            )}
+            {serviceLabel && (
+              <span className="px-1 py-0.5 rounded text-[10px] font-medium bg-emerald-50 text-emerald-700">
+                {serviceLabel}
+              </span>
+            )}
+            {categoryLabel && (
+              <span className="px-1 py-0.5 rounded text-[10px] font-medium bg-amber-50 text-amber-800">
+                <TicketMixedText>{categoryLabel}</TicketMixedText>
+              </span>
+            )}
+          </div>
           <input
             type="checkbox"
             checked={selected}
             onChange={(e) => onSelect(e.target.checked)}
             onClick={(e) => e.stopPropagation()}
-            className="mt-1 h-3.5 w-3.5 rounded border-gray-300 text-blue-600 focus:ring-2 focus:ring-blue-500/30 shrink-0"
+            className="mt-px h-3.5 w-3.5 rounded border-gray-300 text-blue-600 focus:ring-2 focus:ring-blue-500/30 shrink-0"
             aria-label={`Select ${ticket.ticketNumber}`}
           />
-          <Link
-            href={detailLink}
-            scroll={false}
-            onClick={beginDetailNav}
-            className="shrink-0 w-7 h-7 rounded-[9px] bg-[#121212] flex items-center justify-center text-white text-[11px] font-semibold leading-none tickets-num shadow-sm group-hover/card:scale-[1.02] transition-transform"
-            aria-label={`Open ticket ${ticket.ticketNumber}${sourceLabel ? ` (${sourceLabel})` : ""}`}
-          >
-            {typeAvatarLetter}
-          </Link>
-          <div className="min-w-0 flex-1">
-            <div className="flex flex-wrap items-center gap-1">
-              {showOverdue && (
-                <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-medium bg-red-100 text-red-800">
-                  <AlertCircle className="h-2.5 w-2.5 shrink-0" />
-                  <TicketMixedText>{overdueLabel}</TicketMixedText>
-                </span>
-              )}
-              <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-slate-100 text-slate-700 capitalize">
-                {ticket.priority}
-              </span>
-              {ticketTypeLabel && (
-                <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-blue-50 text-blue-700 border border-blue-100">
-                  {ticketTypeLabel}
-                </span>
-              )}
-              {sourceLabel && (
-                <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-violet-50 text-violet-800 border border-violet-100">
-                  {sourceLabel}
-                </span>
-              )}
-              {showSectionChip && (
-                <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-indigo-50 text-indigo-700">
-                  {sectionDisplay}
-                </span>
-              )}
-              {serviceLabel && (
-                <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-emerald-50 text-emerald-700">
-                  {serviceLabel}
-                </span>
-              )}
-              {categoryLabel && (
-                <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-amber-50 text-amber-800">
-                  <TicketMixedText>{categoryLabel}</TicketMixedText>
-                </span>
-              )}
-            </div>
-          </div>
         </div>
 
         <Link
           href={detailLink}
           scroll={false}
           onClick={beginDetailNav}
-          className="group/title inline-flex w-fit max-w-full min-w-0 text-left rounded-sm px-0.5 -mx-0.5 transition-colors duration-150 hover:bg-blue-50/80"
+          className="ticket-subject-link group/title self-start inline-flex flex-wrap items-baseline gap-x-1.5 max-w-full text-left"
         >
-          <TicketMixedText className="font-medium text-[#121212] group-hover/title:text-blue-700 transition-colors duration-150 text-[12px] leading-snug line-clamp-2 [overflow-wrap:anywhere]">
+          <TicketMixedText className="ticket-subject-text font-medium text-[#121212] text-[12px] leading-snug [overflow-wrap:anywhere]">
             {displaySubject}
           </TicketMixedText>
-          <TicketNum className="text-[10px] text-[#121212]/55 group-hover/title:text-blue-600/75 font-medium whitespace-nowrap align-baseline ml-1.5 transition-colors duration-150">
+          <TicketNum className="ticket-subject-id text-[10px] text-[#121212]/55 font-medium whitespace-nowrap">
             #{ticket.ticketNumber || ticket.id}
           </TicketNum>
         </Link>
 
-        <div className="flex items-center gap-1 text-[10px] text-[#121212]/55 truncate">
-          <span className="truncate">
-            <span className="text-[#121212]/70 font-medium">A:</span> {agentLabel}
+        <div className="flex items-center justify-between gap-2 text-[10px] text-[#121212]/55">
+          <span className="min-w-0 truncate">
+            Created <TicketNum>{formatDateTime(ticket.createdAt)}</TicketNum>
           </span>
-          <span aria-hidden className="text-[#121212]/25">·</span>
-          <span className="shrink-0">Updated <TicketNum>{formatDateTime(ticket.updatedAt)}</TicketNum></span>
+          <span className="min-w-0 truncate text-right shrink-0">
+            Updated <TicketNum>{formatDateTime(ticket.updatedAt)}</TicketNum>
+          </span>
         </div>
 
         <div
-          className="mt-auto border-t border-gray-100 pt-1"
+          className="mt-auto border-t border-gray-100 pt-2"
           onClick={(e) => e.preventDefault()}
           onMouseDown={(e) => e.stopPropagation()}
         >

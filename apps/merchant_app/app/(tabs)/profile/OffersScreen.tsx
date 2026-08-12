@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useMemo } from "react";
+import { useEffect, useState, useCallback, useMemo, useRef } from "react";
 import { AppText as Text } from "@/components/AppText";
 import { View, StyleSheet, ActivityIndicator, Alert } from "react-native";
 import { useRouter } from "expo-router";
@@ -32,9 +32,17 @@ import { OffersTrackView } from "@/components/offers/OffersTrackView";
 import { OffersCreateView } from "@/components/offers/OffersCreateView";
 import { OfferFormSheet } from "@/components/offers/OfferFormSheet";
 import { OffersPageTabs } from "@/components/offers/OffersPageTabs";
+import { OfferStorePickSheet } from "@/components/offers/OfferStorePickSheet";
+import type { ChildStore } from "@/context/AuthContext";
 import { offersSharedStyles } from "@/components/offers/offers-theme";
 
 type PageTab = "create" | "track";
+
+function approvedStoresOf(partner: ReturnType<typeof useAuth>["partner"]): ChildStore[] {
+  return (partner?.childStores ?? []).filter(
+    (s) => String(s.approval_status || "").toUpperCase() === "APPROVED"
+  );
+}
 
 function buildPayloadFromForm(
   v: OfferFormValues,
@@ -104,17 +112,24 @@ function buildPayloadFromForm(
 
 export default function OffersScreen() {
   const router = useRouter();
-  const { selectedStore } = useSelectedStore();
-  const { token } = useAuth();
+  const { selectedStore, switchActiveOutlet } = useSelectedStore();
+  const { token, partner } = useAuth();
+  const approvedStores = useMemo(() => approvedStoresOf(partner), [partner]);
   const storeId = selectedStore?.id ?? null;
   const storeName = selectedStore?.store_name ?? null;
 
-  const [pageTab, setPageTab] = useState<PageTab>("track");
+  const [pageTab, setPageTab] = useState<PageTab>("create");
+  const [trackStoreFilter, setTrackStoreFilter] = useState<number | "all">("all");
   const [trackFilter, setTrackFilter] = useState<OfferTrackFilter>("active");
   const [offers, setOffers] = useState<Offer[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [showForm, setShowForm] = useState(false);
+  const [storePickVisible, setStorePickVisible] = useState(false);
+  const pendingCreateRef = useRef<{
+    presetType?: OfferType;
+    createPath?: OfferCreatePath;
+  } | null>(null);
   const [editing, setEditing] = useState<Offer | null>(null);
   const [createSkipChoose, setCreateSkipChoose] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -127,20 +142,35 @@ export default function OffersScreen() {
   const [menuLoading, setMenuLoading] = useState(false);
   const [menuSearch, setMenuSearch] = useState("");
 
+  const storeNameById = useMemo(() => {
+    const map = new Map<number, string>();
+    approvedStores.forEach((s) => map.set(s.id, s.store_name ?? "Outlet"));
+    return map;
+  }, [approvedStores]);
+
+  const offerStoreIds = useMemo((): number[] => {
+    if (pageTab === "track" && approvedStores.length > 1) {
+      if (trackStoreFilter === "all") return approvedStores.map((s) => s.id);
+      return [trackStoreFilter];
+    }
+    if (storeId) return [storeId];
+    return [];
+  }, [pageTab, approvedStores, trackStoreFilter, storeId]);
+
   const reload = useCallback(
     async (opts?: { silent?: boolean }) => {
-      if (!storeId || !token) return;
+      if (!token || offerStoreIds.length === 0) return;
       if (!opts?.silent) setLoading(true);
       try {
-        const list = await listOffers(storeId, token);
-        setOffers(list);
+        const lists = await Promise.all(offerStoreIds.map((id) => listOffers(id, token)));
+        setOffers(lists.flat());
       } catch {
         /* ignore */
       } finally {
         if (!opts?.silent) setLoading(false);
       }
     },
-    [storeId, token]
+    [offerStoreIds, token]
   );
 
   const loadMenuItems = useCallback(async () => {
@@ -205,7 +235,12 @@ export default function OffersScreen() {
     setMenuSearch("");
   };
 
-  const openCreate = (presetType?: OfferType, createPath?: OfferCreatePath) => {
+  const doOpenCreate = (
+    presetType?: OfferType,
+    createPath?: OfferCreatePath,
+    outlet?: ChildStore
+  ) => {
+    if (outlet) switchActiveOutlet(outlet);
     resetForm();
     const mapped =
       presetType === "BOGO" || presetType === "BUY_N_GET_M" ? "BUY_X_GET_Y" : presetType;
@@ -228,6 +263,22 @@ export default function OffersScreen() {
     setShowForm(true);
   };
 
+  const openCreate = (presetType?: OfferType, createPath?: OfferCreatePath) => {
+    if (approvedStores.length > 1) {
+      pendingCreateRef.current = { presetType, createPath };
+      setStorePickVisible(true);
+      return;
+    }
+    doOpenCreate(presetType, createPath);
+  };
+
+  const onStorePickProceed = (outlet: ChildStore) => {
+    setStorePickVisible(false);
+    const pending = pendingCreateRef.current;
+    pendingCreateRef.current = null;
+    doOpenCreate(pending?.presetType, pending?.createPath, outlet);
+  };
+
   const isItemEligibleForFlat = useCallback(
     (item: MenuItemRow): boolean => {
       if (formValues.offerType !== "FLAT") return true;
@@ -238,7 +289,15 @@ export default function OffersScreen() {
     [formValues.offerType, editing, offersByItemId]
   );
 
+  const resolveOfferStoreId = useCallback(
+    (offer: Offer): number | null => offer.store_id ?? storeId,
+    [storeId]
+  );
+
   const openEdit = (o: Offer) => {
+    const outletId = resolveOfferStoreId(o);
+    const outlet = approvedStores.find((s) => s.id === outletId);
+    if (outlet) switchActiveOutlet(outlet);
     setEditing(o);
     setFormValues(populateOfferFormFromOffer(o));
     setImageFile(null);
@@ -357,15 +416,16 @@ export default function OffersScreen() {
   };
 
   const handleDelete = (o: Offer) => {
+    const targetStoreId = resolveOfferStoreId(o);
     Alert.alert("Deactivate offer?", `"${o.offer_title}" will be deactivated.`, [
       { text: "Cancel", style: "cancel" },
       {
         text: "Deactivate",
         style: "destructive",
         onPress: async () => {
-          if (!storeId || !token) return;
+          if (!targetStoreId || !token) return;
           try {
-            await deleteOffer(storeId, o.offer_id, token);
+            await deleteOffer(targetStoreId, o.offer_id, token);
             await reload();
           } catch (e) {
             Alert.alert("Error", e instanceof Error ? e.message : "Failed");
@@ -376,13 +436,14 @@ export default function OffersScreen() {
   };
 
   const handleToggle = async (o: Offer) => {
-    if (!storeId || !token) return;
+    const targetStoreId = resolveOfferStoreId(o);
+    if (!targetStoreId || !token) return;
     if (!o.is_active && isOfferCampaignExpired(o)) {
       Alert.alert("Expired", "This offer’s validity has ended. Create a new offer instead.");
       return;
     }
     try {
-      await updateOffer(storeId, o.offer_id, { is_active: !o.is_active }, token);
+      await updateOffer(targetStoreId, o.offer_id, { is_active: !o.is_active }, token);
       await reload();
     } catch (e) {
       Alert.alert("Error", e instanceof Error ? e.message : "Failed");
@@ -417,6 +478,10 @@ export default function OffersScreen() {
           loading={loading}
           refreshing={refreshing}
           storeName={storeName}
+          stores={approvedStores}
+          trackStoreFilter={trackStoreFilter}
+          onTrackStoreFilterChange={setTrackStoreFilter}
+          storeNameById={storeNameById}
           trackFilter={trackFilter}
           onTrackFilterChange={setTrackFilter}
           onRefresh={onRefresh}
@@ -452,6 +517,17 @@ export default function OffersScreen() {
         onPickImage={openImagePicker}
         onSave={handleSave}
         onClose={closeForm}
+      />
+
+      <OfferStorePickSheet
+        visible={storePickVisible}
+        stores={approvedStores}
+        initialStoreId={selectedStore?.id ?? null}
+        onClose={() => {
+          setStorePickVisible(false);
+          pendingCreateRef.current = null;
+        }}
+        onProceed={onStorePickProceed}
       />
     </View>
   );

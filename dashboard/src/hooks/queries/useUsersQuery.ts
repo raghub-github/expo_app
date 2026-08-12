@@ -99,7 +99,9 @@ export function useUsersQuery(params: UsersQueryParams & { enabled?: boolean } =
     queryKey: queryKeys.users.list(queryParams as Record<string, unknown>),
     queryFn: () => fetchUsers(queryParams),
     enabled,
-    ...getCacheConfig(CacheTier.MEDIUM), // Users list is medium frequency
+    ...getCacheConfig(CacheTier.MEDIUM),
+    // After create/edit navigation the list remounts; always pick up invalidated cache.
+    refetchOnMount: true,
   });
 }
 

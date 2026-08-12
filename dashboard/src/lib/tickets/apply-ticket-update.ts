@@ -319,11 +319,20 @@ export async function applyTicketUpdate(
   }
 
   if (body.tags !== undefined && Array.isArray(body.tags)) {
-    changedFields.push("tags");
-    push(
-      `tags = $?`,
-      (body.tags as unknown[]).filter((t): t is string => typeof t === "string" && t.trim() !== "")
-    );
+    const nextTags = (body.tags as unknown[])
+      .filter((t): t is string => typeof t === "string" && t.trim() !== "")
+      .map((t) => t.trim());
+    const prevTags = Array.isArray(existing.tags)
+      ? (existing.tags as unknown[]).map((t) => String(t).trim()).filter(Boolean)
+      : [];
+    const same =
+      prevTags.length === nextTags.length &&
+      [...prevTags].map((t) => t.toUpperCase()).sort().join("\0") ===
+        [...nextTags].map((t) => t.toUpperCase()).sort().join("\0");
+    if (!same) {
+      changedFields.push("tags");
+      push(`tags = $?`, nextTags);
+    }
   }
 
   if (body.isSpam !== undefined) {
@@ -348,10 +357,23 @@ export async function applyTicketUpdate(
   }
 
   if (body.igmRefundAmount !== undefined) {
-    changedFields.push("igm_refund_amount");
     const raw = body.igmRefundAmount;
     const n = raw == null || String(raw).trim() === "" ? null : Number(raw);
-    push(`igm_refund_amount = $?`, n != null && Number.isFinite(n) ? n : null);
+    const nextVal = n != null && Number.isFinite(n) ? n : null;
+    const prevRaw = existing.igm_refund_amount;
+    const prevVal =
+      prevRaw == null || String(prevRaw).trim() === ""
+        ? null
+        : Number.isFinite(Number(prevRaw))
+          ? Number(prevRaw)
+          : null;
+    const same =
+      (prevVal == null && nextVal == null) ||
+      (prevVal != null && nextVal != null && prevVal === nextVal);
+    if (!same) {
+      changedFields.push("igm_refund_amount");
+      push(`igm_refund_amount = $?`, nextVal);
+    }
   }
 
   if (body.markFrt !== undefined) {

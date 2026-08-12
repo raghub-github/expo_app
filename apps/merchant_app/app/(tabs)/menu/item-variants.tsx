@@ -99,7 +99,7 @@ export default function ItemVariantsScreen() {
     <View style={{ flex: 1, backgroundColor: GatiMitraMerchant.background }}>
       <View style={{ paddingHorizontal: H_PADDING, paddingTop: 14, paddingBottom: 10, flexDirection: "row", alignItems: "center", gap: 10 }}>
         <TouchableOpacity onPress={() => router.back()} hitSlop={8} style={{ paddingVertical: 6, paddingHorizontal: 6 }}>
-          <Ionicons name="chevron-back" size={22} color={GatiMitraMerchant.textPrimary} />
+          <Ionicons name="chevron-back" size={20} color={GatiMitraMerchant.textPrimary} />
         </TouchableOpacity>
         <View style={{ flex: 1, minWidth: 0 }}>
           <Text style={{ fontSize: 16, fontWeight: "800", color: GatiMitraMerchant.textPrimary }} numberOfLines={1}>

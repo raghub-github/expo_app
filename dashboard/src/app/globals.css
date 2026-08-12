@@ -29,6 +29,24 @@
   font-optical-sizing: auto;
 }
 
+/* Ticket subject hover only — do not highlight the whole card/row. */
+.ticket-subject-link {
+  border-radius: 6px;
+  padding: 2px 6px;
+  margin-left: -6px;
+  margin-right: -6px;
+  transition: background-color 150ms ease, color 150ms ease;
+}
+.ticket-subject-link:hover {
+  background-color: #dbeafe;
+}
+.ticket-subject-link:hover .ticket-subject-text {
+  color: #1d4ed8;
+}
+.ticket-subject-link:hover .ticket-subject-id {
+  color: #2563eb;
+}
+
 /* Orders dashboard — same Lora / Poppins pairing as tickets */
 .orders-typo {
   font-family: var(--font-tickets-text), Georgia, "Times New Roman", serif;

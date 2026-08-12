@@ -8,6 +8,7 @@ import {
 } from "lucide-react";
 import { createPortal } from "react-dom";
 import { useToast } from "@/context/ToastContext";
+import { useMerchantDashboardAccess } from "@/hooks/useMerchantDashboardAccess";
 import type { AllOfferTypes, Offer, MenuItemForOffer, OfferTier } from "./offers-types";
 import { OfferTrackCard } from "./offer-track-card";
 import {
@@ -153,11 +154,13 @@ const emptyTier = (): OfferTier => ({ min_order: "", discount_pct: "", discount_
 
 export function StoreOffersClient({ storeId }: { storeId: string }) {
   const { toast } = useToast();
+  const { canManageOffers, isViewOnly } = useMerchantDashboardAccess();
+  const canEditOffers = canManageOffers && !isViewOnly;
   const [storeName, setStoreName] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [offers, setOffers] = useState<Offer[]>([]);
   const [menuItems, setMenuItems] = useState<MenuItemForOffer[]>([]);
-  const [pageTab, setPageTab] = useState<"create" | "track">("create");
+  const [pageTab, setPageTab] = useState<"create" | "track">(canEditOffers ? "create" : "track");
   const [trackFilter, setTrackFilter] = useState<OfferTrackFilter>("all");
   const [showModal, setShowModal] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
@@ -212,6 +215,10 @@ export function StoreOffersClient({ storeId }: { storeId: string }) {
     const stats = offersByItemId.get(item.item_id);
     return !stats || stats.totalCount === 0;
   };
+
+  useEffect(() => {
+    if (!canEditOffers && pageTab === "create") setPageTab("track");
+  }, [canEditOffers, pageTab]);
 
   useEffect(() => {
     if (!storeId) { setIsLoading(false); return; }
@@ -599,8 +606,40 @@ export function StoreOffersClient({ storeId }: { storeId: string }) {
 
   if (isLoading) {
     return (
-      <div className="flex items-center justify-center py-12">
-        <div className="h-8 w-8 animate-spin rounded-full border-2 border-orange-600 border-t-transparent" />
+      <div className="flex h-full min-h-0 flex-col bg-white overflow-hidden" aria-busy aria-label="Loading offers">
+        <div className="shrink-0 border-b border-gray-200 bg-white px-4 sm:px-5 md:px-6">
+          <div className="mt-1 flex gap-8 py-3">
+            <div className="h-4 w-28 rounded bg-gray-200 animate-pulse" />
+            <div className="h-4 w-24 rounded bg-gray-100 animate-pulse" />
+          </div>
+        </div>
+        <div className="flex-1 overflow-auto p-4 sm:p-5 md:p-6 space-y-4">
+          <div className="flex flex-wrap gap-2">
+            {[1, 2, 3, 4].map((i) => (
+              <div key={i} className="h-8 w-20 rounded-full bg-gray-100 animate-pulse" />
+            ))}
+          </div>
+          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+            {[1, 2, 3, 4, 5, 6].map((i) => (
+              <div
+                key={i}
+                className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm space-y-3"
+              >
+                <div className="flex items-start justify-between gap-2">
+                  <div className="h-5 w-32 rounded bg-gray-200 animate-pulse" />
+                  <div className="h-5 w-16 rounded-full bg-gray-100 animate-pulse" />
+                </div>
+                <div className="h-3 w-full rounded bg-gray-100 animate-pulse" />
+                <div className="h-3 w-2/3 rounded bg-gray-100 animate-pulse" />
+                <div className="h-24 w-full rounded-lg bg-gray-50 animate-pulse" />
+                <div className="flex gap-2">
+                  <div className="h-8 flex-1 rounded-lg bg-gray-100 animate-pulse" />
+                  <div className="h-8 w-8 rounded-lg bg-gray-100 animate-pulse" />
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
       </div>
     );
   }
@@ -613,23 +652,29 @@ export function StoreOffersClient({ storeId }: { storeId: string }) {
   const isFreeDelivery = formData.offer_type === "FREE_DELIVERY";
 
   return (
-    <div className="flex h-full min-h-0 flex-col bg-white overflow-hidden">
-      <div className="shrink-0 border-b border-gray-200 bg-white px-4 sm:px-5 md:px-6">
-        <div className="mt-1 flex gap-8 text-sm">
-          <button
-            type="button"
-            onClick={() => setPageTab("create")}
-            className={`pb-3 border-b-2 transition-colors ${
-              pageTab === "create" ? "border-blue-600 text-blue-700 font-medium" : "border-transparent text-gray-500 hover:text-gray-700"
-            }`}
-          >
-            Create offers
-          </button>
+    <div className="flex h-full min-h-0 flex-col bg-gray-50 overflow-hidden">
+      <div className="shrink-0 border-b border-gray-200 bg-white px-4 pt-4 sm:px-5 sm:pt-5 md:px-6 md:pt-6">
+        <div className="mt-1 flex flex-wrap gap-2 pb-4">
+          {canEditOffers ? (
+            <button
+              type="button"
+              onClick={() => setPageTab("create")}
+              className={`rounded-lg border px-4 py-2 text-sm font-semibold transition-colors ${
+                pageTab === "create"
+                  ? "border-[#2ecc9b] bg-[#2ecc9b] text-white shadow-sm"
+                  : "border-gray-300 bg-white text-gray-700 hover:border-gray-400 hover:bg-gray-50"
+              }`}
+            >
+              Create offers
+            </button>
+          ) : null}
           <button
             type="button"
             onClick={() => setPageTab("track")}
-            className={`pb-3 border-b-2 transition-colors ${
-              pageTab === "track" ? "border-blue-600 text-blue-700 font-medium" : "border-transparent text-gray-500 hover:text-gray-700"
+            className={`rounded-lg border px-4 py-2 text-sm font-semibold transition-colors ${
+              pageTab === "track" || !canEditOffers
+                ? "border-[#2ecc9b] bg-[#2ecc9b] text-white shadow-sm"
+                : "border-gray-300 bg-white text-gray-700 hover:border-gray-400 hover:bg-gray-50"
             }`}
           >
             Track offers
@@ -637,8 +682,8 @@ export function StoreOffersClient({ storeId }: { storeId: string }) {
         </div>
 
         {pageTab === "track" && offers.length > 0 ? (
-          <div className="pb-4 pt-3 border-t border-gray-100">
-            <div className="flex items-center gap-3 mb-4">
+          <div className="pb-3 pt-3 border-t border-gray-100">
+            <div className="flex items-center gap-3 mb-3">
               <div className="flex-1 h-px bg-gray-200" />
               <span className="text-[11px] font-semibold tracking-wider text-gray-500 uppercase shrink-0">
                 Offer campaigns
@@ -677,47 +722,46 @@ export function StoreOffersClient({ storeId }: { storeId: string }) {
         ) : null}
       </div>
 
-      <div className="flex-1 min-h-0 overflow-y-auto px-4 sm:px-5 md:px-6 py-4 sm:py-6 w-full min-w-0">
-        {pageTab === "create" ? (
-          <div className="py-6">
-            <div className="rounded-lg border border-gray-200 bg-white p-6">
-              <div className="flex flex-col items-center justify-center gap-3 text-center">
-                <p className="text-sm text-gray-700 font-medium">Create offers</p>
-                <p className="text-sm text-gray-500">Click below to start creating a new offer for {storeName || "your store"}.</p>
-                <button
-                  type="button"
-                  onClick={() => handleOpenModal()}
-                  className="inline-flex items-center justify-center gap-2 px-4 py-2 text-sm font-semibold rounded-md bg-blue-600 text-white hover:bg-blue-700 transition-colors"
-                >
-                  <Plus size={16} className="shrink-0" />
-                  Create offer
-                </button>
-              </div>
+      <div className="flex-1 min-h-0 overflow-y-auto hide-scrollbar bg-gray-50 px-4 sm:px-5 md:px-6 pt-3 pb-4 sm:pt-4 w-full min-w-0">
+        {pageTab === "create" || offers.length === 0 ? (
+          <div className="flex flex-col items-center justify-center min-h-[min(520px,70dvh)] px-6 py-10 text-center">
+            <div className="mb-7 flex h-40 w-40 items-center justify-center rounded-full bg-emerald-50/80">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                src="/offers/no-running-offers-target.png"
+                alt=""
+                width={128}
+                height={128}
+                className="h-32 w-32 object-contain bg-transparent"
+              />
             </div>
-          </div>
-        ) : offers.length === 0 ? (
-          <div className="bg-white/80 backdrop-blur-sm rounded-2xl border border-gray-200/90 border-dashed shadow-sm p-6 sm:p-8 md:p-10 text-center max-w-xl mx-auto">
-            <div className="w-16 h-16 sm:w-20 sm:h-20 bg-gradient-to-br from-orange-100 to-red-50 rounded-2xl flex items-center justify-center mx-auto mb-4 sm:mb-5">
-              <Zap size={28} className="sm:w-8 sm:h-8 text-orange-500" />
-            </div>
-            <h3 className="text-base sm:text-lg font-bold text-gray-900 mb-2">No offers created yet</h3>
-            <p className="text-gray-500 text-sm sm:text-base mb-6 sm:mb-8 max-w-sm mx-auto">Create your first offer to attract more customers and boost sales.</p>
-            <button
-              type="button"
-              onClick={() => { setPageTab("create"); handleOpenModal(); }}
-              className="inline-flex items-center justify-center gap-2 px-5 py-2.5 sm:px-6 sm:py-3 bg-gradient-to-r from-orange-500 to-red-500 text-white rounded-xl hover:from-orange-600 hover:to-red-600 font-semibold text-sm shadow-md hover:shadow-lg transition-all active:scale-[0.98]"
-            >
-              <Plus size={18} />
-              Create First Offer
-            </button>
+            <h2 className="text-[22px] font-extrabold tracking-tight text-gray-900">
+              {pageTab === "create" && offers.length > 0 ? "Create Offers" : "No Running Offers"}
+            </h2>
+            <p className="mt-3 max-w-sm text-[15px] leading-relaxed text-gray-500">
+              {pageTab === "create" && offers.length > 0
+                ? `Start a new discount offer for ${storeName || "your store"} and attract more customers.`
+                : canEditOffers
+                  ? "Create your first discount offer to get started and attract more customers!"
+                  : "No offers to display for this store."}
+            </p>
+            {canEditOffers ? (
+              <button
+                type="button"
+                onClick={() => handleOpenModal()}
+                className="mt-7 inline-flex min-w-[220px] items-center justify-center rounded-full bg-gradient-to-r from-emerald-500 to-teal-400 px-7 py-3.5 text-[15px] font-bold text-white shadow-sm hover:from-emerald-600 hover:to-teal-500 transition-colors"
+              >
+                {offers.length > 0 ? "Create Offer" : "Create Your First Offer"}
+              </button>
+            ) : null}
           </div>
         ) : filteredTrackOffers.length === 0 ? (
-          <div className="rounded-xl border border-dashed border-gray-300 bg-gray-50/80 py-12 text-center max-w-xl mx-auto">
+          <div className="rounded-xl border border-dashed border-gray-300 bg-white py-12 text-center max-w-xl mx-auto">
             <p className="text-sm font-medium text-gray-700">No offers in this filter</p>
             <p className="text-xs text-gray-500 mt-1">Try another campaign filter above.</p>
           </div>
         ) : (
-          <div className="flex flex-col gap-3 w-full min-w-0">
+          <div className="flex flex-col gap-3 w-full min-w-0 pb-1">
             {filteredTrackOffers.map((offer, index) => {
               const offerKey = String(offer.offer_id ?? offer.id ?? index);
               return (
@@ -727,8 +771,8 @@ export function StoreOffersClient({ storeId }: { storeId: string }) {
                   storeName={storeName}
                   expanded={expandedOfferCards[offerKey] ?? true}
                   onToggleExpand={() => toggleOfferCardExpanded(offerKey)}
-                  onEdit={() => handleOpenModal(offer)}
-                  onDelete={() => handleDeleteOffer(offer)}
+                  onEdit={canEditOffers ? () => handleOpenModal(offer) : undefined}
+                  onDelete={canEditOffers ? () => handleDeleteOffer(offer) : undefined}
                   onCopyCoupon={copyToClipboard}
                   getMenuItemName={getMenuItemName}
                 />

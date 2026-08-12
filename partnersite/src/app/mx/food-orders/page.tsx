@@ -51,7 +51,6 @@ import {
   writeCachedFoodOrderStats,
 } from '@/lib/food-order-stats-cache';
 import { usePastRidersEligibility } from '@/hooks/usePastRidersEligibility';
-import { PageSkeletonOrders } from '@/components/PageSkeleton';
 import { MerchantStore } from '@/lib/merchantStore';
 import { isValidPartnerStoreId } from '@/lib/partner-store-id-shared';
 import {
@@ -1894,9 +1893,7 @@ function OrdersPageContent() {
 
         <div className="flex flex-1 min-h-0 flex-col overflow-hidden">
           <div className="flex flex-col lg:flex-row flex-1 min-h-0 overflow-hidden">
-            {loading && orders.length === 0 && !showFullStoreClosedBlankState ? (
-              <PageSkeletonOrders />
-            ) : showFullStoreClosedBlankState ? (
+            {showFullStoreClosedBlankState ? (
               <StoreClosedOrdersState />
             ) : (
               <>

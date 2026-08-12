@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createServerSupabaseClient } from "@/lib/supabase/server";
-import { getSystemUserByEmail } from "@/lib/auth/user-mapping";
+import { getAuthenticatedApiUser, authFailureResponse } from "@/lib/auth/api-session";
+import { resolveSystemUserForSupabaseAuth } from "@/lib/auth/user-mapping";
 import { getSql } from "@/lib/db/client";
 import { canPerformActionByAuth } from "@/lib/permissions/actions";
 import { headers } from "next/headers";
@@ -12,16 +12,15 @@ import { inferStatusSegmentStart, recordCompletedStatusSegment } from "@/lib/age
  * GET /api/agents/status
  * Get current agent's online/offline status
  */
-export async function GET() {
+export async function GET(request: NextRequest) {
   try {
-    const supabase = await createServerSupabaseClient();
-    const { data: { user }, error: userError } = await supabase.auth.getUser();
-
-    if (userError || !user) {
-      return NextResponse.json({ success: false, error: "Not authenticated" }, { status: 401 });
+    const auth = await getAuthenticatedApiUser(request);
+    if (!auth.ok) {
+      return authFailureResponse(auth);
     }
+    const { user } = auth;
 
-    const systemUser = await getSystemUserByEmail(user.email!);
+    const systemUser = await resolveSystemUserForSupabaseAuth(user.id, user.email);
     if (!systemUser) {
       return NextResponse.json({ success: false, error: "User not found" }, { status: 404 });
     }
@@ -89,17 +88,18 @@ export async function GET() {
  */
 export async function PATCH(request: NextRequest) {
   try {
-    const supabase = await createServerSupabaseClient();
-    const { data: { user }, error: userError } = await supabase.auth.getUser();
-
-    if (userError || !user) {
-      return NextResponse.json({ success: false, error: "Not authenticated" }, { status: 401 });
+    const auth = await getAuthenticatedApiUser(request);
+    if (!auth.ok) {
+      return authFailureResponse(auth);
     }
+    const { user } = auth;
 
-    const systemUser = await getSystemUserByEmail(user.email!);
+    const systemUser = await resolveSystemUserForSupabaseAuth(user.id, user.email);
     if (!systemUser) {
       return NextResponse.json({ success: false, error: "User not found" }, { status: 404 });
     }
+
+    const actorEmail = user.email ?? systemUser.email;
 
     // Check if user has ticket action permissions (UPDATE or ASSIGN).
     // Some users are configured on ticket sub-dashboards, so validate across all ticket dashboard variants.
@@ -131,7 +131,7 @@ export async function PATCH(request: NextRequest) {
     for (const dashboardType of ticketDashboards) {
       const canUpdate = await canPerformActionByAuth(
         user.id,
-        user.email!,
+        actorEmail,
         dashboardType as any,
         "UPDATE"
       );
@@ -143,7 +143,7 @@ export async function PATCH(request: NextRequest) {
       }
       canAssign = await canPerformActionByAuth(
         user.id,
-        user.email!,
+        actorEmail,
         dashboardType as any,
         "ASSIGN"
       );
@@ -158,7 +158,7 @@ export async function PATCH(request: NextRequest) {
     const hasStatusToggleAccess =
       (await canPerformActionByAuth(
         user.id,
-        user.email!,
+        actorEmail,
         "TICKET",
         "UPDATE",
         undefined,
@@ -166,7 +166,7 @@ export async function PATCH(request: NextRequest) {
       )) ||
       (await canPerformActionByAuth(
         user.id,
-        user.email!,
+        actorEmail,
         "ticket" as any,
         "UPDATE",
         undefined,

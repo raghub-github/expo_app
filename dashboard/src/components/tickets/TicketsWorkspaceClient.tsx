@@ -4,6 +4,7 @@ import { useAppParams, useAppPathname } from "@/hooks/useAppSearchParams";
 import { useEffect } from "react";
 
 import { useTicketsNavPending } from "@/context/TicketsNavPendingContext";
+import { useBrowserPathname } from "@/hooks/tickets/useBrowserPathname";
 import { ticketsPathTicketId } from "@/lib/tickets/ticket-path-utils";
 import { TicketDashboardClient } from "./TicketDashboardClient";
 import { TicketDetailLoader } from "./ticket-view/TicketDetailLoader";
@@ -20,9 +21,11 @@ export function TicketsWorkspaceClient() {
 function TicketsWorkspaceClientInner() {
   const params = useAppParams();
   const pathname = useAppPathname();
+  const browserPathname = useBrowserPathname();
   const { pendingTicketId } = useTicketsNavPending();
   const slug = (params?.slug as string[] | undefined) ?? [];
   const cleanPath = pathname.split("?")[0].split("#")[0];
+  const browserClean = browserPathname || cleanPath;
 
   // Strict: the Tickets workspace should never scroll the main window.
   // Only inner panes should scroll.
@@ -59,8 +62,13 @@ function TicketsWorkspaceClientInner() {
 
   const slugSegment = slug.length === 1 ? slug[0].trim() : "";
   const pathTicketId = ticketsPathTicketId(cleanPath);
-  const resolvedTicketId =
-    pathTicketId ?? (slugSegment !== "" ? slugSegment : null) ?? pendingTicketId;
+  const browserTicketId = ticketsPathTicketId(browserClean);
+  const isTicketsListPath =
+    cleanPath === "/dashboard/tickets" || browserClean === "/dashboard/tickets";
+  const pathOrSlugTicketId =
+    browserTicketId ?? pathTicketId ?? (slugSegment !== "" ? slugSegment : null);
+  /** Never keep detail open on the list URL — pending id is only for in-flight detail nav. */
+  const resolvedTicketId = isTicketsListPath ? null : pathOrSlugTicketId ?? pendingTicketId;
   const showDetail = Boolean(resolvedTicketId?.trim());
 
   return (

@@ -22,7 +22,7 @@ export const HEADER_HEIGHT = 60; // 56–64px
 export const HEADER_RIGHT_EDGE = 20; // min 20px from right for toggle
 
 // Bottom tab bar — height of chrome inside the tab slot (navigator reserves this space).
-export const TAB_BAR_HEIGHT = 50;
+export const TAB_BAR_HEIGHT = 52;
 /** Space between pill row and bottom of tab slot (above home indicator). */
 export const TAB_BAR_FLOATING_GAP = 10;
 

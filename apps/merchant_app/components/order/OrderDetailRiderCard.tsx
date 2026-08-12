@@ -155,6 +155,13 @@ export function OrderDetailRiderCard({
 
   const showLogButton = historyRiders.length > 0;
   const showLiveAssigned = assignedOrder != null && orderHasAssignedRider(assignedOrder);
+  const hasContent =
+    (showPendingAssign && !showLiveAssigned) ||
+    showLiveAssigned ||
+    (!showLiveAssigned && rider != null && activeInactive) ||
+    showLogButton;
+
+  if (!hasContent) return null;
 
   return (
     <View style={styles.wrap}>
@@ -182,7 +189,7 @@ export function OrderDetailRiderCard({
 
       {showLiveAssigned && assignedOrder ? (
         <View style={styles.card}>
-          <MerchantAssignedRiderRow order={assignedOrder} embedded />
+          <MerchantAssignedRiderRow order={assignedOrder} embedded alwaysVisibleTracking />
         </View>
       ) : null}
 

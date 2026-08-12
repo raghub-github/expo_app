@@ -119,6 +119,9 @@ export async function proxy(request: NextRequest) {
           },
           setAll(cookiesToSet) {
             cookiesToSet.forEach(({ name, value, options }) => {
+              if (name.startsWith("sb-") && (!value || value.length === 0)) {
+                return;
+              }
               request.cookies.set(name, value);
               response.cookies.set(name, value, {
                 ...options,
@@ -128,6 +131,11 @@ export async function proxy(request: NextRequest) {
               });
             });
           },
+        },
+        auth: {
+          autoRefreshToken: false,
+          persistSession: true,
+          detectSessionInUrl: false,
         },
       }
     );
@@ -192,15 +200,22 @@ export async function proxy(request: NextRequest) {
       // Concurrent refresh race: another request already rotated the token.
       // Do not clear cookies — the winning response will have set the new ones.
       if (isRefreshTokenAlreadyUsed(sessionError)) {
-        console.log("[proxy] Refresh token already used (race) — fail open");
+        if (process.env.NEXT_PUBLIC_DEBUG_PROXY === "true") {
+          console.log("[proxy] Refresh token already used (race) — fail open");
+        }
         return response;
       }
-      if (sessionError.message !== "Auth session missing!") {
+      if (
+        process.env.NEXT_PUBLIC_DEBUG_PROXY === "true" &&
+        sessionError.message !== "Auth session missing!"
+      ) {
         console.log("[proxy] Session error:", sessionError);
       }
 
       if (isFatalRefreshTokenError(sessionError)) {
-        console.log("[proxy] Fatal refresh token error — clearing this browser cookies only");
+        if (process.env.NEXT_PUBLIC_DEBUG_PROXY === "true") {
+          console.log("[proxy] Fatal refresh token error — clearing this browser cookies only");
+        }
         // Do NOT call supabase.auth.signOut() — it can revoke refresh for other tabs/devices.
         if (pathname.startsWith("/api/")) {
           const res = NextResponse.json(

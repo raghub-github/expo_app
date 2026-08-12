@@ -30,7 +30,7 @@ import {
 export type NotificationType = "order" | "store" | "system" | "earning";
 
 /** Foreground cadence for the campaign inbox (no postgres realtime for it). */
-const CAMPAIGN_POLL_MS = 10_000;
+const CAMPAIGN_POLL_MS = 45_000;
 
 export interface MerchantNotification {
   id: string;

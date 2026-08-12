@@ -567,7 +567,7 @@ function MenuItemCard({
           activeOpacity={0.75}
           accessibilityLabel="Edit item"
         >
-          <Ionicons name="create-outline" size={16} color={GatiMitraMerchant.textPrimary} />
+          <Ionicons name="pencil-outline" size={15} color={GatiMitraMerchant.textSecondary} />
           <Text style={styles.catalogEditText}>Edit</Text>
         </TouchableOpacity>
       </View>
@@ -1143,8 +1143,11 @@ export default function MenuScreen() {
 
   const handleJumpToSection = useCallback(
     (key: string) => {
-      // Ensure Tree view so section headers exist
-      setViewMode("tree");
+      if (key === "combos") {
+        if (kindFilter === "ITEMS" || kindFilter === "ADDONS") setKindFilter("ALL");
+      } else if (kindFilter === "COMBOS" || kindFilter === "ADDONS") {
+        setKindFilter("ALL");
+      }
       setOpenTreeGroups((prev) => ({ ...prev, [key]: true }));
       setManageSheetVisible(false);
       requestAnimationFrame(() => {
@@ -1153,10 +1156,10 @@ export default function MenuScreen() {
           if (typeof y === "number") {
             scrollRef.current?.scrollTo({ y: Math.max(0, y - 10), animated: true });
           }
-        }, 80);
+        }, 120);
       });
     },
-    [sectionOffsets]
+    [sectionOffsets, kindFilter]
   );
 
   /** Full-menu map for combo components — filtered `items` would hide names/stock for items outside the current category. */

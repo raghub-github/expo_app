@@ -54,6 +54,8 @@ import { useRightSidebar } from "@/context/RightSidebarContext";
 import { useAuth } from "@/providers/AuthProvider";
 import { usePermissions } from "@/hooks/usePermissions";
 import { usePermission } from "@/hooks/usePermission";
+import { useMerchantDashboardAccess } from "@/hooks/useMerchantDashboardAccess";
+import { useTicketDashboardAccess } from "@/hooks/useTicketDashboardAccess";
 import { getDashboardTypeFromPath } from "@/lib/permissions/path-mapping";
 import { useDashboardAccessQuery } from "@/hooks/queries/useDashboardAccessQuery";
 import { loadBootstrapFromStorage } from "@/lib/dashboard-bootstrap-storage";
@@ -756,6 +758,9 @@ function HeaderComponent() {
       !(cleanPathname === "/order" || cleanPathname.startsWith("/order/")))
   );
   const { canTogglePortal = false, isSuperAdmin = false } = usePermissions();
+  const { hasAdminMerchantAccess } = useMerchantDashboardAccess();
+  const { canMutate: canCreateTickets } = useTicketDashboardAccess();
+  const canUseMerchantPortalToggle = canTogglePortal || hasAdminMerchantAccess;
   const { data: dashboardAccessData } = useDashboardAccessQuery();
   /** Avoid SSR/client mismatch when React Query restores cached permissions before hydration. */
   const [queueLinkMounted, setQueueLinkMounted] = useState(false);
@@ -786,7 +791,7 @@ function HeaderComponent() {
   const portal = pendingPortal
     ?? resolveMerchantsPortal({
       portalFromUrl,
-      canTogglePortal,
+      canTogglePortal: canUseMerchantPortalToggle,
     });
 
   useEffect(() => {
@@ -796,20 +801,22 @@ function HeaderComponent() {
   }, [portalFromUrl, pendingPortal]);
 
   // Keep ?portal= in sync on Merchants sub-routes when the list omits it (e.g. old verification links).
+  // Depend on portalParam (stable string), not searchParams object identity — avoids replace storms.
   useEffect(() => {
-    if (!isMerchantsArea || !canTogglePortal) return;
+    if (!isMerchantsArea || !canUseMerchantPortalToggle) return;
     if (portalFromUrl) {
       writeStoredMerchantsPortal(portalFromUrl);
       return;
     }
     const target: MerchantsPortal = "admin";
     writeStoredMerchantsPortal(target);
+    if (portalParam === target) return;
     const next = new URLSearchParams(searchParams.toString());
-    if (next.get("portal") === target) return;
     next.set("portal", target);
     const qs = next.toString();
     router.replace(qs ? `${pathname}?${qs}` : `${pathname}?portal=${target}`);
-  }, [isMerchantsArea, canTogglePortal, portalFromUrl, pathname, router, searchParams]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- searchParams.toString() via portalParam
+  }, [isMerchantsArea, canUseMerchantPortalToggle, portalFromUrl, portalParam, pathname, router]);
 
   const setPortal = (value: MerchantsPortal) => {
     setPendingPortal(value);
@@ -847,19 +854,20 @@ function HeaderComponent() {
   // Never navigate away from the current merchants page (preserve storeId/step on reload).
   useEffect(() => {
     if (!isMerchantsArea) return;
-    if (canTogglePortal) return;
+    if (canUseMerchantPortalToggle) return;
     if (portal === "merchant") return;
     writeStoredMerchantsPortal("merchant");
-    const next = new URLSearchParams(searchParams.toString());
-    if (next.get("portal") === "merchant") {
+    if (portalParam === "merchant") {
       setPendingPortal(null);
       return;
     }
+    const next = new URLSearchParams(searchParams.toString());
     next.set("portal", "merchant");
     const qs = next.toString();
     setPendingPortal("merchant");
     router.replace(qs ? `${pathname}?${qs}` : `${pathname}?portal=merchant`);
-  }, [isMerchantsArea, canTogglePortal, portal, pathname, router, searchParams]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- searchParams via portalParam
+  }, [isMerchantsArea, canUseMerchantPortalToggle, portal, portalParam, pathname, router]);
   const handleOpenRightPanel = () => {
     leftSidebarMobile?.setMobileMenuOpen(false);
     rightSidebar?.onToggle();
@@ -1418,6 +1426,7 @@ function HeaderComponent() {
           <div className="w-full min-w-0 max-w-[140px] sm:max-w-[200px] md:max-w-[240px]">
             <GlobalSearch />
           </div>
+          {canCreateTickets ? (
           <div ref={newMenuRef} className="relative shrink-0">
             <button
               type="button"
@@ -1462,7 +1471,10 @@ function HeaderComponent() {
               </div>
             )}
           </div>
+          ) : null}
+          {canCreateTickets ? (
           <NewTicketSideSheet type={newSheetType} onClose={() => setNewSheetType(null)} />
+          ) : null}
         </div>
       ) : !effectivePathname.startsWith("/dashboard/tickets") &&
         effectivePathname !== "/dashboard/area-managers" &&
@@ -1478,7 +1490,7 @@ function HeaderComponent() {
         {/* Admin | Merchant portal toggle: shown only for explicit portal-toggle access */}
         {isMerchantsAreaForDisplay &&
           portalToggleMounted &&
-          canTogglePortal &&
+          canUseMerchantPortalToggle &&
           !isStoreVerificationDetail && (
           <div className="flex rounded-[10px] border border-[#121212]/10 bg-white p-0.5 shadow-sm" role="tablist" aria-label="Admin or Merchant portal">
             <button

@@ -11,8 +11,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine";
-import { getSystemUserByEmail } from "@/lib/auth/user-mapping";
-import { getAreaManagerByUserId } from "@/lib/area-manager/auth";
+import { resolveMerchantListAreaManagerId } from "@/lib/merchants/resolve-merchant-list-scope";
 import { listMerchantParents, listMerchantStores, getChildMerchantStores } from "@/lib/db/operations/merchant-stores";
 import { getSystemUserEmailsByIds } from "@/lib/db/operations/users";
 
@@ -58,16 +57,11 @@ export async function GET(request: NextRequest) {
     const toDate = searchParams.get("toDate")?.trim() || undefined;
     const storeType = searchParams.get("storeType")?.trim() || undefined;
 
-    // Scope: Area managers see only their stores; Super Admin / other users see all.
-    let areaManagerId: number | null = null;
-    const superAdmin = await isSuperAdmin(user.id, user.email);
-    if (!superAdmin) {
-      const systemUser = await getSystemUserByEmail(user.email);
-      if (systemUser) {
-        const am = await getAreaManagerByUserId(systemUser.id);
-        if (am) areaManagerId = am.id;
-      }
-    }
+    // Scope: AM-assigned stores only unless MERCHANT_VIEW / admin merchant access (org-wide).
+    const areaManagerId = await resolveMerchantListAreaManagerId({
+      supabaseAuthId: user.id,
+      email: user.email,
+    });
 
     if (filter === "parent") {
       const { items, nextCursor } = await listMerchantParents({
@@ -129,10 +123,10 @@ export async function GET(request: NextRequest) {
     else if (category === "drafted") draftedOnly = true;
     else if (category === "resubmitted") resubmittedOnly = true;
 
-    // Child search: return only matching child store(s); limit 1 for "single child" result when search is set
+    // Child search: exact store-id hits usually return 1 row (redirect). Parent-id / fuzzy may return many.
     const { items, nextCursor } = await listMerchantStores({
       areaManagerId,
-      limit: search ? 1 : limit,
+      limit,
       cursor,
       search,
       filter: "child",

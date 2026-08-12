@@ -8,41 +8,26 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { createServerSupabaseClient } from "@/lib/supabase/server";
+import { getAuthenticatedApiUser, authFailureResponse } from "@/lib/auth/api-session";
 import { getSystemUserByEmail } from "@/lib/db/operations/users";
 import { isSuperAdmin, hasDashboardAccessByAuth } from "@/lib/permissions/engine";
 import { getSql } from "@/lib/db/client";
-import { isInvalidRefreshToken, signOutIfSessionDead } from "@/lib/auth/session-errors";
 import { processPendingAutomationJobs } from "@/lib/tickets/ticket-automation/job-processor";
 
 export const runtime = "nodejs";
 /** Prevent overlapping browser polls from holding connections for minutes. */
 export const maxDuration = 25;
 
-async function requireTicketManager() {
-  const supabase = await createServerSupabaseClient();
-  const {
-    data: { user },
-    error: userError,
-  } = await supabase.auth.getUser();
-  if (userError) {
-    if (isInvalidRefreshToken(userError)) {
-      await signOutIfSessionDead(supabase, userError);
-      return {
-        error: NextResponse.json({ success: false, error: "Session invalid", code: "SESSION_INVALID" }, { status: 401 }),
-      };
-    }
-    return { error: NextResponse.json({ success: false, error: "Not authenticated" }, { status: 401 }) };
-  }
-  if (!user) {
-    return { error: NextResponse.json({ success: false, error: "Not authenticated" }, { status: 401 }) };
-  }
-  const systemUser = await getSystemUserByEmail(user.email!);
+async function requireTicketManager(request: NextRequest) {
+  const auth = await getAuthenticatedApiUser(request);
+  if (!auth.ok) return { error: authFailureResponse(auth) };
+
+  const systemUser = await getSystemUserByEmail(auth.user.email!);
   if (!systemUser) {
     return { error: NextResponse.json({ success: false, error: "User not found" }, { status: 404 }) };
   }
-  const userIsSuperAdmin = await isSuperAdmin(user.id, user.email!);
-  const hasTicketAccess = await hasDashboardAccessByAuth(user.id, user.email!, "TICKET");
+  const userIsSuperAdmin = await isSuperAdmin(auth.user.id, auth.user.email!);
+  const hasTicketAccess = await hasDashboardAccessByAuth(auth.user.id, auth.user.email!, "TICKET");
   if (!userIsSuperAdmin && !hasTicketAccess) {
     return { error: NextResponse.json({ success: false, error: "Insufficient permissions" }, { status: 403 }) };
   }
@@ -67,7 +52,7 @@ export async function POST(request: NextRequest) {
   }
 
   if (!authorizeCron(request)) {
-    const auth = await requireTicketManager();
+    const auth = await requireTicketManager(request);
     if ("error" in auth && auth.error) return auth.error;
   }
 

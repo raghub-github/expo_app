@@ -1,8 +1,8 @@
 # Merchant Terms of Service
 
 **Effective Date:** 3 July 2026
-**Last Updated:** 3 July 2026
-**Version:** 1.0
+**Last Updated:** 10 August 2026
+**Version:** 1.1
 
 > The agreement between you (the Merchant) and GatiMitra for listing your outlet, accepting orders, receiving settlements, and using the partner portal and merchant app.
 
@@ -44,6 +44,22 @@ You remain responsible for:
 - GatiMitra may revise commercial terms with notice as permitted in your agreement. Continued use after the effective date constitutes acceptance where allowed by law.
 - Settlements are processed per the payout schedule in your agreement, subject to deductions (commission, taxes, chargebacks, wallet debits, penalties, and adjustments).
 - You authorise GatiMitra to raise tax invoices and to deduct applicable TDS where you are required to withhold under Indian tax law.
+
+## Merchant Terms & Acceptance
+
+By registering and continuing to use the GatiMitra platform, the Merchant acknowledges and agrees to the GatiMitra Merchant Terms & Conditions, including the applicable commercial terms, service charges, payout policies, and platform policies communicated by GatiMitra.
+
+GatiMitra may update its terms, charges, policies, or operational guidelines from time to time. Any applicable changes will be communicated through the GatiMitra Merchant App, Partner Portal, email, or other official communication channels. Continued use of the GatiMitra platform after such changes are communicated will constitute acceptance of the updated terms, subject to applicable law.
+
+## Transparent Payouts & Charges
+
+GatiMitra follows a transparent payout structure. The Merchant will be able to view the applicable order value, deductions/charges, adjustments, and final payable amount through the Merchant App/Partner Portal.
+
+No hidden platform charges will be applied to the Merchant. Any applicable fee, commission, tax, adjustment, or other deduction will be disclosed through the applicable commercial terms and/or reflected in the relevant order, settlement, or payout statement.
+
+The Merchant is responsible for reviewing the applicable terms, order statements, and payout details available on the platform and raising any genuine discrepancy through GatiMitra's official support channels.
+
+GatiMitra is committed to transparent settlements, clear charges, and fair communication with its Merchant Partners.
 
 ## 5. Orders & fulfilment
 

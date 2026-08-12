@@ -6,10 +6,11 @@
  * Body: { delivery_radius_km?, address?: { full_address?, landmark?, city?, state?, postal_code?, latitude?, longitude? }, auto_accept_orders?, preparation_buffer_minutes? }
  */
 import { NextRequest, NextResponse } from "next/server";
-import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine";
+import { getMerchantAccess } from "@/lib/permissions/merchant-access";
+import { resolveMerchantListAreaManagerId } from "@/lib/merchants/resolve-merchant-list-scope";
+import { resolveMerchantApiActor } from "@/lib/merchant-food-orders/store-access";
 import { getSystemUserByEmail } from "@/lib/auth/user-mapping";
-import { getAreaManagerByUserId } from "@/lib/area-manager/auth";
 import { getMerchantStoreById, updateMerchantStore } from "@/lib/db/operations/merchant-stores";
 import { getSql } from "@/lib/db/client";
 import { insertActivityLog } from "@/lib/db/operations/merchant-portal-activity-logs";
@@ -17,11 +18,7 @@ import { insertActivityLog } from "@/lib/db/operations/merchant-portal-activity-
 export const runtime = "nodejs";
 
 async function getAreaManagerId(userId: string, email: string) {
-  if (await isSuperAdmin(userId, email)) return null;
-  const systemUser = await getSystemUserByEmail(email);
-  if (!systemUser) return null;
-  const am = await getAreaManagerByUserId(systemUser.id);
-  return am?.id ?? null;
+  return resolveMerchantListAreaManagerId({ supabaseAuthId: userId, email });
 }
 
 export async function GET(
@@ -34,11 +31,11 @@ export async function GET(
     if (!Number.isFinite(storeId)) {
       return NextResponse.json({ success: false, error: "Invalid store id" }, { status: 400 });
     }
-    const supabase = await createServerSupabaseClient();
-    const { data: { user }, error } = await supabase.auth.getUser();
-    if (error || !user?.email) {
-      return NextResponse.json({ success: false, error: "Not authenticated" }, { status: 401 });
+    const actor = await resolveMerchantApiActor();
+    if (!actor.ok) {
+      return NextResponse.json({ success: false, error: actor.error }, { status: actor.status });
     }
+    const user = { id: actor.id, email: actor.email };
     const allowed =
       (await isSuperAdmin(user.id, user.email)) ||
       (await hasDashboardAccessByAuth(user.id, user.email, "MERCHANT"));
@@ -128,16 +125,32 @@ export async function PATCH(
     if (!Number.isFinite(storeId)) {
       return NextResponse.json({ success: false, error: "Invalid store id" }, { status: 400 });
     }
-    const supabase = await createServerSupabaseClient();
-    const { data: { user }, error } = await supabase.auth.getUser();
-    if (error || !user?.email) {
-      return NextResponse.json({ success: false, error: "Not authenticated" }, { status: 401 });
+    const actor = await resolveMerchantApiActor();
+    if (!actor.ok) {
+      return NextResponse.json({ success: false, error: actor.error }, { status: actor.status });
     }
+    const user = { id: actor.id, email: actor.email };
+    const isAdmin = await isSuperAdmin(user.id, user.email);
     const allowed =
-      (await isSuperAdmin(user.id, user.email)) ||
-      (await hasDashboardAccessByAuth(user.id, user.email, "MERCHANT"));
+      isAdmin || (await hasDashboardAccessByAuth(user.id, user.email, "MERCHANT"));
     if (!allowed) {
       return NextResponse.json({ success: false, error: "Merchant dashboard access required" }, { status: 403 });
+    }
+    if (!isAdmin) {
+      const access = await getMerchantAccess(user.id, user.email);
+      if (
+        !access ||
+        !(
+          access.can_update_store_details ||
+          access.can_update_store_availability ||
+          access.can_update_store_timing
+        )
+      ) {
+        return NextResponse.json(
+          { success: false, error: "View-only access — cannot update store settings" },
+          { status: 403 }
+        );
+      }
     }
     const areaManagerId = await getAreaManagerId(user.id, user.email);
     const store = await getMerchantStoreById(storeId, areaManagerId);

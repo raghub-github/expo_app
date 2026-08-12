@@ -189,11 +189,6 @@ export default function SettingsScreen() {
     if (loggingOut) return;
     setLoggingOut("this");
     try {
-      // Best-effort push unregister — never block logout on a hung network call.
-      await Promise.race([
-        controller.unregisterCurrent().catch(() => undefined),
-        new Promise<void>((resolve) => setTimeout(resolve, 2000)),
-      ]);
       await logout();
       setLogoutModalVisible(false);
       router.replace("/(auth)/login");
@@ -206,10 +201,6 @@ export default function SettingsScreen() {
     if (loggingOut) return;
     setLoggingOut("all");
     try {
-      await Promise.race([
-        controller.unregisterCurrent().catch(() => undefined),
-        new Promise<void>((resolve) => setTimeout(resolve, 2000)),
-      ]);
       await logoutAllDevices();
       setLogoutModalVisible(false);
       router.replace("/(auth)/login");

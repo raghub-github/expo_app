@@ -5,9 +5,9 @@ import { WebView } from "react-native-webview";
 import { Ionicons } from "@expo/vector-icons";
 import type { OrderRecord } from "@/hooks/useOrders";
 import type { MerchantRiderLiveEnrichment } from "@/hooks/useMerchantRiderLiveEnrichment";
-import { useMerchantRiderLiveTracking } from "@/hooks/useMerchantRiderLiveTracking";
 import { MerchantBottomSheetShell } from "@/components/order/MerchantBottomSheetShell";
 import { getConfig, resolveUrlForDevice } from "@/config/env";
+import type { MerchantRiderTrackingPayload } from "@/services/riderTrackingApi";
 import {
   buildMapUpdateScript,
   buildMerchantRiderTrackingMapHtml,
@@ -33,8 +33,22 @@ type Props = {
   order: OrderRecord;
   storeId: number;
   token: string;
-  enrichment?: MerchantRiderLiveEnrichment;
+  enrichment: MerchantRiderLiveEnrichment;
 };
+
+function trackingCoordsChanged(
+  prev: MerchantRiderTrackingPayload | null,
+  next: MerchantRiderTrackingPayload | null
+): boolean {
+  if (!next) return false;
+  if (!prev?.location && next.location) return true;
+  if (!prev?.location || !next.location) return prev !== next;
+  const dLat = Math.abs(prev.location.latitude - next.location.latitude);
+  const dLng = Math.abs(prev.location.longitude - next.location.longitude);
+  const headingA = prev.location.heading_degrees ?? 0;
+  const headingB = next.location.heading_degrees ?? 0;
+  return dLat > 0.00005 || dLng > 0.00005 || Math.abs(headingA - headingB) > 8;
+}
 
 function parseOrdersFoodId(orderId: string): number | null {
   const n = parseInt(orderId, 10);
@@ -50,37 +64,27 @@ export function MerchantRiderTrackingSheet({
   enrichment,
 }: Props) {
   const webRef = useRef<WebView>(null);
+  const lastMapInjectRef = useRef<MerchantRiderTrackingPayload | null>(null);
   const [selfieModalOpen, setSelfieModalOpen] = useState(false);
   const ordersFoodId = parseOrdersFoodId(order.id);
   const mapboxToken = getConfig().mapboxPublicToken;
 
-  const wsOrderIds = useMemo(() => {
-    const ids: string[] = [];
-    if (order.formattedOrderId?.trim()) ids.push(order.formattedOrderId.trim());
-    if (order.orderNumber?.trim()) ids.push(order.orderNumber.trim());
-    return ids;
-  }, [order.formattedOrderId, order.orderNumber]);
-
-  const { data, loading, error } = useMerchantRiderLiveTracking({
-    enabled: visible && ordersFoodId != null,
-    storeId,
-    ordersFoodId,
-    wsOrderIds,
-    token,
-  });
+  const data = enrichment.trackingData;
+  const loading = enrichment.loading;
+  const error = enrichment.trackingError;
 
   const riderName =
-    enrichment?.riderName ??
+    enrichment.riderName ??
     data?.rider.name?.trim() ??
     order.riderName?.trim() ??
     "Delivery partner";
-  const riderMobile = enrichment?.riderMobile ?? data?.rider.mobile ?? order.riderMobile ?? null;
-  const riderSelfie = enrichment?.riderSelfieUrl ?? data?.rider.selfie_url ?? order.riderSelfieUrl;
+  const riderMobile = enrichment.riderMobile ?? data?.rider.mobile ?? order.riderMobile ?? null;
+  const riderSelfie = enrichment.riderSelfieUrl ?? data?.rider.selfie_url ?? order.riderSelfieUrl;
 
   const variant: RiderCardVariant =
     data?.rider_display_variant ?? resolveRiderCardVariant(order);
   const arrivalSubtitle =
-    enrichment?.arrivalSubtitle ??
+    enrichment.arrivalSubtitle ??
     (data?.approach?.remaining_distance_m != null
       ? (() => {
           const m = data.approach!.remaining_distance_m;
@@ -162,6 +166,8 @@ export function MerchantRiderTrackingSheet({
 
   useEffect(() => {
     if (!data || !mapHtml) return;
+    if (!trackingCoordsChanged(lastMapInjectRef.current, data)) return;
+    lastMapInjectRef.current = data;
     webRef.current?.injectJavaScript(buildMapUpdateScript(data));
   }, [data, mapHtml]);
 

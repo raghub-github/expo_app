@@ -1,5 +1,5 @@
 /**
- * Partner Dashboard — date, 4 KPI cards (Today's earning, Delivered, Pending, Overall wallet),
+ * Partner Dashboard — date, 3 KPI cards (Today's earning, Delivered, Overall wallet),
  * All Orders with New/Active tabs, recent orders. Main area only; header/status card untouched.
  */
 
@@ -12,8 +12,12 @@ import {
   Dimensions,
   RefreshControl,
 } from "react-native";
+import { Gesture, GestureDetector } from "react-native-gesture-handler";
+import { runOnJS, useSharedValue } from "react-native-reanimated";
 import { AppText as Text } from "@/components/AppText";
 import { useRouter, useFocusEffect } from "expo-router";
+import { useMerchantNavigate } from "@/lib/merchantNavigation";
+import { useProfileNav } from "@/context/ProfileNavContext";
 import { Ionicons } from "@expo/vector-icons";
 import {
   GatiMitraMerchant,
@@ -30,25 +34,36 @@ import { useAuth } from "@/context/AuthContext";
 import { useSelectedStore } from "@/context/SelectedStoreContext";
 import { useOrders, type OrderRecord } from "@/hooks/useOrders";
 import { LiveOrderCard } from "@/components/order/LiveOrderCard";
+import { DashboardOrdersEmptyState } from "@/components/order/DashboardOrdersEmptyState";
 import { RejectOrderSheet } from "@/components/order/RejectOrderSheet";
 import { MerchantPrepDelaySheet } from "@/components/order/MerchantPrepDelaySheet";
 import { RejectFollowUpHost, useRejectFollowUp } from "@/components/order/RejectFollowUpHost";
 import type { MerchantCancellationReason } from "@/lib/merchantCancellationReasons";
 import { rejectReasonNeedsFollowUp } from "@/lib/merchantCancellationReasons";
 import { fetchWalletSummary } from "@/services/walletApi";
-import { getActiveOrdersCount, invalidateActiveOrdersCountCache } from "@/services/storeSettingsApi";
 import { StoreClosedActiveOrdersNotice } from "@/components/order/StoreClosedActiveOrdersNotice";
 import { openOrderDetailOnce } from "@/lib/openOrderDetailOnce";
 import { isActiveMerchantOrderStage } from "@/lib/merchantActiveOrders";
 import { formatCurrency } from "@/lib/merchantPayoutUtils";
 import { resolveWalletDisplayBalance } from "@gatimitra/merchant-payout";
 import { subscribeMerchantDashboardStatsRefresh } from "@/lib/merchantDashboardStatsBus";
+import { OrderNotificationsDisabledBanner } from "@/components/OrderNotificationsDisabledBanner";
+import { useNotificationPermissionGate } from "@/context/NotificationPermissionGateContext";
 
 const { width } = Dimensions.get("window");
-const CARD_WIDTH = (width - H_PADDING * 2 - CARD_GAP) / 2;
+const KPI_VIEWPORT = width - H_PADDING * 2;
+/** Two full cards + half of the third visible — hints horizontal scroll. */
+const KPI_CARD_WIDTH = (KPI_VIEWPORT - CARD_GAP * 2) / 2.5;
+const KPI_ICON_SIZE = 24;
+const KPI_ICON_GLYPH = 13;
+
 const MAX_RECENT_ORDERS = 5;
 
 type OrderFilterTab = "New" | "Active";
+
+const DASHBOARD_ORDER_TABS: OrderFilterTab[] = ["New", "Active"];
+const SWIPE_THRESHOLD = 48;
+const SWIPE_VELOCITY = 450;
 
 // GatiMitra brand only: white/surface cards + primary green or navy for accent
 function KpiCard({
@@ -65,22 +80,33 @@ function KpiCard({
   onPress: () => void;
 }) {
   const iconColor = accent === "primary" ? GatiMitraMerchant.primary : GatiMitraMerchant.navy;
+
   return (
     <Pressable
       onPress={onPress}
       style={({ pressed }) => [
         styles.kpiCardWrap,
+        { width: KPI_CARD_WIDTH },
         pressed && styles.cardPressed,
         GatiMitraMerchant.cursorPointer,
       ]}
     >
-      <View style={styles.kpiCardInner}>
+      <View style={styles.kpiTopRow}>
         <View style={[styles.kpiIconWrap, { backgroundColor: iconColor }]}>
-          <Ionicons name={icon} size={18} color="#fff" />
+          <Ionicons name={icon} size={KPI_ICON_GLYPH} color="#fff" />
         </View>
-        <Text style={styles.kpiValue} numberOfLines={1}>{value}</Text>
+        <Text style={styles.kpiTitle} numberOfLines={2}>
+          {title}
+        </Text>
       </View>
-      <Text style={styles.kpiTitle}>{title}</Text>
+      <Text
+        style={styles.kpiValue}
+        numberOfLines={1}
+        adjustsFontSizeToFit
+        minimumFontScale={0.7}
+      >
+        {value}
+      </Text>
     </Pressable>
   );
 }
@@ -127,6 +153,8 @@ function formatScheduledOffDateAndTime(value: string | null | undefined): string
 
 export default function DashboardScreen() {
   const router = useRouter();
+  const { push: navPush, pathname } = useMerchantNavigate();
+  const { setReturnRoute } = useProfileNav();
   const { token } = useAuth();
   const { selectedStore, managedStores } = useSelectedStore();
   const storeId = selectedStore?.id ?? null;
@@ -153,21 +181,15 @@ export default function DashboardScreen() {
   const orderTabBootstrapped = useRef(false);
   const [todayEarning, setTodayEarning] = useState(0);
   const [deliveredToday, setDeliveredToday] = useState(0);
-  const [pendingCount, setPendingCount] = useState(0);
   const [walletBalance, setWalletBalance] = useState(0);
 
   const loadDashboardStats = useCallback(async () => {
     if (!token || !storeId) return;
     try {
-      invalidateActiveOrdersCountCache(storeId);
-      const [wallet, active] = await Promise.all([
-        fetchWalletSummary(storeId, token),
-        getActiveOrdersCount(storeId, token),
-      ]);
+      const wallet = await fetchWalletSummary(storeId, token);
       setTodayEarning(Number(wallet.today_earning) || 0);
       setDeliveredToday(Number(wallet.delivered_today ?? 0) || 0);
       setWalletBalance(resolveWalletDisplayBalance(wallet));
-      setPendingCount(Number(active) || 0);
     } catch {
       setTodayEarning(0);
       setDeliveredToday(0);
@@ -184,22 +206,13 @@ export default function DashboardScreen() {
     });
   }, [loadDashboardStats]);
 
-  /** Instant pending card from live board — API refresh follows for wallet/earnings. */
-  const livePendingCount = useMemo(
-    () =>
-      orders.filter(
-        (o) =>
-          o.status === "preparing" ||
-          o.status === "ready" ||
-          o.status === "picked_up"
-      ).length,
-    [orders]
+  useFocusEffect(
+    useCallback(() => {
+      setNowMs(Date.now());
+      const id = setInterval(() => setNowMs(Date.now()), 1000);
+      return () => clearInterval(id);
+    }, [])
   );
-
-  useEffect(() => {
-    const id = setInterval(() => setNowMs(Date.now()), 1000);
-    return () => clearInterval(id);
-  }, []);
 
   useFocusEffect(
     useCallback(() => {
@@ -253,11 +266,11 @@ export default function DashboardScreen() {
       setOrderTab("New");
       return;
     }
-    if (orderTabCounts.active > 0 || pendingCount > 0) {
+    if (orderTabCounts.active > 0) {
       orderTabBootstrapped.current = true;
       setOrderTab("Active");
     }
-  }, [orderTabCounts.new, orderTabCounts.active, pendingCount]);
+  }, [orderTabCounts.new, orderTabCounts.active]);
 
   const recentOrders = useMemo(() => {
     let list = orders;
@@ -279,6 +292,59 @@ export default function DashboardScreen() {
     }
     return list.slice(0, MAX_RECENT_ORDERS);
   }, [orderTab, orders]);
+
+  const shiftOrderTabBySwipe = useCallback(
+    (direction: "next" | "previous") => {
+      const idx = DASHBOARD_ORDER_TABS.indexOf(orderTab);
+      const nextIdx = direction === "next" ? idx + 1 : idx - 1;
+      if (nextIdx < 0 || nextIdx >= DASHBOARD_ORDER_TABS.length) return;
+      setOrderTab(DASHBOARD_ORDER_TABS[nextIdx]!);
+    },
+    [orderTab]
+  );
+
+  const touchStartX = useSharedValue(0);
+  const touchStartY = useSharedValue(0);
+
+  const tabSwipeGesture = useMemo(
+    () =>
+      Gesture.Pan()
+        .manualActivation(true)
+        .onTouchesDown((e) => {
+          "worklet";
+          const touch = e.changedTouches[0];
+          if (!touch) return;
+          touchStartX.value = touch.absoluteX;
+          touchStartY.value = touch.absoluteY;
+        })
+        .onTouchesMove((e, state) => {
+          "worklet";
+          const touch = e.changedTouches[0];
+          if (!touch) return;
+          const dx = touch.absoluteX - touchStartX.value;
+          const dy = touch.absoluteY - touchStartY.value;
+          if (Math.abs(dy) > 14 && Math.abs(dy) >= Math.abs(dx)) {
+            state.fail();
+            return;
+          }
+          if (Math.abs(dx) > 18 && Math.abs(dx) > Math.abs(dy) * 1.5) {
+            state.activate();
+          }
+        })
+        .onEnd((e) => {
+          "worklet";
+          const commitNext =
+            e.translationX <= -SWIPE_THRESHOLD || e.velocityX <= -SWIPE_VELOCITY;
+          const commitPrev =
+            e.translationX >= SWIPE_THRESHOLD || e.velocityX >= SWIPE_VELOCITY;
+          if (commitNext) {
+            runOnJS(shiftOrderTabBySwipe)("next");
+          } else if (commitPrev) {
+            runOnJS(shiftOrderTabBySwipe)("previous");
+          }
+        }),
+    [shiftOrderTabBySwipe, touchStartX, touchStartY]
+  );
 
   const handleAccept = useCallback(
     (order: OrderRecord) => {
@@ -343,6 +409,10 @@ export default function DashboardScreen() {
   );
 
   const scrollBottomPadding = TAB_BAR_SCROLL_CONTENT_PADDING;
+  const { notificationsGranted } = useNotificationPermissionGate();
+  const showNotificationsDisabledBanner = !notificationsGranted;
+  const ordersEmpty = recentOrders.length === 0;
+  const ordersSectionFlex = ordersEmpty;
 
   const REFRESH_TIMEOUT_MS = 15000;
 
@@ -367,7 +437,7 @@ export default function DashboardScreen() {
         style={styles.container}
         contentContainerStyle={[
           styles.content,
-          { paddingBottom: scrollBottomPadding },
+          { paddingBottom: scrollBottomPadding, flexGrow: 1 },
         ]}
         showsVerticalScrollIndicator={false}
         refreshControl={
@@ -379,10 +449,11 @@ export default function DashboardScreen() {
           />
         }
       >
+      <OrderNotificationsDisabledBanner visible={showNotificationsDisabledBanner} />
       {showClosedBanner && (
         <Pressable
           style={styles.scheduledOffBanner}
-          onPress={() => router.push("/(tabs)/profile/vacation")}
+          onPress={() => navPush("/(tabs)/profile/vacation")}
         >
           <Ionicons name="calendar-outline" size={20} color={GatiMitraMerchant.warning} />
           <Text style={styles.scheduledOffText}>
@@ -403,98 +474,105 @@ export default function DashboardScreen() {
       <Text style={styles.dateText}>{formatTodayDate()}</Text>
 
       <View style={styles.section}>
-        <View style={styles.kpiRow}>
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={styles.kpiScrollContent}
+          decelerationRate="fast"
+          snapToInterval={KPI_CARD_WIDTH + CARD_GAP}
+          snapToAlignment="start"
+          disableIntervalMomentum
+        >
           <KpiCard
             title="Today's earning"
             value={formatCurrency(todayEarning)}
             icon="cash-outline"
             accent="primary"
-            onPress={() => router.push("/(tabs)/earnings")}
+            onPress={() => navPush("/(tabs)/earnings")}
           />
           <KpiCard
             title="Delivered"
             value={String(deliveredToday).padStart(2, "0")}
             icon="cube-outline"
             accent="navy"
-            onPress={() => router.push("/(tabs)/orders")}
-          />
-        </View>
-        <View style={styles.kpiRow}>
-          <KpiCard
-            title="Pending deliveries"
-            value={String(livePendingCount)}
-            icon="time-outline"
-            accent="primary"
-            onPress={() => router.push("/(tabs)/orders?tab=active" as any)}
+            onPress={() => navPush("/(tabs)/orders")}
           />
           <KpiCard
-            title="Overall wallet balance"
+            title="Wallet balance"
             value={formatCurrency(walletBalance)}
             icon="wallet-outline"
             accent="navy"
-            onPress={() => router.push("/(tabs)/earnings")}
+            onPress={() => navPush("/(tabs)/earnings")}
           />
-        </View>
+        </ScrollView>
       </View>
 
-      <View style={styles.section}>
+      <View style={[styles.section, ordersSectionFlex && styles.ordersSectionFlex]}>
         <Text style={styles.sectionTitle}>All Orders</Text>
-        <View style={styles.tabRow}>
-          <Pressable
-            onPress={() => setOrderTab("New")}
-            style={[styles.tab, orderTab === "New" && styles.tabActive]}
-          >
-            <View style={styles.tabInner}>
-              <Text style={[styles.tabText, orderTab === "New" && styles.tabTextActive]}>New</Text>
-              <View style={[styles.tabCountBadge, orderTab === "New" && styles.tabCountBadgeActive]}>
-                <Text style={[styles.tabCountText, orderTab === "New" && styles.tabCountTextActive]}>
-                  {orderTabCounts.new > 99 ? "99+" : orderTabCounts.new}
-                </Text>
-              </View>
+        <GestureDetector gesture={tabSwipeGesture}>
+          <View style={ordersSectionFlex ? styles.ordersSwipeArea : undefined}>
+            <View style={styles.tabRow}>
+              <Pressable
+                onPress={() => setOrderTab("New")}
+                style={[styles.tab, orderTab === "New" && styles.tabActive]}
+              >
+                <View style={styles.tabInner}>
+                  <Text style={[styles.tabText, orderTab === "New" && styles.tabTextActive]} numberOfLines={1}>
+                    New
+                  </Text>
+                  <Text style={[styles.tabCountInline, orderTab === "New" && styles.tabTextActive]} numberOfLines={1}>
+                    {orderTabCounts.new > 99 ? "99+" : orderTabCounts.new}
+                  </Text>
+                </View>
+              </Pressable>
+              <Pressable
+                onPress={() => setOrderTab("Active")}
+                style={[styles.tab, orderTab === "Active" && styles.tabActive]}
+              >
+                <View style={styles.tabInner}>
+                  <Text style={[styles.tabText, orderTab === "Active" && styles.tabTextActive]} numberOfLines={1}>
+                    Active
+                  </Text>
+                  <Text style={[styles.tabCountInline, orderTab === "Active" && styles.tabTextActive]} numberOfLines={1}>
+                    {orderTabCounts.active > 99 ? "99+" : orderTabCounts.active}
+                  </Text>
+                </View>
+              </Pressable>
             </View>
-          </Pressable>
-          <Pressable
-            onPress={() => setOrderTab("Active")}
-            style={[styles.tab, orderTab === "Active" && styles.tabActive]}
-          >
-            <View style={styles.tabInner}>
-              <Text style={[styles.tabText, orderTab === "Active" && styles.tabTextActive]}>Active</Text>
-              <View style={[styles.tabCountBadge, orderTab === "Active" && styles.tabCountBadgeActive]}>
-                <Text style={[styles.tabCountText, orderTab === "Active" && styles.tabCountTextActive]}>
-                  {orderTabCounts.active > 99 ? "99+" : orderTabCounts.active}
-                </Text>
-              </View>
+            <View style={[styles.orderList, ordersSectionFlex && styles.orderListEmptyActive]}>
+              {recentOrders.length === 0 ? (
+                <DashboardOrdersEmptyState tab={orderTab} fillAvailable={ordersSectionFlex} />
+              ) : (
+                recentOrders.map((order) => (
+                  <LiveOrderCard
+                    key={order.id}
+                    order={order}
+                    nowMs={nowMs}
+                    acceptanceWindowMinutes={acceptanceWindowMinutes}
+                    storeName={
+                      order.merchantStoreName?.trim() ||
+                      (order.merchantStoreId != null
+                        ? managedStores.find((s) => s.id === order.merchantStoreId)?.store_name
+                        : null) ||
+                      selectedStore?.store_name
+                    }
+                    onAccept={() => handleAccept(order)}
+                    onReject={() => handleReject(order)}
+                    onAdvance={() => handleAdvance(order)}
+                    onNeedMoreTime={() => setPrepDelayOrder(order)}
+                    onViewDetail={() =>
+                      openOrderDetailOnce(router, order.id, {
+                        fromPath: pathname,
+                        currentPath: pathname,
+                        setReturnRoute,
+                      })
+                    }
+                  />
+                ))
+              )}
             </View>
-          </Pressable>
-        </View>
-        <View style={styles.orderList}>
-          {recentOrders.length === 0 ? (
-            <View style={styles.emptyOrders}>
-              <Text style={styles.emptyOrdersText}>No {orderTab.toLowerCase()} orders right now.</Text>
-            </View>
-          ) : (
-            recentOrders.map((order) => (
-              <LiveOrderCard
-                key={order.id}
-                order={order}
-                nowMs={nowMs}
-                acceptanceWindowMinutes={acceptanceWindowMinutes}
-                storeName={
-                  order.merchantStoreName?.trim() ||
-                  (order.merchantStoreId != null
-                    ? managedStores.find((s) => s.id === order.merchantStoreId)?.store_name
-                    : null) ||
-                  selectedStore?.store_name
-                }
-                onAccept={() => handleAccept(order)}
-                onReject={() => handleReject(order)}
-                onAdvance={() => handleAdvance(order)}
-                onNeedMoreTime={() => setPrepDelayOrder(order)}
-                onViewDetail={() => openOrderDetailOnce(router, order.id)}
-              />
-            ))
-          )}
-        </View>
+          </View>
+        </GestureDetector>
       </View>
     </ScrollView>
       <RejectOrderSheet
@@ -572,42 +650,54 @@ const styles = StyleSheet.create({
     color: GatiMitraMerchant.textPrimary,
     marginBottom: 12,
   },
-  kpiRow: { flexDirection: "row", gap: CARD_GAP, marginBottom: CARD_GAP },
+  kpiScrollContent: {
+    paddingRight: H_PADDING,
+    gap: CARD_GAP,
+  },
   kpiCardWrap: {
-    width: CARD_WIDTH,
-    minHeight: 100,
+    minHeight: 96,
     borderRadius: CARD_RADIUS,
-    padding: 14,
+    paddingHorizontal: 12,
+    paddingVertical: 12,
     backgroundColor: GatiMitraMerchant.cardBg,
     borderWidth: 1,
     borderColor: GatiMitraMerchant.border,
-    ...GatiMitraMerchant.shadowSm,
+    overflow: "hidden",
   },
-  kpiCardInner: {
+  kpiTopRow: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 10,
-    marginBottom: 8,
+    gap: 8,
+    marginBottom: 10,
   },
   kpiIconWrap: {
-    width: 36,
-    height: 36,
-    borderRadius: 10,
+    width: KPI_ICON_SIZE,
+    height: KPI_ICON_SIZE,
+    borderRadius: 7,
     alignItems: "center",
     justifyContent: "center",
-  },
-  kpiValue: {
-    fontSize: 18,
-    fontWeight: "700",
-    color: GatiMitraMerchant.textPrimary,
-    flex: 1,
+    flexShrink: 0,
   },
   kpiTitle: {
-    fontSize: 12,
+    flex: 1,
+    minWidth: 0,
+    fontSize: 10,
     fontWeight: "600",
     color: GatiMitraMerchant.textSecondary,
     textTransform: "uppercase",
-    letterSpacing: 0.3,
+    letterSpacing: 0.2,
+    lineHeight: 13,
+  },
+  /** Align with icon left edge — do not stretch to the card’s right border. */
+  kpiValue: {
+    fontSize: 17,
+    fontWeight: "800",
+    color: GatiMitraMerchant.textPrimary,
+    alignSelf: "flex-start",
+    textAlign: "left",
+    maxWidth: "100%",
+    paddingRight: 8,
+    fontVariant: ["tabular-nums"],
   },
   tabRow: {
     flexDirection: "row",
@@ -615,30 +705,46 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     padding: 4,
     marginBottom: 16,
+    overflow: "visible",
   },
   tab: {
     flex: 1,
-    paddingVertical: 10,
+    flexDirection: "row",
+    paddingVertical: 11.5,
     alignItems: "center",
     justifyContent: "center",
     borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "transparent",
+    backgroundColor: "transparent",
   },
   tabInner: {
     flexDirection: "row",
+    flexWrap: "nowrap",
     alignItems: "center",
-    gap: 8,
+    justifyContent: "center",
+    gap: 6,
   },
   tabActive: {
     backgroundColor: GatiMitraMerchant.navy,
+    borderColor: GatiMitraMerchant.navy,
+    borderRadius: 8,
     ...GatiMitraMerchant.shadowSm,
   },
   tabText: {
     fontSize: FONT_LABEL,
     fontWeight: "600",
     color: GatiMitraMerchant.textSecondary,
+    flexShrink: 0,
   },
   tabTextActive: {
     color: "#fff",
+  },
+  tabCountInline: {
+    fontSize: FONT_LABEL,
+    fontWeight: "700",
+    color: GatiMitraMerchant.textSecondary,
+    flexShrink: 0,
   },
   tabCountBadge: {
     minWidth: 22,
@@ -660,15 +766,10 @@ const styles = StyleSheet.create({
   tabCountTextActive: {
     color: "#FFFFFF",
   },
+  ordersSectionFlex: { flex: 1 },
+  ordersSwipeArea: { flex: 1 },
   orderList: { gap: 12 },
-  emptyOrders: {
-    paddingVertical: 24,
-    alignItems: "center",
-  },
-  emptyOrdersText: {
-    fontSize: FONT_LABEL,
-    color: GatiMitraMerchant.textTertiary,
-  },
+  orderListEmptyActive: { flex: 1, justifyContent: "center" },
   cardPressed: {
     opacity: 0.95,
     transform: [{ scale: 0.98 }],

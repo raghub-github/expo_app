@@ -37,7 +37,11 @@ export const queryKeys = {
     sessionStatus: () => ["auth", "session-status"] as const,
   },
   permissions: () => ["permissions"] as const,
-  dashboardAccess: () => ["dashboard-access"] as const,
+  /** Prefer user-scoped key when systemUserId is known (avoids cross-user cache bleed). */
+  dashboardAccess: (systemUserId?: number | null) =>
+    systemUserId != null
+      ? (["dashboard-access", systemUserId] as const)
+      : (["dashboard-access"] as const),
   admin: {
     userAppCategories: (storeType: string) => ["admin", "user-app-categories", storeType] as const,
   },
@@ -95,6 +99,8 @@ export const queryKeys = {
     /** Always string id so URL slug + numeric `ticket.id` share one cache entry (avoids duplicate refetches / “reload”). */
     detail: (id: number | string) => ["tickets", "detail", String(id).trim()] as const,
     activities: (id: number | string) => ["tickets", "activities", String(id).trim()] as const,
+    mergeCandidates: (id: number | string) =>
+      ["tickets", "merge-candidates", String(id).trim()] as const,
     agents: (includePresence?: boolean, accessApprovedOnly?: boolean) =>
       [
         "tickets",

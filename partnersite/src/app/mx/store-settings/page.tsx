@@ -5,6 +5,7 @@ import dynamicImport from 'next/dynamic'
 import { createPortal } from 'react-dom'
 import Link from 'next/link'
 import { useSearchParams } from 'next/navigation'
+import { MerchantAppAssetImage, MX_ASSET } from '@/components/MerchantAppAssetImage'
 import { MXLayoutWhite } from '@/components/MXLayoutWhite'
 import { PartnerPageHeader } from '@/context/PartnerShellHeaderContext'
 import { PARTNER_PAGE_HEADERS } from '@/lib/partner-page-headers'
@@ -23,12 +24,12 @@ import { normalizeWallTimeToHHMM } from '@/lib/wallTimeHHMM'
 import { toastStoreOperationsPostFailure } from '@/lib/storeOperationsPostFeedback'
 import { SettingsSidebarRail, settingsRailMainPaddingClass } from './components/SettingsSidebarRail'
 import { PlanExpiredWarningModal } from '@/components/merchant/PlanExpiredWarningModal'
+import { PartnerBrowserNotificationSettings } from '@/components/PartnerBrowserNotificationSettings'
 import { StoreOperationsPanel } from '@/components/merchant/StoreOperationsPanel'
 import { MenuCapacityPanel } from '@/components/merchant/MenuCapacityPanel'
 import { shouldShowPlanExpiredWarning } from '@/lib/plan-expired-warning'
 import {
   buildGatimitraCustomerStoreUrl,
-  buildStoreSettingsBreadcrumbs,
 } from '@/lib/store-settings-tabs'
 import {
   fetchAndCachePlanUsage,
@@ -1000,11 +1001,6 @@ function StoreSettingsContent() {
     if (!slug) return null
     return buildGatimitraCustomerStoreUrl(slug)
   }, [store?.store_id, storeId])
-
-  const settingsHeaderBreadcrumbs = useMemo(
-    () => buildStoreSettingsBreadcrumbs(activeTab, storeId),
-    [activeTab, storeId]
-  )
 
   const filteredPlanHistory = useMemo(
     () =>
@@ -3488,7 +3484,6 @@ function StoreSettingsContent() {
       <MXLayoutWhite restaurantName={store?.store_name} restaurantId="" {...storeSettingsShellProps}>
         <PartnerPageHeader
           {...PARTNER_PAGE_HEADERS.storeSettings}
-          breadcrumbs={settingsHeaderBreadcrumbs}
         />
         <div
           className={`mx-store-settings-root flex flex-1 min-h-0 flex-col overflow-hidden bg-gray-50 ${settingsRailMainPaddingClass(settingsSidebarCollapsed)}`}
@@ -3518,7 +3513,6 @@ function StoreSettingsContent() {
       >
         <PartnerPageHeader
           {...PARTNER_PAGE_HEADERS.storeSettings}
-          breadcrumbs={settingsHeaderBreadcrumbs}
         />
         <div
           className={`mx-store-settings-root flex flex-1 min-h-0 flex-col overflow-hidden bg-gray-50 ${settingsRailMainPaddingClass(settingsSidebarCollapsed)}`}
@@ -4828,6 +4822,7 @@ function StoreSettingsContent() {
                     </button>
                   </div>
                   <div className="space-y-4">
+                    <PartnerBrowserNotificationSettings />
                     <div className="flex items-center justify-between p-4 bg-gray-50 rounded-lg">
                       <div>
                         <p className="font-semibold text-gray-900">SMS Alerts</p>
@@ -5582,7 +5577,12 @@ function StoreSettingsContent() {
 
             {activeTab === 'gatimitra' && (
               <div className="flex flex-col items-center justify-center min-h-[400px] bg-white rounded-xl border border-gray-200 py-12">
-                <img src="/gstore.png" alt="Store" className="w-64 h-64 mb-8" style={{ maxWidth: '320px', maxHeight: '320px' }} />
+                <MerchantAppAssetImage
+                  assetKey={MX_ASSET.partnerManageStores}
+                  alt="Store"
+                  className="w-64 h-64 mb-8 object-contain"
+                  style={{ maxWidth: '320px', maxHeight: '320px' }}
+                />
                 <p className="text-xl font-semibold text-center mb-6" style={{ color: '#08a353ff' }}>Experience your store from a customer's perspective on <span style={{ color: '#a89a03ff' }}>GatiMitra</span>.</p>
                 {gatimitraCustomerStoreUrl ? (
                   <a

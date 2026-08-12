@@ -1,7 +1,6 @@
 import { useEffect, useState, useCallback, useRef, useMemo } from "react";
 import { AppText as Text } from "@/components/AppText";
 import { ActivityIndicator, Alert, ScrollView, StyleSheet, Switch, View, PanResponder, Pressable } from "react-native";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { useQueryClient } from "@tanstack/react-query";
 import { GatiMitraMerchant, H_PADDING } from "@/constants/theme";
@@ -21,9 +20,7 @@ import {
 import { patchOrderAcceptanceSoundSlot } from "@/services/orderAcceptanceApi";
 import { previewOrderAlertSound } from "@/lib/playOrderAlertSound";
 
-/** Offset from top of content area; use with insets so effective padding is never negative. */
-const CONTENT_TOP_OFFSET = -20;
-const MIN_TOP_PADDING = 8;
+const CONTENT_TOP = 10;
 
 type CommState = CommunicationSettings;
 
@@ -46,7 +43,6 @@ const DEFAULT_STATE: CommState = {
 };
 
 export default function ManageCommunicationsScreen() {
-  const insets = useSafeAreaInsets();
   const { token } = useAuth();
   const { selectedStore } = useSelectedStore();
   const queryClient = useQueryClient();
@@ -268,18 +264,17 @@ export default function ManageCommunicationsScreen() {
   ).current;
 
   return (
-    <View style={[styles.container, { paddingTop: Math.max(MIN_TOP_PADDING, insets.top + CONTENT_TOP_OFFSET) }]}>
+    <View style={[styles.container, { paddingTop: CONTENT_TOP }]}>
       <ScrollView
         style={styles.body}
         contentContainerStyle={styles.content}
         showsVerticalScrollIndicator={false}
       >
-        <View style={styles.headerRow}>
-          <Text style={styles.title}>Manage communications</Text>
-          {(loading || savingKey) && (
+        {(loading || savingKey) && (
+          <View style={styles.headerLoading}>
             <ActivityIndicator size="small" color={GatiMitraMerchant.primary} />
-          )}
-        </View>
+          </View>
+        )}
 
         {/* WhatsApp notifications */}
         <View style={styles.card}>
@@ -625,6 +620,11 @@ const styles = StyleSheet.create({
     paddingBottom: 24,
     paddingTop: 4,
     gap: 10,
+  },
+  headerLoading: {
+    alignItems: "flex-end",
+    paddingHorizontal: H_PADDING,
+    paddingBottom: 6,
   },
   headerRow: {
     flexDirection: "row",

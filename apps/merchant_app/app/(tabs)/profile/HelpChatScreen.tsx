@@ -4,6 +4,7 @@ import { View, StyleSheet, ScrollView, TextInput, Pressable, ActivityIndicator, 
 import * as ImagePicker from "expo-image-picker";
 import * as FileSystem from "expo-file-system/legacy";
 import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
+import { useMerchantGoBack } from "@/lib/merchantNavigation";
 import { useHeaderHeight } from "@react-navigation/elements";
 import { Ionicons } from "@expo/vector-icons";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
@@ -443,6 +444,7 @@ function SkeletonBubble({
 
 export default function HelpChatScreen() {
   const router = useRouter();
+  const goBack = useMerchantGoBack("/(tabs)/profile/tickets");
   const { token, supabaseUserId, partner } = useAuth();
   const { selectedStore } = useSelectedStore();
   const storeId = selectedStore?.id ?? null;
@@ -552,14 +554,45 @@ export default function HelpChatScreen() {
   const { registerLiveSupportTicket, syncLiveSupportTicketStatus, activeTicket: floatingLiveTicket, markLiveSupportAsRead, setLiveSupportChatOpen } =
     useLiveSupportTicket();
 
+  const headerOrderLabel = useMemo(() => {
+    if (linkedOrderLabel) return linkedOrderLabel;
+    const fromTicket = ticket?.formatted_order_id?.trim();
+    if (fromTicket) return fromTicket.startsWith("#") ? fromTicket : `#${fromTicket}`;
+    const fromFloating = floatingLiveTicket?.formattedOrderId?.trim();
+    if (fromFloating) return fromFloating.startsWith("#") ? fromFloating : `#${fromFloating}`;
+    if (ticket?.order_id != null && Number.isInteger(ticket.order_id) && ticket.order_id > 0) {
+      return `#${ticket.order_id}`;
+    }
+    return null;
+  }, [linkedOrderLabel, ticket?.formatted_order_id, ticket?.order_id, floatingLiveTicket?.formattedOrderId]);
+
+  const headerSubtitle = useMemo(() => {
+    const ticketPart = ticket?.ticket_id ? `Ticket ${ticket.ticket_id}` : null;
+    if (ticketPart && headerOrderLabel) return `${ticketPart} · ${headerOrderLabel}`;
+    if (ticketPart) return ticketPart;
+    if (headerOrderLabel) {
+      return `${sectionTitle ?? "Live order support"} · ${headerOrderLabel}`;
+    }
+    return sectionTitle ?? "New support request";
+  }, [ticket?.ticket_id, headerOrderLabel, sectionTitle]);
+
   useEffect(() => {
     if (!ticket) return;
-    if (resolvedOrderCoreId != null) {
+    const orderCoreId =
+      resolvedOrderCoreId ??
+      (ticket.order_id != null && Number.isInteger(ticket.order_id) && ticket.order_id > 0
+        ? ticket.order_id
+        : null);
+    const formattedOrderId =
+      linkedOrderLabel?.replace(/^#?/i, "") ??
+      ticket.formatted_order_id?.replace(/^#?/i, "") ??
+      null;
+    if (orderCoreId != null) {
       registerLiveSupportTicket({
         ticketId: ticket.id,
         ticketDisplayId: ticket.ticket_id,
-        orderCoreId: resolvedOrderCoreId,
-        formattedOrderId: linkedOrderLabel?.replace(/^#?/i, "") ?? null,
+        orderCoreId,
+        formattedOrderId,
         subject: ticket.subject ?? ticket.ticket_title ?? null,
         status: ticket.status,
       });
@@ -1564,31 +1597,24 @@ export default function HelpChatScreen() {
       <SafeAreaView style={styles.container} edges={["top", "left", "right"]}>
         <View style={styles.header}>
           <Pressable
-            onPress={() => {
-              if (router.canGoBack()) router.back();
-              else router.replace("/(tabs)");
-            }}
+            onPress={goBack}
             style={({ pressed }) => [
               styles.backButton,
               pressed && styles.backButtonPressed,
             ]}
           >
             <Ionicons
-              name="arrow-back"
+              name="chevron-back"
               size={20}
               color={GatiMitraMerchant.textPrimary}
             />
           </Pressable>
           <View style={styles.headerLeft}>
-            <Text style={styles.headerTitle} numberOfLines={1}>
+            <Text variant="brand" style={styles.headerTitle} numberOfLines={1}>
               {isLiveOrderSupportFlow ? "Live order support" : "Support chat"}
             </Text>
             <Text style={styles.headerSubtitle} numberOfLines={1}>
-              {ticket?.ticket_id
-                ? `Ticket ${ticket.ticket_id}`
-                : linkedOrderLabel
-                  ? `${sectionTitle ?? "Live order support"} · ${linkedOrderLabel}`
-                  : sectionTitle ?? "New support request"}
+              {headerSubtitle}
             </Text>
           </View>
           <View style={styles.headerRight}>
@@ -1718,10 +1744,10 @@ export default function HelpChatScreen() {
                 </Text>
               </View>
             </View>
-            {linkedOrderLabel ? (
+            {headerOrderLabel ? (
               <View style={styles.liveOrderPickerOrderRow}>
                 <Ionicons name="receipt-outline" size={14} color={GatiMitraMerchant.textSecondary} />
-                <Text style={styles.liveOrderPickerOrderText}>{linkedOrderLabel}</Text>
+                <Text style={styles.liveOrderPickerOrderText}>{headerOrderLabel}</Text>
               </View>
             ) : null}
             <View style={styles.liveOrderPickerList}>

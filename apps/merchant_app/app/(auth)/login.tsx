@@ -345,7 +345,7 @@ export default function LoginScreen() {
             hitSlop={12}
             accessibilityLabel="Go back"
           >
-            <Ionicons name="arrow-back" size={24} color={GatiMitraMerchant.textPrimary} />
+            <Ionicons name="chevron-back" size={20} color={GatiMitraMerchant.textPrimary} />
           </Pressable>
 
           <Text style={styles.title}>Enter Your Mobile Number</Text>

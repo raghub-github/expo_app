@@ -12,6 +12,8 @@ export type StoreProfileFull = {
   agreementAcceptance: Record<string, unknown> | null;
   bankAccounts: BankAccountItem[];
   areaManager: AreaManagerInfo | null;
+  /** True when viewer is view-only and store is not linked to their AM. */
+  legalDocsRestricted: boolean;
 };
 
 async function fetchProfileFull(storeId: string): Promise<StoreProfileFull> {
@@ -30,6 +32,7 @@ async function fetchProfileFull(storeId: string): Promise<StoreProfileFull> {
     agreementAcceptance: data.agreementAcceptance ?? null,
     bankAccounts: Array.isArray(data.bankAccounts) ? data.bankAccounts : [],
     areaManager: data.areaManager ?? null,
+    legalDocsRestricted: data.legalDocsRestricted === true,
   };
 }
 
@@ -53,6 +56,7 @@ export function useStoreProfileFull(storeId: string | null) {
     agreementAcceptance: query.data?.agreementAcceptance ?? null,
     bankAccounts: query.data?.bankAccounts ?? [],
     areaManager: query.data?.areaManager ?? null,
+    legalDocsRestricted: query.data?.legalDocsRestricted === true,
     isLoading: query.isLoading,
     isFetching: query.isFetching,
     error: query.error,

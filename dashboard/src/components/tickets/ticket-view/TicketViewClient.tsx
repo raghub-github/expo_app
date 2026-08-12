@@ -29,6 +29,7 @@ import { Check, Copy, Download, Globe, Paperclip } from "lucide-react";
 import { useRightSidebar } from "@/context/RightSidebarContext";
 import { useAuth } from "@/providers/AuthProvider";
 import { useTicketRoomRealtime, type TicketRoomPresenceIdentity } from "@/hooks/tickets/useTicketRoomRealtime";
+import { useTicketDashboardAccess } from "@/hooks/useTicketDashboardAccess";
 
 const STORAGE_KEY_PREFIX = "ticket-last-viewed-";
 
@@ -175,6 +176,7 @@ export function TicketViewClient({ ticketId }: { ticketId: number | string }) {
   const rightSidebar = useRightSidebar();
   const { user: authUser, systemUser } = useAuth();
   const { data: ticket, isPending, isError, error } = useTicketDetail(ticketId);
+  const { canMutate: canActOnTickets } = useTicketDashboardAccess();
 
   const showActivities = urlPanel === "activities";
   const showCsatPanel = urlPanel === "csat";
@@ -188,6 +190,19 @@ export function TicketViewClient({ ticketId }: { ticketId: number | string }) {
   const ticketNumericId = useMemo(() => {
     const parsed = Number(ticketCacheId);
     return Number.isFinite(parsed) ? parsed : null;
+  }, [ticketCacheId]);
+  const mountedRef = useRef(true);
+  const copyPhoneTimeoutRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      if (copyPhoneTimeoutRef.current != null) {
+        window.clearTimeout(copyPhoneTimeoutRef.current);
+        copyPhoneTimeoutRef.current = null;
+      }
+    };
   }, [ticketCacheId]);
 
   const [agentPresenceIdentity, setAgentPresenceIdentity] = useState<TicketRoomPresenceIdentity | null>(null);
@@ -231,6 +246,7 @@ export function TicketViewClient({ ticketId }: { ticketId: number | string }) {
     const setLive = rightSidebar?.setTicketCopresenceLive;
     const setViewers = rightSidebar?.setTicketOtherAgentViewers;
     if (!setLive && !setViewers) return;
+    if (!mountedRef.current) return;
     setLive?.(copresenceLive);
     setViewers?.(otherAgentViewers);
     return () => {
@@ -278,7 +294,7 @@ export function TicketViewClient({ ticketId }: { ticketId: number | string }) {
     if (!Number.isFinite(idNum)) return;
     void queryClient.prefetchQuery({
       queryKey: queryKeys.tickets.activities(ticketCacheId),
-      queryFn: () => fetchTicketActivities(idNum),
+      queryFn: ({ signal }) => fetchTicketActivities(idNum, signal),
       staleTime: TICKET_ACTIVITIES_STALE_MS,
       retry: false,
     });
@@ -406,7 +422,13 @@ export function TicketViewClient({ ticketId }: { ticketId: number | string }) {
     try {
       await navigator.clipboard.writeText(value);
       setCopiedPhone(true);
-      window.setTimeout(() => setCopiedPhone(false), 1500);
+      if (copyPhoneTimeoutRef.current != null) {
+        window.clearTimeout(copyPhoneTimeoutRef.current);
+      }
+      copyPhoneTimeoutRef.current = window.setTimeout(() => {
+        copyPhoneTimeoutRef.current = null;
+        if (mountedRef.current) setCopiedPhone(false);
+      }, 1500);
     } catch {
       setCopiedPhone(false);
     }
@@ -481,6 +503,8 @@ export function TicketViewClient({ ticketId }: { ticketId: number | string }) {
           <TicketActionBar
             ticketId={ticket.id}
             ticketNumber={ticket.ticketNumber || String(ticket.id)}
+            orderId={ticket.orderId}
+            orderFormattedId={ticket.orderFormattedId}
             mergedTickets={ticket.mergedTickets ?? []}
             mergedIntoTicketId={ticket.mergedIntoTicketId ?? null}
             mergedIntoTicketNumber={ticket.mergedIntoTicketNumber ?? null}
@@ -495,14 +519,17 @@ export function TicketViewClient({ ticketId }: { ticketId: number | string }) {
               else setTicketPanel("csat");
             }}
             onReplyClick={() => {
+              if (!canActOnTickets) return;
               setQuickComposeAction({ type: "reply", nonce: Date.now() });
               setShowReplySection(true);
             }}
             onForwardClick={() => {
+              if (!canActOnTickets) return;
               setQuickComposeAction({ type: "forward", nonce: Date.now() });
               setShowReplySection(true);
             }}
             onAddNoteClick={(visibility) => {
+              if (!canActOnTickets) return;
               setQuickComposeAction({
                 type: visibility === "public" ? "note_public" : "note_private",
                 nonce: Date.now(),
@@ -764,9 +791,12 @@ export function TicketViewClient({ ticketId }: { ticketId: number | string }) {
                   recipientEmail={ticket.raisedByEmail ?? undefined}
                   defaultReplyToOverride={defaultReplyToOverride}
                   onMessageSent={onMessageSent}
-                  replyVisible={showReplySection}
-                  quickComposeAction={quickComposeAction}
-                  onOpenReply={() => setShowReplySection(true)}
+                  replyVisible={canActOnTickets && showReplySection}
+                  quickComposeAction={canActOnTickets ? quickComposeAction : null}
+                  onOpenReply={() => {
+                    if (!canActOnTickets) return;
+                    setShowReplySection(true);
+                  }}
                   onCloseReply={() => setShowReplySection(false)}
                   noScroll
                   embedded

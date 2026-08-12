@@ -1,12 +1,12 @@
 "use client";
 
-import { usePermissions } from "@/hooks/usePermissions";
+import { useMerchantDashboardAccess } from "@/hooks/useMerchantDashboardAccess";
 
-/** True when the user may run store onboarding verify / reject actions (admin merchant access or super admin). */
+/** True when the user may run store onboarding verify / reject actions. */
 export function useCanStoreVerify() {
-  const { isSuperAdmin, canTogglePortal, loading } = usePermissions();
+  const { canOnboard, loading } = useMerchantDashboardAccess();
   return {
-    canStoreVerify: isSuperAdmin || canTogglePortal,
+    canStoreVerify: canOnboard,
     loading,
   };
 }

@@ -1,19 +1,16 @@
 import { useEffect, useRef, useState } from "react";
 import { AppText as Text } from "@/components/AppText";
 import { View, StyleSheet, ScrollView, Switch, ActivityIndicator, Alert, TextInput, Pressable } from "react-native";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { GatiMitraMerchant, H_PADDING } from "@/constants/theme";
 import { useStoreSettings } from "@/context/StoreSettingsContext";
 import { useSelectedStore } from "@/context/SelectedStoreContext";
 import { useAuth } from "@/context/AuthContext";
 import { getOutlet, updateOutlet } from "@/services/outletApi";
 
-/** Offset from top of content area; use with insets so effective padding is never negative. */
-const CONTENT_TOP_OFFSET = -20;
-const MIN_TOP_PADDING = 8;
+/** Small gap below MerchantHeader on profile sub-screens. */
+const CONTENT_TOP = 10;
 
 export default function NotificationsScreen() {
-  const insets = useSafeAreaInsets();
   const { selectedStore } = useSelectedStore();
   const { settings, loading, saving, update } = useStoreSettings();
   const [localValue, setLocalValue] = useState(settings.show_floating_orders);
@@ -293,13 +290,12 @@ export default function NotificationsScreen() {
     avgPrepMinutes.trim() !== savedAvgPrepMinutes.trim();
 
   return (
-    <View style={[styles.container, { paddingTop: Math.max(MIN_TOP_PADDING, insets.top + CONTENT_TOP_OFFSET) }]}>
+    <View style={[styles.container, { paddingTop: CONTENT_TOP }]}>
       <ScrollView
         style={styles.body}
         contentContainerStyle={styles.content}
         showsVerticalScrollIndicator={false}
       >
-        <Text style={styles.pageTitle}>Preferences</Text>
         <View style={styles.card}>
           <View style={styles.cardHeaderRow}>
             <View style={styles.iconCircle}>

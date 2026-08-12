@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { AppText as Text } from "@/components/AppText";
 import { View, Pressable, StyleSheet } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
@@ -22,6 +22,7 @@ import {
 } from "@/lib/riderFreeWait";
 import { useLiveElapsedSeconds } from "@/hooks/useLiveElapsedSeconds";
 import { useMerchantRiderLiveEnrichment } from "@/hooks/useMerchantRiderLiveEnrichment";
+import { pinRiderTrackingOrder } from "@/lib/riderTrackingVisibility";
 import { MerchantRiderTrackingSheet } from "@/components/order/MerchantRiderTrackingSheet";
 import { RiderSelfieAvatar } from "@/components/order/RiderSelfieAvatar";
 import { RiderSelfieViewerModal } from "@/components/order/RiderSelfieViewerModal";
@@ -35,13 +36,21 @@ type Props = {
   showTrack?: boolean;
   /** Inside a bordered detail card — skip top hairline divider. */
   embedded?: boolean;
+  /** Order detail screen — tracking stays on even when not on the orders FlatList. */
+  alwaysVisibleTracking?: boolean;
 };
+
+function parseOrdersFoodId(orderId: string): number | null {
+  const n = parseInt(orderId, 10);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
 
 export function MerchantAssignedRiderRow({
   order,
   showCall = true,
   showTrack = true,
   embedded = false,
+  alwaysVisibleTracking = false,
 }: Props) {
   const { token } = useAuth();
   const { selectedStore } = useSelectedStore();
@@ -50,7 +59,9 @@ export function MerchantAssignedRiderRow({
   const [selfieModalOpen, setSelfieModalOpen] = useState(false);
 
   const hasRider = orderHasAssignedRider(order);
-  const enrichment = useMerchantRiderLiveEnrichment(order, storeId, token, hasRider);
+  const enrichment = useMerchantRiderLiveEnrichment(order, storeId, token, hasRider, {
+    alwaysVisible: alwaysVisibleTracking,
+  });
   const variant = hasRider ? resolveRiderCardVariant(order) : "on_the_way";
   const freeWaitSeconds =
     order.riderFreeWaitSeconds != null && Number.isFinite(order.riderFreeWaitSeconds)
@@ -76,6 +87,13 @@ export function MerchantAssignedRiderRow({
   const remaining = freeWaitRemainingSeconds(elapsedForWait, freeWaitSeconds);
   const progress = freeWaitProgress(elapsedForWait, freeWaitSeconds);
   const pickupOtp = (order.pickupOtp ?? "").trim() || null;
+
+  useEffect(() => {
+    if (!trackingOpen) return;
+    const foodId = parseOrdersFoodId(order.id);
+    if (foodId == null) return;
+    return pinRiderTrackingOrder(foodId);
+  }, [trackingOpen, order.id]);
 
   if (!hasRider) return null;
 

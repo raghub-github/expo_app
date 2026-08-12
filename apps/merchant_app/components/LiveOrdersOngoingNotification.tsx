@@ -6,6 +6,7 @@
 
 import { useEffect, useRef } from "react";
 import { Platform, AppState } from "react-native";
+import { isAppForeground } from "@/lib/appForeground";
 import Constants from "expo-constants";
 import { useAuth } from "@/context/AuthContext";
 import { useSelectedStore } from "@/context/SelectedStoreContext";
@@ -15,7 +16,7 @@ import {
   refreshLiveOrdersOngoingNotification,
 } from "@/lib/liveOrdersOngoingNotification";
 
-const POLL_MS = 12_000;
+const POLL_MS = 25_000;
 
 function isExpoGo(): boolean {
   return Constants.appOwnership === "expo";
@@ -64,7 +65,10 @@ export default function LiveOrdersOngoingNotification() {
     }
 
     void tick();
-    pollTimerRef.current = setInterval(() => void tick(), POLL_MS);
+    pollTimerRef.current = setInterval(() => {
+      if (!isAppForeground()) return;
+      void tick();
+    }, POLL_MS);
 
     const appStateSub = AppState.addEventListener("change", (s) => {
       if (s === "active") void tick();

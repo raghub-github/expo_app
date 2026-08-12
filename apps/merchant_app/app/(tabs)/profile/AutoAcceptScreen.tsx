@@ -48,11 +48,6 @@ export default function AutoAcceptScreen() {
 
   return (
     <ScrollView style={styles.screen} contentContainerStyle={styles.content}>
-      <Text style={styles.title}>Auto accept orders</Text>
-      <Text style={styles.sub}>
-        When enabled, new orders are accepted automatically after your configured delay (same as Partner Site).
-        When disabled, you must accept each order manually.
-      </Text>
       {loading ? (
         <ActivityIndicator color={GatiMitraMerchant.primary} style={{ marginTop: 24 }} />
       ) : (

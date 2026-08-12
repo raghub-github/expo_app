@@ -5,6 +5,7 @@ import { createPortal } from "react-dom";
 import { CheckCircle, Clock, X, XCircle, Loader2, ExternalLink, ChevronRight } from "lucide-react";
 import { useStoreVerificationSheet } from "@/context/StoreVerificationSheetContext";
 import { useCanStoreVerify } from "@/hooks/useCanStoreVerify";
+import { useMerchantDashboardAccess } from "@/hooks/useMerchantDashboardAccess";
 import { MenuReferenceReviewBlock } from "@/components/verification/MenuReferenceReviewBlock";
 import { summarizeMenuRejectionDetail } from "@/lib/store-verification-menu-rejection-detail-shared";
 import type { MenuMediaFile } from "@/lib/merchant-menu-media";
@@ -325,6 +326,9 @@ export function StoreInfoCardSkeleton({ className = "" }: { className?: string }
 export function StoreInfoCard({ store, className = "", compact = false }: StoreInfoCardProps) {
   const { openVerificationSheet } = useStoreVerificationSheet();
   const { canStoreVerify } = useCanStoreVerify();
+  const { isViewOnly, canMutate } = useMerchantDashboardAccess();
+  /** View-only: status is a badge only — no approve / verify entry points. */
+  const canActOnApproval = canStoreVerify && canMutate && !isViewOnly;
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [modalOpen, setModalOpen] = useState(false);
   const [steps, setSteps] = useState<Record<number, StepVerification> | null>(null);
@@ -421,41 +425,61 @@ export function StoreInfoCard({ store, className = "", compact = false }: StoreI
     [openVerificationSheet, store.storeId]
   );
 
-  const statusButton = (
+  const statusLabel =
+    approval === "APPROVED"
+      ? "Approved"
+      : approval === "DELISTED"
+        ? "Delisted"
+        : approval === "REJECTED"
+          ? "Rejected"
+          : approval === "BLOCKED"
+            ? "Blocked"
+            : approval === "SUSPENDED"
+              ? "Suspended"
+              : "Pending";
+  const statusToneClass =
+    approval === "APPROVED"
+      ? "bg-emerald-600"
+      : approval === "DELISTED" ||
+          approval === "REJECTED" ||
+          approval === "BLOCKED" ||
+          approval === "SUSPENDED"
+        ? "bg-red-600"
+        : "bg-amber-500";
+  const statusButton = canActOnApproval ? (
     <button
       type="button"
       onClick={(e) => {
         e.stopPropagation();
         openModal();
       }}
-      className={`inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[10px] font-medium text-white shadow-sm focus:outline-none focus:ring-2 focus:ring-offset-1 ${
+      className={`inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[10px] font-medium text-white shadow-sm focus:outline-none focus:ring-2 focus:ring-offset-1 ${statusToneClass} ${
         approval === "APPROVED"
-          ? "bg-emerald-600 hover:bg-emerald-700 focus:ring-emerald-500"
+          ? "hover:bg-emerald-700 focus:ring-emerald-500"
           : approval === "DELISTED" ||
               approval === "REJECTED" ||
               approval === "BLOCKED" ||
               approval === "SUSPENDED"
-            ? "bg-red-600 hover:bg-red-700 focus:ring-red-500"
-            : "bg-amber-500 hover:bg-amber-600 focus:ring-amber-500"
+            ? "hover:bg-red-700 focus:ring-red-500"
+            : "hover:bg-amber-600 focus:ring-amber-500"
       }`}
+      title="Open verification / approval actions"
     >
       {approval === "APPROVED" && <CheckCircle className="h-3 w-3 shrink-0" />}
       {approval === "DELISTED" && <XCircle className="h-3 w-3 shrink-0" />}
       {approval !== "APPROVED" && approval !== "DELISTED" && <Clock className="h-3 w-3 shrink-0" />}
-      <span>
-        {approval === "APPROVED"
-          ? "Approved"
-          : approval === "DELISTED"
-            ? "Delisted"
-            : approval === "REJECTED"
-              ? "Rejected"
-              : approval === "BLOCKED"
-                ? "Blocked"
-                : approval === "SUSPENDED"
-                  ? "Suspended"
-                  : "Pending"}
-      </span>
+      <span>{statusLabel}</span>
     </button>
+  ) : (
+    <span
+      className={`inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[10px] font-medium text-white ${statusToneClass} opacity-90 cursor-default`}
+      title="View-only access — approval actions disabled"
+    >
+      {approval === "APPROVED" && <CheckCircle className="h-3 w-3 shrink-0" />}
+      {approval === "DELISTED" && <XCircle className="h-3 w-3 shrink-0" />}
+      {approval !== "APPROVED" && approval !== "DELISTED" && <Clock className="h-3 w-3 shrink-0" />}
+      <span>{statusLabel}</span>
+    </span>
   );
 
   const fullDetailsBody = (
@@ -629,14 +653,18 @@ export function StoreInfoCard({ store, className = "", compact = false }: StoreI
                               <div className="flex flex-wrap items-center gap-2 text-sm text-gray-700">
                               <button
                                 type="button"
-                                onClick={() => openStepVerification(stepNum)}
+                                onClick={() =>
+                                  canActOnApproval
+                                    ? openStepVerification(stepNum)
+                                    : openStepDetails(stepNum)
+                                }
                                 className="flex min-w-0 flex-1 flex-wrap items-center gap-2 rounded-lg px-1 py-1 text-left hover:bg-amber-50/80 focus:outline-none focus:ring-2 focus:ring-amber-400"
                               >
                               <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-amber-100 text-amber-700 text-xs font-medium">{stepNum}</span>
                               <span className="font-medium">{VERIFICATION_STEP_LABELS[stepNum] ?? `Step ${stepNum}`}</span>
                               <ChevronRight className="ml-auto h-4 w-4 shrink-0 text-amber-600" aria-hidden />
                               </button>
-                              {canStoreVerify && (
+                              {canActOnApproval && (
                                 <button
                                   type="button"
                                   onClick={() => openStepVerification(stepNum)}

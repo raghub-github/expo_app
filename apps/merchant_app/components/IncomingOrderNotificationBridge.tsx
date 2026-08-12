@@ -16,7 +16,7 @@ import { fetchFoodOrder } from "@/services/ordersApi";
 import { isNewOrderAcceptNotification } from "@/lib/merchant-notification-display";
 import type { MerchantNotification } from "@/context/NotificationContext";
 
-const POLL_MS = 4_000;
+import { AppState } from "react-native";
 
 export default function IncomingOrderNotificationBridge() {
   const { token } = useAuth();
@@ -46,10 +46,10 @@ export default function IncomingOrderNotificationBridge() {
   useEffect(() => {
     if (!token || !storeId) return;
     void refresh();
-    const id = setInterval(() => {
-      void refresh();
-    }, POLL_MS);
-    return () => clearInterval(id);
+    const onResume = AppState.addEventListener("change", (state) => {
+      if (state === "active") void refresh();
+    });
+    return () => onResume.remove();
   }, [token, storeId, refresh]);
 
   useEffect(() => {

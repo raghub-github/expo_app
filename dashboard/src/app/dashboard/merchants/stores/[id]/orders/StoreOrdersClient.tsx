@@ -1,10 +1,20 @@
 'use client';
 
-import React, { useEffect, useState, useCallback, useRef, useMemo, Suspense } from 'react';
+import React, {
+  useEffect,
+  useState,
+  useCallback,
+  useRef,
+  useMemo,
+  Suspense,
+  createContext,
+  useContext,
+} from 'react';
 import { createPortal } from 'react-dom';
 import { useAppSearchParams } from "@/hooks/useAppSearchParams";
 import { useRouter } from "next/navigation";
 import { useToast } from '@/context/ToastContext';
+import { useMerchantDashboardAccess } from '@/hooks/useMerchantDashboardAccess';
 import {
   Clock,
   CheckCircle2,
@@ -39,7 +49,11 @@ import {
 import { useStoreFoodOrders } from '@/hooks/useStoreFoodOrders';
 import { WalletAdjustmentModal } from '@/components/merchants/WalletAdjustmentModal';
 import type { OrdersFoodRow, FoodOrderStats } from '@/lib/types/food-orders';
-import { PageSkeletonOrders } from './PageSkeletonOrders';
+import {
+  OrderHistoryListSkeleton,
+  OrdersContentSkeleton,
+  PageSkeletonOrders,
+} from './PageSkeletonOrders';
 import { supabase } from '@/lib/supabase/client';
 import { useStore } from '@/hooks/useStore';
 import {
@@ -140,9 +154,14 @@ const FOOD_ORDERS_SIDEBAR_FILTERS = [
   { id: 'READY_FOR_PICKUP', label: 'Ready' },
   { id: 'OUT_FOR_DELIVERY', label: 'Picked up' },
   { id: 'RTO', label: 'RTO' },
+  { id: 'SCHEDULED', label: 'Scheduled' },
 ] as const;
 
 type FoodOrdersSidebarFilterId = (typeof FOOD_ORDERS_SIDEBAR_FILTERS)[number]['id'];
+
+/** Partnersite Zomato-style status pills */
+const SIDEBAR_ACTIVE_CLASS = 'bg-white text-gray-900 border-gray-300 shadow-sm';
+const SIDEBAR_INACTIVE_CLASS = 'bg-[#F0F0F0] text-gray-700 border-transparent hover:bg-[#E8E8E8]';
 
 function normOrderStatus(s: string | null | undefined) {
   const mapped = mapStateMachineStatusToPartnerUi(s);
@@ -150,9 +169,21 @@ function normOrderStatus(s: string | null | undefined) {
   return normFoodStatus(s);
 }
 
+function isScheduledFoodOrder(order: OrdersFoodRow): boolean {
+  const st = normOrderStatus(order.order_status);
+  if (st !== 'CREATED') return false;
+  const readyRaw = order.expected_ready_at || order.prep_ready_by_at;
+  if (!readyRaw || !order.created_at) return false;
+  const readyMs = new Date(readyRaw).getTime();
+  const createdMs = new Date(order.created_at).getTime();
+  if (!Number.isFinite(readyMs) || !Number.isFinite(createdMs)) return false;
+  return readyMs - createdMs > 45 * 60 * 1000;
+}
+
 function orderMatchesFoodOrdersSidebar(order: OrdersFoodRow, filterId: string): boolean {
   const st = normOrderStatus(order.order_status);
-  if (filterId === 'NEW_ORDERS') return st === 'CREATED';
+  if (filterId === 'SCHEDULED') return isScheduledFoodOrder(order);
+  if (filterId === 'NEW_ORDERS') return st === 'CREATED' && !isScheduledFoodOrder(order);
   if (filterId === 'PREPARING') return PREPARING_PIPELINE.has(st);
   if (filterId === 'READY_FOR_PICKUP') return st === 'READY_FOR_PICKUP';
   if (filterId === 'OUT_FOR_DELIVERY') return st === 'OUT_FOR_DELIVERY';
@@ -512,13 +543,17 @@ function FormattedOrderId({
   return <span className={`font-bold text-gray-900 ${classes.base}`}>#{fallbackOrderId}</span>;
 }
 
+const OrderActionsAccessContext = createContext(true);
+
 function OrdersPageContent({ storeId }: { storeId: string }) {
   const searchParams = useAppSearchParams();
   const router = useRouter();
+  const { canOperateStore, isViewOnly } = useMerchantDashboardAccess();
+  const canActOnOrders = canOperateStore && !isViewOnly;
   const storeInternalId = parseInt(storeId, 10);
   const [orders, setOrders] = useState<OrdersFoodRow[]>([]);
   const [stats, setStats] = useState<FoodOrderStats | null>(null);
-  const [filter, setFilter] = useState<string>('PREPARING');
+  const [filter, setFilter] = useState<string>('NEW_ORDERS');
   const [selectedOrder, setSelectedOrder] = useState<OrdersFoodRow | null>(null);
   // Partnersite-style: show full-width list by default, open details panel only after selecting an order.
   const [rightPanelOpen, setRightPanelOpen] = useState(false);
@@ -944,7 +979,10 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
 
   useEffect(() => {
     const f = searchParams?.get('filter');
-    if (f && ['NEW_ORDERS', 'PREPARING', 'READY_FOR_PICKUP', 'OUT_FOR_DELIVERY', 'RTO', 'CREATED'].includes(f)) {
+    if (
+      f &&
+      ['NEW_ORDERS', 'SCHEDULED', 'PREPARING', 'READY_FOR_PICKUP', 'OUT_FOR_DELIVERY', 'RTO', 'CREATED'].includes(f)
+    ) {
       setFilter(f === 'CREATED' || f === 'NEW' ? 'NEW_ORDERS' : f);
     }
   }, [searchParams]);
@@ -1493,6 +1531,10 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
         action_source?: 'website' | 'system' | 'admin';
       }
     ) => {
+      if (!canActOnOrders) {
+        toast('View-only access — order actions are disabled', 'error');
+        return false;
+      }
       if (!storeId) {
         toast('Error: Store not loaded', 'error');
         return false;
@@ -1583,7 +1625,7 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
         setActionLoading(null);
       }
     },
-    [storeId, selectedOrder, closeOrderPanel, toast, fetchOrders, fetchStats]
+    [storeId, selectedOrder, closeOrderPanel, toast, fetchOrders, fetchStats, canActOnOrders]
   );
 
   // Backend owns auto-cancel via acceptance-timeout cron. Do not PATCH CANCEL from
@@ -1820,6 +1862,7 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
 
   const sidebarFilterCounts: Record<FoodOrdersSidebarFilterId, number> = {
     NEW_ORDERS: orders.filter((o) => orderMatchesFoodOrdersSidebar(o, 'NEW_ORDERS')).length,
+    SCHEDULED: orders.filter((o) => orderMatchesFoodOrdersSidebar(o, 'SCHEDULED')).length,
     PREPARING: orders.filter((o) => orderMatchesFoodOrdersSidebar(o, 'PREPARING')).length,
     READY_FOR_PICKUP: orders.filter((o) => orderMatchesFoodOrdersSidebar(o, 'READY_FOR_PICKUP')).length,
     OUT_FOR_DELIVERY: orders.filter((o) => orderMatchesFoodOrdersSidebar(o, 'OUT_FOR_DELIVERY')).length,
@@ -1836,13 +1879,19 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
     [orders]
   );
 
+  const initialLoading = loading && orders.length === 0;
+
   const showFullStoreClosedBlankState =
-    ordersSection === 'live' && isStoreOpen === false && !hasActiveOrders;
+    !initialLoading &&
+    ordersSection === 'live' &&
+    isStoreOpen === false &&
+    !hasActiveOrders;
 
   const emptyVariant: FoodOrdersEmptyVariant = useMemo(() => {
     if (filteredOrders.length > 0 && displayOrders.length === 0) return 'search';
     if (
       filter === 'NEW_ORDERS' ||
+      filter === 'SCHEDULED' ||
       filter === 'PREPARING' ||
       filter === 'READY_FOR_PICKUP' ||
       filter === 'OUT_FOR_DELIVERY' ||
@@ -1850,12 +1899,17 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
     ) {
       return filter as FoodOrdersEmptyVariant;
     }
-    return 'PREPARING';
+    return 'NEW_ORDERS';
   }, [filteredOrders.length, displayOrders.length, filter]);
+
+  const selectedOrderInFilter = Boolean(
+    selectedOrder && displayOrders.some((o) => o.id === selectedOrder.id)
+  );
+  const liveSplitOpen = Boolean(rightPanelOpen && selectedOrder && selectedOrderInFilter);
 
   const renderLiveOrderSwitcher = () => (
     <div className="flex min-h-0 h-full flex-col overflow-hidden bg-gray-50/80 py-3 pl-4 pr-1">
-      <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden overscroll-y-contain">
+      <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden overscroll-y-contain hide-scrollbar">
         <div className="space-y-3 pr-1">
           {displayOrders.map((order) => (
             <OrderCard
@@ -1889,14 +1943,9 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
             />
           ))}
         </div>
-        {displayOrders.length === 0 && <FoodOrdersEmptyState variant={emptyVariant} />}
       </div>
     </div>
   );
-
-  if (loading && orders.length === 0) {
-    return <><PageSkeletonOrders /></>;
-  }
 
   function StoreClosedOrdersState() {
     return (
@@ -1953,28 +2002,47 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
   ) : null;
 
   return (
-    <>
+    <OrderActionsAccessContext.Provider value={canActOnOrders}>
       <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden bg-gray-50">
         {ordersSection === 'live' ? (
-        <header id="food-orders-header" className="shrink-0 z-20 bg-white border-b border-gray-200">
+        <header id="food-orders-header" className="shrink-0 z-20 bg-white">
           <div className="w-full min-w-0 px-3 sm:px-4 lg:px-6 py-2 sm:py-3">
-            <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-2 md:gap-0 min-w-0">
-              <div className="flex items-center justify-end md:justify-start md:flex-1 md:items-center md:gap-3 min-w-0 overflow-x-auto hide-scrollbar shrink-0">
+            <div className="flex w-full min-w-0 flex-col md:flex-row md:items-center md:justify-between gap-2 md:gap-0">
+              <div className="flex items-center justify-end md:justify-start md:flex-1 md:items-center md:gap-3 min-w-0 overflow-x-auto hide-scrollbar">
                 {stats && (
                   <div className="flex items-center gap-2 shrink-0">
-                    <StatBadge label="Today" value={String(stats.ordersTodayActive ?? stats.ordersToday)} />
-                    <StatBadge label="Active" value={String(orders.length > 0 ? liveActiveCount : (stats.activeOrders ?? 0))} accent title="Pending live orders (New + Preparing + Ready + Picked up + RTO)" />
+                    <StatBadge
+                      label="Today"
+                      value={String(stats.ordersTodayActive ?? stats.ordersToday)}
+                      title="Orders placed or delivered today (IST)"
+                    />
+                    <StatBadge
+                      label="Active"
+                      value={String(orders.length > 0 ? liveActiveCount : (stats.activeOrders ?? 0))}
+                      accent
+                      title="Pending live orders (New + Preparing + Ready + Picked up + RTO)"
+                    />
                   </div>
                 )}
                 {stats && (
-                  <div className="hidden md:flex items-center gap-2 sm:gap-3 shrink-0">
+                  <div className="hidden md:flex items-center gap-2 sm:gap-3 shrink-0 flex-1 min-w-0">
                     <StatBadge label="Avg Prep" value={`${stats.avgPreparationTimeMinutes}m`} />
-                    <StatBadge label="Revenue" value={`₹${stats.totalRevenueToday.toFixed(0)}`} />
                     <StatBadge label="Completion" value={`${stats.completionRatePercent}%`} />
+                    <div className="relative ml-1 min-w-0 flex-1 max-w-[280px] lg:max-w-[340px]">
+                      <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 pointer-events-none" aria-hidden />
+                      <input
+                        type="search"
+                        inputMode="numeric"
+                        placeholder="Search with order id  ..............."
+                        value={orderIdSearch}
+                        onChange={(e) => setOrderIdSearch(e.target.value)}
+                        className="w-full pl-9 pr-3 py-1.5 rounded-lg border border-gray-200 bg-white text-sm text-gray-900 placeholder:text-gray-400 shadow-sm"
+                      />
+                    </div>
                   </div>
                 )}
               </div>
-              <div className="flex items-center justify-end gap-1.5 sm:gap-2 shrink-0 min-w-0 lg:pl-4">
+              <div className="flex items-center justify-end gap-1.5 sm:gap-2 shrink-0">
               <button
                 onClick={handleStoreToggle}
                 disabled={storeStatusLoading}
@@ -2051,7 +2119,7 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
 
         <div
           id="food-orders-pills"
-          className={`shrink-0 z-30 border-b border-gray-200 bg-white px-3 sm:px-4 lg:px-6 py-2 sm:py-3 shadow-sm${ordersSection === 'live' ? ' border-t' : ''}`}
+          className={`shrink-0 z-30 border-b border-gray-200 bg-white px-3 sm:px-4 lg:px-6 py-3 shadow-sm${ordersSection === 'live' ? ' border-t' : ''}`}
         >
             <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
               {ordersSection === 'live' ? (
@@ -2061,11 +2129,18 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
                       key={id}
                       type="button"
                       onClick={() => handleFilterChange(id)}
-                      className={`px-3.5 py-2 rounded-full text-sm font-semibold border transition-colors shrink-0 ${
-                        filter === id ? 'bg-orange-500 text-white border-orange-500 shadow-sm' : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                      className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-semibold border transition-colors shrink-0 ${
+                        filter === id ? SIDEBAR_ACTIVE_CLASS : SIDEBAR_INACTIVE_CLASS
                       }`}
                     >
-                      {label} ({sidebarFilterCounts[id as FoodOrdersSidebarFilterId] || 0})
+                      {label}
+                      <span
+                        className={`inline-flex h-5 min-w-[20px] items-center justify-center rounded-full px-1.5 text-[11px] font-bold leading-none ${
+                          filter === id ? 'bg-gray-900 text-white' : 'bg-gray-500 text-white'
+                        }`}
+                      >
+                        {sidebarFilterCounts[id as FoodOrdersSidebarFilterId] || 0}
+                      </span>
                     </button>
                   ))}
                 </div>
@@ -2102,7 +2177,7 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
                   <select
                     value={ordersSection}
                     onChange={(e) => handleSectionChange(e.target.value as 'live' | 'history')}
-                    className="w-full appearance-none pl-3 pr-9 py-2 rounded-lg border border-gray-200 bg-white text-sm font-semibold text-gray-900 cursor-pointer"
+                    className="w-full appearance-none pl-3 pr-9 py-2 rounded-xl border border-black bg-white text-sm font-semibold text-gray-900 cursor-pointer"
                     aria-label="Orders section"
                   >
                     <option value="live">Live Orders</option>
@@ -2122,12 +2197,17 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
                     <ChevronDown size={14} className="text-gray-500" />
                   </button>
                 )}
-                <div className="relative flex-1 sm:min-w-[220px] lg:min-w-[300px]">
+                {/* Mobile search (desktop search lives in header — partnersite parity) */}
+                <div className={`relative flex-1 sm:min-w-[220px] lg:min-w-[300px] ${ordersSection === 'live' ? 'md:hidden' : ''}`}>
                   <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 pointer-events-none" aria-hidden />
                   <input
                     type="search"
                     inputMode="numeric"
-                    placeholder={ordersSection === 'history' ? 'Search by order ID' : 'Search by the 4 digit order ID'}
+                    placeholder={
+                      ordersSection === 'history'
+                        ? 'Search by order ID'
+                        : 'Search with order id  ...............'
+                    }
                     value={orderIdSearch}
                     onChange={(e) => setOrderIdSearch(e.target.value)}
                     className="w-full pl-9 pr-3 py-2 rounded-lg border border-gray-200 bg-white text-sm text-gray-900 placeholder:text-gray-400 shadow-sm"
@@ -2321,11 +2401,7 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
             <div className="flex flex-1 min-h-0 flex-col lg:flex-row overflow-hidden">
               <aside className="w-full lg:w-[380px] shrink-0 border-b lg:border-b-0 lg:border-r border-gray-200 bg-white flex flex-col min-h-0 max-h-[45vh] lg:max-h-none">
                 <div className="flex-1 overflow-y-auto min-h-0 p-2 space-y-2 hide-scrollbar">
-                  {loading && (
-                    <div className="flex justify-center py-8 text-gray-500">
-                      <Loader2 className="animate-spin" size={24} />
-                    </div>
-                  )}
+                  {loading && historyOrders.length === 0 && <OrderHistoryListSkeleton />}
                   {!loading && historyOrders.length === 0 && (
                     <p className="text-sm text-gray-500 text-center py-8">No orders in this range.</p>
                   )}
@@ -2362,6 +2438,17 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
               </aside>
               <main className="flex-1 min-w-0 overflow-y-auto min-h-0 bg-gray-50 p-3 sm:p-5 hide-scrollbar">
                 {!selectedOrder ? (
+                  loading && historyOrders.length === 0 ? (
+                    <div className="rounded-xl border border-gray-200 bg-white p-5 space-y-4" aria-busy aria-label="Loading order details">
+                      <div className="flex justify-between gap-3">
+                        <div className="h-5 w-32 rounded bg-gray-200 animate-pulse" />
+                        <div className="h-5 w-20 rounded bg-gray-100 animate-pulse" />
+                      </div>
+                      <div className="h-4 w-2/3 rounded bg-gray-100 animate-pulse" />
+                      <div className="h-40 w-full rounded-lg bg-gray-50 animate-pulse" />
+                      <div className="h-24 w-full rounded-lg bg-gray-50 animate-pulse" />
+                    </div>
+                  ) : (
                   <div className="h-full flex flex-col items-center justify-center text-gray-500 text-sm gap-2">
                     {orderIdSearch.trim() ? (
                       <FoodOrdersEmptyState variant="search" />
@@ -2381,6 +2468,7 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
                       </>
                     )}
                   </div>
+                  )
                 ) : selectedOrderPricing ? (
                   <OrderPanel
                     className="w-full max-w-none h-auto max-h-none"
@@ -2434,68 +2522,67 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
             </div>
           ) : showFullStoreClosedBlankState ? (
             <StoreClosedOrdersState />
+          ) : initialLoading ? (
+            <OrdersContentSkeleton />
           ) : (
           <div className="flex min-h-0 flex-1 flex-col lg:flex-row overflow-hidden">
             {/* Desktop (lg+): When panel open, split layout. Card shows placeholder until an order is selected. */}
             {usePipelineListLayout ? (
+              liveSplitOpen && selectedOrder ? (
               <>
+                {/* Desktop: detail + scrollable order list only when an order is open */}
                 <div className="hidden lg:grid lg:grid-cols-[minmax(0,1fr)_16rem] min-h-0 min-w-0 h-full w-full flex-1 overflow-hidden">
                   <div className="min-h-0 min-w-0 h-full overflow-y-auto overflow-x-hidden overscroll-y-contain border-r border-gray-200 bg-gray-50/80 p-3 sm:p-4 hide-scrollbar">
-                    {pipelineMainOrder ? (
-                      renderPipelineCard(pipelineMainOrder)
-                    ) : (
-                      <FoodOrdersEmptyState variant={emptyVariant} />
-                    )}
+                    {renderPipelineCard(pipelineMainOrder ?? selectedOrder)}
                   </div>
                   {renderLiveOrderSwitcher()}
                 </div>
-                {rightPanelOpen && selectedOrder ? (
-                  <div className="lg:hidden flex-1 min-w-0 flex flex-col overflow-hidden">
-                    <OrderDetailMobile
-                      storeId={storeId}
-                      order={selectedOrder}
-                      onClose={closeOrderPanel}
-                      statusLabel={STATUS_LABEL[selectedOrder.order_status || 'CREATED'] || selectedOrder.order_status || 'CREATED'}
-                      formatVegNonVeg={formatVegNonVeg}
-                      formatTimeAgo={formatTimeAgo}
-                      otpCode={otpCache[selectedOrder.id]?.pickup ?? undefined}
-                      otpType="PICKUP"
-                      otpVerified={otpVerified.has(selectedOrder.id)}
-                      onFetchOtp={() => fetchOtp(selectedOrder.id)}
-                      onAccept={() => updateStatus(selectedOrder, 'ACCEPTED')}
-                      onReject={() => setRejectModal(selectedOrder)}
-                      acceptLabel={acceptCountdown.label}
-                      acceptDisabled={acceptCountdown.disabled}
-                      nowMs={nowTick}
-                      onPreparing={() => updateStatus(selectedOrder, 'PREPARING')}
-                      onReady={() => updateStatus(selectedOrder, 'READY_FOR_PICKUP')}
-                      onDispatch={() => setDispatchModal(selectedOrder)}
-                      onComplete={() => updateStatus(selectedOrder, 'DELIVERED')}
-                      onRto={() => setRtoModalOrder(selectedOrder)}
-                      actionLoading={actionLoading === selectedOrder.id}
-                      onOpenRidersLog={() => {
-                        setRidersLogModalOrderId(merchantOrderApiId(selectedOrder));
-                        setRidersLogModalOrderLabel(selectedOrder.formatted_order_id || `#${selectedOrder.order_id}`);
-                      }}
-                      onOpenRiderImage={(url) => setRiderImageModalUrl(url)}
-                    />
-                  </div>
-                ) : (
-                  <div className="lg:hidden flex-1 overflow-y-auto p-3 sm:p-4 min-w-0 min-h-0 hide-scrollbar space-y-3">
-                    {displayOrders.length === 0 ? (
-                      <FoodOrdersEmptyState variant={emptyVariant} />
-                    ) : (
-                      displayOrders.map((order) => renderPipelineCard(order))
-                    )}
-                  </div>
-                )}
+                <div className="lg:hidden flex-1 min-w-0 flex flex-col overflow-hidden">
+                  <OrderDetailMobile
+                    storeId={storeId}
+                    order={selectedOrder}
+                    onClose={closeOrderPanel}
+                    statusLabel={STATUS_LABEL[selectedOrder.order_status || 'CREATED'] || selectedOrder.order_status || 'CREATED'}
+                    formatVegNonVeg={formatVegNonVeg}
+                    formatTimeAgo={formatTimeAgo}
+                    otpCode={otpCache[selectedOrder.id]?.pickup ?? undefined}
+                    otpType="PICKUP"
+                    otpVerified={otpVerified.has(selectedOrder.id)}
+                    onFetchOtp={() => fetchOtp(selectedOrder.id)}
+                    onAccept={() => updateStatus(selectedOrder, 'ACCEPTED')}
+                    onReject={() => setRejectModal(selectedOrder)}
+                    acceptLabel={acceptCountdown.label}
+                    acceptDisabled={acceptCountdown.disabled}
+                    nowMs={nowTick}
+                    onPreparing={() => updateStatus(selectedOrder, 'PREPARING')}
+                    onReady={() => updateStatus(selectedOrder, 'READY_FOR_PICKUP')}
+                    onDispatch={() => setDispatchModal(selectedOrder)}
+                    onComplete={() => updateStatus(selectedOrder, 'DELIVERED')}
+                    onRto={() => setRtoModalOrder(selectedOrder)}
+                    actionLoading={actionLoading === selectedOrder.id}
+                    onOpenRidersLog={() => {
+                      setRidersLogModalOrderId(merchantOrderApiId(selectedOrder));
+                      setRidersLogModalOrderLabel(selectedOrder.formatted_order_id || `#${selectedOrder.order_id}`);
+                    }}
+                    onOpenRiderImage={(url) => setRiderImageModalUrl(url)}
+                  />
+                </div>
               </>
-            ) : rightPanelOpen ? (
+              ) : (
+                <div className="flex-1 overflow-y-auto p-3 sm:p-4 min-w-0 min-h-0 hide-scrollbar space-y-3">
+                  {displayOrders.length === 0 ? (
+                    <FoodOrdersEmptyState variant={emptyVariant} />
+                  ) : (
+                    displayOrders.map((order) => renderPipelineCard(order))
+                  )}
+                </div>
+              )
+            ) : rightPanelOpen && selectedOrder && selectedOrderInFilter ? (
               <>
                 <div className="order-1 hidden lg:grid lg:grid-cols-[minmax(0,1fr)_16rem] min-h-0 min-w-0 h-full w-full flex-1 overflow-hidden">
                 <div className="flex min-h-0 min-w-0 h-full flex-col overflow-hidden border-r border-gray-200 bg-gray-50/80 p-3">
-                <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden overscroll-y-contain">
-                  {selectedOrder && selectedOrderPricing ? (
+                <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden overscroll-y-contain hide-scrollbar">
+                  {selectedOrderPricing ? (
                     <OrderPanel
                       className="w-full"
                       order={selectedOrder}
@@ -2571,16 +2658,12 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
                         />
                       }
                     />
-                  ) : (
-                    <div className="flex min-h-[320px] items-center justify-center rounded-xl border border-gray-200/80 bg-white p-8 text-center text-sm text-gray-500">
-                      Select an order from the list to view details
-                    </div>
-                  )}
+                  ) : null}
                 </div>
               </div>
                 {/* Right: order cards — scrolls independently from detail panel */}
                 <div className="flex min-h-0 h-full flex-col overflow-hidden bg-gray-50/80 py-3 pl-4 pr-1">
-                  <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden overscroll-y-contain">
+                  <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden overscroll-y-contain hide-scrollbar">
                     <div className="space-y-3 pr-1">
                       {displayOrders.map((order) => (
                         <OrderCard
@@ -2614,14 +2697,9 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
                         />
                       ))}
                     </div>
-                    {displayOrders.length === 0 && (
-                      <FoodOrdersEmptyState variant={emptyVariant} />
-                    )}
                   </div>
                 </div>
               </div>
-                {/* Mobile: Order details panel beside sidebar - card-based layout (only when order selected) */}
-                {selectedOrder && (
                 <div className="lg:hidden flex-1 min-w-0 flex flex-col overflow-hidden order-1">
                   <OrderDetailMobile
                     storeId={storeId}
@@ -2652,7 +2730,6 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
                     onOpenRiderImage={(url) => setRiderImageModalUrl(url)}
                   />
                 </div>
-                )}
               </>
             ) : (
               <>
@@ -3072,7 +3149,7 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
         </div>,
         document.body
       )}
-    </>
+    </OrderActionsAccessContext.Provider>
   );
 }
 
@@ -4121,6 +4198,10 @@ function ActionBtns({
   acceptDisabled?: boolean;
   nowMs?: number;
 }) {
+  const canActOnOrders = useContext(OrderActionsAccessContext);
+  if (!canActOnOrders) {
+    return <p className="text-xs font-medium text-gray-500">View only — order actions disabled</p>;
+  }
   const status = order.order_status || 'CREATED';
   const dis = loading;
   const btnBase = 'rounded-xl font-medium disabled:opacity-50 min-w-0 transition-all duration-200 active:scale-[0.98] shadow-sm border border-transparent';

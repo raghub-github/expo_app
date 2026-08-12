@@ -10,8 +10,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine";
+import { resolveMerchantListAreaManagerId } from "@/lib/merchants/resolve-merchant-list-scope";
 import { getSystemUserByEmail } from "@/lib/auth/user-mapping";
-import { getAreaManagerByUserId } from "@/lib/area-manager/auth";
 import { getMerchantStoreById, updateMerchantStore } from "@/lib/db/operations/merchant-stores";
 import { getSql } from "@/lib/db/client";
 import { uploadWithKey, getSignedUrlFromKey, deleteDocument } from "@/lib/services/r2";
@@ -33,14 +33,10 @@ async function assertStoreAccess(storeId: number) {
   const allowed =
     superAdmin || (await hasDashboardAccessByAuth(user.id, user.email, "MERCHANT"));
   if (!allowed) return { ok: false as const, status: 403, error: "Forbidden" };
-  let areaManagerId: number | null = null;
-  if (!superAdmin) {
-    const systemUser = await getSystemUserByEmail(user.email);
-    if (systemUser) {
-      const am = await getAreaManagerByUserId(systemUser.id);
-      if (am) areaManagerId = am.id;
-    }
-  }
+  const areaManagerId = await resolveMerchantListAreaManagerId({
+      supabaseAuthId: user.id,
+      email: user.email,
+    });
   const store = await getMerchantStoreById(storeId, areaManagerId);
   if (!store) return { ok: false as const, status: 404, error: "Store not found" };
   return { ok: true as const, store, areaManagerId };

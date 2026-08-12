@@ -8,8 +8,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine";
-import { getSystemUserByEmail } from "@/lib/auth/user-mapping";
-import { getAreaManagerByUserId } from "@/lib/area-manager/auth";
+import { resolveMerchantListAreaManagerId } from "@/lib/merchants/resolve-merchant-list-scope";
 import { getMerchantStoreById } from "@/lib/db/operations/merchant-stores";
 import { getSql } from "@/lib/db/client";
 import { ensureMerchantStoreDocumentsStep4JsonColumns } from "@/lib/db/ensure-step4-resubmission-flags-column";
@@ -61,14 +60,10 @@ export async function GET(
         { status: 403 }
       );
     }
-    let areaManagerId: number | null = null;
-    if (!(await isSuperAdmin(user.id, user.email))) {
-      const systemUser = await getSystemUserByEmail(user.email);
-      if (systemUser) {
-        const am = await getAreaManagerByUserId(systemUser.id);
-        if (am) areaManagerId = am.id;
-      }
-    }
+    const areaManagerId = await resolveMerchantListAreaManagerId({
+      supabaseAuthId: user.id,
+      email: user.email,
+    });
     const store = await getMerchantStoreById(storeId, areaManagerId);
     if (!store) {
       return NextResponse.json(
@@ -213,14 +208,10 @@ export async function PATCH(
         { status: 403 }
       );
     }
-    let areaManagerId: number | null = null;
-    if (!(await isSuperAdmin(user.id, user.email))) {
-      const systemUser = await getSystemUserByEmail(user.email);
-      if (systemUser) {
-        const am = await getAreaManagerByUserId(systemUser.id);
-        if (am) areaManagerId = am.id;
-      }
-    }
+    const areaManagerId = await resolveMerchantListAreaManagerId({
+      supabaseAuthId: user.id,
+      email: user.email,
+    });
     const store = await getMerchantStoreById(storeId, areaManagerId);
     if (!store) {
       return NextResponse.json(

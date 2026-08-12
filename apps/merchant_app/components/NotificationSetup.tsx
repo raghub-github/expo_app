@@ -5,7 +5,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AppText as Text } from "@/components/AppText";
 import { AppState, Platform, Pressable, StyleSheet, View, type AppStateStatus } from "react-native";
-import { useRouter } from "expo-router";
+import { useRouter, usePathname } from "expo-router";
 import Constants from "expo-constants";
 import { Ionicons } from "@expo/vector-icons";
 import {
@@ -21,9 +21,14 @@ import { useNotifications } from "@/context/NotificationContext";
 import { useOrders, mapApiOrder } from "@/hooks/useOrders";
 import { useIncomingOrderSheet } from "@/context/IncomingOrderSheetContext";
 import { fetchFoodOrder } from "@/services/ordersApi";
-import { registerStorePushToken } from "@/services/pushTokenApi";
+import { registerStorePushToken, unregisterAllStorePushTokens } from "@/services/pushTokenApi";
 import { getConfig } from "@/config/env";
 import { setMerchantPushUnregister } from "@/lib/merchantPushUnregister";
+import { openOrderDetailOnce } from "@/lib/openOrderDetailOnce";
+import {
+  dispatchMerchantForegroundPush,
+  dispatchMerchantNotificationResponse,
+} from "@/lib/merchantPushDispatch";
 import { PermissionBottomSheetShell } from "@/components/permissions/PermissionBottomSheetShell";
 import { useNotificationPermissionGate } from "@/context/NotificationPermissionGateContext";
 
@@ -51,6 +56,7 @@ export default function NotificationSetup() {
 
 function NotificationSetupImpl() {
   const router = useRouter();
+  const pathname = usePathname();
   const { token: authToken, isAuthenticated } = useAuth();
   const { selectedStore } = useSelectedStore();
   const storeId = selectedStore?.id ?? null;
@@ -106,7 +112,9 @@ function NotificationSetupImpl() {
             (typeof data.url === "string" && data.url.match(/\/order\/(\d+)/)?.[1]);
           const foodId = foodIdRaw != null ? parseInt(String(foodIdRaw), 10) : NaN;
           if (!storeId || !authToken || !Number.isFinite(foodId)) {
-            if (Number.isFinite(foodId)) router.push(`/order/${foodId}` as never);
+            if (Number.isFinite(foodId)) {
+              openOrderDetailOnce(router, String(foodId), { currentPath: pathname });
+            }
             return;
           }
           let order = ordersRef.current.find((o) => o.id === String(foodId));
@@ -114,7 +122,7 @@ function NotificationSetupImpl() {
             try {
               order = mapApiOrder(await fetchFoodOrder(storeId, foodId, authToken));
             } catch {
-              router.push(`/order/${foodId}` as never);
+              openOrderDetailOnce(router, String(foodId), { currentPath: pathname });
               return;
             }
           }
@@ -123,7 +131,7 @@ function NotificationSetupImpl() {
             openIncomingOrderSheet(order);
             return;
           }
-          router.push(`/order/${order.id}` as never);
+          openOrderDetailOnce(router, order.id, { currentPath: pathname });
         })();
         return;
       }
@@ -139,12 +147,20 @@ function NotificationSetupImpl() {
         router.push("/(tabs)/orders" as never);
         return;
       }
+      if (
+        data?.screen === "restaurant_status" ||
+        data?.type === "merchant_go_online" ||
+        data?.type === "merchant_outside_delivery"
+      ) {
+        router.push("/restaurant-status" as never);
+        return;
+      }
       if (data?.screen === "notifications") {
-        router.push("/notifications" as never);
+        router.push("/(tabs)/orders" as never);
         return;
       }
       if (data?.orderId != null) {
-        router.push(`/order/${String(data.orderId)}` as never);
+        openOrderDetailOnce(router, String(data.orderId), { currentPath: pathname });
         return;
       }
       navigateFromPushData({ push: (href) => router.push(href as never) }, {
@@ -152,7 +168,7 @@ function NotificationSetupImpl() {
         appRole: "merchant",
       });
     },
-    [router, storeId, authToken, openIncomingOrderSheet, upsertOrder]
+    [router, pathname, storeId, authToken, openIncomingOrderSheet, upsertOrder]
   );
 
   const { apiBaseUrl } = getConfig();
@@ -197,7 +213,19 @@ function NotificationSetupImpl() {
       }) => {
         await registerStorePushToken(sid, expoPushToken, accessToken, platform);
       },
-      onNotificationOpen: handleOpen,
+      unregisterStoreExpoToken: async ({
+        expoPushToken,
+        accessToken,
+      }: {
+        expoPushToken: string;
+        accessToken: string;
+      }) => {
+        await unregisterAllStorePushTokens(expoPushToken, accessToken);
+      },
+      onNotificationOpen: (payload: PushNotificationOpenPayload) => {
+        dispatchMerchantNotificationResponse(payload);
+        handleOpen(payload);
+      },
       onForeground: (payload: PushNotificationOpenPayload) => {
         // Move the bell badge on arrival, then reconcile with the server.
         const data = payload.data ?? {};
@@ -216,6 +244,7 @@ function NotificationSetupImpl() {
           templateCode: pick("template_code", "gmType"),
           orderId: pick("foodOrderId", "orderId", "order_id"),
         });
+        dispatchMerchantForegroundPush(payload);
         if (isMerchantNewOrderPush(data)) return;
         enqueueInAppBannerFromPush(payload);
       },

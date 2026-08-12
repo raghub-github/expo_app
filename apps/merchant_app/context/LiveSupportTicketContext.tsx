@@ -9,6 +9,7 @@ import {
   type ReactNode,
 } from "react";
 import { AppState, type AppStateStatus } from "react-native";
+import { isAppForeground } from "@/lib/appForeground";
 import { useAuth } from "@/context/AuthContext";
 import { useSelectedStore } from "@/context/SelectedStoreContext";
 import { getTicketMessages, type TicketMessage } from "@/services/ticketApi";
@@ -227,8 +228,15 @@ export function LiveSupportTicketProvider({ children }: { children: ReactNode })
     if (activeTicket == null || storeId == null || !token) return;
     void refreshActiveTicket();
     const id = setInterval(() => {
+      if (!isAppForeground()) return;
+      if (
+        chatOpenTicketIdRef.current != null &&
+        chatOpenTicketIdRef.current === activeTicket.ticketId
+      ) {
+        return;
+      }
       void refreshActiveTicket();
-    }, 8_000);
+    }, 15_000);
     return () => clearInterval(id);
   }, [activeTicket?.ticketId, refreshActiveTicket, storeId, token]);
 

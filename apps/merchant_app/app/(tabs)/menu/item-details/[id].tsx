@@ -96,8 +96,8 @@ export default function ItemDetailsScreen() {
           hitSlop={8}
         >
           <Ionicons
-            name="arrow-back"
-            size={24}
+            name="chevron-back"
+            size={20}
             color={GatiMitraMerchant.textPrimary}
           />
         </TouchableOpacity>

@@ -675,6 +675,62 @@ export async function meRoutes(app: FastifyInstance) {
           })
           .where(eq(userProfiles.userId, sub));
       }
+
+      if (role === "customer" || role === "merchant" || role === "rider") {
+        try {
+          const { purgeUserPushTokens } = await import("../../lib/purge-user-push-tokens.js");
+          await purgeUserPushTokens({ userId: sub, role, log: req.log });
+        } catch (pushErr) {
+          req.log?.warn?.({ err: pushErr, userId: sub.slice(0, 8) }, "logout_all_push_purge_failed");
+        }
+      }
+
+      return { success: true };
+    }
+  );
+
+  /** POST /v1/me/logout — invalidate sessions + purge this device's push registration. */
+  app.post(
+    "/logout",
+    {
+      schema: {
+        body: z
+          .object({
+            expo_push_token: z.string().optional().nullable(),
+            native_push_token: z.string().optional().nullable(),
+          })
+          .optional(),
+        response: {
+          200: z.object({ success: z.boolean() }),
+          403: z.object({ error: z.string() }),
+        },
+      },
+    },
+    async (req, reply) => {
+      const sub = req.auth!.sub;
+      const role = req.auth!.role;
+      if (role !== "customer" && role !== "merchant" && role !== "rider") {
+        return reply.code(403).send({ error: "unsupported_role" });
+      }
+
+      const body = (req.body ?? {}) as {
+        expo_push_token?: string | null;
+        native_push_token?: string | null;
+      };
+
+      try {
+        const { purgeUserPushTokens } = await import("../../lib/purge-user-push-tokens.js");
+        await purgeUserPushTokens({
+          userId: sub,
+          role,
+          expoToken: body.expo_push_token,
+          nativeToken: body.native_push_token,
+          log: req.log,
+        });
+      } catch (pushErr) {
+        req.log?.warn?.({ err: pushErr, userId: sub.slice(0, 8) }, "logout_push_purge_failed");
+      }
+
       return { success: true };
     }
   );

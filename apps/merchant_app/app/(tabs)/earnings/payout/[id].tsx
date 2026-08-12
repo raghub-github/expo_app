@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { AppText as Text } from "@/components/AppText";
 import { View, StyleSheet, ScrollView, Pressable, ActivityIndicator } from "react-native";
-import { useLocalSearchParams, useRouter } from "expo-router";
+import { useLocalSearchParams, usePathname, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import {
@@ -37,6 +37,7 @@ import {
 import { PayoutOrderTypeFilterSheet } from "@/components/earnings/PayoutOrderTypeFilterSheet";
 import { FormattedOrderId } from "@/components/order/FormattedOrderId";
 import { prefetchCompensationPolicy } from "@/lib/compensationPolicyCache";
+import { openOrderDetailOnce } from "@/lib/openOrderDetailOnce";
 
 const EMPTY_SETTLEMENT: SettlementSummary = {
   netOrderValue: 0,
@@ -372,6 +373,7 @@ function OrderPayoutCard({
 export default function PayoutDetailScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
+  const pathname = usePathname();
   const params = useLocalSearchParams<{
     id: string;
     netPayout: string;
@@ -714,7 +716,10 @@ export default function PayoutDetailScreen() {
                   storeLocation={storeLocation}
                   onDetails={() => {
                     if (item.foodOrderId != null) {
-                      router.push({ pathname: "/order/[id]", params: { id: String(item.foodOrderId) } });
+                      openOrderDetailOnce(router, String(item.foodOrderId), {
+                        fromPath: pathname,
+                        currentPath: pathname,
+                      });
                     }
                   }}
                 />
@@ -760,10 +765,21 @@ const s = StyleSheet.create({
     borderRadius: 10,
     padding: 4,
     marginBottom: 14,
+    overflow: "visible",
   },
-  tabBtn: { flex: 1, paddingVertical: 10, borderRadius: 8, alignItems: "center" },
+  tabBtn: {
+    flex: 1,
+    paddingVertical: 10,
+    borderRadius: 8,
+    alignItems: "center",
+    borderWidth: 1,
+    borderColor: "transparent",
+    backgroundColor: "transparent",
+  },
   tabBtnActive: {
     backgroundColor: "#fff",
+    borderColor: "#fff",
+    borderRadius: 8,
     shadowColor: "#000",
     shadowOffset: { width: 0, height: 1 },
     shadowOpacity: 0.06,

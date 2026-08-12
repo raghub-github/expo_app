@@ -3,39 +3,61 @@
  * PATCH /api/merchant/stores/[id] — update store fields (agent verification edits).
  */
 import { NextRequest, NextResponse } from "next/server";
-import { createServerSupabaseClient } from "@/lib/supabase/server";
+import { getAuthenticatedApiUser } from "@/lib/auth/api-session";
 import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine";
-import { getSystemUserByEmail } from "@/lib/auth/user-mapping";
+import { getSystemUserByEmail, resolveSystemUserForSupabaseAuth } from "@/lib/auth/user-mapping";
 import { getAreaManagerByUserId } from "@/lib/area-manager/auth";
+import { resolveMerchantListAreaManagerId } from "@/lib/merchants/resolve-merchant-list-scope";
 import { getMerchantStoreById, updateMerchantStore, getLatestStoreDelistingLog } from "@/lib/db/operations/merchant-stores";
 import { logFieldChange } from "@/lib/db/operations/merchant-portal-activity-logs";
 
 export const runtime = "nodejs";
 
 async function getStoreAndAccess(storeId: number) {
-  const supabase = await createServerSupabaseClient();
-  const { data: { user }, error } = await supabase.auth.getUser();
-  if (error || !user?.email) {
-    return { allowed: false as const, status: 401, error: "Not authenticated" };
+  const auth = await getAuthenticatedApiUser();
+  if (!auth.ok) {
+    if (auth.status === 503 || auth.status === 499) {
+      return {
+        allowed: false as const,
+        status: 503 as const,
+        error: "Service temporarily unavailable",
+      };
+    }
+    return { allowed: false as const, status: 401 as const, error: "Not authenticated" };
   }
-  const superAdmin = await isSuperAdmin(user.id, user.email);
+  const user = auth.user;
+  let email = (user.email ?? "").trim();
+  if (!email) {
+    const mapped = await resolveSystemUserForSupabaseAuth(user.id, undefined);
+    email = (mapped?.email ?? "").trim();
+  }
+  if (!email) {
+    return { allowed: false as const, status: 401 as const, error: "Not authenticated" };
+  }
+  const superAdmin = await isSuperAdmin(user.id, email);
   const allowed =
-    superAdmin ||
-    (await hasDashboardAccessByAuth(user.id, user.email, "MERCHANT"));
+    superAdmin || (await hasDashboardAccessByAuth(user.id, email, "MERCHANT"));
   if (!allowed) {
-    return { allowed: false as const, status: 403, error: "Merchant dashboard access required" };
+    return {
+      allowed: false as const,
+      status: 403 as const,
+      error: "Merchant dashboard access required",
+    };
   }
-  const systemUser = await getSystemUserByEmail(user.email);
-  let areaManagerId: number | null = null;
-  if (!superAdmin && systemUser) {
-    const am = await getAreaManagerByUserId(systemUser.id);
-    if (am) areaManagerId = am.id;
-  }
+  const systemUser = await getSystemUserByEmail(email);
+  // Org-wide when MERCHANT_VIEW / admin merchant access; otherwise AM assignment scope.
+  const areaManagerId = await resolveMerchantListAreaManagerId({
+    supabaseAuthId: user.id,
+    email,
+  });
   const store = await getMerchantStoreById(storeId, areaManagerId);
   if (!store) {
-    return { allowed: false as const, status: 404, error: "Store not found" };
+    return { allowed: false as const, status: 404 as const, error: "Store not found" };
   }
-  const isAgent = areaManagerId != null;
+  // Keep agent PATCH restrictions for area managers even when view scope is org-wide.
+  const amRecord =
+    !superAdmin && systemUser ? await getAreaManagerByUserId(systemUser.id) : null;
+  const isAgent = Boolean(amRecord) && !superAdmin;
   const systemUserId = systemUser?.id ?? null;
   return { allowed: true as const, store, areaManagerId, isAgent, systemUserId };
 }

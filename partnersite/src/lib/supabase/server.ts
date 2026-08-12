@@ -18,20 +18,30 @@ export async function createServerSupabaseClient() {
       },
       setAll(cookiesToSet) {
         try {
+          const authCookies = cookiesToSet.filter((c) => c.name.startsWith("sb-"));
+          if (
+            authCookies.length > 0 &&
+            authCookies.every((c) => !c.value || c.value.length === 0)
+          ) {
+            return;
+          }
           cookiesToSet.forEach(({ name, value, options }) => {
-            // Set cookies with proper options for SSR
             cookieStore.set(name, value, {
               ...options,
-              // Don't override httpOnly if it's explicitly set
               httpOnly: options.httpOnly !== false,
-              secure: process.env.NODE_ENV === 'production',
-              sameSite: 'lax',
+              secure: process.env.NODE_ENV === "production",
+              sameSite: "lax",
             });
           });
         } catch (error) {
-          console.error('Error setting cookies in server client:', error);
+          console.error("Error setting cookies in server client:", error);
         }
       },
+    },
+    auth: {
+      autoRefreshToken: false,
+      persistSession: true,
+      detectSessionInUrl: false,
     },
   });
 }

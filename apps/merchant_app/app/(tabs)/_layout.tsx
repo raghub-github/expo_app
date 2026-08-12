@@ -6,7 +6,7 @@ import { GatiMitraMerchant, TAB_BAR_HEIGHT, TAB_BAR_FLOATING_GAP, FONT_LORA } fr
 import { MerchantCustomHeader } from "@/components/MerchantHeader";
 import { FloatingTabBar } from "@/components/FloatingTabBar";
 import { FloatingPendingOrdersBar } from "@/components/FloatingPendingOrdersBar";
-import { ActiveTabProvider } from "@/context/ActiveTabContext";
+import { OfflineContentOverlay } from "@/components/OfflineContentOverlay";
 import { usePrefetchLiveOrderSupportTopics } from "@/hooks/useLiveOrderSupportTopics";
 import { usePrefetchMenuCatalog } from "@/hooks/useMenuQueries";
 
@@ -34,13 +34,12 @@ function TabIcon({
 export default function TabsLayout() {
   const insets = useSafeAreaInsets();
   const bottomInset = insets.bottom;
-  const tabBarTotalHeight = TAB_BAR_HEIGHT + bottomInset + TAB_BAR_FLOATING_GAP;
+  const tabBarTotalHeight = TAB_BAR_HEIGHT + bottomInset + TAB_BAR_FLOATING_GAP + 6;
   usePrefetchLiveOrderSupportTopics();
   usePrefetchMenuCatalog();
 
   return (
-    <ActiveTabProvider>
-      <View style={{ flex: 1 }}>
+      <View style={{ flex: 1, backgroundColor: GatiMitraMerchant.surfaceWarm }}>
       <Tabs
         tabBar={(props) => <FloatingTabBar {...props} />}
       screenOptions={{
@@ -48,7 +47,7 @@ export default function TabsLayout() {
         tabBarHideOnKeyboard: true,
         /** Keep main tabs mounted so Catalog / Orders open on the first tap with no mount delay. */
         lazy: false,
-        freezeOnBlur: false,
+        freezeOnBlur: true,
         animation: "none",
         tabBarActiveTintColor: GatiMitraMerchant.tabActive,
         tabBarInactiveTintColor: GatiMitraMerchant.tabInactive,
@@ -62,7 +61,7 @@ export default function TabsLayout() {
           /** Fills native tab slot; FloatingTabBar paints the same — avoids grey default behind the floating pill (esp. Android / web). */
           backgroundColor: GatiMitraMerchant.surfaceWarm,
           borderTopWidth: 0,
-          overflow: "hidden",
+          overflow: "visible",
           ...Platform.select({
             ios: {
               shadowColor: "transparent",
@@ -156,8 +155,8 @@ export default function TabsLayout() {
         }}
       />
     </Tabs>
+      <OfflineContentOverlay />
       <FloatingPendingOrdersBar />
       </View>
-    </ActiveTabProvider>
   );
 }

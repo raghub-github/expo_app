@@ -291,7 +291,7 @@ export function TicketCardActionControls({
 
   return (
     <>
-      <div className="flex flex-col gap-1 w-full" onClick={(e) => e.stopPropagation()}>
+      <div className="flex flex-col gap-1.5 w-full" onClick={(e) => e.stopPropagation()}>
         {snoozeCountdown ? (
           <div className="w-full text-right">
             <span

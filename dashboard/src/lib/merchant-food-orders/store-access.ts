@@ -1,12 +1,39 @@
-import { createServerSupabaseClient } from "@/lib/supabase/server";
+import { getAuthenticatedApiUser } from "@/lib/auth/api-session";
+import { resolveSystemUserForSupabaseAuth } from "@/lib/auth/user-mapping";
 import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine";
-import { getSystemUserByEmail } from "@/lib/auth/user-mapping";
-import { getAreaManagerByUserId } from "@/lib/area-manager/auth";
+import { resolveMerchantListAreaManagerId } from "@/lib/merchants/resolve-merchant-list-scope";
 import { getMerchantStoreById, type MerchantStoreRow } from "@/lib/db/operations/merchant-stores";
 
+export type MerchantApiActor =
+  | { ok: true; id: string; email: string }
+  | { ok: false; error: string; status: 401 | 503 };
+
+/**
+ * Cookie-safe merchant actor (avoids raw getUser() 401/503 races under parallel loads).
+ */
+export async function resolveMerchantApiActor(): Promise<MerchantApiActor> {
+  const auth = await getAuthenticatedApiUser();
+  if (!auth.ok) {
+    if (auth.status === 503 || auth.status === 499) {
+      return { ok: false, error: "Service temporarily unavailable", status: 503 };
+    }
+    return { ok: false, error: auth.body.error || "Not authenticated", status: 401 };
+  }
+  const authUser = auth.user;
+  let email = (authUser.email ?? "").trim();
+  if (!email) {
+    const mapped = await resolveSystemUserForSupabaseAuth(authUser.id, undefined);
+    email = (mapped?.email ?? "").trim();
+  }
+  if (!email) {
+    return { ok: false, error: "Not authenticated", status: 401 };
+  }
+  return { ok: true, id: authUser.id, email };
+}
+
 export type MerchantStoreAccessResult =
-  | { error: string; status: 401 | 403 | 404 }
-  | { store: MerchantStoreRow & { parent?: unknown } };
+  | { error: string; status: 401 | 403 | 404 | 503 }
+  | { store: MerchantStoreRow & { parent?: unknown }; user: { id: string; email: string } };
 
 /** Dashboard store URL id = merchant_stores.id (internal bigint). */
 export async function ensureMerchantStoreDashboardAccess(
@@ -15,31 +42,27 @@ export async function ensureMerchantStoreDashboardAccess(
   if (!Number.isFinite(storeIdParam)) {
     return { error: "Invalid store id", status: 404 };
   }
-  const supabase = await createServerSupabaseClient();
-  const {
-    data: { user },
-    error,
-  } = await supabase.auth.getUser();
-  if (error || !user?.email) {
-    return { error: "Not authenticated", status: 401 };
+
+  const actor = await resolveMerchantApiActor();
+  if (!actor.ok) {
+    return { error: actor.error, status: actor.status };
   }
+
   const allowed =
-    (await isSuperAdmin(user.id, user.email)) ||
-    (await hasDashboardAccessByAuth(user.id, user.email, "MERCHANT"));
+    (await isSuperAdmin(actor.id, actor.email)) ||
+    (await hasDashboardAccessByAuth(actor.id, actor.email, "MERCHANT"));
   if (!allowed) {
     return { error: "Merchant dashboard access required", status: 403 };
   }
-  let areaManagerId: number | null = null;
-  if (!(await isSuperAdmin(user.id, user.email))) {
-    const systemUser = await getSystemUserByEmail(user.email);
-    if (systemUser) {
-      const am = await getAreaManagerByUserId(systemUser.id);
-      if (am) areaManagerId = am.id;
-    }
-  }
+
+  // Org-wide when MERCHANT_VIEW / admin merchant access; otherwise AM assignment scope.
+  const areaManagerId = await resolveMerchantListAreaManagerId({
+    supabaseAuthId: actor.id,
+    email: actor.email,
+  });
   const store = await getMerchantStoreById(storeIdParam, areaManagerId);
   if (!store) {
     return { error: "Store not found", status: 404 };
   }
-  return { store };
+  return { store, user: { id: actor.id, email: actor.email } };
 }

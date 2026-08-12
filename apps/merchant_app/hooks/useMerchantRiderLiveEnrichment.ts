@@ -2,7 +2,9 @@ import { useMemo } from "react";
 import type { OrderRecord } from "@/hooks/useOrders";
 import { canTrackAssignedRider, orderHasAssignedRider } from "@/lib/orderAssignedRider";
 import { riderEnRouteToMerchant, resolveRiderCardVariant } from "@/lib/riderMerchantArrivalDisplay";
+import type { MerchantRiderTrackingPayload } from "@/services/riderTrackingApi";
 import { useMerchantRiderLiveTracking } from "@/hooks/useMerchantRiderLiveTracking";
+import { useRiderTrackingOrderVisible } from "@/hooks/useRiderTrackingOrderVisible";
 
 function parseOrdersFoodId(orderId: string): number | null {
   const n = parseInt(orderId, 10);
@@ -17,19 +19,24 @@ export type MerchantRiderLiveEnrichment = {
   arrivalSubtitle: string | null;
   loading: boolean;
   wsConnected: boolean;
+  trackingData: MerchantRiderTrackingPayload | null;
+  trackingError: string | null;
 };
 
 export function useMerchantRiderLiveEnrichment(
   order: OrderRecord,
   storeId: number | null,
   token: string | null,
-  enabled: boolean
+  enabled: boolean,
+  options?: { alwaysVisible?: boolean }
 ): MerchantRiderLiveEnrichment {
   const ordersFoodId = parseOrdersFoodId(order.id);
+  const isVisible = useRiderTrackingOrderVisible(ordersFoodId, options?.alwaysVisible === true);
   const variant = resolveRiderCardVariant(order);
   const enRoute = riderEnRouteToMerchant(order);
   const shouldTrack =
     enabled &&
+    isVisible &&
     !!storeId &&
     !!token &&
     ordersFoodId != null &&
@@ -44,7 +51,7 @@ export function useMerchantRiderLiveEnrichment(
     return ids;
   }, [order.formattedOrderId, order.orderNumber]);
 
-  const { data: tracking, loading, wsConnected } = useMerchantRiderLiveTracking({
+  const { data: tracking, loading, error, wsConnected } = useMerchantRiderLiveTracking({
     enabled: shouldTrack,
     storeId,
     ordersFoodId,
@@ -81,5 +88,7 @@ export function useMerchantRiderLiveEnrichment(
     arrivalSubtitle,
     loading,
     wsConnected,
+    trackingData: tracking,
+    trackingError: error,
   };
 }

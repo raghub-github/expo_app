@@ -3,7 +3,6 @@
  * Others → placeholder until implemented.
  */
 
-import { useEffect } from "react";
 import { AppText as Text } from "@/components/AppText";
 import { View, StyleSheet } from "react-native";
 import { Redirect, useLocalSearchParams } from "expo-router";
@@ -27,7 +26,6 @@ import OffersScreen from "./OffersScreen";
 import ActivityFeedScreen from "./ActivityFeedScreen";
 import AutoAcceptScreen from "./AutoAcceptScreen";
 import PrinterSettingsScreen from "./PrinterSettingsScreen";
-import { useProfileNav } from "@/context/ProfileNavContext";
 
 const SLUG_TITLES: Record<string, string> = {
   "edit-store": "Edit Store",
@@ -62,13 +60,6 @@ const CONTENT_TOP = 18;
 
 export default function ProfileSlugScreen() {
   const { slug, reopen_prompt } = useLocalSearchParams<{ slug: string; reopen_prompt?: string }>();
-  const { setLastProfileSlug } = useProfileNav();
-
-  useEffect(() => {
-    if (slug) {
-      setLastProfileSlug(String(slug));
-    }
-  }, [slug, setLastProfileSlug]);
 
   if (slug === "edit-store") {
     return <OutletInfoScreen />;
@@ -98,8 +89,7 @@ export default function ProfileSlugScreen() {
   }
 
   if (slug === "preferences" || slug === "notifications") {
-    // `notifications` slug kept as alias for old deep links → store Preferences
-    // (floating order pill + outlet prefs). Inbox lives at `/notifications`.
+    // Legacy `notifications` slug → Preferences (floating order pill + outlet prefs).
     return <NotificationsScreen />;
   }
 

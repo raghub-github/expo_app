@@ -3,10 +3,15 @@
  * Full store data for step-by-step verification (all fields needed for each step).
  */
 import { NextRequest, NextResponse } from "next/server";
-import { createServerSupabaseClient } from "@/lib/supabase/server";
+import { resolveMerchantApiActor } from "@/lib/merchant-food-orders/store-access";
 import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine";
-import { getSystemUserByEmail } from "@/lib/auth/user-mapping";
-import { getAreaManagerByUserId } from "@/lib/area-manager/auth";
+import { resolveMerchantListAreaManagerId } from "@/lib/merchants/resolve-merchant-list-scope";
+import {
+  canRevealStoreLegalDocs,
+  redactStoreAgreement,
+  redactStoreBankAccounts,
+  redactStoreLegalDocuments,
+} from "@/lib/merchants/store-legal-docs-access";
 import { getMerchantStoreById } from "@/lib/db/operations/merchant-stores";
 import { resolveAssignedAreaManagersForStoreVerification } from "@/lib/db/operations/parent-area-managers";
 import { getSql } from "@/lib/db/client";
@@ -30,17 +35,18 @@ export async function GET(
       );
     }
 
-    const supabase = await createServerSupabaseClient();
-    const {
-      data: { user },
-      error,
-    } = await supabase.auth.getUser();
-    if (error || !user?.email) {
+    const actor = await resolveMerchantApiActor();
+    if (!actor.ok) {
       return NextResponse.json(
-        { success: false, error: "Not authenticated", code: "SESSION_REQUIRED" },
-        { status: 401 }
+        {
+          success: false,
+          error: actor.error,
+          code: actor.status === 503 ? "SERVICE_UNAVAILABLE" : "SESSION_REQUIRED",
+        },
+        { status: actor.status }
       );
     }
+    const user = { id: actor.id, email: actor.email };
 
     const allowed =
       (await isSuperAdmin(user.id, user.email)) ||
@@ -56,14 +62,10 @@ export async function GET(
       );
     }
 
-    let areaManagerId: number | null = null;
-    if (!(await isSuperAdmin(user.id, user.email))) {
-      const systemUser = await getSystemUserByEmail(user.email);
-      if (systemUser) {
-        const am = await getAreaManagerByUserId(systemUser.id);
-        if (am) areaManagerId = am.id;
-      }
-    }
+    const areaManagerId = await resolveMerchantListAreaManagerId({
+      supabaseAuthId: user.id,
+      email: user.email,
+    });
 
     const store = await getMerchantStoreById(storeId, areaManagerId);
     if (!store) {
@@ -403,17 +405,33 @@ export async function GET(
       console.warn("[verification-data] pending resubmissions:", e);
     }
 
+    const canRevealLegal = await canRevealStoreLegalDocs({
+      supabaseAuthId: user.id,
+      email: user.email,
+      store: {
+        id: store.id,
+        area_manager_id: (store as { area_manager_id?: number | null }).area_manager_id ?? null,
+        parent_id: (store as { parent_id?: number | null }).parent_id ?? null,
+      },
+    });
+    const legalDocsRestricted = !canRevealLegal;
+
     return NextResponse.json({
       success: true,
       store: storePayload,
-      documents,
+      documents: legalDocsRestricted ? redactStoreLegalDocuments(documents) : documents,
       operatingHours,
       onboardingPayments,
-      agreementAcceptance,
+      agreementAcceptance: legalDocsRestricted
+        ? redactStoreAgreement(agreementAcceptance)
+        : agreementAcceptance,
       menuMediaFiles,
-      bankAccounts,
+      bankAccounts: legalDocsRestricted
+        ? redactStoreBankAccounts(bankAccounts)
+        : bankAccounts,
       assignedAreaManagers,
       pendingResubmissions,
+      legalDocsRestricted,
     });
   } catch (e) {
     console.error("[GET /api/merchant/stores/[id]/verification-data]", e);

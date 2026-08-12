@@ -37,6 +37,7 @@ import { MerchantStoreOperationsModals } from "@/components/merchant/MerchantSto
 import { useMerchantStoreOperations } from "@/hooks/useMerchantStoreOperations";
 import { useStoreStatusCardModel, type StoreOperationsSnapshot } from "@/hooks/useStoreStatusCardModel";
 import { useInvalidateMerchantStoreQueries } from "@/hooks/queries/useMerchantStoreQueries";
+import { useMerchantDashboardAccess } from "@/hooks/useMerchantDashboardAccess";
 
 function StatCard({
   title,
@@ -79,6 +80,7 @@ function StatCard({
 export function StoreOverviewDashboard({ storeId }: { storeId: string }) {
   const [statsDate, setStatsDate] = useState("");
   const { store: storeFromHook, isLoading: storeLoading } = useStore(storeId);
+  const { canOperateStore } = useMerchantDashboardAccess();
   const invalidateStoreQueries = useInvalidateMerchantStoreQueries();
   const walletQuery = useStoreWalletQuery(storeId);
   const operationsQuery = useStoreOperationsQuery(storeId);
@@ -316,6 +318,7 @@ export function StoreOverviewDashboard({ storeId }: { storeId: string }) {
             manualActivationLock={statusCard.manualActivationLock}
             showScheduledOffStartsCountdown={statusCard.showScheduledOffStartsCountdown}
             scheduledOffStartsInMs={statusCard.scheduledOffStartsInMs}
+            canToggleStore={canOperateStore}
             onStoreToggle={() => storeOps.handleStoreToggle({ isDelisted })}
             onManualLockChange={(enabled) => {
               statusCard.setManualActivationLock(enabled);

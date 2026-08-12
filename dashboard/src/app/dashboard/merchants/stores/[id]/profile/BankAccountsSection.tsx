@@ -12,13 +12,18 @@ export function BankAccountsSection({
   initialAccounts,
   onVerify,
   canStoreVerify,
+  canEditBank = false,
   storeName,
+  readOnlyRestricted = false,
 }: {
   storeId: string;
   initialAccounts: any[];
   onVerify?: () => void;
   canStoreVerify?: boolean;
+  canEditBank?: boolean;
   storeName?: string | null;
+  /** View-only on unassigned store — no mutations / no clear reload. */
+  readOnlyRestricted?: boolean;
 }) {
   const { toast } = useToast();
   const [accounts, setAccounts] = React.useState<any[]>(initialAccounts ?? []);
@@ -58,9 +63,13 @@ export function BankAccountsSection({
   }, [storeId]);
 
   React.useEffect(() => {
+    if (readOnlyRestricted) {
+      setAccounts(initialAccounts ?? []);
+      return;
+    }
     if (initialAccounts?.length) setAccounts(initialAccounts);
-    else reload();
-  }, [initialAccounts, reload]);
+    else void reload();
+  }, [initialAccounts, reload, readOnlyRestricted]);
 
   const resetForm = React.useCallback(() => {
     setMethod("bank");
@@ -84,6 +93,10 @@ export function BankAccountsSection({
   }, [resetForm]);
 
   const openAddSheet = React.useCallback(async () => {
+    if (!canEditBank) {
+      toast("View-only access — adding accounts is disabled");
+      return;
+    }
     resetForm();
     setShowAdd(true);
     setPolicyLoading(true);
@@ -106,7 +119,7 @@ export function BankAccountsSection({
     } finally {
       setPolicyLoading(false);
     }
-  }, [resetForm]);
+  }, [resetForm, canEditBank, toast]);
 
   const activePolicy = method === "bank" ? bankPolicyMode : upiPolicyMode;
   const isElectronic =
@@ -678,13 +691,15 @@ export function BankAccountsSection({
           <Banknote size={16} className="text-blue-600" />
           Bank Details
         </h3>
-        <button
-          type="button"
-          onClick={() => void openAddSheet()}
-          className="text-xs font-semibold text-orange-600 hover:text-orange-700"
-        >
-          + Add Account
-        </button>
+        {canEditBank ? (
+          <button
+            type="button"
+            onClick={() => void openAddSheet()}
+            className="text-xs font-semibold text-orange-600 hover:text-orange-700"
+          >
+            + Add Account
+          </button>
+        ) : null}
       </div>
 
       {sheet}
@@ -787,32 +802,34 @@ export function BankAccountsSection({
                   </div>
                 )}
               </div>
-              <div className="flex gap-2 mt-2 pt-2 border-t border-gray-100">
-                {!bank.is_primary && !bank.is_disabled && (
-                  <button
-                    type="button"
-                    onClick={() => handleSetDefault(bank.id)}
-                    disabled={actionId === bank.id}
-                    className="px-2 py-1 text-[10px] font-semibold text-orange-600 border border-orange-200 rounded hover:bg-orange-50 disabled:opacity-50"
-                  >
-                    Set Default
-                  </button>
-                )}
-                {!(bank.is_primary && !bank.is_disabled) && (
-                  <button
-                    type="button"
-                    onClick={() => handleToggleDisable(bank)}
-                    disabled={actionId === bank.id}
-                    className={`px-2 py-1 text-[10px] font-semibold rounded ${
-                      bank.is_disabled
-                        ? "text-green-600 border border-green-200 hover:bg-green-50"
-                        : "text-red-600 border border-red-200 hover:bg-red-50"
-                    } disabled:opacity-50`}
-                  >
-                    {bank.is_disabled ? "Enable" : "Disable"}
-                  </button>
-                )}
-              </div>
+              {canEditBank ? (
+                <div className="flex gap-2 mt-2 pt-2 border-t border-gray-100">
+                  {!bank.is_primary && !bank.is_disabled && (
+                    <button
+                      type="button"
+                      onClick={() => handleSetDefault(bank.id)}
+                      disabled={actionId === bank.id}
+                      className="px-2 py-1 text-[10px] font-semibold text-orange-600 border border-orange-200 rounded hover:bg-orange-50 disabled:opacity-50"
+                    >
+                      Set Default
+                    </button>
+                  )}
+                  {!(bank.is_primary && !bank.is_disabled) && (
+                    <button
+                      type="button"
+                      onClick={() => handleToggleDisable(bank)}
+                      disabled={actionId === bank.id}
+                      className={`px-2 py-1 text-[10px] font-semibold rounded ${
+                        bank.is_disabled
+                          ? "text-green-600 border border-green-200 hover:bg-green-50"
+                          : "text-red-600 border border-red-200 hover:bg-red-50"
+                      } disabled:opacity-50`}
+                    >
+                      {bank.is_disabled ? "Enable" : "Disable"}
+                    </button>
+                  )}
+                </div>
+              ) : null}
             </div>
           ))}
         </div>

@@ -1,6 +1,10 @@
 /**
  * Insert a row into unified_ticket_activity_audit.
  * Table may not exist (migration 0096); failures are logged and swallowed so APIs don't break.
+ *
+ * Important: with `prepare: false` / dual-bundled postgres.js, plain Objects and JS arrays
+ * passed to `unsafe()` hit `Buffer.byteLength` → ERR_INVALID_ARG_TYPE. JSONB and array
+ * columns must be sent as text + explicit casts.
  */
 
 /** Postgres.js `sql` from `getSql()`, or a minimal `{ unsafe }` wrapper. */
@@ -51,28 +55,27 @@ type AuditPayload = {
 /** Columns added by migration 0462 — dropped automatically on older databases. */
 const OPTIONAL_COLUMNS = new Set(["batch_id", "update_source", "is_manual_override"]);
 
+function jsonText(value: unknown): string | null {
+  if (value == null) return null;
+  try {
+    return JSON.stringify(value, (_, val) => (typeof val === "bigint" ? val.toString() : val));
+  } catch {
+    return null;
+  }
+}
+
+/** Postgres text[] literal — safe for simple field-name tokens. */
+function pgTextArrayLiteral(values: string[]): string {
+  if (values.length === 0) return "{}";
+  return `{${values
+    .map((s) => `"${String(s).replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`)
+    .join(",")}}`;
+}
+
 export async function insertTicketActivityAudit(
   sqlClient: TicketAuditSqlClient,
   payload: AuditPayload
 ): Promise<void> {
-  const normalizeValue = (key: string, value: unknown): unknown => {
-    if (value == null) return value;
-    // changed_fields is a real TEXT[] — hand the array to the driver, don't JSON it.
-    if (key === "changed_fields") {
-      return Array.isArray(value) ? value.map((v) => String(v)) : [String(value)];
-    }
-    /**
-     * old_value / new_value are JSONB columns. Pass the object through as-is.
-     *
-     * This used to JSON.stringify first, which double-encodes: Postgres reports
-     * the parameter as jsonb (inferred from the column), so postgres.js runs its
-     * own JSON serialiser over the string and the row lands as a jsonb *string*
-     * like "\"{\\\"tags\\\":[...]}\"" instead of an object — unqueryable with
-     * `->>` and misleading in the activity feed. Handing over the object lets the
-     * driver encode it exactly once.
-     */
-    return value;
-  };
   const cols = [
     "ticket_id",
     "activity_type",
@@ -116,8 +119,21 @@ export async function insertTicketActivityAudit(
       if (skip.has(key)) continue;
       const v = payload[key as keyof AuditPayload];
       if (v === undefined) continue;
-      placeholders.push(`$${placeholders.length + 1}`);
-      values.push(normalizeValue(key, v));
+
+      const idx = placeholders.length + 1;
+      if (key === "old_value" || key === "new_value") {
+        // Text + ::jsonb avoids Object → Buffer.byteLength (ERR_INVALID_ARG_TYPE)
+        // and avoids double-encoding that happens when the driver infers jsonb.
+        placeholders.push(`$${idx}::jsonb`);
+        values.push(jsonText(v));
+      } else if (key === "changed_fields") {
+        const arr = Array.isArray(v) ? v.map((x) => String(x)) : [String(v)];
+        placeholders.push(`$${idx}::text[]`);
+        values.push(pgTextArrayLiteral(arr));
+      } else {
+        placeholders.push(`$${idx}`);
+        values.push(v);
+      }
       used.push(key);
     }
     return { values, placeholders, used };

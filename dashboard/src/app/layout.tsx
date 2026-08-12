@@ -46,7 +46,7 @@ export default function RootLayout({
           <ReduxProvider>
             <QueryProvider>
               <ToastProvider>
-                <Suspense fallback={null}>
+                <Suspense fallback={<div className="min-h-screen w-full" style={{ backgroundColor: "#E6F6F5" }} aria-hidden />}>
                   <ControlAppShell>{children}</ControlAppShell>
                 </Suspense>
               </ToastProvider>

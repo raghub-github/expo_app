@@ -8,6 +8,7 @@ import { SummaryCards } from "@/components/customers/SummaryCards";
 import { UserCategoryCards } from "@/components/customers/UserCategoryCards";
 import { HorizontalFilters } from "@/components/customers/HorizontalFilters";
 import { DashboardCenterSpinner } from "@/components/ui/DashboardPageLoader";
+import { useDashboardWorkspaceOverlayVisible } from "@/hooks/useDashboardWorkspaceOverlay";
 import { useCustomersQuery } from "@/hooks/queries/useCustomersQuery";
 import { useCustomerDashboardStats, DashboardStatsFilters } from "@/hooks/queries/useCustomerDashboardStats";
 import { usePermissions } from "@/hooks/queries/usePermissionsQuery";
@@ -18,7 +19,7 @@ const AnalyticsCharts = dynamic(
   () => import("@/components/customers/AnalyticsCharts").then((m) => m.AnalyticsCharts),
   {
     ssr: false,
-    loading: () => <DashboardCenterSpinner className="min-h-[260px]" />,
+    loading: () => null,
   }
 );
 
@@ -26,7 +27,7 @@ const ActivityGraphs = dynamic(
   () => import("@/components/customers/ActivityGraphs").then((m) => m.ActivityGraphs),
   {
     ssr: false,
-    loading: () => <DashboardCenterSpinner className="min-h-[260px]" />,
+    loading: () => null,
   }
 );
 
@@ -44,6 +45,7 @@ function useDebouncedValue<T>(value: T, delay: number): T {
 function CustomersPageContent() {
   const searchParams = useAppSearchParams();
   const { isSuperAdmin, loading: permissionsLoading } = usePermissions();
+  const workspaceOverlayVisible = useDashboardWorkspaceOverlayVisible();
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(1);
   const [dashboardFilters, setDashboardFilters] = useState<DashboardStatsFilters>({});
@@ -108,8 +110,10 @@ function CustomersPageContent() {
     setPage(newPage);
   };
 
-  // Show loading until mounted + permissions settle (avoids hydration mismatch)
+  // Show loading until mounted + permissions settle (avoids hydration mismatch).
+  // Skip inline spinner when the layout nav overlay is already visible.
   if (!hasMounted || permissionsLoading) {
+    if (workspaceOverlayVisible) return null;
     return <DashboardCenterSpinner className="min-h-[320px]" />;
   }
 
@@ -173,18 +177,10 @@ function CustomersPageContent() {
           </div>
 
           {/* Analytics Charts - Always show */}
-          {stats ? (
-            <AnalyticsCharts stats={stats} loading={statsLoading} />
-          ) : statsLoading ? (
-            <DashboardCenterSpinner className="min-h-[320px]" />
-          ) : null}
+          {stats ? <AnalyticsCharts stats={stats} loading={statsLoading} /> : null}
 
           {/* Activity Graphs - Below all cards */}
-          {stats ? (
-            <ActivityGraphs stats={stats} loading={statsLoading} />
-          ) : statsLoading ? (
-            <DashboardCenterSpinner className="min-h-[280px]" />
-          ) : null}
+          {stats ? <ActivityGraphs stats={stats} loading={statsLoading} /> : null}
         </>
       )}
 

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useAuth } from "@/context/AuthContext";
 import { useSelectedStore } from "@/context/SelectedStoreContext";
+import { isAppForeground } from "@/lib/appForeground";
 import {
   fetchNearbyDispatchRiders,
   type NearbyDispatchRiderSummary,
@@ -48,7 +49,10 @@ export function useNearbyDispatchRiders(
       return;
     }
     void fetchSummary();
-    const timer = setInterval(() => void fetchSummary({ background: true }), POLL_MS);
+    const timer = setInterval(() => {
+      if (!isAppForeground()) return;
+      void fetchSummary({ background: true });
+    }, POLL_MS);
     return () => clearInterval(timer);
   }, [enabled, ordersFoodId, storeId, token, fetchSummary]);
 

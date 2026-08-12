@@ -5,9 +5,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { getMerchantAccess } from "@/lib/permissions/merchant-access";
+import { resolveMerchantListAreaManagerId } from "@/lib/merchants/resolve-merchant-list-scope";
 import { logActionByAuth, getIpAddress, getUserAgent } from "@/lib/audit/logger";
 import { getSystemUserByEmail } from "@/lib/auth/user-mapping";
-import { getAreaManagerByUserId } from "@/lib/area-manager/auth";
 import { getMerchantStoreById } from "@/lib/db/operations/merchant-stores";
 import { getSql } from "@/lib/db/client";
 import {
@@ -46,14 +46,10 @@ export async function POST(
       return NextResponse.json({ success: false, error: "Menu update permission required" }, { status: 403 });
     }
 
-    let areaManagerId: number | null = null;
-    if (!access.isSuperAdmin) {
-      const systemUser = await getSystemUserByEmail(user.email);
-      if (systemUser) {
-        const am = await getAreaManagerByUserId(systemUser.id);
-        if (am) areaManagerId = am.id;
-      }
-    }
+    const areaManagerId = await resolveMerchantListAreaManagerId({
+      supabaseAuthId: user.id,
+      email: user.email,
+    });
     const store = await getMerchantStoreById(storeId, areaManagerId);
     if (!store) {
       return NextResponse.json({ success: false, error: "Store not found" }, { status: 404 });

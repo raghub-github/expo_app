@@ -1,7 +1,6 @@
 "use client";
 
 import React, { useState, useEffect, useCallback, useMemo } from "react";
-import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useStore } from "@/hooks/useStore";
 import {
@@ -12,14 +11,10 @@ import {
 } from "@/hooks/queries/useMerchantStoreQueries";
 import { StoreDashboardSkeleton } from "./StoreDashboardSkeleton";
 import {
-  Truck,
   TrendingUp,
   TrendingDown,
   ArrowRight,
-  Loader2,
-  Wallet,
   BarChart3,
-  Store,
   Star,
   Info,
   Table2,
@@ -37,6 +32,16 @@ import { useStoreStatusCardModel, type StoreOperationsSnapshot } from "@/hooks/u
 import { MerchantMarketInsightsCard } from "@/components/merchant/MerchantMarketInsightsCard";
 import { LivePreviewInsightsPanel } from "@/components/merchant/LivePreviewInsightsPanel";
 import { BusinessReportsPanel } from "@/components/merchant/BusinessReportsPanel";
+import { useMerchantDashboardAccess } from "@/hooks/useMerchantDashboardAccess";
+import { DashboardPartnerDeliveryCard } from "@/components/merchant/DashboardPartnerDeliveryCard";
+import { DashboardPartnerStoreOverviewCard } from "@/components/merchant/DashboardPartnerStoreOverviewCard";
+import {
+  PartnerDashboardDeliveryCardSkeleton,
+  PartnerDashboardStoreOverviewSkeleton,
+  PartnerDashboardStoreStatusSkeleton,
+} from "@/components/merchant/PartnerDashboardCardSkeletons";
+import { PARTNER_DASHBOARD_TOP_CARD_SECTION_CLASS } from "@/components/merchant/partner-dashboard-card-styles";
+import { useLocalStoreStatusEngineStore } from "@/lib/localStoreStatusEngineStore";
 
 function MiniSparkline({ values, className = "" }: { values: readonly number[]; className?: string }) {
   const gid = React.useId().replace(/:/g, "");
@@ -102,6 +107,8 @@ export function StoreFullDashboard({ storeId }: { storeId: string }) {
   const router = useRouter();
   const { toast } = useToast();
   const { store: storeFromHook, isLoading: storeLoading } = useStore(storeId);
+  const { canOperateStore, isViewOnly } = useMerchantDashboardAccess();
+  const canToggleDelivery = canOperateStore && !isViewOnly;
   const [store, setStore] = useState<{ store_id: string; name: string; approval_status?: string; approval_reason?: string } | null>(null);
   const [statsDate, setStatsDate] = useState("");
   const invalidateStoreQueries = useInvalidateMerchantStoreQueries();
@@ -178,7 +185,31 @@ export function StoreFullDashboard({ storeId }: { storeId: string }) {
     onCountdownExpired: () => invalidateStoreQueries(storeId),
   });
 
+  const opsReady = Boolean(
+    operationsQuery.data &&
+      (operationsQuery.data as { operational_status?: unknown }).operational_status !== undefined
+  );
+  const showTopCardSkeletons = !opsReady;
 
+  // Instant local engine hydrate + sync when network ops arrive (partnersite pattern).
+  useEffect(() => {
+    if (!storeId) return;
+    useLocalStoreStatusEngineStore.getState().hydrate(storeId);
+  }, [storeId]);
+
+  useEffect(() => {
+    if (!opsReady || !operationsQuery.data) return;
+    const d = operationsQuery.data as {
+      operational_status?: string;
+      manual_close_until?: string | null;
+      close_reason?: string | null;
+    };
+    useLocalStoreStatusEngineStore.getState().syncFromStoreOperations({
+      operationalOpen: String(d.operational_status || "").toUpperCase() === "OPEN",
+      manualCloseUntil: d.manual_close_until ?? null,
+      manualCloseReason: d.close_reason ?? null,
+    });
+  }, [opsReady, operationsQuery.data]);
 
   // Sync wallet from shared React Query cache
   useEffect(() => {
@@ -254,6 +285,10 @@ export function StoreFullDashboard({ storeId }: { storeId: string }) {
   }, [storeId, mxDeliveryEnabled]);
 
   const handleMXDeliveryToggle = useCallback(async () => {
+    if (!canToggleDelivery) {
+      toast("View-only access — delivery mode cannot be changed");
+      return;
+    }
     if (!mxDeliveryEnabled) {
       toast("Self delivery cannot be turned on from the dashboard. Contact support if you need it enabled.");
       return;
@@ -276,7 +311,7 @@ export function StoreFullDashboard({ storeId }: { storeId: string }) {
       setMxDeliveryEnabled(true);
       toast("Failed to update delivery mode");
     }
-  }, [storeId, mxDeliveryEnabled, invalidateStoreQueries, toast]);
+  }, [storeId, mxDeliveryEnabled, canToggleDelivery, invalidateStoreQueries, toast]);
 
   const aovDisplay = useMemo(() => {
     if (deliveredToday > 0 && revenueToday > 0) {
@@ -352,59 +387,12 @@ export function StoreFullDashboard({ storeId }: { storeId: string }) {
       <div className="flex flex-1 flex-col min-h-0 w-full overflow-hidden bg-[#f8fafc]">
         <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden overscroll-y-contain px-4 sm:px-6 lg:px-8 pt-5 pb-4">
           <div className="max-w-[1600px] mx-auto space-y-5">
-            {/* Wallet | Store | Delivery — partnersite-style */}
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 items-stretch pb-1">
-              <section className="min-w-0 flex flex-col h-full">
-                <div className="flex flex-1 flex-col min-h-[240px] sm:min-h-[252px] rounded-xl border-2 border-teal-500 bg-white/40 p-3 sm:p-3.5">
-                  <div className="flex items-start gap-2 mb-3 shrink-0">
-                    <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-emerald-500/[0.08] text-emerald-600 ring-1 ring-emerald-500/15">
-                      <Wallet className="h-4 w-4" strokeWidth={2} />
-                    </span>
-                    <div className="min-w-0 pt-0.5">
-                      <h2 className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">Wallet &amp; earnings</h2>
-                      <p className="text-[11px] text-slate-400 mt-0.5 leading-snug">Balances at a glance</p>
-                    </div>
-                  </div>
-                  <div className="flex-1 flex flex-col justify-center min-h-0">
-                    {walletLoading ? (
-                      <div className="grid grid-cols-2 gap-2.5">
-                        {[1, 2, 3, 4].map((i) => (
-                          <div key={i} className="h-9 rounded-md bg-slate-200/50 animate-pulse" />
-                        ))}
-                      </div>
-                    ) : (
-                      <div className="grid grid-cols-2 gap-x-4 gap-y-3">
-                        <div className="min-w-0">
-                          <p className="text-[9px] font-medium uppercase tracking-wide text-slate-500">Available</p>
-                          <p className="mt-0.5 text-base sm:text-lg font-semibold tabular-nums tracking-tight text-emerald-700">
-                            ₹{walletAvailableBalance != null ? Number(walletAvailableBalance).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "0.00"}
-                          </p>
-                        </div>
-                        <div className="min-w-0">
-                          <p className="text-[9px] font-medium uppercase tracking-wide text-slate-500">Today</p>
-                          <p className="mt-0.5 text-base sm:text-lg font-semibold tabular-nums tracking-tight text-orange-600">
-                            ₹{Number(walletTodayEarning).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                          </p>
-                        </div>
-                        <div className="min-w-0">
-                          <p className="text-[9px] font-medium uppercase tracking-wide text-slate-500">Yesterday</p>
-                          <p className="mt-0.5 text-sm font-semibold tabular-nums text-slate-800">
-                            ₹{Number(walletYesterdayEarning).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                          </p>
-                        </div>
-                        <div className="min-w-0">
-                          <p className="text-[9px] font-medium uppercase tracking-wide text-slate-500">Pending</p>
-                          <p className="mt-0.5 text-sm font-semibold tabular-nums text-violet-600">
-                            ₹{Number(walletPendingBalance).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                          </p>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                </div>
-              </section>
-
-              <section className="min-w-0 flex flex-col h-full">
+            {/* Store status | Delivery | Store overview — exact partnersite order & layout */}
+            <div className="grid grid-cols-1 xl:grid-cols-12 gap-3 items-stretch pb-1">
+              <section className={PARTNER_DASHBOARD_TOP_CARD_SECTION_CLASS}>
+                {showTopCardSkeletons ? (
+                  <PartnerDashboardStoreStatusSkeleton />
+                ) : (
                 <MerchantStoreStatusCard
                   isStoreOpen={statusCard.isStoreOpen}
                   restrictionType={statusCard.restrictionType}
@@ -432,6 +420,7 @@ export function StoreFullDashboard({ storeId }: { storeId: string }) {
                   manualActivationLock={statusCard.manualActivationLock}
                   showScheduledOffStartsCountdown={statusCard.showScheduledOffStartsCountdown}
                   scheduledOffStartsInMs={statusCard.scheduledOffStartsInMs}
+                  canToggleStore={canOperateStore}
                   onStoreToggle={() => handleStoreToggle({ isDelisted })}
                   onManualLockChange={(enabled) => {
                     statusCard.setManualActivationLock(enabled);
@@ -440,95 +429,71 @@ export function StoreFullDashboard({ storeId }: { storeId: string }) {
                   storeInternalId={storeId}
                   onOperationsRefresh={() => storeOps.refreshOperations()}
                 />
+                )}
               </section>
 
-              <section className="min-w-0 flex flex-col h-full">
-                <div className="flex flex-1 flex-col min-h-[240px] sm:min-h-[252px] rounded-xl border-2 border-teal-500 bg-white/40 p-3 sm:p-3.5">
-                  <div className="flex items-start gap-2 mb-2 shrink-0">
-                    <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-orange-500/[0.08] text-orange-600 ring-1 ring-orange-500/15">
-                      <Truck className="h-4 w-4" strokeWidth={2} />
-                    </span>
-                    <div className="min-w-0 pt-0.5">
-                      <h2 className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">Delivery mode</h2>
-                      <p className="text-[11px] text-slate-400 mt-0.5">{mxDeliveryEnabled ? "Your riders" : "Platform riders"}</p>
-                    </div>
-                  </div>
-                  <div className="flex flex-wrap items-center gap-2 shrink-0">
-                    <span className={`text-xs font-semibold transition-colors ${!mxDeliveryEnabled ? "text-violet-700" : "text-slate-400"}`}>GatiMitra</span>
-                    <button
-                      type="button"
-                      disabled={!mxDeliveryEnabled}
-                      title={
-                        mxDeliveryEnabled
-                          ? "Switch to GatiMitra platform riders"
-                          : "Self delivery cannot be turned on here. Contact support."
-                      }
-                      onClick={() => void handleMXDeliveryToggle()}
-                      className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-orange-400 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-60 ${mxDeliveryEnabled ? "bg-orange-500" : "bg-slate-300"}`}
-                      aria-label={mxDeliveryEnabled ? "Switch to GatiMitra delivery" : "Self delivery cannot be enabled from here"}
-                    >
-                      <span className={`inline-block h-3.5 w-3.5 rounded-full bg-white shadow-sm transition-transform ${mxDeliveryEnabled ? "translate-x-[18px]" : "translate-x-[3px]"}`} />
-                    </button>
-                    <span className={`text-xs font-semibold transition-colors ${mxDeliveryEnabled ? "text-orange-600" : "text-slate-400"}`}>Self</span>
-                  </div>
-                  <div className="mt-3 flex min-h-[120px] flex-1 flex-col border-t border-slate-200/80 pt-2.5">
-                    {mxDeliveryEnabled ? (
-                      <>
-                        {selfDeliveryRidersLoading ? (
-                          <p className="text-[11px] text-slate-500">Loading riders…</p>
-                        ) : selfDeliveryRiders.length === 0 ? (
-                          <div className="flex flex-1 flex-col gap-2 justify-center">
-                            <p className="text-xs text-amber-800 leading-snug">No self-delivery riders yet. Add riders in store settings.</p>
-                            <Link
-                              href={`/dashboard/merchants/stores/${storeId}/store-settings`}
-                              className="text-xs font-semibold text-orange-600 hover:text-orange-700"
-                            >
-                              Add riders in Settings →
-                            </Link>
-                          </div>
-                        ) : (
-                          <div className="flex flex-1 min-h-0 flex-col gap-2">
-                            <ul className="space-y-1.5">
-                              {selfDeliveryRiders.slice(0, 2).map((r) => (
-                                <li
-                                  key={String(r.id)}
-                                  className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-xs text-slate-800"
-                                >
-                                  <span className="font-mono text-[10px] font-medium text-slate-400 tabular-nums">#{String(r.id)}</span>
-                                  <span className="font-semibold text-slate-900">{r.rider_name}</span>
-                                  <span className="text-slate-500 tabular-nums">{r.rider_mobile}</span>
-                                </li>
-                              ))}
-                            </ul>
-                            {selfDeliveryRiders.length > 2 && (
-                              <p className="text-[11px] text-slate-500">+{selfDeliveryRiders.length - 2} more</p>
-                            )}
-                            <Link
-                              href={`/dashboard/merchants/stores/${storeId}/store-settings`}
-                              className="inline-flex items-center text-xs font-semibold text-orange-600 hover:text-orange-700 mt-auto"
-                            >
-                              Manage all riders →
-                            </Link>
-                          </div>
-                        )}
-                      </>
-                    ) : (
-                      <div className="flex-1 min-h-[1px]" aria-hidden />
-                    )}
-                  </div>
-                </div>
+              <section className={PARTNER_DASHBOARD_TOP_CARD_SECTION_CLASS}>
+                {showTopCardSkeletons && !statsQuery.data ? (
+                  <PartnerDashboardDeliveryCardSkeleton />
+                ) : (
+                <DashboardPartnerDeliveryCard
+                  mxDeliveryEnabled={mxDeliveryEnabled}
+                  onToggle={() => void handleMXDeliveryToggle()}
+                  toggleLocked={!canToggleDelivery}
+                  showViewRiders={mxDeliveryEnabled && canToggleDelivery}
+                  onViewRiders={() => {
+                    router.push(`/dashboard/merchants/stores/${storeId}/store-settings`);
+                  }}
+                  stats={{
+                    activeOrders:
+                      Number((statsQuery.data as { pendingCount?: number } | undefined)?.pendingCount ?? 0) +
+                      Number((statsQuery.data as { preparingCount?: number } | undefined)?.preparingCount ?? 0) +
+                      Number((statsQuery.data as { outForDeliveryCount?: number } | undefined)?.outForDeliveryCount ?? 0),
+                    avgPreparationTimeMinutes: Number(
+                      (statsQuery.data as { avgPreparationTimeMinutes?: number } | undefined)
+                        ?.avgPreparationTimeMinutes ?? 0
+                    ),
+                    completionRatePercent: Number(
+                      (statsQuery.data as { acceptanceRatePercent?: number } | undefined)
+                        ?.acceptanceRatePercent ?? 0
+                    ),
+                    deliveredTodayCount: deliveredToday,
+                    cancelledTodayCount: Number(
+                      (statsQuery.data as { cancelledTodayCount?: number } | undefined)
+                        ?.cancelledTodayCount ?? 0
+                    ),
+                    rtoTodayCount: 0,
+                  }}
+                />
+                )}
+              </section>
+
+              <section className={PARTNER_DASHBOARD_TOP_CARD_SECTION_CLASS}>
+                {showTopCardSkeletons && walletLoading && walletAvailableBalance == null ? (
+                  <PartnerDashboardStoreOverviewSkeleton />
+                ) : (
+                <DashboardPartnerStoreOverviewCard
+                  totalProducts={Number(
+                    (statsQuery.data as { totalProducts?: number } | undefined)?.totalProducts ?? 0
+                  )}
+                  outOfStock={Number(
+                    (statsQuery.data as { outOfStockCount?: number } | undefined)?.outOfStockCount ?? 0
+                  )}
+                  pendingOrders={Number(
+                    (statsQuery.data as { pendingCount?: number } | undefined)?.pendingCount ?? 0
+                  )}
+                  walletAvailable={walletAvailableBalance}
+                  walletToday={walletTodayEarning}
+                  walletYesterday={walletYesterdayEarning}
+                  walletPending={walletPendingBalance}
+                  walletLoading={walletLoading}
+                />
+                )}
               </section>
             </div>
 
-            {/* Partner site copy — directly under the three summary cards */}
-            <div className="mt-6 sm:mt-8 max-w-3xl">
-              <p className="text-[11px] sm:text-sm text-slate-600 leading-relaxed">
-                See how your store is performing today and how it stacks up against recent periods—so you can spot trends early and act quickly.
-              </p>
-            </div>
-
-            {/* Insights — Live preview / Business reports (partnersite) */}
-            <div className="mt-8 pt-6 border-t border-slate-200/90">
+            {/* Insights — Live preview / Business reports (partnersite order) */}
+            <div className="mt-8 sm:mt-10 pt-6 sm:pt-8 border-t border-slate-200/90">
               <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between lg:gap-6">
                 <div className="flex flex-col gap-3 min-w-0">
                   <div className="inline-flex rounded-lg border border-slate-200/90 p-0.5 bg-slate-100/40 w-fit" role="tablist" aria-label="Dashboard view">
@@ -555,6 +520,9 @@ export function StoreFullDashboard({ storeId }: { storeId: string }) {
                       Business reports
                     </button>
                   </div>
+                  <p className="text-[11px] sm:text-xs text-slate-600 max-w-2xl leading-relaxed">
+                    See how your store is performing today and how it stacks up against recent periods—so you can spot trends early and act quickly.
+                  </p>
                 </div>
                 <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-end shrink-0 min-w-0">
                   <div
@@ -609,8 +577,6 @@ export function StoreFullDashboard({ storeId }: { storeId: string }) {
                   <LivePreviewInsightsPanel
                     storeInternalId={Number(storeId)}
                     periodPreset="today"
-                    userInsightsHref={`/dashboard/merchants/stores/${storeId}/user-insights`}
-                    paymentsHref={`/dashboard/merchants/stores/${storeId}/payments`}
                     marketStoreId={Number(storeId)}
                   />
                 </div>

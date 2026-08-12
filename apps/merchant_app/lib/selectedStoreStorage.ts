@@ -111,3 +111,24 @@ export function shortLocalityFromAddress(fullAddress: string | null | undefined)
   }
   return parts[0] ?? "";
 }
+
+/** City for store header — `city` column only (never landmark or parsed address). */
+export function resolveStoreLocationLabel(
+  _fullAddress: string | null | undefined,
+  outlet?: { landmark?: string | null; city?: string | null } | null,
+  storeCity?: string | null
+): string {
+  const city = (storeCity ?? outlet?.city)?.trim();
+  return city ?? "";
+}
+
+/** Header subline: `GMMC1026 | Panipat` (store id + location when available). */
+export function formatStoreHeaderSubtitle(
+  storeId: string | null | undefined,
+  locationLabel: string | null | undefined
+): string {
+  const id = storeId?.trim() ?? "";
+  const location = locationLabel?.trim() ?? "";
+  if (id && location) return `${id} | ${location}`;
+  return id || location;
+}

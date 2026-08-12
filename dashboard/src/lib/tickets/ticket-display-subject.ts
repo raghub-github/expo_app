@@ -13,6 +13,16 @@ function normalizeOrderIdToken(raw: string): string {
   return raw.trim().replace(/^#/, "").toUpperCase();
 }
 
+/** Remove slash separators from ticket titles/subjects shown in dashboard UI. */
+export function sanitizeTicketDisplayText(text: string): string {
+  return String(text ?? "")
+    .replace(/\s*\/\s*/g, " · ")
+    .replace(/\s·\s·+/g, " · ")
+    .replace(/^[-–—:·\s/]+/, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 function fallbackFormattedOrderId(ticket: TicketSubjectInput): string | null {
   if (ticket.orderId == null || !Number.isFinite(ticket.orderId)) return null;
   const service = String(ticket.orderServiceType ?? ticket.serviceType ?? "food").toLowerCase();
@@ -36,31 +46,22 @@ export function resolveFormattedOrderId(ticket: TicketSubjectInput): string | nu
   return fallbackFormattedOrderId(ticket);
 }
 
-function stripOrderBoilerplate(text: string): string {
-  return text
-    .replace(/^Order related issues\s*[-–—:]\s*/i, "")
-    .replace(/^Order\s+#?[A-Za-z0-9]+\s*[-–—:]\s*/i, "")
-    .replace(/\bOrder\s+#?[A-Za-z0-9]+\b/gi, "")
-    .trim();
-}
-
+/**
+ * List / grid subject line.
+ * When the ticket is linked to an order, prefix `Order #GMF… — ` unless the
+ * subject already contains that order id (avoids "Order #X — Order #X — …").
+ */
 export function formatTicketDisplaySubject(ticket: TicketSubjectInput): string {
-  const subject = (ticket.subject ?? "").trim() || "No subject";
-  const formattedId = resolveFormattedOrderId(ticket);
-  if (!formattedId) return subject;
-
-  const escaped = formattedId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const standard = subject.match(
-    new RegExp(`^Order\\s+#${escaped}\\s*[—–-]\\s*(.+)$`, "i"),
+  const subjectRaw = (ticket.subject ?? "").trim() || "No subject";
+  const subject = sanitizeTicketDisplayText(
+    subjectRaw.length > 0 ? `${subjectRaw.charAt(0).toUpperCase()}${subjectRaw.slice(1)}` : subjectRaw
   );
-  if (standard?.[1]?.trim()) {
-    return `Order #${formattedId} — ${standard[1].trim()}`;
-  }
 
-  let tail = stripOrderBoilerplate(subject);
-  tail = tail.replace(new RegExp(`\\b#?${escaped}\\b`, "gi"), "").trim();
-  tail = tail.replace(/^[-–—:\s]+/, "").trim();
-  if (!tail) tail = "Order issue";
+  const orderId = resolveFormattedOrderId(ticket);
+  if (!orderId) return subject;
 
-  return `Order #${formattedId} — ${tail}`;
+  // Already present in subject (e.g. "Order #GMF100053 — Where is my refund?")
+  if (subject.toUpperCase().includes(orderId)) return subject;
+
+  return sanitizeTicketDisplayText(`Order #${orderId} — ${subject}`);
 }

@@ -8,8 +8,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine";
+import { resolveMerchantListAreaManagerId } from "@/lib/merchants/resolve-merchant-list-scope";
 import { getSystemUserByEmail } from "@/lib/auth/user-mapping";
-import { getAreaManagerByUserId } from "@/lib/area-manager/auth";
 import { listMerchantStores } from "@/lib/db/operations/merchant-stores";
 
 export const runtime = "nodejs";
@@ -45,11 +45,10 @@ export async function GET(request: NextRequest) {
     }
 
     const systemUser = await getSystemUserByEmail(user.email);
-    let areaManagerId: number | null = null;
-    if (systemUser && !(await isSuperAdmin(user.id, user.email))) {
-      const am = await getAreaManagerByUserId(systemUser.id);
-      if (am) areaManagerId = am.id;
-    }
+    const areaManagerId = await resolveMerchantListAreaManagerId({
+      supabaseAuthId: user.id,
+      email: user.email,
+    });
 
     const searchParams = request.nextUrl.searchParams;
     const status = searchParams.get("status") as

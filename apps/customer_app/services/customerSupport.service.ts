@@ -72,6 +72,8 @@ export type RecentOrder = {
   cancelled_at?: string | null;
   merchant_store_id: number | null;
   merchant_store_name: string | null;
+  customer_name?: string | null;
+  item_preview?: string | null;
 };
 
 export type TicketListItem = {

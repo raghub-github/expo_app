@@ -2,15 +2,15 @@
  * Plays configured alert chime when a new-order push arrives (foreground / background JS alive).
  * When the app is fully killed, the OS plays the push notification's default sound.
  *
- * Uses a single foreground subscription + short-window dedupe so dual Expo/FCM
- * delivery (or double listeners) cannot chime the same event twice.
+ * Uses the centralized push dispatcher + short-window dedupe so dual Expo/FCM
+ * delivery cannot chime the same event twice.
  */
 import { useEffect, useRef } from "react";
 import Constants from "expo-constants";
-import { subscribeToForegroundNotifications } from "@gatimitra/expo-push-kit";
 import { useSelectedStore } from "@/context/SelectedStoreContext";
 import { useOrderAcceptanceSettings } from "@/hooks/useOrderAcceptanceSettings";
 import { readDeviceOrderAlertsAsync } from "@/lib/deviceOrderAlerts";
+import { registerMerchantForegroundPushHandler } from "@/lib/merchantPushDispatch";
 import { playIncomingOrderAlert } from "@/lib/playOrderAlertSound";
 
 const DEDUPE_WINDOW_MS = 8000;
@@ -58,17 +58,18 @@ export default function OrderAlertPushHandler() {
   const { settings: acceptanceSettings } = useOrderAcceptanceSettings();
   const settingsRef = useRef(acceptanceSettings);
   settingsRef.current = acceptanceSettings;
+  const storeIdRef = useRef(storeId);
+  storeIdRef.current = storeId;
 
   useEffect(() => {
-    // Expo Go: never touch expo-notifications (SDK 53+ logs a red ERROR on import).
     if (Constants.appOwnership === "expo") return;
-    const sub = subscribeToForegroundNotifications(({ data }) => {
-      if (!isNewOrderPush(data) || !storeId) return;
+    return registerMerchantForegroundPushHandler(({ data }) => {
+      const sid = storeIdRef.current;
+      if (!isNewOrderPush(data) || !sid) return;
       if (!shouldChimeOnce(chimeDedupeKey(data))) return;
-      void playNewOrderChime(storeId, settingsRef.current);
+      void playNewOrderChime(sid, settingsRef.current);
     });
-    return () => sub.remove();
-  }, [storeId]);
+  }, []);
 
   return null;
 }

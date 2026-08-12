@@ -22,6 +22,7 @@ export function CustomersGlobalSearchView() {
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(1);
   const prevSearchParamRef = useRef<string | null>(null);
+  const searchParamsKey = searchParams.toString();
 
   useEffect(() => {
     const p = pathname.replace(/\/$/, "") || "";
@@ -30,10 +31,9 @@ export function CustomersGlobalSearchView() {
       p === "/dashboard/customers/parcel" ||
       p === "/dashboard/customers/person-ride"
     ) {
-      const q = searchParams.toString();
-      router.replace(`/dashboard/customers/all${q ? `?${q}` : ""}`);
+      router.replace(`/dashboard/customers/all${searchParamsKey ? `?${searchParamsKey}` : ""}`);
     }
-  }, [pathname, router, searchParams]);
+  }, [pathname, router, searchParamsKey]);
 
   useEffect(() => {
     const searchParam = searchParams.get("search");
@@ -42,7 +42,7 @@ export function CustomersGlobalSearchView() {
       setSearch(searchParam || "");
       setPage(1);
     }
-  }, [searchParams]);
+  }, [searchParamsKey, searchParams]);
 
   const trimmed = search.trim();
   const shouldFetch = trimmed.length > 0;
@@ -100,16 +100,14 @@ export function CustomersGlobalSearchView() {
     const targetPath = `/dashboard/customers/${targetKey}`;
 
     // Already on the correct customer detail page — no redirect needed.
-    // This prevents an infinite search → redirect loop when searching from the detail page.
-    if (
-      typeof window !== "undefined" &&
-      window.location.pathname === targetPath
-    ) {
+    // Prefer App Router pathname over window.location to stay consistent with RSC.
+    const cleanPath = pathname.split("?")[0].split("#")[0];
+    if (cleanPath === targetPath || cleanPath === `/dashboard/customers/${match.customerId}`) {
       return;
     }
 
     router.replace(`${targetPath}?search=${q}`);
-  }, [searchResultsFresh, customersSorted, router, structured, trimmed]);
+  }, [searchResultsFresh, customersSorted, router, structured, trimmed, pathname]);
 
   const handlePageChange = (newPage: number) => {
     setPage(newPage);

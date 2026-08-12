@@ -30,7 +30,13 @@ export function PlayUpdateAvailableSheet({
   const insets = useSafeAreaInsets();
 
   return (
-    <Modal visible={visible} transparent animationType="slide" onRequestClose={onDismiss}>
+    <Modal
+      visible={visible}
+      transparent
+      animationType="slide"
+      statusBarTranslucent
+      onRequestClose={onDismiss}
+    >
       <View style={styles.overlay}>
         <Pressable style={styles.backdrop} onPress={onDismiss} accessibilityLabel="Dismiss" />
         <View style={[styles.sheet, { paddingBottom: Math.max(insets.bottom, 16) }]}>

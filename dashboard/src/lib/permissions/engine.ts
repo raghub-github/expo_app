@@ -233,6 +233,25 @@ async function getUserPermissionsFromDb(systemUserId: number): Promise<Permissio
 const permissionsCache = new Map<string, { data: UserPermissions | null; timestamp: number }>();
 const PERMISSIONS_CACHE_TTL = 2000; // 2 seconds cache per request
 
+/** Clear in-memory permissions cache (call after superadmin access grants change). */
+export function clearPermissionsCache(opts?: { supabaseAuthId?: string | null; email?: string | null }) {
+  const authId = opts?.supabaseAuthId?.trim();
+  const email = opts?.email?.trim() ?? "";
+  if (!authId && !email) {
+    permissionsCache.clear();
+    return;
+  }
+  for (const key of permissionsCache.keys()) {
+    if (authId && key.includes(`perms:${authId}:`)) {
+      permissionsCache.delete(key);
+      continue;
+    }
+    if (email && key.endsWith(`:${email}`)) {
+      permissionsCache.delete(key);
+    }
+  }
+}
+
 export async function getUserPermissions(
   supabaseAuthId: string,
   email?: string | null

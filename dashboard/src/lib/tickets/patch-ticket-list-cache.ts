@@ -176,10 +176,10 @@ export function patchTicketFromPostgresRow(
 export function invalidateTicketListCaches(queryClient: QueryClient): void {
   void queryClient.invalidateQueries({
     predicate: (q) => q.queryKey[0] === "tickets" && q.queryKey[1] === "list",
-    refetchType: "all",
+    refetchType: "active",
   });
   void queryClient.invalidateQueries({
     queryKey: queryKeys.tickets.helpdeskDashboard(),
-    refetchType: "all",
+    refetchType: "active",
   });
 }

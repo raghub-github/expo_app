@@ -17,47 +17,54 @@ import {
 import { AppText as Text } from "@/components/AppText";
 import { LinearGradient } from "expo-linear-gradient";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { useRouter } from "expo-router";
+import { useRouter, usePathname } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import type { BottomTabBarProps } from "@react-navigation/bottom-tabs";
 import { CommonActions } from "@react-navigation/native";
 import {
   GatiMitraMerchant,
   FONT_LORA,
-  TAB_BAR_HEIGHT,
   TAB_BAR_FLOATING_GAP,
 } from "@/constants/theme";
 import { useActiveTab } from "@/context/ActiveTabContext";
 import { useProfileNav } from "@/context/ProfileNavContext";
+import { hubTabFromPath, isHubPath, merchantPush } from "@/lib/merchantNavigation";
+import { OffersPercentBadgeIcon } from "@/components/OffersPercentBadgeIcon";
 
 const MAIN_TAB_ORDER = ["index", "orders", "menu", "profile"] as const;
-type MainTabName = (typeof MAIN_TAB_ORDER)[number];
 
-const ICON_SIZE = 22;
-const LABEL_FONT_SIZE = 11;
+const DOCK_CLIP_PADDING = 6;
+const CAPSULE_RADIUS = 26;
+/** Unified dock height — main capsule + Flow/Home satellite (reference partner app). */
+const DOCK_BAR_HEIGHT = 52;
+const SATELLITE_WIDTH = 52;
+const ICON_SIZE = 20;
+const LABEL_FONT_SIZE = 10;
 const ICON_LABEL_GAP = 2;
+/** Rounded pill behind active tab (icon + label together). */
+const TAB_PILL_RADIUS = 999;
 /** Only guards true double-fires on dock switches; main tab taps must never feel delayed. */
 const DOCK_PRESS_DEBOUNCE_MS = 220;
 const DOCK_SWITCH_OVERLAY_MS = 380;
 const TAB_HIT_SLOP = { top: 8, bottom: 8, left: 6, right: 6 };
 
-/** True when the profile stack is showing the home screen (index), not a pushed child route. */
+/** True when the profile stack root (index) is showing — not any pushed child route. */
 function isProfileStackAtRoot(tabState: BottomTabBarProps["state"]): boolean {
   const profileRoute = tabState.routes.find((r) => r.name === "profile");
   const stack = profileRoute?.state;
   if (!stack || typeof stack.index !== "number") return true;
-  if (stack.index > 0) return false;
-  const first = stack.routes[0];
-  const name = first?.name ?? "index";
+  const active = stack.routes[stack.index];
+  const name = active?.name ?? "index";
   return name === "index";
 }
-/** Same active treatment for every main tab (matches Home): mint pill + white icon/label. */
+
+type MainTabName = (typeof MAIN_TAB_ORDER)[number];
+/** Zone dock — active tab pill (green). */
 const TAB_ACTIVE_BG = GatiMitraMerchant.primary;
+/** Flow hub dock — active tab pill (blue). Home satellite stays green. */
+const HUB_TAB_ACTIVE_BG = GatiMitraMerchant.navy;
 const TAB_ACTIVE_FG = "#FFFFFF";
 const TAB_INACTIVE_FG = GatiMitraMerchant.tabInactive;
-
-const CAPSULE_RADIUS = 28;
-const SATELLITE_SIZE = 56;
 
 function useIsKeyboardShown(): boolean {
   const [shown, setShown] = useState(false);
@@ -83,9 +90,77 @@ function isMainTab(name: string): name is MainTabName {
   return (MAIN_TAB_ORDER as readonly string[]).includes(name);
 }
 
-// Hub bottom bar shows these buttons only (Complaints is reachable via toggle inside Reviews screen).
-const HUB_TAB_ORDER = ["earnings", "growth", "reviews"] as const;
+// Hub bottom bar: Earnings, Growth, Offers, Reviews (+ Complaints via Reviews toggle).
+const HUB_TAB_ORDER = ["earnings", "growth", "offers", "reviews"] as const;
 type HubTabName = (typeof HUB_TAB_ORDER)[number];
+
+function HubGrowthIcon({ color }: { color: string }) {
+  return (
+    <View style={[styles.hubChartFrame, { borderColor: color }]}>
+      <Ionicons name="stats-chart" size={15} color={color} />
+    </View>
+  );
+}
+
+function HubOffersIcon({ color, active }: { color: string; active?: boolean }) {
+  return <OffersPercentBadgeIcon size={18} color={color} filled={active} />;
+}
+
+function TabCluster({
+  active,
+  compact,
+  tone = "primary",
+  children,
+}: {
+  active: boolean;
+  compact?: boolean;
+  /** primary = green (Zone tabs); navy = blue (Flow hub tabs). */
+  tone?: "primary" | "navy";
+  children: React.ReactNode;
+}) {
+  return (
+    <View
+      style={[
+        styles.tabCluster,
+        compact && styles.tabClusterCompact,
+        active && (tone === "navy" ? styles.tabClusterActiveNavy : styles.tabClusterActive),
+      ]}
+    >
+      {children}
+    </View>
+  );
+}
+
+function DockSwitchPill({
+  label,
+  icon,
+  onPress,
+  variant,
+  accessibilityLabel,
+}: {
+  label: string;
+  icon: keyof typeof Ionicons.glyphMap;
+  onPress: () => void;
+  variant: "flow" | "home";
+  accessibilityLabel: string;
+}) {
+  return (
+    <Pressable
+      onPress={onPress}
+      style={({ pressed }) => [
+        styles.dockSwitchPill,
+        variant === "home" ? styles.dockSwitchPillHome : styles.dockSwitchPillFlow,
+        pressed && styles.pressed,
+        GatiMitraMerchant.cursorPointer,
+      ]}
+      accessibilityRole="button"
+      accessibilityLabel={accessibilityLabel}
+    >
+      <Ionicons name={icon} size={18} color={TAB_ACTIVE_FG} />
+      <Text style={styles.dockSwitchLabel}>{label}</Text>
+    </Pressable>
+  );
+}
 
 function isHubTab(name: string): boolean {
   return (HUB_TAB_ORDER as readonly string[]).includes(name) || name === "complaints";
@@ -94,17 +169,28 @@ function isHubTab(name: string): boolean {
 export function FloatingTabBar({ state, descriptors, navigation }: BottomTabBarProps) {
   const insets = useSafeAreaInsets();
   const router = useRouter();
+  const pathname = usePathname();
   const { setActiveTab } = useActiveTab();
-  const { setOpenProfileRootOnNextFocus } = useProfileNav();
+  const {
+    returnRoute,
+    setOpenProfileRootOnNextFocus,
+    setLastProfileSlug,
+    setReturnRoute,
+    clearReturnRoute,
+  } = useProfileNav();
   const bottomInset = insets.bottom;
   const keyboardShown = useIsKeyboardShown();
   const focusedOptions = descriptors[state.routes[state.index].key].options;
   const hideTabBarOnKeyboard = focusedOptions.tabBarHideOnKeyboard === true;
 
   const currentName = state.routes[state.index]?.name ?? "index";
-  /** Hide Zone/Flow dock on Profile nested screens (Preferences, tickets, etc.). */
+  /** Profile opened from Flow hub (3-line menu) — keep hub dock visible. */
+  const profileHubOverlay =
+    currentName === "profile" && returnRoute != null && isHubPath(returnRoute);
+  const overlayHubTab = profileHubOverlay ? hubTabFromPath(returnRoute) : null;
+  /** Hide Zone/Flow dock on Profile nested screens unless opened as Flow overlay. */
   const profileInnerPage =
-    currentName === "profile" && !isProfileStackAtRoot(state);
+    currentName === "profile" && !isProfileStackAtRoot(state) && !profileHubOverlay;
   const tabBarHidden =
     (hideTabBarOnKeyboard && keyboardShown) || profileInnerPage;
 
@@ -118,6 +204,12 @@ export function FloatingTabBar({ state, descriptors, navigation }: BottomTabBarP
   const [switchKind, setSwitchKind] = useState<"flow" | "home">("flow");
 
   useEffect(() => {
+    if (profileHubOverlay) {
+      setDock("hub");
+      const hubTab = hubTabFromPath(returnRoute);
+      if (hubTab) setActiveTab(hubTab);
+      return;
+    }
     if (isHubTab(currentName)) {
       setDock("hub");
       setActiveTab(currentName);
@@ -126,7 +218,7 @@ export function FloatingTabBar({ state, descriptors, navigation }: BottomTabBarP
       lastMainRoute.current = currentName;
       setActiveTab(currentName);
     }
-  }, [currentName, setActiveTab]);
+  }, [currentName, setActiveTab, profileHubOverlay, returnRoute]);
 
   const runDockSwitch = useCallback(
     (nextDock: "main" | "hub", kind: "flow" | "home", navigate: () => void) => {
@@ -165,6 +257,12 @@ export function FloatingTabBar({ state, descriptors, navigation }: BottomTabBarP
   const lastMainTabPressAt = useRef(0);
   const lastMainTabPressed = useRef<MainTabName | null>(null);
 
+  const resetProfileToRoot = useCallback(() => {
+    setLastProfileSlug(null);
+    setOpenProfileRootOnNextFocus(true);
+    router.replace("/(tabs)/profile");
+  }, [router, setLastProfileSlug, setOpenProfileRootOnNextFocus]);
+
   const onPressMainTab = useCallback(
     (routeName: MainTabName, isActive: boolean) => {
       const now = Date.now();
@@ -179,14 +277,18 @@ export function FloatingTabBar({ state, descriptors, navigation }: BottomTabBarP
       lastMainTabPressed.current = routeName;
 
       const alreadyOnTab = isActive || focusedRouteName === routeName;
+      const profileHasInnerPage = !isProfileStackAtRoot(state);
+
+      if (routeName === "profile" && profileHasInnerPage) {
+        resetProfileToRoot();
+        if (!alreadyOnTab) {
+          navigateToMainTab(routeName);
+        }
+        return;
+      }
 
       if (alreadyOnTab) {
         // Re-tapping the current tab pops its stack; Catalog → index root.
-        if (routeName === "profile" && !isProfileStackAtRoot(state)) {
-          setOpenProfileRootOnNextFocus(true);
-          router.replace("/(tabs)/profile");
-          return;
-        }
         if (routeName === "menu") {
           router.replace("/(tabs)/menu" as never);
         }
@@ -198,9 +300,9 @@ export function FloatingTabBar({ state, descriptors, navigation }: BottomTabBarP
     [
       focusedRouteName,
       navigateToMainTab,
-      state,
+      resetProfileToRoot,
       router,
-      setOpenProfileRootOnNextFocus,
+      state,
     ]
   );
 
@@ -218,15 +320,16 @@ export function FloatingTabBar({ state, descriptors, navigation }: BottomTabBarP
   }, [navigation, runDockSwitch, setActiveTab, dock]);
 
   const goMainDock = useCallback(() => {
-    if (dock === "main") return;
+    if (dock === "main" && !profileHubOverlay) return;
     const now = Date.now();
     if (now - lastHubTabPressAt.current < DOCK_PRESS_DEBOUNCE_MS) return;
     lastHubTabPressAt.current = now;
     const target = lastMainRoute.current;
     runDockSwitch("main", "home", () => {
+      if (profileHubOverlay) clearReturnRoute();
       navigateToMainTab(target);
     });
-  }, [navigateToMainTab, runDockSwitch, dock]);
+  }, [navigateToMainTab, runDockSwitch, dock, profileHubOverlay, clearReturnRoute]);
 
   const orderedMain = MAIN_TAB_ORDER.map((name) => {
     const route = state.routes.find((r) => r.name === name);
@@ -234,8 +337,8 @@ export function FloatingTabBar({ state, descriptors, navigation }: BottomTabBarP
     return { route };
   }).filter(Boolean) as { route: (typeof state.routes)[0] }[];
 
-  /** Same height as `(tabs)/_layout` tabBarStyle so this strip fills the slot — no default grey “plate” behind the pill. */
-  const tabSlotHeight = TAB_BAR_HEIGHT + bottomInset + TAB_BAR_FLOATING_GAP;
+  /** Same height as `(tabs)/_layout` tabBarStyle so this strip fills the slot — extra padding avoids clipping circles. */
+  const tabSlotHeight = DOCK_BAR_HEIGHT + bottomInset + TAB_BAR_FLOATING_GAP + DOCK_CLIP_PADDING;
 
   // One root View: a Fragment would flatten Modal + bar beside the scene; Modal skips flex, so flex:1 on the bar split the screen with the tab scene (blank band over content).
   return (
@@ -314,10 +417,10 @@ export function FloatingTabBar({ state, descriptors, navigation }: BottomTabBarP
           },
           tabBarHidden && styles.wrapperHidden,
         ]}
-        pointerEvents={tabBarHidden ? "none" : "auto"}
+        pointerEvents="box-none"
       >
         {dock === "main" ? (
-          <View style={styles.row}>
+          <View style={styles.row} pointerEvents="box-none">
             <View style={styles.mainCapsule} collapsable={false}>
               {orderedMain.map(({ route }) => {
                 const isActive = route.name === focusedRouteName;
@@ -340,12 +443,7 @@ export function FloatingTabBar({ state, descriptors, navigation }: BottomTabBarP
                       GatiMitraMerchant.cursorPointer,
                     ]}
                   >
-                    <View
-                      style={[
-                        styles.mainTabClusterBase,
-                        isActive && styles.mainTabClusterActive,
-                      ]}
-                    >
+                    <TabCluster active={isActive}>
                       <View style={styles.mainTabIconSlot}>{iconElement}</View>
                       <Text
                         style={[
@@ -356,28 +454,30 @@ export function FloatingTabBar({ state, descriptors, navigation }: BottomTabBarP
                       >
                         {label}
                       </Text>
-                    </View>
+                    </TabCluster>
                   </Pressable>
                 );
               })}
             </View>
 
-            <Pressable
+            <DockSwitchPill
+              label="Flow"
+              icon="swap-horizontal"
               onPress={goHub}
-              style={({ pressed }) => [
-                styles.satellite,
-                pressed && styles.pressed,
-                GatiMitraMerchant.cursorPointer,
-              ]}
-              accessibilityRole="button"
-              accessibilityLabel="Open earnings (Flow)"
-            >
-              <Ionicons name="swap-horizontal" size={22} color={TAB_ACTIVE_FG} />
-              <Text style={styles.satelliteLabel}>Flow</Text>
-            </Pressable>
+              variant="flow"
+              accessibilityLabel="Open Flow hub"
+            />
           </View>
         ) : (
-          <View style={styles.row}>
+          <View style={styles.row} pointerEvents="box-none">
+            <DockSwitchPill
+              label="Home"
+              icon="home"
+              onPress={goMainDock}
+              variant="home"
+              accessibilityLabel="Back to Home"
+            />
+
             <View style={[styles.hubCapsule, styles.hubCapsuleWide]}>
               <ScrollView
                 horizontal
@@ -386,33 +486,42 @@ export function FloatingTabBar({ state, descriptors, navigation }: BottomTabBarP
               >
                 {HUB_TAB_ORDER.map((routeName) => {
                   const complaintsActive = focusedRouteName === "complaints";
+                  const offersHubActive =
+                    typeof pathname === "string" && pathname.includes("/profile/offers");
                   const isFocused =
-                    focusedRouteName === routeName ||
-                    (routeName === "reviews" && complaintsActive);
+                    profileHubOverlay && overlayHubTab
+                      ? routeName === overlayHubTab
+                      : routeName === "offers"
+                        ? offersHubActive
+                        : focusedRouteName === routeName ||
+                          (routeName === "reviews" && complaintsActive);
                   const label =
                     routeName === "earnings"
                       ? "Earnings"
                       : routeName === "growth"
                         ? "Growth"
-                        : complaintsActive
-                          ? "Complaints"
-                          : "Reviews";
-                  const iconName =
-                    routeName === "earnings"
-                      ? ("wallet-outline" as const)
-                      : routeName === "growth"
-                        ? ("trending-up-outline" as const)
-                        : complaintsActive
-                          ? ("warning-outline" as const)
-                          : ("star-outline" as const);
+                        : routeName === "offers"
+                          ? "Offers"
+                          : complaintsActive
+                            ? "Complaints"
+                            : "Reviews";
                   return (
                     <Pressable
                       key={routeName}
                       onPress={() => {
+                        if (routeName === "offers") {
+                          if (profileHubOverlay) clearReturnRoute();
+                          merchantPush(router, "/(tabs)/profile/offers", {
+                            fromPath: pathname,
+                            setReturnRoute,
+                          });
+                          return;
+                        }
                         if (isFocused) return;
                         const now = Date.now();
                         if (now - lastHubTabPressAt.current < DOCK_PRESS_DEBOUNCE_MS) return;
                         lastHubTabPressAt.current = now;
+                        if (profileHubOverlay) clearReturnRoute();
                         setActiveTab(routeName);
                         navigation.dispatch(CommonActions.navigate({ name: routeName } as never));
                       }}
@@ -423,19 +532,28 @@ export function FloatingTabBar({ state, descriptors, navigation }: BottomTabBarP
                         GatiMitraMerchant.cursorPointer,
                       ]}
                     >
-                      <View
-                        style={[
-                          styles.mainTabClusterBase,
-                          styles.hubMiniPill,
-                          isFocused && styles.mainTabClusterActive,
-                        ]}
-                      >
+                      <TabCluster active={isFocused} compact tone="navy">
                         <View style={styles.mainTabIconSlot}>
-                          <Ionicons
-                            name={iconName}
-                            size={ICON_SIZE}
-                            color={isFocused ? TAB_ACTIVE_FG : TAB_INACTIVE_FG}
-                          />
+                          {routeName === "growth" ? (
+                            <HubGrowthIcon color={isFocused ? TAB_ACTIVE_FG : TAB_INACTIVE_FG} />
+                            ) : routeName === "offers" ? (
+                              <HubOffersIcon
+                                color={isFocused ? TAB_ACTIVE_FG : TAB_INACTIVE_FG}
+                                active={isFocused}
+                              />
+                          ) : (
+                            <Ionicons
+                              name={
+                                routeName === "earnings"
+                                  ? "wallet-outline"
+                                  : complaintsActive
+                                    ? "warning-outline"
+                                    : "star-outline"
+                              }
+                              size={ICON_SIZE}
+                              color={isFocused ? TAB_ACTIVE_FG : TAB_INACTIVE_FG}
+                            />
+                          )}
                         </View>
                         <Text
                           style={[styles.label, isFocused ? styles.labelActive : styles.labelInactive]}
@@ -443,26 +561,12 @@ export function FloatingTabBar({ state, descriptors, navigation }: BottomTabBarP
                         >
                           {label}
                         </Text>
-                      </View>
+                      </TabCluster>
                     </Pressable>
                   );
                 })}
               </ScrollView>
             </View>
-
-            <Pressable
-              onPress={goMainDock}
-              style={({ pressed }) => [
-                styles.satelliteHome,
-                pressed && styles.pressed,
-                GatiMitraMerchant.cursorPointer,
-              ]}
-              accessibilityRole="button"
-              accessibilityLabel="Back to Home"
-            >
-              <Ionicons name="home" size={22} color={TAB_ACTIVE_FG} />
-              <Text style={styles.satelliteLabel}>Home</Text>
-            </Pressable>
           </View>
         )}
       </View>
@@ -551,14 +655,18 @@ const styles = StyleSheet.create({
     lineHeight: 22,
     textAlign: "center",
   },
+  // Tab bar slot is taller than the floating capsule; box-none lets scroll/taps pass
+  // through the padded area above the dock (auto was swallowing bottom-of-list touches).
   tabBarRoot: {
     width: "100%",
     flexShrink: 0,
     flexGrow: 0,
+    overflow: "visible",
   },
   wrapper: {
     width: "100%",
     paddingHorizontal: 12,
+    overflow: "visible",
   },
   wrapperHidden: {
     height: 0,
@@ -570,10 +678,11 @@ const styles = StyleSheet.create({
   },
   row: {
     flexDirection: "row",
-    alignItems: "flex-end",
-    gap: 10,
+    alignItems: "center",
+    gap: 8,
     width: "100%",
     minWidth: 0,
+    overflow: "visible",
   },
   mainCapsule: {
     flex: 1,
@@ -581,32 +690,31 @@ const styles = StyleSheet.create({
     minWidth: 0,
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "space-between",
+    justifyContent: "space-around",
     gap: 2,
-    backgroundColor: GatiMitraMerchant.cardBg,
+    backgroundColor: GatiMitraMerchant.surfaceWarm,
     borderRadius: CAPSULE_RADIUS,
     borderWidth: 1,
     borderColor: GatiMitraMerchant.border,
-    paddingVertical: 6,
-    paddingHorizontal: 6,
-    minHeight: TAB_BAR_HEIGHT - 4,
-    overflow: "hidden",
+    paddingVertical: 2,
+    paddingHorizontal: 4,
+    minHeight: DOCK_BAR_HEIGHT,
+    overflow: "visible",
   },
   hubCapsule: {
-    // Do not stretch to full width when only 3 hub pills.
-    flexGrow: 0,
+    flex: 1,
     flexShrink: 1,
+    minWidth: 0,
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: GatiMitraMerchant.cardBg,
+    backgroundColor: GatiMitraMerchant.surfaceWarm,
     borderRadius: CAPSULE_RADIUS,
     borderWidth: 1,
     borderColor: GatiMitraMerchant.border,
-    paddingVertical: 6,
-    paddingHorizontal: 8,
-    minHeight: TAB_BAR_HEIGHT - 4,
-    overflow: "hidden",
+    paddingVertical: 2,
+    paddingHorizontal: 4,
+    minHeight: DOCK_BAR_HEIGHT,
+    overflow: "visible",
   },
   hubCapsuleWide: {
     minWidth: 0,
@@ -614,16 +722,24 @@ const styles = StyleSheet.create({
   hubScrollInner: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 6,
-    paddingHorizontal: 4,
+    gap: 4,
+    paddingHorizontal: 2,
     paddingVertical: 2,
+    flexGrow: 1,
+    justifyContent: "space-around",
   },
   hubPillPress: {
-    flexShrink: 0,
+    flex: 1,
+    minWidth: 0,
+    alignItems: "center",
   },
-  hubMiniPill: {
-    paddingHorizontal: 12,
-    minWidth: 72,
+  hubChartFrame: {
+    width: 22,
+    height: 22,
+    borderRadius: 6,
+    borderWidth: 1.5,
+    alignItems: "center",
+    justifyContent: "center",
   },
   mainTab: {
     flex: 1,
@@ -631,29 +747,42 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  /**
-   * Icon+label cluster: intrinsic width only, centered in the tab slot.
-   * Full-width green (old stretch) looked like a sharp rectangle and changed shape per tab — same pill for everyone.
-   */
-  mainTabClusterBase: {
+  /** Active pill wraps icon + label (reference: Zomato partner dock). */
+  tabCluster: {
     alignItems: "center",
     justifyContent: "center",
-    paddingVertical: 6,
+    paddingVertical: 4,
     paddingHorizontal: 10,
-    borderRadius: 999,
-    overflow: "hidden",
+    borderRadius: TAB_PILL_RADIUS,
+    borderWidth: 1,
+    borderColor: "transparent",
+    backgroundColor: "transparent",
+    minWidth: 48,
   },
-  mainTabClusterActive: {
+  tabClusterCompact: {
+    paddingHorizontal: 7,
+    minWidth: 54,
+  },
+  tabClusterActive: {
     backgroundColor: TAB_ACTIVE_BG,
+    borderColor: TAB_ACTIVE_BG,
+    borderRadius: TAB_PILL_RADIUS,
+  },
+  tabClusterActiveNavy: {
+    backgroundColor: HUB_TAB_ACTIVE_BG,
+    borderColor: HUB_TAB_ACTIVE_BG,
+    borderRadius: TAB_PILL_RADIUS,
   },
   mainTabIconSlot: {
     marginBottom: ICON_LABEL_GAP,
     alignItems: "center",
     justifyContent: "center",
+    height: 20,
   },
   label: {
     fontSize: LABEL_FONT_SIZE,
     fontWeight: "600",
+    letterSpacing: 0.1,
   },
   labelActive: {
     color: TAB_ACTIVE_FG,
@@ -661,29 +790,29 @@ const styles = StyleSheet.create({
   labelInactive: {
     color: TAB_INACTIVE_FG,
   },
-  satellite: {
+  dockSwitchPill: {
     flexShrink: 0,
-    width: SATELLITE_SIZE,
-    height: SATELLITE_SIZE,
-    borderRadius: SATELLITE_SIZE / 2,
+    alignItems: "center",
+    justifyContent: "center",
+    width: SATELLITE_WIDTH,
+    height: DOCK_BAR_HEIGHT,
+    borderRadius: CAPSULE_RADIUS,
+    gap: 1,
+    overflow: "visible",
+  },
+  dockSwitchPillFlow: {
     backgroundColor: GatiMitraMerchant.navy,
-    alignItems: "center",
-    justifyContent: "center",
+    borderRadius: CAPSULE_RADIUS,
   },
-  satelliteHome: {
-    flexShrink: 0,
-    width: SATELLITE_SIZE,
-    height: SATELLITE_SIZE,
-    borderRadius: SATELLITE_SIZE / 2,
+  dockSwitchPillHome: {
     backgroundColor: GatiMitraMerchant.primary,
-    alignItems: "center",
-    justifyContent: "center",
+    borderRadius: CAPSULE_RADIUS,
   },
-  satelliteLabel: {
-    marginTop: 2,
+  dockSwitchLabel: {
     fontSize: 9,
     fontWeight: "700",
-    color: "#FFFFFF",
+    color: TAB_ACTIVE_FG,
+    letterSpacing: 0.2,
   },
   pressed: {
     opacity: 0.88,

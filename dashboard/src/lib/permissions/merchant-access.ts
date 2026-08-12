@@ -12,9 +12,13 @@
  */
 
 import { getSql } from "../db/client";
-import { isSuperAdmin, getUserPermissions } from "./engine";
+import { getUserAccessPoints, getUserPermissions, isSuperAdmin } from "./engine";
 import { getSystemUserByEmail, getSystemUserByAuthId } from "../auth/user-mapping";
 import { logAction, type ActionLogData } from "../audit/logger";
+import {
+  isMerchantViewOnlyAccess,
+  merchantCanMutate,
+} from "@/lib/merchants/merchant-dashboard-access";
 
 export interface MerchantAccess {
   systemUserId: number;
@@ -207,6 +211,39 @@ export async function getMerchantAccess(
     can_request_wallet_adjustment: row ? b(row.can_request_wallet_adjustment) : DEFAULT_ACCESS.can_request_wallet_adjustment,
     can_approve_wallet_adjustment: false,
   };
+
+  // Dashboard access points win: MERCHANT_VIEW-only (or no mutation groups)
+  // must not inherit legacy can_* flags from merchant_management_access.
+  const accessPoints = await getUserAccessPoints(systemUser.id, "MERCHANT");
+  const viewOnly = isMerchantViewOnlyAccess({ accessPoints });
+  if (viewOnly || !merchantCanMutate({ accessPoints })) {
+    return {
+      ...access,
+      can_update_onboarding: false,
+      can_approve_documents: false,
+      can_reject_documents: false,
+      can_approve_store: false,
+      can_reject_store: false,
+      can_update_store_details: false,
+      can_update_store_timing: false,
+      can_update_store_availability: false,
+      can_delist_store: false,
+      can_relist_store: false,
+      can_block_store: false,
+      can_unblock_store: false,
+      can_update_menu: false,
+      can_update_pricing: false,
+      can_update_customizations: false,
+      can_update_offers: false,
+      can_update_bank_details: false,
+      can_approve_payout: false,
+      can_adjust_commission: false,
+      can_manage_store_orders: false,
+      can_request_wallet_adjustment: false,
+      can_approve_wallet_adjustment: false,
+      payout_approval_limit: 0,
+    };
+  }
 
   return access;
 }

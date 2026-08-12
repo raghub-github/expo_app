@@ -23,6 +23,7 @@ import {
   SlidersHorizontal,
 } from "lucide-react";
 import { useToast } from "@/context/ToastContext";
+import { useMerchantDashboardAccess } from "@/hooks/useMerchantDashboardAccess";
 import { R2Image } from "@/components/ui/R2Image";
 import { withAttachmentCacheBust } from "@/lib/attachments/resolve-attachment-proxy-url";
 import { MenuItemsGridSkeleton } from "@/components/ui/MenuItemsGridSkeleton";
@@ -229,6 +230,10 @@ function normalizeItem(
 export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: string; onSwitchToAddonLibrary?: () => void }) {
   const { toast } = useToast();
   const queryClient = useQueryClient();
+  const { canManageStore, canApproveMenuItems, isViewOnly, canMutate } = useMerchantDashboardAccess();
+  /** Pure VIEW (or no store/menu manage grant): no add/edit/delete/stock/approve. */
+  const menuReadOnly = isViewOnly || !canManageStore || !canMutate;
+  const canReviewApprove = canApproveMenuItems && !menuReadOnly;
   const menuQuery = useStoreMenuQuery(storeId);
   const data = menuQuery.data ?? null;
   const loading = menuQuery.isLoading && !data;
@@ -964,7 +969,7 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
   const outStockPercent = menuItems.length ? Math.round((outStock / menuItems.length) * 100) : 0;
 
   const planLimits = null;
-  const canAddItem = true;
+  const canAddItem = !menuReadOnly;
 
   useEffect(() => {
     setItemsToolbar(
@@ -2219,6 +2224,7 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
               </button>
             </div>
             ) : null}
+            {!menuReadOnly ? (
             <button
               type="button"
               onClick={() => setShowManageCategoriesModal(true)}
@@ -2227,6 +2233,8 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
               <Layers size={16} />
               Manage categories
             </button>
+            ) : null}
+            {!menuReadOnly ? (
             <button
               onClick={() => openAddItemModal()}
               disabled={!canAddItem}
@@ -2238,6 +2246,8 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
                 <span className="text-xs opacity-90">({menuItems.length}/{(planLimits as { maxMenuItems?: number })?.maxMenuItems ?? "—"})</span>
               )}
             </button>
+            ) : null}
+            {!menuReadOnly ? (
             <button
               type="button"
               onClick={() => setShowMenuFileSection(true)}
@@ -2246,6 +2256,7 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
               <Upload size={16} />
               Menu file
             </button>
+            ) : null}
           </div>
         </div>
 
@@ -2367,7 +2378,7 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
                       ? "Try a different search term"
                       : "Add your first menu item to get started"}
               </p>
-              {contentScope === "item" && menuItems.length === 0 && categories.length === 0 && (
+              {contentScope === "item" && menuItems.length === 0 && categories.length === 0 && !menuReadOnly && (
                 <div className="mt-4 flex flex-col items-center gap-2">
                   <p className="text-sm text-gray-400">You need to create a category first</p>
                   <button
@@ -2436,7 +2447,7 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
                                 {v.id ? (
                                   <MenuItemStockToggle
                                     inStock={variantInStock}
-                                    disabled={custStockBusy === `variant-${v.id}`}
+                                    disabled={menuReadOnly || custStockBusy === `variant-${v.id}`}
                                     onToggle={() =>
                                       handleCustOptionStockToggle(item, "variant", v.id!, !variantInStock)
                                     }
@@ -2482,7 +2493,7 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
                                       {addon.id ? (
                                         <MenuItemStockToggle
                                           inStock={addonInStock}
-                                          disabled={custStockBusy === `addon-${addon.id}`}
+                                          disabled={menuReadOnly || custStockBusy === `addon-${addon.id}`}
                                           onToggle={() =>
                                             handleCustOptionStockToggle(item, "addon", addon.id!, !addonInStock)
                                           }
@@ -2534,7 +2545,7 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
                                       )}
                                       <MenuItemStockToggle
                                         inStock={optInStock}
-                                        disabled={custStockBusy === `modifier_option-${opt.id}`}
+                                        disabled={menuReadOnly || custStockBusy === `modifier_option-${opt.id}`}
                                         onToggle={() =>
                                           handleCustOptionStockToggle(
                                             item,
@@ -2669,11 +2680,13 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
                             )}
                           </div>
                           </div>
+                          {!menuReadOnly ? (
                           <MenuItemStockToggle
                             inStock={menuOos.isItemInStock(item)}
                             disabled={menuOos.oosBusy}
                             onToggle={() => menuOos.handleItemStockToggle(item)}
                           />
+                          ) : null}
                         </div>
                         <div className="flex items-center gap-1 mb-1">
                           <MenuItemPriceRow item={item} />
@@ -2756,7 +2769,7 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
                               Options
                             </button>
                           ) : null}
-                          {(item.approval_status ?? "PENDING") === "PENDING" && (
+                          {canReviewApprove && (item.approval_status ?? "PENDING") === "PENDING" && (
                             <button
                               type="button"
                               onClick={async (e) => {
@@ -2781,23 +2794,27 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
                               <span className="truncate">Review</span>
                             </button>
                           )}
-                          <button
-                            onClick={() => handleOpenEditModal(item)}
-                            className="min-w-0 flex-1 flex cursor-pointer items-center justify-center gap-0.5 px-1 py-1 bg-blue-50 text-blue-600 font-bold rounded-md border border-blue-200 hover:bg-blue-100 transition-all text-[10px]"
-                          >
-                            <Edit2 size={10} />
-                            <span className="truncate">Edit</span>
-                          </button>
-                          <button
-                            onClick={() => {
-                              setDeleteItemId(item.id);
-                              setShowDeleteModal(true);
-                            }}
-                            className="min-w-0 flex-1 flex cursor-pointer items-center justify-center gap-0.5 px-1 py-1 bg-red-50 text-red-600 font-bold rounded-md border border-red-200 hover:bg-red-100 transition-all text-[10px]"
-                          >
-                            <Trash2 size={10} />
-                            <span className="truncate">Delete</span>
-                          </button>
+                          {!menuReadOnly ? (
+                            <>
+                              <button
+                                onClick={() => handleOpenEditModal(item)}
+                                className="min-w-0 flex-1 flex cursor-pointer items-center justify-center gap-0.5 px-1 py-1 bg-blue-50 text-blue-600 font-bold rounded-md border border-blue-200 hover:bg-blue-100 transition-all text-[10px]"
+                              >
+                                <Edit2 size={10} />
+                                <span className="truncate">Edit</span>
+                              </button>
+                              <button
+                                onClick={() => {
+                                  setDeleteItemId(item.id);
+                                  setShowDeleteModal(true);
+                                }}
+                                className="min-w-0 flex-1 flex cursor-pointer items-center justify-center gap-0.5 px-1 py-1 bg-red-50 text-red-600 font-bold rounded-md border border-red-200 hover:bg-red-100 transition-all text-[10px]"
+                              >
+                                <Trash2 size={10} />
+                                <span className="truncate">Delete</span>
+                              </button>
+                            </>
+                          ) : null}
                         </div>
                       </div>
                     </div>
@@ -2849,12 +2866,14 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
                             </div>
                             <div className="flex items-center gap-2 shrink-0 flex-wrap justify-end">
                               <MenuItemPriceRow item={item} showBadge={false} />
+                              {!menuReadOnly ? (
                               <MenuItemStockToggle
                                 inStock={menuOos.isItemInStock(item)}
                                 disabled={menuOos.oosBusy}
                                 onToggle={() => menuOos.handleItemStockToggle(item)}
                               />
-                              {(item.approval_status ?? "PENDING") === "PENDING" && (
+                              ) : null}
+                              {canReviewApprove && (item.approval_status ?? "PENDING") === "PENDING" && (
                                 <button
                                   type="button"
                                   onClick={async (e) => {
@@ -2881,23 +2900,27 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
                                   Review
                                 </button>
                               )}
-                              <button
-                                type="button"
-                                onClick={() => handleOpenEditModal(item)}
-                                className="px-2 py-1 text-[10px] font-bold rounded-md border border-blue-200 bg-blue-50 text-blue-600 hover:bg-blue-100"
-                              >
-                                Edit
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setDeleteItemId(item.id);
-                                  setShowDeleteModal(true);
-                                }}
-                                className="px-2 py-1 text-[10px] font-bold rounded-md border border-red-200 bg-red-50 text-red-600 hover:bg-red-100"
-                              >
-                                Delete
-                              </button>
+                              {!menuReadOnly ? (
+                                <>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleOpenEditModal(item)}
+                                    className="px-2 py-1 text-[10px] font-bold rounded-md border border-blue-200 bg-blue-50 text-blue-600 hover:bg-blue-100"
+                                  >
+                                    Edit
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setDeleteItemId(item.id);
+                                      setShowDeleteModal(true);
+                                    }}
+                                    className="px-2 py-1 text-[10px] font-bold rounded-md border border-red-200 bg-red-50 text-red-600 hover:bg-red-100"
+                                  >
+                                    Delete
+                                  </button>
+                                </>
+                              ) : null}
                             </div>
                           </div>
                         ))}
@@ -3190,6 +3213,7 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
                     ))}
                   </div>
                 </div>
+                {canReviewApprove ? (
                 <div className="flex items-center justify-between gap-2">
                 <button
                   type="button"
@@ -3297,6 +3321,9 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
                   {isReviewActionLoading === "APPROVE" ? "Approving…" : "Approve photo"}
                 </button>
                 </div>
+                ) : (
+                  <p className="text-xs font-medium text-gray-500">View only — approve/reject disabled</p>
+                )}
               </div>
             </div>
           </div>,
@@ -4064,6 +4091,7 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
                   <div key={parent.id} className="border border-gray-200 rounded-lg overflow-hidden">
                     <div className="flex items-center justify-between gap-2 px-3 py-2 bg-gray-50">
                       <span className="font-medium text-gray-900">{parent.category_name}</span>
+                      {!menuReadOnly ? (
                       <div className="flex items-center gap-1">
                         <button
                           type="button"
@@ -4079,10 +4107,12 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
                           <Trash2 size={14} />
                         </button>
                       </div>
+                      ) : null}
                     </div>
                     {(childrenByParentId.get(parent.id) ?? []).map((child) => (
                       <div key={child.id} className="flex items-center justify-between gap-2 px-4 py-2 border-t border-gray-100 bg-white">
                         <span className="text-gray-700">  {child.category_name}</span>
+                        {!menuReadOnly ? (
                         <div className="flex items-center gap-1">
                           <button type="button" onClick={() => openEditCategory(child)} className="p-1.5 text-gray-500 hover:bg-gray-200 rounded" aria-label="Edit">
                             <Edit2 size={14} />
@@ -4091,6 +4121,7 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
                             <Trash2 size={14} />
                           </button>
                         </div>
+                        ) : null}
                       </div>
                     ))}
                   </div>

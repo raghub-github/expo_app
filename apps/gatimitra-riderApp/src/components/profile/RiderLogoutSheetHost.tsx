@@ -16,12 +16,19 @@ export function RiderLogoutSheetHost() {
   const selectScope = useLogoutSheetStore((s) => s.selectScope);
   const backToChoice = useLogoutSheetStore((s) => s.backToChoice);
   const setSession = useSessionStore((s) => s.setSession);
+  const accessToken = useSessionStore((s) => s.session?.accessToken ?? null);
 
   const onConfirm = async (
     reasonCode: RiderLogoutReasonCode,
     reasonText?: string,
   ) => {
     const logoutAllDevices = scope === "all_devices";
+    try {
+      const { runRiderPushUnregister } = await import("@/src/lib/riderPushUnregister");
+      await runRiderPushUnregister(accessToken);
+    } catch {
+      /* best-effort */
+    }
     try {
       await riderApi.logout({
         reasonCode,
@@ -31,12 +38,6 @@ export function RiderLogoutSheetHost() {
     } catch (err) {
       console.warn("[RiderLogoutSheetHost] logout failed:", err);
       // Still clear local session so rider is not stuck signed-in on a dead token.
-    }
-    try {
-      const { runRiderPushUnregister } = await import("@/src/lib/riderPushUnregister");
-      await runRiderPushUnregister();
-    } catch {
-      /* best-effort */
     }
     await useDutyStore.getState().setDutyStatus(false);
     close();

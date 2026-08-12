@@ -267,27 +267,19 @@ export async function GET(request: NextRequest) {
         console.warn("[GET /api/tickets] SLA sync skipped:", slaSyncErr);
       }
     })();
-    /** Drain ticket_automation_jobs (e.g. ticket_created from DB trigger) before listing so assignments are visible immediately. */
-    try {
-      const { processPendingAutomationJobs } = await import("@/lib/tickets/ticket-automation/job-processor");
-      if (queueScope) {
-        // Queue list should return fast on reload; process jobs in background.
+    /** Drain automation jobs in background — skip lightweight badge/count polls (limit=1). */
+    if (limit > 1 && !createdAfterRaw && !updatedAfterRaw && !activityAfterRaw) {
+      try {
+        const { processPendingAutomationJobs } = await import("@/lib/tickets/ticket-automation/job-processor");
         void processPendingAutomationJobs(sqlClient, {
           limit: 10,
-          workerId: "api-get-tickets-queue",
-        }).catch((jobErr) => {
-          console.error("[GET /api/tickets] processPendingAutomationJobs(queue):", jobErr);
-        });
-      } else {
-        void processPendingAutomationJobs(sqlClient, {
-          limit: 10,
-          workerId: "api-get-tickets",
+          workerId: queueScope ? "api-get-tickets-queue" : "api-get-tickets",
         }).catch((jobErr) => {
           console.error("[GET /api/tickets] processPendingAutomationJobs:", jobErr);
         });
+      } catch (jobErr) {
+        console.error("[GET /api/tickets] processPendingAutomationJobs:", jobErr);
       }
-    } catch (jobErr) {
-      console.error("[GET /api/tickets] processPendingAutomationJobs:", jobErr);
     }
     /** Filter facets; combined with AND (see filtersClause). */
     const whereConditions: unknown[] = [];
@@ -640,13 +632,15 @@ export async function GET(request: NextRequest) {
               ut.assigned_to_agent_id, ut.assigned_to_agent_name,
               ut.assigned_at, ut.satisfaction_rating,
               ut.created_at, ut.updated_at, ut.resolved_at, ut.closed_at,
-              ut.group_id, ut.metadata, ut.sla_due_at, ut.snoozed_until, ut.snooze_reason,
+              ut.group_id, ut.metadata, ut.parent_ticket_id, ut.sla_due_at, ut.snoozed_until, ut.snooze_reason,
               oc.formatted_order_id AS formatted_order_id,
               tg.group_code AS group_code, tg.group_name AS group_name,
-              tgl.id AS meta_landed_group_id, tgl.group_code AS meta_landed_group_code, tgl.group_name AS meta_landed_group_name
+              tgl.id AS meta_landed_group_id, tgl.group_code AS meta_landed_group_code, tgl.group_name AS meta_landed_group_name,
+              parent_ut.ticket_id AS merged_into_ticket_number
             FROM public.unified_tickets ut
             LEFT JOIN public.orders_core oc ON oc.id = ut.order_id
             LEFT JOIN public.ticket_groups tg ON tg.id = ut.group_id
+            LEFT JOIN public.unified_tickets parent_ut ON parent_ut.id = ut.parent_ticket_id
             LEFT JOIN public.ticket_groups tgl ON tgl.id = CASE
               WHEN ut.metadata IS NOT NULL
                 AND (ut.metadata->>'landed_group_id') IS NOT NULL
@@ -667,13 +661,15 @@ export async function GET(request: NextRequest) {
               ut.assigned_to_agent_id, ut.assigned_to_agent_name,
               ut.assigned_at, ut.satisfaction_rating,
               ut.created_at, ut.updated_at, ut.resolved_at, ut.closed_at,
-              ut.group_id, ut.metadata, ut.sla_due_at, ut.snoozed_until, ut.snooze_reason,
+              ut.group_id, ut.metadata, ut.parent_ticket_id, ut.sla_due_at, ut.snoozed_until, ut.snooze_reason,
               oc.formatted_order_id AS formatted_order_id,
               tg.group_code AS group_code, tg.group_name AS group_name,
-              tgl.id AS meta_landed_group_id, tgl.group_code AS meta_landed_group_code, tgl.group_name AS meta_landed_group_name
+              tgl.id AS meta_landed_group_id, tgl.group_code AS meta_landed_group_code, tgl.group_name AS meta_landed_group_name,
+              parent_ut.ticket_id AS merged_into_ticket_number
             FROM public.unified_tickets ut
             LEFT JOIN public.orders_core oc ON oc.id = ut.order_id
             LEFT JOIN public.ticket_groups tg ON tg.id = ut.group_id
+            LEFT JOIN public.unified_tickets parent_ut ON parent_ut.id = ut.parent_ticket_id
             LEFT JOIN public.ticket_groups tgl ON tgl.id = CASE
               WHEN ut.metadata IS NOT NULL
                 AND (ut.metadata->>'landed_group_id') IS NOT NULL
@@ -1017,6 +1013,39 @@ export async function GET(request: NextRequest) {
           String(t.snooze_reason ?? t.snoozeReason).trim() !== ""
             ? String(t.snooze_reason ?? t.snoozeReason)
             : null,
+        ...(() => {
+          const parentRaw = t.parent_ticket_id ?? t.parentTicketId;
+          const parentTicketId =
+            parentRaw != null && parentRaw !== "" && Number.isFinite(Number(parentRaw)) && Number(parentRaw) > 0
+              ? Number(parentRaw)
+              : null;
+          const metaRaw = t.metadata;
+          const meta =
+            metaRaw != null && typeof metaRaw === "object" && !Array.isArray(metaRaw)
+              ? (metaRaw as Record<string, unknown>)
+              : null;
+          const mergedIds = meta?.merged_ticket_ids;
+          const mergedChildCount = Array.isArray(mergedIds)
+            ? mergedIds.map((x) => Number(x)).filter((n) => Number.isFinite(n) && n > 0).length
+            : 0;
+          const mergedFlag = meta?.merged === true || meta?.merged === "true";
+          const isMergePrimary = parentTicketId == null && (mergedChildCount > 0 || mergedFlag);
+          const isMerged = parentTicketId != null || isMergePrimary;
+          const mergedIntoRaw = t.merged_into_ticket_number ?? t.mergedIntoTicketNumber;
+          const mergedIntoTicketNumber =
+            typeof mergedIntoRaw === "string" && mergedIntoRaw.trim()
+              ? mergedIntoRaw.trim()
+              : parentTicketId != null
+                ? String(parentTicketId)
+                : null;
+          return {
+            parentTicketId,
+            mergedChildCount,
+            isMerged,
+            isMergePrimary,
+            mergedIntoTicketNumber,
+          };
+        })(),
         ...(exportMeta ? { exportMeta } : {}),
       };
     });
@@ -1042,7 +1071,23 @@ export async function GET(request: NextRequest) {
       data: payload,
     });
   } catch (error) {
-    console.error("[GET /api/tickets] Error:", error);
+    if (
+      error != null &&
+      typeof error === "object" &&
+      ((error as { name?: string }).name === "AbortError" ||
+        String((error as { message?: string }).message ?? "")
+          .toLowerCase()
+          .includes("aborted"))
+    ) {
+      return NextResponse.json(
+        { success: false, error: "Request aborted", code: "REQUEST_ABORTED" },
+        { status: 499 }
+      );
+    }
+    console.error(
+      "[GET /api/tickets] Error:",
+      error instanceof Error ? error.message : error
+    );
     return NextResponse.json(
       {
         success: false,

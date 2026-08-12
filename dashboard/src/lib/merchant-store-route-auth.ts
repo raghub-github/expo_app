@@ -65,14 +65,17 @@ export async function authorizeMerchantStoreRoute(
     if (!access && areaManagerId == null) {
       return NextResponse.json({ success: false, error: "Merchant access required" }, { status: 403 });
     }
-    if (access) {
-      if (opts?.requireAvailability && !access.can_update_store_availability) {
+    // View-only (MERCHANT_VIEW): never allow availability/timing mutations even if AM-assigned.
+    if (opts?.requireAvailability) {
+      if (!access?.can_update_store_availability) {
         return NextResponse.json(
           { success: false, error: "Permission denied: cannot update store availability" },
           { status: 403 }
         );
       }
-      if (opts?.requireTiming && !access.can_update_store_timing) {
+    }
+    if (opts?.requireTiming) {
+      if (!access?.can_update_store_timing) {
         return NextResponse.json(
           { success: false, error: "Permission denied: cannot update store timing" },
           { status: 403 }

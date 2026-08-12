@@ -1055,7 +1055,7 @@ export default function AddEditItemScreen() {
       {/* Header */}
       <View style={[styles.header, { paddingTop: insets.top + 8 }]}>
         <TouchableOpacity onPress={() => router.back()} style={styles.headerBtn} hitSlop={8}>
-          <Ionicons name="arrow-back" size={24} color={GatiMitraMerchant.textPrimary} />
+          <Ionicons name="chevron-back" size={20} color={GatiMitraMerchant.textPrimary} />
         </TouchableOpacity>
         <Text style={styles.headerTitle}>Item details</Text>
         <View style={{ width: 32 }} />

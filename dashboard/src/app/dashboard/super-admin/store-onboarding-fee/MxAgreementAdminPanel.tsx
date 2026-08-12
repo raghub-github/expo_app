@@ -37,20 +37,34 @@ function templateToForm(t: MerchantAgreementTemplateDTO | null): AgreementForm {
   };
 }
 
-function getSectionItems(sec: MxContractSection): string[] {
-  if (sec.bullets?.length) return [...sec.bullets];
-  if (sec.paragraphs?.length) return [...sec.paragraphs];
-  return [""];
+const PARAGRAPH_SECTION_TITLES = new Set([
+  "II. Charges",
+  "III. Payment Settlement",
+  "Declaration",
+]);
+
+function sectionContentKind(sec: MxContractSection): "bullets" | "paragraphs" {
+  const bulletCount = sec.bullets?.length ?? 0;
+  const paragraphCount = sec.paragraphs?.length ?? 0;
+  if (bulletCount > 0 && paragraphCount === 0) return "bullets";
+  if (paragraphCount > 0 && bulletCount === 0) return "paragraphs";
+  if (paragraphCount > 0) return "paragraphs";
+  if (bulletCount > 0) return "bullets";
+  if (PARAGRAPH_SECTION_TITLES.has(sec.title.trim())) return "paragraphs";
+  return "bullets";
 }
 
-function sectionUsesBullets(sec: MxContractSection): boolean {
-  return Boolean(sec.bullets?.length) || !sec.paragraphs?.length;
+function getSectionItems(sec: MxContractSection): string[] {
+  const kind = sectionContentKind(sec);
+  const items = kind === "bullets" ? sec.bullets : sec.paragraphs;
+  if (items?.length) return [...items];
+  return [""];
 }
 
 function sectionFromItems(sec: MxContractSection, items: string[]): MxContractSection {
   const cleaned = items.map((s) => s.trim()).filter(Boolean);
   const safe = cleaned.length ? cleaned : [""];
-  if (sectionUsesBullets(sec)) {
+  if (sectionContentKind(sec) === "bullets") {
     return { title: sec.title, bullets: safe };
   }
   return { title: sec.title, paragraphs: safe };

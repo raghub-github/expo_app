@@ -213,6 +213,12 @@ async function applyScheduleClosed(
   `;
   log.info({ storeId, trigger: "schedule_closed" }, "store_auto_close");
   await emitStoreStatusChanged(sql, storeId, "OPEN", "CLOSED", "schedule_closed", "AUTO", log);
+  try {
+    const { notifyMerchantOutsideDeliveryTimings } = await import("../../lib/merchant-push-notify.js");
+    await notifyMerchantOutsideDeliveryTimings(sql, storeId);
+  } catch (e) {
+    log.info({ storeId, err: e }, "outside_delivery_push_failed");
+  }
 }
 
 /** 2. Schedule open – business hours started. Atomic full metadata update. */
@@ -1135,6 +1141,14 @@ async function evaluateAndPersistStoreScheduleState(
     if (!autoOpen) {
       statusReasonCode = "auto_open_disabled";
       nextScheduleTransitionAt = toIsoOrNull(new Date(now.getTime() + 6 * 60 * 60 * 1000));
+      if (withinHours && !currentlyOpen) {
+        try {
+          const { notifyMerchantGoOnlinePrompt } = await import("../../lib/merchant-push-notify.js");
+          await notifyMerchantGoOnlinePrompt(sql, storeId);
+        } catch (e) {
+          log.info({ storeId, err: e }, "go_online_push_failed");
+        }
+      }
       if (!withinHours && shouldForceScheduleClose(currentlyOpen, store)) {
         await syncMerchantStoresOnlineTriple(sql, storeId, false);
         await applyScheduleClosed(sql, storeId, log);

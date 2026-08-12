@@ -15,8 +15,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine";
+import { resolveMerchantListAreaManagerId } from "@/lib/merchants/resolve-merchant-list-scope";
 import { getSystemUserByEmail } from "@/lib/auth/user-mapping";
-import { getAreaManagerByUserId } from "@/lib/area-manager/auth";
 import { getMerchantStoreById, delistMerchantStore, relistMerchantStore, type DelistType } from "@/lib/db/operations/merchant-stores";
 
 export const runtime = "nodejs";
@@ -41,8 +41,9 @@ export async function POST(
       return NextResponse.json({ success: false, error: "Not authenticated" }, { status: 401 });
     }
 
+    const superAdmin = await isSuperAdmin(user.id, user.email);
     const allowed =
-      (await isSuperAdmin(user.id, user.email)) ||
+      superAdmin ||
       (await hasDashboardAccessByAuth(user.id, user.email, "MERCHANT"));
     if (!allowed) {
       return NextResponse.json(
@@ -51,15 +52,10 @@ export async function POST(
       );
     }
 
-    let areaManagerId: number | null = null;
-    const superAdmin = await isSuperAdmin(user.id, user.email);
-    if (!superAdmin) {
-      const systemUser = await getSystemUserByEmail(user.email);
-      if (systemUser) {
-        const am = await getAreaManagerByUserId(systemUser.id);
-        if (am) areaManagerId = am.id;
-      }
-    }
+    const areaManagerId = await resolveMerchantListAreaManagerId({
+      supabaseAuthId: user.id,
+      email: user.email,
+    });
 
     const store = await getMerchantStoreById(storeId, areaManagerId);
     if (!store) {

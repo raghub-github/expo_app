@@ -6,7 +6,7 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { getAuthenticatedApiUser, authFailureResponse } from "@/lib/auth/api-session";
-import { getSystemUserByEmail } from "@/lib/db/operations/users";
+import { resolveSystemUserForSupabaseAuth } from "@/lib/auth/user-mapping";
 import { isSuperAdmin, hasDashboardAccessByAuth } from "@/lib/permissions/engine";
 import { getSql } from "@/lib/db/client";
 import { insertTicketActivityAudit } from "@/lib/db/operations/ticket-activity-audit";
@@ -31,13 +31,17 @@ export async function GET(
     }
     const { user } = auth;
 
-    const systemUser = await getSystemUserByEmail(user.email!);
+    const systemUser = await resolveSystemUserForSupabaseAuth(user.id, user.email);
     if (!systemUser) {
       return NextResponse.json({ success: false, error: "User not found" }, { status: 404 });
     }
 
-    const userIsSuperAdmin = await isSuperAdmin(user.id, user.email!);
-    const hasTicketAccess = await hasDashboardAccessByAuth(user.id, user.email!, "TICKET");
+    const userIsSuperAdmin = await isSuperAdmin(user.id, user.email ?? systemUser.email);
+    const hasTicketAccess = await hasDashboardAccessByAuth(
+      user.id,
+      user.email ?? systemUser.email,
+      "TICKET"
+    );
 
     if (!userIsSuperAdmin && !hasTicketAccess) {
       return NextResponse.json({ success: false, error: "Insufficient permissions" }, { status: 403 });
@@ -726,8 +730,24 @@ export async function GET(
       // Optional: enterprise ratings table may reference tickets.id only or be absent.
     }
 
+    const metaFormattedOrderId = (() => {
+      const meta =
+        row.metadata != null && typeof row.metadata === "object" && !Array.isArray(row.metadata)
+          ? (row.metadata as Record<string, unknown>)
+          : null;
+      if (!meta) return null;
+      const top = meta.formatted_order_id;
+      if (typeof top === "string" && top.trim()) return top.trim();
+      const live = meta.live_order_support;
+      if (live != null && typeof live === "object" && !Array.isArray(live)) {
+        const nested = (live as Record<string, unknown>).formatted_order_id;
+        if (typeof nested === "string" && nested.trim()) return nested.trim();
+      }
+      return null;
+    })();
+
     const ticket = {
-      id: row.id,
+      id: Number(row.id),
       ticket_number: row.ticket_id,
       ticket_id: row.ticket_id,
       ticket_type: row.ticket_type,
@@ -737,11 +757,11 @@ export async function GET(
       service_type: row.service_type,
       ticket_title: row.ticket_title,
       ticket_category: row.ticket_category,
-      order_id: row.order_id,
+      order_id: row.order_id != null ? Number(row.order_id) : null,
       order_formatted_id:
         typeof row.formatted_order_id === "string" && row.formatted_order_id.trim() !== ""
           ? row.formatted_order_id.trim()
-          : null,
+          : metaFormattedOrderId,
       order_service_type: row.order_type,
       raised_by_type: row.raised_by_type,
       raised_by_name:
@@ -842,7 +862,7 @@ export async function PATCH(
     }
     const { user } = auth;
 
-    const systemUser = await getSystemUserByEmail(user.email!);
+    const systemUser = await resolveSystemUserForSupabaseAuth(user.id, user.email);
     if (!systemUser) {
       return NextResponse.json({ success: false, error: "User not found" }, { status: 404 });
     }
@@ -869,7 +889,7 @@ export async function PATCH(
       body,
       {
         id: systemUser.id,
-        name: systemUser.fullName ?? systemUser.email ?? "Agent",
+        name: systemUser.full_name ?? systemUser.email ?? "Agent",
         email: systemUser.email ?? null,
       },
       { source: "manual_single" }
