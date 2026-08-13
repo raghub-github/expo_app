@@ -214,6 +214,12 @@ export function RiderPayoutRulesPanel(props: {
   );
   const [prePickupConfigLoaded, setPrePickupConfigLoaded] = useState(false);
 
+  // Backend-authoritative simulation (v3.2): the SAME /pricing/simulate engine order
+  // creation + settlement use, showing INDEPENDENT pre/post-pickup legs from the DB rules.
+  const [backendSim, setBackendSim] = useState<Record<string, unknown> | null>(null);
+  const [backendSimLoading, setBackendSimLoading] = useState(false);
+  const [backendSimError, setBackendSimError] = useState<string | null>(null);
+
   // Customer fare is computed from the same production Customer Slab Pricing Engine used at
   // checkout — never entered manually — so the preview always matches production exactly.
   const [customerSlabs, setCustomerSlabs] = useState<CustomerSlab[]>([]);
@@ -432,6 +438,72 @@ export function RiderPayoutRulesPanel(props: {
       funding: prePickupFunding,
     });
   }, [previewBreakdown, prePickupRaw, prePickupFunding]);
+
+  // Debounced call to the backend production engine — resolves the pre/post legs from the
+  // rider_leg_pricing rules at THIS node (independent rates), using the unsaved rider % for
+  // the pool so the preview reflects edits before Save.
+  const backendService = props.service === "ride" ? "person_ride" : props.service;
+  useEffect(() => {
+    if (!calcRule || customerFare <= 0 || validationError) {
+      setBackendSim(null);
+      setBackendSimError(null);
+      return;
+    }
+    let cancelled = false;
+    const t = setTimeout(async () => {
+      setBackendSimLoading(true);
+      setBackendSimError(null);
+      try {
+        const res = await fetch("/api/super-admin/pricing/simulate", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            service: backendService,
+            vehicleType: props.service === "ride" ? calcVehicleType : undefined,
+            customerFare,
+            pickupKm,
+            dropKm,
+            waitingAmount: previewBreakdown?.waitingAmount ?? 0,
+            surgeAmount: previewBreakdown?.surgeTotal ?? 0,
+            riderPercent: calcRule.riderPercentage,
+            geoLevel: props.level,
+            geoRefId: props.refId,
+          }),
+        });
+        const json = await res.json();
+        if (cancelled) return;
+        if (!res.ok) {
+          setBackendSim(null);
+          setBackendSimError(json?.message || json?.error || "Backend simulation failed");
+        } else {
+          setBackendSim(json);
+        }
+      } catch (e) {
+        if (!cancelled) {
+          setBackendSim(null);
+          setBackendSimError(e instanceof Error ? e.message : "Backend unreachable");
+        }
+      } finally {
+        if (!cancelled) setBackendSimLoading(false);
+      }
+    }, 400);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
+  }, [
+    calcRule,
+    customerFare,
+    validationError,
+    pickupKm,
+    dropKm,
+    previewBreakdown,
+    backendService,
+    calcVehicleType,
+    props.service,
+    props.level,
+    props.refId,
+  ]);
 
   async function submitAdd() {
     setBusyId("new");
@@ -710,6 +782,9 @@ export function RiderPayoutRulesPanel(props: {
                   </div>
                 ) : null}
 
+                {/* Backend engine — INDEPENDENT pre/post legs (authoritative, v3.2). */}
+                <BackendLegPanel sim={backendSim} loading={backendSimLoading} error={backendSimError} />
+
                 {/* Detailed Calculation Breakdown */}
                 <div className="mt-4 rounded-lg border border-teal-100 bg-white px-4 py-3">
                   <p className="text-xs font-semibold uppercase text-slate-500">Detailed calculation breakdown</p>
@@ -790,6 +865,98 @@ function MiniStat(props: { label: string; value: string; emphasize?: boolean }) 
       <p className={props.emphasize ? "text-xl font-bold text-teal-800" : "text-xl font-bold text-slate-800"}>
         {props.value}
       </p>
+    </div>
+  );
+}
+
+type SimLeg = {
+  distanceKm?: number;
+  ratePerKm?: number;
+  baseAmount?: number;
+  rawAmount?: number;
+  allocated?: number;
+  companyFunded?: number;
+  funding?: string;
+  ruleId?: number | null;
+  matched?: boolean;
+};
+type BackendSim = {
+  legs?: { pre?: SimLeg; post?: SimLeg };
+  rider?: {
+    pool?: number;
+    allocatedPrePickup?: number;
+    allocatedPostPickup?: number;
+    deliveryFeeFunded?: number;
+    companyFunded?: number;
+    riderDeliveryCredit?: number;
+    poolExcess?: number;
+  };
+};
+const rupee = (n: unknown) => `₹${(Number(n) || 0).toFixed(2)}`;
+
+/** Backend-authoritative independent pre/post legs (the same engine order + settlement use). */
+function BackendLegPanel(props: {
+  sim: Record<string, unknown> | null;
+  loading: boolean;
+  error: string | null;
+}) {
+  const sim = props.sim as BackendSim | null;
+  const pre = sim?.legs?.pre;
+  const post = sim?.legs?.post;
+  const rider = sim?.rider;
+
+  const legRow = (label: string, leg: SimLeg | undefined, fallback: string) => (
+    <div className="grid grid-cols-2 gap-x-6 gap-y-1 sm:grid-cols-4">
+      <span className="font-semibold text-slate-700">{label}</span>
+      {leg?.matched ? (
+        <>
+          <span>{(leg.distanceKm ?? 0).toFixed(2)} km × {rupee(leg.ratePerKm)}/km</span>
+          <span>raw {rupee(leg.rawAmount)} → alloc <b>{rupee(leg.allocated)}</b></span>
+          <span className="text-slate-500">
+            {leg.funding}
+            {leg.ruleId != null ? ` · rule #${leg.ruleId}` : ""}
+          </span>
+        </>
+      ) : (
+        <span className="sm:col-span-3 text-slate-500">
+          no rule at this node → {fallback} (alloc <b>{rupee(leg?.allocated)}</b>)
+        </span>
+      )}
+    </div>
+  );
+
+  return (
+    <div className="mt-4 rounded-lg border border-violet-200 bg-violet-50/40 px-4 py-3">
+      <div className="flex items-center justify-between">
+        <p className="text-xs font-bold uppercase tracking-wide text-violet-800">
+          Backend engine — independent pre/post legs (authoritative)
+        </p>
+        {props.loading ? (
+          <span className="flex items-center gap-1 text-xs text-violet-600">
+            <Loader2 className="h-3 w-3 animate-spin" /> resolving…
+          </span>
+        ) : null}
+      </div>
+      <p className="mt-0.5 text-[11px] text-violet-600">
+        POST /v1/pricing/simulate — the same engine order creation &amp; settlement use. Pre and
+        post resolve from separate rules; each shows its own distance × rate.
+      </p>
+      {props.error ? (
+        <p className="mt-2 text-sm text-amber-700">{props.error}</p>
+      ) : !sim ? (
+        <p className="mt-2 text-sm text-slate-500">Enter pickup + drop distance to simulate.</p>
+      ) : (
+        <div className="mt-2 space-y-1.5 text-sm text-slate-700">
+          {legRow("Pre-pickup (rider→pickup)", pre, "₹0 (no first-mile)")}
+          {legRow("Post-pickup (pickup→drop)", post, "pool remainder")}
+          <div className="grid grid-cols-2 gap-x-6 gap-y-1 border-t border-violet-100 pt-1.5 sm:grid-cols-4">
+            <span>Pool: <b>{rupee(rider?.pool)}</b></span>
+            <span>Ledger A: <b className="text-teal-800">{rupee(rider?.deliveryFeeFunded)}</b></span>
+            <span>Ledger B: <b className="text-violet-800">{rupee(rider?.companyFunded)}</b></span>
+            <span>Rider gets: <b className="text-teal-800">{rupee(rider?.riderDeliveryCredit)}</b></span>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -114,6 +114,28 @@ function emptyLeg(leg: RiderLegKind, distanceKm: number): ResolvedRiderLeg {
   };
 }
 
+function mapLegRow(row: EffectiveLegRow, leg: RiderLegKind, distanceKm: number): ResolvedRiderLeg {
+  const base = Math.max(0, num(row.base_amount));
+  const rate = Math.max(0, num(row.rate_per_km));
+  const minAmount = numOrNull(row.min_amount);
+  const maxAmount = numOrNull(row.max_amount);
+  return {
+    leg,
+    rawAmount: clampLegAmount(base + rate * distanceKm, minAmount, maxAmount),
+    distanceKm,
+    ratePerKm: rate,
+    baseAmount: base,
+    minAmount,
+    maxAmount,
+    funding: normalizeFunding(row.funding),
+    customerSharePct: Math.min(100, Math.max(0, num(row.customer_share_pct))),
+    ruleId: Number(row.id),
+    sourceLevel: String(row.geo_level),
+    sourceRefId: String(row.geo_ref_id),
+    matched: true,
+  };
+}
+
 /**
  * Resolve one leg's independent price for a location + distance. Returns a leg with
  * matched=false (rawAmount 0) when no rule is configured on the geo chain — the caller
@@ -126,9 +148,38 @@ export async function resolveRiderLegPricing(args: {
   weightKg?: number | null;
   distanceKm: number;
   geo: LegGeoRefs | null | undefined;
+  /** Direct geo node (dashboard knows level+refId) — skips pincode/coord resolution. */
+  geoNode?: { level: string; refId: string } | null;
 }): Promise<ResolvedRiderLeg> {
   const distanceKm = Math.max(0, num(args.distanceKm));
   const leg = args.leg;
+  const vehicle = args.vehicleType ?? null;
+  const weight = args.weightKg == null ? null : Number(args.weightKg);
+
+  // Direct-node mode: query the leg rule at the given node (closest-ancestor from there).
+  if (args.geoNode?.level && args.geoNode?.refId) {
+    const sql = getSql();
+    try {
+      const rows = await sql<EffectiveLegRow[]>`
+        SELECT id, base_amount, rate_per_km, min_amount, max_amount, funding,
+               customer_share_pct, geo_level, geo_ref_id
+        FROM rider_leg_pricing_effective(
+          ${leg}::text,
+          ${String(args.geoNode.level)}::geo_pricing_level,
+          ${String(args.geoNode.refId)}::uuid,
+          ${args.service}::order_type,
+          ${vehicle}::ride_vehicle_pricing_type,
+          ${weight}::numeric,
+          ${distanceKm}::numeric
+        )
+        LIMIT 1
+      `;
+      return rows[0] ? mapLegRow(rows[0], leg, distanceKm) : emptyLeg(leg, distanceKm);
+    } catch {
+      return emptyLeg(leg, distanceKm);
+    }
+  }
+
   if (!args.geo) return emptyLeg(leg, distanceKm);
 
   const pincode = args.geo.pincode ? String(args.geo.pincode).trim() : null;
@@ -157,8 +208,6 @@ export async function resolveRiderLegPricing(args: {
   }
   if (targets.length === 0) return emptyLeg(leg, distanceKm);
 
-  const vehicle = args.vehicleType ?? null;
-  const weight = args.weightKg == null ? null : Number(args.weightKg);
   const sql = getSql();
   try {
     const results = await Promise.all(
@@ -181,28 +230,7 @@ export async function resolveRiderLegPricing(args: {
       )
     );
     for (const rows of results) {
-      const row = rows[0];
-      if (!row) continue;
-      const base = Math.max(0, num(row.base_amount));
-      const rate = Math.max(0, num(row.rate_per_km));
-      const minAmount = numOrNull(row.min_amount);
-      const maxAmount = numOrNull(row.max_amount);
-      const rawAmount = clampLegAmount(base + rate * distanceKm, minAmount, maxAmount);
-      return {
-        leg,
-        rawAmount,
-        distanceKm,
-        ratePerKm: rate,
-        baseAmount: base,
-        minAmount,
-        maxAmount,
-        funding: normalizeFunding(row.funding),
-        customerSharePct: Math.min(100, Math.max(0, num(row.customer_share_pct))),
-        ruleId: Number(row.id),
-        sourceLevel: String(row.geo_level),
-        sourceRefId: String(row.geo_ref_id),
-        matched: true,
-      };
+      if (rows[0]) return mapLegRow(rows[0], leg, distanceKm);
     }
     return emptyLeg(leg, distanceKm);
   } catch {
