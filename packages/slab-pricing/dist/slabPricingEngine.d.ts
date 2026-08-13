@@ -133,4 +133,73 @@ export declare function normalizePrePickupFunding(raw: unknown, fallback?: PrePi
 export declare function defaultPrePickupFunding(service: string): PrePickupFunding;
 /** Compose the rider payout — the ONE place that decides pool-vs-company first-mile. */
 export declare function composeRiderPayout(input: RiderPayoutCompositionInput): RiderPayoutComposition;
+export type RiderLeg = {
+    /** Raw entitlement for this leg = base + rate x leg_km, clamped to [min,max]. */
+    rawAmount: number;
+    /** How this leg is funded. */
+    funding: PrePickupFunding;
+    /** For funding === "shared": % of the leg the CUSTOMER bears (rest is company). */
+    customerSharePct?: number;
+    /** Diagnostics carried through for the simulator/snapshot (not used in math). */
+    distanceKm?: number;
+    ratePerKm?: number;
+    ruleId?: number | null;
+};
+export type ReconcileRiderLegsInput = {
+    /** Rider base pool = eligible delivery fee x rider%. */
+    pool: number;
+    pre: RiderLeg;
+    post: RiderLeg;
+    surge?: number;
+    waiting?: number;
+    tip?: number;
+    /** Other company-funded incentives (dynamic night/rain/etc.). */
+    companyIncentive?: number;
+    /**
+     * When the customer-funded legs exceed the pool: true (default) caps them at the pool
+     * (rider gets the pool, excess dropped); false funds the excess from the company purse.
+     */
+    capExcessToPool?: boolean;
+};
+export type ReconciledLeg = {
+    rawAmount: number;
+    /** Customer-funded portion of the raw (drawn from the pool). */
+    customerFunded: number;
+    /** Company-funded portion of the raw (added on top, Ledger B). */
+    companyFunded: number;
+    /** Amount actually allocated to this leg out of the pool. */
+    allocated: number;
+    funding: PrePickupFunding;
+    distanceKm?: number;
+    ratePerKm?: number;
+    ruleId?: number | null;
+};
+export type ReconciledRiderPayout = {
+    pool: number;
+    pre: ReconciledLeg;
+    post: ReconciledLeg;
+    /** Customer-funded raw that did not fit in the pool (capped or company-funded). */
+    poolExcess: number;
+    /** Portion of poolExcess the company chose to fund (0 when capped). */
+    companyExcessTopup: number;
+    surge: number;
+    waiting: number;
+    tip: number;
+    companyIncentive: number;
+    /** Ledger A — customer / delivery-fee funded (pool + waiting), always <= pool + waiting. */
+    deliveryFeeFundedTotal: number;
+    /** Ledger B — company funded (company leg portions + excess top-up + surge + incentives). */
+    companyFundedTotal: number;
+    /** Single wallet delivery credit (excludes tip). */
+    riderDeliveryCredit: number;
+    /** Grand total = delivery credit + tip. */
+    riderTotal: number;
+};
+/**
+ * Reconcile two independently-priced legs against the rider % pool (v3.2).
+ * Pure — the ONE place that decides how raw pre/post entitlements become allocated pay.
+ */
+export declare function reconcileRiderLegs(input: ReconcileRiderLegsInput): ReconciledRiderPayout;
+/** Clamp a raw leg amount to configured [min,max]: min(max(base + rate*km, min), max). */
+export declare function clampLegAmount(raw: number, minAmount: number | null | undefined, maxAmount: number | null | undefined): number;
 //# sourceMappingURL=slabPricingEngine.d.ts.map

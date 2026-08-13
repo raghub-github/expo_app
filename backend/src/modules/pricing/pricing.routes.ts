@@ -6,6 +6,44 @@ import { z } from "zod";
 import { PricingService } from "./pricing.service.js";
 import { detectOfferConflicts } from "./offer-conflict.service.js";
 import { getStoreByStoreId } from "../merchants/merchant.service.js";
+import { reconcileRiderLegs } from "@gatimitra/slab-pricing";
+import { resolveOrderRiderPayoutBreakdown } from "../../lib/resolve-order-rider-payout.js";
+import { resolveRiderLegPricing, type LegVehicleType } from "../../lib/rider-leg-pricing.js";
+import type { DispatchServiceType } from "../../lib/order-assignment-engine.js";
+
+const riderSimulateSchema = z.object({
+  service: z.enum(["food", "parcel", "person_ride"]),
+  vehicleType: z.enum(["2_wheeler", "3_wheeler", "4_wheeler_non_ac", "4_wheeler_ac"]).optional(),
+  weightKg: z.number().nonnegative().optional(),
+  /** Eligible delivery fee = the pool basis. For GatiMitra Plus pass the GROSS entitlement. */
+  customerFare: z.number().positive(),
+  /** rider → pickup (first-mile). */
+  pickupKm: z.number().nonnegative(),
+  /** pickup → drop (delivery leg). */
+  dropKm: z.number().nonnegative(),
+  pincode: z.string().optional(),
+  state: z.string().optional(),
+  pickupLat: z.number().optional(),
+  pickupLng: z.number().optional(),
+  dropLat: z.number().optional(),
+  dropLng: z.number().optional(),
+  waitingMinutes: z.number().nonnegative().optional(),
+  tip: z.number().nonnegative().optional(),
+  riderId: z.number().int().positive().optional(),
+  /** true (default) caps customer-funded legs at the pool; false company-funds the overflow. */
+  capExcessToPool: z.boolean().optional(),
+  /** Dashboard live-preview: resolve legs at this exact geo node (skips pincode lookup). */
+  geoLevel: z.string().optional(),
+  geoRefId: z.string().optional(),
+  /**
+   * Dashboard live-preview override: use this rider % (from the unsaved form) for the pool
+   * instead of the saved DB rule, so the calculator reflects edits before Save. When set,
+   * surge/waiting come from the direct amounts below (the dashboard computes them).
+   */
+  riderPercent: z.number().min(0).max(100).optional(),
+  surgeAmount: z.number().nonnegative().optional(),
+  waitingAmount: z.number().nonnegative().optional(),
+});
 
 const productPriceSchema = z.object({
   storeId: z.union([z.string(), z.number()]),
@@ -129,5 +167,180 @@ export async function pricingRoutes(app: FastifyInstance): Promise<void> {
     }
     const settlement = PricingService.calculateSettlement(parsed.data.billingSnapshot);
     return reply.send({ ok: true, settlement });
+  });
+
+  /**
+   * POST /v1/pricing/simulate — authoritative rider payout with INDEPENDENT pre/post legs
+   * (Geo Delivery Pricing v3.2). Resolves pre (rider→pickup) and post (pickup→drop) from
+   * their OWN rules/rates/slabs, then reconciles against the rider % pool. Read-only; the
+   * dashboard simulator, and later order-creation/settlement, all call this one engine so
+   * the numbers can never diverge. Returns rule IDs, distances, rates, and both ledgers.
+   */
+  app.post("/simulate", async (req, reply) => {
+    const parsed = riderSimulateSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: "invalid_request", details: parsed.error.flatten() });
+    }
+    const b = parsed.data;
+    const payoutService: "food" | "parcel" | "ride" =
+      b.service === "person_ride" ? "ride" : b.service;
+    const legService = b.service as DispatchServiceType;
+    const legGeo = {
+      pincode: b.pincode ?? null,
+      state: b.state ?? null,
+      latitude: b.pickupLat ?? null,
+      longitude: b.pickupLng ?? null,
+    };
+
+    const round2 = (n: number) => Math.round(n * 100) / 100;
+    const geoNode =
+      b.geoLevel && b.geoRefId ? { level: b.geoLevel, refId: b.geoRefId } : null;
+
+    try {
+      // 1) Rider % pool.
+      let pool: number;
+      let waiting: number;
+      let surge: number;
+      let appliedSurges: { name: string; amount: number }[] = [];
+
+      if (b.riderPercent != null) {
+        // Mode B (dashboard live-preview): pool from the unsaved form %, surge/waiting supplied.
+        pool = Math.max(0, round2(b.customerFare * (b.riderPercent / 100)));
+        waiting = Math.max(0, b.waitingAmount ?? 0);
+        surge = Math.max(0, b.surgeAmount ?? 0);
+      } else {
+        // Mode A (authoritative): pool from the production payout engine (DB %-rule + geo).
+        const breakdown = await resolveOrderRiderPayoutBreakdown({
+          service: payoutService,
+          customerFare: b.customerFare,
+          pickupLat: b.pickupLat ?? 0,
+          pickupLng: b.pickupLng ?? 0,
+          dropLat: b.dropLat ?? 0,
+          dropLng: b.dropLng ?? 0,
+          pickupKm: b.pickupKm,
+          dropKm: b.dropKm,
+          pincode: b.pincode ?? null,
+          state: b.state ?? null,
+          riderId: b.riderId ?? null,
+          vehicleType: null,
+          rideCatalogCode: null,
+          waitingMinutes: b.waitingMinutes ?? 0,
+        });
+        if (!breakdown) {
+          return reply.code(422).send({
+            error: "no_payout_rule",
+            message: "No rider payout (% of fare) rule is configured for this service/location.",
+          });
+        }
+        waiting = Math.max(0, breakdown.waitingAmount);
+        surge = Math.max(0, breakdown.surgeTotal);
+        pool = Math.max(0, round2(breakdown.subtotalBeforeSurge - waiting));
+        appliedSurges = breakdown.appliedSurges;
+      }
+
+      // 2) Resolve the TWO legs INDEPENDENTLY (own rules, own distances, own rates). The
+      // dashboard passes the exact geo node; order-creation passes pincode/coords.
+      const vehicle: LegVehicleType = b.vehicleType ?? null;
+      const [preLeg, postLeg] = await Promise.all([
+        resolveRiderLegPricing({
+          leg: "pre",
+          service: legService,
+          vehicleType: vehicle,
+          weightKg: b.weightKg ?? null,
+          distanceKm: b.pickupKm,
+          geo: legGeo,
+          geoNode,
+        }),
+        resolveRiderLegPricing({
+          leg: "post",
+          service: legService,
+          vehicleType: vehicle,
+          weightKg: b.weightKg ?? null,
+          distanceKm: b.dropKm,
+          geo: legGeo,
+          geoNode,
+        }),
+      ]);
+
+      // 3) Reconcile the independent legs against the pool.
+      const reconciled = reconcileRiderLegs({
+        pool,
+        pre: {
+          rawAmount: preLeg.rawAmount,
+          funding: preLeg.funding,
+          customerSharePct: preLeg.customerSharePct,
+          distanceKm: preLeg.distanceKm,
+          ratePerKm: preLeg.ratePerKm,
+          ruleId: preLeg.ruleId,
+        },
+        post: {
+          rawAmount: postLeg.rawAmount,
+          funding: postLeg.funding,
+          customerSharePct: postLeg.customerSharePct,
+          distanceKm: postLeg.distanceKm,
+          ratePerKm: postLeg.ratePerKm,
+          ruleId: postLeg.ruleId,
+        },
+        surge,
+        waiting,
+        tip: b.tip ?? 0,
+        capExcessToPool: b.capExcessToPool,
+      });
+
+      return reply.send({
+        ok: true,
+        engine: "rider_leg_pricing_v3_2",
+        customer: { eligibleDeliveryFee: Math.round(b.customerFare * 100) / 100 },
+        pool: { riderPool: pool, waiting, surge, appliedSurges },
+        legs: {
+          pre: {
+            leg: "pre",
+            distanceKm: preLeg.distanceKm,
+            ratePerKm: preLeg.ratePerKm,
+            baseAmount: preLeg.baseAmount,
+            rawAmount: preLeg.rawAmount,
+            allocated: reconciled.pre.allocated,
+            customerFunded: reconciled.pre.customerFunded,
+            companyFunded: reconciled.pre.companyFunded,
+            funding: preLeg.funding,
+            ruleId: preLeg.ruleId,
+            matched: preLeg.matched,
+            sourceLevel: preLeg.sourceLevel,
+          },
+          post: {
+            leg: "post",
+            distanceKm: postLeg.distanceKm,
+            ratePerKm: postLeg.ratePerKm,
+            baseAmount: postLeg.baseAmount,
+            rawAmount: postLeg.rawAmount,
+            allocated: reconciled.post.allocated,
+            customerFunded: reconciled.post.customerFunded,
+            companyFunded: reconciled.post.companyFunded,
+            funding: postLeg.funding,
+            ruleId: postLeg.ruleId,
+            matched: postLeg.matched,
+            sourceLevel: postLeg.sourceLevel,
+          },
+        },
+        rider: {
+          pool: reconciled.pool,
+          allocatedPrePickup: reconciled.pre.allocated,
+          allocatedPostPickup: reconciled.post.allocated,
+          poolExcess: reconciled.poolExcess,
+          companyExcessTopup: reconciled.companyExcessTopup,
+          surge: reconciled.surge,
+          waiting: reconciled.waiting,
+          tip: reconciled.tip,
+          deliveryFeeFunded: reconciled.deliveryFeeFundedTotal,
+          companyFunded: reconciled.companyFundedTotal,
+          riderDeliveryCredit: reconciled.riderDeliveryCredit,
+          riderTotal: reconciled.riderTotal,
+        },
+      });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "simulate_failed";
+      req.log.error({ err: e }, "pricing_simulate_failed");
+      return reply.code(500).send({ error: "simulate_failed", message: msg });
+    }
   });
 }
