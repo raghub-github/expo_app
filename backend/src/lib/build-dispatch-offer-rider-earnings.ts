@@ -5,7 +5,7 @@
 
 import { eq } from "drizzle-orm";
 import { getDb } from "../db/client.js";
-import { ordersCore, ordersRide } from "../db/schema.js";
+import { ordersCore, ordersRide, ordersParcel } from "../db/schema.js";
 import {
   rideGeoFromCheckoutMetadata,
   rideTripDistanceFromCheckoutMetadata,
@@ -24,7 +24,10 @@ import {
   type PrePickupFunding,
 } from "./rider-payout-composition.js";
 import { reconcileRiderLegs } from "@gatimitra/slab-pricing";
-import { resolveRiderLegsForOrder } from "./resolve-rider-legs-for-order.js";
+import {
+  resolveRiderLegsForOrder,
+  resolveOrderLegVehicleType,
+} from "./resolve-rider-legs-for-order.js";
 import type { DispatchServiceType } from "./order-assignment-engine.js";
 
 export type DispatchOfferRiderEarnings = {
@@ -134,6 +137,8 @@ export async function buildDispatchOfferRiderEarnings(args: {
   if (!core) return null;
 
   let rideType: string | null = null;
+  let parcelWeightKg: number | null = null;
+  let parcelVehicleCategory: string | null = null;
   let tip = 0;
   if (service === "ride") {
     const [ride] = await db
@@ -148,9 +153,27 @@ export async function buildDispatchOfferRiderEarnings(args: {
     const t = Number(ride?.customerTipAmount ?? 0);
     tip = Number.isFinite(t) && t > 0 ? Math.round(t) : 0;
   } else {
+    if (service === "parcel") {
+      const [parcel] = await db
+        .select({
+          weightKg: ordersParcel.weightKg,
+          vehicleCategory: ordersParcel.vehicleCategory,
+        })
+        .from(ordersParcel)
+        .where(eq(ordersParcel.orderId, args.orderCoreId))
+        .limit(1);
+      const w = Number(parcel?.weightKg);
+      parcelWeightKg = Number.isFinite(w) && w > 0 ? w : null;
+      parcelVehicleCategory = parcel?.vehicleCategory ?? null;
+    }
     const t = Number(core.tipAmount ?? 0);
     tip = Number.isFinite(t) && t > 0 ? Math.round(t) : 0;
   }
+  const legVehicleType = resolveOrderLegVehicleType({
+    service,
+    rideCatalogCode: rideType,
+    parcelVehicleCategory,
+  });
 
   const customerFare = await resolveCustomerFareForRiderPayout(args.orderCoreId, service);
   if (customerFare <= 0) return null;
@@ -229,10 +252,12 @@ export async function buildDispatchOfferRiderEarnings(args: {
   // v3.2 — resolve the two legs INDEPENDENTLY. PRE falls back to the legacy first-mile when
   // no pre-leg rule exists; POST is 0 (⇒ pool remainder) when no post-leg rule exists — so
   // with an empty rider_leg_pricing table this is byte-identical to the v3.1 composition.
+  // Vehicle (ride catalog code / parcel booked category) + parcel weight are the order's
+  // REAL values, so vehicle-/weight-specific leg rules actually match real orders.
   const legs = await resolveRiderLegsForOrder({
     serviceType: args.serviceType,
-    vehicleType: null,
-    weightKg: null,
+    vehicleType: legVehicleType,
+    weightKg: parcelWeightKg,
     pickupKm: pickupDistanceKm,
     dropKm: tripDistanceKm,
     geo: {

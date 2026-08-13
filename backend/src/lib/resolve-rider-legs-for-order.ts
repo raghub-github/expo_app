@@ -14,8 +14,38 @@ import {
   type LegGeoRefs,
   type LegVehicleType,
 } from "./rider-leg-pricing.js";
+import { catalogCodeToPricingVehicle } from "../modules/ride-state-config/catalogVehicleMap.js";
 import type { PrePickupFunding } from "@gatimitra/slab-pricing";
 import type { DispatchServiceType } from "./order-assignment-engine.js";
+
+const VALID_LEG_VEHICLES = new Set<string>([
+  "2_wheeler",
+  "3_wheeler",
+  "4_wheeler_non_ac",
+  "4_wheeler_ac",
+]);
+
+/**
+ * Resolve the real vehicle for THIS order so vehicle-specific pre/post leg rules can
+ * actually match — without this, an admin-configured vehicle-specific rule never applies
+ * to a real order. Ride: catalog code (e.g. "auto") -> pricing vehicle via the same mapping
+ * already used for the customer-fare lookup. Parcel: the order's booked vehicle_category
+ * (already stored as the same enum strings). Food: no vehicle dimension.
+ */
+export function resolveOrderLegVehicleType(args: {
+  service: "food" | "parcel" | "ride";
+  rideCatalogCode?: string | null;
+  parcelVehicleCategory?: string | null;
+}): LegVehicleType {
+  if (args.service === "ride") {
+    return args.rideCatalogCode ? catalogCodeToPricingVehicle(args.rideCatalogCode) : null;
+  }
+  if (args.service === "parcel") {
+    const v = String(args.parcelVehicleCategory ?? "").trim();
+    return VALID_LEG_VEHICLES.has(v) ? (v as LegVehicleType) : null;
+  }
+  return null;
+}
 
 export type OrderLegResult = {
   amount: number;

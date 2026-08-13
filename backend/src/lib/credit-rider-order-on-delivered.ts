@@ -10,7 +10,10 @@ import {
   normalizePrePickupFunding,
 } from "./rider-payout-composition.js";
 import { reconcileRiderLegs } from "@gatimitra/slab-pricing";
-import { resolveRiderLegsForOrder } from "./resolve-rider-legs-for-order.js";
+import {
+  resolveRiderLegsForOrder,
+  resolveOrderLegVehicleType,
+} from "./resolve-rider-legs-for-order.js";
 import type { DispatchServiceType } from "./order-assignment-engine.js";
 
 export type RiderOrderWalletServiceType = "food" | "parcel" | "person_ride";
@@ -285,9 +288,12 @@ export async function creditRiderOrderEarningOnDelivered(
       r.ride_type,
       r.pickup_wait_seconds,
       r.estimated_fare,
-      r.final_fare
+      r.final_fare,
+      p.weight_kg AS parcel_weight_kg,
+      p.vehicle_category AS parcel_vehicle_category
     FROM orders_core c
     LEFT JOIN orders_ride r ON r.order_id = c.id
+    LEFT JOIN orders_parcel p ON p.order_id = c.id
     WHERE c.id = ${coreId}
     LIMIT 1
   `;
@@ -314,6 +320,8 @@ export async function creditRiderOrderEarningOnDelivered(
     pickup_wait_seconds?: number | null;
     estimated_fare?: unknown;
     final_fare?: unknown;
+    parcel_weight_kg?: unknown;
+    parcel_vehicle_category?: string | null;
   } | undefined;
 
   if (!row) {
@@ -435,10 +443,20 @@ export async function creditRiderOrderEarningOnDelivered(
   );
   const legRideGeo =
     settlementService === "ride" ? rideGeoFromCheckoutMetadata(row.checkout_metadata) : {};
+  // Vehicle (ride catalog code / parcel booked category) + parcel weight are the order's
+  // REAL values, so vehicle-/weight-specific leg rules actually match real orders (same
+  // resolution the offer used, so offered vehicle/weight rule == paid vehicle/weight rule).
+  const legVehicleType = resolveOrderLegVehicleType({
+    service: settlementService,
+    rideCatalogCode: row.ride_type,
+    parcelVehicleCategory: row.parcel_vehicle_category,
+  });
+  const parcelWeightNum = Number(row.parcel_weight_kg);
+  const legWeightKg = Number.isFinite(parcelWeightNum) && parcelWeightNum > 0 ? parcelWeightNum : null;
   const legs = await resolveRiderLegsForOrder({
     serviceType: serviceType as DispatchServiceType,
-    vehicleType: null,
-    weightKg: null,
+    vehicleType: legVehicleType,
+    weightKg: legWeightKg,
     pickupKm: legPickupKm,
     dropKm: legDropKm,
     geo: {
