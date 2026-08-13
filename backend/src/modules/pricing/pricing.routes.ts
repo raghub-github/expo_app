@@ -287,10 +287,28 @@ export async function pricingRoutes(app: FastifyInstance): Promise<void> {
         capExcessToPool: b.capExcessToPool,
       });
 
+      // Plain-language narration of which mode was used per leg, so the dashboard doesn't
+      // have to re-derive it client-side. Pure presentation — no new calculation: a leg's
+      // raw rate only changes the paid amount when its funding is company/shared (a real
+      // top-up) or when the pool was exceeded (an explicit, visible cap/shortfall).
+      const legExplanation = (
+        legFunding: "company" | "customer" | "shared",
+        legRaw: number
+      ): string => {
+        if (legFunding === "company") return "company guarantee, paid on top of the pool";
+        if (legFunding === "shared") return "part pool, part company top-up";
+        if (legRaw > 0 && reconciled.poolExcess > 0) return "capped at the pool (see poolExcess)";
+        return "carved from the pool (rate is informational only)";
+      };
+
       return reply.send({
         ok: true,
         engine: "rider_leg_pricing_v3_2",
         customer: { eligibleDeliveryFee: Math.round(b.customerFare * 100) / 100 },
+        explanation: {
+          pre: legExplanation(preLeg.funding, preLeg.rawAmount),
+          post: legExplanation(postLeg.funding, postLeg.rawAmount),
+        },
         pool: { riderPool: pool, waiting, surge, appliedSurges },
         legs: {
           pre: {

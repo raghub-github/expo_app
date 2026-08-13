@@ -205,6 +205,15 @@ export function RiderLegPricingPanel(props: {
           No {leg}-pickup rule at this node — {leg === "post" ? "post-pickup falls back to the pool remainder" : "first-mile is 0"}.
         </p>
       ) : (
+        <>
+          {leg === "post" && list.some(({ r }) => r.funding === "customer") ? (
+            <p className="mt-2 rounded-md border border-amber-200 bg-amber-50 px-2 py-1.5 text-[11px] text-amber-800">
+              Rows with Funding = <b>Customer</b> below: the rate/min/max are informational
+              only — the rider&apos;s actual post-pickup pay is always the pool remainder
+              (see the explainer above). Switch Funding to <b>Company</b> or <b>Shared</b> to
+              make a row&apos;s amount a real guaranteed top-up paid on top of the pool.
+            </p>
+          ) : null}
         <div className="mt-2 overflow-x-auto">
           <table className="w-full min-w-[880px] text-xs">
             <thead>
@@ -227,6 +236,11 @@ export function RiderLegPricingPanel(props: {
             <tbody>
               {list.map(({ r, i }) => {
                 const busy = busyId === r.id || (r.id <= 0 && busyId === `new-${leg}`);
+                // Informational-only in this mode (see the amber note above the table) —
+                // muted, not disabled, since the row still saves and the fields still
+                // matter diagnostically / if funding is later switched to Company or Shared.
+                const inert = leg === "post" && r.funding === "customer";
+                const amountInput = inert ? `${input} opacity-50` : input;
                 return (
                   <tr key={r.id > 0 ? r.id : `new-${i}`} className="align-top">
                     {showVehicle ? (
@@ -247,10 +261,10 @@ export function RiderLegPricingPanel(props: {
                     ) : null}
                     <td className="px-1 py-1"><input className={input} value={r.minKm} onChange={(e) => setRow(i, { minKm: e.target.value })} /></td>
                     <td className="px-1 py-1"><input className={input} value={r.maxKm} onChange={(e) => setRow(i, { maxKm: e.target.value })} placeholder="∞" /></td>
-                    <td className="px-1 py-1"><input className={input} value={r.baseAmount} onChange={(e) => setRow(i, { baseAmount: e.target.value })} placeholder={r.minKm.trim() === "0" ? "0" : "—"} disabled={r.minKm.trim() !== "0"} /></td>
-                    <td className="px-1 py-1"><input className={input} value={r.ratePerKm} onChange={(e) => setRow(i, { ratePerKm: e.target.value })} /></td>
-                    <td className="px-1 py-1"><input className={input} value={r.minAmount} onChange={(e) => setRow(i, { minAmount: e.target.value })} placeholder="—" /></td>
-                    <td className="px-1 py-1"><input className={input} value={r.maxAmount} onChange={(e) => setRow(i, { maxAmount: e.target.value })} placeholder="—" /></td>
+                    <td className="px-1 py-1"><input className={amountInput} value={r.baseAmount} onChange={(e) => setRow(i, { baseAmount: e.target.value })} placeholder={r.minKm.trim() === "0" ? "0" : "—"} disabled={r.minKm.trim() !== "0"} title={inert ? "Informational only while Funding = Customer" : undefined} /></td>
+                    <td className="px-1 py-1"><input className={amountInput} value={r.ratePerKm} onChange={(e) => setRow(i, { ratePerKm: e.target.value })} title={inert ? "Informational only while Funding = Customer" : undefined} /></td>
+                    <td className="px-1 py-1"><input className={amountInput} value={r.minAmount} onChange={(e) => setRow(i, { minAmount: e.target.value })} placeholder="—" title={inert ? "Informational only while Funding = Customer" : undefined} /></td>
+                    <td className="px-1 py-1"><input className={amountInput} value={r.maxAmount} onChange={(e) => setRow(i, { maxAmount: e.target.value })} placeholder="—" title={inert ? "Informational only while Funding = Customer" : undefined} /></td>
                     <td className="px-1 py-1">
                       <select className={input} value={r.funding} onChange={(e) => setRow(i, { funding: e.target.value as Funding })}>
                         <option value="company">Company</option>
@@ -281,6 +295,7 @@ export function RiderLegPricingPanel(props: {
             </tbody>
           </table>
         </div>
+        </>
       )}
     </div>
   );
@@ -295,6 +310,15 @@ export function RiderLegPricingPanel(props: {
       <p className="mt-0.5 flex flex-wrap items-center gap-1 text-[11px] text-slate-500">
         Independent ₹/km rules per leg. <b>Pre-pickup</b> <span className="inline-flex items-center gap-0.5">rider <ArrowRight className="h-3 w-3" /> pickup</span>, <b>Post-pickup</b> <span className="inline-flex items-center gap-0.5">pickup <ArrowRight className="h-3 w-3" /> drop</span>. Closest-ancestor-wins; the calculator above reflects these live.
       </p>
+      <div className="mt-2 rounded-lg border border-violet-100 bg-white px-3 py-2 text-[11px] leading-relaxed text-slate-600">
+        <b className="text-violet-800">How the rider is actually paid:</b> Rider base pool =
+        eligible delivery fee × rider %. <b>Pre-pickup</b> is deducted from that pool first.{" "}
+        <b>Post-pickup</b> is whatever remains — it has <b>no separate rate</b> of its own
+        unless its Funding below is <b>Company</b> or <b>Shared</b>, in which case that
+        portion is a guaranteed top-up paid <b>on top of</b> the pool (and does not reduce
+        the other leg). A rate typed into a <b>Customer</b>-funded post-pickup row is
+        informational only.
+      </div>
       {loading ? (
         <p className="mt-3 flex items-center gap-2 text-sm text-slate-500"><Loader2 className="h-4 w-4 animate-spin" /> Loading leg rules…</p>
       ) : (
