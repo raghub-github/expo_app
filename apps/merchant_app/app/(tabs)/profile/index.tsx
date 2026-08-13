@@ -464,14 +464,9 @@ export default function ProfileScreen() {
             <Text style={styles.menuLabel}>Bank Account</Text>
             <Ionicons name="chevron-forward" size={18} color={GatiMitraMerchant.textTertiary} />
           </Pressable>
-          <Pressable onPress={navigate("status")} style={({ pressed }) => [styles.menuRow, pressed && styles.menuRowPressed, GatiMitraMerchant.cursorPointer]}>
+          <Pressable onPress={navigate("status")} style={({ pressed }) => [styles.menuRow, styles.menuRowLast, pressed && styles.menuRowPressed, GatiMitraMerchant.cursorPointer]}>
             <Ionicons name="pulse-outline" size={20} color={GatiMitraMerchant.primary} />
             <Text style={styles.menuLabel}>Store Status</Text>
-            <Ionicons name="chevron-forward" size={18} color={GatiMitraMerchant.textTertiary} />
-          </Pressable>
-          <Pressable onPress={() => navPush("/(tabs)/earnings")} style={({ pressed }) => [styles.menuRow, styles.menuRowLast, pressed && styles.menuRowPressed, GatiMitraMerchant.cursorPointer]}>
-            <Ionicons name="wallet-outline" size={20} color={GatiMitraMerchant.primary} />
-            <Text style={styles.menuLabel}>Earnings Summary</Text>
             <Ionicons name="chevron-forward" size={18} color={GatiMitraMerchant.textTertiary} />
           </Pressable>
         </View>

@@ -86,19 +86,22 @@ export function MerchantStoreOperationsModals({
 
       {showClosePopup && (
         <div
-          className="fixed inset-0 z-[120] flex items-center justify-center bg-black/50 backdrop-blur-md p-4"
+          className="fixed inset-0 z-[120] flex justify-end bg-black/40 backdrop-blur-[1px]"
           role="dialog"
           aria-modal="true"
           aria-labelledby="dashboard-close-store-title"
           onClick={handleCancelClosePopup}
         >
           <div
-            className="mx-auto w-full max-w-md rounded-2xl border border-gray-200 bg-white p-6 shadow-2xl"
+            className="flex h-dvh w-full max-w-md flex-col border-l border-gray-200 bg-white shadow-2xl"
             onClick={(e) => e.stopPropagation()}
           >
-            <h2 id="dashboard-close-store-title" className="mb-4 text-lg font-bold text-gray-900">
-              How would you like to close your store?
-            </h2>
+            <div className="shrink-0 border-b border-gray-100 px-5 py-4">
+              <h2 id="dashboard-close-store-title" className="text-lg font-bold text-gray-900">
+                How would you like to close your store?
+              </h2>
+            </div>
+            <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
             <div className="space-y-3">
               <label
                 className={`flex cursor-pointer items-center gap-3 rounded-lg border-2 p-3 ${
@@ -220,7 +223,8 @@ export function MerchantStoreOperationsModals({
                 />
               )}
             </div>
-            <div className="mt-5 flex gap-3">
+            </div>
+            <div className="shrink-0 border-t border-gray-100 px-5 py-4 flex gap-3">
               <button
                 type="button"
                 onClick={handleCancelClosePopup}

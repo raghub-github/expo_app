@@ -38,9 +38,9 @@ import { shortLocalityFromAddress } from "@/lib/selectedStoreStorage";
 
 const POLL_FAST_MS = 15_000;
 const POLL_NORMAL_MS = 25_000;
-const POLL_BACKOFF_MS = 45_000;
+const POLL_BACKOFF_MS = 60_000;
 /** Avoid stampeding the API when managing many outlets at once. */
-const ORDERS_FETCH_CONCURRENCY = 4;
+const ORDERS_FETCH_CONCURRENCY = 2;
 
 async function mapInBatches<T, R>(
   items: T[],
@@ -210,8 +210,6 @@ export function OrdersProvider({ children }: { children: ReactNode }) {
         if (__DEV__) {
           console.log(`[orders] food-orders ok count=${merged.length}`);
         }
-        fetchFailStreakRef.current = 0;
-        setPollFailStreak(0);
         setOrders((current) => {
           const next = mergePendingOptimistic(merged);
           if (transitionInFlightRef.current.size === 0) return next;
@@ -225,6 +223,9 @@ export function OrdersProvider({ children }: { children: ReactNode }) {
             return local ?? serverRow;
           });
         });
+        const recovering = fetchFailStreakRef.current > 0;
+        fetchFailStreakRef.current = 0;
+        setPollFailStreak(0);
         for (const sid of orderStoreIds) {
           const slice = merged.filter((o) => o.merchantStoreId === sid);
           prefetchMenuItemsForOrders(
@@ -232,8 +233,9 @@ export function OrdersProvider({ children }: { children: ReactNode }) {
             token,
             slice.flatMap((o) => o.lineItems)
           );
-          // Prefetch at most a few live timelines — skip enrichment (riders-log +
-          // actions) on poll; that was starving the DB pool and timing out food-orders.
+          // Prefetch at most one live timeline — skip while recovering from timeouts
+          // so we don't re-stampede the device HTTP pool.
+          if (recovering) continue;
           const liveForPrefetch = slice
             .filter(
               (o) =>
@@ -242,7 +244,7 @@ export function OrdersProvider({ children }: { children: ReactNode }) {
                 o.status !== "rejected" &&
                 o.status !== "rto"
             )
-            .slice(0, 2);
+            .slice(0, 1);
           for (const row of liveForPrefetch) {
             const foodId = parseInt(row.id, 10);
             if (Number.isFinite(foodId)) {

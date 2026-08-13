@@ -122,18 +122,33 @@ async function notifyMerchantStore(
   });
 }
 
-/** Zomato-style idle / online reminder when store is accepting orders. */
+/** Idle / online reminder when store starts accepting orders — same copy as waiting-for-order inbox. */
 export async function notifyMerchantStoreOnline(sql: Sql, storeId: number): Promise<void> {
-  const title = "🟢 Your restaurant is online";
-  const body = "Waiting for orders";
+  const { WAITING_FOR_ORDER_TITLE, WAITING_FOR_ORDER_BODY, ensureWaitingForOrderInbox } = await import(
+    "./merchant-waiting-for-order.js"
+  );
+  const ensured = await ensureWaitingForOrderInbox(storeId);
+  if (ensured.suppressed) return;
+  // Only push when the waiting-for-order inbox row is newly created (store just came online).
+  // Avoid re-pushing every schedule tick while already online.
+  if (!ensured.created) return;
+
   await notifyMerchantStore(sql, {
     storeId,
     type: "system",
-    title,
-    body,
+    title: WAITING_FOR_ORDER_TITLE,
+    body: WAITING_FOR_ORDER_BODY,
     actionUrl: "/(tabs)/",
-    pushData: { type: "store_online", screen: "notifications" },
+    pushData: {
+      type: "store_online",
+      notificationType: "store_online",
+      screen: "home",
+      merchantId: storeId,
+      url: "/(tabs)/",
+    },
     channelId: "merchant_online",
+    // Inbox row already inserted by ensureWaitingForOrderInbox.
+    skipInbox: true,
   });
 }
 

@@ -4,7 +4,7 @@ import { createSafeFetchWithTimeout } from '@/lib/auth/fetch-with-timeout';
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || '';
 const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
 const hasEnv = Boolean(supabaseUrl && supabaseAnonKey);
-const browserFetch = createSafeFetchWithTimeout(15_000);
+const browserFetch = createSafeFetchWithTimeout(8_000);
 
 if (!hasEnv && typeof window !== 'undefined') {
 	// Browser-only warning — silence build/SSG which loads this module before

@@ -210,6 +210,11 @@ function LoginPageContent() {
     try {
       const checkRes = await fetch(`/api/auth/check-existing?phone=${encodeURIComponent(p)}`);
       const checkData = await checkRes.json().catch(() => ({}));
+      if (!checkRes.ok || checkData.code === 'SERVICE_UNAVAILABLE') {
+        showLoginError('Unable to verify this mobile number right now. Please try again in a moment.');
+        setLoading(false);
+        return;
+      }
       if (checkData.exists !== true) {
         showLoginError('No merchant account found for this mobile number. Please register first.');
         setLoading(false);
@@ -247,6 +252,11 @@ function LoginPageContent() {
     try {
       const checkRes = await fetch(`/api/auth/check-existing?phone=${encodeURIComponent(p)}`);
       const checkData = await checkRes.json().catch(() => ({}));
+      if (!checkRes.ok || checkData.code === 'SERVICE_UNAVAILABLE') {
+        showLoginError('Unable to verify this mobile number right now. Please try again in a moment.');
+        setLoading(false);
+        return;
+      }
       if (checkData.exists !== true) {
         showLoginError('No merchant account found for this mobile number. Please register first.');
         setLoading(false);

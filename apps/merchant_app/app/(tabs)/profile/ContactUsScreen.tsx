@@ -17,6 +17,7 @@ import { useSelectedStore } from "@/context/SelectedStoreContext";
 import { fetchMerchantHelpSections } from "@/services/ticketApi";
 import { MerchantTicketOrderPickSheet } from "@/components/support/MerchantTicketOrderPickSheet";
 import type { ApiFoodOrder } from "@/services/ordersApi";
+import { topicRequiresOrderSelection } from "@/lib/supportOrderRequiredTopics";
 
 type HelpSection = {
   id: string;
@@ -33,10 +34,10 @@ type PendingChatDraft = {
   selectedIssue: string;
 };
 
-/** Sections where ticket intake requires picking an order first (Partner Site parity). */
+/** True when this section (or any of its quick options) needs an order pick. */
 function sectionNeedsOrderPick(section: HelpSection): boolean {
-  if (section.quickOptions.length > 0) return true;
-  return section.sectionCode === "order_timing" || section.sectionCode === "orders";
+  if (topicRequiresOrderSelection(section.title)) return true;
+  return section.quickOptions.some((opt) => topicRequiresOrderSelection(opt));
 }
 
 function resolveHelpHubIcon(fromDb: string | null): keyof typeof Ionicons.glyphMap {
@@ -135,16 +136,28 @@ export default function ContactUsScreen() {
       openChat(section);
       return;
     }
-    if (section.quickOptions.length > 0) {
-      setOptionsSection(section);
+    const orderRequiredOptions = section.quickOptions.filter((opt) =>
+      topicRequiresOrderSelection(opt)
+    );
+    if (orderRequiredOptions.length > 0) {
+      // Show only order-required options; other quick options go straight to chat.
+      setOptionsSection({ ...section, quickOptions: orderRequiredOptions });
       return;
     }
-    setPendingDraft({ section, selectedIssue: section.title });
-    setOrderPickVisible(true);
+    if (topicRequiresOrderSelection(section.title)) {
+      setPendingDraft({ section, selectedIssue: section.title });
+      setOrderPickVisible(true);
+      return;
+    }
+    openChat(section);
   };
 
   const onQuickOptionPress = (section: HelpSection, option: string) => {
     setOptionsSection(null);
+    if (!topicRequiresOrderSelection(option)) {
+      openChat(section, undefined, option);
+      return;
+    }
     setPendingDraft({ section, selectedIssue: option });
     setOrderPickVisible(true);
   };

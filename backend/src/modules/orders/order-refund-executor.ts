@@ -90,6 +90,45 @@ function buildExecutionKey(orderCoreId: number, refundId: number): string {
     .digest("hex");
 }
 
+/**
+ * Razorpay's SDK often throws a plain object (statusCode + error.description),
+ * not an Error. `String(err)` then becomes "[object Object]" and is stored on
+ * order_refunds.failure_reason — which is what the 442k FAILED rows contain.
+ * Never include secrets/keys; keep the string short for the TEXT column.
+ */
+function serializeRefundFailure(err: unknown): string {
+  const clip = (s: string) => s.replace(/\s+/g, " ").trim().slice(0, 500);
+  if (err == null) return "unknown_error";
+  if (typeof err === "string") return clip(err) || "unknown_error";
+  if (err instanceof Error) {
+    const msg = clip(err.message);
+    if (msg && msg !== "[object Object]") return msg;
+  }
+  if (typeof err === "object") {
+    const o = err as Record<string, unknown>;
+    const nested =
+      o.error != null && typeof o.error === "object"
+        ? (o.error as Record<string, unknown>)
+        : null;
+    const parts: string[] = [];
+    const code = nested?.code ?? o.code;
+    const description = nested?.description ?? o.description ?? o.message;
+    const status = o.statusCode ?? o.status ?? nested?.statusCode;
+    if (code != null && String(code).trim()) parts.push(String(code));
+    if (description != null && String(description).trim()) parts.push(String(description));
+    if (status != null && String(status).trim()) parts.push(`status=${String(status)}`);
+    if (parts.length > 0) return clip(parts.join(" | "));
+    try {
+      const json = JSON.stringify(o);
+      if (json && json !== "{}") return clip(json);
+    } catch {
+      /* circular */
+    }
+  }
+  const fallback = clip(String(err));
+  return fallback && fallback !== "[object Object]" ? fallback : "unserializable_error";
+}
+
 interface OrderPaymentSnapshot {
   ordersCorePaymentId: number | null;
   gateway: string;              // razorpay | wallet | mixed | cod | ...
@@ -1018,7 +1057,7 @@ export async function executeOrderRefund(
       idempotent: false,
     };
   } catch (err) {
-    const msg = (err as Error)?.message ?? String(err);
+    const msg = serializeRefundFailure(err);
     await markFailed(sql, args.refundId, executionKey, msg, args.actor, route);
     await syncOrderRefundCompletionMarkers({
       orderCoreId: args.orderCoreId,

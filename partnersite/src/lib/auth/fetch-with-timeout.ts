@@ -1,35 +1,79 @@
 /**
- * Fetch wrapper that aborts after a timeout to avoid long hangs when Supabase (or other APIs) is unreachable.
- * Use this for auth/session calls so the app fails fast and returns 503 instead of waiting for connect timeout.
+ * Fetch wrapper that aborts after a timeout to avoid long hangs when Supabase is unreachable.
+ *
+ * IMPORTANT: Never throw on timeout/network. @supabase/auth-js treats thrown fetch errors
+ * (and HTTP 502/503/504) as AuthRetryableFetchError and retries for ~30s+, flooding logs.
+ * Return a non-retryable 408 so callers fail once and fast.
+ *
+ * auth-js still console.error's AuthApiError from getUser/recovery — use
+ * `runWithQuietAuthTimeoutErrors` around those calls to keep the terminal usable.
  */
 
-const DEFAULT_TIMEOUT_MS = 12_000;
+const DEFAULT_TIMEOUT_MS = 5_000;
+
+function timeoutResponse(): Response {
+  return new Response(JSON.stringify({ error: "request_timeout", message: "Upstream timeout" }), {
+    status: 408,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+function isQuietAuthTimeoutLogArg(arg: unknown): boolean {
+  if (!arg || typeof arg !== "object") return false;
+  const e = arg as { __isAuthError?: boolean; status?: number; message?: string; name?: string };
+  if (e.__isAuthError && (e.status === 408 || e.status === 0)) return true;
+  const msg = String(e.message ?? "").toLowerCase();
+  return (
+    msg.includes("upstream timeout") ||
+    msg.includes("request_timeout") ||
+    (msg.includes("operation was aborted") && (e.name === "AbortError" || e.__isAuthError === true))
+  );
+}
+
+/** Suppress auth-js console.error spam for expected timeout / abort failures. */
+export async function runWithQuietAuthTimeoutErrors<T>(fn: () => Promise<T>): Promise<T> {
+  const original = console.error;
+  console.error = (...args: unknown[]) => {
+    if (args.some(isQuietAuthTimeoutLogArg)) return;
+    original.apply(console, args as Parameters<typeof console.error>);
+  };
+  try {
+    return await fn();
+  } finally {
+    console.error = original;
+  }
+}
 
 export function createFetchWithTimeout(timeoutMs: number = DEFAULT_TIMEOUT_MS): typeof fetch {
   return (input: RequestInfo | URL, init?: RequestInit) => {
     const controller = new AbortController();
-    const id = setTimeout(() => controller.abort(), timeoutMs);
-    const requestInit: RequestInit = {
-      ...init,
-      signal: init?.signal ?? controller.signal,
-    };
-    return fetch(input, requestInit).finally(() => clearTimeout(id));
+    const id = setTimeout(() => {
+      try {
+        controller.abort();
+      } catch {
+        /* ignore */
+      }
+    }, timeoutMs);
+
+    const external = init?.signal;
+    if (external) {
+      if (external.aborted) {
+        controller.abort();
+      } else {
+        external.addEventListener("abort", () => controller.abort(), { once: true });
+      }
+    }
+
+    const { signal: _ignored, ...rest } = init ?? {};
+    return fetch(input, { ...rest, signal: controller.signal })
+      .catch(() => timeoutResponse())
+      .finally(() => clearTimeout(id));
   };
 }
 
 /**
- * Safe fetch that never throws: on network/timeout failure returns a 503 Response.
- * Use in Edge/Proxy so Supabase auth gets a response and doesn't log "fetch failed" to console.
+ * Alias — same non-throwing timeout behavior (kept for existing imports).
  */
-export function createSafeFetchWithTimeout(timeoutMs: number = 6_000): typeof fetch {
-  const timeoutFetch = createFetchWithTimeout(timeoutMs);
-  return (input: RequestInfo | URL, init?: RequestInit) =>
-    timeoutFetch(input, init).catch(() =>
-      Promise.resolve(
-        new Response(JSON.stringify({ error: "Service temporarily unavailable" }), {
-          status: 503,
-          headers: { "Content-Type": "application/json" },
-        })
-      )
-    );
+export function createSafeFetchWithTimeout(timeoutMs: number = 5_000): typeof fetch {
+  return createFetchWithTimeout(timeoutMs);
 }

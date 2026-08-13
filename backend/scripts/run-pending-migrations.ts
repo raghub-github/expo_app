@@ -27,6 +27,18 @@ loadEnv();
 const env = getEnv();
 const sql = postgres(env.DATABASE_URL, { max: 1, idle_timeout: 30, connect_timeout: 30 });
 
+/** CREATE INDEX CONCURRENTLY needs session mode, not PgBouncer transaction pooling. */
+function toSessionModeUrl(url: string): string {
+  const u = new URL(url);
+  if (u.port === "6543") u.port = "5432";
+  u.searchParams.delete("pgbouncer");
+  return u.toString();
+}
+
+function isConcurrentIndexSql(content: string): boolean {
+  return /CREATE\s+(UNIQUE\s+)?INDEX\s+CONCURRENTLY/i.test(content);
+}
+
 function listForwardMigrations(): string[] {
   return fs
     .readdirSync(drizzleDir)
@@ -120,6 +132,12 @@ async function probeApplied(file: string): Promise<boolean> {
         SELECT 1 FROM public.schema_migrations
         WHERE version = '0487_repair_accept_timeout_pending_refunds'
       ) AS ok`,
+    "0523_order_refunds_orderid_created_idx.sql": `
+      SELECT EXISTS (
+        SELECT 1 FROM pg_indexes
+        WHERE schemaname = 'public'
+          AND indexname = 'idx_or_orderid_created_active_refund'
+      ) AS ok`,
   };
   const q = probes[file];
   if (!q) return false;
@@ -168,7 +186,23 @@ async function main() {
     const started = Date.now();
     console.log(`\n→ Applying ${f} …`);
     try {
-      await sql.unsafe(content);
+      if (isConcurrentIndexSql(content)) {
+        const sessionUrl = toSessionModeUrl(env.DATABASE_URL);
+        const sessionSql = postgres(sessionUrl, {
+          max: 1,
+          idle_timeout: 30,
+          connect_timeout: 60,
+          prepare: false,
+        });
+        try {
+          await sessionSql.unsafe("SET statement_timeout = 0");
+          await sessionSql.unsafe(content);
+        } finally {
+          await sessionSql.end({ timeout: 5 });
+        }
+      } else {
+        await sql.unsafe(content);
+      }
       const ms = Date.now() - started;
       await sql`
         INSERT INTO public.schema_migrations (version, name, execution_time_ms)

@@ -63,7 +63,7 @@ export function LoginPageShell({
             <Image
               src="/logo.png"
               alt="GatiMitra"
-              width={140}
+              width={160}
               height={40}
               className={`w-auto object-contain ${isWide ? 'h-8' : 'h-9'}`}
               priority

@@ -12,6 +12,7 @@ import {
 import { invalidatePartnerPushBackendCache } from "@/lib/browser-push/partner-push-status";
 import { PARTNER_SELECTED_STORE_CHANGED } from "@/lib/partner-selected-store";
 import { useMerchantSession } from "@/context/MerchantSessionContext";
+import { mapMerchantAppDeepLinkToPartnersite } from "@/lib/mapMerchantAppDeepLink";
 
 /** Only run on authenticated partner console routes — never on /auth/*. */
 function isPartnerDashboardPath(pathname: string): boolean {
@@ -132,15 +133,25 @@ export function PartnerBrowserPushBootstrap() {
       const deepRaw =
         (typeof payload.data?.deep_link === "string" && payload.data.deep_link) ||
         (typeof payload.data?.deepLink === "string" && payload.data.deepLink) ||
-        "/mx/food-orders";
-      let href = deepRaw;
+        (typeof payload.data?.url === "string" && payload.data.url) ||
+        "/partners/dashboard";
+      let href = mapMerchantAppDeepLinkToPartnersite(deepRaw, {
+        preferMx: pathname.startsWith("/mx"),
+      });
       try {
         if (/^https?:\/\//i.test(deepRaw)) {
           const u = new URL(deepRaw);
-          href = u.origin === window.location.origin ? `${u.pathname}${u.search}` : deepRaw;
+          href =
+            u.origin === window.location.origin
+              ? mapMerchantAppDeepLinkToPartnersite(`${u.pathname}${u.search}`, {
+                  preferMx: pathname.startsWith("/mx"),
+                })
+              : deepRaw;
         }
       } catch {
-        href = "/mx/food-orders";
+        href = mapMerchantAppDeepLinkToPartnersite("/partners/dashboard", {
+          preferMx: pathname.startsWith("/mx"),
+        });
       }
       toast(title, {
         description: body || undefined,
@@ -161,7 +172,7 @@ export function PartnerBrowserPushBootstrap() {
       permissionStatus?.removeEventListener("change", onPermissionsApiChange);
       unsub();
     };
-  }, [onDashboard, ready, authenticated, tryRegisterIfGranted, reconcilePermissionState]);
+  }, [onDashboard, ready, authenticated, tryRegisterIfGranted, reconcilePermissionState, pathname]);
 
   return null;
 }

@@ -51,11 +51,11 @@ export async function notifyMerchantStoreNewOrder(
     /* omit amount rather than show customer grand_total */
   }
 
-  const title = "New order!";
+  const title = "New Order Received! 🔔";
   const body =
     total != null && total > 0
-      ? `${displayId} · ₹${formatExactMerchantInr(total)} — tap to accept`
-      : `${displayId} — tap to accept`;
+      ? `You have a new order waiting for confirmation. ${displayId} · ₹${formatExactMerchantInr(total)}`
+      : "You have a new order waiting for confirmation.";
 
   // Legacy in-app inbox row (kept for backward compat with the merchant app's
   // existing notifications tab reading merchant_store_notifications).

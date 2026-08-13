@@ -7,8 +7,8 @@ import {
 } from "@/lib/auth/session-errors";
 import { validateMerchantFromSession } from "@/lib/auth/validate-merchant";
 
-const maxGetUserAttempts = 3;
-const retryDelaysMs = [800, 1600];
+const maxGetUserAttempts = 2;
+const retryDelaysMs = [500];
 
 /** GET /api/auth/merchant-session — legacy path; prefer /api/merchant-auth/merchant-session */
 export async function GET(_request: NextRequest) {
@@ -18,19 +18,24 @@ export async function GET(_request: NextRequest) {
     let userError: unknown = null;
 
     for (let attempt = 1; attempt <= maxGetUserAttempts; attempt++) {
-      const result = await supabase.auth.getUser();
-      user = result.data?.user
-        ? {
-            id: result.data.user.id,
-            email: result.data.user.email ?? undefined,
-            phone: result.data.user.phone ?? undefined,
-          }
-        : null;
-      userError = result.error ?? null;
+      try {
+        const result = await supabase.auth.getUser();
+        user = result.data?.user
+          ? {
+              id: result.data.user.id,
+              email: result.data.user.email ?? undefined,
+              phone: result.data.user.phone ?? undefined,
+            }
+          : null;
+        userError = result.error ?? null;
+      } catch (err) {
+        user = null;
+        userError = err;
+      }
       if (!userError && user) break;
       if (userError && isRefreshTokenAlreadyUsed(userError)) {
         if (attempt < maxGetUserAttempts) {
-          await new Promise((r) => setTimeout(r, retryDelaysMs[attempt - 1] ?? 1000));
+          await new Promise((r) => setTimeout(r, retryDelaysMs[attempt - 1] ?? 500));
           continue;
         }
         break;
@@ -38,11 +43,7 @@ export async function GET(_request: NextRequest) {
       if (userError && isFatalRefreshTokenError(userError)) break;
       if (userError && isNetworkOrTransientError(userError)) break;
       if (userError && attempt < maxGetUserAttempts) {
-        await new Promise((r) => setTimeout(r, retryDelaysMs[attempt - 1] ?? 1000));
-        continue;
-      }
-      if (!user && !userError && attempt < maxGetUserAttempts) {
-        await new Promise((r) => setTimeout(r, 400));
+        await new Promise((r) => setTimeout(r, retryDelaysMs[attempt - 1] ?? 500));
         continue;
       }
       break;

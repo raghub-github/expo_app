@@ -10,6 +10,9 @@ type ProfileNavContextValue = {
   returnRoute: string | null;
   setReturnRoute: (route: string | null) => void;
   clearReturnRoute: () => void;
+  /** Schedule-off screen: sync MerchantHeader title/subtitle to selected tab. */
+  vacationHeader: { title: string; subtitle: string } | null;
+  setVacationHeader: (v: { title: string; subtitle: string } | null) => void;
 };
 
 const ProfileNavContext = createContext<ProfileNavContextValue | null>(null);
@@ -18,6 +21,10 @@ export function ProfileNavProvider({ children }: { children: ReactNode }) {
   const [lastProfileSlug, setLastProfileSlugState] = useState<string | null>(null);
   const [openProfileRootOnNextFocus, setOpenProfileRootOnNextFocus] = useState(false);
   const [returnRoute, setReturnRouteState] = useState<string | null>(null);
+  const [vacationHeader, setVacationHeaderState] = useState<{
+    title: string;
+    subtitle: string;
+  } | null>(null);
 
   const setLastProfileSlug = useCallback((slug: string | null) => {
     setLastProfileSlugState(slug);
@@ -31,6 +38,10 @@ export function ProfileNavProvider({ children }: { children: ReactNode }) {
     setReturnRouteState(null);
   }, []);
 
+  const setVacationHeader = useCallback((v: { title: string; subtitle: string } | null) => {
+    setVacationHeaderState(v);
+  }, []);
+
   const value = useMemo<ProfileNavContextValue>(
     () => ({
       lastProfileSlug,
@@ -40,6 +51,8 @@ export function ProfileNavProvider({ children }: { children: ReactNode }) {
       returnRoute,
       setReturnRoute,
       clearReturnRoute,
+      vacationHeader,
+      setVacationHeader,
     }),
     [
       lastProfileSlug,
@@ -48,6 +61,8 @@ export function ProfileNavProvider({ children }: { children: ReactNode }) {
       returnRoute,
       setReturnRoute,
       clearReturnRoute,
+      vacationHeader,
+      setVacationHeader,
     ]
   );
 

@@ -139,6 +139,16 @@ export async function emitStoreStatusChanged(
   } catch (e) {
     log.info({ storeId, err: e }, "store_status_change_insert_failed");
   }
+
+  // CLOSED → OPEN: push "You're Online" to all registered devices (works when app is closed).
+  if (previousStatus === "CLOSED" && newStatus === "OPEN") {
+    try {
+      const { notifyMerchantStoreOnline } = await import("../../lib/merchant-push-notify.js");
+      await notifyMerchantStoreOnline(sql, storeId);
+    } catch (e) {
+      log.info({ storeId, err: e }, "store_online_push_failed");
+    }
+  }
 }
 
 /** Ensure merchant_store_availability has a row for this store (insert default if missing). */
@@ -184,7 +194,8 @@ async function applyScheduleClosed(
   log: { info: (o: object, msg?: string) => void }
 ): Promise<void> {
   const nowIso = new Date().toISOString();
-  await sql`
+  // Never wipe an active manual hold / lock / vacation — race with partner/dashboard/merchant close.
+  const updated = await sql`
     UPDATE merchant_store_availability
     SET
       is_available = FALSE,
@@ -206,7 +217,20 @@ async function applyScheduleClosed(
       last_toggled_at = ${nowIso},
       updated_at = NOW()
     WHERE store_id = ${storeId}
+      AND COALESCE(block_auto_open, FALSE) = FALSE
+      AND (manual_close_until IS NULL OR manual_close_until <= NOW())
+      AND (
+        unavailable_reason IS NULL
+        OR LOWER(TRIM(unavailable_reason)) NOT IN (
+          'manual_indefinite', 'forced_lock', 'manual_close', 'vacation'
+        )
+      )
+    RETURNING store_id
   `;
+  if (!updated.length) {
+    log.info({ storeId, trigger: "schedule_closed_skipped_manual_hold" }, "store_auto_close_skipped");
+    return;
+  }
   await sql`
     INSERT INTO merchant_store_status_log (store_id, action, restriction_type, close_reason)
     VALUES (${storeId}, 'store_closed_auto', 'SCHEDULE', 'schedule_closed')
@@ -226,9 +250,10 @@ async function applyScheduleOpen(
   sql: ReturnType<typeof getSql>,
   storeId: number,
   log: { info: (o: object, msg?: string) => void }
-): Promise<void> {
+): Promise<boolean> {
   const nowIso = new Date().toISOString();
-  await sql`
+  // Atomic guard: never wipe an active manual close / lock (race with partner/dashboard POST).
+  const updated = await sql`
     UPDATE merchant_store_availability
     SET
       is_available = TRUE,
@@ -250,13 +275,29 @@ async function applyScheduleOpen(
       last_toggled_at = ${nowIso},
       updated_at = NOW()
     WHERE store_id = ${storeId}
+      AND COALESCE(block_auto_open, FALSE) = FALSE
+      AND (manual_close_until IS NULL OR manual_close_until <= NOW())
+      AND (
+        unavailable_reason IS NULL
+        OR LOWER(TRIM(unavailable_reason)) NOT IN ('manual_indefinite', 'forced_lock')
+      )
+      AND NOT (
+        LOWER(TRIM(COALESCE(unavailable_reason, ''))) = 'manual_close'
+        AND (manual_close_until IS NULL OR manual_close_until > NOW())
+      )
+    RETURNING store_id
   `;
+  if (!updated.length) {
+    log.info({ storeId, trigger: "schedule_open_skipped_manual_hold" }, "store_auto_open_skipped");
+    return false;
+  }
   await sql`
     INSERT INTO merchant_store_status_log (store_id, action, close_reason)
     VALUES (${storeId}, 'store_opened_auto', 'auto_open_triggered')
   `;
   log.info({ storeId, trigger: "schedule_open" }, "store_auto_open");
   await emitStoreStatusChanged(sql, storeId, "CLOSED", "OPEN", "schedule_open", "AUTO", log);
+  return true;
 }
 
 /** 5. Forced lock – manual activation lock. Atomic full metadata update. */
@@ -305,7 +346,7 @@ async function applyScheduleExpired(
   log: { info: (o: object, msg?: string) => void }
 ): Promise<void> {
   const nowIso = new Date().toISOString();
-  await sql`
+  const updated = await sql`
     UPDATE merchant_store_availability
     SET
       is_available = FALSE,
@@ -328,7 +369,20 @@ async function applyScheduleExpired(
       last_toggled_at = ${nowIso},
       updated_at = NOW()
     WHERE store_id = ${storeId}
+      AND COALESCE(block_auto_open, FALSE) = FALSE
+      AND (manual_close_until IS NULL OR manual_close_until <= NOW())
+      AND (
+        unavailable_reason IS NULL
+        OR LOWER(TRIM(unavailable_reason)) NOT IN (
+          'manual_indefinite', 'forced_lock', 'manual_close', 'vacation'
+        )
+      )
+    RETURNING store_id
   `;
+  if (!updated.length) {
+    log.info({ storeId, reason: "schedule_expired_skipped_manual_hold" }, "store_auto_close_skipped");
+    return;
+  }
   await sql`
     INSERT INTO merchant_store_status_log (store_id, action, restriction_type, close_reason)
     VALUES (${storeId}, 'store_closed_auto', 'SCHEDULE', 'schedule_expired')
@@ -342,9 +396,9 @@ async function applyAutoReopen(
   sql: ReturnType<typeof getSql>,
   storeId: number,
   log: { info: (o: object, msg?: string) => void }
-): Promise<void> {
+): Promise<boolean> {
   const nowIso = new Date().toISOString();
-  await sql`
+  const updated = await sql`
     UPDATE merchant_store_availability
     SET
       is_available = TRUE,
@@ -366,10 +420,21 @@ async function applyAutoReopen(
       last_toggled_at = ${nowIso},
       updated_at = NOW()
     WHERE store_id = ${storeId}
-      AND (manual_close_until IS NULL OR manual_close_until < NOW())
+      AND COALESCE(block_auto_open, FALSE) = FALSE
+      AND (manual_close_until IS NULL OR manual_close_until <= NOW())
+      AND (
+        unavailable_reason IS NULL
+        OR LOWER(TRIM(unavailable_reason)) NOT IN ('manual_indefinite', 'forced_lock')
+      )
+    RETURNING store_id
   `;
+  if (!updated.length) {
+    log.info({ storeId, trigger: "auto_reopen_skipped_manual_hold" }, "store_auto_open_skipped");
+    return false;
+  }
   log.info({ storeId, trigger: "auto_reopen" }, "store_auto_open");
   await emitStoreStatusChanged(sql, storeId, "CLOSED", "OPEN", "auto_reopen", "AUTO", log);
+  return true;
 }
 
 async function applyScheduleEndPromptStart(
@@ -395,7 +460,7 @@ async function applyScheduleEndAutoOff(
   log: { info: (o: object, msg?: string) => void }
 ): Promise<void> {
   const nowIso = new Date().toISOString();
-  await sql`
+  const updated = await sql`
     UPDATE merchant_store_availability
     SET
       is_available = FALSE,
@@ -418,7 +483,20 @@ async function applyScheduleEndAutoOff(
       last_toggled_at = ${nowIso},
       updated_at = NOW()
     WHERE store_id = ${storeId}
+      AND COALESCE(block_auto_open, FALSE) = FALSE
+      AND (manual_close_until IS NULL OR manual_close_until <= NOW())
+      AND (
+        unavailable_reason IS NULL
+        OR LOWER(TRIM(unavailable_reason)) NOT IN (
+          'manual_indefinite', 'forced_lock', 'manual_close', 'vacation'
+        )
+      )
+    RETURNING store_id
   `;
+  if (!updated.length) {
+    log.info({ storeId, trigger: "schedule_end_timeout_skipped_manual_hold" }, "store_auto_off_skipped");
+    return;
+  }
   await sql`
     INSERT INTO merchant_store_status_log (store_id, action, restriction_type, close_reason)
     VALUES (${storeId}, 'store_closed_auto', 'AUTO_OFF', 'schedule_end_timeout')
@@ -447,7 +525,11 @@ function parseManualCloseUntilMs(raw: Date | string | null | undefined): number 
   }
 }
 
-/** Return true only if DB says store has no active manual close (manual_close_until is null or in the past). */
+/**
+ * Return true only if DB says store has no active manual hold/lock/temp-close.
+ * Must match evaluateAndPersistStoreScheduleState early-returns so schedule_open
+ * cannot race a partner/dashboard manual_close and flip the store back OPEN.
+ */
 async function hasNoActiveManualClose(
   sql: ReturnType<typeof getSql>,
   storeId: number
@@ -455,8 +537,16 @@ async function hasNoActiveManualClose(
   const rows = await sql`
     SELECT 1 FROM merchant_store_availability
     WHERE store_id = ${storeId}
+      AND COALESCE(block_auto_open, FALSE) = FALSE
       AND (manual_close_until IS NULL OR manual_close_until <= NOW())
-      AND (unavailable_reason IS NULL OR unavailable_reason <> 'manual_indefinite')
+      AND (
+        unavailable_reason IS NULL
+        OR LOWER(TRIM(unavailable_reason)) NOT IN ('manual_indefinite', 'forced_lock')
+      )
+      AND NOT (
+        LOWER(TRIM(COALESCE(unavailable_reason, ''))) = 'manual_close'
+        AND (manual_close_until IS NULL OR manual_close_until > NOW())
+      )
     LIMIT 1
   `;
   return rows.length > 0;
@@ -945,7 +1035,6 @@ type MerchantStoresOnlineRow = {
 export function merchantStoresRowHasStaleOnlineFlags(row: MerchantStoresOnlineRow): boolean {
   return (
     String(row.operational_status ?? "").trim().toUpperCase() === "OPEN" ||
-    row.is_active === true ||
     row.is_accepting_orders === true ||
     row.is_available === true
   );
@@ -996,18 +1085,25 @@ async function reconcileOfflineWhenScheduleClosed(
       updated_at = NOW()
     WHERE store_id = ${storeId}
       AND (is_available = TRUE OR is_accepting_orders = TRUE)
+      AND COALESCE(block_auto_open, FALSE) = FALSE
+      AND (manual_close_until IS NULL OR manual_close_until <= NOW())
       AND (
         unavailable_reason IS NULL
-        OR unavailable_reason NOT IN ('manual_indefinite', 'forced_lock', 'vacation')
+        OR unavailable_reason NOT IN (
+          'manual_indefinite', 'forced_lock', 'vacation', 'manual_close'
+        )
       )
   `;
 }
 
 /** When `operational_status` is already CLOSED but an orphan boolean stayed TRUE, strict `currentlyOpen` misses — still run close/repair. */
 function storeRowShowsStaleOnlineSignals(store: StoreRow): boolean {
+  // Do NOT treat `is_active` alone as online — it is part of the online triple when closing,
+  // but historical rows / partial writes can leave is_active=true while the store is CLOSED.
+  // Using it alone made shouldForceScheduleClose almost always true and let schedule_closed
+  // race-wipe active manual_close_until.
   return (
     String(store.operational_status ?? "").trim().toUpperCase() === "OPEN" ||
-    store.is_active === true ||
     store.is_accepting_orders === true ||
     store.ms_is_available === true
   );
@@ -1045,6 +1141,9 @@ async function evaluateAndPersistStoreScheduleState(
       ? String(store.unavailable_reason).trim().toLowerCase()
       : "";
   const isManualIndefinite = unavailableReasonNorm === "manual_indefinite";
+  // Partnersite/dashboard can stamp manual_close with null until (hold until merchant opens).
+  const isOrphanManualClose =
+    unavailableReasonNorm === "manual_close" && !(manualCloseUntilMs > 0);
   const isManualOverride = store.is_manual_override === true;
   const promptExpiresMs = parseManualCloseUntilMs(store.schedule_end_prompt_expires_at);
   const currentlyOpen =
@@ -1110,13 +1209,8 @@ async function evaluateAndPersistStoreScheduleState(
       return;
     }
 
-    if (isTodayScheduledClosed && shouldForceScheduleClose(currentlyOpen, store)) {
-      statusReasonCode = "off_day_or_schedule_closed";
-      await syncMerchantStoresOnlineTriple(sql, storeId, false);
-      await applyScheduleClosed(sql, storeId, log);
-      return;
-    }
-
+    // Manual hold / activation lock must win over off-day + outside-hours schedule close.
+    // Off-day used to run first and call applyScheduleClosed which cleared manual_close_until.
     if (blockAutoOpen) {
       statusReasonCode = "block_auto_open";
       nextScheduleTransitionAt = toIsoOrNull(new Date(now.getTime() + 6 * 60 * 60 * 1000));
@@ -1127,14 +1221,21 @@ async function evaluateAndPersistStoreScheduleState(
       return;
     }
 
-    if (isManualCloseActive || isManualIndefinite) {
-      statusReasonCode = isManualIndefinite ? "manual_indefinite" : "manual_close_active";
+    if (isManualCloseActive || isManualIndefinite || isOrphanManualClose) {
+      statusReasonCode = isManualIndefinite || isOrphanManualClose ? "manual_indefinite" : "manual_close_active";
       nextScheduleTransitionAt = isManualCloseActive
         ? toIsoOrNull(store.manual_close_until)
         : toIsoOrNull(new Date(now.getTime() + 6 * 60 * 60 * 1000));
       if (shouldForceScheduleClose(currentlyOpen, store)) {
         await syncMerchantStoresOnlineTriple(sql, storeId, false);
       }
+      return;
+    }
+
+    if (isTodayScheduledClosed && shouldForceScheduleClose(currentlyOpen, store)) {
+      statusReasonCode = "off_day_or_schedule_closed";
+      await syncMerchantStoresOnlineTriple(sql, storeId, false);
+      await applyScheduleClosed(sql, storeId, log);
       return;
     }
 
@@ -1164,8 +1265,15 @@ async function evaluateAndPersistStoreScheduleState(
           return;
         }
         const manualCloseJustExpired = manualCloseUntilMs > 0 && nowMs >= manualCloseUntilMs;
+        // Apply availability first (atomic manual-hold WHERE). Only then flip merchant_stores.
+        const opened = manualCloseJustExpired
+          ? await applyAutoReopen(sql, storeId, log)
+          : await applyScheduleOpen(sql, storeId, log);
+        if (!opened) {
+          statusReasonCode = "manual_close_guard";
+          return;
+        }
         await syncMerchantStoresOnlineTriple(sql, storeId, true);
-        await (manualCloseJustExpired ? applyAutoReopen(sql, storeId, log) : applyScheduleOpen(sql, storeId, log));
         statusReasonCode = manualCloseJustExpired ? "auto_reopen_after_manual" : "schedule_open";
       } else {
         statusReasonCode = "within_hours_open";

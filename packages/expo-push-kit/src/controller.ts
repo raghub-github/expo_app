@@ -250,17 +250,12 @@ export function createPushPermissionController(
           store_id: auth.storeId ?? null,
           ...metadata,
         });
-        if (res.ok) {
+          if (res.ok) {
           lastSyncedKey = key;
-          if (
-            auth.role === "merchant" &&
-            auth.storeId &&
-            expoToken &&
-            options.registerStoreExpoToken
-          ) {
+          if (auth.role === "merchant" && expoToken && options.registerStoreExpoToken) {
             try {
               await options.registerStoreExpoToken({
-                storeId: auth.storeId,
+                storeId: auth.storeId ?? 0,
                 expoPushToken: expoToken,
                 accessToken: auth.accessToken,
                 platform: Platform.OS,
@@ -440,25 +435,34 @@ export function createPushPermissionController(
     const accessToken = opts?.accessToken?.trim() || auth?.accessToken;
     if (!accessToken) return;
 
-    const expoToken = snapshot.expoPushToken;
-    const nativeToken = snapshot.nativePushToken;
-    const role = auth?.role;
+    // Prefer in-memory tokens; if logout races before first sync, re-read device tokens.
+    let expoToken = snapshot.expoPushToken;
+    let nativeToken = snapshot.nativePushToken;
+    if (!expoToken && !nativeToken) {
+      try {
+        expoToken = (await getFreshExpoPushToken({ requestIfNeeded: false })) ?? null;
+        const native = await getFreshNativePushToken();
+        nativeToken = native?.token ?? null;
+      } catch {
+        /* full user purge still works with empty body */
+      }
+    }
+    const role = auth?.role ?? opts?.role;
 
+    // Empty tokens → backend purges ALL push rows for this user/role (logout-safe).
     await unregisterPushTokenOnBackend(options.apiBaseUrl, accessToken, {
       expo_push_token: expoToken,
       native_push_token: nativeToken,
     });
 
-    if (
-      role === "merchant" &&
-      expoToken &&
-      options.unregisterStoreExpoToken
-    ) {
+    if (role === "merchant" && options.unregisterStoreExpoToken) {
       try {
-        await options.unregisterStoreExpoToken({
-          expoPushToken: expoToken,
-          accessToken,
-        });
+        if (expoToken) {
+          await options.unregisterStoreExpoToken({
+            expoPushToken: expoToken,
+            accessToken,
+          });
+        }
       } catch (e) {
         log("store expo token unregister failed (non-fatal)", {
           error: (e as Error)?.message,

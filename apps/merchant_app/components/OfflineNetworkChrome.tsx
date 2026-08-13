@@ -1,21 +1,37 @@
 /**
  * Offline UX — red bottom status bar only.
+ * Sits just above the floating tab bar (does not overlap nav).
  * Main content offline empty state lives in OfflineContentOverlay (tabs layout).
  */
 import { useEffect, useRef } from "react";
 import { AppText as Text } from "@/components/AppText";
 import { Animated, StyleSheet, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
+import { usePathname } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useNetworkStatus } from "@/context/NetworkStatusContext";
+import { TAB_BAR_FLOATING_GAP, TAB_BAR_HEIGHT } from "@/constants/theme";
 
 const LORA = "Lora_400Regular";
 const RED_BAR = "#9F1239";
 
 export function OfflineNetworkChrome() {
   const insets = useSafeAreaInsets();
+  const pathname = usePathname();
   const { isOnline, ready } = useNetworkStatus();
   const slide = useRef(new Animated.Value(80)).current;
+
+  const hasTabBar =
+    !pathname.startsWith("/order/") &&
+    !pathname.includes("/support/chat") &&
+    !pathname.startsWith("/(auth)") &&
+    pathname !== "/login" &&
+    !pathname.includes("/auth/");
+
+  /** Clearance so the bar sits on top of the floating dock, not under it. */
+  const bottomOffset = hasTabBar
+    ? TAB_BAR_HEIGHT + TAB_BAR_FLOATING_GAP + insets.bottom
+    : Math.max(insets.bottom, 8);
 
   useEffect(() => {
     if (!ready) return;
@@ -36,7 +52,7 @@ export function OfflineNetworkChrome() {
         style={[
           styles.barWrap,
           {
-            paddingBottom: Math.max(insets.bottom, 8),
+            bottom: bottomOffset,
             transform: [{ translateY: slide }],
           },
         ]}
@@ -56,7 +72,6 @@ const styles = StyleSheet.create({
     position: "absolute",
     left: 0,
     right: 0,
-    bottom: 0,
     zIndex: 9998,
     elevation: 9998,
   },

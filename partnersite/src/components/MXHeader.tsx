@@ -40,7 +40,7 @@ export const MXHeader: React.FC<MXHeaderProps> = ({
         <div className="flex items-center justify-between">
           {/* Left Section - Logo & Title */}
           <div className="flex items-center gap-3">
-            <img src="/logo.png" alt="GatiMitra" className="h-10 w-auto sm:h-12 object-contain" />
+            <img src="/onlylogo.png" alt="GatiMitra" className="h-10 w-auto sm:h-12 object-contain" />
             <p className="text-xs text-slate-400 font-medium">Merchant Portal</p>
           </div>
 

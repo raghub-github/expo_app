@@ -20,6 +20,7 @@ import { PageSkeletonGeneric, StoreSettingsPageSkeleton } from '@/components/Pag
 import { toast } from 'sonner'
 import { useQueryClient } from '@tanstack/react-query'
 import { merchantKeys } from '@/lib/query-keys'
+import { notifyPartnerTodaySlotsUpdated } from '@/lib/partnerTodaySlotsSync'
 import { normalizeWallTimeToHHMM } from '@/lib/wallTimeHHMM'
 import { toastStoreOperationsPostFailure } from '@/lib/storeOperationsPostFeedback'
 import { SettingsSidebarRail, settingsRailMainPaddingClass } from './components/SettingsSidebarRail'
@@ -2647,6 +2648,7 @@ function StoreSettingsContent() {
             closedDay: closedDayToUse,
           },
         });
+        notifyPartnerTodaySlotsUpdated(queryClient, storeId);
       }
       
       return success;
@@ -2727,6 +2729,7 @@ function StoreSettingsContent() {
           return next
         })
         await fetchTimings()
+        notifyPartnerTodaySlotsUpdated(queryClient, storeId)
       } else {
         let errMsg = 'Failed to save timings'
         try {
@@ -3262,6 +3265,7 @@ function StoreSettingsContent() {
         }
         toast.success('✅ Store timings saved successfully!');
         await fetchTimings();
+        notifyPartnerTodaySlotsUpdated(queryClient, storeId);
       } else {
         let data;
         try {

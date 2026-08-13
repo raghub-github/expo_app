@@ -540,10 +540,15 @@ export async function syncOperationalStatusFromSchedule(args: {
   }
 
   const manualCloseActive = !!manualCloseUntil && nowMs < manualCloseUntil.getTime();
-  if (manualCloseActive || manualIndefinite) {
+  const orphanManualClose =
+    String(availRow?.unavailable_reason ?? '')
+      .trim()
+      .toLowerCase() === 'manual_close' && !manualCloseUntil;
+  if (manualCloseActive || manualIndefinite || orphanManualClose) {
     trace('manual_hold_skip_auto', {
       manual_close_active: manualCloseActive,
       manual_indefinite: manualIndefinite,
+      orphan_manual_close: orphanManualClose,
       effective_status: effectiveStatus,
     });
     return buildResult(effectiveStatus, manualCloseUntil, availRow, mutations, scheduleEndPromptActive, promptExpiresAt, licenseEvaluation);

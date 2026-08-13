@@ -48,7 +48,14 @@ import { formatCurrency } from "@/lib/merchantPayoutUtils";
 import { resolveWalletDisplayBalance } from "@gatimitra/merchant-payout";
 import { subscribeMerchantDashboardStatsRefresh } from "@/lib/merchantDashboardStatsBus";
 import { OrderNotificationsDisabledBanner } from "@/components/OrderNotificationsDisabledBanner";
+import {
+  MerchantHomeBannerCarousel,
+  MerchantScheduleOffBanner,
+  MerchantRushHourBanner,
+  type MerchantHomeBannerSlide,
+} from "@/components/MerchantHomeBannerCarousel";
 import { useNotificationPermissionGate } from "@/context/NotificationPermissionGateContext";
+import { formatStoreActionSourceLabel } from "@/lib/storeActionSource";
 
 const { width } = Dimensions.get("window");
 const KPI_VIEWPORT = width - H_PADDING * 2;
@@ -71,26 +78,16 @@ function KpiCard({
   value,
   icon,
   accent,
-  onPress,
 }: {
   title: string;
   value: string;
   icon: keyof typeof Ionicons.glyphMap;
   accent: "primary" | "navy";
-  onPress: () => void;
 }) {
   const iconColor = accent === "primary" ? GatiMitraMerchant.primary : GatiMitraMerchant.navy;
 
   return (
-    <Pressable
-      onPress={onPress}
-      style={({ pressed }) => [
-        styles.kpiCardWrap,
-        { width: KPI_CARD_WIDTH },
-        pressed && styles.cardPressed,
-        GatiMitraMerchant.cursorPointer,
-      ]}
-    >
+    <View style={[styles.kpiCardWrap, { width: KPI_CARD_WIDTH }]}>
       <View style={styles.kpiTopRow}>
         <View style={[styles.kpiIconWrap, { backgroundColor: iconColor }]}>
           <Ionicons name={icon} size={KPI_ICON_GLYPH} color="#fff" />
@@ -107,7 +104,7 @@ function KpiCard({
       >
         {value}
       </Text>
-    </Pressable>
+    </View>
   );
 }
 
@@ -115,40 +112,6 @@ function formatTodayDate(): string {
   const d = new Date();
   const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
   return `Today ${d.getDate()} ${months[d.getMonth()]} ${d.getFullYear()}`;
-}
-
-/** Format API date/time for banner. Handles ISO, timestamp number, "YYYY-MM-DD HH:mm:ss", and parses manually if needed. */
-function formatScheduledOffDateAndTime(value: string | null | undefined): string {
-  if (value == null || value === "") return "scheduled date";
-  const str = typeof value === "number" ? String(value) : String(value).trim();
-  if (!str) return "scheduled date";
-  let d = new Date(str);
-  if (Number.isNaN(d.getTime())) {
-    d = new Date(str.replace(" ", "T"));
-  }
-  if (Number.isNaN(d.getTime()) && /^\d{4}-\d{2}-\d{2}/.test(str) && !/[Z+-]\d{2}/.test(str)) {
-    d = new Date(str.trim().replace(" ", "T") + "Z");
-  }
-  if (Number.isNaN(d.getTime()) && /^\d+$/.test(str)) {
-    d = new Date(Number(str));
-  }
-  if (Number.isNaN(d.getTime())) {
-    const match = str.match(/^(\d{4})-(\d{2})-(\d{2})[T\s](\d{1,2}):(\d{2})(?::(\d{2}))?/);
-    if (match) {
-      const [, y, mo, day, h, mi, s] = match;
-      d = new Date(Number(y), Number(mo) - 1, Number(day), Number(h), Number(mi), Number(s || 0), 0);
-    }
-  }
-  if (Number.isNaN(d.getTime())) return "scheduled date";
-  const day = d.getDate();
-  const month = d.toLocaleString("en-IN", { month: "short" });
-  const year = d.getFullYear();
-  const h = d.getHours();
-  const m = d.getMinutes();
-  const am = h < 12;
-  const h12 = h % 12 || 12;
-  const min = Number.isNaN(m) ? "00" : m < 10 ? `0${m}` : String(m);
-  return `${day} ${month} ${year} till ${h12}:${min} ${am ? "AM" : "PM"}`;
 }
 
 export default function DashboardScreen() {
@@ -159,16 +122,7 @@ export default function DashboardScreen() {
   const { selectedStore, managedStores } = useSelectedStore();
   const storeId = selectedStore?.id ?? null;
   const { orders, refetch: refetchOrders, transitionOrder, extendPrepDelay, acceptanceWindowMinutes } = useOrders();
-  const {
-    isOnline,
-    manualCloseUntil,
-    restrictionType,
-    scheduledClosure,
-    upcomingScheduledClosure,
-    unavailableReason,
-    statusReason,
-    refresh,
-  } = useStoreStatus();
+  const { isOnline, refresh, scheduledClosure, upcomingScheduledClosure, activeRush } = useStoreStatus();
   const [refreshing, setRefreshing] = useState(false);
   const [nowMs, setNowMs] = useState(Date.now());
   const [rejectTarget, setRejectTarget] = useState<OrderRecord | null>(null);
@@ -221,25 +175,97 @@ export default function DashboardScreen() {
     }, [refresh, loadDashboardStats])
   );
 
-  // Show the yellow banner ONLY when store is closed AND closure is manual/scheduled
-  // (temp close, closed for today, schedule off, permanent shut). Never show when store is online;
-  // hide instantly when store goes online. Do not show for auto/schedule-only closure (outside hours).
-  const unavail = unavailableReason != null ? String(unavailableReason).trim().toLowerCase() : "";
-  const status = statusReason != null ? String(statusReason).trim().toLowerCase() : "";
-  const restriction = restrictionType != null ? String(restrictionType).trim().toLowerCase() : "";
-  const hasManualOrScheduledClosure =
-    scheduledClosure != null ||
-    restrictionType === "PERMANENT_SHUT" ||
-    (manualCloseUntil != null &&
-      manualCloseUntil !== "" &&
-      new Date(manualCloseUntil).getTime() > Date.now()) ||
-    unavail === "manual_close" ||
-    unavail === "manual_indefinite" ||
-    status === "manual_close" ||
-    status === "manual_indefinite" ||
-    restriction === "manual" ||
-    restriction === "manual_hold";
-  const showClosedBanner = !isOnline && hasManualOrScheduledClosure;
+  const { notificationsGranted } = useNotificationPermissionGate();
+  const showNotificationsDisabledBanner = !notificationsGranted;
+
+  const formatBannerWindow = useCallback((fromIso: string, toIso: string) => {
+    const fmt = (iso: string) => {
+      const d = new Date(iso);
+      if (Number.isNaN(d.getTime())) return null;
+      return new Intl.DateTimeFormat("en-IN", {
+        day: "2-digit",
+        month: "short",
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: true,
+        timeZone: "Asia/Calcutta",
+      }).format(d);
+    };
+    const fromLabel = fmt(fromIso);
+    const toLabel = fmt(toIso);
+    if (fromLabel && toLabel) return `${fromLabel} – ${toLabel}`;
+    return fromLabel || toLabel || "";
+  }, []);
+
+  // Rider-style separate home carousel (not inside store status card).
+  const homeBannerSlides = useMemo((): MerchantHomeBannerSlide[] => {
+    const slides: MerchantHomeBannerSlide[] = [];
+    if (showNotificationsDisabledBanner) {
+      slides.push({
+        id: "order_notifications_disabled",
+        durationMs: 10_000,
+        element: <OrderNotificationsDisabledBanner visible />,
+      });
+    }
+    if (scheduledClosure && !isOnline) {
+      const windowText = formatBannerWindow(scheduledClosure.from, scheduledClosure.to);
+      if (windowText) {
+        slides.push({
+          id: "schedule_off_active",
+          durationMs: 12_000,
+          element: (
+            <MerchantScheduleOffBanner
+              phase="active"
+              windowText={windowText}
+              reason={scheduledClosure.reason}
+              sourceLabel={formatStoreActionSourceLabel(scheduledClosure.marked_from)}
+              onPress={() => navPush("/(tabs)/profile/vacation?tab=slots")}
+            />
+          ),
+        });
+      }
+    }
+    if (upcomingScheduledClosure) {
+      const windowText = formatBannerWindow(upcomingScheduledClosure.from, upcomingScheduledClosure.to);
+      if (windowText) {
+        slides.push({
+          id: "schedule_off_upcoming",
+          durationMs: 12_000,
+          element: (
+            <MerchantScheduleOffBanner
+              phase="upcoming"
+              windowText={windowText}
+              reason={upcomingScheduledClosure.reason}
+              sourceLabel={formatStoreActionSourceLabel(upcomingScheduledClosure.marked_from)}
+              onPress={() => navPush("/(tabs)/profile/vacation?tab=slots")}
+            />
+          ),
+        });
+      }
+    }
+    if (activeRush && activeRush.is_active && activeRush.remaining_minutes > 0) {
+      slides.push({
+        id: "rush_active",
+        durationMs: 10_000,
+        element: (
+          <MerchantRushHourBanner
+            remainingMinutes={activeRush.remaining_minutes}
+            sourceLabel={formatStoreActionSourceLabel(activeRush.marked_from)}
+            onPress={() => navPush("/(tabs)/profile/preparation-time")}
+          />
+        ),
+      });
+    }
+    return slides;
+  }, [
+    showNotificationsDisabledBanner,
+    scheduledClosure,
+    upcomingScheduledClosure,
+    activeRush,
+    isOnline,
+    formatBannerWindow,
+    navPush,
+  ]);
 
   const hasActiveOrders = useMemo(
     () => orders.some((o) => isActiveMerchantOrderStage(o.status)),
@@ -409,8 +435,6 @@ export default function DashboardScreen() {
   );
 
   const scrollBottomPadding = TAB_BAR_SCROLL_CONTENT_PADDING;
-  const { notificationsGranted } = useNotificationPermissionGate();
-  const showNotificationsDisabledBanner = !notificationsGranted;
   const ordersEmpty = recentOrders.length === 0;
   const ordersSectionFlex = ordersEmpty;
 
@@ -449,27 +473,7 @@ export default function DashboardScreen() {
           />
         }
       >
-      <OrderNotificationsDisabledBanner visible={showNotificationsDisabledBanner} />
-      {showClosedBanner && (
-        <Pressable
-          style={styles.scheduledOffBanner}
-          onPress={() => navPush("/(tabs)/profile/vacation")}
-        >
-          <Ionicons name="calendar-outline" size={20} color={GatiMitraMerchant.warning} />
-          <Text style={styles.scheduledOffText}>
-            {restrictionType === "PERMANENT_SHUT"
-              ? "Store is permanently closed."
-              : scheduledClosure
-                ? `Store is closed from ${formatScheduledOffDateAndTime(scheduledClosure.from)} to ${formatScheduledOffDateAndTime(scheduledClosure.to)}.\nReason: ${scheduledClosure.reason}`
-                : manualCloseUntil
-                  ? `Store closed until ${formatScheduledOffDateAndTime(manualCloseUntil)}`
-                  : unavail === "manual_indefinite" || status === "manual_indefinite"
-                    ? "Store is closed until you turn it back ON from Store status."
-                    : "Store is scheduled off."}
-          </Text>
-          <Ionicons name="chevron-forward" size={18} color={GatiMitraMerchant.textSecondary} />
-        </Pressable>
-      )}
+      <MerchantHomeBannerCarousel slides={homeBannerSlides} />
       <StoreClosedActiveOrdersNotice visible={!isOnline && hasActiveOrders} />
       <Text style={styles.dateText}>{formatTodayDate()}</Text>
 
@@ -488,21 +492,18 @@ export default function DashboardScreen() {
             value={formatCurrency(todayEarning)}
             icon="cash-outline"
             accent="primary"
-            onPress={() => navPush("/(tabs)/earnings")}
           />
           <KpiCard
             title="Delivered"
             value={String(deliveredToday).padStart(2, "0")}
             icon="cube-outline"
             accent="navy"
-            onPress={() => navPush("/(tabs)/orders")}
           />
           <KpiCard
             title="Wallet balance"
             value={formatCurrency(walletBalance)}
             icon="wallet-outline"
             accent="navy"
-            onPress={() => navPush("/(tabs)/earnings")}
           />
         </ScrollView>
       </View>
@@ -618,24 +619,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: H_PADDING,
     paddingTop: 16,
     backgroundColor: GatiMitraMerchant.surfaceWarm,
-  },
-  scheduledOffBanner: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 10,
-    paddingVertical: 12,
-    paddingHorizontal: 14,
-    marginBottom: 12,
-    backgroundColor: "#FEF3C7",
-    borderRadius: CARD_RADIUS,
-    borderWidth: 1,
-    borderColor: "#F59E0B",
-  },
-  scheduledOffText: {
-    flex: 1,
-    fontSize: 13,
-    fontWeight: "600",
-    color: "#92400E",
   },
   dateText: {
     fontSize: 15,

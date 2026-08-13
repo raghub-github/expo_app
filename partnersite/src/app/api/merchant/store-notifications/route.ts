@@ -15,6 +15,7 @@ import {
   markAllPartnerCampaignsRead,
   markPartnerCampaignRead,
 } from '@/lib/partner-campaign-inbox';
+import { mapMerchantAppDeepLinkToPartnersite } from '@/lib/mapMerchantAppDeepLink';
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder.supabase.co";
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "placeholder-service-role-key";
@@ -54,7 +55,11 @@ export async function GET(req: NextRequest) {
       body: r.body,
       read: r.read === true,
       order_id: r.order_id != null ? String(r.order_id) : undefined,
-      action_url: r.action_url ?? undefined,
+      action_url: r.action_url
+        ? mapMerchantAppDeepLinkToPartnersite(String(r.action_url), {
+            preferMx: false,
+          })
+        : undefined,
       created_at: r.created_at as string | undefined,
       source: 'store' as const,
     }));

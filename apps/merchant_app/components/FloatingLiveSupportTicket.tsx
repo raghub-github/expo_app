@@ -1,10 +1,20 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { AppText as Text } from "@/components/AppText";
-import { View, StyleSheet, Platform, Animated, Easing, PanResponder, useWindowDimensions } from "react-native";
+import { View, StyleSheet, Platform, useWindowDimensions } from "react-native";
 import { useRouter, usePathname, useGlobalSearchParams } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { Gesture, GestureDetector } from "react-native-gesture-handler";
+import Animated, {
+  Easing,
+  runOnJS,
+  useAnimatedStyle,
+  useSharedValue,
+  withRepeat,
+  withSpring,
+  withTiming,
+} from "react-native-reanimated";
 import {
   TAB_BAR_HEIGHT,
   TAB_BAR_FLOATING_GAP,
@@ -21,10 +31,14 @@ import {
 } from "@/lib/liveSupportTicketStorage";
 
 const FAB_SIZE = 56;
-const DRAG_THRESHOLD = 6;
+const DRAG_THRESHOLD = 8;
+const REMOVE_ICON_SIZE = 44;
 
 /**
  * Draggable live-support FAB — headset + green dot + unread badge.
+ * Drag toward the bottom to reveal a REMOVE drop target.
+ * Drop hides the FAB across all pages until the merchant opens a ticket
+ * from My Tickets (or otherwise registers live support again).
  */
 export function FloatingLiveSupportTicket() {
   const router = useRouter();
@@ -34,18 +48,37 @@ export function FloatingLiveSupportTicket() {
   const { width: screenW, height: screenH } = useWindowDimensions();
   const { selectedStore } = useSelectedStore();
   const storeId = selectedStore?.id ?? null;
-  const { activeTicket, unreadCount, refreshActiveTicket } = useLiveSupportTicket();
+  const {
+    activeTicket,
+    unreadCount,
+    refreshActiveTicket,
+    fabDismissed,
+    dismissLiveSupportFab,
+  } = useLiveSupportTicket();
 
-  const pulse = useRef(new Animated.Value(0.4)).current;
-  const posRef = useRef<LiveSupportFabPosition>({ x: 0, y: 0 });
-  const dragRef = useRef({ moved: false, originX: 0, originY: 0 });
-  const [pos, setPos] = useState<LiveSupportFabPosition | null>(null);
+  const [posReady, setPosReady] = useState(false);
+
+  const translateX = useSharedValue(0);
+  const translateY = useSharedValue(0);
+  const dragOriginX = useSharedValue(0);
+  const dragOriginY = useSharedValue(0);
+  const isDragging = useSharedValue(0);
+  const overRemove = useSharedValue(0);
+  const removeZoneProgress = useSharedValue(0);
+  const pulse = useSharedValue(0.4);
+
+  const screenWSV = useSharedValue(screenW);
+  const screenHSV = useSharedValue(screenH);
+  const minBottomSV = useSharedValue(0);
+  const minTopSV = useSharedValue(0);
+  const removeZoneTopSV = useSharedValue(0);
 
   const hasTabBar =
     !pathname.startsWith("/order/") && !pathname.includes("/support/chat");
   const minBottom = hasTabBar
     ? TAB_BAR_HEIGHT + TAB_BAR_FLOATING_GAP + insets.bottom + 8
     : insets.bottom + 12;
+  const minTop = insets.top + HEADER_HEIGHT;
 
   const defaultPos = useMemo(
     () => ({
@@ -58,63 +91,68 @@ export function FloatingLiveSupportTicket() {
   const clampPos = useCallback(
     (p: LiveSupportFabPosition): LiveSupportFabPosition => ({
       x: Math.max(H_PADDING, Math.min(screenW - H_PADDING - FAB_SIZE, p.x)),
-      y: Math.max(
-        insets.top + HEADER_HEIGHT,
-        Math.min(screenH - minBottom - FAB_SIZE, p.y)
-      ),
+      y: Math.max(minTop, Math.min(screenH - minBottom - FAB_SIZE, p.y)),
     }),
-    [screenW, screenH, minBottom, insets.top]
+    [screenW, screenH, minBottom, minTop]
   );
 
+  // Keep worklet bounds in sync with layout.
   useEffect(() => {
-    const loop = Animated.loop(
-      Animated.sequence([
-        Animated.timing(pulse, {
-          toValue: 1,
-          duration: 900,
-          easing: Easing.inOut(Easing.ease),
-          useNativeDriver: true,
-        }),
-        Animated.timing(pulse, {
-          toValue: 0.4,
-          duration: 900,
-          easing: Easing.inOut(Easing.ease),
-          useNativeDriver: true,
-        }),
-      ])
+    screenWSV.value = screenW;
+    screenHSV.value = screenH;
+    minBottomSV.value = minBottom;
+    minTopSV.value = minTop;
+    removeZoneTopSV.value = screenH - minBottom - REMOVE_ICON_SIZE - 12;
+  }, [
+    screenW,
+    screenH,
+    minBottom,
+    minTop,
+    screenWSV,
+    screenHSV,
+    minBottomSV,
+    minTopSV,
+    removeZoneTopSV,
+  ]);
+
+  useEffect(() => {
+    pulse.value = withRepeat(
+      withTiming(1, { duration: 900, easing: Easing.inOut(Easing.ease) }),
+      -1,
+      true
     );
-    loop.start();
-    return () => loop.stop();
   }, [pulse]);
 
   useEffect(() => {
     let cancelled = false;
+    setPosReady(false);
     if (storeId == null) {
       const next = clampPos(defaultPos);
-      posRef.current = next;
-      setPos(next);
+      translateX.value = next.x;
+      translateY.value = next.y;
+      setPosReady(true);
       return;
     }
     void (async () => {
       const saved = await loadLiveSupportFabPosition(storeId);
       if (cancelled) return;
       const next = clampPos(saved ?? defaultPos);
-      posRef.current = next;
-      setPos(next);
+      translateX.value = next.x;
+      translateY.value = next.y;
+      setPosReady(true);
     })();
     return () => {
       cancelled = true;
     };
-  }, [storeId, defaultPos, clampPos]);
+  }, [storeId, defaultPos, clampPos, translateX, translateY]);
 
+  // Re-clamp after rotation / tab-bar chrome changes.
   useEffect(() => {
-    if (pos == null) return;
-    const next = clampPos(pos);
-    if (next.x !== pos.x || next.y !== pos.y) {
-      posRef.current = next;
-      setPos(next);
-    }
-  }, [screenW, screenH, minBottom, clampPos, pos]);
+    if (!posReady) return;
+    const next = clampPos({ x: translateX.value, y: translateY.value });
+    translateX.value = next.x;
+    translateY.value = next.y;
+  }, [screenW, screenH, minBottom, minTop, clampPos, posReady, translateX, translateY]);
 
   const openChat = useCallback(() => {
     if (activeTicket == null) return;
@@ -124,47 +162,144 @@ export function FloatingLiveSupportTicket() {
     });
   }, [activeTicket, router]);
 
-  const panResponder = useMemo(
+  const persistPos = useCallback(
+    (x: number, y: number) => {
+      if (storeId == null) return;
+      void saveLiveSupportFabPosition(storeId, { x, y });
+    },
+    [storeId]
+  );
+
+  const dismissFab = useCallback(() => {
+    dismissLiveSupportFab();
+  }, [dismissLiveSupportFab]);
+
+  const panGesture = useMemo(
     () =>
-      PanResponder.create({
-        onStartShouldSetPanResponder: () => true,
-        onMoveShouldSetPanResponder: (_, g) =>
-          Math.abs(g.dx) > DRAG_THRESHOLD || Math.abs(g.dy) > DRAG_THRESHOLD,
-        onPanResponderGrant: () => {
-          dragRef.current = {
-            moved: false,
-            originX: posRef.current.x,
-            originY: posRef.current.y,
-          };
-        },
-        onPanResponderMove: (_, g) => {
-          if (Math.abs(g.dx) > DRAG_THRESHOLD || Math.abs(g.dy) > DRAG_THRESHOLD) {
-            dragRef.current.moved = true;
-          }
-          const next = clampPos({
-            x: dragRef.current.originX + g.dx,
-            y: dragRef.current.originY + g.dy,
-          });
-          posRef.current = next;
-          setPos(next);
-        },
-        onPanResponderRelease: () => {
-          if (!dragRef.current.moved) {
-            openChat();
+      Gesture.Pan()
+        .minDistance(DRAG_THRESHOLD)
+        .onBegin(() => {
+          "worklet";
+          dragOriginX.value = translateX.value;
+          dragOriginY.value = translateY.value;
+        })
+        .onStart(() => {
+          "worklet";
+          isDragging.value = 1;
+          removeZoneProgress.value = withTiming(1, { duration: 180 });
+        })
+        .onUpdate((e) => {
+          "worklet";
+          const rawX = dragOriginX.value + e.translationX;
+          const rawY = dragOriginY.value + e.translationY;
+          const maxX = screenWSV.value - H_PADDING - FAB_SIZE;
+          const dragMaxY = screenHSV.value - minBottomSV.value - FAB_SIZE * 0.25;
+          translateX.value = Math.max(H_PADDING, Math.min(maxX, rawX));
+          translateY.value = Math.max(minTopSV.value, Math.min(dragMaxY, rawY));
+
+          const fabBottom = translateY.value + FAB_SIZE;
+          const fabTop = translateY.value;
+          const zoneTop = removeZoneTopSV.value;
+          const zoneBottom = screenHSV.value - minBottomSV.value;
+          const hit = fabBottom > zoneTop + 8 && fabTop < zoneBottom;
+          overRemove.value = hit ? 1 : 0;
+        })
+        .onEnd(() => {
+          "worklet";
+          const shouldRemove = overRemove.value === 1;
+          isDragging.value = 0;
+          overRemove.value = 0;
+          removeZoneProgress.value = withTiming(0, { duration: 160 });
+
+          if (shouldRemove) {
+            // Hide remove affordance instantly with the FAB (no linger).
+            removeZoneProgress.value = 0;
+            runOnJS(dismissFab)();
             return;
           }
-          if (storeId != null) {
-            void saveLiveSupportFabPosition(storeId, posRef.current);
+
+          const maxX = screenWSV.value - H_PADDING - FAB_SIZE;
+          const maxY = screenHSV.value - minBottomSV.value - FAB_SIZE;
+          const nextX = Math.max(H_PADDING, Math.min(maxX, translateX.value));
+          const nextY = Math.max(minTopSV.value, Math.min(maxY, translateY.value));
+          translateX.value = withSpring(nextX, { damping: 18, stiffness: 220 });
+          translateY.value = withSpring(nextY, { damping: 18, stiffness: 220 });
+          runOnJS(persistPos)(nextX, nextY);
+        })
+        .onFinalize(() => {
+          "worklet";
+          if (isDragging.value === 1) {
+            isDragging.value = 0;
+            overRemove.value = 0;
+            removeZoneProgress.value = withTiming(0, { duration: 160 });
           }
-        },
-        onPanResponderTerminate: () => {
-          if (storeId != null && dragRef.current.moved) {
-            void saveLiveSupportFabPosition(storeId, posRef.current);
-          }
-        },
-      }),
-    [clampPos, openChat, storeId]
+        }),
+    [
+      dismissFab,
+      dragOriginX,
+      dragOriginY,
+      isDragging,
+      minBottomSV,
+      minTopSV,
+      overRemove,
+      persistPos,
+      removeZoneProgress,
+      removeZoneTopSV,
+      screenHSV,
+      screenWSV,
+      translateX,
+      translateY,
+    ]
   );
+
+  const tapGesture = useMemo(
+    () =>
+      Gesture.Tap().onEnd(() => {
+        "worklet";
+        runOnJS(openChat)();
+      }),
+    [openChat]
+  );
+
+  const gesture = useMemo(
+    () => Gesture.Exclusive(panGesture, tapGesture),
+    [panGesture, tapGesture]
+  );
+
+  const fabStyle = useAnimatedStyle(() => ({
+    transform: [
+      { translateX: translateX.value },
+      { translateY: translateY.value },
+      { scale: isDragging.value ? 1.06 : 1 },
+    ],
+    opacity: overRemove.value ? 0.85 : 1,
+  }));
+
+  const pulseStyle = useAnimatedStyle(() => ({
+    opacity: pulse.value,
+    transform: [{ scale: 0.9 + (pulse.value - 0.4) * (0.3 / 0.6) }],
+  }));
+
+  const removeZoneStyle = useAnimatedStyle(() => ({
+    opacity: removeZoneProgress.value,
+    transform: [
+      {
+        translateY: (1 - removeZoneProgress.value) * 24,
+      },
+    ],
+  }));
+
+  const removeInnerStyle = useAnimatedStyle(() => ({
+    transform: [{ scale: overRemove.value ? 1.12 : 1 }],
+  }));
+
+  const removeIconWhiteStyle = useAnimatedStyle(() => ({
+    opacity: 1 - overRemove.value,
+  }));
+
+  const removeIconRedStyle = useAnimatedStyle(() => ({
+    opacity: overRemove.value,
+  }));
 
   const routeTicketId = Array.isArray(params.ticketId)
     ? params.ticketId[0]
@@ -181,64 +316,81 @@ export function FloatingLiveSupportTicket() {
     void refreshActiveTicket();
   }, [refreshActiveTicket, activeTicket?.ticketId, activeTicket?.status, onThisTicketChat, pathname]);
 
-  if (activeTicket == null || isLiveSupportTicketTerminal(activeTicket.status) || pos == null) {
+  if (
+    activeTicket == null ||
+    isLiveSupportTicketTerminal(activeTicket.status) ||
+    !posReady ||
+    fabDismissed ||
+    onThisTicketChat
+  ) {
     return null;
   }
-
-  if (onThisTicketChat) return null;
 
   const badgeLabel = unreadCount > 99 ? "99+" : String(unreadCount);
 
   return (
-    <View
-      pointerEvents="box-none"
-      style={[styles.host, { left: pos.x, top: pos.y }]}
-      {...panResponder.panHandlers}
-    >
-      <View style={styles.btn}>
-        <LinearGradient
-          colors={["#FF7A45", "#E85D04"]}
-          start={{ x: 0, y: 0 }}
-          end={{ x: 1, y: 1 }}
-          style={styles.gradient}
-        >
-          <View style={styles.iconCircle}>
-            <Ionicons name="headset" size={24} color="#E85D04" />
+    <View pointerEvents="box-none" style={styles.overlay} collapsable={false}>
+      <Animated.View
+        pointerEvents="none"
+        style={[
+          styles.removeZoneWrap,
+          {
+            bottom: minBottom + 8,
+          },
+          removeZoneStyle,
+        ]}
+      >
+        <Animated.View style={[styles.removeIconWrap, removeInnerStyle]}>
+          <Animated.View style={[styles.removeIconLayer, removeIconWhiteStyle]}>
+            <Ionicons name="trash-outline" size={28} color="#FFFFFF" />
+          </Animated.View>
+          <Animated.View style={[styles.removeIconLayer, styles.removeIconLayerAbsolute, removeIconRedStyle]}>
+            <Ionicons name="trash" size={28} color="#EF4444" />
+          </Animated.View>
+        </Animated.View>
+      </Animated.View>
+
+      <GestureDetector gesture={gesture}>
+        <Animated.View style={[styles.host, fabStyle]}>
+          <View style={styles.btn}>
+            <LinearGradient
+              colors={["#FF7A45", "#E85D04"]}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 1 }}
+              style={styles.gradient}
+            >
+              <View style={styles.iconCircle}>
+                <Ionicons name="headset" size={24} color="#E85D04" />
+              </View>
+              <Animated.View
+                style={[styles.liveDot, unreadCount > 0 && styles.liveDotHidden, pulseStyle]}
+              />
+            </LinearGradient>
+            {unreadCount > 0 ? (
+              <View style={styles.badge}>
+                <Text style={styles.badgeText}>{badgeLabel}</Text>
+              </View>
+            ) : null}
           </View>
-          <Animated.View
-            style={[
-              styles.liveDot,
-              unreadCount > 0 && styles.liveDotHidden,
-              {
-                opacity: pulse,
-                transform: [
-                  {
-                    scale: pulse.interpolate({
-                      inputRange: [0.4, 1],
-                      outputRange: [0.9, 1.2],
-                    }),
-                  },
-                ],
-              },
-            ]}
-          />
-        </LinearGradient>
-        {unreadCount > 0 ? (
-          <View style={styles.badge}>
-            <Text style={styles.badgeText}>{badgeLabel}</Text>
-          </View>
-        ) : null}
-      </View>
+        </Animated.View>
+      </GestureDetector>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
+  overlay: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 110,
+    elevation: 110,
+  },
   host: {
     position: "absolute",
+    left: 0,
+    top: 0,
     width: FAB_SIZE,
     height: FAB_SIZE,
-    zIndex: 110,
+    zIndex: 112,
     ...Platform.select({
       ios: {
         shadowColor: "#000",
@@ -246,7 +398,7 @@ const styles = StyleSheet.create({
         shadowOpacity: 0.2,
         shadowRadius: 10,
       },
-      android: { elevation: 10 },
+      android: { elevation: 12 },
       default: {},
     }),
   },
@@ -303,5 +455,31 @@ const styles = StyleSheet.create({
     fontSize: 10,
     fontWeight: "800",
     color: "#FFFFFF",
+  },
+  removeZoneWrap: {
+    position: "absolute",
+    left: 0,
+    right: 0,
+    height: REMOVE_ICON_SIZE,
+    zIndex: 111,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  removeIconWrap: {
+    width: REMOVE_ICON_SIZE,
+    height: REMOVE_ICON_SIZE,
+    borderRadius: REMOVE_ICON_SIZE / 2,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(15, 23, 42, 0.55)",
+  },
+  removeIconLayer: {
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  removeIconLayerAbsolute: {
+    ...StyleSheet.absoluteFillObject,
+    alignItems: "center",
+    justifyContent: "center",
   },
 });

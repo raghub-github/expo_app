@@ -1,4 +1,5 @@
 import { client as pg } from "@/lib/drizzle";
+import { mapMerchantAppDeepLinkToPartnersite } from "@/lib/mapMerchantAppDeepLink";
 
 export type PartnerCampaignNotification = {
   id: string;
@@ -53,12 +54,7 @@ export async function parentMerchantPublicIdForStore(
 }
 
 function partnersiteDeepLink(raw: string | null | undefined): string {
-  const t = String(raw ?? "").trim();
-  if (!t || t === "/" || t === "/notifications" || /^\/notifications(\/|$|\?)/.test(t)) {
-    return "/mx/food-orders";
-  }
-  if (/^https?:\/\//i.test(t)) return t;
-  return t.startsWith("/") ? t : `/${t}`;
+  return mapMerchantAppDeepLinkToPartnersite(raw);
 }
 
 /**

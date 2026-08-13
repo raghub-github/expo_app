@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 import { createServerClient } from "@supabase/ssr";
-import { createSafeFetchWithTimeout } from "@/lib/auth/fetch-with-timeout";
+import { createSafeFetchWithTimeout, runWithQuietAuthTimeoutErrors } from "@/lib/auth/fetch-with-timeout";
 import {
   getSessionMetadata,
   checkSessionValidity,
@@ -106,7 +106,8 @@ export async function proxy(request: NextRequest) {
   };
 
   try {
-    const safeFetch = createSafeFetchWithTimeout(6_000);
+    return await runWithQuietAuthTimeoutErrors(async () => {
+    const safeFetch = createSafeFetchWithTimeout(5_000);
 
     const supabase = createServerClient(
       process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder.supabase.co",
@@ -172,20 +173,32 @@ export async function proxy(request: NextRequest) {
     }
 
     let session: { user: { id: string; email?: string; phone?: string } } | null = null;
-    let sessionError: { message?: string; code?: string } | null = null;
+    let sessionError: { message?: string; code?: string; status?: number } | null = null;
 
     if (hasAuthCookie) {
       try {
-        const timeoutPromise = new Promise<{ data: { user: null }; error: { message: string; code: string } }>((resolve) =>
-          setTimeout(() => resolve({ data: { user: null }, error: { message: "Session check timeout", code: "TIMEOUT" } }), 5000)
-        );
-        const userPromise = supabase.auth.getUser().then((r) => r).catch((err: unknown) => ({
+        const userResult = (await supabase.auth.getUser().catch((err: unknown) => ({
           data: { user: null },
-          error: { message: (err && typeof err === "object" && "message" in err ? String((err as { message: unknown }).message) : "fetch failed"), code: "NETWORK_ERROR" },
-        }));
-        const userResult = (await Promise.race([userPromise, timeoutPromise])) as unknown as { data?: { user?: { id: string; email?: string; phone?: string } }; error?: { message?: string; code?: string } };
+          error: {
+            message:
+              err && typeof err === "object" && "message" in err
+                ? String((err as { message: unknown }).message)
+                : "fetch failed",
+            code: "NETWORK_ERROR",
+          },
+        }))) as unknown as {
+          data?: { user?: { id: string; email?: string; phone?: string } | null };
+          error?: { message?: string; code?: string; status?: number };
+        };
         const user = userResult.data?.user ?? null;
         sessionError = userResult.error ?? null;
+        if (
+          sessionError &&
+          (sessionError.status === 408 ||
+            /timeout|abort|request_timeout/i.test(String(sessionError.message ?? "")))
+        ) {
+          sessionError = { message: "Session check timeout", code: "TIMEOUT" };
+        }
         if (user) session = { user: { id: user.id, email: user.email, phone: user.phone } };
       } catch {
         session = null;
@@ -429,7 +442,17 @@ export async function proxy(request: NextRequest) {
     }
 
     return response;
+    });
   } catch (error) {
+    if (
+      error &&
+      typeof error === "object" &&
+      "__isAuthError" in error &&
+      ((error as { status?: number }).status === 408 ||
+        (error as { status?: number }).status === 0)
+    ) {
+      return response;
+    }
     console.error("[proxy] Error:", error);
     return response;
   }

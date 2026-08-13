@@ -63,72 +63,109 @@ export function MerchantSessionProvider({ children }: { children: React.ReactNod
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const initialLoadRef = useRef(true);
+  const inFlightRef = useRef<Promise<void> | null>(null);
+  const lastFetchAtRef = useRef(0);
+  const lastUnavailableAtRef = useRef(0);
+  const FOCUS_MIN_INTERVAL_MS = 30_000;
+  const UNAVAILABLE_BACKOFF_MS = 20_000;
 
-  const fetchSession = useCallback(async (options?: { background?: boolean }) => {
+  const fetchSession = useCallback(async (options?: { background?: boolean; force?: boolean }) => {
     const background = options?.background === true;
+    const force = options?.force === true;
+    const now = Date.now();
+
+    if (
+      !force &&
+      lastUnavailableAtRef.current > 0 &&
+      now - lastUnavailableAtRef.current < UNAVAILABLE_BACKOFF_MS
+    ) {
+      return;
+    }
+    if (!force && background && now - lastFetchAtRef.current < FOCUS_MIN_INTERVAL_MS) {
+      return;
+    }
+    if (inFlightRef.current) {
+      await inFlightRef.current;
+      return;
+    }
+
     if (background) setIsRefreshing(true);
-    try {
-      // Single bootstrap call — avoids parallel getUser()/refresh-token races.
-      const sessionRes = await fetch("/api/merchant-auth/merchant-session", {
-        credentials: "include",
-      });
-      const sessionData = await sessionRes.json().catch(() => ({}));
+    const run = (async () => {
+      try {
+        lastFetchAtRef.current = Date.now();
+        // Single bootstrap call — avoids parallel getUser()/refresh-token races.
+        const sessionRes = await fetch("/api/merchant-auth/merchant-session", {
+          credentials: "include",
+        });
+        const sessionData = await sessionRes.json().catch(() => ({}));
 
-      if (sessionRes.status === 503 || sessionData.code === "SERVICE_UNAVAILABLE") {
-        // Transient — keep prior state if any; do not treat as logged out.
-        return;
-      }
-
-      if (sessionRes.status === 401 && FATAL_SESSION_CODES.has(String(sessionData.code || ""))) {
-        setUser(null);
-        setParent(null);
-        setSessionStatus({ authenticated: false, expired: true });
-        return;
-      }
-
-      if (sessionData.success && sessionData.data?.user) {
-        try {
-          localStorage.removeItem(PARTNER_CROSS_TAB_LOGOUT_KEY);
-        } catch {
-          /* ignore */
+        if (sessionRes.status === 503 || sessionData.code === "SERVICE_UNAVAILABLE") {
+          lastUnavailableAtRef.current = Date.now();
+          // Transient — keep prior state if any; do not treat as logged out.
+          return;
         }
-        setUser({
-          id: sessionData.data.user.id,
-          email: sessionData.data.user.email ?? null,
-          phone: sessionData.data.user.phone ?? null,
-          name: sessionData.data.user.name ?? null,
-          avatar_url: sessionData.data.user.avatar_url ?? null,
-        });
-        setParent(sessionData.data.parent ?? null);
-        setSessionStatus({
-          authenticated: sessionData.authenticated !== false,
-          expired: false,
-          timeRemainingFormatted: sessionData.session?.timeRemainingFormatted,
-        });
-      } else {
-        setUser(null);
-        setParent(null);
-        setSessionStatus({
-          authenticated: false,
-          expired: !!sessionData.expired,
-        });
+
+        lastUnavailableAtRef.current = 0;
+
+        if (sessionRes.status === 401 && FATAL_SESSION_CODES.has(String(sessionData.code || ""))) {
+          setUser(null);
+          setParent(null);
+          setSessionStatus({ authenticated: false, expired: true });
+          return;
+        }
+
+        if (sessionData.success && sessionData.data?.user) {
+          try {
+            localStorage.removeItem(PARTNER_CROSS_TAB_LOGOUT_KEY);
+          } catch {
+            /* ignore */
+          }
+          setUser({
+            id: sessionData.data.user.id,
+            email: sessionData.data.user.email ?? null,
+            phone: sessionData.data.user.phone ?? null,
+            name: sessionData.data.user.name ?? null,
+            avatar_url: sessionData.data.user.avatar_url ?? null,
+          });
+          setParent(sessionData.data.parent ?? null);
+          setSessionStatus({
+            authenticated: sessionData.authenticated !== false,
+            expired: false,
+            timeRemainingFormatted: sessionData.session?.timeRemainingFormatted,
+          });
+        } else {
+          setUser(null);
+          setParent(null);
+          setSessionStatus({
+            authenticated: false,
+            expired: !!sessionData.expired,
+          });
+        }
+      } catch {
+        // Network blip — do not clear an existing session.
+        lastUnavailableAtRef.current = Date.now();
+      } finally {
+        if (initialLoadRef.current) {
+          setIsLoading(false);
+          initialLoadRef.current = false;
+        }
+        if (background) {
+          setIsRefreshing(false);
+          endPartnerSessionBackgroundRefresh();
+        }
       }
-    } catch {
-      // Network blip — do not clear an existing session.
+    })();
+
+    inFlightRef.current = run;
+    try {
+      await run;
     } finally {
-      if (initialLoadRef.current) {
-        setIsLoading(false);
-        initialLoadRef.current = false;
-      }
-      if (background) {
-        setIsRefreshing(false);
-        endPartnerSessionBackgroundRefresh();
-      }
+      inFlightRef.current = null;
     }
   }, []);
 
   useEffect(() => {
-    void fetchSession();
+    void fetchSession({ force: true });
   }, [fetchSession]);
 
   // Re-validate session when the tab regains focus so downstream queries don't
@@ -192,7 +229,7 @@ export function MerchantSessionProvider({ children }: { children: React.ReactNod
       isAuthenticated: !!user && sessionStatus?.authenticated !== false,
       logout,
       refetch: () => {
-        void fetchSession({ background: true });
+        void fetchSession({ background: true, force: true });
       },
     }),
     [user, sessionStatus, parent, isLoading, isRefreshing, logout, fetchSession]

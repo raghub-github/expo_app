@@ -13,6 +13,7 @@ import {
   X,
 } from "lucide-react";
 import { toast } from "sonner";
+import { useInvalidateMerchantStoreQueries } from "@/hooks/queries/useMerchantStoreQueries";
 import {
   type DaySchedule,
   type DayType,
@@ -32,9 +33,17 @@ type Props = {
   storeTimezone?: string | null;
   /** View-only / no store-manage: hide Edit/Save/Remove/toggles. */
   readOnly?: boolean;
+  storeId?: string;
 };
 
-export function OutletTimingsPanel({ apiBase, active, storeTimezone, readOnly = false }: Props) {
+export function OutletTimingsPanel({
+  apiBase,
+  active,
+  storeTimezone,
+  readOnly = false,
+  storeId,
+}: Props) {
+  const invalidateStoreQueries = useInvalidateMerchantStoreQueries();
   const [applyMondayToAll, setApplyMondayToAll] = useState(false);
   const [showCopyMondayConfirm, setShowCopyMondayConfirm] = useState(false);
   const [copyMondayConfirmLoading, setCopyMondayConfirmLoading] = useState(false);
@@ -115,9 +124,10 @@ export function OutletTimingsPanel({ apiBase, active, storeTimezone, readOnly = 
         toast.error(data.error || "Failed to save timings");
         return false;
       }
+      if (storeId) invalidateStoreQueries(storeId);
       return true;
     },
-    [apiBase]
+    [apiBase, invalidateStoreQueries, storeId]
   );
 
   const saveCompleteTimings = useCallback(

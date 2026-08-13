@@ -99,6 +99,7 @@ import { OrderRiderTrackingModal } from '@/components/orders/OrderRiderTrackingM
 import { orderHasAssignedRider } from '@/lib/order-has-assigned-rider';
 import { RiderPhotoModal } from '@/components/orders/RiderPhotoModal';
 import { RejectOrderSidesheet } from '@/components/orders/RejectOrderSidesheet';
+import { CloseStoreSidesheet } from '@/components/CloseStoreSidesheet';
 import { RejectFollowUpHost, useRejectFollowUp } from '@/components/orders/RejectFollowUpHost';
 import { rejectReasonNeedsFollowUp } from '@/lib/merchantCancellationReasons';
 import { OrderCancellationBanner } from '@/components/orders/OrderCancellationBanner';
@@ -1055,8 +1056,8 @@ function OrdersPageContent() {
     setCloseConfirmLoading(true);
     let manualCloseUntilIso: string | undefined;
     if (closeClosureType === 'temporary') {
-      const closedUntil = new Date(`${closeClosureDate}T${closeClosureTime}:00`);
-      manualCloseUntilIso = closedUntil.toISOString();
+      const timeNorm = /^\d{2}:\d{2}:\d{2}$/.test(closeClosureTime) ? closeClosureTime : `${closeClosureTime}:00`;
+      manualCloseUntilIso = `${closeClosureDate}T${timeNorm}`;
     }
     const reasonText = closeReason === 'Other' ? (closeReasonOther?.trim() || 'Other') : closeReason;
     const body: {
@@ -1111,8 +1112,9 @@ function OrdersPageContent() {
         toast.error('Please select date and time for reopening');
         return;
       }
-      const closedUntil = new Date(`${closeClosureDate}T${closeClosureTime}:00`);
-      if (closedUntil.getTime() <= Date.now()) {
+      const timeNorm = /^\d{2}:\d{2}:\d{2}$/.test(closeClosureTime) ? closeClosureTime : `${closeClosureTime}:00`;
+      const closedUntil = new Date(`${closeClosureDate}T${timeNorm}+05:30`);
+      if (Number.isNaN(closedUntil.getTime()) || closedUntil.getTime() <= Date.now()) {
         toast.error('Reopening date and time must be in the future');
         return;
       }
@@ -2406,82 +2408,30 @@ function OrdersPageContent() {
       {/* Reject modal */}
     </MXLayoutWhite>
 
-      {/* Store close modal – portaled so overlay is above sidebar */}
-      {showStoreCloseModal && typeof document !== 'undefined' && createPortal(
-        <div className="fixed inset-0 bg-black/50 backdrop-blur-md flex items-center justify-center z-[100] p-4" aria-hidden="true">
-          <div className="mx-auto max-w-md rounded-2xl bg-white p-6 shadow-2xl border border-gray-200 max-h-[90vh] overflow-y-auto">
-            <h2 className="text-lg font-bold text-gray-900 mb-4">How would you like to close your store?</h2>
-            <div className="space-y-3">
-              <label className={`flex items-center gap-3 p-3 rounded-lg cursor-pointer border-2 ${closeClosureType === 'temporary' ? 'bg-orange-50 border-orange-400' : 'border-gray-200 hover:border-orange-200'}`}>
-                <input type="radio" name="closureType" checked={closeClosureType === 'temporary'} onChange={() => setCloseClosureType('temporary')} className="w-4 h-4" />
-                <div className="flex-1">
-                  <p className="text-sm font-semibold text-gray-900">Temporary Closed</p>
-                  <p className="text-xs text-gray-600">Close until a specific date and time. Reopens automatically then, or turn ON manually anytime.</p>
-                </div>
-              </label>
-              {closeClosureType === 'temporary' && (
-                <div className="ml-7 space-y-3 p-3 rounded-lg bg-orange-50/50 border border-orange-200">
-                  <p className="text-xs font-semibold text-gray-700">Reopen on (date and time):</p>
-                  <div className="grid grid-cols-2 gap-3">
-                    <div>
-                      <label className="text-[10px] font-medium text-gray-500 block mb-1">Date</label>
-                      <input type="date" value={closeClosureDate} onChange={(e) => setCloseClosureDate(e.target.value)} min={(() => { const n = new Date(); return `${n.getFullYear()}-${(n.getMonth() + 1).toString().padStart(2, '0')}-${n.getDate().toString().padStart(2, '0')}`; })()} className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm text-gray-900" />
-                    </div>
-                    <div>
-                      <label className="text-[10px] font-medium text-gray-500 block mb-1">Time</label>
-                      <input type="time" value={closeClosureTime} onChange={(e) => setCloseClosureTime(e.target.value)} className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm text-gray-900" />
-                    </div>
-                  </div>
-                  <p className="text-[10px] text-gray-600">Store stays closed until this date & time, or until you turn it ON manually.</p>
-                </div>
-              )}
-              <label className={`flex items-center gap-3 p-3 rounded-lg cursor-pointer border-2 ${closeClosureType === 'today' ? 'bg-red-50 border-red-400' : 'border-gray-200 hover:border-red-200'}`}>
-                <input type="radio" name="closureType" checked={closeClosureType === 'today'} onChange={() => setCloseClosureType('today')} className="w-4 h-4" />
-                <div className="flex-1">
-                  <p className="text-sm font-semibold text-gray-900">Close for Today</p>
-                  <p className="text-xs text-gray-600">Closed until end of today (India time). Schedule can resume tomorrow.</p>
-                </div>
-              </label>
-              <label className={`flex items-center gap-3 p-3 rounded-lg cursor-pointer border-2 ${closeClosureType === 'manual_hold' ? 'bg-amber-50 border-amber-400' : 'border-gray-200 hover:border-amber-200'}`}>
-                <input type="radio" name="closureType" checked={closeClosureType === 'manual_hold'} onChange={() => setCloseClosureType('manual_hold')} className="w-4 h-4" />
-                <div className="flex-1">
-                  <p className="text-sm font-semibold text-gray-900">Until I manually turn it ON</p>
-                  <p className="text-xs text-gray-600">Store stays OFF even during operating hours until you turn it ON</p>
-                </div>
-              </label>
-            </div>
-            <div className="mt-4 space-y-2">
-              <label className="text-xs font-semibold text-gray-700 block">Reason for closing <span className="text-red-500">*</span></label>
-              <select value={closeReason} onChange={(e) => setCloseReason(e.target.value)} className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm text-gray-900 bg-white">
-                <option value="">Select reason</option>
-                <option value="Staff shortage">Staff shortage</option>
-                <option value="Inventory restock">Inventory restock</option>
-                <option value="Device issue / electricity">Device issue / electricity</option>
-                <option value="Run out of Gas">Run out of Gas</option>
-                <option value="Payment issue">Payment issue</option>
-                <option value="Rush of offline orders">Rush of offline orders</option>
-                <option value="Equipment issue">Equipment issue</option>
-                <option value="Holiday / Off">Holiday / Off</option>
-                <option value="Maintenance">Maintenance</option>
-                <option value="Personal / Emergency">Personal / Emergency</option>
-                <option value="Kitchen / Prep area issue">Kitchen / Prep area issue</option>
-                <option value="Supplier delay">Supplier delay</option>
-                <option value="Other">Other</option>
-              </select>
-              {closeReason === 'Other' && (
-                <input type="text" value={closeReasonOther} onChange={(e) => setCloseReasonOther(e.target.value)} placeholder="Enter reason" className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm text-gray-900" />
-              )}
-            </div>
-            <div className="flex gap-3 mt-5">
-              <button type="button" onClick={() => { if (!closeConfirmLoading) { setShowStoreCloseModal(false); setCloseClosureType(null); setCloseReason(''); setCloseReasonOther(''); } }} disabled={closeConfirmLoading} className="flex-1 px-4 py-2.5 border border-gray-300 rounded-xl text-gray-700 font-medium hover:bg-gray-50 disabled:opacity-50">Cancel</button>
-              <button type="button" onClick={handleStoreCloseModalConfirm} disabled={!closeClosureType || !closeReason?.trim() || (closeReason === 'Other' && !closeReasonOther?.trim()) || (closeClosureType === 'temporary' && (!closeClosureDate || !closeClosureTime)) || closeConfirmLoading} className="flex-1 px-4 py-2.5 bg-red-600 text-white rounded-xl font-medium hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed inline-flex items-center justify-center gap-2">
-                {closeConfirmLoading ? <><Loader2 size={18} className="animate-spin" /> Confirming...</> : 'Confirm'}
-              </button>
-            </div>
-          </div>
-        </div>,
-        document.body
-      )}
+      {/* Store close sidesheet – does not cover the partner header like a centered modal */}
+      <CloseStoreSidesheet
+        open={showStoreCloseModal}
+        toggleClosureType={closeClosureType}
+        setToggleClosureType={setCloseClosureType}
+        closureDate={closeClosureDate}
+        setClosureDate={setCloseClosureDate}
+        closureTime={closeClosureTime}
+        setClosureTime={setCloseClosureTime}
+        closeReason={closeReason}
+        setCloseReason={setCloseReason}
+        closeReasonOther={closeReasonOther}
+        setCloseReasonOther={setCloseReasonOther}
+        loading={closeConfirmLoading}
+        onCancel={() => {
+          if (!closeConfirmLoading) {
+            setShowStoreCloseModal(false);
+            setCloseClosureType(null);
+            setCloseReason('');
+            setCloseReasonOther('');
+          }
+        }}
+        onConfirm={handleStoreCloseModalConfirm}
+      />
 
       {/* Turn Store ON modal – portaled so overlay is above sidebar */}
       {showTurnOnModal && typeof document !== 'undefined' && createPortal(

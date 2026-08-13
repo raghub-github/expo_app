@@ -3,6 +3,7 @@
 
 import { useEffect, useState, useCallback, useMemo } from "react";
 import { useRouter } from "next/navigation";
+import { useQueryClient } from "@tanstack/react-query";
 import { Store, Plus, LogOut, Leaf } from "lucide-react";
 import { toast } from "sonner";
 import LogoutConfirmModal from "@/components/LogoutConfirmModal";
@@ -18,6 +19,7 @@ import {
 import type { PartnerVerificationStepRejection } from "@/lib/onboarding/partner-verification-rejections";
 import { normalizeMerchantStoreMediaUrl } from "@/lib/r2";
 import { clearPartnerStoreSelection, persistPartnerSelectedStoreId } from "@/lib/partner-selected-store";
+import { merchantKeys } from "@/lib/query-keys";
 
 type StoreItem = {
   store_id: string;
@@ -48,6 +50,7 @@ type ResolveData = {
 
 export function PartnersAllStoresPage() {
   const router = useRouter();
+  const queryClient = useQueryClient();
   const [status, setStatus] = useState<"loading" | "home" | "retry">("loading");
   const [data, setData] = useState<ResolveData | null>(null);
   const [showLogoutModal, setShowLogoutModal] = useState(false);
@@ -55,66 +58,13 @@ export function PartnersAllStoresPage() {
   const [verificationSubmittedBanner, setVerificationSubmittedBanner] = useState(false);
   const [highlightStorePublicId, setHighlightStorePublicId] = useState<string | null>(null);
 
-  const resolveSession = useCallback(async () => {
-    setStatus("loading");
-    try {
-      const res = await fetch("/api/merchant-auth/resolve-session", { credentials: "include" });
-      if (res.status === 404) {
-        setStatus("retry");
-        return;
-      }
-      let result: ResolveData & { code?: string; error?: string };
-      try {
-        result = await res.json();
-      } catch {
-        setStatus("retry");
-        return;
-      }
-
-      if (!res.ok || !result.success) {
-        if (res.status === 503 || result.code === "SERVICE_UNAVAILABLE") {
-          setStatus("retry");
-          return;
-        }
-        const code = result.code;
-        const fatalAuth =
-          res.status === 401 ||
-          code === "SESSION_INVALID" ||
-          code === "DEVICE_SESSION_INVALID" ||
-          code === "MERCHANT_NOT_FOUND";
-
-        if (fatalAuth) {
-          // Only clear cookies when the backend says the session is genuinely gone.
-          if (code === "SESSION_INVALID" || code === "DEVICE_SESSION_INVALID") {
-            try {
-              const { partnerLogoutLocal } = await import("@/lib/auth/partner-logout");
-              await partnerLogoutLocal({ redirectToLogin: false, clearStoreSelection: true });
-            } catch {
-              // ignore
-            }
-          }
-          const errMsg = result.error;
-          if (code === "MERCHANT_NOT_FOUND") {
-            window.location.href = "/auth/register";
-            return;
-          }
-          const query =
-            errMsg ? `?error=${encodeURIComponent(errMsg)}` : "";
-          window.location.href = `/auth${query}`;
-          return;
-        }
-
-        // Ambiguous / non-auth failure — keep cookies, show retry (do NOT logout).
-        setStatus("retry");
-        return;
-      }
-
+  const applyResolved = useCallback(
+    (result: ResolveData) => {
       setData(result);
       setStatus("home");
 
       const stores = result.stores ?? [];
       const parentId = result.parentId ?? result.onboardingProgress?.parent_id;
-      // New parent with no child store — do not land on dashboard via stale selection
       if (stores.length === 0) {
         clearPartnerStoreSelection();
         const q =
@@ -133,10 +83,97 @@ export function PartnersAllStoresPage() {
       } catch {
         /* ignore */
       }
-    } catch {
-      setStatus("retry");
+    },
+    []
+  );
+
+  const resolveSession = useCallback(async () => {
+    const cached = queryClient.getQueryData<ResolveData>(merchantKeys.resolveSession());
+    if (cached?.success) {
+      applyResolved(cached);
+    } else {
+      setStatus("loading");
     }
-  }, []);
+    try {
+      const result = await queryClient.fetchQuery({
+        queryKey: merchantKeys.resolveSession(),
+        queryFn: async () => {
+          const res = await fetch("/api/merchant-auth/resolve-session", { credentials: "include" });
+          if (res.status === 404) {
+            const err = new Error("NOT_FOUND") as Error & { status: number; body?: ResolveData };
+            err.status = 404;
+            throw err;
+          }
+          let body: ResolveData & { code?: string; error?: string };
+          try {
+            body = await res.json();
+          } catch {
+            const err = new Error("INVALID_JSON") as Error & { status: number };
+            err.status = res.status;
+            throw err;
+          }
+          if (!res.ok || !body.success) {
+            const err = new Error(body.code || "RESOLVE_FAILED") as Error & {
+              status: number;
+              body: ResolveData & { code?: string; error?: string };
+            };
+            err.status = res.status;
+            err.body = body;
+            throw err;
+          }
+          return body;
+        },
+        staleTime: 5 * 60 * 1000,
+      });
+      applyResolved(result);
+    } catch (e) {
+      const err = e as Error & {
+        status?: number;
+        body?: ResolveData & { code?: string; error?: string };
+      };
+      if (err.status === 404) {
+        setStatus("retry");
+        return;
+      }
+      const result = err.body;
+      if (result && (!result.success || err.status)) {
+        if (err.status === 503 || result.code === "SERVICE_UNAVAILABLE") {
+          setStatus("retry");
+          return;
+        }
+        const code = result.code;
+        const fatalAuth =
+          err.status === 401 ||
+          code === "SESSION_INVALID" ||
+          code === "DEVICE_SESSION_INVALID" ||
+          code === "MERCHANT_NOT_FOUND";
+
+        if (fatalAuth) {
+          if (code === "SESSION_INVALID" || code === "DEVICE_SESSION_INVALID") {
+            try {
+              const { partnerLogoutLocal } = await import("@/lib/auth/partner-logout");
+              await partnerLogoutLocal({ redirectToLogin: false, clearStoreSelection: true });
+            } catch {
+              // ignore
+            }
+          }
+          const errMsg = result.error;
+          if (code === "MERCHANT_NOT_FOUND") {
+            window.location.href = "/auth/register";
+            return;
+          }
+          const query = errMsg ? `?error=${encodeURIComponent(errMsg)}` : "";
+          window.location.href = `/auth${query}`;
+          return;
+        }
+
+        if (!cached?.success) setStatus("retry");
+        return;
+      }
+
+      if (!cached?.success) setStatus("retry");
+    }
+  }, [applyResolved, queryClient]);
 
   useEffect(() => {
     resolveSession();
@@ -331,7 +368,7 @@ export function PartnersAllStoresPage() {
         <div className="px-3 sm:px-6 pt-3 sm:pt-4">
           <div className="mx-auto max-w-6xl flex items-center justify-between">
             <div className="flex items-center gap-2">
-              <img src="/logo.png" alt="GatiMitra" className="h-8 w-auto sm:h-9 object-contain" />
+              <img src="/onlylogo.png" alt="GatiMitra" className="h-8 w-auto sm:h-9 object-contain" />
               <span className="hidden sm:inline text-xs font-semibold uppercase tracking-wider text-slate-500">
                 Partner
               </span>

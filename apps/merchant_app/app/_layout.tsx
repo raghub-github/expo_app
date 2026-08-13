@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import "react-native-gesture-handler";
-import { LogBox, View } from "react-native";
+import { LogBox, Platform, StatusBar as RNStatusBar, View } from "react-native";
 import { Stack } from "expo-router";
 import { useFonts } from "expo-font";
 import { Lora_400Regular, Lora_700Bold } from "@expo-google-fonts/lora";
@@ -73,6 +73,15 @@ const ASSETS_FETCH_TIMEOUT_MS = 8000;
 const FONTS_READY_FALLBACK_MS = 8000;
 /** Keep the branded splash on screen long enough to actually be read. */
 const MIN_SPLASH_VISIBLE_MS = 1200;
+
+function AndroidStatusBarSync({ color }: { color: string }) {
+  useEffect(() => {
+    RNStatusBar.setTranslucent(false);
+    RNStatusBar.setBackgroundColor(color);
+    RNStatusBar.setBarStyle("dark-content");
+  }, [color]);
+  return null;
+}
 
 export default function RootLayout() {
   const [fontsLoaded, fontsError] = useFonts({
@@ -171,10 +180,13 @@ export default function RootLayout() {
                           <SubscriptionProvider>
                             <StatusBar
                               style="dark"
-                              backgroundColor={GatiMitraMerchant.background}
+                              backgroundColor={GatiMitraMerchant.surfaceWarm}
                               translucent={false}
                               hidden={false}
                             />
+                            {Platform.OS === "android" ? (
+                              <AndroidStatusBarSync color={GatiMitraMerchant.surfaceWarm} />
+                            ) : null}
                             <IncomingOrderSheetProvider>
                               <NotificationSetup />
                               <AppAssetsPrefetch />

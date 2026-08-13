@@ -71,6 +71,16 @@ module.exports = ({ config }) => ({
       "./plugins/withMerchantOrderWake",
       "./plugins/withAndroidUpiQueries",
       [
+        "./plugins/withOfflineConnectivityMonitor",
+        {
+          title: "🚫 Oops, no network available!",
+          body: "Please check your internet connection and try again",
+          channelId: "merchant_connectivity",
+          channelName: "Connectivity",
+          notificationId: 91002,
+        },
+      ],
+      [
         "./plugins/withBootReconnectNotification",
         {
           title: "Reconnect to receive orders",

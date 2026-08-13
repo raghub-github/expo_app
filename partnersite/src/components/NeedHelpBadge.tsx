@@ -9,6 +9,7 @@ import {
   type MxNeedHelpOpenDetail,
 } from "@/lib/openMxNeedHelp";
 import { formatMerchantOrderPickSubtitle } from "@/lib/formatOrderPickRow";
+import { topicRequiresOrderSelection } from "@/lib/supportOrderRequiredTopics";
 
 const SESSION_OUTSIDE_PROVIDER: MerchantSessionContextValue = {
   user: null,
@@ -420,26 +421,45 @@ const NeedHelpBadge: React.FC<{
     }
   };
 
+  const beginCompose = useCallback(
+    (draft: { ticketTitleId: number; subject: string; description: string }) => {
+      setPendingTicket(draft);
+      setComposeText(draft.description);
+      setSheetStep("compose");
+    },
+    []
+  );
+
   const onPickChild = (child: HelpSection) => {
     const subject = `${selectedTopic?.title ?? "Support"} · ${child.title}`;
     const description = [selectedTopic?.title, child.title, child.subtitle]
       .filter(Boolean)
       .join(" — ");
-    beginOrderPick({
+    const draft = {
       ticketTitleId: child.ticket_title_id,
       subject,
       description,
-    });
+    };
+    if (topicRequiresOrderSelection(child.title)) {
+      beginOrderPick(draft);
+      return;
+    }
+    beginCompose(draft);
   };
 
   const onPickQuick = (text: string) => {
     if (!selectedTopic) return;
     const subject = `${selectedTopic.title} · ${text.slice(0, 80)}`;
-    beginOrderPick({
+    const draft = {
       ticketTitleId: selectedTopic.ticket_title_id,
       subject,
       description: text,
-    });
+    };
+    if (topicRequiresOrderSelection(text)) {
+      beginOrderPick(draft);
+      return;
+    }
+    beginCompose(draft);
   };
 
   const onComposeSubmit = (e: React.FormEvent) => {

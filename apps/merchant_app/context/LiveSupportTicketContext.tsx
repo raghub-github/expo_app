@@ -27,6 +27,11 @@ export type ActiveLiveSupportTicket = StoredLiveSupportTicket;
 type LiveSupportTicketContextValue = {
   activeTicket: ActiveLiveSupportTicket | null;
   unreadCount: number;
+  /** True after user drag-dismisses the live-support FAB (survives page switches). */
+  fabDismissed: boolean;
+  dismissLiveSupportFab: () => void;
+  /** Show FAB again — call when merchant opens a ticket from My Tickets (or registers live support). */
+  revealLiveSupportFab: () => void;
   registerLiveSupportTicket: (ticket: ActiveLiveSupportTicket) => void;
   syncLiveSupportTicketStatus: (ticketId: number, status: string) => void;
   markLiveSupportAsRead: (readAt?: string, messages?: TicketMessage[]) => void;
@@ -64,8 +69,18 @@ export function LiveSupportTicketProvider({ children }: { children: ReactNode })
 
   const [activeTicket, setActiveTicket] = useState<ActiveLiveSupportTicket | null>(null);
   const [unreadCount, setUnreadCount] = useState(0);
+  /** Session-scoped: hide floating headset until merchant opens a ticket from My Tickets. */
+  const [fabDismissed, setFabDismissed] = useState(false);
   const refreshInFlight = useRef(false);
   const chatOpenTicketIdRef = useRef<number | null>(null);
+
+  const dismissLiveSupportFab = useCallback(() => {
+    setFabDismissed(true);
+  }, []);
+
+  const revealLiveSupportFab = useCallback(() => {
+    setFabDismissed(false);
+  }, []);
 
   const persist = useCallback(
     async (ticket: ActiveLiveSupportTicket | null) => {
@@ -91,6 +106,8 @@ export function LiveSupportTicketProvider({ children }: { children: ReactNode })
         clearLiveSupportTicket();
         return;
       }
+      // Opening / attaching a live ticket (e.g. from chat) should show the FAB again.
+      setFabDismissed(false);
       setActiveTicket((prev) => {
         const next = {
           ...ticket,
@@ -178,6 +195,7 @@ export function LiveSupportTicketProvider({ children }: { children: ReactNode })
     let cancelled = false;
     setActiveTicket(null);
     setUnreadCount(0);
+    setFabDismissed(false);
     if (storeId == null) return;
     void (async () => {
       const stored = await loadStoredLiveSupportTicket(storeId);
@@ -252,6 +270,9 @@ export function LiveSupportTicketProvider({ children }: { children: ReactNode })
     () => ({
       activeTicket,
       unreadCount,
+      fabDismissed,
+      dismissLiveSupportFab,
+      revealLiveSupportFab,
       registerLiveSupportTicket,
       syncLiveSupportTicketStatus,
       markLiveSupportAsRead,
@@ -262,6 +283,9 @@ export function LiveSupportTicketProvider({ children }: { children: ReactNode })
     [
       activeTicket,
       unreadCount,
+      fabDismissed,
+      dismissLiveSupportFab,
+      revealLiveSupportFab,
       registerLiveSupportTicket,
       syncLiveSupportTicketStatus,
       markLiveSupportAsRead,
