@@ -118,13 +118,49 @@ export type DynamicPricingInput = {
 };
 
 /**
- * Upsert the rule for (node, service, mode, vehicle) — one row per the unique key. The
- * conflict target matches the expression unique index (COALESCE makes "all vehicles" a
- * single real dedupe slot instead of every NULL being treated as distinct).
+ * Upsert the rule for (node, service, mode, vehicle) — one row per the unique key.
+ *
+ * Two PARTIAL unique indexes back this (see migration 0527): one for the "all vehicles"
+ * case (vehicle_type IS NULL), one for vehicle-specific overrides (vehicle_type IS NOT
+ * NULL) — NOT a single COALESCE expression index, because casting the vehicle_type ENUM to
+ * text for that expression would go through enum_out(), which Postgres marks STABLE (not
+ * IMMUTABLE), and index expressions require IMMUTABLE-only functions (error 42P17). Each
+ * partial index needs its own matching ON CONFLICT (columns) WHERE predicate, so this
+ * branches on whether a vehicle was selected rather than using one conflict target for both.
  */
 export async function upsertDynamicPricingRule(a: DynamicPricingInput): Promise<DynamicPricingRuleRow> {
   const sql = getSql();
   const dow = a.daysOfWeek && a.daysOfWeek.length > 0 ? a.daysOfWeek : null;
+
+  if (a.vehicleType == null) {
+    const rows = await sql`
+      INSERT INTO dynamic_pricing_rules (
+        mode, service_type, vehicle_type, geo_level, geo_ref_id, name, value_type, value, max_amount,
+        funding, customer_share_pct, taxable, gst_rate, all_day, start_time, end_time,
+        days_of_week, active_from, active_to, manual_active, priority, is_active
+      ) VALUES (
+        ${a.mode}, ${a.service}, ${a.vehicleType}::ride_vehicle_pricing_type,
+        ${a.level}::geo_pricing_level, ${a.refId}::uuid, ${a.name},
+        ${a.valueType}, ${a.value}, ${a.maxAmount}, ${a.funding}, ${a.customerSharePct},
+        ${a.taxable}, ${a.gstRate}, ${a.allDay}, ${a.startTime}, ${a.endTime},
+        ${dow as unknown as number[]}, ${a.activeFrom}, ${a.activeTo}, ${a.manualActive},
+        ${a.priority}, ${a.isActive}
+      )
+      ON CONFLICT (geo_level, geo_ref_id, service_type, mode) WHERE vehicle_type IS NULL
+      DO UPDATE SET
+        name = EXCLUDED.name, value_type = EXCLUDED.value_type, value = EXCLUDED.value,
+        max_amount = EXCLUDED.max_amount, funding = EXCLUDED.funding,
+        customer_share_pct = EXCLUDED.customer_share_pct, taxable = EXCLUDED.taxable,
+        gst_rate = EXCLUDED.gst_rate, all_day = EXCLUDED.all_day, start_time = EXCLUDED.start_time,
+        end_time = EXCLUDED.end_time, days_of_week = EXCLUDED.days_of_week,
+        active_from = EXCLUDED.active_from, active_to = EXCLUDED.active_to,
+        manual_active = EXCLUDED.manual_active, priority = EXCLUDED.priority,
+        is_active = EXCLUDED.is_active, updated_at = now()
+      RETURNING *
+    `;
+    return mapRow((Array.isArray(rows) ? rows[0] : rows) as Record<string, unknown>);
+  }
+
   const rows = await sql`
     INSERT INTO dynamic_pricing_rules (
       mode, service_type, vehicle_type, geo_level, geo_ref_id, name, value_type, value, max_amount,
@@ -138,7 +174,8 @@ export async function upsertDynamicPricingRule(a: DynamicPricingInput): Promise<
       ${dow as unknown as number[]}, ${a.activeFrom}, ${a.activeTo}, ${a.manualActive},
       ${a.priority}, ${a.isActive}
     )
-    ON CONFLICT (geo_level, geo_ref_id, service_type, mode, (COALESCE(vehicle_type::text, '_all'))) DO UPDATE SET
+    ON CONFLICT (geo_level, geo_ref_id, service_type, mode, vehicle_type) WHERE vehicle_type IS NOT NULL
+    DO UPDATE SET
       name = EXCLUDED.name, value_type = EXCLUDED.value_type, value = EXCLUDED.value,
       max_amount = EXCLUDED.max_amount, funding = EXCLUDED.funding,
       customer_share_pct = EXCLUDED.customer_share_pct, taxable = EXCLUDED.taxable,

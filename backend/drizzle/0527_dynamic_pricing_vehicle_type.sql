@@ -13,15 +13,24 @@ ALTER TABLE dynamic_pricing_rules
 COMMENT ON COLUMN dynamic_pricing_rules.vehicle_type IS
   'NULL = applies to all vehicles. A specific vehicle overrides the all-vehicles row for that mode/node/service.';
 
--- Replace the old "one row per (node, service, mode)" constraint with one that also allows
--- ONE additional row per specific vehicle — but still only ONE "all vehicles" (NULL) row.
--- COALESCE makes NULL behave as a real, single dedupe slot (a plain UNIQUE treats every NULL
--- as distinct, which would let admins silently create duplicate all-vehicle rows).
+-- Replace the old "one row per (node, service, mode)" constraint with two PARTIAL unique
+-- indexes — one for the "all vehicles" case, one for vehicle-specific overrides — so NULL
+-- still behaves as a single dedupe slot (never letting admins create duplicate all-vehicle
+-- rows) while still allowing one extra row per specific vehicle.
+--
+-- NOTE: an earlier version of this migration used a single expression index with
+-- COALESCE(vehicle_type::text, '_all'), which Postgres rejects — casting a user-defined
+-- ENUM to text goes through enum_out(), which Postgres marks STABLE (its result depends on
+-- the pg_enum catalog, e.g. ALTER TYPE ... RENAME VALUE), not IMMUTABLE, and index
+-- expressions require IMMUTABLE functions only (error 42P17). Two partial indexes avoid any
+-- expression/cast entirely — each references the raw enum column with a plain NULL test.
 ALTER TABLE dynamic_pricing_rules DROP CONSTRAINT IF EXISTS dyn_pricing_uniq;
-CREATE UNIQUE INDEX IF NOT EXISTS dyn_pricing_uniq_idx
-  ON dynamic_pricing_rules (
-    geo_level, geo_ref_id, service_type, mode, COALESCE(vehicle_type::text, '_all')
-  );
+CREATE UNIQUE INDEX IF NOT EXISTS dyn_pricing_uniq_all_vehicles_idx
+  ON dynamic_pricing_rules (geo_level, geo_ref_id, service_type, mode)
+  WHERE vehicle_type IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS dyn_pricing_uniq_vehicle_idx
+  ON dynamic_pricing_rules (geo_level, geo_ref_id, service_type, mode, vehicle_type)
+  WHERE vehicle_type IS NOT NULL;
 
 CREATE INDEX IF NOT EXISTS dyn_pricing_vehicle_idx
   ON dynamic_pricing_rules (vehicle_type) WHERE vehicle_type IS NOT NULL;

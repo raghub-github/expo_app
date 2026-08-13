@@ -20,7 +20,8 @@ AS $$
 $$;
 
 DROP INDEX IF EXISTS dyn_pricing_vehicle_idx;
-DROP INDEX IF EXISTS dyn_pricing_uniq_idx;
+DROP INDEX IF EXISTS dyn_pricing_uniq_all_vehicles_idx;
+DROP INDEX IF EXISTS dyn_pricing_uniq_vehicle_idx;
 
 -- Restores the original constraint. Will FAIL if vehicle-specific rows were added in the
 -- meantime (duplicate (node,service,mode) rows would violate it) — remove them first.
