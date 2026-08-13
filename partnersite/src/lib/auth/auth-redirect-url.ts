@@ -77,9 +77,20 @@ export function getPartnerAuthRedirectBaseUrl(): string {
   return getPartnerSiteBaseUrl();
 }
 
-/** OAuth callback path — server-side code exchange (reliable PKCE + cookies). */
+/**
+ * OAuth `redirectTo` for Supabase. MUST point at the `/auth/callback` PAGE, not the
+ * `/api/auth/callback` route: the page (app/auth/callback/page.tsx) forwards the `code`
+ * to the API route for the server-side PKCE exchange.
+ *
+ * Why the page and not the API route directly: Supabase only redirects to URLs in the
+ * project's Redirect-URLs allowlist. The allowlist (shared with the dashboard) lists
+ * `https://partner.gatimitra.com/auth/callback` + `/auth/**`, matching the dashboard's
+ * `/auth/callback` convention — it does NOT list `/api/auth/callback`. Returning
+ * `/api/auth/callback` here made Supabase reject the redirect and fall back to the project
+ * Site URL (gatimitra.com), sending partners to the wrong domain after Google sign-in.
+ */
 export function getPartnerOAuthCallbackUrl(): string {
-  return `${getPartnerAuthRedirectBaseUrl()}/api/auth/callback`;
+  return `${getPartnerAuthRedirectBaseUrl()}/auth/callback`;
 }
 
 export const DEFAULT_POST_AUTH_PATH = "/partners/all-stores";

@@ -7,8 +7,11 @@
  * server-side code exchange and cookie setting (reliable on all devices).
  *
  * Supabase Dashboard > Authentication > URL Configuration (for partner app at partner.gatimitra.com):
- * - Site URL: use https://partner.gatimitra.com (not gatimitra.com or localhost) so cookies and redirects use the correct domain.
- * - Redirect URLs: must include https://partner.gatimitra.com/api/auth/callback and http://localhost:3002/api/auth/callback.
+ * - Redirect URLs: must include the OAuth landing PAGE — https://partner.gatimitra.com/auth/callback
+ *   (and http://localhost:3002/auth/callback for dev). NOT /api/auth/callback — that's the internal
+ *   API route the page forwards to, and Supabase never redirects there directly.
+ * - Site URL is shared with the dashboard; the allowlist entry above is what makes Supabase honor
+ *   the partner redirect instead of falling back to the Site URL.
  */
 
 import { createClient } from "@/lib/supabase/client";
