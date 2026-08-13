@@ -17,11 +17,15 @@ function toDbService(s: "food" | "parcel" | "ride" | "all"): DynServiceDb {
   return s === "ride" ? "person_ride" : s;
 }
 
+const vehicleSchema = z.enum(["2_wheeler", "3_wheeler", "4_wheeler_non_ac", "4_wheeler_ac"]);
+
 const bodySchema = z.object({
   level: levelSchema,
   refId: z.string().uuid(),
   service: serviceSchema,
   mode: z.enum(["NIGHT", "RAIN", "PEAK", "FESTIVAL", "HOLIDAY", "HIGH_DEMAND", "LOW_SUPPLY", "MANUAL"]),
+  /** NULL/omitted = applies to all vehicles. Only meaningful for ride/parcel. */
+  vehicleType: vehicleSchema.nullable().optional(),
   name: z.string().max(120).nullable().optional(),
   valueType: z.enum(["FIXED", "PER_KM", "PERCENTAGE", "MULTIPLIER"]),
   value: z.number().nonnegative(),
@@ -88,6 +92,9 @@ export async function POST(req: NextRequest) {
   if (!d.allDay && d.mode !== "MANUAL" && (!d.startTime || !d.endTime) && (!d.daysOfWeek || d.daysOfWeek.length === 0) && !d.activeFrom) {
     return NextResponse.json({ error: "Set a time window (all-day, start/end, days, or a date range) — or use MANUAL." }, { status: 400 });
   }
+  if (d.service === "food" && d.vehicleType) {
+    return NextResponse.json({ error: "Food has no vehicle dimension — leave vehicle unset." }, { status: 400 });
+  }
 
   try {
     const rule = await upsertDynamicPricingRule({
@@ -95,6 +102,7 @@ export async function POST(req: NextRequest) {
       refId: d.refId,
       service: toDbService(d.service),
       mode: d.mode,
+      vehicleType: d.vehicleType ?? null,
       name: d.name ?? null,
       valueType: d.valueType,
       value: d.value,

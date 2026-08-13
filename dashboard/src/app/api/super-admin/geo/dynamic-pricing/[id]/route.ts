@@ -10,6 +10,7 @@ import {
 export const runtime = "nodejs";
 
 const patchSchema = z.object({
+  vehicleType: z.enum(["2_wheeler", "3_wheeler", "4_wheeler_non_ac", "4_wheeler_ac"]).nullable().optional(),
   name: z.string().max(120).nullable().optional(),
   valueType: z.enum(["FIXED", "PER_KM", "PERCENTAGE", "MULTIPLIER"]).optional(),
   value: z.number().nonnegative().optional(),
@@ -53,6 +54,7 @@ export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: strin
     if (!current) return NextResponse.json({ error: "Not found" }, { status: 404 });
     const p = parsed.data;
     const merged = {
+      vehicleType: p.vehicleType === undefined ? current.vehicleType : p.vehicleType,
       name: p.name === undefined ? current.name : p.name,
       valueType: p.valueType ?? current.valueType,
       value: p.value ?? current.value,

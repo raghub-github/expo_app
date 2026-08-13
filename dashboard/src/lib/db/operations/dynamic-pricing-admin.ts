@@ -7,11 +7,14 @@ export type DynMode =
   | "NIGHT" | "RAIN" | "PEAK" | "FESTIVAL" | "HOLIDAY" | "HIGH_DEMAND" | "LOW_SUPPLY" | "MANUAL";
 export type DynValueType = "FIXED" | "PER_KM" | "PERCENTAGE" | "MULTIPLIER";
 export type DynFunding = "customer" | "company" | "shared";
+export type DynVehicleType = "2_wheeler" | "3_wheeler" | "4_wheeler_non_ac" | "4_wheeler_ac";
 
 export type DynamicPricingRuleRow = {
   id: number;
   mode: DynMode;
   serviceType: DynServiceDb;
+  /** NULL = applies to all vehicles; overrides the all-vehicles row for this mode when set. */
+  vehicleType: DynVehicleType | null;
   geoLevel: GeoHierarchyLevel;
   geoRefId: string;
   name: string | null;
@@ -40,6 +43,7 @@ function mapRow(r: Record<string, unknown>): DynamicPricingRuleRow {
     id: Number(r.id),
     mode: String(r.mode) as DynMode,
     serviceType: String(r.service_type) as DynServiceDb,
+    vehicleType: r.vehicle_type == null ? null : (String(r.vehicle_type) as DynVehicleType),
     geoLevel: String(r.geo_level) as GeoHierarchyLevel,
     geoRefId: String(r.geo_ref_id),
     name: r.name == null ? null : String(r.name),
@@ -92,6 +96,8 @@ export type DynamicPricingInput = {
   refId: string;
   service: DynServiceDb;
   mode: DynMode;
+  /** NULL = applies to all vehicles (food always NULL). */
+  vehicleType: DynVehicleType | null;
   name: string | null;
   valueType: DynValueType;
   value: number;
@@ -111,23 +117,28 @@ export type DynamicPricingInput = {
   isActive: boolean;
 };
 
-/** Upsert the single rule for (node, service, mode) — one row per the unique key. */
+/**
+ * Upsert the rule for (node, service, mode, vehicle) — one row per the unique key. The
+ * conflict target matches the expression unique index (COALESCE makes "all vehicles" a
+ * single real dedupe slot instead of every NULL being treated as distinct).
+ */
 export async function upsertDynamicPricingRule(a: DynamicPricingInput): Promise<DynamicPricingRuleRow> {
   const sql = getSql();
   const dow = a.daysOfWeek && a.daysOfWeek.length > 0 ? a.daysOfWeek : null;
   const rows = await sql`
     INSERT INTO dynamic_pricing_rules (
-      mode, service_type, geo_level, geo_ref_id, name, value_type, value, max_amount,
+      mode, service_type, vehicle_type, geo_level, geo_ref_id, name, value_type, value, max_amount,
       funding, customer_share_pct, taxable, gst_rate, all_day, start_time, end_time,
       days_of_week, active_from, active_to, manual_active, priority, is_active
     ) VALUES (
-      ${a.mode}, ${a.service}, ${a.level}::geo_pricing_level, ${a.refId}::uuid, ${a.name},
+      ${a.mode}, ${a.service}, ${a.vehicleType}::ride_vehicle_pricing_type,
+      ${a.level}::geo_pricing_level, ${a.refId}::uuid, ${a.name},
       ${a.valueType}, ${a.value}, ${a.maxAmount}, ${a.funding}, ${a.customerSharePct},
       ${a.taxable}, ${a.gstRate}, ${a.allDay}, ${a.startTime}, ${a.endTime},
       ${dow as unknown as number[]}, ${a.activeFrom}, ${a.activeTo}, ${a.manualActive},
       ${a.priority}, ${a.isActive}
     )
-    ON CONFLICT (geo_level, geo_ref_id, service_type, mode) DO UPDATE SET
+    ON CONFLICT (geo_level, geo_ref_id, service_type, mode, (COALESCE(vehicle_type::text, '_all'))) DO UPDATE SET
       name = EXCLUDED.name, value_type = EXCLUDED.value_type, value = EXCLUDED.value,
       max_amount = EXCLUDED.max_amount, funding = EXCLUDED.funding,
       customer_share_pct = EXCLUDED.customer_share_pct, taxable = EXCLUDED.taxable,
@@ -149,6 +160,7 @@ export async function updateDynamicPricingRule(
   const dow = patch.daysOfWeek && patch.daysOfWeek.length > 0 ? patch.daysOfWeek : null;
   const rows = await sql`
     UPDATE dynamic_pricing_rules SET
+      vehicle_type = ${patch.vehicleType}::ride_vehicle_pricing_type,
       name = ${patch.name}, value_type = ${patch.valueType}, value = ${patch.value},
       max_amount = ${patch.maxAmount}, funding = ${patch.funding},
       customer_share_pct = ${patch.customerSharePct}, taxable = ${patch.taxable},
