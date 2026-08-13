@@ -6,10 +6,12 @@ import { rideTripDistanceFromCheckoutMetadata, rideGeoFromCheckoutMetadata } fro
 import { readRideRiderPayoutSnapshot } from "./ride-rider-payout-snapshot.js";
 import { readDynamicRiderIncentiveFromSnapshot } from "./dynamic-pricing.js";
 import {
-  composeRiderPayout,
   defaultPrePickupFunding,
   normalizePrePickupFunding,
 } from "./rider-payout-composition.js";
+import { reconcileRiderLegs } from "@gatimitra/slab-pricing";
+import { resolveRiderLegsForOrder } from "./resolve-rider-legs-for-order.js";
+import type { DispatchServiceType } from "./order-assignment-engine.js";
 
 export type RiderOrderWalletServiceType = "food" | "parcel" | "person_ride";
 
@@ -268,6 +270,9 @@ export async function creditRiderOrderEarningOnDelivered(
       c.rider_earning,
       c.rider_pre_pickup_allowance,
       c.rider_pre_pickup_funding,
+      c.rider_pickup_distance_meters,
+      c.rider_post_pickup_amount,
+      c.rider_post_pickup_funding,
       c.fare_amount,
       c.tip_amount,
       c.billing_snapshot,
@@ -293,6 +298,9 @@ export async function creditRiderOrderEarningOnDelivered(
     rider_earning?: unknown;
     rider_pre_pickup_allowance?: unknown;
     rider_pre_pickup_funding?: unknown;
+    rider_pickup_distance_meters?: unknown;
+    rider_post_pickup_amount?: unknown;
+    rider_post_pickup_funding?: unknown;
     fare_amount?: unknown;
     tip_amount?: unknown;
     billing_snapshot?: unknown;
@@ -414,12 +422,52 @@ export async function creditRiderOrderEarningOnDelivered(
   const snapSurge = round2(Math.max(0, Number(payoutSnap?.surgeEarning ?? 0)));
   const snapWaiting = round2(Math.max(0, Number(payoutSnap?.waitingEarning ?? 0)));
   const basePool = round2(Math.max(0, deliveryFee - snapSurge - snapWaiting));
-  const composition = composeRiderPayout({
-    basePool,
-    prePickupRaw,
+
+  // v3.2 — settle the two legs INDEPENDENTLY, resolving them the SAME way the offer did so
+  // offered == paid. PRE: a pre-leg rule if configured, else the frozen first-mile. POST:
+  // the frozen post-leg amount (immutable) if present, else a live post-leg rule, else 0 ⇒
+  // pool remainder (v3.1). With no leg rules this is byte-identical to the v3.1 credit.
+  const legPickupKm = Math.max(0, Number(row.rider_pickup_distance_meters ?? 0)) / 1000;
+  const legDropKm = Math.max(
+    0,
+    rideTripDistanceFromCheckoutMetadata(row.checkout_metadata) ??
+      (Number.isFinite(Number(row.distance_km)) ? Number(row.distance_km) : 0)
+  );
+  const legRideGeo =
+    settlementService === "ride" ? rideGeoFromCheckoutMetadata(row.checkout_metadata) : {};
+  const legs = await resolveRiderLegsForOrder({
+    serviceType: serviceType as DispatchServiceType,
+    vehicleType: null,
+    weightKg: null,
+    pickupKm: legPickupKm,
+    dropKm: legDropKm,
+    geo: {
+      pincode: legRideGeo.pickupPincode ?? null,
+      state: legRideGeo.pickupState ?? null,
+      latitude: Number(row.pickup_lat) || null,
+      longitude: Number(row.pickup_lon) || null,
+    },
+    fallbackPre: { amount: prePickupRaw, funding: prePickupFunding },
+  }).catch(() => null);
+
+  const frozenPostAmount =
+    row.rider_post_pickup_amount != null
+      ? round2(Math.max(0, Number(row.rider_post_pickup_amount)))
+      : null;
+  const preLegAmount = legs ? legs.pre.amount : prePickupRaw;
+  const preLegFunding = legs ? legs.pre.funding : prePickupFunding;
+  const postLegAmount = frozenPostAmount ?? (legs ? legs.post.amount : 0);
+  const postLegFunding = normalizePrePickupFunding(
+    row.rider_post_pickup_funding ?? legs?.post.funding,
+    "customer"
+  );
+
+  const composition = reconcileRiderLegs({
+    pool: basePool,
+    pre: { rawAmount: preLegAmount, funding: preLegFunding },
+    post: { rawAmount: postLegAmount, funding: postLegFunding },
     surge: snapSurge,
     waiting: snapWaiting,
-    funding: prePickupFunding,
   });
   // Single wallet delivery credit (tip + dynamic incentive credited separately below).
   deliveryFee = composition.riderDeliveryCredit;
@@ -438,14 +486,18 @@ export async function creditRiderOrderEarningOnDelivered(
           surgeEarning: payoutSnap.surgeEarning,
         }
       : {}),
-    // v3.1 first-mile composition ledger (audit): pre/post split + two funding pools.
-    ...(prePickupRaw > 0
+    // v3.2 independent-leg ledger (audit): raw + allocated pre/post + two funding pools.
+    ...(preLegAmount > 0 || postLegAmount > 0
       ? {
-          prePickupRaw,
-          prePickupFunding,
-          prePickupFromPool: composition.prePickupFromPool,
-          prePickupCompanyFunded: composition.prePickupCompanyFunded,
-          postPickup: composition.postPickup,
+          prePickupRaw: preLegAmount,
+          prePickupFunding: preLegFunding,
+          prePickupFromPool: composition.pre.allocated,
+          prePickupCompanyFunded: composition.pre.companyFunded,
+          postPickupRaw: postLegAmount,
+          postPickupFunding: postLegFunding,
+          postPickup: composition.post.allocated,
+          preRuleId: legs?.pre.ruleId ?? null,
+          postRuleId: legs?.post.ruleId ?? null,
           deliveryFeeFunded: composition.deliveryFeeFundedTotal,
           companyFunded: composition.companyFundedTotal,
         }

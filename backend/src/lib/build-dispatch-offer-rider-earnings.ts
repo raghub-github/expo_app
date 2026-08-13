@@ -19,11 +19,12 @@ import {
 import { computePrePickupAllowance } from "./pre-pickup-pay.js";
 import { readDynamicRiderIncentiveFromSnapshot } from "./dynamic-pricing.js";
 import {
-  composeRiderPayout,
   defaultPrePickupFunding,
   normalizePrePickupFunding,
   type PrePickupFunding,
 } from "./rider-payout-composition.js";
+import { reconcileRiderLegs } from "@gatimitra/slab-pricing";
+import { resolveRiderLegsForOrder } from "./resolve-rider-legs-for-order.js";
 import type { DispatchServiceType } from "./order-assignment-engine.js";
 
 export type DispatchOfferRiderEarnings = {
@@ -215,20 +216,9 @@ export async function buildDispatchOfferRiderEarnings(args: {
     defaultPrePickupFunding(service)
   );
 
-  // v3.1 — compose the first-mile WITH the % pool instead of adding it on top. The pure
-  // % pool is the subtotal minus the waiting add-on; surge + waiting stay separate.
-  const composition = composeRiderPayout({
-    basePool: Math.max(0, payout.subtotalBeforeSurge - payout.waitingAmount),
-    prePickupRaw,
-    surge: payout.surgeTotal,
-    waiting: payout.waitingAmount,
-    funding: prePickupFunding,
-  });
+  const tripDistanceKm = Math.max(0, bookingTripKm ?? 0);
 
-  // Company-funded dynamic incentive (night/rain/peak/festival) from the customer bill —
-  // paid to the rider on delivery, so the offer must show it too. Merged into appliedSurges
-  // so the rider app renders "Night ₹X" alongside any rider-side surge. It stays ON TOP as a
-  // company-funded incentive (Ledger B), exactly like company-funded surge.
+  // Company-funded dynamic incentive (night/rain/peak/festival) — a Ledger-B top-up.
   const dynIncentive = readDynamicRiderIncentiveFromSnapshot(core.billingSnapshot);
   const dynamicIncentiveEarning = dynIncentive.amount > 0 ? dynIncentive.amount : 0;
   const mergedSurges = [
@@ -236,9 +226,36 @@ export async function buildDispatchOfferRiderEarnings(args: {
     ...dynIncentive.lines.map((l) => ({ name: l.name, amount: l.amount })),
   ];
 
-  const tripDistanceKm = Math.max(0, bookingTripKm ?? 0);
-  const total =
-    Math.round((composition.riderDeliveryCredit + tip + dynamicIncentiveEarning) * 100) / 100;
+  // v3.2 — resolve the two legs INDEPENDENTLY. PRE falls back to the legacy first-mile when
+  // no pre-leg rule exists; POST is 0 (⇒ pool remainder) when no post-leg rule exists — so
+  // with an empty rider_leg_pricing table this is byte-identical to the v3.1 composition.
+  const legs = await resolveRiderLegsForOrder({
+    serviceType: args.serviceType,
+    vehicleType: null,
+    weightKg: null,
+    pickupKm: pickupDistanceKm,
+    dropKm: tripDistanceKm,
+    geo: {
+      pincode: rideGeo.pickupPincode,
+      state: rideGeo.pickupState,
+      latitude: pickupLat,
+      longitude: pickupLng,
+    },
+    fallbackPre: { amount: prePickupRaw, funding: prePickupFunding },
+  });
+
+  const composition = reconcileRiderLegs({
+    pool: Math.max(0, payout.subtotalBeforeSurge - payout.waitingAmount),
+    pre: { rawAmount: legs.pre.amount, funding: legs.pre.funding },
+    post: { rawAmount: legs.post.amount, funding: legs.post.funding },
+    surge: payout.surgeTotal,
+    waiting: payout.waitingAmount,
+    tip,
+    companyIncentive: dynamicIncentiveEarning,
+  });
+  const prePickupPaid = Math.round((composition.pre.allocated + composition.pre.companyFunded) * 100) / 100;
+
+  const total = composition.riderTotal;
 
   return {
     estimatedEarning: total,
@@ -250,13 +267,13 @@ export async function buildDispatchOfferRiderEarnings(args: {
         : undefined,
     appliedSurges: mergedSurges.length > 0 ? mergedSurges : undefined,
     customerTipAmount: tip > 0 ? tip : undefined,
-    prePickupEarning: composition.prePickupPaid > 0 ? composition.prePickupPaid : undefined,
+    prePickupEarning: prePickupPaid > 0 ? prePickupPaid : undefined,
     prePickupFromPool:
-      composition.prePickupFromPool > 0 ? composition.prePickupFromPool : undefined,
+      composition.pre.allocated > 0 ? composition.pre.allocated : undefined,
     prePickupCompanyFunded:
-      composition.prePickupCompanyFunded > 0 ? composition.prePickupCompanyFunded : undefined,
-    postPickupEarning: composition.postPickup > 0 ? composition.postPickup : undefined,
-    prePickupFunding,
+      composition.pre.companyFunded > 0 ? composition.pre.companyFunded : undefined,
+    postPickupEarning: composition.post.allocated > 0 ? composition.post.allocated : undefined,
+    prePickupFunding: legs.pre.funding,
     dynamicIncentiveEarning: dynamicIncentiveEarning > 0 ? dynamicIncentiveEarning : undefined,
     totalEarning: total,
     pickupDistanceKm,
