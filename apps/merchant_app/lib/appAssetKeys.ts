@@ -33,6 +33,9 @@ export const MX = {
     promoBanner: "offers.promo_banner",
     emptyRunning: "offers.empty_running",
   },
+  onboarding: {
+    packagingTipsVideo: "onboarding.packaging_tips_video",
+  },
 } as const;
 
 /** Welcome carousel keys in display order (CMS-managed). */

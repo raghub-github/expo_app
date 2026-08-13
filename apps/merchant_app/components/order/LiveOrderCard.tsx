@@ -18,6 +18,7 @@ import { formatOrderCardCustomerLabel } from "@/components/order/orderFormatters
 import { MerchantOrderIdRow } from "@/components/order/MerchantOrderCardToolbar";
 import { OrderCardItemRow } from "@/components/order/OrderCardItemRow";
 import { OrderCardMerchantInstructions } from "@/components/order/OrderCardMerchantInstructions";
+import { useNowMs } from "@/hooks/useNowMs";
 
 const STATUS_GREEN = "#22C55E";
 
@@ -121,7 +122,7 @@ function isTerminalStatus(status: OrderStage): boolean {
 
 export type LiveOrderCardProps = {
   order: OrderRecord;
-  nowMs: number;
+  nowMs?: number;
   acceptanceWindowMinutes?: number;
   storeName?: string | null;
   onAccept: () => void;
@@ -144,6 +145,8 @@ export function LiveOrderCard({
   onViewDetail,
   actionLoading,
 }: LiveOrderCardProps) {
+  const localNow = useNowMs(nowMs == null);
+  const clock = nowMs ?? localNow;
   const [selectedItem, setSelectedItem] = useState<LineItem | null>(null);
   const onItemPress = useCallback((item: LineItem) => setSelectedItem(item), []);
 
@@ -175,7 +178,7 @@ export function LiveOrderCard({
       <MerchantPreparingOrderCard
         order={order}
         storeName={storeName}
-        nowMs={nowMs}
+        nowMs={clock}
         onReady={onAdvance}
         onNeedMoreTime={onNeedMoreTime}
         onViewDetail={onViewDetail}
@@ -188,7 +191,7 @@ export function LiveOrderCard({
       <MerchantReadyOrderCard
         order={order}
         storeName={storeName}
-        nowMs={nowMs}
+        nowMs={clock}
         onViewDetail={onViewDetail}
         onItemPress={onItemPress}
       />
@@ -206,7 +209,7 @@ export function LiveOrderCard({
     card = (
       <NewOrderCard
         order={order}
-        nowMs={nowMs}
+        nowMs={clock}
         acceptanceWindowMinutes={acceptanceWindowMinutes}
         onAccept={onAccept}
         onReject={onReject}
@@ -219,7 +222,7 @@ export function LiveOrderCard({
     card = (
       <LiveOrderCardDefault
         order={order}
-        nowMs={nowMs}
+        nowMs={clock}
         onAdvance={onAdvance}
         onViewDetail={onViewDetail}
         onItemPress={onItemPress}
@@ -245,7 +248,11 @@ function LiveOrderCardDefault({
   onAdvance,
   onViewDetail,
   onItemPress,
-}: Omit<LiveOrderCardProps, "storeName" | "actionLoading" | "onAccept" | "onReject" | "acceptanceWindowMinutes"> & {
+}: {
+  order: OrderRecord;
+  nowMs: number;
+  onAdvance: () => void;
+  onViewDetail: () => void;
   onItemPress: (item: LineItem) => void;
 }) {
   const timeSince = formatTimeSince(order.createdAt, nowMs);

@@ -138,6 +138,7 @@ function resolveProfileSubPage(pathname: string | undefined): string | null {
   if (pathname.includes("/complaints")) return "Complaints";
   if (pathname.includes("/reviews")) return "Reviews";
   if (pathname.includes("/plans")) return "Plans & Subscription";
+  if (pathname.includes("/learning")) return "Learning centre";
   return null;
 }
 
@@ -164,6 +165,7 @@ function resolveProfileSubPageSubtitle(pathname: string | undefined): string | n
   if (pathname.includes("/status")) return "Control online/offline and store availability.";
   if (pathname.includes("/offers")) return "Create and manage offers for customers.";
   if (pathname.includes("offer-insights")) return "See how your offers are performing.";
+  if (pathname.includes("/learning")) return "India's Lowest Commission platform";
   return null;
 }
 
@@ -184,7 +186,11 @@ function isMenuStandaloneHeaderRoute(pathname: string | undefined): boolean {
 /** Full-screen headers (chat, etc.) — hide the tab-level MerchantHeader entirely. */
 function isStandaloneScreenHeaderRoute(pathname: string | undefined): boolean {
   if (!pathname) return false;
-  return pathname.includes("/help") || pathname.includes("/support/chat");
+  return (
+    pathname.includes("/help") ||
+    pathname.includes("/support/chat") ||
+    pathname.includes("/onboarding-benefits")
+  );
 }
 
 /** Parent brand logo in the header — hidden when no store logo is configured. */

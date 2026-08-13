@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AppText as Text } from "@/components/AppText";
-import { View, Modal, StyleSheet, TouchableOpacity, Pressable, Animated, ActivityIndicator, Alert, ScrollView, useWindowDimensions, NativeSyntheticEvent, NativeScrollEvent, InteractionManager } from "react-native";
+import { View, Modal, StyleSheet, TouchableOpacity, Pressable, Animated, ActivityIndicator, Alert, FlatList, useWindowDimensions, NativeSyntheticEvent, NativeScrollEvent, InteractionManager, type LayoutChangeEvent } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { GatiMitraMerchant, BUTTON_RADIUS, CARD_RADIUS } from "@/constants/theme";
@@ -19,6 +19,10 @@ import {
   uploadCatalogPhotoWithProgress,
   type CatalogPhotoUploadCallbacks,
 } from "@/lib/catalogPhotoUploadFlow";
+import {
+  MenuImageSquareAdjustModal,
+  type AdjustedImageFile,
+} from "@/components/menu/MenuImageSquareAdjustModal";
 
 type Props = {
   visible: boolean;
@@ -62,20 +66,22 @@ export function CatalogItemPhotoSheet({
   uploadCallbacks,
 }: Props) {
   const slideY = useRef(new Animated.Value(40)).current;
-  const carouselRef = useRef<ScrollView>(null);
+  const carouselRef = useRef<FlatList>(null);
   const mountedRef = useRef(false);
   const { width: screenWidth } = useWindowDimensions();
   const insets = useSafeAreaInsets();
-  const imageWidth = screenWidth - 32;
-  const imageHeight = Math.min(192, imageWidth);
+  const [pageWidth, setPageWidth] = useState(() => Math.max(1, screenWidth - 32));
+  const imageHeight = Math.min(220, pageWidth);
 
   const [detailLoading, setDetailLoading] = useState(false);
   const [detail, setDetail] = useState<MenuItemDetail | null>(null);
   const [activeIndex, setActiveIndex] = useState(0);
   const [busy, setBusy] = useState(false);
   const [replaceConfirmVisible, setReplaceConfirmVisible] = useState(false);
+  const [adjustUri, setAdjustUri] = useState<string | null>(null);
+  const pendingReplaceItemRef = useRef<MenuItemRow | null>(null);
 
-  const loadDetail = useCallback(async () => {
+  const loadDetail = useCallback(async (opts?: { resetCarousel?: boolean }) => {
     if (!item || !storeId || !token) return;
 
     const cached = getCachedMenuItem(storeId, item.id);
@@ -93,7 +99,13 @@ export function CatalogItemPhotoSheet({
       if (data) {
         setCachedMenuItem(storeId, item.id, data);
         setDetail(data);
-        setActiveIndex(0);
+        if (opts?.resetCarousel !== false) {
+          setActiveIndex(0);
+          requestAnimationFrame(() => {
+            if (!mountedRef.current) return;
+            carouselRef.current?.scrollToOffset({ offset: 0, animated: false });
+          });
+        }
         for (const img of data.images ?? []) {
           void prefetchAuthImage(img.image_url, token);
         }
@@ -175,9 +187,23 @@ export function CatalogItemPhotoSheet({
   );
 
   const images = useMemo(() => {
-    if (detail?.images && detail.images.length > 0) return detail.images;
+    const fromDetail = detail?.images ?? [];
+    // After a successful detail load with zero images, don't fall back to a
+    // stale list-row primary URL (shows blank/black after delete).
+    if (detail && detail.id === item?.id) {
+      return [...fromDetail].sort((a, b) => {
+        if (Boolean(a.is_primary) !== Boolean(b.is_primary)) return a.is_primary ? -1 : 1;
+        return (a.display_order ?? 0) - (b.display_order ?? 0);
+      });
+    }
+    if (fromDetail.length > 0) {
+      return [...fromDetail].sort((a, b) => {
+        if (Boolean(a.is_primary) !== Boolean(b.is_primary)) return a.is_primary ? -1 : 1;
+        return (a.display_order ?? 0) - (b.display_order ?? 0);
+      });
+    }
     return previewImages;
-  }, [detail?.images, previewImages]);
+  }, [detail, detail?.images, item?.id, previewImages]);
   const approvalStatus = detail?.approval_status ?? item?.approval_status ?? null;
 
   const currentImage = images[activeIndex] ?? null;
@@ -197,6 +223,13 @@ export function CatalogItemPhotoSheet({
   const showAddPhotoSlide = isPrimaryRejected || approvalStatus === "REJECTED";
   const totalSlides = images.length + (showAddPhotoSlide ? 1 : 0);
   const isOnAddPhotoSlide = showAddPhotoSlide && activeIndex === images.length;
+  const carouselSlides = useMemo(
+    () => [
+      ...images.map((img) => ({ key: `img-${img.id}-${img.image_url}`, kind: "image" as const, img })),
+      ...(showAddPhotoSlide ? [{ key: "add-photo", kind: "add" as const, img: null }] : []),
+    ],
+    [images, showAddPhotoSlide],
+  );
   const isCurrentRejected =
     activeIndex < images.length && hasPhotos && currentModeration === "REJECTED";
   const rejectionReason =
@@ -213,26 +246,31 @@ export function CatalogItemPhotoSheet({
       if (visible && mountedRef.current) {
         requestAnimationFrame(() => {
           if (!mountedRef.current || !visible) return;
-          carouselRef.current?.scrollTo({ x: 0, animated: false });
+          carouselRef.current?.scrollToOffset({ offset: 0, animated: false });
         });
       }
     }
   }, [activeIndex, totalSlides, visible]);
 
-  const handleScroll = (e: NativeSyntheticEvent<NativeScrollEvent>) => {
-    const x = e.nativeEvent.contentOffset.x;
-    const idx = Math.round(x / imageWidth);
-    if (idx !== activeIndex && idx >= 0 && idx < totalSlides) setActiveIndex(idx);
-  };
+  const handleCarouselLayout = useCallback((e: LayoutChangeEvent) => {
+    const w = Math.round(e.nativeEvent.layout.width);
+    if (w > 0 && Math.abs(w - pageWidth) > 1) setPageWidth(w);
+  }, [pageWidth]);
+
+  const handleScroll = useCallback((e: NativeSyntheticEvent<NativeScrollEvent>) => {
+    const w = pageWidth > 0 ? pageWidth : 1;
+    const idx = Math.round(e.nativeEvent.contentOffset.x / w);
+    setActiveIndex((prev) => (idx !== prev && idx >= 0 && idx < totalSlides ? idx : prev));
+  }, [pageWidth, totalSlides]);
 
   const scrollToSlide = useCallback(
     (index: number) => {
       if (!visible || !mountedRef.current) return;
       if (index < 0 || index >= totalSlides) return;
-      carouselRef.current?.scrollTo({ x: index * imageWidth, animated: true });
+      carouselRef.current?.scrollToOffset({ offset: index * pageWidth, animated: true });
       setActiveIndex(index);
     },
-    [imageWidth, totalSlides, visible],
+    [pageWidth, totalSlides, visible],
   );
 
   const closeSheetForUpload = useCallback(() => {
@@ -241,27 +279,56 @@ export function CatalogItemPhotoSheet({
     });
   }, [onClose]);
 
+  const uploadAdjustedReplace = useCallback(
+    async (file: AdjustedImageFile) => {
+      const target = pendingReplaceItemRef.current ?? item;
+      if (!target || !storeId || !token) return;
+      setAdjustUri(null);
+      setBusy(true);
+      try {
+        if (uploadCallbacks) {
+          await uploadCatalogPhotoWithProgress(target, storeId, token, file, uploadCallbacks);
+        } else {
+          const { uploadItemImage } = await import("@/services/menuApi");
+          await uploadItemImage(storeId, target.id, token, file);
+        }
+        onUpdated();
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : "Upload failed";
+        Alert.alert("Could not upload photo", msg);
+      } finally {
+        setBusy(false);
+        pendingReplaceItemRef.current = null;
+      }
+    },
+    [item, storeId, token, uploadCallbacks, onUpdated],
+  );
+
   const runReplacePhotoPicker = useCallback(async () => {
     if (!item || !storeId || !token || busy) return;
     try {
-      const file = await pickCatalogPhoto("gallery");
-      if (!file) return;
+      pendingReplaceItemRef.current = item;
       setBusy(true);
       closeSheetForUpload();
-      if (uploadCallbacks) {
-        await uploadCatalogPhotoWithProgress(item, storeId, token, file, uploadCallbacks);
-      } else {
-        const { uploadItemImage } = await import("@/services/menuApi");
-        await uploadItemImage(storeId, item.id, token, file);
+      await new Promise<void>((resolve) => {
+        InteractionManager.runAfterInteractions(() => resolve());
+      });
+      await new Promise((r) => setTimeout(r, 160));
+      const file = await pickCatalogPhoto("gallery");
+      if (!file) {
+        pendingReplaceItemRef.current = null;
+        return;
       }
-      onUpdated();
+      await new Promise((r) => setTimeout(r, 320));
+      setAdjustUri(file.uri);
     } catch (e) {
-      const msg = e instanceof Error ? e.message : "Upload failed";
+      pendingReplaceItemRef.current = null;
+      const msg = e instanceof Error ? e.message : "Could not open photo";
       Alert.alert("Could not upload photo", msg);
     } finally {
       setBusy(false);
     }
-  }, [item, storeId, token, busy, closeSheetForUpload, onUpdated, uploadCallbacks]);
+  }, [item, storeId, token, busy, closeSheetForUpload]);
 
   const handleAddPhoto = useCallback(() => {
     if (!item || busy) return;
@@ -308,12 +375,27 @@ export function CatalogItemPhotoSheet({
         onPress: async () => {
           setBusy(true);
           try {
+            // Optimistic: drop the deleted slide immediately so the carousel
+            // never sits on a black empty page.
+            setDetail((prev) => {
+              if (!prev) return prev;
+              const nextImages = (prev.images ?? []).filter((img) => img.id !== imageToDelete.id);
+              const next = { ...prev, images: nextImages };
+              setCachedMenuItem(storeId, prev.id, next);
+              return next;
+            });
+            setActiveIndex(0);
+            requestAnimationFrame(() => {
+              if (!mountedRef.current) return;
+              carouselRef.current?.scrollToOffset({ offset: 0, animated: false });
+            });
             await deleteMenuItemImage(storeId, imageToDelete.id, token);
-            await loadDetail();
+            await loadDetail({ resetCarousel: true });
             onUpdated();
           } catch (e) {
             const msg = e instanceof Error ? e.message : "Delete failed";
             Alert.alert("Could not delete photo", msg);
+            await loadDetail({ resetCarousel: true });
           } finally {
             setBusy(false);
           }
@@ -322,16 +404,38 @@ export function CatalogItemPhotoSheet({
     ]);
   }, [storeId, token, busy, loadDetail, onUpdated]);
 
-  if (!item) return null;
+  // While open, poll detail so admin approve/reject updates without manual refresh.
+  useEffect(() => {
+    if (!visible || !item || !storeId || !token) return;
+    const poll = setInterval(() => {
+      void loadDetail({ resetCarousel: false });
+    }, 8_000);
+    return () => clearInterval(poll);
+  }, [visible, item?.id, storeId, token, loadDetail]);
+
+  // Parent catalog refresh (realtime) may update moderation fields on `item`.
+  useEffect(() => {
+    if (!visible || !item) return;
+    void loadDetail({ resetCarousel: false });
+  }, [
+    visible,
+    item?.id,
+    item?.approval_status,
+    item?.primary_image_moderation_status,
+    item?.item_image_url,
+    item?.image_count,
+  ]);
+
+  if (!item && !adjustUri) return null;
 
   return (
     <>
-    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
-      <View style={styles.overlay}>
+    {item && visible ? (
+    <Modal visible transparent animationType="fade" onRequestClose={onClose}>
+      <View style={styles.overlay} pointerEvents="box-none">
         <Pressable style={StyleSheet.absoluteFill} onPress={onClose} />
         <Animated.View
           style={[styles.sheet, { transform: [{ translateY: slideY }], paddingBottom: Math.max(insets.bottom, 20) }]}
-          onStartShouldSetResponder={() => true}
         >
           <View style={styles.header}>
             <Text style={styles.headerTitle}>Photo status</Text>
@@ -351,88 +455,139 @@ export function CatalogItemPhotoSheet({
               <Text style={styles.emptyText}>No photos uploaded yet</Text>
             </View>
           ) : (
-            <View style={styles.carouselWrap}>
-              <ScrollView
+            <View style={styles.carouselWrap} onLayout={handleCarouselLayout}>
+              <FlatList
                 ref={carouselRef}
+                data={carouselSlides}
+                keyExtractor={(slide) => slide.key}
                 horizontal
                 pagingEnabled
+                nestedScrollEnabled
+                directionalLockEnabled
+                bounces={false}
+                overScrollMode="never"
+                decelerationRate="fast"
                 showsHorizontalScrollIndicator={false}
+                keyboardShouldPersistTaps="handled"
+                scrollEnabled={totalSlides > 1}
+                style={{ width: pageWidth }}
+                getItemLayout={(_, index) => ({
+                  length: pageWidth,
+                  offset: pageWidth * index,
+                  index,
+                })}
+                onScroll={handleScroll}
                 onMomentumScrollEnd={handleScroll}
                 scrollEventThrottle={16}
-                removeClippedSubviews={false}
-                nestedScrollEnabled
-              >
-                {images.map((img) => {
+                renderItem={({ item: slide }) => {
+                  if (slide.kind === "add") {
+                    return (
+                      <TouchableOpacity
+                        style={[styles.slide, styles.addPhotoSlide, { width: pageWidth, height: imageHeight }]}
+                        onPress={handleAddPhoto}
+                        disabled={busy}
+                        activeOpacity={0.92}
+                      >
+                        <View style={styles.addPhotoInner}>
+                          <View style={styles.addPhotoIconWrap}>
+                            <Ionicons name="camera" size={28} color={GatiMitraMerchant.primary} />
+                            <View style={styles.addPhotoPlusBadge}>
+                              <Ionicons name="add" size={12} color="#FFFFFF" />
+                            </View>
+                          </View>
+                          <Text style={styles.addPhotoSlideText}>Add photo</Text>
+                        </View>
+                      </TouchableOpacity>
+                    );
+                  }
+                  const img = slide.img!;
                   const slideModeration = normalizeImageModerationStatus(img.moderation_status);
                   return (
-                  <View key={img.image_url || String(img.id)} style={[styles.slide, { width: imageWidth, height: imageHeight }]}>
-                    <AuthProxyImage
-                      uri={img.image_url}
-                      token={token}
-                      style={{ width: imageWidth, height: imageHeight }}
-                      resizeMode="contain"
-                    />
-                    {img.id > 0 ? (
-                      <TouchableOpacity
-                        style={styles.deleteBtn}
-                        onPress={() => handleDeletePhoto(img)}
-                        disabled={busy}
-                        hitSlop={8}
-                      >
-                        <Ionicons name="trash-outline" size={18} color="#FFFFFF" />
-                      </TouchableOpacity>
-                    ) : null}
-                    {slideModeration === "APPROVED" ? (
-                      <View style={styles.approvedBadge}>
-                        <Text style={styles.approvedBadgeText}>Approved</Text>
-                      </View>
-                    ) : null}
-                    {slideModeration === "REJECTED" ? (
-                      <View style={styles.rejectedBadge}>
-                        <Ionicons name="information-circle" size={14} color="#FFFFFF" />
-                        <Text style={styles.rejectedBadgeText}>Rejected</Text>
-                      </View>
-                    ) : slideModeration === "PENDING" && img.is_primary ? (
-                      <View style={styles.reviewingBadge}>
-                        <Text style={styles.reviewingBadgeText}>Image in review</Text>
-                      </View>
-                    ) : null}
-                  </View>
-                  );
-                })}
-                {showAddPhotoSlide ? (
-                  <TouchableOpacity
-                    style={[styles.slide, styles.addPhotoSlide, { width: imageWidth, height: imageHeight }]}
-                    onPress={handleAddPhoto}
-                    disabled={busy}
-                    activeOpacity={0.92}
-                  >
-                    <View style={styles.addPhotoInner}>
-                      <View style={styles.addPhotoIconWrap}>
-                        <Ionicons name="camera" size={28} color={GatiMitraMerchant.primary} />
-                        <View style={styles.addPhotoPlusBadge}>
-                          <Ionicons name="add" size={12} color="#FFFFFF" />
+                    <View style={[styles.slide, { width: pageWidth, height: imageHeight }]}>
+                      <AuthProxyImage
+                        uri={img.image_url}
+                        token={token}
+                        style={{ width: pageWidth, height: imageHeight, backgroundColor: "#F3F4F6" }}
+                        resizeMode="contain"
+                      />
+                      {img.id > 0 ? (
+                        <TouchableOpacity
+                          style={styles.deleteBtn}
+                          onPress={() => handleDeletePhoto(img)}
+                          disabled={busy}
+                          hitSlop={8}
+                        >
+                          <Ionicons name="trash-outline" size={18} color="#FFFFFF" />
+                        </TouchableOpacity>
+                      ) : null}
+                      {slideModeration === "APPROVED" ? (
+                        <View style={styles.approvedBadge}>
+                          <Text style={styles.approvedBadgeText}>Approved</Text>
                         </View>
-                      </View>
-                      <Text style={styles.addPhotoSlideText}>Add photo</Text>
+                      ) : null}
+                      {slideModeration === "REJECTED" ? (
+                        <View style={styles.rejectedBadge}>
+                          <Ionicons name="information-circle" size={14} color="#FFFFFF" />
+                          <Text style={styles.rejectedBadgeText}>Rejected</Text>
+                        </View>
+                      ) : slideModeration === "PENDING" ? (
+                        <View style={styles.reviewingBadge}>
+                          <Text style={styles.reviewingBadgeText}>Image in review</Text>
+                        </View>
+                      ) : null}
                     </View>
-                  </TouchableOpacity>
-                ) : null}
-              </ScrollView>
+                  );
+                }}
+              />
 
               {totalSlides > 1 ? (
-                <View style={styles.dotsRow}>
-                  {Array.from({ length: totalSlides }).map((_, idx) => (
-                    <TouchableOpacity
-                      key={idx === images.length ? "add-photo" : `img-${idx}`}
-                      onPress={() => scrollToSlide(idx)}
-                      hitSlop={8}
-                      accessibilityRole="button"
-                      accessibilityLabel={idx === images.length ? "Add photo slide" : `Photo ${idx + 1}`}
-                    >
-                      <View style={[styles.dot, idx === activeIndex && styles.dotActive]} />
-                    </TouchableOpacity>
-                  ))}
+                <View style={styles.pagerRow}>
+                  <TouchableOpacity
+                    onPress={() => scrollToSlide(activeIndex - 1)}
+                    disabled={activeIndex <= 0}
+                    hitSlop={10}
+                    style={[styles.pagerChevronBtn, activeIndex <= 0 && styles.pagerChevronDisabled]}
+                    accessibilityRole="button"
+                    accessibilityLabel="Previous photo"
+                  >
+                    <Ionicons
+                      name="chevron-back"
+                      size={22}
+                      color={activeIndex <= 0 ? "#D1D5DB" : GatiMitraMerchant.textPrimary}
+                    />
+                  </TouchableOpacity>
+                  <View style={styles.dotsRow}>
+                    {Array.from({ length: totalSlides }).map((_, idx) => (
+                      <TouchableOpacity
+                        key={idx === images.length ? "add-photo" : `img-${idx}`}
+                        onPress={() => scrollToSlide(idx)}
+                        hitSlop={8}
+                        accessibilityRole="button"
+                        accessibilityLabel={idx === images.length ? "Add photo slide" : `Photo ${idx + 1}`}
+                      >
+                        <View style={[styles.dot, idx === activeIndex && styles.dotActive]} />
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                  <TouchableOpacity
+                    onPress={() => scrollToSlide(activeIndex + 1)}
+                    disabled={activeIndex >= totalSlides - 1}
+                    hitSlop={10}
+                    style={[
+                      styles.pagerChevronBtn,
+                      activeIndex >= totalSlides - 1 && styles.pagerChevronDisabled,
+                    ]}
+                    accessibilityRole="button"
+                    accessibilityLabel="Next photo"
+                  >
+                    <Ionicons
+                      name="chevron-forward"
+                      size={22}
+                      color={
+                        activeIndex >= totalSlides - 1 ? "#D1D5DB" : GatiMitraMerchant.textPrimary
+                      }
+                    />
+                  </TouchableOpacity>
                 </View>
               ) : null}
             </View>
@@ -515,6 +670,7 @@ export function CatalogItemPhotoSheet({
         </Animated.View>
       </View>
     </Modal>
+    ) : null}
 
     <Modal
       visible={visible && replaceConfirmVisible}
@@ -557,6 +713,16 @@ export function CatalogItemPhotoSheet({
         </View>
       </View>
     </Modal>
+
+    <MenuImageSquareAdjustModal
+      visible={Boolean(adjustUri)}
+      uri={adjustUri}
+      onCancel={() => {
+        setAdjustUri(null);
+        pendingReplaceItemRef.current = null;
+      }}
+      onConfirm={(file) => void uploadAdjustedReplace(file)}
+    />
     </>
   );
 }
@@ -620,11 +786,31 @@ const styles = StyleSheet.create({
   },
   carouselWrap: {
     marginBottom: 12,
+    width: "100%",
+    overflow: "hidden",
+  },
+  pagerRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    marginTop: 10,
+    gap: 8,
+  },
+  pagerChevronBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#F3F4F6",
+  },
+  pagerChevronDisabled: {
+    opacity: 0.45,
   },
   slide: {
     borderRadius: 14,
     overflow: "hidden",
-    backgroundColor: "#111827",
+    backgroundColor: "#F3F4F6",
   },
   addPhotoSlide: {
     backgroundColor: "#1F2937",
@@ -778,8 +964,9 @@ const styles = StyleSheet.create({
   dotsRow: {
     flexDirection: "row",
     justifyContent: "center",
+    alignItems: "center",
     gap: 6,
-    marginTop: 10,
+    minHeight: 36,
   },
   dot: {
     width: 7,

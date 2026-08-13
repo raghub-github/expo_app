@@ -31,7 +31,7 @@ import { useSelectedStore } from "@/context/SelectedStoreContext";
 import { useIncomingOrderSheet } from "@/context/IncomingOrderSheetContext";
 import { useOrders, type LineItem, type OrderRecord } from "@/hooks/useOrders";
 import { useOrderAcceptanceSettings } from "@/hooks/useOrderAcceptanceSettings";
-import { patchFoodOrderStatus, fetchFoodOrder, syncAcceptanceTimeout } from "@/services/ordersApi";
+import { fetchFoodOrder, syncAcceptanceTimeout } from "@/services/ordersApi";
 import { readDeviceOrderAlertsAsync } from "@/lib/deviceOrderAlerts";
 import {
   playIncomingOrderAlert,
@@ -259,6 +259,7 @@ function AcceptOrderSwipeButton({
   disabled,
   countdown,
   timeProgress,
+  remainingMs,
   urgent,
   orderKey,
   onPress,
@@ -268,6 +269,7 @@ function AcceptOrderSwipeButton({
   countdown: string;
   /** 0–1 remaining acceptance window — synced with new-order fuse */
   timeProgress: number;
+  remainingMs: number;
   urgent: boolean;
   /** Resets the track when the merchant pages to another pending order. */
   orderKey: string;
@@ -309,8 +311,17 @@ function AcceptOrderSwipeButton({
   }, [btnPulse]);
 
   useEffect(() => {
-    progressWidth.value = withTiming(timeProgress * 100, { duration: 280, easing: Easing.linear });
-  }, [progressWidth, timeProgress]);
+    const start = Math.max(0, Math.min(100, timeProgress * 100));
+    progressWidth.value = start;
+    if (start > 0 && remainingMs > 0) {
+      progressWidth.value = withTiming(0, {
+        duration: remainingMs,
+        easing: Easing.linear,
+      });
+    }
+    // Restart only when the merchant pages to another order — not on the 1s label tick.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [orderKey, progressWidth]);
 
   useEffect(() => {
     confirmedRef.current = false;
@@ -460,7 +471,7 @@ export default function IncomingOrderModal() {
   const [sheetOrder, setSheetOrder] = useState<OrderRecord | null>(null);
   const sheetOrderRef = useRef<OrderRecord | null>(null);
   sheetOrderRef.current = sheetOrder;
-  const { orders, refetch } = useOrders();
+  const { orders, upsertOrder, transitionOrder } = useOrders();
   const { settings: acceptanceSettings, acceptanceWindowMinutes } = useOrderAcceptanceSettings();
 
   const [rejectOpen, setRejectOpen] = useState(false);
@@ -658,7 +669,7 @@ export default function IncomingOrderModal() {
 
   useEffect(() => {
     if (!sheetOrder) return;
-    const t = setInterval(() => setNowTick(Date.now()), 100);
+    const t = setInterval(() => setNowTick(Date.now()), 1000);
     return () => clearInterval(t);
   }, [sheetOrder]);
 
@@ -857,7 +868,6 @@ export default function IncomingOrderModal() {
         }
         setParked(false);
         setSheetOrder(target);
-        void refetch();
         return;
       }
 
@@ -873,9 +883,8 @@ export default function IncomingOrderModal() {
         setParked(false);
       }
       setSheetOrder(null);
-      void refetch();
     },
-    [pendingList, currentIndex, refetch, setParked]
+    [pendingList, currentIndex, setParked]
   );
 
   const minimizeSheet = useCallback(() => {
@@ -909,26 +918,30 @@ export default function IncomingOrderModal() {
     async (
       status: "ACCEPTED" | "CANCELLED",
       extra?: { rejected_reason?: string; preparation_time_minutes?: number },
-      mode: "auto" | "manual" = "manual"
+      mode: "auto" | "manual" = "manual",
+      target?: OrderRecord | null
     ) => {
-      if (!actionStoreId || !token || !sheetOrder || sheetOrder.id.startsWith("core-")) return;
-      const foodId = parseInt(sheetOrder.id, 10);
-      const actedCoreId = Number(sheetOrder.ordersCoreId);
-      const actedFoodId = sheetOrder.id;
+      const current = target ?? sheetOrder;
+      if (!token || !current || current.id.startsWith("core-")) return;
+      const foodId = parseInt(current.id, 10);
+      const actedCoreId = Number(current.ordersCoreId);
+      const actedFoodId = current.id;
       if (!Number.isFinite(foodId)) return;
       setActionLoading(true);
       try {
-        await patchFoodOrderStatus(actionStoreId, foodId, token, status, extra?.rejected_reason, {
-          action_source: "app",
-          ...(status === "ACCEPTED"
-            ? {
-                accept_mode: mode,
-                preparation_time_minutes: extra?.preparation_time_minutes ?? prepMinutes,
-              }
-            : {}),
-          ...(status === "CANCELLED" ? { cancel_mode: mode } : {}),
-        });
-        requestMerchantDashboardStatsRefresh();
+        upsertOrder(current);
+        const applied = await transitionOrder(
+          current.id,
+          status === "ACCEPTED" ? "preparing" : "rejected",
+          {
+            rejectedReason: extra?.rejected_reason,
+            preparationTimeMinutes:
+              status === "ACCEPTED" ? extra?.preparation_time_minutes ?? prepMinutes : undefined,
+            acceptMode: status === "ACCEPTED" ? mode : undefined,
+            cancelMode: status === "CANCELLED" ? mode : undefined,
+          }
+        );
+        if (!applied) return;
         if (status === "CANCELLED" && mode === "auto") {
           showToast("Order cancelled");
         }
@@ -939,8 +952,13 @@ export default function IncomingOrderModal() {
           forFoodId: actedFoodId,
         });
       } catch (err) {
-        if (status === "CANCELLED" && isInvalidTransitionError(err)) {
-          if (mode === "auto") showToast("Order cancelled");
+        if (isInvalidTransitionError(err)) {
+          upsertOrder({
+            ...current,
+            status: status === "ACCEPTED" ? "preparing" : "rejected",
+            pipelineStatus: status,
+          });
+          if (status === "CANCELLED" && mode === "auto") showToast("Order cancelled");
           requestMerchantDashboardStatsRefresh();
           await advanceOrCloseSheet({
             markDismissed: true,
@@ -948,12 +966,17 @@ export default function IncomingOrderModal() {
             forCoreId: actedCoreId,
             forFoodId: actedFoodId,
           });
+          return;
+        }
+        if (status === "ACCEPTED") {
+          const msg = err instanceof Error && err.message.trim() ? err.message : "Could not accept order";
+          showToast(msg);
         }
       } finally {
         setActionLoading(false);
       }
     },
-    [actionStoreId, token, sheetOrder, advanceOrCloseSheet, showToast, prepMinutes]
+    [token, sheetOrder, advanceOrCloseSheet, showToast, prepMinutes, upsertOrder, transitionOrder]
   );
 
   const stepPrep = useCallback((delta: number) => {
@@ -1357,6 +1380,7 @@ export default function IncomingOrderModal() {
                         disabled={secondsLeft <= 0}
                         countdown={mmss}
                         timeProgress={fuseProgress}
+                        remainingMs={Math.max(0, fuseBaselineMs * fuseProgress)}
                         urgent={fuseUrgent}
                         orderKey={order.id}
                         onPress={() =>
@@ -1422,59 +1446,12 @@ export default function IncomingOrderModal() {
               const snap = order;
               setRejectOpen(false);
               if (rejectReasonNeedsFollowUp(reason)) {
-                beginFollowUp(reason, snap.lineItems, async () => {
-                  const foodId = parseInt(snap.id, 10);
-                  if (!storeId || !token || !Number.isFinite(foodId)) return;
-                  try {
-                    await patchFoodOrderStatus(storeId, foodId, token, "CANCELLED", reason, {
-                      action_source: "app",
-                      cancel_mode: "manual",
-                    });
-                  } catch (err) {
-                    if (!isInvalidTransitionError(err)) throw err;
-                  }
-                  requestMerchantDashboardStatsRefresh();
-                  await advanceOrCloseSheet({
-                    markDismissed: true,
-                    parkIfLast: false,
-                    forCoreId: snap.ordersCoreId,
-                    forFoodId: snap.id,
-                  });
-                });
+                beginFollowUp(reason, snap.lineItems, () =>
+                  patchStatus("CANCELLED", { rejected_reason: reason }, "manual", snap)
+                );
                 return;
               }
-              void (async () => {
-                setActionLoading(true);
-                try {
-                  const foodId = parseInt(snap.id, 10);
-                  if (!storeId || !token || !Number.isFinite(foodId)) return;
-                  await patchFoodOrderStatus(storeId, foodId, token, "CANCELLED", reason, {
-                    action_source: "app",
-                    cancel_mode: "manual",
-                  });
-                  requestMerchantDashboardStatsRefresh();
-                  await advanceOrCloseSheet({
-                    markDismissed: true,
-                    parkIfLast: false,
-                    forCoreId: snap.ordersCoreId,
-                    forFoodId: snap.id,
-                  });
-                } catch (err) {
-                  if (!isInvalidTransitionError(err)) {
-                    /* list refresh will reconcile */
-                  } else {
-                    requestMerchantDashboardStatsRefresh();
-                    await advanceOrCloseSheet({
-                      markDismissed: true,
-                      parkIfLast: false,
-                      forCoreId: snap.ordersCoreId,
-                      forFoodId: snap.id,
-                    });
-                  }
-                } finally {
-                  setActionLoading(false);
-                }
-              })();
+              void patchStatus("CANCELLED", { rejected_reason: reason }, "manual", snap);
             }}
           />
         </>

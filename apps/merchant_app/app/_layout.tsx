@@ -29,6 +29,7 @@ import IncomingOrderModal from "../components/IncomingOrderModal";
 import IncomingOrderNotificationBridge from "../components/IncomingOrderNotificationBridge";
 import AcceptanceTimeoutSync from "../components/AcceptanceTimeoutSync";
 import PreventServicesRealtime from "../components/PreventServicesRealtime";
+import LearningCentreRealtime from "../components/LearningCentreRealtime";
 import ServiceRestrictedNotice from "../components/ServiceRestrictedNotice";
 import { IncomingOrderSheetProvider } from "@/context/IncomingOrderSheetContext";
 import { SessionRevokedGate } from "@/components/SessionRevokedGate";
@@ -48,6 +49,7 @@ import {
   MerchantBootstrapScreen,
   MERCHANT_SPLASH_BG,
 } from "@/components/MerchantBootstrapScreen";
+import { AppErrorBoundary } from "@/components/AppErrorBoundary";
 
 void SplashScreen.preventAutoHideAsync().catch(() => {});
 
@@ -63,7 +65,10 @@ const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
       staleTime: 60 * 1000,
+      gcTime: 15 * 60 * 1000,
       retry: 1,
+      refetchOnWindowFocus: false,
+      refetchOnReconnect: true,
     },
   },
 });
@@ -202,8 +207,10 @@ export default function RootLayout() {
                               <IncomingOrderNotificationBridge />
                               <AcceptanceTimeoutSync />
                               <PreventServicesRealtime />
+                              <LearningCentreRealtime />
                               <ServiceRestrictedNotice />
                               <SessionRevokedGate />
+                              <AppErrorBoundary source="merchant-stack">
                               <Stack
                                 screenOptions={{
                                   headerShown: false,
@@ -218,6 +225,7 @@ export default function RootLayout() {
                                 <Stack.Screen name="order-history" options={{ headerShown: false }} />
                                 <Stack.Screen name="restaurant-status" options={{ headerShown: false }} />
                               </Stack>
+                              </AppErrorBoundary>
                               <OfflineNetworkChrome />
                               <PlayInAppUpdateBootstrap />
                             </IncomingOrderSheetProvider>

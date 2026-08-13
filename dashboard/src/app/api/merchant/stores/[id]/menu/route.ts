@@ -120,11 +120,13 @@ export async function GET(
                LIMIT 1
              ) AS primary_image_moderation_status,
              (SELECT EXISTS(
-               SELECT 1 FROM merchant_menu_item_change_requests r
-               WHERE r.menu_item_id = merchant_menu_items.id AND r.status = 'PENDING'
+               SELECT 1 FROM merchant_menu_item_review_requests r
+               WHERE r.menu_item_id = merchant_menu_items.id
+                 AND r.status = 'PENDING'::merchant_menu_item_review_request_status
              )) AS has_pending_change_request,
-             (SELECT request_type::text FROM merchant_menu_item_change_requests r
-               WHERE r.menu_item_id = merchant_menu_items.id AND r.status = 'PENDING'
+             (SELECT request_type::text FROM merchant_menu_item_review_requests r
+               WHERE r.menu_item_id = merchant_menu_items.id
+                 AND r.status = 'PENDING'::merchant_menu_item_review_request_status
                ORDER BY r.created_at DESC
                LIMIT 1
              ) AS pending_change_request_type

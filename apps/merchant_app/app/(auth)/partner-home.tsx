@@ -193,7 +193,7 @@ export default function PartnerHomeScreen() {
 
   const storesOrdered = useMemo(() => {
     if (!partner) return [];
-    const list = [...partner.childStores];
+    const list = [...(Array.isArray(partner.childStores) ? partner.childStores : [])];
     if (sortMode === "name") {
       return list.sort((a, b) => (a.store_name || "").localeCompare(b.store_name || ""));
     }

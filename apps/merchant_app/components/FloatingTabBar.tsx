@@ -28,7 +28,7 @@ import {
 } from "@/constants/theme";
 import { useActiveTab } from "@/context/ActiveTabContext";
 import { useProfileNav } from "@/context/ProfileNavContext";
-import { hubTabFromPath, isHubPath, merchantPush } from "@/lib/merchantNavigation";
+import { hubTabFromPath, isHubPath } from "@/lib/merchantNavigation";
 import { OffersPercentBadgeIcon } from "@/components/OffersPercentBadgeIcon";
 
 const MAIN_TAB_ORDER = ["index", "orders", "menu", "profile"] as const;
@@ -43,8 +43,9 @@ const LABEL_FONT_SIZE = 10;
 const ICON_LABEL_GAP = 2;
 /** Rounded pill behind active tab (icon + label together). */
 const TAB_PILL_RADIUS = 999;
-/** Only guards true double-fires on dock switches; main tab taps must never feel delayed. */
-const DOCK_PRESS_DEBOUNCE_MS = 220;
+/** Blocks multi-tap stacking on Zone/Flow tabs (Offers push, Profile stack, dock switch). */
+const DOCK_PRESS_DEBOUNCE_MS = 700;
+const SAME_TAB_PRESS_DEBOUNCE_MS = 700;
 const DOCK_SWITCH_OVERLAY_MS = 380;
 const TAB_HIT_SLOP = { top: 8, bottom: 8, left: 6, right: 6 };
 
@@ -191,8 +192,9 @@ export function FloatingTabBar({ state, descriptors, navigation }: BottomTabBarP
   /** Hide Zone/Flow dock on Profile nested screens unless opened as Flow overlay. */
   const profileInnerPage =
     currentName === "profile" && !isProfileStackAtRoot(state) && !profileHubOverlay;
+  const packagingTipsPage = (pathname ?? "").includes("packaging-tips");
   const tabBarHidden =
-    (hideTabBarOnKeyboard && keyboardShown) || profileInnerPage;
+    (hideTabBarOnKeyboard && keyboardShown) || profileInnerPage || packagingTipsPage;
 
   const [dock, setDock] = useState<"main" | "hub">(() =>
     isHubTab(currentName) ? "hub" : "main"
@@ -202,6 +204,13 @@ export function FloatingTabBar({ state, descriptors, navigation }: BottomTabBarP
   );
   const [switchOverlay, setSwitchOverlay] = useState(false);
   const [switchKind, setSwitchKind] = useState<"flow" | "home">("flow");
+  const switchOverlayTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (switchOverlayTimerRef.current) clearTimeout(switchOverlayTimerRef.current);
+    };
+  }, []);
 
   useEffect(() => {
     if (profileHubOverlay) {
@@ -228,7 +237,8 @@ export function FloatingTabBar({ state, descriptors, navigation }: BottomTabBarP
       setSwitchOverlay(true);
       setDock(nextDock);
       navigate();
-      setTimeout(() => setSwitchOverlay(false), DOCK_SWITCH_OVERLAY_MS);
+      if (switchOverlayTimerRef.current) clearTimeout(switchOverlayTimerRef.current);
+      switchOverlayTimerRef.current = setTimeout(() => setSwitchOverlay(false), DOCK_SWITCH_OVERLAY_MS);
     },
     []
   );
@@ -266,10 +276,10 @@ export function FloatingTabBar({ state, descriptors, navigation }: BottomTabBarP
   const onPressMainTab = useCallback(
     (routeName: MainTabName, isActive: boolean) => {
       const now = Date.now();
-      // Multi-tap on Profile (or any main tab) must not stack screens.
+      // Multi-tap must not stack Profile / Catalog nested screens.
       if (
         lastMainTabPressed.current === routeName &&
-        now - lastMainTabPressAt.current < 1_000
+        now - lastMainTabPressAt.current < SAME_TAB_PRESS_DEBOUNCE_MS
       ) {
         return;
       }
@@ -288,7 +298,7 @@ export function FloatingTabBar({ state, descriptors, navigation }: BottomTabBarP
       }
 
       if (alreadyOnTab) {
-        // Re-tapping the current tab pops its stack; Catalog → index root.
+        // Re-tapping Catalog pops nested item screens once — ignore further taps in debounce.
         if (routeName === "menu") {
           router.replace("/(tabs)/menu" as never);
         }
@@ -509,18 +519,20 @@ export function FloatingTabBar({ state, descriptors, navigation }: BottomTabBarP
                     <Pressable
                       key={routeName}
                       onPress={() => {
-                        if (routeName === "offers") {
-                          if (profileHubOverlay) clearReturnRoute();
-                          merchantPush(router, "/(tabs)/profile/offers", {
-                            fromPath: pathname,
-                            setReturnRoute,
-                          });
-                          return;
-                        }
-                        if (isFocused) return;
                         const now = Date.now();
                         if (now - lastHubTabPressAt.current < DOCK_PRESS_DEBOUNCE_MS) return;
                         lastHubTabPressAt.current = now;
+
+                        if (routeName === "offers") {
+                          if (isFocused || (pathname ?? "").includes("/profile/offers")) {
+                            return;
+                          }
+                          if (profileHubOverlay) clearReturnRoute();
+                          router.replace("/(tabs)/profile/offers" as never);
+                          setReturnRoute(pathname ?? "/(tabs)/earnings");
+                          return;
+                        }
+                        if (isFocused) return;
                         if (profileHubOverlay) clearReturnRoute();
                         setActiveTab(routeName);
                         navigation.dispatch(CommonActions.navigate({ name: routeName } as never));

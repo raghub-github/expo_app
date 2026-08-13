@@ -41,6 +41,7 @@ import { prefetchOperatingHours, prefetchOutlet } from "@/services/outletApi";
 import { getPartnerLegalUrls } from "@/lib/partnerLegalUrls";
 import { openPartnerRegisterStoreHandoff } from "@/lib/partnerRegisterStoreHandoff";
 import { OffersPercentBadgeIcon } from "@/components/OffersPercentBadgeIcon";
+import { LearningCentreIcon } from "@/components/LearningCentreIcon";
 import { isMerchantAuthError } from "@/services/auth.service";
 
 const CONTENT_TOP = 12;
@@ -153,8 +154,15 @@ export default function ProfileScreen() {
   const [logoutModalVisible, setLogoutModalVisible] = useState(false);
   const [addingChild, setAddingChild] = useState(false);
   const navLockRef = useRef(false);
+  const navUnlockTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const legalUrls = getPartnerLegalUrls();
   const showAddAnotherChild = (partner?.childStores?.length ?? 0) === 1;
+
+  useEffect(() => {
+    return () => {
+      if (navUnlockTimerRef.current) clearTimeout(navUnlockTimerRef.current);
+    };
+  }, []);
 
   // Do not prefetch nested profile routes here: router.prefetch() can dispatch PRELOAD
   // actions that are not always handled by the profile stack navigator.
@@ -194,22 +202,24 @@ export default function ProfileScreen() {
     }, [selectedStore?.id, token])
   );
 
-  const navigate = (slug: string) => () => {
-    if (navLockRef.current) return;
+  const armNavLock = () => {
     navLockRef.current = true;
-    router.push(`/(tabs)/profile/${slug}` as any);
-    setTimeout(() => {
+    if (navUnlockTimerRef.current) clearTimeout(navUnlockTimerRef.current);
+    navUnlockTimerRef.current = setTimeout(() => {
       navLockRef.current = false;
     }, 700);
   };
 
+  const navigate = (slug: string) => () => {
+    if (navLockRef.current) return;
+    armNavLock();
+    router.push(`/(tabs)/profile/${slug}` as any);
+  };
+
   const guardedNavPush = (href: string) => {
     if (navLockRef.current) return;
-    navLockRef.current = true;
+    armNavLock();
     navPush(href);
-    setTimeout(() => {
-      navLockRef.current = false;
-    }, 700);
   };
 
   const handleAddAnotherChild = async () => {
@@ -422,6 +432,12 @@ export default function ProfileScreen() {
         <View style={[styles.tileGrid, { gap: TILE_GAP }]}>
           <GridCard icon="help-circle-outline" label="Help & support" onPress={navigate("contact")} tileWidth={settingsTileWidth} />
           <GridCard icon="chatbubbles-outline" label="My tickets" onPress={navigate("tickets")} tileWidth={settingsTileWidth} />
+          <GridCard
+            customIcon={<LearningCentreIcon size={26} color={GatiMitraMerchant.textPrimary} />}
+            label="Learning centre"
+            onPress={navigate("learning")}
+            tileWidth={settingsTileWidth}
+          />
         </View>
       </View>
 

@@ -25,6 +25,7 @@ import { registerStorePushToken, unregisterAllStorePushTokens } from "@/services
 import { getConfig } from "@/config/env";
 import { setMerchantPushUnregister } from "@/lib/merchantPushUnregister";
 import { openOrderDetailOnce } from "@/lib/openOrderDetailOnce";
+import { isSafeMerchantPushHref } from "@/lib/merchantNavigation";
 import {
   dispatchMerchantForegroundPush,
   dispatchMerchantNotificationResponse,
@@ -108,7 +109,9 @@ function NotificationSetupImpl() {
     (payload: PushNotificationOpenPayload) => {
       const data = payload.data;
       if (data?.action === "reopen_prompt" && data?.url && typeof data.url === "string") {
-        router.push(`${data.url}${String(data.url).includes("?") ? "&" : "?"}reopen_prompt=1` as never);
+        if (isSafeMerchantPushHref(data.url)) {
+          router.push(`${data.url}${String(data.url).includes("?") ? "&" : "?"}reopen_prompt=1` as never);
+        }
         return;
       }
       if (isMerchantNewOrderPush(data)) {
@@ -142,7 +145,14 @@ function NotificationSetupImpl() {
         return;
       }
       if (data?.url && typeof data.url === "string") {
-        router.push(data.url as never);
+        if (isSafeMerchantPushHref(data.url)) {
+          router.push(data.url as never);
+        } else {
+          const foodId = data.url.match(/\/order\/(\d+)/)?.[1];
+          if (foodId) {
+            openOrderDetailOnce(router, foodId, { currentPath: pathname });
+          }
+        }
         return;
       }
       if (data?.screen === "reviews" || String(data.type ?? "") === "merchant_rating") {

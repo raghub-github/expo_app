@@ -8,11 +8,15 @@ import { usePermissions } from "@/hooks/usePermissions";
 import {
   APP_STATIC_ASSET_APPS,
   appStaticAssetAppLabel,
+  isAppStaticVideoAsset,
   type AppStaticAssetApp,
 } from "@/lib/app-static-assets/shared";
 import type { AppStaticAssetRow } from "@/lib/db/operations/app-static-assets";
+import { LearningCentreAdminPanel } from "@/components/super-admin/LearningCentreAdminPanel";
 import { resolveAttachmentProxyUrl } from "@/lib/attachments/resolve-attachment-proxy-url";
 import { cn } from "@/lib/utils";
+
+type PageTab = AppStaticAssetApp | "learning";
 
 function previewUrl(proxyUrl: string | null): string | null {
   if (!proxyUrl) return null;
@@ -27,13 +31,15 @@ type SectionGroup = {
 export default function AppImagesPage() {
   const router = useRouter();
   const { isSuperAdmin, loading: permLoading } = usePermissions();
-  const [app, setApp] = useState<AppStaticAssetApp>("customer");
+  const [tab, setTab] = useState<PageTab>("customer");
+  const [learningTick, setLearningTick] = useState(0);
   const [items, setItems] = useState<AppStaticAssetRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const pendingUploadId = useRef<string | null>(null);
+  const app = tab === "learning" ? "merchant" : tab;
 
   useEffect(() => {
     if (!permLoading && !isSuperAdmin) {
@@ -60,8 +66,8 @@ export default function AppImagesPage() {
   }, [app]);
 
   useEffect(() => {
-    if (isSuperAdmin) void loadItems();
-  }, [isSuperAdmin, loadItems]);
+    if (isSuperAdmin && tab !== "learning") void loadItems();
+  }, [isSuperAdmin, loadItems, tab]);
 
   const grouped = useMemo((): SectionGroup[] => {
     const map = new Map<string, AppStaticAssetRow[]>();
@@ -78,6 +84,11 @@ export default function AppImagesPage() {
 
   const onPickFile = (id: string) => {
     pendingUploadId.current = id;
+    if (fileInputRef.current) {
+      fileInputRef.current.accept = isAppStaticVideoAsset(id)
+        ? "video/mp4,video/webm,video/quicktime,video/x-m4v"
+        : "image/jpeg,image/png,image/webp,image/gif";
+    }
     fileInputRef.current?.click();
   };
 
@@ -113,7 +124,7 @@ export default function AppImagesPage() {
 
   const onRemove = async (id: string) => {
     if (busyId) return;
-    if (!window.confirm("Remove this image? The app will show empty until a new image is uploaded.")) {
+    if (!window.confirm("Remove this file? The app will show empty until a new file is uploaded.")) {
       return;
     }
     setBusyId(id);
@@ -155,41 +166,62 @@ export default function AppImagesPage() {
         >
           ← Super Admin
         </Link>
-        <h1 className="mt-2 text-2xl font-bold text-slate-900">App images</h1>
+        <h1 className="mt-2 text-2xl font-bold text-slate-900">
+          {tab === "learning" ? "Learning Centre" : "App images"}
+        </h1>
         <p className="mt-1 text-sm text-slate-600">
-          Upload images to R2 for Customer, Rider & Merchant apps. Images are served via backend
-          proxy — no bundled assets in app code. Branding → App icon updates in-app after the next
-          app open; the Expo bundling / phone home-screen icon is native and needs a store rebuild.
+          {tab === "learning"
+            ? "Add section title, video title, thumbnail, and a YouTube link. Select Rider, Merchant, or Customer for each video. Tapping a card in the app opens YouTube."
+            : "Upload images and videos to R2 for Customer, Rider & Merchant apps. Files are served via signed URLs — no bundled assets in app code. Branding → App icon updates in-app after the next app open; the Expo bundling / phone home-screen icon is native and needs a store rebuild. Packaging tips video: MP4, max 80 MB."}
         </p>
       </div>
 
       <div className="mb-6 flex flex-wrap gap-2">
-        {APP_STATIC_ASSET_APPS.map((tab) => (
+        {APP_STATIC_ASSET_APPS.map((appTab) => (
           <button
-            key={tab}
+            key={appTab}
             type="button"
-            onClick={() => setApp(tab)}
+            onClick={() => setTab(appTab)}
             className={cn(
               "rounded-full px-4 py-2 text-sm font-medium transition-colors",
-              app === tab
+              tab === appTab
                 ? "bg-teal-600 text-white shadow-sm"
                 : "bg-slate-100 text-slate-700 hover:bg-slate-200"
             )}
           >
-            {appStaticAssetAppLabel(tab)}
+            {appStaticAssetAppLabel(appTab)}
           </button>
         ))}
         <button
           type="button"
-          onClick={() => void loadItems()}
-          disabled={loading}
+          onClick={() => setTab("learning")}
+          className={cn(
+            "rounded-full px-4 py-2 text-sm font-medium transition-colors",
+            tab === "learning"
+              ? "bg-teal-600 text-white shadow-sm"
+              : "bg-slate-100 text-slate-700 hover:bg-slate-200"
+          )}
+        >
+          Learning
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            if (tab === "learning") setLearningTick((n) => n + 1);
+            else void loadItems();
+          }}
+          disabled={tab !== "learning" && loading}
           className="ml-auto inline-flex items-center gap-1.5 rounded-full border border-slate-200 px-3 py-2 text-sm text-slate-600 hover:bg-slate-50"
         >
-          <RefreshCw className={cn("h-4 w-4", loading && "animate-spin")} />
+          <RefreshCw className={cn("h-4 w-4", tab !== "learning" && loading && "animate-spin")} />
           Refresh
         </button>
       </div>
 
+      {tab === "learning" ? (
+        <LearningCentreAdminPanel key={learningTick} />
+      ) : (
+        <>
       {error ? (
         <div className="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
           {error}
@@ -229,11 +261,20 @@ export default function AppImagesPage() {
                     {sectionItems.map((item) => {
                       const url = previewUrl(item.proxy_url);
                       const isBusy = busyId === item.id;
+                      const isVideo = isAppStaticVideoAsset(item.id);
                       return (
                         <tr key={item.id} className="hover:bg-slate-50/80">
                           <td className="px-4 py-3">
                             <div className="flex h-14 w-14 items-center justify-center overflow-hidden rounded-lg border border-slate-200 bg-slate-50">
-                              {url ? (
+                              {url && isVideo ? (
+                                <video
+                                  src={url}
+                                  muted
+                                  playsInline
+                                  preload="metadata"
+                                  className="h-full w-full object-cover"
+                                />
+                              ) : url ? (
                                 // eslint-disable-next-line @next/next/no-img-element
                                 <img
                                   src={url}
@@ -289,6 +330,8 @@ export default function AppImagesPage() {
             </section>
           ))}
         </div>
+      )}
+        </>
       )}
     </div>
   );

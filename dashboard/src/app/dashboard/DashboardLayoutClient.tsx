@@ -78,6 +78,7 @@ function pathRightSidebarActive(
   const clean = cleanDashboardHref(pathname);
   // Inside a store's verification flow — full-width content, no merchants right rail.
   if (isStoreVerificationDetailPath(clean, searchParams)) return false;
+  if (clean.startsWith("/dashboard/area-managers/stores/register-parent")) return false;
   if (clean === "/dashboard/riders" || clean.startsWith("/dashboard/riders/")) {
     return Boolean((searchParams?.get("search") || "").trim());
   }
@@ -714,6 +715,13 @@ function DashboardLayoutContent({
 
   /** Never hide right rail from pending nav — wait for settled pathname (no width jump). */
   const pendingSuppressesRight = false;
+  const isParentOnboardingPage = useMemo(
+    () =>
+      /^\/dashboard\/area-managers\/stores\/register-parent(\/|$)/.test(
+        cleanPathname
+      ),
+    [cleanPathname]
+  );
   const isStoreVerificationDetail = isStoreVerificationDetailPath(
     cleanPathname,
     searchParams
@@ -732,6 +740,7 @@ function DashboardLayoutContent({
    * Keep the rail mounted when merely collapsed so the expand chevron stays available. */
   const shouldRenderRightSidebar =
     !isAddChildPage &&
+    !isParentOnboardingPage &&
     !isCustomerDetailFromOrder &&
     !isStoreVerificationDetail &&
     (hasRightSidebarEligible || isTicketDetailPage) &&
@@ -811,6 +820,8 @@ function DashboardLayoutContent({
                     className={`flex-1 transition-all duration-300 w-full flex flex-col min-h-0 relative text-gray-900 ${
                       isAddChildPage
                         ? "overflow-hidden bg-gradient-to-br from-slate-50 to-slate-100 p-0"
+                        : isParentOnboardingPage
+                        ? "overflow-hidden bg-[#f4f6f8] p-3 sm:p-4"
                         : isOrderDetailPage
                         ? "overflow-hidden bg-transparent p-0"
                         : isTicketsFullBleedLayout
@@ -834,7 +845,7 @@ function DashboardLayoutContent({
                   >
                     <div
                       className={`relative flex min-h-0 w-full max-w-full min-w-0 flex-1 flex-col ${
-                        isAddChildPage ? "h-full" : ""
+                        isAddChildPage || isParentOnboardingPage ? "h-full" : ""
                       }`}
                     >
                       {children}

@@ -10,6 +10,10 @@ import {
   uploadCatalogPhotoWithProgress,
   type CatalogPhotoUploadCallbacks,
 } from "@/lib/catalogPhotoUploadFlow";
+import {
+  MenuImageSquareAdjustModal,
+  type AdjustedImageFile,
+} from "@/components/menu/MenuImageSquareAdjustModal";
 
 type Props = {
   visible: boolean;
@@ -35,6 +39,8 @@ export function CatalogPhotoUploadOptionsSheet({
   const slideY = useRef(new Animated.Value(48)).current;
   const insets = useSafeAreaInsets();
   const [busy, setBusy] = useState(false);
+  const [adjustUri, setAdjustUri] = useState<string | null>(null);
+  const pendingItemRef = useRef<MenuItemRow | null>(null);
 
   useEffect(() => {
     if (!visible) {
@@ -49,6 +55,26 @@ export function CatalogPhotoUploadOptionsSheet({
     }).start();
   }, [visible, slideY]);
 
+  const uploadAdjusted = useCallback(
+    async (file: AdjustedImageFile) => {
+      const target = pendingItemRef.current ?? item;
+      if (!target || !storeId || !token) return;
+      setAdjustUri(null);
+      setBusy(true);
+      try {
+        await uploadCatalogPhotoWithProgress(target, storeId, token, file, uploadCallbacks);
+        onUploaded();
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : "Upload failed";
+        Alert.alert("Could not upload photo", msg);
+      } finally {
+        setBusy(false);
+        pendingItemRef.current = null;
+      }
+    },
+    [item, storeId, token, uploadCallbacks, onUploaded],
+  );
+
   const handlePick = useCallback(
     async (source: "camera" | "gallery") => {
       if (!item || !storeId || !token || busy) return;
@@ -58,66 +84,84 @@ export function CatalogPhotoUploadOptionsSheet({
       }
       setBusy(true);
       try {
+        pendingItemRef.current = item;
         // Close sheet first so native picker isn't stacked under Modal (Android crash).
         onClose();
         await new Promise<void>((resolve) => {
           InteractionManager.runAfterInteractions(() => resolve());
         });
-        await new Promise((r) => setTimeout(r, 120));
+        await new Promise((r) => setTimeout(r, 160));
         const file = await pickCatalogPhoto(source);
-        if (!file) return;
-        await uploadCatalogPhotoWithProgress(item, storeId, token, file, uploadCallbacks);
-        onUploaded();
+        if (!file) {
+          pendingItemRef.current = null;
+          return;
+        }
+        // Android drops a Modal that opens in the same tick as the picker dismiss.
+        await new Promise((r) => setTimeout(r, 320));
+        setAdjustUri(file.uri);
       } catch (e) {
-        const msg = e instanceof Error ? e.message : "Upload failed";
+        pendingItemRef.current = null;
+        const msg = e instanceof Error ? e.message : "Could not open photo";
         Alert.alert("Could not upload photo", msg);
       } finally {
         setBusy(false);
       }
     },
-    [busy, imageLimitReached, item, onClose, onUploaded, storeId, token, uploadCallbacks],
+    [busy, imageLimitReached, item, onClose, storeId, token],
   );
 
-  if (!item) return null;
-
   return (
-    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
-      <View style={styles.overlay}>
-        <Pressable style={StyleSheet.absoluteFill} onPress={onClose} />
-        <Animated.View
-          style={[
-            styles.sheet,
-            { transform: [{ translateY: slideY }], paddingBottom: Math.max(insets.bottom, 20) },
-          ]}
-          onStartShouldSetResponder={() => true}
-        >
-          <Text style={styles.title}>Choose an option</Text>
-          <TouchableOpacity
-            style={styles.option}
-            onPress={() => void handlePick("camera")}
-            disabled={busy}
-            activeOpacity={0.85}
+    <>
+      {visible ? (
+      <Modal visible transparent animationType="fade" onRequestClose={onClose}>
+        <View style={styles.overlay}>
+          <Pressable style={StyleSheet.absoluteFill} onPress={onClose} />
+          <Animated.View
+            style={[
+              styles.sheet,
+              { transform: [{ translateY: slideY }], paddingBottom: Math.max(insets.bottom, 20) },
+            ]}
+            onStartShouldSetResponder={() => true}
           >
-            <Ionicons name="camera-outline" size={22} color={GatiMitraMerchant.textPrimary} />
-            <Text style={styles.optionText}>Take photo</Text>
-            {busy ? <ActivityIndicator size="small" color={GatiMitraMerchant.primary} /> : null}
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={styles.option}
-            onPress={() => void handlePick("gallery")}
-            disabled={busy}
-            activeOpacity={0.85}
-          >
-            <Ionicons name="images-outline" size={22} color={GatiMitraMerchant.textPrimary} />
-            <Text style={styles.optionText}>Upload from gallery</Text>
-            {busy ? <ActivityIndicator size="small" color={GatiMitraMerchant.primary} /> : null}
-          </TouchableOpacity>
-          <TouchableOpacity style={styles.cancelBtn} onPress={onClose} disabled={busy}>
-            <Text style={styles.cancelText}>Cancel</Text>
-          </TouchableOpacity>
-        </Animated.View>
-      </View>
-    </Modal>
+            <Text style={styles.title}>Choose an option</Text>
+            <TouchableOpacity
+              style={styles.option}
+              onPress={() => void handlePick("camera")}
+              disabled={busy || !item}
+              activeOpacity={0.85}
+            >
+              <Ionicons name="camera-outline" size={22} color={GatiMitraMerchant.textPrimary} />
+              <Text style={styles.optionText}>Take photo</Text>
+              {busy ? <ActivityIndicator size="small" color={GatiMitraMerchant.primary} /> : null}
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.option}
+              onPress={() => void handlePick("gallery")}
+              disabled={busy || !item}
+              activeOpacity={0.85}
+            >
+              <Ionicons name="images-outline" size={22} color={GatiMitraMerchant.textPrimary} />
+              <Text style={styles.optionText}>Upload from gallery</Text>
+              {busy ? <ActivityIndicator size="small" color={GatiMitraMerchant.primary} /> : null}
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.cancelBtn} onPress={onClose} disabled={busy}>
+              <Text style={styles.cancelText}>Cancel</Text>
+            </TouchableOpacity>
+          </Animated.View>
+        </View>
+      </Modal>
+      ) : null}
+
+      <MenuImageSquareAdjustModal
+        visible={Boolean(adjustUri)}
+        uri={adjustUri}
+        onCancel={() => {
+          setAdjustUri(null);
+          pendingItemRef.current = null;
+        }}
+        onConfirm={(file) => void uploadAdjusted(file)}
+      />
+    </>
   );
 }
 

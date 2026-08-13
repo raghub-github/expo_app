@@ -29,6 +29,8 @@ import Animated, {
 } from "react-native-reanimated";
 import { AppText as Text } from "@/components/AppText";
 import { Ionicons } from "@expo/vector-icons";
+import { useNowMs } from "@/hooks/useNowMs";
+import { useDebouncedValue } from "@/lib/hooks/useDebouncedValue";
 import { useRouter, useLocalSearchParams, useFocusEffect } from "expo-router";
 import { useMerchantNavigate } from "@/lib/merchantNavigation";
 import { useProfileNav } from "@/context/ProfileNavContext";
@@ -169,18 +171,23 @@ function isOpenScheduledOrder(order: OrderRecord): boolean {
 }
 
 function SearchBar({
-  value,
-  onChangeText,
+  onDebouncedChange,
   filterCount,
   onFilterPress,
   showFilter,
 }: {
-  value: string;
-  onChangeText: (value: string) => void;
+  onDebouncedChange: (value: string) => void;
   filterCount: number;
   onFilterPress: () => void;
   showFilter?: boolean;
 }) {
+  const [value, setValue] = useState("");
+  const debounced = useDebouncedValue(value, 250);
+
+  useEffect(() => {
+    onDebouncedChange(debounced);
+  }, [debounced, onDebouncedChange]);
+
   return (
     <View style={styles.searchRow}>
       <View style={styles.searchWrap}>
@@ -190,7 +197,7 @@ function SearchBar({
           placeholder="Search by order id"
           placeholderTextColor={GatiMitraMerchant.textTertiary}
           value={value}
-          onChangeText={onChangeText}
+          onChangeText={setValue}
           returnKeyType="search"
         />
       </View>
@@ -389,20 +396,12 @@ export function OrdersListScreen({ mode }: { mode: OrdersListMode }) {
   const lastAppliedRouteTabRef = useRef("");
   const filterKeyBootstrapped = useRef(false);
   const [refreshing, setRefreshing] = useState(false);
-  const [nowMs, setNowMs] = useState(Date.now());
+  const nowMs = useNowMs(true, 60_000);
   const [rejectTarget, setRejectTarget] = useState<OrderRecord | null>(null);
   const [rejectLoading, setRejectLoading] = useState(false);
   const [prepDelayOrder, setPrepDelayOrder] = useState<OrderRecord | null>(null);
   const [prepDelayLoading, setPrepDelayLoading] = useState(false);
   const { followUp, beginFollowUp, dismissFollowUp, setFollowUp } = useRejectFollowUp();
-
-  useFocusEffect(
-    useCallback(() => {
-      setNowMs(Date.now());
-      const id = setInterval(() => setNowMs(Date.now()), 1000);
-      return () => clearInterval(id);
-    }, [])
-  );
 
   useEffect(() => {
     if (isHistory || loading) return;
@@ -624,7 +623,9 @@ export function OrdersListScreen({ mode }: { mode: OrdersListMode }) {
   const handleAccept = useCallback(
     (order: OrderRecord) => {
       if (order.status === "created") {
-        transitionOrder(order.id, "preparing");
+        void transitionOrder(order.id, "preparing").catch(() => {
+          /* error surfaced via OrdersContext */
+        });
       }
     },
     [transitionOrder]
@@ -643,7 +644,9 @@ export function OrdersListScreen({ mode }: { mode: OrdersListMode }) {
       if (rejectReasonNeedsFollowUp(reason)) {
         setRejectTarget(null);
         beginFollowUp(reason, orderSnap.lineItems, () =>
-          transitionOrder(orderSnap.id, "rejected", { rejectedReason: reason })
+          void transitionOrder(orderSnap.id, "rejected", { rejectedReason: reason }).catch(
+            () => {}
+          )
         );
         return;
       }
@@ -772,7 +775,6 @@ export function OrdersListScreen({ mode }: { mode: OrdersListMode }) {
     return (
       <LiveOrderCard
         order={item}
-        nowMs={nowMs}
         acceptanceWindowMinutes={acceptanceWindowMinutes}
         storeName={orderStoreName}
         onAccept={() => handleAccept(item)}
@@ -789,8 +791,7 @@ export function OrdersListScreen({ mode }: { mode: OrdersListMode }) {
   const listHeader = isHistory ? (
     <>
       <SearchBar
-        value={search}
-        onChangeText={setSearch}
+        onDebouncedChange={setSearch}
         filterCount={activeFilterCount}
         onFilterPress={() => setFilterSheetOpen(true)}
         showFilter
@@ -802,8 +803,7 @@ export function OrdersListScreen({ mode }: { mode: OrdersListMode }) {
   const liveFixedChrome = !isHistory ? (
     <View style={styles.fixedChrome}>
       <SearchBar
-        value={search}
-        onChangeText={setSearch}
+        onDebouncedChange={setSearch}
         filterCount={activeFilterCount}
         onFilterPress={() => setFilterSheetOpen(true)}
         showFilter
@@ -962,11 +962,11 @@ export function OrdersListScreen({ mode }: { mode: OrdersListMode }) {
               )
             }
             showsVerticalScrollIndicator={false}
-            initialNumToRender={12}
-            windowSize={7}
-            maxToRenderPerBatch={12}
-            updateCellsBatchingPeriod={16}
-            removeClippedSubviews={false}
+            initialNumToRender={8}
+            windowSize={5}
+            maxToRenderPerBatch={8}
+            updateCellsBatchingPeriod={50}
+            removeClippedSubviews={Platform.OS === "android"}
             extraData={filterKey}
             onViewableItemsChanged={onViewableItemsChanged}
             viewabilityConfig={viewabilityConfig}

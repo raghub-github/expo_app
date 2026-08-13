@@ -13,14 +13,24 @@ export type NormalizedImageFile = { uri: string; type: string; name: string };
 export async function normalizeMenuItemImageUri(
   uri: string
 ): Promise<{ ok: true; file: NormalizedImageFile } | { ok: false; error: string }> {
+  let workUri = uri;
   let w: number;
   let h: number;
   try {
-    const dims = await new Promise<{ width: number; height: number }>((resolve, reject) => {
-      Image.getSize(uri, (width, height) => resolve({ width, height }), reject);
+    const baked = await ImageManipulator.manipulateAsync(uri, [], {
+      compress: 1,
+      format: ImageManipulator.SaveFormat.JPEG,
     });
-    w = dims.width;
-    h = dims.height;
+    workUri = baked.uri;
+    w = baked.width;
+    h = baked.height;
+    if (!w || !h) {
+      const dims = await new Promise<{ width: number; height: number }>((resolve, reject) => {
+        Image.getSize(workUri, (width, height) => resolve({ width, height }), reject);
+      });
+      w = dims.width;
+      h = dims.height;
+    }
   } catch {
     return { ok: false, error: "Could not read image dimensions. Try another photo." };
   }
@@ -36,7 +46,7 @@ export async function normalizeMenuItemImageUri(
   let compress = 0.92;
   for (let attempt = 0; attempt < 6; attempt++) {
     const result = await ImageManipulator.manipulateAsync(
-      uri,
+      workUri,
       [
         { crop: { originX, originY, width: side, height: side } },
         { resize: { width: outDim, height: outDim } },

@@ -37,9 +37,10 @@ const FIELD_CLASS =
 
 /** Compact fields for step-3 profile — polished inputs that fill the white area. */
 const FIELD_CLASS_COMPACT =
-  "auth-field w-full px-3.5 py-2 rounded-xl border border-slate-200 bg-white text-slate-900 placeholder:text-slate-500 text-sm shadow-[0_1px_2px_rgba(15,23,42,0.05)] transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-emerald-500/25 focus:border-emerald-400 hover:border-slate-300";
+  "auth-field w-full px-3.5 py-2.5 rounded-xl border border-slate-200 bg-white text-[15px] font-normal leading-snug text-slate-800 placeholder:font-normal placeholder:text-slate-400 shadow-[0_1px_2px_rgba(15,23,42,0.05)] transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-emerald-500/25 focus:border-emerald-400 hover:border-slate-300";
 
-const LABEL_COMPACT = "block text-xs font-semibold text-slate-700 mb-1 tracking-wide";
+const LABEL_COMPACT =
+  "mb-1.5 block text-[11px] font-medium uppercase tracking-[0.14em] text-slate-500";
 
 const OTP_LABEL_CLASS = "block text-center text-sm font-semibold text-slate-800 mb-3";
 
@@ -119,6 +120,7 @@ export default function RegisterPage() {
   const [merchant_type, setMerchantType] = useState<"LOCAL" | "BRAND" | "CHAIN" | "FRANCHISE">("LOCAL");
   const [brand_name, setBrandName] = useState("");
   const [business_category, setBusinessCategory] = useState("");
+  const [business_category_other, setBusinessCategoryOther] = useState("");
   const [alternate_phone, setAlternatePhone] = useState("");
   const [address_line1, setAddressLine1] = useState("");
   const [city, setCity] = useState("");
@@ -184,7 +186,23 @@ export default function RegisterPage() {
           if (draft.parent_name) setParentName(draft.parent_name);
           if (draft.merchant_type) setMerchantType(draft.merchant_type);
           if (draft.brand_name) setBrandName(draft.brand_name);
-          if (draft.business_category) setBusinessCategory(draft.business_category);
+          if (draft.business_category) {
+            const known = ["RESTAURANT", "CLOUD_KITCHEN", "CAFE", "BAKERY", "OTHER"];
+            if (known.includes(draft.business_category)) {
+              setBusinessCategory(draft.business_category);
+              if (draft.business_category_other) {
+                setBusinessCategoryOther(draft.business_category_other);
+              }
+            } else {
+              setBusinessCategory("OTHER");
+              setBusinessCategoryOther(
+                draft.business_category_other || draft.business_category
+              );
+            }
+          } else if (draft.business_category_other) {
+            setBusinessCategory("OTHER");
+            setBusinessCategoryOther(draft.business_category_other);
+          }
           if (draft.alternate_phone) setAlternatePhone(draft.alternate_phone);
           if (draft.address_line1) setAddressLine1(draft.address_line1);
           if (draft.city) setCity(draft.city);
@@ -220,6 +238,7 @@ export default function RegisterPage() {
       merchant_type,
       brand_name,
       business_category,
+      business_category_other,
       alternate_phone,
       address_line1,
       city,
@@ -236,6 +255,7 @@ export default function RegisterPage() {
     merchant_type,
     brand_name,
     business_category,
+    business_category_other,
     alternate_phone,
     address_line1,
     city,
@@ -503,8 +523,16 @@ export default function RegisterPage() {
       setError("Alternate phone must be 10–15 digits (optional + prefix).");
       return;
     }
+    if (business_category === "OTHER" && !business_category_other.trim()) {
+      setError("Please specify your business category.");
+      return;
+    }
     setLoading(true);
     try {
+      const resolvedCategory =
+        business_category === "OTHER"
+          ? business_category_other.trim()
+          : business_category || null;
       const payload = {
         email_user_id: emailUserId,
         email: verifiedEmail,
@@ -513,7 +541,7 @@ export default function RegisterPage() {
         parent_name: parent_name.trim(),
         merchant_type,
         brand_name: brand_name.trim() || null,
-        business_category: business_category || null,
+        business_category: resolvedCategory,
         alternate_phone: altPhone || null,
         address_line1: address_line1.trim() || null,
         city: city.trim() || null,
@@ -844,8 +872,14 @@ export default function RegisterPage() {
             <div className="rounded-2xl border-2 border-slate-200 bg-white px-5 py-5 sm:px-7 sm:py-6 shadow-sm">
               <RegisterFormHeader step={step} subtitle={stepSubtitle} compact />
               <div className="mt-3">
-          <form onSubmit={handleSubmitDetails} className="space-y-4">
-            <div className="grid grid-cols-1 gap-x-3 gap-y-2.5 sm:grid-cols-2 lg:grid-cols-3">
+          <form onSubmit={handleSubmitDetails} className="space-y-5">
+            <div
+              className={`grid grid-cols-1 gap-x-4 gap-y-4 sm:grid-cols-2 ${
+                merchant_type === "BRAND" || merchant_type === "CHAIN" || merchant_type === "FRANCHISE"
+                  ? "lg:grid-cols-4"
+                  : "lg:grid-cols-3"
+              }`}
+            >
               <div>
                 <label className={LABEL_COMPACT}>Owner / Contact Name *</label>
                 <div className="relative">
@@ -854,7 +888,7 @@ export default function RegisterPage() {
                     type="text"
                     value={owner_name}
                     onChange={(e) => setOwnerName(e.target.value)}
-                    placeholder="Your name"
+                    placeholder="Owner name"
                     required
                     className={`${FIELD_CLASS_COMPACT} pl-9`}
                   />
@@ -866,7 +900,7 @@ export default function RegisterPage() {
                   type="text"
                   value={parent_name}
                   onChange={(e) => setParentName(e.target.value)}
-                  placeholder="My Restaurant / Brand"
+                  placeholder="Restaurant / Brand"
                   required
                   className={FIELD_CLASS_COMPACT}
                 />
@@ -884,7 +918,6 @@ export default function RegisterPage() {
                   <option value="FRANCHISE">Franchise</option>
                 </select>
               </div>
-
               {(merchant_type === "BRAND" || merchant_type === "CHAIN" || merchant_type === "FRANCHISE") && (
                 <div>
                   <label className={LABEL_COMPACT}>Brand Name</label>
@@ -897,11 +930,22 @@ export default function RegisterPage() {
                   />
                 </div>
               )}
+            </div>
+
+            <div
+              className={`grid grid-cols-1 gap-x-4 gap-y-4 ${
+                business_category === "OTHER" ? "sm:grid-cols-2 lg:grid-cols-3" : "sm:grid-cols-2"
+              }`}
+            >
               <div>
                 <label className={LABEL_COMPACT}>Business Category</label>
                 <select
                   value={business_category}
-                  onChange={(e) => setBusinessCategory(e.target.value)}
+                  onChange={(e) => {
+                    const next = e.target.value;
+                    setBusinessCategory(next);
+                    if (next !== "OTHER") setBusinessCategoryOther("");
+                  }}
                   className={FIELD_CLASS_COMPACT}
                 >
                   <option value="">Select</option>
@@ -912,6 +956,18 @@ export default function RegisterPage() {
                   <option value="OTHER">Other</option>
                 </select>
               </div>
+              {business_category === "OTHER" ? (
+                <div>
+                  <label className={LABEL_COMPACT}>Specify Category *</label>
+                  <input
+                    type="text"
+                    value={business_category_other}
+                    onChange={(e) => setBusinessCategoryOther(e.target.value)}
+                    placeholder="Enter business type"
+                    className={FIELD_CLASS_COMPACT}
+                  />
+                </div>
+              ) : null}
               <div>
                 <label className={LABEL_COMPACT}>Alternate Phone</label>
                 <input
@@ -923,11 +979,15 @@ export default function RegisterPage() {
                   className={`${FIELD_CLASS_COMPACT} auth-num`}
                 />
               </div>
+            </div>
 
-              <div className="sm:col-span-2 lg:col-span-3 flex items-center gap-1.5 text-slate-800 font-semibold text-sm pt-0.5 border-t border-slate-100">
-                <MapPin className="w-4 h-4 text-emerald-500" /> Address
-              </div>
-              <div className="sm:col-span-2 lg:col-span-3">
+            <div className="space-y-5">
+            <div className="flex items-center gap-1.5 text-[12px] font-semibold uppercase tracking-[0.16em] text-emerald-600 border-t border-slate-100 pt-2">
+              <MapPin className="w-4 h-4 text-emerald-500" /> Address
+            </div>
+
+            <div className="grid grid-cols-1 gap-x-4 gap-y-4 sm:grid-cols-2 lg:grid-cols-3">
+              <div>
                 <label className={LABEL_COMPACT}>Address line</label>
                 <input
                   type="text"
@@ -957,6 +1017,10 @@ export default function RegisterPage() {
                   className={FIELD_CLASS_COMPACT}
                 />
               </div>
+            </div>
+            </div>
+
+            <div className="grid grid-cols-1 gap-x-4 gap-y-4 sm:grid-cols-2 lg:grid-cols-3">
               <div>
                 <label className={LABEL_COMPACT}>Pincode</label>
                 <input
@@ -968,13 +1032,11 @@ export default function RegisterPage() {
                   className={`${FIELD_CLASS_COMPACT} auth-num`}
                 />
               </div>
-
-              <div className="sm:col-span-2 lg:col-span-3">
-                <div className="flex flex-wrap items-center gap-3 rounded-xl border border-dashed border-emerald-200/80 bg-emerald-50/40 px-3 py-2.5">
-                  <div className="flex items-center gap-1.5 text-slate-700 font-medium text-sm shrink-0">
-                    <Image className="w-4 h-4 text-emerald-500" /> Parent / Store logo
-                  </div>
-                  <label className="cursor-pointer inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs text-slate-600 shadow-sm hover:border-emerald-400 hover:text-emerald-700 transition-colors">
+              <div className="sm:col-span-2">
+                <label className={LABEL_COMPACT}>Parent / Store logo</label>
+                <div className="flex min-h-[42px] flex-wrap items-center gap-2 rounded-xl border border-dashed border-emerald-200/80 bg-emerald-50/40 px-3 py-1.5">
+                  <Image className="w-4 h-4 shrink-0 text-emerald-500" />
+                  <label className="cursor-pointer inline-flex h-8 items-center gap-2 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-normal text-slate-600 shadow-sm hover:border-emerald-400 hover:text-emerald-700 transition-colors">
                     <input
                       type="file"
                       accept="image/jpeg,image/png,image/webp"
@@ -982,7 +1044,7 @@ export default function RegisterPage() {
                       onChange={handleLogoChange}
                     />
                     {store_logo_preview ? (
-                      <img src={store_logo_preview} alt="Logo preview" className="w-9 h-9 object-contain rounded" />
+                      <img src={store_logo_preview} alt="Logo preview" className="w-6 h-6 object-contain rounded" />
                     ) : (
                       <span>Choose image</span>
                     )}
@@ -996,12 +1058,12 @@ export default function RegisterPage() {
                       Remove
                     </button>
                   )}
-                  <span className="text-xs text-slate-500">JPEG, PNG or WebP · Max 5 MB · Optional</span>
+                  <span className="text-xs font-normal text-slate-500">JPEG, PNG or WebP · Max 5 MB · Optional</span>
                 </div>
               </div>
             </div>
 
-            <div className="flex flex-col-reverse sm:flex-row gap-2 pt-1">
+            <div className="flex flex-col-reverse sm:flex-row gap-2 pt-2">
               <button
                 type="button"
                 onClick={() => setStep(2)}

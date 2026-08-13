@@ -5,6 +5,15 @@ function cacheKey(storeId: number, foodId: number): string {
 }
 
 const cache = new Map<string, ApiFoodOrder>();
+const MAX_CACHED_ORDERS = 150;
+
+function evictIfNeeded(): void {
+  while (cache.size > MAX_CACHED_ORDERS) {
+    const first = cache.keys().next().value;
+    if (first == null) break;
+    cache.delete(first);
+  }
+}
 
 export function setCachedFoodOrder(
   storeId: number,
@@ -14,6 +23,7 @@ export function setCachedFoodOrder(
   if (!Number.isFinite(storeId) || storeId <= 0) return;
   if (!Number.isFinite(foodId) || foodId <= 0) return;
   cache.set(cacheKey(storeId, foodId), order);
+  evictIfNeeded();
 }
 
 export function cacheFoodOrders(storeId: number, orders: ApiFoodOrder[]): void {
