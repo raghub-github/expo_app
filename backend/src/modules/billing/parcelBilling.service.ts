@@ -19,6 +19,7 @@ import {
   applyDynamicSurchargesToBilling,
   resolveActiveDynamicSurchargesFromRefs,
 } from "../../lib/dynamic-pricing.js";
+import { resolveOrderLegVehicleType } from "../../lib/resolve-rider-legs-for-order.js";
 
 function sanitizePlaceholder(v: string | null | undefined): string | null {
   if (v == null) return null;
@@ -291,10 +292,16 @@ export async function computeBillForParcel(
 
   const billing = executeBillingPipeline(ctx, dataset);
 
-  // Dynamic pricing (night/rain/peak/festival/…): customer portion → bill, company portion recorded.
+  // Dynamic pricing (night/rain/peak/festival/…): customer portion → bill, company portion
+  // recorded. vehicleType: the order's booked vehicle_category, so a vehicle-specific surge
+  // actually applies to real orders instead of only the all-vehicle rule.
   const dyn = await resolveActiveDynamicSurchargesFromRefs({
     refs: calcGeo.refs,
     service: "parcel",
+    vehicleType: resolveOrderLegVehicleType({
+      service: "parcel",
+      parcelVehicleCategory: vehicleType,
+    }),
     base: billing.items_net_after_discounts,
     distanceKm,
     now: input.now,

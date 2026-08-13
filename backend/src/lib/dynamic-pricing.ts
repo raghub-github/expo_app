@@ -10,6 +10,7 @@
 import { getSql } from "../db/client.js";
 import { resolveDropGeoRefsFromPincode } from "../modules/billing/geoRefFromPincode.js";
 import type { BillingResult, DropGeoRefByLevel } from "../modules/billing/types.js";
+import type { RideVehiclePricingType } from "../modules/rider-payout-pricing/types.js";
 
 export type DynamicPricingMode =
   | "NIGHT" | "RAIN" | "PEAK" | "FESTIVAL" | "HOLIDAY" | "HIGH_DEMAND" | "LOW_SUPPLY" | "MANUAL";
@@ -21,6 +22,8 @@ export type DynamicPricingRule = {
   id: number;
   mode: DynamicPricingMode;
   serviceType: DynamicPricingServiceType;
+  /** NULL = applies to all vehicles; overrides the all-vehicles row for this mode when set. */
+  vehicleType: RideVehiclePricingType | null;
   geoLevel: string;
   geoRefId: string;
   name: string | null;
@@ -191,6 +194,22 @@ export function preferServiceSpecificDynamicRules(
   return rules.filter((r) => !(r.serviceType === "all" && specificModes.has(r.mode)));
 }
 
+/**
+ * Prefer a vehicle-specific rule over an all-vehicles (vehicleType=null) rule for the same
+ * mode — same pattern as preferServiceSpecificDynamicRules, one dimension over. Only takes
+ * effect when the caller supplied a vehicle (ride/parcel); food has no vehicle dimension.
+ */
+export function preferVehicleSpecificDynamicRules(
+  rules: DynamicPricingRule[],
+  vehicleType: RideVehiclePricingType | null | undefined
+): DynamicPricingRule[] {
+  if (!vehicleType) return rules.filter((r) => r.vehicleType == null);
+  const specificModes = new Set(
+    rules.filter((r) => r.vehicleType === vehicleType).map((r) => r.mode)
+  );
+  return rules.filter((r) => !(r.vehicleType == null && specificModes.has(r.mode)));
+}
+
 export type DynamicSurchargeApplication = {
   surcharges: ResolvedDynamicSurcharge[];
   customerTotal: number;
@@ -344,6 +363,7 @@ function mapRow(r: Record<string, unknown>): DynamicPricingRule {
     id: Number(r.id),
     mode: String(r.mode) as DynamicPricingMode,
     serviceType: String(r.service_type) as DynamicPricingServiceType,
+    vehicleType: r.vehicle_type == null ? null : (String(r.vehicle_type) as RideVehiclePricingType),
     geoLevel: String(r.geo_level),
     geoRefId: String(r.geo_ref_id),
     name: r.name == null ? null : String(r.name),
@@ -379,6 +399,8 @@ const EMPTY_APPLICATION: DynamicSurchargeApplication = {
 export async function resolveActiveDynamicSurchargesFromRefs(args: {
   refs: DropGeoRefByLevel | null;
   service: "food" | "parcel" | "person_ride";
+  /** Vehicle for this order (ride/parcel only). NULL/omitted -> only all-vehicle rules apply. */
+  vehicleType?: RideVehiclePricingType | null;
   base: number;
   distanceKm: number;
   now?: Date;
@@ -395,22 +417,25 @@ export async function resolveActiveDynamicSurchargesFromRefs(args: {
 
   const sql = getSql();
   const now = args.now ?? new Date();
+  const vehicleType = args.vehicleType ?? null;
   let rows: DynamicPricingRule[] = [];
   try {
     const results = await Promise.all(
       targets.map(
         (t) =>
           sql<Record<string, unknown>[]>`
-            SELECT * FROM dynamic_pricing_rules_effective(${t.level}::geo_pricing_level, ${t.id}::uuid, ${args.service})
+            SELECT * FROM dynamic_pricing_rules_effective(${t.level}::geo_pricing_level, ${t.id}::uuid, ${args.service}, ${vehicleType}::ride_vehicle_pricing_type)
           `
       )
     );
-    // Closest-first dedupe per (mode, serviceType): the first level that returns a row wins.
+    // Closest-first dedupe per (mode, serviceType, vehicleType): the first level that returns
+    // a row wins. Vehicle kept in the key so both a vehicle-specific AND an all-vehicle row
+    // for the same mode can survive this pass — preferVehicleSpecificDynamicRules picks below.
     const seen = new Set<string>();
     for (const levelRows of results) {
       for (const raw of levelRows) {
         const rule = mapRow(raw);
-        const key = `${rule.mode}:${rule.serviceType}`;
+        const key = `${rule.mode}:${rule.serviceType}:${rule.vehicleType ?? "_all"}`;
         if (seen.has(key)) continue;
         seen.add(key);
         rows.push(rule);
@@ -421,6 +446,7 @@ export async function resolveActiveDynamicSurchargesFromRefs(args: {
   }
 
   rows = preferServiceSpecificDynamicRules(rows, args.service);
+  rows = preferVehicleSpecificDynamicRules(rows, vehicleType);
   const active = rows.filter((r) => isDynamicRuleActiveNow(r, now));
   const resolved = active.map((r) => resolveOneDynamicSurcharge(r, args.base, args.distanceKm));
   return aggregateDynamicSurcharges(resolved.filter((s) => s.customerAmount > 0 || s.companyAmount > 0));
@@ -435,6 +461,7 @@ export async function resolveActiveDynamicSurcharges(args: {
   pincode?: string | null;
   state?: string | null;
   service: "food" | "parcel" | "person_ride";
+  vehicleType?: RideVehiclePricingType | null;
   base: number;
   distanceKm: number;
   now?: Date;
@@ -451,6 +478,7 @@ export async function resolveActiveDynamicSurcharges(args: {
   return resolveActiveDynamicSurchargesFromRefs({
     refs,
     service: args.service,
+    vehicleType: args.vehicleType,
     base: args.base,
     distanceKm: args.distanceKm,
     now: args.now,

@@ -5,6 +5,7 @@ import { toast } from "sonner";
 import { CloudRain, Loader2, Moon, Plus, Sparkles, TrendingUp } from "lucide-react";
 import { parseDecimalOrZero } from "@/lib/pricing/slabInputUtils";
 import { SlabNumericInput } from "./SlabNumericInput";
+import { VEHICLE_OPTIONS, PARCEL_VEHICLE_OPTIONS, type VehicleType } from "./rideVehicleTypes";
 
 type RiderService = "food" | "parcel" | "ride";
 type Mode = "NIGHT" | "RAIN" | "PEAK" | "FESTIVAL" | "HOLIDAY" | "HIGH_DEMAND" | "LOW_SUPPLY" | "MANUAL";
@@ -26,6 +27,8 @@ const DOW = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 type Row = {
   id: number;
   mode: Mode;
+  /** NULL = applies to all vehicles (food never has a vehicle). */
+  vehicleType: VehicleType | null;
   name: string | null;
   valueType: ValueType;
   value: number;
@@ -44,6 +47,8 @@ type Row = {
 
 type Form = {
   mode: Mode;
+  /** "" = applies to all vehicles. */
+  vehicleType: VehicleType | "";
   name: string;
   valueType: ValueType;
   value: string;
@@ -61,7 +66,7 @@ type Form = {
 };
 
 const blankForm: Form = {
-  mode: "NIGHT", name: "", valueType: "FIXED", value: "0", maxAmount: "", funding: "customer",
+  mode: "NIGHT", vehicleType: "", name: "", valueType: "FIXED", value: "0", maxAmount: "", funding: "customer",
   customerSharePct: "50", taxable: false, gstPct: "18", allDay: false, startTime: "22:00",
   endTime: "06:00", daysOfWeek: [], manualActive: false, isActive: true,
 };
@@ -84,6 +89,7 @@ function mapRow(r: Record<string, unknown>): Row {
   return {
     id: Number(r.id),
     mode: String(r.mode) as Mode,
+    vehicleType: (r.vehicleType ?? r.vehicle_type) == null ? null : (String(r.vehicleType ?? r.vehicle_type) as VehicleType),
     name: r.name == null ? null : String(r.name),
     valueType: String(r.valueType ?? r.value_type) as ValueType,
     value: Number(r.value),
@@ -106,6 +112,7 @@ function mapRow(r: Record<string, unknown>): Row {
 function rowToForm(r: Row): Form {
   return {
     mode: r.mode,
+    vehicleType: r.vehicleType ?? "",
     name: r.name ?? "",
     valueType: r.valueType,
     value: String(r.value),
@@ -125,6 +132,14 @@ function rowToForm(r: Row): Form {
 
 function valueTypeSuffix(t: ValueType): string {
   return t === "FIXED" ? "₹" : t === "PER_KM" ? "₹/km" : t === "PERCENTAGE" ? "% of fare" : "× fare";
+}
+
+function vehicleOptionsFor(service: RiderService) {
+  return service === "parcel" ? PARCEL_VEHICLE_OPTIONS : VEHICLE_OPTIONS;
+}
+
+function vehicleLabel(service: RiderService, v: VehicleType): string {
+  return vehicleOptionsFor(service).find((o) => o.value === v)?.label ?? v;
 }
 
 /**
@@ -165,6 +180,7 @@ export function DynamicPricingPanel(props: { level: string; refId: string; servi
   function formToPayload(f: Form) {
     return {
       mode: f.mode,
+      vehicleType: service === "food" || f.vehicleType === "" ? null : f.vehicleType,
       name: f.name.trim() || null,
       valueType: f.valueType,
       value: parseDecimalOrZero(f.value),
@@ -263,7 +279,7 @@ export function DynamicPricingPanel(props: { level: string; refId: string; servi
       ) : null}
 
       {addOpen ? (
-        <RuleForm form={addForm} setForm={setAddForm} onCancel={() => setAddOpen(false)} onSave={submitAdd} busy={busy} isEdit={false} />
+        <RuleForm form={addForm} setForm={setAddForm} onCancel={() => setAddOpen(false)} onSave={submitAdd} busy={busy} isEdit={false} service={service} />
       ) : null}
 
       {!loading && rules.length === 0 && !addOpen ? (
@@ -283,6 +299,7 @@ export function DynamicPricingPanel(props: { level: string; refId: string; servi
               onSave={() => submitEdit(r.id)}
               busy={busy}
               isEdit
+              service={service}
             />
           ) : (
             <div key={r.id} className="rounded-xl border border-slate-200 bg-white px-4 py-3">
@@ -298,6 +315,13 @@ export function DynamicPricingPanel(props: { level: string; refId: string; servi
                   <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-semibold text-slate-600">
                     {r.funding === "shared" ? `shared ${r.customerSharePct}% cust` : r.funding}
                   </span>
+                  {r.vehicleType ? (
+                    <span className="rounded-full bg-violet-100 px-2 py-0.5 text-xs font-semibold text-violet-800">
+                      {vehicleLabel(service, r.vehicleType)}
+                    </span>
+                  ) : service !== "food" ? (
+                    <span className="text-xs text-slate-400">all vehicles</span>
+                  ) : null}
                   <span className="text-xs text-slate-500">
                     {r.manualActive || r.mode === "MANUAL"
                       ? "manual override"
@@ -339,6 +363,7 @@ function RuleForm(props: {
   onSave: () => void;
   busy: boolean;
   isEdit: boolean;
+  service: RiderService;
 }) {
   const { form, setForm } = props;
   const set = (k: keyof Form) => (v: string) => setForm((f) => ({ ...f, [k]: v }));
@@ -358,6 +383,17 @@ function RuleForm(props: {
             {MODES.map((m) => <option key={m.value} value={m.value}>{m.label}</option>)}
           </select>
         </Field>
+        {props.service !== "food" ? (
+          <Field label="Vehicle">
+            <select className={inputCls} value={form.vehicleType} disabled={props.isEdit}
+              onChange={(e) => setForm((f) => ({ ...f, vehicleType: e.target.value as VehicleType | "" }))}>
+              <option value="">All vehicles</option>
+              {vehicleOptionsFor(props.service).map((v) => (
+                <option key={v.value} value={v.value}>{v.label}</option>
+              ))}
+            </select>
+          </Field>
+        ) : null}
         <Field label="Label (optional)">
           <input className={inputCls} value={form.name} onChange={(e) => set("name")(e.target.value)} placeholder={form.mode} />
         </Field>

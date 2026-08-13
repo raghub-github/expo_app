@@ -22,6 +22,7 @@ import {
   applyDynamicSurchargesToBilling,
   resolveActiveDynamicSurchargesFromRefs,
 } from "../../lib/dynamic-pricing.js";
+import { catalogCodeToPricingVehicle } from "../ride-state-config/catalogVehicleMap.js";
 
 function sanitizePlaceholder(v: string | null | undefined): string | null {
   if (v == null) return null;
@@ -326,9 +327,12 @@ export async function computeBillForRide(
 
   // Dynamic pricing (night/rain/peak/festival/…): the customer-borne portion is added to
   // the bill here; the company-borne portion is recorded for rider incentive / settlement.
+  // vehicleType: catalog code -> pricing vehicle so a vehicle-specific surge (e.g. Peak Hour
+  // for Auto only) actually applies to real orders instead of only the all-vehicle rule.
   const dyn = await resolveActiveDynamicSurchargesFromRefs({
     refs: calcGeo.refs,
     service: "person_ride",
+    vehicleType: rideType ? catalogCodeToPricingVehicle(rideType) : null,
     base: billing.items_net_after_discounts,
     distanceKm,
     now: input.now,

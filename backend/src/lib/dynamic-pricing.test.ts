@@ -5,6 +5,8 @@ import {
   applyDynamicSurchargesToBilling,
   computeDynamicSurchargeTotal,
   isDynamicRuleActiveNow,
+  preferServiceSpecificDynamicRules,
+  preferVehicleSpecificDynamicRules,
   resolveOneDynamicSurcharge,
   splitDynamicByFunding,
   readDynamicRiderIncentiveFromSnapshot,
@@ -14,7 +16,7 @@ import type { BillingResult } from "../modules/billing/types.js";
 
 function rule(over: Partial<DynamicPricingRule>): DynamicPricingRule {
   return {
-    id: 1, mode: "NIGHT", serviceType: "all", geoLevel: "state", geoRefId: "x", name: null,
+    id: 1, mode: "NIGHT", serviceType: "all", vehicleType: null, geoLevel: "state", geoRefId: "x", name: null,
     valueType: "FIXED", value: 0, maxAmount: null, funding: "customer", customerSharePct: 100,
     taxable: false, gstRate: 0, allDay: false, startTime: null, endTime: null, daysOfWeek: null,
     activeFrom: null, activeTo: null, manualActive: false, priority: 100, isActive: true, ...over,
@@ -162,5 +164,67 @@ describe("readDynamicRiderIncentiveFromSnapshot (rider offer/credit bridge)", ()
     assert.equal(r.lines.length, 0);
     assert.deepEqual(readDynamicRiderIncentiveFromSnapshot(null), { amount: 0, lines: [] });
     assert.deepEqual(readDynamicRiderIncentiveFromSnapshot("x"), { amount: 0, lines: [] });
+  });
+});
+
+describe("preferServiceSpecificDynamicRules", () => {
+  it("drops the 'all' rule for a mode when a service-specific rule exists", () => {
+    const rules = [
+      rule({ id: 1, mode: "PEAK", serviceType: "all" }),
+      rule({ id: 2, mode: "PEAK", serviceType: "person_ride" }),
+      rule({ id: 3, mode: "NIGHT", serviceType: "all" }),
+    ];
+    const result = preferServiceSpecificDynamicRules(rules, "person_ride");
+    assert.deepEqual(result.map((r) => r.id).sort(), [2, 3]);
+  });
+
+  it("keeps the 'all' rule when no service-specific rule exists for that mode", () => {
+    const rules = [rule({ id: 1, mode: "NIGHT", serviceType: "all" })];
+    const result = preferServiceSpecificDynamicRules(rules, "food");
+    assert.deepEqual(result.map((r) => r.id), [1]);
+  });
+});
+
+describe("preferVehicleSpecificDynamicRules", () => {
+  it("drops the all-vehicles rule for a mode when the queried vehicle has its own rule", () => {
+    const rules = [
+      rule({ id: 1, mode: "PEAK", vehicleType: null }),
+      rule({ id: 2, mode: "PEAK", vehicleType: "3_wheeler" }),
+      rule({ id: 3, mode: "NIGHT", vehicleType: null }),
+    ];
+    const result = preferVehicleSpecificDynamicRules(rules, "3_wheeler");
+    assert.deepEqual(result.map((r) => r.id).sort(), [2, 3]);
+  });
+
+  it("keeps the all-vehicles rule when the queried vehicle has no specific rule for that mode", () => {
+    // Rows are already SQL-filtered to NULL-or-queried-vehicle (same precondition
+    // preferServiceSpecificDynamicRules relies on for service) — PEAK has only an
+    // all-vehicles row (no 2_wheeler override), NIGHT has a 2_wheeler-specific row.
+    const rules = [
+      rule({ id: 1, mode: "PEAK", vehicleType: null }),
+      rule({ id: 2, mode: "NIGHT", vehicleType: "2_wheeler" }),
+    ];
+    const result = preferVehicleSpecificDynamicRules(rules, "2_wheeler");
+    assert.deepEqual(result.map((r) => r.id).sort(), [1, 2]);
+  });
+
+  it("no vehicle queried (food, or unknown) -> only all-vehicles rules ever match", () => {
+    const rules = [
+      rule({ id: 1, mode: "PEAK", vehicleType: null }),
+      rule({ id: 2, mode: "PEAK", vehicleType: "3_wheeler" }),
+    ];
+    assert.deepEqual(preferVehicleSpecificDynamicRules(rules, null).map((r) => r.id), [1]);
+    assert.deepEqual(preferVehicleSpecificDynamicRules(rules, undefined).map((r) => r.id), [1]);
+  });
+
+  it("vehicle-specific rules for DIFFERENT modes survive alongside all-vehicles rules", () => {
+    // Rows already SQL-filtered to NULL-or-"2_wheeler": PEAK has only its 2_wheeler override
+    // (no all-vehicles PEAK row here), NIGHT has only an all-vehicles row.
+    const rules = [
+      rule({ id: 1, mode: "PEAK", vehicleType: "2_wheeler" }),
+      rule({ id: 2, mode: "NIGHT", vehicleType: null }),
+    ];
+    const result = preferVehicleSpecificDynamicRules(rules, "2_wheeler");
+    assert.deepEqual(result.map((r) => r.id).sort(), [1, 2]);
   });
 });
