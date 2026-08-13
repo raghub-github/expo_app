@@ -1,0 +1,13 @@
+-- Cleanup for 0527_dynamic_pricing_vehicle_type.sql.
+--
+-- CREATE OR REPLACE FUNCTION with an added parameter (even DEFAULT NULL) does NOT replace
+-- an existing function of a DIFFERENT arity in Postgres — it creates a separate overload.
+-- So 0527 left the OLD 3-arg dynamic_pricing_rules_effective(level, id, service) sitting
+-- alongside the new 4-arg one instead of replacing it (confirmed live: both signatures
+-- exist). The only application caller (dynamic-pricing.ts) always passes all 4 arguments
+-- explicitly, so this has caused no functional bug — but the stale 3-arg overload is a
+-- footgun (any future 3-arg call would silently resolve to the non-vehicle-aware version
+-- instead of erroring) and should not be left around.
+--
+-- Drops ONLY the exact 3-arg signature; the live 4-arg version is untouched.
+DROP FUNCTION IF EXISTS dynamic_pricing_rules_effective(geo_pricing_level, uuid, text);
