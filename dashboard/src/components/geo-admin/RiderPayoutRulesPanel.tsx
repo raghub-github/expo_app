@@ -175,6 +175,8 @@ export function RiderPayoutRulesPanel(props: {
   refId: string;
   service: RiderService;
   surgeRefreshKey?: number;
+  /** Bumped by the leg-pricing editor so the backend simulation re-fetches after a save. */
+  legRulesRefreshKey?: number;
 }) {
   const cacheKey = useMemo(
     () => servicePayoutRulesCacheKey({ level: props.level, refId: props.refId, service: props.service }),
@@ -503,6 +505,7 @@ export function RiderPayoutRulesPanel(props: {
     props.service,
     props.level,
     props.refId,
+    props.legRulesRefreshKey,
   ]);
 
   async function submitAdd() {

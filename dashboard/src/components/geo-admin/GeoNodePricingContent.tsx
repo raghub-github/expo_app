@@ -5,6 +5,7 @@ import { toast } from "sonner";
 import { Layers, Loader2, Plus } from "lucide-react";
 import { RiderPayoutRulesPanel, ProductionVerificationCard } from "./RiderPayoutRulesPanel";
 import { PrePickupCompensationPanel } from "./PrePickupCompensationPanel";
+import { RiderLegPricingPanel } from "./RiderLegPricingPanel";
 import { DynamicPricingPanel } from "./DynamicPricingPanel";
 import { VEHICLE_OPTIONS, PARCEL_VEHICLE_OPTIONS, type VehicleType } from "./rideVehicleTypes";
 import { RideCustomerPricingPanel } from "./RideCustomerPricingPanel";
@@ -73,6 +74,7 @@ export function GeoNodePricingContent(props: { level: GeoNodeLevel; refId: strin
   const [slabs, setSlabs] = useState<SlabRow[]>([]);
   const [savedFingerprints, setSavedFingerprints] = useState<Map<number, string>>(new Map());
   const [surgeRefreshKey, setSurgeRefreshKey] = useState(0);
+  const [legRulesRefreshKey, setLegRulesRefreshKey] = useState(0);
   const [surgeSheetOpen, setSurgeSheetOpen] = useState(false);
   const [previewDistanceKm, setPreviewDistanceKm] = useState("3");
   const slabsRef = useRef<SlabRow[]>([]);
@@ -566,14 +568,21 @@ export function GeoNodePricingContent(props: { level: GeoNodeLevel; refId: strin
                 refId={refId}
                 service={riderService as "food" | "parcel" | "ride"}
                 surgeRefreshKey={surgeRefreshKey}
+                legRulesRefreshKey={legRulesRefreshKey}
               />
               <PrePickupCompensationPanel
                 level={level}
                 refId={refId}
                 service={riderService as "food" | "parcel" | "ride"}
               />
+              <RiderLegPricingPanel
+                level={level}
+                refId={refId}
+                service={riderService as "food" | "parcel" | "ride"}
+                onChanged={() => setLegRulesRefreshKey((k) => k + 1)}
+              />
               {/* Production-engine status sits BELOW both the payout rules and the
-                  first-mile panel so the config editors come first, verification last. */}
+                  leg-pricing panels so the config editors come first, verification last. */}
               <ProductionVerificationCard />
             </>
           ) : serviceType === "person_ride" ? (
