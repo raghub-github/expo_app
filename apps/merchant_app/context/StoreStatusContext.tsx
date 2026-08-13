@@ -108,6 +108,7 @@ export function StoreStatusProvider({ children }: { children: ReactNode }) {
 
   const storeId = selectedStore?.id ?? null;
   const refreshIdRef = useRef(0);
+  const lastRefreshAtRef = useRef(0);
   const initialLoadDoneRef = useRef(false);
   /** Refs so we can preserve temp close when a stale GET returns null for manual_close_until. */
   const manualCloseUntilRef = useRef<string | null>(null);
@@ -116,10 +117,11 @@ export function StoreStatusProvider({ children }: { children: ReactNode }) {
   // Restore cached status so Store Status card shows instantly on app open.
   useEffect(() => {
     if (!storeId) return;
+    let cancelled = false;
     const key = `${STATUS_CACHE_KEY_PREFIX}${storeId}`;
     SecureStore.getItemAsync(key)
       .then((raw) => {
-        if (!raw) return;
+        if (cancelled || !raw) return;
         try {
           const c = JSON.parse(raw) as Record<string, unknown>;
           if (c && typeof c.is_open === "boolean") {
@@ -147,6 +149,9 @@ export function StoreStatusProvider({ children }: { children: ReactNode }) {
         }
       })
       .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
   }, [storeId]);
 
   const refresh = useCallback(async () => {
@@ -250,6 +255,7 @@ export function StoreStatusProvider({ children }: { children: ReactNode }) {
       setLastToggledByEmail(status.last_toggled_by_email ?? null);
       setScheduleEndPromptExpiresAt((status as any).schedule_end_prompt_expires_at ?? null);
       setLastRefreshedAt(Date.now());
+      lastRefreshAtRef.current = Date.now();
       initialLoadDoneRef.current = true;
       // Cache so next app open shows status instantly.
       const key = `${STATUS_CACHE_KEY_PREFIX}${storeId}`;
@@ -329,7 +335,9 @@ export function StoreStatusProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (!token || !storeId) return;
     const onAppState = (state: AppStateStatus) => {
-      if (state === "active") void refresh();
+      if (state !== "active") return;
+      if (Date.now() - lastRefreshAtRef.current < 10_000) return;
+      void refresh();
     };
     const sub = AppState.addEventListener("change", onAppState);
     return () => sub.remove();

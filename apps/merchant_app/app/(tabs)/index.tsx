@@ -54,6 +54,11 @@ import {
   MerchantRushHourBanner,
   type MerchantHomeBannerSlide,
 } from "@/components/MerchantHomeBannerCarousel";
+import {
+  OnboardingBenefitsCard,
+  useOnboardingBenefitsWindow,
+} from "@/components/OnboardingBenefitsCard";
+import { useMenuItems, MENU_CATALOG_LIST_FILTERS } from "@/hooks/useMenuQueries";
 import { useNotificationPermissionGate } from "@/context/NotificationPermissionGateContext";
 import { formatStoreActionSourceLabel } from "@/lib/storeActionSource";
 
@@ -121,10 +126,27 @@ export default function DashboardScreen() {
   const { token } = useAuth();
   const { selectedStore, managedStores } = useSelectedStore();
   const storeId = selectedStore?.id ?? null;
+  const menuStoreId = selectedStore?.store_id ?? null;
   const { orders, refetch: refetchOrders, transitionOrder, extendPrepDelay, acceptanceWindowMinutes } = useOrders();
   const { isOnline, refresh, scheduledClosure, upcomingScheduledClosure, activeRush } = useStoreStatus();
+  const { data: menuCatalog } = useMenuItems(menuStoreId, token, MENU_CATALOG_LIST_FILTERS);
+
+  const catalogItems = menuCatalog?.items ?? [];
+  const hasCatalogItems = catalogItems.length > 0;
+  const itemsWithImages = useMemo(
+    () =>
+      catalogItems.filter(
+        (it) => Boolean(it.item_image_url) || (it.image_count ?? 0) > 0
+      ).length,
+    [catalogItems]
+  );
+  const { visible: showOnboardingBenefits } = useOnboardingBenefitsWindow(
+      menuStoreId,
+      hasCatalogItems,
+      itemsWithImages,
+      catalogItems.length
+    );
   const [refreshing, setRefreshing] = useState(false);
-  const [nowMs, setNowMs] = useState(Date.now());
   const [rejectTarget, setRejectTarget] = useState<OrderRecord | null>(null);
   const [rejectLoading, setRejectLoading] = useState(false);
   const [prepDelayOrder, setPrepDelayOrder] = useState<OrderRecord | null>(null);
@@ -137,6 +159,7 @@ export default function DashboardScreen() {
   const [deliveredToday, setDeliveredToday] = useState(0);
   const [walletBalance, setWalletBalance] = useState(0);
 
+  const lastStatsAtRef = useRef(0);
   const loadDashboardStats = useCallback(async () => {
     if (!token || !storeId) return;
     try {
@@ -144,6 +167,7 @@ export default function DashboardScreen() {
       setTodayEarning(Number(wallet.today_earning) || 0);
       setDeliveredToday(Number(wallet.delivered_today ?? 0) || 0);
       setWalletBalance(resolveWalletDisplayBalance(wallet));
+      lastStatsAtRef.current = Date.now();
     } catch {
       setTodayEarning(0);
       setDeliveredToday(0);
@@ -162,17 +186,9 @@ export default function DashboardScreen() {
 
   useFocusEffect(
     useCallback(() => {
-      setNowMs(Date.now());
-      const id = setInterval(() => setNowMs(Date.now()), 1000);
-      return () => clearInterval(id);
-    }, [])
-  );
-
-  useFocusEffect(
-    useCallback(() => {
-      void refresh();
+      if (Date.now() - lastStatsAtRef.current < 20_000) return;
       void loadDashboardStats();
-    }, [refresh, loadDashboardStats])
+    }, [loadDashboardStats])
   );
 
   const { notificationsGranted } = useNotificationPermissionGate();
@@ -375,7 +391,9 @@ export default function DashboardScreen() {
   const handleAccept = useCallback(
     (order: OrderRecord) => {
       if (order.status === "created") {
-        transitionOrder(order.id, "preparing");
+        void transitionOrder(order.id, "preparing").catch(() => {
+          /* error surfaced via OrdersContext */
+        });
       }
     },
     [transitionOrder]
@@ -392,7 +410,9 @@ export default function DashboardScreen() {
       if (rejectReasonNeedsFollowUp(reason)) {
         setRejectTarget(null);
         beginFollowUp(reason, orderSnap.lineItems, () =>
-          transitionOrder(orderSnap.id, "rejected", { rejectedReason: reason })
+          void transitionOrder(orderSnap.id, "rejected", { rejectedReason: reason }).catch(
+            () => {}
+          )
         );
         return;
       }
@@ -508,6 +528,13 @@ export default function DashboardScreen() {
         </ScrollView>
       </View>
 
+      {showOnboardingBenefits ? (
+        <OnboardingBenefitsCard
+          storeName={selectedStore?.store_name}
+          onView={() => navPush("/(tabs)/onboarding-benefits")}
+        />
+      ) : null}
+
       <View style={[styles.section, ordersSectionFlex && styles.ordersSectionFlex]}>
         <Text style={styles.sectionTitle}>All Orders</Text>
         <GestureDetector gesture={tabSwipeGesture}>
@@ -548,7 +575,6 @@ export default function DashboardScreen() {
                   <LiveOrderCard
                     key={order.id}
                     order={order}
-                    nowMs={nowMs}
                     acceptanceWindowMinutes={acceptanceWindowMinutes}
                     storeName={
                       order.merchantStoreName?.trim() ||

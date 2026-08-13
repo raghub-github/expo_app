@@ -37,6 +37,10 @@ import {
 import { getCurrentPageName, getCurrentDashboard, getCurrentDashboardSubRoutes, orderDashboardRoutes } from "@/lib/navigation/dashboard-routes";
 import { DashboardSearch } from "./DashboardSearch";
 import { GlobalSearch } from "@/components/search/GlobalSearch";
+import {
+  getParentOnboardingSubtitle,
+  subscribeParentOnboardingSubtitle,
+} from "@/lib/parent-onboarding-chrome";
 const AgentStatusToggle = dynamic(
   () => import("@/components/tickets/AgentStatusToggle").then((m) => m.AgentStatusToggle),
   {
@@ -72,6 +76,7 @@ import {
   parsePortalParam,
   writeStoredMerchantsPortal,
   resolveMerchantsPortal,
+  isAdminOnlyMerchantsPath,
   type MerchantsPortal,
 } from "@/lib/merchants/portal-preference";
 import {
@@ -702,6 +707,26 @@ function HeaderComponent() {
         : null;
   const isAmOnboardingFailedPage =
     cleanPathname.startsWith("/dashboard/area-managers/stores/onboarding-failed");
+  const isParentOnboardingPage = cleanPathname.startsWith(
+    "/dashboard/area-managers/stores/register-parent"
+  );
+  const parentOnboardingBackHref = useMemo(() => {
+    const raw = searchParams.get("returnTo");
+    if (raw && raw.startsWith("/") && !raw.startsWith("//")) return raw;
+    return "/dashboard/area-managers/stores?filter=parent";
+  }, [searchParams]);
+  const [parentOnboardingSubtitle, setParentOnboardingSubtitleState] = useState(
+    getParentOnboardingSubtitle
+  );
+  useEffect(() => {
+    if (!isParentOnboardingPage) return;
+    const unsubSubtitle = subscribeParentOnboardingSubtitle(
+      setParentOnboardingSubtitleState
+    );
+    return () => {
+      unsubSubtitle();
+    };
+  }, [isParentOnboardingPage]);
   const isUsersArea =
     cleanPathname === USERS_PATH || cleanPathname.startsWith(`${USERS_PATH}/`);
   const usersBackHref = isUsersArea ? resolveUsersBackHref(cleanPathname) : null;
@@ -753,6 +778,7 @@ function HeaderComponent() {
     (currentDashboard &&
       cleanPathname !== "/dashboard" &&
       currentSubRoutes.length > 0 &&
+      !isParentOnboardingPage &&
       !cleanPathname.startsWith("/dashboard/customers") &&
       !cleanPathname.startsWith("/dashboard/orders") &&
       !(cleanPathname === "/order" || cleanPathname.startsWith("/order/")))
@@ -832,7 +858,13 @@ function HeaderComponent() {
       router.replace(qs ? `${pathname}?${qs}` : pathname);
       return;
     }
-    // Stay on deep merchants routes (e.g. verifications?storeId=&step=) — only swap portal.
+    // Admin-only tools (menu-requests, verifications, …) must leave the main area
+    // when switching to Merchant portal — do not keep the admin page with ?portal=merchant.
+    if (value === "merchant" && isAdminOnlyMerchantsPath(pathnameClean)) {
+      router.replace("/dashboard/merchants?portal=merchant");
+      return;
+    }
+    // Stay on other deep merchants routes (e.g. verifications while remaining Admin).
     if (
       pathnameClean.startsWith("/dashboard/merchants/") &&
       pathnameClean !== "/dashboard/merchants"
@@ -1273,6 +1305,25 @@ function HeaderComponent() {
               {pageName}
             </h2>
           </div>
+        ) : isParentOnboardingPage ? (
+          <div className="flex min-w-0 items-center gap-2.5">
+            <Link
+              href={parentOnboardingBackHref}
+              className="shrink-0 cursor-pointer rounded-md p-1.5 text-gray-600 transition hover:bg-gray-100"
+              aria-label="Back"
+              title="Back"
+            >
+              <ArrowLeft className="h-4 w-4" />
+            </Link>
+            <div className="min-w-0 leading-tight">
+              <h2 className="truncate text-base font-semibold text-[#121212] sm:text-lg">
+                Parent onboarding
+              </h2>
+              <p className="mt-0.5 hidden max-w-xl truncate text-xs text-gray-500 sm:block">
+                {parentOnboardingSubtitle}
+              </p>
+            </div>
+          </div>
         ) : isAmOnboardingFailedPage ? (
           <div className="min-w-0 flex-shrink">
             <h2 className="min-w-0 truncate text-base font-semibold text-[#121212] sm:text-lg">
@@ -1480,6 +1531,7 @@ function HeaderComponent() {
         effectivePathname !== "/dashboard/area-managers" &&
         !isGeoRiderAvailabilityPage &&
         !isAmOnboardingFailedPage &&
+        !isParentOnboardingPage &&
         !effectivePathname.startsWith("/dashboard/merchants/verifications") ? (
         <div className="hidden lg:flex items-center justify-center flex-1 max-w-xl mx-4 min-w-0">
           <DashboardSearch compact={true} />

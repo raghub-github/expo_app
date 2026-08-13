@@ -81,10 +81,21 @@ async function getStoredPartner(): Promise<PartnerData | null> {
   try {
     const raw = await SecureStore.getItemAsync(PARTNER_KEY);
     if (!raw) return null;
-    return JSON.parse(raw) as PartnerData;
+    return parsePartnerData(JSON.parse(raw));
   } catch {
     return null;
   }
+}
+
+function parsePartnerData(raw: unknown): PartnerData | null {
+  if (!raw || typeof raw !== "object") return null;
+  const p = raw as Partial<PartnerData>;
+  if (!p.parent || typeof p.parent !== "object" || p.parent.id == null) return null;
+  return {
+    parent: p.parent,
+    childStores: Array.isArray(p.childStores) ? p.childStores : [],
+    activeDevices: typeof p.activeDevices === "number" ? p.activeDevices : 0,
+  };
 }
 
 async function getStoredSupabaseUserId(): Promise<string | null> {
@@ -142,6 +153,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         });
         if (res.ok) {
           const data = await res.json();
+          if (!data?.parent) {
+            await SecureStore.setItemAsync(PARTNER_KEY, JSON.stringify(newPartner));
+            setPartnerState(newPartner);
+            return;
+          }
           const partnerData: PartnerData = {
             parent: data.parent,
             childStores: data.childStores ?? [],
@@ -221,6 +237,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       });
       if (res.ok) {
         const data = await res.json();
+        if (!data?.parent) return;
         const partnerData: PartnerData = {
           parent: data.parent,
           childStores: data.childStores ?? [],
@@ -270,6 +287,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             });
             if (cancelled || !res.ok) return;
             const data = await res.json();
+            if (!data?.parent) return;
             const partnerData: PartnerData = {
               parent: data.parent,
               childStores: data.childStores ?? [],

@@ -11,6 +11,7 @@ export type ParentRegisterDraft = {
   merchant_type?: "LOCAL" | "BRAND" | "CHAIN" | "FRANCHISE";
   brand_name?: string;
   business_category?: string;
+  business_category_other?: string;
   alternate_phone?: string;
   address_line1?: string;
   city?: string;

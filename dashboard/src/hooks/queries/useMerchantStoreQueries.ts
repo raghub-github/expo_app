@@ -78,12 +78,6 @@ export function useStoreWalletQuery(storeId: string | null) {
 
 /** Shared query: store operations. Single request per storeId, cached 5min. */
 export function useStoreOperationsQuery(storeId: string | null) {
-  const auth = useAuthOptional();
-  const sessionUser = auth?.user;
-  const permissions = auth?.permissions;
-  const authReady = auth?.authReady ?? false;
-  const isAllowed = Boolean(authReady && sessionUser && permissions);
-
   const url = storeId ? `/api/merchant/stores/${storeId}/store-operations` : null;
   const cachedOps = storeId ? readStoreOperationsCache(storeId) : null;
 
@@ -94,7 +88,7 @@ export function useStoreOperationsQuery(storeId: string | null) {
       if (storeId) writeStoreOperationsCache(storeId, data);
       return data;
     },
-    enabled: Boolean(storeId && url) && isAllowed,
+    enabled: Boolean(storeId && url),
     ...SHARED_OPTIONS,
     // Instant paint from session cache (partnersite-style) while network refreshes.
     initialData: cachedOps ?? undefined,

@@ -625,6 +625,8 @@ const { weatherRoutes } = await import("./modules/weather/weather.routes.js");
 await app.register(weatherRoutes, { prefix: "/v1/weather" });
 const { appAssetsRoutes } = await import("./modules/app-assets/app-assets.routes.js");
 await app.register(appAssetsRoutes, { prefix: "/v1/app-assets" });
+const { learningCentreRoutes } = await import("./modules/learning-centre/learning-centre.routes.js");
+await app.register(learningCentreRoutes, { prefix: "/v1/learning-centre" });
 // distanceRoutes kept exported for other test harnesses; register is via distanceModule above.
 void distanceRoutes;
 await app.register((await import("./modules/rider-payout/riderPayout.routes.js")).riderPayoutRoutes, { prefix: "/v1/rider-payout" });

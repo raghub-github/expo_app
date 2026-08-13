@@ -198,7 +198,7 @@ export async function GET(
       supabaseAuthId: user.id,
       email: user.email,
     });
-    let store = await getMerchantStoreById(storeId, areaManagerId);
+    const store = await getMerchantStoreById(storeId, areaManagerId);
     if (!store) {
       return NextResponse.json({ success: false, error: "Store not found" }, { status: 404 });
     }
@@ -206,8 +206,6 @@ export async function GET(
     await ensureAvailabilityRow(storeId);
     // Non-blocking: partnersite paints from cache; awaiting tick made dashboard status lag.
     void triggerStoreScheduleTick(storeId).catch(() => undefined);
-
-    store = (await getMerchantStoreById(storeId, areaManagerId)) ?? store;
 
     // Derive effective operational status from DB row (Partner Site gate).
     // A store is only truly OPEN when:

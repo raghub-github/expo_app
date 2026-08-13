@@ -83,20 +83,18 @@ export function StoreMenuChangeRequestsClient({ storeId }: { storeId: string }) 
     []
   );
 
-  const storePublicId = (data as { store?: { store_id?: string } } | null)?.store?.store_id as
-    | string
-    | null
-    | undefined;
+  const requestStoreKey = String(storeId || "").trim();
 
   const [crStatus, setCrStatus] = useState<"ALL" | "PENDING" | "APPROVED" | "REJECTED" | "CANCELLED">("PENDING");
   const [crType, setCrType] = useState<"ALL" | "CREATE" | "UPDATE" | "DELETE">("ALL");
-  const [crLoading, setCrLoading] = useState(false);
+  const [crLoading, setCrLoading] = useState(true);
   const [crActionLoadingId, setCrActionLoadingId] = useState<number | null>(null);
   const [changeRequests, setChangeRequests] = useState<Record<string, unknown>[]>([]);
   const [crDetailModal, setCrDetailModal] = useState<Record<string, unknown> | null>(null);
   const [crShowAllFields, setCrShowAllFields] = useState(false);
   const [crRejectReason, setCrRejectReason] = useState("");
   const [reviewSummary, setReviewSummary] = useState<MenuReviewQueueSummary | null>(null);
+  const [photosLoading, setPhotosLoading] = useState(true);
   const [photoReviewItem, setPhotoReviewItem] = useState<MenuItem | null>(null);
   const [photoRejectReason, setPhotoRejectReason] = useState("");
   const [photoRejectError, setPhotoRejectError] = useState<string | null>(null);
@@ -119,21 +117,41 @@ export function StoreMenuChangeRequestsClient({ storeId }: { storeId: string }) 
     [categories]
   );
 
-  const pendingPhotoItems = useMemo(
-    () =>
-      menuItems.filter((item) => {
-        if (!item.item_image_url?.trim()) return false;
-        const primaryMod = String(item.primary_image_moderation_status ?? "").toUpperCase();
-        if (primaryMod === "PENDING") return true;
-        const st = String(item.approval_status ?? "PENDING").toUpperCase();
-        return st === "PENDING";
-      }),
-    [menuItems]
-  );
+  const pendingPhotoItems = useMemo(() => {
+    const fromSummary = reviewSummary?.photo_items;
+    if (Array.isArray(fromSummary) && fromSummary.length > 0) {
+      return fromSummary.map(
+        (row): MenuItem => ({
+          id: row.id,
+          item_id: String(row.id),
+          item_name: row.item_name,
+          category_id: null,
+          base_price: Number(row.selling_price ?? 0),
+          selling_price: Number(row.selling_price ?? 0),
+          discount_percentage: 0,
+          item_image_url: row.item_image_url ?? "",
+          approval_status: (row.approval_status as MenuItem["approval_status"]) ?? "PENDING",
+          primary_image_moderation_status:
+            (row.primary_image_moderation_status as MenuItem["primary_image_moderation_status"]) ??
+            "PENDING",
+        })
+      );
+    }
+    return menuItems.filter((item) => {
+      const hasImage =
+        Boolean(item.item_image_url?.trim()) ||
+        (Array.isArray(item.images) && item.images.some((img) => String(img.image_url ?? "").trim()));
+      if (!hasImage) return false;
+      const primaryMod = String(item.primary_image_moderation_status ?? "").toUpperCase();
+      if (primaryMod === "PENDING") return true;
+      return String(item.approval_status ?? "").toUpperCase() === "PENDING";
+    });
+  }, [reviewSummary?.photo_items, menuItems]);
 
   const fetchReviewSummary = useCallback(() => {
-    const id = storePublicId ?? storeId;
+    const id = requestStoreKey;
     if (!id) return;
+    setPhotosLoading(true);
     fetch(`/api/merchant-menu/review-queue-summary?storeId=${encodeURIComponent(id)}`)
       .then((r) => (r.ok ? r.json() : null))
       .then((body) => {
@@ -142,10 +160,12 @@ export function StoreMenuChangeRequestsClient({ storeId }: { storeId: string }) 
           pending_change_requests: Number(body.pending_change_requests ?? 0),
           pending_photo_reviews: Number(body.pending_photo_reviews ?? 0),
           total_pending: Number(body.total_pending ?? 0),
+          photo_items: Array.isArray(body.photo_items) ? body.photo_items : [],
         });
       })
-      .catch(() => setReviewSummary(null));
-  }, [storePublicId, storeId]);
+      .catch(() => setReviewSummary(null))
+      .finally(() => setPhotosLoading(false));
+  }, [requestStoreKey]);
 
   useEffect(() => {
     fetchReviewSummary();
@@ -159,10 +179,10 @@ export function StoreMenuChangeRequestsClient({ storeId }: { storeId: string }) 
 
   useEffect(() => {
     let cancelled = false;
-    if (!storePublicId) return;
+    if (!requestStoreKey) return;
     setCrLoading(true);
     const params = new URLSearchParams();
-    params.set("storeId", storePublicId);
+    params.set("storeId", requestStoreKey);
     if (crStatus !== "ALL") params.set("status", crStatus);
     if (crType !== "ALL") params.set("request_type", crType);
     params.set("limit", "50");
@@ -180,12 +200,12 @@ export function StoreMenuChangeRequestsClient({ storeId }: { storeId: string }) 
     return () => {
       cancelled = true;
     };
-  }, [storePublicId, crStatus, crType]);
+  }, [requestStoreKey, crStatus, crType]);
 
   const refetchChangeRequests = useCallback(() => {
-    if (!storePublicId) return;
+    if (!requestStoreKey) return;
     const params = new URLSearchParams();
-    params.set("storeId", storePublicId);
+    params.set("storeId", requestStoreKey);
     if (crStatus !== "ALL") params.set("status", crStatus);
     if (crType !== "ALL") params.set("request_type", crType);
     params.set("limit", "50");
@@ -196,7 +216,7 @@ export function StoreMenuChangeRequestsClient({ storeId }: { storeId: string }) 
         const list = (d && Array.isArray(d.change_requests) ? d.change_requests : []) as Record<string, unknown>[];
         setChangeRequests(list);
       });
-  }, [storePublicId, crStatus, crType]);
+  }, [requestStoreKey, crStatus, crType]);
 
   const handleApproveCr = async (id: number) => {
     if (!canReviewMenu) {
@@ -554,7 +574,7 @@ export function StoreMenuChangeRequestsClient({ storeId }: { storeId: string }) 
                   </tr>
                 </thead>
                 <tbody>
-                  {menuQuery.isLoading ? (
+                  {photosLoading ? (
                     <tr>
                       <td className="px-4 py-6 text-xs text-gray-500" colSpan={4}>
                         Loading photo reviews…
@@ -658,13 +678,7 @@ export function StoreMenuChangeRequestsClient({ storeId }: { storeId: string }) 
                 </tr>
               </thead>
               <tbody>
-                {!storePublicId ? (
-                  <tr>
-                    <td className="px-4 py-6 text-xs text-gray-500" colSpan={5}>
-                      Loading store info…
-                    </td>
-                  </tr>
-                ) : crLoading ? (
+                {crLoading ? (
                   <tr>
                     <td className="px-4 py-6 text-xs text-gray-500" colSpan={5}>
                       Loading change requests…

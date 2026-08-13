@@ -26,6 +26,7 @@ import OffersScreen from "./OffersScreen";
 import ActivityFeedScreen from "./ActivityFeedScreen";
 import AutoAcceptScreen from "./AutoAcceptScreen";
 import PrinterSettingsScreen from "./PrinterSettingsScreen";
+import LearningCentreScreen from "./LearningCentreScreen";
 
 const SLUG_TITLES: Record<string, string> = {
   "edit-store": "Edit Store",
@@ -54,6 +55,7 @@ const SLUG_TITLES: Record<string, string> = {
   language: "Language",
   help: "Help Centre",
   contact: "Contact Us",
+  learning: "Learning centre",
 };
 
 const CONTENT_TOP = 18;
@@ -139,6 +141,10 @@ export default function ProfileSlugScreen() {
 
   if (slug === "activity-feed") {
     return <ActivityFeedScreen />;
+  }
+
+  if (slug === "learning") {
+    return <LearningCentreScreen />;
   }
 
   const title = (slug && SLUG_TITLES[slug]) || slug || "Settings";
