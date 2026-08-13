@@ -1677,6 +1677,10 @@ export const ordersCore = pgTable(
     riderPickupDistanceMeters: integer("rider_pickup_distance_meters"),
     /** First-mile funding frozen at accept: company | customer | shared. NULL = legacy on-top. */
     riderPrePickupFunding: text("rider_pre_pickup_funding"),
+    /** Post-pickup (pickup→drop) leg raw entitlement frozen at accept. NULL = pool remainder. */
+    riderPostPickupAmount: numeric("rider_post_pickup_amount", { precision: 10, scale: 2 }),
+    /** Post-pickup leg funding frozen at accept: company | customer | shared. NULL = within-pool. */
+    riderPostPickupFunding: text("rider_post_pickup_funding"),
     status: orderStatusTypeEnum("status").notNull().default("assigned"),
     currentStatus: text("current_status"),
     itemTotal: numeric("item_total", { precision: 12, scale: 2 }),
