@@ -207,3 +207,86 @@ export function composeRiderPayout(input) {
         prePickupCappedAtPool: funding === "customer" && prePickupRaw > basePool,
     };
 }
+/** Split a leg's raw into (customerFunded from pool, companyFunded on top) by funding. */
+function splitLegFunding(leg) {
+    const raw = Math.max(0, Number(leg.rawAmount) || 0);
+    const funding = normalizePrePickupFunding(leg.funding);
+    if (funding === "company")
+        return { customer: 0, company: raw };
+    if (funding === "customer")
+        return { customer: raw, company: 0 };
+    // shared
+    const share = Math.min(100, Math.max(0, Number(leg.customerSharePct) || 0)) / 100;
+    const customer = round2(raw * share);
+    return { customer, company: round2(raw - customer) };
+}
+/**
+ * Reconcile two independently-priced legs against the rider % pool (v3.2).
+ * Pure — the ONE place that decides how raw pre/post entitlements become allocated pay.
+ */
+export function reconcileRiderLegs(input) {
+    const pool = round2(Math.max(0, Number(input.pool) || 0));
+    const surge = round2(Math.max(0, Number(input.surge) || 0));
+    const waiting = round2(Math.max(0, Number(input.waiting) || 0));
+    const tip = round2(Math.max(0, Number(input.tip) || 0));
+    const companyIncentive = round2(Math.max(0, Number(input.companyIncentive) || 0));
+    const capExcessToPool = input.capExcessToPool !== false; // default true
+    const preSplit = splitLegFunding(input.pre);
+    const postSplit = splitLegFunding(input.post);
+    const custRawTotal = round2(preSplit.customer + postSplit.customer);
+    let allocPre;
+    let allocPost;
+    let poolExcess = 0;
+    if (custRawTotal <= pool) {
+        // Everything customer-funded fits. Rider is paid the FULL pool: pre keeps its raw
+        // customer share and the unallocated remainder falls to the post (drop) leg.
+        allocPre = preSplit.customer;
+        allocPost = round2(postSplit.customer + (pool - custRawTotal));
+    }
+    else {
+        // Customer-funded legs exceed the pool — allocate pre first, then the rest to post.
+        allocPre = Math.min(preSplit.customer, pool);
+        allocPost = round2(pool - allocPre);
+        poolExcess = round2(custRawTotal - pool);
+    }
+    allocPre = round2(allocPre);
+    const companyExcessTopup = capExcessToPool ? 0 : poolExcess;
+    const deliveryFeeFundedTotal = round2(allocPre + allocPost + waiting);
+    const companyFundedTotal = round2(preSplit.company + postSplit.company + companyExcessTopup + surge + companyIncentive);
+    const riderDeliveryCredit = round2(deliveryFeeFundedTotal + companyFundedTotal);
+    const riderTotal = round2(riderDeliveryCredit + tip);
+    const mk = (leg, split, allocated) => ({
+        rawAmount: round2(Math.max(0, Number(leg.rawAmount) || 0)),
+        customerFunded: round2(split.customer),
+        companyFunded: round2(split.company),
+        allocated: round2(allocated),
+        funding: normalizePrePickupFunding(leg.funding),
+        distanceKm: leg.distanceKm,
+        ratePerKm: leg.ratePerKm,
+        ruleId: leg.ruleId ?? null,
+    });
+    return {
+        pool,
+        pre: mk(input.pre, preSplit, allocPre),
+        post: mk(input.post, postSplit, allocPost),
+        poolExcess,
+        companyExcessTopup: round2(companyExcessTopup),
+        surge,
+        waiting,
+        tip,
+        companyIncentive,
+        deliveryFeeFundedTotal,
+        companyFundedTotal,
+        riderDeliveryCredit,
+        riderTotal,
+    };
+}
+/** Clamp a raw leg amount to configured [min,max]: min(max(base + rate*km, min), max). */
+export function clampLegAmount(raw, minAmount, maxAmount) {
+    let v = Math.max(0, Number(raw) || 0);
+    if (minAmount != null && Number.isFinite(minAmount))
+        v = Math.max(v, minAmount);
+    if (maxAmount != null && Number.isFinite(maxAmount))
+        v = Math.min(v, maxAmount);
+    return round2(v);
+}

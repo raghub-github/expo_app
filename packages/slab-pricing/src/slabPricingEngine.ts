@@ -374,3 +374,174 @@ export function composeRiderPayout(
     prePickupCappedAtPool: funding === "customer" && prePickupRaw > basePool,
   };
 }
+
+// ─── Geo Delivery Pricing v3.2: INDEPENDENT pre-pickup & post-pickup legs ───────
+//
+// v3.1 (composeRiderPayout) treated post-pickup as the pool remainder. v3.2 prices the
+// two legs INDEPENDENTLY (each from its own rule: pre = rider->pickup, post = pickup->drop,
+// with their own rate/slab/vehicle/geo/min/max/funding) and then RECONCILES them against
+// the rider % pool. The rider is paid the pool (delivery-fee-funded, <=100%); company-funded
+// leg portions + surge/incentives are recorded on top (Ledger B) and may exceed 100%.
+//
+// SINGLE SOURCE OF TRUTH — shared by the backend offer/credit/settlement AND the dashboard
+// simulator + POST /pricing/simulate, so raw, allocated, and paid numbers are identical.
+
+export type RiderLeg = {
+  /** Raw entitlement for this leg = base + rate x leg_km, clamped to [min,max]. */
+  rawAmount: number;
+  /** How this leg is funded. */
+  funding: PrePickupFunding;
+  /** For funding === "shared": % of the leg the CUSTOMER bears (rest is company). */
+  customerSharePct?: number;
+  /** Diagnostics carried through for the simulator/snapshot (not used in math). */
+  distanceKm?: number;
+  ratePerKm?: number;
+  ruleId?: number | null;
+};
+
+export type ReconcileRiderLegsInput = {
+  /** Rider base pool = eligible delivery fee x rider%. */
+  pool: number;
+  pre: RiderLeg;
+  post: RiderLeg;
+  surge?: number;
+  waiting?: number;
+  tip?: number;
+  /** Other company-funded incentives (dynamic night/rain/etc.). */
+  companyIncentive?: number;
+  /**
+   * When the customer-funded legs exceed the pool: true (default) caps them at the pool
+   * (rider gets the pool, excess dropped); false funds the excess from the company purse.
+   */
+  capExcessToPool?: boolean;
+};
+
+export type ReconciledLeg = {
+  rawAmount: number;
+  /** Customer-funded portion of the raw (drawn from the pool). */
+  customerFunded: number;
+  /** Company-funded portion of the raw (added on top, Ledger B). */
+  companyFunded: number;
+  /** Amount actually allocated to this leg out of the pool. */
+  allocated: number;
+  funding: PrePickupFunding;
+  distanceKm?: number;
+  ratePerKm?: number;
+  ruleId?: number | null;
+};
+
+export type ReconciledRiderPayout = {
+  pool: number;
+  pre: ReconciledLeg;
+  post: ReconciledLeg;
+  /** Customer-funded raw that did not fit in the pool (capped or company-funded). */
+  poolExcess: number;
+  /** Portion of poolExcess the company chose to fund (0 when capped). */
+  companyExcessTopup: number;
+  surge: number;
+  waiting: number;
+  tip: number;
+  companyIncentive: number;
+  /** Ledger A — customer / delivery-fee funded (pool + waiting), always <= pool + waiting. */
+  deliveryFeeFundedTotal: number;
+  /** Ledger B — company funded (company leg portions + excess top-up + surge + incentives). */
+  companyFundedTotal: number;
+  /** Single wallet delivery credit (excludes tip). */
+  riderDeliveryCredit: number;
+  /** Grand total = delivery credit + tip. */
+  riderTotal: number;
+};
+
+/** Split a leg's raw into (customerFunded from pool, companyFunded on top) by funding. */
+function splitLegFunding(leg: RiderLeg): { customer: number; company: number } {
+  const raw = Math.max(0, Number(leg.rawAmount) || 0);
+  const funding = normalizePrePickupFunding(leg.funding);
+  if (funding === "company") return { customer: 0, company: raw };
+  if (funding === "customer") return { customer: raw, company: 0 };
+  // shared
+  const share = Math.min(100, Math.max(0, Number(leg.customerSharePct) || 0)) / 100;
+  const customer = round2(raw * share);
+  return { customer, company: round2(raw - customer) };
+}
+
+/**
+ * Reconcile two independently-priced legs against the rider % pool (v3.2).
+ * Pure — the ONE place that decides how raw pre/post entitlements become allocated pay.
+ */
+export function reconcileRiderLegs(input: ReconcileRiderLegsInput): ReconciledRiderPayout {
+  const pool = round2(Math.max(0, Number(input.pool) || 0));
+  const surge = round2(Math.max(0, Number(input.surge) || 0));
+  const waiting = round2(Math.max(0, Number(input.waiting) || 0));
+  const tip = round2(Math.max(0, Number(input.tip) || 0));
+  const companyIncentive = round2(Math.max(0, Number(input.companyIncentive) || 0));
+  const capExcessToPool = input.capExcessToPool !== false; // default true
+
+  const preSplit = splitLegFunding(input.pre);
+  const postSplit = splitLegFunding(input.post);
+  const custRawTotal = round2(preSplit.customer + postSplit.customer);
+
+  let allocPre: number;
+  let allocPost: number;
+  let poolExcess = 0;
+
+  if (custRawTotal <= pool) {
+    // Everything customer-funded fits. Rider is paid the FULL pool: pre keeps its raw
+    // customer share and the unallocated remainder falls to the post (drop) leg.
+    allocPre = preSplit.customer;
+    allocPost = round2(postSplit.customer + (pool - custRawTotal));
+  } else {
+    // Customer-funded legs exceed the pool — allocate pre first, then the rest to post.
+    allocPre = Math.min(preSplit.customer, pool);
+    allocPost = round2(pool - allocPre);
+    poolExcess = round2(custRawTotal - pool);
+  }
+  allocPre = round2(allocPre);
+
+  const companyExcessTopup = capExcessToPool ? 0 : poolExcess;
+
+  const deliveryFeeFundedTotal = round2(allocPre + allocPost + waiting);
+  const companyFundedTotal = round2(
+    preSplit.company + postSplit.company + companyExcessTopup + surge + companyIncentive
+  );
+  const riderDeliveryCredit = round2(deliveryFeeFundedTotal + companyFundedTotal);
+  const riderTotal = round2(riderDeliveryCredit + tip);
+
+  const mk = (leg: RiderLeg, split: { customer: number; company: number }, allocated: number): ReconciledLeg => ({
+    rawAmount: round2(Math.max(0, Number(leg.rawAmount) || 0)),
+    customerFunded: round2(split.customer),
+    companyFunded: round2(split.company),
+    allocated: round2(allocated),
+    funding: normalizePrePickupFunding(leg.funding),
+    distanceKm: leg.distanceKm,
+    ratePerKm: leg.ratePerKm,
+    ruleId: leg.ruleId ?? null,
+  });
+
+  return {
+    pool,
+    pre: mk(input.pre, preSplit, allocPre),
+    post: mk(input.post, postSplit, allocPost),
+    poolExcess,
+    companyExcessTopup: round2(companyExcessTopup),
+    surge,
+    waiting,
+    tip,
+    companyIncentive,
+    deliveryFeeFundedTotal,
+    companyFundedTotal,
+    riderDeliveryCredit,
+    riderTotal,
+  };
+}
+
+/** Clamp a raw leg amount to configured [min,max]: min(max(base + rate*km, min), max). */
+export function clampLegAmount(
+  raw: number,
+  minAmount: number | null | undefined,
+  maxAmount: number | null | undefined
+): number {
+  let v = Math.max(0, Number(raw) || 0);
+  if (minAmount != null && Number.isFinite(minAmount)) v = Math.max(v, minAmount);
+  if (maxAmount != null && Number.isFinite(maxAmount)) v = Math.min(v, maxAmount);
+  return round2(v);
+}
