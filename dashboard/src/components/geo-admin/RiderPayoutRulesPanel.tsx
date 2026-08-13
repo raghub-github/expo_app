@@ -786,7 +786,13 @@ export function RiderPayoutRulesPanel(props: {
                 ) : null}
 
                 {/* Backend engine — INDEPENDENT pre/post legs (authoritative, v3.2). */}
-                <BackendLegPanel sim={backendSim} loading={backendSimLoading} error={backendSimError} />
+                <BackendLegPanel
+                  sim={backendSim}
+                  loading={backendSimLoading}
+                  error={backendSimError}
+                  customerFare={customerFare}
+                  riderPercentage={calcRule.riderPercentage}
+                />
 
                 {/* Detailed Calculation Breakdown */}
                 <div className="mt-4 rounded-lg border border-teal-100 bg-white px-4 py-3">
@@ -902,27 +908,42 @@ function BackendLegPanel(props: {
   sim: Record<string, unknown> | null;
   loading: boolean;
   error: string | null;
+  customerFare: number;
+  riderPercentage: number;
 }) {
   const sim = props.sim as BackendSim | null;
   const pre = sim?.legs?.pre;
   const post = sim?.legs?.post;
   const rider = sim?.rider;
+  // A leg's raw rate only changes what's paid when it's Company/Shared funded (a real
+  // top-up) or when it's Customer-funded but large enough to push the total over the pool
+  // (an explicit shortfall/cap case). Otherwise the raw number is informational only.
+  const legMatters = (leg: SimLeg | undefined) =>
+    leg?.funding === "company" || leg?.funding === "shared" || (rider?.poolExcess ?? 0) > 0;
 
   const legRow = (label: string, leg: SimLeg | undefined, fallback: string) => (
-    <div className="grid grid-cols-2 gap-x-6 gap-y-1 sm:grid-cols-4">
+    <div className="grid grid-cols-[minmax(0,1fr)] gap-y-0.5 sm:grid-cols-[10rem_1fr]">
       <span className="font-semibold text-slate-700">{label}</span>
       {leg?.matched ? (
-        <>
-          <span>{(leg.distanceKm ?? 0).toFixed(2)} km × {rupee(leg.ratePerKm)}/km</span>
-          <span>raw {rupee(leg.rawAmount)} → alloc <b>{rupee(leg.allocated)}</b></span>
+        <span>
           <span className="text-slate-500">
-            {leg.funding}
-            {leg.ruleId != null ? ` · rule #${leg.ruleId}` : ""}
+            {(leg.distanceKm ?? 0).toFixed(2)} km × {rupee(leg.ratePerKm)}/km ={" "}
           </span>
-        </>
+          <span className={legMatters(leg) ? "text-slate-700" : "text-slate-400 line-through decoration-slate-300"}>
+            raw {rupee(leg.rawAmount)}
+          </span>
+          <span className="text-slate-500"> → paid </span>
+          <b className="text-teal-800">{rupee(leg.allocated)}</b>
+          <span className="ml-1.5 text-slate-500">
+            ({leg.funding}{leg.ruleId != null ? ` · rule #${leg.ruleId}` : ""})
+          </span>
+          {!legMatters(leg) ? (
+            <span className="ml-1.5 text-amber-700">— rate is informational; see below</span>
+          ) : null}
+        </span>
       ) : (
-        <span className="sm:col-span-3 text-slate-500">
-          no rule at this node → {fallback} (alloc <b>{rupee(leg?.allocated)}</b>)
+        <span className="text-slate-500">
+          no rule at this node → {fallback}, paid <b className="text-teal-800">{rupee(leg?.allocated)}</b>
         </span>
       )}
     </div>
@@ -932,7 +953,7 @@ function BackendLegPanel(props: {
     <div className="mt-4 rounded-lg border border-violet-200 bg-violet-50/40 px-4 py-3">
       <div className="flex items-center justify-between">
         <p className="text-xs font-bold uppercase tracking-wide text-violet-800">
-          Backend engine — independent pre/post legs (authoritative)
+          Backend engine — how the rider is actually paid (authoritative)
         </p>
         {props.loading ? (
           <span className="flex items-center gap-1 text-xs text-violet-600">
@@ -941,22 +962,43 @@ function BackendLegPanel(props: {
         ) : null}
       </div>
       <p className="mt-0.5 text-[11px] text-violet-600">
-        POST /v1/pricing/simulate — the same engine order creation &amp; settlement use. Pre and
-        post resolve from separate rules; each shows its own distance × rate.
+        POST /v1/pricing/simulate — the same engine order creation &amp; settlement use.
       </p>
       {props.error ? (
         <p className="mt-2 text-sm text-amber-700">{props.error}</p>
       ) : !sim ? (
         <p className="mt-2 text-sm text-slate-500">Enter pickup + drop distance to simulate.</p>
       ) : (
-        <div className="mt-2 space-y-1.5 text-sm text-slate-700">
-          {legRow("Pre-pickup (rider→pickup)", pre, "₹0 (no first-mile)")}
-          {legRow("Post-pickup (pickup→drop)", post, "pool remainder")}
+        <div className="mt-2 space-y-2 text-sm text-slate-700">
+          {/* Waterfall: gross entitlement -> rider % -> base pool -> pre -> post */}
+          <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1 rounded-md bg-white/70 px-2.5 py-2 text-xs">
+            <span>Gross eligible entitlement <b>{rupee(props.customerFare)}</b></span>
+            <ArrowRight className="h-3 w-3 text-violet-300" />
+            <span>× rider % <b>{props.riderPercentage}%</b></span>
+            <ArrowRight className="h-3 w-3 text-violet-300" />
+            <span>= base pool <b className="text-violet-900">{rupee(rider?.pool)}</b></span>
+          </div>
+          <div className="space-y-1 pl-1">
+            {legRow("Pre-pickup (rider→pickup)", pre, "₹0 (no first-mile)")}
+            {legRow("Post-pickup (pickup→drop)", post, "pool remainder")}
+          </div>
+          {(rider?.poolExcess ?? 0) > 0 ? (
+            <p className="rounded-md border border-amber-200 bg-amber-50 px-2 py-1.5 text-xs text-amber-800">
+              ⚠ Customer-funded legs total more than the pool by {rupee(rider?.poolExcess)} —
+              capped at the pool (no silent overpay). Configure Company/Shared funding on a
+              leg to make the excess an explicit company top-up instead.
+            </p>
+          ) : null}
           <div className="grid grid-cols-2 gap-x-6 gap-y-1 border-t border-violet-100 pt-1.5 sm:grid-cols-4">
-            <span>Pool: <b>{rupee(rider?.pool)}</b></span>
-            <span>Ledger A: <b className="text-teal-800">{rupee(rider?.deliveryFeeFunded)}</b></span>
-            <span>Ledger B: <b className="text-violet-800">{rupee(rider?.companyFunded)}</b></span>
-            <span>Rider gets: <b className="text-teal-800">{rupee(rider?.riderDeliveryCredit)}</b></span>
+            <span title="What the customer's collected fee covers — always ≤ the pool">
+              Ledger A (customer-funded pool): <b className="text-teal-800">{rupee(rider?.deliveryFeeFunded)}</b>
+            </span>
+            <span title="Extra the company adds on top — surge, incentives, guaranteed top-ups">
+              Ledger B (company top-up): <b className="text-violet-800">{rupee(rider?.companyFunded)}</b>
+            </span>
+            <span className="sm:col-span-2">
+              Final rider payout: <b className="text-teal-800">{rupee(rider?.riderDeliveryCredit)}</b> (A + B)
+            </span>
           </div>
         </div>
       )}
