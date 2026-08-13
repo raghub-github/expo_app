@@ -66,13 +66,17 @@ type OrdersContextValue = {
   transitionOrder: (
     orderId: string,
     nextStatus: OrderStage,
-    opts?: { rejectedReason?: string }
-  ) => Promise<void>;
+    opts?: {
+      rejectedReason?: string;
+      preparationTimeMinutes?: number;
+      acceptMode?: "auto" | "manual";
+      cancelMode?: "auto" | "manual";
+    }
+  ) => Promise<boolean>;
   extendPrepDelay: (orderId: string, additionalMinutes: number) => Promise<void>;
   counts: OrderCounts;
   formatRelativeTime: (iso: string) => string;
   acceptanceWindowMinutes: number;
-  orderNowMs: number;
 };
 
 const OrdersContext = createContext<OrdersContextValue | null>(null);
@@ -131,7 +135,6 @@ export function OrdersProvider({ children }: { children: ReactNode }) {
   const [orders, setOrders] = useState<OrderRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [orderNowMs, setOrderNowMs] = useState(() => Date.now());
   const ordersCountRef = useRef(0);
   ordersCountRef.current = orders.length;
   const refetchInFlightRef = useRef<Promise<void> | null>(null);
@@ -140,6 +143,8 @@ export function OrdersProvider({ children }: { children: ReactNode }) {
   /** Consecutive food-orders failures — slow the poll so we don't stampede a recovering API. */
   const fetchFailStreakRef = useRef(0);
   const [pollFailStreak, setPollFailStreak] = useState(0);
+  const lastFetchAtRef = useRef(0);
+  const lastResumeFetchAtRef = useRef(0);
   /** Orders inserted optimistically from realtime, kept alive across a stale full refetch. */
   const pendingOptimisticRef = useRef<Map<number, { order: OrderRecord; at: number }>>(new Map());
   const ordersRef = useRef<OrderRecord[]>([]);
@@ -200,7 +205,9 @@ export function OrdersProvider({ children }: { children: ReactNode }) {
         const batches = await mapInBatches(orderStoreIds, ORDERS_FETCH_CONCURRENCY, async (sid) => {
           const list = await fetchFoodOrders(sid, token, { limit: 40 });
           cacheFoodOrders(sid, list);
-          return list.map((row) => mapWithStore(row, sid));
+          return list
+            .filter((row) => row != null && (row.orders_core_id != null || row.orders_food_id != null))
+            .map((row) => mapWithStore(row, sid));
         });
         const merged = batches.flat();
         // Newest first across stores
@@ -226,6 +233,7 @@ export function OrdersProvider({ children }: { children: ReactNode }) {
         const recovering = fetchFailStreakRef.current > 0;
         fetchFailStreakRef.current = 0;
         setPollFailStreak(0);
+        lastFetchAtRef.current = Date.now();
         for (const sid of orderStoreIds) {
           const slice = merged.filter((o) => o.merchantStoreId === sid);
           prefetchMenuItemsForOrders(
@@ -337,9 +345,9 @@ export function OrdersProvider({ children }: { children: ReactNode }) {
       const idx = list.findIndex(
         (o) => o.id === order.id || o.ordersCoreId === order.ordersCoreId
       );
-      if (idx < 0) return [order, ...list];
-      const next = list.slice();
-      next[idx] = order;
+      const next = idx < 0 ? [order, ...list] : list.slice();
+      if (idx >= 0) next[idx] = order;
+      ordersRef.current = next;
       return next;
     });
   }, []);
@@ -362,7 +370,7 @@ export function OrdersProvider({ children }: { children: ReactNode }) {
       setLoading(false);
       return;
     }
-    setLoading(true);
+    if (ordersCountRef.current === 0) setLoading(true);
     void refetch();
   }, [refetch, ordersTabHot]);
 
@@ -394,21 +402,20 @@ export function OrdersProvider({ children }: { children: ReactNode }) {
     return () => clearInterval(id);
   }, [pollIntervalMs, refetch, ordersTabHot]);
 
-  // Read-only freshness sync when app is resumed.
+  // Read-only freshness sync when app is resumed (skip if a poll just succeeded).
   useEffect(() => {
     if (!token || orderStoreIds.length === 0) return;
     const onAppState = (state: AppStateStatus) => {
-      if (state === "active") void refetch();
+      if (state !== "active") return;
+      const now = Date.now();
+      if (now - lastFetchAtRef.current < 8_000) return;
+      if (now - lastResumeFetchAtRef.current < 8_000) return;
+      lastResumeFetchAtRef.current = now;
+      void refetch();
     };
     const sub = AppState.addEventListener("change", onAppState);
     return () => sub.remove();
   }, [token, orderStoreIds, refetch]);
-
-  useEffect(() => {
-    if (!hasPendingAccept) return undefined;
-    const id = setInterval(() => setOrderNowMs(Date.now()), 1000);
-    return () => clearInterval(id);
-  }, [hasPendingAccept]);
 
   const resolveOrderStoreId = useCallback(
     (order: OrderRecord): number | null => {
@@ -424,17 +431,22 @@ export function OrdersProvider({ children }: { children: ReactNode }) {
     async (
       orderId: string,
       nextStatus: OrderStage,
-      opts?: { rejectedReason?: string }
-    ) => {
-      if (!token || orderStoreIds.length === 0) return;
+      opts?: {
+        rejectedReason?: string;
+        preparationTimeMinutes?: number;
+        acceptMode?: "auto" | "manual";
+        cancelMode?: "auto" | "manual";
+      }
+    ): Promise<boolean> => {
+      if (!token || orderStoreIds.length === 0) return false;
       if (orderId.startsWith("core-")) {
         setError("Order is still syncing; refresh in a moment or use Partner Site.");
-        return;
+        return false;
       }
       const order = ordersRef.current.find((o) => o.id === orderId);
-      if (!order || !canTransition(order, nextStatus)) return;
+      if (!order || !canTransition(order, nextStatus)) return false;
       const storeId = resolveOrderStoreId(order);
-      if (!storeId) return;
+      if (!storeId) return false;
 
       // Kitchen "Order Ready" can fire while pipeline is still ACCEPTED (accepted
       // but not yet PREPARING). Always resolve to READY_FOR_PICKUP from either.
@@ -457,15 +469,15 @@ export function OrdersProvider({ children }: { children: ReactNode }) {
             )
           );
         }
-        return;
+        return true;
       }
-      if (transitionInFlightRef.current.has(orderId)) return;
+      if (transitionInFlightRef.current.has(orderId)) return false;
 
       const rejectedReason =
         nextStatus === "rejected" ? opts?.rejectedReason?.trim() : undefined;
       if (nextStatus === "rejected" && !rejectedReason) {
         setError("Select a cancellation reason.");
-        return;
+        return false;
       }
 
       const prev = ordersRef.current;
@@ -478,8 +490,17 @@ export function OrdersProvider({ children }: { children: ReactNode }) {
 
       const patchOpts = {
         action_source: "app" as const,
-        ...(apiStatus === "ACCEPTED" ? { accept_mode: "manual" as const } : {}),
-        ...(apiStatus === "CANCELLED" ? { cancel_mode: "manual" as const } : {}),
+        ...(apiStatus === "ACCEPTED"
+          ? {
+              accept_mode: opts?.acceptMode ?? "manual",
+              ...(opts?.preparationTimeMinutes != null
+                ? { preparation_time_minutes: opts.preparationTimeMinutes }
+                : {}),
+            }
+          : {}),
+        ...(apiStatus === "CANCELLED"
+          ? { cancel_mode: opts?.cancelMode ?? "manual" }
+          : {}),
       };
 
       try {
@@ -505,6 +526,7 @@ export function OrdersProvider({ children }: { children: ReactNode }) {
           storeName: selectedStore?.store_name ?? undefined,
           force: true,
         });
+        return true;
       } catch (e) {
         const msg = e instanceof Error ? e.message : "";
         const alreadyAtTarget =
@@ -519,7 +541,7 @@ export function OrdersProvider({ children }: { children: ReactNode }) {
             );
             setError(null);
             requestMerchantDashboardStatsRefresh();
-            return;
+            return true;
           } catch {
             // fall through to rollback
           }
@@ -543,7 +565,7 @@ export function OrdersProvider({ children }: { children: ReactNode }) {
       }
       const foodId = Number(orderId);
       if (!Number.isFinite(foodId)) return;
-      const order = orders.find((o) => o.id === orderId);
+      const order = ordersRef.current.find((o) => o.id === orderId);
       const storeId = order ? resolveOrderStoreId(order) : orderStoreIds[0] ?? null;
       if (!storeId) return;
 
@@ -564,7 +586,7 @@ export function OrdersProvider({ children }: { children: ReactNode }) {
         throw e;
       }
     },
-    [token, orderStoreIds, orders, resolveOrderStoreId, mapWithStore]
+    [token, orderStoreIds, resolveOrderStoreId, mapWithStore]
   );
 
   const counts: OrderCounts = useMemo(() => {
@@ -596,7 +618,6 @@ export function OrdersProvider({ children }: { children: ReactNode }) {
       counts,
       formatRelativeTime,
       acceptanceWindowMinutes,
-      orderNowMs,
     }),
     [
       orders,
@@ -608,7 +629,6 @@ export function OrdersProvider({ children }: { children: ReactNode }) {
       extendPrepDelay,
       counts,
       acceptanceWindowMinutes,
-      orderNowMs,
     ]
   );
 

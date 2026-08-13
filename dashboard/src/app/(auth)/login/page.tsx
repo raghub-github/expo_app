@@ -1,28 +1,44 @@
 "use client";
 
 import { useState, useEffect, useRef, useCallback } from "react";
-import { useRouter } from "next/navigation";
+import { toast, Toaster } from "sonner";
 import { requestEmailOTP, verifyOTP, signInWithGoogle } from "@/lib/auth/supabase";
 import { supabase } from "@/lib/supabase/client";
 import { Logo } from "@/components/brand/Logo";
 import { safeParseJson } from "@/lib/utils";
-import { Mail, Lock, ArrowRight, Loader2 } from "lucide-react";
+import { Mail, Lock, Loader2 } from "lucide-react";
+import { LoginToggle, type DashboardLoginTab } from "@/components/auth/LoginToggle";
 import { saveBootstrapToStorage } from "@/lib/dashboard-bootstrap-storage";
 import { postSetCookieWithTokens } from "@/lib/auth/sync-server-session";
 import { clearStaleClientAuthStorage, readClientSessionFromStorage } from "@/lib/auth/client-session-storage";
 import { markDashboardFreshLogin } from "@/lib/dashboard-auth-client-state";
 
 const OTP_LENGTH = 8;
+const TOAST_MS = 2000;
+
+function showLoginError(msg: string) {
+  if (!msg) return;
+  const isAuthHint =
+    msg.toLowerCase().includes("not registered") ||
+    msg.toLowerCase().includes("not yet added") ||
+    msg.toLowerCase().includes("create your account") ||
+    msg.toLowerCase().includes("not authorized");
+  toast.error(
+    isAuthHint
+      ? `${msg} Ask an admin to add your email in Dashboard → Users (ACTIVE + role).`
+      : msg,
+    { duration: TOAST_MS }
+  );
+}
 
 export default function LoginPage() {
-  const router = useRouter();
   const [email, setEmail] = useState("");
   const [otpDigits, setOtpDigits] = useState<string[]>(() => Array(OTP_LENGTH).fill(""));
   const otpInputRefs = useRef<(HTMLInputElement | null)[]>([]);
+  const [loginTab, setLoginTab] = useState<DashboardLoginTab>("google");
   const [otpSent, setOtpSent] = useState(false);
   const [loading, setLoading] = useState(false);
   const [googleLoading, setGoogleLoading] = useState(false);
-  const [error, setError] = useState("");
   const otpRequestInFlightRef = useRef(false);
   const otpVerifyInFlightRef = useRef(false);
   const googleInFlightRef = useRef(false);
@@ -107,7 +123,7 @@ export default function LoginPage() {
 
     const errorParam = searchParams.get("error");
     if (errorParam) {
-      setError(decodeURIComponent(errorParam));
+      showLoginError(decodeURIComponent(errorParam));
       // Clean up URL
       window.history.replaceState({}, "", window.location.pathname);
     }
@@ -122,18 +138,17 @@ export default function LoginPage() {
     if (otpRequestInFlightRef.current || loading || googleLoading) return;
     otpRequestInFlightRef.current = true;
     setLoading(true);
-    setError("");
 
     try {
       const result = await requestEmailOTP(email);
 
       if (result.success) {
         setOtpSent(true);
-        setError("");
-        // Show success message
-        console.log("OTP request successful. Check your email for the verification code.");
+        toast.success(`We sent a verification code to ${email.trim()}`, {
+          duration: TOAST_MS,
+        });
       } else {
-        setError(result.error || "Failed to send OTP. Please try again.");
+        showLoginError(result.error || "Failed to send OTP. Please try again.");
       }
     } finally {
       setLoading(false);
@@ -186,7 +201,6 @@ export default function LoginPage() {
     if (otpVerifyInFlightRef.current || loading || googleLoading) return;
     otpVerifyInFlightRef.current = true;
     setLoading(true);
-    setError("");
 
     try {
       const result = await verifyOTP(email, otp, "email");
@@ -205,7 +219,7 @@ export default function LoginPage() {
             cookieResult.error ||
             "Your account is not authorized to access this portal. Please contact an administrator.";
           await supabase.auth.signOut();
-          setError(errorMessage);
+          showLoginError(errorMessage);
           setLoading(false);
           return;
         }
@@ -244,10 +258,10 @@ export default function LoginPage() {
         return;
         } catch (cookieError) {
           console.error("Error setting cookies:", cookieError);
-          setError("Failed to complete login. Please try again.");
+          showLoginError("Failed to complete login. Please try again.");
         }
       } else {
-        setError(result.error || "Invalid OTP. Please try again.");
+        showLoginError(result.error || "Invalid OTP. Please try again.");
       }
     } finally {
       setLoading(false);
@@ -259,13 +273,12 @@ export default function LoginPage() {
     if (googleInFlightRef.current || googleLoading || loading) return;
     googleInFlightRef.current = true;
     setGoogleLoading(true);
-    setError("");
 
     try {
       const result = await signInWithGoogle();
 
       if (!result.success) {
-        setError(result.error || "Google login failed. Please try again.");
+        showLoginError(result.error || "Google login failed. Please try again.");
         setGoogleLoading(false);
       }
       // If successful, the user will be redirected to Google OAuth
@@ -282,14 +295,16 @@ export default function LoginPage() {
       className="relative flex min-h-screen items-center justify-center px-4 py-4 sm:px-6 sm:py-6 lg:px-8 bg-cover bg-center bg-no-repeat"
       style={{ backgroundImage: "url('/bg.png')" }}
     >
+      <Toaster position="top-right" richColors closeButton />
       <div className="absolute inset-0 bg-white/60 backdrop-blur-[1px]" aria-hidden />
-      <div className="relative z-10 w-full max-w-md space-y-5">
-        {/* Logo Section */}
-        <div className="flex flex-col items-center space-y-2">
-          <div className="flex justify-center -mb-1">
-            <Logo variant="full" size="md" className="w-full max-w-[140px] sm:max-w-[180px]" />
-          </div>
-          <div className="text-center">
+      <div className="relative z-10 w-full max-w-xl space-y-5">
+        {/* Main Login Card — matches dashboard main area bg */}
+        <div className="rounded-2xl border border-slate-300 bg-[#e8eef4] p-5 sm:p-8">
+          {/* Header */}
+          <div className="mb-5 px-1 text-center sm:px-2">
+            <div className="mb-3 flex justify-center">
+              <Logo variant="full" size="md" className="w-full max-w-[160px] sm:max-w-[200px]" />
+            </div>
             <h1 className="text-xl font-bold text-gray-900 sm:text-2xl">
               Welcome Back
             </h1>
@@ -297,44 +312,30 @@ export default function LoginPage() {
               Sign in to access your dashboard
             </p>
           </div>
-        </div>
 
-        {/* Main Login Card */}
-        <div className="rounded-2xl bg-white p-5 shadow-2xl ring-1 ring-gray-200 sm:p-7">
-          {/* Error Message */}
-          {error && (
-            <div className={`mb-4 rounded-lg border p-3 ${
-              error.toLowerCase().includes("not registered") || error.toLowerCase().includes("not yet added") || error.toLowerCase().includes("create your account")
-                ? "bg-amber-50 border-amber-200"
-                : "bg-red-50 border-red-200"
-            }`}>
-              <p className={`text-xs font-medium sm:text-sm ${
-                error.toLowerCase().includes("not registered") || error.toLowerCase().includes("not yet added") || error.toLowerCase().includes("create your account")
-                  ? "text-amber-800"
-                  : "text-red-800"
-              }`}>{error}</p>
-              {(error.toLowerCase().includes("not registered") || error.toLowerCase().includes("not yet added") || error.toLowerCase().includes("create your account")) && (
-                <p className="mt-1.5 text-xs text-amber-700">Your email must exist in Dashboard → Users with status ACTIVE and a role. Ask an administrator to add you.</p>
-              )}
-            </div>
-          )}
+          <LoginToggle
+            value={loginTab}
+            onChange={(tab) => {
+              setLoginTab(tab);
+            }}
+            disabled={loading || googleLoading}
+          />
 
-          {/* Google Login - Primary Option */}
-          <div className="space-y-4">
-            <div>
+          <div className="mt-6">
+            {loginTab === "google" && (
               <button
                 onClick={handleGoogleLogin}
                 disabled={loading || googleLoading}
-                className="group relative flex w-full items-center justify-center gap-3 rounded-xl border-2 border-gray-200 bg-white px-5 py-3.5 text-sm font-semibold text-gray-700 shadow-sm transition-all duration-200 hover:border-blue-300 hover:bg-blue-50 hover:shadow-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed sm:text-base sm:px-6 sm:py-4"
+                className="flex w-full items-center justify-center gap-3 rounded-xl border border-slate-200 bg-white px-5 py-3.5 text-sm font-semibold text-slate-700 transition-all duration-200 hover:border-slate-300 hover:bg-white focus:outline-none focus-visible:ring-2 focus-visible:ring-[#00A88F]/40 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {googleLoading ? (
                   <>
-                    <Loader2 className="h-5 w-5 animate-spin text-blue-600" />
-                    <span className="text-blue-600">Connecting to Google...</span>
+                    <Loader2 className="h-5 w-5 animate-spin text-[#00A88F]" />
+                    <span className="text-[#00A88F]">Connecting to Google...</span>
                   </>
                 ) : (
                   <>
-                    <svg className="h-6 w-6" viewBox="0 0 24 24">
+                    <svg className="h-5 w-5 shrink-0" viewBox="0 0 24 24" aria-hidden>
                       <path
                         fill="#4285F4"
                         d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
@@ -352,34 +353,23 @@ export default function LoginPage() {
                         d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"
                       />
                     </svg>
-                    <span>Continue with Google</span>
-                    <ArrowRight className="ml-auto h-5 w-5 text-gray-400 transition-transform group-hover:translate-x-1" />
+                    <span>Sign in with Google</span>
                   </>
                 )}
               </button>
-            </div>
+            )}
 
-            {/* Divider */}
-            <div className="relative">
-              <div className="absolute inset-0 flex items-center">
-                <div className="w-full border-t border-gray-200"></div>
-              </div>
-              <div className="relative flex justify-center text-sm">
-                <span className="bg-white px-4 text-gray-500">Or continue with email</span>
-              </div>
-            </div>
-
-            {/* OTP Login - Secondary Option */}
+            {loginTab === "email" && (
             <form
               onSubmit={otpSent ? handleVerifyOTP : handleRequestOTP}
               className="space-y-4"
             >
-              <div>
-                <label htmlFor="email-otp" className="block text-sm font-semibold text-gray-700 mb-2">
+              <div className="space-y-1.5">
+                <label htmlFor="email-otp" className="block text-sm font-semibold text-slate-800">
                   Email Address
                 </label>
-                <div className="relative">
-                  <Mail className="absolute left-3 top-1/2 h-5 w-5 -translate-y-1/2 text-gray-400" />
+                <div className="relative group">
+                  <Mail className="pointer-events-none absolute left-3.5 top-1/2 h-5 w-5 -translate-y-1/2 text-slate-400 transition-colors group-focus-within:text-[#00A88F]" />
                   <input
                     id="email-otp"
                     name="email"
@@ -389,83 +379,92 @@ export default function LoginPage() {
                     onChange={(e) => setEmail(e.target.value)}
                     disabled={otpSent || loading}
                     placeholder="Enter your email"
-                    className="block w-full rounded-lg border border-gray-300 bg-white py-3 pl-10 pr-4 text-sm placeholder-gray-400 shadow-sm transition-all focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-0 disabled:bg-gray-50 disabled:text-gray-500"
+                    className="w-full rounded-xl border border-slate-200 bg-white py-3 pl-11 pr-4 text-sm text-slate-900 placeholder:text-slate-400 shadow-[0_1px_2px_rgba(15,23,42,0.04)] transition-all duration-200 hover:border-slate-300 focus:border-[#00A88F] focus:bg-white focus:outline-none focus:ring-2 focus:ring-[#00A88F]/25 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-600"
                     suppressHydrationWarning
                   />
                 </div>
               </div>
 
               {otpSent && (
-                <div>
-                  <label className="block text-sm font-semibold text-gray-700 mb-2">
-                    Enter Verification Code
-                  </label>
-                  <div className="flex justify-center gap-1.5 sm:gap-2 mb-2">
-                    {Array.from({ length: OTP_LENGTH }).map((_, i) => (
-                      <input
-                        key={i}
-                        ref={(el) => { otpInputRefs.current[i] = el; }}
-                        type="text"
-                        inputMode="numeric"
-                        autoComplete="one-time-code"
-                        maxLength={1}
-                        value={otpDigits[i]}
-                        onChange={(e) => setOtpDigit(i, e.target.value)}
-                        onKeyDown={(e) => handleOtpKeyDown(i, e)}
-                        onPaste={i === 0 ? handleOtpPaste : undefined}
-                        className="w-9 h-11 sm:w-10 sm:h-12 rounded-lg border border-gray-300 bg-white text-center text-lg font-mono font-semibold text-gray-900 placeholder-gray-400 shadow-sm transition-all focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-0"
-                        style={{ color: "#111827" }}
-                        aria-label={`Digit ${i + 1} of ${OTP_LENGTH}`}
-                      />
-                    ))}
+                <div className="space-y-3">
+                  <div>
+                    <label className="mb-2 block text-sm font-semibold text-slate-800">
+                      Enter Verification Code
+                    </label>
+                    <div className="flex justify-between gap-1.5 sm:gap-2">
+                      {Array.from({ length: OTP_LENGTH }).map((_, i) => (
+                        <input
+                          key={i}
+                          ref={(el) => { otpInputRefs.current[i] = el; }}
+                          type="text"
+                          inputMode="numeric"
+                          autoComplete="one-time-code"
+                          maxLength={1}
+                          value={otpDigits[i]}
+                          onChange={(e) => setOtpDigit(i, e.target.value)}
+                          onKeyDown={(e) => handleOtpKeyDown(i, e)}
+                          onPaste={i === 0 ? handleOtpPaste : undefined}
+                          className="h-11 w-9 flex-1 max-w-[2.75rem] rounded-lg border border-slate-200 bg-white text-center text-lg font-mono font-semibold text-slate-900 shadow-[0_1px_2px_rgba(15,23,42,0.04)] transition-all focus:border-[#00A88F] focus:outline-none focus:ring-2 focus:ring-[#00A88F]/25 sm:h-12 sm:max-w-[3rem]"
+                          style={{ color: "#111827" }}
+                          aria-label={`Digit ${i + 1} of ${OTP_LENGTH}`}
+                        />
+                      ))}
+                    </div>
                   </div>
-                  <p className="mt-2 text-xs text-gray-500">
-                    We sent a verification code to <span className="font-medium text-gray-700">{email}</span>
-                  </p>
-                  <p className="mt-1 text-xs text-blue-600 bg-blue-50 border border-blue-200 rounded px-2 py-1">
-                    📧 Check your inbox (and spam folder) for the code. Enter the 8 digits above.
-                  </p>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setOtpSent(false);
-                      setOtpDigits(Array(OTP_LENGTH).fill(""));
-                      setError("");
-                    }}
-                    className="mt-2 text-xs font-medium text-blue-600 hover:text-blue-700"
-                  >
-                    Use a different email
-                  </button>
+
+                  <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between sm:gap-3">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setOtpSent(false);
+                        setOtpDigits(Array(OTP_LENGTH).fill(""));
+                      }}
+                      className="shrink-0 text-left text-sm font-medium text-[#00A88F] hover:text-[#009078] hover:underline"
+                    >
+                      Use a different email
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={loading || googleLoading || otpValue.length !== OTP_LENGTH}
+                      className="inline-flex flex-1 items-center justify-center gap-2 rounded-xl bg-[#00A88F] px-5 py-3 text-sm font-semibold text-white transition-all duration-200 hover:bg-[#009078] focus:outline-none focus:ring-2 focus:ring-[#00A88F]/40 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 sm:flex-none sm:min-w-[160px]"
+                    >
+                      {loading ? (
+                        <>
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                          <span>Verifying...</span>
+                        </>
+                      ) : (
+                        <>
+                          <Lock className="h-4 w-4" />
+                          <span>Verify Code</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
                 </div>
               )}
 
-              <button
-                type="submit"
-                disabled={loading || googleLoading || (otpSent && otpValue.length !== OTP_LENGTH)}
-                className="flex w-full items-center justify-center gap-2 rounded-lg bg-blue-600 px-5 py-2.5 text-sm font-semibold text-white shadow-lg transition-all duration-200 hover:bg-blue-700 hover:shadow-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed sm:px-6 sm:py-3"
-              >
-                {loading ? (
-                  <>
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                    <span>{otpSent ? "Verifying..." : "Sending code..."}</span>
-                  </>
-                ) : (
-                  <>
-                    {otpSent ? (
-                      <>
-                        <Lock className="h-4 w-4" />
-                        <span>Verify Code</span>
-                      </>
-                    ) : (
-                      <>
-                        <Mail className="h-4 w-4" />
-                        <span>Send Verification Code</span>
-                      </>
-                    )}
-                  </>
-                )}
-              </button>
+              {!otpSent && (
+                <button
+                  type="submit"
+                  disabled={loading || googleLoading}
+                  className="flex w-full items-center justify-center gap-2 rounded-xl bg-[#00A88F] px-5 py-3.5 text-sm font-semibold text-white transition-all duration-200 hover:bg-[#009078] focus:outline-none focus:ring-2 focus:ring-[#00A88F]/40 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {loading ? (
+                    <>
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                      <span>Sending code...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Mail className="h-4 w-4" />
+                      <span>Send Verification Code</span>
+                    </>
+                  )}
+                </button>
+              )}
             </form>
+            )}
           </div>
         </div>
 

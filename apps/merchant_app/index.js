@@ -3,4 +3,5 @@
  * Does NOT replace RN.Text (getter-only on New Architecture).
  */
 require("./lib/installGlobalTypography").installGlobalTypography();
+require("./lib/installProductionErrorHandlers").installProductionErrorHandlers();
 require("expo-router/entry");

@@ -2,7 +2,7 @@
  * Menu / attachment images with durable disk + memory cache.
  * Survives force-close: local files under cacheDirectory are reused on next launch.
  */
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
   type ImageProps,
@@ -21,6 +21,24 @@ import { GatiMitraMerchant } from "@/constants/theme";
 const URI_CACHE = new Map<string, string>();
 const IN_FLIGHT = new Map<string, Promise<string | null>>();
 const DISK_MISS = new Set<string>();
+const MAX_URI_CACHE = 200;
+const MAX_DISK_MISS = 400;
+
+function rememberUri(resolved: string, local: string): void {
+  if (URI_CACHE.size >= MAX_URI_CACHE) {
+    const first = URI_CACHE.keys().next().value;
+    if (first != null) URI_CACHE.delete(first);
+  }
+  URI_CACHE.set(resolved, local);
+}
+
+function rememberDiskMiss(resolved: string): void {
+  if (DISK_MISS.size >= MAX_DISK_MISS) {
+    const first = DISK_MISS.values().next().value;
+    if (first != null) DISK_MISS.delete(first);
+  }
+  DISK_MISS.add(resolved);
+}
 
 function resolveRenderableUri(uri: string | null | undefined): string | null {
   if (!uri) return null;
@@ -69,20 +87,20 @@ async function readDiskCache(resolved: string): Promise<string | null> {
   try {
     const info = await FileSystem.getInfoAsync(target);
     if (info.exists) {
-      URI_CACHE.set(resolved, target);
+      rememberUri(resolved, target);
       return target;
     }
   } catch {
     /* miss */
   }
-  DISK_MISS.add(resolved);
+  rememberDiskMiss(resolved);
   return null;
 }
 
 async function fetchAuthImageLocalUri(uri: string, token?: string | null): Promise<string | null> {
   if (!uri) return null;
   if (isLocalUri(uri)) {
-    URI_CACHE.set(uri, uri);
+    rememberUri(uri, uri);
     return uri;
   }
 
@@ -98,7 +116,7 @@ async function fetchAuthImageLocalUri(uri: string, token?: string | null): Promi
     });
     if (result.status >= 200 && result.status < 300 && result.uri) {
       DISK_MISS.delete(uri);
-      URI_CACHE.set(uri, result.uri);
+      rememberUri(uri, result.uri);
       return result.uri;
     }
   } catch {
@@ -158,6 +176,14 @@ export function AuthProxyImage({
   const [loading, setLoading] = useState(() => Boolean(resolved && !memCached));
   const [failed, setFailed] = useState(false);
 
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
   useEffect(() => {
     const nextResolved = resolveRenderableUri(uri);
     const nextMem = nextResolved ? URI_CACHE.get(nextResolved) ?? null : null;
@@ -189,7 +215,7 @@ export function AuthProxyImage({
   useEffect(() => {
     if (!resolved) return;
     if (isLocalUri(resolved)) {
-      URI_CACHE.set(resolved, resolved);
+      rememberUri(resolved, resolved);
       setRenderUri(resolved);
       setLoading(false);
       return;
@@ -219,6 +245,7 @@ export function AuthProxyImage({
         DISK_MISS.delete(resolved);
         URI_CACHE.delete(resolved);
         const local = await fetchAuthImageLocalUri(resolved, token);
+        if (!mountedRef.current) return;
         if (local) {
           setRenderUri(local);
           setFailed(false);
@@ -279,8 +306,10 @@ export function AuthProxyImage({
           radius != null ? { borderRadius: radius } : null,
         ]}
         contentFit={contentFit}
+        contentPosition="center"
         cachePolicy="memory-disk"
         recyclingKey={resolved ?? renderUri ?? undefined}
+        allowDownscaling
         onError={handleError}
         transition={0}
       />

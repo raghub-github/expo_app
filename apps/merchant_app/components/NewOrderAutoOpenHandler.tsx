@@ -24,12 +24,7 @@ function orderPathFromData(data: Record<string, unknown>): string | null {
     data.foodOrderId ??
     data.orderId ??
     (typeof data.url === "string" ? data.url.match(/\/order\/(\d+)/)?.[1] : null);
-  if (foodIdRaw == null) {
-    if (typeof data.url === "string" && data.url.trim()) {
-      return data.url.replace(/^\//, "");
-    }
-    return null;
-  }
+  if (foodIdRaw == null) return null;
   const id = String(foodIdRaw).replace(/\D/g, "");
   if (!id) return null;
   return `order/${id}`;

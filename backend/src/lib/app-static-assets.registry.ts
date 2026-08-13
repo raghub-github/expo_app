@@ -171,6 +171,14 @@ export const APP_STATIC_ASSET_SEEDS: AppStaticAssetSeed[] = [
     description: "Offers track — empty running offers illustration",
     sortOrder: 20,
   },
+  {
+    id: "merchant.onboarding.packaging_tips_video",
+    app: "merchant",
+    section: "Onboarding",
+    label: "Packaging tips video",
+    description: "Merchant onboarding — View packaging tips (MP4). Must play to the end to complete the task.",
+    sortOrder: 10,
+  },
 ];
 
 export function parseAppStaticAssetApp(value: string): AppStaticAssetApp | null {

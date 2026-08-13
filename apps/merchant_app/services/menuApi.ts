@@ -813,7 +813,14 @@ export async function fetchMenuItem(
     const err = await res.json().catch(() => ({}));
     throw new Error((err as { message?: string }).message || `Item fetch failed: ${res.status}`);
   }
-  return res.json() as Promise<MenuItemDetail>;
+  const data = (await res.json()) as MenuItemDetail;
+  return {
+    ...data,
+    images: (data.images ?? []).map((img) => ({
+      ...img,
+      image_url: resolveImageUrl(img.image_url) ?? img.image_url,
+    })),
+  };
 }
 
 export type MenuItemPayload = {

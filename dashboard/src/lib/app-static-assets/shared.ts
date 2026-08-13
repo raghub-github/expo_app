@@ -11,3 +11,11 @@ export function appStaticAssetAppLabel(app: AppStaticAssetApp): string {
   if (app === "rider") return "Rider";
   return "Merchant";
 }
+
+export const APP_STATIC_VIDEO_ASSET_IDS = new Set([
+  "merchant.onboarding.packaging_tips_video",
+]);
+
+export function isAppStaticVideoAsset(id: string): boolean {
+  return APP_STATIC_VIDEO_ASSET_IDS.has(id);
+}

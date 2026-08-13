@@ -6077,3 +6077,30 @@ export const orderKotPrintEvents = pgTable(
   })
 );
 
+/** Super Admin Learning Centre YouTube videos — see drizzle/0528_learning_centre_videos.sql */
+export const learningCentreVideos = pgTable(
+  "learning_centre_videos",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    audience: text("audience").notNull(),
+    sectionTitle: text("section_title").notNull(),
+    videoTitle: text("video_title").notNull(),
+    youtubeUrl: text("youtube_url").notNull(),
+    thumbnailR2Key: text("thumbnail_r2_key"),
+    thumbnailProxyUrl: text("thumbnail_proxy_url"),
+    durationLabel: text("duration_label"),
+    sectionNumber: integer("section_number").notNull().default(1),
+    sortOrder: integer("sort_order").notNull().default(0),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    audienceSectionIdx: index("idx_learning_centre_videos_audience_section").on(
+      t.audience,
+      t.sectionTitle,
+      t.sortOrder,
+      t.id
+    ),
+  })
+);
+

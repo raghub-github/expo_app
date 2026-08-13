@@ -60,6 +60,8 @@ const nextConfig: NextConfig = {
   // Reduce chunk load errors with Turbopack (Next 16)
   experimental: {
     optimizePackageImports: ["lucide-react"],
+    // Video uploads (packaging tips) exceed the default 10MB proxy body buffer.
+    proxyClientMaxBodySize: "80mb",
   },
   /**
    * Must match `outputFileTracingRoot` (Next.js 16 requirement).

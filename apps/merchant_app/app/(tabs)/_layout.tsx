@@ -45,8 +45,8 @@ export default function TabsLayout() {
       screenOptions={{
         /** Custom FloatingTabBar honors this — hides bar while typing so inputs stay above the keyboard. */
         tabBarHideOnKeyboard: true,
-        /** Keep main tabs mounted so Catalog / Orders open on the first tap with no mount delay. */
-        lazy: false,
+        /** Hidden hub screens stay lazy. Visible tabs opt into eager mount below. */
+        lazy: true,
         freezeOnBlur: true,
         animation: "none",
         tabBarActiveTintColor: GatiMitraMerchant.tabActive,
@@ -80,6 +80,7 @@ export default function TabsLayout() {
         name="index"
         options={{
           title: "Home",
+          lazy: false,
           tabBarIcon: ({ color, focused, size }) => (
             <TabIcon name={focused ? "home" : "home-outline"} color={color} size={size} />
           ),
@@ -89,6 +90,7 @@ export default function TabsLayout() {
         name="orders"
         options={{
           title: "Orders",
+          lazy: false,
           tabBarIcon: ({ color, focused, size }) => (
             <TabIcon name={focused ? "receipt" : "receipt-outline"} color={color} size={size} />
           ),
@@ -98,6 +100,7 @@ export default function TabsLayout() {
         name="menu"
         options={{
           title: "Catalog",
+          lazy: false,
           tabBarIcon: ({ color, focused, size }) => (
             <TabIcon name={focused ? "cube" : "cube-outline"} color={color} size={size} />
           ),
@@ -125,6 +128,14 @@ export default function TabsLayout() {
         }}
       />
       <Tabs.Screen
+        name="onboarding-benefits"
+        options={{
+          title: "Onboarding benefits",
+          href: null,
+          headerShown: false,
+        }}
+      />
+      <Tabs.Screen
         name="reviews"
         options={{
           title: "Review",
@@ -149,6 +160,7 @@ export default function TabsLayout() {
         name="profile"
         options={{
           title: "Profile",
+          lazy: false,
           tabBarIcon: ({ color, focused, size }) => (
             <TabIcon name={focused ? "person" : "person-outline"} color={color} size={size} />
           ),

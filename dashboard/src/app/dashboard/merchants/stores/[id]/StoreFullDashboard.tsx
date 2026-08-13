@@ -189,7 +189,8 @@ export function StoreFullDashboard({ storeId }: { storeId: string }) {
     operationsQuery.data &&
       (operationsQuery.data as { operational_status?: unknown }).operational_status !== undefined
   );
-  const showTopCardSkeletons = !opsReady;
+  // Only skeleton while the first ops fetch is in flight. Errors / empty cache must still show the card.
+  const showTopCardSkeletons = !opsReady && operationsQuery.isPending;
 
   // Instant local engine hydrate + sync when network ops arrive (partnersite pattern).
   useEffect(() => {

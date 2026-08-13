@@ -1,5 +1,5 @@
 /**
- * POST — upload / replace image for an app static asset slot.
+ * POST — upload / replace image or video for an app static asset slot.
  * FormData: file (required)
  */
 import { NextRequest, NextResponse } from "next/server";
@@ -11,13 +11,17 @@ import {
   setAppStaticAssetImage,
 } from "@/lib/db/operations/app-static-assets";
 import { uploadWithKey, deleteDocument } from "@/lib/services/r2";
+import { isAppStaticVideoAsset } from "@/lib/app-static-assets/shared";
 
 export const runtime = "nodejs";
+export const maxDuration = 120;
 
 type RouteCtx = { params: Promise<{ id: string }> };
 
-const MAX_BYTES = 8 * 1024 * 1024;
+const IMAGE_MAX_BYTES = 8 * 1024 * 1024;
+const VIDEO_MAX_BYTES = 80 * 1024 * 1024;
 const IMAGE_EXTS = new Set(["jpg", "jpeg", "png", "webp", "gif"]);
+const VIDEO_EXTS = new Set(["mp4", "webm", "mov", "m4v"]);
 
 function extFromName(name: string): string {
   const m = /\.([a-z0-9]+)$/i.exec(name);
@@ -72,26 +76,54 @@ export async function POST(request: NextRequest, ctx: RouteCtx) {
 
     const ext = extFromName(file.name);
     const mime = (file.type || "").toLowerCase();
-    if (!mime.startsWith("image/") && !IMAGE_EXTS.has(ext)) {
-      return NextResponse.json(
-        { error: "Only images (jpg, png, webp, gif) are allowed" },
-        { status: 400 }
-      );
-    }
-    if (file.size > MAX_BYTES) {
-      return NextResponse.json({ error: "File too large (max 8 MB)" }, { status: 400 });
+    const videoSlot = isAppStaticVideoAsset(id);
+    const isVideo = mime.startsWith("video/") || VIDEO_EXTS.has(ext);
+    const isImage = mime.startsWith("image/") || IMAGE_EXTS.has(ext);
+
+    if (videoSlot) {
+      if (!isVideo) {
+        return NextResponse.json(
+          { error: "This slot accepts video only (mp4, webm, mov)" },
+          { status: 400 }
+        );
+      }
+      if (file.size > VIDEO_MAX_BYTES) {
+        return NextResponse.json({ error: "Video too large (max 80 MB)" }, { status: 400 });
+      }
+    } else {
+      if (!isImage) {
+        return NextResponse.json(
+          { error: "Only images (jpg, png, webp, gif) are allowed" },
+          { status: 400 }
+        );
+      }
+      if (file.size > IMAGE_MAX_BYTES) {
+        return NextResponse.json({ error: "File too large (max 8 MB)" }, { status: 400 });
+      }
     }
 
-    const safeExt = IMAGE_EXTS.has(ext) ? (ext === "jpeg" ? "jpg" : ext) : "jpg";
+    const safeExt = videoSlot
+      ? VIDEO_EXTS.has(ext)
+        ? ext
+        : "mp4"
+      : IMAGE_EXTS.has(ext)
+        ? ext === "jpeg"
+          ? "jpg"
+          : ext
+        : "jpg";
     const stamp = `${Date.now()}_${randomBytes(6).toString("hex")}`;
     const r2Key = `app-static-assets/${existing.app}/${existing.id.replace(/\./g, "_")}/${stamp}.${safeExt}`;
 
     await uploadWithKey(file, r2Key);
     const proxyUrl = `/api/attachments/proxy?key=${encodeURIComponent(r2Key)}`;
 
-    const oldKey = existing.proxy_url ? extractKeyFromProxyOrUrl(existing.proxy_url) : null;
+    const oldKey =
+      (existing.r2_key?.trim() || null) ??
+      (existing.proxy_url ? extractKeyFromProxyOrUrl(existing.proxy_url) : null);
     const updated = await setAppStaticAssetImage(id, r2Key, proxyUrl);
     if (!updated) {
+      // Roll back the newly uploaded object if DB write failed.
+      deleteDocument(r2Key).catch(() => undefined);
       return NextResponse.json({ error: "Failed to update asset" }, { status: 500 });
     }
 
@@ -121,7 +153,9 @@ export async function DELETE(_request: NextRequest, ctx: RouteCtx) {
       return NextResponse.json({ error: "Asset slot not found" }, { status: 404 });
     }
 
-    const oldKey = existing.proxy_url ? extractKeyFromProxyOrUrl(existing.proxy_url) : null;
+    const oldKey =
+      (existing.r2_key?.trim() || null) ??
+      (existing.proxy_url ? extractKeyFromProxyOrUrl(existing.proxy_url) : null);
     const updated = await clearAppStaticAssetImage(id);
     if (!updated) {
       return NextResponse.json({ error: "Failed to clear asset" }, { status: 500 });

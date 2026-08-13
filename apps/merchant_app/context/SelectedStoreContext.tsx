@@ -45,7 +45,7 @@ function isApprovedStore(store: ChildStore): boolean {
 
 function approvedStoresOf(partner: PartnerData | null): ChildStore[] {
   if (!partner) return [];
-  return partner.childStores.filter(isApprovedStore);
+  return (Array.isArray(partner.childStores) ? partner.childStores : []).filter(isApprovedStore);
 }
 
 function findStoreInPartner(
@@ -54,10 +54,11 @@ function findStoreInPartner(
   storePublicId?: string,
 ): ChildStore | null {
   if (!partner) return null;
-  const byId = partner.childStores.find((s) => s.id === storeDbId);
+  const stores = Array.isArray(partner.childStores) ? partner.childStores : [];
+  const byId = stores.find((s) => s.id === storeDbId);
   if (byId) return byId;
   if (storePublicId) {
-    return partner.childStores.find((s) => s.store_id === storePublicId) ?? null;
+    return stores.find((s) => s.store_id === storePublicId) ?? null;
   }
   return null;
 }
@@ -67,13 +68,15 @@ function persistSelection(
   primary: ChildStore,
   managed: ChildStore[],
 ) {
+  const parentId = partner.parent?.id;
+  if (parentId == null) return;
   void writeLastSelectedStore({
-    parentId: partner.parent.id,
+    parentId,
     storeDbId: primary.id,
     storePublicId: primary.store_id,
   });
   void writeManagedStores({
-    parentId: partner.parent.id,
+    parentId,
     primaryStoreDbId: primary.id,
     storeDbIds: managed.map((s) => s.id),
   });

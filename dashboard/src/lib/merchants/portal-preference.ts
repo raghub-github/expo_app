@@ -34,3 +34,15 @@ export function resolveMerchantsPortal(args: {
   if (args.canTogglePortal) return "admin";
   return "merchant";
 }
+
+/** Admin-rail tools — switching to Merchant portal must leave these pages. */
+export function isAdminOnlyMerchantsPath(pathname: string): boolean {
+  const p = pathname.split("?")[0] ?? "";
+  return (
+    p.startsWith("/dashboard/merchants/menu-requests") ||
+    p.startsWith("/dashboard/merchants/verifications") ||
+    p.startsWith("/dashboard/merchants/assign-am") ||
+    p.startsWith("/dashboard/merchants/wallet-requests") ||
+    p.startsWith("/dashboard/merchants/subscription-refunds")
+  );
+}

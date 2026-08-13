@@ -3,7 +3,7 @@ import { z } from "zod";
 export const parentMerchantSchema = z.object({
   parent_merchant_id: z.string().optional(),
   parent_name: z.string().min(2, "Parent name is required"),
-  merchant_type: z.enum(["LOCAL", "BRAND"]),
+  merchant_type: z.enum(["LOCAL", "BRAND", "CHAIN", "FRANCHISE"]),
   owner_name: z.string().min(2, "Owner name is required"),
   owner_email: z
     .string()

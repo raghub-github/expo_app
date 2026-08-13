@@ -18,7 +18,6 @@ import {
   fetchFoodOrderTimeline,
   fetchFoodOrderActions,
   fetchFoodOrderRidersLog,
-  patchFoodOrderStatus,
   type ApiFoodOrder,
   type FoodOrderTimelineEntry,
   type FoodOrderRiderLogEntry,
@@ -30,7 +29,6 @@ import {
   getCachedOrderTimeline,
   setCachedOrderTimeline,
 } from "@/lib/orderTimelineCache";
-import { requestMerchantDashboardStatsRefresh } from "@/lib/merchantDashboardStatsBus";
 import { MerchantOrderVerticalTimeline } from "@/components/order/MerchantOrderVerticalTimeline";
 import { OrderItemDetails } from "@/components/order/OrderItemDetails";
 import { OrderBillDetails } from "@/components/order/OrderBillDetails";
@@ -124,16 +122,16 @@ function ActionButton({
 }
 
 export default function OrderDetailScreen() {
-  const { id } = useLocalSearchParams<{ id: string }>();
+  const { id: rawId } = useLocalSearchParams<{ id: string | string[] }>();
   const router = useRouter();
   const goBack = useMerchantGoBack("/(tabs)/orders");
   const insets = useSafeAreaInsets();
   const { token } = useAuth();
   const { selectedStore } = useSelectedStore();
-  const { orders: boardOrders } = useOrdersContext();
+  const { orders: boardOrders, transitionOrder, upsertOrder } = useOrdersContext();
   const printContext = useMerchantPrintContext();
 
-  const routeId = id ?? "";
+  const routeId = Array.isArray(rawId) ? rawId[0] ?? "" : String(rawId ?? "");
   const ordersFoodId = parseOrdersFoodId(routeId);
   const selectedStoreId = selectedStore?.id ?? null;
   const cachedSeed =
@@ -165,7 +163,8 @@ export default function OrderDetailScreen() {
   const [ridersLog, setRidersLog] = useState<FoodOrderRiderLogEntry[]>([]);
   const [activeRider, setActiveRider] = useState<FoodOrderRiderLogEntry | null>(null);
   const [actionLoading, setActionLoading] = useState(false);
-  const markReadyInFlightRef = useRef(false);
+  const actionInFlightRef = useRef(false);
+  const loadGenRef = useRef(0);
   const [eta, setEta] = useState<OrderEtaResponse | null>(null);
 
   const etaOrderIdText = (order?.formatted_order_id ?? "").trim() || null;
@@ -193,6 +192,8 @@ export default function OrderDetailScreen() {
   }, [boardSeed, order, ordersFoodId, storeId]);
 
   const load = useCallback(async () => {
+    const gen = ++loadGenRef.current;
+    const stillCurrent = () => gen === loadGenRef.current;
     if (!token || !storeId || ordersFoodId == null) {
       setLoading(false);
       if (ordersFoodId == null && routeId) {
@@ -226,6 +227,7 @@ export default function OrderDetailScreen() {
         fetchFoodOrder(storeId, ordersFoodId, token),
         soft(fetchFoodOrderRidersLog(storeId, ordersFoodId, token), [] as FoodOrderRiderLogEntry[]),
       ]);
+      if (!stillCurrent()) return;
       setCachedFoodOrder(storeId, ordersFoodId, o);
       setOrder(o);
       if (ridersEarly.length > 0) {
@@ -252,6 +254,7 @@ export default function OrderDetailScreen() {
         soft(fetchFoodOrderActions(storeId, ordersFoodId, token), [] as MerchantOrderActionForTimeline[]),
         soft(fetchFoodOrderRidersLog(storeId, ordersFoodId, token), ridersEarly),
       ]);
+      if (!stillCurrent()) return;
       setCachedOrderTimeline(storeId, ordersFoodId, tl);
       setTimeline(tl);
       setActions(act);
@@ -273,11 +276,13 @@ export default function OrderDetailScreen() {
       const idText = (o.formatted_order_id ?? "").trim();
       if (idText && /^GM\d+/i.test(idText)) {
         const etaRes = await soft(fetchOrderEta(idText), null);
+        if (!stillCurrent()) return;
         setEta(etaRes);
       } else {
         setEta(null);
       }
     } catch (e) {
+      if (!stillCurrent()) return;
       // Never blank the page if anything already painted (cache / board / prior paint).
       let painted = false;
       setOrder((prev) => {
@@ -294,7 +299,7 @@ export default function OrderDetailScreen() {
         setError(e instanceof Error ? e.message : "Failed to load order");
       }
     } finally {
-      setLoading(false);
+      if (stillCurrent()) setLoading(false);
     }
   }, [token, storeId, ordersFoodId, routeId, boardSeed]);
 
@@ -446,47 +451,14 @@ export default function OrderDetailScreen() {
     stage,
   ]);
 
-  const runAction = async (nextApiStatus: string) => {
-    if (!token || !storeId || ordersFoodId == null || !order) return;
-    setActionLoading(true);
-    try {
-      const updated = await patchFoodOrderStatus(storeId, ordersFoodId, token, nextApiStatus, undefined, {
-        action_source: "app",
-        accept_mode: "manual",
-      });
-      setOrder(updated);
-      requestMerchantDashboardStatsRefresh();
-      const [tl, act, riders] = await Promise.all([
-        fetchFoodOrderTimeline(storeId, ordersFoodId, token),
-        fetchFoodOrderActions(storeId, ordersFoodId, token),
-        fetchFoodOrderRidersLog(storeId, ordersFoodId, token),
-      ]);
-      setTimeline(tl);
-      setActions(act);
-      setRidersLog(riders);
-      setRiderReachedAt(riders.find((r) => r.reached_merchant_at)?.reached_merchant_at ?? null);
-      setActiveRider(
-        [...riders]
-          .reverse()
-          .find((r) => {
-            const st = (r.assignment_status ?? "").toUpperCase();
-            return st !== "CANCELLED" && st !== "REJECTED";
-          }) ?? null
-      );
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Update failed");
-    } finally {
-      setActionLoading(false);
-    }
-  };
-
-  const refreshTimeline = async () => {
+  const refreshTimeline = async (gen = loadGenRef.current) => {
     if (!token || !storeId || ordersFoodId == null) return;
     const [tl, act, riders] = await Promise.all([
       fetchFoodOrderTimeline(storeId, ordersFoodId, token),
       fetchFoodOrderActions(storeId, ordersFoodId, token),
       fetchFoodOrderRidersLog(storeId, ordersFoodId, token),
     ]);
+    if (gen !== loadGenRef.current) return;
     setTimeline(tl);
     setActions(act);
     setRidersLog(riders);
@@ -499,6 +471,34 @@ export default function OrderDetailScreen() {
           return st !== "CANCELLED" && st !== "REJECTED";
         }) ?? null
     );
+  };
+
+  const runBoardAction = async (nextStage: OrderStage) => {
+    if (!token || ordersFoodId == null || !order || actionInFlightRef.current) return;
+    const gen = loadGenRef.current;
+    actionInFlightRef.current = true;
+    setActionLoading(true);
+    try {
+      upsertOrder(
+        mapApiOrder(order, {
+          storeId: storeId ?? undefined,
+          storeName: selectedStore?.store_name ?? null,
+        })
+      );
+      const applied = await transitionOrder(String(ordersFoodId), nextStage);
+      if (!applied) return;
+      if (gen !== loadGenRef.current) return;
+      const cached = getCachedFoodOrder(ordersFoodId, storeId)?.order;
+      if (cached) setOrder(cached);
+      await refreshTimeline(gen);
+      setError(null);
+    } catch (e) {
+      if (gen !== loadGenRef.current) return;
+      setError(e instanceof Error ? e.message : "Update failed");
+    } finally {
+      actionInFlightRef.current = false;
+      if (gen === loadGenRef.current) setActionLoading(false);
+    }
   };
 
   const showAccept = stage === "created";
@@ -660,7 +660,7 @@ export default function OrderDetailScreen() {
                   label="Accept order"
                   variant="primary"
                   loading={actionLoading}
-                  onPress={() => void runAction("ACCEPTED")}
+                  onPress={() => void runBoardAction("preparing")}
                 />
               ) : null}
               {showMarkReady ? (
@@ -668,52 +668,12 @@ export default function OrderDetailScreen() {
                   label="Mark ready"
                   variant="primary"
                   loading={actionLoading}
-                  onPress={async () => {
-                    if (
-                      !token ||
-                      !storeId ||
-                      ordersFoodId == null ||
-                      actionLoading ||
-                      markReadyInFlightRef.current
-                    ) {
-                      return;
-                    }
-                    const st = order.order_status.toUpperCase();
+                  onPress={() => {
+                    const st = String(order?.order_status ?? "").toUpperCase();
                     if (st === "READY_FOR_PICKUP" || st === "OUT_FOR_DELIVERY" || st === "DELIVERED") {
                       return;
                     }
-                    markReadyInFlightRef.current = true;
-                    setActionLoading(true);
-                    try {
-                      if (st === "ACCEPTED") {
-                        await patchFoodOrderStatus(storeId, ordersFoodId, token, "PREPARING", undefined, {
-                          action_source: "app",
-                        });
-                      }
-                      const updated = await patchFoodOrderStatus(
-                        storeId,
-                        ordersFoodId,
-                        token,
-                        "READY_FOR_PICKUP",
-                        undefined,
-                        { action_source: "app" }
-                      );
-                      setOrder(updated);
-                      requestMerchantDashboardStatsRefresh();
-                      await refreshTimeline();
-                      setError(null);
-                    } catch (e) {
-                      const msg = e instanceof Error ? e.message : "Update failed";
-                      if (/invalid transition.*READY_FOR_PICKUP:READY_FOR_PICKUP/i.test(msg)) {
-                        await load();
-                        setError(null);
-                        return;
-                      }
-                      setError(msg);
-                    } finally {
-                      markReadyInFlightRef.current = false;
-                      setActionLoading(false);
-                    }
+                    void runBoardAction("ready");
                   }}
                 />
               ) : null}
@@ -722,7 +682,7 @@ export default function OrderDetailScreen() {
                   label="Mark dispatched"
                   variant="primary"
                   loading={actionLoading}
-                  onPress={() => void runAction("OUT_FOR_DELIVERY")}
+                  onPress={() => void runBoardAction("picked_up")}
                 />
               ) : null}
               {showComplete ? (
@@ -730,7 +690,7 @@ export default function OrderDetailScreen() {
                   label="Mark delivered"
                   variant="primary"
                   loading={actionLoading}
-                  onPress={() => void runAction("DELIVERED")}
+                  onPress={() => void runBoardAction("delivered")}
                 />
               ) : null}
               {stage === "delivered" ? (

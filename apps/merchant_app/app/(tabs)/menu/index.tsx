@@ -3,10 +3,11 @@
  * Data layer: useMenuQueries (backend is source of truth; cache + invalidation here).
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, memo } from "react";
 import {
   View,
   ScrollView,
+  SectionList,
   StyleSheet,
   TouchableOpacity,
   TextInput,
@@ -17,6 +18,8 @@ import {
   Modal,
   Alert,
   Pressable,
+  BackHandler,
+  Platform,
 } from "react-native";
 import { AppText as Text } from "@/components/AppText";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -31,6 +34,7 @@ import {
 import { useAuth } from "@/context/AuthContext";
 import { useSelectedStore } from "@/context/SelectedStoreContext";
 import { useMenuCategories, useMenuItems, usePatchItemStock, menuKeys, MENU_CATALOG_LIST_FILTERS } from "@/hooks/useMenuQueries";
+import { useMerchantMenuRealtime } from "@/hooks/useMerchantMenuRealtime";
 import type { MenuItemRow, MenuCategory, MenuItemDetail, ListItemsResponse } from "@/services/menuApi";
 import type { ComboRow, ComboDetail } from "@/services/menuApi";
 import {
@@ -51,7 +55,8 @@ import {
   type OutOfStockMode as ApiOutOfStockMode,
 } from "@/services/menuApi";
 import { resolveImageUrl } from "@/services/outletApi";
-import { useRouter } from "expo-router";
+import { useRouter, useLocalSearchParams, useFocusEffect } from "expo-router";
+import { useProfileNav } from "@/context/ProfileNavContext";
 import * as SecureStore from "expo-secure-store";
 import { OutOfStockModal, type OutOfStockPayload } from "@/components/OutOfStockModal";
 import {
@@ -76,11 +81,50 @@ type ChangeRequestFilter = "ALL" | "DELETE" | "UPDATE";
 type ItemKindFilter = "ALL" | "ITEMS" | "COMBOS" | "ADDONS";
 
 type MenuViewMode = "card" | "tree";
-/** Bumped so existing installs pick list (tree) as the new default once. */
-const MENU_VIEW_MODE_KEY = "gatimitra_merchant_menu_view_mode_v2";
+/** Bumped so installs restore the card list UI as the default once. */
+const MENU_VIEW_MODE_KEY = "gatimitra_merchant_menu_view_mode_v3";
 const CATALOG_TOGGLE_RADIUS = 15;
 
 type CatalogKindTab = "ALL" | "COMBOS" | "ADDONS";
+
+type CatalogSection = {
+  key: string;
+  categoryName: string;
+  allInStock: boolean;
+  outOfStockCount: number;
+  totalItems: number;
+  data: MenuItemRow[];
+};
+
+function CatalogSearchInput({
+  onDebouncedChange,
+}: {
+  onDebouncedChange: (q: string) => void;
+}) {
+  const [search, setSearch] = useState("");
+  useEffect(() => {
+    const t = setTimeout(() => onDebouncedChange(search.trim()), 300);
+    return () => clearTimeout(t);
+  }, [search, onDebouncedChange]);
+
+  return (
+    <View style={styles.searchWrap}>
+      <Ionicons name="search-outline" size={18} color={GatiMitraMerchant.textTertiary} />
+      <TextInput
+        style={styles.searchInput}
+        placeholder="Search items..."
+        placeholderTextColor={GatiMitraMerchant.textTertiary}
+        value={search}
+        onChangeText={setSearch}
+      />
+      {search.length > 0 ? (
+        <TouchableOpacity onPress={() => setSearch("")} hitSlop={8}>
+          <Ionicons name="close-circle" size={18} color={GatiMitraMerchant.textTertiary} />
+        </TouchableOpacity>
+      ) : null}
+    </View>
+  );
+}
 
 function CatalogKindToggle({
   active,
@@ -298,7 +342,7 @@ function itemPhotoRejected(item: MenuItemRow): boolean {
   return item.approval_status === "REJECTED";
 }
 
-function CatalogCategoryHeader({
+const CatalogCategoryHeader = memo(function CatalogCategoryHeader({
   title,
   count,
   isOpen,
@@ -370,9 +414,9 @@ function CatalogCategoryHeader({
       </View>
     </View>
   );
-}
+});
 
-function MenuItemCard({
+const MenuItemCard = memo(function MenuItemCard({
   item,
   onToggleEffectiveStock,
   onToggleRecommended,
@@ -488,7 +532,7 @@ function MenuItemCard({
             <AuthProxyImage
               uri={imageUri}
               token={token}
-              style={StyleSheet.absoluteFillObject}
+              style={styles.catalogItemImage}
               resizeMode="cover"
             />
           ) : (
@@ -578,7 +622,7 @@ function MenuItemCard({
       ) : null}
     </Pressable>
   );
-}
+});
 
 function ComboCard({
   combo,
@@ -763,9 +807,12 @@ function ComboCard({
 export default function MenuScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
+  const params = useLocalSearchParams<{ view?: string; from?: string }>();
+  const { returnRoute, clearReturnRoute } = useProfileNav();
+  const fromOnboarding = params.from === "onboarding";
   const scrollBottomPadding = TAB_BAR_SCROLL_CONTENT_PADDING;
-  const scrollRef = useRef<ScrollView>(null);
-  const [sectionOffsets, setSectionOffsets] = useState<Record<string, number>>({});
+  const scrollRef = useRef<SectionList<MenuItemRow, CatalogSection>>(null);
+  const treeGroupsRef = useRef<Array<{ key: string }>>([]);
 
   const { token } = useAuth();
   const { selectedStore } = useSelectedStore();
@@ -778,11 +825,10 @@ export default function MenuScreen() {
   const [changeRequestFilter, setChangeRequestFilter] = useState<ChangeRequestFilter>("ALL");
   const [kindFilter, setKindFilter] = useState<ItemKindFilter>("ALL");
   const [filterSheetVisible, setFilterSheetVisible] = useState(false);
-  const [search, setSearch] = useState("");
   const [searchDebounced, setSearchDebounced] = useState("");
   const [addMenuVisible, setAddMenuVisible] = useState(false);
   const [manageSheetVisible, setManageSheetVisible] = useState(false);
-  const [viewMode, setViewMode] = useState<MenuViewMode>("tree");
+  const [viewMode, setViewMode] = useState<MenuViewMode>("card");
   const [openTreeGroups, setOpenTreeGroups] = useState<Record<string, boolean>>({});
   const [categoryFilterSheetVisible, setCategoryFilterSheetVisible] = useState(false);
   const [subcategoryFilterSheetVisible, setSubcategoryFilterSheetVisible] = useState(false);
@@ -827,14 +873,13 @@ export default function MenuScreen() {
   }, []);
 
   useEffect(() => {
-    const t = setTimeout(() => setSearchDebounced(search.trim()), 300);
-    return () => clearTimeout(t);
-  }, [search]);
-
-  useEffect(() => {
     let mounted = true;
     (async () => {
       try {
+        if (params.view === "card") {
+          setViewMode("card");
+          return;
+        }
         const raw = await SecureStore.getItemAsync(MENU_VIEW_MODE_KEY);
         if (!mounted) return;
         if (raw === "card" || raw === "tree") setViewMode(raw);
@@ -845,17 +890,41 @@ export default function MenuScreen() {
     return () => {
       mounted = false;
     };
-  }, []);
+  }, [params.view]);
+
+  useFocusEffect(
+    useCallback(() => {
+      if (params.view === "card") {
+        setViewMode("card");
+      }
+    }, [params.view])
+  );
+
+  useEffect(() => {
+    if (!fromOnboarding) return;
+    const onHardwareBack = () => {
+      const target =
+        returnRoute && returnRoute.includes("onboarding-benefits")
+          ? returnRoute
+          : "/(tabs)/onboarding-benefits";
+      clearReturnRoute();
+      router.replace(target as never);
+      return true;
+    };
+    const sub = BackHandler.addEventListener("hardwareBackPress", onHardwareBack);
+    return () => sub.remove();
+  }, [fromOnboarding, returnRoute, clearReturnRoute, router]);
 
   useEffect(() => {
     (async () => {
+      if (fromOnboarding) return; // don't overwrite merchant preference when forced from onboarding
       try {
         await SecureStore.setItemAsync(MENU_VIEW_MODE_KEY, viewMode);
       } catch {
         // ignore
       }
     })();
-  }, [viewMode]);
+  }, [viewMode, fromOnboarding]);
 
   useEffect(() => {
     if (!storeId || !token) {
@@ -926,11 +995,35 @@ export default function MenuScreen() {
   const allItems = catalogData?.items ?? [];
   const catalogTotal = catalogData?.total ?? allItems.length;
 
-  // Warm disk/memory image cache as soon as catalog rows arrive (survives force-close).
+  const onMenuRealtimeStale = useCallback(() => {
+    void refetchCatalog();
+    void refetchCategories();
+    if (itemPhotoSheet && storeId && token) {
+      invalidateMenuItemCache(storeId, itemPhotoSheet.id);
+    }
+  }, [refetchCatalog, refetchCategories, itemPhotoSheet, storeId, token]);
+
+  useMerchantMenuRealtime({
+    storeId: selectedStore?.id ?? null,
+    enabled: Boolean(selectedStore?.id && token),
+    authToken: token,
+    onMenuStale: onMenuRealtimeStale,
+  });
+
+  // Keep open photo sheet in sync when admin approve/reject refreshes the catalog.
+  useEffect(() => {
+    if (!itemPhotoSheet) return;
+    const next = allItems.find((it) => it.id === itemPhotoSheet.id);
+    if (next && next !== itemPhotoSheet) {
+      setItemPhotoSheet(next);
+    }
+  }, [allItems, itemPhotoSheet]);
+
+  // Warm a small window of thumbnails; the rest load as rows virtualize on screen.
   useEffect(() => {
     if (!token || allItems.length === 0) return;
     prefetchAuthImages(
-      allItems.map((it) => it.item_image_url).filter(Boolean),
+      allItems.slice(0, 24).map((it) => it.item_image_url).filter(Boolean),
       token,
     );
   }, [token, catalogData?.items]);
@@ -1151,15 +1244,28 @@ export default function MenuScreen() {
       setOpenTreeGroups((prev) => ({ ...prev, [key]: true }));
       setManageSheetVisible(false);
       requestAnimationFrame(() => {
-        setTimeout(() => {
-          const y = sectionOffsets[key];
-          if (typeof y === "number") {
-            scrollRef.current?.scrollTo({ y: Math.max(0, y - 10), animated: true });
-          }
-        }, 120);
+        if (key === "combos") {
+          const list = scrollRef.current as unknown as {
+            scrollToEnd?: (opts: { animated?: boolean }) => void;
+          } | null;
+          list?.scrollToEnd?.({ animated: true });
+          return;
+        }
+        const idx = treeGroupsRef.current.findIndex((g) => g.key === key);
+        if (idx < 0) return;
+        try {
+          scrollRef.current?.scrollToLocation({
+            sectionIndex: idx,
+            itemIndex: 0,
+            animated: true,
+            viewOffset: 12,
+          });
+        } catch {
+          /* collapsed / empty section */
+        }
       });
     },
-    [sectionOffsets, kindFilter]
+    [kindFilter]
   );
 
   /** Full-menu map for combo components — filtered `items` would hide names/stock for items outside the current category. */
@@ -1191,6 +1297,7 @@ export default function MenuScreen() {
     groups.sort((a, b) => a.categoryName.localeCompare(b.categoryName));
     return groups;
   }, [items, categories]);
+  treeGroupsRef.current = itemsTreeGroups;
 
   const treeKeysSig = useMemo(() => itemsTreeGroups.map((g) => g.key).join("|"), [itemsTreeGroups]);
   useEffect(() => {
@@ -1245,25 +1352,32 @@ export default function MenuScreen() {
       }
     }
 
-    void Promise.all(
-      custItemIds.map(async (id) => {
+    void (async () => {
+      const CONCURRENCY = 4;
+      for (let i = 0; i < custItemIds.length; i += CONCURRENCY) {
         if (cancelled) return;
-        const key = menuKeys.item(storeId, id);
-        if (queryClient.getQueryData<MenuItemDetail>(key)) return;
-        try {
-          const detail = await queryClient.fetchQuery({
-            queryKey: key,
-            queryFn: () => fetchMenuItem(storeId, id, token),
-            staleTime: 5 * 60 * 1000,
-          });
-          if (!cancelled && detail) {
-            setCustDetailsById((prev) => (prev[id] ? prev : { ...prev, [id]: detail }));
-          }
-        } catch {
-          // ignore — row stays in per-item loading state
-        }
-      })
-    );
+        const chunk = custItemIds.slice(i, i + CONCURRENCY);
+        await Promise.all(
+          chunk.map(async (id) => {
+            if (cancelled) return;
+            const key = menuKeys.item(storeId, id);
+            if (queryClient.getQueryData<MenuItemDetail>(key)) return;
+            try {
+              const detail = await queryClient.fetchQuery({
+                queryKey: key,
+                queryFn: () => fetchMenuItem(storeId, id, token),
+                staleTime: 5 * 60 * 1000,
+              });
+              if (!cancelled && detail) {
+                setCustDetailsById((prev) => (prev[id] ? prev : { ...prev, [id]: detail }));
+              }
+            } catch {
+              /* ignore — row stays in per-item loading state */
+            }
+          })
+        );
+      }
+    })();
 
     return () => {
       cancelled = true;
@@ -1289,24 +1403,29 @@ export default function MenuScreen() {
         const rows = res.combos ?? [];
         setCombos(rows);
 
-        void Promise.all(
-          rows.map(async (c) => {
-            try {
-              const d = await fetchCombo(storeId, c.id, token);
-              return d ? [c.id, d] as const : null;
-            } catch {
-              return null;
-            }
-          })
-        ).then((detailEntries) => {
-          if (cancelled) return;
+        void (async () => {
           const map = new Map<number, ComboDetail>();
-          for (const entry of detailEntries) {
-            if (!entry) continue;
-            map.set(entry[0], entry[1]);
+          const CONCURRENCY = 4;
+          for (let i = 0; i < rows.length; i += CONCURRENCY) {
+            if (cancelled) return;
+            const chunk = rows.slice(i, i + CONCURRENCY);
+            const detailEntries = await Promise.all(
+              chunk.map(async (c) => {
+                try {
+                  const d = await fetchCombo(storeId, c.id, token);
+                  return d ? ([c.id, d] as const) : null;
+                } catch {
+                  return null;
+                }
+              })
+            );
+            for (const entry of detailEntries) {
+              if (!entry) continue;
+              map.set(entry[0], entry[1]);
+            }
           }
-          setComboDetails(map);
-        });
+          if (!cancelled) setComboDetails(map);
+        })();
       } catch {
         if (!cancelled) {
           setCombos([]);
@@ -2123,6 +2242,24 @@ export default function MenuScreen() {
     setKindFilter(tab === "COMBOS" ? "COMBOS" : tab === "ADDONS" ? "ADDONS" : "ALL");
   }, []);
 
+  const catalogSections = useMemo((): CatalogSection[] => {
+    if (!showItems || loading) return [];
+    return itemsTreeGroups.map((group) => {
+      const isOpen = openTreeGroups[group.key] ?? true;
+      const allInStock =
+        (group.items?.length ?? 0) > 0 && group.items.every((i) => effectiveInStock(i));
+      const outOfStockInGroup = group.items.filter((i) => !effectiveInStock(i)).length;
+      return {
+        key: group.key,
+        categoryName: group.categoryName,
+        allInStock,
+        outOfStockCount: outOfStockInGroup,
+        totalItems: group.items.length,
+        data: isOpen ? group.items : [],
+      };
+    });
+  }, [showItems, loading, itemsTreeGroups, openTreeGroups, effectiveInStock]);
+
   const renderComboTreeSection = () => {
     if ((visibleCombos?.length ?? 0) === 0) return null;
     const key = "combos";
@@ -2137,10 +2274,6 @@ export default function MenuScreen() {
     return (
       <View
         style={[styles.treeGroupCard, !allActive && styles.treeGroupCardOos]}
-        onLayout={(e) => {
-          const y = e.nativeEvent.layout.y;
-          setSectionOffsets((prev) => (prev.combos === y ? prev : { ...prev, combos: y }));
-        }}
       >
         <CatalogCategoryHeader
           title="Combos"
@@ -2333,15 +2466,170 @@ export default function MenuScreen() {
           </View>
         </Modal>
       )}
-    <ScrollView
+    <SectionList
       ref={scrollRef}
       style={styles.scrollView}
       contentContainerStyle={[styles.content, { paddingBottom: scrollBottomPadding }]}
       showsVerticalScrollIndicator={false}
+      stickySectionHeadersEnabled={false}
+      initialNumToRender={12}
+      maxToRenderPerBatch={10}
+      windowSize={10}
+      updateCellsBatchingPeriod={50}
+      removeClippedSubviews={false}
+      keyboardShouldPersistTaps="handled"
       refreshControl={
         <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={GatiMitraMerchant.primary} />
       }
-    >
+      sections={kindFilter === "ADDONS" ? [] : catalogSections}
+      keyExtractor={(item) => String(item.id)}
+      extraData={`${viewMode}|${nowTick}|${kindFilter}`}
+      onScrollToIndexFailed={() => {
+        /* jump-to-section can fire before rows are measured */
+      }}
+      renderSectionHeader={({ section }) => {
+        const categoryIdNum = /^\d+$/.test(section.key) ? parseInt(section.key, 10) : NaN;
+        const isOpen = openTreeGroups[section.key] ?? true;
+        return (
+          <View
+            style={[
+              styles.treeGroupCard,
+              styles.treeGroupCardHeaderOnly,
+              !section.allInStock && styles.treeGroupCardOos,
+            ]}
+          >
+            <CatalogCategoryHeader
+              title={section.categoryName}
+              count={section.totalItems}
+              isOpen={isOpen}
+              allInStock={section.allInStock}
+              outOfStockCount={section.outOfStockCount}
+              onToggleOpen={() =>
+                setOpenTreeGroups((prev) => ({
+                  ...prev,
+                  [section.key]: !isOpen,
+                }))
+              }
+              onToggleStock={() => {
+                const group = itemsTreeGroups.find((g) => g.key === section.key);
+                if (group) void handleCategoryGroupStockToggle(group, categoryIdNum, section.allInStock);
+              }}
+              onMenuPress={() => {
+                const group = itemsTreeGroups.find((g) => g.key === section.key);
+                if (group) openCategoryMenu(group, categoryIdNum);
+              }}
+            />
+          </View>
+        );
+      }}
+      renderSectionFooter={({ section }) => (
+        <View
+          style={[
+            styles.treeGroupCardFooter,
+            !section.allInStock && styles.treeGroupCardOos,
+          ]}
+        />
+      )}
+      renderItem={({ item, section }) => {
+        if (viewMode === "card") {
+          return (
+            <View
+              style={[
+                styles.treeGroupBody,
+                !section.allInStock && styles.treeGroupCardOos,
+              ]}
+            >
+              <MenuItemCard
+                item={item}
+                onToggleEffectiveStock={handleToggleEffectiveStock}
+                onToggleRecommended={handleToggleRecommended}
+                effectiveInStock={effectiveInStock}
+                getItemOosLabel={getItemOosLabel}
+                onMoreOptions={handleMoreOptions}
+                onOpenPreview={handleOpenItemPreview}
+                onOpenPhoto={handleOpenItemPhoto}
+                photoUpload={photoUploadByItemId[item.id] ?? null}
+              />
+            </View>
+          );
+        }
+        const treeLocked = isMenuItemPlanLocked(item);
+        return (
+          <View
+            style={[
+              styles.treeGroupBody,
+              !section.allInStock && styles.treeGroupCardOos,
+            ]}
+          >
+          <View style={[styles.treeRow, treeLocked && styles.treeRowLocked]}>
+            <TouchableOpacity
+              style={styles.treeRowLeft}
+              onPress={() => {
+                if (treeLocked) {
+                  Alert.alert("Item locked", lockedItemTapMessage());
+                  return;
+                }
+                handleOpenItemDetails(item.id);
+              }}
+              activeOpacity={0.8}
+            >
+              <View style={styles.treeThumbWrap}>
+                {item.item_image_url ? (
+                  <AuthProxyImage
+                    uri={item.item_image_url}
+                    token={token}
+                    style={StyleSheet.absoluteFillObject}
+                    resizeMode="cover"
+                  />
+                ) : (
+                  <View style={styles.treeThumbPlaceholder}>
+                    <Ionicons name="image-outline" size={16} color={GatiMitraMerchant.textTertiary} />
+                  </View>
+                )}
+              </View>
+              <View style={styles.treeRowTextCol}>
+                <View style={{ flexDirection: "row", alignItems: "center", gap: 6, minWidth: 0 }}>
+                  <Text style={[styles.treeItemName, treeLocked && styles.treeItemNameLocked]} numberOfLines={1}>
+                    {item.item_name}
+                  </Text>
+                  {treeLocked ? (
+                    <View style={styles.treeLockedPill}>
+                      <Text style={styles.treeLockedPillText}>Locked</Text>
+                    </View>
+                  ) : null}
+                </View>
+                {treeLocked ? (
+                  <Text style={styles.treeOosSubtext} numberOfLines={1}>
+                    Locked — upgrade your current plan to unlock
+                  </Text>
+                ) : getItemOosLabel(item) ? (
+                  <Text style={styles.treeOosSubtext} numberOfLines={2}>
+                    {getItemOosLabel(item)}
+                  </Text>
+                ) : (
+                  <Text style={styles.treeInStockSubtext} numberOfLines={1}>
+                    In stock
+                  </Text>
+                )}
+              </View>
+            </TouchableOpacity>
+            <View style={styles.treeRowRight}>
+              <Text style={styles.treePrice}>
+                ₹{Number(item.base_price ?? item.selling_price).toFixed(0)}
+              </Text>
+              <CatalogStockToggle
+                value={effectiveInStock(item)}
+                onValueChange={(v) => handleToggleEffectiveStock(item, v)}
+                disabled={treeLocked}
+              />
+            </View>
+          </View>
+          </View>
+        );
+      }}
+      ListHeaderComponent={
+        <>
+
       {/* Top bar: add + search + filter icon — compact row */}
       <View style={styles.topBar}>
         <TouchableOpacity
@@ -2352,21 +2640,7 @@ export default function MenuScreen() {
           <Ionicons name="add" size={20} color="#fff" />
           <Text style={styles.addBtnText}>Add</Text>
         </TouchableOpacity>
-        <View style={styles.searchWrap}>
-          <Ionicons name="search-outline" size={18} color={GatiMitraMerchant.textTertiary} />
-          <TextInput
-            style={styles.searchInput}
-            placeholder="Search items..."
-            placeholderTextColor={GatiMitraMerchant.textTertiary}
-            value={search}
-            onChangeText={setSearch}
-          />
-          {(search?.length ?? 0) > 0 && (
-            <TouchableOpacity onPress={() => setSearch("")} hitSlop={8}>
-              <Ionicons name="close-circle" size={18} color={GatiMitraMerchant.textTertiary} />
-            </TouchableOpacity>
-          )}
-        </View>
+        <CatalogSearchInput onDebouncedChange={setSearchDebounced} />
 
           {kindFilter !== "ADDONS" ? (
             <View style={styles.viewToggleWrap}>
@@ -2512,182 +2786,40 @@ export default function MenuScreen() {
                 <ActivityIndicator size="large" color={GatiMitraMerchant.primary} />
                 <Text style={styles.emptyText}>Loading menu…</Text>
               </View>
-            ) : (
-              <>
-                <View style={styles.itemGrid}>
-              {showItems ? (
-                <View style={styles.treeWrap}>
-                  {itemsTreeGroups.map((group) => {
-                    const isOpen = openTreeGroups[group.key] ?? true;
-                    const allInStock =
-                      (group.items?.length ?? 0) > 0 &&
-                      group.items.every((i) => effectiveInStock(i));
-                    const totalItemsInGroup = group.items?.length ?? 0;
-                    const outOfStockInGroup = group.items.filter((i) => !effectiveInStock(i)).length;
-                    const categoryIdNum = /^\d+$/.test(group.key) ? parseInt(group.key, 10) : NaN;
-
-                    return (
-                      <View
-                        key={group.key}
-                        style={[
-                          styles.treeGroupCard,
-                          !allInStock && styles.treeGroupCardOos,
-                        ]}
-                        onLayout={(e) => {
-                          const y = e.nativeEvent.layout.y;
-                          setSectionOffsets((prev) => (prev[group.key] === y ? prev : { ...prev, [group.key]: y }));
-                        }}
-                      >
-                        <CatalogCategoryHeader
-                          title={group.categoryName}
-                          count={totalItemsInGroup}
-                          isOpen={isOpen}
-                          allInStock={allInStock}
-                          outOfStockCount={outOfStockInGroup}
-                          onToggleOpen={() =>
-                            setOpenTreeGroups((prev) => ({
-                              ...prev,
-                              [group.key]: !isOpen,
-                            }))
-                          }
-                          onToggleStock={() => {
-                            void handleCategoryGroupStockToggle(group, categoryIdNum, allInStock);
-                          }}
-                          onMenuPress={() => {
-                            openCategoryMenu(group, categoryIdNum);
-                          }}
-                        />
-
-                        {isOpen ? (
-                          <View style={styles.treeItemsWrap}>
-                            {group.items.map((item) => {
-                              if (viewMode === "card") {
-                                return (
-                                  <MenuItemCard
-                                    key={item.id}
-                                    item={item}
-                                    onToggleEffectiveStock={handleToggleEffectiveStock}
-                                    onToggleRecommended={handleToggleRecommended}
-                                    effectiveInStock={effectiveInStock}
-                                    getItemOosLabel={getItemOosLabel}
-                                    onMoreOptions={handleMoreOptions}
-                                    onOpenPreview={handleOpenItemPreview}
-                                    onOpenPhoto={handleOpenItemPhoto}
-                                    photoUpload={photoUploadByItemId[item.id] ?? null}
-                                  />
-                                );
-                              }
-
-                              const treeLocked = isMenuItemPlanLocked(item);
-                              return (
-                                <View key={item.id} style={[styles.treeRow, treeLocked && styles.treeRowLocked]}>
-                                  <TouchableOpacity
-                                    style={styles.treeRowLeft}
-                                    onPress={() => {
-                                      if (treeLocked) {
-                                        Alert.alert("Item locked", lockedItemTapMessage());
-                                        return;
-                                      }
-                                      handleOpenItemDetails(item.id);
-                                    }}
-                                    activeOpacity={0.8}
-                                  >
-                                    <View style={styles.treeThumbWrap}>
-                                      {item.item_image_url ? (
-                                        <AuthProxyImage
-                                          uri={item.item_image_url}
-                                          token={token}
-                                          style={StyleSheet.absoluteFillObject}
-                                          resizeMode="cover"
-                                        />
-                                      ) : (
-                                        <View style={styles.treeThumbPlaceholder}>
-                                          <Ionicons
-                                            name="image-outline"
-                                            size={16}
-                                            color={GatiMitraMerchant.textTertiary}
-                                          />
-                                        </View>
-                                      )}
-                                    </View>
-                                    <View style={styles.treeRowTextCol}>
-                                      <View style={{ flexDirection: "row", alignItems: "center", gap: 6, minWidth: 0 }}>
-                                        <Text
-                                          style={[styles.treeItemName, treeLocked && styles.treeItemNameLocked]}
-                                          numberOfLines={1}
-                                        >
-                                          {item.item_name}
-                                        </Text>
-                                        {treeLocked ? (
-                                          <View style={styles.treeLockedPill}>
-                                            <Text style={styles.treeLockedPillText}>Locked</Text>
-                                          </View>
-                                        ) : null}
-                                      </View>
-                                      {treeLocked ? (
-                                        <Text style={styles.treeOosSubtext} numberOfLines={1}>
-                                          Locked — upgrade your current plan to unlock
-                                        </Text>
-                                      ) : getItemOosLabel(item) ? (
-                                        <Text style={styles.treeOosSubtext} numberOfLines={2}>
-                                          {getItemOosLabel(item)}
-                                        </Text>
-                                      ) : (
-                                        <Text style={styles.treeInStockSubtext} numberOfLines={1}>
-                                          In stock
-                                        </Text>
-                                      )}
-                                    </View>
-                                  </TouchableOpacity>
-                                  <View style={styles.treeRowRight}>
-                                    <Text style={styles.treePrice}>
-                                      ₹{Number(item.base_price ?? item.selling_price).toFixed(0)}
-                                    </Text>
-                                    <CatalogStockToggle
-                                      value={effectiveInStock(item)}
-                                      onValueChange={(v) => handleToggleEffectiveStock(item, v)}
-                                      disabled={treeLocked}
-                                    />
-                                  </View>
-                                </View>
-                              );
-                            })}
-                          </View>
-                        ) : null}
-                      </View>
-                    );
-                  })}
-
-                  {viewMode === "tree" ? renderComboTreeSection() : null}
-                </View>
-              ) : null}
-              {showCombos && kindFilter === "COMBOS" && viewMode === "tree" ? (
-                <View style={styles.treeWrap}>{renderComboTreeSection()}</View>
-              ) : null}
-              {showCombos && viewMode === "card" ? renderComboCards() : null}
-                </View>
-                {catalogListEmpty ? (
-                  <View style={styles.emptyCard}>
-                    <Ionicons
-                      name={kindFilter === "COMBOS" ? "layers-outline" : "restaurant-outline"}
-                      size={36}
-                      color={GatiMitraMerchant.textTertiary}
-                    />
-                    <Text style={styles.emptyText}>
-                      {kindFilter === "COMBOS"
-                        ? "No combos yet. Add one from the Add menu."
-                        : search.trim()
-                          ? "No items match your search"
-                          : "No items match. Add an item or change filters."}
-                    </Text>
-                  </View>
-                ) : null}
-              </>
-            )}
+            ) : null}
           </>
         )}
       </View>
-    </ScrollView>
+        </>
+      }
+      ListFooterComponent={
+        <>
+          {showCombos && kindFilter === "COMBOS" && viewMode === "tree" ? (
+            <View style={styles.treeWrap}>{renderComboTreeSection()}</View>
+          ) : null}
+          {showItems && viewMode === "tree" ? renderComboTreeSection() : null}
+          {showCombos && viewMode === "card" ? (
+            <View style={styles.itemGrid}>{renderComboCards()}</View>
+          ) : null}
+          {catalogListEmpty ? (
+            <View style={styles.emptyCard}>
+              <Ionicons
+                name={kindFilter === "COMBOS" ? "layers-outline" : "restaurant-outline"}
+                size={36}
+                color={GatiMitraMerchant.textTertiary}
+              />
+              <Text style={styles.emptyText}>
+                {kindFilter === "COMBOS"
+                  ? "No combos yet. Add one from the Add menu."
+                  : searchDebounced
+                    ? "No items match your search"
+                    : "No items match. Add an item or change filters."}
+              </Text>
+            </View>
+          ) : null}
+        </>
+      }
+    />
 
       {/* Main catalog filters bottom sheet */}
       <Modal visible={filterSheetVisible} transparent animationType="slide">
@@ -3034,6 +3166,9 @@ export default function MenuScreen() {
         onClose={() => setItemPhotoSheet(null)}
         onUpdated={() => {
           void refetchCatalog();
+          if (storeId && token && itemPhotoSheet) {
+            invalidateMenuItemCache(storeId, itemPhotoSheet.id);
+          }
           if (storeId && token) {
             void fetchMenuImageUploadStatus(storeId, token).then(setImagePlan).catch(() => {});
           }
@@ -3627,6 +3762,31 @@ const styles = StyleSheet.create({
     backgroundColor: "#FFFFFF",
     ...GatiMitraMerchant.shadowSm,
   },
+  treeGroupCardHeaderOnly: {
+    marginBottom: 0,
+    borderBottomWidth: 0,
+    borderBottomLeftRadius: 0,
+    borderBottomRightRadius: 0,
+    shadowOpacity: 0,
+    elevation: 0,
+  },
+  treeGroupBody: {
+    backgroundColor: "#FFFFFF",
+    borderLeftWidth: 1,
+    borderRightWidth: 1,
+    borderColor: GatiMitraMerchant.border,
+  },
+  treeGroupCardFooter: {
+    height: 8,
+    marginBottom: 10,
+    backgroundColor: "#FFFFFF",
+    borderLeftWidth: 1,
+    borderRightWidth: 1,
+    borderBottomWidth: 1,
+    borderColor: GatiMitraMerchant.border,
+    borderBottomLeftRadius: CARD_RADIUS,
+    borderBottomRightRadius: CARD_RADIUS,
+  },
   treeGroupCardOos: {
     borderLeftWidth: 3,
     borderLeftColor: GatiMitraMerchant.error,
@@ -3802,10 +3962,11 @@ const styles = StyleSheet.create({
     marginLeft: 22,
   },
   catalogItemImageWrap: {
-    width: 88,
-    height: 88,
-    borderRadius: 10,
+    width: 104,
+    height: 104,
+    borderRadius: 12,
     overflow: "hidden",
+    position: "relative",
     backgroundColor: "#F3F4F6",
     borderWidth: 1,
     borderColor: GatiMitraMerchant.border,
@@ -3860,13 +4021,13 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     gap: 2,
-    backgroundColor: "#F59E0B",
-    paddingVertical: 5,
+    backgroundColor: "rgba(245, 158, 11, 0.92)",
+    paddingVertical: 3,
     zIndex: 3,
   },
   catalogPhotoReviewingText: {
     color: "#FFFFFF",
-    fontSize: 11,
+    fontSize: 9,
     fontWeight: "800",
     letterSpacing: 0.2,
   },

@@ -143,6 +143,14 @@ export async function listAppStaticAssets(app: AppStaticAssetApp): Promise<AppSt
           'No running offers',
           'Offers track — empty running offers illustration.',
           20
+        ),
+        (
+          'merchant.onboarding.packaging_tips_video',
+          'merchant',
+          'Onboarding',
+          'Packaging tips video',
+          'Merchant onboarding — View packaging tips (MP4). Must play to the end to complete the task.',
+          10
         )
       ON CONFLICT (id) DO NOTHING
     `;

@@ -14,6 +14,7 @@ const CROSS_TAB_ENTRY_SUFFIXES = [
   "/profile/status",
   "/profile/tickets",
   "/profile/help",
+  "/profile/learning",
   "/order-history",
   "/restaurant-status",
 ] as const;
@@ -23,6 +24,19 @@ function normalizePath(path: string | undefined | null): string {
   let p = path.split("?")[0]?.split("#")[0] ?? "/(tabs)";
   if (!p.startsWith("/")) p = `/${p}`;
   return p.replace(/\/+$/, "") || "/(tabs)";
+}
+
+/** Push payloads may include a url — only allow in-app merchant routes. */
+export function isSafeMerchantPushHref(url: string): boolean {
+  const raw = url.trim();
+  if (!raw || raw.includes("://") || raw.includes("\\") || raw.includes("..")) return false;
+  const path = (raw.startsWith("/") ? raw : `/${raw}`).split("?")[0]?.split("#")[0] ?? "";
+  if (!path.startsWith("/")) return false;
+  if (/^\/order\/\d+$/.test(path)) return true;
+  if (path === "/restaurant-status" || path.startsWith("/restaurant-status/")) return true;
+  if (path === "/order-history" || path.startsWith("/order-history/")) return true;
+  if (path === "/(tabs)" || path.startsWith("/(tabs)/")) return true;
+  return false;
 }
 
 /** Flow hub routes (Earnings, Growth, Offers, Reviews). */
@@ -122,6 +136,17 @@ export function merchantGoBack(
   const pathname = options.pathname;
   const returnRoute = options.returnRoute ?? null;
   const fallback = options.fallback ?? inferMerchantBackFallback(pathname);
+
+  // Catalog opened from onboarding benefits — always return there (not Home).
+  if (
+    returnRoute &&
+    pathname?.includes("/menu") &&
+    returnRoute.includes("onboarding-benefits")
+  ) {
+    options.clearReturnRoute?.();
+    router.replace(returnRoute as never);
+    return;
+  }
 
   if (
     returnRoute &&

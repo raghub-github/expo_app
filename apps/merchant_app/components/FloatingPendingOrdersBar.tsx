@@ -22,6 +22,7 @@ import { useOrders } from "@/hooks/useOrders";
 import { useStoreSettings } from "@/context/StoreSettingsContext";
 import { useIncomingOrderSheetOptional } from "@/context/IncomingOrderSheetContext";
 import { useSelectedStore } from "@/context/SelectedStoreContext";
+import { usePathname } from "expo-router";
 
 const FAB_SIZE = 56;
 const DRAG_THRESHOLD = 6;
@@ -63,6 +64,8 @@ export function FloatingPendingOrdersBar() {
   const sheet = useIncomingOrderSheetOptional();
   const { selectedStore } = useSelectedStore();
   const storeId = selectedStore?.id ?? null;
+  const pathname = usePathname();
+  const hideOnPackagingTips = (pathname ?? "").includes("packaging-tips");
 
   const pending = useMemo(
     () => orders.filter((o) => o.status === "created").length,
@@ -70,7 +73,8 @@ export function FloatingPendingOrdersBar() {
   );
 
   const sheetOpen = sheet?.sheetOpen === true;
-  const show = settings.show_floating_orders && pending > 0 && !sheetOpen;
+  const show =
+    settings.show_floating_orders && pending > 0 && !sheetOpen && !hideOnPackagingTips;
 
   const minBottom = TAB_BAR_HEIGHT + TAB_BAR_FLOATING_GAP + insets.bottom + 8;
   const defaultPos = useMemo(

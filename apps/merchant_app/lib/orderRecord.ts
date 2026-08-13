@@ -192,8 +192,8 @@ function formatRelativeTime(iso: string): string {
   return formatDisplayTime(iso);
 }
 
-export function apiStatusToStage(api: string): OrderStage {
-  const u = api.toUpperCase();
+export function apiStatusToStage(api: string | null | undefined): OrderStage {
+  const u = String(api ?? "CREATED").toUpperCase();
   if (u === "CREATED" || u === "NEW" || u === "PLACED") return "created";
   if (u === "ACCEPTED" || u === "PREPARING") return "preparing";
   if (u === "READY_FOR_PICKUP") return "ready";
@@ -229,19 +229,21 @@ export function mapApiOrder(
   const foodRowId = o.core_only ? null : o.orders_food_id;
   const cancelledAt = coerceTimestamp(o.cancelled_at);
   const customerName = (o.customer_name ?? "").trim();
+  const createdAt = coerceTimestamp(o.created_at) ?? new Date(0).toISOString();
+  const items = Array.isArray(o.items) ? o.items.filter((it): it is NonNullable<typeof it> => it != null) : [];
 
   return {
     id: foodRowId != null ? String(foodRowId) : `core-${o.orders_core_id}`,
-    ordersCoreId: o.orders_core_id,
+    ordersCoreId: Number(o.orders_core_id) || 0,
     orderNumber,
     formattedOrderId: formatted || null,
     taxInvoiceNumber: o.tax_invoice_number?.trim() || null,
     customerName: customerName || "Guest",
-    createdAt: o.created_at,
-    displayTime: formatDisplayTime(o.created_at),
-    lineItems: (o.items ?? []).map((it) => ({
-      qty: it.qty,
-      name: it.name,
+    createdAt,
+    displayTime: formatDisplayTime(createdAt),
+    lineItems: items.map((it) => ({
+      qty: Number(it.qty) || 0,
+      name: String(it.name ?? "Item"),
       price: Number(it.price) || 0,
       menuItemId:
         it.menu_item_id != null && Number.isFinite(Number(it.menu_item_id))

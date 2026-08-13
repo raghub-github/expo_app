@@ -12,7 +12,7 @@ import type { ApiFoodOrder } from "@/services/ordersApi";
 import type { OrderStage } from "@/hooks/useOrders";
 import { useAuth } from "@/context/AuthContext";
 import { useSelectedStore } from "@/context/SelectedStoreContext";
-import { useOrdersContext } from "@/context/OrdersContext";
+import { useNowMs } from "@/hooks/useNowMs";
 import {
   formatOrderDateTime,
   formatOrderIdDisplay,
@@ -44,7 +44,7 @@ export function OrderDetailCustomerCard({
 }: Props) {
   const { token } = useAuth();
   const { selectedStore } = useSelectedStore();
-  const { orderNowMs } = useOrdersContext();
+  const orderNowMs = useNowMs(stage === "ready");
   const [copied, setCopied] = useState(false);
   const isClosed = stage === "rejected" || stage === "rto";
   const isReady = stage === "ready";

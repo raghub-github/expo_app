@@ -120,8 +120,8 @@ export async function GET(
              fat, fat_unit, fibre, fibre_unit, item_tags,
              approval_status::text,
              rejection_reason,
-             (SELECT EXISTS(SELECT 1 FROM merchant_menu_item_change_requests r WHERE r.menu_item_id = merchant_menu_items.id AND r.status = 'PENDING')) AS has_pending_change_request,
-             (SELECT request_type::text FROM merchant_menu_item_change_requests r WHERE r.menu_item_id = merchant_menu_items.id AND r.status = 'PENDING' ORDER BY r.created_at DESC LIMIT 1) AS pending_change_request_type
+             (SELECT EXISTS(SELECT 1 FROM merchant_menu_item_review_requests r WHERE r.menu_item_id = merchant_menu_items.id AND r.status = 'PENDING')) AS has_pending_change_request,
+             (SELECT request_type::text FROM merchant_menu_item_review_requests r WHERE r.menu_item_id = merchant_menu_items.id AND r.status = 'PENDING' ORDER BY r.created_at DESC LIMIT 1) AS pending_change_request_type
       FROM merchant_menu_items
       WHERE id = ${menuItemId} AND store_id = ${storeId}
       LIMIT 1
