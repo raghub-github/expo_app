@@ -10,10 +10,15 @@ import {
 export const runtime = "nodejs";
 
 const patchSchema = z.object({
+  vehicleType: z.enum(["2_wheeler", "3_wheeler", "4_wheeler_non_ac", "4_wheeler_ac"]).optional().nullable(),
   riderPercentage: z.number().gt(0).lte(100).optional(),
   platformPercentage: z.number().gte(0).lt(100).optional(),
   waitingChargePerMin: z.number().nonnegative().optional().nullable(),
   waitingFreeMinutes: z.number().int().nonnegative().optional(),
+  waitingMaxCharge: z.number().nonnegative().optional().nullable(),
+  waitingFundingMode: z.enum(["CUSTOMER_100", "COMPANY_100", "SHARED"]).optional(),
+  waitingCustomerSharePct: z.number().min(0).max(100).optional(),
+  waitingCompanySharePct: z.number().min(0).max(100).optional(),
   priority: z.number().int().nonnegative().optional(),
   isActive: z.boolean().optional(),
   effectiveFrom: z.string().datetime().optional().nullable(),
@@ -45,11 +50,17 @@ export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: strin
     if (!current) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
     const merged = {
+      vehicleType: parsed.data.vehicleType === undefined ? current.vehicleType : parsed.data.vehicleType,
       riderPercentage: parsed.data.riderPercentage ?? current.riderPercentage,
       platformPercentage: parsed.data.platformPercentage ?? current.platformPercentage,
       waitingChargePerMin:
         parsed.data.waitingChargePerMin === undefined ? current.waitingChargePerMin : parsed.data.waitingChargePerMin,
       waitingFreeMinutes: parsed.data.waitingFreeMinutes ?? current.waitingFreeMinutes,
+      waitingMaxCharge:
+        parsed.data.waitingMaxCharge === undefined ? current.waitingMaxCharge : parsed.data.waitingMaxCharge,
+      waitingFundingMode: parsed.data.waitingFundingMode ?? current.waitingFundingMode,
+      waitingCustomerSharePct: parsed.data.waitingCustomerSharePct ?? current.waitingCustomerSharePct,
+      waitingCompanySharePct: parsed.data.waitingCompanySharePct ?? current.waitingCompanySharePct,
       priority: parsed.data.priority ?? current.priority,
       isActive: parsed.data.isActive ?? current.isActive,
       effectiveFrom: parsed.data.effectiveFrom === undefined ? current.effectiveFrom : parsed.data.effectiveFrom,
@@ -61,6 +72,9 @@ export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: strin
         { error: "riderPercentage + platformPercentage must equal 100" },
         { status: 400 }
       );
+    }
+    if (current.serviceType === "food" && merged.vehicleType) {
+      return NextResponse.json({ error: "Food has no vehicle dimension — leave vehicle unset." }, { status: 400 });
     }
 
     const rule = await updateServicePayoutRule(id, merged);

@@ -11,15 +11,23 @@ export const runtime = "nodejs";
 
 const levelSchema = z.enum(["state", "region", "district", "division", "post_office", "pincode"]);
 const serviceSchema = z.enum(["food", "parcel", "ride"]);
+const vehicleSchema = z.enum(["2_wheeler", "3_wheeler", "4_wheeler_non_ac", "4_wheeler_ac"]);
+const waitingFundingSchema = z.enum(["CUSTOMER_100", "COMPANY_100", "SHARED"]);
 
 const ruleBodySchema = z.object({
   level: levelSchema,
   refId: z.string().uuid(),
   service: serviceSchema,
+  /** NULL/omitted = applies to all vehicles. Only meaningful for parcel/ride. */
+  vehicleType: vehicleSchema.optional().nullable(),
   riderPercentage: z.number().gt(0).lte(100),
   platformPercentage: z.number().gte(0).lt(100),
   waitingChargePerMin: z.number().nonnegative().optional().nullable(),
   waitingFreeMinutes: z.number().int().nonnegative().optional(),
+  waitingMaxCharge: z.number().nonnegative().optional().nullable(),
+  waitingFundingMode: waitingFundingSchema.optional(),
+  waitingCustomerSharePct: z.number().min(0).max(100).optional(),
+  waitingCompanySharePct: z.number().min(0).max(100).optional(),
   priority: z.number().int().nonnegative().optional(),
   isActive: z.boolean().optional(),
   effectiveFrom: z.string().datetime().optional().nullable(),
@@ -76,16 +84,31 @@ export async function POST(req: NextRequest) {
 
   const pctError = validatePercentages(parsed.data.riderPercentage, parsed.data.platformPercentage);
   if (pctError) return NextResponse.json({ error: pctError }, { status: 400 });
+  if (parsed.data.service === "food" && parsed.data.vehicleType) {
+    return NextResponse.json({ error: "Food has no vehicle dimension — leave vehicle unset." }, { status: 400 });
+  }
+  if (
+    parsed.data.waitingFundingMode === "SHARED" &&
+    (parsed.data.waitingCustomerSharePct ?? 100) <= 0 &&
+    (parsed.data.waitingCompanySharePct ?? 0) <= 0
+  ) {
+    return NextResponse.json({ error: "Shared waiting funding needs a nonzero customer or company share" }, { status: 400 });
+  }
 
   try {
     const rule = await insertServicePayoutRule({
       level: parsed.data.level,
       refId: parsed.data.refId,
       service: parsed.data.service as RiderPayoutServiceType,
+      vehicleType: parsed.data.vehicleType ?? null,
       riderPercentage: parsed.data.riderPercentage,
       platformPercentage: parsed.data.platformPercentage,
       waitingChargePerMin: parsed.data.waitingChargePerMin ?? null,
       waitingFreeMinutes: parsed.data.waitingFreeMinutes ?? 2,
+      waitingMaxCharge: parsed.data.waitingMaxCharge ?? null,
+      waitingFundingMode: parsed.data.waitingFundingMode ?? "CUSTOMER_100",
+      waitingCustomerSharePct: parsed.data.waitingCustomerSharePct ?? 100,
+      waitingCompanySharePct: parsed.data.waitingCompanySharePct ?? 0,
       priority: parsed.data.priority ?? 100,
       isActive: parsed.data.isActive ?? true,
       effectiveFrom: parsed.data.effectiveFrom ?? null,

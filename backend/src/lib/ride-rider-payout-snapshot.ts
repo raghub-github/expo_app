@@ -271,7 +271,8 @@ async function freezeAcceptPayoutSnapshotIfMissing(
     );
 }
 
-async function writeRideRiderPayoutSnapshot(
+/** Generic despite the name — safe for any order type (the ordersRide join degrades to fareAmount fallback). */
+export async function writeRideRiderPayoutSnapshot(
   orderCorePk: number,
   snapshot: RideRiderPayoutSnapshot,
   customerTipAmount: number,

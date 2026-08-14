@@ -144,6 +144,7 @@ export async function resolveRiderPayoutQuote(args: {
     level: args.level,
     refId: args.refId,
     service: args.service,
+    vehicleType: args.vehicleType,
     now: args.now,
   });
 

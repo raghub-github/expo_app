@@ -211,6 +211,9 @@ export async function buildDispatchOfferRiderEarnings(args: {
     riderLng: args.riderLng,
     riderId: args.riderId,
     rideCatalogCode: rideType,
+    // parcel's real vehicle so a vehicle-specific rider%/waiting rule actually matches —
+    // the internal fallback only resolves vehicle for "ride" (via rideCatalogCode).
+    vehicleType: legVehicleType,
     pincode: rideGeo.pickupPincode,
     state: rideGeo.pickupState,
   });

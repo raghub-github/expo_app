@@ -3065,6 +3065,7 @@ export const ordersParcel = pgTable(
     }),
     riderAssignedAt: timestamp("rider_assigned_at", { withTimezone: true }),
     riderReachedPickupAt: timestamp("rider_reached_pickup_at", { withTimezone: true }),
+    pickupWaitSeconds: integer("pickup_wait_seconds"),
     pickupOtpVerifiedAt: timestamp("pickup_otp_verified_at", { withTimezone: true }),
     deliveryOtpVerifiedAt: timestamp("delivery_otp_verified_at", { withTimezone: true }),
     cancelledByType: text("cancelled_by_type"),
