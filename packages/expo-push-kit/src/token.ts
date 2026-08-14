@@ -98,7 +98,14 @@ export async function getFreshExpoPushToken(opts?: {
       ? await Notifications.getExpoPushTokenAsync({ projectId })
       : await Notifications.getExpoPushTokenAsync();
     const token = tokenData?.data?.trim() ?? "";
-    return token.length > 0 ? token : null;
+    if (token.length > 0) {
+      const masked =
+        token.length <= 12 ? `${token.slice(0, 4)}…` : `${token.slice(0, 8)}…${token.slice(-4)}`;
+      console.log("[push] Expo push token obtained", { token: masked, projectId: projectId ?? null });
+      return token;
+    }
+    console.warn("[push] getExpoPushTokenAsync returned empty token");
+    return null;
   } catch (e) {
     console.warn("[push] getExpoPushTokenAsync failed:", (e as Error)?.message ?? e);
     return null;
@@ -130,6 +137,7 @@ export async function getFreshNativePushToken(): Promise<DevicePushTokenResult |
   if (perm.osStatus !== "granted") return null;
 
   try {
+    console.log("[push] FCM/APNs initialized — requesting device push token");
     const deviceToken = await Notifications.getDevicePushTokenAsync();
     const raw = String(deviceToken?.data ?? "").trim();
     if (!raw) {
@@ -138,6 +146,9 @@ export async function getFreshNativePushToken(): Promise<DevicePushTokenResult |
     }
     const type: NativePushTokenType =
       deviceToken.type === "ios" || Platform.OS === "ios" ? "apns" : "fcm";
+    const masked =
+      raw.length <= 12 ? `${raw.slice(0, 4)}…` : `${raw.slice(0, 8)}…${raw.slice(-4)}`;
+    console.log("[push] FCM token obtained", { type, token: masked });
     return { token: raw, type };
   } catch (e) {
     console.warn(

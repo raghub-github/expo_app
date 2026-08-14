@@ -5,6 +5,8 @@ import { Gift, Loader2, Plus, Trash2, Save, X } from "lucide-react";
 import { ConfirmModal } from "@/components/ui/ConfirmModal";
 
 type Settings = Record<string, unknown>;
+type ParticipantType = "customer" | "rider" | "merchant";
+
 type Rule = {
   id: number;
   user_type: string;
@@ -18,6 +20,8 @@ type Rule = {
   active: boolean;
   priority: number;
   require_kyc?: boolean | null;
+  event_type?: string | null;
+  reward_mode?: string | null;
 };
 
 type Analytics = {
@@ -30,6 +34,16 @@ type Analytics = {
     conversionRate: number;
     customerReferrals: number;
     riderReferrals: number;
+    merchantReferrals?: number;
+    expiredReferrals?: number;
+    referrerRewardAmount?: number;
+    referredRewardAmount?: number;
+    referrerRewardCount?: number;
+    referredRewardCount?: number;
+    campaignBudget?: number | null;
+    campaignBudgetConsumed?: number;
+    campaignBudgetRemaining?: number | null;
+    campaignBudgetExhausted?: boolean;
   };
   funnel?: Record<string, number>;
   rewardJobs?: Array<{
@@ -40,12 +54,53 @@ type Analytics = {
     last_error?: string;
     reward_amount: number;
   }>;
+  merchantParents?: Array<{
+    id: string;
+    status: string;
+    reward_status?: string;
+    completed_orders?: number;
+    referrer_parent?: string | null;
+    referred_parent?: string | null;
+    child_store_count?: number;
+  }>;
 };
 
 type RuleModalState =
-  | { mode: "create"; userType: "rider" | "customer" }
+  | { mode: "create"; userType: ParticipantType }
   | { mode: "edit"; rule: Rule }
   | null;
+
+const MERCHANT_EVENT_OPTIONS: Array<{ value: string; label: string }> = [
+  { value: "STORE_APPROVED", label: "Store approved" },
+  { value: "REGISTRATION_COMPLETED", label: "Registration completed" },
+  { value: "KYC_APPROVED", label: "KYC approved" },
+  { value: "MENU_COMPLETED", label: "Menu / catalog completed" },
+  { value: "FIRST_ORDER_DELIVERED", label: "First qualifying order delivered" },
+  { value: "ORDER_DELIVERED_COUNT", label: "X qualifying delivered orders" },
+  { value: "ACTIVE_DAYS", label: "Active for X days" },
+];
+
+const SERVICE_TOGGLES: Array<{
+  key: string;
+  label: string;
+  helper: string;
+}> = [
+  {
+    key: "customer_referral_enabled",
+    label: "Customer Referral",
+    helper: "Controls whether new customer referral codes can be used or created.",
+  },
+  {
+    key: "rider_referral_enabled",
+    label: "Rider Referral",
+    helper: "Controls whether new rider referral codes can be used or created.",
+  },
+  {
+    key: "merchant_referral_enabled",
+    label: "Merchant Referral",
+    helper: "Controls whether new merchant referral codes can be used or created.",
+  },
+];
 
 const SETTING_TOGGLES: Array<{
   key: string;
@@ -56,26 +111,14 @@ const SETTING_TOGGLES: Array<{
   {
     key: "enabled",
     label: "Referral system enabled",
-    onText: "Links, tracking, apply, and rewards all run normally.",
-    offText: "Links still open and relationships keep tracking, but no rewards, wallet credits, or reward notifications are sent.",
+    onText: "Links, tracking, apply, and rewards all run normally (per service toggle).",
+    offText: "Master off: no service can create referrals or credit rewards.",
   },
   {
     key: "reward_enabled",
     label: "Rewards enabled",
     onText: "Eligible referrals can be credited when rules match.",
-    offText: "Tracking continues, but the engine will not credit GatiCash or rider wallet for any rule.",
-  },
-  {
-    key: "customer_referral_enabled",
-    label: "Customer referral enabled",
-    onText: "Customer invite links and auto-apply work for the customer app.",
-    offText: "Customer share / apply is paused. Existing customer referral history is kept.",
-  },
-  {
-    key: "rider_referral_enabled",
-    label: "Rider referral enabled",
-    onText: "Rider invite links and milestone tracking stay active.",
-    offText: "Rider referral apply is paused. Existing rider referral history is kept.",
+    offText: "Tracking continues, but the engine will not credit GatiCash or wallets for any rule.",
   },
   {
     key: "customer_reward_enabled",
@@ -90,6 +133,12 @@ const SETTING_TOGGLES: Array<{
     offText: "Rider milestones still track, but no wallet credit is issued.",
   },
   {
+    key: "merchant_reward_enabled",
+    label: "Merchant rewards enabled",
+    onText: "Merchant wallet credits are allowed when the referred merchant qualifies.",
+    offText: "Merchant relationships still update, but no wallet credit is issued.",
+  },
+  {
     key: "auto_apply_enabled",
     label: "Auto-apply from install link",
     onText: "Install-referrer / deep-link codes apply automatically on first open — no manual entry.",
@@ -97,9 +146,15 @@ const SETTING_TOGGLES: Array<{
   },
   {
     key: "require_kyc",
-    label: "Require rider KYC",
-    onText: "Rider milestone rewards only credit after KYC is approved (plus order count).",
-    offText: "Rider milestones can credit on order count alone, without waiting for KYC.",
+    label: "Require KYC (rider / merchant)",
+    onText: "Rider and merchant rewards only credit after KYC / store approval when the rule requires it.",
+    offText: "Milestones can credit on qualifying events alone, without waiting for KYC.",
+  },
+  {
+    key: "referral_expiry_enabled",
+    label: "Referral expiry enabled",
+    onText: "Applied referrals expire after the configured validity days if they do not qualify.",
+    offText: "Applied referrals stay eligible until rewarded or blocked.",
   },
   {
     key: "first_order_only",
@@ -160,8 +215,9 @@ function RuleFormModal({
     also_credit_referred?: boolean;
     active: boolean;
     require_kyc: boolean;
+    event_type?: string | null;
   };
-  userType: "customer" | "rider";
+  userType: ParticipantType;
   busy: boolean;
   onClose: () => void;
   onSave: (values: {
@@ -172,32 +228,45 @@ function RuleFormModal({
     also_credit_referred?: boolean;
     active: boolean;
     require_kyc: boolean;
+    event_type?: string | null;
   }) => void | Promise<void>;
 }) {
   const [name, setName] = useState(initial.name);
-  const [qty, setQty] = useState(String(initial.milestone_orders));
-  const [amount, setAmount] = useState(String(initial.reward_amount));
+  const [qty, setQty] = useState(
+    initial.milestone_orders ? String(initial.milestone_orders) : "",
+  );
+  const [amount, setAmount] = useState(
+    initial.reward_amount ? String(initial.reward_amount) : "",
+  );
   const [referredAmount, setReferredAmount] = useState(
-    String(initial.referred_reward_amount ?? initial.reward_amount ?? 0),
+    initial.referred_reward_amount != null
+      ? String(initial.referred_reward_amount)
+      : "",
   );
   const [alsoCreditReferred, setAlsoCreditReferred] = useState(
     Boolean(initial.also_credit_referred),
   );
   const [active, setActive] = useState(initial.active);
   const [requireKyc, setRequireKyc] = useState(initial.require_kyc);
+  const [eventType, setEventType] = useState(
+    initial.event_type || (userType === "merchant" ? "STORE_APPROVED" : ""),
+  );
   const [localError, setLocalError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!open) return;
     setName(initial.name);
-    setQty(String(initial.milestone_orders));
-    setAmount(String(initial.reward_amount));
-    setReferredAmount(String(initial.referred_reward_amount ?? initial.reward_amount ?? 0));
+    setQty(initial.milestone_orders ? String(initial.milestone_orders) : "");
+    setAmount(initial.reward_amount ? String(initial.reward_amount) : "");
+    setReferredAmount(
+      initial.referred_reward_amount != null ? String(initial.referred_reward_amount) : "",
+    );
     setAlsoCreditReferred(Boolean(initial.also_credit_referred));
     setActive(initial.active);
     setRequireKyc(initial.require_kyc);
+    setEventType(initial.event_type || (userType === "merchant" ? "STORE_APPROVED" : ""));
     setLocalError(null);
-  }, [open, initial]);
+  }, [open, initial, userType]);
 
   useEffect(() => {
     if (!open) return;
@@ -215,9 +284,23 @@ function RuleFormModal({
 
   if (!open) return null;
 
-  const rewardLabel = userType === "customer" ? "GatiCash amount (₹)" : "Wallet reward amount (₹)";
+  const rewardNoun =
+    userType === "customer" ? "GatiCash" : "wallet credit";
   const qtyLabel =
-    userType === "customer" ? "Qualifying order count" : "Completed orders (milestone qty)";
+    userType === "customer"
+      ? "Qualifying order count"
+      : userType === "merchant"
+        ? "Threshold (orders / days)"
+        : "Completed orders (milestone qty)";
+  const referrerLabel =
+    userType === "customer" ? "Referrer GatiCash (₹)" : "Referrer wallet reward (₹)";
+  const referredLabel =
+    userType === "customer" ? "Friend GatiCash (₹)" : "Referred wallet reward (₹)";
+  const countNeeded =
+    userType !== "merchant" ||
+    eventType === "ORDER_DELIVERED_COUNT" ||
+    eventType === "ACTIVE_DAYS" ||
+    eventType === "FIRST_ORDER_DELIVERED";
 
   return (
     <div className="fixed inset-0 z-[120] flex items-center justify-center p-4 sm:p-6" role="presentation">
@@ -232,11 +315,11 @@ function RuleFormModal({
         role="dialog"
         aria-modal="true"
         aria-labelledby="rule-form-modal-title"
-        className="relative w-full max-w-lg rounded-xl border border-gray-200 bg-white shadow-2xl"
+        className="relative flex max-h-[min(92vh,880px)] w-full max-w-4xl flex-col overflow-hidden rounded-xl border border-gray-200 bg-white shadow-2xl"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="flex items-start justify-between gap-3 border-b border-gray-100 px-4 py-3 sm:px-5">
-          <h2 id="rule-form-modal-title" className="text-base font-semibold text-gray-900">
+        <div className="flex shrink-0 items-start justify-between gap-3 border-b border-gray-100 px-4 py-3 sm:px-6">
+          <h2 id="rule-form-modal-title" className="min-w-0 break-words text-base font-semibold text-gray-900">
             {title}
           </h2>
           <button
@@ -250,7 +333,7 @@ function RuleFormModal({
           </button>
         </div>
 
-        <div className="space-y-4 px-4 py-4 sm:px-5">
+        <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-4 py-4 sm:px-6">
           {localError && (
             <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
               {localError}
@@ -268,8 +351,32 @@ function RuleFormModal({
             />
           </label>
 
-          <div className="grid gap-4 sm:grid-cols-2">
+          {userType === "merchant" && (
             <label className="block">
+              <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                Qualifying event
+              </span>
+              <select
+                className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:border-teal-500 focus:outline-none focus:ring-1 focus:ring-teal-500"
+                value={eventType}
+                onChange={(e) => setEventType(e.target.value)}
+                disabled={busy}
+              >
+                {MERCHANT_EVENT_OPTIONS.map((opt) => (
+                  <option key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </option>
+                ))}
+              </select>
+              <span className="mt-1 block text-xs leading-5 text-slate-500 break-words">
+                The referred merchant must complete this event. Amounts stay in this form — never in the app.
+              </span>
+            </label>
+          )}
+
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+            {countNeeded && (
+            <label className="block min-w-0">
               <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">{qtyLabel}</span>
               <input
                 type="number"
@@ -279,14 +386,16 @@ function RuleFormModal({
                 value={qty}
                 onChange={(e) => setQty(e.target.value)}
                 disabled={busy}
+                placeholder="Enter threshold"
               />
-              <span className="mt-1 block text-xs text-slate-500">
-                How many completed / delivered orders unlock this reward.
+              <span className="mt-1 block text-xs leading-5 text-slate-500 break-words">
+                How many completed / delivered orders (or days) unlock this reward.
               </span>
             </label>
-            <label className="block">
+            )}
+            <label className="block min-w-0">
               <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">
-                {userType === "customer" ? "Referrer GatiCash (₹)" : rewardLabel}
+                {referrerLabel}
               </span>
               <input
                 type="number"
@@ -296,82 +405,86 @@ function RuleFormModal({
                 value={amount}
                 onChange={(e) => setAmount(e.target.value)}
                 disabled={busy}
+                placeholder="Exact ₹ from Super Admin"
               />
-              <span className="mt-1 block text-xs text-slate-500">
-                {userType === "customer"
-                  ? "Amount credited to the person who shared the link."
-                  : "Credited to rider wallet (withdrawable)."}
+              <span className="mt-1 block text-xs leading-5 text-slate-500 break-words">
+                Amount credited to the person who shared the link. Apps never override this.
               </span>
             </label>
+            {alsoCreditReferred && (
+            <label className="block min-w-0 md:col-span-2">
+              <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                {referredLabel}
+              </span>
+              <input
+                type="number"
+                min={0}
+                step={1}
+                className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:border-teal-500 focus:outline-none focus:ring-1 focus:ring-teal-500"
+                value={referredAmount}
+                onChange={(e) => setReferredAmount(e.target.value)}
+                disabled={busy}
+                placeholder="Exact ₹ for the referred party"
+              />
+              <span className="mt-1 block text-xs leading-5 text-slate-500 break-words">
+                Amount credited to the invited {userType}.
+              </span>
+            </label>
+            )}
           </div>
 
-          {userType === "customer" && (
-            <>
-              <div className="flex items-start justify-between gap-4 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
-                <div>
-                  <p className="text-sm font-medium text-slate-800">Also reward referred friend</p>
-                  <p className="mt-0.5 text-xs text-slate-500">
-                    {alsoCreditReferred
-                      ? "Friend also gets GatiCash on first qualifying order."
-                      : "Only the referrer is credited."}
-                  </p>
-                </div>
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+            <div className="flex min-w-0 items-start justify-between gap-3 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+              <div className="min-w-0 flex-1">
+                <p className="text-sm font-medium text-slate-800 break-words">Also reward referred {userType}</p>
+                <p className="mt-0.5 text-xs leading-5 text-slate-500 break-words">
+                  {alsoCreditReferred
+                    ? `Both sides receive ${rewardNoun} from the same logical reward event.`
+                    : "Only the referrer is credited."}
+                </p>
+              </div>
+              <div className="shrink-0 pt-0.5">
                 <Toggle
                   checked={alsoCreditReferred}
                   onChange={setAlsoCreditReferred}
                   disabled={busy}
                 />
               </div>
-              {alsoCreditReferred && (
-                <label className="block">
-                  <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">
-                    Friend GatiCash (₹)
-                  </span>
-                  <input
-                    type="number"
-                    min={0}
-                    step={1}
-                    className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:border-teal-500 focus:outline-none focus:ring-1 focus:ring-teal-500"
-                    value={referredAmount}
-                    onChange={(e) => setReferredAmount(e.target.value)}
-                    disabled={busy}
-                  />
-                  <span className="mt-1 block text-xs text-slate-500">
-                    Amount credited to the invited customer.
-                  </span>
-                </label>
-              )}
-            </>
-          )}
-
-          <div className="flex items-start justify-between gap-4 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
-            <div>
-              <p className="text-sm font-medium text-slate-800">Rule active</p>
-              <p className="mt-0.5 text-xs text-slate-500">
-                {active
-                  ? "This rule is evaluated when events match."
-                  : "Rule is kept in history but will not grant rewards."}
-              </p>
             </div>
-            <Toggle checked={active} onChange={setActive} disabled={busy} />
-          </div>
-
-          {userType === "rider" && (
-            <div className="flex items-start justify-between gap-4 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
-              <div>
-                <p className="text-sm font-medium text-slate-800">Require KYC for this milestone</p>
-                <p className="mt-0.5 text-xs text-slate-500">
-                  {requireKyc
-                    ? "Reward waits until rider KYC is approved."
-                    : "Order count alone is enough for this milestone."}
+            <div className="flex min-w-0 items-start justify-between gap-3 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+              <div className="min-w-0 flex-1">
+                <p className="text-sm font-medium text-slate-800 break-words">Rule active</p>
+                <p className="mt-0.5 text-xs leading-5 text-slate-500 break-words">
+                  {active
+                    ? "This rule is evaluated when events match."
+                    : "Rule is kept in history but will not grant rewards."}
                 </p>
               </div>
-              <Toggle checked={requireKyc} onChange={setRequireKyc} disabled={busy} />
+              <div className="shrink-0 pt-0.5">
+                <Toggle checked={active} onChange={setActive} disabled={busy} />
+              </div>
             </div>
-          )}
+            {(userType === "rider" || userType === "merchant") && (
+              <div className="flex min-w-0 items-start justify-between gap-3 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 md:col-span-2">
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm font-medium text-slate-800 break-words">
+                    {userType === "merchant" ? "Require store approval / KYC" : "Require KYC for this milestone"}
+                  </p>
+                  <p className="mt-0.5 text-xs leading-5 text-slate-500 break-words">
+                    {requireKyc
+                      ? "Reward waits until KYC / store approval is complete."
+                      : "The qualifying event alone is enough for this rule."}
+                  </p>
+                </div>
+                <div className="shrink-0 pt-0.5">
+                  <Toggle checked={requireKyc} onChange={setRequireKyc} disabled={busy} />
+                </div>
+              </div>
+            )}
+          </div>
         </div>
 
-        <div className="flex flex-col-reverse gap-2 border-t border-gray-100 bg-gray-50/80 px-4 py-3 sm:flex-row sm:justify-end sm:px-5">
+        <div className="flex shrink-0 flex-col-reverse gap-2 border-t border-gray-100 bg-gray-50/80 px-4 py-3 sm:flex-row sm:justify-end sm:px-6">
           <button
             type="button"
             onClick={() => !busy && onClose()}
@@ -384,39 +497,35 @@ function RuleFormModal({
             type="button"
             disabled={busy}
             onClick={() => {
-              const milestone = Number(qty);
+              const milestone = Number(qty || 0);
               const reward = Number(amount);
               const referred = Number(referredAmount);
               if (!name.trim()) {
                 setLocalError("Name is required");
                 return;
               }
-              if (!Number.isFinite(milestone) || milestone < 0) {
-                setLocalError("Enter a valid order quantity");
+              if (countNeeded && (!Number.isFinite(milestone) || milestone < 0)) {
+                setLocalError("Enter a valid order / day quantity");
                 return;
               }
               if (!Number.isFinite(reward) || reward < 0) {
-                setLocalError("Enter a valid reward amount");
+                setLocalError("Enter a valid referrer reward amount");
                 return;
               }
-              if (
-                userType === "customer" &&
-                alsoCreditReferred &&
-                (!Number.isFinite(referred) || referred < 0)
-              ) {
-                setLocalError("Enter a valid friend reward amount");
+              if (alsoCreditReferred && (!Number.isFinite(referred) || referred < 0)) {
+                setLocalError("Enter a valid referred-party reward amount");
                 return;
               }
               setLocalError(null);
               void onSave({
                 name: name.trim(),
-                milestone_orders: Math.floor(milestone),
+                milestone_orders: countNeeded ? Math.floor(milestone) : 0,
                 reward_amount: reward,
-                referred_reward_amount:
-                  userType === "customer" && alsoCreditReferred ? referred : null,
-                also_credit_referred: userType === "customer" ? alsoCreditReferred : false,
+                referred_reward_amount: alsoCreditReferred ? referred : null,
+                also_credit_referred: alsoCreditReferred,
                 active,
                 require_kyc: requireKyc,
+                event_type: userType === "merchant" ? eventType || "STORE_APPROVED" : null,
               });
             }}
             className="inline-flex items-center justify-center gap-2 rounded-lg bg-teal-600 px-4 py-2 text-sm font-medium text-white hover:bg-teal-700 disabled:opacity-60"
@@ -438,7 +547,9 @@ export function ReferralEngineAdminClient() {
   const [settings, setSettings] = useState<Settings | null>(null);
   const [rules, setRules] = useState<Rule[]>([]);
   const [analytics, setAnalytics] = useState<Analytics | null>(null);
-  const [tab, setTab] = useState<"settings" | "customer" | "rider" | "analytics">("settings");
+  const [tab, setTab] = useState<"settings" | "customer" | "rider" | "merchant" | "analytics">(
+    "settings",
+  );
   const [ruleModal, setRuleModal] = useState<RuleModalState>(null);
   const [deleteTarget, setDeleteTarget] = useState<Rule | null>(null);
   const [deleteBusy, setDeleteBusy] = useState(false);
@@ -492,11 +603,24 @@ export function ReferralEngineAdminClient() {
           rider_referral_enabled: Boolean(settings.rider_referral_enabled),
           customer_reward_enabled: Boolean(settings.customer_reward_enabled),
           rider_reward_enabled: Boolean(settings.rider_reward_enabled),
+          merchant_referral_enabled: Boolean(settings.merchant_referral_enabled),
+          merchant_reward_enabled: Boolean(settings.merchant_reward_enabled),
           auto_apply_enabled: Boolean(settings.auto_apply_enabled),
           require_kyc: Boolean(settings.require_kyc),
           first_order_only: Boolean(settings.first_order_only),
+          referral_expiry_enabled: Boolean(settings.referral_expiry_enabled),
+          reward_mode:
+            settings.reward_mode === "highest_only" ? "highest_only" : "incremental",
           min_order_amount: Number(settings.min_order_amount),
           monthly_reward_cap: Number(settings.monthly_reward_cap),
+          campaign_budget:
+            settings.campaign_budget === "" || settings.campaign_budget == null
+              ? null
+              : Number(settings.campaign_budget),
+          max_successful_referrals:
+            settings.max_successful_referrals === "" || settings.max_successful_referrals == null
+              ? null
+              : Number(settings.max_successful_referrals),
           currency: String(settings.currency || "INR"),
           referral_validity_days:
             settings.referral_validity_days != null
@@ -514,6 +638,20 @@ export function ReferralEngineAdminClient() {
               : undefined,
           code_prefix_rider:
             settings.code_prefix_rider != null ? String(settings.code_prefix_rider) : undefined,
+          code_prefix_merchant:
+            settings.code_prefix_merchant != null
+              ? String(settings.code_prefix_merchant)
+              : undefined,
+          merchant_qualification_scope:
+            settings.merchant_qualification_scope === "SINGLE_STORE" ||
+            settings.merchant_qualification_scope === "SELECTED_STORES"
+              ? settings.merchant_qualification_scope
+              : "ALL_CHILD_STORES",
+          merchant_qualification_store_ids: Array.isArray(settings.merchant_qualification_store_ids)
+            ? (settings.merchant_qualification_store_ids as unknown[])
+                .map((v) => Number(v))
+                .filter((n) => Number.isFinite(n) && n > 0)
+            : [],
         }),
       });
       const data = await res.json();
@@ -567,24 +705,37 @@ export function ReferralEngineAdminClient() {
     also_credit_referred?: boolean;
     active: boolean;
     require_kyc: boolean;
+    event_type?: string | null;
   }) {
     if (!ruleModal) return;
     setModalBusy(true);
     setError(null);
     try {
       if (ruleModal.mode === "create") {
-        const code = `RIDER_M${values.milestone_orders}_${Date.now().toString(36).toUpperCase()}`;
+        const userType = ruleModal.userType;
+        const prefix =
+          userType === "merchant" ? "MX" : userType === "customer" ? "CUST" : "RIDER_M";
+        const code = `${prefix}${values.milestone_orders}_${Date.now().toString(36).toUpperCase()}`;
         const res = await fetch("/api/super-admin/referral/rules", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            user_type: "rider",
+            user_type: userType,
             rule_code: code,
             name: values.name,
             milestone_orders: values.milestone_orders,
             reward_amount: values.reward_amount,
-            reward_type: "WALLET_CREDIT",
+            reward_type: userType === "customer" ? "GATICASH" : "WALLET_CREDIT",
+            also_credit_referred: values.also_credit_referred ?? false,
+            referred_reward_amount: values.referred_reward_amount ?? null,
             require_kyc: values.require_kyc,
+            event_type:
+              values.event_type ||
+              (userType === "merchant"
+                ? "STORE_APPROVED"
+                : userType === "customer"
+                  ? "FIRST_ORDER_DELIVERED"
+                  : "ORDER_DELIVERED_COUNT"),
             active: values.active,
             priority: values.milestone_orders,
           }),
@@ -603,6 +754,7 @@ export function ReferralEngineAdminClient() {
             also_credit_referred: values.also_credit_referred,
             active: values.active,
             require_kyc: values.require_kyc,
+            event_type: values.event_type,
             priority: values.milestone_orders,
           }),
         });
@@ -620,6 +772,7 @@ export function ReferralEngineAdminClient() {
 
   const customerRules = rules.filter((r) => r.user_type === "customer");
   const riderRules = rules.filter((r) => r.user_type === "rider");
+  const merchantRules = rules.filter((r) => r.user_type === "merchant");
 
   const modalInitial =
     ruleModal?.mode === "edit"
@@ -630,24 +783,31 @@ export function ReferralEngineAdminClient() {
           referred_reward_amount:
             ruleModal.rule.referred_reward_amount != null
               ? Number(ruleModal.rule.referred_reward_amount)
-              : Number(ruleModal.rule.reward_amount),
+              : null,
           also_credit_referred: Boolean(ruleModal.rule.also_credit_referred),
           active: ruleModal.rule.active,
           require_kyc: Boolean(ruleModal.rule.require_kyc ?? true),
+          event_type: ruleModal.rule.event_type ?? null,
         }
       : {
-          name: "250 completed orders",
-          milestone_orders: 250,
-          reward_amount: 2500,
+          name: "",
+          milestone_orders: 0,
+          reward_amount: 0,
           referred_reward_amount: null,
-          also_credit_referred: false,
+          also_credit_referred: true,
           active: true,
           require_kyc: true,
+          event_type:
+            ruleModal?.userType === "merchant"
+              ? "STORE_APPROVED"
+              : ruleModal?.userType === "customer"
+                ? "FIRST_ORDER_DELIVERED"
+                : "ORDER_DELIVERED_COUNT",
         };
 
-  const modalUserType =
+  const modalUserType: ParticipantType =
     ruleModal?.mode === "edit"
-      ? (ruleModal.rule.user_type as "customer" | "rider")
+      ? (ruleModal.rule.user_type as ParticipantType)
       : ruleModal?.userType ?? "rider";
 
   return (
@@ -659,7 +819,8 @@ export function ReferralEngineAdminClient() {
             Referral & Rewards
           </h1>
           <p className="mt-1 text-sm text-slate-500">
-            Database-driven engine for customer GatiCash and rider wallet milestones. Config version{" "}
+            Database-driven engine for customer GatiCash, rider wallet, and merchant wallet
+            referrals. Config version{" "}
             <span className="font-mono">{String(settings?.config_version ?? "—")}</span>
           </p>
         </div>
@@ -688,6 +849,7 @@ export function ReferralEngineAdminClient() {
             ["settings", "Settings"],
             ["customer", "Customer rules"],
             ["rider", "Rider milestones"],
+            ["merchant", "Merchant rules"],
             ["analytics", "Analytics"],
           ] as const
         ).map(([id, label]) => (
@@ -712,6 +874,46 @@ export function ReferralEngineAdminClient() {
         <>
           {tab === "settings" && settings && (
             <div className="space-y-6">
+              <section className="space-y-3">
+                <div>
+                  <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-700">
+                    Referral Services
+                  </h2>
+                  <p className="mt-1 text-xs text-slate-500">
+                    Independent database-backed toggles. OFF blocks new referral applications
+                    and code generation for that audience only. Existing relationships and
+                    already-earned rewards are not deleted.
+                  </p>
+                </div>
+                <div className="grid gap-3 md:grid-cols-3">
+                  {SERVICE_TOGGLES.map(({ key, label, helper }) => {
+                    const on = Boolean(settings[key]);
+                    return (
+                      <div
+                        key={key}
+                        className="flex items-start justify-between gap-4 rounded-xl border border-slate-200 bg-white px-4 py-3"
+                      >
+                        <div className="min-w-0">
+                          <p className="text-sm font-medium text-slate-800">{label}</p>
+                          <p
+                            className={`mt-1 text-xs font-semibold ${
+                              on ? "text-emerald-700" : "text-red-600"
+                            }`}
+                          >
+                            {on ? "Referral service active" : "Referral service disabled"}
+                          </p>
+                          <p className="mt-1 text-xs leading-relaxed text-slate-500">{helper}</p>
+                        </div>
+                        <Toggle
+                          checked={on}
+                          onChange={(v) => setSettings({ ...settings, [key]: v })}
+                        />
+                      </div>
+                    );
+                  })}
+                </div>
+              </section>
+
               <div className="grid gap-3 md:grid-cols-2">
                 {SETTING_TOGGLES.map(({ key, label, onText, offText }) => {
                   const on = Boolean(settings[key]);
@@ -734,6 +936,68 @@ export function ReferralEngineAdminClient() {
                   );
                 })}
               </div>
+
+              <section className="space-y-3 rounded-xl border border-slate-200 bg-white px-4 py-4">
+                <div>
+                  <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-700">
+                    Merchant qualification scope
+                  </h2>
+                  <p className="mt-1 text-xs text-slate-500">
+                    Parent merchant qualification. Child stores never receive a separate merchant
+                    referral reward. Default aggregates every eligible child store.
+                  </p>
+                </div>
+                <label className="block">
+                  <span className="text-xs font-semibold uppercase text-slate-500">
+                    Qualification scope
+                  </span>
+                  <select
+                    className="mt-1 w-full rounded-md border border-slate-200 px-3 py-2 text-sm"
+                    value={String(settings.merchant_qualification_scope ?? "ALL_CHILD_STORES")}
+                    onChange={(e) =>
+                      setSettings({
+                        ...settings,
+                        merchant_qualification_scope: e.target.value,
+                      })
+                    }
+                  >
+                    <option value="ALL_CHILD_STORES">ALL_CHILD_STORES — sum all child stores</option>
+                    <option value="SINGLE_STORE">
+                      SINGLE_STORE — count the strongest single child store
+                    </option>
+                    <option value="SELECTED_STORES">
+                      SELECTED_STORES — sum only listed store IDs
+                    </option>
+                  </select>
+                </label>
+                {String(settings.merchant_qualification_scope) === "SELECTED_STORES" ? (
+                  <label className="block">
+                    <span className="text-xs font-semibold uppercase text-slate-500">
+                      Eligible child store IDs
+                    </span>
+                    <input
+                      type="text"
+                      className="mt-1 w-full rounded-md border border-slate-200 px-3 py-2 text-sm font-mono"
+                      placeholder="12, 45, 88"
+                      value={(Array.isArray(settings.merchant_qualification_store_ids)
+                        ? (settings.merchant_qualification_store_ids as unknown[])
+                        : []
+                      ).join(", ")}
+                      onChange={(e) => {
+                        const ids = e.target.value
+                          .split(/[,\s]+/)
+                          .map((part) => Number(part.trim()))
+                          .filter((n) => Number.isFinite(n) && n > 0);
+                        setSettings({ ...settings, merchant_qualification_store_ids: ids });
+                      }}
+                    />
+                    <span className="mt-1 block text-xs text-slate-500">
+                      Numeric merchant_stores.id values. Only these stores contribute toward the
+                      referred parent merchant’s progress.
+                    </span>
+                  </label>
+                ) : null}
+              </section>
 
               <div className="grid gap-4 md:grid-cols-2">
                 <label className="rounded-xl border border-slate-200 bg-white px-4 py-3">
@@ -845,6 +1109,114 @@ export function ReferralEngineAdminClient() {
                     </span>
                   </label>
                 )}
+                <label className="rounded-xl border border-slate-200 bg-white px-4 py-3">
+                  <span className="text-xs font-semibold uppercase text-slate-500">
+                    Merchant code prefix
+                  </span>
+                  <input
+                    type="text"
+                    className="mt-1 w-full rounded-md border border-slate-200 px-3 py-2 text-sm uppercase"
+                    value={String(settings.code_prefix_merchant ?? "MX")}
+                    onChange={(e) =>
+                      setSettings({
+                        ...settings,
+                        code_prefix_merchant: e.target.value.toUpperCase(),
+                      })
+                    }
+                  />
+                  <span className="mt-1 block text-xs text-slate-500">
+                    Prefix for newly generated merchant codes only. Existing codes are never changed.
+                  </span>
+                </label>
+                <label className="rounded-xl border border-slate-200 bg-white px-4 py-3">
+                  <span className="text-xs font-semibold uppercase text-slate-500">
+                    Milestone reward mode
+                  </span>
+                  <select
+                    className="mt-1 w-full rounded-md border border-slate-200 px-3 py-2 text-sm"
+                    value={settings.reward_mode === "highest_only" ? "highest_only" : "incremental"}
+                    onChange={(e) =>
+                      setSettings({ ...settings, reward_mode: e.target.value })
+                    }
+                  >
+                    <option value="incremental">Incremental (each milestone once)</option>
+                    <option value="highest_only">Highest milestone only</option>
+                  </select>
+                  <span className="mt-1 block text-xs text-slate-500">
+                    Incremental pays every reached milestone. Highest-only pays the top achieved tier.
+                  </span>
+                </label>
+                <label className="rounded-xl border border-slate-200 bg-white px-4 py-3">
+                  <span className="text-xs font-semibold uppercase text-slate-500">
+                    Max successful referrals
+                  </span>
+                  <input
+                    type="number"
+                    min={0}
+                    className="mt-1 w-full rounded-md border border-slate-200 px-3 py-2 text-sm"
+                    value={
+                      settings.max_successful_referrals == null
+                        ? ""
+                        : String(settings.max_successful_referrals)
+                    }
+                    onChange={(e) =>
+                      setSettings({
+                        ...settings,
+                        max_successful_referrals: e.target.value === "" ? null : Number(e.target.value),
+                      })
+                    }
+                    placeholder="Unlimited"
+                  />
+                  <span className="mt-1 block text-xs text-slate-500">
+                    Leave empty for unlimited successful referrals per referrer.
+                  </span>
+                </label>
+                <label className="rounded-xl border border-slate-200 bg-white px-4 py-3">
+                  <span className="text-xs font-semibold uppercase text-slate-500">
+                    Campaign budget (₹)
+                  </span>
+                  <input
+                    type="number"
+                    min={0}
+                    className="mt-1 w-full rounded-md border border-slate-200 px-3 py-2 text-sm"
+                    value={
+                      settings.campaign_budget == null ? "" : String(settings.campaign_budget)
+                    }
+                    onChange={(e) =>
+                      setSettings({
+                        ...settings,
+                        campaign_budget: e.target.value === "" ? null : Number(e.target.value),
+                      })
+                    }
+                    placeholder="No campaign cap"
+                  />
+                  <span className="mt-1 block text-xs text-slate-500">
+                    Maximum combined referrer + referred payout. Leave empty for no cap.
+                    Server-enforced — concurrent credits cannot exceed this amount.
+                  </span>
+                  {analytics?.totals?.campaignBudget != null && (
+                    <div className="mt-2 grid grid-cols-3 gap-2 text-xs">
+                      <div className="rounded-md bg-slate-50 px-2 py-1.5">
+                        <p className="text-slate-500">Consumed</p>
+                        <p className="font-semibold tabular-nums text-slate-800">
+                          ₹{analytics.totals.campaignBudgetConsumed ?? 0}
+                        </p>
+                      </div>
+                      <div className="rounded-md bg-slate-50 px-2 py-1.5">
+                        <p className="text-slate-500">Remaining</p>
+                        <p className="font-semibold tabular-nums text-slate-800">
+                          ₹{analytics.totals.campaignBudgetRemaining ?? 0}
+                        </p>
+                      </div>
+                      <div className="rounded-md bg-slate-50 px-2 py-1.5">
+                        <p className="text-slate-500">Status</p>
+                        <p className={`font-semibold ${analytics.totals.campaignBudgetExhausted ? "text-red-600" : "text-emerald-700"}`}>
+                          {analytics.totals.campaignBudgetExhausted ? "Exhausted" : "Open"}
+                        </p>
+                      </div>
+                    </div>
+                  )}
+                </label>
               </div>
             </div>
           )}
@@ -902,7 +1274,71 @@ export function ReferralEngineAdminClient() {
                   <div>
                     <p className="font-semibold text-slate-900">{rule.name}</p>
                     <p className="text-xs text-slate-500">
-                      {rule.rule_code} · {rule.milestone_orders} orders · ₹{rule.reward_amount} wallet
+                      {rule.rule_code} · {rule.milestone_orders} orders · referrer ₹
+                      {rule.reward_amount}
+                      {rule.also_credit_referred
+                        ? ` · referred ₹${rule.referred_reward_amount ?? rule.reward_amount}`
+                        : ""}
+                      {!rule.active ? " · inactive" : ""}
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <Toggle checked={rule.active} onChange={() => void toggleRule(rule)} />
+                    <button
+                      type="button"
+                      className="rounded-lg border border-slate-200 px-3 py-1.5 text-sm font-medium hover:bg-slate-50"
+                      onClick={() => setRuleModal({ mode: "edit", rule })}
+                    >
+                      Edit
+                    </button>
+                    <button
+                      type="button"
+                      className="rounded-lg border border-red-200 px-3 py-1.5 text-sm text-red-700 hover:bg-red-50"
+                      onClick={() => setDeleteTarget(rule)}
+                      aria-label={`Delete ${rule.rule_code}`}
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {tab === "merchant" && (
+            <div className="space-y-3">
+              <div className="flex items-start justify-between gap-3">
+                <p className="text-sm text-slate-500">
+                  Merchant rewards are wallet credits. Configure the qualifying event and exact
+                  amounts here — apps only display what the backend returns.
+                </p>
+                <button
+                  type="button"
+                  onClick={() => setRuleModal({ mode: "create", userType: "merchant" })}
+                  className="inline-flex shrink-0 items-center gap-2 rounded-lg bg-teal-600 px-3 py-2 text-sm font-semibold text-white"
+                >
+                  <Plus className="h-4 w-4" /> Add merchant rule
+                </button>
+              </div>
+              {merchantRules.length === 0 ? (
+                <p className="rounded-xl border border-dashed border-slate-200 bg-slate-50 px-4 py-6 text-sm text-slate-500">
+                  No merchant rules yet. Add a rule to start two-sided merchant referrals.
+                </p>
+              ) : null}
+              {merchantRules.map((rule) => (
+                <div
+                  key={rule.id}
+                  className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white px-4 py-3"
+                >
+                  <div>
+                    <p className="font-semibold text-slate-900">{rule.name}</p>
+                    <p className="text-xs text-slate-500">
+                      {rule.rule_code} · {rule.event_type || "STORE_APPROVED"}
+                      {rule.milestone_orders ? ` · ${rule.milestone_orders}` : ""} · referrer ₹
+                      {rule.reward_amount}
+                      {rule.also_credit_referred
+                        ? ` · referred ₹${rule.referred_reward_amount ?? rule.reward_amount}`
+                        : ""}
                       {!rule.active ? " · inactive" : ""}
                     </p>
                   </div>
@@ -940,9 +1376,19 @@ export function ReferralEngineAdminClient() {
                   ["Conversion %", analytics.totals.conversionRate],
                   ["Reward distributed ₹", analytics.totals.rewardDistributed],
                   [
-                    "Customer / Rider",
-                    `${analytics.totals.customerReferrals} / ${analytics.totals.riderReferrals}`,
+                    "Customer / Rider / Merchant",
+                    `${analytics.totals.customerReferrals} / ${analytics.totals.riderReferrals} / ${analytics.totals.merchantReferrals ?? 0}`,
                   ],
+                  ["Campaign budget ₹", analytics.totals.campaignBudget ?? "Unlimited"],
+                  ["Budget consumed ₹", analytics.totals.campaignBudgetConsumed ?? analytics.totals.rewardDistributed],
+                  ["Budget remaining ₹", analytics.totals.campaignBudgetRemaining ?? "—"],
+                  [
+                    "Budget status",
+                    analytics.totals.campaignBudgetExhausted ? "Exhausted" : "Open",
+                  ],
+                  ["Referrer rewards ₹", analytics.totals.referrerRewardAmount ?? 0],
+                  ["Referred-user rewards ₹", analytics.totals.referredRewardAmount ?? 0],
+                  ["Expired", analytics.totals.expiredReferrals ?? 0],
                 ].map(([label, value]) => (
                   <div
                     key={String(label)}
@@ -968,6 +1414,41 @@ export function ReferralEngineAdminClient() {
                         <p className="text-lg font-bold tabular-nums">{v}</p>
                       </div>
                     ))}
+                  </div>
+                </div>
+              )}
+
+              {analytics.merchantParents && analytics.merchantParents.length > 0 && (
+                <div>
+                  <h3 className="mb-2 text-sm font-semibold text-slate-800">
+                    Merchant parent referrals
+                  </h3>
+                  <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white">
+                    <table className="min-w-full text-left text-sm">
+                      <thead className="bg-slate-50 text-xs uppercase text-slate-500">
+                        <tr>
+                          <th className="px-3 py-2">Referrer parent</th>
+                          <th className="px-3 py-2">Referred parent</th>
+                          <th className="px-3 py-2">Child stores</th>
+                          <th className="px-3 py-2">Progress</th>
+                          <th className="px-3 py-2">Status</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {analytics.merchantParents.map((row) => (
+                          <tr key={row.id} className="border-t border-slate-100">
+                            <td className="px-3 py-2">{row.referrer_parent || "—"}</td>
+                            <td className="px-3 py-2">{row.referred_parent || "—"}</td>
+                            <td className="px-3 py-2 tabular-nums">{row.child_store_count ?? 0}</td>
+                            <td className="px-3 py-2 tabular-nums">{row.completed_orders ?? 0}</td>
+                            <td className="px-3 py-2">
+                              {row.status}
+                              {row.reward_status ? ` · ${row.reward_status}` : ""}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
                   </div>
                 </div>
               )}
@@ -1017,9 +1498,9 @@ export function ReferralEngineAdminClient() {
         open={ruleModal != null}
         title={
           ruleModal?.mode === "create"
-            ? "Add rider milestone"
+            ? `Add ${ruleModal.userType} rule`
             : ruleModal?.mode === "edit"
-              ? `Edit ${ruleModal.rule.user_type === "customer" ? "customer rule" : "milestone"}`
+              ? `Edit ${ruleModal.rule.user_type} rule`
               : "Edit rule"
         }
         initial={modalInitial}

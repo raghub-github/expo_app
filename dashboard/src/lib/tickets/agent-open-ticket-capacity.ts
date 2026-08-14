@@ -39,6 +39,23 @@ export type AgentCapacityCheck =
   | { ok: true; open: number; effectiveCap: number }
   | { ok: false; open: number; effectiveCap: number; reason: string };
 
+export async function isAgentOnlineForAssignment(
+  sql: SqlClient,
+  agentUserId: number
+): Promise<boolean> {
+  const rows = (await sql`
+    SELECT is_online, current_status::text AS current_status
+    FROM public.agent_profiles
+    WHERE user_id = ${agentUserId}
+    ORDER BY updated_at DESC NULLS LAST, id DESC
+    LIMIT 1
+  `) as { is_online?: boolean; current_status?: string | null }[];
+  const r = rows[0];
+  if (!r) return false;
+  const online = r.is_online === true || r.is_online === ("t" as unknown as boolean);
+  return online && String(r.current_status ?? "").trim().toLowerCase() === "online";
+}
+
 export async function checkAgentOpenTicketCapacity(
   sql: SqlClient,
   agentUserId: number

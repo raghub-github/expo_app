@@ -28,6 +28,7 @@ import {
   setParentOnboardingProgress,
   setParentOnboardingSubtitle,
 } from "@/lib/parent-onboarding-chrome";
+import { MerchantReferralCodeField, type MerchantReferralCodeFieldHandle } from "@/components/merchant/MerchantReferralCodeField";
 
 const EMAIL_OTP_LENGTH = 8;
 const PHONE_OTP_LENGTH = 6;
@@ -406,6 +407,13 @@ export function RegisterParentClient() {
   const [storeLogoFile, setStoreLogoFile] = useState<File | null>(null);
   const [logoPreviewUrl, setLogoPreviewUrl] = useState<string | null>(null);
   const [registerSuccess, setRegisterSuccess] = useState(false);
+  const [referralCode, setReferralCode] = useState("");
+  const [referralApplied, setReferralApplied] = useState(false);
+  const [referralFromName, setReferralFromName] = useState<string | null>(null);
+  const [referralInviteeLine, setReferralInviteeLine] = useState<string | null>(null);
+  const [referralError, setReferralError] = useState<string | null>(null);
+  const [referralServiceAvailable, setReferralServiceAvailable] = useState(true);
+  const referralFieldRef = useRef<MerchantReferralCodeFieldHandle>(null);
   const logoInputRef = useRef<HTMLInputElement>(null);
   const otpInputRefs = useRef<(HTMLInputElement | null)[]>([]);
   const phoneOtpInputRefs = useRef<(HTMLInputElement | null)[]>([]);
@@ -449,6 +457,7 @@ export function RegisterParentClient() {
           step,
           form,
           supabase_user_id: verifiedSupabaseUserId,
+          referralCode,
         })
       );
     } catch {
@@ -462,6 +471,7 @@ export function RegisterParentClient() {
     verifiedSupabaseUserId,
     primaryNumberVerified,
     showDraftChoice,
+    referralCode,
   ]);
 
   // Email resend cooldown
@@ -940,6 +950,15 @@ export function RegisterParentClient() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!validateProfile()) return;
+    let validatedReferralCode: string | undefined;
+    if (referralServiceAvailable) {
+      const checked = await referralFieldRef.current?.verify();
+      if (checked && !checked.ok) {
+        setError("Please enter a valid referral code, or leave it blank.");
+        return;
+      }
+      validatedReferralCode = checked?.ok ? checked.code ?? undefined : undefined;
+    }
     setError(null);
     setLoading(true);
     try {
@@ -972,6 +991,7 @@ export function RegisterParentClient() {
         fd.set("pincode", form.pincode?.trim() ?? "");
         if (verifiedSupabaseUserId)
           fd.set("supabase_user_id", verifiedSupabaseUserId);
+        if (validatedReferralCode) fd.set("referralCode", validatedReferralCode);
         fd.set("store_logo", storeLogoFile);
         const res = await fetch(
           "/api/area-manager/parent-merchant/register",
@@ -1005,6 +1025,7 @@ export function RegisterParentClient() {
           pincode: form.pincode?.trim(),
           store_logo: form.store_logo?.trim() || undefined,
           supabase_user_id: verifiedSupabaseUserId ?? undefined,
+          referralCode: validatedReferralCode,
         };
         const res = await fetch(
           "/api/area-manager/parent-merchant/register",
@@ -1059,6 +1080,9 @@ export function RegisterParentClient() {
           restoredForm.business_category = "OTHER";
         }
         setForm(restoredForm);
+        if (typeof draft.referralCode === "string" && draft.referralCode.trim()) {
+          setReferralCode(String(draft.referralCode).trim().toUpperCase());
+        }
         setPrimaryNumberVerified(!!draft.primaryNumberVerified);
         let nextStep: StepType = "phone";
         if (isValidStep(draft.step)) {
@@ -1707,8 +1731,8 @@ export function RegisterParentClient() {
                       <div
                         className={`grid grid-cols-1 gap-x-4 gap-y-4 ${
                           form.business_category === "OTHER"
-                            ? "sm:grid-cols-2 lg:grid-cols-3"
-                            : "sm:grid-cols-2"
+                            ? "sm:grid-cols-2 lg:grid-cols-4"
+                            : "sm:grid-cols-2 lg:grid-cols-3"
                         }`}
                       >
                         <div>
@@ -1763,6 +1787,49 @@ export function RegisterParentClient() {
                             />
                           </IconWrap>
                         </div>
+                        <MerchantReferralCodeField
+                          ref={referralFieldRef}
+                          value={referralCode}
+                          onChange={setReferralCode}
+                          applied={referralApplied}
+                          appliedFromName={referralFromName}
+                          inviteeRewardLine={referralInviteeLine}
+                          error={referralError}
+                          onServiceAvailableChange={(available) => {
+                            setReferralServiceAvailable(available);
+                            if (!available) {
+                              setReferralApplied(false);
+                              setReferralCode("");
+                              setReferralFromName(null);
+                              setReferralError(null);
+                            } else {
+                              setReferralError(null);
+                            }
+                          }}
+                          onApplied={(preview) => {
+                            if (!preview.ok) {
+                              setReferralApplied(false);
+                              setReferralFromName(null);
+                              setReferralInviteeLine(null);
+                              setReferralError(
+                                preview.message ??
+                                  "Invalid referral code. Please check the code and try again.",
+                              );
+                              return;
+                            }
+                            setReferralCode(preview.code || referralCode);
+                            setReferralApplied(true);
+                            setReferralFromName(preview.referrerDisplayName ?? null);
+                            setReferralInviteeLine(preview.inviteeRewardLine ?? null);
+                            setReferralError(null);
+                          }}
+                          onCleared={() => {
+                            setReferralApplied(false);
+                            setReferralFromName(null);
+                            setReferralInviteeLine(null);
+                            setReferralError(null);
+                          }}
+                        />
                       </div>
 
                       <div className="space-y-5">

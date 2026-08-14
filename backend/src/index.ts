@@ -716,6 +716,42 @@ await app.register(offersInternalRoutes, { prefix: "/v1/internal" });
 const { weatherInternalRoutes } = await import("./modules/weather/weather.routes.js");
 await app.register(weatherInternalRoutes, { prefix: "/v1/internal" });
 
+app.post<{ Body: { party?: string; action?: string; riderId?: number; storeId?: number; reason?: string | null } }>(
+  "/v1/internal/wallet-freeze-notify",
+  async (req, reply) => {
+    const secret = process.env.BACKEND_SCHEDULE_TICK_SECRET;
+    if (!secret || (req.headers["x-internal-secret"] as string) !== secret) {
+      return reply.code(401).send({ error: "unauthorized" });
+    }
+    const body = (req.body ?? {}) as {
+      party?: string;
+      action?: string;
+      riderId?: number;
+      storeId?: number;
+      reason?: string | null;
+    };
+    const party = body.party === "merchant" ? "merchant" : body.party === "rider" ? "rider" : null;
+    const action = body.action === "unfreeze" ? "unfreeze" : body.action === "freeze" ? "freeze" : null;
+    if (!party || !action) {
+      return reply.code(400).send({ error: "party and action required" });
+    }
+    try {
+      const { notifyWalletFreezeChange } = await import("./lib/notify-wallet-freeze.js");
+      await notifyWalletFreezeChange({
+        party,
+        action,
+        riderId: Number(body.riderId) || undefined,
+        storeId: Number(body.storeId) || undefined,
+        reason: typeof body.reason === "string" ? body.reason : null,
+      });
+      return reply.send({ ok: true });
+    } catch (e) {
+      req.log.error({ err: e }, "wallet_freeze_notify_failed");
+      return reply.code(500).send({ error: "notify_failed" });
+    }
+  },
+);
+
 app.post<{ Params: { riderId: string } }>(
   "/v1/internal/riders/:riderId/vehicle-verified-notify",
   async (req, reply) => {
@@ -878,7 +914,7 @@ try {
    */
   if (env.DISABLE_BACKGROUND_JOBS) {
     app.log.warn(
-      "All background ticks disabled via DISABLE_BACKGROUND_JOBS (reduces local DB pool load)"
+      "All background ticks disabled via DISABLE_BACKGROUND_JOBS (reduces local DB pool load). Referral queue + domain notification handlers still run.",
     );
   } else {
   const scheduleIntervalMs = 30_000;
@@ -913,9 +949,6 @@ try {
     app.log.error({ err }, "notification_reminder_poller_start_failed"),
   );
   app.log.info("notification reminder poller started");
-
-  // Wire domain events → notification templates.
-  registerDomainEventHandlers();
 
   // Verification background workers — R2 mirror + retry queue.
   // Skip locked; running multiple backend replicas is safe.
@@ -1007,41 +1040,6 @@ try {
       .catch((err) => app.log.error({ err }, "rider_tracking_watchdog_tick"));
   setTimeout(() => { void runRiderTrackingWatchdogLocked(); }, 8_000);
   riderTrackingWatchdogInterval = setInterval(() => { void runRiderTrackingWatchdogLocked(); }, riderTrackingWatchdogIntervalMs);
-
-  // Referral reward queue poller (every 30s) + daily reconciliation (every 6h)
-  const runReferralQueueTickLocked = () =>
-    withLock("tick:referral-reward-queue", 25_000, async () => {
-      const { processReferralRewardJobs } = await import("./modules/referral/referral.queue.js");
-      return processReferralRewardJobs({ limit: 25 });
-    })
-      .then((result) => {
-        incrCounter(
-          "tick_runs_total",
-          "Polling tick outcomes by lock state",
-          1,
-          { tick: "referral_reward_queue", outcome: result === null ? "skipped" : "ran" },
-        );
-      })
-      .catch((err) => app.log.error({ err }, "referral_reward_queue_tick"));
-  setTimeout(() => { void runReferralQueueTickLocked(); }, 8_000);
-  setInterval(() => { void runReferralQueueTickLocked(); }, 30_000);
-
-  const runReferralReconcileTickLocked = () =>
-    withLock("tick:referral-reconcile", 120_000, async () => {
-      const { runReferralReconciliation } = await import("./modules/referral/referral.queue.js");
-      return runReferralReconciliation();
-    })
-      .then((result) => {
-        incrCounter(
-          "tick_runs_total",
-          "Polling tick outcomes by lock state",
-          1,
-          { tick: "referral_reconcile", outcome: result === null ? "skipped" : "ran" },
-        );
-      })
-      .catch((err) => app.log.error({ err }, "referral_reconcile_tick"));
-  setTimeout(() => { void runReferralReconcileTickLocked(); }, 60_000);
-  setInterval(() => { void runReferralReconcileTickLocked(); }, 6 * 60 * 60 * 1000);
 
   // Prevent Services expiry — flips a rule whose `ends_at` has passed to
   // 'expired'. The runtime check is already time-correct without this, but the
@@ -1236,6 +1234,47 @@ try {
     );
   }
   }
+
+  // Domain event handlers are not pollers — keep them on in local dev.
+  registerDomainEventHandlers();
+
+  // Referral queue: SKIP LOCKED, limit 25. Stays on when DISABLE_BACKGROUND_JOBS
+  // so local wallet credits are not stuck behind the heavy-tick kill switch.
+  const runReferralQueueTickLocked = () =>
+    withLock("tick:referral-reward-queue", 25_000, async () => {
+      const { processReferralRewardJobs } = await import("./modules/referral/referral.queue.js");
+      return processReferralRewardJobs({ limit: 25 });
+    })
+      .then((result) => {
+        incrCounter(
+          "tick_runs_total",
+          "Polling tick outcomes by lock state",
+          1,
+          { tick: "referral_reward_queue", outcome: result === null ? "skipped" : "ran" },
+        );
+      })
+      .catch((err) => app.log.error({ err }, "referral_reward_queue_tick"));
+  setTimeout(() => { void runReferralQueueTickLocked(); }, 8_000);
+  setInterval(() => { void runReferralQueueTickLocked(); }, 30_000);
+  app.log.info({ intervalSeconds: 30 }, "referral reward queue tick started");
+
+  const runReferralReconcileTickLocked = () =>
+    withLock("tick:referral-reconcile", 120_000, async () => {
+      const { runReferralReconciliation } = await import("./modules/referral/referral.queue.js");
+      return runReferralReconciliation();
+    })
+      .then((result) => {
+        incrCounter(
+          "tick_runs_total",
+          "Polling tick outcomes by lock state",
+          1,
+          { tick: "referral_reconcile", outcome: result === null ? "skipped" : "ran" },
+        );
+      })
+      .catch((err) => app.log.error({ err }, "referral_reconcile_tick"));
+  setTimeout(() => { void runReferralReconcileTickLocked(); }, 60_000);
+  setInterval(() => { void runReferralReconcileTickLocked(); }, 6 * 60 * 60 * 1000);
+
 } catch (error) {
   app.log.error({ error }, "Failed to start server");
   process.exit(1);

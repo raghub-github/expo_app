@@ -1,8 +1,9 @@
 /**
  * Human-readable reward copy derived from live referral config.
  *
- * Single source of truth so the landing page, share message, and marketing
- * surfaces all describe the same amounts. Nothing here is hardcoded.
+ * Amounts and thresholds always come from the database. This module only
+ * formats them for invitees (landing pages / WhatsApp). Apps format their
+ * own sharer-facing copy from the same structured amounts.
  */
 
 import type {
@@ -10,18 +11,20 @@ import type {
   ReferralSettings,
   ReferralUserType,
 } from "./referral.config.service.js";
+import { referralRewardsEnabled } from "./referral.participants.js";
 
 export type ReferralRewardSummary = {
   inviteeLines: string[];
   shareLines: string[];
   headline: string;
   rewardsPaused: boolean;
-  /** Structured amounts for personalized share / OG templates. */
   inviteeRewardLabel: string | null;
   referrerRewardLabel: string | null;
   conditionLine: string;
-  /** Compact OG preview line, e.g. "You Get ₹50 • Friend Gets ₹50". */
   ogSummary: string;
+  youEarnAmount: number | null;
+  theyEarnAmount: number | null;
+  requirementOrders: number | null;
 };
 
 function symbolFor(currency: string): string {
@@ -35,147 +38,153 @@ function money(amount: number, currency: string): string {
   return `${symbol}${text}`;
 }
 
-function rewardNoun(rule: ReferralRewardRule): string {
-  return rule.reward_type === "GATICASH" ? "GatiCash" : "wallet credit";
+function pickPrimary(
+  rules: ReferralRewardRule[],
+  userType: ReferralUserType,
+): ReferralRewardRule | null {
+  const active = rules.filter(
+    (r) =>
+      r.user_type === userType &&
+      r.active &&
+      (Number(r.reward_amount) > 0 || Number(r.referred_reward_amount) > 0),
+  );
+  if (active.length === 0) {
+    return rules.find((r) => r.user_type === userType && r.active) ?? null;
+  }
+  const kind = (r: ReferralRewardRule) => {
+    const event = String(r.event_type ?? "").toUpperCase();
+    const orders = Number(r.milestone_orders) || 0;
+    if (event === "ORDER_DELIVERED_COUNT" || (orders > 0 && event !== "STORE_APPROVED")) return 3;
+    if (event === "STORE_APPROVED" || event === "REGISTRATION_COMPLETED") return 1;
+    return 2;
+  };
+  active.sort((a, b) => {
+    const kindDiff = kind(b) - kind(a);
+    if (kindDiff !== 0) return kindDiff;
+    const rewardDiff = (Number(b.reward_amount) || 0) - (Number(a.reward_amount) || 0);
+    if (rewardDiff !== 0) return rewardDiff;
+    const orderDiff = (Number(b.milestone_orders) || 0) - (Number(a.milestone_orders) || 0);
+    if (orderDiff !== 0) return orderDiff;
+    return (Number(b.priority) || 0) - (Number(a.priority) || 0);
+  });
+  return active[0] ?? null;
 }
 
-function customerSummary(
+function theyAmount(rule: ReferralRewardRule | null): number {
+  if (!rule) return 0;
+  if (rule.also_credit_referred === false && rule.referred_reward_amount == null) return 0;
+  if (rule.referred_reward_amount != null) return Number(rule.referred_reward_amount) || 0;
+  if (rule.also_credit_referred) return Number(rule.reward_amount) || 0;
+  return 0;
+}
+
+function requirementPhrase(
+  audience: ReferralUserType,
+  rule: ReferralRewardRule | null,
   settings: ReferralSettings,
-  rules: ReferralRewardRule[],
-): ReferralRewardSummary {
-  const currency = settings.currency;
-  const rule = rules
-    .filter((r) => r.user_type === "customer" && r.active)
-    .sort((a, b) => a.priority - b.priority)[0];
+): string {
+  const event = String(rule?.event_type ?? "").toUpperCase();
+  const orders = Number(rule?.milestone_orders) || 0;
+  const min = Number(rule?.min_order_amount ?? settings.min_order_amount) || 0;
+  const kyc = Boolean(rule?.require_kyc ?? settings.require_kyc);
 
-  if (!rule) {
-    return {
-      inviteeLines: ["Install GatiMitra and start ordering food, parcels and rides."],
-      shareLines: ["Invite friends to GatiMitra."],
-      headline: "Invite Friends & Earn Rewards",
-      rewardsPaused: true,
-      inviteeRewardLabel: null,
-      referrerRewardLabel: null,
-      conditionLine: "Complete your first eligible delivered order to unlock rewards.",
-      ogSummary: "Invite Friends & Earn Rewards",
-    };
+  if (event === "STORE_APPROVED") return "get your store approved";
+  if (event === "REGISTRATION_COMPLETED") return "complete registration";
+  if (event === "MENU_COMPLETED") return "complete your menu";
+  if (event === "ACTIVE_DAYS" && orders > 0) {
+    return `stay active for ${orders} ${orders === 1 ? "day" : "days"}`;
   }
 
-  const minOrder = Number(rule.min_order_amount ?? settings.min_order_amount) || 0;
-  const referrerAmount = Number(rule.reward_amount) || 0;
-  const friendAmount = rule.also_credit_referred
-    ? Number(rule.referred_reward_amount ?? rule.reward_amount) || 0
-    : 0;
-  const noun = rewardNoun(rule);
-  const orderCondition =
-    minOrder > 0
-      ? `first eligible delivered order of ${money(minOrder, currency)} or more`
-      : "first eligible delivered order";
-
-  const inviteeRewardLabel =
-    friendAmount > 0 ? `${money(friendAmount, currency)} ${noun}` : null;
-  const referrerRewardLabel =
-    referrerAmount > 0 ? `${money(referrerAmount, currency)} ${noun}` : null;
-
-  const inviteeLines: string[] = [];
-  const shareLines: string[] = [];
-
-  if (friendAmount > 0) {
-    inviteeLines.push(`Get ${inviteeRewardLabel} after your ${orderCondition}.`);
-  } else {
-    inviteeLines.push(`Complete your ${orderCondition} to unlock referral rewards.`);
+  if (audience === "customer") {
+    if (min > 0) return `complete a delivered order of ${money(min, settings.currency)} or more`;
+    return "complete your first delivered order";
   }
-  if (referrerAmount > 0) {
-    inviteeLines.push(
-      `Your friend earns ${referrerRewardLabel} when you complete it.`,
-    );
+  if (audience === "rider") {
+    const base =
+      orders > 0
+        ? `complete ${orders} ${orders === 1 ? "delivery" : "deliveries"}`
+        : "complete the required delivery milestones";
+    return kyc ? `${base} after KYC approval` : base;
   }
+  if (orders > 0) return `complete ${orders} delivered orders`;
+  return "complete the required orders";
+}
 
-  if (friendAmount > 0) {
-    shareLines.push(`You Get: ${inviteeRewardLabel}`);
-  }
-  if (referrerAmount > 0) {
-    shareLines.push(`Referrer Gets: ${referrerRewardLabel}`);
-  }
+function afterClause(phrase: string): string {
+  if (phrase.startsWith("complete ")) return `after completing ${phrase.slice("complete ".length)}`;
+  if (phrase.startsWith("get ")) return `after you ${phrase}`;
+  if (phrase.startsWith("stay ")) return `after you ${phrase}`;
+  return `after you ${phrase}`;
+}
 
-  const conditionLine = `Complete your ${orderCondition} and unlock your referral rewards.`;
-
-  const ogParts: string[] = [];
-  if (inviteeRewardLabel) ogParts.push(`You Get ${inviteeRewardLabel}`);
-  if (referrerRewardLabel) ogParts.push(`Friend Gets ${referrerRewardLabel}`);
-  const ogSummary =
-    ogParts.length > 0 ? ogParts.join(" • ") : "Invite Friends & Earn Rewards";
-
+function emptySummary(audience: ReferralUserType): ReferralRewardSummary {
+  const headline =
+    audience === "rider"
+      ? "Become a GatiMitra delivery partner"
+      : audience === "merchant"
+        ? "Become a GatiMitra merchant partner"
+        : "Invite friends & earn rewards";
   return {
-    inviteeLines,
-    shareLines: shareLines.length > 0 ? shareLines : ["Invite friends to GatiMitra."],
-    headline:
-      friendAmount > 0
-        ? `Get ${inviteeRewardLabel} on your first order`
-        : "Invite Friends & Earn Rewards",
-    rewardsPaused: referrerAmount <= 0 && friendAmount <= 0,
-    inviteeRewardLabel,
-    referrerRewardLabel,
-    conditionLine,
-    ogSummary,
+    inviteeLines: ["Join GatiMitra and start earning with us."],
+    shareLines: ["Invite others to GatiMitra."],
+    headline,
+    rewardsPaused: true,
+    inviteeRewardLabel: null,
+    referrerRewardLabel: null,
+    conditionLine: "Referral rewards are currently unavailable.",
+    ogSummary: headline,
+    youEarnAmount: null,
+    theyEarnAmount: null,
+    requirementOrders: null,
   };
 }
 
-function riderSummary(
+function audienceSummary(
   settings: ReferralSettings,
   rules: ReferralRewardRule[],
+  audience: ReferralUserType,
 ): ReferralRewardSummary {
   const currency = settings.currency;
-  const milestones = rules
-    .filter((r) => r.user_type === "rider" && r.active && Number(r.reward_amount) > 0)
-    .sort((a, b) => a.milestone_orders - b.milestone_orders);
+  const rule = pickPrimary(rules, audience);
+  if (!rule) return emptySummary(audience);
 
-  if (milestones.length === 0) {
-    return {
-      inviteeLines: ["Join GatiMitra as a delivery partner and start earning."],
-      shareLines: ["Invite riders to join GatiMitra."],
-      headline: "Become a GatiMitra delivery partner",
-      rewardsPaused: true,
-      inviteeRewardLabel: null,
-      referrerRewardLabel: null,
-      conditionLine: "Complete KYC and your first delivery milestones to unlock rewards.",
-      ogSummary: "Become a GatiMitra delivery partner",
-    };
+  const youAmt = Number(rule.reward_amount) || 0;
+  const theyAmt = theyAmount(rule);
+  const youLabel = youAmt > 0 ? money(youAmt, currency) : null;
+  const theyLabel = theyAmt > 0 ? money(theyAmt, currency) : null;
+  const req = requirementPhrase(audience, rule, settings);
+  const after = afterClause(req);
+  const orders = Number(rule.milestone_orders) || 0;
+
+  const inviteeLines: string[] = [];
+  if (theyLabel) {
+    inviteeLines.push(`Get ${theyLabel} ${after}.`);
+  } else {
+    inviteeLines.push(`Join GatiMitra and ${req} to unlock rewards.`);
   }
 
-  const first = milestones[0];
-  const kycNeeded = first.require_kyc ?? settings.require_kyc;
-  const noun = rewardNoun(first);
+  const shareLines: string[] = [];
+  if (youLabel) shareLines.push(`You earn ${youLabel}`);
+  if (theyLabel) shareLines.push(`They earn ${theyLabel}`);
 
-  const describe = (rule: ReferralRewardRule) =>
-    `${money(Number(rule.reward_amount), currency)} after ${rule.milestone_orders} ` +
-    `completed ${rule.milestone_orders === 1 ? "delivery" : "deliveries"}`;
-
-  const inviteeRewardLabel = describe(first);
-  const inviteeLines = [
-    `Earn ${inviteeRewardLabel}${kycNeeded ? " (once KYC is approved)" : ""}.`,
-  ];
-  if (milestones.length > 1) {
-    inviteeLines.push(
-      `More milestones after that: ${milestones.slice(1).map(describe).join(", ")}.`,
-    );
-  }
-  inviteeLines.push(`Rewards are credited to your rider wallet and are withdrawable.`);
-
-  const shareLines = [
-    `You Get: ${inviteeRewardLabel}${kycNeeded ? " after KYC" : ""}`,
-    `Referrer Gets: ${noun} for every milestone you complete`,
-  ];
+  const headline = theyLabel
+    ? `Get ${theyLabel} ${after}`
+    : "Join GatiMitra and grow with us";
 
   return {
     inviteeLines,
-    shareLines,
-    headline: `Earn ${inviteeRewardLabel}`,
-    rewardsPaused: false,
-    inviteeRewardLabel,
-    referrerRewardLabel: noun,
-    conditionLine: `Complete ${first.milestone_orders} deliveries${kycNeeded ? " after KYC approval" : ""} to unlock your first reward.`,
-    ogSummary: `You Get ${inviteeRewardLabel}`,
+    shareLines: shareLines.length > 0 ? shareLines : ["Invite others to GatiMitra."],
+    headline,
+    rewardsPaused: youAmt <= 0 && theyAmt <= 0,
+    inviteeRewardLabel: theyLabel,
+    referrerRewardLabel: youLabel,
+    conditionLine: theyLabel
+      ? `Get ${theyLabel} ${after}.`
+      : `Join GatiMitra and ${req}.`,
+    ogSummary: theyLabel ? `Get ${theyLabel} ${after}` : headline,
+    youEarnAmount: youAmt > 0 ? youAmt : null,
+    theyEarnAmount: theyAmt > 0 ? theyAmt : null,
+    requirementOrders: orders > 0 ? orders : null,
   };
 }
 
@@ -184,67 +193,85 @@ export function buildReferralRewardSummary(
   rules: ReferralRewardRule[],
   userType: ReferralUserType,
 ): ReferralRewardSummary {
-  const summary =
-    userType === "rider"
-      ? riderSummary(settings, rules)
-      : customerSummary(settings, rules);
-
-  const rewardsEnabled =
-    settings.enabled &&
-    settings.reward_enabled &&
-    (userType === "customer"
-      ? settings.customer_referral_enabled && settings.customer_reward_enabled
-      : settings.rider_referral_enabled && settings.rider_reward_enabled);
+  const summary = audienceSummary(settings, rules, userType);
+  const rewardsEnabled = referralRewardsEnabled(settings, userType);
 
   if (!rewardsEnabled) {
     return {
       ...summary,
-      shareLines: [...summary.shareLines, "Reward payouts are currently paused."],
+      shareLines: ["Referral rewards are currently unavailable."],
       rewardsPaused: true,
+      youEarnAmount: null,
+      theyEarnAmount: null,
+      inviteeRewardLabel: null,
+      referrerRewardLabel: null,
+      conditionLine: "Referral rewards are currently unavailable.",
+      headline: "Referral rewards are currently unavailable.",
     };
   }
   return summary;
 }
 
 /**
- * Personalized, WhatsApp-optimized share message.
- * All amounts come from the live summary — never hardcode values here.
+ * Recipient-facing WhatsApp/share text.
+ * Never includes the sender's reward.
  */
 export function buildPersonalizedShareMessage(opts: {
   referrerName?: string | null;
   referralCode: string;
   shareUrl: string;
   summary: ReferralRewardSummary;
-  audience?: "customer" | "rider";
+  audience?: "customer" | "rider" | "merchant";
 }): string {
-  const name = opts.referrerName?.trim() || "Your friend";
+  const name = opts.referrerName?.trim() || "A friend";
   const code = opts.referralCode.trim().toUpperCase();
   const url = opts.shareUrl.trim();
-  const isRider = opts.audience === "rider";
+  const theyLabel = opts.summary.inviteeRewardLabel;
+  const condition = opts.summary.conditionLine?.trim() || "";
+  const rewardLine =
+    theyLabel && condition.toLowerCase().startsWith("get ")
+      ? `🎁 ${condition}`
+      : theyLabel
+        ? `🎁 Get ${theyLabel} when you qualify.`
+        : null;
 
-  const lines: string[] = [
-    `🎉 ${name} invited you to join GatiMitra${isRider ? " as a delivery partner" : ""}!`,
+  const intro =
+    opts.audience === "merchant"
+      ? "Join GatiMitra and grow your business with online orders, more customers, and easy digital tools! 📈"
+      : opts.audience === "rider"
+        ? "Join GatiMitra as a delivery partner and earn on your own schedule! 🛵"
+        : "Join GatiMitra for food, parcels, and more — delivered to your door! 🍽️";
+
+  const mid =
+    opts.audience === "merchant"
+      ? "I’m already using GatiMitra. Join through my referral link and get started with GatiMitra for your business."
+      : opts.audience === "rider"
+        ? "I’m already riding with GatiMitra. Use my referral link to sign up."
+        : "I’m already using GatiMitra. Sign up with my referral link to get started.";
+
+  const closer =
+    opts.audience === "merchant"
+      ? "Let’s grow together! 🚀"
+      : opts.audience === "rider"
+        ? "Let’s earn together! 🚀"
+        : "See you on GatiMitra! 🚀";
+
+  return [
+    "Hey!",
     "",
-    opts.summary.conditionLine,
+    intro,
     "",
-  ];
-
-  if (opts.summary.inviteeRewardLabel) {
-    lines.push(`🎁 You Get: ${opts.summary.inviteeRewardLabel}`);
-  }
-  if (opts.summary.referrerRewardLabel) {
-    lines.push(`🎁 ${name} Gets: ${opts.summary.referrerRewardLabel}`);
-  }
-  if (opts.summary.inviteeRewardLabel || opts.summary.referrerRewardLabel) {
-    lines.push("");
-  }
-
-  lines.push("Join Now:");
-  lines.push(url);
-  lines.push("");
-  lines.push(`Referral Code: ${code}`);
-  lines.push("");
-  lines.push("*T&C Apply.");
-
-  return lines.join("\n");
+    mid,
+    "",
+    ...(rewardLine ? [rewardLine, ""] : []),
+    "👉 Join here:",
+    url,
+    "",
+    "Use my referral code:",
+    code,
+    "",
+    closer,
+    "",
+    `– ${name}`,
+  ].join("\n");
 }

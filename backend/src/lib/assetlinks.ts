@@ -25,7 +25,7 @@
 import { getEnv } from "../config/env.js";
 
 const DEFAULT_PACKAGE = "com.gatimitra.customer";
-const DEFAULT_RIDER_PACKAGE = "com.raghubhunia.gatimitrariderapp";
+const DEFAULT_RIDER_PACKAGE = "com.gatimitra.rider";
 
 /** Normalise a fingerprint to the colon-separated uppercase hex Google expects. */
 function normalizeFingerprint(raw: string): string | null {

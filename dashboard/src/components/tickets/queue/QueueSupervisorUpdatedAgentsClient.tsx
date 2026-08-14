@@ -9,14 +9,20 @@ import {
   useTicketsAgentsQuery,
   type QueueAgentPresence,
   type TicketAgent,
+  type TicketsAgentsData,
 } from "@/hooks/tickets/useTicketsAgentsQuery";
 import { useTicketsReferenceDataQuery } from "@/hooks/tickets/useTicketsReferenceDataQuery";
 import { usePermissions } from "@/hooks/usePermissions";
 import { useToast } from "@/context/ToastContext";
 import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
+import { saveClientSnapshot } from "@/lib/client-route-snapshot";
+import { queryKeys } from "@/lib/queryKeys";
+
 type Tiered = { primary: number[]; secondary: number[] };
 type Assignments = Record<string, Tiered>;
 type RefGroup = { id: number; groupName: string };
+
+const AGENT_STATUS_SNAPSHOT_KEY = "dashboard_snapshot:agentStatus";
 
 function emptyTiers(): Tiered {
   return { primary: [], secondary: [] };
@@ -471,7 +477,56 @@ export function QueueSupervisorUpdatedAgentsClient() {
       });
       const json = await res.json();
       if (!res.ok || !json.success) throw new Error(json.error ?? "Failed");
+      const nowIso = new Date().toISOString();
+      const offlineReason = reason.slice(0, 500);
+      queryClient.setQueriesData<TicketsAgentsData>({ queryKey: ["tickets", "agents"] }, (prev) => {
+        if (!prev) return prev;
+        return {
+          ...prev,
+          agents: prev.agents.map((a) =>
+            a.id === selectedAgent.id
+              ? {
+                  ...a,
+                  queuePresence: {
+                    currentStatus: "offline",
+                    isOnline: false,
+                    lastActivityAt: nowIso,
+                    lastLogoutAt: nowIso,
+                    lastLogoutReason: offlineReason,
+                    todayUtc: a.queuePresence?.todayUtc ?? "",
+                    todayOnlineMinutes: a.queuePresence?.todayOnlineMinutes ?? 0,
+                    todayBreakMinutes: a.queuePresence?.todayBreakMinutes ?? 0,
+                    todayBusyMinutes: a.queuePresence?.todayBusyMinutes ?? 0,
+                    todayWorkingMinutes: a.queuePresence?.todayWorkingMinutes ?? 0,
+                  },
+                }
+              : a
+          ),
+        };
+      });
+      const selfId = agentsData?.currentUser?.id;
+      if (selfId != null && selfId === selectedAgent.id) {
+        queryClient.setQueryData(["agentStatus"], (prev: { success?: boolean; data?: Record<string, unknown> } | undefined) => ({
+          success: true,
+          data: {
+            ...(prev?.data ?? {}),
+            isOnline: false,
+            currentStatus: "offline",
+          },
+        }));
+        saveClientSnapshot(AGENT_STATUS_SNAPSHOT_KEY, {
+          success: true,
+          data: {
+            isOnline: false,
+            currentStatus: "offline",
+            breakStartedAt: null,
+            lastOnlineAt: null,
+          },
+        });
+      }
       void queryClient.invalidateQueries({ queryKey: ["tickets", "agents"] });
+      void queryClient.invalidateQueries({ queryKey: ["agentStatus"] });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.tickets.lists() });
       toast("Agent marked offline", "success");
     } catch (e) {
       toast(e instanceof Error ? e.message : "Failed to set offline", "error");

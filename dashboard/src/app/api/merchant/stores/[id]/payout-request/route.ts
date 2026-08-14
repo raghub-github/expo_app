@@ -78,6 +78,14 @@ export async function POST(
     );
   } catch (e) {
     const msg = e instanceof Error ? e.message : "Internal error";
+    const code = (e as { code?: string })?.code;
+    const freezeReason = (e as { freezeReason?: string | null })?.freezeReason ?? null;
+    if (code === "WALLET_FROZEN") {
+      return NextResponse.json(
+        { success: false, error: msg, code: "WALLET_FROZEN", freezeReason },
+        { status: 403 },
+      );
+    }
     console.error("[POST /api/merchant/stores/[id]/payout-request]", e);
     return NextResponse.json({ success: false, error: msg }, { status: 400 });
   }

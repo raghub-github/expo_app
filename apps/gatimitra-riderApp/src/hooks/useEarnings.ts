@@ -12,6 +12,9 @@ export const DEFAULT_EARNINGS_SUMMARY: EarningsSummary = {
   thisMonth: 0,
   hasBankAccount: false,
   breakdown: { food: 0, parcel: 0, ride: 0 },
+  isFrozen: false,
+  freezeReason: null,
+  frozenAt: null,
   accountRestrictions: {
     accountRestricted: false,
     accountRestrictedReason: "none",

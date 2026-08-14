@@ -21,6 +21,13 @@ export type UnregisterPushBody = {
   native_push_token?: string | null;
 };
 
+function maskToken(value: string | null | undefined): string | null {
+  const t = String(value ?? "").trim();
+  if (!t) return null;
+  if (t.length <= 12) return `${t.slice(0, 4)}…`;
+  return `${t.slice(0, 8)}…${t.slice(-4)}`;
+}
+
 async function pushFetch(
   url: string,
   accessToken: string,
@@ -64,7 +71,28 @@ export async function registerExpoPushTokenOnBackend(
   body: RegisterPushBody
 ): Promise<{ ok: boolean; status: number; error?: string }> {
   const base = apiBaseUrl.replace(/\/$/, "");
-  return pushFetch(`${base}/v1/push/register`, accessToken, body);
+  const url = `${base}/v1/push/register`;
+  console.log("[push] Registering device token", {
+    endpoint: "POST /v1/push/register",
+    device_type: body.device_type,
+    store_id: body.store_id ?? null,
+    expo: maskToken(body.expo_push_token),
+    native: maskToken(body.native_push_token),
+    native_type: body.native_token_type ?? null,
+  });
+  const res = await pushFetch(url, accessToken, body);
+  console.log("[push] Device token registration response", {
+    ok: res.ok,
+    status: res.status,
+    error: res.error ?? null,
+  });
+  if (res.ok) {
+    console.log("[push] Token stored successfully", {
+      expo: maskToken(body.expo_push_token),
+      native: maskToken(body.native_push_token),
+    });
+  }
+  return res;
 }
 
 /**

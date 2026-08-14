@@ -33,6 +33,9 @@ export interface WalletSummary {
   withdrawable_balance?: number;
   /** True when admin has paused payouts for the merchant. */
   settlement_paused?: boolean;
+  isFrozen?: boolean;
+  freezeReason?: string | null;
+  frozenAt?: string | null;
 }
 
 export interface LedgerEntry {

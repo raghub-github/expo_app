@@ -72,7 +72,14 @@ export async function proxy(request: NextRequest) {
   }
 
   const oauthCode = request.nextUrl.searchParams.get("code");
-  if (oauthCode && pathname !== "/auth/callback" && pathname !== "/api/auth/callback") {
+  // Never treat API query `code=` as a Supabase OAuth code. Referral preview uses
+  // `?code=MX…` and must not be redirected to /api/auth/callback.
+  if (
+    oauthCode &&
+    pathname !== "/auth/callback" &&
+    pathname !== "/api/auth/callback" &&
+    !pathname.startsWith("/api/")
+  ) {
     const callbackUrl = new URL("/api/auth/callback", request.url);
     request.nextUrl.searchParams.forEach((value, key) => callbackUrl.searchParams.set(key, value));
     return NextResponse.redirect(callbackUrl);
@@ -146,7 +153,7 @@ export async function proxy(request: NextRequest) {
       request.cookies.has("sb-refresh-token") ||
       request.cookies.getAll().some((c) => c.name.startsWith("sb-"));
 
-    const publicRoutes = ["/auth", "/api/auth"];
+    const publicRoutes = ["/auth", "/api/auth", "/api/referral", "/merchant-ref"];
     const isPublicRoute = publicRoutes.some((r) => pathname.startsWith(r));
     const isLoginPage =
       pathname === "/auth" ||

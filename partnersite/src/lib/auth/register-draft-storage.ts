@@ -17,6 +17,7 @@ export type ParentRegisterDraft = {
   city?: string;
   state?: string;
   pincode?: string;
+  referralCode?: string;
 };
 
 export function loadParentRegisterDraft(): ParentRegisterDraft | null {

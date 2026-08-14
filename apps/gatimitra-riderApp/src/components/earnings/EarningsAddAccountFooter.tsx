@@ -14,6 +14,8 @@ type Props = {
   hasBankAccount?: boolean;
   /** Enable the withdrawal button only when the wallet is positive and > ₹300. */
   canWithdraw?: boolean;
+  isFrozen?: boolean;
+  freezeReason?: string | null;
   onAddAccount: () => void;
   onRequestWithdrawal?: () => void;
 };
@@ -23,6 +25,8 @@ export function EarningsAddAccountFooter({
   isLoading,
   hasBankAccount = false,
   canWithdraw = false,
+  isFrozen = false,
+  freezeReason = null,
   onAddAccount,
   onRequestWithdrawal,
 }: Props) {
@@ -68,7 +72,13 @@ export function EarningsAddAccountFooter({
           </Text>
         </TouchableOpacity>
         <Text style={styles.withdrawalNote}>
-          {canWithdraw
+          {isFrozen
+            ? freezeReason
+              ? t("earnings.walletFrozenReason", "Withdrawals are currently disabled.\nReason: {{reason}}", {
+                  reason: freezeReason,
+                })
+              : t("earnings.walletFrozen", "Withdrawals are currently disabled.")
+            : canWithdraw
             ? t("earnings.withdrawalNote", "Withdrawals are processed weekly")
             : t("earnings.withdrawalMinNote", "Minimum ₹{{min}} balance required to withdraw", {
                 min: MIN_WITHDRAWAL_BALANCE,

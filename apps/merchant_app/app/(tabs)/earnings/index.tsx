@@ -197,8 +197,9 @@ export default function EarningsScreen() {
   }, [storeId, token, currentCycleCard]);
 
   const withdrawableBalance = getWithdrawableBalance(wallet);
+  const walletFrozen = Boolean(wallet?.isFrozen);
   const maxWithdrawalLimit = getMaxWithdrawalLimit(withdrawableBalance);
-  const withdrawalInputEnabled = maxWithdrawalLimit >= MIN_WITHDRAWAL && !withdrawing;
+  const withdrawalInputEnabled = maxWithdrawalLimit >= MIN_WITHDRAWAL && !withdrawing && !walletFrozen;
 
   const selectTxFilter = (key: TxFilter) => {
     setTxFilter((prev) => (prev === key && key !== "all" ? "all" : key));
@@ -214,6 +215,15 @@ export default function EarningsScreen() {
   };
 
   const openWithdraw = async () => {
+    if (wallet?.isFrozen) {
+      Alert.alert(
+        "Wallet Frozen",
+        wallet.freezeReason
+          ? `Withdrawals are currently disabled.\nReason: ${wallet.freezeReason}`
+          : "Withdrawals are currently disabled.",
+      );
+      return;
+    }
     if (!storeId || !token) return;
     const limit = getMaxWithdrawalLimit(getWithdrawableBalance(wallet));
     setWithdrawAmount(limit >= MIN_WITHDRAWAL ? formatWithdrawalInputAmount(limit) : "");
@@ -230,6 +240,15 @@ export default function EarningsScreen() {
   };
 
   const handleWithdraw = async () => {
+    if (wallet?.isFrozen) {
+      Alert.alert(
+        "Wallet Frozen",
+        wallet.freezeReason
+          ? `Withdrawals are currently disabled.\nReason: ${wallet.freezeReason}`
+          : "Withdrawals are currently disabled.",
+      );
+      return;
+    }
     if (!storeId || !token || !withdrawBankId) return;
     const amt = parseFloat(withdrawAmount);
     if (isNaN(amt) || amt < MIN_WITHDRAWAL) { Alert.alert("Invalid", `Min ₹${MIN_WITHDRAWAL}`); return; }
@@ -277,6 +296,15 @@ export default function EarningsScreen() {
     const displayEstPayout = currentCycleEstPayout ?? currentCycleCard.netPayout;
     return (
       <View style={s.currentCycleWrap}>
+        {walletFrozen ? (
+          <View style={s.frozenBanner}>
+            <Text style={s.frozenTitle}>Wallet Frozen</Text>
+            <Text style={s.frozenBody}>Withdrawals are currently disabled.</Text>
+            {wallet?.freezeReason ? (
+              <Text style={s.frozenReason}>Reason: {wallet.freezeReason}</Text>
+            ) : null}
+          </View>
+        ) : null}
         <View style={s.cycleRow}>
           <Pressable
             onPress={() => setCycleExpanded((v) => !v)}
@@ -319,10 +347,19 @@ export default function EarningsScreen() {
           </Pressable>
           <Pressable
             onPress={openWithdraw}
-            style={({ pressed }) => [s.cardWithdrawBtn, pressed && s.pressed]}
+            disabled={walletFrozen}
+            style={({ pressed }) => [
+              s.cardWithdrawBtn,
+              walletFrozen && s.cardWithdrawBtnDisabled,
+              pressed && !walletFrozen && s.pressed,
+            ]}
           >
-            <Text style={s.cardWithdrawBtnText}>Withdraw</Text>
-            <Ionicons name="chevron-forward" size={14} color={GatiMitraMerchant.navy} />
+            <Text style={[s.cardWithdrawBtnText, walletFrozen && s.cardWithdrawBtnTextDisabled]}>
+              {walletFrozen ? "Frozen" : "Withdraw"}
+            </Text>
+            {!walletFrozen ? (
+              <Ionicons name="chevron-forward" size={14} color={GatiMitraMerchant.navy} />
+            ) : null}
           </Pressable>
         </View>
 
@@ -814,6 +851,23 @@ const s = StyleSheet.create({
     flexShrink: 0,
   },
   cardWithdrawBtnText: { fontSize: 14, fontWeight: "700", color: GatiMitraMerchant.navy },
+  cardWithdrawBtnDisabled: {
+    borderColor: "#D1D5DB",
+    backgroundColor: "#F3F4F6",
+  },
+  cardWithdrawBtnTextDisabled: { color: "#9CA3AF" },
+  frozenBanner: {
+    backgroundColor: "#FEF2F2",
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "#FECACA",
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    marginBottom: 10,
+  },
+  frozenTitle: { fontSize: 14, fontWeight: "800", color: "#991B1B" },
+  frozenBody: { fontSize: 12, color: "#7F1D1D", marginTop: 2 },
+  frozenReason: { fontSize: 12, color: "#7F1D1D", marginTop: 4, fontWeight: "600" },
   cycleViewDetailsBtn: {
     flexDirection: "row",
     alignItems: "center",

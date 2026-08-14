@@ -103,6 +103,17 @@ export type DomainEventMap = {
     amount: number;
   };
 
+  "wallet.frozen": {
+    role: "rider" | "merchant";
+    userId: string;
+    reason?: string | null;
+  };
+
+  "wallet.unfrozen": {
+    role: "rider" | "merchant";
+    userId: string;
+  };
+
   // Any wallet ledger insertion.
   "wallet.updated": {
     userId: string;
@@ -168,7 +179,7 @@ export type DomainEventMap = {
   // Referral reward credited (GatiCash or rider wallet).
   "referral.reward_credited": {
     userId: string;
-    role: "customer" | "rider";
+    role: "customer" | "rider" | "merchant";
     amount: number;
     title: string;
     body: string;
@@ -602,6 +613,30 @@ export function registerDomainEventHandlers(): void {
     });
   });
 
+  on("wallet.frozen", async (e) => {
+    const template = e.role === "merchant" ? "MERCHANT_WALLET_FROZEN" : "RIDER_WALLET_FROZEN";
+    await sendNotification({
+      templateCode: template,
+      variables: { reason: e.reason?.trim() || "Contact support." },
+      target: { user_id: e.userId },
+      priority: "high",
+      idempotencyKey: `${template}:${e.userId}:${e.reason ?? "na"}`,
+      metadata: { reason: e.reason ?? null },
+    });
+  });
+
+  on("wallet.unfrozen", async (e) => {
+    const template = e.role === "merchant" ? "MERCHANT_WALLET_UNFROZEN" : "RIDER_WALLET_UNFROZEN";
+    await sendNotification({
+      templateCode: template,
+      variables: {},
+      target: { user_id: e.userId },
+      priority: "high",
+      idempotencyKey: `${template}:${e.userId}`,
+      metadata: {},
+    });
+  });
+
   on("wallet.updated", async (e) => {
     const template =
       e.role === "customer" ? "CUSTOMER_WALLET_UPDATED"
@@ -697,7 +732,11 @@ export function registerDomainEventHandlers(): void {
 
   on("referral.reward_credited", async (e) => {
     const template =
-      e.role === "customer" ? "REFERRAL_REWARD_CUSTOMER" : "REFERRAL_REWARD_RIDER";
+      e.role === "customer"
+        ? "REFERRAL_REWARD_CUSTOMER"
+        : e.role === "merchant"
+          ? "REFERRAL_REWARD_MERCHANT"
+          : "REFERRAL_REWARD_RIDER";
     await sendNotification({
       templateCode: template,
       variables: {

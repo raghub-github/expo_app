@@ -48,7 +48,7 @@ export default function RegisterPhone() {
     const data = await res.json();
     if (data.success) {
       if (data.exists) {
-        router.push(`/auth/register-store?parent_id=${data.parent_merchant_id}`);
+        router.push("/partners/all-stores?picker=1");
       } else {
         router.push(`/auth/register-parent?phone=${phone}`);
       }

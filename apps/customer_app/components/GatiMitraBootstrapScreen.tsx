@@ -227,12 +227,12 @@ const styles = StyleSheet.create({
   overlayRoot: {
     zIndex: 10000,
     elevation: 10000,
-    backgroundColor: GRADIENT_TOP,
+    backgroundColor: GatiMitraColors.splashMint,
   },
   inlineRoot: {
     flex: 1,
     width: "100%",
-    backgroundColor: GRADIENT_TOP,
+    backgroundColor: GatiMitraColors.splashMint,
   },
   gradient: {
     position: "absolute",

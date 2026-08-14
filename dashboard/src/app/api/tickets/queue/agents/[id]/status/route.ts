@@ -70,9 +70,39 @@ export async function PATCH(
     });
 
     try {
-      await runQueueBalanceAutoAssign(sql, { forAgentUserId: targetUserId });
+      await runQueueBalanceAutoAssign(sql, {
+        forAgentUserId: targetUserId,
+        excludeAgentUserIds: [targetUserId],
+      });
     } catch (e) {
       console.error("[PATCH queue/agents/status] auto-assign after supervisor offline:", e);
+    }
+
+    try {
+      const { getTicketQueueOfflineReleaseSettings } = await import(
+        "@/lib/tickets/ticket-queue-offline-settings"
+      );
+      const { enqueueTicketAutomationJob } = await import(
+        "@/lib/tickets/ticket-automation/enqueue-automation-job"
+      );
+      const { processPendingAutomationJobs } = await import(
+        "@/lib/tickets/ticket-automation/job-processor"
+      );
+      const offlineSettings = await getTicketQueueOfflineReleaseSettings(sql);
+      if (offlineSettings.releaseWhenAgentOffline) {
+        await enqueueTicketAutomationJob(sql, {
+          ticketId: null,
+          agentUserId: targetUserId,
+          triggerEvent: "agent_went_offline",
+          idempotencyKey: `supervisor-offline:${targetUserId}:${Math.floor(Date.now() / 1000)}`,
+        });
+        await processPendingAutomationJobs(sql, {
+          limit: 20,
+          workerId: `supervisor-offline-${targetUserId}`,
+        });
+      }
+    } catch (autoErr) {
+      console.error("[PATCH queue/agents/status] offline automation:", autoErr);
     }
 
     return NextResponse.json({ success: true, data: { status: "offline" } });

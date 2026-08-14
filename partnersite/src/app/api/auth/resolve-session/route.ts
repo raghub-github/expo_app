@@ -20,7 +20,7 @@ function getSupabaseAdmin() {
 /**
  * GET /api/auth/resolve-session
  * Requires valid session. Returns parent, child stores, and onboarding progress
- * so the client can redirect: no children → register-store; in progress → resume; has verified → dashboard.
+ * so the client can show All Stores. Child onboarding opens only from Add Store / Complete Onboarding.
  */
 export async function GET(request: NextRequest) {
   try {

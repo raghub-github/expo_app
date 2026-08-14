@@ -8,6 +8,12 @@ import type { ReferralRewardParty, ReferralRewardType, ReferralUserType } from "
 import { creditReferralReward } from "./referral.reward.service.js";
 import { recordLifecycleEvent } from "./referral.lifecycle.service.js";
 import type { MatchedRule } from "./referral.rule-engine.js";
+import {
+  deriveRelationshipRewardState,
+  jobStatusToPartyState,
+  relationshipIsFullyCredited,
+  type PartyRewardState,
+} from "./referral.relationship-state.js";
 
 export type EnqueueRewardJobInput = {
   relationshipId: number;
@@ -17,11 +23,82 @@ export type EnqueueRewardJobInput = {
   referredUserId: number;
   campaignId?: number | null;
   referralCode?: string | null;
+  merchantStoreId?: number | null;
 };
 
 function backoffMs(attempts: number): number {
   // 1s, 2s, 4s, … capped at 1h
   return Math.min(3_600_000, 1000 * 2 ** Math.max(0, attempts));
+}
+
+async function syncRelationshipRewardState(opts: {
+  relationshipId: number;
+  ruleId: number;
+  userType: ReferralUserType;
+  alsoCreditReferred: boolean;
+}): Promise<void> {
+  const sql = getSql();
+  const jobs = await sql<Array<{ reward_party: string; status: string }>>`
+    SELECT reward_party::text, status::text
+    FROM referral_reward_jobs
+    WHERE referral_relationship_id = ${opts.relationshipId}
+      AND reward_rule_id = ${opts.ruleId}
+  `.catch(() => [] as Array<{ reward_party: string; status: string }>);
+
+  const hasReferredJob = jobs.some((j) => String(j.reward_party).toLowerCase() === "referred");
+  const alsoCreditReferred = opts.alsoCreditReferred || hasReferredJob;
+
+  let referrer: PartyRewardState = "pending";
+  let referred: PartyRewardState = alsoCreditReferred ? "pending" : "credited";
+  for (const row of jobs) {
+    const party = String(row.reward_party ?? "").toLowerCase();
+    const state = jobStatusToPartyState(row.status);
+    if (party === "referrer") referrer = state;
+    if (party === "referred") referred = state;
+  }
+  const overall = deriveRelationshipRewardState({
+    alsoCreditReferred,
+    referrer,
+    referred,
+  });
+  const fully = relationshipIsFullyCredited(overall);
+
+  await sql`
+    UPDATE referral_relationships
+    SET
+      metadata = COALESCE(metadata, '{}'::jsonb) || ${JSON.stringify({
+        reward_parties: { referrer, referred },
+        reward_state: overall,
+      })}::jsonb,
+      status = CASE
+        WHEN ${fully} THEN 'reward_credited'::referral_relationship_status
+        WHEN status = 'reward_credited' THEN 'milestone_pending'::referral_relationship_status
+        ELSE status
+      END,
+      reward_status = ${fully ? "credited" : overall === "skipped_disabled" ? "skipped" : overall === "permanent_failure" ? "failed" : "pending"},
+      updated_at = NOW()
+    WHERE id = ${opts.relationshipId}
+  `;
+
+  if (fully) {
+    await recordLifecycleEvent({
+      relationshipId: opts.relationshipId,
+      fromState: "REWARD_ELIGIBLE",
+      toState: "REWARD_GRANTED",
+      eventName: "reward_job_succeeded",
+      userType: opts.userType,
+      metadata: { ruleId: opts.ruleId, reward_state: overall },
+      force: true,
+    });
+    await recordLifecycleEvent({
+      relationshipId: opts.relationshipId,
+      fromState: "REWARD_GRANTED",
+      toState: "REWARD_NOTIFIED",
+      eventName: "reward_notified",
+      userType: opts.userType,
+      force: true,
+    });
+  }
 }
 
 export async function enqueueRewardJobs(input: EnqueueRewardJobInput): Promise<string[]> {
@@ -67,6 +144,8 @@ export async function enqueueRewardJobs(input: EnqueueRewardJobInput): Promise<s
           referrerId: input.referrerId,
           referredUserId: input.referredUserId,
           ruleCode: input.rule.rule_code,
+          alsoCreditReferred: Boolean(input.rule.also_credit_referred),
+          merchantStoreId: input.merchantStoreId ?? null,
         })}::jsonb
       )
       ON CONFLICT (job_key) DO NOTHING
@@ -170,6 +249,8 @@ export async function processReferralRewardJobs(opts?: {
         beneficiaryOverride: Number(row.beneficiary_user_id),
         campaignId: row.campaign_id != null ? Number(row.campaign_id) : null,
         referralCode: meta.referralCode != null ? String(meta.referralCode) : null,
+        merchantStoreId:
+          meta.merchantStoreId != null ? Number(meta.merchantStoreId) : null,
       });
 
       if (result.skipped) {
@@ -179,6 +260,12 @@ export async function processReferralRewardJobs(opts?: {
               completed_at = NOW(), updated_at = NOW()
           WHERE id = ${id}
         `;
+        await syncRelationshipRewardState({
+          relationshipId: Number(row.referral_relationship_id),
+          ruleId: Number(row.reward_rule_id),
+          userType: row.user_type as ReferralUserType,
+          alsoCreditReferred: Boolean(meta.alsoCreditReferred),
+        });
         succeeded += 1;
         continue;
       }
@@ -188,21 +275,11 @@ export async function processReferralRewardJobs(opts?: {
         SET status = 'succeeded', completed_at = NOW(), updated_at = NOW(), last_error = NULL
         WHERE id = ${id}
       `;
-      await recordLifecycleEvent({
+      await syncRelationshipRewardState({
         relationshipId: Number(row.referral_relationship_id),
-        fromState: "REWARD_ELIGIBLE",
-        toState: "REWARD_GRANTED",
-        eventName: "reward_job_succeeded",
+        ruleId: Number(row.reward_rule_id),
         userType: row.user_type as ReferralUserType,
-        force: true,
-      });
-      await recordLifecycleEvent({
-        relationshipId: Number(row.referral_relationship_id),
-        fromState: "REWARD_GRANTED",
-        toState: "REWARD_NOTIFIED",
-        eventName: "reward_notified",
-        userType: row.user_type as ReferralUserType,
-        force: true,
+        alsoCreditReferred: Boolean(meta.alsoCreditReferred),
       });
       succeeded += 1;
     } catch (err) {

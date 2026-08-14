@@ -21,6 +21,8 @@ const patchSchema = z.object({
   min_order_amount: z.number().nonnegative().nullable().optional(),
   active: z.boolean().optional(),
   priority: z.number().int().optional(),
+  event_type: z.string().max(64).nullable().optional(),
+  reward_mode: z.enum(["incremental", "highest_only"]).nullable().optional(),
 });
 
 export async function PATCH(

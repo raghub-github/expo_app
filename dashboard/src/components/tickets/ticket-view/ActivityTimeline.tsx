@@ -130,6 +130,14 @@ function normalizeFrtActivityText(text: string | null | undefined): string {
   return String(text);
 }
 
+/** Show "Auto Assigned" instead of internal codes like (automation_least_loaded). */
+function normalizeAssignmentActivityText(text: string): string {
+  return text.replace(
+    /\s*\((?:automation|auto)[_-][a-z0-9_]+\)\s*$/i,
+    " (Auto Assigned)"
+  );
+}
+
 function formatActionLabel(actionType: string): string {
   const labels: Record<string, string> = {
     CREATED: "Ticket created",
@@ -236,7 +244,9 @@ function activityDetailLines(a: TimelineItem): string[] {
   const oldPriority = o.priority != null ? String(o.priority) : "";
   const newPriority = n.priority != null ? String(n.priority) : "";
   const assigned = n.assigned_to_agent_name != null ? String(n.assigned_to_agent_name) : "";
-  const desc = normalizeFrtActivityText(String((a as any).activityDescription ?? "").trim());
+  const desc = normalizeAssignmentActivityText(
+    normalizeFrtActivityText(String((a as any).activityDescription ?? "").trim())
+  );
   const lowerAction = String(a.actionType || "").toLowerCase();
   const lowerDesc = desc.toLowerCase();
   const cleanValue = (value: string): string => {

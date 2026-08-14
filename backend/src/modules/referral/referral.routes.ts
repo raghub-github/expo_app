@@ -1,5 +1,5 @@
 /**
- * Referral API — customer + rider share the same engine.
+ * Referral API — customer, rider, and merchant share the same engine.
  */
 
 import type { FastifyInstance } from "fastify";
@@ -8,6 +8,8 @@ import { auth } from "../../plugins/auth.js";
 import { getSql } from "../../db/client.js";
 import {
   getReferralConfig,
+  playStorePackageFor,
+  startReferralConfigCacheListener,
   toPublicReferralConfig,
   type ReferralUserType,
 } from "./referral.config.service.js";
@@ -16,6 +18,7 @@ import {
   getMyReferralProfile,
   recordReferralInstallClick,
   resolveReferralPublicBase,
+  resolveReferralPublicBaseFor,
 } from "./referral.tracking.service.js";
 import { buildReferralLandingHtml } from "./referral.deep-link.js";
 import {
@@ -24,10 +27,39 @@ import {
 } from "./referral.reward-summary.js";
 import { referralAdminRoutes, registerReferralSettingsAlias } from "./referral.admin.routes.js";
 import { recordLifecycleEvent } from "./referral.lifecycle.service.js";
+import { referralTrackingEnabled } from "./referral.participants.js";
+import { internalSecretGrantsReferralOnboarding } from "./referral.admin-auth.js";
+import {
+  applyMerchantReferralForParent,
+  classifyMerchantReferralError,
+  merchantReferralPublicMessage,
+  previewReferralCode,
+} from "./referral.onboarding.js";
+import {
+  httpStatusForReferralApplyError,
+  isReferralServiceDisabledError,
+  referralServiceDisabledPayload,
+  REFERRAL_SERVICE_DISABLED,
+} from "./referral.errors.js";
+
+function parseNumericPk(sub: string): number | null {
+  const trimmed = sub.trim();
+  const usr = /^usr_(\d+)$/.exec(trimmed);
+  if (usr) {
+    const n = Number(usr[1]);
+    return Number.isFinite(n) && n > 0 ? n : null;
+  }
+  if (/^\d+$/.test(trimmed)) {
+    const n = Number(trimmed);
+    return Number.isFinite(n) && n > 0 ? n : null;
+  }
+  return null;
+}
 
 async function resolveActor(
   role: string | undefined,
   sub: string | undefined,
+  phone?: string | null,
 ): Promise<{
   userType: ReferralUserType;
   userId: number;
@@ -53,18 +85,48 @@ async function resolveActor(
     };
   }
   if (role === "rider") {
-    const riderId = Number(sub);
-    if (!Number.isFinite(riderId)) return null;
-    // riders.mobile (there is no riders.phone column)
+    // Rider JWT `sub` is `usr_{numericId}` (see auth.routes.ts), not a raw bigint.
+    const riderPk = parseNumericPk(sub);
+    const phoneKey = phone?.trim() || null;
+    const [row] = riderPk
+      ? await sql<Array<{ id: string; phone: string | null; full_name: string | null }>>`
+          SELECT id::text, mobile AS phone, name AS full_name
+          FROM riders
+          WHERE id = ${riderPk}
+          LIMIT 1
+        `
+      : phoneKey
+        ? await sql<Array<{ id: string; phone: string | null; full_name: string | null }>>`
+            SELECT id::text, mobile AS phone, name AS full_name
+            FROM riders
+            WHERE mobile = ${phoneKey}
+            LIMIT 1
+          `
+        : await sql<Array<{ id: string; phone: string | null; full_name: string | null }>>`
+            SELECT id::text, mobile AS phone, name AS full_name
+            FROM riders
+            WHERE ('usr_' || id::text) = ${sub}
+            LIMIT 1
+          `;
+    if (!row) return null;
+    return {
+      userType: "rider",
+      userId: Number(row.id),
+      phone: row.phone,
+      fullName: row.full_name,
+    };
+  }
+  if (role === "merchant") {
     const [row] = await sql<Array<{ id: string; phone: string | null; full_name: string | null }>>`
-      SELECT id::text, mobile AS phone, name AS full_name
-      FROM riders
-      WHERE id = ${riderId}
+      SELECT id::text, registered_phone AS phone,
+             COALESCE(owner_name, parent_name, brand_name) AS full_name
+      FROM merchant_parents
+      WHERE parent_merchant_id = ${sub} OR id::text = ${sub}
       LIMIT 1
     `;
     if (!row) return null;
     return {
-      userType: "rider",
+      userType: "merchant",
       userId: Number(row.id),
       phone: row.phone,
       fullName: row.full_name,
@@ -74,6 +136,7 @@ async function resolveActor(
 }
 
 export async function referralRoutes(app: FastifyInstance) {
+  startReferralConfigCacheListener();
   await registerReferralSettingsAlias(app);
 
   // Public live config (no auth) — apps poll + compare configVersion
@@ -82,15 +145,18 @@ export async function referralRoutes(app: FastifyInstance) {
     {
       schema: {
         querystring: z.object({
-          userType: z.enum(["customer", "rider"]).default("customer"),
+          userType: z.enum(["customer", "rider", "merchant"]).default("customer"),
           sinceVersion: z.coerce.number().int().optional(),
+          fresh: z.string().optional(),
         }),
       },
     },
     async (req, reply) => {
       try {
-        const q = req.query as { userType: ReferralUserType; sinceVersion?: number };
-        const { settings, rules } = await getReferralConfig();
+        const q = req.query as { userType: ReferralUserType; sinceVersion?: number; fresh?: string };
+        const { settings, rules } = await getReferralConfig({
+          force: q.fresh === "1" || q.fresh === "true",
+        });
         if (
           q.sinceVersion != null &&
           Number.isFinite(q.sinceVersion) &&
@@ -122,7 +188,7 @@ export async function referralRoutes(app: FastifyInstance) {
     {
       schema: {
         querystring: z.object({
-          userType: z.enum(["customer", "rider"]).default("rider"),
+          userType: z.enum(["customer", "rider", "merchant"]).default("rider"),
         }),
       },
     },
@@ -134,27 +200,119 @@ export async function referralRoutes(app: FastifyInstance) {
     },
   );
 
+  app.get(
+    "/preview",
+    {
+      schema: {
+        querystring: z.object({
+          code: z.string().min(3).max(32),
+          userType: z.enum(["customer", "rider", "merchant"]).default("merchant"),
+        }),
+      },
+    },
+    async (req, reply) => {
+      const q = req.query as { code: string; userType: ReferralUserType };
+      const result = await previewReferralCode({
+        referralCode: q.code,
+        userType: q.userType,
+      });
+      if (!result.ok) {
+        const status = httpStatusForReferralApplyError(result.error);
+        const extra = isReferralServiceDisabledError(result.error)
+          ? referralServiceDisabledPayload()
+          : {};
+        return reply.code(status).send({
+          ...result,
+          ...extra,
+          message: result.message,
+        });
+      }
+      return result;
+    },
+  );
+
+  app.post(
+    "/internal/apply-onboarding",
+    {
+      schema: {
+        body: z.object({
+          referralCode: z.string().min(3).max(32),
+          parentMerchantId: z.union([z.number().int().positive(), z.string().min(1).max(32)]),
+          source: z
+            .enum(["deep_link", "play_install_referrer", "manual", "share_sheet", "unknown"])
+            .optional(),
+          referredPhone: z.string().max(20).optional(),
+          createIfMissing: z.boolean().optional(),
+        }),
+      },
+    },
+    async (req, reply) => {
+      if (!internalSecretGrantsReferralOnboarding(req)) {
+        return reply.code(403).send({ ok: false, error: "forbidden" });
+      }
+      const body = req.body as {
+        referralCode: string;
+        parentMerchantId: number | string;
+        source?: "deep_link" | "play_install_referrer" | "manual" | "share_sheet" | "unknown";
+        referredPhone?: string;
+        createIfMissing?: boolean;
+      };
+      const result = await applyMerchantReferralForParent({
+        parentMerchantId: body.parentMerchantId,
+        referralCode: body.referralCode,
+        source: body.source ?? "manual",
+        referredPhone: body.referredPhone ?? null,
+        ip: req.ip,
+        userAgent: String(req.headers["user-agent"] ?? ""),
+        createIfMissing: body.createIfMissing,
+      });
+      if ("skipped" in result && result.skipped) {
+        return { ok: true, skipped: true, reason: result.reason };
+      }
+      if (!result.ok) {
+        const status = httpStatusForReferralApplyError(result.error);
+        const extra = isReferralServiceDisabledError(result.error)
+          ? referralServiceDisabledPayload()
+          : null;
+        return reply.code(status).send({
+          ok: false,
+          error: extra?.error ?? result.error,
+          publicError: classifyMerchantReferralError(result.error),
+          message: extra?.userMessage ?? merchantReferralPublicMessage(result.error),
+          flags: result.flags,
+          ...(extra ?? {}),
+        });
+      }
+      return result;
+    },
+  );
+
   // Authenticated surface
   await app.register(async (scoped) => {
     await scoped.register(auth, { required: true });
 
     scoped.get("/me", async (req, reply) => {
-      const actor = await resolveActor(req.auth?.role, req.auth?.sub);
-      if (!actor) return reply.code(403).send({ ok: false, error: "forbidden" });
-      const { settings, rules } = await getReferralConfig();
-      const profile = await getMyReferralProfile({
-        userType: actor.userType,
-        userId: actor.userId,
-      });
-      return {
-        ok: true,
-        ...profile,
-        config: toPublicReferralConfig(settings, rules, actor.userType),
-      };
+      try {
+        const actor = await resolveActor(req.auth?.role, req.auth?.sub, req.auth?.phone);
+        if (!actor) return reply.code(403).send({ ok: false, error: "forbidden" });
+        const { settings, rules } = await getReferralConfig();
+        const profile = await getMyReferralProfile({
+          userType: actor.userType,
+          userId: actor.userId,
+        });
+        return {
+          ok: true,
+          ...profile,
+          config: toPublicReferralConfig(settings, rules, actor.userType),
+        };
+      } catch (err) {
+        console.warn("[referral] /me failed", (err as Error).message);
+        return reply.code(500).send({ ok: false, error: "referral_profile_failed" });
+      }
     });
 
     scoped.get("/history", async (req, reply) => {
-      const actor = await resolveActor(req.auth?.role, req.auth?.sub);
+      const actor = await resolveActor(req.auth?.role, req.auth?.sub, req.auth?.phone);
       if (!actor) return reply.code(403).send({ ok: false, error: "forbidden" });
       const profile = await getMyReferralProfile({
         userType: actor.userType,
@@ -175,8 +333,12 @@ export async function referralRoutes(app: FastifyInstance) {
         },
       },
       async (req, reply) => {
-        const actor = await resolveActor(req.auth?.role, req.auth?.sub);
+        const actor = await resolveActor(req.auth?.role, req.auth?.sub, req.auth?.phone);
         if (!actor) return reply.code(403).send({ ok: false, error: "forbidden" });
+        const { settings, rules } = await getReferralConfig();
+        if (!referralTrackingEnabled(settings, actor.userType)) {
+          return reply.code(409).send(referralServiceDisabledPayload());
+        }
         const profile = await getMyReferralProfile({
           userType: actor.userType,
           userId: actor.userId,
@@ -184,7 +346,6 @@ export async function referralRoutes(app: FastifyInstance) {
         if (!profile.referralCode || !profile.shareUrl) {
           return reply.code(400).send({ ok: false, error: "no_referral_code" });
         }
-        const { settings, rules } = await getReferralConfig();
         const summary = buildReferralRewardSummary(settings, rules, actor.userType);
         const message = buildPersonalizedShareMessage({
           referrerName: actor.fullName,
@@ -221,7 +382,7 @@ export async function referralRoutes(app: FastifyInstance) {
         },
       },
       async (req, reply) => {
-        const actor = await resolveActor(req.auth?.role, req.auth?.sub);
+        const actor = await resolveActor(req.auth?.role, req.auth?.sub, req.auth?.phone);
         if (!actor) return reply.code(403).send({ ok: false, error: "forbidden" });
         const body = req.body as {
           referralCode?: string;
@@ -270,7 +431,16 @@ export async function referralRoutes(app: FastifyInstance) {
         });
 
         if (!result.ok) {
-          return reply.code(400).send(result);
+          const extra = isReferralServiceDisabledError(result.error)
+            ? referralServiceDisabledPayload()
+            : {};
+          return reply.code(httpStatusForReferralApplyError(result.error)).send({
+            ...result,
+            ...extra,
+            error: isReferralServiceDisabledError(result.error)
+              ? REFERRAL_SERVICE_DISABLED
+              : result.error,
+          });
         }
         return result;
       },
@@ -284,8 +454,12 @@ export async function referralRoutes(app: FastifyInstance) {
         },
       },
       async (req, reply) => {
-        const actor = await resolveActor(req.auth?.role, req.auth?.sub);
+        const actor = await resolveActor(req.auth?.role, req.auth?.sub, req.auth?.phone);
         if (!actor) return reply.code(403).send({ ok: false, error: "forbidden" });
+        const { settings } = await getReferralConfig();
+        if (!referralTrackingEnabled(settings, actor.userType)) {
+          return reply.code(409).send(referralServiceDisabledPayload());
+        }
         const code = (req.body as { referralCode: string }).referralCode.trim().toUpperCase();
         const sql = getSql();
         const [row] = await sql<Array<{ user_type: string; user_id: string }>>`
@@ -351,16 +525,19 @@ export async function referralPublicLandingRoutes(app: FastifyInstance) {
     });
     const { settings, rules } = await getReferralConfig();
     const summary = buildReferralRewardSummary(settings, rules, "customer");
+    const serviceOff = !referralTrackingEnabled(settings, "customer");
     const html = buildReferralLandingHtml({
       code,
       clickToken: click.clickToken,
       playReferrer: click.playReferrer,
-      packageName: settings.deep_link.play_store_customer_package,
+      packageName: playStorePackageFor(settings, "customer"),
       publicBase: resolveReferralPublicBase(),
       canonicalPrefix: settings.deep_link.customer_path_prefix,
-      headline: summary.headline,
-      rewardLines: summary.inviteeLines,
-      ogSummary: summary.ogSummary,
+      headline: serviceOff
+        ? "This referral code is no longer available."
+        : summary.headline,
+      rewardLines: serviceOff ? [] : summary.inviteeLines,
+      ogSummary: serviceOff ? "This referral code is no longer available." : summary.ogSummary,
       audience: "customer",
     });
     return (reply as { type: (t: string) => { send: (b: string) => unknown } })
@@ -383,20 +560,41 @@ export async function referralPublicLandingRoutes(app: FastifyInstance) {
     if (!click) return reply.status(404).send("Referral code not found");
     const { settings, rules } = await getReferralConfig();
     const summary = buildReferralRewardSummary(settings, rules, "rider");
+    const serviceOff = !referralTrackingEnabled(settings, "rider");
     const html = buildReferralLandingHtml({
       code,
       clickToken: click.clickToken,
       playReferrer: click.playReferrer,
-      packageName: settings.deep_link.play_store_rider_package,
+      packageName: playStorePackageFor(settings, "rider"),
       publicBase: resolveReferralPublicBase(),
       appScheme: "gatimitra-rider",
       path: "referral",
       canonicalPrefix: settings.deep_link.rider_path_prefix,
-      headline: summary.headline,
-      rewardLines: summary.inviteeLines,
-      ogSummary: summary.ogSummary,
+      headline: serviceOff
+        ? "This referral code is no longer available."
+        : summary.headline,
+      rewardLines: serviceOff ? [] : summary.inviteeLines,
+      ogSummary: serviceOff ? "This referral code is no longer available." : summary.ogSummary,
       audience: "rider",
     });
     return reply.type("text/html; charset=utf-8").send(html);
+  });
+
+  app.get("/merchant-ref/:code", async (req, reply) => {
+    const code = String((req.params as { code: string }).code ?? "").trim().toUpperCase();
+    if (!code) return reply.status(400).send("Invalid referral link");
+    const click = await recordReferralInstallClick({
+      referralCode: code,
+      userType: "merchant",
+      ip: req.ip,
+      userAgent: String(req.headers["user-agent"] ?? ""),
+    });
+    if (!click) return reply.status(404).send("Referral code not found");
+    const dest = new URL(
+      `/merchant-ref/${encodeURIComponent(code)}`,
+      `${resolveReferralPublicBaseFor("merchant")}/`,
+    );
+    dest.searchParams.set("click", click.clickToken);
+    return reply.redirect(dest.toString(), 302);
   });
 }

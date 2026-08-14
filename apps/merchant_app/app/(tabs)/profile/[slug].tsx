@@ -27,6 +27,7 @@ import ActivityFeedScreen from "./ActivityFeedScreen";
 import AutoAcceptScreen from "./AutoAcceptScreen";
 import PrinterSettingsScreen from "./PrinterSettingsScreen";
 import LearningCentreScreen from "./LearningCentreScreen";
+import ReferralsScreen from "./ReferralsScreen";
 
 const SLUG_TITLES: Record<string, string> = {
   "edit-store": "Edit Store",
@@ -49,6 +50,7 @@ const SLUG_TITLES: Record<string, string> = {
   commission: "Commission Details",
   "tax-reports": "Tax Reports",
   offers: "Offers & Promotions",
+  referrals: "Refer & Earn",
   "activity-feed": "Recent Activity",
   preferences: "Preferences",
   notifications: "Notifications",
@@ -137,6 +139,10 @@ export default function ProfileSlugScreen() {
 
   if (slug === "offers") {
     return <OffersScreen />;
+  }
+
+  if (slug === "referrals") {
+    return <ReferralsScreen />;
   }
 
   if (slug === "activity-feed") {

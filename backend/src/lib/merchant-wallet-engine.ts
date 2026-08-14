@@ -35,6 +35,13 @@ import {
 import { buildEligibleCompensationMessage, buildCancellationInfoLedgerDescription } from "./merchant-cancellation-compensation-display.js";
 import { countMerchantDeliveredOrdersIst } from "./merchant-growth-metrics.js";
 import { logStoreActivity } from "./store-activity-feed.js";
+import {
+  WalletFrozenError,
+  isWalletFrozenError,
+  merchantWalletFreezeView,
+  throwIfMerchantWalletFrozen,
+  walletFrozenFromDebitMessage,
+} from "./wallet-freeze.js";
 
 const SETTLEMENT_LEDGER_LIMIT = 5000;
 
@@ -115,15 +122,31 @@ export async function getWalletSummary(
     console.warn("[getWalletSummary] repair orphaned payout holds:", e);
   }
 
-  const [w] = await sql`
-    SELECT available_balance, pending_balance, hold_balance, reserve_balance,
-           COALESCE(pending_settlement, 0) AS pending_settlement,
-           COALESCE(lifetime_credit, 0) AS lifetime_credit,
-           COALESCE(lifetime_debit, 0) AS lifetime_debit,
-           total_earned, total_withdrawn, total_penalty, total_commission_deducted, status,
-           COALESCE(settlement_paused, false) AS settlement_paused
-    FROM merchant_wallet WHERE id = ${walletId}
-  `;
+  let w: Record<string, unknown> | undefined;
+  try {
+    const rows = await sql`
+      SELECT available_balance, pending_balance, hold_balance, reserve_balance,
+             COALESCE(pending_settlement, 0) AS pending_settlement,
+             COALESCE(lifetime_credit, 0) AS lifetime_credit,
+             COALESCE(lifetime_debit, 0) AS lifetime_debit,
+             total_earned, total_withdrawn, total_penalty, total_commission_deducted, status,
+             COALESCE(settlement_paused, false) AS settlement_paused,
+             frozen_reason, frozen_at
+      FROM merchant_wallet WHERE id = ${walletId}
+    `;
+    w = rows[0] as Record<string, unknown> | undefined;
+  } catch {
+    const rows = await sql`
+      SELECT available_balance, pending_balance, hold_balance, reserve_balance,
+             COALESCE(pending_settlement, 0) AS pending_settlement,
+             COALESCE(lifetime_credit, 0) AS lifetime_credit,
+             COALESCE(lifetime_debit, 0) AS lifetime_debit,
+             total_earned, total_withdrawn, total_penalty, total_commission_deducted, status,
+             COALESCE(settlement_paused, false) AS settlement_paused
+      FROM merchant_wallet WHERE id = ${walletId}
+    `;
+    w = rows[0] as Record<string, unknown> | undefined;
+  }
   const wr = w as any;
 
   let available_balance = Number(wr.available_balance ?? 0);
@@ -224,6 +247,8 @@ export async function getWalletSummary(
       ? await countMerchantDeliveredOrdersIst(sql, storeId, todayYmd, todayYmd)
       : 0;
 
+  const freeze = merchantWalletFreezeView(wr);
+
   return {
     wallet_id: walletId,
     available_balance: available,
@@ -238,7 +263,7 @@ export async function getWalletSummary(
     total_withdrawn: roundMoney(Number(wr.total_withdrawn ?? 0)),
     total_penalty: roundMoney(Number(wr.total_penalty ?? 0)),
     total_commission_deducted: roundMoney(Number(wr.total_commission_deducted ?? 0)),
-    status: String(wr.status ?? "ACTIVE") as WalletSummary["status"],
+    status: freeze.status as WalletSummary["status"],
     today_earning: roundMoney(todayEarning),
     yesterday_earning: roundMoney(yesterdayEarning),
     pending_withdrawal_total: roundMoney(pendingWithdrawal),
@@ -248,6 +273,9 @@ export async function getWalletSummary(
     total_balance: roundMoney(available + hold + pending),
     settlement_paused: settlementPaused,
     delivered_today: deliveredToday,
+    isFrozen: freeze.isFrozen,
+    freezeReason: freeze.freezeReason,
+    frozenAt: freeze.frozenAt,
   };
 }
 
@@ -1131,30 +1159,58 @@ export async function createWithdrawalRequest(
   const quote = await getPayoutQuote(storeId, amount);
 
   // Partner Site parity: HOLD AVAILABLE → HOLD bucket, then insert payout request.
-  // On hold-credit or insert failure, release funds back to AVAILABLE.
+  // Freeze check shares the same row lock as debit so a concurrent admin freeze cannot slip through.
   const holdKey = idempotencyKey("payout_hold", walletId, Date.now());
   let holdLedgerId = 0;
 
   try {
-    const [holdResult] = await sql`
-      SELECT merchant_wallet_debit(
-        ${walletId}, ${amount}, 'HOLD_LOCK', 'AVAILABLE',
-        'WITHDRAWAL', ${0}, ${holdKey},
-        ${'Withdrawal requested: ₹' + amount.toFixed(2)},
-        ${JSON.stringify({ source, commission: quote.commission_amount, net: quote.net_payout_amount })}::jsonb
-      ) AS ledger_id
-    `;
-    holdLedgerId = Number((holdResult as any).ledger_id);
+    await sql.begin(async (tx) => {
+      const [locked] = await tx`
+        SELECT status, frozen_reason
+        FROM merchant_wallet
+        WHERE id = ${walletId}
+        FOR UPDATE
+      `;
+      throwIfMerchantWalletFrozen(locked as { status?: unknown; frozen_reason?: unknown });
 
-    await sql`
-      SELECT merchant_wallet_credit(
-        ${walletId}, ${amount}, 'HOLD_LOCK', 'HOLD',
-        'WITHDRAWAL', ${0}, ${holdKey + '_credit_hold'},
-        ${'Withdrawal requested (processing): ₹' + amount.toFixed(2)},
-        ${JSON.stringify({ hold_debit_ledger_id: holdLedgerId })}::jsonb
-      ) AS ledger_id
-    `;
+      const [holdResult] = await tx`
+        SELECT merchant_wallet_debit(
+          ${walletId}, ${amount}, 'HOLD_LOCK', 'AVAILABLE',
+          'WITHDRAWAL', ${0}, ${holdKey},
+          ${'Withdrawal requested: ₹' + amount.toFixed(2)},
+          ${JSON.stringify({ source, commission: quote.commission_amount, net: quote.net_payout_amount })}::jsonb
+        ) AS ledger_id
+      `;
+      holdLedgerId = Number((holdResult as any).ledger_id);
+
+      await tx`
+        SELECT merchant_wallet_credit(
+          ${walletId}, ${amount}, 'HOLD_LOCK', 'HOLD',
+          'WITHDRAWAL', ${0}, ${holdKey + '_credit_hold'},
+          ${'Withdrawal requested (processing): ₹' + amount.toFixed(2)},
+          ${JSON.stringify({ hold_debit_ledger_id: holdLedgerId })}::jsonb
+        ) AS ledger_id
+      `;
+    });
   } catch (holdErr) {
+    if (isWalletFrozenError(holdErr)) throw holdErr;
+    const msg = holdErr instanceof Error ? holdErr.message : "";
+    const frozenErr = walletFrozenFromDebitMessage(msg, null);
+    if (frozenErr) {
+      try {
+        const [again] = await sql`
+          SELECT frozen_reason FROM merchant_wallet WHERE id = ${walletId} LIMIT 1
+        `;
+        throw new WalletFrozenError(
+          typeof (again as { frozen_reason?: unknown } | undefined)?.frozen_reason === "string"
+            ? String((again as { frozen_reason?: unknown }).frozen_reason)
+            : frozenErr.freezeReason,
+        );
+      } catch (inner) {
+        if (isWalletFrozenError(inner)) throw inner;
+        throw frozenErr;
+      }
+    }
     if (holdLedgerId > 0) {
       try {
         await sql`

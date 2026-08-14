@@ -2060,6 +2060,10 @@ export default function RidersPage() {
             };
             const handleWalletFreezeSubmit = async () => {
               if (!riderId || !walletFreezeModal) return;
+              if (walletFreezeModal === 'freeze' && !walletFreezeReason.trim()) {
+                setWalletFreezeError('Freeze reason is required');
+                return;
+              }
               setWalletFreezeError(null);
               setWalletFreezeSubmitting(true);
               try {
@@ -2067,7 +2071,7 @@ export default function RidersPage() {
                   method: 'POST',
                   headers: { 'Content-Type': 'application/json' },
                   credentials: 'include',
-                  body: JSON.stringify({ action: walletFreezeModal, reason: walletFreezeReason.trim() || undefined }),
+                  body: JSON.stringify({ action: walletFreezeModal, reason: walletFreezeReason.trim() }),
                 });
                 const data = await res.json();
                 if (!res.ok) {
@@ -2351,6 +2355,12 @@ export default function RidersPage() {
                         {isFrozen ? 'Wallet frozen' : 'Wallet active'}
                       </span>
                     </div>
+                    {isFrozen && wallet?.freezeReason ? (
+                      <p className="text-xs text-gray-700 mt-1">
+                        <span className="font-medium">Reason: </span>
+                        {wallet.freezeReason}
+                      </p>
+                    ) : null}
                     {latestFreeze && (
                       <p className="text-xs text-gray-700 mt-1">
                         <span className="font-medium">Latest: </span>
@@ -2425,7 +2435,9 @@ export default function RidersPage() {
                           : 'Rider will be able to request withdrawals again.'}
                       </p>
                       <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-1">Reason (optional)</label>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">
+                          Reason {walletFreezeModal === 'freeze' ? '*' : '(optional)'}
+                        </label>
                         <input
                           type="text"
                           value={walletFreezeReason}
@@ -2437,7 +2449,7 @@ export default function RidersPage() {
                       {walletFreezeError && <p className="text-sm text-red-700 bg-red-50 px-3 py-2 rounded-lg">{walletFreezeError}</p>}
                       <div className="flex justify-end gap-3 pt-2">
                         <button type="button" onClick={() => !walletFreezeSubmitting && setWalletFreezeModal(null)} className="px-4 py-2 text-sm font-medium text-gray-700 bg-gray-200 hover:bg-gray-300 rounded-lg cursor-pointer">Cancel</button>
-                        <button type="button" onClick={handleWalletFreezeSubmit} disabled={walletFreezeSubmitting} className="px-4 py-2 text-sm font-medium bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 cursor-pointer">
+                        <button type="button" onClick={handleWalletFreezeSubmit} disabled={walletFreezeSubmitting || (walletFreezeModal === 'freeze' && !walletFreezeReason.trim())} className="px-4 py-2 text-sm font-medium bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 cursor-pointer">
                           {walletFreezeSubmitting ? 'Submitting...' : 'Confirm'}
                         </button>
                       </div>

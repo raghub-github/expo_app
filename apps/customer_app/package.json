@@ -21,6 +21,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint:typography": "node scripts/check-apptext-typography.js",
     "generate:icons": "node scripts/generate-app-icons.mjs",
+    "generate:splash": "node scripts/generate-native-splash.mjs",
     "legal:build": "node legal/build-bundle.mjs",
     "prebuild:legal": "node legal/build-bundle.mjs"
   },

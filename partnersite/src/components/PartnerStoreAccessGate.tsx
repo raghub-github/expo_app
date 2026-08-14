@@ -40,7 +40,7 @@ export function PartnerStoreAccessGate({ children }: { children: React.ReactNode
     let cancelled = false;
 
     async function gate() {
-      // Hub is always allowed — it will send empty parents to register-store
+      // Hub is always allowed — empty parents stay on All Stores until they add a child.
       if (isAllStores) {
         if (!cancelled) setAllowed(true);
         return;
@@ -81,15 +81,10 @@ export function PartnerStoreAccessGate({ children }: { children: React.ReactNode
         }
 
         const stores = data.stores ?? [];
-        const parentId = data.parentId ?? data.onboardingProgress?.parent_id;
 
         if (stores.length === 0) {
           clearPartnerStoreSelection();
-          const q =
-            parentId != null
-              ? `?parent_id=${encodeURIComponent(String(parentId))}&new=1`
-              : '?new=1';
-          if (!cancelled) window.location.href = `/auth/register-store${q}`;
+          if (!cancelled) window.location.href = "/partners/all-stores?picker=1";
           return;
         }
 

@@ -7,7 +7,7 @@ import type { ReferralUserType } from "./referral.config.service.js";
 import { getReferralSettings } from "./referral.config.service.js";
 import {
   evaluateReferralFraud,
-  hashPhone,
+  hashIp,
   type FraudContext,
   type FraudResult,
 } from "./referral.fraud.js";
@@ -89,22 +89,16 @@ export async function evaluateAdvancedReferralFraud(
 
   if (ctx.ip) {
     const threshold = Number(adv.suspicious_ip_threshold ?? 10);
-    const [ipCnt] = await sql<Array<{ n: string }>>`
-      SELECT COUNT(*)::text AS n
-      FROM referral_install_clicks
-      WHERE ip_hash = ${hashPhone(ctx.ip) /* reuse hash util for ip */}
-        AND created_at > NOW() - INTERVAL '1 hour'
-    `.catch(() => [{ n: "0" }]);
-    // Prefer dedicated ip hash — fall back to simple count by raw metadata
-    void ipCnt;
-    const [ipCnt2] = await sql<Array<{ n: string }>>`
-      SELECT COUNT(*)::text AS n
-      FROM referral_lifecycle_events
-      WHERE event_name = 'link_clicked'
-        AND metadata->>'ip' = ${ctx.ip}
-        AND created_at > NOW() - INTERVAL '1 hour'
-    `.catch(() => [{ n: "0" }]);
-    if (Number(ipCnt2?.n ?? 0) >= threshold) flags.push("suspicious_ip");
+    const ipHash = hashIp(ctx.ip);
+    const [ipCnt] = ipHash
+      ? await sql<Array<{ n: string }>>`
+          SELECT COUNT(*)::text AS n
+          FROM referral_install_clicks
+          WHERE ip_hash = ${ipHash}
+            AND created_at > NOW() - INTERVAL '1 hour'
+        `.catch(() => [{ n: "0" }])
+      : [{ n: "0" }];
+    if (Number(ipCnt?.n ?? 0) >= threshold) flags.push("suspicious_ip");
   }
 
   if (flags.length > 0) {

@@ -189,9 +189,15 @@ export function FloatingTabBar({ state, descriptors, navigation }: BottomTabBarP
   const profileHubOverlay =
     currentName === "profile" && returnRoute != null && isHubPath(returnRoute);
   const overlayHubTab = profileHubOverlay ? hubTabFromPath(returnRoute) : null;
-  /** Hide Zone/Flow dock on Profile nested screens unless opened as Flow overlay. */
+  /** Offers is a Profile stack screen but belongs to the Flow hub dock. */
+  const offersHubPage =
+    typeof pathname === "string" && pathname.includes("/profile/offers");
+  /** Hide Zone/Flow dock on Profile nested screens unless opened as Flow overlay / Offers. */
   const profileInnerPage =
-    currentName === "profile" && !isProfileStackAtRoot(state) && !profileHubOverlay;
+    currentName === "profile" &&
+    !isProfileStackAtRoot(state) &&
+    !profileHubOverlay &&
+    !offersHubPage;
   const packagingTipsPage = (pathname ?? "").includes("packaging-tips");
   const tabBarHidden =
     (hideTabBarOnKeyboard && keyboardShown) || profileInnerPage || packagingTipsPage;
@@ -213,6 +219,13 @@ export function FloatingTabBar({ state, descriptors, navigation }: BottomTabBarP
   }, []);
 
   useEffect(() => {
+    const offersOpen =
+      typeof pathname === "string" && pathname.includes("/profile/offers");
+    if (offersOpen) {
+      setDock("hub");
+      setActiveTab("offers");
+      return;
+    }
     if (profileHubOverlay) {
       setDock("hub");
       const hubTab = hubTabFromPath(returnRoute);
@@ -227,7 +240,7 @@ export function FloatingTabBar({ state, descriptors, navigation }: BottomTabBarP
       lastMainRoute.current = currentName;
       setActiveTab(currentName);
     }
-  }, [currentName, setActiveTab, profileHubOverlay, returnRoute]);
+  }, [currentName, setActiveTab, profileHubOverlay, returnRoute, pathname]);
 
   const runDockSwitch = useCallback(
     (nextDock: "main" | "hub", kind: "flow" | "home", navigate: () => void) => {
@@ -330,16 +343,27 @@ export function FloatingTabBar({ state, descriptors, navigation }: BottomTabBarP
   }, [navigation, runDockSwitch, setActiveTab, dock]);
 
   const goMainDock = useCallback(() => {
-    if (dock === "main" && !profileHubOverlay) return;
+    const offersOpen =
+      typeof pathname === "string" && pathname.includes("/profile/offers");
+    if (dock === "main" && !profileHubOverlay && !offersOpen) return;
     const now = Date.now();
     if (now - lastHubTabPressAt.current < DOCK_PRESS_DEBOUNCE_MS) return;
     lastHubTabPressAt.current = now;
-    const target = lastMainRoute.current;
+    // From Offers / Flow overlay, always land on Home (Zone index).
     runDockSwitch("main", "home", () => {
-      if (profileHubOverlay) clearReturnRoute();
-      navigateToMainTab(target);
+      clearReturnRoute();
+      setLastProfileSlug(null);
+      navigateToMainTab("index");
     });
-  }, [navigateToMainTab, runDockSwitch, dock, profileHubOverlay, clearReturnRoute]);
+  }, [
+    navigateToMainTab,
+    runDockSwitch,
+    dock,
+    profileHubOverlay,
+    clearReturnRoute,
+    pathname,
+    setLastProfileSlug,
+  ]);
 
   const orderedMain = MAIN_TAB_ORDER.map((name) => {
     const route = state.routes.find((r) => r.name === name);
@@ -498,13 +522,17 @@ export function FloatingTabBar({ state, descriptors, navigation }: BottomTabBarP
                   const complaintsActive = focusedRouteName === "complaints";
                   const offersHubActive =
                     typeof pathname === "string" && pathname.includes("/profile/offers");
+                  // Offers lives under the Profile stack — prefer pathname over returnRoute
+                  // so the Offers pill stays selected while that screen is open.
                   const isFocused =
-                    profileHubOverlay && overlayHubTab
-                      ? routeName === overlayHubTab
-                      : routeName === "offers"
-                        ? offersHubActive
-                        : focusedRouteName === routeName ||
-                          (routeName === "reviews" && complaintsActive);
+                    routeName === "offers"
+                      ? offersHubActive
+                      : offersHubActive
+                        ? false
+                        : profileHubOverlay && overlayHubTab
+                          ? routeName === overlayHubTab
+                          : focusedRouteName === routeName ||
+                            (routeName === "reviews" && complaintsActive);
                   const label =
                     routeName === "earnings"
                       ? "Earnings"
@@ -524,12 +552,16 @@ export function FloatingTabBar({ state, descriptors, navigation }: BottomTabBarP
                         lastHubTabPressAt.current = now;
 
                         if (routeName === "offers") {
-                          if (isFocused || (pathname ?? "").includes("/profile/offers")) {
-                            return;
-                          }
+                          if (offersHubActive) return;
                           if (profileHubOverlay) clearReturnRoute();
+                          setDock("hub");
+                          setActiveTab("offers");
+                          const from =
+                            typeof pathname === "string" && pathname.trim()
+                              ? pathname
+                              : "/(tabs)/earnings";
+                          setReturnRoute(from);
                           router.replace("/(tabs)/profile/offers" as never);
-                          setReturnRoute(pathname ?? "/(tabs)/earnings");
                           return;
                         }
                         if (isFocused) return;

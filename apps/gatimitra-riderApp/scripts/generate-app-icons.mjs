@@ -1,7 +1,7 @@
 /**
  * Generates launcher icons for GatiMitra Rider from assets/images/rideraap.png.
  *
- * - icon.png: 1024×1024 full launcher (designed squircle artwork, white background)
+ * - icon.png: 1024×1024 full launcher (designed squircle artwork, mint background)
  * - adaptive-icon.png: foreground scaled to Android safe zone (~72%) on transparent canvas
  * - splash-logo.png: centered artwork for splash screen
  *
@@ -20,7 +20,7 @@ const CANVAS = 1024;
 /** Android adaptive icon safe zone ≈ 66%; use 72% because rideraap has built-in padding. */
 const ADAPTIVE_SCALE = 0.72;
 const SPLASH_SCALE = 0.58;
-const BRAND_BG = "#FFFFFF";
+const BRAND_BG = "#C4E8D1";
 const LOGO_SOURCE = path.join(projectRoot, "assets/images/rideraap.png");
 const ICON_OUT = path.join(projectRoot, "assets/icon.png");
 const ADAPTIVE_OUT = path.join(projectRoot, "assets/adaptive-icon.png");

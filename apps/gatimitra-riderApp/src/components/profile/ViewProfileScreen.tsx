@@ -20,6 +20,7 @@ import { useSessionStore } from "@/src/stores/sessionStore";
 import { SUPPORTED_LANGUAGES } from "@/src/stores/languageStore";
 import { toAbsoluteImageUrl } from "@/src/utils/mediaUrl";
 import { colors } from "@/src/theme";
+import { fetchRiderReferralConfig } from "@/src/services/referral.service";
 
 const TEAL = colors.primary[600];
 const TEAL_LIGHT = colors.primary[50];
@@ -90,6 +91,15 @@ export function ViewProfileScreen() {
   const { data: profile, isLoading, isError, refetch, isRefetching } = useRiderProfile();
   const { data: riderStatus } = useRiderStatus(riderId);
   const [avatarError, setAvatarError] = useState(false);
+  const [showReferralUi, setShowReferralUi] = useState(false);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    void fetchRiderReferralConfig(controller.signal).then((config) => {
+      setShowReferralUi(config?.referralEnabled === true);
+    });
+    return () => controller.abort();
+  }, []);
 
   const displayProfile = profile
     ? {
@@ -244,11 +254,13 @@ export function ViewProfileScreen() {
               </View>
               <Ionicons name="lock-closed" size={14} color="#CBD5E1" />
             </View>
-            <ReadOnlyField
-              label={t("profile.viewProfileDetails.myReferralCode", "Your referral code")}
-              value={displayProfile.referralCode?.trim() || "—"}
-              icon="gift-outline"
-            />
+            {showReferralUi ? (
+              <ReadOnlyField
+                label={t("profile.viewProfileDetails.myReferralCode", "Your referral code")}
+                value={displayProfile.referralCode?.trim() || "—"}
+                icon="gift-outline"
+              />
+            ) : null}
             {displayProfile.referredByDisplayId ? (
               <ReadOnlyField
                 label={t("profile.viewProfileDetails.referredBy", "Referred by")}

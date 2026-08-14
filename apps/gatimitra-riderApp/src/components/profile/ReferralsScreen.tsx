@@ -16,6 +16,7 @@ import { useQuery } from "@tanstack/react-query";
 import { colors } from "@/src/theme";
 import { shareRiderReferralCode } from "@/src/lib/rider-referral-share";
 import { fetchRiderReferralMe } from "@/src/services/referral.service";
+import { presentReferralCopy, REFERRAL_CODE_UNAVAILABLE_USER_MESSAGE } from "@/src/lib/referralCopy";
 import { useSessionStore } from "@/src/stores/sessionStore";
 import { useRiderStatus } from "@/src/hooks/useOnboarding";
 
@@ -46,39 +47,22 @@ export function ReferralsScreen() {
   };
   const referralCode =
     data?.referralCode?.trim() || riderStatus?.referralCode?.trim() || null;
-  const headline = data?.config?.rewardSummary?.headline?.trim();
-
-  const steps = useMemo(
-    () => [
-      {
-        icon: "share-social-outline" as const,
-        title: t("profile.referralStepShare", "Share your link"),
-        body: t(
-          "profile.referralStepShareBody",
-          "Send your unique referral link via WhatsApp, SMS, or any app.",
-        ),
-      },
-      {
-        icon: "download-outline" as const,
-        title: t("profile.referralStepInstall", "They join via your link"),
-        body: t(
-          "profile.referralStepInstallBody",
-          "Partners who join from your link get the referral applied automatically.",
-        ),
-      },
-      {
-        icon: "gift-outline" as const,
-        title: t("profile.referralStepEarn", "You both earn rewards"),
-        body:
-          headline ||
-          t(
-            "profile.referralStepEarnBody",
-            "After they complete delivery milestones, rewards credit to your wallet.",
-          ),
-      },
-    ],
-    [headline, t],
+  const copy = useMemo(
+    () =>
+      presentReferralCopy({
+        audience: "rider",
+        referralEnabled: data?.config?.referralEnabled,
+        rewardEnabled: data?.config?.rewardEnabled,
+        rewardsPaused: data?.config?.rewardSummary?.rewardsPaused,
+        currency: data?.config?.currency,
+        requireKyc: data?.config?.requireKyc,
+        milestones: data?.config?.milestones,
+      }),
+    [data?.config],
   );
+  const referralEnabled = data?.config?.referralEnabled === true;
+
+  const steps = copy.steps;
 
   return (
     <SafeAreaView style={styles.root} edges={["top", "bottom"]}>
@@ -92,12 +76,8 @@ export function ReferralsScreen() {
           <Ionicons name="arrow-back" size={22} color={TEXT} />
         </Pressable>
         <View style={styles.headerText}>
-          <Text style={styles.headerTitle}>
-            {t("profile.referAndEarn", "Refer & Earn")}
-          </Text>
-          <Text style={styles.headerSub}>
-            {t("profile.referralsSubtitle", "Share your link and track rewards")}
-          </Text>
+          <Text style={styles.headerTitle}>{copy.title}</Text>
+          <Text style={styles.headerSub}>{copy.subtitle}</Text>
         </View>
       </View>
 
@@ -115,6 +95,13 @@ export function ReferralsScreen() {
             <Text style={styles.retryBtnText}>{t("common.retry", "Retry")}</Text>
           </Pressable>
         </View>
+      ) : data && !referralEnabled ? (
+        <View style={styles.centerState}>
+          <Ionicons name="gift-outline" size={40} color="#94A3B8" />
+          <Text style={styles.centerTitle}>
+            {t("profile.referralsUnavailable", REFERRAL_CODE_UNAVAILABLE_USER_MESSAGE)}
+          </Text>
+        </View>
       ) : (
         <ScrollView
           contentContainerStyle={styles.scroll}
@@ -127,6 +114,18 @@ export function ReferralsScreen() {
             />
           }
         >
+          <View style={styles.heroCard}>
+            <Text style={styles.heroTitle}>
+              {copy.hasActiveReward ? copy.headline : copy.unavailableMessage}
+            </Text>
+            {copy.hasActiveReward && copy.youEarnLine ? (
+              <Text style={styles.heroYou}>{copy.youEarnLine}</Text>
+            ) : null}
+            {copy.hasActiveReward && copy.theyEarnDetail ? (
+              <Text style={styles.heroThey}>{copy.theyEarnDetail}</Text>
+            ) : null}
+          </View>
+
           <View style={styles.stepsCard}>
             {steps.map((step, i) => (
               <View
@@ -134,7 +133,19 @@ export function ReferralsScreen() {
                 style={[styles.stepRow, i < steps.length - 1 && styles.stepBorder]}
               >
                 <View style={styles.stepIcon}>
-                  <Ionicons name={step.icon} size={18} color={TEAL_DARK} />
+                  <Ionicons
+                    name={
+                      i === 0
+                        ? "share-social-outline"
+                        : i === 1
+                          ? "download-outline"
+                          : i === steps.length - 1
+                            ? "gift-outline"
+                            : "checkmark-circle-outline"
+                    }
+                    size={18}
+                    color={TEAL_DARK}
+                  />
                 </View>
                 <View style={styles.stepBody}>
                   <Text style={styles.stepTitle}>{step.title}</Text>
@@ -147,7 +158,7 @@ export function ReferralsScreen() {
           {referralCode ? (
             <Pressable
               style={({ pressed }) => [styles.shareBtn, pressed && { opacity: 0.9 }]}
-              onPress={() => void shareRiderReferralCode(referralCode, riderName)}
+              onPress={() => void shareRiderReferralCode(referralCode, riderName, copy)}
             >
               <Ionicons name="logo-whatsapp" size={18} color="#fff" />
               <Text style={styles.shareBtnText}>
@@ -200,12 +211,7 @@ export function ReferralsScreen() {
 
           <View style={styles.tipCard}>
             <Ionicons name="information-circle-outline" size={18} color={TEAL_DARK} />
-            <Text style={styles.tipText}>
-              {t(
-                "profile.referralTip",
-                "Rewards credit to your wallet after qualifying milestones. Amounts and caps are controlled by GatiMitra and update live.",
-              )}
-            </Text>
+            <Text style={styles.tipText}>{copy.tip}</Text>
           </View>
         </ScrollView>
       )}
@@ -236,6 +242,17 @@ const styles = StyleSheet.create({
   headerText: { flex: 1 },
   headerTitle: { fontSize: 18, fontWeight: "800", color: TEXT },
   headerSub: { fontSize: 12, color: MUTED, marginTop: 2 },
+  heroCard: {
+    backgroundColor: "#fff",
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: BORDER,
+    padding: 16,
+    marginBottom: 12,
+  },
+  heroTitle: { fontSize: 16, fontWeight: "800", color: TEXT, lineHeight: 22 },
+  heroYou: { marginTop: 8, fontSize: 14, fontWeight: "700", color: TEAL_DARK },
+  heroThey: { marginTop: 4, fontSize: 13, color: MUTED, lineHeight: 18 },
   centerState: {
     flex: 1,
     alignItems: "center",

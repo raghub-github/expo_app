@@ -12,7 +12,7 @@ import { useDashboardWorkspaceOverlayVisible } from "@/hooks/useDashboardWorkspa
 import { useCustomersQuery } from "@/hooks/queries/useCustomersQuery";
 import { useCustomerDashboardStats, DashboardStatsFilters } from "@/hooks/queries/useCustomerDashboardStats";
 import { usePermissions } from "@/hooks/queries/usePermissionsQuery";
-import { AlertCircle } from "lucide-react";
+import { CustomerNotFoundState } from "@/components/customers/CustomerNotFoundState";
 
 // Lazily load heavy chart components so they don't block initial paint.
 const AnalyticsCharts = dynamic(
@@ -48,7 +48,15 @@ function CustomersPageContent() {
   const workspaceOverlayVisible = useDashboardWorkspaceOverlayVisible();
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(1);
-  const [dashboardFilters, setDashboardFilters] = useState<DashboardStatsFilters>({});
+  const [dashboardFilters, setDashboardFilters] = useState<DashboardStatsFilters>(() => {
+    if (typeof window === "undefined") return {};
+    try {
+      const saved = localStorage.getItem("customerDashboardFilters");
+      return saved ? (JSON.parse(saved) as DashboardStatsFilters) : {};
+    } catch {
+      return {};
+    }
+  });
   const [hasMounted, setHasMounted] = useState(false);
   const prevSearchParamRef = useRef<string | null>(null);
   const debouncedSearch = useDebouncedValue(search, 500);
@@ -91,21 +99,27 @@ function CustomersPageContent() {
 
   // Only fetch if super admin OR if there's a search query
   const shouldFetch = isSuperAdmin || !!debouncedSearch;
-  const { data, isLoading, error } = useCustomersQuery({
+  const { data, isLoading, isPending: customersPending, error, authGateReady } = useCustomersQuery({
     page,
     limit: 20,
     search: debouncedSearch || undefined,
     enabled: shouldFetch && !permissionsLoading,
   });
+  const searchLoading = Boolean(
+    search && (isLoading || customersPending || (shouldFetch && !authGateReady && !data))
+  );
 
   // Fetch dashboard stats by default (when not searching and super admin)
   const shouldFetchStats = isSuperAdmin && !search;
   const {
     data: stats,
-    isLoading: statsLoading,
+    isPending: statsPending,
+    isError: statsError,
   } = useCustomerDashboardStats(shouldFetchStats ? dashboardFilters : {}, {
     enabled: shouldFetchStats,
   });
+  // Disabled/pending queries have isLoading=false with no data — don't flash zeros.
+  const statsLoading = shouldFetchStats && !statsError && (statsPending || stats == null);
   const handlePageChange = (newPage: number) => {
     setPage(newPage);
   };
@@ -184,11 +198,12 @@ function CustomersPageContent() {
         </>
       )}
 
-      {/* Search Results View - Show when searching */}
       {showSearchResults && (
+        error || (!searchLoading && (!data?.customers || data.customers.length === 0)) ? (
+          <CustomerNotFoundState />
+        ) : (
         <div className="rounded-lg border border-gray-200 bg-white p-6">
           <div className="space-y-4">
-            {/* Page Header */}
             <div className="flex items-center justify-between">
               <div>
                 <h1 className="text-2xl font-semibold text-gray-900">Search Results</h1>
@@ -200,34 +215,9 @@ function CustomersPageContent() {
               </div>
             </div>
 
-            {/* Error Message */}
-            {error && (
-              <div className="rounded-lg bg-red-50 border border-red-200 p-4">
-                <p className="text-sm text-red-800">
-                  Error loading customers: {error instanceof Error ? error.message : "Unknown error"}
-                </p>
-              </div>
-            )}
-
-            {/* No Results Message */}
-            {!isLoading && (!data?.customers || data.customers.length === 0) && (
-              <div className="rounded-lg bg-yellow-50 border border-yellow-200 p-4">
-                <div className="flex items-start space-x-3">
-                  <AlertCircle className="h-5 w-5 text-yellow-600 mt-0.5" />
-                  <div>
-                    <p className="text-sm font-medium text-yellow-800">No customers found</p>
-                    <p className="text-sm text-yellow-700 mt-1">
-                      No customers match your search query. Please try a different search term.
-                    </p>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* Customer Table */}
             <CustomerTable
               customers={data?.customers || []}
-              loading={isLoading}
+              loading={searchLoading}
               pageType="all"
               searchQuery={search}
               onPageChange={handlePageChange}
@@ -236,6 +226,7 @@ function CustomersPageContent() {
             />
           </div>
         </div>
+        )
       )}
     </div>
   );

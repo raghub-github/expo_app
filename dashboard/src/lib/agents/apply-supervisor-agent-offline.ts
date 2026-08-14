@@ -91,21 +91,30 @@ export async function applySupervisorAgentOffline(
     changedByUserId: supervisorUserId,
   });
 
-  await sql`
-    INSERT INTO public.agent_profiles (
-      user_id, current_status, is_online, break_started_at, busy_started_at, last_activity_at, updated_at,
-      current_status_since
-    )
-    VALUES (${targetUserId}, 'offline', false, NULL, NULL, ${nowIso}, ${nowIso}, ${nowIso})
-    ON CONFLICT (user_id) DO UPDATE SET
-      current_status = 'offline',
-      is_online = false,
-      break_started_at = NULL,
-      busy_started_at = NULL,
-      last_activity_at = ${nowIso},
-      updated_at = ${nowIso},
-      current_status_since = ${nowIso}
-  `;
+  // UPDATE every row for this user (duplicate profiles would otherwise leave an
+  // online row that auto-assign still joins). Insert only when none exist.
+  const updated = (await sql`
+    UPDATE public.agent_profiles
+    SET current_status = 'offline',
+        is_online = false,
+        break_started_at = NULL,
+        busy_started_at = NULL,
+        last_activity_at = ${nowIso},
+        updated_at = ${nowIso},
+        current_status_since = ${nowIso}
+    WHERE user_id = ${targetUserId}
+    RETURNING id
+  `) as { id?: unknown }[];
+
+  if (!updated.length) {
+    await sql`
+      INSERT INTO public.agent_profiles (
+        user_id, current_status, is_online, break_started_at, busy_started_at, last_activity_at, updated_at,
+        current_status_since
+      )
+      VALUES (${targetUserId}, 'offline', false, NULL, NULL, ${nowIso}, ${nowIso}, ${nowIso})
+    `;
+  }
 
   await sql`
     UPDATE public.agent_work_sessions

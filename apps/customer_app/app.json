@@ -10,9 +10,19 @@
     "jsEngine": "hermes",
     "newArchEnabled": true,
     "splash": {
-      "image": "./assets/images/splash-logo.png",
-      "resizeMode": "contain",
-      "backgroundColor": "#5eead4"
+      "image": "./assets/images/splash-brand.png",
+      "resizeMode": "cover",
+      "backgroundColor": "#14b8a6",
+      "android": {
+        "image": "./assets/images/splash-android12.png",
+        "resizeMode": "contain",
+        "backgroundColor": "#14b8a6"
+      },
+      "ios": {
+        "image": "./assets/images/splash-brand.png",
+        "resizeMode": "cover",
+        "backgroundColor": "#5eead4"
+      }
     },
     "assetBundlePatterns": [
       "**/*"
@@ -20,11 +30,11 @@
     "androidStatusBar": {
       "hidden": false,
       "translucent": true,
-      "backgroundColor": "#5eead4",
+      "backgroundColor": "#14b8a6",
       "barStyle": "light-content"
     },
     "androidNavigationBar": {
-      "backgroundColor": "#5eead4",
+      "backgroundColor": "#14b8a6",
       "barStyle": "light-content",
       "visible": "visible"
     },
@@ -41,6 +51,7 @@
       },
       "package": "com.gatimitra.customer",
       "softwareKeyboardLayoutMode": "resize",
+      "useNextNotificationsApi": true,
       "permissions": [
         "POST_NOTIFICATIONS",
         "VIBRATE",

@@ -3,7 +3,7 @@
  *
  * - icon.png: 1024×1024 full launcher icon (logo on pure black background)
  * - adaptive-icon.png: 1024×1024 transparent foreground (logo only, safe-zone sized)
- * - splash-logo.png: logo-only for splash (transparent background)
+ * - splash-logo.png: logo-only for login + notification icon (not the launch splash)
  *
  * Logo occupies ~40% of canvas for clear safe-zone padding inside
  * circle / squircle / teardrop launcher masks (avoids edge overlap).

@@ -89,7 +89,7 @@ export async function getAverageMenuPrepMinutesForStores(
       WHERE m.store_id = ANY(${ids}::int[])
         AND COALESCE(m.is_deleted, FALSE) = FALSE
         AND m.is_active = TRUE
-        AND m.approval_status = 'APPROVED'
+        AND m.approval_status::text IN ('APPROVED', 'PENDING')
         AND m.preparation_time_minutes IS NOT NULL
         AND m.preparation_time_minutes > 0
       GROUP BY m.store_id

@@ -27,6 +27,14 @@ import {
   loadParentRegisterDraft,
   saveParentRegisterDraft,
 } from "@/lib/auth/register-draft-storage";
+import { MerchantReferralCodeField, type MerchantReferralCodeFieldHandle } from "@/components/MerchantReferralCodeField";
+import {
+  parseMerchantReferralFromPath,
+  peekPendingMerchantReferral,
+  pickMerchantReferralCode,
+  storePendingMerchantReferral,
+  clearPendingMerchantReferral,
+} from "@/lib/pendingMerchantReferral";
 
 type Step = 1 | 2 | 3;
 
@@ -128,12 +136,80 @@ export default function RegisterPage() {
   const [pincode, setPincode] = useState("");
   const [store_logo_file, setStoreLogoFile] = useState<File | null>(null);
   const [store_logo_preview, setStoreLogoPreview] = useState<string | null>(null);
+  const [referralCode, setReferralCode] = useState("");
+  const [referralApplied, setReferralApplied] = useState(false);
+  const [referralFromName, setReferralFromName] = useState<string | null>(null);
+  const [referralInviteeLine, setReferralInviteeLine] = useState<string | null>(null);
+  const [referralError, setReferralError] = useState<string | null>(null);
+  const [referralSource, setReferralSource] = useState<"deep_link" | "manual">("manual");
+  const [referralServiceAvailable, setReferralServiceAvailable] = useState(true);
 
   const emailVerifyInFlightRef = useRef(false);
   const lastEmailOtpRef = useRef("");
   const mobileVerifyInFlightRef = useRef(false);
   const lastMobileOtpRef = useRef("");
   const restoreAttemptedRef = useRef(false);
+  const referralHydratedRef = useRef(false);
+  const referralFieldRef = useRef<MerchantReferralCodeFieldHandle>(null);
+
+  // Capture deep-link / pending referral before any auth step so refresh and login keep it.
+  useEffect(() => {
+    if (referralHydratedRef.current) return;
+    referralHydratedRef.current = true;
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("referralUnavailable") === "1") {
+      setReferralServiceAvailable(false);
+      setReferralApplied(false);
+      setReferralError("This referral code is no longer available.");
+      return;
+    }
+    const fromUrl = parseMerchantReferralFromPath(
+      window.location.pathname,
+      window.location.search,
+    );
+    const stored = peekPendingMerchantReferral();
+    const draft = loadParentRegisterDraft();
+    if (fromUrl?.code) {
+      storePendingMerchantReferral({
+        code: fromUrl.code,
+        clickToken: fromUrl.clickToken,
+        source: "deep_link",
+      });
+      setReferralSource("deep_link");
+    }
+    const resolved = pickMerchantReferralCode({
+      explicit: draft?.referralCode,
+      deepLink: fromUrl?.code,
+      stored: stored?.code,
+    });
+    if (!resolved) return;
+    setReferralCode(resolved);
+    void (async () => {
+      try {
+        const res = await fetch(
+          `/api/referral/preview?referralCode=${encodeURIComponent(resolved)}&userType=merchant`,
+          { cache: "no-store" },
+        );
+        const data = await res.json().catch(() => ({}));
+        if (res.status === 409 || data?.code === "REFERRAL_SERVICE_DISABLED" || data?.error === "REFERRAL_SERVICE_DISABLED") {
+          setReferralApplied(false);
+          setReferralCode("");
+          setReferralError(null);
+          setReferralServiceAvailable(false);
+          clearPendingMerchantReferral();
+          return;
+        }
+        if (res.ok && data?.ok && data.valid !== false) {
+          setReferralApplied(true);
+          setReferralFromName(data.referrerDisplayName ?? null);
+          setReferralInviteeLine(data.inviteeRewardLine ?? null);
+          setReferralError(null);
+        }
+      } catch {
+        /* user can Apply manually */
+      }
+    })();
+  }, []);
 
   // After refresh: restore verified email/phone progress (session + sessionStorage draft).
   useEffect(() => {
@@ -208,6 +284,7 @@ export default function RegisterPage() {
           if (draft.city) setCity(draft.city);
           if (draft.state) setState(draft.state);
           if (draft.pincode) setPincode(draft.pincode);
+          if (draft.referralCode) setReferralCode(draft.referralCode);
         }
 
         const restoredStep: Step =
@@ -244,6 +321,7 @@ export default function RegisterPage() {
       city,
       state,
       pincode,
+      referralCode,
     });
   }, [
     step,
@@ -261,6 +339,7 @@ export default function RegisterPage() {
     city,
     state,
     pincode,
+    referralCode,
   ]);
 
   const handleSendEmailOtp = async (e: React.FormEvent) => {
@@ -527,6 +606,15 @@ export default function RegisterPage() {
       setError("Please specify your business category.");
       return;
     }
+    let validatedReferralCode: string | null = null;
+    if (referralServiceAvailable) {
+      const checked = await referralFieldRef.current?.verify();
+      if (checked && !checked.ok) {
+        setError("Please enter a valid referral code, or leave it blank.");
+        return;
+      }
+      validatedReferralCode = checked?.ok ? checked.code : null;
+    }
     setLoading(true);
     try {
       const resolvedCategory =
@@ -547,6 +635,8 @@ export default function RegisterPage() {
         city: city.trim() || null,
         state: state.trim() || null,
         pincode: pincode.trim() || null,
+        referralCode: validatedReferralCode,
+        referralSource,
       };
       let res: Response;
       if (store_logo_file) {
@@ -583,7 +673,7 @@ export default function RegisterPage() {
       if (parentId != null && String(parentId).trim()) {
         // Brief pause so toast is visible before hard navigation
         await new Promise((r) => setTimeout(r, 600));
-        window.location.href = `/auth/register-store?parent_id=${encodeURIComponent(String(parentId))}&new=1`;
+        window.location.href = "/partners/all-stores?picker=1";
         return;
       }
       router.push("/auth?registered=1");
@@ -934,7 +1024,7 @@ export default function RegisterPage() {
 
             <div
               className={`grid grid-cols-1 gap-x-4 gap-y-4 ${
-                business_category === "OTHER" ? "sm:grid-cols-2 lg:grid-cols-3" : "sm:grid-cols-2"
+                business_category === "OTHER" ? "sm:grid-cols-2 lg:grid-cols-4" : "sm:grid-cols-2 lg:grid-cols-3"
               }`}
             >
               <div>
@@ -979,6 +1069,61 @@ export default function RegisterPage() {
                   className={`${FIELD_CLASS_COMPACT} auth-num`}
                 />
               </div>
+              <MerchantReferralCodeField
+                ref={referralFieldRef}
+                value={referralCode}
+                onChange={(code) => {
+                  setReferralCode(code);
+                  setReferralSource("manual");
+                  if (code) {
+                    storePendingMerchantReferral({ code, source: "manual" });
+                  } else {
+                    clearPendingMerchantReferral();
+                  }
+                }}
+                applied={referralApplied}
+                appliedFromName={referralFromName}
+                inviteeRewardLine={referralInviteeLine}
+                error={referralError}
+                inputClassName={FIELD_CLASS_COMPACT}
+                onServiceAvailableChange={(available) => {
+                  setReferralServiceAvailable(available);
+                  if (!available) {
+                    setReferralApplied(false);
+                    setReferralCode("");
+                    setReferralFromName(null);
+                    setReferralError(null);
+                    clearPendingMerchantReferral();
+                  } else {
+                    setReferralError(null);
+                  }
+                }}
+                onApplied={(preview) => {
+                  if (!preview.ok) {
+                    setReferralApplied(false);
+                    setReferralFromName(null);
+                    setReferralInviteeLine(null);
+                    setReferralError(preview.message ?? "Invalid referral code. Please check the code and try again.");
+                    return;
+                  }
+                  const code = preview.code || referralCode;
+                  setReferralCode(code);
+                  setReferralApplied(true);
+                  setReferralFromName(preview.referrerDisplayName ?? null);
+                  setReferralInviteeLine(preview.inviteeRewardLine ?? null);
+                  setReferralError(null);
+                  storePendingMerchantReferral({
+                    code,
+                    source: referralSource,
+                  });
+                }}
+                onCleared={() => {
+                  setReferralApplied(false);
+                  setReferralFromName(null);
+                  setReferralInviteeLine(null);
+                  setReferralError(null);
+                }}
+              />
             </div>
 
             <div className="space-y-5">

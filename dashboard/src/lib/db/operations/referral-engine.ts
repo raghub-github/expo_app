@@ -60,7 +60,7 @@ export async function getReferralSettingsAdmin() {
   return row ? serialize(row) : null;
 }
 
-export async function listReferralRewardRulesAdmin(userType?: "customer" | "rider") {
+export async function listReferralRewardRulesAdmin(userType?: "customer" | "rider" | "merchant") {
   const sql = getSql();
   if (userType) {
     const rows = await sql<Array<Record<string, unknown>>>`
@@ -84,6 +84,8 @@ export type ReferralSettingsPatch = {
   rider_referral_enabled?: boolean;
   customer_reward_enabled?: boolean;
   rider_reward_enabled?: boolean;
+  merchant_referral_enabled?: boolean;
+  merchant_reward_enabled?: boolean;
   auto_apply_enabled?: boolean;
   require_kyc?: boolean;
   first_order_only?: boolean;
@@ -100,6 +102,13 @@ export type ReferralSettingsPatch = {
   reward_claim_window_days?: number;
   code_prefix_customer?: string;
   code_prefix_rider?: string;
+  code_prefix_merchant?: string;
+  reward_mode?: "incremental" | "highest_only";
+  referral_expiry_enabled?: boolean;
+  max_successful_referrals?: number | null;
+  campaign_budget?: number | null;
+  merchant_qualification_scope?: "ALL_CHILD_STORES" | "SINGLE_STORE" | "SELECTED_STORES";
+  merchant_qualification_store_ids?: number[];
 };
 
 async function bumpConfigVersion(sql: ReturnType<typeof getSql>): Promise<number> {
@@ -210,6 +219,60 @@ export async function updateReferralSettingsAdmin(
     `.catch(() => undefined);
   }
 
+  // 0536 merchant + reward_mode — best-effort so pre-0536 DBs still save core settings.
+  if (
+    patch.merchant_referral_enabled != null ||
+    patch.merchant_reward_enabled != null ||
+    patch.code_prefix_merchant != null ||
+    patch.reward_mode != null ||
+    patch.referral_expiry_enabled != null ||
+    patch.max_successful_referrals !== undefined ||
+    patch.campaign_budget !== undefined
+  ) {
+    await sql`
+      UPDATE referral_settings SET
+        merchant_referral_enabled = COALESCE(${patch.merchant_referral_enabled ?? null}, merchant_referral_enabled),
+        merchant_reward_enabled = COALESCE(${patch.merchant_reward_enabled ?? null}, merchant_reward_enabled),
+        code_prefix_merchant = COALESCE(${patch.code_prefix_merchant ?? null}, code_prefix_merchant),
+        reward_mode = COALESCE(${patch.reward_mode ?? null}, reward_mode),
+        referral_expiry_enabled = COALESCE(${patch.referral_expiry_enabled ?? null}, referral_expiry_enabled),
+        max_successful_referrals = ${
+          patch.max_successful_referrals === undefined
+            ? sql`max_successful_referrals`
+            : patch.max_successful_referrals
+        },
+        campaign_budget = ${
+          patch.campaign_budget === undefined ? sql`campaign_budget` : patch.campaign_budget
+        },
+        updated_at = NOW()
+      WHERE id = 1
+    `.catch(() => undefined);
+  }
+
+  if (
+    patch.merchant_qualification_scope != null ||
+    patch.merchant_qualification_store_ids !== undefined
+  ) {
+    const scope = patch.merchant_qualification_scope ?? null;
+    if (patch.merchant_qualification_store_ids !== undefined) {
+      const storeIds = patch.merchant_qualification_store_ids;
+      await sql`
+        UPDATE referral_settings SET
+          merchant_qualification_scope = COALESCE(${scope}, merchant_qualification_scope),
+          merchant_qualification_store_ids = ${storeIds}::bigint[],
+          updated_at = NOW()
+        WHERE id = 1
+      `.catch(() => undefined);
+    } else {
+      await sql`
+        UPDATE referral_settings SET
+          merchant_qualification_scope = COALESCE(${scope}, merchant_qualification_scope),
+          updated_at = NOW()
+        WHERE id = 1
+      `.catch(() => undefined);
+    }
+  }
+
   const version = await bumpConfigVersion(sql);
   const after = await getReferralSettingsAdmin();
   await writeReferralAudit({
@@ -228,7 +291,7 @@ export async function updateReferralSettingsAdmin(
 }
 
 export type RewardRuleInput = {
-  user_type: "customer" | "rider";
+  user_type: "customer" | "rider" | "merchant";
   rule_code: string;
   name: string;
   description?: string | null;
@@ -242,6 +305,8 @@ export type RewardRuleInput = {
   min_order_amount?: number | null;
   active?: boolean;
   priority?: number;
+  event_type?: string | null;
+  reward_mode?: "incremental" | "highest_only" | null;
 };
 
 export async function createReferralRewardRuleAdmin(
@@ -256,8 +321,8 @@ export async function createReferralRewardRuleAdmin(
   if (input.user_type === "customer" && input.reward_type !== "GATICASH") {
     throw new Error("Customer rewards must be GATICASH");
   }
-  if (input.user_type === "rider" && input.reward_type !== "WALLET_CREDIT") {
-    throw new Error("Rider rewards must be WALLET_CREDIT");
+  if ((input.user_type === "rider" || input.user_type === "merchant") && input.reward_type !== "WALLET_CREDIT") {
+    throw new Error("Rider and merchant rewards must be WALLET_CREDIT");
   }
   const sql = getSql();
   const [row] = await sql<Array<Record<string, unknown>>>`
@@ -283,6 +348,16 @@ export async function createReferralRewardRuleAdmin(
     )
     RETURNING *
   `;
+  // 0536 event_type / reward_mode — best-effort so pre-0536 DBs still create rules.
+  if (row?.id && (input.event_type || input.reward_mode)) {
+    await sql`
+      UPDATE referral_reward_rules SET
+        event_type = COALESCE(${input.event_type ?? null}::referral_rule_event_type, event_type),
+        reward_mode = COALESCE(${input.reward_mode ?? null}, reward_mode),
+        updated_at = NOW()
+      WHERE id = ${Number(row.id)}
+    `.catch(() => undefined);
+  }
   const version = await bumpConfigVersion(sql);
   await writeReferralAudit({
     adminId: audit?.adminId,
@@ -318,8 +393,8 @@ export async function updateReferralRewardRuleAdmin(
   if (userType === "customer" && rewardType !== "GATICASH") {
     throw new Error("Customer rewards must be GATICASH");
   }
-  if (userType === "rider" && rewardType !== "WALLET_CREDIT") {
-    throw new Error("Rider rewards must be WALLET_CREDIT");
+  if ((userType === "rider" || userType === "merchant") && rewardType !== "WALLET_CREDIT") {
+    throw new Error("Rider and merchant rewards must be WALLET_CREDIT");
   }
 
   const [row] = await sql<Array<Record<string, unknown>>>`
@@ -340,6 +415,15 @@ export async function updateReferralRewardRuleAdmin(
     WHERE id = ${id}
     RETURNING *
   `;
+  if (input.event_type != null || input.reward_mode !== undefined) {
+    await sql`
+      UPDATE referral_reward_rules SET
+        event_type = COALESCE(${input.event_type ?? null}::referral_rule_event_type, event_type),
+        reward_mode = COALESCE(${input.reward_mode ?? null}, reward_mode),
+        updated_at = NOW()
+      WHERE id = ${id}
+    `.catch(() => undefined);
+  }
   const version = await bumpConfigVersion(sql);
   await writeReferralAudit({
     adminId: audit?.adminId,
@@ -395,14 +479,20 @@ export async function getReferralAnalyticsAdmin() {
       COUNT(*) FILTER (WHERE status IN ('fraud_blocked','cancelled')
         OR lifecycle_state IN ('FRAUD_BLOCKED','REWARD_FAILED','EXPIRED'))::int AS failed,
       COUNT(*) FILTER (WHERE user_type = 'customer')::int AS customer_referrals,
-      COUNT(*) FILTER (WHERE user_type = 'rider')::int AS rider_referrals
+      COUNT(*) FILTER (WHERE user_type = 'rider')::int AS rider_referrals,
+      COUNT(*) FILTER (WHERE user_type = 'merchant')::int AS merchant_referrals,
+      COUNT(*) FILTER (WHERE status::text IN ('expired') OR lifecycle_state::text = 'EXPIRED')::int AS expired_referrals
     FROM referral_relationships
   `.catch((): Array<Record<string, unknown>> => [{}]);
 
   const [rewards] = await sql<Array<Record<string, unknown>>>`
     SELECT
       COALESCE(SUM(reward_amount) FILTER (WHERE status = 'credited'), 0)::float AS reward_distributed,
-      COUNT(*) FILTER (WHERE status = 'credited')::int AS reward_count
+      COUNT(*) FILTER (WHERE status = 'credited')::int AS reward_count,
+      COALESCE(SUM(reward_amount) FILTER (WHERE status = 'credited' AND reward_party = 'referrer'), 0)::float AS referrer_reward_amount,
+      COALESCE(SUM(reward_amount) FILTER (WHERE status = 'credited' AND reward_party = 'referred'), 0)::float AS referred_reward_amount,
+      COUNT(*) FILTER (WHERE status = 'credited' AND reward_party = 'referrer')::int AS referrer_reward_count,
+      COUNT(*) FILTER (WHERE status = 'credited' AND reward_party = 'referred')::int AS referred_reward_count
     FROM referral_reward_transactions
   `.catch((): Array<Record<string, unknown>> => [{}]);
 
@@ -446,8 +536,39 @@ export async function getReferralAnalyticsAdmin() {
     LIMIT 30
   `.catch(() => []);
 
+  const merchantParents = await sql<Array<Record<string, unknown>>>`
+    SELECT
+      rr.id::text AS id,
+      rr.status::text AS status,
+      rr.reward_status,
+      rr.completed_orders,
+      COALESCE(ref.brand_name, ref.parent_name, ref.owner_name) AS referrer_parent,
+      COALESCE(ree.brand_name, ree.parent_name, ree.owner_name) AS referred_parent,
+      (
+        SELECT COUNT(*)::int FROM merchant_stores ms
+        WHERE ms.parent_id = rr.referred_user_id AND ms.deleted_at IS NULL
+      ) AS child_store_count
+    FROM referral_relationships rr
+    LEFT JOIN merchant_parents ref ON ref.id = rr.referrer_id
+    LEFT JOIN merchant_parents ree ON ree.id = rr.referred_user_id
+    WHERE rr.user_type = 'merchant'::referral_user_type
+    ORDER BY rr.updated_at DESC
+    LIMIT 25
+  `.catch(() => []);
+
   const total = num(totals?.total_referrals);
+  const [budgetRow] = await sql<Array<{ campaign_budget: string | null }>>`
+    SELECT campaign_budget::text FROM referral_settings ORDER BY id ASC LIMIT 1
+  `.catch((): Array<{ campaign_budget: string | null }> => [{ campaign_budget: null }]);
+
   const successful = num(totals?.successful);
+  const consumed = num(rewards?.reward_distributed);
+  const campaignBudget =
+    budgetRow?.campaign_budget != null && budgetRow.campaign_budget !== ""
+      ? num(budgetRow.campaign_budget)
+      : null;
+  const remaining =
+    campaignBudget != null ? Math.max(0, campaignBudget - consumed) : null;
   return {
     totals: {
       totalReferrals: total,
@@ -456,14 +577,25 @@ export async function getReferralAnalyticsAdmin() {
       failed: num(totals?.failed),
       customerReferrals: num(totals?.customer_referrals),
       riderReferrals: num(totals?.rider_referrals),
-      rewardDistributed: num(rewards?.reward_distributed),
+      merchantReferrals: num(totals?.merchant_referrals),
+      expiredReferrals: num(totals?.expired_referrals),
+      rewardDistributed: consumed,
       rewardCount: num(rewards?.reward_count),
+      referrerRewardAmount: num(rewards?.referrer_reward_amount),
+      referredRewardAmount: num(rewards?.referred_reward_amount),
+      referrerRewardCount: num(rewards?.referrer_reward_count),
+      referredRewardCount: num(rewards?.referred_reward_count),
       conversionRate: total > 0 ? Math.round((successful / total) * 1000) / 10 : 0,
+      campaignBudget,
+      campaignBudgetConsumed: consumed,
+      campaignBudgetRemaining: remaining,
+      campaignBudgetExhausted: remaining != null && remaining <= 0,
     },
     funnel: serialize(funnel ?? {}),
     topReferrers: topReferrers.map(serialize),
     monthlyTrend: monthly.map(serialize),
     rewardJobs: jobs.map(serialize),
+    merchantParents: merchantParents.map(serialize),
   };
 }
 
@@ -476,3 +608,88 @@ export async function listReferralAuditAdmin(limit = 50) {
   `.catch(() => []);
   return rows.map(serialize);
 }
+
+/** Enqueue merchant STORE_APPROVED reward jobs. Backend poller credits wallets. */
+export async function triggerMerchantReferralOnStoreApproved(parentId: number): Promise<void> {
+  if (!Number.isFinite(parentId) || parentId <= 0) return;
+  const sql = getSql();
+  try {
+    const [rel] = await sql<Array<{
+      id: string;
+      referrer_id: string;
+      referred_user_id: string;
+      referral_code: string | null;
+      campaign_id: string | null;
+    }>>`
+      SELECT id::text, referrer_id::text, referred_user_id::text, referral_code, campaign_id::text
+      FROM referral_relationships
+      WHERE user_type = 'merchant'::referral_user_type
+        AND referred_user_id = ${parentId}
+        AND status NOT IN ('fraud_blocked', 'cancelled', 'ineligible')
+      LIMIT 1
+    `;
+    if (!rel) return;
+
+    await sql`
+      UPDATE referral_relationships
+      SET kyc_approved = true, updated_at = NOW()
+      WHERE id = ${Number(rel.id)}
+    `;
+
+    const rules = await sql<Array<Record<string, unknown>>>`
+      SELECT id, reward_amount, referred_reward_amount, also_credit_referred, reward_type, rule_code
+      FROM referral_reward_rules
+      WHERE user_type = 'merchant'::referral_user_type
+        AND active = true
+        AND event_type::text IN ('STORE_APPROVED', 'KYC_APPROVED')
+    `;
+
+    for (const rule of rules) {
+      const ruleId = Number(rule.id);
+      const referrerAmt = Number(rule.reward_amount ?? 0);
+      const parties: Array<{ party: "referrer" | "referred"; amount: number; beneficiary: number }> = [
+        { party: "referrer", amount: referrerAmt, beneficiary: Number(rel.referrer_id) },
+      ];
+      if (rule.also_credit_referred) {
+        parties.push({
+          party: "referred",
+          amount: Number(rule.referred_reward_amount ?? rule.reward_amount ?? 0),
+          beneficiary: Number(rel.referred_user_id),
+        });
+      }
+      for (const p of parties) {
+        if (!(p.amount > 0)) continue;
+        const jobKey = `ref_job_${rel.id}_rule_${ruleId}_${p.party}`;
+        await sql`
+          INSERT INTO referral_reward_jobs (
+            job_key, referral_relationship_id, reward_rule_id, campaign_id,
+            user_type, beneficiary_user_id, reward_party, reward_amount, reward_type,
+            status, metadata
+          ) VALUES (
+            ${jobKey},
+            ${Number(rel.id)},
+            ${ruleId},
+            ${rel.campaign_id ? Number(rel.campaign_id) : null},
+            'merchant'::referral_user_type,
+            ${p.beneficiary},
+            ${p.party}::referral_reward_party,
+            ${p.amount},
+            'WALLET_CREDIT'::referral_reward_type,
+            'queued'::referral_reward_job_status,
+            ${JSON.stringify({
+              referralCode: rel.referral_code,
+              referrerId: Number(rel.referrer_id),
+              referredUserId: Number(rel.referred_user_id),
+              ruleCode: String(rule.rule_code ?? ""),
+              eventType: "STORE_APPROVED",
+            })}::jsonb
+          )
+          ON CONFLICT (job_key) DO NOTHING
+        `;
+      }
+    }
+  } catch {
+    /* pre-0536 DBs or missing tables — ignore */
+  }
+}
+
