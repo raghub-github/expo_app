@@ -160,10 +160,13 @@ export async function POST(req: NextRequest) {
 
     // Store the registering area manager in parent_area_managers so they see the parent in their stores list
     if (parentId > 0 && area_manager_id != null) {
+      // Parent-level link (store_id NULL). The 3-col unique (parent_id, store_id, area_manager_id)
+      // does NOT match a 2-col conflict target, so target the partial unique index added in
+      // migration 0534 (parent_area_managers_parent_am_null_store_uniq) via its WHERE predicate.
       await sql`
         INSERT INTO parent_area_managers (parent_id, area_manager_id, assigned_by)
         VALUES (${parentId}, ${area_manager_id}, ${authResult.resolved.systemUserId})
-        ON CONFLICT (parent_id, area_manager_id) DO NOTHING
+        ON CONFLICT (parent_id, area_manager_id) WHERE store_id IS NULL DO NOTHING
       `;
     }
 
