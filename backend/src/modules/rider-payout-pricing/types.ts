@@ -49,6 +49,8 @@ export type ParcelCustomerPricingRow = RideCustomerPricingRow;
 export type ServicePayoutRuleRow = {
   id: number;
   serviceType: RiderPayoutServiceType;
+  /** NULL = applies to all vehicles; overrides the all-vehicles row for the same node/service. */
+  vehicleType: RideVehiclePricingType | null;
   geoLevel: string;
   geoRefId: string;
   riderPercentage: number;

@@ -2,6 +2,7 @@ import { getSql } from "../client";
 
 export type GeoHierarchyLevel = "state" | "region" | "district" | "division" | "post_office" | "pincode";
 export type RiderPayoutServiceType = "food" | "parcel" | "ride";
+export type PayoutVehicleType = "2_wheeler" | "3_wheeler" | "4_wheeler_non_ac" | "4_wheeler_ac";
 
 /**
  * Rider Fare Engine v3.0: percentage-of-customer-fare payout rule, geo-inherited.
@@ -11,6 +12,8 @@ export type RiderPayoutServiceType = "food" | "parcel" | "ride";
 export type ServicePayoutRuleRow = {
   id: number;
   serviceType: RiderPayoutServiceType;
+  /** NULL = applies to all vehicles; overrides the all-vehicles row for the same node/service. */
+  vehicleType: PayoutVehicleType | null;
   geoLevel: GeoHierarchyLevel;
   geoRefId: string;
   riderPercentage: number;
@@ -38,6 +41,7 @@ function mapRule(r: Record<string, unknown>): ServicePayoutRuleRow {
   return {
     id: Number(r.id),
     serviceType: String(r.service_type) as RiderPayoutServiceType,
+    vehicleType: r.vehicle_type == null ? null : (String(r.vehicle_type) as PayoutVehicleType),
     geoLevel: String(r.geo_level) as GeoHierarchyLevel,
     geoRefId: String(r.geo_ref_id),
     riderPercentage: Number(r.rider_percentage),
@@ -135,6 +139,8 @@ export type ServicePayoutRuleInput = {
   level: GeoHierarchyLevel;
   refId: string;
   service: RiderPayoutServiceType;
+  /** NULL/omitted = applies to all vehicles. Only meaningful for parcel/ride. */
+  vehicleType?: PayoutVehicleType | null;
   riderPercentage: number;
   platformPercentage: number;
   waitingChargePerMin: number | null;
@@ -154,13 +160,14 @@ export async function insertServicePayoutRule(args: ServicePayoutRuleInput): Pro
   const funding = args.waitingFundingMode ?? "CUSTOMER_100";
   const rows = await sql`
     INSERT INTO service_payout_rules (
-      service_type, geo_level, geo_ref_id, rider_percentage, platform_percentage,
+      service_type, vehicle_type, geo_level, geo_ref_id, rider_percentage, platform_percentage,
       waiting_charge_per_min, waiting_free_minutes,
       waiting_max_charge, waiting_funding_mode,
       waiting_customer_share_pct, waiting_company_share_pct,
       priority, is_active, effective_from, effective_to
     ) VALUES (
-      ${args.service}, ${args.level}::geo_pricing_level, ${args.refId}::uuid,
+      ${args.service}, ${args.vehicleType ?? null}::ride_vehicle_pricing_type,
+      ${args.level}::geo_pricing_level, ${args.refId}::uuid,
       ${args.riderPercentage}, ${args.platformPercentage},
       ${args.waitingChargePerMin}, ${args.waitingFreeMinutes},
       ${args.waitingMaxCharge ?? null}, ${funding},
@@ -179,6 +186,7 @@ export async function updateServicePayoutRule(
   const funding = patch.waitingFundingMode ?? "CUSTOMER_100";
   const rows = await sql`
     UPDATE service_payout_rules SET
+      vehicle_type = ${patch.vehicleType ?? null}::ride_vehicle_pricing_type,
       rider_percentage = ${patch.riderPercentage},
       platform_percentage = ${patch.platformPercentage},
       waiting_charge_per_min = ${patch.waitingChargePerMin},

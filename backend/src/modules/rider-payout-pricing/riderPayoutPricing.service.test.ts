@@ -9,6 +9,7 @@ import type { ServicePayoutRuleRow } from "./types.js";
 const baseRule: ServicePayoutRuleRow = {
   id: 1,
   serviceType: "food",
+  vehicleType: null,
   geoLevel: "state",
   geoRefId: "x",
   riderPercentage: 90,

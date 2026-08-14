@@ -62,12 +62,22 @@ function ToggleSwitch(props: { checked: boolean; onChange: (checked: boolean) =>
  * the pickup/drop split is always pure distance ratio, so nothing here can
  * ever force a fixed or 50/50 split.
  */
+type WaitingFundingMode = "CUSTOMER_100" | "COMPANY_100" | "SHARED";
+
 export type ServicePayoutRuleRow = {
   id: number;
+  /** NULL = applies to all vehicles; overrides the all-vehicles row for the same node/service. */
+  vehicleType: VehicleType | null;
   riderPercentage: number;
   platformPercentage: number;
   waitingChargePerMin: number | null;
   waitingFreeMinutes: number;
+  /** Optional cap on the total waiting charge (₹). */
+  waitingMaxCharge: number | null;
+  /** Who bears the waiting charge — customer, company, or a split. */
+  waitingFundingMode: WaitingFundingMode;
+  waitingCustomerSharePct: number;
+  waitingCompanySharePct: number;
   priority: number;
   isActive: boolean;
   effectiveFrom: string | null;
@@ -75,46 +85,76 @@ export type ServicePayoutRuleRow = {
 };
 
 type RuleForm = {
+  vehicleType: VehicleType | "";
   riderPercentage: string;
   waitingChargePerMin: string;
   waitingFreeMinutes: string;
+  waitingMaxCharge: string;
+  waitingFundingMode: WaitingFundingMode;
+  waitingCustomerSharePct: string;
+  waitingCompanySharePct: string;
   priority: string;
   isActive: boolean;
 };
 
-const blankForm: RuleForm = {
-  riderPercentage: "90",
-  waitingChargePerMin: "1",
-  waitingFreeMinutes: "2",
-  priority: "100",
-  isActive: true,
-};
+/** Food has no vehicle dimension and defaults waiting to company-funded (matches the
+ * pre-pickup first-mile default) — parcel/ride default to customer-funded, all vehicles. */
+function blankFormFor(service: RiderService): RuleForm {
+  return {
+    vehicleType: "",
+    riderPercentage: "90",
+    waitingChargePerMin: "1",
+    waitingFreeMinutes: "2",
+    waitingMaxCharge: "",
+    waitingFundingMode: service === "food" ? "COMPANY_100" : "CUSTOMER_100",
+    waitingCustomerSharePct: service === "food" ? "0" : "100",
+    waitingCompanySharePct: service === "food" ? "100" : "0",
+    priority: "100",
+    isActive: true,
+  };
+}
 
 function ruleToForm(r: ServicePayoutRuleRow): RuleForm {
   return {
+    vehicleType: r.vehicleType ?? "",
     riderPercentage: String(r.riderPercentage),
     waitingChargePerMin: r.waitingChargePerMin == null ? "" : String(r.waitingChargePerMin),
     waitingFreeMinutes: String(r.waitingFreeMinutes),
+    waitingMaxCharge: r.waitingMaxCharge == null ? "" : String(r.waitingMaxCharge),
+    waitingFundingMode: r.waitingFundingMode,
+    waitingCustomerSharePct: String(r.waitingCustomerSharePct),
+    waitingCompanySharePct: String(r.waitingCompanySharePct),
     priority: String(r.priority),
     isActive: r.isActive,
   };
 }
 
-function formToPayload(f: RuleForm) {
+function formToPayload(f: RuleForm, service: RiderService) {
   const riderPercentage = parseDecimalOrZero(f.riderPercentage);
   return {
+    vehicleType: service === "food" || f.vehicleType === "" ? null : f.vehicleType,
     riderPercentage,
     platformPercentage: Math.round((100 - riderPercentage) * 100) / 100,
     waitingChargePerMin: f.waitingChargePerMin === "" ? null : parseDecimalOrZero(f.waitingChargePerMin),
     waitingFreeMinutes: Math.round(parseDecimalOrZero(f.waitingFreeMinutes)),
+    waitingMaxCharge: f.waitingMaxCharge === "" ? null : parseDecimalOrZero(f.waitingMaxCharge),
+    waitingFundingMode: f.waitingFundingMode,
+    waitingCustomerSharePct:
+      f.waitingFundingMode === "SHARED"
+        ? parseDecimalOrZero(f.waitingCustomerSharePct)
+        : f.waitingFundingMode === "COMPANY_100" ? 0 : 100,
+    waitingCompanySharePct:
+      f.waitingFundingMode === "SHARED"
+        ? parseDecimalOrZero(f.waitingCompanySharePct)
+        : f.waitingFundingMode === "COMPANY_100" ? 100 : 0,
     priority: Math.round(parseDecimalOrZero(f.priority)),
     isActive: f.isActive,
   };
 }
 
 /** Form values -> preview engine input. Used so the calculator updates live from unsaved edits. */
-function formToPreviewInput(f: RuleForm): ServicePayoutRulePreviewInput {
-  const payload = formToPayload(f);
+function formToPreviewInput(f: RuleForm, service: RiderService): ServicePayoutRulePreviewInput {
+  const payload = formToPayload(f, service);
   return {
     riderPercentage: payload.riderPercentage,
     platformPercentage: payload.platformPercentage,
@@ -157,12 +197,22 @@ const btnSecondary =
   "inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-white disabled:opacity-50";
 
 function mapRuleFromApi(r: Record<string, unknown>): ServicePayoutRuleRow {
+  const fundingRaw = String(r.waitingFundingMode ?? "CUSTOMER_100").toUpperCase();
+  const waitingFundingMode: WaitingFundingMode =
+    fundingRaw === "COMPANY_100" || fundingRaw === "SHARED"
+      ? (fundingRaw as WaitingFundingMode)
+      : "CUSTOMER_100";
   return {
     id: Number(r.id),
+    vehicleType: r.vehicleType == null ? null : (String(r.vehicleType) as VehicleType),
     riderPercentage: Number(r.riderPercentage),
     platformPercentage: Number(r.platformPercentage),
     waitingChargePerMin: r.waitingChargePerMin == null ? null : Number(r.waitingChargePerMin),
     waitingFreeMinutes: Number(r.waitingFreeMinutes ?? 2),
+    waitingMaxCharge: r.waitingMaxCharge == null ? null : Number(r.waitingMaxCharge),
+    waitingFundingMode,
+    waitingCustomerSharePct: Number(r.waitingCustomerSharePct ?? 100),
+    waitingCompanySharePct: Number(r.waitingCompanySharePct ?? 0),
     priority: Number(r.priority ?? 100),
     isActive: r.isActive === true,
     effectiveFrom: r.effectiveFrom == null ? null : String(r.effectiveFrom),
@@ -189,9 +239,9 @@ export function RiderPayoutRulesPanel(props: {
   );
   const [loading, setLoading] = useState(!cached);
   const [addingOpen, setAddingOpen] = useState(false);
-  const [addForm, setAddForm] = useState<RuleForm>(blankForm);
+  const [addForm, setAddForm] = useState<RuleForm>(blankFormFor(props.service));
   const [editingId, setEditingId] = useState<number | null>(null);
-  const [editForm, setEditForm] = useState<RuleForm>(blankForm);
+  const [editForm, setEditForm] = useState<RuleForm>(blankFormFor(props.service));
   const [busyId, setBusyId] = useState<number | "new" | null>(null);
 
   const [previewPickupKm, setPreviewPickupKm] = useState("");
@@ -382,10 +432,10 @@ export function RiderPayoutRulesPanel(props: {
   // The calculator reflects whatever the admin is currently typing in the Add/Edit form —
   // no Save required — falling back to the saved effective rule when no form is open.
   const calcRule: ServicePayoutRulePreviewInput | null = useMemo(() => {
-    if (editingId != null) return formToPreviewInput(editForm);
-    if (addingOpen) return formToPreviewInput(addForm);
+    if (editingId != null) return formToPreviewInput(editForm, props.service);
+    if (addingOpen) return formToPreviewInput(addForm, props.service);
     return effectiveRule ? ruleRowToPreviewInput(effectiveRule) : null;
-  }, [editingId, editForm, addingOpen, addForm, effectiveRule]);
+  }, [editingId, editForm, addingOpen, addForm, effectiveRule, props.service]);
 
   const validationError = useMemo(() => {
     if (!hasPickupInput || pickupKm <= 0) return "Pickup distance is required.";
@@ -511,7 +561,7 @@ export function RiderPayoutRulesPanel(props: {
   async function submitAdd() {
     setBusyId("new");
     try {
-      const payload = formToPayload(addForm);
+      const payload = formToPayload(addForm, props.service);
       if (payload.riderPercentage <= 0 || payload.riderPercentage > 100) {
         toast.error("Rider % must be between 0 and 100");
         return;
@@ -525,7 +575,7 @@ export function RiderPayoutRulesPanel(props: {
       if (!res.ok) throw new Error(json.error ?? "Failed to add rule");
       toast.success("Rider payout rule added");
       setAddingOpen(false);
-      setAddForm(blankForm);
+      setAddForm(blankFormFor(props.service));
       await refresh();
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Failed to add rule");
@@ -537,7 +587,7 @@ export function RiderPayoutRulesPanel(props: {
   async function submitEdit(id: number) {
     setBusyId(id);
     try {
-      const payload = formToPayload(editForm);
+      const payload = formToPayload(editForm, props.service);
       if (payload.riderPercentage <= 0 || payload.riderPercentage > 100) {
         toast.error("Rider % must be between 0 and 100");
         return;
@@ -592,7 +642,7 @@ export function RiderPayoutRulesPanel(props: {
       ) : null}
 
       {addingOpen ? (
-        <RuleFormCard form={addForm} setForm={setAddForm} onCancel={() => setAddingOpen(false)} onSave={submitAdd} busy={busyId === "new"} />
+        <RuleFormCard form={addForm} setForm={setAddForm} onCancel={() => setAddingOpen(false)} onSave={submitAdd} busy={busyId === "new"} service={props.service} />
       ) : null}
 
       {!loading && rules.length === 0 && !addingOpen ? (
@@ -611,6 +661,7 @@ export function RiderPayoutRulesPanel(props: {
               onCancel={() => setEditingId(null)}
               onSave={() => submitEdit(r.id)}
               busy={busyId === r.id}
+              service={props.service}
             />
           ) : (
             <div key={r.id} className="rounded-xl border border-slate-200 bg-white px-4 py-3">
@@ -625,7 +676,23 @@ export function RiderPayoutRulesPanel(props: {
                   <span className="text-xs text-slate-500">Priority {r.priority}</span>
                   <span className="text-xs text-slate-500">
                     Wait ₹{r.waitingChargePerMin ?? 0}/min after {r.waitingFreeMinutes} min free
+                    {r.waitingMaxCharge != null ? ` (cap ₹${r.waitingMaxCharge})` : ""}
                   </span>
+                  <span className="rounded-full bg-indigo-50 px-2 py-0.5 text-xs font-semibold text-indigo-700">
+                    Wait borne by:{" "}
+                    {r.waitingFundingMode === "CUSTOMER_100"
+                      ? "Customer"
+                      : r.waitingFundingMode === "COMPANY_100"
+                        ? "Company"
+                        : `Shared ${r.waitingCustomerSharePct}% cust / ${r.waitingCompanySharePct}% co.`}
+                  </span>
+                  {r.vehicleType ? (
+                    <span className="rounded-full bg-violet-50 px-2 py-0.5 text-xs font-semibold text-violet-700">
+                      {VEHICLE_OPTIONS.find((v) => v.value === r.vehicleType)?.label ?? r.vehicleType}
+                    </span>
+                  ) : props.service !== "food" ? (
+                    <span className="text-xs text-slate-400">all vehicles</span>
+                  ) : null}
                 </div>
                 <div className="flex gap-2">
                   <button
@@ -1082,10 +1149,12 @@ function RuleFormCard(props: {
   onCancel: () => void;
   onSave: () => void;
   busy: boolean;
+  service: RiderService;
 }) {
   const { form, setForm } = props;
   const set = (key: keyof RuleForm) => (value: string) => setForm((f) => ({ ...f, [key]: value }));
   const platformPct = 100 - parseDecimalOrZero(form.riderPercentage || "0");
+  const showVehicle = props.service !== "food";
 
   return (
     <div className="mt-4 rounded-xl border border-teal-200 bg-teal-50/40 px-4 py-4">
@@ -1100,16 +1169,60 @@ function RuleFormCard(props: {
           <SlabNumericInput value={form.priority} onChange={set("priority")} kind="integer" className={inputCls} />
         </PreviewField>
 
-        <PreviewField label="Wait charge (₹/min)">
-          <SlabNumericInput value={form.waitingChargePerMin} onChange={set("waitingChargePerMin")} kind="decimal" className={inputCls} placeholder="none" />
-        </PreviewField>
-        <PreviewField label="Free wait (minutes)">
-          <SlabNumericInput value={form.waitingFreeMinutes} onChange={set("waitingFreeMinutes")} kind="integer" className={inputCls} />
-        </PreviewField>
+        {showVehicle ? (
+          <PreviewField label="Vehicle">
+            <select
+              className={inputCls}
+              value={form.vehicleType}
+              onChange={(e) => setForm((f) => ({ ...f, vehicleType: e.target.value as VehicleType | "" }))}
+            >
+              <option value="">All vehicles</option>
+              {VEHICLE_OPTIONS.map((v) => (
+                <option key={v.value} value={v.value}>{v.label}</option>
+              ))}
+            </select>
+          </PreviewField>
+        ) : null}
         <label className="flex items-end gap-2 pb-2 text-xs font-semibold text-slate-700">
           <input type="checkbox" checked={form.isActive} onChange={(e) => setForm((f) => ({ ...f, isActive: e.target.checked }))} />
           Active
         </label>
+      </div>
+
+      <div className="mt-3 rounded-lg border border-indigo-100 bg-white/60 px-3 py-2">
+        <p className="text-xs font-semibold uppercase text-indigo-700">Rider waiting charge</p>
+        <div className="mt-2 grid grid-cols-2 gap-3 sm:grid-cols-4">
+          <PreviewField label="Wait charge (₹/min)">
+            <SlabNumericInput value={form.waitingChargePerMin} onChange={set("waitingChargePerMin")} kind="decimal" className={inputCls} placeholder="none" />
+          </PreviewField>
+          <PreviewField label="Free wait (minutes)">
+            <SlabNumericInput value={form.waitingFreeMinutes} onChange={set("waitingFreeMinutes")} kind="integer" className={inputCls} />
+          </PreviewField>
+          <PreviewField label="Max cap ₹ (optional)">
+            <SlabNumericInput value={form.waitingMaxCharge} onChange={set("waitingMaxCharge")} kind="decimal" className={inputCls} placeholder="none" />
+          </PreviewField>
+          <PreviewField label="Who bears it">
+            <select
+              className={inputCls}
+              value={form.waitingFundingMode}
+              onChange={(e) => setForm((f) => ({ ...f, waitingFundingMode: e.target.value as WaitingFundingMode }))}
+            >
+              <option value="CUSTOMER_100">Customer</option>
+              <option value="COMPANY_100">Company</option>
+              <option value="SHARED">Shared</option>
+            </select>
+          </PreviewField>
+        </div>
+        {form.waitingFundingMode === "SHARED" ? (
+          <div className="mt-2 grid grid-cols-2 gap-3 sm:grid-cols-4">
+            <PreviewField label="Customer share (%)">
+              <SlabNumericInput value={form.waitingCustomerSharePct} onChange={set("waitingCustomerSharePct")} kind="decimal" className={inputCls} />
+            </PreviewField>
+            <PreviewField label="Company share (%)">
+              <SlabNumericInput value={form.waitingCompanySharePct} onChange={set("waitingCompanySharePct")} kind="decimal" className={inputCls} />
+            </PreviewField>
+          </div>
+        ) : null}
       </div>
 
       <div className="mt-4 flex justify-end gap-2">

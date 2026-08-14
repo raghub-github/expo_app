@@ -381,6 +381,13 @@ export async function creditRiderOrderEarningOnDelivered(
               dropKm: tripKm,
               riderId,
               rideCatalogCode: row.ride_type,
+              // parcel's real vehicle so a vehicle-specific rider%/waiting rule actually
+              // matches at settlement — the internal fallback only resolves for "ride".
+              vehicleType: resolveOrderLegVehicleType({
+                service: payoutService,
+                rideCatalogCode: row.ride_type,
+                parcelVehicleCategory: row.parcel_vehicle_category,
+              }),
               waitingMinutes: payoutService === "ride" ? waitingMinutes : undefined,
               pincode: rideGeo.pickupPincode,
               state: rideGeo.pickupState,
