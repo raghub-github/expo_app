@@ -4,7 +4,6 @@ import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useSta
 import { toast } from "sonner";
 import { Layers, Loader2, Plus } from "lucide-react";
 import { RiderPayoutRulesPanel, ProductionVerificationCard } from "./RiderPayoutRulesPanel";
-import { PrePickupCompensationPanel } from "./PrePickupCompensationPanel";
 import { RiderLegPricingPanel } from "./RiderLegPricingPanel";
 import { DynamicPricingPanel } from "./DynamicPricingPanel";
 import { VEHICLE_OPTIONS, PARCEL_VEHICLE_OPTIONS, type VehicleType } from "./rideVehicleTypes";
@@ -569,11 +568,6 @@ export function GeoNodePricingContent(props: { level: GeoNodeLevel; refId: strin
                 service={riderService as "food" | "parcel" | "ride"}
                 surgeRefreshKey={surgeRefreshKey}
                 legRulesRefreshKey={legRulesRefreshKey}
-              />
-              <PrePickupCompensationPanel
-                level={level}
-                refId={refId}
-                service={riderService as "food" | "parcel" | "ride"}
               />
               <RiderLegPricingPanel
                 level={level}
