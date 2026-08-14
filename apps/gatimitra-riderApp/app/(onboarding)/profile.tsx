@@ -126,33 +126,35 @@ export default function ProfileScreen() {
             <View className="mb-6">
               <Text className="text-sm font-medium text-gray-700 mb-2">{t("onboarding.profile.referralCode")}</Text>
               {riderReferralOn ? (
-                <TextInput
-                  value={referralCode}
-                  onChangeText={(v) => {
-                    setReferralCode(v);
-                    if (referralError) setReferralError(null);
-                  }}
-                  onBlur={() => {
-                    const code = referralCode.trim();
-                    if (!code) return;
-                    void previewRiderReferral(code).then((preview) => {
-                      if (!preview.ok) {
-                        setReferralError(
-                          preview.userMessage ||
-                            preview.message ||
-                            "Invalid referral code. Please check the code and try again.",
-                        );
-                      }
-                    });
-                  }}
-                  placeholder={t("onboarding.profile.referralPlaceholder")}
-                  placeholderTextColor={colors.gray[400]}
-                  autoCapitalize="characters"
-                  className="bg-gray-50 border border-gray-200 rounded-xl px-4 py-4 text-base font-bold text-gray-900"
-                />
-                {referralError ? (
-                  <Text className="mt-2 text-sm text-red-600">{referralError}</Text>
-                ) : null}
+                <>
+                  <TextInput
+                    value={referralCode}
+                    onChangeText={(v) => {
+                      setReferralCode(v);
+                      if (referralError) setReferralError(null);
+                    }}
+                    onBlur={() => {
+                      const code = referralCode.trim();
+                      if (!code) return;
+                      void previewRiderReferral(code).then((preview) => {
+                        if (!preview.ok) {
+                          setReferralError(
+                            preview.userMessage ||
+                              preview.message ||
+                              "Invalid referral code. Please check the code and try again.",
+                          );
+                        }
+                      });
+                    }}
+                    placeholder={t("onboarding.profile.referralPlaceholder")}
+                    placeholderTextColor={colors.gray[400]}
+                    autoCapitalize="characters"
+                    className="bg-gray-50 border border-gray-200 rounded-xl px-4 py-4 text-base font-bold text-gray-900"
+                  />
+                  {referralError ? (
+                    <Text className="mt-2 text-sm text-red-600">{referralError}</Text>
+                  ) : null}
+                </>
               ) : (
                 <>
                   <TextInput

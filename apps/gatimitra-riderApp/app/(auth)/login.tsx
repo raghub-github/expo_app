@@ -155,7 +155,6 @@ export default function LoginScreen() {
   const [keyboardVisible, setKeyboardVisible] = useState(false);
   const [keyboardHeight, setKeyboardHeight] = useState(0);
   const riderHero = useAppAssetSource(RX.auth.hero);
-  const brandLogo = useAppAssetSource(RX.auth.logo);
 
   const phoneDigits = phoneE164.replace(/\D/g, "");
   const phoneValid = phoneDigits.length >= 10;
@@ -515,14 +514,6 @@ export default function LoginScreen() {
           edges={["top"]}
           style={[styles.heroSafe, keyboardVisible && styles.heroSafeCompact]}
         >
-          {brandLogo ? (
-            <Image
-              source={brandLogo}
-              style={[styles.brandLogo, keyboardVisible && styles.brandLogoCompact]}
-              resizeMode="contain"
-            />
-          ) : null}
-
           <View style={[styles.heroBottom, keyboardVisible && styles.heroBottomCompact]}>
             <Text style={[styles.heroHeadline, keyboardVisible && styles.heroHeadlineCompact]}>
               Deliver Smiles.{"\n"}
@@ -584,22 +575,13 @@ const styles = StyleSheet.create({
   },
   heroSafe: {
     flex: 1,
-    justifyContent: "space-between",
+    justifyContent: "flex-end",
     paddingHorizontal: 20,
     paddingBottom: 16,
   },
   heroSafeCompact: {
-    justifyContent: "space-between",
+    justifyContent: "flex-end",
     paddingBottom: 10,
-  },
-  brandLogo: {
-    width: 148,
-    height: 40,
-    marginTop: 4,
-  },
-  brandLogoCompact: {
-    width: 128,
-    height: 34,
   },
   heroBottom: {
     gap: 6,
