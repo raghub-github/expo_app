@@ -2,7 +2,7 @@
 
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
-import { Bike, Loader2 } from "lucide-react";
+import { Bike, ChevronDown, ChevronRight, Loader2 } from "lucide-react";
 import { parseDecimalOrZero } from "@/lib/pricing/slabInputUtils";
 import { SlabNumericInput } from "./SlabNumericInput";
 
@@ -82,21 +82,33 @@ const FUNDING_LABEL: Record<Funding, string> = {
 };
 
 /**
- * Per-location rider PRE-PICKUP (first-mile) ₹/km compensation editor.
+ * Per-location rider PRE-PICKUP (first-mile) ₹/km compensation editor — the LEGACY,
+ * single-flat-rate fallback. When a Pre-pickup SLAB rule exists for this node (see
+ * RiderLegPricingPanel, which renders this component nested inside its "Pre-pickup" card),
+ * that slab rule always wins and this flat rate has zero effect on any real order — it only
+ * takes over automatically at nodes where no slab rule has been configured yet. Pass
+ * `preSlabRuleActive` so this renders as a collapsed "not currently used" strip instead of
+ * a full editable form in that case, so admins don't waste time tuning a dead value.
  *
  * Overrides the global Dispatch Coverage default for THIS geo node (and, by inheritance,
  * its descendants). When no override is set, the location falls back to the nearest
  * ancestor's override, or the global default. Never changes the customer's delivery price
  * unless funding = customer/shared.
  */
-export function PrePickupCompensationPanel(props: { level: string; refId: string; service: RiderService }) {
-  const { level, refId, service } = props;
+export function PrePickupCompensationPanel(props: {
+  level: string;
+  refId: string;
+  service: RiderService;
+  preSlabRuleActive?: boolean;
+}) {
+  const { level, refId, service, preSlabRuleActive } = props;
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [override, setOverride] = useState<OverrideRow | null>(null);
   const [effective, setEffective] = useState<OverrideRow | null>(null);
   const [inherited, setInherited] = useState(false);
   const [form, setForm] = useState<Form>(blankForm);
+  const [expanded, setExpanded] = useState(false);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -195,15 +207,60 @@ export function PrePickupCompensationPanel(props: { level: string; refId: string
     }
   }
 
+  // A slab rule already governs pre-pickup here — this flat rate is inert. Show a compact,
+  // collapsed strip instead of the full form so admins don't tune a value with no effect.
+  if (preSlabRuleActive && !expanded) {
+    return (
+      <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
+        <button
+          type="button"
+          onClick={() => setExpanded(true)}
+          className="flex w-full items-center gap-2 text-left text-xs text-slate-600"
+        >
+          <ChevronRight className="h-3.5 w-3.5 shrink-0" />
+          <Bike className="h-3.5 w-3.5 shrink-0 text-slate-400" />
+          <span>
+            Legacy flat-rate fallback{" "}
+            {loading ? "" : effective ? <>(₹{effective.ratePerKm}/km, {effective.funding})</> : "(unset)"} —{" "}
+            <b className="text-slate-700">not used here</b>, the slab rule above takes precedence.
+          </span>
+          <span className="ml-auto shrink-0 text-teal-700 underline">Edit anyway</span>
+        </button>
+      </div>
+    );
+  }
+
   return (
-    <div className="mt-6 rounded-xl border border-slate-200 bg-white px-4 py-4">
-      <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-wide text-teal-800">
-        <Bike className="h-4 w-4" /> Rider pre-pickup (first-mile) ₹/km — this location
+    <div className="mt-3 rounded-xl border border-slate-200 bg-white px-4 py-4">
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-wide text-teal-800">
+          <Bike className="h-4 w-4" /> Legacy first-mile ₹/km fallback — this location
+        </div>
+        {preSlabRuleActive ? (
+          <button
+            type="button"
+            onClick={() => setExpanded(false)}
+            className="flex items-center gap-1 text-xs font-semibold text-slate-500 hover:text-slate-700"
+          >
+            <ChevronDown className="h-3.5 w-3.5" /> Collapse
+          </button>
+        ) : null}
       </div>
       <p className="mt-1 text-xs text-slate-500">
-        Pays the accepting rider for the pickup leg (rider → store/pickup). Overrides the global
-        Dispatch Coverage default for this node and inherits down the tree. Company-funded does not
-        change the customer&apos;s price.
+        {preSlabRuleActive ? (
+          <>
+            A Pre-pickup slab rule is configured above and always wins — this flat rate has{" "}
+            <b>no effect on any order right now</b>. It only takes over automatically if that slab
+            rule is ever removed.
+          </>
+        ) : (
+          <>
+            No Pre-pickup slab rule exists yet, so this flat rate is what riders are{" "}
+            <b>actually paid</b> for the first mile (rider → store/pickup) right now. Add a slab
+            rule above for distance-tiered rates — it will immediately take over.
+          </>
+        )}{" "}
+        Company-funded does not change the customer&apos;s price.
       </p>
 
       {loading ? (

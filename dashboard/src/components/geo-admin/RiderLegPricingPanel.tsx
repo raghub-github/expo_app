@@ -4,6 +4,7 @@ import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { Loader2, Plus, Trash2, ArrowRight } from "lucide-react";
 import { parseDecimalOrZero } from "@/lib/pricing/slabInputUtils";
+import { PrePickupCompensationPanel } from "./PrePickupCompensationPanel";
 
 type Service = "food" | "parcel" | "ride";
 type Leg = "pre" | "post";
@@ -184,6 +185,7 @@ export function RiderLegPricingPanel(props: {
 
   const pre = useMemo(() => rows.map((r, i) => ({ r, i })).filter((x) => x.r.leg === "pre"), [rows]);
   const post = useMemo(() => rows.map((r, i) => ({ r, i })).filter((x) => x.r.leg === "post"), [rows]);
+  const preSlabRuleActive = pre.some(({ r }) => r.isActive);
 
   const renderLeg = (leg: Leg, list: { r: Row; i: number }[], title: string, hint: string) => (
     <div className="mt-3 rounded-xl border border-violet-200 bg-white px-4 py-3">
@@ -200,9 +202,19 @@ export function RiderLegPricingPanel(props: {
           <Plus className="h-3.5 w-3.5" /> Add slab
         </button>
       </div>
+      {leg === "pre" ? (
+        <PrePickupCompensationPanel
+          level={props.level}
+          refId={props.refId}
+          service={props.service}
+          preSlabRuleActive={preSlabRuleActive}
+        />
+      ) : null}
       {list.length === 0 ? (
         <p className="mt-2 text-xs text-slate-500">
-          No {leg}-pickup rule at this node — {leg === "post" ? "post-pickup falls back to the pool remainder" : "first-mile is 0"}.
+          {leg === "post"
+            ? "No post-pickup rule at this node — post-pickup falls back to the pool remainder."
+            : "No Pre-pickup slab rule at this node — the legacy flat-rate fallback above is what riders are actually paid."}
         </p>
       ) : (
         <>
@@ -312,7 +324,9 @@ export function RiderLegPricingPanel(props: {
       </p>
       <div className="mt-2 rounded-lg border border-violet-100 bg-white px-3 py-2 text-[11px] leading-relaxed text-slate-600">
         <b className="text-violet-800">How the rider is actually paid:</b> Rider base pool =
-        eligible delivery fee × rider %. <b>Pre-pickup</b> is deducted from that pool first.{" "}
+        eligible delivery fee × rider %. <b>Pre-pickup</b> is deducted from that pool first —
+        a Pre-pickup slab rule below always wins; only when none exists does the legacy
+        flat-rate fallback (nested in the Pre-pickup card) take over.{" "}
         <b>Post-pickup</b> is whatever remains — it has <b>no separate rate</b> of its own
         unless its Funding below is <b>Company</b> or <b>Shared</b>, in which case that
         portion is a guaranteed top-up paid <b>on top of</b> the pool (and does not reduce
@@ -323,7 +337,7 @@ export function RiderLegPricingPanel(props: {
         <p className="mt-3 flex items-center gap-2 text-sm text-slate-500"><Loader2 className="h-4 w-4 animate-spin" /> Loading leg rules…</p>
       ) : (
         <>
-          {renderLeg("pre", pre, "Pre-pickup (rider → pickup)", "First-mile. Company-funded by default (paid on top).")}
+          {renderLeg("pre", pre, "Pre-pickup (rider → pickup)", "First-mile. A slab rule here always wins over the legacy flat rate below. Company-funded by default (paid on top).")}
           {renderLeg("post", post, "Post-pickup (pickup → drop)", "Delivery leg. Customer-funded by default (within the % pool).")}
         </>
       )}
