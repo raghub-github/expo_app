@@ -287,6 +287,8 @@ export async function creditRiderOrderEarningOnDelivered(
       c.checkout_metadata,
       r.ride_type,
       r.pickup_wait_seconds,
+      f.pickup_wait_seconds AS food_pickup_wait_seconds,
+      p.pickup_wait_seconds AS parcel_pickup_wait_seconds,
       r.estimated_fare,
       r.final_fare,
       p.weight_kg AS parcel_weight_kg,
@@ -294,6 +296,7 @@ export async function creditRiderOrderEarningOnDelivered(
     FROM orders_core c
     LEFT JOIN orders_ride r ON r.order_id = c.id
     LEFT JOIN orders_parcel p ON p.order_id = c.id
+    LEFT JOIN orders_food f ON f.order_id = c.id
     WHERE c.id = ${coreId}
     LIMIT 1
   `;
@@ -318,6 +321,8 @@ export async function creditRiderOrderEarningOnDelivered(
     checkout_metadata?: unknown;
     ride_type?: string | null;
     pickup_wait_seconds?: number | null;
+    food_pickup_wait_seconds?: number | null;
+    parcel_pickup_wait_seconds?: number | null;
     estimated_fare?: unknown;
     final_fare?: unknown;
     parcel_weight_kg?: unknown;
@@ -352,7 +357,9 @@ export async function creditRiderOrderEarningOnDelivered(
       const tripKm =
         tripKmFromBooking ??
         (Number.isFinite(tripKmCore) && tripKmCore > 0 ? tripKmCore : undefined);
-      const waitSec = Number(row.pickup_wait_seconds);
+      const waitSec = Number(
+        row.pickup_wait_seconds ?? row.food_pickup_wait_seconds ?? row.parcel_pickup_wait_seconds
+      );
       const waitingMinutes =
         Number.isFinite(waitSec) && waitSec > 0 ? Math.max(0, Math.round(waitSec / 60)) : 0;
       const rideGeo =
@@ -388,7 +395,10 @@ export async function creditRiderOrderEarningOnDelivered(
                 rideCatalogCode: row.ride_type,
                 parcelVehicleCategory: row.parcel_vehicle_category,
               }),
-              waitingMinutes: payoutService === "ride" ? waitingMinutes : undefined,
+              waitingMinutes:
+                payoutService === "ride" || payoutService === "food" || payoutService === "parcel"
+                  ? waitingMinutes
+                  : undefined,
               pincode: rideGeo.pickupPincode,
               state: rideGeo.pickupState,
             })

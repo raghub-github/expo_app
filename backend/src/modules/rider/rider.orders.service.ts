@@ -82,6 +82,8 @@ import {
   computeRidePickupWaitSeconds,
   resolveRidePickupFreeWaitMinutes,
 } from "../../lib/ride-pickup-wait.js";
+import { applyFoodPickupWaitingToBilling } from "../../lib/food-pickup-wait.js";
+import { applyParcelPickupWaitingToBilling } from "../../lib/parcel-pickup-wait.js";
 import {
   assertRiderMilestoneGeoFence,
   getOrderMilestoneGeoFenceStatuses,
@@ -4248,6 +4250,7 @@ async function markParcelPickedUpForRider(
   const now = new Date();
   let orderIdText = "";
   let newlyPicked = false;
+  let orderCorePk = 0;
 
   await db.transaction(async (tx) => {
     const [existing] = await tx
@@ -4256,6 +4259,7 @@ async function markParcelPickedUpForRider(
         orderId: ordersCore.orderId,
         status: ordersCore.status,
         currentStatus: ordersCore.currentStatus,
+        riderReachedPickupAt: ordersParcel.riderReachedPickupAt,
       })
       .from(ordersCore)
       .innerJoin(ordersParcel, eq(ordersParcel.orderId, ordersCore.id))
@@ -4273,6 +4277,7 @@ async function markParcelPickedUpForRider(
       throw Object.assign(new Error("Parcel order not found"), { statusCode: 404 });
     }
     orderIdText = existing.orderId.trim();
+    orderCorePk = existing.id;
 
     const activeAssignment = await loadActiveRiderAssignmentMilestones(tx, existing.id, riderId);
     if (activeAssignment?.pickedUpAt) {
@@ -4301,11 +4306,18 @@ async function markParcelPickedUpForRider(
       throw Object.assign(new Error("Could not mark parcel picked up"), { statusCode: 409 });
     }
 
+    // Waiting-charge clock: same definition as food/ride (computeRidePickupWaitSeconds) —
+    // total time from "rider reached pickup" to actual pickup confirmation.
+    const pickupWaitSeconds = existing.riderReachedPickupAt
+      ? computeRidePickupWaitSeconds(existing.riderReachedPickupAt, now)
+      : null;
+
     await tx
       .update(ordersParcel)
       .set({
         pickupOtpVerifiedAt: now,
         updatedAt: now,
+        ...(pickupWaitSeconds != null ? { pickupWaitSeconds } : {}),
       })
       .where(eq(ordersParcel.orderId, row.id));
 
@@ -4321,6 +4333,14 @@ async function markParcelPickedUpForRider(
     });
     newlyPicked = true;
   });
+
+  if (newlyPicked && orderCorePk) {
+    try {
+      await applyParcelPickupWaitingToBilling(orderCorePk);
+    } catch (err) {
+      console.warn("[markParcelPickedUpForRider] waiting billing update failed:", err);
+    }
+  }
 
   if (newlyPicked && orderIdText) {
     void notifyCustomerParcelLifecycle({
@@ -4902,6 +4922,7 @@ async function finalizeFoodPickupVerificationForRider(
     .select({
       pickupTimerStartedAt: ordersFood.pickupTimerStartedAt,
       pickupDurationSeconds: ordersFood.pickupDurationSeconds,
+      riderReachedPickupAt: ordersFood.riderReachedPickupAt,
     })
     .from(ordersFood)
     .where(eq(ordersFood.orderId, row.id))
@@ -4917,6 +4938,13 @@ async function finalizeFoodPickupVerificationForRider(
           ? Math.max(0, Math.floor((now.getTime() - new Date(String(timerStarted)).getTime()) / 1000))
           : null;
 
+  // Waiting-charge clock: total time from "rider reached the store" to actual pickup —
+  // same definition used for rides (computeRidePickupWaitSeconds). Free minutes/rate/funding
+  // are resolved from service_payout_rules by applyFoodPickupWaitingToBilling below.
+  const pickupWaitSeconds = foodPickupMeta?.riderReachedPickupAt
+    ? computeRidePickupWaitSeconds(foodPickupMeta.riderReachedPickupAt, now)
+    : null;
+
   await tx
     .update(ordersFood)
     .set({
@@ -4924,6 +4952,7 @@ async function finalizeFoodPickupVerificationForRider(
       dispatchedAt: now,
       updatedAt: now,
       ...(pickupDurationSeconds != null ? { pickupDurationSeconds } : {}),
+      ...(pickupWaitSeconds != null ? { pickupWaitSeconds } : {}),
     })
     .where(eq(ordersFood.orderId, row.id));
 
@@ -5211,6 +5240,12 @@ export async function markFoodPickupWithoutVerificationForRider(
     });
   });
 
+  try {
+    await applyFoodPickupWaitingToBilling(orderCorePk);
+  } catch (err) {
+    console.warn("[markFoodPickupWithoutVerificationForRider] waiting billing update failed:", err);
+  }
+
   const merchantFeedbackSubmitted = await loadRiderMerchantFeedbackSubmitted(
     db,
     riderId,
@@ -5298,6 +5333,12 @@ async function verifyFoodPickupOtpForRider(
 
     return finalized;
   });
+
+  try {
+    await applyFoodPickupWaitingToBilling(orderCorePk);
+  } catch (err) {
+    console.warn("[verifyFoodPickupOtpForRider] waiting billing update failed:", err);
+  }
 
   const merchantFeedbackSubmitted = await loadRiderMerchantFeedbackSubmitted(
     db,
@@ -5392,6 +5433,12 @@ export async function verifyFoodPickupBarcodeForRider(
 
     return finalized;
   });
+
+  try {
+    await applyFoodPickupWaitingToBilling(orderCorePk);
+  } catch (err) {
+    console.warn("[verifyFoodPickupBarcodeForRider] waiting billing update failed:", err);
+  }
 
   const merchantFeedbackSubmitted = await loadRiderMerchantFeedbackSubmitted(
     db,

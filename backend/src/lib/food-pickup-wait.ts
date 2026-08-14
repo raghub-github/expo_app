@@ -1,0 +1,162 @@
+import { eq } from "drizzle-orm";
+import { getDb, getSql } from "../db/client.js";
+import { ordersCore, ordersFood } from "../db/schema.js";
+import { resolveGeoLocation } from "../modules/billing/geoLocationResolver.js";
+import { pickMostSpecificGeoAnchor } from "../modules/ride-state-config/rideStateConfig.repository.js";
+import { loadEffectiveServicePayoutRule } from "../modules/rider-payout-pricing/riderPayoutPricing.repository.js";
+import { computeWaitingCharge } from "../modules/rides/pricing/rideWaitingCharge.js";
+import {
+  readRideRiderPayoutSnapshot,
+  writeRideRiderPayoutSnapshot,
+  type RideRiderPayoutSnapshot,
+} from "./ride-rider-payout-snapshot.js";
+import { computeRidePickupWaitSeconds } from "./ride-pickup-wait.js";
+
+function round2(n: number): number {
+  if (!Number.isFinite(n)) return 0;
+  return Math.round(n * 100) / 100;
+}
+
+/**
+ * After the rider marks a food order picked up: compute the waiting charge (funding-split
+ * aware, resolved from service_payout_rules for the food service at the order's drop geo —
+ * same anchor used for the rider's base payout, see resolveOrderRiderPayoutBreakdown), credit
+ * the full amount to the rider's frozen accept-time payout snapshot, and — only when the
+ * order isn't already paid — add the customer-funded share to the bill. Food defaults to
+ * COMPANY_100 funding (migration 0532), so in the common case customerWaiting is 0 and the
+ * already-captured customer payment is never touched; the company-funded share is still
+ * recorded in billing_snapshot for settlement/subsidy accounting either way.
+ */
+export async function applyFoodPickupWaitingToBilling(
+  orderCorePk: number
+): Promise<{ customerWaiting: number; riderWaiting: number } | null> {
+  const db = getDb();
+  const [row] = await db
+    .select({
+      id: ordersCore.id,
+      dropLat: ordersCore.dropLat,
+      dropLon: ordersCore.dropLon,
+      billingSnapshot: ordersCore.billingSnapshot,
+      grandTotal: ordersCore.grandTotal,
+      tipAmount: ordersCore.tipAmount,
+      paymentStatus: ordersCore.paymentStatus,
+      riderReachedPickupAt: ordersFood.riderReachedPickupAt,
+      pickupWaitSeconds: ordersFood.pickupWaitSeconds,
+    })
+    .from(ordersCore)
+    .innerJoin(ordersFood, eq(ordersFood.orderId, ordersCore.id))
+    .where(eq(ordersCore.id, orderCorePk))
+    .limit(1);
+
+  if (!row?.id) return null;
+
+  const prevSnap =
+    row.billingSnapshot != null && typeof row.billingSnapshot === "object"
+      ? (row.billingSnapshot as Record<string, unknown>)
+      : {};
+  // Finalize is guarded to run once per order at the call site; this is a cheap extra guard.
+  if (prevSnap.waiting_charge != null) {
+    return {
+      customerWaiting: Number(prevSnap.waiting_customer_share) || 0,
+      riderWaiting: 0,
+    };
+  }
+
+  const waitSeconds =
+    row.pickupWaitSeconds != null
+      ? Math.max(0, Number(row.pickupWaitSeconds) || 0)
+      : row.riderReachedPickupAt
+        ? computeRidePickupWaitSeconds(row.riderReachedPickupAt, new Date())
+        : 0;
+
+  if (waitSeconds <= 0) return { customerWaiting: 0, riderWaiting: 0 };
+
+  let freeMinutes = 2;
+  let chargePerMin = 0;
+  let waitingMax: number | null = null;
+  let fundingMode: "CUSTOMER_100" | "COMPANY_100" | "SHARED" = "COMPANY_100";
+  let customerSharePct = 0;
+  let companySharePct = 100;
+
+  try {
+    // Food's payout geo anchor is the DROP location (matches resolveOrderRiderPayoutBreakdown's
+    // non-ride branch), not pickup — keeps this in sync with the node used for the base earning.
+    const geo = await resolveGeoLocation({
+      latitude: Number(row.dropLat),
+      longitude: Number(row.dropLon),
+    });
+    const anchor = pickMostSpecificGeoAnchor(geo.refs);
+    if (anchor) {
+      const { rule } = await loadEffectiveServicePayoutRule({
+        level: anchor.level,
+        refId: anchor.refId,
+        service: "food",
+      });
+      if (rule) {
+        freeMinutes = Math.max(0, Math.round(rule.waitingFreeMinutes ?? 2));
+        chargePerMin = Math.max(0, Number(rule.waitingChargePerMin ?? 0));
+        waitingMax = rule.waitingMaxCharge;
+        fundingMode = rule.waitingFundingMode ?? "COMPANY_100";
+        customerSharePct = rule.waitingCustomerSharePct ?? 0;
+        companySharePct = rule.waitingCompanySharePct ?? 100;
+      }
+    }
+  } catch {
+    /* keep defaults */
+  }
+
+  if (chargePerMin <= 0) return { customerWaiting: 0, riderWaiting: 0 };
+
+  const split = computeWaitingCharge(waitSeconds, {
+    freeMinutes,
+    chargePerMin,
+    maxCharge: waitingMax,
+    fundingMode,
+    customerSharePct,
+    companySharePct,
+  });
+
+  const customerWaiting = split.customerShare;
+  const riderWaiting = split.capped;
+  const tip = round2(Number(row.tipAmount) || 0);
+
+  const snapshot = readRideRiderPayoutSnapshot(row.billingSnapshot);
+  if (snapshot) {
+    const updatedSnapshot: RideRiderPayoutSnapshot = {
+      ...snapshot,
+      waitingEarning: riderWaiting,
+      totalEarning: round2(snapshot.baseEarning + riderWaiting + snapshot.surgeEarning + tip),
+    };
+    await writeRideRiderPayoutSnapshot(orderCorePk, updatedSnapshot, tip);
+  }
+
+  const sql = getSql();
+  await sql`
+    UPDATE orders_core
+    SET billing_snapshot = COALESCE(billing_snapshot, '{}'::jsonb) || ${JSON.stringify({
+      waiting_charge: customerWaiting,
+      waiting_charge_gross: split.capped,
+      waiting_customer_share: split.customerShare,
+      waiting_company_share: split.companyShare,
+      waiting_funding_mode: split.fundingMode,
+      company_funded_waiting: split.companyShare,
+      pickup_wait_seconds: waitSeconds,
+    })}::jsonb,
+        updated_at = NOW()
+    WHERE id = ${orderCorePk}
+  `;
+
+  // Customer bill already captured (the common food path) — never retroactively recollect.
+  // Only unpaid orders (e.g. COD food) pick up the customer-funded share in grand_total.
+  if (customerWaiting > 0 && row.paymentStatus !== "completed") {
+    const currentGrand = Number(row.grandTotal) || 0;
+    await sql`
+      UPDATE orders_core
+      SET grand_total = ${String(round2(currentGrand + customerWaiting))},
+          updated_at = NOW()
+      WHERE id = ${orderCorePk}
+    `;
+  }
+
+  return { customerWaiting, riderWaiting };
+}
