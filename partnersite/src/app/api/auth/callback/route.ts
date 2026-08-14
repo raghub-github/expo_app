@@ -37,6 +37,30 @@ function applyCookieOptions(
 }
 
 /**
+ * Retarget the SAME response (keeping its Set-Cookie mutations) at a new location, instead
+ * of returning a fresh NextResponse.redirect that would drop those cookie changes. Critical
+ * on error paths: the session-clear from signOut() must reach the browser.
+ */
+function redirectVia(response: NextResponse, target: URL): NextResponse {
+  response.headers.set("Location", target.toString());
+  return response;
+}
+
+/**
+ * Wipe every Supabase auth cookie (session token + PKCE code-verifier, including chunked
+ * `.0`/`.1` variants) from the browser on a failed attempt. Without this, a leftover/half-
+ * consumed code verifier collides with the next sign-in and Supabase throws
+ * "invalid flow state, no valid flow state found" on the retry.
+ */
+function clearSupabaseAuthCookies(request: NextRequest, response: NextResponse): void {
+  for (const c of request.cookies.getAll()) {
+    if (c.name.startsWith("sb-")) {
+      response.cookies.set(c.name, "", { path: "/", maxAge: 0 });
+    }
+  }
+}
+
+/**
  * GET /api/auth/callback?code=...&next=...
  *
  * Server-side OAuth callback: exchange code for session, set cookies on the redirect response,
@@ -78,21 +102,28 @@ export async function GET(request: NextRequest) {
 
   if (error) {
     console.error("[auth/callback] exchangeCodeForSession error:", error.message);
-    return NextResponse.redirect(
-      new URL(`/auth?error=${encodeURIComponent(error.message)}`, origin)
-    );
+    // Wipe stale flow state so an immediate retry (no page refresh) starts clean.
+    clearSupabaseAuthCookies(request, response);
+    return redirectVia(response, new URL(`/auth?error=${encodeURIComponent(error.message)}`, origin));
   }
 
   if (!data.session?.user) {
     console.warn("[auth/callback] No session after exchange");
-    return NextResponse.redirect(new URL("/auth?error=no_session", origin));
+    clearSupabaseAuthCookies(request, response);
+    return redirectVia(response, new URL("/auth?error=no_session", origin));
   }
 
   const validation = await validateMerchantFromSession(data.session.user);
   if (!validation.isValid) {
+    // signOut() revokes the just-created session AND clears its cookies — but only on THIS
+    // `response`. Returning it (not a fresh redirect) is what makes the clear reach the
+    // browser; otherwise the leftover session + code-verifier break the next sign-in with
+    // "invalid flow state". Also wipe any verifier chunks explicitly.
     await supabase.auth.signOut();
+    clearSupabaseAuthCookies(request, response);
     console.warn("[auth/callback] Merchant validation failed:", validation.error);
-    return NextResponse.redirect(
+    return redirectVia(
+      response,
       new URL(
         `/auth?error=${encodeURIComponent(validation.error ?? "Not authorized for merchant dashboard")}`,
         origin
