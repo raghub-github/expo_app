@@ -269,6 +269,12 @@ export default function LoginScreen() {
           setDeviceSessionRetry(true);
           throw verifyError;
         }
+        if (isRiderAuthError(verifyError) && verifyError.code === "device_change_limit_exceeded") {
+          // Retrying the device-session-only exchange can't bypass the rate limit —
+          // never offer that button for this error, even if a prior attempt set it.
+          setDeviceSessionRetry(false);
+          throw verifyError;
+        }
         throw verifyError;
       }
 
@@ -338,6 +344,9 @@ export default function LoginScreen() {
       setDeviceSessionRetry(false);
       router.replace("/");
     } catch (e) {
+      if (isRiderAuthError(e) && e.code === "device_change_limit_exceeded") {
+        setDeviceSessionRetry(false);
+      }
       setError(e instanceof Error ? e.message : t("login.failedVerify"));
     } finally {
       setBusy(false);

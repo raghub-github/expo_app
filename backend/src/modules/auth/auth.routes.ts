@@ -28,7 +28,7 @@ import { getDb, getSql } from "../../db/client.js";
 import { riders, userProfiles, customers } from "../../db/schema.js";
 import { eq } from "drizzle-orm";
 import { auth } from "../../plugins/auth.js";
-import { persistRiderDeviceSession } from "../../lib/rider-app-session.js";
+import { applyRiderDeviceLoginPolicy, RiderDeviceChangeLimitError } from "../../lib/rider-device-change-policy.js";
 import { resolveRiderLoginGeoForSession, type RiderLoginGeo } from "../../lib/login-geo.js";
 import {
   phonesMatch,
@@ -791,7 +791,17 @@ export async function authRoutes(app: FastifyInstance) {
           400: z.object({ error: z.string() }),
           403: z.object({ error: z.string(), message: z.string() }),
           404: z.object({ error: z.string(), message: z.string() }).optional(),
-          429: z.object({ error: z.string() }),
+          // Base shape used by the OTP-attempt limit (too_many_attempts); rider device-change
+          // rejections add the optional fields below — Fastify strips anything undeclared here.
+          429: z.object({
+            error: z.string(),
+            message: z.string().optional(),
+            limitType: z.enum(["24h", "30d"]).optional(),
+            currentCount: z.number().optional(),
+            limit: z.number().optional(),
+            retryAt: z.string().optional(),
+            retryAfterSec: z.number().optional(),
+          }),
           500: z.object({ error: z.string(), message: z.string().optional() }).optional(),
           503: z.object({ error: z.string(), message: z.string().optional() }),
         },
@@ -1238,14 +1248,30 @@ export async function authRoutes(app: FastifyInstance) {
       const loginGeo = await riderSessionLoginGeo(req);
 
       try {
-        await persistRiderDeviceSession(sql, {
+        await applyRiderDeviceLoginPolicy(sql, {
           userId,
+          riderId,
           deviceId,
           loginMethod: "phone",
           ip,
           loginGeo,
+          bypassPolicy: Boolean(verifyBypass),
         });
       } catch (sessErr: unknown) {
+        if (sessErr instanceof RiderDeviceChangeLimitError) {
+          const retryAtIso = sessErr.retryAt.toISOString();
+          const retryAfterSec = Math.max(0, Math.round((sessErr.retryAt.getTime() - Date.now()) / 1000));
+          const windowLabel = sessErr.limitType === "24h" ? "24 hours" : "30 days";
+          return reply.code(429).send({
+            error: "device_change_limit_exceeded",
+            message: `You've changed devices ${sessErr.currentCount} times in the last ${windowLabel}. Try again after ${sessErr.retryAt.toLocaleString("en-IN")}.`,
+            limitType: sessErr.limitType,
+            currentCount: sessErr.currentCount,
+            limit: sessErr.limit,
+            retryAt: retryAtIso,
+            retryAfterSec,
+          });
+        }
         req.log?.error?.({ err: sessErr }, "Rider OTP login: device session persist failed");
         return reply.code(503).send({
           error: "device_session_unavailable",
@@ -1294,6 +1320,15 @@ export async function authRoutes(app: FastifyInstance) {
           200: SessionSchema,
           400: z.object({ error: z.string() }),
           401: z.object({ error: z.string() }),
+          429: z.object({
+            error: z.string(),
+            message: z.string().optional(),
+            limitType: z.enum(["24h", "30d"]).optional(),
+            currentCount: z.number().optional(),
+            limit: z.number().optional(),
+            retryAt: z.string().optional(),
+            retryAfterSec: z.number().optional(),
+          }),
           503: z.object({ error: z.string(), message: z.string().optional() }),
         },
       },
@@ -1357,15 +1392,29 @@ export async function authRoutes(app: FastifyInstance) {
       const loginGeo = await riderSessionLoginGeo(req, clientLoginGeo);
 
       try {
-        await persistRiderDeviceSession(sql, {
+        await applyRiderDeviceLoginPolicy(sql, {
           userId,
+          riderId,
           deviceId,
           loginMethod: "phone",
           ip,
           loginGeo,
           device: deviceMeta ?? undefined,
+          bypassPolicy: false,
         });
       } catch (sessErr: unknown) {
+        if (sessErr instanceof RiderDeviceChangeLimitError) {
+          const windowLabel = sessErr.limitType === "24h" ? "24 hours" : "30 days";
+          return reply.code(429).send({
+            error: "device_change_limit_exceeded",
+            message: `You've changed devices ${sessErr.currentCount} times in the last ${windowLabel}. Try again after ${sessErr.retryAt.toLocaleString("en-IN")}.`,
+            limitType: sessErr.limitType,
+            currentCount: sessErr.currentCount,
+            limit: sessErr.limit,
+            retryAt: sessErr.retryAt.toISOString(),
+            retryAfterSec: Math.max(0, Math.round((sessErr.retryAt.getTime() - Date.now()) / 1000)),
+          });
+        }
         req.log?.error?.({ err: sessErr }, "Rider Supabase exchange: device session persist failed");
         return reply.code(503).send({
           error: "device_session_unavailable",
@@ -1979,7 +2028,17 @@ export async function authRoutes(app: FastifyInstance) {
         response: {
           200: SessionSchema,
           400: z.object({ error: z.string() }),
+          429: z.object({
+            error: z.string(),
+            message: z.string().optional(),
+            limitType: z.enum(["24h", "30d"]).optional(),
+            currentCount: z.number().optional(),
+            limit: z.number().optional(),
+            retryAt: z.string().optional(),
+            retryAfterSec: z.number().optional(),
+          }),
           500: z.object({ error: z.string() }).optional(),
+          503: z.object({ error: z.string(), message: z.string().optional() }),
         },
       },
     },
@@ -2084,16 +2143,30 @@ export async function authRoutes(app: FastifyInstance) {
         const loginGeo = await riderSessionLoginGeo(req);
 
         try {
-          await persistRiderDeviceSession(sql, {
+          await applyRiderDeviceLoginPolicy(sql, {
             userId,
+            riderId,
             deviceId,
             loginMethod: "phone",
             ip,
             loginGeo,
+            bypassPolicy: false,
           });
         } catch (sessErr: unknown) {
+          if (sessErr instanceof RiderDeviceChangeLimitError) {
+            const windowLabel = sessErr.limitType === "24h" ? "24 hours" : "30 days";
+            return reply.code(429).send({
+              error: "device_change_limit_exceeded",
+              message: `You've changed devices ${sessErr.currentCount} times in the last ${windowLabel}. Try again after ${sessErr.retryAt.toLocaleString("en-IN")}.`,
+              limitType: sessErr.limitType,
+              currentCount: sessErr.currentCount,
+              limit: sessErr.limit,
+              retryAt: sessErr.retryAt.toISOString(),
+              retryAfterSec: Math.max(0, Math.round((sessErr.retryAt.getTime() - Date.now()) / 1000)),
+            });
+          }
           req.log?.error?.({ err: sessErr }, "Rider MSG91 login: device session persist failed");
-          return (reply as any).code(503).send({
+          return reply.code(503).send({
             error: "device_session_unavailable",
             message: "Could not start your session on this device. Please try again.",
           });
