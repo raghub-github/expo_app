@@ -148,9 +148,14 @@ export function DeviceSessionsScreen() {
             {t("profile.deviceSessions.title", "Logged-in devices")}
           </Text>
           <Text style={styles.subtitle}>
-            {t("profile.deviceSessions.subtitle", "{{count}} active session(s)", {
-              count: activeCount,
-            })}
+            {activeCount <= 1
+              ? t(
+                  "profile.deviceSessions.subtitleSingleDevice",
+                  "Only one device can be signed in at a time",
+                )
+              : t("profile.deviceSessions.subtitle", "{{count}} active session(s)", {
+                  count: activeCount,
+                })}
           </Text>
         </View>
       </View>

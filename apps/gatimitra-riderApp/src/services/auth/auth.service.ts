@@ -81,6 +81,12 @@ function mapVerifyErrorCode(errCode: string, serverMessage: string, fallbackMess
       serverMessage || "Could not start your session on this device. Please try again.",
     );
   }
+  if (errCode === "device_change_limit_exceeded") {
+    throw new RiderAuthError(
+      "device_change_limit_exceeded",
+      serverMessage || "You've changed devices too many times recently. Please try again later.",
+    );
+  }
   if (errCode === "invalid_otp") {
     throw new Error("Invalid OTP.");
   }
