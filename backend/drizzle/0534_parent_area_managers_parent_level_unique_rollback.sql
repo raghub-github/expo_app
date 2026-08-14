@@ -1,0 +1,2 @@
+-- Rollback for 0534_parent_area_managers_parent_level_unique.sql
+DROP INDEX IF EXISTS public.parent_area_managers_parent_am_null_store_uniq;
