@@ -1,5 +1,8 @@
+import { isStoreDelisted } from "@/lib/store-delist";
+
 export type StoreOnboardingSnapshot = {
   approval_status?: string | null;
+  delisted_at?: string | null;
   onboarding_completed?: boolean | null;
   current_onboarding_step?: number | null;
   verification_step_rejections?: { merchant_resubmitted_at?: string | null }[] | null;
@@ -36,6 +39,9 @@ export function storeNeedsOnboardingAction(store: StoreOnboardingSnapshot): bool
 }
 
 export function getStoreOnboardingBadge(store: StoreOnboardingSnapshot): { label: string; className: string } {
+  if (isStoreDelisted(store)) {
+    return { label: "Delisted", className: "bg-red-100 text-red-800" };
+  }
   if (storeHasOpenVerificationFix(store)) {
     return { label: "Action needed", className: "bg-red-500 text-white" };
   }

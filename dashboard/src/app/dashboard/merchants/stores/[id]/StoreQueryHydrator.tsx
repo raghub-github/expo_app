@@ -5,7 +5,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { STORE_KEY } from "@/hooks/useStore";
 import type { StoreProfile } from "@/hooks/useStore";
 import { queryKeys } from "@/lib/queryKeys";
-import { readStoreOperationsCache } from "@/lib/merchants/partner-store-ops-cache";
+import { readStoreOperationsCache, writeStoreOperationsCache } from "@/lib/merchants/partner-store-ops-cache";
 import { useLocalStoreStatusEngineStore } from "@/lib/localStoreStatusEngineStore";
 
 /** Primes React Query store + ops cache so sidebar and dashboard get instant data. */
@@ -40,6 +40,7 @@ export function StoreQueryHydrator({
         });
         const data = await res.json().catch(() => null);
         if (!res.ok) throw new Error((data as { error?: string })?.error ?? "Request failed");
+        writeStoreOperationsCache(storeId, data);
         return data;
       },
       staleTime: 10 * 60 * 1000,

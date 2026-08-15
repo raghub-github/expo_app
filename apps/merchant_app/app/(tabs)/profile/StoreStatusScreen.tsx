@@ -14,6 +14,7 @@ import {
   type StatusHistoryEntry,
 } from "@/services/storeStatusApi";
 import { formatCloseReasonForCard } from "@/lib/formatCloseReasonForCard";
+import { showStoreDelistedAlert } from "@/lib/storeDelist";
 
 const CHART_HEIGHT = 120;
 const { width: SCREEN_WIDTH } = Dimensions.get("window");
@@ -135,6 +136,8 @@ export default function StoreStatusScreen({ reopenPromptFromNotification }: Stor
     unavailableReason,
     reopenAtIso: reopenAtIsoFromContext,
     refresh,
+    isDelisted,
+    needsManualOpenAfterRelist: needsRelistManualOpen,
   } = useStoreStatus();
   const { token } = useAuth();
   const { selectedStore } = useSelectedStore();
@@ -158,12 +161,16 @@ export default function StoreStatusScreen({ reopenPromptFromNotification }: Stor
         {
           text: "Go Online",
           onPress: () => {
+            if (isDelisted) {
+              showStoreDelistedAlert(() => router.push("/(tabs)/profile/contact"));
+              return;
+            }
             toggle().then(() => router.replace("/(tabs)")).catch(() => {});
           },
         },
       ]
     );
-  }, [reopenPromptFromNotification, isOnline, toggle, router]);
+  }, [reopenPromptFromNotification, isOnline, isDelisted, toggle, router]);
 
   const fetchWeekly = useCallback(async () => {
     if (!selectedStore?.id || !token) {
@@ -274,6 +281,10 @@ export default function StoreStatusScreen({ reopenPromptFromNotification }: Stor
 
   const handleQuickReopen = async () => {
     if (loading || reopening || isOnline) return;
+    if (isDelisted) {
+      showStoreDelistedAlert(() => router.push("/(tabs)/profile/contact"));
+      return;
+    }
     setReopening(true);
     try {
       await toggle();
@@ -292,7 +303,7 @@ export default function StoreStatusScreen({ reopenPromptFromNotification }: Stor
     reopenAtIso ? formatCountdown(reopenAtIso) : null
   );
   useEffect(() => {
-    if (!reopenAtIso) {
+    if (!reopenAtIso || isDelisted || needsRelistManualOpen) {
       setCountdownLabel(null);
       return;
     }
@@ -300,10 +311,10 @@ export default function StoreStatusScreen({ reopenPromptFromNotification }: Stor
     update();
     const id = setInterval(update, 1000);
     return () => clearInterval(id);
-  }, [reopenAtIso]);
+  }, [reopenAtIso, isDelisted, needsRelistManualOpen]);
 
   const nextAutoOpenLabel =
-    !isOnline && reopenAtIso && autoOpenFromSchedule && !manualActivationLock
+    !isDelisted && !needsRelistManualOpen && !isOnline && reopenAtIso && autoOpenFromSchedule && !manualActivationLock
       ? `Next auto open: ${formatIstDayDateTime(reopenAtIso)}`
       : null;
 
@@ -377,7 +388,7 @@ export default function StoreStatusScreen({ reopenPromptFromNotification }: Stor
                   <Text style={styles.metaText}>Closed until manually reopened.</Text>
                 )
               )}
-              {(countdownLabel != null || (reopenAtIso && reopenTimeLabel != null)) && (
+              {!isDelisted && !needsRelistManualOpen && (countdownLabel != null || (reopenAtIso && reopenTimeLabel != null)) && (
                 <Text style={styles.countdown}>
                   {countdownLabel ?? `Reopens at ${reopenTimeLabel}`}
                 </Text>

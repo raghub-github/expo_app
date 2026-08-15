@@ -223,7 +223,7 @@ body.modal-open-blur aside * {
 }
 
 .animate-store-closed-marquee {
-  animation: store-closed-marquee 28s linear infinite;
+  animation: store-closed-marquee 52s linear infinite;
 }
 
 /* Dual opposite gradient rings around a centered icon (account loading) */

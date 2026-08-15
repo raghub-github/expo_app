@@ -101,7 +101,7 @@ export default function OnboardingBenefitsScreen() {
         if (storeDbId && token) {
           await syncOnboardingBenefitsFromServer(storeId, storeDbId, token);
         }
-        const existing = await loadOnboardingBenefitsState(storeId);
+        const existing = await loadOnboardingBenefitsState(storeId, { storeDbId, token });
         if (existing?.completedAt) {
           if (cancelled) return;
           setStartedAt(existing.startedAt);
@@ -122,7 +122,7 @@ export default function OnboardingBenefitsScreen() {
           itemsWithImages,
           itemCount: catalogItems.length,
         });
-        const refreshed = await loadOnboardingBenefitsState(storeId);
+        const refreshed = await loadOnboardingBenefitsState(storeId, { storeDbId, token });
         setStartedAt((refreshed ?? state).startedAt);
         const tipsDone = Boolean(
           refreshed?.packagingTipsCompletedAt ?? state.packagingTipsCompletedAt
@@ -166,6 +166,7 @@ export default function OnboardingBenefitsScreen() {
         token,
         itemsWithImages,
         itemCount: catalogItems.length,
+        packagingTipsDone,
       });
       if (!result.ok) return;
       setCompleted(true);
@@ -182,6 +183,7 @@ export default function OnboardingBenefitsScreen() {
     token,
     itemsWithImages,
     catalogItems.length,
+    packagingTipsDone,
     goBack,
   ]);
 

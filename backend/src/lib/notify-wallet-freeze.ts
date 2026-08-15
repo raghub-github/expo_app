@@ -1,5 +1,6 @@
 import { emitEvent } from "../modules/notifications/eventBus.js";
 import { getSql } from "../db/client.js";
+import { broadcastMerchantWalletFreeze } from "./merchant-wallet-freeze-broadcast.js";
 
 export type WalletFreezeNotifyInput = {
   party: "rider" | "merchant";
@@ -37,15 +38,23 @@ export async function notifyWalletFreezeChange(input: WalletFreezeNotifyInput): 
     LIMIT 1
   `;
   const userId = String((row as { parent_merchant_id?: unknown } | undefined)?.parent_merchant_id ?? "").trim();
-  if (!userId) return;
-
-  if (input.action === "freeze") {
-    emitEvent("wallet.frozen", {
-      role: "merchant",
-      userId,
-      reason: input.reason ?? null,
-    });
-  } else {
-    emitEvent("wallet.unfrozen", { role: "merchant", userId });
+  const freezeReason = input.reason ?? null;
+  if (userId) {
+    if (input.action === "freeze") {
+      emitEvent("wallet.frozen", {
+        role: "merchant",
+        userId,
+        reason: freezeReason,
+      });
+    } else {
+      emitEvent("wallet.unfrozen", { role: "merchant", userId });
+    }
   }
+
+  await broadcastMerchantWalletFreeze({
+    storeId,
+    action: input.action,
+    isFrozen: input.action === "freeze",
+    freezeReason: input.action === "freeze" ? freezeReason : null,
+  });
 }

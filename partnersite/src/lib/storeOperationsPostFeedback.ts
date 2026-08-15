@@ -14,6 +14,11 @@ export const STORE_OPERATIONS_LICENSE_PENDING_CODE = 'LICENSE_PENDING_VERIFICATI
 export const LICENSE_ONLINE_BLOCKED_TOAST =
   "Can't go online until your new licence is verified by Gatimitra.";
 
+export const STORE_OPERATIONS_DELISTED_CODE = 'STORE_DELISTED' as const;
+
+export const STORE_OPERATIONS_DELISTED_TOAST =
+  'This store is delisted. You cannot turn it online until GatiMitra relists it. Please contact support.';
+
 export const STORE_OPERATIONS_OUTSIDE_OPERATING_HOURS_CODE = 'OUTSIDE_OPERATING_HOURS' as const;
 
 export const STORE_OPERATIONS_OUTSIDE_OPERATING_HOURS_TOAST =
@@ -51,12 +56,23 @@ export function isLicenseBlockedStoreOpsError(body: unknown): boolean {
   );
 }
 
+export function isStoreDelistedOpsError(body: unknown): boolean {
+  if (!body || typeof body !== 'object') return false;
+  const code = (body as StoreOperationsErrorJson).code;
+  const error = String((body as StoreOperationsErrorJson).error ?? '').toUpperCase();
+  return code === STORE_OPERATIONS_DELISTED_CODE || error === STORE_OPERATIONS_DELISTED_CODE;
+}
+
 export function toastStoreOperationsPostFailure(
   res: Response,
   body: unknown,
   fallbackMessage: string
 ): void {
   const b = (body && typeof body === 'object' ? body : {}) as StoreOperationsErrorJson;
+  if ((res.status === 403 || res.status === 400) && isStoreDelistedOpsError(body)) {
+    toast.error(STORE_OPERATIONS_DELISTED_TOAST);
+    return;
+  }
   if ((res.status === 403 || res.status === 400) && isLicenseBlockedStoreOpsError(body)) {
     toast.error(LICENSE_ONLINE_BLOCKED_TOAST);
     return;

@@ -11,6 +11,8 @@ import { PartnerStoreAccessGate } from "@/components/PartnerStoreAccessGate";
 import { PartnerShellFrame } from "@/components/PartnerShellFrame";
 import { PartnerIncomingOrderModal } from "@/components/PartnerIncomingOrderModal";
 import { PartnerBrowserPushBootstrap } from "@/components/PartnerBrowserPushBootstrap";
+import { MerchantWalletFreezeLive } from "@/hooks/useMerchantWalletFreezeLive";
+import { MerchantStoreDelistLive } from "@/hooks/useMerchantStoreDelistLive";
 
 /** Routes that render their own full-screen UI instead of the partner shell. */
 const ROUTES_WITHOUT_SHELL = [
@@ -55,6 +57,8 @@ export default function PartnersLayout({ children }: { children: React.ReactNode
       <PartnerBrowserPushBootstrap />
       <PartnerShellWarmup />
       <PartnerMerchantQueryFocusSync />
+      <MerchantWalletFreezeLive />
+      <MerchantStoreDelistLive />
       <PartnerAcceptanceTimeoutSync />
       <Suspense fallback={null}>
         <PartnerPendingNewOrdersBar />

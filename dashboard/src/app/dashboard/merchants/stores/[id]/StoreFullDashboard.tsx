@@ -42,6 +42,7 @@ import {
 } from "@/components/merchant/PartnerDashboardCardSkeletons";
 import { PARTNER_DASHBOARD_TOP_CARD_SECTION_CLASS } from "@/components/merchant/partner-dashboard-card-styles";
 import { useLocalStoreStatusEngineStore } from "@/lib/localStoreStatusEngineStore";
+import { isStoreDelisted } from "@/lib/merchants/store-delist";
 
 function MiniSparkline({ values, className = "" }: { values: readonly number[]; className?: string }) {
   const gid = React.useId().replace(/:/g, "");
@@ -177,9 +178,21 @@ export function StoreFullDashboard({ storeId }: { storeId: string }) {
     }
   }, [storeFromHook]);
 
-  const isDelisted = ((storeFromHook?.approval_status ?? store?.approval_status) || "").toUpperCase() === "DELISTED";
+  const isDelisted = isStoreDelisted(storeFromHook ?? store);
 
-  const statusCard = useStoreStatusCardModel(operationsQuery.data as StoreOperationsSnapshot | undefined, {
+  const statusCard = useStoreStatusCardModel(
+    operationsQuery.data || isDelisted
+      ? ({
+          ...(operationsQuery.data as StoreOperationsSnapshot | undefined),
+          operational_status:
+            (operationsQuery.data as StoreOperationsSnapshot | undefined)?.operational_status ??
+            (isDelisted ? "CLOSED" : undefined),
+          is_delisted:
+            isDelisted ||
+            (operationsQuery.data as StoreOperationsSnapshot | undefined)?.is_delisted === true,
+        } as StoreOperationsSnapshot)
+      : undefined,
+    {
     storeTimezone: (storeFromHook as { timezone?: string | null } | null)?.timezone,
     storeIdLabel: storeFromHook?.store_id ?? null,
     onCountdownExpired: () => invalidateStoreQueries(storeId),
@@ -421,6 +434,7 @@ export function StoreFullDashboard({ storeId }: { storeId: string }) {
                   manualActivationLock={statusCard.manualActivationLock}
                   showScheduledOffStartsCountdown={statusCard.showScheduledOffStartsCountdown}
                   scheduledOffStartsInMs={statusCard.scheduledOffStartsInMs}
+                  isDelisted={statusCard.isDelisted}
                   canToggleStore={canOperateStore}
                   onStoreToggle={() => handleStoreToggle({ isDelisted })}
                   onManualLockChange={(enabled) => {

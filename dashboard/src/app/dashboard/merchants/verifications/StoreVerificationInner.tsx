@@ -70,6 +70,7 @@ import {
   STORE_VERIFICATIONS_PATH,
   parseStoreVerificationStepParam,
 } from "@/lib/merchants/store-verification-path";
+import { isStoreDelisted } from "@/lib/merchants/store-delist";
 import { useStoreVerificationLiveSync } from "@/hooks/useStoreVerificationLiveSync";
 
 /** Console: filter `profile-media-gallery` (development-only). */
@@ -650,6 +651,7 @@ interface StoreDetail {
   created_at?: string | null;
   current_onboarding_step?: number | null;
   onboarding_completed?: boolean | null;
+  delisted_at?: string | null;
 }
 
 interface VerificationDataStore {
@@ -4872,6 +4874,7 @@ export function StoreVerificationInner({
             created_at: data.store.created_at ?? null,
             current_onboarding_step: data.store.current_onboarding_step ?? null,
             onboarding_completed: data.store.onboarding_completed ?? false,
+            delisted_at: data.store.delisted_at ?? null,
           });
         } else {
           setError("Store not found");
@@ -5619,7 +5622,7 @@ export function StoreVerificationInner({
   const isApproved = statusUpper === "APPROVED";
   const isRejectedLike =
     statusUpper === "REJECTED" || statusUpper === "BLOCKED" || statusUpper === "SUSPENDED";
-  const isDelisted = statusUpper === "DELISTED";
+  const isDelisted = isStoreDelisted(store);
   // Onboarding verify, rejected-store override, or approved-store doc/step re-verify (admin deep link).
   const canVerify =
     !isDelisted &&

@@ -106,7 +106,7 @@ describe("Merchant app review login bypass (REVIEW_LOGIN_*)", () => {
 
   it("SECURITY: the fixed OTP never applies to any other phone number", () => {
     const svc = createPartnerReviewLoginService(merchantOn());
-    for (const other of ["+919876543210", "9876543210", "7367878980", "+917367878982", ""]) {
+    for (const other of ["+919876543210", "9876543210", "7367878980", "+917367878982", "", "9997367878981"]) {
       assert.equal(svc.isReviewLogin(other), false, `${other} must use the normal SMS flow`);
     }
   });
@@ -189,6 +189,8 @@ describe("matchReviewBypass (what the OTP route uses)", () => {
     assert.equal(matchReviewBypass(all, "+917367878981")?.app, "partner");
     assert.equal(matchReviewBypass(all, CUSTOMER_PHONE)?.app, "customer");
     assert.equal(matchReviewBypass(all, "+919876543210"), null, "normal user → real SMS");
+    assert.equal(matchReviewBypass(all, CUSTOMER_PHONE, "merchant"), null);
+    assert.equal(matchReviewBypass(all, MERCHANT_PHONE, "merchant")?.app, "partner");
   });
 
   it("returns null for every phone when both bypasses are disabled", () => {
@@ -218,7 +220,7 @@ describe("logging", () => {
     );
   });
 
-  it("masks all but the trailing 4 digits and never logs the OTP", () => {
+  it("masks the subscriber as 736*****981 and never logs the OTP", () => {
     const seen: Record<string, unknown>[] = [];
     const log = { info: (o: Record<string, unknown>) => seen.push(o) };
     const svc = createPartnerReviewLoginService(merchantOn());
@@ -230,11 +232,11 @@ describe("logging", () => {
     });
     assert.equal(seen.length, 1);
     const rec = seen[0]!;
-    assert.equal(rec.phoneTail, "8981");
+    assert.equal(rec.phone, "736*****981");
     assert.equal(rec.surface, "partner");
     // No appType passed here → falls back to the bypass surface.
     assert.equal(rec.appType, "partner");
-    assert.equal(rec.event, "review_login_bypass");
+    assert.equal(rec.event, "REVIEW_LOGIN_BYPASS_USED");
     const serialised = JSON.stringify(rec);
     assert.equal(serialised.includes(MERCHANT_OTP), false, "OTP must never be logged");
     assert.equal(serialised.includes("7367878981"), false, "full phone must never be logged");
@@ -247,11 +249,16 @@ describe("internals", () => {
     assert.equal(__test.digitsOnly(undefined), "");
   });
 
-  it("phonesEqual needs a full aligned 10-digit tail", () => {
+  it("phonesEqual is exact after canonicalization (not last-10 of a longer number)", () => {
     assert.equal(__test.phonesEqual("+917367878981", "7367878981"), true);
     assert.equal(__test.phonesEqual("7367878981", "7367878980"), false);
     assert.equal(__test.phonesEqual("878981", "878981"), false, "short values must not match");
     assert.equal(__test.phonesEqual("", "7367878981"), false);
+    assert.equal(
+      __test.phonesEqual("9997367878981", "7367878981"),
+      false,
+      "must not match a 10-digit tail of a longer unrelated number",
+    );
   });
 
   it("otpsEqual is length-safe and constant-time for equal lengths", () => {
@@ -290,6 +297,35 @@ describe("isReviewOtpOnForeignPhone (defense-in-depth)", () => {
       } as Partial<Env>),
     );
     assert.equal(isReviewOtpOnForeignPhone(all, "+919876543210", "123456"), false);
+  });
+
+  it("shared 123456 across merchant+customer does NOT reject the merchant review number", () => {
+    const all = createReviewBypasses(
+      makeEnv({
+        REVIEW_LOGIN_BYPASS_ENABLED: true,
+        REVIEW_LOGIN_PHONE: MERCHANT_PHONE,
+        REVIEW_LOGIN_FIXED_OTP: MERCHANT_OTP,
+        GOOGLE_REVIEW_MODE: true,
+        GOOGLE_REVIEW_PHONE: "+919999999999",
+        GOOGLE_REVIEW_OTP: MERCHANT_OTP,
+      } as Partial<Env>),
+    );
+    assert.equal(
+      isReviewOtpOnForeignPhone(all, "+917367878981", MERCHANT_OTP, "merchant"),
+      false,
+      "merchant review phone + its own OTP must be allowed even if customer uses the same digits",
+    );
+    assert.equal(
+      isReviewOtpOnForeignPhone(all, "+917367878982", MERCHANT_OTP, "merchant"),
+      true,
+      "a different merchant number must not use the review OTP as a global code",
+    );
+    assert.equal(
+      matchReviewBypass(all, "+919999999999", "merchant"),
+      null,
+      "customer review phone must not trigger the merchant bypass",
+    );
+    assert.equal(matchReviewBypass(all, "+917367878981", "merchant")?.app, "partner");
   });
 });
 
@@ -352,7 +388,7 @@ describe("Rider app review login bypass (RIDER_REVIEW_LOGIN_*, its own number 91
     const rec = seen[0]!;
     assert.equal(rec.surface, "rider");
     assert.equal(rec.appType, "rider");
-    assert.equal(rec.phoneTail, "4305");
+    assert.equal(rec.phone, "911*****305");
     const s = JSON.stringify(rec);
     assert.equal(s.includes(RIDER_OTP), false, "OTP must never be logged");
     assert.equal(s.includes(RIDER_PHONE), false, "full phone must never be logged");

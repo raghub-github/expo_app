@@ -27,6 +27,7 @@ type StoreItem = {
   full_address: string | null;
   store_phones: string[] | null;
   approval_status: string | null;
+  delisted_at?: string | null;
   is_active: boolean | null;
   banner_url?: string | null;
   current_onboarding_step?: number | null;

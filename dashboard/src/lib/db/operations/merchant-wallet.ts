@@ -10,7 +10,7 @@ import type {
   ReconciliationReport,
   PayoutResult,
 } from "@gatimitra/contracts";
-import { roundMoney, WALLET_CONSTANTS, idempotencyKey } from "@gatimitra/contracts";
+import { roundMoney, WALLET_CONSTANTS, idempotencyKey, computeMerchantWithdrawalBuckets } from "@gatimitra/contracts";
 import { enrichWalletSummary } from "@/lib/payment/wallet-summary-enrichment";
 import { getPaymentPayoutQuote } from "@/lib/payment/payout-quote";
 import { getSql } from "../client";
@@ -66,23 +66,28 @@ export async function getWalletSummary(storeId: number): Promise<WalletSummary> 
     else if (at >= yesterdayStart && at < todayStart) yesterdayEarning += amt;
   }
   let pendingWithdrawalTotal = 0;
+  let inProcessWithdrawalTotal = 0;
   try {
     const payoutRows = await sql`
-      SELECT COALESCE(SUM(net_payout_amount), 0) AS total
+      SELECT net_payout_amount, status
       FROM merchant_payout_requests WHERE wallet_id = ${walletId} AND status IN ('PENDING', 'APPROVED', 'PROCESSING')
     `;
-    pendingWithdrawalTotal = Number((payoutRows[0] as any)?.total ?? 0);
-  } catch {
-    try {
-      const payoutRows = await sql`
-        SELECT COALESCE(SUM(amount), 0) AS total
-        FROM merchant_payout_requests WHERE wallet_id = ${walletId} AND status IN ('PENDING', 'APPROVED', 'PROCESSING')
-      `;
-      pendingWithdrawalTotal = Number((payoutRows[0] as any)?.total ?? 0);
-    } catch {
-      pendingWithdrawalTotal = 0;
+    for (const row of payoutRows as any[]) {
+      const amt = Number(row.net_payout_amount ?? row.amount ?? 0);
+      const st = String(row.status ?? "").toUpperCase();
+      if (st === "PENDING") pendingWithdrawalTotal += amt;
+      else if (st === "APPROVED" || st === "PROCESSING") inProcessWithdrawalTotal += amt;
     }
+  } catch {
+    pendingWithdrawalTotal = 0;
+    inProcessWithdrawalTotal = 0;
   }
+  const buckets = computeMerchantWithdrawalBuckets({
+    available_balance: Number(wr.available_balance ?? 0),
+    hold_balance: Number(wr.hold_balance ?? 0),
+    pending_withdrawal_total: pendingWithdrawalTotal,
+    in_process_withdrawal_total: inProcessWithdrawalTotal,
+  });
   const base: WalletSummary = {
     wallet_id: walletId,
     available_balance: roundMoney(Number(wr.available_balance ?? 0)),
@@ -100,7 +105,9 @@ export async function getWalletSummary(storeId: number): Promise<WalletSummary> 
     status: String(wr.status ?? "ACTIVE") as WalletSummary["status"],
     today_earning: roundMoney(todayEarning),
     yesterday_earning: roundMoney(yesterdayEarning),
-    pending_withdrawal_total: roundMoney(pendingWithdrawalTotal),
+    pending_withdrawal_total: buckets.pending_withdrawal_total,
+    in_process_withdrawal_total: buckets.in_process_withdrawal_total,
+    withdrawable_balance: buckets.withdrawable_balance,
   };
   return enrichWalletSummary(sql, walletId, base);
 }
@@ -228,6 +235,29 @@ export async function createWithdrawalRequest(
   }
 
   const walletId = await getOrCreateWalletId(storeId);
+  const recentDuplicate = await sql`
+    SELECT id, amount, commission_percentage, commission_amount, net_payout_amount, status, hold_ledger_id
+    FROM merchant_payout_requests
+    WHERE wallet_id = ${walletId}
+      AND bank_account_id = ${bankAccountId}
+      AND status IN ('PENDING', 'APPROVED', 'PROCESSING')
+      AND ABS(amount - ${amount}) < 0.009
+      AND requested_at > NOW() - INTERVAL '5 minutes'
+    ORDER BY id DESC
+    LIMIT 1
+  `;
+  if (recentDuplicate.length > 0) {
+    const pr = recentDuplicate[0] as any;
+    return {
+      payout_request_id: Number(pr.id),
+      amount: Number(pr.amount),
+      commission_percentage: Number(pr.commission_percentage ?? 0),
+      commission_amount: Number(pr.commission_amount ?? 0),
+      net_payout_amount: Number(pr.net_payout_amount ?? pr.amount),
+      status: String(pr.status) as PayoutResult["status"],
+      hold_ledger_id: pr.hold_ledger_id != null ? Number(pr.hold_ledger_id) : null,
+    };
+  }
   const pendingRows = await sql`
     SELECT COUNT(*)::int AS cnt FROM merchant_payout_requests
     WHERE wallet_id = ${walletId} AND status IN ('PENDING', 'APPROVED', 'PROCESSING')
@@ -237,17 +267,53 @@ export async function createWithdrawalRequest(
     throw new Error(`Maximum ${WALLET_CONSTANTS.MAX_PENDING_WITHDRAWALS} pending withdrawals allowed`);
   }
 
-  const bankCheck = await sql`
-    SELECT id FROM merchant_store_bank_accounts WHERE id = ${bankAccountId} AND store_id = ${storeId} LIMIT 1
-  `;
-  if (bankCheck.length === 0) throw new Error("Invalid bank account");
+  let bank: {
+    is_active?: boolean;
+    is_disabled?: boolean;
+    is_verified?: boolean;
+    verification_status?: string;
+    upi_verified?: boolean;
+  } | undefined;
+  try {
+    const bankCheck = await sql`
+      SELECT id, is_active, is_disabled, is_verified, verification_status, upi_verified
+      FROM merchant_store_bank_accounts
+      WHERE id = ${bankAccountId} AND store_id = ${storeId}
+      LIMIT 1
+    `;
+    bank = bankCheck[0] as typeof bank;
+    if (bankCheck.length === 0) throw new Error("Invalid bank account");
+  } catch (err) {
+    if (err instanceof Error && err.message === "Invalid bank account") throw err;
+    const fallback = await sql`
+      SELECT id FROM merchant_store_bank_accounts WHERE id = ${bankAccountId} AND store_id = ${storeId} LIMIT 1
+    `;
+    if (fallback.length === 0) throw new Error("Invalid bank account");
+    bank = undefined;
+  }
+  if (bank) {
+    if (bank.is_disabled === true) throw new Error("Bank account is disabled");
+    if (bank.is_active === false) throw new Error("Bank account is not active");
+    const vs = String(bank.verification_status ?? "").trim().toLowerCase();
+    const verified = bank.is_verified === true || vs === "verified" || bank.upi_verified === true;
+    if (!verified) {
+      throw new Error("Bank account is not verified. Verify the account before withdrawing.");
+    }
+  }
 
-  const holdKey = idempotencyKey("payout_hold", walletId, Date.now());
+  const holdKey = idempotencyKey(
+    "payout_hold",
+    walletId,
+    bankAccountId,
+    Math.round(amount * 100),
+    Math.floor(Date.now() / 120_000),
+  );
   let holdLedgerId = 0;
+  let created: Record<string, unknown> | undefined;
   try {
     await sql.begin(async (tx) => {
       const [locked] = await tx`
-        SELECT status, frozen_reason
+        SELECT status, frozen_reason, available_balance, hold_balance
         FROM merchant_wallet
         WHERE id = ${walletId}
         FOR UPDATE
@@ -268,6 +334,26 @@ export async function createWithdrawalRequest(
         );
       }
 
+      const [activePayouts] = await tx`
+        SELECT
+          COALESCE(SUM(CASE WHEN status = 'PENDING' THEN net_payout_amount ELSE 0 END), 0) AS pending,
+          COALESCE(SUM(CASE WHEN status IN ('APPROVED', 'PROCESSING') THEN net_payout_amount ELSE 0 END), 0) AS in_process
+        FROM merchant_payout_requests
+        WHERE wallet_id = ${walletId}
+          AND status IN ('PENDING', 'APPROVED', 'PROCESSING')
+      `;
+      const buckets = computeMerchantWithdrawalBuckets({
+        available_balance: Number((locked as { available_balance?: unknown })?.available_balance ?? 0),
+        hold_balance: Number((locked as { hold_balance?: unknown })?.hold_balance ?? 0),
+        pending_withdrawal_total: Number((activePayouts as { pending?: unknown })?.pending ?? 0),
+        in_process_withdrawal_total: Number((activePayouts as { in_process?: unknown })?.in_process ?? 0),
+      });
+      if (amount > buckets.withdrawable_balance + 0.009) {
+        throw new Error(
+          `Insufficient withdrawable balance. Available to withdraw: ₹${buckets.withdrawable_balance.toFixed(2)}`,
+        );
+      }
+
       const [holdResult] = await tx`
         SELECT merchant_wallet_debit(
           ${walletId}, ${amount}, ${"HOLD_LOCK"}, ${"AVAILABLE"},
@@ -284,6 +370,19 @@ export async function createWithdrawalRequest(
           ${"Withdrawal hold (hold bucket)"}, ${JSON.stringify({ hold_debit_ledger_id: holdLedgerId })}::jsonb
         )
       `;
+
+      const [payoutRow] = await tx`
+        INSERT INTO merchant_payout_requests (
+          wallet_id, amount, status,
+          commission_percentage, commission_amount, net_payout_amount,
+          bank_account_id, hold_ledger_id
+        ) VALUES (
+          ${walletId}, ${amount}, 'PENDING',
+          ${quote.commission_percentage}, ${quote.commission_amount}, ${quote.net_payout_amount},
+          ${bankAccountId}, ${holdLedgerId}
+        ) RETURNING id, amount, commission_percentage, commission_amount, net_payout_amount, status
+      `;
+      created = payoutRow as Record<string, unknown>;
     });
   } catch (err) {
     if ((err as { code?: string })?.code === "WALLET_FROZEN") throw err;
@@ -296,25 +395,14 @@ export async function createWithdrawalRequest(
     throw err;
   }
 
-  const [payoutRow] = await sql`
-    INSERT INTO merchant_payout_requests (
-      wallet_id, amount, status,
-      commission_percentage, commission_amount, net_payout_amount,
-      bank_account_id, hold_ledger_id
-    ) VALUES (
-      ${walletId}, ${amount}, 'PENDING',
-      ${quote.commission_percentage}, ${quote.commission_amount}, ${quote.net_payout_amount},
-      ${bankAccountId}, ${holdLedgerId}
-    ) RETURNING id, amount, commission_percentage, commission_amount, net_payout_amount, status
-  `;
-  const pr = payoutRow as Record<string, unknown>;
+  if (!created) throw new Error("Failed to create payout request");
   return {
-    payout_request_id: Number(pr.id),
-    amount: Number(pr.amount),
-    commission_percentage: Number(pr.commission_percentage),
-    commission_amount: Number(pr.commission_amount),
-    net_payout_amount: Number(pr.net_payout_amount),
-    status: String(pr.status) as PayoutResult["status"],
+    payout_request_id: Number(created.id),
+    amount: Number(created.amount),
+    commission_percentage: Number(created.commission_percentage),
+    commission_amount: Number(created.commission_amount),
+    net_payout_amount: Number(created.net_payout_amount),
+    status: String(created.status) as PayoutResult["status"],
     hold_ledger_id: holdLedgerId,
   };
 }

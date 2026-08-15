@@ -22,7 +22,6 @@ import { loadInbox, markReadRemote, type InboxItem } from "@gatimitra/expo-push-
 import { getConfig } from "@/config/env";
 import { readMerchantAccessToken } from "@/lib/merchantSessionStorage";
 import {
-  addDismissedCampaignId,
   addDismissedCampaignIds,
   readDismissedCampaignIds,
 } from "@/lib/dismissedCampaignNotifications";
@@ -279,9 +278,18 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
         readDismissedCampaignIds(),
       ]);
       dismissedCampaignIdsRef.current = dismissedCampaignIds;
-      const storeRows = list.map(mapRowToNotification);
+      const storeRows = list
+        .map(mapRowToNotification)
+        .filter((n) => {
+          const fp = `fp:${n.title.trim().toLowerCase()}|${n.body.trim().toLowerCase().slice(0, 120)}`;
+          return !dismissedCampaignIds.has(fp);
+        });
       // Campaign rows have no server-side delete, so honour local dismissals.
-      const visibleCampaign = campaign.filter((n) => !dismissedCampaignIds.has(n.id));
+      const visibleCampaign = campaign.filter((n) => {
+        if (dismissedCampaignIds.has(n.id)) return false;
+        const fp = `fp:${n.title.trim().toLowerCase()}|${n.body.trim().toLowerCase().slice(0, 120)}`;
+        return !dismissedCampaignIds.has(fp);
+      });
       // Campaign / announcement rows first, then live store notifications.
       setNotifications(mergeNotificationFeed([...visibleCampaign, ...storeRows]));
     } catch {
@@ -311,6 +319,8 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
       const nid = String(notice.notificationId ?? "").trim();
       const id = nid ? `campaign:${nid}` : `push:${title}|${body}`.slice(0, 160);
       if (dismissedCampaignIdsRef.current.has(id)) return;
+      const fp = `fp:${title.toLowerCase()}|${body.toLowerCase().slice(0, 120)}`;
+      if (dismissedCampaignIdsRef.current.has(fp)) return;
 
       const code = String(notice.templateCode ?? "").toUpperCase();
       const type: NotificationType =
@@ -433,32 +443,48 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
 
   const removeNotification = useCallback(
     async (id: string) => {
-      setNotifications((prev) => prev.filter((n) => n.id !== id));
-      if (id.startsWith("campaign:")) {
-        // Campaign inbox rows are audit logs — persist the dismissal so the
-        // next inbox fetch does not bring the row back.
-        dismissedCampaignIdsRef.current.add(id);
-        await addDismissedCampaignId(id);
-        return;
-      }
+      const target = notifications.find((n) => n.id === id);
+      const fp =
+        target != null
+          ? `${target.title.trim().toLowerCase()}|${target.body.trim().toLowerCase().slice(0, 120)}`
+          : "";
+      const twins = fp
+        ? notifications.filter(
+            (n) =>
+              n.id === id ||
+              `${n.title.trim().toLowerCase()}|${n.body.trim().toLowerCase().slice(0, 120)}` === fp
+          )
+        : notifications.filter((n) => n.id === id);
+      const twinIds = new Set(twins.map((n) => n.id));
+      setNotifications((prev) => prev.filter((n) => !twinIds.has(n.id)));
+
+      const campaignIds = twins.filter((n) => n.id.startsWith("campaign:")).map((n) => n.id);
+      if (fp) campaignIds.push(`fp:${fp}`);
+      for (const cid of campaignIds) dismissedCampaignIdsRef.current.add(cid);
+      if (campaignIds.length > 0) await addDismissedCampaignIds(campaignIds);
+
       if (token && storeId) {
+        const storeIds = twins.filter((n) => !n.id.startsWith("campaign:")).map((n) => n.id);
         try {
-          await deleteStoreNotification(storeId, id, token);
+          await Promise.all(storeIds.map((sid) => deleteStoreNotification(storeId, sid, token)));
         } catch {
           void fetchNotifications({ silent: true });
         }
       }
     },
-    [token, storeId, fetchNotifications]
+    [notifications, token, storeId, fetchNotifications]
   );
 
   const clearAllNotifications = useCallback(async () => {
     const campaignIds = notifications
       .filter((n) => n.id.startsWith("campaign:"))
       .map((n) => n.id);
+    const fingerprints = notifications.map(
+      (n) => `fp:${n.title.trim().toLowerCase()}|${n.body.trim().toLowerCase().slice(0, 120)}`
+    );
     setNotifications([]);
-    for (const id of campaignIds) dismissedCampaignIdsRef.current.add(id);
-    await addDismissedCampaignIds(campaignIds);
+    for (const id of [...campaignIds, ...fingerprints]) dismissedCampaignIdsRef.current.add(id);
+    await addDismissedCampaignIds([...campaignIds, ...fingerprints]);
 
     if (token && storeId) {
       try {

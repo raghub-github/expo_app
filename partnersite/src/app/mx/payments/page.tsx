@@ -65,6 +65,7 @@ import { PaymentsOverviewCharts } from '@/components/payments/PaymentsOverviewCh
 import { toast } from 'sonner'
 import { MobileHamburgerButton } from '@/components/MobileHamburgerButton'
 import { useHydrated } from '@/hooks/useHydrated'
+import { usePartnerWalletFreezeState } from '@/lib/merchant-wallet-freeze-overlay'
 
 export const dynamic = 'force-dynamic'
 
@@ -259,10 +260,18 @@ function PaymentsContent() {
   )
   const ledgerTotal = ledgerData?.total ?? 0
   const withdrawableBalance = getWithdrawableBalance(wallet as WalletSummary | undefined)
+  const liveFreeze = usePartnerWalletFreezeState(storeId)
   const walletFrozen = Boolean(
-    wallet?.isFrozen || String(wallet?.status ?? '').toUpperCase() === 'FROZEN'
+    liveFreeze?.isFrozen ??
+      (wallet?.isFrozen || String(wallet?.status ?? '').toUpperCase() === 'FROZEN'),
   )
-  const freezeReason = wallet?.freezeReason ?? null
+  const freezeReason = walletFrozen
+    ? (liveFreeze?.isFrozen ? liveFreeze.freezeReason : null) ?? wallet?.freezeReason ?? null
+    : null
+  useEffect(() => {
+    if (!walletFrozen) return
+    setShowWithdrawal(false)
+  }, [walletFrozen])
   const maxWithdrawalLimit = getMaxWithdrawalLimit(withdrawableBalance)
   const withdrawalInputEnabled = maxWithdrawalLimit >= MIN_WITHDRAWAL && !isWithdrawing && !walletFrozen
 
@@ -392,13 +401,13 @@ function PaymentsContent() {
       return
     }
     const amount = parseFloat(withdrawalAmount)
-    if (!storeId || isNaN(amount) || amount < 100) {
-      toast.error('Enter a valid amount (min ₹100)')
+    if (!storeId || isNaN(amount) || amount < MIN_WITHDRAWAL) {
+      toast.error(`Enter a valid amount (min ₹${MIN_WITHDRAWAL})`)
       return
     }
-    const available = wallet?.withdrawable_balance ?? wallet?.available_balance ?? 0
-    if (available < 100) {
-      toast.error('Available balance is below the minimum withdrawal (₹100).')
+    const available = getWithdrawableBalance(wallet as WalletSummary | undefined)
+    if (available < MIN_WITHDRAWAL) {
+      toast.error(`Available balance is below the minimum withdrawal (₹${MIN_WITHDRAWAL}).`)
       return
     }
     if (amount > maxWithdrawalLimit) {
@@ -894,12 +903,20 @@ function PaymentsContent() {
 
           <div className="px-4 sm:px-6 lg:px-8 py-4 max-w-7xl mx-auto w-full space-y-3">
             {walletFrozen ? (
-              <div className="rounded-lg border-2 border-red-200 bg-red-50 p-3">
-                <p className="text-sm font-semibold text-red-800">Wallet Frozen</p>
-                <p className="text-xs text-red-700 mt-0.5">Withdrawals are currently disabled.</p>
-                {freezeReason ? (
-                  <p className="text-xs text-red-800 mt-1 font-medium">Reason: {freezeReason}</p>
-                ) : null}
+              <div className="overflow-hidden rounded-lg border border-red-200 bg-red-50 py-2" role="status">
+                <div className="flex w-max animate-store-closed-marquee whitespace-nowrap">
+                  {[0, 1].map((copy) => (
+                    <span
+                      key={copy}
+                      className="shrink-0 whitespace-nowrap px-6 text-sm font-semibold text-red-800"
+                      aria-hidden={copy === 1}
+                    >
+                      Wallet Frozen · Withdrawals are currently disabled.
+                      {freezeReason ? ` Reason: ${freezeReason}` : ''}
+                      {' · '}
+                    </span>
+                  ))}
+                </div>
               </div>
             ) : null}
             {/* Wallet summary cards */}
@@ -913,7 +930,7 @@ function PaymentsContent() {
                       <div className="h-7 w-20 mt-1.5 bg-gray-200 rounded animate-pulse" />
                     ) : (
                       <p className="text-xl font-bold text-gray-900 mt-1">
-                        {formatInr(wallet?.withdrawable_balance ?? wallet?.available_balance ?? 0)}
+                        {formatInr(withdrawableBalance)}
                       </p>
                     )}
                   </div>

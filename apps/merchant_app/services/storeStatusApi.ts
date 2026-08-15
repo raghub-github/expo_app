@@ -104,6 +104,8 @@ export type StoreStatus = {
   next_open_iso?: string | null;
   /** When true, hide schedule countdown (store inside hours but held closed — dashboard / Partner parity). */
   within_hours_but_restricted?: boolean;
+  is_delisted?: boolean;
+  approval_status?: string | null;
 };
 
 export type WeeklyDay = {
@@ -347,6 +349,14 @@ async function fetchStoreStatusOnce(storeIdNum: number, tokenStr: string): Promi
   }
 
   const withinHoursButRestricted = data?.within_hours_but_restricted === true;
+  const isDelisted =
+    data?.is_delisted === true ||
+    (data?.delisted_at != null && String(data.delisted_at).trim() !== "") ||
+    String(data?.approval_status ?? "").toUpperCase() === "DELISTED";
+  const approvalStatus =
+    typeof data?.approval_status === "string" && String(data.approval_status).trim()
+      ? String(data.approval_status).trim().toUpperCase()
+      : null;
   const lastToggleType =
     typeof (data as any)?.last_toggle_type === "string" ? String((data as any).last_toggle_type).trim() || null : null;
   const lastToggledAt =
@@ -360,7 +370,9 @@ async function fetchStoreStatusOnce(storeIdNum: number, tokenStr: string): Promi
 
   return {
     store_id: Number(data.store_id ?? storeIdNum),
-    is_open: data.is_open === true,
+    is_open: data.is_open === true && !isDelisted,
+    is_delisted: isDelisted,
+    approval_status: approvalStatus,
     operational_status:
       typeof data.operational_status === "string" ? data.operational_status.trim().toUpperCase() : null,
     within_operating_hours: data.within_operating_hours === true,
@@ -452,6 +464,12 @@ export async function updateStoreStatus(
       if (errCode === "outside_operating_hours") {
         const e = new Error(msg);
         (e as Error & { code?: string }).code = "outside_operating_hours";
+        throw e;
+      }
+      const nestedCode = typeof err?.code === "string" ? err.code.trim() : "";
+      if (errCode === "STORE_DELISTED" || nestedCode === "STORE_DELISTED") {
+        const e = new Error(msg);
+        (e as Error & { code?: string }).code = "STORE_DELISTED";
         throw e;
       }
       throw new Error(msg);

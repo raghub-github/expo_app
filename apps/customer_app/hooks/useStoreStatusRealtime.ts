@@ -39,6 +39,8 @@ type RealtimePayloadRow = {
   is_available?: boolean | null;
   is_accepting_orders?: boolean | null;
   operational_status?: string | null;
+  approval_status?: string | null;
+  status?: string | null;
   next_open_at?: string | null;
   next_close_at?: string | null;
   live_schedule_phase?: string | null;
@@ -94,6 +96,23 @@ function patchMerchantListCaches(
   return touched;
 }
 
+/** Drop a delisted/inactive store from Home + Search lists immediately. */
+function removeMerchantFromListCaches(queryClient: QueryClient, publicStoreId: string): boolean {
+  let touched = false;
+  const apply = (old: unknown): unknown => {
+    if (!Array.isArray(old)) return old;
+    const next = (old as MerchantSummary[]).filter((m) => String(m.id) !== publicStoreId);
+    if (next.length !== (old as MerchantSummary[]).length) {
+      touched = true;
+      return next;
+    }
+    return old;
+  };
+  queryClient.setQueriesData({ queryKey: ["merchants"] }, apply);
+  queryClient.setQueriesData({ queryKey: ["search"] }, apply);
+  return touched;
+}
+
 export function useStoreStatusRealtime() {
   const setStatus = useStoreStatusStore((s) => s.setStatus);
   const queryClient = useQueryClient();
@@ -130,7 +149,16 @@ export function useStoreStatusRealtime() {
                 : "";
           if (!publicStoreId) return;
 
-          const liveStatus: LiveStatus = computeLiveStatusFromRow({
+          const approval = String(row.approval_status ?? "").toUpperCase();
+          const rowStatus = String(row.status ?? "").toUpperCase();
+          const hiddenFromCustomers =
+            approval === "DELISTED" ||
+            rowStatus === "INACTIVE" ||
+            rowStatus === "DELISTED";
+
+          const liveStatus: LiveStatus = hiddenFromCustomers
+            ? "CLOSED"
+            : computeLiveStatusFromRow({
             is_active: row.is_active,
             is_available: row.is_available,
             is_accepting_orders: row.is_accepting_orders,
@@ -145,6 +173,16 @@ export function useStoreStatusRealtime() {
 
           const prevStatus = useStoreStatusStore.getState().getStatus(publicStoreId);
           setStatus(publicStoreId, liveStatus);
+
+          if (hiddenFromCustomers) {
+            removeMerchantFromListCaches(queryClient, publicStoreId);
+            void queryClient.invalidateQueries({ queryKey: ["merchants"] });
+            void queryClient.invalidateQueries({ queryKey: ["search"] });
+            void queryClient.invalidateQueries({ queryKey: ["food-home"] });
+            void queryClient.removeQueries({
+              queryKey: MERCHANT_DETAIL_QUERY_KEY(publicStoreId),
+            });
+          }
 
           const sig = scheduleSignature(liveStatus, nextOpenAt, nextCloseAt, phase);
           const prevSig = lastScheduleSigByStoreId.get(publicStoreId);

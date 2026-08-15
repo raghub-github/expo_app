@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
-import { roundMoney } from '@/lib/wallet-types';
+import { roundMoney, computeMerchantWithdrawalBuckets } from '@/lib/wallet-types';
 import { withRouteTimeout, RouteTimeoutError } from '@/lib/route-timeout';
 import { backfillMissingDeliveredOrderCredits, backfillMissingCancelledOrderLedger } from '@/lib/backfill-merchant-wallet-credits';
 import { latestRunningBalanceFromLedgerRows } from '@/lib/merchant-wallet-ledger-display';
+import { fetchMerchantWalletFromEngine } from '@/lib/merchant-withdrawal-engine-client';
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder.supabase.co";
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "placeholder-service-role-key";
@@ -43,6 +44,17 @@ export async function GET(req: NextRequest) {
     const merchantStoreId = await resolveStoreInternalId(db, storeId.trim());
     if (merchantStoreId === null) {
       return NextResponse.json({ error: 'Store not found' }, { status: 404 });
+    }
+
+    const engineWallet = await fetchMerchantWalletFromEngine(merchantStoreId, { lite, reconcile });
+    if (engineWallet) {
+      const summary = { ...engineWallet };
+      delete summary.success;
+      return NextResponse.json({
+        success: true,
+        store_id: storeId,
+        ...summary,
+      });
     }
 
     // Backfill runs in the background — never block the read path (scheduled worker also heals drift).
@@ -236,13 +248,11 @@ export async function GET(req: NextRequest) {
       .gte('created_at', yesterdayStart.toISOString())
       .lt('created_at', todayEnd.toISOString());
 
-    const payoutsPromise = lite
-      ? Promise.resolve({ data: null as { net_payout_amount: unknown; status: unknown }[] | null })
-      : db
-          .from('merchant_payout_requests')
-          .select('net_payout_amount, status')
-          .eq('wallet_id', walletId)
-          .in('status', ['PENDING', 'APPROVED', 'PROCESSING']);
+    const payoutsPromise = db
+      .from('merchant_payout_requests')
+      .select('net_payout_amount, status')
+      .eq('wallet_id', walletId)
+      .in('status', ['PENDING', 'APPROVED', 'PROCESSING']);
 
     const [{ data: ledgerRows }, { data: payoutRows }] = await Promise.all([
       earningsPromise,
@@ -257,7 +267,7 @@ export async function GET(req: NextRequest) {
       else if (at >= yesterdayStart && at < todayStart) yesterday_earning += amt;
     });
 
-    if (!lite && payoutRows) {
+    if (payoutRows) {
       payoutRows.forEach((row) => {
         const amt = Number(row.net_payout_amount ?? 0);
         const st = String(row.status ?? '').toUpperCase();
@@ -266,7 +276,15 @@ export async function GET(req: NextRequest) {
       });
     }
 
-    const withdrawable_balance = roundMoney(available_balance);
+    const buckets = computeMerchantWithdrawalBuckets({
+      available_balance,
+      hold_balance,
+      pending_withdrawal_total,
+      in_process_withdrawal_total,
+    });
+    const withdrawable_balance = buckets.withdrawable_balance;
+    pending_withdrawal_total = buckets.pending_withdrawal_total;
+    in_process_withdrawal_total = buckets.in_process_withdrawal_total;
     const total_balance = roundMoney(available_balance + hold_balance + pending_balance);
 
     if (!lite && total_earned <= 0) {

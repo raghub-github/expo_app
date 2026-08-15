@@ -21,6 +21,7 @@ import {
   matchReviewBypass,
   otpsEqual,
   isReviewOtpOnForeignPhone,
+  maskReviewPhone,
   __test as reviewModeTest,
 } from "./reviewMode.js";
 import { verifyFirebaseIdToken } from "./firebaseAdmin.js";
@@ -239,10 +240,23 @@ async function persistMerchantDeviceSessionForMerchant(
  */
 export async function authRoutes(app: FastifyInstance) {
   const env = getEnv();
-  // Two independent store-review bypasses (customer app + merchant app). The
-  // OTP request body carries no appType, so the phone number is the
-  // discriminator — each bypass owns a distinct, separately-configured number.
   const reviewBypasses = createReviewBypasses(env);
+  const merchantReview = reviewBypasses.find((s) => s.app === "partner");
+  if (merchantReview?.isArmed()) {
+    app.log.info(
+      {
+        event: "REVIEW_LOGIN_BYPASS_ARMED",
+        environment: env.NODE_ENV,
+        phone: maskReviewPhone(env.REVIEW_LOGIN_PHONE),
+      },
+      "[ReviewMode] merchant review login bypass is armed",
+    );
+  } else {
+    app.log.info(
+      { event: "REVIEW_LOGIN_BYPASS_OFF", environment: env.NODE_ENV },
+      "[ReviewMode] merchant review login bypass is off",
+    );
+  }
 
   // In-memory OTP store. Production should prefer Redis; semantics are the same.
   // `isReview` marks entries seeded by a review bypass — verify re-checks phone
@@ -609,7 +623,7 @@ export async function authRoutes(app: FastifyInstance) {
       // SMS path. The OTP is stored in the SAME otpStore with the SAME shape
       // so /otp/verify sees no difference. Checked BEFORE the merchant-existence
       // gate below so the review number never needs a registered account.
-      const requestBypass = matchReviewBypass(reviewBypasses, phoneE164);
+      const requestBypass = matchReviewBypass(reviewBypasses, phoneE164, appType);
       if (requestBypass) {
         const otp = requestBypass.getReviewOtp();
         otpStore.set(requestId, {
@@ -841,8 +855,10 @@ export async function authRoutes(app: FastifyInstance) {
         return reply.code(429).send({ error: "too_many_attempts" });
       }
 
-      // Defense: review fixed OTP must never unlock a non-review phone.
-      if (isReviewOtpOnForeignPhone(reviewBypasses, phoneE164, otp)) {
+      // Defense: this app's review OTP must never unlock a non-review phone.
+      // Scoped by appType so a shared digit string (customer + merchant both
+      // 123456) cannot reject the merchant review number as "foreign".
+      if (isReviewOtpOnForeignPhone(reviewBypasses, phoneE164, otp, appType)) {
         req.log?.warn?.(
           { requestId, appType, phoneTail },
           "[OTP] Verify rejected — review OTP used on non-review phone",
@@ -851,7 +867,7 @@ export async function authRoutes(app: FastifyInstance) {
       }
 
       // Review-seeded entries must still bind to an armed review phone.
-      const verifyBypass = matchReviewBypass(reviewBypasses, phoneE164);
+      const verifyBypass = matchReviewBypass(reviewBypasses, phoneE164, appType);
       if (entry.isReview) {
         if (!verifyBypass) {
           otpStore.delete(requestId);

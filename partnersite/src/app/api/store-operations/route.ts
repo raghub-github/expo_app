@@ -36,6 +36,7 @@ import { fetchPartnerStoreStatusSnapshot } from '@/lib/fetchPartnerStoreStatusSn
 import { resetPartnerNotificationsPanelCleared } from '@/lib/partner-notifications-panel';
 import { syncOperationalStatusFromSchedule, type AvailabilityRow } from '@/lib/storeScheduleSync';
 import { triggerStoreScheduleTick } from '@/lib/triggerStoreScheduleTick';
+import { isStoreDelisted } from '@/lib/store-delist';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
@@ -97,7 +98,9 @@ function effectiveOpenFromMerchantStoreRow(storeRow: MerchantStoreGateRow | null
   if (!storeRow) return 'CLOSED';
   const approval = String(storeRow.approval_status || '').toUpperCase();
   const rawOperational = String(storeRow.operational_status || 'CLOSED').toUpperCase();
-  const isDelisted = approval === 'DELISTED';
+  const isDelisted =
+    approval === 'DELISTED' ||
+    (storeRow.delisted_at != null && String(storeRow.delisted_at).trim() !== '');
   const ok =
     !isDelisted &&
     approval === 'APPROVED' &&
@@ -229,12 +232,23 @@ export async function GET(req: NextRequest) {
     if (!storeInternalId) return NextResponse.json({ error: 'Store not found' }, { status: 404 });
 
     await ensureAvailabilityRow(db, storeInternalId);
-    let authoritative = await fetchPartnerStoreStatusSnapshot(storeInternalId);
+
+    const { data: storePeek } = await db
+      .from('merchant_stores')
+      .select('delisted_at, approval_status')
+      .eq('id', storeInternalId)
+      .single();
+    const storeIsDelistedEarly = isStoreDelisted(storePeek);
+
+    let authoritative = storeIsDelistedEarly
+      ? null
+      : await fetchPartnerStoreStatusSnapshot(storeInternalId);
 
     // Backend unreachable → local schedule sync that RESPECTS manual close/lock.
     // Never call syncStoreStatusAfterOperatingHoursChange here — that clears manual holds
     // (intended only after outlet-timings edits) and was reopening stores right after close.
-    if (!authoritative) {
+    // Delisted stores stay closed — skip backend snapshot + heal (those GETs were 5–16s each).
+    if (!authoritative && !storeIsDelistedEarly) {
       try {
         const { data: storeForSync } = await db
           .from('merchant_stores')
@@ -383,6 +397,7 @@ export async function GET(req: NextRequest) {
     // Allow heal when unavailable_reason is still "manual_close" but until has elapsed —
     // otherwise partnersite stays on Reopens in 00:00:00 until a full page refresh.
     if (
+      !storeIsDelistedEarly &&
       withinHoursLocal &&
       displayOperational === 'CLOSED' &&
       !localManualHoldActive &&
@@ -639,10 +654,22 @@ export async function GET(req: NextRequest) {
       timezone: storeTz,
     });
 
+    const storeIsDelisted = Boolean(
+      storeIsDelistedEarly ||
+      (authoritative as { is_delisted?: boolean } | null)?.is_delisted === true ||
+        isStoreDelisted({
+          approval_status:
+            authoritative?.approval_status ??
+            (storeGated as MerchantStoreGateRow | null)?.approval_status ??
+            null,
+          delisted_at: (storeGated as MerchantStoreGateRow | null)?.delisted_at ?? null,
+        })
+    );
+
     const responseBody: Record<string, unknown> = {
       operational_status: displayOperational,
-      surface_online: surfaceOnline,
-      is_open: surfaceOnline,
+      surface_online: storeIsDelisted ? false : surfaceOnline,
+      is_open: storeIsDelisted ? false : surfaceOnline,
       live_schedule_phase: livePhase,
       live_next_open_at: liveStoreRow?.next_open_at ?? null,
       live_next_close_at: liveStoreRow?.next_close_at ?? null,
@@ -657,12 +684,14 @@ export async function GET(req: NextRequest) {
       license_expired_documents: licenseStatus.expired,
       license_pending_verification: licenseStatus.pending_verification,
       approval_status: authoritative?.approval_status ?? (storeGated as MerchantStoreGateRow | null)?.approval_status ?? null,
+      is_delisted: storeIsDelisted,
+      delisted_at: (storeGated as MerchantStoreGateRow | null)?.delisted_at ?? null,
       is_active: authoritative?.is_active ?? (storeGated as MerchantStoreGateRow | null)?.is_active ?? null,
       is_accepting_orders: displayOperational === 'OPEN',
       is_available: authoritative?.is_available ?? (storeGated as MerchantStoreGateRow | null)?.is_available ?? null,
       manual_close_until: manualCloseUntil ? manualCloseUntil.toISOString() : null,
       close_reason: closeReasonForClient,
-      opens_at,
+      opens_at: storeIsDelisted ? null : opens_at,
       auto_open_from_schedule: authoritative?.auto_open_from_schedule
         ?? isAutoOpenFromScheduleEnabled(rawAvail?.auto_open_from_schedule ?? avail?.auto_open_from_schedule),
       block_auto_open: blockAutoOpen,
@@ -688,10 +717,10 @@ export async function GET(req: NextRequest) {
       schedule_end_prompt_expires_at: scheduleEndPromptExpiresAt
         ? scheduleEndPromptExpiresAt.toISOString()
         : null,
-      next_schedule_transition_at: nextScheduleTransitionAt,
-      countdown_at: scheduleCountdown.at,
-      countdown_kind: scheduleCountdown.kind,
-      countdown_wall_label: scheduleCountdown.wallLabel,
+      next_schedule_transition_at: storeIsDelisted ? null : nextScheduleTransitionAt,
+      countdown_at: storeIsDelisted ? null : scheduleCountdown.at,
+      countdown_kind: storeIsDelisted ? null : scheduleCountdown.kind,
+      countdown_wall_label: storeIsDelisted ? null : scheduleCountdown.wallLabel,
       scheduled_time_offs: scheduledTimeOffs,
       active_rush: activeRush,
     };
@@ -881,6 +910,25 @@ export async function POST(req: NextRequest) {
     }
 
     if (action === 'manual_open') {
+      const { data: storeForDelist } = await db
+        .from('merchant_stores')
+        .select('approval_status, delisted_at')
+        .eq('id', storeInternalId)
+        .maybeSingle();
+      const approval = String((storeForDelist as { approval_status?: string } | null)?.approval_status || '').toUpperCase();
+      const delistedAt = (storeForDelist as { delisted_at?: string | null } | null)?.delisted_at;
+      if (approval === 'DELISTED' || (delistedAt != null && String(delistedAt).trim() !== '')) {
+        return NextResponse.json(
+          {
+            success: false,
+            error:
+              'This store is delisted. You cannot turn it online until GatiMitra relists it. Please contact support.',
+            code: 'STORE_DELISTED',
+          },
+          { status: 403 }
+        );
+      }
+
       const licenseStatus = await loadMerchantLicenseEvaluation(db, storeInternalId);
       if (licenseStatus.blocked) {
         const pending = licenseStatus.pending_verification.length > 0;

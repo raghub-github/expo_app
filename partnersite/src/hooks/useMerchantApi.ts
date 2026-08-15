@@ -10,7 +10,8 @@ import {
 import { merchantKeys } from '@/lib/query-keys';
 import { mapPayoutSettlementApiResponse } from '@/lib/merchant-payout-utils';
 import { isValidPartnerStoreId } from '@/lib/partner-store-id-shared';
-import { readDashboardWalletCache, writeDashboardWalletCache } from '@/lib/partner-dashboard-cache';
+import { readDashboardWalletCache, writeDashboardWalletCache, clearDashboardWalletCache } from '@/lib/partner-dashboard-cache';
+import { applyPartnerWalletFreezeOverlay } from '@/lib/merchant-wallet-freeze-overlay';
 import { usePartnerMerchantQueriesEnabled } from '@/context/MerchantSessionContext';
 import {
   waitForPartnerSessionBackgroundRefresh,
@@ -42,6 +43,12 @@ export interface WalletSummary {
   isFrozen?: boolean;
   freezeReason?: string | null;
   frozenAt?: string | null;
+  held_balance?: number;
+  pending_withdrawal?: number;
+  processing_withdrawal?: number;
+  paid_amount?: number;
+  failed_amount?: number;
+  withdrawal_allowed?: boolean;
 }
 
 export type WalletAnalyticsPeriod = 'week' | 'month' | 'quarter';
@@ -153,6 +160,9 @@ export interface StoreOperationsData {
   countdown_kind?: string | null;
   countdown_wall_label?: string | null;
   close_reason?: string | null;
+  unavailable_reason?: string | null;
+  is_delisted?: boolean;
+  delisted_at?: string | null;
   manual_close_until?: string | null;
   license_blocked?: boolean;
   approval_status?: string | null;
@@ -185,7 +195,7 @@ async function fetchWallet(storeId: string, options?: { lite?: boolean }): Promi
   );
   const data = await res.json();
   if (data.error) throw new Error(data.error);
-  return {
+  const mapped: WalletSummary = {
     available_balance: data.available_balance ?? 0,
     locked_balance: 0,
     withdrawable_balance: data.withdrawable_balance ?? data.available_balance ?? 0,
@@ -198,13 +208,20 @@ async function fetchWallet(storeId: string, options?: { lite?: boolean }): Promi
     yesterday_earning: data.yesterday_earning ?? 0,
     total_earned: data.total_earned ?? 0,
     total_withdrawn: data.total_withdrawn ?? 0,
-    pending_withdrawal_total: data.pending_withdrawal_total ?? 0,
-    in_process_withdrawal_total: data.in_process_withdrawal_total ?? 0,
+    pending_withdrawal_total: data.pending_withdrawal_total ?? data.pending_withdrawal ?? 0,
+    in_process_withdrawal_total: data.in_process_withdrawal_total ?? data.processing_withdrawal ?? 0,
     status: data.status,
-    isFrozen: data.isFrozen === true || String(data.status ?? "").toUpperCase() === "FROZEN",
+    isFrozen: data.isFrozen === true || data.is_frozen === true || String(data.status ?? "").toUpperCase() === "FROZEN",
     freezeReason: data.freezeReason ?? null,
     frozenAt: data.frozenAt ?? null,
+    held_balance: data.held_balance ?? data.hold_balance ?? 0,
+    pending_withdrawal: data.pending_withdrawal ?? data.pending_withdrawal_total ?? 0,
+    processing_withdrawal: data.processing_withdrawal ?? data.in_process_withdrawal_total ?? 0,
+    paid_amount: data.paid_amount ?? data.total_withdrawn ?? 0,
+    failed_amount: data.failed_amount ?? 0,
+    withdrawal_allowed: data.withdrawal_allowed !== false && !(data.isFrozen === true || data.is_frozen === true),
   };
+  return applyPartnerWalletFreezeOverlay(storeId, mapped);
 }
 
 async function fetchWalletAnalytics(
@@ -341,22 +358,32 @@ async function fetchBankAccounts(storeId: string): Promise<BankAccount[]> {
   }));
 }
 
+const STORE_OPS_STALE_MS = 15 * 1000;
+const storeOpsInflight = new Map<string, Promise<StoreOperationsData>>();
+
 export async function fetchStoreOperations(storeId: string): Promise<StoreOperationsData> {
-  // Cache-bust + no-store: countdown→open must not reuse a stale GET from before the slot start.
-  const url = `/api/store-operations?store_id=${encodeURIComponent(storeId)}&_=${Date.now()}`;
-  const res = await fetch(url, {
-    credentials: 'include',
-    cache: 'no-store',
+  const existing = storeOpsInflight.get(storeId);
+  if (existing) return existing;
+  const pending = (async () => {
+    const url = `/api/store-operations?store_id=${encodeURIComponent(storeId)}`;
+    const res = await fetch(url, {
+      credentials: 'include',
+      cache: 'no-store',
+    });
+    let data: StoreOperationsData & { error?: string };
+    try {
+      data = (await res.json()) as StoreOperationsData & { error?: string };
+    } catch {
+      throw new Error('Network error — could not load store operations');
+    }
+    if (!res.ok) throw new Error(data.error ?? 'Failed to fetch store operations');
+    writeStoreOperationsCache(storeId, data);
+    return data;
+  })().finally(() => {
+    if (storeOpsInflight.get(storeId) === pending) storeOpsInflight.delete(storeId);
   });
-  let data: StoreOperationsData & { error?: string };
-  try {
-    data = (await res.json()) as StoreOperationsData & { error?: string };
-  } catch {
-    throw new Error('Network error — could not load store operations');
-  }
-  if (!res.ok) throw new Error(data.error ?? 'Failed to fetch store operations');
-  writeStoreOperationsCache(storeId, data);
-  return data;
+  storeOpsInflight.set(storeId, pending);
+  return pending;
 }
 
 async function fetchStoreSettings(storeId: string): Promise<StoreSettingsData> {
@@ -398,7 +425,7 @@ export async function fetchSelfDeliveryRiders(storeId: string): Promise<SelfDeli
 /** Wallet summary; shared cache between dashboard and payments. */
 export function useMerchantWallet(
   storeId: string | null,
-  options?: { enabled?: boolean; lite?: boolean },
+  options?: { enabled?: boolean; lite?: boolean; live?: boolean },
 ) {
   const authReady = usePartnerMerchantQueriesEnabled(storeId);
   const enabled = (options?.enabled ?? true) && authReady;
@@ -413,11 +440,14 @@ export function useMerchantWallet(
       return data;
     },
     enabled,
-    staleTime: 30 * 1000,
-    gcTime: 30 * 60 * 1000,
-    placeholderData: cached ?? keepPreviousData,
+    staleTime: 5 * 1000,
+    gcTime: 5 * 60 * 1000,
+    placeholderData: cached
+      ? applyPartnerWalletFreezeOverlay(storeId!, cached)
+      : keepPreviousData,
     refetchOnMount: 'always',
-    refetchOnWindowFocus: false,
+    refetchOnWindowFocus: true,
+    refetchInterval: options?.live ? 2000 : false,
   });
 }
 
@@ -526,10 +556,11 @@ export function useStoreOperations(
     queryFn: () => fetchStoreOperations(storeId!),
     enabled,
     // Live open/close must pick up schedule boundaries within seconds, not minutes.
-    staleTime: 15 * 1000,
+    staleTime: STORE_OPS_STALE_MS,
     gcTime: 20 * 60 * 1000,
     placeholderData: cached ?? keepPreviousData,
-    refetchOnMount: 'always',
+    refetchOnMount: true,
+    refetchOnWindowFocus: false,
     refetchInterval: options?.refetchInterval ?? false,
   });
 }
@@ -587,6 +618,7 @@ export function usePayoutRequestMutation() {
       return data;
     },
     onSuccess: (_, variables) => {
+      clearDashboardWalletCache(variables.storeId);
       queryClient.invalidateQueries({ queryKey: merchantKeys.wallet(variables.storeId) });
       queryClient.invalidateQueries({ queryKey: [...merchantKeys.all, 'ledger', variables.storeId] });
       queryClient.invalidateQueries({

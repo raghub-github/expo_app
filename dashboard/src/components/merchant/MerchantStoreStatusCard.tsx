@@ -40,6 +40,7 @@ export type MerchantStoreStatusCardProps = {
   manualLockSubtext?: string;
   showScheduledOffStartsCountdown?: boolean;
   scheduledOffStartsInMs?: number | null;
+  isDelisted?: boolean;
   onManualLockChange: (enabled: boolean) => void;
   onStoreToggle: () => void;
   /** When false, power/lock stay visible but disabled (view-only — partnersite layout). */
@@ -80,6 +81,7 @@ export function MerchantStoreStatusCard({
   manualLockSubtext,
   showScheduledOffStartsCountdown = false,
   scheduledOffStartsInMs = null,
+  isDelisted = false,
   onManualLockChange,
   onStoreToggle,
   canToggleStore = true,
@@ -253,10 +255,18 @@ export function MerchantStoreStatusCard({
             </div>
           </div>
         )}
-        {!isTodayScheduledClosed && scheduleStatusLabel && !isStoreOpen && schedulePhase !== "BREAK" && (
+        {!isTodayScheduledClosed && scheduleStatusLabel && !isStoreOpen && schedulePhase !== "BREAK" && !isDelisted && (
           <p className="text-[10px] font-medium text-slate-500">{scheduleStatusLabel}</p>
         )}
-        {showScheduleCountdown &&
+        {isDelisted ? (
+          <div className="rounded-lg bg-red-50/90 px-2.5 py-2 ring-1 ring-red-200/80">
+            <p className="text-[11px] font-semibold text-red-800 leading-snug">
+              Delisted — this store stays closed until GatiMitra relists it.
+            </p>
+          </div>
+        ) : null}
+        {!isDelisted &&
+          showScheduleCountdown &&
           activeCountdownAt &&
           (() => {
             void countdownTick;
@@ -292,13 +302,13 @@ export function MerchantStoreStatusCard({
               </div>
             );
           })()}
-        {!isStoreOpen && closeReasonDisplay && (
+        {!isDelisted && !isStoreOpen && closeReasonDisplay && (
           <p className="text-[11px] text-slate-600 leading-snug line-clamp-3" title={closeReasonDisplay}>
             <span className="font-semibold text-slate-700">Close reason: </span>
             {closeReasonDisplay}
           </p>
         )}
-        {(lastToggledByName || lastToggleBy || lastToggleType) && lastToggledAt && (
+        {!isDelisted && (lastToggledByName || lastToggleBy || lastToggleType) && lastToggledAt && (
           <div className="rounded-lg bg-slate-50/90 px-2.5 py-2 ring-1 ring-slate-200/70">
             <p className="text-[9px] font-medium uppercase tracking-wide text-slate-500 mb-0.5">
               Last activity
@@ -338,7 +348,7 @@ export function MerchantStoreStatusCard({
         )}
       </div>
 
-      {canToggleStore && storeInternalId && onOperationsRefresh ? (
+      {canToggleStore && !isDelisted && storeInternalId && onOperationsRefresh ? (
         <MerchantStoreScheduleActions storeId={storeInternalId} onRefresh={onOperationsRefresh} />
       ) : null}
 

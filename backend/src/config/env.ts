@@ -390,7 +390,12 @@ const EnvSchema = z.object({
    * `REVIEW_LOGIN_PHONE`, so it cannot authenticate any other number.
    */
   REVIEW_LOGIN_BYPASS_ENABLED: z.preprocess(
-    (v) => v === true || v === "true" || v === "1",
+    (v) => {
+      if (v === true || v === 1) return true;
+      if (typeof v !== "string") return false;
+      const s = v.trim().toLowerCase();
+      return s === "true" || s === "1";
+    },
     z.boolean()
   ).default(false),
   REVIEW_LOGIN_PHONE: z.preprocess(emptyToUndefined, z.string().min(10).max(20).optional()),
