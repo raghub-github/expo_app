@@ -118,6 +118,10 @@ interface WalletSummary {
   total_withdrawn: number
   pending_withdrawal_total: number
   in_process_withdrawal_total: number
+  status?: string
+  isFrozen?: boolean
+  freezeReason?: string | null
+  frozenAt?: string | null
 }
 
 interface OrderDetailItem {
@@ -255,10 +259,22 @@ function PaymentsContent() {
   )
   const ledgerTotal = ledgerData?.total ?? 0
   const withdrawableBalance = getWithdrawableBalance(wallet as WalletSummary | undefined)
+  const walletFrozen = Boolean(
+    wallet?.isFrozen || String(wallet?.status ?? '').toUpperCase() === 'FROZEN'
+  )
+  const freezeReason = wallet?.freezeReason ?? null
   const maxWithdrawalLimit = getMaxWithdrawalLimit(withdrawableBalance)
-  const withdrawalInputEnabled = maxWithdrawalLimit >= MIN_WITHDRAWAL && !isWithdrawing
+  const withdrawalInputEnabled = maxWithdrawalLimit >= MIN_WITHDRAWAL && !isWithdrawing && !walletFrozen
 
   const openWithdrawalSheet = () => {
+    if (walletFrozen) {
+      toast.error(
+        freezeReason
+          ? `Withdrawals are currently disabled. Reason: ${freezeReason}`
+          : 'Withdrawals are currently disabled.',
+      )
+      return
+    }
     const limit = getMaxWithdrawalLimit(getWithdrawableBalance(wallet as WalletSummary | undefined))
     if (limit >= MIN_WITHDRAWAL) {
       setWithdrawalAmount(formatWithdrawalInputAmount(limit))
@@ -367,6 +383,14 @@ function PaymentsContent() {
   }
 
   const handleWithdrawal = async () => {
+    if (walletFrozen) {
+      toast.error(
+        freezeReason
+          ? `Withdrawals are currently disabled. Reason: ${freezeReason}`
+          : 'Withdrawals are currently disabled.',
+      )
+      return
+    }
     const amount = parseFloat(withdrawalAmount)
     if (!storeId || isNaN(amount) || amount < 100) {
       toast.error('Enter a valid amount (min ₹100)')
@@ -858,16 +882,26 @@ function PaymentsContent() {
                 </button>
                 <button
                   onClick={openWithdrawalSheet}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-medium bg-emerald-600 text-white hover:bg-emerald-700 shadow-sm transition-colors text-sm"
+                  disabled={walletFrozen}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-medium bg-emerald-600 text-white hover:bg-emerald-700 shadow-sm transition-colors text-sm disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-emerald-600"
                 >
                   <ArrowDownToLine size={16} />
-                  Withdraw
+                  {walletFrozen ? 'Wallet Frozen' : 'Withdraw'}
                 </button>
               </div>
             </div>
           </div>
 
           <div className="px-4 sm:px-6 lg:px-8 py-4 max-w-7xl mx-auto w-full space-y-3">
+            {walletFrozen ? (
+              <div className="rounded-lg border-2 border-red-200 bg-red-50 p-3">
+                <p className="text-sm font-semibold text-red-800">Wallet Frozen</p>
+                <p className="text-xs text-red-700 mt-0.5">Withdrawals are currently disabled.</p>
+                {freezeReason ? (
+                  <p className="text-xs text-red-800 mt-1 font-medium">Reason: {freezeReason}</p>
+                ) : null}
+              </div>
+            ) : null}
             {/* Wallet summary cards */}
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-3">
               {/* Withdrawable - Primary Card */}
@@ -1104,15 +1138,24 @@ function PaymentsContent() {
                 <div className="grid grid-cols-1 gap-2">
                   <button
                     onClick={openWithdrawalSheet}
-                    className="flex items-center justify-between p-3 rounded-lg hover:bg-gray-50 transition-colors group"
+                    disabled={walletFrozen}
+                    className="flex items-center justify-between p-3 rounded-lg hover:bg-gray-50 transition-colors group disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     <div className="flex items-center gap-3">
                       <div className="p-2 rounded-lg bg-emerald-100 group-hover:bg-emerald-200 transition-colors">
                         <ArrowDownToLine size={16} className="text-emerald-600" />
                       </div>
                       <div className="text-left">
-                        <p className="font-medium text-gray-900 text-xs">Withdraw Earnings</p>
-                        <p className="text-[10px] text-gray-600">Transfer your earnings to bank account</p>
+                        <p className="font-medium text-gray-900 text-xs">
+                          {walletFrozen ? 'Wallet Frozen' : 'Withdraw Earnings'}
+                        </p>
+                        <p className="text-[10px] text-gray-600">
+                          {walletFrozen
+                            ? freezeReason
+                              ? `Reason: ${freezeReason}`
+                              : 'Withdrawals are currently disabled.'
+                            : 'Transfer your earnings to bank account'}
+                        </p>
                       </div>
                     </div>
                     <ChevronRight size={14} className="text-gray-400 flex-shrink-0" />

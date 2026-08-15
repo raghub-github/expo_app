@@ -29,7 +29,6 @@ import {
   storeDescriptionLength,
   storeDescriptionValidationMessage,
 } from "@/lib/store-description";
-
 const StoreLocationMapboxGL = dynamic(() => import("@/components/StoreLocationMapboxGL"), { ssr: false });
 const STEP1_FIELD_CLASS =
   "w-full px-3.5 py-3 text-sm border border-slate-200/90 rounded-xl bg-white shadow-[0_1px_2px_rgba(15,23,42,0.05)] focus:outline-none focus:ring-2 focus:ring-indigo-500/25 focus:border-indigo-400 hover:border-indigo-200 transition-all";
@@ -2489,6 +2488,22 @@ export function AddChildStoreClient() {
                             <option value="OTHERS">Others</option>
                           </select>
                         </div>
+                        {storeType === "OTHERS" ? (
+                          <div>
+                            <label className={STEP1_LABEL_CLASS}>Custom Store Type *</label>
+                            <input
+                              type="text"
+                              value={customStoreType}
+                              onChange={(e) => setCustomStoreType(e.target.value)}
+                              className="w-full px-3.5 py-3 text-sm border-2 border-indigo-200 rounded-xl bg-white shadow-[0_1px_2px_rgba(15,23,42,0.05)] focus:outline-none focus:ring-2 focus:ring-indigo-500/25 focus:border-indigo-400 transition-all"
+                              placeholder="Please specify your store type (e.g., Clothing Store, Electronics, etc.)"
+                              required
+                            />
+                            <p className="text-xs text-slate-500 mt-1">
+                              Please specify what type of store you are registering
+                            </p>
+                          </div>
+                        ) : null}
                         <div>
                           <label className={STEP1_LABEL_CLASS}>Store Email *</label>
                           <input
@@ -2498,26 +2513,11 @@ export function AddChildStoreClient() {
                             className={STEP1_FIELD_CLASS}
                             placeholder="store@example.com"
                             required
+                            autoComplete="email"
+                            suppressHydrationWarning
                           />
                         </div>
                       </div>
-
-                      {storeType === "OTHERS" && (
-                        <div>
-                          <label className={STEP1_LABEL_CLASS}>Custom Store Type *</label>
-                          <input
-                            type="text"
-                            value={customStoreType}
-                            onChange={(e) => setCustomStoreType(e.target.value)}
-                            className="w-full px-3.5 py-3 text-sm border-2 border-indigo-200 rounded-xl bg-white shadow-[0_1px_2px_rgba(15,23,42,0.05)] focus:outline-none focus:ring-2 focus:ring-indigo-500/25 focus:border-indigo-400 transition-all"
-                            placeholder="Please specify your store type (e.g., Clothing Store, Electronics, etc.)"
-                            required
-                          />
-                          <p className="text-xs text-slate-500 mt-1">
-                            Please specify what type of store you are registering
-                          </p>
-                        </div>
-                      )}
 
                       <div className="grid grid-cols-1 lg:grid-cols-2 gap-x-5 gap-y-4 sm:gap-y-5">
                         <div className="flex flex-col">

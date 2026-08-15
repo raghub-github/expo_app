@@ -49,8 +49,10 @@ const patchSchema = z.object({
   reward_enabled: z.boolean().optional(),
   customer_referral_enabled: z.boolean().optional(),
   rider_referral_enabled: z.boolean().optional(),
+  merchant_referral_enabled: z.boolean().optional(),
   customer_reward_enabled: z.boolean().optional(),
   rider_reward_enabled: z.boolean().optional(),
+  merchant_reward_enabled: z.boolean().optional(),
   auto_apply_enabled: z.boolean().optional(),
   require_kyc: z.boolean().optional(),
   first_order_only: z.boolean().optional(),
@@ -66,6 +68,15 @@ const patchSchema = z.object({
   reward_claim_window_days: z.number().int().positive().max(3650).optional(),
   code_prefix_customer: z.string().min(1).max(16).optional(),
   code_prefix_rider: z.string().min(1).max(16).optional(),
+  code_prefix_merchant: z.string().min(1).max(16).optional(),
+  reward_mode: z.enum(["incremental", "highest_only"]).optional(),
+  referral_expiry_enabled: z.boolean().optional(),
+  max_successful_referrals: z.number().int().nonnegative().nullable().optional(),
+  campaign_budget: z.number().nonnegative().nullable().optional(),
+  merchant_qualification_scope: z
+    .enum(["ALL_CHILD_STORES", "SINGLE_STORE", "SELECTED_STORES"])
+    .optional(),
+  merchant_qualification_store_ids: z.array(z.number().int().positive()).optional(),
   reason: z.string().max(500).optional(),
 });
 

@@ -2075,13 +2075,10 @@ export async function deleteItemImage(
         SET is_primary = true, updated_at = NOW()
         WHERE id = ${(nextPrimary as any).id}
       `;
-      const modStatus = String((nextPrimary as any).moderation_status ?? "PENDING").toUpperCase();
-      const itemStatus = modStatus === "APPROVED" || modStatus === "REJECTED" ? modStatus : "PENDING";
+      const nextUrl = String((nextPrimary as any).image_url ?? "").trim() || null;
       await sql`
         UPDATE merchant_menu_items
-        SET item_image_url = ${(nextPrimary as any).image_url},
-            approval_status = ${itemStatus}::merchant_menu_item_approval_status,
-            rejection_reason = ${itemStatus === "REJECTED" ? (nextPrimary as any).rejection_reason : null},
+        SET item_image_url = ${nextUrl},
             updated_at = NOW()
         WHERE id = ${menuItemId} AND store_id = ${storeIdNum}
       `;
@@ -2089,10 +2086,6 @@ export async function deleteItemImage(
       await sql`
         UPDATE merchant_menu_items
         SET item_image_url = NULL,
-            approval_status = 'PENDING'::merchant_menu_item_approval_status,
-            rejection_reason = NULL,
-            approved_at = NULL,
-            approved_by = NULL,
             updated_at = NOW()
         WHERE id = ${menuItemId} AND store_id = ${storeIdNum}
       `;

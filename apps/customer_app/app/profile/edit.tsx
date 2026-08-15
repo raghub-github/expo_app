@@ -11,6 +11,8 @@ import { useRouter } from "expo-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Ionicons } from "@expo/vector-icons";
 import { profileService, GENDERS, AGE_GROUPS, type Gender } from "@/services/profile.service";
+import { referralService } from "@/services/referral.service";
+import { REFERRAL_CODE_UNAVAILABLE_USER_MESSAGE } from "@/lib/referralCopy";
 
 const PROFILE_GENDERS = GENDERS.filter((g) => g.value !== "others");
 const BG = "#F0F4F3";
@@ -45,6 +47,12 @@ export default function EditProfileScreen() {
     queryFn: () => profileService.getProfile(),
     retry: false,
   });
+  const { data: referralConfig } = useQuery({
+    queryKey: ["referral", "config", "customer"],
+    queryFn: () => referralService.getConfig(),
+    retry: false,
+  });
+  const customerReferralOn = referralConfig?.referralEnabled === true;
 
   useEffect(() => {
     if (profile) {
@@ -77,12 +85,26 @@ export default function EditProfileScreen() {
     if (!validate() || submitting) return;
     setSubmitting(true);
     try {
+      let referredBy: string | undefined = customerReferralOn ? referralId.trim() || undefined : undefined;
+      if (referredBy) {
+        const preview = await referralService.preview(referredBy);
+        if (!preview.ok) {
+          setErrors({
+            referral:
+              preview.userMessage ||
+              preview.message ||
+              "Invalid referral code. Please check the code and try again.",
+          });
+          return;
+        }
+        referredBy = (preview.code || referredBy).toUpperCase();
+      }
       await profileService.updateProfile({
         full_name: fullName.trim(),
         ...(isEmailVerified ? {} : { email: email.trim().toLowerCase() }),
         age_group: ageGroup || undefined,
         gender: gender || undefined,
-        referred_by: referralId.trim() || undefined,
+        referred_by: referredBy,
         address_line1: addressLine1.trim() || undefined,
         address_line2: addressLine2.trim() || undefined,
         city: city.trim() || undefined,
@@ -188,15 +210,29 @@ export default function EditProfileScreen() {
           ))}
         </View>
 
+        {referralConfig && !customerReferralOn ? (
+          <>
+            <AppText style={styles.label}>Referral ID (optional)</AppText>
+            <AppText style={styles.verifiedHint}>{REFERRAL_CODE_UNAVAILABLE_USER_MESSAGE}</AppText>
+          </>
+        ) : (
+          <>
         <AppText style={styles.label}>Referral ID (optional)</AppText>
         <TextInput
           style={styles.input}
           placeholder="Referral code"
           placeholderTextColor={PLACEHOLDER}
           value={referralId}
-          onChangeText={setReferralId}
+          onChangeText={(v) => {
+            setReferralId(v);
+            if (errors.referral) setErrors((e) => ({ ...e, referral: "" }));
+          }}
+          autoCapitalize="characters"
           editable={!submitting}
         />
+        {errors.referral ? <AppText style={styles.errorText}>{errors.referral}</AppText> : null}
+          </>
+        )}
 
         <AppText style={styles.sectionTitle}>Address (optional)</AppText>
         <AppText style={styles.label}>Address line 1</AppText>

@@ -14,7 +14,6 @@ import { useRiderBankPaymentMethod } from "@/src/hooks/useRiderBankAccount";
 import {
   EarningsAddAccountFooter,
   EARNINGS_ADD_ACCOUNT_FOOTER_HEIGHT,
-  MIN_WITHDRAWAL_BALANCE,
 } from "@/src/components/earnings/EarningsAddAccountFooter";
 import { useEarningsBankSheetStore } from "@/src/stores/earningsBankSheetStore";
 import { EarningsWithdrawalModal } from "@/src/components/earnings/EarningsWithdrawalModal";
@@ -36,8 +35,9 @@ export default function EarningsScreen() {
 
   useFocusEffect(
     useCallback(() => {
+      void refetch();
       void refetchBankAccount();
-    }, [refetchBankAccount]),
+    }, [refetch, refetchBankAccount]),
   );
 
   if (isError && !earnings) {
@@ -75,6 +75,24 @@ export default function EarningsScreen() {
             </Text>
             <Text style={styles.balanceHint}>{t("earnings.availableForWithdrawal")}</Text>
           </View>
+
+          {display.isFrozen ? (
+            <View style={styles.frozenBanner}>
+              <Text style={styles.frozenTitle}>
+                {t("earnings.walletFrozenTitle", "Wallet Frozen")}
+              </Text>
+              <Text style={styles.frozenBody}>
+                {t("earnings.walletFrozen", "Withdrawals are currently disabled.")}
+              </Text>
+              {display.freezeReason ? (
+                <Text style={styles.frozenReason}>
+                  {t("earnings.walletFrozenReasonLabel", "Reason: {{reason}}", {
+                    reason: display.freezeReason,
+                  })}
+                </Text>
+              ) : null}
+            </View>
+          ) : null}
 
           {/* Shown only when the wallet is negative — read-only "Pay ₹X" (native). */}
           <NegativeWalletPayCard />
@@ -173,9 +191,14 @@ export default function EarningsScreen() {
             bankAccount={bankAccount}
             isLoading={isBankAccountLoading}
             hasBankAccount={display.hasBankAccount}
-            canWithdraw={display.totalBalance > MIN_WITHDRAWAL_BALANCE}
+            canWithdraw={Boolean(display.canWithdraw) && !display.isFrozen}
+            isFrozen={Boolean(display.isFrozen)}
+            freezeReason={display.freezeReason ?? null}
             onAddAccount={openBankSheet}
-            onRequestWithdrawal={() => setWithdrawOpen(true)}
+            onRequestWithdrawal={() => {
+              if (display.isFrozen) return;
+              setWithdrawOpen(true);
+            }}
           />
         ) : null}
 
@@ -331,6 +354,33 @@ const styles = StyleSheet.create({
   balanceHint: {
     fontSize: 13,
     color: "#FFE0D1",
+  },
+  frozenBanner: {
+    backgroundColor: "#FEF2F2",
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#FECACA",
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    marginBottom: 14,
+  },
+  frozenTitle: {
+    fontSize: 15,
+    fontWeight: "800",
+    color: "#991B1B",
+    marginBottom: 4,
+  },
+  frozenBody: {
+    fontSize: 13,
+    lineHeight: 18,
+    color: "#7F1D1D",
+  },
+  frozenReason: {
+    marginTop: 6,
+    fontSize: 13,
+    lineHeight: 18,
+    color: "#7F1D1D",
+    fontWeight: "600",
   },
   statsRow: {
     flexDirection: "row",

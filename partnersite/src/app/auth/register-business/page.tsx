@@ -22,7 +22,7 @@ function RegisterBusinessContent() {
           <h2 className="text-2xl font-extrabold text-gray-800 text-center leading-tight">Register Business / Brand</h2>
         </div>
         <ParentMerchantForm onSuccess={(data) => {
-          router.push(`/auth/register-store?parent_id=${data.parent_merchant_id || ""}`);
+          router.push("/partners/all-stores?picker=1");
         }} />
       </div>
     </div>

@@ -12,7 +12,7 @@ import {
   pickRoundRobinAssigneeForGroup,
 } from "./assignment-strategies";
 import { getTicketAutoAssignmentGate } from "./assignment-eligibility";
-import { checkAgentOpenTicketCapacity, logAssignmentSkipped } from "@/lib/tickets/agent-open-ticket-capacity";
+import { checkAgentOpenTicketCapacity, isAgentOnlineForAssignment, logAssignmentSkipped } from "@/lib/tickets/agent-open-ticket-capacity";
 import {
   actionTargetField,
   manualOverrideSkipReason,
@@ -328,6 +328,12 @@ function mapAssignmentTypeColumn(assignedByType: string): string {
   return shortened || "auto_unknown";
 }
 
+function assignmentActivityLabel(assignedByType: string): string {
+  const t = assignedByType.trim().toLowerCase();
+  if (t.startsWith("automation_") || t.startsWith("auto_")) return "Auto Assigned";
+  return assignedByType;
+}
+
 async function assignToAgentId(
   sql: SqlClient,
   ticketId: number,
@@ -336,6 +342,16 @@ async function assignToAgentId(
   opts: { replaceExisting?: boolean } = {}
 ): Promise<ActionApplyResult> {
   const replaceExisting = opts.replaceExisting === true;
+  const online = await isAgentOnlineForAssignment(sql, agentId);
+  if (!online) {
+    void logAssignmentSkipped(sql, {
+      ticketId,
+      agentUserId: agentId,
+      summary: "Agent is offline or unavailable for assignment",
+      details: { assignedByType },
+    });
+    return { ok: false, detail: "Agent is offline or unavailable for assignment" };
+  }
   const cap = await checkAgentOpenTicketCapacity(sql, agentId);
   if (!cap.ok) {
     void logAssignmentSkipped(sql, {
@@ -423,7 +439,7 @@ async function assignToAgentId(
     ticket_id: ticketId,
     activity_type: "assignment",
     activity_category: "assignment",
-    activity_description: `Assigned to ${name ?? "agent"} (${assignedByType})`,
+    activity_description: `Assigned to ${name ?? "agent"} (${assignmentActivityLabel(assignedByType)})`,
     actor_type: "SYSTEM",
     actor_name: "Automation",
     assigned_to_user_id: agentId,

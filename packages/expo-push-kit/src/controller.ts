@@ -147,6 +147,10 @@ export function createPushPermissionController(
   const refreshPermissionOnly = async (): Promise<PushControllerSnapshot> => {
     emit({ loading: true, error: null });
     const perm = await readNotificationPermission();
+    log(`Notification permission: ${perm.osStatus}`, {
+      canAskAgain: perm.canAskAgain,
+      expoGo: isExpoGoRuntime(),
+    });
     emit({
       loading: false,
       osStatus: perm.osStatus,

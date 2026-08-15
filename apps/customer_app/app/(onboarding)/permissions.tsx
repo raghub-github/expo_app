@@ -103,7 +103,7 @@ export default function OnboardingPermissionsScreen() {
     const { apiBaseUrl } = getConfig();
     pushControllerRef.current = createPushPermissionController({
       apiBaseUrl,
-      androidPackageName: Constants.expoConfig?.android?.package,
+      androidPackageName: "com.gatimitra.customer",
       androidChannels: [
         { channelId: "default", name: "Orders & updates", lightColor: "#14b8a6" },
         { channelId: "customer_default", name: "Orders & updates", lightColor: "#14b8a6" },
@@ -111,6 +111,10 @@ export default function OnboardingPermissionsScreen() {
       getAuth: () => {
         if (!session?.accessToken || session.role !== "customer") return null;
         return { accessToken: session.accessToken, role: "customer" };
+      },
+      log: (message, extra) => {
+        if (extra) console.log(`[push:customer:onboarding] ${message}`, extra);
+        else console.log(`[push:customer:onboarding] ${message}`);
       },
     });
     return () => {

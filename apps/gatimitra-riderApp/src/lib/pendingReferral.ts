@@ -9,7 +9,7 @@ const KEY = "@gatimitra/pending_referral_v1";
 export type PendingReferral = {
   code: string;
   clickToken?: string | null;
-  source: "deep_link" | "play_install_referrer";
+  source: "deep_link" | "play_install_referrer" | "manual";
   savedAt: string;
 };
 

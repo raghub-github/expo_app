@@ -9,11 +9,8 @@ function getAndroidPackageName(): string {
     return "host.exp.exponent";
   }
 
-  return (
-    Constants.expoConfig?.android?.package ||
-    Constants.manifest?.android?.package ||
-    "com.gatimitra.rider"
-  );
+  // Must match Firebase google-services.json + app.config android.package.
+  return "com.gatimitra.rider";
 }
 
 async function openAndroidAppDetails(): Promise<void> {

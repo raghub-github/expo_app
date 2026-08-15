@@ -74,7 +74,6 @@ export function FoodOrdersEmptyState({ variant }: { variant: FoodOrdersEmptyVari
         <MerchantAppAssetImage
           assetKey={assetKey}
           alt={line1}
-          refresh
           className="h-auto w-full max-h-[280px] max-w-[280px] object-contain bg-transparent"
           style={{ backgroundColor: "transparent" }}
         />

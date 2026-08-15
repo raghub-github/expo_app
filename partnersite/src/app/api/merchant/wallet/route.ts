@@ -68,7 +68,7 @@ export async function GET(req: NextRequest) {
           id, available_balance, pending_balance, hold_balance, reserve_balance,
           locked_balance, pending_settlement, lifetime_credit, lifetime_debit,
           total_earned, total_withdrawn, total_penalty, total_commission_deducted, status,
-          settlement_paused
+          settlement_paused, frozen_reason, frozen_at
         `)
         .eq('merchant_store_id', merchantStoreId)
         .single();
@@ -117,6 +117,8 @@ export async function GET(req: NextRequest) {
     let total_commission_deducted = 0;
     let status = 'ACTIVE';
     let settlement_paused = false;
+    let freezeReason: string | null = null;
+    let frozenAt: string | null = null;
 
     if (wallet) {
       walletId = wallet.id as number;
@@ -133,6 +135,10 @@ export async function GET(req: NextRequest) {
       total_commission_deducted = Number(wallet.total_commission_deducted ?? 0);
       status = (wallet.status as string) ?? 'ACTIVE';
       settlement_paused = Boolean(wallet.settlement_paused);
+      freezeReason = typeof wallet.frozen_reason === 'string' && wallet.frozen_reason.trim()
+        ? wallet.frozen_reason.trim()
+        : null;
+      frozenAt = wallet.frozen_at ? String(wallet.frozen_at) : null;
     } else {
       const { data: newId, error: rpcError } = await db.rpc('get_or_create_merchant_wallet', {
         p_merchant_store_id: merchantStoreId,
@@ -156,6 +162,10 @@ export async function GET(req: NextRequest) {
         total_commission_deducted = Number(newWallet.total_commission_deducted ?? 0);
         status = (newWallet.status as string) ?? 'ACTIVE';
         settlement_paused = Boolean(newWallet.settlement_paused);
+        freezeReason = typeof newWallet.frozen_reason === 'string' && newWallet.frozen_reason.trim()
+          ? newWallet.frozen_reason.trim()
+          : null;
+        frozenAt = newWallet.frozen_at ? String(newWallet.frozen_at) : null;
       }
     }
 
@@ -297,6 +307,9 @@ export async function GET(req: NextRequest) {
       withdrawable_balance,
       total_balance,
       settlement_paused,
+      isFrozen: String(status).toUpperCase() === 'FROZEN',
+      freezeReason: String(status).toUpperCase() === 'FROZEN' ? freezeReason : null,
+      frozenAt: String(status).toUpperCase() === 'FROZEN' ? frozenAt : null,
     });
     });
   } catch (e) {

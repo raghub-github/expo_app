@@ -20,7 +20,8 @@ function resolvedUrlForItem(item: AppAssetItem | undefined): string | null {
 }
 
 export function setAppAssets(next: Record<string, AppAssetItem>) {
-  assets = next;
+  // Merge so a partial/slow refresh never blanks already-shown stage images.
+  assets = { ...assets, ...next };
   loaded = true;
   emit();
 }

@@ -106,7 +106,7 @@ installReleaseConsoleSilencer();
 
 /** Storage key used by the in-app "Configure API URL" sheet on the login screen. */
 const API_URL_OVERRIDE_KEY = "dev.apiBaseUrl";
-const SPLASH_CHROME_COLOR = "#5eead4";
+const SPLASH_CHROME_COLOR = "#14b8a6";
 
 /**
  * Perceived-luminance test so status-bar icons ALWAYS contrast with their
@@ -527,18 +527,22 @@ function PendingReferralResume() {
   useEffect(() => {
     if (!hydrated || !session?.accessToken) return;
     void (async () => {
+      const config = await referralService.getConfig().catch(() => null);
+      if (config?.referralEnabled !== true) return;
       // Prefer freshly captured Play Install Referrer, then any pending deep-link code.
       const capture = await capturePlayInstallReferrerOnce().catch(() => null);
       if (capture?.code && !capture.alreadyConsumed) {
         try {
-          await referralService.apply({
+          const result = await referralService.apply({
             referralCode: capture.code,
             playReferrer: capture.raw ?? undefined,
             source: "play_install_referrer",
             deviceFingerprint: undefined,
           });
-          await clearPendingReferral();
-          return;
+          if (result.ok || result.alreadyApplied) {
+            await clearPendingReferral();
+            return;
+          }
         } catch {
           /* fall through to pending */
         }
@@ -547,12 +551,14 @@ function PendingReferralResume() {
       const pending = await peekPendingReferral();
       if (!pending?.code) return;
       try {
-        await referralService.apply({
+        const result = await referralService.apply({
           referralCode: pending.code,
           clickToken: pending.clickToken ?? undefined,
           source: pending.source,
         });
-        await clearPendingReferral();
+        if (result.ok || result.alreadyApplied) {
+          await clearPendingReferral();
+        }
       } catch {
         /* retry on next launch */
       }

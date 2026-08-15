@@ -76,13 +76,27 @@ export async function POST(req: NextRequest) {
 
     const { data: wallet, error: walletErr } = await db
       .from('merchant_wallet')
-      .select('id, available_balance')
+      .select('id, available_balance, status, frozen_reason')
       .eq('merchant_store_id', merchantStoreId)
       .single();
     if (walletErr || !wallet) {
       return NextResponse.json({ error: 'Wallet not found' }, { status: 404 });
     }
     const walletId = wallet.id as number;
+    const walletStatus = String((wallet as { status?: unknown }).status ?? 'ACTIVE').toUpperCase();
+    const freezeReason =
+      typeof (wallet as { frozen_reason?: unknown }).frozen_reason === 'string'
+        ? String((wallet as { frozen_reason: string }).frozen_reason).trim() || null
+        : null;
+    if (walletStatus === 'FROZEN') {
+      return NextResponse.json({
+        error: freezeReason
+          ? `Withdrawals are currently disabled. Reason: ${freezeReason}`
+          : 'Withdrawals are currently disabled.',
+        code: 'WALLET_FROZEN',
+        freezeReason,
+      }, { status: 403 });
+    }
     const availableBalance = Number(wallet.available_balance ?? 0);
     if (amount > availableBalance) {
       return NextResponse.json({ error: 'Insufficient balance' }, { status: 400 });
@@ -130,6 +144,16 @@ export async function POST(req: NextRequest) {
 
     if (holdDebitErr) {
       console.error('[merchant/payout-request] hold debit failed:', holdDebitErr);
+      const msg = holdDebitErr.message || '';
+      if (/wallet not allowed to debit/i.test(msg) && /FROZEN/i.test(msg)) {
+        return NextResponse.json({
+          error: freezeReason
+            ? `Withdrawals are currently disabled. Reason: ${freezeReason}`
+            : 'Withdrawals are currently disabled.',
+          code: 'WALLET_FROZEN',
+          freezeReason,
+        }, { status: 403 });
+      }
       return NextResponse.json({ error: holdDebitErr.message || 'Insufficient balance or wallet frozen' }, { status: 400 });
     }
 

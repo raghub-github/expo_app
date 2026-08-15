@@ -22,8 +22,8 @@ module.exports = ({ config }) => ({
     ...appJson.expo,
     ...config?.expo,
     scheme: config?.expo?.scheme || appJson.expo.scheme || "gatimitra-merchant",
-    // Always use Partner Control wordmark — never onlylogo / stale adaptive crops.
-    icon: "./assets/images/splash-logo.png",
+    // Partner Control app icon (mxappicon.png — keep source resolution as-is).
+    icon: "./assets/mxappicon.png",
     splash: {
       ...(appJson.expo.splash || {}),
       image: "./assets/images/splash-logo.png",
@@ -33,7 +33,7 @@ module.exports = ({ config }) => ({
     ios: {
       ...appJson.expo.ios,
       ...config?.expo?.ios,
-      icon: "./assets/images/splash-logo.png",
+      icon: "./assets/mxappicon.png",
       infoPlist: {
         ...(appJson.expo.ios?.infoPlist || {}),
         ...(config?.expo?.ios?.infoPlist || {}),
@@ -57,13 +57,26 @@ module.exports = ({ config }) => ({
       ...appJson.expo.android,
       ...config?.expo?.android,
       package: "com.gatimitra.partner",
-      icon: "./assets/images/splash-logo.png",
+      icon: "./assets/mxappicon.png",
       adaptiveIcon: {
-        foregroundImage: "./assets/images/splash-logo.png",
-        backgroundColor: MERCHANT_SPLASH_BG,
+        foregroundImage: "./assets/mxappicon.png",
+        backgroundColor: "#0B241C",
       },
       ...(hasGoogleServices ? { googleServicesFile: "./google-services.json" } : {}),
       softwareKeyboardLayoutMode: "pan",
+      intentFilters: [
+        ...(((appJson.expo.android?.intentFilters || []) as object[])),
+        {
+          action: "VIEW",
+          autoVerify: true,
+          data: [
+            { scheme: "https", host: "partner.gatimitra.com", pathPrefix: "/merchant-ref" },
+            { scheme: "https", host: "gatimitra.com", pathPrefix: "/merchant-ref" },
+            { scheme: "gatimitra-merchant", host: "referral" },
+          ],
+          category: ["BROWSABLE", "DEFAULT"],
+        },
+      ],
     },
     plugins: [
       ...(appJson.expo.plugins || []),
@@ -134,6 +147,6 @@ module.exports = ({ config }) => ({
           undefined,
       },
     },
-    owner: "raghubhunia53s-team",
+    owner: "raghubhunia",
   },
 });

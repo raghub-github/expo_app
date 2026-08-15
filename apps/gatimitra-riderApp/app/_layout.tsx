@@ -26,6 +26,7 @@ import { useLanguageStore } from "@/src/stores/languageStore";
 import { colors } from "@/src/theme";
 import { RiderFonts } from "@/src/theme/fonts";
 import { RiderPushSetup } from "@/src/components/RiderPushSetup";
+import { RiderPendingReferralResume } from "@/src/components/RiderPendingReferralResume";
 import { RiderDispatchRealtime } from "@/src/components/RiderDispatchRealtime";
 import { RiderDispatchKeepAlive } from "@/src/components/RiderDispatchKeepAlive";
 import { PreventServicesRealtime } from "@/src/components/PreventServicesRealtime";
@@ -139,6 +140,7 @@ function RootLayoutNav() {
         <StatusBar style="dark" />
         <ThemeProvider value={colorScheme === "dark" ? DarkTheme : DefaultTheme}>
           <RiderPushSetup />
+          <RiderPendingReferralResume />
           <RiderDutyLocationPing />
           <ActiveOrderResumeBootstrap />
           <RiderDispatchKeepAlive />

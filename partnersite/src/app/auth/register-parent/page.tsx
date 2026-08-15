@@ -23,7 +23,7 @@ function RegisterParentContent() {
         <ParentMerchantForm
           verifiedPhone={phone}
           onSuccess={(data) => {
-            router.push(`/auth/register-store?parent_id=${data.parent_merchant_id || ""}`);
+            router.push("/partners/all-stores?picker=1");
           }}
         />
       </div>

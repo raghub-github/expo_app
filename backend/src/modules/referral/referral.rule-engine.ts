@@ -15,6 +15,10 @@ export type RuleEventType =
   | "ORDER_DELIVERED_COUNT"
   | "KYC_APPROVED"
   | "SIGNUP"
+  | "REGISTRATION_COMPLETED"
+  | "STORE_APPROVED"
+  | "MENU_COMPLETED"
+  | "ACTIVE_DAYS"
   | "CUSTOM";
 
 export type RuleEvaluationContext = {
@@ -55,18 +59,28 @@ function cityOk(rule: MatchedRule, cityId?: number | null): boolean {
 
 function matchesEvent(rule: MatchedRule, ctx: RuleEvaluationContext): boolean {
   const et = (rule.event_type ??
-    (rule.user_type === "customer" ? "FIRST_ORDER_DELIVERED" : "ORDER_DELIVERED_COUNT")) as RuleEventType;
+    (rule.user_type === "customer"
+      ? "FIRST_ORDER_DELIVERED"
+      : rule.user_type === "merchant"
+        ? "STORE_APPROVED"
+        : "ORDER_DELIVERED_COUNT")) as RuleEventType;
 
-  if (et !== ctx.eventType && !(et === "CUSTOM")) return false;
+  if (et !== ctx.eventType && et !== "CUSTOM") return false;
 
   if (ctx.eventType === "FIRST_ORDER_DELIVERED") {
     return ctx.completedOrders >= Math.max(1, rule.milestone_orders || 1);
   }
-  if (ctx.eventType === "ORDER_DELIVERED_COUNT") {
+  if (ctx.eventType === "ORDER_DELIVERED_COUNT" || ctx.eventType === "ACTIVE_DAYS") {
     return ctx.completedOrders >= rule.milestone_orders;
   }
-  if (ctx.eventType === "KYC_APPROVED") {
-    return Boolean(ctx.kycApproved);
+  if (
+    ctx.eventType === "KYC_APPROVED" ||
+    ctx.eventType === "STORE_APPROVED" ||
+    ctx.eventType === "MENU_COMPLETED" ||
+    ctx.eventType === "SIGNUP" ||
+    ctx.eventType === "REGISTRATION_COMPLETED"
+  ) {
+    return true;
   }
   return true;
 }
@@ -126,6 +140,10 @@ export async function loadActiveCampaignRules(
     monthly_cap_override:
       row.monthly_cap_override != null ? Number(row.monthly_cap_override) : null,
     city_ids: Array.isArray(row.city_ids) ? (row.city_ids as number[]) : [],
+    reward_mode:
+      row.reward_mode === "highest_only" || row.reward_mode === "incremental"
+        ? (row.reward_mode as "incremental" | "highest_only")
+        : null,
   }));
 }
 
@@ -134,7 +152,7 @@ export async function evaluateRules(ctx: RuleEvaluationContext): Promise<Matched
   const now = ctx.now ?? new Date();
   const rules = await loadActiveCampaignRules(ctx.userType);
 
-  return rules.filter((rule) => {
+  const matched = rules.filter((rule) => {
     if (!inWindow(rule, now)) return false;
     if (!cityOk(rule, ctx.cityId)) return false;
     if (ctx.campaignId != null && rule.campaign_id != null && rule.campaign_id !== ctx.campaignId) {
@@ -143,7 +161,9 @@ export async function evaluateRules(ctx: RuleEvaluationContext): Promise<Matched
     if (!matchesEvent(rule, ctx)) return false;
 
     const requireKyc = rule.require_kyc ?? settings.require_kyc;
-    if (requireKyc && ctx.userType === "rider" && !ctx.kycApproved) return false;
+    if (requireKyc && (ctx.userType === "rider" || ctx.userType === "merchant") && !ctx.kycApproved) {
+      return false;
+    }
 
     const minOrder = rule.min_order_amount ?? settings.min_order_amount;
     if (
@@ -157,4 +177,18 @@ export async function evaluateRules(ctx: RuleEvaluationContext): Promise<Matched
 
     return true;
   });
+
+  const countEvents = ctx.eventType === "ORDER_DELIVERED_COUNT" || ctx.eventType === "ACTIVE_DAYS";
+  if (countEvents && matched.length > 1) {
+    const highestOnly = matched.filter((rule) => {
+      const mode = rule.reward_mode ?? settings.reward_mode ?? "incremental";
+      return mode === "highest_only";
+    });
+    if (highestOnly.length === matched.length) {
+      const top = [...matched].sort((a, b) => b.milestone_orders - a.milestone_orders)[0];
+      return top ? [top] : [];
+    }
+  }
+
+  return matched;
 }

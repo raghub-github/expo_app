@@ -55,7 +55,7 @@ export async function sendParentAccountCreatedEmail(args: {
   parentMerchantId: string | null;
   parentId?: number | null;
 }): Promise<{ sent: boolean; reason?: string }> {
-  const { ownerName, ownerEmail, parentName, parentMerchantId, parentId } = args;
+  const { ownerName, ownerEmail, parentName, parentMerchantId } = args;
   const to = (ownerEmail || "").trim().toLowerCase();
   if (!to || !to.includes("@")) {
     return { sent: false, reason: "missing_email" };
@@ -70,10 +70,7 @@ export async function sendParentAccountCreatedEmail(args: {
   const safeName = (ownerName || "").toString().trim() || "Partner";
   const safeParent = (parentName || "").toString().trim() || "your business";
   const safePid = (parentMerchantId || "").toString().trim();
-  const continueUrl =
-    parentId != null
-      ? `https://partner.gatimitra.com/auth/register-store?parent_id=${encodeURIComponent(String(parentId))}&new=1`
-      : "https://partner.gatimitra.com/auth/register-store?new=1";
+  const continueUrl = "https://partner.gatimitra.com/partners/all-stores?picker=1";
 
   const textBody = [
     `Hi ${safeName},`,

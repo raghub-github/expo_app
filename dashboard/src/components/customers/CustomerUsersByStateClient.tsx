@@ -6,6 +6,7 @@ import { useQuery } from "@tanstack/react-query";
 import { ArrowLeft, MapPinned, Search, Users } from "lucide-react";
 import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
 import { queryKeys } from "@/lib/queryKeys";
+import { useAuthOptional } from "@/providers/AuthProvider";
 
 type StateRow = {
   id: string;
@@ -25,7 +26,7 @@ type UsersByStateResponse = {
   error?: string;
 };
 
-async function fetchUsersByState(): Promise<NonNullable<UsersByStateResponse["data"]>> {
+export async function fetchUsersByState(): Promise<NonNullable<UsersByStateResponse["data"]>> {
   const res = await fetch("/api/customers/users-by-state", {
     credentials: "include",
     cache: "no-store",
@@ -37,13 +38,48 @@ async function fetchUsersByState(): Promise<NonNullable<UsersByStateResponse["da
   return json.data;
 }
 
+function StatCard({
+  label,
+  value,
+  loading,
+  className,
+  labelClassName,
+}: {
+  label: string;
+  value: number | undefined;
+  loading: boolean;
+  className: string;
+  labelClassName: string;
+}) {
+  return (
+    <div className={className}>
+      <p className={`text-xs font-medium ${labelClassName}`}>{label}</p>
+      <p className="mt-1 text-2xl font-bold text-gray-900">
+        {loading ? (
+          <span className="inline-block h-8 w-16 animate-pulse rounded bg-white/70" />
+        ) : (
+          (value ?? 0).toLocaleString()
+        )}
+      </p>
+    </div>
+  );
+}
+
 export function CustomerUsersByStateClient() {
   const [query, setQuery] = useState("");
-  const { data, isLoading, isError, error, refetch, isFetching } = useQuery({
+  const auth = useAuthOptional();
+  const authReady = auth == null ? true : Boolean(auth.authReady || auth.user);
+  const { data, isPending, isError, error, refetch, isFetching } = useQuery({
     queryKey: queryKeys.customers.usersByState(),
     queryFn: fetchUsersByState,
+    enabled: authReady,
     staleTime: 60_000,
+    gcTime: 60 * 60 * 1000,
+    refetchOnMount: "always",
+    refetchOnWindowFocus: false,
   });
+
+  const waitingForData = !isError && (isPending || data == null);
 
   const filtered = useMemo(() => {
     const rows = data?.states ?? [];
@@ -101,24 +137,27 @@ export function CustomerUsersByStateClient() {
       </div>
 
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-        <div className="rounded-xl border border-blue-100 bg-blue-50/80 p-4">
-          <p className="text-xs font-medium text-blue-700">All users</p>
-          <p className="mt-1 text-2xl font-bold text-gray-900">
-            {(data?.totalUsers ?? 0).toLocaleString()}
-          </p>
-        </div>
-        <div className="rounded-xl border border-emerald-100 bg-emerald-50/80 p-4">
-          <p className="text-xs font-medium text-emerald-700">With state / UT</p>
-          <p className="mt-1 text-2xl font-bold text-gray-900">
-            {(data?.usersWithState ?? 0).toLocaleString()}
-          </p>
-        </div>
-        <div className="rounded-xl border border-amber-100 bg-amber-50/80 p-4">
-          <p className="text-xs font-medium text-amber-700">State not set</p>
-          <p className="mt-1 text-2xl font-bold text-gray-900">
-            {(data?.usersWithoutState ?? 0).toLocaleString()}
-          </p>
-        </div>
+        <StatCard
+          label="All users"
+          value={data?.totalUsers}
+          loading={waitingForData}
+          className="rounded-xl border border-blue-100 bg-blue-50/80 p-4"
+          labelClassName="text-blue-700"
+        />
+        <StatCard
+          label="With state / UT"
+          value={data?.usersWithState}
+          loading={waitingForData}
+          className="rounded-xl border border-emerald-100 bg-emerald-50/80 p-4"
+          labelClassName="text-emerald-700"
+        />
+        <StatCard
+          label="State not set"
+          value={data?.usersWithoutState}
+          loading={waitingForData}
+          className="rounded-xl border border-amber-100 bg-amber-50/80 p-4"
+          labelClassName="text-amber-700"
+        />
       </div>
 
       <div className="overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm">
@@ -126,14 +165,16 @@ export function CustomerUsersByStateClient() {
           <div className="flex items-center gap-2 text-sm font-semibold text-gray-900">
             <Users className="h-4 w-4 text-blue-600" />
             States &amp; Union Territories
-            {isFetching && !isLoading ? (
+            {isFetching && !waitingForData ? (
               <span className="text-[10px] font-medium text-gray-400">Updating…</span>
             ) : null}
           </div>
-          <p className="text-xs text-gray-500">{filtered.length} regions</p>
+          <p className="text-xs text-gray-500">
+            {waitingForData ? "…" : `${filtered.length} regions`}
+          </p>
         </div>
 
-        {isLoading ? (
+        {waitingForData ? (
           <div className="flex justify-center py-16">
             <LoadingSpinner size="md" text="Loading states..." />
           </div>

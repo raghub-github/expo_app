@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { db, client } from '@/lib/drizzle';
 import { parentMerchantSchema } from '@/lib/validation/parentMerchantSchema';
 import { logAudit } from '@/lib/auditLogger';
+import { applyMerchantReferralOnParentCreate } from '@/lib/applyMerchantReferralOnParent';
 
 export async function POST(req: NextRequest) {
   try {
@@ -92,9 +93,16 @@ export async function POST(req: NextRequest) {
         performed_by: '',
         performed_by_email: '',
       });
+      await applyMerchantReferralOnParentCreate({
+        parentPk: inserted[0]?.id,
+        referralCode: data.referralCode,
+        source: 'manual',
+        referredPhone: data.registered_phone,
+      });
       return NextResponse.json({
         success: true,
         parent_merchant_id: inserted[0]?.parent_merchant_id,
+        parent_id: inserted[0]?.id,
         info: 'Parent merchant registered successfully.'
       });
     } catch (err) {

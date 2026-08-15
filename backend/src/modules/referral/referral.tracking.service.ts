@@ -8,12 +8,15 @@ import {
   getReferralSettings,
   type ReferralUserType,
 } from "./referral.config.service.js";
+import { hashIp, hashPhone } from "./referral.fraud.js";
+import { evaluateAdvancedReferralFraud } from "./referral.fraud.advanced.js";
+import { getOrCreateReferralCode, findExistingReferralCode } from "./referral.codes.js";
+import { deepLinkPathFor, referralTrackingEnabled } from "./referral.participants.js";
 import {
-  evaluateReferralFraud,
-  hashIp,
-  hashPhone,
-} from "./referral.fraud.js";
-import { getOrCreateReferralCode } from "./referral.codes.js";
+  assertReferralUserEligible,
+  expiresAtFromValidityDays,
+} from "./referral.eligibility.js";
+import { REFERRAL_SERVICE_DISABLED } from "./referral.errors.js";
 
 export type ApplyReferralInput = {
   userType: ReferralUserType;
@@ -44,7 +47,9 @@ async function lookupCode(code: string): Promise<{
   const [fromUnified] = await sql<Array<{ user_type: string; user_id: string; referral_code: string }>>`
     SELECT user_type::text, user_id::text, referral_code
     FROM referral_codes
-    WHERE referral_code = ${normalized} AND active = true
+    WHERE referral_code = ${normalized}
+      AND active = true
+      AND COALESCE(suspended, false) = false
     LIMIT 1
   `.catch(() => [] as Array<{ user_type: string; user_id: string; referral_code: string }>);
 
@@ -86,6 +91,21 @@ async function lookupCode(code: string): Promise<{
     };
   }
 
+  const [merchant] = await sql<Array<{ id: string; referral_code: string }>>`
+    SELECT id::text, referral_code
+    FROM merchant_parents
+    WHERE UPPER(TRIM(referral_code)) = ${normalized}
+    LIMIT 1
+  `.catch(() => [] as Array<{ id: string; referral_code: string }>);
+  if (merchant?.referral_code) {
+    await ensureReferralCodeRow("merchant", Number(merchant.id), merchant.referral_code);
+    return {
+      userType: "merchant",
+      userId: Number(merchant.id),
+      referralCode: merchant.referral_code.toUpperCase(),
+    };
+  }
+
   return null;
 }
 
@@ -100,11 +120,17 @@ export async function ensureReferralCodeRow(
   await sql`
     INSERT INTO referral_codes (user_type, user_id, referral_code, active)
     VALUES (${userType}::referral_user_type, ${userId}, ${code}, true)
-    ON CONFLICT (referral_code) DO UPDATE
-      SET user_type = EXCLUDED.user_type,
-          user_id = EXCLUDED.user_id,
-          active = true,
-          updated_at = NOW()
+    ON CONFLICT (user_type, user_id) DO UPDATE
+      SET
+        regenerated_from = CASE
+          WHEN referral_codes.referral_code IS DISTINCT FROM EXCLUDED.referral_code
+          THEN referral_codes.referral_code
+          ELSE referral_codes.regenerated_from
+        END,
+        referral_code = EXCLUDED.referral_code,
+        active = true,
+        suspended = false,
+        updated_at = NOW()
   `.catch(() => undefined);
 }
 
@@ -119,6 +145,12 @@ export async function resolveReferrerPhone(
     `;
     return row?.phone ?? null;
   }
+  if (userType === "merchant") {
+    const [row] = await sql<Array<{ phone: string | null }>>`
+      SELECT registered_phone AS phone FROM merchant_parents WHERE id = ${userId} LIMIT 1
+    `;
+    return row?.phone ?? null;
+  }
   const [row] = await sql<Array<{ phone: string | null }>>`
     SELECT mobile AS phone FROM riders WHERE id = ${userId} LIMIT 1
   `;
@@ -126,26 +158,10 @@ export async function resolveReferrerPhone(
 }
 
 export async function applyReferral(input: ApplyReferralInput): Promise<ApplyReferralResult> {
-  const settings = await getReferralSettings();
-  if (!settings.enabled) {
-    // Tracking continues even when disabled — still create relationship, no rewards later
-  }
-  if (input.userType === "customer" && !settings.customer_referral_enabled && settings.enabled) {
-    // Still allow tracking when global enabled but customer flag off? PRD: links work, tracking continues.
-  }
-  if (input.userType === "rider" && !settings.rider_referral_enabled && settings.enabled) {
-    // same
-  }
-
-  const looked = await lookupCode(input.referralCode);
-  if (!looked) return { ok: false, error: "invalid_code" };
-  if (looked.userType !== input.userType) {
-    return { ok: false, error: "code_user_type_mismatch" };
-  }
-
+  const settings = await getReferralSettings(true);
   const sql = getSql();
 
-  // Already applied?
+  // Existing relationship is not a NEW application — OFF must not rewrite or delete it.
   const [existing] = await sql<Array<{ id: string; status: string }>>`
     SELECT id::text, status::text
     FROM referral_relationships
@@ -160,6 +176,61 @@ export async function applyReferral(input: ApplyReferralInput): Promise<ApplyRef
       status: existing.status,
       alreadyApplied: true,
     };
+  }
+
+  if (!referralTrackingEnabled(settings, input.userType)) {
+    return { ok: false, error: REFERRAL_SERVICE_DISABLED };
+  }
+
+  const looked = await lookupCode(input.referralCode);
+  if (!looked) return { ok: false, error: "invalid_code" };
+  if (looked.userType !== input.userType) {
+    return { ok: false, error: "code_user_type_mismatch" };
+  }
+
+  const referredOk = await assertReferralUserEligible(input.userType, input.referredUserId);
+  if (!referredOk.ok) return { ok: false, error: "user_ineligible" };
+  const referrerOk = await assertReferralUserEligible(looked.userType, looked.userId);
+  if (!referrerOk.ok) return { ok: false, error: "referrer_ineligible" };
+
+  const applyLockKey = `ref_apply_${input.userType}_${looked.userId}`;
+  await sql`SELECT pg_advisory_lock(hashtext(${applyLockKey}))`;
+
+  try {
+  // Re-check under lock in case a concurrent apply won.
+  const [existingLocked] = await sql<Array<{ id: string; status: string }>>`
+    SELECT id::text, status::text
+    FROM referral_relationships
+    WHERE user_type = ${input.userType}::referral_user_type
+      AND referred_user_id = ${input.referredUserId}
+    LIMIT 1
+  `;
+  if (existingLocked) {
+    return {
+      ok: true,
+      relationshipId: Number(existingLocked.id),
+      status: existingLocked.status,
+      alreadyApplied: true,
+    };
+  }
+
+  const settingsNow = await getReferralSettings(true);
+  if (!referralTrackingEnabled(settingsNow, input.userType)) {
+    return { ok: false, error: REFERRAL_SERVICE_DISABLED };
+  }
+
+  const maxRefs = settings.max_successful_referrals;
+  if (maxRefs != null && Number.isFinite(maxRefs) && maxRefs > 0) {
+    const [cnt] = await sql<Array<{ n: string }>>`
+      SELECT COUNT(*)::text AS n
+      FROM referral_relationships
+      WHERE user_type = ${input.userType}::referral_user_type
+        AND referrer_id = ${looked.userId}
+        AND status NOT IN ('fraud_blocked', 'cancelled', 'ineligible')
+    `;
+    if (Number(cnt?.n ?? 0) >= maxRefs) {
+      return { ok: false, error: "referrer_limit_reached" };
+    }
   }
 
   let installAttributed = Boolean(input.installAttributed);
@@ -189,7 +260,7 @@ export async function applyReferral(input: ApplyReferralInput): Promise<ApplyRef
   }
 
   const referrerPhone = await resolveReferrerPhone(looked.userType, looked.userId);
-  const fraud = await evaluateReferralFraud(settings.fraud_checks, {
+  const fraud = await evaluateAdvancedReferralFraud({
     userType: input.userType,
     referrerId: looked.userId,
     referredUserId: input.referredUserId,
@@ -199,6 +270,7 @@ export async function applyReferral(input: ApplyReferralInput): Promise<ApplyRef
     deviceFingerprint: input.deviceFingerprint,
     installAttributed: settings.auto_apply_enabled ? installAttributed : true,
     autoApplyRequired: settings.auto_apply_enabled && input.source !== "manual",
+    ip: input.ip,
   });
 
   // Manual entry is only allowed when auto_apply is off OR admin allows — PRD says
@@ -215,6 +287,12 @@ export async function applyReferral(input: ApplyReferralInput): Promise<ApplyRef
   if (!fraud.ok && fraud.flags.includes("same_phone")) {
     return { ok: false, error: "same_phone", flags: fraud.flags };
   }
+  if (!fraud.ok && fraud.flags.includes("referral_loop")) {
+    return { ok: false, error: "referral_loop", flags: fraud.flags };
+  }
+  if (!fraud.ok && fraud.flags.includes("velocity_abuse")) {
+    return { ok: false, error: "velocity_abuse", flags: fraud.flags };
+  }
 
   const status =
     !fraud.ok && fraud.flags.includes("no_install_attribution")
@@ -227,11 +305,30 @@ export async function applyReferral(input: ApplyReferralInput): Promise<ApplyRef
 
   const autoApplied = installAttributed && status !== "fraud_blocked";
 
+  const [campaign] = await sql<Array<{ id: string; referral_validity_days: number | null }>>`
+    SELECT id::text, referral_validity_days
+    FROM referral_campaigns
+    WHERE enabled = true
+      AND (user_type IS NULL OR user_type = ${input.userType}::referral_user_type)
+      AND (starts_at IS NULL OR starts_at <= NOW())
+      AND (ends_at IS NULL OR ends_at >= NOW())
+    ORDER BY priority ASC, id ASC
+    LIMIT 1
+  `.catch(() => [] as Array<{ id: string; referral_validity_days: number | null }>);
+  const campaignId = campaign?.id ? Number(campaign.id) : null;
+  const validityDays =
+    campaign?.referral_validity_days ?? settings.referral_validity_days ?? 365;
+  const expiresAt = expiresAtFromValidityDays(
+    validityDays,
+    settings.referral_expiry_enabled !== false,
+  );
+
   const [inserted] = await sql<Array<{ id: string; status: string }>>`
     INSERT INTO referral_relationships (
       user_type, referrer_id, referred_user_id, referral_code, source,
       install_at, app_open_at, auto_applied, status, reward_status,
-      device_fingerprint, phone_hash, fraud_flags, metadata
+      device_fingerprint, phone_hash, fraud_flags, metadata,
+      campaign_id, expires_at
     ) VALUES (
       ${input.userType}::referral_user_type,
       ${looked.userId},
@@ -249,7 +346,10 @@ export async function applyReferral(input: ApplyReferralInput): Promise<ApplyRef
       ${JSON.stringify({
         ip_hash: hashIp(input.ip),
         user_agent: input.userAgent ?? null,
-      })}::jsonb
+        campaign_code: campaignId,
+      })}::jsonb,
+      ${campaignId},
+      ${expiresAt ? expiresAt.toISOString() : null}
     )
     ON CONFLICT (user_type, referred_user_id) DO NOTHING
     RETURNING id::text, status::text
@@ -292,7 +392,7 @@ export async function applyReferral(input: ApplyReferralInput): Promise<ApplyRef
       )
       ON CONFLICT (referred_customer_id) DO NOTHING
     `.catch(() => undefined);
-  } else {
+  } else if (input.userType === "rider") {
     await sql`
       UPDATE riders
       SET referred_by = ${looked.userId}
@@ -315,11 +415,30 @@ export async function applyReferral(input: ApplyReferralInput): Promise<ApplyRef
     };
   }
 
+  if (input.userType === "merchant") {
+    try {
+      const { evaluateMerchantReferralOnEvent } = await import("./referral.engine.js");
+      await evaluateMerchantReferralOnEvent({
+        merchantParentId: input.referredUserId,
+        eventType: "REGISTRATION_COMPLETED",
+      });
+      await evaluateMerchantReferralOnEvent({
+        merchantParentId: input.referredUserId,
+        eventType: "SIGNUP",
+      });
+    } catch {
+      /* evaluation is best-effort */
+    }
+  }
+
   return {
     ok: true,
     relationshipId: Number(inserted.id),
     status: inserted.status,
   };
+  } finally {
+    await sql`SELECT pg_advisory_unlock(hashtext(${applyLockKey}))`.catch(() => undefined);
+  }
 }
 
 export async function recordReferralInstallClick(opts: {
@@ -369,10 +488,16 @@ export async function getMyReferralProfile(opts: {
   const settings = await getReferralSettings();
 
   // Already-registered users keep the code they have; only users without one
-  // get a freshly generated code.
+  // get a freshly generated code. When the service toggle is OFF we still
+  // return an existing published code (for Super Admin / history) but do not
+  // allocate a new one.
   let code: string | null = null;
   try {
-    code = await getOrCreateReferralCode(opts.userType, opts.userId);
+    if (referralTrackingEnabled(settings, opts.userType)) {
+      code = await getOrCreateReferralCode(opts.userType, opts.userId);
+    } else {
+      code = await findExistingReferralCode(opts.userType, opts.userId);
+    }
   } catch (err) {
     console.warn("[referral] code resolution failed", (err as Error).message);
     code = null;
@@ -380,68 +505,70 @@ export async function getMyReferralProfile(opts: {
 
   if (code) await ensureReferralCodeRow(opts.userType, opts.userId, code);
 
-  const prefix =
-    opts.userType === "customer"
-      ? settings.deep_link.customer_path_prefix
-      : settings.deep_link.rider_path_prefix;
-  const base = resolveReferralPublicBase();
-  const shareUrl = code ? `${base}${prefix.startsWith("/") ? prefix : `/${prefix}`}/${code}` : null;
+  const trackingOn = referralTrackingEnabled(settings, opts.userType);
+  const prefix = deepLinkPathFor(settings, opts.userType);
+  const base = resolveReferralPublicBaseFor(opts.userType);
+  const shareUrl =
+    trackingOn && code ? `${base}${prefix.startsWith("/") ? prefix : `/${prefix}`}/${code}` : null;
 
-  // Join profile tables so clients never need to show raw PKs.
-  const history =
+  const historySql =
     opts.userType === "customer"
-      ? await sql<Array<Record<string, unknown>>>`
+      ? sql<Array<Record<string, unknown>>>`
           SELECT
-            rr.id,
-            rr.referred_user_id,
-            c.customer_id AS referred_display_id,
-            c.full_name AS referred_name,
-            rr.status::text AS status,
-            rr.reward_status,
-            rr.completed_orders,
-            rr.kyc_approved,
-            rr.auto_applied,
-            rr.created_at,
+            rr.id::text AS id, rr.referred_user_id::text AS referred_user_id,
+            c.customer_id AS referred_display_id, c.full_name AS referred_name,
+            rr.status::text AS status, rr.reward_status, rr.completed_orders,
+            rr.kyc_approved, rr.auto_applied, rr.created_at,
             (
               SELECT COALESCE(SUM(rtx.reward_amount), 0)
               FROM referral_reward_transactions rtx
               WHERE rtx.referral_relationship_id = rr.id
-                AND rtx.status = 'credited'
-                AND rtx.reward_party = 'referrer'
+                AND rtx.status = 'credited' AND rtx.reward_party = 'referrer'
             ) AS reward_earned
           FROM referral_relationships rr
           LEFT JOIN customers c ON c.id = rr.referred_user_id
-          WHERE rr.user_type = 'customer'::referral_user_type
-            AND rr.referrer_id = ${opts.userId}
-          ORDER BY rr.created_at DESC
-          LIMIT 100
-        `.catch(() => [] as Array<Record<string, unknown>>)
-      : await sql<Array<Record<string, unknown>>>`
-          SELECT
-            rr.id,
-            rr.referred_user_id,
-            COALESCE('GMR' || r.id::text, rr.referred_user_id::text) AS referred_display_id,
-            r.name AS referred_name,
-            rr.status::text AS status,
-            rr.reward_status,
-            rr.completed_orders,
-            rr.kyc_approved,
-            rr.auto_applied,
-            rr.created_at,
-            (
-              SELECT COALESCE(SUM(rtx.reward_amount), 0)
-              FROM referral_reward_transactions rtx
-              WHERE rtx.referral_relationship_id = rr.id
-                AND rtx.status = 'credited'
-                AND rtx.reward_party = 'referrer'
-            ) AS reward_earned
-          FROM referral_relationships rr
-          LEFT JOIN riders r ON r.id = rr.referred_user_id
-          WHERE rr.user_type = 'rider'::referral_user_type
-            AND rr.referrer_id = ${opts.userId}
-          ORDER BY rr.created_at DESC
-          LIMIT 100
-        `.catch(() => [] as Array<Record<string, unknown>>);
+          WHERE rr.user_type = 'customer'::referral_user_type AND rr.referrer_id = ${opts.userId}
+          ORDER BY rr.created_at DESC LIMIT 100
+        `
+      : opts.userType === "merchant"
+        ? sql<Array<Record<string, unknown>>>`
+            SELECT
+              rr.id::text AS id, rr.referred_user_id::text AS referred_user_id,
+              mp.parent_merchant_id AS referred_display_id,
+              COALESCE(mp.brand_name, mp.parent_name, mp.owner_name) AS referred_name,
+              rr.status::text AS status, rr.reward_status, rr.completed_orders,
+              rr.kyc_approved, rr.auto_applied, rr.created_at,
+              (
+                SELECT COALESCE(SUM(rtx.reward_amount), 0)
+                FROM referral_reward_transactions rtx
+                WHERE rtx.referral_relationship_id = rr.id
+                  AND rtx.status = 'credited' AND rtx.reward_party = 'referrer'
+              ) AS reward_earned
+            FROM referral_relationships rr
+            LEFT JOIN merchant_parents mp ON mp.id = rr.referred_user_id
+            WHERE rr.user_type = 'merchant'::referral_user_type AND rr.referrer_id = ${opts.userId}
+            ORDER BY rr.created_at DESC LIMIT 100
+          `
+        : sql<Array<Record<string, unknown>>>`
+            SELECT
+              rr.id::text AS id, rr.referred_user_id::text AS referred_user_id,
+              COALESCE('GMR' || r.id::text, rr.referred_user_id::text) AS referred_display_id,
+              r.name AS referred_name,
+              rr.status::text AS status, rr.reward_status, rr.completed_orders,
+              rr.kyc_approved, rr.auto_applied, rr.created_at,
+              (
+                SELECT COALESCE(SUM(rtx.reward_amount), 0)
+                FROM referral_reward_transactions rtx
+                WHERE rtx.referral_relationship_id = rr.id
+                  AND rtx.status = 'credited' AND rtx.reward_party = 'referrer'
+              ) AS reward_earned
+            FROM referral_relationships rr
+            LEFT JOIN riders r ON r.id = rr.referred_user_id
+            WHERE rr.user_type = 'rider'::referral_user_type AND rr.referrer_id = ${opts.userId}
+            ORDER BY rr.created_at DESC LIMIT 100
+          `;
+
+  const history = await historySql.catch(() => [] as Array<Record<string, unknown>>);
 
   const mapped = history.map((row) => {
     const status = String(row.status ?? "");
@@ -460,6 +587,8 @@ export async function getMyReferralProfile(opts: {
         : "");
     return {
       ...row,
+      id: row.id != null ? String(row.id) : null,
+      referred_user_id: row.referred_user_id != null ? String(row.referred_user_id) : null,
       referred_display_id: displayId || null,
       referred_name: row.referred_name != null ? String(row.referred_name) : null,
       reward_earned: rewardEarned,
@@ -483,26 +612,58 @@ export async function getMyReferralProfile(opts: {
   };
 }
 
-export function resolveReferralPublicBase(): string {
-  const explicit =
-    process.env.REFERRAL_LINK_BASE_URL?.replace(/\/+$/, "") ||
-    process.env.ADDRESS_LINK_BASE_URL?.replace(/\/+$/, "");
-  if (explicit) {
+const DEFAULT_CUSTOMER_RIDER_REFERRAL_BASE = "https://gatimitra.com";
+export const DEFAULT_MERCHANT_REFERRAL_PUBLIC_BASE = "https://partner.gatimitra.com";
+
+function isPublicShareHost(hostname: string): boolean {
+  const host = hostname.toLowerCase();
+  return (
+    host !== "localhost" &&
+    host !== "127.0.0.1" &&
+    !/^192\.168\./.test(host) &&
+    !/^10\./.test(host)
+  );
+}
+
+function firstPublicBase(candidates: Array<string | undefined>): string | null {
+  for (const raw of candidates) {
+    const explicit = raw?.replace(/\/+$/, "");
+    if (!explicit) continue;
     try {
-      const host = new URL(explicit).hostname.toLowerCase();
-      // Never put localhost / LAN hosts into shareable referral links.
-      if (
-        host !== "localhost" &&
-        host !== "127.0.0.1" &&
-        !/^192\.168\./.test(host) &&
-        !/^10\./.test(host)
-      ) {
-        return explicit;
-      }
+      if (isPublicShareHost(new URL(explicit).hostname)) return explicit;
     } catch {
       /* fall through */
     }
   }
-  // App Links are verified on gatimitra.com; override via REFERRAL_LINK_BASE_URL if needed.
-  return "https://gatimitra.com";
+  return null;
+}
+
+export function resolveReferralPublicBase(): string {
+  return (
+    firstPublicBase([
+      process.env.REFERRAL_LINK_BASE_URL,
+      process.env.ADDRESS_LINK_BASE_URL,
+    ]) || DEFAULT_CUSTOMER_RIDER_REFERRAL_BASE
+  );
+}
+
+/** Merchant share / deep links open Partner Site onboarding, not gatimitra.com. */
+export function resolveReferralPublicBaseFor(userType: ReferralUserType): string {
+  if (userType === "merchant") {
+    return (
+      firstPublicBase([
+        process.env.MERCHANT_REFERRAL_LINK_BASE_URL,
+        process.env.PARTNER_SITE_URL,
+      ]) || DEFAULT_MERCHANT_REFERRAL_PUBLIC_BASE
+    );
+  }
+  return resolveReferralPublicBase();
+}
+
+export async function lookupReferralCode(code: string): Promise<{
+  userType: ReferralUserType;
+  userId: number;
+  referralCode: string;
+} | null> {
+  return lookupCode(code);
 }

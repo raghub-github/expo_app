@@ -2,7 +2,10 @@
 
 import React from "react";
 import Link from "next/link";
+import { useQueryClient } from "@tanstack/react-query";
 import { Users, UtensilsCrossed, Package, Car } from "lucide-react";
+import { queryKeys } from "@/lib/queryKeys";
+import { fetchUsersByState } from "@/components/customers/CustomerUsersByStateClient";
 
 interface SummaryCardsProps {
   allUsers: number;
@@ -21,6 +24,7 @@ export const SummaryCards = React.memo(function SummaryCards({
   personUsers,
   loading = false,
 }: SummaryCardsProps) {
+  const queryClient = useQueryClient();
   const cards: Array<{
     title: string;
     value: number;
@@ -105,6 +109,13 @@ export const SummaryCards = React.memo(function SummaryCards({
               href={card.href}
               className={className}
               aria-label={`${card.title} — ${card.hint ?? "Open details"}`}
+              onMouseEnter={() => {
+                void queryClient.prefetchQuery({
+                  queryKey: queryKeys.customers.usersByState(),
+                  queryFn: fetchUsersByState,
+                  staleTime: 60_000,
+                });
+              }}
             >
               {body}
             </Link>

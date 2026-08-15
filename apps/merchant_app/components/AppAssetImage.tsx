@@ -1,3 +1,4 @@
+import { useRef } from "react";
 import type { ImageSourcePropType, ImageStyle, StyleProp } from "react-native";
 import { Image as RNImage, StyleSheet } from "react-native";
 import { getAppAssetUrl, useAppAssetUrl } from "@/store/appAssetsStore";
@@ -9,13 +10,21 @@ type Props = {
   accessibilityLabel?: string;
 };
 
-function resizeModeToRn(mode: Props["resizeMode"]): "cover" | "contain" | "stretch" | "repeat" | "center" {
-  return mode === "cover" || mode === "stretch" || mode === "repeat" || mode === "center"
+function resizeModeToRn(
+  mode: Props["resizeMode"]
+): "cover" | "contain" | "stretch" | "repeat" | "center" {
+  return mode === "cover" ||
+    mode === "stretch" ||
+    mode === "repeat" ||
+    mode === "center"
     ? mode
     : "contain";
 }
 
-/** Renders super-admin CMS image from R2 signed URL only (no bundled fallbacks). */
+/**
+ * CMS image from R2 signed URL.
+ * Keeps the last good URL so tab switches / asset reloads do not flash blank.
+ */
 export function AppAssetImage({
   assetKey,
   style,
@@ -23,15 +32,17 @@ export function AppAssetImage({
   accessibilityLabel,
 }: Props) {
   const url = useAppAssetUrl(assetKey);
+  const stickyRef = useRef<string | null>(url);
+  if (url) stickyRef.current = url;
+  const displayUrl = url ?? stickyRef.current;
 
-  if (!url) {
+  if (!displayUrl) {
     return null;
   }
 
   return (
     <RNImage
-      key={`${assetKey}:${url}`}
-      source={{ uri: url }}
+      source={{ uri: displayUrl }}
       style={[style, styles.transparent]}
       resizeMode={resizeModeToRn(resizeMode)}
       accessibilityLabel={accessibilityLabel}

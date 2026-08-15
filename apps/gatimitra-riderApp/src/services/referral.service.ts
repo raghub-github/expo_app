@@ -3,6 +3,7 @@
  * Amounts and milestones are Super Admin driven — never hardcode rewards.
  */
 
+import { ApiError } from "@gatimitra/sdk";
 import { getRiderAppConfig } from "@/src/config/env";
 import { riderApi } from "@/src/services/api/riderApi";
 
@@ -32,6 +33,11 @@ export type RiderReferralConfig = {
     rewardAmount: number;
     rewardType: string;
     requireKyc: boolean;
+    referredRewardAmount?: number | null;
+    alsoCreditReferred?: boolean;
+    eventType?: string | null;
+    minOrderAmount?: number | null;
+    priority?: number | null;
   }>;
 };
 
@@ -83,10 +89,108 @@ export async function fetchRiderReferralConfig(
         ...m,
         milestoneOrders: Number(m.milestoneOrders) || 0,
         rewardAmount: Number(m.rewardAmount) || 0,
+        referredRewardAmount:
+          m.referredRewardAmount == null ? null : Number(m.referredRewardAmount) || 0,
+        alsoCreditReferred: Boolean(m.alsoCreditReferred),
       })),
     };
   } catch {
     return null;
+  }
+}
+
+export async function previewRiderReferral(code: string): Promise<{
+  ok: boolean;
+  valid?: boolean;
+  code?: string;
+  error?: string;
+  message?: string;
+  userMessage?: string;
+}> {
+  const trimmed = code.trim().toUpperCase();
+  if (trimmed.length < 3) {
+    return {
+      ok: false,
+      valid: false,
+      error: "invalid_code",
+      message: "Invalid referral code. Please check the code and try again.",
+    };
+  }
+  const { apiBaseUrl } = getRiderAppConfig();
+  try {
+    const res = await fetch(
+      `${apiBaseUrl}/v1/referral/preview?code=${encodeURIComponent(trimmed)}&userType=rider`,
+      { headers: { Accept: "application/json" } },
+    );
+    const body = (await res.json().catch(() => ({}))) as {
+      ok?: boolean;
+      valid?: boolean;
+      code?: string;
+      error?: string;
+      message?: string;
+      userMessage?: string;
+    };
+    if (!res.ok || body.ok === false || body.valid === false) {
+      return {
+        ok: false,
+        valid: false,
+        error: body.error,
+        message:
+          body.userMessage ||
+          body.message ||
+          "Invalid referral code. Please check the code and try again.",
+        userMessage: body.userMessage,
+      };
+    }
+    return {
+      ok: true,
+      valid: true,
+      code: body.code || trimmed,
+      message: body.message,
+    };
+  } catch {
+    return {
+      ok: false,
+      valid: false,
+      error: "invalid_code",
+      message: "Invalid referral code. Please check the code and try again.",
+    };
+  }
+}
+
+export async function applyRiderReferral(input: {
+  referralCode?: string;
+  clickToken?: string;
+  playReferrer?: string;
+  source?: "deep_link" | "play_install_referrer" | "manual" | "share_sheet" | "unknown";
+  deviceFingerprint?: string;
+}): Promise<{ ok: boolean; error?: string; alreadyApplied?: boolean }> {
+  try {
+    const body = await riderApi.applyReferral(input);
+    const payload = body as { ok?: boolean; error?: string; code?: string; alreadyApplied?: boolean };
+    if (
+      payload?.code === "REFERRAL_SERVICE_DISABLED" ||
+      payload?.error === "REFERRAL_SERVICE_DISABLED" ||
+      payload?.error === "referral_disabled"
+    ) {
+      return { ok: false, error: "REFERRAL_SERVICE_DISABLED" };
+    }
+    return body as { ok: boolean; error?: string; alreadyApplied?: boolean };
+  } catch (err) {
+    if (err instanceof ApiError) {
+      const payload = (err.payload ?? {}) as {
+        error?: string;
+        code?: string;
+        alreadyApplied?: boolean;
+      };
+      if (payload.alreadyApplied) return { ok: true, alreadyApplied: true };
+      const code = payload.code || payload.error;
+      if (code === "REFERRAL_SERVICE_DISABLED" || code === "referral_disabled") {
+        return { ok: false, error: "REFERRAL_SERVICE_DISABLED" };
+      }
+      return { ok: false, error: code || "apply_failed" };
+    }
+    throw err;
   }
 }
 
@@ -109,9 +213,9 @@ export async function fetchRiderReferralMe(
     },
     config: (body.config ?? {
       configVersion: 0,
-      enabled: true,
-      referralEnabled: true,
-      rewardEnabled: true,
+      enabled: false,
+      referralEnabled: false,
+      rewardEnabled: false,
       requireKyc: false,
       currency: "INR",
       milestones: [],

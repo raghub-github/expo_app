@@ -64,14 +64,8 @@ export function PartnersAllStoresPage() {
       setStatus("home");
 
       const stores = result.stores ?? [];
-      const parentId = result.parentId ?? result.onboardingProgress?.parent_id;
       if (stores.length === 0) {
         clearPartnerStoreSelection();
-        const q =
-          parentId != null
-            ? `?parent_id=${encodeURIComponent(String(parentId))}&new=1`
-            : "?new=1";
-        window.location.href = `/auth/register-store${q}`;
         return;
       }
       const owned = new Set(stores.map((s) => String(s.store_id || "").trim()).filter(Boolean));
@@ -411,8 +405,12 @@ export function PartnersAllStoresPage() {
         </div>
       </header>
 
-      <main className="flex-1 px-2 sm:px-4 lg:px-6 pb-8 sm:pb-10">
-        <div className="mx-auto max-w-7xl">
+      <main
+        className={`flex-1 px-2 sm:px-4 lg:px-6 pb-8 sm:pb-10 ${
+          stores.length === 0 ? "flex items-start justify-center pt-10 sm:pt-14" : ""
+        }`}
+      >
+        <div className="mx-auto max-w-7xl w-full">
           {storeNeedingVerificationFix ? (
             <div className="mt-3 sm:mt-4 w-full">
               <StoreVerificationRejectedHeaderBanner
@@ -446,13 +444,21 @@ export function PartnersAllStoresPage() {
             </div>
           ) : null}
 
-          <div className="text-center mt-5 sm:mt-6">
-            <p className="text-xs sm:text-sm font-semibold tracking-wide text-slate-500 uppercase">Select Store</p>
-          </div>
+          {stores.length > 0 ? (
+            <div className="text-center mt-5 sm:mt-6">
+              <p className="text-xs sm:text-sm font-semibold tracking-wide text-slate-500 uppercase">Select Store</p>
+            </div>
+          ) : null}
 
-          <div className="mt-6 sm:mt-8 flex justify-center">
-            <div className="w-full max-w-6xl">
-              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-6 sm:gap-10 justify-items-center">
+          <div className={stores.length === 0 ? "flex justify-center" : "mt-6 sm:mt-8 flex justify-center"}>
+            <div className={stores.length === 0 ? "" : "w-full max-w-6xl"}>
+              <div
+                className={
+                  stores.length === 0
+                    ? "flex justify-center"
+                    : "grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-6 sm:gap-10 justify-items-center"
+                }
+              >
                 {storesOrdered.map((store) => {
                   const badge = getStatusBadge(store);
                   const pendingOnboarding = isOnboardingPending(store);
@@ -480,9 +486,8 @@ export function PartnersAllStoresPage() {
                       );
                       return;
                     }
-                    // Incomplete draft → continue onboarding form.
+                    // Incomplete draft stays on All Stores until they tap Complete Onboarding or Add Store.
                     if (canContinueOnboarding && !isStoreOnboardingSubmitted(store) && !isApproved) {
-                      goToOnboarding(store.store_id);
                       return;
                     }
                     // Verified or under review / submitted — always allow partner dashboard entry.
@@ -586,20 +591,6 @@ export function PartnersAllStoresPage() {
                   </div>
                 </button>
               </div>
-
-              {stores.length === 0 ? (
-                <div className="mt-8 text-center">
-                  <p className="text-sm text-slate-500 mb-4">No store registered yet. Add your first store to get started.</p>
-                  <button
-                    type="button"
-                    onClick={addNewChildStore}
-                    className="inline-flex items-center justify-center gap-2 rounded-xl border-2 border-dashed border-slate-300 bg-slate-50/50 py-3 px-4 text-sm font-semibold text-slate-700 hover:border-indigo-400 hover:bg-indigo-50/50"
-                  >
-                    <Plus className="h-5 w-5" />
-                    Add your first store
-                  </button>
-                </div>
-              ) : null}
             </div>
           </div>
         </div>

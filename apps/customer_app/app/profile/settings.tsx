@@ -91,7 +91,7 @@ export default function SettingsScreen() {
   const pushOptions = useMemo(
     () => ({
       apiBaseUrl,
-      androidPackageName: Constants.expoConfig?.android?.package,
+      androidPackageName: "com.gatimitra.customer",
       androidChannels: [
         { channelId: "default", name: "Orders & updates", lightColor: "#14b8a6" },
       ],

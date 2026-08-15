@@ -3,6 +3,10 @@ import { customerPriceFromBase } from "../commission/pricing.js";
 import { resolveStoreCommission } from "../commission/commission.resolver.js";
 import { toAbsoluteClientMediaUrl } from "../../utils/publicAttachmentUrl.js";
 import { listStores } from "./merchant.service.js";
+import {
+  getCustomerVisibleApprovalExpr,
+  getCustomerVisibleItemImageExpr,
+} from "../../lib/customer-menu-item-visibility.js";
 
 export type FoodItemUnderPriceDto = {
   itemId: string;
@@ -139,13 +143,15 @@ export async function listFoodItemsUnderPrice(params: {
   if (storeIds.length === 0) return [];
 
   const sql = getSql();
+  const customerImage = getCustomerVisibleItemImageExpr(sql, "mmi");
+  const customerApproval = getCustomerVisibleApprovalExpr(sql, "mmi");
   const rows = await sql<ItemRow[]>`
     SELECT
       mmi.id,
       mmi.store_id AS store_pk,
       mmi.item_id,
       mmi.item_name,
-      mmi.item_image_url,
+      ${customerImage} AS item_image_url,
       mmi.selling_price,
       mmi.base_price,
       mmi.discount_percentage,
@@ -162,7 +168,7 @@ export async function listFoodItemsUnderPrice(params: {
       -- Entitlement gate: plan-locked items are hidden from customer discovery surfaces.
       AND COALESCE(mmi.is_locked_by_plan, false) = false
       AND COALESCE(mmi.in_stock, true) = true
-      AND mmi.approval_status::text = 'APPROVED'
+      AND ${customerApproval}
       AND mmi.is_active = true
       AND mmi.selling_price IS NOT NULL
       AND mmi.selling_price > 0
@@ -236,6 +242,8 @@ export async function listFoodItemsUnderPriceGrouped(params: {
   );
 
   const sql = getSql();
+  const customerImage = getCustomerVisibleItemImageExpr(sql, "mmi");
+  const customerApproval = getCustomerVisibleApprovalExpr(sql, "mmi");
   const rowLimit = maxStores * itemsPerStore * 4;
   const rows = await sql<ItemRow[]>`
     SELECT
@@ -243,7 +251,7 @@ export async function listFoodItemsUnderPriceGrouped(params: {
       mmi.store_id AS store_pk,
       mmi.item_id,
       mmi.item_name,
-      mmi.item_image_url,
+      ${customerImage} AS item_image_url,
       mmi.selling_price,
       mmi.base_price,
       mmi.discount_percentage,
@@ -260,7 +268,7 @@ export async function listFoodItemsUnderPriceGrouped(params: {
       -- Entitlement gate: plan-locked items are hidden from customer discovery surfaces.
       AND COALESCE(mmi.is_locked_by_plan, false) = false
       AND COALESCE(mmi.in_stock, true) = true
-      AND mmi.approval_status::text = 'APPROVED'
+      AND ${customerApproval}
       AND mmi.is_active = true
       AND mmi.selling_price IS NOT NULL
       AND mmi.selling_price > 0

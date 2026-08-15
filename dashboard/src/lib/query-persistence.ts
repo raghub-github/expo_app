@@ -14,7 +14,7 @@ type Persister = {
   removeClient: () => Promise<void>;
 };
 
-const CACHE_VERSION = "1.0.0";
+const CACHE_VERSION = "1.0.1";
 const CACHE_KEY = "react-query-cache";
 
 /**
@@ -45,23 +45,16 @@ const EXCLUDED_QUERY_PREFIXES = [
  * Check if a query key should be persisted
  */
 function shouldPersistQuery(queryKey: readonly unknown[]): boolean {
-  const keyString = JSON.stringify(queryKey);
-  
-  // Check exclusions first (security)
-  for (const excluded of EXCLUDED_QUERY_PREFIXES) {
-    if (keyString.includes(excluded)) {
-      return false;
-    }
+  const root = typeof queryKey[0] === "string" ? queryKey[0] : "";
+  if (!root) return false;
+
+  // Match the query-key root only. Substring matching was persisting
+  // `["customers","users-by-state"]` because it contains "users".
+  if (EXCLUDED_QUERY_PREFIXES.some((prefix) => root === prefix)) {
+    return false;
   }
-  
-  // Check if it's in the persisted list
-  for (const prefix of PERSISTED_QUERY_PREFIXES) {
-    if (keyString.includes(prefix)) {
-      return true;
-    }
-  }
-  
-  return false;
+
+  return PERSISTED_QUERY_PREFIXES.some((prefix) => root === prefix);
 }
 
 /**
@@ -183,13 +176,15 @@ export function createPersister(): Persister {
         const now = Date.now();
         if (client.clientState?.queries) {
           client.clientState.queries = client.clientState.queries.filter(
-            (query: { state?: { data?: unknown } }) => {            // Check if query has expiry metadata
-            const queryData = query.state?.data as { __expiresAt?: number } | undefined;
-            if (queryData?.__expiresAt && queryData.__expiresAt < now) {
-              return false;
+            (query: { queryKey?: readonly unknown[]; state?: { data?: unknown } }) => {
+              if (!shouldPersistQuery(query.queryKey || [])) return false;
+              const queryData = query.state?.data as { __expiresAt?: number } | undefined;
+              if (queryData?.__expiresAt && queryData.__expiresAt < now) {
+                return false;
+              }
+              return true;
             }
-            return true;
-          });
+          );
         }
         
         return client;

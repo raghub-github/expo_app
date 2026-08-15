@@ -2,6 +2,7 @@ export {
   getReferralConfig,
   getReferralSettings,
   getActiveRewardRules,
+  startReferralConfigCacheListener,
   invalidateReferralConfigCache,
   bumpAndPublishReferralConfig,
   toPublicReferralConfig,
@@ -12,12 +13,26 @@ export {
   getMyReferralProfile,
   recordReferralInstallClick,
   ensureReferralCodeRow,
+  resolveReferralPublicBase,
+  resolveReferralPublicBaseFor,
 } from "./referral.tracking.service.js";
+export {
+  previewReferralCode,
+  applyMerchantReferralForParent,
+  pickMerchantReferralCode,
+  merchantReferralPublicMessage,
+} from "./referral.onboarding.js";
+export {
+  REFERRAL_SERVICE_DISABLED,
+  REFERRAL_CODE_UNAVAILABLE_USER_MESSAGE,
+  isReferralServiceDisabledError,
+} from "./referral.errors.js";
 
 export {
   evaluateCustomerReferralOnOrderDelivered,
   evaluateRiderReferralOnOrderDelivered,
   evaluateRiderReferralOnKycApproved,
+  evaluateMerchantReferralOnEvent,
 } from "./referral.engine.js";
 
 export { creditReferralReward } from "./referral.reward.service.js";

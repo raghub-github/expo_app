@@ -156,15 +156,20 @@ function PushNotificationBootstrapInner() {
   const { apiBaseUrl } = getConfig();
   const authRef = useRef({ session, hydrated });
   authRef.current = { session, hydrated };
+  const permissionPromptedRef = useRef(false);
+  const expoGo = Constants.appOwnership === "expo";
 
   const pushOptions = useMemo(
     () => ({
       apiBaseUrl,
-      androidPackageName: Constants.expoConfig?.android?.package,
+      // Must match Firebase google-services.json + app.json package.
+      androidPackageName: "com.gatimitra.customer",
       androidChannels: [...CUSTOMER_PUSH_CHANNELS],
       getAuth: () => {
         const { session: s, hydrated: h } = authRef.current;
-        if (!h || !s?.accessToken || s.role !== "customer") return null;
+        // Match Merchant: register as soon as we have a customer access token.
+        if (!s?.accessToken || s.role !== "customer") return null;
+        if (!h) return null;
         return { accessToken: s.accessToken, role: "customer" as const };
       },
       collectDeviceMetadata: async () => ({
@@ -181,21 +186,29 @@ function PushNotificationBootstrapInner() {
       }),
       onNotificationOpen: handleOpen,
       onForeground: handleForeground,
+      log: (message: string, extra?: Record<string, unknown>) => {
+        if (extra) console.log(`[push:customer] ${message}`, extra);
+        else console.log(`[push:customer] ${message}`);
+      },
     }),
     [apiBaseUrl, handleOpen, handleForeground]
   );
 
-  const { controller } = usePushPermissionController(pushOptions);
+  const { controller } = usePushPermissionController(pushOptions, {
+    autoStart: true,
+  });
 
   useEffect(() => {
-    setCustomerPushUnregister((opts) => controller.unregisterCurrent(opts));
+    setCustomerPushUnregister((opts) =>
+      controller.unregisterCurrent({ ...opts, role: "customer" })
+    );
     return () => setCustomerPushUnregister(null);
   }, [controller]);
 
   // Foreground: we play CX sound ourselves — skip OS default chime (avoids double play).
   // Never import expo-notifications in Expo Go (SDK 53+ logs a hard error on import).
   useEffect(() => {
-    if (Constants.appOwnership === "expo") return;
+    if (expoGo) return;
     let cancelled = false;
     void (async () => {
       try {
@@ -217,28 +230,57 @@ function PushNotificationBootstrapInner() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [expoGo]);
 
   // Re-sync tokens once auth hydrates / session appears (lifecycle may have
   // run earlier with getAuth() === null and skipped registration).
+  // Returning users skip onboarding permissions — request OS permission here
+  // when still undetermined/denied (same outcome as Merchant post-login gate).
   useEffect(() => {
-    if (!hydrated || !session?.accessToken || session.role !== "customer") return;
+    if (!hydrated || !session?.accessToken || session.role !== "customer") {
+      permissionPromptedRef.current = false;
+      return;
+    }
+    controller.startLifecycle();
     void (async () => {
-      const snap = await controller.refresh({ syncIfGranted: true });
-      if (__DEV__) {
-        console.log("[push] post-login refresh", {
-          osStatus: snap.osStatus,
-          syncStatus: snap.syncStatus,
-          lastBackendSyncOk: snap.lastBackendSyncOk,
-          hasExpo: !!snap.expoPushToken,
-          hasNative: !!snap.nativePushToken,
-          error: snap.error,
-          expoGo: Constants.appOwnership === "expo",
-        });
-      }
+      let snap = await controller.refresh({ syncIfGranted: !expoGo });
+      console.log("[push:customer] post-login refresh", {
+        osStatus: snap.osStatus,
+        syncStatus: snap.syncStatus,
+        lastBackendSyncOk: snap.lastBackendSyncOk,
+        hasExpo: !!snap.expoPushToken,
+        hasNative: !!snap.nativePushToken,
+        error: snap.error,
+        expoGo,
+      });
+      if (expoGo) return;
+      if (snap.osStatus === "granted") return;
+      if (permissionPromptedRef.current) return;
+      permissionPromptedRef.current = true;
+      console.log("[push:customer] requesting notification permission after login");
+      const result = await controller.requestOrOpenSettings();
+      snap = result.snapshot;
+      console.log("[push:customer] post-login permission result", {
+        granted: result.granted,
+        openedSettings: result.openedSettings,
+        osStatus: snap.osStatus,
+        syncStatus: snap.syncStatus,
+        lastBackendSyncOk: snap.lastBackendSyncOk,
+        hasExpo: !!snap.expoPushToken,
+        hasNative: !!snap.nativePushToken,
+        error: snap.error,
+      });
     })();
-  }, [hydrated, session?.accessToken, session?.role, controller]);
+  }, [hydrated, session?.accessToken, session?.role, controller, expoGo]);
 
+  useEffect(() => {
+    const sub = AppState.addEventListener("change", (s: AppStateStatus) => {
+      if (s !== "active") return;
+      if (!hydrated || !session?.accessToken || session.role !== "customer") return;
+      void controller.refresh({ syncIfGranted: !expoGo });
+    });
+    return () => sub.remove();
+  }, [hydrated, session?.accessToken, session?.role, controller, expoGo]);
   // In-app campaign delivery: when no Expo/FCM token is registered (Expo Go /
   // permission denied), admin sends still land in notification_dispatch_logs.
   // Poll the inbox and surface new rows as floating banners so announcements

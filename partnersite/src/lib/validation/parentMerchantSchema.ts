@@ -24,6 +24,7 @@ export const parentMerchantSchema = z.object({
   created_at: z.string().optional(),
   updated_at: z.string().optional(),
   created_by: z.number().optional(),
+  referralCode: z.string().max(32).optional(),
 });
 
 export type ParentMerchantInput = z.infer<typeof parentMerchantSchema>;

@@ -873,6 +873,9 @@ export async function riderRoutes(app: FastifyInstance) {
     /** Rider can withdraw only when the wallet is positive and above this amount. */
     minWithdrawal: z.number().optional(),
     canWithdraw: z.boolean().optional(),
+    isFrozen: z.boolean().optional(),
+    freezeReason: z.string().nullable().optional(),
+    frozenAt: z.string().nullable().optional(),
     breakdown: z.object({
       food: z.number(),
       parcel: z.number(),
@@ -929,6 +932,9 @@ export async function riderRoutes(app: FastifyInstance) {
           thisMonth: 0,
           hasBankAccount: false,
           breakdown: { food: 0, parcel: 0, ride: 0 },
+          isFrozen: false,
+          freezeReason: null,
+          frozenAt: null,
           accountRestrictions: {
             accountRestricted: false,
             accountRestrictedReason: "none" as const,
@@ -975,6 +981,29 @@ export async function riderRoutes(app: FastifyInstance) {
         getRiderWalletBreakdown(riderId),
       ]);
       const MIN_WITHDRAWAL_BALANCE = 300;
+      const isFrozen = Boolean(wallet?.isFrozen);
+      let freezeReason = isFrozen
+        ? (typeof wallet?.freezeReason === "string" && wallet.freezeReason.trim()
+            ? wallet.freezeReason.trim()
+            : null)
+        : null;
+      if (isFrozen && !freezeReason) {
+        const sql = getSql();
+        const [hist] = await sql`
+          SELECT reason FROM rider_wallet_freeze_history
+          WHERE rider_id = ${riderId} AND action = 'freeze'
+          ORDER BY created_at DESC
+          LIMIT 1
+        `;
+        const histReason = (hist as { reason?: unknown } | undefined)?.reason;
+        freezeReason = typeof histReason === "string" && histReason.trim() ? histReason.trim() : null;
+      }
+      const frozenAt =
+        isFrozen && wallet?.frozenAt
+          ? wallet.frozenAt instanceof Date
+            ? wallet.frozenAt.toISOString()
+            : String(wallet.frozenAt)
+          : null;
       return {
         totalBalance: total,
         withdrawable,
@@ -984,7 +1013,10 @@ export async function riderRoutes(app: FastifyInstance) {
         thisMonth: periodTotals.thisMonth,
         hasBankAccount,
         minWithdrawal: MIN_WITHDRAWAL_BALANCE,
-        canWithdraw: total > MIN_WITHDRAWAL_BALANCE,
+        canWithdraw: total > MIN_WITHDRAWAL_BALANCE && !isFrozen && !accountRestrictions.globalWalletBlock,
+        isFrozen,
+        freezeReason,
+        frozenAt,
         breakdown: { food, parcel, ride },
         breakdownDetail,
         accountRestrictions: {
@@ -1071,6 +1103,10 @@ export async function riderRoutes(app: FastifyInstance) {
         const withdrawal = await createRiderWithdrawalRequest(riderId, body.amount);
         return { withdrawal };
       } catch (err) {
+        const { isWalletFrozenError, walletFrozenHttpBody } = await import("../../lib/wallet-freeze.js");
+        if (isWalletFrozenError(err)) {
+          return (reply as any).status(403).send(walletFrozenHttpBody(err));
+        }
         const message = err instanceof Error ? err.message : "Withdrawal failed";
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         return (reply as any).status(400).send({ error: message });

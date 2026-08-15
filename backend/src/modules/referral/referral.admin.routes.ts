@@ -10,18 +10,11 @@ import { getReferralConfig, toPublicReferralConfig } from "./referral.config.ser
 import { adminRetryRewardJob, processReferralRewardJobs, runReferralReconciliation } from "./referral.queue.js";
 import { regenerateReferralCode, suspendReferralCode, allocateUniqueReferralCode } from "./referral.codes.js";
 import { FUNNEL_STAGES } from "./referral.lifecycle.js";
-
-async function requireAdmin(req: { auth?: { role?: string } }, reply: { code: (n: number) => { send: (b: unknown) => unknown } }) {
-  const role = req.auth?.role;
-  if (role !== "admin" && role !== "super_admin" && role !== "system") {
-    // Backend JWT roles for dashboard staff may differ — allow via internal header in dashboard proxy
-    return false;
-  }
-  return true;
-}
+import { requireReferralSuperAdmin } from "./referral.admin-auth.js";
 
 export async function referralAdminRoutes(app: FastifyInstance) {
   await app.register(auth, { required: true });
+  app.addHook("preHandler", requireReferralSuperAdmin);
 
   app.get("/rules", async (req) => {
     const q = req.query as { userType?: string };
@@ -171,7 +164,7 @@ export async function referralAdminRoutes(app: FastifyInstance) {
         relationshipId: body.relationshipId,
         rule: {
           id: Number(rule.id),
-          user_type: rule.user_type as "customer" | "rider",
+          user_type: rule.user_type as "customer" | "rider" | "merchant",
           rule_code: String(rule.rule_code),
           name: String(rule.name),
           description: null,
@@ -188,7 +181,7 @@ export async function referralAdminRoutes(app: FastifyInstance) {
           metadata: { manual: true, reason: body.reason },
           campaign_id: rel.campaign_id != null ? Number(rel.campaign_id) : null,
         },
-        userType: String(rel.user_type) as "customer" | "rider",
+        userType: String(rel.user_type) as "customer" | "rider" | "merchant",
         referrerId: Number(rel.referrer_id),
         referredUserId: Number(rel.referred_user_id),
         campaignId: rel.campaign_id != null ? Number(rel.campaign_id) : null,
@@ -215,7 +208,7 @@ export async function referralAdminRoutes(app: FastifyInstance) {
     {
       schema: {
         body: z.object({
-          userType: z.enum(["customer", "rider"]),
+          userType: z.enum(["customer", "rider", "merchant"]),
           userId: z.number().int().positive(),
           customCode: z.string().min(4).max(32).optional(),
         }),
@@ -223,7 +216,7 @@ export async function referralAdminRoutes(app: FastifyInstance) {
     },
     async (req) => {
       const body = req.body as {
-        userType: "customer" | "rider";
+        userType: "customer" | "rider" | "merchant";
         userId: number;
         customCode?: string;
       };
@@ -242,7 +235,7 @@ export async function referralAdminRoutes(app: FastifyInstance) {
     {
       schema: {
         body: z.object({
-          userType: z.enum(["customer", "rider"]),
+          userType: z.enum(["customer", "rider", "merchant"]),
           userId: z.number().int().positive(),
           suspend: z.boolean().default(true),
         }),
@@ -250,7 +243,7 @@ export async function referralAdminRoutes(app: FastifyInstance) {
     },
     async (req) => {
       const body = req.body as {
-        userType: "customer" | "rider";
+        userType: "customer" | "rider" | "merchant";
         userId: number;
         suspend: boolean;
       };
@@ -268,8 +261,6 @@ export async function referralAdminRoutes(app: FastifyInstance) {
     const result = await processReferralRewardJobs({ limit: 50 });
     return { ok: true, ...result };
   });
-
-  void requireAdmin;
 }
 
 /** Lightweight public settings endpoint (config_version oriented). */

@@ -14,9 +14,10 @@ import { StatusBar } from "expo-status-bar";
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import { useTranslation } from "react-i18next";
 import * as Clipboard from "expo-clipboard";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { BrandingFooter } from "@/components/BrandingFooter";
 import { shareReferralCode } from "@/lib/referralShare";
+import { presentReferralCopy } from "@/lib/referralCopy";
 import { isCustomProfileUploadUrl } from "@/lib/emailAvatar";
 import { getNameInitials } from "@/lib/nameInitials";
 import { useProfile } from "@/hooks/useProfile";
@@ -27,6 +28,7 @@ import { ProfilePhotoViewerSheet } from "@/components/profile/ProfilePhotoViewer
 import { useScreenChromeStore } from "@/store/screenChromeStore";
 import { STATUS_BAR_TO_HEADER_GAP } from "@/constants/layout";
 import { profileService, type UserProfile } from "@/services/profile.service";
+import { referralService } from "@/services/referral.service";
 import { invalidateProfileCache, PROFILE_QUERY_KEY, writeCachedProfile } from "@/lib/profileCache";
 import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
 
@@ -67,7 +69,8 @@ export default function ProfileScreen() {
         statusBarStyle: "dark",
         hideStatusBarSpacer: false,
       });
-    }, [])
+      void queryClient.invalidateQueries({ queryKey: ["referral", "config", "customer"] });
+    }, [queryClient])
   );
 
   const displayName = profile?.full_name?.trim() || t("common.customer");
@@ -79,6 +82,23 @@ export default function ProfileScreen() {
     return rounded.toLocaleString("en-IN");
   }, [profile?.lifetime_savings_inr]);
   const referralCode = profile?.referral_code ?? null;
+  const { data: referralConfig } = useQuery({
+    queryKey: ["referral", "config", "customer"],
+    queryFn: () => referralService.getConfig(),
+    staleTime: 30_000,
+  });
+  const showReferralUi = referralConfig?.referralEnabled === true;
+  const referralCopy = presentReferralCopy({
+    audience: "customer",
+    referralEnabled: referralConfig?.referralEnabled,
+    rewardEnabled: referralConfig?.rewardEnabled,
+    rewardsPaused: referralConfig?.rewardSummary?.rewardsPaused,
+    currency: referralConfig?.currency,
+    minOrderAmount: referralConfig?.minOrderAmount,
+    requireKyc: referralConfig?.requireKyc,
+    firstOrderOnly: referralConfig?.firstOrderOnly,
+    milestones: referralConfig?.milestones,
+  });
   const customerId = profile?.customer_id ?? profile?.user_id ?? null;
   const isEmailVerified = profile?.is_email_verified ?? false;
   const profileImageUrl = profile?.profile_image_url?.trim() || null;
@@ -223,8 +243,8 @@ export default function ProfileScreen() {
   }, []);
 
   const handleReferNow = useCallback(() => {
-    void shareReferralCode(referralCode, displayName);
-  }, [referralCode, displayName]);
+    void shareReferralCode(referralCode, displayName, null, referralCopy);
+  }, [referralCode, displayName, referralCopy]);
 
   const addressParts = [
     profile?.address_line1,
@@ -237,7 +257,9 @@ export default function ProfileScreen() {
   const menuItems: MenuItem[] = [
     { id: "transactions", label: t("profile.transactions"), icon: "wallet-outline", path: "/wallet" },
     { id: "support", label: t("profile.support"), icon: "chatbubble-ellipses-outline", path: "/support" },
-    { id: "rewards", label: t("profile.rewardsAndReferrals"), icon: "gift-outline", path: "/profile/referrals", badge: "New" },
+    ...(showReferralUi
+      ? [{ id: "rewards", label: t("profile.rewardsAndReferrals"), icon: "gift-outline" as const, path: "/profile/referrals", badge: "New" }]
+      : []),
     { id: "addresses", label: t("profile.savedAddresses"), icon: "location-outline", path: "/profile/addresses" },
     { id: "collections", label: t("profile.yourCollections"), icon: "bookmark-outline", path: "/profile/collections" },
     { id: "settings", label: t("profile.settings"), icon: "settings-outline", path: "/profile/settings" },
@@ -356,7 +378,7 @@ export default function ProfileScreen() {
         </View>
 
         {/* Customer / Referral IDs */}
-        {(customerId || referralCode) ? (
+        {(customerId || (showReferralUi && referralCode)) ? (
           <View style={styles.idCard}>
             {customerId ? (
               <TouchableOpacity style={styles.idRow} onPress={() => copyToClipboard(customerId, "Customer ID")}>
@@ -367,8 +389,8 @@ export default function ProfileScreen() {
                 </View>
               </TouchableOpacity>
             ) : null}
-            {customerId && referralCode ? <View style={styles.idDivider} /> : null}
-            {referralCode ? (
+            {customerId && showReferralUi && referralCode ? <View style={styles.idDivider} /> : null}
+            {showReferralUi && referralCode ? (
               <TouchableOpacity style={styles.idRow} onPress={() => copyToClipboard(referralCode, t("profile.referralId"))}>
                 <AppText style={styles.idLabel}>{t("profile.referralId")}</AppText>
                 <View style={styles.idValueRow}>
@@ -415,15 +437,16 @@ export default function ProfileScreen() {
           ))}
         </View>
 
-        {/* Refer banner */}
-        <View style={styles.referCard}>
-          <AppText style={styles.referTitle}>{t("profile.referEarnTitle")}</AppText>
-          <AppText style={styles.referSub}>{t("profile.referEarnSub")}</AppText>
-          <TouchableOpacity style={styles.referBtn} activeOpacity={0.9} onPress={handleReferNow}>
-            <AppText style={styles.referBtnText}>{t("profile.referNow")}</AppText>
-            <Ionicons name="arrow-forward" size={16} color="#fff" />
-          </TouchableOpacity>
-        </View>
+        {showReferralUi ? (
+          <View style={styles.referCard}>
+            <AppText style={styles.referTitle}>{referralCopy.title}</AppText>
+            <AppText style={styles.referSub}>{referralCopy.subtitle}</AppText>
+            <TouchableOpacity style={styles.referBtn} activeOpacity={0.9} onPress={handleReferNow}>
+              <AppText style={styles.referBtnText}>{t("profile.referNow")}</AppText>
+              <Ionicons name="arrow-forward" size={16} color="#fff" />
+            </TouchableOpacity>
+          </View>
+        ) : null}
 
         <BrandingFooter />
       </ScrollView>

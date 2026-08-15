@@ -456,7 +456,7 @@ export default function LoginScreen() {
               <AppText style={apiUrlStyles.sheetTitle}>Configure API URL</AppText>
               <AppText style={apiUrlStyles.sheetSubtitle}>
                 Point this installed app at a different backend without rebuilding.
-                Use your PC's LAN IP (e.g. http://10.0.0.5:3000) or an ngrok URL.
+                Use your PC's LAN IP (e.g. http://10.150.65.181:3000) or an ngrok URL.
               </AppText>
               <AppText style={apiUrlStyles.sheetLabel}>Current</AppText>
               <Text style={apiUrlStyles.sheetCurrent} numberOfLines={1}>{currentApiUrl}</Text>
@@ -465,7 +465,7 @@ export default function LoginScreen() {
               <TextInput
                 value={apiUrlInput}
                 onChangeText={setApiUrlInput}
-                placeholder="http://10.113.83.18:3000"
+                placeholder="http://10.150.65.181:3000"
                 placeholderTextColor={PLACEHOLDER_GRAY}
                 autoCapitalize="none"
                 autoCorrect={false}

@@ -197,6 +197,9 @@ const EarningsSummarySchema = z.object({
   hasBankAccount: z.boolean(),
   minWithdrawal: z.number().optional(),
   canWithdraw: z.boolean().optional(),
+  isFrozen: z.boolean().optional(),
+  freezeReason: z.string().nullable().optional(),
+  frozenAt: z.string().nullable().optional(),
   breakdown: z.object({
     food: z.number(),
     parcel: z.number(),
@@ -1156,6 +1159,24 @@ export const riderApi = {
       };
       config?: Record<string, unknown>;
     }>("/v1/referral/me", { method: "GET" });
+  },
+
+  async applyReferral(body: {
+    referralCode?: string;
+    clickToken?: string;
+    playReferrer?: string;
+    source?: "deep_link" | "play_install_referrer" | "manual" | "share_sheet" | "unknown";
+    deviceFingerprint?: string;
+  }) {
+    const client = createApiClient();
+    return client.request<{ ok: boolean; error?: string; alreadyApplied?: boolean; relationshipId?: number }>(
+      "/v1/referral/apply",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      },
+    );
   },
 };
 

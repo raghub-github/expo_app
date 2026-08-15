@@ -155,6 +155,9 @@ export function warmDashboardWalletCache(storeId: string): void {
         total_withdrawn: data.total_withdrawn ?? 0,
         pending_withdrawal_total: data.pending_withdrawal_total ?? 0,
         in_process_withdrawal_total: data.in_process_withdrawal_total ?? 0,
+        isFrozen: data.isFrozen === true || String(data.status ?? "").toUpperCase() === "FROZEN",
+        freezeReason: data.freezeReason ?? null,
+        frozenAt: data.frozenAt ?? null,
       });
     })
     .catch(() => {

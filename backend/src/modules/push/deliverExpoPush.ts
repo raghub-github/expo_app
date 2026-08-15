@@ -83,10 +83,9 @@ async function sendInline(
   const tickets = res.body?.data ?? [];
   tickets.forEach((ticket, i) => {
     const err = ticket.details?.error ?? "";
-    if (
-      ticket.status === "error" &&
-      (err === "DeviceNotRegistered" || err === "InvalidCredentials")
-    ) {
+    // Only purge truly dead device tokens — InvalidCredentials is Expo project
+    // FCM config, not a bad token.
+    if (ticket.status === "error" && err === "DeviceNotRegistered") {
       const tok = tokens[i];
       if (tok) dead.push(tok);
     }
@@ -98,17 +97,26 @@ async function sendInline(
     incrCounter("push_inline_ticket_errors_total", "Inline Expo ticket errors", outcomes.err);
   }
 
+  const firstErr =
+    tickets.find((t) => t.status === "error")?.details?.error ??
+    tickets.find((t) => t.status === "error")?.message;
+
   return {
     ok: outcomes.ok > 0,
     accepted: outcomes.ok,
     failed: outcomes.err,
-    error: outcomes.ok === 0 ? "all_tickets_failed" : undefined,
+    error:
+      outcomes.ok === 0
+        ? firstErr
+          ? `expo_ticket_${firstErr}`
+          : "all_tickets_failed"
+        : undefined,
     mode: "inline",
   };
 }
 
 export async function deliverExpoPush(
-  payload: PushSendJob,
+  payload: PushSendJob & { forceInline?: boolean },
 ): Promise<{
   ok: boolean;
   accepted: number;
@@ -116,7 +124,7 @@ export async function deliverExpoPush(
   error?: string;
   mode: "inline" | "queued";
 }> {
-  const preferQueue = getEnv().PUSH_USE_QUEUE === true;
+  const preferQueue = getEnv().PUSH_USE_QUEUE === true && !payload.forceInline;
   const data = mergeDeepLinkData(payload);
   const job: PushSendJob = { ...payload, data, screen: payload.screen };
 
@@ -128,6 +136,11 @@ export async function deliverExpoPush(
           : undefined;
       await enqueue(QUEUE_NAMES.PUSH_SEND, job, jobId ? { jobId } : undefined);
       incrCounter("push_enqueued_total", "Push notifications enqueued", 1);
+      console.info(
+        `[push] enqueued nid=${payload.dispatchLogId ?? "n/a"} tokens=${
+          Array.isArray(payload.to) ? payload.to.length : 1
+        }`,
+      );
       return { ok: true, accepted: 1, failed: 0, mode: "queued" };
     } catch (err) {
       incrCounter("push_enqueue_failed_total", "Push enqueue failures (tolerated)");

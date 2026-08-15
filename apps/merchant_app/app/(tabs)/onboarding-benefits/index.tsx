@@ -12,6 +12,7 @@ import {
   ActivityIndicator,
   StatusBar,
   Platform,
+  BackHandler,
 } from "react-native";
 import { useFocusEffect, useRouter } from "expo-router";
 import { StatusBar as ExpoStatusBar } from "expo-status-bar";
@@ -31,14 +32,16 @@ import { useSelectedStore } from "@/context/SelectedStoreContext";
 import { useMenuItems, MENU_CATALOG_LIST_FILTERS } from "@/hooks/useMenuQueries";
 import { useMerchantGoBack, useMerchantNavigate } from "@/lib/merchantNavigation";
 import {
-  dismissOnboardingBenefits,
+  confirmOnboardingBenefitsCompleted,
   ensureOnboardingBenefitsStarted,
+  formatAddPhotosTaskTitle,
   formatOnboardingDeadline,
   isImageUploadComplete,
   isOnboardingExpired,
   loadOnboardingBenefitsState,
   resolveImageUploadTarget,
   reviveOnboardingBenefitsIfPending,
+  syncOnboardingBenefitsFromServer,
 } from "@/lib/onboardingBenefitsStorage";
 
 type TabKey = "activated" | "locked";
@@ -52,18 +55,21 @@ function itemHasImage(item: {
 
 export default function OnboardingBenefitsScreen() {
   const router = useRouter();
-  const goBack = useMerchantGoBack();
+  const goBack = useMerchantGoBack("/(tabs)");
   const { push: navPush } = useMerchantNavigate();
   const insets = useSafeAreaInsets();
   const { token } = useAuth();
   const { selectedStore } = useSelectedStore();
   const storeId = selectedStore?.store_id ?? null;
+  const storeDbId = selectedStore?.id ?? null;
 
-  const { data, isLoading, refetch } = useMenuItems(storeId, token, MENU_CATALOG_LIST_FILTERS);
+  const { data, isLoading, refetch, isFetched } = useMenuItems(storeId, token, MENU_CATALOG_LIST_FILTERS);
 
   const [startedAt, setStartedAt] = useState<string | null>(null);
   const [packagingTipsDone, setPackagingTipsDone] = useState(false);
   const [tab, setTab] = useState<TabKey>("activated");
+  const [completed, setCompleted] = useState(false);
+  const [gotItBusy, setGotItBusy] = useState(false);
 
   const catalogItems = data?.items ?? [];
   const hasCatalogItems = catalogItems.length > 0;
@@ -83,39 +89,101 @@ export default function OnboardingBenefitsScreen() {
         StatusBar.setBarStyle("dark-content");
         StatusBar.setTranslucent(false);
       }
+
+      const onHardwareBack = () => {
+        goBack();
+        return true;
+      };
+      const backSub = BackHandler.addEventListener("hardwareBackPress", onHardwareBack);
+
       void (async () => {
         if (!storeId) return;
+        if (storeDbId && token) {
+          await syncOnboardingBenefitsFromServer(storeId, storeDbId, token);
+        }
         const existing = await loadOnboardingBenefitsState(storeId);
+        if (existing?.completedAt) {
+          if (cancelled) return;
+          setStartedAt(existing.startedAt);
+          setPackagingTipsDone(Boolean(existing.packagingTipsCompletedAt));
+          setCompleted(true);
+          setTab("locked");
+          // Completed onboarding must not stay on this screen after restart deep-link.
+          goBack();
+          return;
+        }
         if (!hasCatalogItems && !existing) return;
-        const state = await ensureOnboardingBenefitsStarted(storeId);
+        const state = await ensureOnboardingBenefitsStarted(storeId, {
+          storeDbId,
+          token,
+        });
         if (cancelled) return;
         await reviveOnboardingBenefitsIfPending(storeId, {
           itemsWithImages,
-          approvedItemCount: catalogItems.length,
+          itemCount: catalogItems.length,
         });
         const refreshed = await loadOnboardingBenefitsState(storeId);
         setStartedAt((refreshed ?? state).startedAt);
-        const tipsDone = Boolean(refreshed?.packagingTipsCompletedAt ?? state.packagingTipsCompletedAt);
+        const tipsDone = Boolean(
+          refreshed?.packagingTipsCompletedAt ?? state.packagingTipsCompletedAt
+        );
         setPackagingTipsDone(tipsDone);
+        setCompleted(Boolean(refreshed?.completedAt));
         const expiredNow = isOnboardingExpired((refreshed ?? state).startedAt);
-        setTab(expiredNow ? "locked" : "activated");
-
-        const imagesDone = isImageUploadComplete(itemsWithImages, catalogItems.length);
-        if (expiredNow || (imagesDone && tipsDone)) {
-          await dismissOnboardingBenefits(storeId);
-        }
+        setTab(expiredNow || refreshed?.completedAt ? "locked" : "activated");
+        // Do NOT auto-set completedAt when both tasks are done — Got it owns that.
       })();
       void refetch();
       return () => {
         cancelled = true;
+        backSub.remove();
       };
-    }, [storeId, hasCatalogItems, refetch, itemsWithImages, catalogItems.length])
+    }, [
+      storeId,
+      storeDbId,
+      token,
+      hasCatalogItems,
+      refetch,
+      itemsWithImages,
+      catalogItems.length,
+      goBack,
+    ])
   );
 
   const imageTarget = resolveImageUploadTarget(catalogItems.length);
   const imageDone = isImageUploadComplete(itemsWithImages, catalogItems.length);
-  const showingLocked = tab === "locked" || expired;
+  const bothTasksDone = imageDone && packagingTipsDone;
+  const showingLocked = tab === "locked" || expired || completed;
   const activeStep = Math.min(3, 1 + Number(imageDone) + Number(packagingTipsDone));
+  const photosTitle = formatAddPhotosTaskTitle(catalogItems.length);
+
+  const onGotIt = useCallback(async () => {
+    if (!storeId || !bothTasksDone || gotItBusy || completed) return;
+    setGotItBusy(true);
+    try {
+      const result = await confirmOnboardingBenefitsCompleted(storeId, {
+        storeDbId,
+        token,
+        itemsWithImages,
+        itemCount: catalogItems.length,
+      });
+      if (!result.ok) return;
+      setCompleted(true);
+      goBack();
+    } finally {
+      setGotItBusy(false);
+    }
+  }, [
+    storeId,
+    bothTasksDone,
+    gotItBusy,
+    completed,
+    storeDbId,
+    token,
+    itemsWithImages,
+    catalogItems.length,
+    goBack,
+  ]);
 
   return (
     <View style={[styles.screen, { paddingTop: Math.max(insets.top, 10) }]}>
@@ -236,7 +304,7 @@ export default function OnboardingBenefitsScreen() {
             <View style={styles.taskList}>
               <TaskRow
                 icon="image-outline"
-                title={`Add photos on ${imageTarget} items`}
+                title={photosTitle}
                 subtitle={
                   expired && !imageDone
                     ? `Due date ${deadlineLabel} passed. Task locked.`
@@ -269,6 +337,35 @@ export default function OnboardingBenefitsScreen() {
                 }}
               />
             </View>
+
+            {!expired && !completed ? (
+              <Pressable
+                onPress={() => void onGotIt()}
+                disabled={!bothTasksDone || gotItBusy}
+                style={({ pressed }) => [
+                  styles.gotItBtn,
+                  (!bothTasksDone || gotItBusy) && styles.gotItBtnDisabled,
+                  pressed && bothTasksDone && !gotItBusy && { opacity: 0.9 },
+                ]}
+                accessibilityRole="button"
+                accessibilityState={{ disabled: !bothTasksDone || gotItBusy }}
+                accessibilityLabel="Got it, samajh gaya"
+              >
+                <Text
+                  style={[
+                    styles.gotItBtnText,
+                    (!bothTasksDone || gotItBusy) && styles.gotItBtnTextDisabled,
+                  ]}
+                >
+                  {gotItBusy ? "Saving…" : "Got it · समझ गया"}
+                </Text>
+              </Pressable>
+            ) : null}
+            {!expired && !completed && !bothTasksDone ? (
+              <Text style={styles.gotItHint}>
+                Complete both tasks above to finish onboarding for this outlet.
+              </Text>
+            ) : null}
           </View>
         )}
       </ScrollView>
@@ -537,5 +634,35 @@ const styles = StyleSheet.create({
   },
   taskSubDone: {
     color: GatiMitraMerchant.success,
+  },
+  gotItBtn: {
+    marginHorizontal: 16,
+    marginTop: 16,
+    marginBottom: 8,
+    backgroundColor: GatiMitraMerchant.navy,
+    borderRadius: 14,
+    paddingVertical: 14,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  gotItBtnDisabled: {
+    backgroundColor: "#E2E8F0",
+  },
+  gotItBtnText: {
+    fontSize: 16,
+    fontFamily: FONT_LORA_BOLD,
+    color: "#FFFFFF",
+  },
+  gotItBtnTextDisabled: {
+    color: GatiMitraMerchant.textTertiary,
+  },
+  gotItHint: {
+    marginHorizontal: 16,
+    marginBottom: 16,
+    fontSize: 12,
+    fontFamily: FONT_LORA,
+    color: GatiMitraMerchant.textSecondary,
+    textAlign: "center",
+    lineHeight: 18,
   },
 });

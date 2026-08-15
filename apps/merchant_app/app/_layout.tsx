@@ -45,6 +45,7 @@ import StoreOnlineStatusNotifier from "../components/StoreOnlineStatusNotifier";
 import { NetworkStatusProvider } from "@/context/NetworkStatusContext";
 import { OfflineNetworkChrome } from "@/components/OfflineNetworkChrome";
 import { PlayInAppUpdateBootstrap } from "@/components/PlayInAppUpdateBootstrap";
+import { MerchantReferralAttribution } from "@/components/MerchantReferralAttribution";
 import {
   MerchantBootstrapScreen,
   MERCHANT_SPLASH_BG,
@@ -210,6 +211,7 @@ export default function RootLayout() {
                               <LearningCentreRealtime />
                               <ServiceRestrictedNotice />
                               <SessionRevokedGate />
+                              <MerchantReferralAttribution />
                               <AppErrorBoundary source="merchant-stack">
                               <Stack
                                 screenOptions={{

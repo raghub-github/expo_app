@@ -34,14 +34,22 @@ export async function sendExpoPushWithRetry(
   maxAttempts = 3
 ): Promise<{ ok: boolean; status: number; body: ExpoPushResponse | null; error?: string }> {
   let lastErr: string | undefined;
+  const headers: Record<string, string> = {
+    Accept: "application/json",
+    "Content-Type": "application/json",
+  };
+  try {
+    const { getEnv } = await import("../../config/env.js");
+    const token = getEnv().EXPO_ACCESS_TOKEN?.trim();
+    if (token) headers.Authorization = `Bearer ${token}`;
+  } catch {
+    // env may be unavailable in isolated workers — unauthenticated Expo still works for many projects
+  }
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
       const res = await fetch(EXPO_PUSH_URL, {
         method: "POST",
-        headers: {
-          Accept: "application/json",
-          "Content-Type": "application/json",
-        },
+        headers,
         body: JSON.stringify(message),
       });
       const status = res.status;
@@ -56,6 +64,24 @@ export async function sendExpoPushWithRetry(
         log.warn({ status, attempt }, "expo_push_retry");
         await sleep(300 * 2 ** (attempt - 1));
         continue;
+      }
+      if (!(status >= 200 && status < 300)) {
+        log.warn({ status, attempt, error: body }, "expo_push_http_error");
+      } else {
+        const tickets = body?.data ?? [];
+        const errTickets = tickets.filter((t) => t.status === "error");
+        if (errTickets.length > 0) {
+          log.warn(
+            {
+              attempt,
+              errors: errTickets.map((t) => t.details?.error ?? t.message ?? "error").slice(0, 5),
+              tokenCount: message.to.length,
+            },
+            "expo_push_ticket_errors",
+          );
+        } else {
+          log.debug({ attempt, accepted: tickets.length }, "expo_push_accepted");
+        }
       }
       return { ok: status >= 200 && status < 300, status, body };
     } catch (e) {

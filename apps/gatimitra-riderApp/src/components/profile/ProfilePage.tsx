@@ -31,6 +31,7 @@ import { profileHeroShadow } from "@/src/components/profile/profileCardShadow";
 import { RiderRatingBadge } from "@/src/components/profile/RiderRatingBadge";
 import { formatRiderRatingDisplay } from "@/src/lib/format-rider-rating";
 import { toAbsoluteImageUrl } from "@/src/utils/mediaUrl";
+import { fetchRiderReferralConfig } from "@/src/services/referral.service";
 
 const PAGE_BG = "#F4F6F8";
 const PAD = 16;
@@ -119,6 +120,15 @@ export function ProfilePage() {
 
   const ratingDisplay = formatRiderRatingDisplay(riderStatus?.rating);
   const referralCode = riderStatus?.referralCode?.trim() || null;
+  const [showReferralUi, setShowReferralUi] = useState(false);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    void fetchRiderReferralConfig(controller.signal).then((config) => {
+      setShowReferralUi(config?.referralEnabled === true);
+    });
+    return () => controller.abort();
+  }, []);
 
   const verifiedLines = t("profile.verifiedPartner", "Verified Partner").split(/\s+/);
   const ribbonTop = verifiedLines.slice(0, -1).join(" ") || "Verified";
@@ -200,7 +210,7 @@ export function ProfilePage() {
               </View>
             </View>
 
-            {referralCode ? (
+            {showReferralUi && referralCode ? (
               <View style={styles.referralCorner} pointerEvents="none">
                 <Text style={styles.referralCornerLabel}>
                   {t("profile.referralId", "Referral ID")}

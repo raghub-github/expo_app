@@ -13,7 +13,7 @@ const APP_NAME = Constants.expoConfig?.name ?? "GatiMitra Rider";
 const PACKAGE_NAME =
   Constants.expoConfig?.android?.package ??
   Application.applicationId ??
-  "com.raghubhunia.gatimitrariderapp";
+  "com.gatimitra.rider";
 const APP_ICON = require("../../assets/images/rideraap.png");
 
 export function PlayInAppUpdateBootstrap() {

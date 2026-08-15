@@ -1,6 +1,6 @@
 import { Alert, Share, Linking } from "react-native";
 import * as Clipboard from "expo-clipboard";
-import type { ReferralRewardSummary } from "@/services/referral.service";
+import type { ReferralPresentedCopy } from "@/lib/referralCopy";
 
 /** Always share production domain — never localhost / LAN / temporary hosts. */
 const PRODUCTION_BASE = "https://gatimitra.com";
@@ -36,58 +36,31 @@ export function buildReferralShareMessage(
   referralCode: string,
   userName?: string | null,
   shareUrl?: string | null,
-  rewardSummary?: ReferralRewardSummary | null,
+  presented?: ReferralPresentedCopy | null,
 ): string {
-  const name = userName?.trim() || "Your friend";
+  const name = userName?.trim() || "A friend";
   const code = referralCode.trim().toUpperCase();
   const url = buildReferralShareUrl(code, shareUrl);
-  const condition =
-    rewardSummary?.conditionLine?.trim() ||
-    "Complete your first eligible delivered order and unlock your referral rewards.";
-
-  const lines: string[] = [
+  if (presented) {
+    return presented.shareMessage({ referrerName: name, referralCode: code, shareUrl: url });
+  }
+  return [
     `🎉 ${name} invited you to join GatiMitra!`,
     "",
-    condition,
+    "Join now:",
+    url,
     "",
-  ];
-
-  if (rewardSummary?.inviteeRewardLabel) {
-    lines.push(`🎁 You Get: ${rewardSummary.inviteeRewardLabel}`);
-  }
-  if (rewardSummary?.referrerRewardLabel) {
-    lines.push(`🎁 ${name} Gets: ${rewardSummary.referrerRewardLabel}`);
-  }
-  if (rewardSummary?.inviteeRewardLabel || rewardSummary?.referrerRewardLabel) {
-    lines.push("");
-  }
-
-  // Fallback when structured labels are missing but shareLines exist.
-  if (
-    !rewardSummary?.inviteeRewardLabel &&
-    !rewardSummary?.referrerRewardLabel &&
-    rewardSummary?.shareLines?.length
-  ) {
-    for (const line of rewardSummary.shareLines) {
-      if (line?.trim()) lines.push(`🎁 ${line.trim()}`);
-    }
-    lines.push("");
-  }
-
-  lines.push("Join Now:");
-  lines.push(url);
-  lines.push("");
-  lines.push(`Referral Code: ${code}`);
-  lines.push("");
-  lines.push("*T&C Apply.");
-  return lines.join("\n");
+    `Referral code: ${code}`,
+    "",
+    "T&C apply.",
+  ].join("\n");
 }
 
 export async function shareReferralCode(
   referralCode: string | null | undefined,
   userName?: string | null,
   shareUrl?: string | null,
-  rewardSummary?: ReferralRewardSummary | null,
+  presented?: ReferralPresentedCopy | null,
 ): Promise<boolean> {
   const code = referralCode?.trim();
   if (!code) {
@@ -100,7 +73,7 @@ export async function shareReferralCode(
   try {
     const url = buildReferralShareUrl(code, shareUrl);
     await Share.share({
-      message: buildReferralShareMessage(code, userName, url, rewardSummary),
+      message: buildReferralShareMessage(code, userName, url, presented),
       url,
       title: "Refer & Earn on GatiMitra",
     });
@@ -133,12 +106,12 @@ export async function openReferralWhatsApp(
   referralCode: string | null | undefined,
   userName?: string | null,
   shareUrl?: string | null,
-  rewardSummary?: ReferralRewardSummary | null,
+  presented?: ReferralPresentedCopy | null,
 ): Promise<void> {
   const code = referralCode?.trim();
   if (!code) return;
   const text = encodeURIComponent(
-    buildReferralShareMessage(code, userName, shareUrl, rewardSummary),
+    buildReferralShareMessage(code, userName, shareUrl, presented),
   );
   await Linking.openURL(`https://wa.me/?text=${text}`).catch(() => undefined);
 }

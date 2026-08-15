@@ -118,7 +118,10 @@ export function AgentStatusToggle() {
   });
 
   const currentStatus = statusData?.data?.currentStatus || "offline";
-  const isOnline = statusData?.data?.isOnline ?? false;
+  const rawOnline = statusData?.data?.isOnline as unknown;
+  const isOnlineFlag =
+    rawOnline === true || rawOnline === "t" || rawOnline === "true" || rawOnline === 1;
+  const isOnline = currentStatus === "online" && isOnlineFlag;
 
   /** Pulse only on first-ever load with no snapshot (initialData already covers refresh). */
   const statusUnknown = isPending && statusData == null;

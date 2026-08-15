@@ -31,6 +31,7 @@ import {
   referralService,
   type ReferralPublicConfig,
 } from "@/services/referral.service";
+import { presentReferralCopy } from "@/lib/referralCopy";
 import { StoreBottomSheetShell } from "@/components/store/StoreBottomSheetShell";
 import { useProfile } from "@/hooks/useProfile";
 
@@ -41,103 +42,54 @@ const MUTED = "#6B7280";
 const BORDER = "#E5E7EB";
 const PAGE_BG = "#F3F4F6";
 
-function num(v: unknown, fallback = 0): number {
-  const n = Number(v);
-  return Number.isFinite(n) ? n : fallback;
-}
-
-/** Live amounts from current referral rules. */
-function resolveCustomerRewards(config: ReferralPublicConfig | undefined | null) {
-  const rules = config?.milestones ?? [];
-  const primary =
-    rules.find((m) => m.alsoCreditReferred) ??
-    rules.find((m) => num(m.rewardAmount) > 0 || num(m.referredRewardAmount) > 0) ??
-    rules[0];
-
-  const referrer = num(primary?.rewardAmount);
-  const referredRaw = primary?.referredRewardAmount;
-  const referred =
-    primary?.alsoCreditReferred
-      ? num(referredRaw != null ? referredRaw : primary.rewardAmount)
-      : 0;
-
-  // Display "both" amount: prefer positive shared value when admin set only one side.
-  const bothDisplay =
-    referrer > 0 && referred > 0
-      ? referrer === referred
-        ? referrer
-        : null
-      : referrer > 0
-        ? referrer
-        : referred > 0
-          ? referred
-          : 0;
-
-  return {
-    minOrder: num(config?.minOrderAmount, 249),
-    monthlyCap: num(config?.monthlyRewardCap),
-    referrer,
-    referred,
-    bothDisplay,
-    currency: config?.currency ?? "INR",
-    rewardEnabled: Boolean(config?.rewardEnabled),
-    referralEnabled: Boolean(config?.referralEnabled),
-    autoApply: Boolean(config?.autoApplyEnabled),
-    firstOrderOnly: Boolean(config?.firstOrderOnly ?? true),
-  };
-}
-
 function buildFaqs(config: ReferralPublicConfig | undefined | null) {
-  const r = resolveCustomerRewards(config);
-  const inr = (n: number) => `₹${n}`;
-  const earnLine =
-    r.referrer > 0 && r.referred > 0 && r.referrer !== r.referred
-      ? `You earn ${inr(r.referrer)} GatiCash and your friend earns ${inr(r.referred)} GatiCash after their first qualifying delivered order.`
-      : r.bothDisplay != null && r.bothDisplay > 0
-        ? `You and your friend each earn ${inr(r.bothDisplay)} GatiCash after their first qualifying delivered order.`
-        : r.rewardEnabled
-          ? "Reward amounts are set by GatiMitra. Check back soon — amounts update live from admin."
-          : "Rewards are currently paused by admin. Referral tracking still works.";
+  const copy = presentReferralCopy({
+    audience: "customer",
+    referralEnabled: config?.referralEnabled,
+    rewardEnabled: config?.rewardEnabled,
+    rewardsPaused: config?.rewardSummary?.rewardsPaused,
+    currency: config?.currency,
+    minOrderAmount: config?.minOrderAmount,
+    requireKyc: config?.requireKyc,
+    firstOrderOnly: config?.firstOrderOnly,
+    milestones: config?.milestones,
+  });
+  const min = Number(config?.minOrderAmount) || 0;
+  const monthlyCap = Number(config?.monthlyRewardCap) || 0;
+  const you = copy.youEarnLine;
+  const they = copy.theyEarnLine;
+  const earnLine = copy.hasActiveReward
+    ? [you, they].filter(Boolean).join(". ") + "."
+    : copy.unavailableMessage;
 
   return [
+    { q: "How much do I earn?", a: earnLine },
     {
-      q: "How much do I earn?",
-      a: earnLine,
-    },
-    {
-      q: "What is the minimum order?",
-      a: `Your friend’s first delivered order must be at least ${inr(r.minOrder)} to qualify for the reward.`,
+      q: "What does my friend need to do?",
+      a: `They ${copy.requirementPhrase}.`,
     },
     {
       q: "Is there a monthly limit?",
       a:
-        r.monthlyCap > 0
-          ? `Yes. You can earn up to ${inr(r.monthlyCap)} in referral rewards per calendar month. Extra referrals still track, but credits pause until next month.`
-          : "No monthly cap is configured right now.",
+        monthlyCap > 0
+          ? `Yes. You can earn up to ₹${monthlyCap} in referral rewards each month.`
+          : "There is no monthly limit right now.",
     },
     {
       q: "When is the reward credited?",
-      a: r.firstOrderOnly
-        ? "After your friend’s first qualifying order is delivered (not on signup or install)."
-        : "After a qualifying delivered order that matches the active referral rule.",
+      a: min > 0
+        ? "After your friend’s delivered order meets the required amount."
+        : "After your friend completes the required delivered order.",
     },
     {
       q: "Do I need to enter a code?",
-      a: r.autoApply
+      a: config?.autoApplyEnabled
         ? "No. Friends who install from your shared link get the referral applied automatically."
-        : "They may need to apply your referral code during signup if auto-apply is off.",
+        : "Share your referral ID so friends can apply it when they join.",
     },
     {
       q: "Can I withdraw GatiCash?",
-      a: "No. Referral rewards credit as non-withdrawable GatiCash and can only be spent inside GatiMitra.",
-    },
-    {
-      q: "Are rewards active right now?",
-      a: r.rewardEnabled
-        ? "Yes — rewards are enabled. Amounts and caps update automatically when GatiMitra changes them."
-        : r.referralEnabled
-          ? "Referral tracking is on, but reward payouts are currently paused."
-          : "Customer referral is currently paused.",
+      a: "No. Referral rewards credit as GatiCash and can only be spent inside GatiMitra.",
     },
   ];
 }
@@ -182,15 +134,29 @@ export default function ReferralsScreen() {
   }, [referralCode, shareUrl]);
 
   const config = liveConfig ?? data?.config;
+  const referralEnabled = config?.referralEnabled === true;
   const history = data?.history ?? [];
   const stats = data?.stats ?? {
     totalReferrals: history.length,
     totalActive: history.filter((r) => r.is_active).length,
     totalEarned: history.reduce((s, r) => s + (Number(r.reward_earned) || 0), 0),
   };
-  const rewards = useMemo(() => resolveCustomerRewards(config), [config]);
+  const rewards = useMemo(
+    () =>
+      presentReferralCopy({
+        audience: "customer",
+        referralEnabled: config?.referralEnabled,
+        rewardEnabled: config?.rewardEnabled,
+        rewardsPaused: config?.rewardSummary?.rewardsPaused,
+        currency: config?.currency,
+        minOrderAmount: config?.minOrderAmount,
+        requireKyc: config?.requireKyc,
+        firstOrderOnly: config?.firstOrderOnly,
+        milestones: config?.milestones,
+      }),
+    [config],
+  );
   const faqs = useMemo(() => buildFaqs(config), [config]);
-  const rewardSummary = config?.rewardSummary ?? null;
 
   useFocusEffect(
     useCallback(() => {
@@ -227,13 +193,17 @@ export default function ReferralsScreen() {
     if (params.autoApply === "1") {
       void (async () => {
         try {
-          await referralService.apply({
+          const cfg = await referralService.getConfig().catch(() => null);
+          if (cfg?.referralEnabled !== true) return;
+          const result = await referralService.apply({
             referralCode: code,
             clickToken: params.click ? String(params.click) : undefined,
             source: "deep_link",
           });
-          await clearPendingReferral();
-          await refetch();
+          if (result.ok || result.alreadyApplied) {
+            await clearPendingReferral();
+            await refetch();
+          }
         } catch {
           /* keep pending for resume after auth */
         }
@@ -241,38 +211,7 @@ export default function ReferralsScreen() {
     }
   }, [params.autoApply, params.click, params.code, refetch]);
 
-  const steps = useMemo(() => {
-    const min = rewards.minOrder;
-    let earnBody: string;
-    if (rewards.referrer > 0 && rewards.referred > 0 && rewards.referrer !== rewards.referred) {
-      earnBody = `After their first delivered order of ₹${min}+, you get ₹${rewards.referrer} and they get ₹${rewards.referred} GatiCash.`;
-    } else if (rewards.bothDisplay != null && rewards.bothDisplay > 0) {
-      earnBody = `After their first delivered order of ₹${min}+, you both get ₹${rewards.bothDisplay} GatiCash.`;
-    } else if (rewards.rewardEnabled) {
-      earnBody = `After their first delivered order of ₹${min}+, GatiCash is credited per the live reward rules.`;
-    } else {
-      earnBody = `After their first delivered order of ₹${min}+, rewards credit when admin re-enables payouts.`;
-    }
-    return [
-      {
-        icon: "share-social-outline" as const,
-        title: "Share your link",
-        body: "Send your unique referral link via WhatsApp, SMS, or any app.",
-      },
-      {
-        icon: "download-outline" as const,
-        title: "They install via your link",
-        body: rewards.autoApply
-          ? "Friends who install from your link get the referral applied automatically — no code entry."
-          : "Share your referral ID so friends can apply it when they join.",
-      },
-      {
-        icon: "gift-outline" as const,
-        title: "You both earn GatiCash",
-        body: earnBody,
-      },
-    ];
-  }, [rewards]);
+  const steps = rewards.steps;
 
   return (
     <>
@@ -281,20 +220,38 @@ export default function ReferralsScreen() {
         contentContainerStyle={{ padding: 16, paddingBottom: insets.bottom + 24 }}
         showsVerticalScrollIndicator={false}
       >
+        {config && !referralEnabled ? (
+          <View style={styles.heroCard}>
+            <View style={styles.heroIconWrap}>
+              <Ionicons name="gift-outline" size={28} color={MUTED} />
+            </View>
+            <AppText style={styles.heroTitle}>{rewards.title}</AppText>
+            <AppText style={styles.heroSub}>
+              This referral code is no longer available.
+            </AppText>
+          </View>
+        ) : (
+          <>
         <View style={styles.heroCard}>
           <View style={styles.heroIconWrap}>
             <Ionicons name="gift" size={28} color={GREEN_DARK} />
           </View>
-          <AppText style={styles.heroTitle}>{t("profile.referEarnTitle")}</AppText>
+          <AppText style={styles.heroTitle}>{rewards.title}</AppText>
           <AppText style={styles.heroSub}>
             {!config
               ? isLoading || isFetching
                 ? "Loading your referral details…"
                 : "Could not load referral details. Pull to retry."
-              : config.rewardEnabled
-                ? t("profile.referEarnSub")
-                : "Referral tracking is on. Rewards are currently paused by admin."}
+              : rewards.hasActiveReward
+                ? rewards.subtitle
+                : rewards.unavailableMessage}
           </AppText>
+          {rewards.hasActiveReward && rewards.youEarnLine ? (
+            <AppText style={styles.heroAmount}>{rewards.youEarnLine}</AppText>
+          ) : null}
+          {rewards.hasActiveReward && rewards.theyEarnDetail ? (
+            <AppText style={styles.heroSub}>{rewards.theyEarnDetail}</AppText>
+          ) : null}
         </View>
 
         {isError && !data ? (
@@ -336,7 +293,7 @@ export default function ReferralsScreen() {
               style={styles.primaryBtn}
               activeOpacity={0.9}
               onPress={() =>
-                shareReferralCode(referralCode, referrerName, shareUrl, rewardSummary)
+                shareReferralCode(referralCode, referrerName, shareUrl, rewards)
               }
             >
               <Ionicons name="share-outline" size={18} color="#fff" />
@@ -347,7 +304,7 @@ export default function ReferralsScreen() {
             style={styles.whatsappBtn}
             activeOpacity={0.9}
             onPress={() =>
-              openReferralWhatsApp(referralCode, referrerName, shareUrl, rewardSummary)
+              openReferralWhatsApp(referralCode, referrerName, shareUrl, rewards)
             }
           >
             <Ionicons name="logo-whatsapp" size={18} color="#fff" />
@@ -363,7 +320,19 @@ export default function ReferralsScreen() {
               style={[styles.stepRow, index < steps.length - 1 && styles.stepBorder]}
             >
               <View style={styles.stepIcon}>
-                <Ionicons name={step.icon} size={20} color={GREEN_DARK} />
+                <Ionicons
+                  name={
+                    index === 0
+                      ? "share-social-outline"
+                      : index === 1
+                        ? "download-outline"
+                        : index === steps.length - 1
+                          ? "gift-outline"
+                          : "checkmark-circle-outline"
+                  }
+                  size={20}
+                  color={GREEN_DARK}
+                />
               </View>
               <View style={styles.stepBody}>
                 <AppText style={styles.stepTitle}>{step.title}</AppText>
@@ -413,10 +382,11 @@ export default function ReferralsScreen() {
         <View style={styles.tipCard}>
           <Ionicons name="information-circle-outline" size={20} color={GREEN} />
           <AppText style={styles.tipText}>
-            Rewards credit as non-withdrawable GatiCash after a qualifying delivered order. Amounts
-            and caps are controlled by GatiMitra and update live.
+            {rewards.tip}
           </AppText>
         </View>
+          </>
+        )}
       </ScrollView>
 
       <StoreBottomSheetShell
@@ -466,6 +436,7 @@ const styles = StyleSheet.create({
   },
   heroTitle: { fontSize: 18, fontWeight: "800", color: TEXT, textAlign: "center" },
   heroSub: { fontSize: 13, color: MUTED, textAlign: "center", marginTop: 6, lineHeight: 19 },
+  heroAmount: { fontSize: 15, fontWeight: "700", color: GREEN_DARK, textAlign: "center", marginTop: 10 },
   retryCard: {
     flexDirection: "row",
     alignItems: "center",

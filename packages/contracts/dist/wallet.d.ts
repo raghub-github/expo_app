@@ -117,6 +117,9 @@ export declare const WalletSummarySchema: z.ZodObject<{
     total_balance: z.ZodOptional<z.ZodNumber>;
     settlement_paused: z.ZodOptional<z.ZodBoolean>;
     delivered_today: z.ZodOptional<z.ZodNumber>;
+    isFrozen: z.ZodOptional<z.ZodBoolean>;
+    freezeReason: z.ZodOptional<z.ZodNullable<z.ZodString>>;
+    frozenAt: z.ZodOptional<z.ZodNullable<z.ZodString>>;
 }, z.core.$strip>;
 export type WalletSummary = z.infer<typeof WalletSummarySchema>;
 export declare const LedgerEntrySchema: z.ZodObject<{

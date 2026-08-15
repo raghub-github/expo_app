@@ -16,11 +16,9 @@ function androidPackage(): string | undefined {
   if (Constants.appOwnership === "expo") {
     return "host.exp.exponent";
   }
-  return (
-    Constants.expoConfig?.android?.package ||
-    (Constants.manifest as { android?: { package?: string } } | null)?.android?.package ||
-    "com.gatimitra.rider"
-  );
+  // Prefer hardcoded package so Settings intents match Firebase even if
+  // Constants.expoConfig is stale in a development client.
+  return "com.gatimitra.rider";
 }
 
 export async function requestNotificationPermissions() {
