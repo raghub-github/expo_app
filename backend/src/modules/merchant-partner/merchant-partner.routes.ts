@@ -2156,7 +2156,7 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
           }
           const sql = getSql();
           const owned = await requireOwnedPartnerStore(sql, req.auth.sub, storeId);
-          if ("error" in owned) return reply.code(owned.status).send({ error: owned.error });
+          if ("error" in owned) return reply.code(owned.status ?? 403).send({ error: owned.error });
           const row = await getOnboardingTask(sql, storeId, ONBOARDING_BENEFITS_TASK_KEY);
           const task = toOnboardingTaskDto(row, ONBOARDING_BENEFITS_TASK_KEY);
           return reply.send({ storeId, tasks: [task], task });
@@ -2180,7 +2180,7 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
           }
           const sql = getSql();
           const owned = await requireOwnedPartnerStore(sql, req.auth.sub, storeId);
-          if ("error" in owned) return reply.code(owned.status).send({ error: owned.error });
+          if ("error" in owned) return reply.code(owned.status ?? 403).send({ error: owned.error });
           const row = await ensureOnboardingTaskStarted(sql, storeId, taskKey);
           return reply.send(toOnboardingTaskDto(row, taskKey));
         }
@@ -2203,7 +2203,7 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
           }
           const sql = getSql();
           const owned = await requireOwnedPartnerStore(sql, req.auth.sub, storeId);
-          if ("error" in owned) return reply.code(owned.status).send({ error: owned.error });
+          if ("error" in owned) return reply.code(owned.status ?? 403).send({ error: owned.error });
           const row = await completeOnboardingTask(sql, storeId, {
             taskKey,
             completedBy: req.auth.sub,
@@ -2228,7 +2228,7 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
           }
           const sql = getSql();
           const owned = await requireOwnedPartnerStore(sql, req.auth.sub, storeId);
-          if ("error" in owned) return reply.code(owned.status).send({ error: owned.error });
+          if ("error" in owned) return reply.code(owned.status ?? 403).send({ error: owned.error });
           const dto = toOnboardingTaskDto(
             await getOnboardingTask(sql, storeId, ONBOARDING_BENEFITS_TASK_KEY)
           );
@@ -2266,7 +2266,7 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
         }
         const sql = getSql();
         const owned = await requireOwnedPartnerStore(sql, req.auth.sub, storeId);
-        if ("error" in owned) return reply.code(owned.status).send({ error: owned.error });
+        if ("error" in owned) return reply.code(owned.status ?? 403).send({ error: owned.error });
         const body = req.body ?? {};
         let row = await getOnboardingTask(sql, storeId, ONBOARDING_BENEFITS_TASK_KEY);
         if (body.started_at !== undefined || !row) {
