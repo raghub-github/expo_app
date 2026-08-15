@@ -1,0 +1,87 @@
+# apps/merchant_app/.easignore
+# EAS archives from the monorepo GIT ROOT, so every path here is git-root-relative.
+# Goal: upload ONLY what the merchant build needs (apps/merchant_app + shared packages/),
+# not the whole monorepo. Without this file EAS fell back to .gitignore and uploaded ~283 MB
+# (all apps + backend + dashboards + partnersite + cxsite), which failed on upload.
+#
+# Root-level dirs are ANCHORED with a leading "/" so a bare name never strips an identically
+# named subdir INSIDE apps/merchant_app (e.g. its own services/, scripts/) — the exact trap
+# documented in the root .easignore.
+
+# --- Other apps / web projects (not needed for the merchant build) ---
+/apps/customer_app/
+/apps/gatimitra-riderApp/
+/rider-web/
+
+# --- Backend / dashboards / web / infra (never needed for a mobile build) ---
+/backend/
+/dashboard/
+/dashboards/
+/partnersite/
+/cxsite/
+/services/
+/infra/
+/docs/
+/scripts/
+/merchant_db/
+
+# --- node_modules anywhere (EAS installs deps on the builder) ---
+**/node_modules/
+
+# --- Native dirs: managed workflow; EAS runs expo prebuild ---
+/apps/merchant_app/android/
+/apps/merchant_app/ios/
+
+# --- Caches / build artifacts ---
+**/.expo/
+**/.expo-shared/
+**/.gradle/
+**/.next/
+**/.cache/
+**/build/
+**/out/
+**/tmp/
+**/temp/
+**/logs/
+*.log
+*.tgz
+*.zip
+*.tar.gz
+*.apk
+*.aab
+*.ipa
+*.keystore
+
+# --- Backend-only artifacts, docs, tests ---
+**/drizzle/
+**/__tests__/
+**/*.test.*
+**/*.spec.*
+**/coverage/
+
+# --- Env files: provided via EAS environment, not the archive ---
+**/.env
+**/.env.*
+!**/.env.example
+
+# --- Git / IDE / OS junk ---
+.git/
+.gitignore
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# --- dist/: exclude everything EXCEPT shared workspace package builds ---
+# merchant imports @gatimitra/{bill-print,contracts,expo-push-kit,kot-print,
+# map-tracking-engine,merchant-payout,otp-verify-ui,print-utils} → they resolve to
+# packages/<pkg>/dist, so those MUST stay in the archive.
+**/dist/
+!packages/*/dist/
+!packages/*/dist/**
+
+# NOTE: google-services.json is intentionally NOT ignored here — the merchant Android
+# build needs it for FCM (app.config.js wires it via android.googleServicesFile).
