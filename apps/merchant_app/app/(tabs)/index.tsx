@@ -47,20 +47,11 @@ import { isActiveMerchantOrderStage } from "@/lib/merchantActiveOrders";
 import { formatCurrency } from "@/lib/merchantPayoutUtils";
 import { resolveWalletDisplayBalance } from "@gatimitra/merchant-payout";
 import { subscribeMerchantDashboardStatsRefresh } from "@/lib/merchantDashboardStatsBus";
-import { OrderNotificationsDisabledBanner } from "@/components/OrderNotificationsDisabledBanner";
-import {
-  MerchantHomeBannerCarousel,
-  MerchantScheduleOffBanner,
-  MerchantRushHourBanner,
-  type MerchantHomeBannerSlide,
-} from "@/components/MerchantHomeBannerCarousel";
 import {
   OnboardingBenefitsCard,
   useOnboardingBenefitsWindow,
 } from "@/components/OnboardingBenefitsCard";
 import { useMenuItems, MENU_CATALOG_LIST_FILTERS } from "@/hooks/useMenuQueries";
-import { useNotificationPermissionGate } from "@/context/NotificationPermissionGateContext";
-import { formatStoreActionSourceLabel } from "@/lib/storeActionSource";
 
 const { width } = Dimensions.get("window");
 const KPI_VIEWPORT = width - H_PADDING * 2;
@@ -128,7 +119,7 @@ export default function DashboardScreen() {
   const storeId = selectedStore?.id ?? null;
   const menuStoreId = selectedStore?.store_id ?? null;
   const { orders, refetch: refetchOrders, transitionOrder, extendPrepDelay, acceptanceWindowMinutes } = useOrders();
-  const { isOnline, refresh, scheduledClosure, upcomingScheduledClosure, activeRush } = useStoreStatus();
+  const { isOnline, refresh } = useStoreStatus();
   const { data: menuCatalog } = useMenuItems(menuStoreId, token, MENU_CATALOG_LIST_FILTERS);
 
   const catalogItems = menuCatalog?.items ?? [];
@@ -195,98 +186,6 @@ export default function DashboardScreen() {
       void loadDashboardStats();
     }, [loadDashboardStats])
   );
-
-  const { notificationsGranted } = useNotificationPermissionGate();
-  const showNotificationsDisabledBanner = !notificationsGranted;
-
-  const formatBannerWindow = useCallback((fromIso: string, toIso: string) => {
-    const fmt = (iso: string) => {
-      const d = new Date(iso);
-      if (Number.isNaN(d.getTime())) return null;
-      return new Intl.DateTimeFormat("en-IN", {
-        day: "2-digit",
-        month: "short",
-        hour: "2-digit",
-        minute: "2-digit",
-        hour12: true,
-        timeZone: "Asia/Calcutta",
-      }).format(d);
-    };
-    const fromLabel = fmt(fromIso);
-    const toLabel = fmt(toIso);
-    if (fromLabel && toLabel) return `${fromLabel} – ${toLabel}`;
-    return fromLabel || toLabel || "";
-  }, []);
-
-  // Rider-style separate home carousel (not inside store status card).
-  const homeBannerSlides = useMemo((): MerchantHomeBannerSlide[] => {
-    const slides: MerchantHomeBannerSlide[] = [];
-    if (showNotificationsDisabledBanner) {
-      slides.push({
-        id: "order_notifications_disabled",
-        durationMs: 10_000,
-        element: <OrderNotificationsDisabledBanner visible />,
-      });
-    }
-    if (scheduledClosure && !isOnline) {
-      const windowText = formatBannerWindow(scheduledClosure.from, scheduledClosure.to);
-      if (windowText) {
-        slides.push({
-          id: "schedule_off_active",
-          durationMs: 12_000,
-          element: (
-            <MerchantScheduleOffBanner
-              phase="active"
-              windowText={windowText}
-              reason={scheduledClosure.reason}
-              sourceLabel={formatStoreActionSourceLabel(scheduledClosure.marked_from)}
-              onPress={() => navPush("/(tabs)/profile/vacation?tab=slots")}
-            />
-          ),
-        });
-      }
-    }
-    if (upcomingScheduledClosure) {
-      const windowText = formatBannerWindow(upcomingScheduledClosure.from, upcomingScheduledClosure.to);
-      if (windowText) {
-        slides.push({
-          id: "schedule_off_upcoming",
-          durationMs: 12_000,
-          element: (
-            <MerchantScheduleOffBanner
-              phase="upcoming"
-              windowText={windowText}
-              reason={upcomingScheduledClosure.reason}
-              sourceLabel={formatStoreActionSourceLabel(upcomingScheduledClosure.marked_from)}
-              onPress={() => navPush("/(tabs)/profile/vacation?tab=slots")}
-            />
-          ),
-        });
-      }
-    }
-    if (activeRush && activeRush.is_active && activeRush.remaining_minutes > 0) {
-      slides.push({
-        id: "rush_active",
-        durationMs: 10_000,
-        element: (
-          <MerchantRushHourBanner
-            remainingMinutes={activeRush.remaining_minutes}
-            sourceLabel={formatStoreActionSourceLabel(activeRush.marked_from)}
-            onPress={() => navPush("/(tabs)/profile/preparation-time")}
-          />
-        ),
-      });
-    }
-    return slides;
-  }, [
-    showNotificationsDisabledBanner,
-    scheduledClosure,
-    upcomingScheduledClosure,
-    activeRush,
-    isOnline,
-    formatBannerWindow,
-    navPush,
-  ]);
 
   const hasActiveOrders = useMemo(
     () => orders.some((o) => isActiveMerchantOrderStage(o.status)),
@@ -498,7 +397,6 @@ export default function DashboardScreen() {
           />
         }
       >
-      <MerchantHomeBannerCarousel slides={homeBannerSlides} />
       <StoreClosedActiveOrdersNotice visible={!isOnline && hasActiveOrders} />
       <Text style={styles.dateText}>{formatTodayDate()}</Text>
 

@@ -34,6 +34,8 @@ import { PermissionBottomSheetShell } from "@/components/permissions/PermissionB
 import { useNotificationPermissionGate } from "@/context/NotificationPermissionGateContext";
 import type { PartnerData } from "@/context/AuthContext";
 import * as SecureStore from "expo-secure-store";
+import { useMerchantWalletFreezeLive } from "@/hooks/useMerchantWalletFreezeLive";
+import { useMerchantStoreDelistLive } from "@/hooks/useMerchantStoreDelistLive";
 
 const LORA = "Lora_400Regular";
 const LORA_BOLD = "Lora_700Bold";
@@ -65,6 +67,16 @@ function NotificationSetupImpl() {
   const { token: authToken, isAuthenticated, partner } = useAuth();
   const { selectedStore } = useSelectedStore();
   const storeId = selectedStore?.id ?? null;
+  useMerchantWalletFreezeLive({
+    storeId,
+    authToken,
+    enabled: Boolean(isAuthenticated && authToken && storeId),
+  });
+  useMerchantStoreDelistLive({
+    storeId,
+    authToken,
+    enabled: Boolean(isAuthenticated && authToken && storeId),
+  });
   const { refresh: refreshNotifications, applyIncomingPush } = useNotifications();
   const refreshNotificationsRef = useRef(refreshNotifications);
   refreshNotificationsRef.current = refreshNotifications;
@@ -418,9 +430,7 @@ function NotificationSetupImpl() {
             <View style={styles.stepBadge}>
               <Text style={styles.stepBadgeText}>1</Text>
             </View>
-            <Text style={styles.noteText}>
-              {needsSettings ? "Tap Open Settings below" : "Tap Allow below"}
-            </Text>
+            <Text style={styles.noteText}>Tap Allow below</Text>
           </View>
           <View style={styles.noteRow}>
             <View style={styles.stepBadge}>
@@ -439,11 +449,9 @@ function NotificationSetupImpl() {
           onPress={() => void onAllow()}
           disabled={busy}
           accessibilityRole="button"
-          accessibilityLabel={needsSettings ? "Open Settings" : "Allow"}
+          accessibilityLabel="Allow"
         >
-          <Text style={styles.btnText}>
-            {busy ? "Please wait…" : needsSettings ? "Open Settings" : "Allow"}
-          </Text>
+          <Text style={styles.btnText}>{busy ? "Please wait…" : "Allow"}</Text>
         </Pressable>
 
         <Pressable style={styles.later} onPress={dismiss} hitSlop={8}>

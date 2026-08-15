@@ -5,15 +5,18 @@ import { WAITING_FOR_ORDER_TITLE } from '@/lib/partner-notification-constants';
 import {
   isPartnerNotificationsPanelClearedForStore,
   markPartnerNotificationsPanelCleared,
+  getPartnerNotificationsClearedAt,
 } from '@/lib/partner-notifications-panel';
 import { purgeStaleNewOrderNotifications } from '@/lib/purge-stale-new-order-notifications';
 import {
   clearPartnerCampaignNotifications,
   deletePartnerCampaignNotification,
+  deletePartnerCampaignNotificationsByTitle,
   isCampaignNotificationId,
   listPartnerCampaignNotifications,
   markAllPartnerCampaignsRead,
   markPartnerCampaignRead,
+  parentMerchantPublicIdForStore,
 } from '@/lib/partner-campaign-inbox';
 import { mapMerchantAppDeepLinkToPartnersite } from '@/lib/mapMerchantAppDeepLink';
 
@@ -26,6 +29,26 @@ function getDb() {
   });
 }
 
+function notificationFingerprint(title: unknown, body: unknown): string {
+  return `${String(title ?? '').trim().toLowerCase()}|${String(body ?? '').trim().toLowerCase().slice(0, 120)}`;
+}
+
+function dedupeNotifications<T extends { title?: unknown; body?: unknown; created_at?: string }>(rows: T[]): T[] {
+  const best = new Map<string, T>();
+  for (const n of rows) {
+    const fp = notificationFingerprint(n.title, n.body);
+    const prev = best.get(fp);
+    if (!prev) {
+      best.set(fp, n);
+      continue;
+    }
+    const ta = n.created_at ? new Date(n.created_at).getTime() : 0;
+    const tb = prev.created_at ? new Date(prev.created_at).getTime() : 0;
+    if (ta >= tb) best.set(fp, n);
+  }
+  return [...best.values()];
+}
+
 /** GET ?store_id= — store ops alerts + super-admin campaign announcements */
 export async function GET(req: NextRequest) {
   try {
@@ -35,12 +58,15 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: gate.error }, { status: gate.status });
     }
     const db = getDb();
-    const { data, error } = await db
+    const clearedAt = await getPartnerNotificationsClearedAt(db, gate.storeIdNum);
+    let query = db
       .from('merchant_store_notifications')
       .select('id, store_id, type, title, body, read, order_id, action_url, created_at')
-      .eq('store_id', gate.storeIdNum)
-      .order('created_at', { ascending: false })
-      .limit(50);
+      .eq('store_id', gate.storeIdNum);
+    if (clearedAt) {
+      query = query.gt('created_at', clearedAt);
+    }
+    const { data, error } = await query.order('created_at', { ascending: false }).limit(50);
     if (error) {
       console.error('[store-notifications GET]', error);
       return NextResponse.json({ error: 'Failed to load notifications' }, { status: 500 });
@@ -64,9 +90,9 @@ export async function GET(req: NextRequest) {
       source: 'store' as const,
     }));
 
-    const campaignNotifications = await listPartnerCampaignNotifications(gate.storeIdNum, 40);
+    const campaignNotifications = await listPartnerCampaignNotifications(gate.storeIdNum, 40, clearedAt);
 
-    const notifications = [...storeNotifications, ...campaignNotifications].sort((a, b) => {
+    const notifications = dedupeNotifications([...storeNotifications, ...campaignNotifications]).sort((a, b) => {
       const ta = a.created_at ? new Date(a.created_at).getTime() : 0;
       const tb = b.created_at ? new Date(b.created_at).getTime() : 0;
       return tb - ta;
@@ -226,13 +252,48 @@ export async function DELETE(req: NextRequest) {
       return NextResponse.json({ error: 'notification_id required' }, { status: 400 });
     }
     if (isCampaignNotificationId(notificationId)) {
+      const parentId = await parentMerchantPublicIdForStore(gate.storeIdNum);
+      let title = '';
+      let bodyText = '';
+      if (parentId) {
+        try {
+          const { client: pg } = await import('@/lib/drizzle');
+          const rows = await pg`
+            SELECT title, body
+            FROM public.notification_dispatch_logs
+            WHERE notification_id = ${notificationId}::uuid
+              AND recipient_user_id = ${parentId}
+            LIMIT 1
+          `;
+          const row = rows[0] as { title?: string | null; body?: string | null } | undefined;
+          title = String(row?.title ?? '').trim();
+          bodyText = String(row?.body ?? '');
+        } catch {
+          /* lookup is best-effort */
+        }
+      }
       const ok = await deletePartnerCampaignNotification(gate.storeIdNum, notificationId);
       if (!ok) return NextResponse.json({ error: 'delete_failed' }, { status: 500 });
+      if (title) {
+        await db
+          .from('merchant_store_notifications')
+          .delete()
+          .eq('store_id', gate.storeIdNum)
+          .eq('title', title)
+          .eq('body', bodyText);
+        await deletePartnerCampaignNotificationsByTitle(gate.storeIdNum, title, bodyText);
+      }
       return NextResponse.json({ ok: true });
     }
     if (!/^\d+$/.test(notificationId)) {
       return NextResponse.json({ error: 'notification_id required' }, { status: 400 });
     }
+    const { data: existing } = await db
+      .from('merchant_store_notifications')
+      .select('id, title, body')
+      .eq('store_id', gate.storeIdNum)
+      .eq('id', Number(notificationId))
+      .maybeSingle();
     const { error } = await db
       .from('merchant_store_notifications')
       .delete()
@@ -241,6 +302,17 @@ export async function DELETE(req: NextRequest) {
     if (error) {
       console.error('[store-notifications DELETE]', error);
       return NextResponse.json({ error: 'delete_failed' }, { status: 500 });
+    }
+    const title = typeof existing?.title === 'string' ? existing.title.trim() : '';
+    const bodyText = typeof existing?.body === 'string' ? existing.body : '';
+    if (title) {
+      await db
+        .from('merchant_store_notifications')
+        .delete()
+        .eq('store_id', gate.storeIdNum)
+        .eq('title', title)
+        .eq('body', bodyText);
+      await deletePartnerCampaignNotificationsByTitle(gate.storeIdNum, title, bodyText);
     }
     return NextResponse.json({ ok: true });
   } catch (e) {

@@ -33,6 +33,30 @@ export async function fetchWalletSummary(storeId: number, token: string): Promis
   return data as WalletSummary;
 }
 
+export async function fetchWalletFreezeStatus(
+  storeId: number,
+  token: string,
+): Promise<{ isFrozen: boolean; freezeReason: string | null; status: string; frozenAt: string | null }> {
+  const res = await authFetch(`${getBase()}/v1/merchant-partner/stores/${storeId}/wallet/freeze`, token);
+  if (!res.ok) {
+    throw new Error(`freeze_status_${res.status}`);
+  }
+  const data = (await res.json()) as {
+    isFrozen?: boolean;
+    freezeReason?: string | null;
+    status?: string;
+    frozenAt?: string | null;
+  };
+  const status = String(data.status ?? "ACTIVE").toUpperCase();
+  const isFrozen = data.isFrozen === true || status === "FROZEN";
+  return {
+    isFrozen,
+    freezeReason: isFrozen ? data.freezeReason ?? null : null,
+    status,
+    frozenAt: data.frozenAt ?? null,
+  };
+}
+
 export async function fetchLedger(
   storeId: number,
   token: string,
@@ -136,9 +160,10 @@ export async function createPayoutRequest(
   bankAccountId: number,
   token: string
 ): Promise<PayoutResult> {
+  const idempotencyKey = `mapp_${storeId}_${bankAccountId}_${Math.round(amount * 100)}_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
   const res = await authFetch(`${getBase()}/v1/merchant-partner/stores/${storeId}/payout-request`, token, {
     method: "POST",
-    body: JSON.stringify({ amount, bank_account_id: bankAccountId }),
+    body: JSON.stringify({ amount, bank_account_id: bankAccountId, idempotency_key: idempotencyKey }),
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({})) as {

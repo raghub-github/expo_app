@@ -1,6 +1,7 @@
 /** Store status display + manual actions. Backend owns schedule / operational truth. */
 import { createContext, useContext, useState, useCallback, useEffect, useMemo, useRef, type ReactNode } from "react";
 import { Alert, AppState, type AppStateStatus } from "react-native";
+import { useRouter } from "expo-router";
 import { isAppForeground } from "@/lib/appForeground";
 import * as SecureStore from "expo-secure-store";
 import { useAuth } from "@/context/AuthContext";
@@ -14,6 +15,15 @@ import {
   type ScheduledClosure,
   type ActiveRushWindow,
 } from "@/services/storeStatusApi";
+import {
+  MERCHANT_DELIST_SUPPORT_HREF,
+  showStoreDelistedAlert,
+  needsManualOpenAfterRelist,
+} from "@/lib/storeDelist";
+import {
+  getMerchantStoreDelistSnapshot,
+  subscribeMerchantStoreDelist,
+} from "@/lib/merchantStoreDelistBus";
 const STATUS_CACHE_KEY_PREFIX = "merchant_store_status_";
 
 /** Poll interval for real-time status (schedule changes, auto open/close). */
@@ -70,11 +80,14 @@ type StoreStatusContextValue = {
   lastToggledByEmail: string | null;
   scheduleEndPromptActive: boolean;
   scheduleEndPromptExpiresAt: string | null;
+  isDelisted: boolean;
+  needsManualOpenAfterRelist: boolean;
 };
 
 const StoreStatusContext = createContext<StoreStatusContextValue | null>(null);
 
 export function StoreStatusProvider({ children }: { children: ReactNode }) {
+  const router = useRouter();
   const { token } = useAuth();
   const { selectedStore } = useSelectedStore();
   const [isOnline, setIsOnline] = useState(false);
@@ -103,10 +116,14 @@ export function StoreStatusProvider({ children }: { children: ReactNode }) {
   const [lastToggledById, setLastToggledById] = useState<string | null>(null);
   const [lastToggledByEmail, setLastToggledByEmail] = useState<string | null>(null);
   const [scheduleEndPromptExpiresAt, setScheduleEndPromptExpiresAt] = useState<string | null>(null);
+  const [isDelisted, setIsDelisted] = useState(false);
   const scheduleEndPromptShownRef = useRef<string | null>(null);
   const [lastRefreshedAt, setLastRefreshedAt] = useState<number | null>(null);
 
   const storeId = selectedStore?.id ?? null;
+  const goToDelistSupport = useCallback(() => {
+    router.push(MERCHANT_DELIST_SUPPORT_HREF as never);
+  }, [router]);
   const refreshIdRef = useRef(0);
   const lastRefreshAtRef = useRef(0);
   const initialLoadDoneRef = useRef(false);
@@ -143,6 +160,10 @@ export function StoreStatusProvider({ children }: { children: ReactNode }) {
             if (c.closed_by_id != null) setClosedById(c.closed_by_id as string | null);
             if (c.scheduled_closure != null) setScheduledClosure(c.scheduled_closure as ScheduledClosure | null);
             if (c.scheduled_closure_upcoming != null) setUpcomingScheduledClosure(c.scheduled_closure_upcoming as ScheduledClosure | null);
+            if (c.is_delisted === true) {
+              setIsDelisted(true);
+              setIsOnline(false);
+            }
           }
         } catch {
           // ignore parse error
@@ -157,6 +178,7 @@ export function StoreStatusProvider({ children }: { children: ReactNode }) {
   const refresh = useCallback(async () => {
     if (!token || !storeId) {
       setIsOnline(false);
+      setIsDelisted(false);
       setAutoOpenFromSchedule(true);
       setManualActivationLock(false);
       setManualCloseUntil(null);
@@ -223,7 +245,9 @@ export function StoreStatusProvider({ children }: { children: ReactNode }) {
           ? manualCloseReasonRef.current
           : fromApiReason;
 
-      setIsOnline(status.is_open);
+      const delisted = status.is_delisted === true;
+      setIsDelisted(delisted);
+      setIsOnline(delisted ? false : status.is_open);
       setAutoOpenFromSchedule(status.auto_open_from_schedule);
       setManualActivationLock(status.block_auto_open);
       setManualCloseUntil(effectiveUntil);
@@ -262,7 +286,8 @@ export function StoreStatusProvider({ children }: { children: ReactNode }) {
       SecureStore.setItemAsync(
         key,
         JSON.stringify({
-          is_open: status.is_open,
+          is_open: delisted ? false : status.is_open,
+          is_delisted: delisted,
           auto_open_from_schedule: status.auto_open_from_schedule,
           manual_close_until: effectiveUntil,
           manual_close_reason: effectiveReason,
@@ -343,6 +368,20 @@ export function StoreStatusProvider({ children }: { children: ReactNode }) {
     return () => sub.remove();
   }, [token, storeId, refresh]);
 
+  useEffect(() => {
+    const snap = getMerchantStoreDelistSnapshot(storeId);
+    if (snap) {
+      setIsDelisted(snap.isDelisted);
+      if (snap.isDelisted) setIsOnline(false);
+    }
+    return subscribeMerchantStoreDelist((next) => {
+      if (storeId == null || next.storeId !== storeId) return;
+      setIsDelisted(next.isDelisted);
+      if (next.isDelisted) setIsOnline(false);
+      else void refresh();
+    });
+  }, [storeId, refresh]);
+
   /**
    * Countdown target:
    * - temp close: `merchant_store_availability.manual_close_until`
@@ -416,6 +455,10 @@ export function StoreStatusProvider({ children }: { children: ReactNode }) {
   const toggle = useCallback(async (closeOptions?: CloseStoreOptions) => {
     if (!token || !storeId) return;
     const next = !isOnline;
+    if (next && isDelisted) {
+      showStoreDelistedAlert(goToDelistSupport);
+      return;
+    }
     setIsOnline(next);
     try {
       const status = await updateStoreStatus(storeId, next, token, next ? undefined : closeOptions);
@@ -441,6 +484,13 @@ export function StoreStatusProvider({ children }: { children: ReactNode }) {
       }
       await refresh();
     } catch (e: unknown) {
+      const code = e != null && typeof e === "object" ? String((e as { code?: string }).code ?? "") : "";
+      if (code === "STORE_DELISTED") {
+        setIsDelisted(true);
+        setIsOnline(false);
+        showStoreDelistedAlert(goToDelistSupport);
+        throw e;
+      }
       let msg = "Something went wrong. Please try again.";
       if (e instanceof Error && e.message?.trim()) {
         const m = e.message.trim();
@@ -452,7 +502,7 @@ export function StoreStatusProvider({ children }: { children: ReactNode }) {
       Alert.alert("Could not change status", msg);
       throw e;
     }
-  }, [token, storeId, isOnline, refresh]);
+  }, [token, storeId, isOnline, isDelisted, refresh, goToDelistSupport]);
 
   const closeStore = useCallback(
     async (closeOptions: CloseStoreOptions) => {
@@ -573,6 +623,14 @@ export function StoreStatusProvider({ children }: { children: ReactNode }) {
         scheduleEndPromptActive:
           scheduleEndPromptExpiresAt != null && new Date(scheduleEndPromptExpiresAt).getTime() > Date.now(),
         scheduleEndPromptExpiresAt,
+        isDelisted,
+        needsManualOpenAfterRelist: needsManualOpenAfterRelist({
+          isDelisted,
+          isOpen: isOnline,
+          lastToggleType,
+          closeReason: manualCloseReason ?? statusReason,
+          unavailableReason,
+        }),
       }}
     >
       {children}

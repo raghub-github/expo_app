@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { formatCloseReasonForCard } from "@/lib/merchantPortalCloseReasons";
 import { partnerSurfaceOnlineFromStoreOperationsBody } from "@/lib/partnerStoreSurfaceOnline";
 import {
@@ -10,6 +10,7 @@ import {
   type ScheduledTimeOffRow,
 } from "@/lib/storeDashboardScheduledOff";
 import { computeStoreStatusBadge, formatHmsCountdown } from "@/lib/storeStatusCardFormat";
+import { isStoreDelisted } from "@/lib/merchants/store-delist";
 
 export type StoreOperationsSnapshot = {
   operational_status?: string;
@@ -35,7 +36,21 @@ export type StoreOperationsSnapshot = {
   last_toggled_by_name?: string | null;
   last_toggled_by_id?: string | null;
   last_toggled_at?: string | null;
+  is_delisted?: boolean;
+  delisted_at?: string | null;
+  approval_status?: string | null;
 };
+
+const EMPTY_SLOTS: { start: string; end: string }[] = [];
+
+function normalizeRestrictionType(raw: unknown): string | null {
+  const rtRaw = raw != null ? String(raw).trim() : "";
+  if (!rtRaw) return null;
+  const upper = rtRaw.toUpperCase();
+  if (upper === "MANUAL_HOLD" || upper === "CLOSED_TODAY" || upper === "TEMPORARY") return upper;
+  if (rtRaw.toLowerCase() === "manual_hold") return "MANUAL_HOLD";
+  return upper;
+}
 
 export function useStoreStatusCardModel(
   operationsData: StoreOperationsSnapshot | undefined,
@@ -45,72 +60,50 @@ export function useStoreStatusCardModel(
     typeof opts.storeTimezone === "string" && opts.storeTimezone.trim() !== ""
       ? opts.storeTimezone.trim()
       : "Asia/Kolkata";
+  const onCountdownExpiredRef = useRef(opts.onCountdownExpired);
+  onCountdownExpiredRef.current = opts.onCountdownExpired;
 
-  const [todaySlots, setTodaySlots] = useState<{ start: string; end: string }[]>([]);
-  const [configuredTodaySlots, setConfiguredTodaySlots] = useState<{ start: string; end: string }[]>([]);
-  const [restrictionType, setRestrictionType] = useState<string | null>(null);
-  const [withinHoursButRestricted, setWithinHoursButRestricted] = useState(false);
-  const [opensAt, setOpensAt] = useState<string | null>(null);
-  const [schedulePhase, setSchedulePhase] = useState<string | null>(null);
-  const [scheduleStatusLabel, setScheduleStatusLabel] = useState<string | null>(null);
-  const [isTodayScheduledClosed, setIsTodayScheduledClosed] = useState(false);
-  const [nextScheduleTransitionAt, setNextScheduleTransitionAt] = useState<string | null>(null);
-  const [countdownAt, setCountdownAt] = useState<string | null>(null);
-  const [countdownKind, setCountdownKind] = useState<string | null>(null);
-  const [countdownWallLabel, setCountdownWallLabel] = useState<string | null>(null);
-  const [scheduledTimeOffs, setScheduledTimeOffs] = useState<ScheduledTimeOffRow[]>([]);
-  const [activeRush, setActiveRush] = useState<ActiveRushWindowRow | null>(null);
-  const [lastToggleBy, setLastToggleBy] = useState<string | null>(null);
-  const [lastToggleType, setLastToggleType] = useState<string | null>(null);
-  const [lastToggledByName, setLastToggledByName] = useState<string | null>(null);
-  const [lastToggledAt, setLastToggledAt] = useState<string | null>(null);
   const [manualActivationLock, setManualActivationLock] = useState(false);
   const [countdownTick, setCountdownTick] = useState(0);
 
+  const isDelisted = isStoreDelisted(operationsData);
+  const d = operationsData;
+
+  const todaySlots = d?.today_slots?.length ? d.today_slots : EMPTY_SLOTS;
+  const configuredTodaySlots = d?.configured_today_slots?.length ? d.configured_today_slots : EMPTY_SLOTS;
+  const schedulePhase = typeof d?.schedule_phase === "string" ? d.schedule_phase : null;
+  const scheduleStatusLabel = typeof d?.schedule_status_label === "string" ? d.schedule_status_label : null;
+  const isTodayScheduledClosed = d?.is_today_scheduled_closed === true;
+  const nextScheduleTransitionAt =
+    typeof d?.next_schedule_transition_at === "string" ? d.next_schedule_transition_at : null;
+  const countdownAt = typeof d?.countdown_at === "string" ? d.countdown_at : null;
+  const countdownKind = typeof d?.countdown_kind === "string" ? d.countdown_kind : null;
+  const countdownWallLabel = typeof d?.countdown_wall_label === "string" ? d.countdown_wall_label : null;
+  const lastToggleBy = d?.last_toggled_by_email ?? null;
+  const lastToggleType = d?.last_toggle_type ?? null;
+  const lastToggledByName = d?.last_toggled_by_name ?? null;
+  const lastToggledAt = d?.last_toggled_at ?? null;
+  const restrictionType = normalizeRestrictionType(d?.restriction_type);
+  const withinHoursButRestricted = d?.within_hours_but_restricted === true;
+  const opensAt = d?.opens_at ?? null;
+  const blockAutoOpen = d?.block_auto_open === true;
+
+  const scheduledTimeOffs = useMemo(
+    () => parseScheduledTimeOffsFromApi(d?.scheduled_time_offs),
+    [d?.scheduled_time_offs]
+  );
+  const activeRush = useMemo(() => parseActiveRushFromApi(d?.active_rush), [d?.active_rush]);
+
   const isStoreOpen = useMemo(() => {
-    if (!operationsData || operationsData.operational_status === undefined) return false;
-    const surface = partnerSurfaceOnlineFromStoreOperationsBody(operationsData as Record<string, unknown>);
-    return surface ?? operationsData.operational_status === "OPEN";
-  }, [operationsData]);
+    if (isDelisted) return false;
+    if (!d || d.operational_status === undefined) return false;
+    const surface = partnerSurfaceOnlineFromStoreOperationsBody(d as Record<string, unknown>);
+    return surface ?? d.operational_status === "OPEN";
+  }, [d, isDelisted]);
 
   useEffect(() => {
-    const d = operationsData;
-    if (!d || d.operational_status === undefined) return;
-    const slots = d.today_slots || [];
-    setTodaySlots(slots);
-    setConfiguredTodaySlots(d.configured_today_slots || []);
-    setSchedulePhase(typeof d.schedule_phase === "string" ? d.schedule_phase : null);
-    setScheduleStatusLabel(typeof d.schedule_status_label === "string" ? d.schedule_status_label : null);
-    setIsTodayScheduledClosed(d.is_today_scheduled_closed === true);
-    setNextScheduleTransitionAt(
-      typeof d.next_schedule_transition_at === "string" ? d.next_schedule_transition_at : null
-    );
-    setCountdownAt(typeof d.countdown_at === "string" ? d.countdown_at : null);
-    setCountdownKind(typeof d.countdown_kind === "string" ? d.countdown_kind : null);
-    setCountdownWallLabel(typeof d.countdown_wall_label === "string" ? d.countdown_wall_label : null);
-    setScheduledTimeOffs(parseScheduledTimeOffsFromApi(d.scheduled_time_offs));
-    setActiveRush(parseActiveRushFromApi(d.active_rush));
-    setLastToggleBy(d.last_toggled_by_email ?? null);
-    setLastToggleType(d.last_toggle_type ?? null);
-    setLastToggledByName(d.last_toggled_by_name ?? null);
-    setLastToggledAt(d.last_toggled_at ?? null);
-    const rtRaw = d.restriction_type != null ? String(d.restriction_type).trim() : "";
-    if (!rtRaw) {
-      setRestrictionType(null);
-    } else {
-      const upper = rtRaw.toUpperCase();
-      if (upper === "MANUAL_HOLD" || upper === "CLOSED_TODAY" || upper === "TEMPORARY") {
-        setRestrictionType(upper);
-      } else if (rtRaw.toLowerCase() === "manual_hold") {
-        setRestrictionType("MANUAL_HOLD");
-      } else {
-        setRestrictionType(upper);
-      }
-    }
-    setWithinHoursButRestricted(d.within_hours_but_restricted === true);
-    setOpensAt(d.opens_at ?? null);
-    setManualActivationLock(d.block_auto_open === true);
-  }, [operationsData]);
+    setManualActivationLock(blockAutoOpen);
+  }, [blockAutoOpen]);
 
   const closeReasonDisplay = useMemo(() => {
     const r = operationsData?.close_reason;
@@ -142,8 +135,11 @@ export function useStoreStatusCardModel(
     return null;
   }, [cardDisplaySlots]);
 
-  const activeCountdownAt = countdownAt ?? opensAt ?? nextScheduleTransitionAt ?? null;
-  const showScheduleCountdown = !isStoreOpen && !withinHoursButRestricted && !!activeCountdownAt;
+  const activeCountdownAt = isDelisted
+    ? null
+    : countdownAt ?? opensAt ?? nextScheduleTransitionAt ?? null;
+  const showScheduleCountdown =
+    !isDelisted && !isStoreOpen && !withinHoursButRestricted && !!activeCountdownAt;
 
   const opensCountdownLabel = useMemo(() => {
     if (countdownKind === "break_starts_in") return "Break starts in";
@@ -184,11 +180,13 @@ export function useStoreStatusCardModel(
         isTodayScheduledClosed,
         countdownKind,
         scheduledTimeOffs,
+        isDelisted,
       }),
-    [isStoreOpen, restrictionType, schedulePhase, isTodayScheduledClosed, countdownKind, scheduledTimeOffs]
+    [isStoreOpen, restrictionType, schedulePhase, isTodayScheduledClosed, countdownKind, scheduledTimeOffs, isDelisted]
   );
 
   const showScheduledOffStartsCountdown =
+    !isDelisted &&
     isStoreOpen &&
     !scheduledTimeOffs.some((x) => x.phase === "active") &&
     scheduledTimeOffs.some((x) => x.phase === "upcoming");
@@ -241,12 +239,13 @@ export function useStoreStatusCardModel(
   );
 
   useEffect(() => {
+    if (isDelisted) return;
     const target = activeCountdownAt;
     if (!isStoreOpen && target && !withinHoursButRestricted) {
       const t = setInterval(() => {
         const ms = new Date(target).getTime() - Date.now();
         if (ms <= 0) {
-          opts.onCountdownExpired?.();
+          onCountdownExpiredRef.current?.();
           return;
         }
         setCountdownTick((n) => n + 1);
@@ -258,14 +257,15 @@ export function useStoreStatusCardModel(
       return () => clearInterval(t);
     }
   }, [
+    isDelisted,
     isStoreOpen,
     activeCountdownAt,
     withinHoursButRestricted,
     showScheduledOffStartsCountdown,
-    opts.onCountdownExpired,
   ]);
 
   return {
+    isDelisted,
     isStoreOpen,
     restrictionType,
     storeStatusBadge,

@@ -45,6 +45,7 @@ import { useStoreContext } from "../StoreContext";
 import { useStore } from "@/hooks/useStore";
 import { useMerchantDashboardAccess } from "@/hooks/useMerchantDashboardAccess";
 import { billingCycleLabel, billingCycleSuffix } from "@/lib/billingCycleLabel";
+import { isStoreDelisted } from "@/lib/merchants/store-delist";
 
 type StoreDetail = {
   id: number;
@@ -605,7 +606,7 @@ export function StoreSettingsClient({ storeId }: { storeId: string }) {
   };
 
   const effectiveStore = (store ?? layoutStore ?? queryStore) as StoreDetail | null;
-  const isDelisted = (effectiveStore?.approval_status || "").toUpperCase() === "DELISTED";
+  const isDelisted = isStoreDelisted(effectiveStore);
 
   const {
     isStoreOpen,
@@ -640,7 +641,19 @@ export function StoreSettingsClient({ storeId }: { storeId: string }) {
   });
 
   const invalidateStoreQueries = useInvalidateMerchantStoreQueries();
-  const statusCard = useStoreStatusCardModel(operationsQuery.data as StoreOperationsSnapshot | undefined, {
+  const statusCard = useStoreStatusCardModel(
+    operationsQuery.data || isDelisted
+      ? ({
+          ...(operationsQuery.data as StoreOperationsSnapshot | undefined),
+          operational_status:
+            (operationsQuery.data as StoreOperationsSnapshot | undefined)?.operational_status ??
+            (isDelisted ? "CLOSED" : undefined),
+          is_delisted:
+            isDelisted ||
+            (operationsQuery.data as StoreOperationsSnapshot | undefined)?.is_delisted === true,
+        } as StoreOperationsSnapshot)
+      : undefined,
+    {
     storeTimezone: typeof effectiveStore?.timezone === "string" ? effectiveStore.timezone : null,
     storeIdLabel: effectiveStore?.store_id ?? null,
     onCountdownExpired: () => invalidateStoreQueries(storeId),
@@ -979,8 +992,8 @@ export function StoreSettingsClient({ storeId }: { storeId: string }) {
                 <Power className="h-5 w-5" />
                 Store operations
               </h2>
-              <div className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-2">
-                <div className="lg:col-span-2">
+              <div className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-2 md:items-stretch">
+                <div className="min-w-0 h-full">
                   <MerchantStoreStatusCard
                     isStoreOpen={statusCard.isStoreOpen}
                     restrictionType={statusCard.restrictionType}
@@ -1008,6 +1021,7 @@ export function StoreSettingsClient({ storeId }: { storeId: string }) {
                     manualActivationLock={statusCard.manualActivationLock}
                     showScheduledOffStartsCountdown={statusCard.showScheduledOffStartsCountdown}
                     scheduledOffStartsInMs={statusCard.scheduledOffStartsInMs}
+                    isDelisted={statusCard.isDelisted}
                     canToggleStore={canEditSettings && canOperateStore}
                     onStoreToggle={() => handleStoreToggle({ isDelisted })}
                     onManualLockChange={(enabled) => {
@@ -1018,7 +1032,7 @@ export function StoreSettingsClient({ storeId }: { storeId: string }) {
                     onOperationsRefresh={() => refreshOperations()}
                   />
                 </div>
-                <div className="lg:col-span-2">
+                <div className="min-w-0 h-full">
                   <MerchantWalletFreezeCard storeId={storeId} canEdit={canEditSettings} />
                 </div>
                 <div className="rounded-lg border border-gray-200 bg-gray-50/60 p-4">

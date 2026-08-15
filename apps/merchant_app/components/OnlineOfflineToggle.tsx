@@ -14,6 +14,7 @@ const KNOB_SIZE = 24;
 const KNOB_RADIUS = 7;
 const PILL_PADDING = 6;
 const PILL_WIDTH = 104;
+const DELISTED_PILL_WIDTH = 124;
 const KNOB_TRAVEL = PILL_WIDTH - PILL_PADDING * 2 - KNOB_SIZE;
 
 const ONLINE_GREEN = "#16A34A";
@@ -21,9 +22,11 @@ const OFFLINE_RED = "#DC2626";
 
 export function OnlineOfflineToggle({
   isOnline,
+  isDelisted = false,
   onToggle,
 }: {
   isOnline: boolean;
+  isDelisted?: boolean;
   onToggle: () => void;
 }) {
   const animValue = useRef(new Animated.Value(isOnline ? 1 : 0)).current;
@@ -47,6 +50,9 @@ export function OnlineOfflineToggle({
     outputRange: [0, KNOB_TRAVEL],
   });
 
+  const pillWidth = isDelisted ? DELISTED_PILL_WIDTH : PILL_WIDTH;
+  const labelSlotWidth = pillWidth - PILL_PADDING * 2 - KNOB_SIZE - 4;
+
   return (
     <Pressable
       onPress={onToggle}
@@ -56,15 +62,15 @@ export function OnlineOfflineToggle({
         GatiMitraMerchant.cursorPointer,
       ]}
     >
-      <Animated.View style={[styles.pill, { backgroundColor }]}>
-        <View style={styles.labelLeft} pointerEvents="none">
+      <Animated.View style={[styles.pill, { width: pillWidth, backgroundColor }]}>
+        <View style={[styles.labelLeft, { width: labelSlotWidth }]} pointerEvents="none">
           <Text style={styles.label} numberOfLines={1}>
             {isOnline ? "ONLINE" : ""}
           </Text>
         </View>
-        <View style={styles.labelRight} pointerEvents="none">
-          <Text style={styles.label} numberOfLines={1}>
-            {!isOnline ? "OFFLINE" : ""}
+        <View style={[styles.labelRight, { width: labelSlotWidth }]} pointerEvents="none">
+          <Text style={[styles.label, isDelisted && styles.labelDelisted]} numberOfLines={1}>
+            {!isOnline ? (isDelisted ? "DELISTED" : "OFFLINE") : ""}
           </Text>
         </View>
         <Animated.View
@@ -90,7 +96,6 @@ const styles = StyleSheet.create({
     opacity: 0.9,
   },
   pill: {
-    width: PILL_WIDTH,
     height: PILL_HEIGHT,
     borderRadius: 8,
     flexDirection: "row",
@@ -120,6 +125,10 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     color: "#FFFFFF",
     letterSpacing: 0.3,
+  },
+  labelDelisted: {
+    fontSize: 10,
+    letterSpacing: 0.2,
   },
   knob: {
     position: "absolute",

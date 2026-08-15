@@ -1,0 +1,2 @@
+DELETE FROM public.notification_templates
+WHERE code IN ('MERCHANT_STORE_DELISTED', 'MERCHANT_STORE_RELISTED');

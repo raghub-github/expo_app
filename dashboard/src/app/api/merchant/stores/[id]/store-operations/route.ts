@@ -4,10 +4,11 @@
  */
 import { NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
-import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine";
+import { getUserPermissions, hasDashboardAccess, hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine";
 import { resolveMerchantListAreaManagerId } from "@/lib/merchants/resolve-merchant-list-scope";
 import { getSystemUserByEmail } from "@/lib/auth/user-mapping";
 import { getMerchantStoreById, updateMerchantStore } from "@/lib/db/operations/merchant-stores";
+import { isStoreDelisted } from "@/lib/merchants/store-delist";
 import { insertActivityLog } from "@/lib/db/operations/merchant-portal-activity-logs";
 import { getSql } from "@/lib/db/client";
 import {
@@ -153,6 +154,44 @@ function computeManualCloseUntilIso(body: Record<string, unknown>, oh: Record<st
   return null;
 }
 
+type StoreOpsStoreRow = {
+  id: number;
+  store_id: string;
+  approval_status: string | null;
+  operational_status: string | null;
+  is_active: boolean | null;
+  is_accepting_orders: boolean | null;
+  is_available: boolean | null;
+  deleted_at: string | Date | null;
+  delisted_at: string | Date | null;
+};
+
+/** Slim store row for GET — avoids gallery/parent payload that delayed the status card. */
+async function getStoreOpsStoreRow(
+  storeId: number,
+  areaManagerId: number | null
+): Promise<StoreOpsStoreRow | null> {
+  const sql = getSql();
+  const rows =
+    areaManagerId != null
+      ? await sql`
+          SELECT id, store_id, approval_status, operational_status, is_active,
+                 is_accepting_orders, is_available, deleted_at, delisted_at
+          FROM merchant_stores
+          WHERE id = ${storeId} AND deleted_at IS NULL AND area_manager_id = ${areaManagerId}
+          LIMIT 1
+        `
+      : await sql`
+          SELECT id, store_id, approval_status, operational_status, is_active,
+                 is_accepting_orders, is_available, deleted_at, delisted_at
+          FROM merchant_stores
+          WHERE id = ${storeId} AND deleted_at IS NULL
+          LIMIT 1
+        `;
+  const row = Array.isArray(rows) ? rows[0] : rows;
+  return row ? (row as StoreOpsStoreRow) : null;
+}
+
 function getTodayContextInIST(): { todayDate: string; dayKey: DayKey } {
   const now = new Date();
   const todayDate = new Intl.DateTimeFormat("en-CA", {
@@ -188,24 +227,32 @@ export async function GET(
     if (error || !user?.email) {
       return NextResponse.json({ success: false, error: "Not authenticated" }, { status: 401 });
     }
-    const allowed =
-      (await isSuperAdmin(user.id, user.email)) ||
-      (await hasDashboardAccessByAuth(user.id, user.email, "MERCHANT"));
-    if (!allowed) {
+    const userPerms = await getUserPermissions(user.id, user.email);
+    if (!userPerms) {
       return NextResponse.json({ success: false, error: "Merchant dashboard access required" }, { status: 403 });
     }
-    const areaManagerId = await resolveMerchantListAreaManagerId({
-      supabaseAuthId: user.id,
-      email: user.email,
-    });
-    const store = await getMerchantStoreById(storeId, areaManagerId);
+    if (!userPerms.isSuperAdmin) {
+      const allowed = await hasDashboardAccess(userPerms.systemUserId, "MERCHANT");
+      if (!allowed) {
+        return NextResponse.json({ success: false, error: "Merchant dashboard access required" }, { status: 403 });
+      }
+    }
+    const areaManagerId = userPerms.isSuperAdmin
+      ? null
+      : await resolveMerchantListAreaManagerId({
+          supabaseAuthId: user.id,
+          email: user.email,
+        });
+    const store = await getStoreOpsStoreRow(storeId, areaManagerId);
     if (!store) {
       return NextResponse.json({ success: false, error: "Store not found" }, { status: 404 });
     }
 
-    await ensureAvailabilityRow(storeId);
-    // Non-blocking: partnersite paints from cache; awaiting tick made dashboard status lag.
-    void triggerStoreScheduleTick(storeId).catch(() => undefined);
+    // Availability insert + schedule tick must not block the status card paint.
+    void ensureAvailabilityRow(storeId).catch(() => undefined);
+    if (!isStoreDelisted(store)) {
+      void triggerStoreScheduleTick(storeId).catch(() => undefined);
+    }
 
     // Derive effective operational status from DB row (Partner Site gate).
     // A store is only truly OPEN when:
@@ -215,7 +262,7 @@ export async function GET(
     // - store is not deleted or delisted
     const approval = String(store.approval_status || "").toUpperCase();
     const rawOperational = String(store.operational_status || "CLOSED").toUpperCase();
-    const isDelisted = approval === "DELISTED";
+    const isDelisted = isStoreDelisted(store);
     const isTrulyOpen =
       !isDelisted &&
       approval === "APPROVED" &&
@@ -230,19 +277,47 @@ export async function GET(
 
     const { todayDate, dayKey } = getTodayContextInIST();
     const sql = getSql();
-    const operatingRows = await sql`
-      SELECT is_24_hours, closed_days, same_for_all_days,
-             monday_open, monday_slot1_start, monday_slot1_end, monday_slot2_start, monday_slot2_end,
-             tuesday_open, tuesday_slot1_start, tuesday_slot1_end, tuesday_slot2_start, tuesday_slot2_end,
-             wednesday_open, wednesday_slot1_start, wednesday_slot1_end, wednesday_slot2_start, wednesday_slot2_end,
-             thursday_open, thursday_slot1_start, thursday_slot1_end, thursday_slot2_start, thursday_slot2_end,
-             friday_open, friday_slot1_start, friday_slot1_end, friday_slot2_start, friday_slot2_end,
-             saturday_open, saturday_slot1_start, saturday_slot1_end, saturday_slot2_start, saturday_slot2_end,
-             sunday_open, sunday_slot1_start, sunday_slot1_end, sunday_slot2_start, sunday_slot2_end
-      FROM merchant_store_operating_hours
-      WHERE store_id = ${storeId}
-      LIMIT 1
-    `;
+    const closureNowIso = new Date().toISOString();
+    const [operatingRows, availRows, schedClosureRows, rushRows] = await Promise.all([
+      sql`
+        SELECT is_24_hours, closed_days, same_for_all_days,
+               monday_open, monday_slot1_start, monday_slot1_end, monday_slot2_start, monday_slot2_end,
+               tuesday_open, tuesday_slot1_start, tuesday_slot1_end, tuesday_slot2_start, tuesday_slot2_end,
+               wednesday_open, wednesday_slot1_start, wednesday_slot1_end, wednesday_slot2_start, wednesday_slot2_end,
+               thursday_open, thursday_slot1_start, thursday_slot1_end, thursday_slot2_start, thursday_slot2_end,
+               friday_open, friday_slot1_start, friday_slot1_end, friday_slot2_start, friday_slot2_end,
+               saturday_open, saturday_slot1_start, saturday_slot1_end, saturday_slot2_start, saturday_slot2_end,
+               sunday_open, sunday_slot1_start, sunday_slot1_end, sunday_slot2_start, sunday_slot2_end
+        FROM merchant_store_operating_hours
+        WHERE store_id = ${storeId}
+        LIMIT 1
+      `,
+      sql`
+        SELECT manual_close_until, block_auto_open, close_reason, restriction_type, unavailable_reason,
+               last_toggled_at, last_toggled_by_email, last_toggled_by_name, last_toggled_by_id, last_toggle_type,
+               is_manual_override, schedule_end_prompt_expires_at, schedule_end_prompted_at
+        FROM merchant_store_availability
+        WHERE store_id = ${storeId}
+        LIMIT 1
+      `,
+      sql`
+        SELECT id, reason, starts_at, ends_at, status, marked_from
+        FROM merchant_store_scheduled_closures
+        WHERE store_id = ${storeId}
+          AND status IN ('scheduled', 'active')
+          AND ends_at > ${closureNowIso}
+        ORDER BY starts_at ASC
+      `,
+      sql`
+        SELECT duration_minutes, started_at, ends_at, marked_from
+        FROM merchant_store_rush_windows
+        WHERE store_id = ${storeId}
+          AND is_active = TRUE
+          AND ends_at > NOW()
+        ORDER BY started_at DESC
+        LIMIT 1
+      `,
+    ]);
     const operating = Array.isArray(operatingRows) ? operatingRows[0] : operatingRows;
     const todaySlots: { start: string; end: string }[] = [];
     let isTodayScheduledClosed = true;
@@ -271,14 +346,6 @@ export async function GET(
       isTodayScheduledClosed = todaySlots.length === 0;
     }
 
-    const availRows = await sql`
-      SELECT manual_close_until, block_auto_open, close_reason, restriction_type, unavailable_reason,
-             last_toggled_at, last_toggled_by_email, last_toggled_by_name, last_toggled_by_id, last_toggle_type,
-             is_manual_override, schedule_end_prompt_expires_at, schedule_end_prompted_at
-      FROM merchant_store_availability
-      WHERE store_id = ${storeId}
-      LIMIT 1
-    `;
     const availRow = Array.isArray(availRows) ? availRows[0] : availRows;
     const av = (availRow ?? {}) as Record<string, unknown>;
     const blockAutoOpen = av.block_auto_open === true;
@@ -381,15 +448,6 @@ export async function GET(
       refNow: nowRef,
     });
 
-    const closureNowIso = new Date().toISOString();
-    const schedClosureRows = await sql`
-      SELECT id, reason, starts_at, ends_at, status, marked_from
-      FROM merchant_store_scheduled_closures
-      WHERE store_id = ${storeId}
-        AND status IN ('scheduled', 'active')
-        AND ends_at > ${closureNowIso}
-      ORDER BY starts_at ASC
-    `;
     const promptExpiresRaw = av["schedule_end_prompt_expires_at"];
     let scheduleEndPromptExpiresAt: string | null = null;
     if (promptExpiresRaw != null && String(promptExpiresRaw).trim() !== "") {
@@ -437,16 +495,7 @@ export async function GET(
       });
     }
 
-    const rushRows = await sql`
-      SELECT duration_minutes, started_at, ends_at, marked_from
-      FROM merchant_store_rush_windows
-      WHERE store_id = ${storeId}
-        AND is_active = TRUE
-        AND ends_at > NOW()
-      ORDER BY started_at DESC
-      LIMIT 1
-    `;
-    const rushRow = rushRows[0] as
+    const rushRow = (Array.isArray(rushRows) ? rushRows[0] : rushRows) as
       | {
           duration_minutes: number;
           started_at: Date | string;
@@ -475,6 +524,7 @@ export async function GET(
       success: true,
       operational_status: effectiveOperationalStatus,
       is_delisted: isDelisted,
+      delisted_at: store.delisted_at ?? null,
       approval_status: store.approval_status,
       is_active: store.is_active,
       is_accepting_orders: store.is_accepting_orders,
@@ -488,7 +538,7 @@ export async function GET(
       within_operating_hours: withinHours,
       close_reason: closeReason,
       manual_close_until: manualCloseUntil,
-      next_open_iso: nextOpenIso,
+      next_open_iso: isDelisted ? null : nextOpenIso,
       last_toggled_at: lastToggledAt,
       last_toggled_by_email: lastToggledByEmail,
       last_toggled_by_name: lastToggledByName,
@@ -496,14 +546,14 @@ export async function GET(
       last_toggle_type: lastToggleType,
       restriction_type: restrictionTypeOut,
       unavailable_reason: unavailableReason,
-      within_hours_but_restricted: withinHoursButRestricted,
+      within_hours_but_restricted: isDelisted ? false : withinHoursButRestricted,
       block_auto_open: blockAutoOpen,
       is_today_scheduled_closed: schedule.isTodayScheduledClosed,
-      opens_at: opensAtOut,
-      next_schedule_transition_at: nextScheduleTransitionAt,
-      countdown_at: scheduleCountdown.at,
-      countdown_kind: scheduleCountdown.kind,
-      countdown_wall_label: scheduleCountdown.wallLabel,
+      opens_at: isDelisted ? null : opensAtOut,
+      next_schedule_transition_at: isDelisted ? null : nextScheduleTransitionAt,
+      countdown_at: isDelisted ? null : scheduleCountdown.at,
+      countdown_kind: isDelisted ? null : scheduleCountdown.kind,
+      countdown_wall_label: isDelisted ? null : scheduleCountdown.wallLabel,
       scheduled_time_offs: scheduledTimeOffs,
       active_rush: activeRush,
       schedule_end_prompt_active: scheduleEndPromptActive,
@@ -557,10 +607,14 @@ export async function POST(
     }
 
     const approval = String(store.approval_status || "").toUpperCase();
-    const isDelisted = approval === "DELISTED";
+    const isDelisted = isStoreDelisted(store);
     if (isDelisted && action === "manual_open") {
       return NextResponse.json(
-        { success: false, error: "Delisted store cannot be opened. Relist the store from admin first." },
+        {
+          success: false,
+          error: "Delisted store cannot be opened. Relist the store from admin first.",
+          code: "STORE_DELISTED",
+        },
         { status: 400 }
       );
     }

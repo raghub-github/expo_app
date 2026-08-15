@@ -277,6 +277,13 @@ async function applyScheduleOpen(
     WHERE store_id = ${storeId}
       AND COALESCE(block_auto_open, FALSE) = FALSE
       AND (manual_close_until IS NULL OR manual_close_until <= NOW())
+      AND EXISTS (
+        SELECT 1 FROM merchant_stores ms
+        WHERE ms.id = ${storeId}
+          AND ms.approval_status = 'APPROVED'
+          AND ms.delisted_at IS NULL
+          AND ms.deleted_at IS NULL
+      )
       AND (
         unavailable_reason IS NULL
         OR LOWER(TRIM(unavailable_reason)) NOT IN ('manual_indefinite', 'forced_lock')
@@ -422,6 +429,13 @@ async function applyAutoReopen(
     WHERE store_id = ${storeId}
       AND COALESCE(block_auto_open, FALSE) = FALSE
       AND (manual_close_until IS NULL OR manual_close_until <= NOW())
+      AND EXISTS (
+        SELECT 1 FROM merchant_stores ms
+        WHERE ms.id = ${storeId}
+          AND ms.approval_status = 'APPROVED'
+          AND ms.delisted_at IS NULL
+          AND ms.deleted_at IS NULL
+      )
       AND (
         unavailable_reason IS NULL
         OR LOWER(TRIM(unavailable_reason)) NOT IN ('manual_indefinite', 'forced_lock')
@@ -1009,6 +1023,8 @@ type StoreRow = {
   store_id: number;
   timezone?: string | null;
   operational_status?: string | null;
+  approval_status?: string | null;
+  delisted_at?: Date | string | null;
   /** `merchant_stores.is_available` (distinct from joined `msa.is_available` → `StoreRow.is_available`) */
   ms_is_available?: boolean | null;
   is_accepting_orders: boolean | null;
@@ -1151,6 +1167,26 @@ async function evaluateAndPersistStoreScheduleState(
     store.avail_accepting !== false &&
     store.is_available !== false &&
     (store.is_active !== false);
+  const approval = String(store.approval_status ?? "").toUpperCase();
+  const isDelisted = approval === "DELISTED" || (store.delisted_at != null && String(store.delisted_at).trim() !== "");
+  if (isDelisted) {
+    if (shouldForceScheduleClose(currentlyOpen, store)) {
+      await syncMerchantStoresOnlineTriple(sql, storeId, false);
+    }
+    await sql`
+      UPDATE merchant_store_availability
+      SET
+        is_available = FALSE,
+        is_accepting_orders = FALSE,
+        unavailable_reason = COALESCE(NULLIF(TRIM(unavailable_reason), ''), 'delisted'),
+        close_reason = COALESCE(NULLIF(TRIM(close_reason), ''), 'Store delisted'),
+        restriction_type = COALESCE(NULLIF(TRIM(restriction_type), ''), 'DELISTED'),
+        updated_at = NOW()
+      WHERE store_id = ${storeId}
+        AND (is_available = TRUE OR is_accepting_orders = TRUE)
+    `;
+    return;
+  }
   let statusReasonCode = "schedule_evaluated";
   let nextScheduleTransitionAt: string | null = null;
 
@@ -1380,6 +1416,8 @@ async function runStoreScheduleTickOnce(
       SELECT
         ms.id AS store_id,
         ms.operational_status,
+        ms.approval_status,
+        ms.delisted_at,
         ms.is_accepting_orders,
         ms.is_active,
         ms.is_available AS ms_is_available,
@@ -1557,6 +1595,8 @@ export async function runStoreScheduleTickForStore(
       SELECT
         ms.id AS store_id,
         ms.operational_status,
+        ms.approval_status,
+        ms.delisted_at,
         ms.is_accepting_orders,
         ms.is_active,
         ms.is_available AS ms_is_available,

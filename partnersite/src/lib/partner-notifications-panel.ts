@@ -72,6 +72,23 @@ export async function resetPartnerNotificationsPanelCleared(
   if (error) console.error('[resetPartnerNotificationsPanelCleared]', error);
 }
 
+export async function getPartnerNotificationsClearedAt(
+  db: SupabaseClient,
+  storeIdNum: number
+): Promise<string | null> {
+  const { data: row, error } = await db
+    .from('merchant_store_settings')
+    .select('settings_metadata')
+    .eq('store_id', storeIdNum)
+    .maybeSingle();
+  if (error) {
+    console.error('[getPartnerNotificationsClearedAt]', error);
+    return null;
+  }
+  const value = readMetaObject(row?.settings_metadata)[PARTNER_NOTIFICATIONS_CLEARED_AT_KEY];
+  return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
 export async function isPartnerNotificationsPanelClearedForStore(
   db: SupabaseClient,
   storeIdNum: number

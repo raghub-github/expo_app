@@ -45,6 +45,58 @@ async function sendMerchantExpoPush(tokens: string[], payload: PushPayload): Pro
   }
 }
 
+const STORE_NOTIFY_LAST_META_KEY = "store_notify_last";
+const STORE_NOTIFY_IDEM_HOURS = 6;
+
+function readMetaObject(raw: unknown): Record<string, unknown> {
+  return raw && typeof raw === "object" && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {};
+}
+
+async function recentlySentStoreTitle(sql: Sql, storeId: number, title: string): Promise<boolean> {
+  const rows = await sql`
+    SELECT settings_metadata
+    FROM merchant_store_settings
+    WHERE store_id = ${storeId}
+    LIMIT 1
+  `;
+  const meta = readMetaObject((rows[0] as { settings_metadata?: unknown } | undefined)?.settings_metadata);
+  const lastMap = readMetaObject(meta[STORE_NOTIFY_LAST_META_KEY]);
+  const lastIso = typeof lastMap[title] === "string" ? String(lastMap[title]) : "";
+  if (!lastIso) return false;
+  const lastMs = new Date(lastIso).getTime();
+  if (!Number.isFinite(lastMs)) return false;
+  return Date.now() - lastMs < STORE_NOTIFY_IDEM_HOURS * 60 * 60 * 1000;
+}
+
+async function stampStoreNotifyTitle(sql: Sql, storeId: number, title: string): Promise<void> {
+  const now = new Date().toISOString();
+  const rows = await sql`
+    SELECT settings_metadata
+    FROM merchant_store_settings
+    WHERE store_id = ${storeId}
+    LIMIT 1
+  `;
+  const prevMeta = readMetaObject((rows[0] as { settings_metadata?: unknown } | undefined)?.settings_metadata);
+  const lastMap = readMetaObject(prevMeta[STORE_NOTIFY_LAST_META_KEY]);
+  const nextMeta = {
+    ...prevMeta,
+    [STORE_NOTIFY_LAST_META_KEY]: { ...lastMap, [title]: now },
+  };
+  const metaJson = JSON.stringify(nextMeta);
+  if (rows[0]) {
+    await sql`
+      UPDATE merchant_store_settings
+      SET settings_metadata = ${metaJson}::jsonb, updated_at = NOW()
+      WHERE store_id = ${storeId}
+    `;
+    return;
+  }
+  await sql`
+    INSERT INTO merchant_store_settings (store_id, settings_metadata)
+    VALUES (${storeId}, ${metaJson}::jsonb)
+  `;
+}
+
 export async function insertMerchantStoreNotification(
   sql: Sql,
   args: {
@@ -81,9 +133,15 @@ export async function insertMerchantStoreNotification(
     return;
   }
 
-  await sql`
+  // Delist / relist / wallet retries must not recreate an inbox row the merchant
+  // already dismissed (Clear all deletes the row, then a retry would bring it back).
+  if (await recentlySentStoreTitle(sql, args.storeId, args.title)) {
+    return;
+  }
+
+  const inserted = await sql`
     INSERT INTO merchant_store_notifications (store_id, type, title, body, read, order_id, action_url)
-    VALUES (
+    SELECT
       ${args.storeId},
       ${args.type},
       ${args.title},
@@ -91,8 +149,22 @@ export async function insertMerchantStoreNotification(
       FALSE,
       ${args.orderId ?? null},
       ${args.actionUrl ?? null}
+    WHERE NOT EXISTS (
+      SELECT 1
+      FROM merchant_store_notifications n
+      WHERE n.store_id = ${args.storeId}
+        AND n.title = ${args.title}
+        AND n.created_at > now() - interval '6 hours'
     )
+    RETURNING id
   `;
+  if ((inserted as unknown as Array<unknown>).length > 0) {
+    try {
+      await stampStoreNotifyTitle(sql, args.storeId, args.title);
+    } catch {
+      /* stamp is best-effort; live-row idempotency still holds */
+    }
+  }
 }
 
 async function notifyMerchantStore(

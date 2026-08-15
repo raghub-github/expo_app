@@ -13,9 +13,13 @@ import {
   dispatchPartnerNotificationsChanged,
   shouldClearOrderNotifications,
 } from '@/lib/clear-store-order-notifications';
-import { toastStoreOperationsPostFailure } from '@/lib/storeOperationsPostFeedback';
+import { toastStoreOperationsPostFailure, isStoreDelistedOpsError } from '@/lib/storeOperationsPostFeedback';
+import { StoreDelistedBlockedDialog } from '@/components/StoreDelistedBlockedDialog';
+import { PARTNER_STORE_OPERATIONS_REFRESH_EVENT } from '@/lib/partnerStoreOperationsRefresh';
 import { displayLabelForAcceptedStep } from '@/lib/merchantVisibleTimeline';
 import { partnerSurfaceOnlineFromStoreOperationsBody } from '@/lib/partnerStoreSurfaceOnline';
+import { fetchStoreOperations } from '@/hooks/useMerchantApi';
+import { isStoreDelisted } from '@/lib/store-delist';
 import {
   Clock,
   CheckCircle2,
@@ -365,6 +369,8 @@ function OrdersPageContent() {
   const [thermalPrinterWidthMm, setThermalPrinterWidthMm] = useState<58 | 80>(80);
   const [riderTrackingOpen, setRiderTrackingOpen] = useState(false);
   const [isStoreOpen, setIsStoreOpen] = useState<boolean | null>(null);
+  const [storeDelisted, setStoreDelisted] = useState(false);
+  const [showDelistedBlocked, setShowDelistedBlocked] = useState(false);
   const [showStoreCloseModal, setShowStoreCloseModal] = useState(false);
   const [closeClosureType, setCloseClosureType] = useState<'temporary' | 'today' | 'manual_hold' | null>(null);
   const [closeClosureDate, setCloseClosureDate] = useState('');
@@ -622,11 +628,16 @@ function OrdersPageContent() {
   const fetchStoreStatus = useCallback(async () => {
     if (!storeId) return;
     try {
-      const res = await fetch(`/api/store-operations?store_id=${encodeURIComponent(storeId)}`);
-      const data = await res.json();
+      const data = await fetchStoreOperations(storeId);
       if (data.operational_status !== undefined) {
-        const surface = partnerSurfaceOnlineFromStoreOperationsBody(data as Record<string, unknown>);
-        setIsStoreOpen(surface ?? String(data.operational_status).toUpperCase() === 'OPEN');
+        const delisted = isStoreDelisted({
+          approval_status: data.approval_status,
+          delisted_at: data.delisted_at,
+          is_delisted: data.is_delisted,
+        });
+        setStoreDelisted(delisted);
+        const surface = partnerSurfaceOnlineFromStoreOperationsBody(data as unknown as Record<string, unknown>);
+        setIsStoreOpen(delisted ? false : (surface ?? String(data.operational_status).toUpperCase() === 'OPEN'));
       }
     } catch {}
   }, [storeId]);
@@ -638,29 +649,57 @@ function OrdersPageContent() {
   // Realtime: auto-update store status when it changes in DB (merchant_stores, merchant_store_availability, merchant_store_operating_hours)
   useEffect(() => {
     if (!storeInternalId || !storeId) return;
+    if (storeDelisted) return;
     const supabase = createClient();
+    let debounce: ReturnType<typeof setTimeout> | undefined;
+    const kick = () => {
+      if (debounce) clearTimeout(debounce);
+      debounce = setTimeout(() => {
+        void fetchStoreStatus();
+      }, 1500);
+    };
     const ch = supabase
       .channel(`store_status:${storeInternalId}`)
       .on(
         'postgres_changes',
         { event: 'UPDATE', schema: 'public', table: 'merchant_stores', filter: `id=eq.${storeInternalId}` },
-        () => { fetchStoreStatus(); }
+        kick
       )
       .on(
         'postgres_changes',
         { event: 'UPDATE', schema: 'public', table: 'merchant_store_availability', filter: `store_id=eq.${storeInternalId}` },
-        () => { fetchStoreStatus(); }
+        kick
       )
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'merchant_store_operating_hours', filter: `store_id=eq.${storeInternalId}` },
-        () => { fetchStoreStatus(); }
+        kick
       )
       .subscribe();
     return () => {
+      if (debounce) clearTimeout(debounce);
       ch.unsubscribe();
     };
-  }, [storeInternalId, storeId, fetchStoreStatus]);
+  }, [storeInternalId, storeId, fetchStoreStatus, storeDelisted]);
+
+  useEffect(() => {
+    if (!storeId || typeof window === 'undefined') return;
+    let lastFetch = 0;
+    const onRefresh = (ev: Event) => {
+      const ce = ev as CustomEvent<{ storeId?: string; forceClosed?: boolean; isDelisted?: boolean }>;
+      const sid = ce.detail?.storeId;
+      if (sid && sid === storeId) {
+        if (ce.detail?.forceClosed) setIsStoreOpen(false);
+        if (typeof ce.detail?.isDelisted === 'boolean') setStoreDelisted(ce.detail.isDelisted);
+        const now = Date.now();
+        if (now - lastFetch < 2500) return;
+        lastFetch = now;
+        void fetchStoreStatus();
+      }
+    };
+    window.addEventListener(PARTNER_STORE_OPERATIONS_REFRESH_EVENT, onRefresh as EventListener);
+    return () => window.removeEventListener(PARTNER_STORE_OPERATIONS_REFRESH_EVENT, onRefresh as EventListener);
+  }, [storeId, fetchStoreStatus]);
 
   const fetchOrders = useCallback(async () => {
     const ids = managedStoreIds.length > 0 ? managedStoreIds : storeId ? [storeId] : [];
@@ -1002,15 +1041,24 @@ function OrdersPageContent() {
 
   const handleStoreToggle = useCallback(() => {
     if (!storeId) return;
+    if (storeDelisted) {
+      setShowDelistedBlocked(true);
+      return;
+    }
     if (isStoreOpen) {
       setShowStoreCloseModal(true);
       return;
     }
     setShowTurnOnModal(true);
-  }, [storeId, isStoreOpen]);
+  }, [storeId, isStoreOpen, storeDelisted]);
 
   const handleConfirmTurnOn = useCallback(async () => {
     if (!storeId) return;
+    if (storeDelisted) {
+      setShowTurnOnModal(false);
+      setShowDelistedBlocked(true);
+      return;
+    }
     setTurnOnLoading(true);
     try {
       const res = await fetch('/api/store-operations', {
@@ -1025,7 +1073,14 @@ function OrdersPageContent() {
         setShowTurnOnModal(false);
         toast.success('Store is now OPEN. Orders are being accepted!');
       } else {
-        toastStoreOperationsPostFailure(res, data, 'Failed to open store');
+        if (isStoreDelistedOpsError(data)) {
+          setShowTurnOnModal(false);
+          setShowDelistedBlocked(true);
+          setStoreDelisted(true);
+          setIsStoreOpen(false);
+        } else {
+          toastStoreOperationsPostFailure(res, data, 'Failed to open store');
+        }
         await fetchStoreStatus();
       }
     } catch {
@@ -1034,7 +1089,7 @@ function OrdersPageContent() {
     } finally {
       setTurnOnLoading(false);
     }
-  }, [storeId, fetchStoreStatus]);
+  }, [storeId, fetchStoreStatus, storeDelisted]);
 
   // When store close modal opens: fetch opening time and set default date/time
   useEffect(() => {
@@ -2431,6 +2486,11 @@ function OrdersPageContent() {
           }
         }}
         onConfirm={handleStoreCloseModalConfirm}
+      />
+
+      <StoreDelistedBlockedDialog
+        open={showDelistedBlocked}
+        onClose={() => setShowDelistedBlocked(false)}
       />
 
       {/* Turn Store ON modal – portaled so overlay is above sidebar */}

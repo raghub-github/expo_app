@@ -38,6 +38,17 @@ import {
   formatStoreHeaderSubtitle,
   resolveStoreLocationLabel,
 } from "@/lib/selectedStoreStorage";
+import { StoreDelistedMarquee } from "@/components/StoreDelistedMarquee";
+import { MERCHANT_DELIST_SUPPORT_HREF, needsManualOpenAfterRelist, STORE_RELISTED_MANUAL_OPEN_MARQUEE } from "@/lib/storeDelist";
+import { OrderNotificationsDisabledBanner } from "@/components/OrderNotificationsDisabledBanner";
+import {
+  MerchantHomeBannerCarousel,
+  MerchantScheduleOffBanner,
+  MerchantRushHourBanner,
+  type MerchantHomeBannerSlide,
+} from "@/components/MerchantHomeBannerCarousel";
+import { useNotificationPermissionGate } from "@/context/NotificationPermissionGateContext";
+import { formatStoreActionSourceLabel } from "@/lib/storeActionSource";
 
 const DAY_KEYS = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"] as const;
 type DayKey = (typeof DAY_KEYS)[number];
@@ -250,15 +261,15 @@ function MainHeader({
   reopenAtIso?: string | null;
   reopenCountdownLabelPrefix?: string;
 }) {
-  const { isOnline, scheduledClosure, manualCloseUntil, restrictionType } = useStoreStatus();
+  const { isOnline, scheduledClosure, manualCloseUntil, restrictionType, isDelisted } = useStoreStatus();
   const reopenAtIso = normalizeIso(reopenAtIsoProp);
   const countdownPrefix = reopenCountdownLabelPrefix ?? "Opens in";
   const [countdownTime, setCountdownTime] = useState<string | null>(() =>
-    reopenAtIso && !isOnline ? formatNextReopenCountdown(reopenAtIso) : null
+    reopenAtIso && !isOnline && !isDelisted ? formatNextReopenCountdown(reopenAtIso) : null
   );
 
   useEffect(() => {
-    if (isOnline || !reopenAtIso || !showHeaderToggle) {
+    if (isOnline || isDelisted || !reopenAtIso || !showHeaderToggle) {
       setCountdownTime(null);
       return;
     }
@@ -268,7 +279,7 @@ function MainHeader({
     tick();
     const id = setInterval(tick, 1000);
     return () => clearInterval(id);
-  }, [isOnline, reopenAtIso, showHeaderToggle]);
+  }, [isOnline, isDelisted, reopenAtIso, showHeaderToggle]);
   const {
     selectedStore,
     managedStores,
@@ -451,8 +462,12 @@ function MainHeader({
               style={styles.headerToggleWrap}
               onStartShouldSetResponder={() => true}
             >
-              <OnlineOfflineToggle isOnline={isOnline} onToggle={onToggleRequest} />
-              {!isOnline && countdownTime ? (
+              <OnlineOfflineToggle
+                isOnline={isOnline}
+                isDelisted={isDelisted}
+                onToggle={onToggleRequest}
+              />
+              {!isOnline && !isDelisted && countdownTime ? (
                 <Text style={styles.headerToggleCountdown} numberOfLines={1}>
                   {countdownPrefix}{" "}
                   <Text style={styles.headerToggleCountdownBold}>{countdownTime}</Text>
@@ -719,7 +734,7 @@ function StoreStatusCard({
 }
 
 
-type WarningModalType = "store-status" | "switch-store" | "outside-hours";
+type WarningModalType = "store-status" | "switch-store" | "outside-hours" | "delisted";
 
 export function MerchantCustomHeader() {
   const insets = useSafeAreaInsets();
@@ -753,7 +768,19 @@ export function MerchantCustomHeader() {
     lastToggledByName,
     lastToggledById,
     lastToggledByEmail,
+    isDelisted,
+    activeRush,
+    needsManualOpenAfterRelist: needsRelistManualOpenFromCtx,
   } = useStoreStatus();
+  const needsRelistManualOpen =
+    needsRelistManualOpenFromCtx ||
+    needsManualOpenAfterRelist({
+      isDelisted,
+      isOpen: isOnline,
+      lastToggleType,
+      closeReason: manualCloseReason ?? statusReason,
+      unavailableReason,
+    });
   const hasScheduledClosure =
     scheduledClosure != null ||
     (manualCloseUntil != null &&
@@ -761,6 +788,7 @@ export function MerchantCustomHeader() {
       new Date(manualCloseUntil).getTime() > Date.now()) ||
     upcomingScheduledClosure != null;
   const { switchActiveOutlet } = useSelectedStore();
+  const { notificationsGranted } = useNotificationPermissionGate();
 
   const [nowTick, setNowTick] = useState(() => Date.now());
   useEffect(() => {
@@ -858,6 +886,13 @@ export function MerchantCustomHeader() {
   }, [selectedStore?.id, token, pathname]);
 
   const showStoreStatusWarning = () => {
+    if (isDelisted) {
+      setWarningModal({
+        visible: true,
+        type: "delisted",
+      });
+      return;
+    }
     setCloseMode("TEMP");
     setCloseReason(null);
     setCloseReasonOtherText("");
@@ -926,6 +961,10 @@ export function MerchantCustomHeader() {
   };
 
   const confirmWarningModal = () => {
+    if (warningModal.type === "delisted") {
+      closeWarningModal();
+      return;
+    }
     if (warningModal.type === "store-status") {
       // When closing, ensure a reason is selected (and "Other" is filled).
       if (warningModal.goingOffline) {
@@ -966,6 +1005,7 @@ export function MerchantCustomHeader() {
           .catch((e: unknown) => {
             const code = e != null && typeof e === "object" ? String((e as { code?: string }).code ?? "") : "";
             const msg = e instanceof Error ? e.message : "";
+            if (code === "STORE_DELISTED") return;
             if (
               code === "outside_operating_hours" ||
               msg.toLowerCase().includes("outside its scheduled operating hours")
@@ -1136,9 +1176,9 @@ export function MerchantCustomHeader() {
     return v.includes("gatimitra") || v.endsWith("@gatimitra.in") || v.endsWith("@gatimitra.com");
   };
 
-  // "Last: Closed by ..." when store is offline
+  // "Last: Closed by ..." when store is offline (hidden while delisted)
   let lastClosedLine: string | null = null;
-  if (!isOnline && lastToggledAt) {
+  if (!isOnline && !isDelisted && lastToggledAt) {
     const timeStr = new Intl.DateTimeFormat("en-IN", {
       hour: "2-digit",
       minute: "2-digit",
@@ -1183,8 +1223,123 @@ export function MerchantCustomHeader() {
     return null;
   }
 
+  const statusTodayHoursLabel = (() => {
+    if (isTempClose) return null;
+    if (resolvedTodayHoursLabel === "Today: Closed" && !isOnline) return null;
+    if (resolvedTodayHoursLabel) return resolvedTodayHoursLabel;
+    if (!isOnline && nextOpenTime) return `Today: Next open at ${formatSlotTime(nextOpenTime)}`;
+    if (!isOnline && nextCloseTime) return `Today: Next close at ${formatSlotTime(nextCloseTime)}`;
+    return null;
+  })();
+
+  const formatBannerWindow = (fromIso: string, toIso: string) => {
+    const fmt = (iso: string) => {
+      const d = new Date(iso);
+      if (Number.isNaN(d.getTime())) return null;
+      return new Intl.DateTimeFormat("en-IN", {
+        day: "2-digit",
+        month: "short",
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: true,
+        timeZone: "Asia/Calcutta",
+      }).format(d);
+    };
+    const fromLabel = fmt(fromIso);
+    const toLabel = fmt(toIso);
+    if (fromLabel && toLabel) return `${fromLabel} – ${toLabel}`;
+    return fromLabel || toLabel || "";
+  };
+
+  const homeBannerSlides: MerchantHomeBannerSlide[] = [
+    {
+      id: "store_status",
+      durationMs: 30_000,
+      element: (
+        <StoreStatusCard
+          onPressCard={() => merchantNavPush("/restaurant-status")}
+          onPressTodayHours={() => {
+            if (!selectedStore) return;
+            merchantNavPush("/(tabs)/profile/hours");
+          }}
+          offlineSubtitle={!isOnline ? closedReasonLine : undefined}
+          autoReopenLabel={autoReopenLabel}
+          scheduleLabel={scheduleLabel}
+          showAutoOpenTag={!isDelisted && !needsRelistManualOpen && !isTempClose && autoOpenFromSchedule}
+          todayHoursLabel={statusTodayHoursLabel}
+          reopenAtIso={!isOnline && !isDelisted && !needsRelistManualOpen ? primaryReopenIso : null}
+          reopenCountdownLabelPrefix={
+            !isOnline && !isDelisted && !needsRelistManualOpen && primaryReopenIso ? "Opens in" : undefined
+          }
+          reopenAtFormatted={
+            !isOnline && !isDelisted && !needsRelistManualOpen ? formatIstDateTimeCompact(primaryReopenIso) : null
+          }
+          lastOpenedLine={isOnline ? lastOpenedLine : null}
+          lastClosedLine={!isOnline && !isDelisted ? lastClosedLine : null}
+        />
+      ),
+    },
+  ];
+  if (!notificationsGranted) {
+    homeBannerSlides.push({
+      id: "order_notifications_disabled",
+      durationMs: 30_000,
+      element: <OrderNotificationsDisabledBanner visible />,
+    });
+  }
+  if (scheduledClosure && !isOnline) {
+    const windowText = formatBannerWindow(scheduledClosure.from, scheduledClosure.to);
+    if (windowText) {
+      homeBannerSlides.push({
+        id: "schedule_off_active",
+        durationMs: 30_000,
+        element: (
+          <MerchantScheduleOffBanner
+            phase="active"
+            windowText={windowText}
+            reason={scheduledClosure.reason}
+            sourceLabel={formatStoreActionSourceLabel(scheduledClosure.marked_from)}
+            onPress={() => merchantNavPush("/(tabs)/profile/vacation?tab=slots")}
+          />
+        ),
+      });
+    }
+  }
+  if (upcomingScheduledClosure) {
+    const windowText = formatBannerWindow(upcomingScheduledClosure.from, upcomingScheduledClosure.to);
+    if (windowText) {
+      homeBannerSlides.push({
+        id: "schedule_off_upcoming",
+        durationMs: 30_000,
+        element: (
+          <MerchantScheduleOffBanner
+            phase="upcoming"
+            windowText={windowText}
+            reason={upcomingScheduledClosure.reason}
+            sourceLabel={formatStoreActionSourceLabel(upcomingScheduledClosure.marked_from)}
+            onPress={() => merchantNavPush("/(tabs)/profile/vacation?tab=slots")}
+          />
+        ),
+      });
+    }
+  }
+  if (activeRush && activeRush.is_active && activeRush.remaining_minutes > 0) {
+    homeBannerSlides.push({
+      id: "rush_active",
+      durationMs: 30_000,
+      element: (
+        <MerchantRushHourBanner
+          remainingMinutes={activeRush.remaining_minutes}
+          sourceLabel={formatStoreActionSourceLabel(activeRush.marked_from)}
+          onPress={() => merchantNavPush("/(tabs)/profile/preparation-time")}
+        />
+      ),
+    });
+  }
+
   return (
     <>
+    <View>
     <View style={[styles.wrapper, { paddingTop: topPadding }]}>
       <View style={[styles.mainSection, !isHomeScreen && styles.mainSectionNoCard]}>
         <MainHeader
@@ -1195,39 +1350,22 @@ export function MerchantCustomHeader() {
           pathname={pathname}
           showHeaderToggle={isHomeScreen}
           onToggleRequest={showStoreStatusWarning}
-          reopenAtIso={!isOnline ? primaryReopenIso : null}
-          reopenCountdownLabelPrefix={!isOnline && primaryReopenIso ? "Opens in" : undefined}
+          reopenAtIso={!isOnline && !isDelisted && !needsRelistManualOpen ? primaryReopenIso : null}
+          reopenCountdownLabelPrefix={!isOnline && !isDelisted && !needsRelistManualOpen && primaryReopenIso ? "Opens in" : undefined}
         />
       </View>
     </View>
     {isHomeScreen ? (
       <View style={styles.statusCardSection}>
-        <StoreStatusCard
-          onPressCard={() => merchantNavPush("/restaurant-status")}
-          onPressTodayHours={() => {
-            if (!selectedStore) return;
-            merchantNavPush("/(tabs)/profile/hours");
-          }}
-          offlineSubtitle={!isOnline ? closedReasonLine : undefined}
-          autoReopenLabel={autoReopenLabel}
-          scheduleLabel={scheduleLabel}
-          showAutoOpenTag={!isTempClose && autoOpenFromSchedule}
-          todayHoursLabel={(() => {
-            if (isTempClose) return null;
-            if (resolvedTodayHoursLabel === "Today: Closed" && !isOnline) return null;
-            if (resolvedTodayHoursLabel) return resolvedTodayHoursLabel;
-            if (!isOnline && nextOpenTime) return `Today: Next open at ${formatSlotTime(nextOpenTime)}`;
-            if (!isOnline && nextCloseTime) return `Today: Next close at ${formatSlotTime(nextCloseTime)}`;
-            return null;
-          })()}
-          reopenAtIso={!isOnline ? primaryReopenIso : null}
-          reopenCountdownLabelPrefix={!isOnline && primaryReopenIso ? "Opens in" : undefined}
-          reopenAtFormatted={!isOnline ? formatIstDateTimeCompact(primaryReopenIso) : null}
-          lastOpenedLine={isOnline ? lastOpenedLine : null}
-          lastClosedLine={!isOnline ? lastClosedLine : null}
-        />
+        <MerchantHomeBannerCarousel slides={homeBannerSlides} variant="flush" />
       </View>
     ) : null}
+    {isDelisted ? (
+      <StoreDelistedMarquee />
+    ) : needsRelistManualOpen ? (
+      <StoreDelistedMarquee message={STORE_RELISTED_MANUAL_OPEN_MARQUEE} />
+    ) : null}
+    </View>
 
       <Modal
         visible={warningModal.visible}
@@ -1259,7 +1397,50 @@ export function MerchantCustomHeader() {
             {warningModal.type === "store-status" && warningModal.goingOffline ? (
               <View style={styles.bottomSheetHandle} />
             ) : null}
-            {warningModal.type === "outside-hours" ? (
+            {warningModal.type === "delisted" ? (
+              <>
+                <View style={styles.storeOnIconWrap}>
+                  <View style={[styles.storeOnIconCircle, styles.outsideHoursIconCircle]}>
+                    <Ionicons name="alert-circle-outline" size={28} color="#DC2626" />
+                  </View>
+                </View>
+                <Text style={styles.storeOnTitle}>Store Status</Text>
+                <Text style={[styles.storeOnBody, { fontWeight: "700", color: "#B91C1C" }]}>
+                  📊 Status: DELISTED
+                </Text>
+                <Text style={styles.storeOnBody}>
+                  Your store has been delisted from GatiMitra and is currently unavailable to receive new orders.
+                </Text>
+                <Text style={styles.storeOnBody}>
+                  Please contact GatiMitra Support for more information or assistance with reactivation.
+                </Text>
+                <View style={styles.warningActions}>
+                  <Pressable
+                    onPress={closeWarningModal}
+                    style={({ pressed }) => [
+                      styles.warningBtn,
+                      styles.warningBtnCancel,
+                      pressed && styles.pressed,
+                    ]}
+                  >
+                    <Text style={styles.warningBtnCancelText}>Got It</Text>
+                  </Pressable>
+                  <Pressable
+                    onPress={() => {
+                      closeWarningModal();
+                      merchantNavPush(MERCHANT_DELIST_SUPPORT_HREF);
+                    }}
+                    style={({ pressed }) => [
+                      styles.warningBtn,
+                      styles.storeOnConfirmBtn,
+                      pressed && styles.pressed,
+                    ]}
+                  >
+                    <Text style={styles.storeOnConfirmText}>Contact support</Text>
+                  </Pressable>
+                </View>
+              </>
+            ) : warningModal.type === "outside-hours" ? (
               <>
                 <View style={styles.storeOnIconWrap}>
                   <View style={[styles.storeOnIconCircle, styles.outsideHoursIconCircle]}>
@@ -2038,10 +2219,13 @@ const styles = StyleSheet.create({
   statusCard: {
     alignSelf: "stretch",
     width: "100%",
+    height: "100%",
     borderRadius: 0,
-    paddingHorizontal: H_PADDING,
-    paddingVertical: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 6,
+    paddingRight: 12,
     borderWidth: 0,
+    justifyContent: "center",
   },
   statusCardOnline: {
     backgroundColor: "#15803D",
@@ -2146,9 +2330,10 @@ const styles = StyleSheet.create({
   },
   statusCardRightMeta: {
     flexShrink: 0,
-    maxWidth: "52%",
+    maxWidth: "64%",
     alignItems: "flex-end",
     gap: 1,
+    marginRight: 0,
   },
   statusCardMetaRight: {
     fontSize: 10,

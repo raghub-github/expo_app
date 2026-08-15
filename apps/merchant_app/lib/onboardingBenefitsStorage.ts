@@ -1,100 +1,140 @@
 /**
- * Per-store onboarding benefits progress.
- * Local SecureStore is a cache; backend merchant_store_settings.settings_metadata
- * is the source of truth so completion survives reinstall / new device / logout.
+ * Per-store onboarding benefits.
+ * Database (merchant_onboarding_tasks) is the source of truth.
+ * Local memory is a session cache only and is never used to SHOW the Home card.
  */
 
-import * as SecureStore from "expo-secure-store";
 import { getConfig } from "@/config/env";
 
 export const ONBOARDING_BENEFITS_WINDOW_DAYS = 15;
 export const ONBOARDING_IMAGE_TARGET = 10;
+export const ONBOARDING_BENEFITS_TASK_KEY = "ONBOARDING_BENEFITS";
+
+export type OnboardingTaskApiStatus = "INCOMPLETE" | "COMPLETED" | "NOT_FOUND";
+
+export type OnboardingTaskDto = {
+  taskKey: string;
+  status: OnboardingTaskApiStatus;
+  completedAt: string | null;
+  expiresAt: string | null;
+  isExpired: boolean;
+  visible: boolean;
+  startedAt: string | null;
+  packagingTipsCompletedAt: string | null;
+};
 
 export type OnboardingBenefitsState = {
-  /** ISO date when benefits unlocked (first time store had menu items). */
   startedAt: string;
   packagingTipsCompletedAt?: string | null;
-  /** Once hidden (completed or expired), stay hidden. */
   dismissedAt?: string | null;
-  /** Server-confirmed completion — never revive after this. */
   completedAt?: string | null;
 };
 
-function storageKey(storeId: string) {
-  return `gm_onboarding_benefits_v2_${storeId}`;
+type SessionEntry = {
+  dto: OnboardingTaskDto;
+};
+
+/** Session cache only. Never used to render the card as visible. */
+const sessionByStoreDbId = new Map<number, SessionEntry>();
+
+function apiBase(): string {
+  return getConfig().apiBaseUrl.replace(/\/+$/, "");
 }
 
-export async function loadOnboardingBenefitsState(
-  storeId: string
-): Promise<OnboardingBenefitsState | null> {
+function authHeaders(token: string): HeadersInit {
+  return { Authorization: `Bearer ${token}`, "X-Silent-Error": "1" };
+}
+
+function normalizeTask(raw: Partial<OnboardingTaskDto> & {
+  task_key?: string;
+  completed_at?: string | null;
+  expires_at?: string | null;
+  is_expired?: boolean;
+  started_at?: string | null;
+  packaging_tips_completed_at?: string | null;
+  status?: string | null;
+  visible?: boolean;
+}): OnboardingTaskDto {
+  const statusRaw = String(raw.status ?? "NOT_FOUND").toUpperCase();
+  const status: OnboardingTaskApiStatus =
+    statusRaw === "COMPLETED" ? "COMPLETED" : statusRaw === "INCOMPLETE" ? "INCOMPLETE" : "NOT_FOUND";
+  const completedAt = raw.completedAt ?? raw.completed_at ?? null;
+  const expiresAt = raw.expiresAt ?? raw.expires_at ?? null;
+  const isExpired = raw.isExpired ?? raw.is_expired ?? false;
+  const visible = status === "COMPLETED" ? false : Boolean(raw.visible) && status === "INCOMPLETE" && !isExpired;
+  return {
+    taskKey: raw.taskKey ?? raw.task_key ?? ONBOARDING_BENEFITS_TASK_KEY,
+    status,
+    completedAt,
+    expiresAt,
+    isExpired,
+    visible,
+    startedAt: raw.startedAt ?? raw.started_at ?? null,
+    packagingTipsCompletedAt: raw.packagingTipsCompletedAt ?? raw.packaging_tips_completed_at ?? null,
+  };
+}
+
+function remember(storeDbId: number, dto: OnboardingTaskDto): OnboardingTaskDto {
+  sessionByStoreDbId.set(storeDbId, { dto });
+  return dto;
+}
+
+export function peekCompletedOnboardingTask(storeDbId: number | null): boolean {
+  if (!storeDbId) return false;
+  return sessionByStoreDbId.get(storeDbId)?.dto.status === "COMPLETED";
+}
+
+export async function fetchOnboardingTask(
+  storeDbId: number,
+  token: string
+): Promise<OnboardingTaskDto | null> {
   try {
-    const raw = await SecureStore.getItemAsync(storageKey(storeId));
-    if (!raw) return null;
-    const parsed = JSON.parse(raw) as OnboardingBenefitsState;
-    if (!parsed?.startedAt) return null;
-    return parsed;
+    const res = await fetch(
+      `${apiBase()}/v1/merchant-partner/stores/${storeDbId}/onboarding/tasks`,
+      { headers: authHeaders(token) }
+    );
+    if (!res.ok) return null;
+    const data = (await res.json()) as { task?: Partial<OnboardingTaskDto>; tasks?: Partial<OnboardingTaskDto>[] };
+    const raw = data.task ?? data.tasks?.[0];
+    if (!raw) {
+      const missing = normalizeTask({ status: "NOT_FOUND", visible: false });
+      return remember(storeDbId, missing);
+    }
+    return remember(storeDbId, normalizeTask(raw));
   } catch {
     return null;
   }
 }
 
-async function saveState(storeId: string, next: OnboardingBenefitsState) {
-  try {
-    await SecureStore.setItemAsync(storageKey(storeId), JSON.stringify(next));
-  } catch {
-    // ignore
-  }
-}
-
-function mergeRemote(
-  local: OnboardingBenefitsState | null,
-  remote: Partial<OnboardingBenefitsState> | null
-): OnboardingBenefitsState | null {
-  if (!local && !remote?.startedAt) return null;
-  const base: OnboardingBenefitsState = {
-    startedAt: remote?.startedAt ?? local!.startedAt,
-    packagingTipsCompletedAt:
-      remote?.packagingTipsCompletedAt ?? local?.packagingTipsCompletedAt ?? null,
-    dismissedAt: remote?.dismissedAt ?? local?.dismissedAt ?? null,
-    completedAt: remote?.completedAt ?? local?.completedAt ?? null,
-  };
-  // Prefer whichever timestamp is set (server or local).
-  if (remote?.completedAt && !local?.completedAt) base.completedAt = remote.completedAt;
-  if (local?.completedAt && !remote?.completedAt) base.completedAt = local.completedAt;
-  if (remote?.packagingTipsCompletedAt || local?.packagingTipsCompletedAt) {
-    base.packagingTipsCompletedAt =
-      remote?.packagingTipsCompletedAt ?? local?.packagingTipsCompletedAt ?? null;
-  }
-  if (base.completedAt) {
-    base.dismissedAt = base.dismissedAt ?? base.completedAt;
-  }
-  return base;
-}
-
-async function fetchRemoteState(
+export async function startOnboardingTask(
   storeDbId: number,
   token: string
-): Promise<Partial<OnboardingBenefitsState> | null> {
+): Promise<OnboardingTaskDto | null> {
   try {
-    const base = getConfig().apiBaseUrl.replace(/\/+$/, "");
     const res = await fetch(
-      `${base}/v1/merchant-partner/stores/${storeDbId}/onboarding-benefits`,
-      { headers: { Authorization: `Bearer ${token}`, "X-Silent-Error": "1" } }
+      `${apiBase()}/v1/merchant-partner/stores/${storeDbId}/onboarding/tasks/${ONBOARDING_BENEFITS_TASK_KEY}/start`,
+      { method: "POST", headers: authHeaders(token) }
     );
     if (!res.ok) return null;
-    const data = (await res.json()) as {
-      started_at?: string | null;
-      packaging_tips_completed_at?: string | null;
-      dismissed_at?: string | null;
-      completed_at?: string | null;
-    };
-    if (!data?.started_at && !data?.completed_at) return null;
-    return {
-      startedAt: data.started_at ?? new Date().toISOString(),
-      packagingTipsCompletedAt: data.packaging_tips_completed_at ?? null,
-      dismissedAt: data.dismissed_at ?? null,
-      completedAt: data.completed_at ?? null,
-    };
+    const data = (await res.json()) as Partial<OnboardingTaskDto>;
+    return remember(storeDbId, normalizeTask(data));
+  } catch {
+    return null;
+  }
+}
+
+export async function completeOnboardingTaskRemote(
+  storeDbId: number,
+  token: string
+): Promise<OnboardingTaskDto | null> {
+  try {
+    const res = await fetch(
+      `${apiBase()}/v1/merchant-partner/stores/${storeDbId}/onboarding/tasks/${ONBOARDING_BENEFITS_TASK_KEY}/complete`,
+      { method: "POST", headers: authHeaders(token) }
+    );
+    if (!res.ok) return null;
+    const data = (await res.json()) as Partial<OnboardingTaskDto>;
+    return remember(storeDbId, normalizeTask({ ...data, status: "COMPLETED", visible: false }));
   } catch {
     return null;
   }
@@ -104,110 +144,112 @@ async function patchRemoteState(
   storeDbId: number,
   token: string,
   patch: Record<string, unknown>
-): Promise<void> {
+): Promise<OnboardingTaskDto | null> {
   try {
-    const base = getConfig().apiBaseUrl.replace(/\/+$/, "");
-    await fetch(`${base}/v1/merchant-partner/stores/${storeDbId}/onboarding-benefits`, {
+    const res = await fetch(`${apiBase()}/v1/merchant-partner/stores/${storeDbId}/onboarding-benefits`, {
       method: "PATCH",
       headers: {
-        Authorization: `Bearer ${token}`,
+        ...authHeaders(token),
         "Content-Type": "application/json",
-        "X-Silent-Error": "1",
       },
       body: JSON.stringify(patch),
     });
+    if (!res.ok) return null;
+    const data = (await res.json()) as Partial<OnboardingTaskDto> & {
+      completed_at?: string | null;
+      started_at?: string | null;
+      packaging_tips_completed_at?: string | null;
+      status?: string | null;
+      visible?: boolean;
+      is_expired?: boolean;
+      expires_at?: string | null;
+    };
+    return remember(storeDbId, normalizeTask(data));
   } catch {
-    // local cache still updated
+    return null;
   }
 }
 
+function dtoToState(dto: OnboardingTaskDto): OnboardingBenefitsState | null {
+  if (dto.status === "NOT_FOUND" && !dto.startedAt) return null;
+  return {
+    startedAt: dto.startedAt ?? new Date().toISOString(),
+    packagingTipsCompletedAt: dto.packagingTipsCompletedAt,
+    dismissedAt: dto.status === "COMPLETED" ? dto.completedAt : null,
+    completedAt: dto.completedAt,
+  };
+}
+
+export async function loadOnboardingBenefitsState(
+  _storeId: string,
+  opts?: { storeDbId?: number | null; token?: string | null }
+): Promise<OnboardingBenefitsState | null> {
+  if (opts?.storeDbId && opts.token) {
+    const cached = sessionByStoreDbId.get(opts.storeDbId)?.dto;
+    if (cached) return dtoToState(cached);
+    const dto = await fetchOnboardingTask(opts.storeDbId, opts.token);
+    return dto ? dtoToState(dto) : null;
+  }
+  return null;
+}
+
 export async function syncOnboardingBenefitsFromServer(
-  storePublicId: string,
+  _storePublicId: string,
   storeDbId: number | null,
   token: string | null
 ): Promise<OnboardingBenefitsState | null> {
-  const local = await loadOnboardingBenefitsState(storePublicId);
-  if (!storeDbId || !token) return local;
-  const remote = await fetchRemoteState(storeDbId, token);
-  const merged = mergeRemote(local, remote);
-  if (merged) await saveState(storePublicId, merged);
-  return merged;
+  if (!storeDbId || !token) return null;
+  const dto = await fetchOnboardingTask(storeDbId, token);
+  return dto ? dtoToState(dto) : null;
 }
 
 export async function ensureOnboardingBenefitsStarted(
-  storeId: string,
+  _storeId: string,
   opts?: { storeDbId?: number | null; token?: string | null }
 ): Promise<OnboardingBenefitsState> {
-  const existing = await loadOnboardingBenefitsState(storeId);
-  if (existing) return existing;
-  const next: OnboardingBenefitsState = {
+  if (opts?.storeDbId && opts.token) {
+    const existing = await fetchOnboardingTask(opts.storeDbId, opts.token);
+    if (existing?.status === "COMPLETED") {
+      return dtoToState(existing)!;
+    }
+    if (existing?.status === "INCOMPLETE" && existing.startedAt) {
+      return dtoToState(existing)!;
+    }
+    const started = await startOnboardingTask(opts.storeDbId, opts.token);
+    if (started) return dtoToState(started)!;
+  }
+  return {
     startedAt: new Date().toISOString(),
     packagingTipsCompletedAt: null,
     dismissedAt: null,
     completedAt: null,
   };
-  await saveState(storeId, next);
-  if (opts?.storeDbId && opts?.token) {
-    void patchRemoteState(opts.storeDbId, opts.token, {
-      started_at: next.startedAt,
-    });
-  }
-  return next;
 }
 
 export async function markPackagingTipsCompleted(
-  storeId: string,
+  _storeId: string,
   opts?: { storeDbId?: number | null; token?: string | null }
 ): Promise<void> {
-  const current = (await loadOnboardingBenefitsState(storeId)) ?? {
-    startedAt: new Date().toISOString(),
-  };
-  if (current.packagingTipsCompletedAt) return;
+  if (!opts?.storeDbId || !opts.token) return;
+  const current = sessionByStoreDbId.get(opts.storeDbId)?.dto;
+  if (current?.packagingTipsCompletedAt) return;
   const at = new Date().toISOString();
-  await saveState(storeId, {
-    ...current,
-    packagingTipsCompletedAt: at,
-  });
-  if (opts?.storeDbId && opts?.token) {
-    void patchRemoteState(opts.storeDbId, opts.token, {
-      packaging_tips_completed_at: at,
-    });
-  }
+  await patchRemoteState(opts.storeDbId, opts.token, { packaging_tips_completed_at: at });
 }
 
-/**
- * Soft-dismiss without completing (e.g. early close). Never sets completedAt.
- * Home card can revive while tasks are still open and the window has not expired.
- */
 export async function dismissOnboardingBenefits(
-  storeId: string,
+  _storeId: string,
   opts?: { storeDbId?: number | null; token?: string | null; completed?: boolean }
 ): Promise<void> {
-  const current = (await loadOnboardingBenefitsState(storeId)) ?? {
-    startedAt: new Date().toISOString(),
-  };
-  if (current.completedAt) return;
-  if (current.dismissedAt && !opts?.completed) return;
-  const at = new Date().toISOString();
-  const next: OnboardingBenefitsState = {
-    ...current,
-    dismissedAt: current.dismissedAt ?? at,
-    completedAt: opts?.completed ? current.completedAt ?? at : current.completedAt ?? null,
-  };
-  await saveState(storeId, next);
-  if (opts?.storeDbId && opts?.token) {
-    void patchRemoteState(opts.storeDbId, opts.token, {
-      dismissed_at: next.dismissedAt,
-      ...(next.completedAt ? { completed_at: next.completedAt } : {}),
-    });
+  if (!opts?.storeDbId || !opts.token) return;
+  if (opts.completed) {
+    await completeOnboardingTaskRemote(opts.storeDbId, opts.token);
+    return;
   }
+  const at = new Date().toISOString();
+  await patchRemoteState(opts.storeDbId, opts.token, { dismissed_at: at });
 }
 
-/**
- * Permanent completion — only after BOTH required tasks are done.
- * photoTarget = min(totalItems, 10). Called from the "Got it" button.
- * Sets completedAt so the Home card never revives for this store.
- */
 export async function confirmOnboardingBenefitsCompleted(
   storeId: string,
   opts: {
@@ -215,43 +257,28 @@ export async function confirmOnboardingBenefitsCompleted(
     token?: string | null;
     itemsWithImages: number;
     itemCount: number;
+    packagingTipsDone?: boolean;
   }
-): Promise<{ ok: boolean; reason?: "tasks_incomplete" | "already_completed" }> {
-  const current = (await loadOnboardingBenefitsState(storeId)) ?? {
-    startedAt: new Date().toISOString(),
-  };
-  if (current.completedAt) return { ok: true, reason: "already_completed" };
+): Promise<{ ok: boolean; reason?: "tasks_incomplete" | "already_completed" | "server_error" }> {
+  const cached = opts.storeDbId ? sessionByStoreDbId.get(opts.storeDbId)?.dto : undefined;
+  if (cached?.status === "COMPLETED") return { ok: true, reason: "already_completed" };
 
   const imagesDone = isImageUploadComplete(opts.itemsWithImages, opts.itemCount);
-  const tipsDone = Boolean(current.packagingTipsCompletedAt);
+  const tipsDone = Boolean(cached?.packagingTipsCompletedAt) || opts.packagingTipsDone === true;
   if (!imagesDone || !tipsDone) {
     return { ok: false, reason: "tasks_incomplete" };
   }
-
-  await dismissOnboardingBenefits(storeId, {
-    storeDbId: opts.storeDbId,
-    token: opts.token,
-    completed: true,
-  });
+  if (!opts.storeDbId || !opts.token) return { ok: false, reason: "server_error" };
+  const dto = await completeOnboardingTaskRemote(opts.storeDbId, opts.token);
+  if (!dto || dto.status !== "COMPLETED") return { ok: false, reason: "server_error" };
   return { ok: true };
 }
 
-/**
- * Only revive a soft-dismissed card when not permanently completed and window open.
- * Never auto-set completedAt — that requires the merchant tapping Got it.
- */
 export async function reviveOnboardingBenefitsIfPending(
-  storeId: string,
+  _storeId: string,
   _opts: { itemsWithImages: number; itemCount: number }
 ): Promise<OnboardingBenefitsState | null> {
-  const current = await loadOnboardingBenefitsState(storeId);
-  if (!current) return null;
-  if (current.completedAt) return current;
-  if (!current.dismissedAt) return current;
-  if (isOnboardingExpired(current.startedAt)) return current;
-  const revived = { ...current, dismissedAt: null };
-  await saveState(storeId, revived);
-  return revived;
+  return null;
 }
 
 export function getOnboardingDeadline(startedAt: string): Date {
@@ -274,7 +301,6 @@ export function formatOnboardingDeadline(startedAt: string): string {
   }).format(d);
 }
 
-/** Image task target: min(total items, 10). */
 export function resolveImageUploadTarget(itemCount: number): number {
   if (itemCount <= 0) return ONBOARDING_IMAGE_TARGET;
   return Math.min(ONBOARDING_IMAGE_TARGET, itemCount);
@@ -292,29 +318,13 @@ export function formatAddPhotosTaskTitle(itemCount: number): string {
 }
 
 /**
- * Hide Home card when:
- * - merchant tapped Got it (completedAt), OR
- * - 15-day window expired
- *
- * Both tasks done alone does NOT hide the card — Got it must be tapped.
- * State is per storeId (SecureStore key + settings_metadata.onboarding_benefits).
+ * Home card: never show until the backend task payload is known.
+ * COMPLETED / EXPIRED / NOT_FOUND / loading → hidden.
  */
 export function shouldShowOnboardingBenefitsCard(opts: {
-  hasItems: boolean;
-  startedAt: string | null;
-  packagingTipsDone: boolean;
-  itemsWithImages: number;
-  itemCount: number;
-  dismissed: boolean;
-  completed: boolean;
-  catalogReady: boolean;
+  ready: boolean;
+  visibleFromServer: boolean;
 }): boolean {
-  if (opts.completed) return false;
-  if (opts.startedAt && isOnboardingExpired(opts.startedAt)) return false;
-  if (!opts.hasItems && !opts.startedAt) return false;
-  if (!opts.startedAt) return opts.hasItems;
-  // Avoid flash of card on cold start before catalog hydrates when already completed locally.
-  if (!opts.catalogReady && (opts.dismissed || opts.completed)) return false;
-  if (opts.dismissed) return false;
-  return true;
+  if (!opts.ready) return false;
+  return opts.visibleFromServer === true;
 }

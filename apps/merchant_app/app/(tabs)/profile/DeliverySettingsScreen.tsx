@@ -1,10 +1,12 @@
 import { useEffect, useState } from "react";
 import { AppText as Text } from "@/components/AppText";
 import { View, StyleSheet, Switch, Modal, Pressable, TextInput, ScrollView, Alert, RefreshControl } from "react-native";
+import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { GatiMitraMerchant, H_PADDING } from "@/constants/theme";
 import { useStoreStatus } from "@/context/StoreStatusContext";
+import { showStoreDelistedAlert } from "@/lib/storeDelist";
 import { useProfileNav } from "@/context/ProfileNavContext";
 import { useStoreSettings } from "@/context/StoreSettingsContext";
 import { useAuth } from "@/context/AuthContext";
@@ -28,6 +30,7 @@ const MIN_TOP_PADDING = 8;
 
 export default function DeliverySettingsScreen() {
   const insets = useSafeAreaInsets();
+  const router = useRouter();
   const {
     isOnline,
     loading,
@@ -37,6 +40,7 @@ export default function DeliverySettingsScreen() {
     manualActivationLock,
     toggleAutoOpenFromSchedule,
     toggleManualActivationLock,
+    isDelisted,
   } = useStoreStatus();
   const { setLastProfileSlug } = useProfileNav();
   const { settings, update } = useStoreSettings();
@@ -457,6 +461,10 @@ export default function DeliverySettingsScreen() {
             <Switch
               value={isOnline}
               onValueChange={() => {
+                if (!isOnline && isDelisted) {
+                  showStoreDelistedAlert(() => router.push("/(tabs)/profile/contact"));
+                  return;
+                }
                 if (isOnline) {
                   setGoingOffline(true);
                   setCloseModalVisible(true);

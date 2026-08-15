@@ -82,6 +82,8 @@ import {
   switchPartnerActiveOutlet,
 } from '@/lib/partner-selected-store';
 import { emitPartnerStoreOperationsRefresh, PARTNER_STORE_OPERATIONS_REFRESH_EVENT } from '@/lib/partnerStoreOperationsRefresh';
+import { isStoreDelisted, isStoreOpsLockedUntilVerified } from '@/lib/store-delist';
+import { StoreDelistedBlockedDialog } from '@/components/StoreDelistedBlockedDialog';
 import { mapMerchantAppDeepLinkToPartnersite } from '@/lib/mapMerchantAppDeepLink';
 import { STORE_SETTINGS_TAB_LABELS } from '@/lib/store-settings-tabs';
 import {
@@ -336,6 +338,7 @@ type StoreOpRow = {
   todayScheduledClosed?: boolean | null;
   /** Merchant store approval — online/offline locked until APPROVED. */
   approvalStatus?: string | null;
+  isDelisted?: boolean;
   /** ISO reopen / next-open target for exact wake refresh (matches dashboard countdown). */
   countdownAt?: string | null;
   countdownKind?: string | null;
@@ -524,6 +527,7 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
   const [showLogoutAllModal, setShowLogoutAllModal] = useState(false);
   const [isLoggingOut, setIsLoggingOut] = useState(false);
   const [storeOpen, setStoreOpen] = useState<boolean | null>(null);
+  const [showDelistedBlocked, setShowDelistedBlocked] = useState(false);
   const [autoOpenFromSchedule, setAutoOpenFromSchedule] = useState(true);
   const [manualLock, setManualLock] = useState(false);
   const [storeOpsById, setStoreOpsById] = useState<Record<string, StoreOpRow>>({});
@@ -1015,7 +1019,7 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
       const data = await queryClient.fetchQuery({
         queryKey: merchantKeys.storeOperations(resolvedStoreId),
         queryFn: () => fetchStoreOperations(resolvedStoreId),
-        staleTime: 0,
+        staleTime: 15_000,
       });
       if (data && typeof data.operational_status === 'string') {
         applyLicenseFieldsFromStoreOps(data as unknown as Record<string, unknown>);
@@ -1041,6 +1045,11 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
         const autoOpenEnabled = data.auto_open_from_schedule !== false;
         const approvalStatus =
           typeof data.approval_status === 'string' ? data.approval_status : null;
+        const rowDelisted = isStoreDelisted({
+          approval_status: approvalStatus,
+          delisted_at: (data as { delisted_at?: string | null }).delisted_at,
+          is_delisted: (data as { is_delisted?: boolean }).is_delisted,
+        });
         // Never leave chip as blank "Status" when we have an operational answer.
         setStoreOpen(surfOnline === null ? false : surfOnline);
         setAutoOpenFromSchedule(autoOpenEnabled);
@@ -1055,6 +1064,7 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
             schedulePhase,
             todayScheduledClosed: todayClosed,
             approvalStatus,
+            isDelisted: rowDelisted,
             countdownAt,
             countdownKind,
           },
@@ -1072,7 +1082,7 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
       const data = await queryClient.fetchQuery({
         queryKey: merchantKeys.storeOperations(storeId),
         queryFn: () => fetchStoreOperations(storeId),
-        staleTime: 0,
+        staleTime: 15_000,
       });
       if (data && typeof data.operational_status === 'string') {
         const withinH =
@@ -1101,6 +1111,11 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
           todayScheduledClosed: todayClosed,
           approvalStatus:
             typeof data.approval_status === 'string' ? data.approval_status : null,
+          isDelisted: isStoreDelisted({
+            approval_status: data.approval_status,
+            delisted_at: (data as { delisted_at?: string | null }).delisted_at,
+            is_delisted: (data as { is_delisted?: boolean }).is_delisted,
+          }),
           countdownAt: typeof data.countdown_at === 'string' ? data.countdown_at : null,
           countdownKind: typeof data.countdown_kind === 'string' ? data.countdown_kind : null,
         };
@@ -1111,7 +1126,6 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
           setManualLock(row.manualLock);
           applyLicenseFieldsFromStoreOps(data as unknown as Record<string, unknown>);
         }
-        emitPartnerStoreOperationsRefresh(storeId);
         return true;
       }
     } catch {
@@ -1123,6 +1137,10 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
   const tryOpenStoreAfterLicenseCheck = useCallback(
     async (storeId: string, storeName: string) => {
       const ops = storeOpsById[storeId];
+      if (ops?.isDelisted || String(ops?.approvalStatus || '').toUpperCase() === 'DELISTED') {
+        setShowDelistedBlocked(true);
+        return;
+      }
       if (ops?.withinOperatingHours === false || ops?.todayScheduledClosed === true) {
         setOutsideHoursModalStoreId(storeId);
         return;
@@ -1186,7 +1204,7 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
 
   // Exact wake at reopen/break end — same idea as merchant app StoreStatusContext.
   const headerCountdownAt =
-    resolvedStoreId && storeOpen !== true
+    resolvedStoreId && storeOpen !== true && storeOpsById[resolvedStoreId]?.isDelisted !== true
       ? storeOpsById[resolvedStoreId]?.countdownAt ?? null
       : null;
   useEffect(() => {
@@ -1215,10 +1233,32 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
 
   useEffect(() => {
     if (!resolvedStoreId || typeof window === 'undefined') return;
+    let lastOpsRefreshAt = 0;
     const onRefresh = (ev: Event) => {
-      const ce = ev as CustomEvent<{ storeId?: string }>;
+      const ce = ev as CustomEvent<{ storeId?: string; forceClosed?: boolean; isDelisted?: boolean }>;
       const sid = ce.detail?.storeId;
-      if (sid && sid === resolvedStoreId) void refreshStoreOperations();
+      if (sid && sid === resolvedStoreId) {
+        if (ce.detail?.forceClosed) {
+          setStoreOpen(false);
+          setStoreOpsById((prev) => {
+            const row = prev[resolvedStoreId];
+            if (!row) return prev;
+            return {
+              ...prev,
+              [resolvedStoreId]: {
+                ...row,
+                open: false,
+                isDelisted: ce.detail?.isDelisted === true ? true : row.isDelisted,
+                countdownAt: ce.detail?.isDelisted === true ? null : row.countdownAt,
+              },
+            };
+          });
+        }
+        const now = Date.now();
+        if (now - lastOpsRefreshAt < 2500) return;
+        lastOpsRefreshAt = now;
+        void refreshStoreOperations();
+      }
     };
     window.addEventListener(PARTNER_STORE_OPERATIONS_REFRESH_EVENT, onRefresh as EventListener);
     return () => window.removeEventListener(PARTNER_STORE_OPERATIONS_REFRESH_EVENT, onRefresh as EventListener);
@@ -1907,7 +1947,8 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
               : 'Offline';
   const onlineGreen = storeOpen === true;
   const resolvedApproval = String(resolvedOpsRow?.approvalStatus || '').toUpperCase();
-  const storeOpsLockedUntilVerified = !!resolvedApproval && resolvedApproval !== 'APPROVED';
+  const storeIsDelisted = resolvedOpsRow?.isDelisted === true || resolvedApproval === 'DELISTED';
+  const storeOpsLockedUntilVerified = isStoreOpsLockedUntilVerified(resolvedApproval, storeIsDelisted);
 
   const q = resolvedStoreId ? `?storeId=${encodeURIComponent(resolvedStoreId)}` : '';
   const settingsHref = `/partners/store-settings${q}`;
@@ -2826,15 +2867,19 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
                                   on={isOn === true}
                                   disabled={
                                     isOn === null ||
-                                    (row?.approvalStatus != null &&
-                                      String(row.approvalStatus).toUpperCase() !== 'APPROVED')
+                                    (row?.isDelisted !== true &&
+                                      row?.approvalStatus != null &&
+                                      String(row.approvalStatus).toUpperCase() !== 'APPROVED' &&
+                                      String(row.approvalStatus).toUpperCase() !== 'DELISTED')
                                   }
                                   ariaLabel={`${isOn === true ? 'Turn off' : 'Turn on'} ${s.store_name}`}
                                   onToggle={() => {
-                                    if (
-                                      row?.approvalStatus != null &&
-                                      String(row.approvalStatus).toUpperCase() !== 'APPROVED'
-                                    ) {
+                                    const approval = String(row?.approvalStatus || '').toUpperCase();
+                                    if (row?.isDelisted === true || approval === 'DELISTED') {
+                                      setShowDelistedBlocked(true);
+                                      return;
+                                    }
+                                    if (approval && approval !== 'APPROVED') {
                                       toast.error('Store status is locked until your store is verified.');
                                       return;
                                     }
@@ -3246,6 +3291,10 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
           <button
             type="button"
             onClick={() => {
+              if (storeIsDelisted) {
+                setShowDelistedBlocked(true);
+                return;
+              }
               if (storeOpsLockedUntilVerified) {
                 toast.error('Store status is locked until your store is verified.');
                 return;
@@ -3256,14 +3305,16 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
             className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-2 py-1.5 text-xs font-medium text-gray-800 hover:bg-gray-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-gray-300 sm:gap-2 sm:px-2.5 sm:text-sm disabled:cursor-not-allowed disabled:opacity-50"
             aria-expanded={sheet === 'status'}
             title={
-              storeOpsLockedUntilVerified
+              storeIsDelisted
+                ? 'Store is delisted'
+                : storeOpsLockedUntilVerified
                 ? 'Available after store is verified'
                 : onlineLabel
             }
           >
             <span className={`h-2 w-2 rounded-full ${onlineGreen ? 'bg-emerald-500' : storeOpen === false ? 'bg-red-500' : 'bg-gray-400'}`} />
             <span className="hidden sm:inline">
-              {storeOpsLockedUntilVerified ? 'Under review' : onlineLabel}
+              {storeIsDelisted ? 'Delisted' : storeOpsLockedUntilVerified ? 'Under review' : onlineLabel}
             </span>
             <ChevronDown size={14} className="text-gray-500 sm:w-4" />
           </button>
@@ -3694,6 +3745,11 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
           if (sid) await refetchStoreOp(sid);
           await refreshStoreOperations();
         }}
+      />
+
+      <StoreDelistedBlockedDialog
+        open={showDelistedBlocked}
+        onClose={() => setShowDelistedBlocked(false)}
       />
 
       <StoreOperationalFlowModals

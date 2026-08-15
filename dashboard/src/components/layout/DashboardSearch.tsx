@@ -120,9 +120,24 @@ function DashboardSearchInner({ compact = false }: DashboardSearchProps) {
 
   // Clear search button loading when pathname or search params change (after navigation)
   const queryString = searchParams.toString();
+  const merchantsSearchLoading = merchantsSearch?.isLoading ?? false;
+  const merchantsHasSearched = merchantsSearch?.hasSearched ?? false;
   useEffect(() => {
     if (dashboardType === "MERCHANT") setLoading(false);
   }, [pathname, queryString, dashboardType]);
+
+  // Empty / completed merchant search must always release the header spinner,
+  // even when the URL did not change (same wrong ID searched again).
+  useEffect(() => {
+    if (dashboardType !== "MERCHANT") return;
+    if (!merchantsSearchLoading && merchantsHasSearched) setLoading(false);
+  }, [dashboardType, merchantsSearchLoading, merchantsHasSearched]);
+
+  useEffect(() => {
+    if (dashboardType !== "MERCHANT" || !loading) return;
+    const t = window.setTimeout(() => setLoading(false), 5000);
+    return () => window.clearTimeout(t);
+  }, [loading, dashboardType]);
 
   // Don't render if not in a searchable dashboard
   if (!dashboardType) {
@@ -179,7 +194,10 @@ function DashboardSearchInner({ compact = false }: DashboardSearchProps) {
           <div className="flex-1 flex flex-col sm:flex-row gap-2">
             <select
               value={merchantType}
-              onChange={(e) => setMerchantType(e.target.value as "child" | "parent")}
+              onChange={(e) => {
+                setMerchantType(e.target.value as "child" | "parent");
+                setLoading(false);
+              }}
               className={`border border-[#121212]/10 rounded-[10px] shadow-sm focus:outline-none focus:ring-2 focus:ring-[#121212]/15 focus:border-[#121212]/25 bg-white text-[#121212] transition-colors duration-200 ${
                 compact ? "px-3 py-1.5 text-sm h-9" : "px-4 py-2"
               }`}
@@ -194,6 +212,7 @@ function DashboardSearchInner({ compact = false }: DashboardSearchProps) {
               onChange={(e) => {
                 const value = e.target.value.toUpperCase();
                 setLocalSearchValue(value);
+                if (loading) setLoading(false);
                 if (!value.trim() && currentDashboard?.href) {
                   router.replace(currentDashboard.href);
                 }
@@ -207,7 +226,7 @@ function DashboardSearchInner({ compact = false }: DashboardSearchProps) {
           </div>
           <button
             type="submit"
-            disabled={searchButtonLoading}
+            disabled={isAssignAmPage && searchButtonLoading}
             className={`cursor-pointer rounded-[10px] font-medium bg-[#121212] text-white hover:bg-black disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 transition-colors ${
               compact ? "px-3 py-1.5 text-sm h-9" : "px-4 py-2"
             }`}

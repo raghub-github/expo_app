@@ -1,5 +1,6 @@
 import { partnerSurfaceOnlineFromStoreOperationsBody } from '@/lib/partnerStoreSurfaceOnline';
 import { useLocalStoreStatusEngineStore } from '@/lib/localStoreStatusEngineStore';
+import { isStoreDelisted } from '@/lib/store-delist';
 
 export type ScheduledTimeOffRow = {
   id: number;
@@ -85,7 +86,8 @@ function parseActiveRushFromApi(raw: unknown): ActiveRushRow | null {
 export function deriveStoreOperationsUiPatch(raw: unknown): StoreOperationsUiPatch {
   const data = raw as Record<string, unknown>;
   const surfaceOnline = partnerSurfaceOnlineFromStoreOperationsBody(data);
-  const openForPartnerUi = surfaceOnline ?? false;
+  const delisted = isStoreDelisted(data);
+  const openForPartnerUi = delisted ? false : (surfaceOnline ?? false);
   const slots = (data.today_slots || []) as { start: string; end: string }[];
   const activeSlot = (data.active_slot ?? null) as { start: string; end: string } | null;
   const displaySlot = activeSlot ?? slots[0] ?? null;
@@ -106,13 +108,13 @@ export function deriveStoreOperationsUiPatch(raw: unknown): StoreOperationsUiPat
     manualCloseReason: closeReason,
   });
 
-  if (data.schedule_end_prompt_active === true) {
+  if (!delisted && data.schedule_end_prompt_active === true) {
     useLocalStoreStatusEngineStore.getState().openScheduleEndModal();
   }
 
   return {
     isStoreOpen: openForPartnerUi,
-    opensAt: (data.opens_at as string | null | undefined) ?? null,
+    opensAt: delisted ? null : ((data.opens_at as string | null | undefined) ?? null),
     todaySlots: slots,
     openingTime: displaySlot?.start ?? null,
     closingTime: displaySlot?.end ?? null,
@@ -129,16 +131,23 @@ export function deriveStoreOperationsUiPatch(raw: unknown): StoreOperationsUiPat
     lastToggledById:
       data.last_toggled_by_id != null ? String(data.last_toggled_by_id) : null,
     restrictionType: rt === 'manual_hold' ? 'MANUAL_HOLD' : ((data.restriction_type as string | null | undefined) ?? null),
-    withinHoursButRestricted: data.within_hours_but_restricted === true,
+    withinHoursButRestricted: delisted ? false : data.within_hours_but_restricted === true,
     lastToggledAt: (data.last_toggled_at as string | null | undefined) ?? null,
     manualActivationLock: data.block_auto_open === true,
     licenseBlockedForOps: data.license_blocked === true,
     closeReasonFromOps: closeReason,
-    nextScheduleTransitionAt:
-      typeof data.next_schedule_transition_at === 'string' ? data.next_schedule_transition_at : null,
-    countdownAt: typeof data.countdown_at === 'string' ? data.countdown_at : null,
-    countdownKind: typeof data.countdown_kind === 'string' ? data.countdown_kind : null,
-    countdownWallLabel: typeof data.countdown_wall_label === 'string' ? data.countdown_wall_label : null,
+    nextScheduleTransitionAt: delisted
+      ? null
+      : typeof data.next_schedule_transition_at === 'string'
+        ? data.next_schedule_transition_at
+        : null,
+    countdownAt: delisted ? null : typeof data.countdown_at === 'string' ? data.countdown_at : null,
+    countdownKind: delisted ? null : typeof data.countdown_kind === 'string' ? data.countdown_kind : null,
+    countdownWallLabel: delisted
+      ? null
+      : typeof data.countdown_wall_label === 'string'
+        ? data.countdown_wall_label
+        : null,
     scheduledTimeOffs: parseScheduledTimeOffsFromApi(data.scheduled_time_offs),
     activeRush: parseActiveRushFromApi(data.active_rush),
     scheduleEndPromptActive: data.schedule_end_prompt_active === true,

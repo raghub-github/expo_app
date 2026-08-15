@@ -1,11 +1,12 @@
 import type { WalletSummary } from '@/hooks/useMerchantApi';
 
-const WALLET_SESSION_PREFIX = 'mx_dashboard_wallet_v1:';
-const WALLET_LOCAL_PREFIX = 'mx_dashboard_wallet_v1_ls:';
+const WALLET_SESSION_PREFIX = 'mx_dashboard_wallet_v2:';
+const WALLET_LOCAL_PREFIX = 'mx_dashboard_wallet_v2_ls:';
 const DELIVERY_STATS_SESSION_PREFIX = 'mx_dashboard_delivery_stats_v1:';
 const DELIVERY_STATS_LOCAL_PREFIX = 'mx_dashboard_delivery_stats_v1_ls:';
 const STORE_OVERVIEW_SESSION_PREFIX = 'mx_dashboard_store_overview_v1:';
 const STORE_OVERVIEW_LOCAL_PREFIX = 'mx_dashboard_store_overview_v1_ls:';
+const WALLET_TTL_MS = 8 * 1000;
 const SESSION_TTL_MS = 15 * 60 * 1000;
 const LOCAL_TTL_MS = 24 * 60 * 60 * 1000;
 
@@ -51,8 +52,8 @@ export function readDashboardWalletCache(storeId: string): WalletSummary | null 
   return readLayer<WalletSummary>(
     `${WALLET_SESSION_PREFIX}${id}`,
     `${WALLET_LOCAL_PREFIX}${id}`,
-    SESSION_TTL_MS,
-    LOCAL_TTL_MS,
+    WALLET_TTL_MS,
+    WALLET_TTL_MS,
   );
 }
 
@@ -60,6 +61,21 @@ export function writeDashboardWalletCache(storeId: string, data: WalletSummary) 
   const id = storeId.trim();
   if (!id) return;
   writeLayer(`${WALLET_SESSION_PREFIX}${id}`, `${WALLET_LOCAL_PREFIX}${id}`, data);
+}
+
+export function clearDashboardWalletCache(storeId: string) {
+  const id = storeId.trim();
+  if (!id || typeof window === 'undefined') return;
+  try {
+    sessionStorage.removeItem(`${WALLET_SESSION_PREFIX}${id}`);
+  } catch {
+    /* ignore */
+  }
+  try {
+    localStorage.removeItem(`${WALLET_LOCAL_PREFIX}${id}`);
+  } catch {
+    /* ignore */
+  }
 }
 
 export type DashboardDeliveryStats = {

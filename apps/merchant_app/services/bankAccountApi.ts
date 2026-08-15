@@ -64,7 +64,14 @@ export async function listBankAccounts(
     throw new Error((err as any).error || res.statusText || "Failed to load bank accounts");
   }
   const data = await res.json();
-  return (data as any).accounts ?? [];
+  if (Array.isArray(data)) return data as BankAccount[];
+  if (Array.isArray((data as { accounts?: unknown }).accounts)) {
+    return (data as { accounts: BankAccount[] }).accounts;
+  }
+  if (Array.isArray((data as { data?: unknown }).data)) {
+    return (data as { data: BankAccount[] }).data;
+  }
+  return [];
 }
 
 export async function addBankAccount(

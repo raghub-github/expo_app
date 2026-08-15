@@ -76,7 +76,7 @@ export function panelFieldsFromStoreSettings(
 }
 
 export function panelFieldsFromStoreOpsGet(
-  data: Record<string, unknown>
+  data: { block_auto_open?: unknown; license_blocked?: unknown }
 ): Partial<Omit<StoreOperationsPanelCache, 'fetchedAt'>> {
   return {
     manualActivationLock: data.block_auto_open === true,
@@ -88,23 +88,19 @@ export function panelFieldsFromStoreOpsGet(
 export async function prefetchStoreOperationsPanel(storeId: string): Promise<void> {
   if (!storeId.trim()) return;
   try {
-    const [settingsRes, opsRes] = await Promise.all([
+    const { fetchStoreOperations } = await import('@/hooks/useMerchantApi');
+    const [settingsRes, opsData] = await Promise.all([
       fetch(`/api/merchant/store-settings?storeId=${encodeURIComponent(storeId)}`, {
         credentials: 'include',
       }),
-      fetch(`/api/store-operations?store_id=${encodeURIComponent(storeId)}`, {
-        credentials: 'include',
-      }),
+      fetchStoreOperations(storeId).catch(() => null),
     ]);
     const settingsData = settingsRes.ok
       ? ((await settingsRes.json().catch(() => ({}))) as Record<string, unknown>)
       : {};
-    const opsData = opsRes.ok
-      ? ((await opsRes.json().catch(() => ({}))) as Record<string, unknown>)
-      : {};
     writeCachedStoreOperationsPanel(storeId, {
       ...panelFieldsFromStoreSettings(settingsData),
-      ...panelFieldsFromStoreOpsGet(opsData),
+      ...panelFieldsFromStoreOpsGet(opsData ?? {}),
     });
   } catch {
     /* non-blocking prefetch */

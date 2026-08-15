@@ -15,6 +15,9 @@ import {
   fetchPayoutCycles,
   type WalletSummary, type LedgerEntry, type PayoutRequestsSummary, type PayoutRequestListItem,
 } from "@/services/walletApi";
+import { requestMerchantDashboardStatsRefresh } from "@/lib/merchantDashboardStatsBus";
+import { useMerchantWalletFreezeState } from "@/hooks/useMerchantWalletFreezeLive";
+import { getMerchantWalletFreezeSnapshot } from "@/lib/merchantWalletFreezeBus";
 import { listBankAccounts, type BankAccount } from "@/services/bankAccountApi";
 import { parsePgTimestamp } from "@/lib/parsePgTimestamp";
 import {
@@ -86,6 +89,7 @@ export default function EarningsScreen() {
   const { selectedStore } = useSelectedStore();
   const { token } = useAuth();
   const storeId = selectedStore?.id ?? null;
+  const liveFreeze = useMerchantWalletFreezeState(storeId);
 
   const [activeTab, setActiveTab] = useState<"payouts" | "transactions">("payouts");
   const [wallet, setWallet] = useState<WalletSummary | null>(null);
@@ -123,7 +127,17 @@ export default function EarningsScreen() {
         fetchPayoutRequests(storeId, token, 20).catch(() => null),
         fetchPayoutCycles(storeId, token, 50).catch(() => []),
       ]);
-      setWallet(w);
+      const snap = getMerchantWalletFreezeSnapshot(storeId);
+      setWallet(
+        snap
+          ? {
+              ...w,
+              isFrozen: snap.isFrozen,
+              status: snap.isFrozen ? "FROZEN" : w.status,
+              freezeReason: snap.isFrozen ? snap.freezeReason : w.freezeReason,
+            }
+          : w,
+      );
       setLedger(l.entries.filter(isMerchantVisibleLedgerEntry));
       if (payouts) {
         setPayoutSummary(payouts.summary);
@@ -197,8 +211,19 @@ export default function EarningsScreen() {
   }, [storeId, token, currentCycleCard]);
 
   const withdrawableBalance = getWithdrawableBalance(wallet);
-  const walletFrozen = Boolean(wallet?.isFrozen);
+  const walletFrozen = Boolean(
+    liveFreeze?.isFrozen ??
+      (wallet?.isFrozen || String(wallet?.status ?? "").toUpperCase() === "FROZEN"),
+  );
+  const freezeReason = walletFrozen
+    ? (liveFreeze?.isFrozen ? liveFreeze.freezeReason : null) ?? wallet?.freezeReason ?? null
+    : null;
   const maxWithdrawalLimit = getMaxWithdrawalLimit(withdrawableBalance);
+  useEffect(() => {
+    if (!walletFrozen) return;
+    setShowWithdraw(false);
+    setBankPickerOpen(false);
+  }, [walletFrozen]);
   const withdrawalInputEnabled = maxWithdrawalLimit >= MIN_WITHDRAWAL && !withdrawing && !walletFrozen;
 
   const selectTxFilter = (key: TxFilter) => {
@@ -215,11 +240,11 @@ export default function EarningsScreen() {
   };
 
   const openWithdraw = async () => {
-    if (wallet?.isFrozen) {
+    if (walletFrozen) {
       Alert.alert(
         "Wallet Frozen",
-        wallet.freezeReason
-          ? `Withdrawals are currently disabled.\nReason: ${wallet.freezeReason}`
+        freezeReason
+          ? `Withdrawals are currently disabled.\nReason: ${freezeReason}`
           : "Withdrawals are currently disabled.",
       );
       return;
@@ -232,19 +257,27 @@ export default function EarningsScreen() {
     setBanksLoading(true);
     try {
       const b = await listBankAccounts(storeId, token);
-      setBanks(b.filter((a) => !a.is_disabled));
-      const primary = b.find((a) => a.is_primary && !a.is_disabled);
+      const usable = b.filter((a) => a.is_disabled !== true);
+      setBanks(usable);
+      const primary = usable.find((a) => a.is_primary) ?? usable[0];
       if (primary) setWithdrawBankId(primary.id);
-    } catch { /* */ }
-    finally { setBanksLoading(false); }
+    } catch (e) {
+      setBanks([]);
+      Alert.alert(
+        "Bank accounts",
+        e instanceof Error ? e.message : "Could not load bank accounts. Try again.",
+      );
+    } finally {
+      setBanksLoading(false);
+    }
   };
 
   const handleWithdraw = async () => {
-    if (wallet?.isFrozen) {
+    if (walletFrozen) {
       Alert.alert(
         "Wallet Frozen",
-        wallet.freezeReason
-          ? `Withdrawals are currently disabled.\nReason: ${wallet.freezeReason}`
+        freezeReason
+          ? `Withdrawals are currently disabled.\nReason: ${freezeReason}`
           : "Withdrawals are currently disabled.",
       );
       return;
@@ -263,6 +296,7 @@ export default function EarningsScreen() {
       setShowWithdraw(false);
       setWithdrawAmount("");
       setSuccessSheet({ amountLabel });
+      requestMerchantDashboardStatsRefresh();
       await load();
     } catch (e) {
       Alert.alert("Failed", e instanceof Error ? e.message : "Try again");
@@ -300,8 +334,8 @@ export default function EarningsScreen() {
           <View style={s.frozenBanner}>
             <Text style={s.frozenTitle}>Wallet Frozen</Text>
             <Text style={s.frozenBody}>Withdrawals are currently disabled.</Text>
-            {wallet?.freezeReason ? (
-              <Text style={s.frozenReason}>Reason: {wallet.freezeReason}</Text>
+            {freezeReason ? (
+              <Text style={s.frozenReason}>Reason: {freezeReason}</Text>
             ) : null}
           </View>
         ) : null}

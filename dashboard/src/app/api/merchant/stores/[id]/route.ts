@@ -9,6 +9,7 @@ import { getSystemUserByEmail, resolveSystemUserForSupabaseAuth } from "@/lib/au
 import { getAreaManagerByUserId } from "@/lib/area-manager/auth";
 import { resolveMerchantListAreaManagerId } from "@/lib/merchants/resolve-merchant-list-scope";
 import { getMerchantStoreById, updateMerchantStore, getLatestStoreDelistingLog } from "@/lib/db/operations/merchant-stores";
+import { isStoreDelisted } from "@/lib/merchants/store-delist";
 import { logFieldChange } from "@/lib/db/operations/merchant-portal-activity-logs";
 
 export const runtime = "nodejs";
@@ -87,8 +88,7 @@ export async function GET(
     const verification =
       _request.nextUrl?.searchParams?.get("verification") === "1";
 
-    const approvalStatus = (store.approval_status as unknown as string) || "";
-    const isDelisted = approvalStatus.toUpperCase() === "DELISTED";
+    const isDelisted = isStoreDelisted(store);
 
     let delistedAt: string | null = null;
     let delistReason: string | null = null;

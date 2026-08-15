@@ -7,6 +7,7 @@ import {
   computeSurfaceLiveStatus,
   effectiveOperationalFromStoreRow,
 } from "../../lib/store-surface-online.js";
+import { isStoreDelistedRow } from "../../lib/store-delist.js";
 import {
   isWithinOperatingHours,
   nowInStoreTz,
@@ -23,6 +24,8 @@ export type PartnerStoreStatusSnapshot = {
   is_accepting_orders: boolean | null;
   is_available: boolean | null;
   approval_status: string | null;
+  is_delisted: boolean;
+  delisted_at: string | null;
   auto_open_from_schedule: boolean;
   block_auto_open: boolean;
   manual_close_until: string | null;
@@ -66,6 +69,7 @@ export async function buildPartnerStoreStatusSnapshot(
            ms.is_active,
            ms.is_available AS store_is_available,
            ms.approval_status,
+           ms.delisted_at,
            msa.auto_open_from_schedule,
            msa.block_auto_open,
            msa.manual_close_until,
@@ -90,6 +94,7 @@ export async function buildPartnerStoreStatusSnapshot(
     is_active?: boolean | null;
     store_is_available?: boolean | null;
     approval_status?: string | null;
+    delisted_at?: Date | string | null;
     auto_open_from_schedule?: boolean | null;
     block_auto_open?: boolean | null;
     manual_close_until?: Date | string | null;
@@ -119,19 +124,26 @@ export async function buildPartnerStoreStatusSnapshot(
     is_accepting_orders: row.is_accepting_orders,
     is_available: row.store_is_available,
     approval_status: row.approval_status,
+    delisted_at: row.delisted_at,
+  });
+  const isDelisted = isStoreDelistedRow({
+    approval_status: row.approval_status,
+    delisted_at: row.delisted_at,
   });
   const surfaceOnline = computeSurfaceLiveStatus(effectiveOp, withinOperatingHours) === "OPEN";
 
   return {
     store_id: storeId,
-    is_open: surfaceOnline,
+    is_open: surfaceOnline && !isDelisted,
     operational_status: effectiveOp,
-    surface_online: surfaceOnline,
+    surface_online: surfaceOnline && !isDelisted,
     within_operating_hours: withinOperatingHours,
     is_active: row.is_active ?? null,
     is_accepting_orders: row.is_accepting_orders ?? null,
     is_available: row.store_is_available ?? null,
     approval_status: row.approval_status != null ? String(row.approval_status) : null,
+    is_delisted: isDelisted,
+    delisted_at: toIso(row.delisted_at),
     auto_open_from_schedule: row.auto_open_from_schedule !== false,
     block_auto_open: row.block_auto_open === true,
     manual_close_until: toIso(row.manual_close_until),

@@ -10,6 +10,8 @@ export type PartnerStoreStatusSnapshot = {
   is_accepting_orders: boolean | null;
   is_available: boolean | null;
   approval_status: string | null;
+  is_delisted?: boolean;
+  delisted_at?: string | null;
   auto_open_from_schedule: boolean;
   block_auto_open: boolean;
   manual_close_until: string | null;

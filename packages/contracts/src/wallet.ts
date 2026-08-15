@@ -142,7 +142,7 @@ export const WalletSummarySchema = z.object({
   in_process_withdrawal_total: z.number().optional(),
   /** Sum in LOCKED lifecycle (refund window) — same across all merchant portals */
   locked_settlement_total: z.number().optional(),
-  /** withdrawable = available_balance (after hold rules) */
+  /** withdrawable = available − uncovered active payouts (unified engine) */
   withdrawable_balance: z.number().optional(),
   /** available + locked + hold + pending (merchant-facing total) */
   total_balance: z.number().optional(),
@@ -153,6 +153,13 @@ export const WalletSummarySchema = z.object({
   isFrozen: z.boolean().optional(),
   freezeReason: z.string().nullable().optional(),
   frozenAt: z.string().nullable().optional(),
+  held_balance: z.number().optional(),
+  pending_withdrawal: z.number().optional(),
+  processing_withdrawal: z.number().optional(),
+  paid_amount: z.number().optional(),
+  failed_amount: z.number().optional(),
+  is_frozen: z.boolean().optional(),
+  withdrawal_allowed: z.boolean().optional(),
 });
 export type WalletSummary = z.infer<typeof WalletSummarySchema>;
 
@@ -225,6 +232,7 @@ export const CreateWithdrawalRequestSchema = z.object({
   store_id: z.string().or(z.number()),
   amount: z.number().min(100, "Amount must be at least ₹100"),
   bank_account_id: z.number().positive(),
+  idempotency_key: z.string().min(8).max(128).optional(),
 });
 export type CreateWithdrawalRequest = z.infer<typeof CreateWithdrawalRequestSchema>;
 
@@ -239,6 +247,9 @@ export const ReconciliationReportSchema = z.object({
   difference: z.number(),
   is_consistent: z.boolean(),
   checked_at: z.string(),
+  hold_vs_active_payouts: z.number().optional(),
+  available_vs_last_ledger: z.number().optional(),
+  issues: z.array(z.string()).optional(),
 });
 export type ReconciliationReport = z.infer<typeof ReconciliationReportSchema>;
 
@@ -252,6 +263,12 @@ export const WALLET_CONSTANTS = {
   DEFAULT_LEDGER_PAGE_SIZE: 50,
 } as const;
 
+/** Dashboard freeze → Merchant App / Partner Site Withdraw disable (Supabase broadcast). */
+export const MERCHANT_WALLET_FREEZE_EVENT = "wallet_freeze" as const;
+export function merchantWalletFreezeChannel(storeId: number | string): string {
+  return `merchant_wallet_freeze:${storeId}`;
+}
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 export function roundMoney(n: number): number {
@@ -263,16 +280,101 @@ export function idempotencyKey(prefix: string, ...parts: (string | number)[]): s
 }
 
 /** Unified balance buckets for merchant app, partnersite, and dashboard. */
+export function computeMerchantWithdrawalBuckets(input: {
+  available_balance: number;
+  hold_balance?: number;
+  pending_withdrawal_total?: number;
+  in_process_withdrawal_total?: number;
+}): {
+  withdrawable_balance: number;
+  pending_withdrawal_total: number;
+  in_process_withdrawal_total: number;
+  active_payout_total: number;
+} {
+  const available = roundMoney(Math.max(0, Number(input.available_balance) || 0));
+  const hold = roundMoney(Math.max(0, Number(input.hold_balance) || 0));
+  const pendingWithdrawal = roundMoney(Math.max(0, Number(input.pending_withdrawal_total) || 0));
+  const inProcess = roundMoney(Math.max(0, Number(input.in_process_withdrawal_total) || 0));
+  const activePayouts = roundMoney(pendingWithdrawal + inProcess);
+  // Hold should already have reduced available. If a payout row exists without a hold,
+  // still reserve it so the same rupee cannot be withdrawn twice.
+  const uncovered = roundMoney(Math.max(0, activePayouts - hold));
+  return {
+    withdrawable_balance: roundMoney(Math.max(0, available - uncovered)),
+    pending_withdrawal_total: pendingWithdrawal,
+    in_process_withdrawal_total: inProcess,
+    active_payout_total: activePayouts,
+  };
+}
+
+/**
+ * Canonical merchant withdrawal accounting. Frontends must display these fields
+ * from the backend — they must not recompute remaining wallet locally.
+ */
+export function calculateMerchantWithdrawalAccounting(input: {
+  available_balance: number;
+  hold_balance?: number;
+  pending_balance?: number;
+  pending_withdrawal_total?: number;
+  in_process_withdrawal_total?: number;
+  paid_amount?: number;
+  failed_amount?: number;
+  is_frozen?: boolean;
+  settlement_paused?: boolean;
+}): {
+  available_balance: number;
+  held_balance: number;
+  pending_balance: number;
+  pending_withdrawal: number;
+  processing_withdrawal: number;
+  withdrawable_balance: number;
+  paid_amount: number;
+  failed_amount: number;
+  is_frozen: boolean;
+  withdrawal_allowed: boolean;
+} {
+  const available = roundMoney(Math.max(0, Number(input.available_balance) || 0));
+  const hold = roundMoney(Math.max(0, Number(input.hold_balance) || 0));
+  const pending = roundMoney(Math.max(0, Number(input.pending_balance) || 0));
+  const buckets = computeMerchantWithdrawalBuckets({
+    available_balance: available,
+    hold_balance: hold,
+    pending_withdrawal_total: input.pending_withdrawal_total,
+    in_process_withdrawal_total: input.in_process_withdrawal_total,
+  });
+  const isFrozen = input.is_frozen === true;
+  return {
+    available_balance: available,
+    held_balance: hold,
+    pending_balance: pending,
+    pending_withdrawal: buckets.pending_withdrawal_total,
+    processing_withdrawal: buckets.in_process_withdrawal_total,
+    withdrawable_balance: buckets.withdrawable_balance,
+    paid_amount: roundMoney(Math.max(0, Number(input.paid_amount) || 0)),
+    failed_amount: roundMoney(Math.max(0, Number(input.failed_amount) || 0)),
+    is_frozen: isFrozen,
+    withdrawal_allowed: !isFrozen && input.settlement_paused !== true,
+  };
+}
+
+/** Unified balance buckets for merchant app, partnersite, and dashboard. */
 export function normalizeMerchantWalletDisplay(summary: WalletSummary) {
-  const available = summary.available_balance;
+  const buckets = computeMerchantWithdrawalBuckets({
+    available_balance: summary.available_balance,
+    hold_balance: summary.hold_balance,
+    pending_withdrawal_total: summary.pending_withdrawal_total,
+    in_process_withdrawal_total: summary.in_process_withdrawal_total ?? 0,
+  });
   const hold = summary.hold_balance;
   const pending = summary.pending_balance;
   return {
-    withdrawable: roundMoney(summary.withdrawable_balance ?? available),
+    withdrawable: buckets.withdrawable_balance,
     locked: 0,
     hold: roundMoney(hold),
     pending: roundMoney(pending),
-    total: roundMoney(summary.total_balance ?? available + hold + pending),
+    total: roundMoney(summary.total_balance ?? summary.available_balance + hold + pending),
     settlement_paused: summary.settlement_paused ?? false,
+    pending_withdrawal: buckets.pending_withdrawal_total,
+    in_process_withdrawal: buckets.in_process_withdrawal_total,
   };
 }

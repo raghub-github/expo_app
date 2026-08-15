@@ -96,11 +96,44 @@ export async function POST(
         actorRole,
       });
 
+      void (async () => {
+        try {
+          const { broadcastMerchantStoreDelist } = await import(
+            "@/lib/merchant-store-delist-broadcast"
+          );
+          await broadcastMerchantStoreDelist({
+            storeId,
+            action: "delist",
+            isDelisted: true,
+          });
+        } catch {
+          /* broadcast is best-effort */
+        }
+      })();
+
+      void (async () => {
+        try {
+          const { backendFetch } = await import("@/lib/notif-backend");
+          await backendFetch("/v1/internal/store-delist-notify", {
+            method: "POST",
+            body: JSON.stringify({
+              storeId,
+              action: "delist",
+              reason: reasonDescription || null,
+            }),
+          });
+        } catch {
+          /* notify is best-effort */
+        }
+      })();
+
       return NextResponse.json({ success: true, action: "delist" });
     }
 
     // Relist flow
-    if (store.approval_status !== "DELISTED") {
+    const delisted =
+      store.delisted_at != null || String(store.approval_status || "").toUpperCase() === "DELISTED";
+    if (!delisted) {
       return NextResponse.json(
         { success: false, error: "Store is not delisted." },
         { status: 400 }
@@ -115,6 +148,37 @@ export async function POST(
       actorRole,
       relistReason,
     });
+
+    void (async () => {
+      try {
+        const { broadcastMerchantStoreDelist } = await import(
+          "@/lib/merchant-store-delist-broadcast"
+        );
+        await broadcastMerchantStoreDelist({
+          storeId,
+          action: "relist",
+          isDelisted: false,
+        });
+      } catch {
+        /* broadcast is best-effort */
+      }
+    })();
+
+    void (async () => {
+      try {
+        const { backendFetch } = await import("@/lib/notif-backend");
+        await backendFetch("/v1/internal/store-delist-notify", {
+          method: "POST",
+          body: JSON.stringify({
+            storeId,
+            action: "relist",
+            reason: relistReason,
+          }),
+        });
+      } catch {
+        /* notify is best-effort */
+      }
+    })();
 
     return NextResponse.json({ success: true, action: "relist" });
   } catch (e) {

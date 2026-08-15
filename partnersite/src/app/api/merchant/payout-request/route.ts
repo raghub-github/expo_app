@@ -3,7 +3,8 @@ import { createClient } from '@supabase/supabase-js';
 import { createServerSupabaseClient } from '@/lib/supabase/server';
 import { validateMerchantFromSession } from '@/lib/auth/validate-merchant';
 import { getAuditActor, logMerchantAudit } from '@/lib/audit-merchant';
-import { WALLET_CONSTANTS, roundMoney } from '@/lib/wallet-types';
+import { WALLET_CONSTANTS } from '@/lib/wallet-types';
+import { createMerchantPayoutViaEngine } from '@/lib/merchant-withdrawal-engine-client';
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder.supabase.co";
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "placeholder-service-role-key";
@@ -18,13 +19,8 @@ function getDb() {
  * POST /api/merchant/payout-request
  * Body: { storeId, amount, bank_account_id }
  *
- * HOLD-based withdrawal flow:
- * 1. Validate inputs, auth, balance
- * 2. Check for duplicate pending withdrawals (max 3)
- * 3. HOLD_LOCK: Debit AVAILABLE → Credit HOLD (atomic via RPC)
- * 4. Insert payout request linked to hold ledger entry
- * 5. On later completion: HOLD → DEBIT (separate flow)
- * 6. On failure: HOLD → release back to AVAILABLE
+ * Session auth stays on Partner Site. The hold + payout row is created by the
+ * Fastify merchant wallet engine so Merchant App and Partner Site cannot diverge.
  */
 export async function POST(req: NextRequest) {
   try {
@@ -74,163 +70,19 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Store not accessible' }, { status: 403 });
     }
 
-    const { data: wallet, error: walletErr } = await db
-      .from('merchant_wallet')
-      .select('id, available_balance, status, frozen_reason')
-      .eq('merchant_store_id', merchantStoreId)
-      .single();
-    if (walletErr || !wallet) {
-      return NextResponse.json({ error: 'Wallet not found' }, { status: 404 });
-    }
-    const walletId = wallet.id as number;
-    const walletStatus = String((wallet as { status?: unknown }).status ?? 'ACTIVE').toUpperCase();
-    const freezeReason =
-      typeof (wallet as { frozen_reason?: unknown }).frozen_reason === 'string'
-        ? String((wallet as { frozen_reason: string }).frozen_reason).trim() || null
-        : null;
-    if (walletStatus === 'FROZEN') {
+    const engine = await createMerchantPayoutViaEngine(
+      merchantStoreId,
+      amount,
+      bankAccountId,
+      'partnersite',
+    );
+    if (!engine.ok) {
       return NextResponse.json({
-        error: freezeReason
-          ? `Withdrawals are currently disabled. Reason: ${freezeReason}`
-          : 'Withdrawals are currently disabled.',
-        code: 'WALLET_FROZEN',
-        freezeReason,
-      }, { status: 403 });
-    }
-    const availableBalance = Number(wallet.available_balance ?? 0);
-    if (amount > availableBalance) {
-      return NextResponse.json({ error: 'Insufficient balance' }, { status: 400 });
-    }
-
-    // Duplicate withdrawal prevention
-    const { data: pendingPayouts } = await db
-      .from('merchant_payout_requests')
-      .select('id')
-      .eq('wallet_id', walletId)
-      .in('status', ['PENDING', 'APPROVED', 'PROCESSING']);
-    if ((pendingPayouts?.length ?? 0) >= WALLET_CONSTANTS.MAX_PENDING_WITHDRAWALS) {
-      return NextResponse.json({
-        error: `Maximum ${WALLET_CONSTANTS.MAX_PENDING_WITHDRAWALS} pending withdrawals allowed. Wait for existing ones to complete.`,
-      }, { status: 429 });
-    }
-
-    const { data: bankRow, error: bankErr } = await db
-      .from('merchant_store_bank_accounts')
-      .select('id, store_id')
-      .eq('id', bankAccountId)
-      .single();
-    if (bankErr || !bankRow || (bankRow.store_id as number) !== merchantStoreId) {
-      return NextResponse.json({ error: 'Invalid bank account' }, { status: 400 });
-    }
-
-    // Full amount to merchant — no withdrawal-time commission
-    const commissionPercentage = 0;
-    const commissionAmount = 0;
-    const netPayoutAmount = roundMoney(amount);
-
-    // STEP 1: HOLD funds — debit AVAILABLE
-    const holdKey = `payout_hold_${walletId}_${Date.now()}`;
-    const { data: holdLedgerId, error: holdDebitErr } = await db.rpc('merchant_wallet_debit', {
-      p_wallet_id: walletId,
-      p_amount: amount,
-      p_category: 'HOLD_LOCK',
-      p_balance_type: 'AVAILABLE',
-      p_reference_type: 'WITHDRAWAL',
-      p_reference_id: 0,
-      p_idempotency_key: holdKey,
-      p_description: `Withdrawal requested: ₹${amount.toFixed(2)}`,
-      p_metadata: { source: 'partnersite' },
-    });
-
-    if (holdDebitErr) {
-      console.error('[merchant/payout-request] hold debit failed:', holdDebitErr);
-      const msg = holdDebitErr.message || '';
-      if (/wallet not allowed to debit/i.test(msg) && /FROZEN/i.test(msg)) {
-        return NextResponse.json({
-          error: freezeReason
-            ? `Withdrawals are currently disabled. Reason: ${freezeReason}`
-            : 'Withdrawals are currently disabled.',
-          code: 'WALLET_FROZEN',
-          freezeReason,
-        }, { status: 403 });
-      }
-      return NextResponse.json({ error: holdDebitErr.message || 'Insufficient balance or wallet frozen' }, { status: 400 });
-    }
-
-    // STEP 2: Credit HOLD bucket
-    const { error: holdCreditErr } = await db.rpc('merchant_wallet_credit', {
-      p_wallet_id: walletId,
-      p_amount: amount,
-      p_category: 'HOLD_LOCK',
-      p_balance_type: 'HOLD',
-      p_reference_type: 'WITHDRAWAL',
-      p_reference_id: 0,
-      p_idempotency_key: holdKey + '_credit_hold',
-      p_description: `Withdrawal requested (processing): ₹${amount.toFixed(2)}`,
-      p_metadata: { hold_debit_ledger_id: holdLedgerId },
-    });
-
-    if (holdCreditErr) {
-      console.error('[merchant/payout-request] hold credit failed:', holdCreditErr);
-      // Reverse the debit — release back to AVAILABLE
-      await db.rpc('merchant_wallet_credit', {
-        p_wallet_id: walletId,
-        p_amount: amount,
-        p_category: 'FAILED_WITHDRAWAL_REVERSAL',
-        p_balance_type: 'AVAILABLE',
-        p_reference_type: 'WITHDRAWAL',
-        p_reference_id: 0,
-        p_idempotency_key: holdKey + '_reversal',
-        p_description: `Hold credit failed — reversal`,
-        p_metadata: { reason: 'hold_credit_failed' },
-      });
-      return NextResponse.json({ error: 'Wallet hold failed. Please try again.' }, { status: 500 });
-    }
-
-    // STEP 3: Insert payout request
-    const { data: payoutRow, error: insertErr } = await db
-      .from('merchant_payout_requests')
-      .insert({
-        wallet_id: walletId,
-        amount,
-        status: 'PENDING',
-        commission_percentage: commissionPercentage,
-        commission_amount: commissionAmount,
-        net_payout_amount: netPayoutAmount,
-        bank_account_id: bankAccountId,
-        hold_ledger_id: holdLedgerId,
-        requested_by_id: user.id,
-        requested_by_email: user.email ?? null,
-      })
-      .select('id, amount, commission_percentage, commission_amount, net_payout_amount, status, requested_at')
-      .single();
-
-    if (insertErr) {
-      console.error('[merchant/payout-request] insert failed:', insertErr);
-      // Reverse the hold — debit HOLD, credit AVAILABLE
-      await db.rpc('merchant_wallet_debit', {
-        p_wallet_id: walletId,
-        p_amount: amount,
-        p_category: 'HOLD_RELEASE',
-        p_balance_type: 'HOLD',
-        p_reference_type: 'WITHDRAWAL',
-        p_reference_id: 0,
-        p_idempotency_key: holdKey + '_release_debit',
-        p_description: 'Payout insert failed — releasing hold',
-        p_metadata: { reason: 'payout_insert_failed' },
-      });
-      await db.rpc('merchant_wallet_credit', {
-        p_wallet_id: walletId,
-        p_amount: amount,
-        p_category: 'FAILED_WITHDRAWAL_REVERSAL',
-        p_balance_type: 'AVAILABLE',
-        p_reference_type: 'WITHDRAWAL',
-        p_reference_id: 0,
-        p_idempotency_key: holdKey + '_release_credit',
-        p_description: 'Payout insert failed — funds released',
-        p_metadata: { reason: 'payout_insert_failed' },
-      });
-      return NextResponse.json({ error: insertErr.message || 'Failed to create payout request' }, { status: 500 });
+        success: false,
+        error: engine.data.error ?? 'Withdrawal failed',
+        code: engine.data.code,
+        freezeReason: engine.data.freezeReason ?? null,
+      }, { status: engine.status });
     }
 
     const actor = await getAuditActor();
@@ -242,32 +94,36 @@ export async function POST(req: NextRequest) {
       action: 'CREATE',
       action_field: 'WITHDRAWAL_REQUEST',
       new_value: {
-        payout_request_id: payoutRow.id,
-        amount: payoutRow.amount,
+        payout_request_id: engine.data.payout_request_id,
+        amount: engine.data.amount ?? amount,
         bank_account_id: bankAccountId,
-        status: payoutRow.status,
-        commission_percentage: payoutRow.commission_percentage,
-        commission_amount: payoutRow.commission_amount,
-        net_payout_amount: payoutRow.net_payout_amount,
-        hold_ledger_id: holdLedgerId,
-        requested_at: payoutRow.requested_at,
+        status: engine.data.status,
+        commission_percentage: engine.data.commission_percentage,
+        commission_amount: engine.data.commission_amount,
+        net_payout_amount: engine.data.net_payout_amount,
+        hold_ledger_id: engine.data.hold_ledger_id,
+        requested_at: engine.data.requested_at,
+        engine: 'fastify_merchant_wallet',
       },
       ...actor,
       ip_address: ip,
       user_agent: ua,
-      audit_metadata: { description: `Withdrawal requested: ₹${Number(payoutRow.amount).toFixed(2)} (funds held)` },
+      audit_metadata: {
+        description: `Withdrawal requested: ₹${Number(engine.data.amount ?? amount).toFixed(2)} (funds held)`,
+      },
     });
 
     return NextResponse.json({
       success: true,
-      payout_request_id: payoutRow.id,
-      amount: payoutRow.amount,
-      commission_percentage: payoutRow.commission_percentage,
-      commission_amount: payoutRow.commission_amount,
-      net_payout_amount: payoutRow.net_payout_amount,
-      status: payoutRow.status,
-      requested_at: payoutRow.requested_at,
-      hold_ledger_id: holdLedgerId,
+      payout_request_id: engine.data.payout_request_id,
+      amount: engine.data.amount ?? amount,
+      commission_percentage: engine.data.commission_percentage ?? 0,
+      commission_amount: engine.data.commission_amount ?? 0,
+      net_payout_amount: engine.data.net_payout_amount ?? amount,
+      status: engine.data.status ?? 'PENDING',
+      requested_at: engine.data.requested_at,
+      hold_ledger_id: engine.data.hold_ledger_id ?? null,
+      idempotent: engine.data.idempotent === true,
     });
   } catch (e) {
     console.error('[merchant/payout-request]', e);

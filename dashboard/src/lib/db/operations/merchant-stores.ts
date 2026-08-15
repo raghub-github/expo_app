@@ -256,10 +256,8 @@ export async function countMerchantStoresByStatus(
 }
 
 /**
- * Delist a merchant store: update core flags (inactive + not accepting orders),
- * set approval_status to DELISTED, and insert an audit row into store_delisting_logs.
- *
- * This does NOT currently auto-unblock or relist; a separate relist helper should reverse this.
+ * Delist a merchant store without changing onboarding approval_status.
+ * Service block is delisted_at + CLOSED operational flags.
  */
 export async function delistMerchantStore(params: {
   storeId: number;
@@ -281,19 +279,16 @@ export async function delistMerchantStore(params: {
     throw new Error("Store not found");
   }
 
-  const prevApproval = (store.approval_status as unknown as string) || null;
+  const prevApproval = (store.approval_status as unknown as string) || "APPROVED";
   const prevOperational = (store.operational_status as unknown as string) || null;
 
-  // Apply delist flags
-  const nextApproval = "DELISTED" as unknown as string;
+  const nextApproval = prevApproval;
   const nextOperational = "CLOSED" as unknown as string;
 
   await sql.begin(async (tx) => {
     const run = tx as unknown as typeof sql;
-    // Update store flags; status is derived from approval_status trigger (enforce_store_status_rule)
     await run`      UPDATE merchant_stores
       SET
-        approval_status = 'DELISTED'::store_approval_status,
         delist_reason = ${params.reasonDescription},
         delisted_at = NOW(),
         is_active = FALSE,
@@ -301,6 +296,19 @@ export async function delistMerchantStore(params: {
         is_available = FALSE,
         operational_status = 'CLOSED'::store_operational_status
       WHERE id = ${params.storeId}
+    `;
+
+    await run`
+      UPDATE merchant_store_availability
+      SET
+        is_available = FALSE,
+        is_accepting_orders = FALSE,
+        unavailable_reason = 'delisted',
+        close_reason = 'Store delisted',
+        restriction_type = 'DELISTED',
+        last_toggle_type = 'DELIST',
+        updated_at = NOW()
+      WHERE store_id = ${params.storeId}
     `;
 
     // Insert into store_delisting_logs for permanent audit trail
@@ -417,10 +425,9 @@ export async function getLatestStoreDelistingLog(
 /**
  * Relist a previously delisted store.
  *
- * - Restores approval_status from the last delist log (fallback APPROVED).
+ * - Does not change approval_status (stays APPROVED / whatever it was).
  * - Clears delist_reason / delisted_at.
- * - Keeps the store CLOSED: is_accepting_orders = FALSE, is_available = FALSE, operational_status = CLOSED.
- * - Marks any active DELISTED blocks in merchant_store_blocks as unblocked.
+ * - Keeps the store CLOSED until the merchant opens it.
  */
 export async function relistMerchantStore(params: {
   storeId: number;
@@ -452,12 +459,14 @@ export async function relistMerchantStore(params: {
       LIMIT 1
     `) ?? [];
 
+  const currentApproval = (store.approval_status as unknown as string) || "APPROVED";
   const targetApproval =
-    (lastLog?.previous_approval_status as string | null) || (store.approval_status as unknown as string) || "APPROVED";
+    currentApproval.toUpperCase() === "DELISTED"
+      ? (lastLog?.previous_approval_status as string | null) || "APPROVED"
+      : currentApproval;
 
   await sql.begin(async (tx) => {
     const run = tx as unknown as typeof sql;
-    // Restore approval_status (typically APPROVED) but keep store operationally CLOSED.
     await run`      UPDATE merchant_stores
       SET
         approval_status = ${targetApproval}::store_approval_status,
@@ -468,6 +477,20 @@ export async function relistMerchantStore(params: {
         is_available = FALSE,
         operational_status = 'CLOSED'::store_operational_status
       WHERE id = ${params.storeId}
+    `;
+
+    await run`
+      UPDATE merchant_store_availability
+      SET
+        is_available = FALSE,
+        is_accepting_orders = FALSE,
+        unavailable_reason = 'manual_indefinite',
+        close_reason = 'Relisted — turn the store online once to resume auto on/off',
+        restriction_type = 'manual',
+        last_toggle_type = 'RELIST',
+        last_toggled_at = NOW(),
+        updated_at = NOW()
+      WHERE store_id = ${params.storeId}
     `;
 
     // Audit entry in store_delisting_logs to capture relist action.

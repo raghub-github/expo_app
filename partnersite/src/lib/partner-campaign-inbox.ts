@@ -64,13 +64,17 @@ function partnersiteDeepLink(raw: string | null | undefined): string {
  */
 export async function listPartnerCampaignNotifications(
   storeIdNum: number,
-  limit = 40
+  limit = 40,
+  sinceIso?: string | null
 ): Promise<PartnerCampaignNotification[]> {
   const parentId = await parentMerchantPublicIdForStore(storeIdNum);
   if (!parentId) return [];
 
   const notRevoked = (await supportsRevokeColumn())
     ? pg`AND d.revoked_at IS NULL`
+    : pg``;
+  const notCleared = sinceIso
+    ? pg`AND d.queued_at > ${sinceIso}::timestamptz`
     : pg``;
 
   try {
@@ -82,6 +86,7 @@ export async function listPartnerCampaignNotifications(
         AND d.channel = 'in_app'
         AND d.status IN ('queued', 'sent', 'delivered', 'clicked')
         ${notRevoked}
+        ${notCleared}
       ORDER BY d.queued_at DESC
       LIMIT ${limit}
     `;
@@ -192,6 +197,67 @@ export async function clearPartnerCampaignNotifications(storeIdNum: number): Pro
     }
   } catch (e) {
     console.warn("[partner-campaign-inbox] clear failed:", (e as Error).message);
+  }
+}
+
+export async function deletePartnerCampaignNotificationsByTitle(
+  storeIdNum: number,
+  title: string,
+  body?: string
+): Promise<void> {
+  const parentId = await parentMerchantPublicIdForStore(storeIdNum);
+  const trimmed = title.trim();
+  if (!parentId || !trimmed) return;
+  const canRevoke = await supportsRevokeColumn();
+  const bodyTrim = typeof body === 'string' ? body.trim() : '';
+  try {
+    if (canRevoke) {
+      if (bodyTrim) {
+        await pg`
+          UPDATE public.notification_dispatch_logs
+          SET revoked_at = COALESCE(revoked_at, now())
+          WHERE recipient_user_id = ${parentId}
+            AND recipient_role = 'merchant'
+            AND channel = 'in_app'
+            AND title = ${trimmed}
+            AND body = ${bodyTrim}
+            AND revoked_at IS NULL
+        `;
+      } else {
+        await pg`
+          UPDATE public.notification_dispatch_logs
+          SET revoked_at = COALESCE(revoked_at, now())
+          WHERE recipient_user_id = ${parentId}
+            AND recipient_role = 'merchant'
+            AND channel = 'in_app'
+            AND title = ${trimmed}
+            AND revoked_at IS NULL
+        `;
+      }
+      return;
+    }
+    if (bodyTrim) {
+      await pg`
+        UPDATE public.notification_dispatch_logs
+        SET clicked_at = COALESCE(clicked_at, now()), status = 'clicked'
+        WHERE recipient_user_id = ${parentId}
+          AND recipient_role = 'merchant'
+          AND channel = 'in_app'
+          AND title = ${trimmed}
+          AND body = ${bodyTrim}
+      `;
+    } else {
+      await pg`
+        UPDATE public.notification_dispatch_logs
+        SET clicked_at = COALESCE(clicked_at, now()), status = 'clicked'
+        WHERE recipient_user_id = ${parentId}
+          AND recipient_role = 'merchant'
+          AND channel = 'in_app'
+          AND title = ${trimmed}
+      `;
+    }
+  } catch (e) {
+    console.warn('[partner-campaign-inbox] delete by title failed:', (e as Error).message);
   }
 }
 
