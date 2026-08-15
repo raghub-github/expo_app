@@ -23,6 +23,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { AppText as Text } from "@/components/AppText";
 import { GatiMitraMerchant, FONT_LORA, FONT_LORA_BOLD } from "@/constants/theme";
 import { useSelectedStore } from "@/context/SelectedStoreContext";
+import { useAuth } from "@/context/AuthContext";
 import { useMerchantGoBack } from "@/lib/merchantNavigation";
 import { markPackagingTipsCompleted } from "@/lib/onboardingBenefitsStorage";
 import { MX } from "@/lib/appAssetKeys";
@@ -71,9 +72,10 @@ const FrozenVideo = memo(function FrozenVideo({
 });
 
 export default function PackagingTipsScreen() {
-  const goBack = useMerchantGoBack();
+  const goBack = useMerchantGoBack("/(tabs)/onboarding-benefits");
   const insets = useSafeAreaInsets();
   const { selectedStore } = useSelectedStore();
+  const { token } = useAuth();
   const storeId = selectedStore?.store_id ?? null;
   const videoRef = useRef<Video>(null);
   const mountedRef = useRef(true);
@@ -135,9 +137,14 @@ export default function PackagingTipsScreen() {
   const completeAndLeave = useCallback(() => {
     if (!watchedToEnd || leavingRef.current) return;
     leavingRef.current = true;
-    if (storeId) void markPackagingTipsCompleted(storeId);
+    if (storeId) {
+      void markPackagingTipsCompleted(storeId, {
+        storeDbId: selectedStore?.id ?? null,
+        token,
+      });
+    }
     void teardownPlayer().finally(() => goBack());
-  }, [watchedToEnd, storeId, goBack, teardownPlayer]);
+  }, [watchedToEnd, storeId, selectedStore?.id, token, goBack, teardownPlayer]);
 
   useEffect(() => {
     mountedRef.current = true;

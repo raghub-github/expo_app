@@ -1,5 +1,3 @@
-import { useCallback } from "react";
-import { useFocusEffect } from "expo-router";
 import { AppText as Text } from "@/components/AppText";
 import { View, StyleSheet } from "react-native";
 import { AppAssetImage } from "@/components/AppAssetImage";
@@ -8,7 +6,6 @@ import {
   type OrderStageEmptyKey,
   orderStageEmptyAssetKey,
 } from "@/lib/orderStageAssets";
-import { reloadMerchantAppAssets } from "@/store/appAssetsStore";
 
 const STAGE_LABELS: Record<OrderStageEmptyKey, string> = {
   preparing: "Preparing",
@@ -28,12 +25,6 @@ export function OrdersStageEmptyState({
 }) {
   const assetKey = orderStageEmptyAssetKey(stage);
   const label = STAGE_LABELS[stage];
-
-  useFocusEffect(
-    useCallback(() => {
-      void reloadMerchantAppAssets();
-    }, [])
-  );
 
   return (
     <View style={styles.wrap}>

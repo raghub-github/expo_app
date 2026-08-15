@@ -3,6 +3,7 @@ import { createClient } from "@supabase/supabase-js";
 import { getParentLogoKey } from "@/lib/r2-paths";
 import { uploadToR2, toStoredDocumentUrl } from "@/lib/r2";
 import { sendParentAccountCreatedEmail } from "@/lib/email/partner-smtp";
+import { applyMerchantReferralOnParentCreate } from "@/lib/applyMerchantReferralOnParent";
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder.supabase.co";
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "placeholder-service-role-key";
@@ -51,6 +52,8 @@ export async function POST(request: NextRequest) {
     let state: string | null | undefined;
     let pincode: string | null | undefined;
     let store_logo_file: File | null = null;
+    let referralCode: string | null = null;
+    let referralSource: "deep_link" | "manual" = "manual";
 
     if (contentType.includes("multipart/form-data")) {
       const formData = await request.formData();
@@ -67,6 +70,9 @@ export async function POST(request: NextRequest) {
       city = (formData.get("city") as string) || null;
       state = (formData.get("state") as string) || null;
       pincode = (formData.get("pincode") as string) || null;
+      referralCode = (formData.get("referralCode") as string) || null;
+      const src = String(formData.get("referralSource") || "");
+      if (src === "deep_link") referralSource = "deep_link";
       const file = formData.get("store_logo");
       if (file instanceof File && file.size > 0) store_logo_file = file;
     } else {
@@ -84,6 +90,8 @@ export async function POST(request: NextRequest) {
       city = body.city ?? null;
       state = body.state ?? null;
       pincode = body.pincode ?? null;
+      referralCode = body.referralCode ?? body.referral_code ?? null;
+      if (body.referralSource === "deep_link") referralSource = "deep_link";
     }
 
     const normalizedEmail = (email || "").trim().toLowerCase();
@@ -258,6 +266,13 @@ export async function POST(request: NextRequest) {
     } catch (mailErr) {
       console.error("[auth/register] parent welcome email error:", mailErr);
     }
+
+    await applyMerchantReferralOnParentCreate({
+      parentPk: insertData.id,
+      referralCode,
+      source: referralSource,
+      referredPhone: normalizedPhone,
+    });
 
     return NextResponse.json({
       success: true,

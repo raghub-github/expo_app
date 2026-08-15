@@ -1,8 +1,15 @@
 "use client";
 import React from 'react';
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { parentMerchantSchema, ParentMerchantInput } from '@/lib/validation/parentMerchantSchema';
+import { MerchantReferralCodeField, type MerchantReferralCodeFieldHandle } from '@/components/MerchantReferralCodeField';
+import {
+  peekPendingMerchantReferral,
+  pickMerchantReferralCode,
+  storePendingMerchantReferral,
+  clearPendingMerchantReferral,
+} from '@/lib/pendingMerchantReferral';
 
 // Utility to get parent_id from URL
 function getParentId() {
@@ -74,6 +81,44 @@ export default function ParentMerchantForm({ verifiedPhone, onSuccess }: { verif
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [info, setInfo] = useState<string | null>(null);
+  const [referralCode, setReferralCode] = useState("");
+  const [referralApplied, setReferralApplied] = useState(false);
+  const [referralFromName, setReferralFromName] = useState<string | null>(null);
+  const [referralInviteeLine, setReferralInviteeLine] = useState<string | null>(null);
+  const [referralError, setReferralError] = useState<string | null>(null);
+  const [referralServiceAvailable, setReferralServiceAvailable] = useState(true);
+  const referralFieldRef = useRef<MerchantReferralCodeFieldHandle>(null);
+
+  useEffect(() => {
+    const stored = peekPendingMerchantReferral();
+    const code = pickMerchantReferralCode({ stored: stored?.code });
+    if (!code) return;
+    setReferralCode(code);
+    void (async () => {
+      try {
+        const res = await fetch(
+          `/api/referral/preview?referralCode=${encodeURIComponent(code)}&userType=merchant`,
+          { cache: "no-store" },
+        );
+        const data = await res.json().catch(() => ({}));
+        if (res.status === 409 || data?.code === "REFERRAL_SERVICE_DISABLED" || data?.error === "REFERRAL_SERVICE_DISABLED") {
+          setReferralApplied(false);
+          setReferralCode("");
+          setReferralError(null);
+          setReferralServiceAvailable(false);
+          clearPendingMerchantReferral();
+          return;
+        }
+        if (res.ok && data?.ok && data.valid !== false) {
+          setReferralApplied(true);
+          setReferralFromName(data.referrerDisplayName ?? null);
+          setReferralInviteeLine(data.inviteeRewardLine ?? null);
+        }
+      } catch {
+        /* optional */
+      }
+    })();
+  }, []);
 
   const validatePhone = (phone: string) => {
     return /^[6-9]\d{9}$/.test(phone.replace(/\D/g, ''));
@@ -171,6 +216,16 @@ export default function ParentMerchantForm({ verifiedPhone, onSuccess }: { verif
       return;
     }
 
+    let validatedReferralCode: string | undefined;
+    if (referralServiceAvailable) {
+      const checked = await referralFieldRef.current?.verify();
+      if (checked && !checked.ok) {
+        setError('Please enter a valid referral code, or leave it blank.');
+        return;
+      }
+      validatedReferralCode = checked?.ok ? checked.code ?? undefined : undefined;
+    }
+
     const normalizedPhone = form.registered_phone.replace(/\D/g, '');
     const finalFormData = {
       ...form,
@@ -178,6 +233,7 @@ export default function ParentMerchantForm({ verifiedPhone, onSuccess }: { verif
       registered_phone_normalized: normalizedPhone,
       parent_merchant_id: '',
       is_active: true,
+      referralCode: validatedReferralCode,
     };
 
     const parsed = parentMerchantSchema.safeParse(finalFormData);
@@ -546,6 +602,54 @@ export default function ParentMerchantForm({ verifiedPhone, onSuccess }: { verif
               </div>
 
             </div>
+
+            <MerchantReferralCodeField
+              ref={referralFieldRef}
+              value={referralCode}
+              onChange={(code) => {
+                setReferralCode(code);
+                if (code) storePendingMerchantReferral({ code, source: "manual" });
+                else clearPendingMerchantReferral();
+              }}
+              applied={referralApplied}
+              appliedFromName={referralFromName}
+              inviteeRewardLine={referralInviteeLine}
+              error={referralError}
+              onServiceAvailableChange={(available) => {
+                setReferralServiceAvailable(available);
+                if (!available) {
+                  setReferralApplied(false);
+                  setReferralCode("");
+                  setReferralFromName(null);
+                  setReferralError(null);
+                  clearPendingMerchantReferral();
+                } else {
+                  setReferralError(null);
+                }
+              }}
+              onApplied={(preview) => {
+                if (!preview.ok) {
+                  setReferralApplied(false);
+                  setReferralFromName(null);
+                  setReferralInviteeLine(null);
+                  setReferralError(preview.message ?? "Invalid referral code. Please check the code and try again.");
+                  return;
+                }
+                const code = preview.code || referralCode;
+                setReferralCode(code);
+                setReferralApplied(true);
+                setReferralFromName(preview.referrerDisplayName ?? null);
+                setReferralInviteeLine(preview.inviteeRewardLine ?? null);
+                setReferralError(null);
+                storePendingMerchantReferral({ code, source: "manual" });
+              }}
+              onCleared={() => {
+                setReferralApplied(false);
+                setReferralFromName(null);
+                setReferralInviteeLine(null);
+                setReferralError(null);
+              }}
+            />
 
             {/* Error Message */}
             {error && (

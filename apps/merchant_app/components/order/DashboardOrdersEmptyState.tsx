@@ -1,11 +1,8 @@
-import { useCallback } from "react";
-import { useFocusEffect } from "expo-router";
 import { AppText as Text } from "@/components/AppText";
 import { View, StyleSheet } from "react-native";
 import { AppAssetImage } from "@/components/AppAssetImage";
 import { GatiMitraMerchant } from "@/constants/theme";
 import { MX } from "@/lib/appAssetKeys";
-import { reloadMerchantAppAssets } from "@/store/appAssetsStore";
 
 type Tab = "New" | "Active";
 
@@ -16,12 +13,6 @@ export function DashboardOrdersEmptyState({
   tab: Tab;
   fillAvailable?: boolean;
 }) {
-  useFocusEffect(
-    useCallback(() => {
-      void reloadMerchantAppAssets();
-    }, [])
-  );
-
   if (tab === "Active") {
     return (
       <View style={[styles.emptyWrap, fillAvailable && styles.emptyWrapFill]}>

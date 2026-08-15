@@ -1645,7 +1645,16 @@ export async function updateMerchantStore(
               created_by, updated_by
   `;
   
-  return (Array.isArray(result) ? result[0] : result) as Row | null;
+  const updated = (Array.isArray(result) ? result[0] : result) as Row | null;
+  if (data.approval_status === "APPROVED" && updated?.parent_id) {
+    const parentId = Number(updated.parent_id);
+    if (Number.isFinite(parentId) && parentId > 0) {
+      void import("./referral-engine")
+        .then((m) => m.triggerMerchantReferralOnStoreApproved(parentId))
+        .catch(() => undefined);
+    }
+  }
+  return updated;
 }
 
 export type MerchantTrendPoint = { date: string; count: number };

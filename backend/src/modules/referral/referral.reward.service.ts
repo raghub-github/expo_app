@@ -10,6 +10,8 @@ import {
   type ReferralRewardRule,
   type ReferralUserType,
 } from "./referral.config.service.js";
+import { assertCampaignBudgetAvailable, withCampaignBudgetLock } from "./referral.budget.js";
+import { assertReferralUserEligible } from "./referral.eligibility.js";
 
 function monthKey(d = new Date()): string {
   const y = d.getUTCFullYear();
@@ -85,6 +87,23 @@ async function creditCustomerGatiCash(opts: {
   `;
   if (existing?.status === "credited") {
     return { txId: Number(existing.id) };
+  }
+
+  const budget = await assertCampaignBudgetAvailable(opts.amount);
+  if (!budget.ok) {
+    await sql`
+      INSERT INTO referral_reward_transactions (
+        referral_relationship_id, reward_rule_id, user_type, beneficiary_user_id,
+        reward_party, reward_amount, reward_type, status, idempotency_key, failure_reason
+      ) VALUES (
+        ${opts.relationshipId}, ${opts.ruleId}, 'customer'::referral_user_type,
+        ${opts.customerPk}, ${opts.party}::referral_reward_party, ${opts.amount},
+        'GATICASH'::referral_reward_type, 'skipped_cap'::referral_reward_tx_status,
+        ${opts.idempotencyKey}, 'campaign_budget_exhausted'
+      )
+      ON CONFLICT (idempotency_key) DO NOTHING
+    `;
+    return { txId: null, skipped: budget.skipped };
   }
 
   const settings = await getReferralSettings();
@@ -205,6 +224,7 @@ async function creditRiderWallet(opts: {
   relationshipId: number;
   ruleId: number | null;
   milestoneOrders: number;
+  party: "referrer" | "referred";
   idempotencyKey: string;
   campaignId?: number | null;
   referralCode?: string | null;
@@ -222,6 +242,24 @@ async function creditRiderWallet(opts: {
     return { ledgerId: Number(existing.id) };
   }
 
+  const budget = await assertCampaignBudgetAvailable(opts.amount);
+  if (!budget.ok) {
+    await sql`
+      INSERT INTO referral_reward_transactions (
+        referral_relationship_id, reward_rule_id, user_type, beneficiary_user_id,
+        reward_party, reward_amount, reward_type, status, idempotency_key,
+        milestone_orders, failure_reason
+      ) VALUES (
+        ${opts.relationshipId}, ${opts.ruleId}, 'rider'::referral_user_type,
+        ${opts.riderId}, ${opts.party}::referral_reward_party, ${opts.amount},
+        'WALLET_CREDIT'::referral_reward_type, 'skipped_cap'::referral_reward_tx_status,
+        ${opts.idempotencyKey}, ${opts.milestoneOrders}, 'campaign_budget_exhausted'
+      )
+      ON CONFLICT (idempotency_key) DO NOTHING
+    `;
+    return { ledgerId: null, skipped: budget.skipped };
+  }
+
   const settings = await getReferralSettings();
   if (!settings.reward_enabled || !settings.rider_reward_enabled) {
     await sql`
@@ -231,7 +269,7 @@ async function creditRiderWallet(opts: {
         milestone_orders, failure_reason
       ) VALUES (
         ${opts.relationshipId}, ${opts.ruleId}, 'rider'::referral_user_type,
-        ${opts.riderId}, 'referrer'::referral_reward_party, ${opts.amount},
+        ${opts.riderId}, ${opts.party}::referral_reward_party, ${opts.amount},
         'WALLET_CREDIT'::referral_reward_type, 'skipped_disabled'::referral_reward_tx_status,
         ${opts.idempotencyKey}, ${opts.milestoneOrders}, 'rewards_disabled'
       )
@@ -249,7 +287,7 @@ async function creditRiderWallet(opts: {
         milestone_orders, failure_reason
       ) VALUES (
         ${opts.relationshipId}, ${opts.ruleId}, 'rider'::referral_user_type,
-        ${opts.riderId}, 'referrer'::referral_reward_party, ${opts.amount},
+        ${opts.riderId}, ${opts.party}::referral_reward_party, ${opts.amount},
         'WALLET_CREDIT'::referral_reward_type, 'skipped_cap'::referral_reward_tx_status,
         ${opts.idempotencyKey}, ${opts.milestoneOrders}, 'monthly_cap'
       )
@@ -278,7 +316,7 @@ async function creditRiderWallet(opts: {
       ${balanceAfter.toFixed(2)},
       ${opts.idempotencyKey},
       'referral',
-      ${`Referral milestone ${opts.milestoneOrders} orders`},
+      ${`Referral ${opts.party} reward — milestone ${opts.milestoneOrders}`},
       ${JSON.stringify({
         relationshipId: opts.relationshipId,
         ruleId: opts.ruleId,
@@ -312,7 +350,7 @@ async function creditRiderWallet(opts: {
         ${balanceAfter.toFixed(2)},
         ${opts.idempotencyKey},
         'referral',
-        ${`Referral milestone ${opts.milestoneOrders} orders`},
+        ${`Referral ${opts.party} reward — milestone ${opts.milestoneOrders}`},
         ${JSON.stringify({
           relationshipId: opts.relationshipId,
           ruleId: opts.ruleId,
@@ -333,7 +371,7 @@ async function creditRiderWallet(opts: {
       idempotency_key, milestone_orders, credited_at
     ) VALUES (
       ${opts.relationshipId}, ${opts.ruleId}, 'rider'::referral_user_type,
-      ${opts.riderId}, 'referrer'::referral_reward_party, ${opts.amount},
+      ${opts.riderId}, ${opts.party}::referral_reward_party, ${opts.amount},
       'WALLET_CREDIT'::referral_reward_type, 'credited'::referral_reward_tx_status,
       ${ledgerId}, ${opts.idempotencyKey}, ${opts.milestoneOrders}, NOW()
     )
@@ -345,9 +383,11 @@ async function creditRiderWallet(opts: {
 
   await addMonthlyUsage("rider", opts.riderId, opts.amount);
 
-  const rendered = renderReferralTemplate(settings.notification_templates.rider_milestone, {
-    amount: opts.amount,
-  });
+  const tmpl =
+    opts.party === "referred"
+      ? settings.notification_templates.rider_referred
+      : settings.notification_templates.rider_milestone;
+  const rendered = renderReferralTemplate(tmpl, { amount: opts.amount });
 
   emitEvent("referral.reward_credited", {
     userId: String(opts.riderId),
@@ -355,9 +395,199 @@ async function creditRiderWallet(opts: {
     amount: opts.amount,
     title: rendered.title,
     body: rendered.body,
-    party: "referrer",
+    party: opts.party,
     rewardKey: opts.idempotencyKey,
   });
+
+  return { ledgerId };
+}
+
+async function creditMerchantWallet(opts: {
+  parentPk: number;
+  amount: number;
+  relationshipId: number;
+  ruleId: number | null;
+  milestoneOrders: number;
+  party: "referrer" | "referred";
+  idempotencyKey: string;
+  campaignId?: number | null;
+  referralCode?: string | null;
+  referrerId?: number | null;
+  referredUserId?: number | null;
+  merchantStoreId?: number | null;
+}): Promise<{ ledgerId: number | null; skipped?: string }> {
+  const sql = getSql();
+  const [existing] = await sql<Array<{ id: string; status: string }>>`
+    SELECT id::text, status::text
+    FROM referral_reward_transactions
+    WHERE idempotency_key = ${opts.idempotencyKey}
+    LIMIT 1
+  `;
+  if (existing?.status === "credited") {
+    return { ledgerId: Number(existing.id) };
+  }
+
+  const budget = await assertCampaignBudgetAvailable(opts.amount);
+  if (!budget.ok) {
+    await sql`
+      INSERT INTO referral_reward_transactions (
+        referral_relationship_id, reward_rule_id, user_type, beneficiary_user_id,
+        reward_party, reward_amount, reward_type, status, idempotency_key,
+        milestone_orders, failure_reason
+      ) VALUES (
+        ${opts.relationshipId}, ${opts.ruleId}, 'merchant'::referral_user_type,
+        ${opts.parentPk}, ${opts.party}::referral_reward_party, ${opts.amount},
+        'WALLET_CREDIT'::referral_reward_type, 'skipped_cap'::referral_reward_tx_status,
+        ${opts.idempotencyKey}, ${opts.milestoneOrders}, 'campaign_budget_exhausted'
+      )
+      ON CONFLICT (idempotency_key) DO NOTHING
+    `;
+    return { ledgerId: null, skipped: budget.skipped };
+  }
+
+  const settings = await getReferralSettings();
+  if (!settings.reward_enabled || settings.merchant_reward_enabled === false) {
+    await sql`
+      INSERT INTO referral_reward_transactions (
+        referral_relationship_id, reward_rule_id, user_type, beneficiary_user_id,
+        reward_party, reward_amount, reward_type, status, idempotency_key,
+        milestone_orders, failure_reason
+      ) VALUES (
+        ${opts.relationshipId}, ${opts.ruleId}, 'merchant'::referral_user_type,
+        ${opts.parentPk}, ${opts.party}::referral_reward_party, ${opts.amount},
+        'WALLET_CREDIT'::referral_reward_type, 'skipped_disabled'::referral_reward_tx_status,
+        ${opts.idempotencyKey}, ${opts.milestoneOrders}, 'rewards_disabled'
+      )
+      ON CONFLICT (idempotency_key) DO NOTHING
+    `;
+    return { ledgerId: null, skipped: "rewards_disabled" };
+  }
+
+  const used = await getMonthlyUsage("merchant", opts.parentPk);
+  if (used + opts.amount > settings.monthly_reward_cap) {
+    await sql`
+      INSERT INTO referral_reward_transactions (
+        referral_relationship_id, reward_rule_id, user_type, beneficiary_user_id,
+        reward_party, reward_amount, reward_type, status, idempotency_key,
+        milestone_orders, failure_reason
+      ) VALUES (
+        ${opts.relationshipId}, ${opts.ruleId}, 'merchant'::referral_user_type,
+        ${opts.parentPk}, ${opts.party}::referral_reward_party, ${opts.amount},
+        'WALLET_CREDIT'::referral_reward_type, 'skipped_cap'::referral_reward_tx_status,
+        ${opts.idempotencyKey}, ${opts.milestoneOrders}, 'monthly_cap'
+      )
+      ON CONFLICT (idempotency_key) DO NOTHING
+    `;
+    return { ledgerId: null, skipped: "monthly_cap" };
+  }
+
+  const preferredStoreId =
+    opts.merchantStoreId != null && Number.isFinite(opts.merchantStoreId) && opts.merchantStoreId > 0
+      ? opts.merchantStoreId
+      : null;
+  const [store] = preferredStoreId
+    ? await sql<Array<{ store_id: string }>>`
+        SELECT id::text AS store_id
+        FROM merchant_stores
+        WHERE id = ${preferredStoreId}
+          AND parent_id = ${opts.parentPk}
+          AND deleted_at IS NULL
+        LIMIT 1
+      `
+    : await sql<Array<{ store_id: string }>>`
+        SELECT id::text AS store_id
+        FROM merchant_stores
+        WHERE parent_id = ${opts.parentPk} AND deleted_at IS NULL
+        ORDER BY id ASC
+        LIMIT 1
+      `;
+  if (!store?.store_id) {
+    await sql`
+      INSERT INTO referral_reward_transactions (
+        referral_relationship_id, reward_rule_id, user_type, beneficiary_user_id,
+        reward_party, reward_amount, reward_type, status, idempotency_key,
+        milestone_orders, failure_reason
+      ) VALUES (
+        ${opts.relationshipId}, ${opts.ruleId}, 'merchant'::referral_user_type,
+        ${opts.parentPk}, ${opts.party}::referral_reward_party, ${opts.amount},
+        'WALLET_CREDIT'::referral_reward_type, 'failed'::referral_reward_tx_status,
+        ${opts.idempotencyKey}, ${opts.milestoneOrders}, 'no_store_wallet'
+      )
+      ON CONFLICT (idempotency_key) DO NOTHING
+    `;
+    return { ledgerId: null, skipped: "no_store_wallet" };
+  }
+
+  const [wallet] = await sql<Array<{ wallet_id: string }>>`
+    SELECT public.get_or_create_merchant_wallet(${Number(store.store_id)}::bigint)::text AS wallet_id
+  `;
+  const walletId = Number(wallet?.wallet_id ?? 0);
+  if (!Number.isFinite(walletId) || walletId <= 0) {
+    return { ledgerId: null, skipped: "wallet_missing" };
+  }
+
+  const [ledger] = await sql<Array<{ id: string }>>`
+    SELECT public.merchant_wallet_credit(
+      ${walletId}::bigint,
+      ${opts.amount}::numeric,
+      'BONUS'::public.wallet_transaction_category,
+      'AVAILABLE'::public.wallet_balance_type,
+      'SYSTEM'::public.wallet_reference_type,
+      ${opts.relationshipId}::bigint,
+      ${opts.idempotencyKey},
+      ${`Referral ${opts.party} reward`},
+      ${JSON.stringify({
+        relationshipId: opts.relationshipId,
+        ruleId: opts.ruleId,
+        party: opts.party,
+        campaignId: opts.campaignId ?? null,
+        referralCode: opts.referralCode ?? null,
+        referrerId: opts.referrerId ?? null,
+        referredUserId: opts.referredUserId ?? null,
+        rewardTransactionKey: opts.idempotencyKey,
+      })}::jsonb
+    )::text AS id
+  `;
+  const ledgerId = ledger?.id ? Number(ledger.id) : null;
+
+  await sql`
+    INSERT INTO referral_reward_transactions (
+      referral_relationship_id, reward_rule_id, user_type, beneficiary_user_id,
+      reward_party, reward_amount, reward_type, status, wallet_ledger_id,
+      idempotency_key, milestone_orders, credited_at
+    ) VALUES (
+      ${opts.relationshipId}, ${opts.ruleId}, 'merchant'::referral_user_type,
+      ${opts.parentPk}, ${opts.party}::referral_reward_party, ${opts.amount},
+      'WALLET_CREDIT'::referral_reward_type, 'credited'::referral_reward_tx_status,
+      ${ledgerId}, ${opts.idempotencyKey}, ${opts.milestoneOrders}, NOW()
+    )
+    ON CONFLICT (idempotency_key) DO UPDATE
+      SET status = 'credited',
+          wallet_ledger_id = COALESCE(EXCLUDED.wallet_ledger_id, referral_reward_transactions.wallet_ledger_id),
+          credited_at = COALESCE(referral_reward_transactions.credited_at, NOW())
+  `;
+
+  await addMonthlyUsage("merchant", opts.parentPk, opts.amount);
+
+  const [parent] = await sql<Array<{ parent_merchant_id: string | null }>>`
+    SELECT parent_merchant_id FROM merchant_parents WHERE id = ${opts.parentPk} LIMIT 1
+  `;
+  const tmpl =
+    opts.party === "referred"
+      ? settings.notification_templates.merchant_reward
+      : settings.notification_templates.merchant_referrer;
+  const rendered = renderReferralTemplate(tmpl, { amount: opts.amount });
+  if (parent?.parent_merchant_id) {
+    emitEvent("referral.reward_credited", {
+      userId: parent.parent_merchant_id,
+      role: "merchant",
+      amount: opts.amount,
+      title: rendered.title,
+      body: rendered.body,
+      party: opts.party,
+      rewardKey: opts.idempotencyKey,
+    });
+  }
 
   return { ledgerId };
 }
@@ -372,7 +602,9 @@ export async function creditReferralReward(opts: {
   beneficiaryOverride?: number;
   campaignId?: number | null;
   referralCode?: string | null;
+  merchantStoreId?: number | null;
 }): Promise<{ credited: boolean; skipped?: string }> {
+  return withCampaignBudgetLock(async () => {
   const party = opts.partyOverride;
   const audit = {
     campaignId: opts.campaignId ?? null,
@@ -380,6 +612,14 @@ export async function creditReferralReward(opts: {
     referrerId: opts.referrerId,
     referredUserId: opts.referredUserId,
   };
+
+  const beneficiaryId =
+    opts.beneficiaryOverride ??
+    (party === "referred" ? opts.referredUserId : opts.referrerId);
+  const eligible = await assertReferralUserEligible(opts.userType, beneficiaryId);
+  if (!eligible.ok) {
+    return { credited: false, skipped: "user_ineligible" };
+  }
 
   if (opts.userType === "customer") {
     if (!party || party === "referrer") {
@@ -396,14 +636,6 @@ export async function creditReferralReward(opts: {
         ...audit,
       });
       if (party === "referrer") {
-        if (!r1.skipped) {
-          const sql = getSql();
-          await sql`
-            UPDATE referral_relationships
-            SET status = 'reward_credited', reward_status = 'credited', updated_at = NOW()
-            WHERE id = ${opts.relationshipId}
-          `;
-        }
         return { credited: !r1.skipped, skipped: r1.skipped };
       }
       if (r1.skipped && !opts.rule.also_credit_referred) {
@@ -429,32 +661,33 @@ export async function creditReferralReward(opts: {
       }
     }
 
-    const sql = getSql();
-    await sql`
-      UPDATE referral_relationships
-      SET status = 'reward_credited', reward_status = 'credited', updated_at = NOW()
-      WHERE id = ${opts.relationshipId}
-    `;
     return { credited: true };
   }
 
-  const key = `ref_rider_${opts.relationshipId}_rule_${opts.rule.id}_${party ?? "referrer"}`;
-  const r = await creditRiderWallet({
-    riderId: opts.beneficiaryOverride ?? opts.referrerId,
+  const resolvedParty = party ?? "referrer";
+  const beneficiary =
+    opts.beneficiaryOverride ??
+    (resolvedParty === "referred" ? opts.referredUserId : opts.referrerId);
+  const key = `ref_${opts.userType}_${opts.relationshipId}_rule_${opts.rule.id}_${resolvedParty}`;
+  const creditOpts = {
     amount: opts.rule.reward_amount,
     relationshipId: opts.relationshipId,
     ruleId: opts.rule.id,
     milestoneOrders: opts.rule.milestone_orders,
+    party: resolvedParty,
     idempotencyKey: key,
     ...audit,
-  });
-  if (!r.skipped) {
-    const sql = getSql();
-    await sql`
-      UPDATE referral_relationships
-      SET status = 'reward_credited', reward_status = 'credited', updated_at = NOW()
-      WHERE id = ${opts.relationshipId}
-    `;
-  }
+  };
+
+  const r =
+    opts.userType === "merchant"
+      ? await creditMerchantWallet({
+          parentPk: beneficiary,
+          merchantStoreId: opts.merchantStoreId ?? null,
+          ...creditOpts,
+        })
+      : await creditRiderWallet({ riderId: beneficiary, ...creditOpts });
+
   return { credited: !r.skipped, skipped: r.skipped };
+  });
 }

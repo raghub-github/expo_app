@@ -52,6 +52,27 @@ function dedupeByToken(recipients: Recipient[]): Recipient[] {
   return out;
 }
 
+/**
+ * Prefer Android app FCM tokens over Expo tokens for the same user.
+ * Expo Push requires FCM credentials uploaded to each Expo project; when that
+ * is missing Expo returns InvalidCredentials while direct FCM v1 (same
+ * google-services tokens) still works.
+ */
+function preferNativeAndroidFcm(recipients: Recipient[]): Recipient[] {
+  const usersWithAndroidFcm = new Set<string>();
+  for (const r of recipients) {
+    if (r.platform !== "android") continue;
+    if (!r.deviceToken || r.deviceToken === "__in_app_only__") continue;
+    if (isExpoPushTokenString(r.deviceToken)) continue;
+    usersWithAndroidFcm.add(`${r.role}:${r.userId}`);
+  }
+  if (usersWithAndroidFcm.size === 0) return recipients;
+  return recipients.filter((r) => {
+    if (!isExpoPushTokenString(r.deviceToken)) return true;
+    return !usersWithAndroidFcm.has(`${r.role}:${r.userId}`);
+  });
+}
+
 async function tokensForUserIds(
   userIds: string[],
   role?: NotificationRole
@@ -138,32 +159,12 @@ async function nativeFcmTokens(opts: {
     return [];
   }
 
-  const expoUserIds = new Set<string>();
-  if (opts.includeAppFcmWithoutExpo !== false) {
-    const candidateUsers = [...new Set(rows.map((r) => r.user_id))];
-    if (candidateUsers.length > 0) {
-      const expoRows = (await sql`
-        SELECT DISTINCT user_id FROM public.expo_push_tokens
-        WHERE user_id = ANY(${candidateUsers}::text[])
-          AND expo_push_token IS NOT NULL
-          ${role ? sql`AND lower(role) = ${role}` : sql``}
-      `) as unknown as Array<{ user_id: string }>;
-      for (const r of expoRows) expoUserIds.add(r.user_id);
-    }
-  }
-
+  // App Android FCM is always included; preferNativeAndroidFcm drops Expo
+  // duplicates for the same user so we do not double-notify.
   return rows
     .filter((r) => {
       if (!r.native_token || isExpoPushTokenString(r.native_token)) return false;
-      const platform = normalisePlatform(r.platform);
-      const source = (r.source ?? "app").toLowerCase();
-      // Always deliver web / partnersite / dashboard browser tokens.
-      if (platform === "web" || source === "partnersite" || source === "dashboard" || source === "browser") {
-        return true;
-      }
-      // App Android FCM: only if no Expo token (prevents double push).
-      if (opts.includeAppFcmWithoutExpo === false) return true;
-      return !expoUserIds.has(r.user_id);
+      return true;
     })
     .map((r) => ({
       userId: r.user_id,
@@ -260,7 +261,7 @@ async function merchantRecipients(opts: {
     nativeParts.push(...(await nativeFcmTokens({ allForRole: true, role: "merchant" })));
   }
 
-  return dedupeByToken([...storeTokens, ...expoRecipients, ...nativeParts]);
+  return preferNativeAndroidFcm(dedupeByToken([...storeTokens, ...expoRecipients, ...nativeParts]));
 }
 
 async function userIdsByRole(role: NotificationRole): Promise<string[]> {
@@ -549,7 +550,7 @@ async function recipientsForRole(role: NotificationRole): Promise<Recipient[]> {
   const ids = await userIdsByRole(role);
   const expo = await tokensForUserIds(ids, role);
   const native = await nativeFcmTokens({ allForRole: true, role });
-  return dedupeByToken([...expo, ...native]);
+  return preferNativeAndroidFcm(dedupeByToken([...expo, ...native]));
 }
 
 const DEFAULT_GEO_RADIUS_KM = 25;
@@ -797,6 +798,11 @@ async function recipientsForGeo(opts: {
  * Resolve a target filter into concrete delivery recipients.
  */
 export async function resolveTarget(target: TargetFilter): Promise<Recipient[]> {
+  const recipients = await resolveTargetRaw(target);
+  return preferNativeAndroidFcm(dedupeByToken(recipients));
+}
+
+async function resolveTargetRaw(target: TargetFilter): Promise<Recipient[]> {
   if ("device_token" in target && target.device_token) {
     return [
       {

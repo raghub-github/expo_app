@@ -11,6 +11,7 @@ import {
   openDisplayOverOtherAppsSettings,
 } from "./androidIntents";
 import { getNotificationPermissions, openSharedNotificationSettings } from "./notificationsWrapper";
+import { runRiderPushRefresh } from "@/src/lib/riderPushRefresh";
 import { androidPermissionChecker } from "./androidPermissionChecker";
 import { acquireAndCommitRiderLocation } from "@/src/services/location/riderLocationController";
 import { useRiderLocationStore } from "@/src/stores/riderLocationStore";
@@ -207,6 +208,8 @@ export class SmartPermissionHandler {
   async handleNotificationAllowAction(): Promise<boolean> {
     let check = await this.checkNotificationPermission();
     if (check.status === "granted") {
+      // Ensure FCM/Expo tokens are registered even if OS was already granted.
+      void runRiderPushRefresh();
       return true;
     }
 
@@ -215,6 +218,7 @@ export class SmartPermissionHandler {
       await this.requestPermission("notifications");
       check = await this.checkNotificationPermission();
       if (check.status === "granted") {
+        void runRiderPushRefresh();
         return true;
       }
     }

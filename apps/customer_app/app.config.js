@@ -14,8 +14,10 @@ const appJson = require("./app.json");
 const APP_ICON = "./assets/icon.png";
 const APP_ADAPTIVE_FOREGROUND = "./assets/adaptive-icon.png";
 const APP_ICON_BG = "#000000";
-/** Native splash + Android 12+ splash window — match JS bootstrap mint (GatiMitraBootstrapScreen). */
-const LAUNCHER_SPLASH_BG = "#5eead4";
+/** Native launch splash — GatiMitra wordmark, not the circular logo. */
+const LAUNCHER_SPLASH_BG = "#14b8a6";
+const LAUNCHER_SPLASH_IMAGE = "./assets/images/splash-brand.png";
+const LAUNCHER_SPLASH_ANDROID12 = "./assets/images/splash-android12.png";
 
 const googleServicesFile = path.resolve(__dirname, "google-services.json");
 const hasGoogleServices = fs.existsSync(googleServicesFile);
@@ -31,9 +33,21 @@ module.exports = {
     icon: APP_ICON,
     splash: {
       ...appJson.expo.splash,
-      image: "./assets/images/splash-logo.png",
-      resizeMode: "contain",
+      image: LAUNCHER_SPLASH_IMAGE,
+      resizeMode: "cover",
       backgroundColor: LAUNCHER_SPLASH_BG,
+      android: {
+        ...(appJson.expo.splash?.android || {}),
+        image: LAUNCHER_SPLASH_ANDROID12,
+        resizeMode: "contain",
+        backgroundColor: LAUNCHER_SPLASH_BG,
+      },
+      ios: {
+        ...(appJson.expo.splash?.ios || {}),
+        image: LAUNCHER_SPLASH_IMAGE,
+        resizeMode: "cover",
+        backgroundColor: "#5eead4",
+      },
     },
     ios: {
       ...appJson.expo.ios,
@@ -55,6 +69,8 @@ module.exports = {
       ...appJson.expo.android,
       softwareKeyboardLayoutMode: "resize",
       edgeToEdgeEnabled: false,
+      package: "com.gatimitra.customer",
+      useNextNotificationsApi: true,
       icon: APP_ICON,
       adaptiveIcon: {
         foregroundImage: APP_ADAPTIVE_FOREGROUND,
@@ -87,6 +103,30 @@ module.exports = {
     },
     plugins: [
       ...(appJson.expo.plugins || []),
+      [
+        "expo-splash-screen",
+        {
+          backgroundColor: LAUNCHER_SPLASH_BG,
+          image: LAUNCHER_SPLASH_ANDROID12,
+          imageWidth: 240,
+          resizeMode: "contain",
+          enableFullScreenImage_legacy: true,
+          android: {
+            image: LAUNCHER_SPLASH_ANDROID12,
+            backgroundColor: LAUNCHER_SPLASH_BG,
+            imageWidth: 240,
+          },
+          ios: {
+            image: LAUNCHER_SPLASH_IMAGE,
+            backgroundColor: "#5eead4",
+            enableFullScreenImage_legacy: true,
+          },
+          dark: {
+            image: LAUNCHER_SPLASH_ANDROID12,
+            backgroundColor: LAUNCHER_SPLASH_BG,
+          },
+        },
+      ],
       "@config-plugins/react-native-blob-util",
       [
         "expo-notifications",
@@ -101,7 +141,7 @@ module.exports = {
       [
         "expo-navigation-bar",
         {
-          backgroundColor: "#5eead4",
+          backgroundColor: LAUNCHER_SPLASH_BG,
           barStyle: "light",
           visibility: "visible",
           position: "relative",

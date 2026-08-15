@@ -57,7 +57,7 @@ Then:
    npx expo start
    ```
 2. **On your device:** Open the **installed preview/development build** (the APK you installed from EAS or from `npx expo run:android`).
-3. **Connect to Metro:** In the app, connect to the dev server (e.g. "Enter URL manually" and type your machine's URL like `http://10.19.200.18:8081`, or scan the QR if the build supports it). Device and computer must be on the same Wi‑Fi.
+3. **Connect to Metro:** In the app, connect to the dev server (e.g. "Enter URL manually" and type your machine's URL like `http://10.150.65.181:8081`, or scan the QR if the build supports it). Device and computer must be on the same Wi‑Fi.
 4. **Result:** The app loads the bundle from Metro. You get **live reload / fast refresh** — code changes show up in the installed app without reinstalling. No other process needed.
 
 You don't need to re-run EAS build for every code change when using this flow; only when you change native code or env at build time.
@@ -233,7 +233,7 @@ eas build --profile preview --platform android --clear-cache
 ## Troubleshooting
 
 ### OTP not received / "Network request failed" / "Request timeout"
-- ✅ **On a real device:** Set backend URL to your computer’s IP, not `localhost`. Example: in `apps/gatimitra-riderApp/.env` set `EXPO_PUBLIC_API_BASE_URL=http://10.19.200.18:3000` (use your machine’s IP from `ipconfig`). Restart Expo after changing `.env`.
+- ✅ **On a real device:** Set backend URL to your computer’s IP, not `localhost`. Example: in `apps/gatimitra-riderApp/.env` set `EXPO_PUBLIC_API_BASE_URL=http://10.150.65.181:3000` (use your machine’s IP from `ipconfig`). Restart Expo after changing `.env`.
 - ✅ **Development (Expo Go / backend OTP):** The app does not send SMS; the backend returns a 4-digit OTP in the response. After tapping “Send OTP”, the code is shown on the login screen under “Development: use the code below”. Enter that code to continue.
 - ✅ Backend must be running: `curl http://localhost:3000/v1/health` (or use your IP when testing from another machine).
 - ✅ **Timeout:** OTP requests use a 30s timeout. If you still see a timeout, ensure the device can reach the backend (same Wi‑Fi, correct `EXPO_PUBLIC_API_BASE_URL`, backend running and not stuck).
@@ -246,7 +246,7 @@ eas build --profile preview --platform android --clear-cache
 1. Backend does **not** send SMS; it only returns OTP in the response in dev.
 2. Run backend: `cd backend && npm run dev`.
 3. From app: tap Send OTP. If the request succeeds, you see either the "Development: use the code below" box (with the 4-digit code) or move to the OTP step.
-4. If you get a timeout/error: set `EXPO_PUBLIC_API_BASE_URL` to your machine IP (e.g. `http://10.19.200.18:3000`) in `apps/gatimitra-riderApp/.env`, same Wi‑Fi, restart Expo.
+4. If you get a timeout/error: set `EXPO_PUBLIC_API_BASE_URL` to your machine IP (e.g. `http://10.150.65.181:3000`) in `apps/gatimitra-riderApp/.env`, same Wi‑Fi, restart Expo.
 5. Test backend directly: `curl -X POST http://localhost:3000/v1/auth/otp/request -H "Content-Type: application/json" -d "{\"phoneE164\":\"+919876543210\"}"` — you should get `{"requestId":"...","expiresInSec":300,"otp":"1234"}` (otp only in non-production).
 
 ### "Network request failed" or "Connection refused"

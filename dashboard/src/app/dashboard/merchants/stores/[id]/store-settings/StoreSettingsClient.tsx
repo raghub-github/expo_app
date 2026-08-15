@@ -35,6 +35,7 @@ import {
 } from "@/lib/merchantPortalCloseReasons";
 import { useMerchantStoreOperations } from "@/hooks/useMerchantStoreOperations";
 import { MerchantStoreStatusCard } from "@/components/merchant/MerchantStoreStatusCard";
+import { MerchantWalletFreezeCard } from "@/components/merchant/MerchantWalletFreezeCard";
 import { SubscriptionHistory } from "@/components/merchants/SubscriptionHistory";
 import { useStoreStatusCardModel, type StoreOperationsSnapshot } from "@/hooks/useStoreStatusCardModel";
 import { useInvalidateMerchantStoreQueries } from "@/hooks/queries/useMerchantStoreQueries";
@@ -1016,6 +1017,9 @@ export function StoreSettingsClient({ storeId }: { storeId: string }) {
                     storeInternalId={storeId}
                     onOperationsRefresh={() => refreshOperations()}
                   />
+                </div>
+                <div className="lg:col-span-2">
+                  <MerchantWalletFreezeCard storeId={storeId} canEdit={canEditSettings} />
                 </div>
                 <div className="rounded-lg border border-gray-200 bg-gray-50/60 p-4">
                   <h3 className="text-sm font-semibold text-gray-900">Order handling</h3>

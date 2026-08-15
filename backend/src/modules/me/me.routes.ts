@@ -15,6 +15,8 @@ import {
   markCustomerEmailVerified,
 } from "../../lib/customer-email-verified.js";
 import { getCustomerLifetimeSavingsInr } from "./customer-lifetime-savings.js";
+import { getReferralSettings } from "../referral/referral.config.service.js";
+import { referralTrackingEnabled } from "../referral/referral.participants.js";
 
 /** Random words for referral code suffix (1 or 2 words) */
 const REFERRAL_WORDS = [
@@ -395,15 +397,34 @@ export async function meRoutes(app: FastifyInstance) {
           const newProfileCompleted = body.profile_completed !== undefined ? body.profile_completed : existing.profileCompleted;
           const effectiveFullName = body.full_name !== undefined ? body.full_name : existing.fullName ?? "";
 
-          // Auto-generate unique referral code when user completes profile (redirect to home) and doesn't have one yet
+          // Auto-generate unique referral code when user completes profile and doesn't have one yet.
+          // The Customer Referral service toggle is the source of truth — do not mint new codes while OFF.
           let referralCodeToSet: string | null = existing.referralCode ?? null;
-          if (newProfileCompleted && !existing.referralCode && effectiveFullName && effectiveFullName.trim().toLowerCase() !== "pending") {
+          const referralSettings = await getReferralSettings().catch(() => null);
+          const customerReferralOn = referralSettings
+            ? referralTrackingEnabled(referralSettings, "customer")
+            : true;
+          if (
+            customerReferralOn &&
+            newProfileCompleted &&
+            !existing.referralCode &&
+            effectiveFullName &&
+            effectiveFullName.trim().toLowerCase() !== "pending"
+          ) {
             try {
               referralCodeToSet = await generateUniqueReferralCode(db, effectiveFullName.trim(), customerId);
             } catch (refErr) {
               req.log?.warn?.({ err: refErr }, "referral code generation skipped");
             }
           }
+
+          // referred_by on the profile row is a legacy hint only. When the service is OFF,
+          // ignore newly submitted codes so old onboarding payloads cannot look "applied".
+          const referredByToSet = customerReferralOn
+            ? body.referred_by !== undefined
+              ? body.referred_by.trim().toUpperCase() || null
+              : existing.referredBy
+            : existing.referredBy;
 
           const [updated] = await db
             .update(customers)
@@ -420,7 +441,7 @@ export async function meRoutes(app: FastifyInstance) {
               smsPermission: body.sms_permission !== undefined ? body.sms_permission : existing.smsPermission,
               locationPermission: body.location_permission !== undefined ? body.location_permission : existing.locationPermission,
               contactsPermission: body.contacts_permission !== undefined ? body.contacts_permission : existing.contactsPermission,
-              referredBy: body.referred_by !== undefined ? (body.referred_by.trim().toUpperCase() || null) : existing.referredBy,
+              referredBy: referredByToSet,
               addressLine1: body.address_line1 !== undefined ? body.address_line1 : existing.addressLine1,
               addressLine2: body.address_line2 !== undefined ? body.address_line2 : existing.addressLine2,
               city: body.city !== undefined ? body.city : existing.city,

@@ -3543,6 +3543,7 @@ export const riderWallet = pgTable(
     isFrozen: boolean("is_frozen").notNull().default(false),
     frozenAt: timestamp("frozen_at", { withTimezone: true }),
     frozenBySystemUserId: integer("frozen_by_system_user_id").references((): any => systemUsers.id, { onDelete: "set null" }),
+    freezeReason: text("freeze_reason"),
     lastUpdatedAt: timestamp("last_updated_at", { withTimezone: true }).notNull().defaultNow(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },

@@ -2116,6 +2116,135 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
         }
       );
 
+      /**
+       * GET /merchant-partner/stores/:storeId/onboarding-benefits
+       * Source of truth for Home onboarding card (persists across reinstall / logout).
+       * Stored in merchant_store_settings.settings_metadata.onboarding_benefits — no new table.
+       */
+      protectedApp.get<{ Params: { storeId: string } }>(
+        "/stores/:storeId/onboarding-benefits",
+        async (req, reply) => {
+          if (req.auth?.role !== "merchant" || !req.auth?.sub) {
+            return reply.code(401).send({ error: "merchant_required" });
+          }
+          const storeId = Number(req.params.storeId);
+          if (!Number.isFinite(storeId) || storeId <= 0) {
+            return reply.code(400).send({ error: "invalid_store_id" });
+          }
+          const sql = getSql();
+          const parentId = await getPartnerParentId(sql, req.auth.sub);
+          if (parentId == null) return reply.code(404).send({ error: "partner_not_found" });
+          const storeRows = await sql`
+            SELECT id FROM merchant_stores
+            WHERE id = ${storeId} AND parent_id = ${parentId} AND deleted_at IS NULL
+            LIMIT 1
+          `;
+          if (storeRows.length === 0) return reply.code(404).send({ error: "store_not_found" });
+
+          const rows = await sql`
+            SELECT settings_metadata
+            FROM merchant_store_settings
+            WHERE store_id = ${storeId}
+            LIMIT 1
+          `;
+          const meta =
+            (rows[0] as { settings_metadata?: Record<string, unknown> } | undefined)
+              ?.settings_metadata ?? {};
+          const ob = (meta.onboarding_benefits as Record<string, unknown> | undefined) ?? {};
+          return reply.send({
+            store_id: storeId,
+            started_at: typeof ob.started_at === "string" ? ob.started_at : null,
+            packaging_tips_completed_at:
+              typeof ob.packaging_tips_completed_at === "string"
+                ? ob.packaging_tips_completed_at
+                : null,
+            dismissed_at: typeof ob.dismissed_at === "string" ? ob.dismissed_at : null,
+            completed_at: typeof ob.completed_at === "string" ? ob.completed_at : null,
+          });
+        }
+      );
+
+      /** PATCH /merchant-partner/stores/:storeId/onboarding-benefits */
+      protectedApp.patch<{
+        Params: { storeId: string };
+        Body: {
+          started_at?: string | null;
+          packaging_tips_completed_at?: string | null;
+          dismissed_at?: string | null;
+          completed_at?: string | null;
+        };
+      }>("/stores/:storeId/onboarding-benefits", async (req, reply) => {
+        if (req.auth?.role !== "merchant" || !req.auth?.sub) {
+          return reply.code(401).send({ error: "merchant_required" });
+        }
+        const storeId = Number(req.params.storeId);
+        if (!Number.isFinite(storeId) || storeId <= 0) {
+          return reply.code(400).send({ error: "invalid_store_id" });
+        }
+        const sql = getSql();
+        const parentId = await getPartnerParentId(sql, req.auth.sub);
+        if (parentId == null) return reply.code(404).send({ error: "partner_not_found" });
+        const storeRows = await sql`
+          SELECT id FROM merchant_stores
+          WHERE id = ${storeId} AND parent_id = ${parentId} AND deleted_at IS NULL
+          LIMIT 1
+        `;
+        if (storeRows.length === 0) return reply.code(404).send({ error: "store_not_found" });
+
+        const rows = await sql`
+          SELECT id, settings_metadata
+          FROM merchant_store_settings
+          WHERE store_id = ${storeId}
+          LIMIT 1
+        `;
+        const existingRow = rows[0] as
+          | { id: number; settings_metadata: Record<string, unknown> }
+          | undefined;
+        const existingMeta = existingRow?.settings_metadata ?? {};
+        const prev = (existingMeta.onboarding_benefits ?? {}) as {
+          started_at?: string | null;
+          packaging_tips_completed_at?: string | null;
+          dismissed_at?: string | null;
+          completed_at?: string | null;
+        };
+        const body = req.body ?? {};
+        const next = {
+          ...prev,
+          ...(body.started_at !== undefined ? { started_at: body.started_at } : {}),
+          ...(body.packaging_tips_completed_at !== undefined
+            ? { packaging_tips_completed_at: body.packaging_tips_completed_at }
+            : {}),
+          ...(body.dismissed_at !== undefined ? { dismissed_at: body.dismissed_at } : {}),
+          ...(body.completed_at !== undefined ? { completed_at: body.completed_at } : {}),
+        };
+        // Never clear completed_at once set.
+        if (prev.completed_at && !next.completed_at) {
+          next.completed_at = prev.completed_at;
+        }
+        const merged = { ...existingMeta, onboarding_benefits: next };
+        const metaJson = JSON.stringify(merged);
+        if (existingRow) {
+          await sql`
+            UPDATE merchant_store_settings
+            SET settings_metadata = ${metaJson}::jsonb,
+                updated_at = now()
+            WHERE id = ${existingRow.id}
+          `;
+        } else {
+          await sql`
+            INSERT INTO merchant_store_settings (store_id, settings_metadata)
+            VALUES (${storeId}, ${metaJson}::jsonb)
+          `;
+        }
+        return reply.send({
+          store_id: storeId,
+          started_at: next.started_at ?? null,
+          packaging_tips_completed_at: next.packaging_tips_completed_at ?? null,
+          dismissed_at: next.dismissed_at ?? null,
+          completed_at: next.completed_at ?? null,
+        });
+      });
+
       /** PATCH /merchant-partner/stores/:storeId/communication-settings — update notification & report preferences. */
       protectedApp.patch<{
         Params: { storeId: string };
@@ -4130,6 +4259,10 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
             const result = await createWithdrawalRequest(storeId, amount, bankAccountId, "merchant_app");
             return reply.code(201).send({ success: true, ...result });
           } catch (e) {
+            const { isWalletFrozenError, walletFrozenHttpBody } = await import("../../lib/wallet-freeze.js");
+            if (isWalletFrozenError(e)) {
+              return reply.code(403).send({ success: false, ...walletFrozenHttpBody(e) });
+            }
             return reply.code(400).send({ error: e instanceof Error ? e.message : "Withdrawal failed" });
           }
         }

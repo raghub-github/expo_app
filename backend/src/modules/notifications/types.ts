@@ -153,14 +153,25 @@ export type SendIntent = {
    * Scheduled poller leaves this unset so automated marketing still respects the window.
    */
   bypassQuietHours?: boolean;
+  /**
+   * When true, deliver Expo pushes inline (wait for Expo/FCM ticket acceptance)
+   * instead of only enqueueing to Redis. Required for Super Admin "Send now"
+   * so success means the provider accepted the message.
+   */
+  deliverNow?: boolean;
 };
 
 /** Result of one send across all resolved recipients. */
 export type SendResult = {
   campaignId?: number;
+  /** Recipients accepted by Expo/FCM (or successfully enqueued when deliverNow=false). */
   queued: number;
   skipped: number;          // due to preferences, opt-out, no token, etc.
-  failedSync: number;       // hard fail before enqueue
+  failedSync: number;       // hard fail before / during provider send
+  /** Provider-accepted count (Expo ticket ok / FCM send ok). */
+  accepted?: number;
+  /** Provider-rejected count. */
+  failedProvider?: number;
   notificationIds: string[]; // notification_logs.notification_id UUIDs
   /** Why a campaign produced zero deliveries (quiet hours, empty audience, etc.). */
   skipReason?: "no_recipients" | "quiet_hours" | "template_missing" | string;
@@ -183,4 +194,6 @@ export type ProviderSendResult = {
   ok: boolean;
   errorCode?: string;
   errorMessage?: string;
+  /** FCM message id when accepted (not logged to clients). */
+  messageId?: string;
 };

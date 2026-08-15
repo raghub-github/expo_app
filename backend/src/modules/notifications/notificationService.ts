@@ -225,8 +225,11 @@ function pushDataForRow(row: CreateLogRow): Record<string, unknown> {
 
 async function dispatchExpoRow(
   row: CreateLogRow,
-  opts?: { maxRetries?: number; attempt?: number },
+  opts?: { maxRetries?: number; attempt?: number; forceInline?: boolean },
 ): Promise<boolean> {
+  console.info(
+    `[notifications] expo_dispatch start nid=${row.notificationId} role=${row.recipient.role} platform=${row.recipient.platform} forceInline=${Boolean(opts?.forceInline)}`,
+  );
   const result = await deliverExpoPush({
     to: row.recipient.deviceToken,
     title: row.title,
@@ -240,8 +243,51 @@ async function dispatchExpoRow(
     templateCode: row.templateCode,
     attempt: opts?.attempt ?? 0,
     priority: row.priority,
+    forceInline: opts?.forceInline === true,
   });
   if (!result.ok) {
+    const errBlob = `${result.error ?? ""}`.toLowerCase();
+    const expoCredsMissing =
+      errBlob.includes("invalidcredentials") ||
+      errBlob.includes("fcm server key") ||
+      errBlob.includes("expo_ticket_invalidcredentials");
+    if (expoCredsMissing || row.recipient.platform === "android") {
+      const nativeToken = await lookupNativeFcmToken(
+        row.recipient.userId,
+        row.recipient.role,
+      );
+      if (nativeToken) {
+        console.warn(
+          `[notifications] expo_dispatch fallback_fcm nid=${row.notificationId} reason=${result.error ?? "expo_failed"} token_fp=${nativeToken.slice(0, 12)}…`,
+        );
+        const res = await sendFcmV1({
+          notificationId: row.notificationId,
+          token: nativeToken,
+          title: row.title,
+          body: row.body,
+          imageUrl: row.imageUrl ?? null,
+          deepLink: row.deepLink ?? null,
+          channelId: channelIdForRecipient(row.recipient, row.priority, row),
+          data: {
+            template_code: row.templateCode,
+            gmType: row.templateCode,
+            title: row.title,
+            body: row.body,
+            gmTitle: row.title,
+            gmMessage: row.body,
+            gmBanner: "true",
+            ...(row.campaignId != null ? { campaign_id: String(row.campaignId) } : {}),
+          },
+          priority: row.priority as never,
+        });
+        return finalizeFcmDelivery(row.notificationId, nativeToken, res, {
+          maxRetries: opts?.maxRetries,
+        });
+      }
+    }
+    console.warn(
+      `[notifications] expo_dispatch fail nid=${row.notificationId} mode=${result.mode} err=${result.error ?? "unknown"}`,
+    );
     const { markFailedWithRetrySchedule } = await import("./retryEngine.js");
     await markFailedWithRetrySchedule({
       notificationId: row.notificationId,
@@ -257,12 +303,45 @@ async function dispatchExpoRow(
     }
     return false;
   }
+  console.info(
+    `[notifications] expo_dispatch ok nid=${row.notificationId} mode=${result.mode} accepted=${result.accepted}`,
+  );
   // Inline Expo acceptance ≈ provider accepted; queue path stays "sent" until worker reports.
+  // Admin deliverNow always uses inline — only then we mark delivered.
   await updateLogStatus(
     row.notificationId,
     result.mode === "inline" ? "delivered" : "sent",
   );
   return true;
+}
+
+async function lookupNativeFcmToken(
+  userId: string,
+  role: string,
+): Promise<string | null> {
+  if (!userId || userId.startsWith("__")) return null;
+  try {
+    const sql = getSql();
+    const rows = (await sql`
+      SELECT native_token
+      FROM public.native_device_push_tokens
+      WHERE user_id = ${userId}
+        AND token_type = 'fcm'
+        AND lower(coalesce(platform,'')) = 'android'
+        AND lower(coalesce(source,'app')) = 'app'
+        AND (last_seen_at IS NULL OR last_seen_at >= now() - interval '90 days')
+        ${role && role !== "all" ? sql`AND lower(role) = ${role.toLowerCase()}` : sql``}
+      ORDER BY updated_at DESC NULLS LAST
+      LIMIT 1
+    `) as unknown as Array<{ native_token: string }>;
+    return rows[0]?.native_token ?? null;
+  } catch (e) {
+    console.warn(
+      "[notifications] native FCM lookup failed:",
+      (e as Error).message,
+    );
+    return null;
+  }
 }
 
 /**
@@ -397,7 +476,7 @@ async function sendImpl(intent: SendIntent): Promise<SendResult> {
       console.warn(
         `[notifications] Push token unavailable. Recording in-app only ` +
           `(template=${template.code}, users=${inboxOnly.length}).`,
-        { target: intent.target, title: rendered.title, body: rendered.body },
+        { target: intent.target },
       );
     } else {
       console.warn(
@@ -590,7 +669,14 @@ async function sendImpl(intent: SendIntent): Promise<SendResult> {
 
   // 7. Dispatch — Expo Push for mobile push rows, FCM v1 for topic/direct/browser
   let queued = 0;
+  let accepted = 0;
+  let failedProvider = 0;
+  let failedSync = 0;
+  const forceInline = intent.deliverNow === true;
   const maxRetries = Math.max(1, Number(template.retry_count) || 4);
+  console.info(
+    `[notifications] dispatch_start campaign=${intent.campaignId ?? "n/a"} template=${template.code} rows=${logRows.length} deliverNow=${forceInline}`,
+  );
   for (const row of logRows) {
     try {
       if (row.recipient.userId === "__topic__") {
@@ -599,6 +685,9 @@ async function sendImpl(intent: SendIntent): Promise<SendResult> {
           ? row.recipient.deviceToken.slice(FCM_TOPIC_PREFIX.length)
           : row.recipient.deviceToken;
         const webLink = deepLinkForWebRecipient(row.deepLink, row.recipient.role, { topic });
+        console.info(
+          `[notifications] fcm_topic nid=${row.notificationId} topic=${topic} role=${row.recipient.role}`,
+        );
         const res = await sendFcmV1({
           notificationId: row.notificationId,
           topic,
@@ -616,15 +705,30 @@ async function sendImpl(intent: SendIntent): Promise<SendResult> {
           priority: row.priority as never,
           silent: template.silent,
         });
-        if (await finalizeFcmDelivery(row.notificationId, undefined, res, { maxRetries })) queued++;
+        if (await finalizeFcmDelivery(row.notificationId, undefined, res, { maxRetries })) {
+          queued++;
+          accepted++;
+        } else {
+          failedProvider++;
+          failedSync++;
+        }
         continue;
       }
       if (row.recipient.userId === "__direct__") {
         const isExpo = isExpoDeviceToken(row.recipient.deviceToken);
         if (isExpo) {
-          if (await dispatchExpoRow(row, { maxRetries })) queued++;
+          if (await dispatchExpoRow(row, { maxRetries, forceInline })) {
+            queued++;
+            accepted++;
+          } else {
+            failedProvider++;
+            failedSync++;
+          }
           continue;
         }
+        console.info(
+          `[notifications] fcm_direct nid=${row.notificationId} token_fp=${row.recipient.deviceToken.slice(0, 12)}…`,
+        );
         const res = await sendFcmV1({
           notificationId: row.notificationId,
           token: row.recipient.deviceToken,
@@ -640,7 +744,13 @@ async function sendImpl(intent: SendIntent): Promise<SendResult> {
           priority: row.priority as never,
           silent: template.silent,
         });
-        if (await finalizeFcmDelivery(row.notificationId, row.recipient.deviceToken, res, { maxRetries })) queued++;
+        if (await finalizeFcmDelivery(row.notificationId, row.recipient.deviceToken, res, { maxRetries })) {
+          queued++;
+          accepted++;
+        } else {
+          failedProvider++;
+          failedSync++;
+        }
         continue;
       }
 
@@ -656,10 +766,17 @@ async function sendImpl(intent: SendIntent): Promise<SendResult> {
             errorCode: "NO_PUSH_TOKEN",
             errorMessage: "Push token unavailable. Skipping notification.",
           });
+          failedSync++;
           continue;
         }
         if (isExpoDeviceToken(token)) {
-          if (await dispatchExpoRow(row, { maxRetries })) queued++;
+          if (await dispatchExpoRow(row, { maxRetries, forceInline })) {
+            queued++;
+            accepted++;
+          } else {
+            failedProvider++;
+            failedSync++;
+          }
           continue;
         }
 
@@ -668,6 +785,9 @@ async function sendImpl(intent: SendIntent): Promise<SendResult> {
         const deepLink = isWeb
           ? deepLinkForWebRecipient(row.deepLink, row.recipient.role)
           : row.deepLink ?? null;
+        console.info(
+          `[notifications] fcm_token nid=${row.notificationId} role=${row.recipient.role} platform=${row.recipient.platform} token_fp=${token.slice(0, 12)}…`,
+        );
         const res = await sendFcmV1({
           notificationId: row.notificationId,
           token,
@@ -692,7 +812,13 @@ async function sendImpl(intent: SendIntent): Promise<SendResult> {
           priority: row.priority as never,
           silent: template.silent,
         });
-        if (await finalizeFcmDelivery(row.notificationId, token, res, { maxRetries })) queued++;
+        if (await finalizeFcmDelivery(row.notificationId, token, res, { maxRetries })) {
+          queued++;
+          accepted++;
+        } else {
+          failedProvider++;
+          failedSync++;
+        }
         continue;
       }
       // Legacy "browser" log rows (if any) — only deliver for true web tokens, never Expo.
@@ -703,6 +829,7 @@ async function sendImpl(intent: SendIntent): Promise<SendResult> {
             errorCode: "WRONG_CHANNEL_PLATFORM",
             errorMessage: "Browser channel requires a web FCM token.",
           });
+          failedSync++;
           continue;
         }
         const deepLink = deepLinkForWebRecipient(row.deepLink, row.recipient.role);
@@ -721,13 +848,20 @@ async function sendImpl(intent: SendIntent): Promise<SendResult> {
           priority: row.priority as never,
           silent: template.silent,
         });
-        if (await finalizeFcmDelivery(row.notificationId, token, res, { maxRetries })) queued++;
+        if (await finalizeFcmDelivery(row.notificationId, token, res, { maxRetries })) {
+          queued++;
+          accepted++;
+        } else {
+          failedProvider++;
+          failedSync++;
+        }
         continue;
       }
       if (row.channel === "in_app") {
         // In-app inbox = the log row IS the inbox entry. No dispatch needed.
         await updateLogStatus(row.notificationId, "delivered");
         queued++;
+        accepted++;
         continue;
       }
       // socket / unknown — leave queued
@@ -739,6 +873,7 @@ async function sendImpl(intent: SendIntent): Promise<SendResult> {
         errorCode: "DISPATCH_ERROR",
         errorMessage: (e as Error).message,
       });
+      failedSync++;
     }
   }
 
@@ -748,6 +883,9 @@ async function sendImpl(intent: SendIntent): Promise<SendResult> {
   }
 
   const took = Date.now() - startedAt;
+  console.info(
+    `[notifications] dispatch_done campaign=${intent.campaignId ?? "n/a"} template=${template.code} queued=${queued} accepted=${accepted} failedProvider=${failedProvider} failedSync=${failedSync} skipped=${skipped} ms=${took}`,
+  );
   if (took > 3000) {
     console.warn(`[notifications] send took ${took}ms (template=${template.code}, recipients=${logRows.length})`);
   }
@@ -756,10 +894,13 @@ async function sendImpl(intent: SendIntent): Promise<SendResult> {
     campaignId: intent.campaignId,
     queued,
     skipped,
-    failedSync: 0,
+    failedSync,
+    accepted,
+    failedProvider,
     notificationIds: logRows.map((r) => r.notificationId),
     ...(inboxOnlyFallback
       ? {
+          skipReason: "no_push_tokens",
           warning: softSkipWarningForTarget(
             intent.target as unknown as Record<string, unknown>,
             "no_recipients",
@@ -876,6 +1017,7 @@ export async function resendCampaign(
       campaignId,
       // Operator-triggered resend should deliver even during quiet hours.
       bypassQuietHours: true,
+      deliverNow: true,
       overrides: {
         title: campaign.override_title,
         body: campaign.override_body,
@@ -890,7 +1032,9 @@ export async function resendCampaign(
       await finalizeCampaignSend(campaignId, "failed");
       return { ...result, campaignId, status: "failed" };
     }
-    if (!softSkip && result.failedSync > 0 && result.queued === 0) {
+    const accepted = result.accepted ?? result.queued;
+    const providerFailed = result.failedProvider ?? 0;
+    if (!softSkip && (result.failedSync > 0 || providerFailed > 0) && accepted === 0) {
       await finalizeCampaignSend(campaignId, "failed");
       return { ...result, campaignId, status: "failed" };
     }

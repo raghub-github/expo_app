@@ -12,7 +12,7 @@ const isExpoGo = Constants.appOwnership === "expo";
 const APP_NAME = Constants.expoConfig?.name ?? "GatiMitra Partner";
 const PACKAGE_NAME =
   Constants.expoConfig?.android?.package ?? Application.applicationId ?? "com.gatimitra.partner";
-const APP_ICON = require("../assets/images/splash-logo.png");
+const APP_ICON = require("../assets/mxappicon.png");
 
 export function PlayInAppUpdateBootstrap() {
   if (Platform.OS !== "android" || isExpoGo) return null;

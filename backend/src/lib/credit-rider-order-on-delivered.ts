@@ -90,14 +90,22 @@ async function runReferralEvalAfterDelivery(opts: {
     const {
       evaluateRiderReferralOnOrderDelivered,
       evaluateCustomerReferralOnOrderDelivered,
+      evaluateMerchantReferralOnEvent,
     } = await import("../modules/referral/referral.engine.js");
     await evaluateRiderReferralOnOrderDelivered({
       riderId: opts.riderId,
       ordersCoreId: opts.coreId,
       orderType: opts.orderType,
     });
-    const [orderRow] = await sql<Array<{ customer_id: string | null }>>`
-      SELECT customer_id::text AS customer_id
+    const [orderRow] = await sql<Array<{
+      customer_id: string | null;
+      merchant_parent_id: string | null;
+      merchant_store_id: string | null;
+    }>>`
+      SELECT
+        customer_id::text AS customer_id,
+        merchant_parent_id::text AS merchant_parent_id,
+        merchant_store_id::text AS merchant_store_id
       FROM orders_core
       WHERE id = ${opts.coreId}
       LIMIT 1
@@ -107,6 +115,23 @@ async function runReferralEvalAfterDelivery(opts: {
       await evaluateCustomerReferralOnOrderDelivered({
         customerPk,
         ordersCoreId: opts.coreId,
+      });
+    }
+    const merchantParentPk = Number(orderRow?.merchant_parent_id ?? 0);
+    const merchantStorePk = Number(orderRow?.merchant_store_id ?? 0);
+    if (Number.isFinite(merchantParentPk) && merchantParentPk > 0) {
+      await evaluateMerchantReferralOnEvent({
+        merchantParentId: merchantParentPk,
+        eventType: "FIRST_ORDER_DELIVERED",
+        ordersCoreId: opts.coreId,
+        merchantStoreId: Number.isFinite(merchantStorePk) && merchantStorePk > 0 ? merchantStorePk : null,
+        incrementOrder: true,
+      });
+      await evaluateMerchantReferralOnEvent({
+        merchantParentId: merchantParentPk,
+        eventType: "ORDER_DELIVERED_COUNT",
+        ordersCoreId: opts.coreId,
+        merchantStoreId: Number.isFinite(merchantStorePk) && merchantStorePk > 0 ? merchantStorePk : null,
       });
     }
   } catch (refErr) {

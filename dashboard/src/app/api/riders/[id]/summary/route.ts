@@ -834,6 +834,11 @@ export async function GET(
           const security = toNum((walletRow as { securityBalance?: unknown }).securityBalance ?? 0);
           const isFrozen = Boolean((walletRow as { isFrozen?: boolean }).isFrozen);
           const frozenAt = (walletRow as { frozenAt?: Date | null }).frozenAt ?? null;
+          const freezeReason = isFrozen
+            ? ((walletRow as { freezeReason?: string | null }).freezeReason
+                ?? latestFreezeRow?.reason
+                ?? null)
+            : null;
           return {
           totalBalance: String(total),
           globalWalletBlock,
@@ -849,6 +854,7 @@ export async function GET(
           totalWithdrawn: walletRow.totalWithdrawn,
           lastUpdatedAt: walletRow.lastUpdatedAt,
           isFrozen,
+          freezeReason,
           frozenAt: frozenAt ? String(frozenAt) : null,
           latestFreezeAction: latestFreezeRow ? {
             action: latestFreezeRow.action,

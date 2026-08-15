@@ -318,22 +318,46 @@ export async function finalizeCampaignSend(
 /**
  * Recover immediate-send campaigns left stuck in `running` when an older code path
  * never flipped status after send() returned.
+ * Only mark completed when logs show provider-accepted work; otherwise fail so
+ * Super Admin does not show a false success.
  */
 export async function recoverStaleRunningCampaigns(): Promise<number> {
   const sql = getSql();
-  const rows = (await sql`
-    UPDATE public.notification_campaigns
-    SET status = 'completed', finished_at = COALESCE(finished_at, now())
+  const stuck = (await sql`
+    SELECT id FROM public.notification_campaigns
     WHERE status = 'running'
       AND scheduled_at IS NULL
       AND finished_at IS NULL
       AND created_at < now() - interval '2 minutes'
-    RETURNING id
   `) as unknown as Array<{ id: number }>;
-  for (const row of rows) {
+  let n = 0;
+  for (const row of stuck) {
     await syncCampaignCountsFromLogs(row.id);
+    const counts = (await sql`
+      SELECT
+        COALESCE(SUM(CASE WHEN status IN ('sent','delivered','clicked') THEN 1 ELSE 0 END), 0)::int AS ok_count,
+        COALESCE(SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END), 0)::int AS fail_count,
+        COALESCE(SUM(CASE WHEN status IN ('queued') THEN 1 ELSE 0 END), 0)::int AS pending_count
+      FROM public.notification_dispatch_logs
+      WHERE campaign_id = ${row.id}
+    `) as unknown as Array<{ ok_count: number; fail_count: number; pending_count: number }>;
+    const c = counts[0] ?? { ok_count: 0, fail_count: 0, pending_count: 0 };
+    const status =
+      c.ok_count > 0 && c.pending_count === 0
+        ? "completed"
+        : c.fail_count > 0 && c.ok_count === 0
+          ? "failed"
+          : c.pending_count > 0
+            ? "failed"
+            : "completed";
+    await sql`
+      UPDATE public.notification_campaigns
+      SET status = ${status}, finished_at = COALESCE(finished_at, now())
+      WHERE id = ${row.id} AND status = 'running'
+    `;
+    n += 1;
   }
-  return rows.length;
+  return n;
 }
 
 export async function loadDueScheduledCampaigns(limit: number = 50): Promise<Array<{ id: number; target_filter: Record<string, unknown>; variables: Record<string, unknown>; template_code: string | null; override_title: string | null; override_body: string | null; override_image: string | null; override_deep_link: string | null }>> {

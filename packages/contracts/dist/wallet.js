@@ -130,6 +130,9 @@ export const WalletSummarySchema = z.object({
     settlement_paused: z.boolean().optional(),
     /** Orders with Delivered timeline event today (IST). Home dashboard only. */
     delivered_today: z.number().optional(),
+    isFrozen: z.boolean().optional(),
+    freezeReason: z.string().nullable().optional(),
+    frozenAt: z.string().nullable().optional(),
 });
 // ─── Ledger Entry ─────────────────────────────────────────────────────────────
 export const LedgerEntrySchema = z.object({

@@ -344,6 +344,8 @@ export const notificationRoutes: FastifyPluginAsync = async (app) => {
             target: b.target,
             campaignId: campaign.id,
             bypassQuietHours: true,
+            // Wait for Expo/FCM acceptance — do not report success on Redis enqueue alone.
+            deliverNow: true,
             overrides: {
               title: b.overrideTitle ?? null,
               body: b.overrideBody ?? null,
@@ -357,7 +359,11 @@ export const notificationRoutes: FastifyPluginAsync = async (app) => {
           });
           // Missing push tokens / quiet hours are soft outcomes — never 400.
           // Campaign stays completed; dashboard shows a warning, not an error.
-          if (result.skipReason === "no_recipients" || result.skipReason === "quiet_hours") {
+          if (
+            result.skipReason === "no_recipients" ||
+            result.skipReason === "quiet_hours" ||
+            result.skipReason === "no_push_tokens"
+          ) {
             await finalizeCampaignSend(campaign.id, "completed");
             req.log.warn(
               {
@@ -371,6 +377,7 @@ export const notificationRoutes: FastifyPluginAsync = async (app) => {
               ...result,
               campaignId: campaign.id,
               status: "completed",
+              pushDelivered: false,
               warning:
                 result.warning ??
                 softSkipWarningForTarget(
@@ -388,17 +395,29 @@ export const notificationRoutes: FastifyPluginAsync = async (app) => {
               ...result,
             });
           }
-          if (result.failedSync > 0 && result.queued === 0) {
+          const accepted = result.accepted ?? result.queued;
+          const providerFailed = result.failedProvider ?? 0;
+          if ((result.failedSync > 0 || providerFailed > 0) && accepted === 0) {
             await finalizeCampaignSend(campaign.id, "failed");
             return reply.code(502).send({
               error: "all_dispatches_failed",
               campaignId: campaign.id,
-              message: "Every push dispatch failed (FCM/Expo). Check Firebase credentials and device tokens.",
+              message:
+                "Every push dispatch failed (FCM/Expo). Check Firebase credentials, Expo access token, and device tokens.",
               ...result,
             });
           }
           await finalizeCampaignSend(campaign.id, "completed");
-          return reply.send({ campaignId: campaign.id, status: "completed", ...result });
+          return reply.send({
+            campaignId: campaign.id,
+            status: "completed",
+            ...result,
+            ...(providerFailed > 0
+              ? {
+                  warning: `${providerFailed} device(s) rejected by Expo/FCM; ${accepted} accepted.`,
+                }
+              : {}),
+          });
         } catch (e) {
           req.log.error({ err: e, campaignId: campaign.id }, "notification_campaign_send_failed");
           await finalizeCampaignSend(campaign.id, "failed");

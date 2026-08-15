@@ -144,7 +144,12 @@ export default function DashboardScreen() {
       menuStoreId,
       hasCatalogItems,
       itemsWithImages,
-      catalogItems.length
+      catalogItems.length,
+      {
+        storeDbId: selectedStore?.id ?? null,
+        token,
+        catalogReady: menuCatalog != null || !menuStoreId,
+      }
     );
   const [refreshing, setRefreshing] = useState(false);
   const [rejectTarget, setRejectTarget] = useState<OrderRecord | null>(null);

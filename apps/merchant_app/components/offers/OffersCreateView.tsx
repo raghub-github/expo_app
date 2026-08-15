@@ -1,19 +1,17 @@
-import { useState, useCallback } from "react";
+import { useState } from "react";
 import { AppText as Text } from "@/components/AppText";
 import { View, StyleSheet, ScrollView, Pressable, RefreshControl } from "react-native";
-import { useFocusEffect } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 import { AppAssetImage } from "@/components/AppAssetImage";
 import { MX } from "@/lib/appAssetKeys";
-import { reloadMerchantAppAssets } from "@/store/appAssetsStore";
 import type { OfferType } from "@/services/offersApi";
 import { countOffersForTrackFilter } from "@/lib/offers/offer-lifecycle";
 import type { Offer } from "@/services/offersApi";
 import { OFFER_PROMO_CHOICES, type OfferCreatePath } from "@/lib/offers/offer-form-constants";
 import { OFFERS_UI, offersSharedStyles } from "./offers-theme";
 import { PromosLearnMoreSheet } from "./PromosLearnMoreSheet";
-import { GatiMitraMerchant, H_PADDING } from "@/constants/theme";
+import { GatiMitraMerchant, H_PADDING, TAB_BAR_SCROLL_CONTENT_PADDING_LOOSE } from "@/constants/theme";
 
 type Props = {
   offers: Offer[];
@@ -36,17 +34,14 @@ export function OffersCreateView({
   const hasActive = activeCount > 0;
   const [learnMoreVisible, setLearnMoreVisible] = useState(false);
 
-  useFocusEffect(
-    useCallback(() => {
-      void reloadMerchantAppAssets();
-    }, [])
-  );
-
   return (
     <>
     <ScrollView
       style={styles.scroll}
-      contentContainerStyle={[offersSharedStyles.scrollContent, { paddingBottom: 32 }]}
+      contentContainerStyle={[
+        offersSharedStyles.scrollContent,
+        { paddingBottom: TAB_BAR_SCROLL_CONTENT_PADDING_LOOSE },
+      ]}
       showsVerticalScrollIndicator={false}
       refreshControl={
         onRefresh ? (

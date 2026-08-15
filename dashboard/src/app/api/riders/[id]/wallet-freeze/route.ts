@@ -4,7 +4,7 @@
  */
 import { NextRequest, NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
-import { getDb } from "@/lib/db/client";
+import { getDb, getSql } from "@/lib/db/client";
 import {
   riderWallet,
   riderWalletFreezeHistory,
@@ -94,6 +94,9 @@ export async function GET(
     success: true,
     data: {
       isFrozen: wallet?.isFrozen ?? false,
+      freezeReason: wallet?.isFrozen
+        ? (wallet.freezeReason ?? latest?.reason ?? null)
+        : null,
       frozenAt: wallet?.frozenAt ?? null,
       frozenBySystemUserId: wallet?.frozenBySystemUserId ?? null,
       latestAction: latest
@@ -116,7 +119,7 @@ export async function POST(
 ) {
   const resolved = await getAuthAndRider(request, await params);
   if ("error" in resolved) return resolved.error;
-  const { db, riderId, systemUserId } = resolved;
+  const { riderId, systemUserId } = resolved;
 
   const supabase = await createServerSupabaseClient();
   const { data: { user: authUser } } = await supabase.auth.getUser();
@@ -152,65 +155,95 @@ export async function POST(
     );
   }
 
-  const [wallet] = await db
-    .select()
-    .from(riderWallet)
-    .where(eq(riderWallet.riderId, riderId))
-    .limit(1);
-
-  if (!wallet) {
+  const reason = typeof body.reason === "string" ? body.reason.trim() : "";
+  if (action === "freeze" && !reason) {
     return NextResponse.json(
-      { success: false, error: "Rider wallet not found" },
-      { status: 404 }
-    );
-  }
-
-  if (action === "freeze" && wallet.isFrozen) {
-    return NextResponse.json(
-      { success: false, error: "Wallet is already frozen" },
-      { status: 400 }
-    );
-  }
-  if (action === "unfreeze" && !wallet.isFrozen) {
-    return NextResponse.json(
-      { success: false, error: "Wallet is not frozen" },
+      { success: false, error: "Freeze reason is required" },
       { status: 400 }
     );
   }
 
-  const reason = typeof body.reason === "string" ? body.reason.trim() || null : null;
+  const sql = getSql();
+  try {
+    await sql.begin(async (tx) => {
+      const [locked] = await tx`
+        SELECT is_frozen
+        FROM rider_wallet
+        WHERE rider_id = ${riderId}
+        FOR UPDATE
+      `;
+      if (!locked) {
+        throw Object.assign(new Error("Rider wallet not found"), { status: 404 });
+      }
+      const frozen = Boolean((locked as { is_frozen?: unknown }).is_frozen);
+      if (action === "freeze" && frozen) {
+        throw Object.assign(new Error("Wallet is already frozen"), { status: 400 });
+      }
+      if (action === "unfreeze" && !frozen) {
+        throw Object.assign(new Error("Wallet is not frozen"), { status: 400 });
+      }
 
-  await db.insert(riderWalletFreezeHistory).values({
-    riderId,
-    action,
-    performedBySystemUserId: systemUserId,
-    reason,
-  });
+      await tx`
+        INSERT INTO rider_wallet_freeze_history (
+          rider_id, action, performed_by_system_user_id, reason
+        ) VALUES (
+          ${riderId}, ${action}, ${systemUserId}, ${reason || null}
+        )
+      `;
 
-  if (action === "freeze") {
-    await db
-      .update(riderWallet)
-      .set({
-        isFrozen: true,
-        frozenAt: new Date(),
-        frozenBySystemUserId: systemUserId,
-        lastUpdatedAt: new Date(),
-      })
-      .where(eq(riderWallet.riderId, riderId));
-  } else {
-    await db
-      .update(riderWallet)
-      .set({
-        isFrozen: false,
-        frozenAt: null,
-        frozenBySystemUserId: null,
-        lastUpdatedAt: new Date(),
-      })
-      .where(eq(riderWallet.riderId, riderId));
+      if (action === "freeze") {
+        await tx`
+          UPDATE rider_wallet
+          SET
+            is_frozen = true,
+            frozen_at = NOW(),
+            frozen_by_system_user_id = ${systemUserId},
+            freeze_reason = ${reason},
+            last_updated_at = NOW()
+          WHERE rider_id = ${riderId}
+        `;
+      } else {
+        await tx`
+          UPDATE rider_wallet
+          SET
+            is_frozen = false,
+            frozen_at = NULL,
+            frozen_by_system_user_id = NULL,
+            freeze_reason = NULL,
+            last_updated_at = NOW()
+          WHERE rider_id = ${riderId}
+        `;
+      }
+    });
+  } catch (err) {
+    const status = Number((err as { status?: unknown })?.status) || 500;
+    const message = err instanceof Error ? err.message : "Wallet freeze failed";
+    if (status === 400 || status === 404) {
+      return NextResponse.json({ success: false, error: message }, { status });
+    }
+    console.error("[POST /api/riders/[id]/wallet-freeze]", err);
+    return NextResponse.json({ success: false, error: message }, { status: 500 });
   }
+
+  void (async () => {
+    try {
+      const { backendFetch } = await import("@/lib/notif-backend");
+      await backendFetch("/v1/internal/wallet-freeze-notify", {
+        method: "POST",
+        body: JSON.stringify({
+          party: "rider",
+          action,
+          riderId,
+          reason: reason || null,
+        }),
+      });
+    } catch {
+      /* notify is best-effort */
+    }
+  })();
 
   return NextResponse.json({
     success: true,
-    data: { action, isFrozen: action === "freeze" },
+    data: { action, isFrozen: action === "freeze", freezeReason: action === "freeze" ? reason : null },
   });
 }

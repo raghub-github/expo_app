@@ -1,14 +1,23 @@
 /**
  * Expo App Configuration
  * This file allows dynamic configuration using environment variables
+ *
+ * Android FCM: package must match Firebase google-services.json client
+ * `com.gatimitra.rider` (same project as Merchant: gatimitra-od-c5bad).
  */
+
+const fs = require("fs");
+const path = require("path");
 
 // Expo Go reads `icon` + `splash.image` from manifest — use rideraap.png directly (cache-bust).
 // Native APK icons: run `npm run generate:icons` → assets/icon.png + adaptive-icon.png
 const APP_ICON = "./assets/images/rideraap.png";
 const APP_ICON_NATIVE = "./assets/icon.png";
 const APP_ADAPTIVE_FOREGROUND = "./assets/adaptive-icon.png";
-const APP_ICON_BG = "#FFFFFF";
+const APP_ICON_BG = "#C4E8D1";
+
+const googleServicesFile = path.resolve(__dirname, "google-services.json");
+const hasGoogleServices = fs.existsSync(googleServicesFile);
 
 module.exports = {
   expo: {
@@ -23,7 +32,7 @@ module.exports = {
     splash: {
       image: APP_ICON,
       resizeMode: "contain",
-      backgroundColor: "#FFFFFF"
+      backgroundColor: "#C4E8D1"
     },
     ios: {
       supportsTablet: true,
@@ -44,7 +53,10 @@ module.exports = {
     },
     android: {
       softwareKeyboardLayoutMode: "resize",
-      package: "com.raghubhunia.gatimitrariderapp",
+      // Must match Firebase Android client in google-services.json
+      package: "com.gatimitra.rider",
+      ...(hasGoogleServices ? { googleServicesFile: "./google-services.json" } : {}),
+      useNextNotificationsApi: true,
       adaptiveIcon: {
         foregroundImage: APP_ADAPTIVE_FOREGROUND,
         backgroundColor: APP_ICON_BG
@@ -130,8 +142,8 @@ module.exports = {
       [
         "expo-notifications",
         {
-          icon: "./assets/images/onlylogo.png",
-          color: "#FFFFFF",
+          icon: "./assets/images/rideraap.png",
+          color: "#C4E8D1",
           sounds: [],
           defaultChannel: "default",
         }
@@ -159,7 +171,7 @@ module.exports = {
           image: APP_ICON,
           imageWidth: 240,
           resizeMode: "contain",
-          backgroundColor: "#FFFFFF",
+          backgroundColor: "#C4E8D1",
         },
       ],
     ],

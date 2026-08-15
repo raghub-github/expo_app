@@ -63,6 +63,15 @@ export function shouldShowDashboardNavOverlay(fromPath: string, toHref: string):
   ) {
     return false;
   }
+  // Customer inner pages (users-by-state, profile) own their loaders. Overlay +
+  // cancelQueries was aborting stats / users-by-state on first visit and wiping
+  // cards when navigating back.
+  if (
+    cleanPath.startsWith("/dashboard/customers") &&
+    cleanTarget.startsWith("/dashboard/customers")
+  ) {
+    return false;
+  }
   // Merchant store portal tabs share the right rail; page clients own their loaders.
   // Overlay was covering z-40 RightSidebar and looked like the rail “hid” on every tab change.
   const storePathRe = /^\/dashboard\/merchants\/stores\/\d+(\/|$)/;

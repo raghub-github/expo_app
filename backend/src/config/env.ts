@@ -113,6 +113,9 @@ const EnvSchema = z.object({
     .transform((v) => v !== "0" && v !== "false")
     .default(true),
 
+  /** Optional Expo Push access token (recommended for production / higher rate limits). */
+  EXPO_ACCESS_TOKEN: z.preprocess(emptyToUndefined, z.string().min(10).optional()),
+
   // Cloudflare R2 (backend-only)
   R2_TOKEN_VALUE: z.preprocess(emptyToUndefined, z.string().min(10).optional()),
   R2_BUCKET_NAME: z.preprocess(emptyToUndefined, z.string().min(3).optional()),

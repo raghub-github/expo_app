@@ -6,7 +6,7 @@
     "orientation": "portrait",
     "scheme": "gatimitra-merchant",
     "userInterfaceStyle": "automatic",
-    "icon": "./assets/images/splash-logo.png",
+    "icon": "./assets/mxappicon.png",
     "splash": {
       "image": "./assets/images/splash-logo.png",
       "resizeMode": "contain",
@@ -20,17 +20,17 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.gatimitra.merchant",
-      "icon": "./assets/images/splash-logo.png",
+      "icon": "./assets/mxappicon.png",
       "infoPlist": {
         "UIViewControllerBasedStatusBarAppearance": true
       }
     },
     "android": {
       "adaptiveIcon": {
-        "foregroundImage": "./assets/images/splash-logo.png",
+        "foregroundImage": "./assets/mxappicon.png",
         "backgroundColor": "#0B241C"
       },
-      "icon": "./assets/images/splash-logo.png",
+      "icon": "./assets/mxappicon.png",
       "package": "com.gatimitra.partner",
       "permissions": [
         "RECEIVE_BOOT_COMPLETED",
@@ -56,7 +56,7 @@
     ],
     "extra": {
       "eas": {
-        "projectId": "2a277edd-b33f-4f8b-a5ae-c7d4477b3534"
+        "projectId": "4ee6d69b-548a-4b55-a058-64ab1e85ae54"
       }
     }
   }

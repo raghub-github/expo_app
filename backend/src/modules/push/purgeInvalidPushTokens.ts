@@ -8,9 +8,13 @@ import { getSql } from "../../db/client.js";
 export function isTerminalPushDeliveryError(code?: string | null, message?: string | null): boolean {
   const blob = `${code ?? ""} ${message ?? ""}`.toLowerCase();
   if (!blob.trim()) return false;
+  // InvalidCredentials from Expo usually means the Expo project is missing an FCM
+  // service-account upload (developer fault) — do NOT treat as a dead device token.
+  if (blob.includes("invalidcredentials") || blob.includes("fcm server key")) {
+    return false;
+  }
   return (
     blob.includes("devicenotregistered") ||
-    blob.includes("invalidcredentials") ||
     blob.includes("invalid-registration") ||
     blob.includes("registration-token-not-registered") ||
     blob.includes("unregistered") ||

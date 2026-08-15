@@ -65,8 +65,10 @@ export function useCustomerDashboardStats(
     enabled: authGateReady && options?.enabled !== false,
     ...getCacheConfig(CacheTier.MEDIUM),
     staleTime: 5 * 60 * 1000, // 5 minutes
+    gcTime: 60 * 60 * 1000,
     refetchOnWindowFocus: false,
-    refetchOnMount: false,
+    // Remount after inner-page nav / cancelled fetches must load again.
+    refetchOnMount: true,
     // Keep previous data during refetch to avoid UI flicker on filter changes.
     placeholderData: (prev) => prev,
   });

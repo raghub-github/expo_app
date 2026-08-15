@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useRef, useCallback } from "react";
+import { AppState, Platform, type AppStateStatus } from "react-native";
 import Constants from "expo-constants";
+import * as Device from "expo-device";
 import { useRouter } from "expo-router";
 import { useQueryClient } from "@tanstack/react-query";
 import {
@@ -18,10 +20,12 @@ import {
 } from "@/src/stores/notificationInboxStore";
 import { RIDER_AVAILABLE_ORDERS_QUERY_KEY } from "@/src/hooks/useOrders";
 import { setRiderPushUnregister } from "@/src/lib/riderPushUnregister";
+import { setRiderPushRefresh } from "@/src/lib/riderPushRefresh";
 
 /**
  * Registers Expo + native tokens via shared push controller (JWT role = rider).
  * Keeps rider-specific inbox, order invalidation, and deep-link callbacks.
+ * Package + Firebase client must be `com.gatimitra.rider` (same as Merchant pattern).
  */
 export function RiderPushSetup() {
   const router = useRouter();
@@ -29,6 +33,8 @@ export function RiderPushSetup() {
   const session = useSessionStore((s) => s.session);
   const hydrated = useSessionStore((s) => s.hydrated);
   const setPermissionStepGranted = usePermissionStore((s) => s.setPermissionStepGranted);
+  const permissionPromptedRef = useRef(false);
+  const expoGo = Constants.appOwnership === "expo";
 
   const handleOpen = useCallback(
     (payload: PushNotificationOpenPayload) => {
@@ -76,33 +82,110 @@ export function RiderPushSetup() {
   const pushOptions = useMemo(
     () => ({
       apiBaseUrl,
-      androidPackageName:
-        Constants.expoConfig?.android?.package || "com.gatimitra.rider",
+      androidPackageName: "com.gatimitra.rider",
       androidChannels: [
         { channelId: "default", name: "Orders & alerts", lightColor: "#0d9488" },
+        { channelId: "rider_default", name: "Orders & alerts", lightColor: "#0d9488" },
       ],
       getAuth: () => {
         const { session: s, hydrated: h } = authRef.current;
         if (!h || !s?.accessToken || s.role !== "rider") return null;
         return { accessToken: s.accessToken, role: "rider" as const };
       },
+      collectDeviceMetadata: async () => ({
+        device_model: Device.modelName ?? null,
+        device_brand: Device.brand ?? null,
+        os_name: Device.osName ?? Platform.OS,
+        os_version: Device.osVersion ?? String(Platform.Version ?? ""),
+        app_version:
+          (Constants.expoConfig?.version as string | undefined) ??
+          (Constants.expoConfig?.runtimeVersion as string | undefined) ??
+          null,
+        locale: Intl.DateTimeFormat().resolvedOptions().locale ?? null,
+        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone ?? null,
+      }),
       onNotificationOpen: handleOpen,
       onForeground: handleForeground,
+      log: (message: string, extra?: Record<string, unknown>) => {
+        if (extra) console.log(`[push:rider] ${message}`, extra);
+        else console.log(`[push:rider] ${message}`);
+      },
     }),
     [apiBaseUrl, handleOpen, handleForeground]
   );
 
-  const { snapshot, controller } = usePushPermissionController(pushOptions);
+  const { snapshot, controller } = usePushPermissionController(pushOptions, {
+    autoStart: true,
+  });
 
   useEffect(() => {
-    setRiderPushUnregister(() => controller.unregisterCurrent());
+    setRiderPushUnregister((opts) =>
+      controller.unregisterCurrent({ ...opts, role: "rider" })
+    );
     return () => setRiderPushUnregister(null);
   }, [controller]);
 
   useEffect(() => {
-    if (!hydrated || !session?.accessToken || session.role !== "rider") return;
-    void controller.refresh({ syncIfGranted: true });
-  }, [hydrated, session?.accessToken, session?.role, controller]);
+    setRiderPushRefresh(async () => {
+      const snap = await controller.refresh({ syncIfGranted: !expoGo });
+      console.log("[push:rider] refresh after permission grant", {
+        osStatus: snap.osStatus,
+        syncStatus: snap.syncStatus,
+        lastBackendSyncOk: snap.lastBackendSyncOk,
+        hasExpo: !!snap.expoPushToken,
+        hasNative: !!snap.nativePushToken,
+        error: snap.error,
+      });
+    });
+    return () => setRiderPushRefresh(null);
+  }, [controller, expoGo]);
+
+  useEffect(() => {
+    if (!hydrated || !session?.accessToken || session.role !== "rider") {
+      permissionPromptedRef.current = false;
+      return;
+    }
+    controller.startLifecycle();
+    void (async () => {
+      let snap = await controller.refresh({ syncIfGranted: !expoGo });
+      console.log("[push:rider] post-login refresh", {
+        osStatus: snap.osStatus,
+        syncStatus: snap.syncStatus,
+        lastBackendSyncOk: snap.lastBackendSyncOk,
+        hasExpo: !!snap.expoPushToken,
+        hasNative: !!snap.nativePushToken,
+        error: snap.error,
+        expoGo,
+      });
+      if (expoGo) return;
+      if (snap.osStatus === "granted") return;
+      // Returning riders who skipped /(permissions) still need a grant + register.
+      if (permissionPromptedRef.current) return;
+      permissionPromptedRef.current = true;
+      console.log("[push:rider] requesting notification permission after login");
+      const result = await controller.requestOrOpenSettings();
+      snap = result.snapshot;
+      console.log("[push:rider] post-login permission result", {
+        granted: result.granted,
+        openedSettings: result.openedSettings,
+        osStatus: snap.osStatus,
+        syncStatus: snap.syncStatus,
+        lastBackendSyncOk: snap.lastBackendSyncOk,
+        hasExpo: !!snap.expoPushToken,
+        hasNative: !!snap.nativePushToken,
+        error: snap.error,
+      });
+    })();
+  }, [hydrated, session?.accessToken, session?.role, controller, expoGo]);
+
+  useEffect(() => {
+    const sub = AppState.addEventListener("change", (s: AppStateStatus) => {
+      if (s !== "active") return;
+      if (!hydrated || !session?.accessToken || session.role !== "rider") return;
+      void controller.refresh({ syncIfGranted: !expoGo });
+    });
+    return () => sub.remove();
+  }, [hydrated, session?.accessToken, session?.role, controller, expoGo]);
 
   useEffect(() => {
     if (snapshot.osStatus === "granted") {

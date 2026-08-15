@@ -36,6 +36,7 @@ export async function GET(request: NextRequest) {
       FROM agent_profiles ap
       JOIN system_users su ON ap.user_id = su.id
       WHERE ap.user_id = ${systemUser.id}
+      ORDER BY ap.updated_at DESC NULLS LAST, ap.id DESC
       LIMIT 1
     `;
 
@@ -63,7 +64,7 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({
       success: true,
       data: {
-        isOnline: profile.is_online || false,
+        isOnline: profile.is_online === true || profile.is_online === "t",
         currentStatus: profile.current_status || "offline",
         breakStartedAt: profile.break_started_at,
         lastOnlineAt: profile.last_online_at,

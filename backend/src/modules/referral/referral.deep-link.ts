@@ -29,7 +29,7 @@ export function buildReferralLandingHtml(args: {
   /** Compact OG line, e.g. "You Get ₹50 • Friend Gets ₹50". */
   ogSummary?: string | null;
   appStoreUrl?: string | null;
-  audience?: "customer" | "rider";
+  audience?: "customer" | "rider" | "merchant";
 }): string {
   const scheme = args.appScheme ?? "gatimitra";
   const path = args.path ?? "referral";
@@ -42,6 +42,7 @@ export function buildReferralLandingHtml(args: {
   const canonicalPrefix = args.canonicalPrefix ?? "/ref";
   const pageUrl = `${args.publicBase}${canonicalPrefix}/${encodeURIComponent(args.code)}`;
   const isRider = args.audience === "rider";
+  const isMerchant = args.audience === "merchant";
   const ogTitle = "Invite Friends & Earn Rewards";
   const headline = args.headline?.trim() || ogTitle;
   const rewardLines = (args.rewardLines ?? []).filter((l) => l.trim().length > 0);

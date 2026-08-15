@@ -337,6 +337,12 @@ const StoreRegistrationForm = () => {
       return raw != null && String(raw).trim() !== '';
     })();
 
+  // Never auto-open this wizard. Require Add Store (`new=1`) or an explicit store resume (`store_id`).
+  useEffect(() => {
+    if (forceNewOnboarding || selectedStorePublicId) return;
+    window.location.replace("/partners/all-stores?picker=1");
+  }, [forceNewOnboarding, selectedStorePublicId]);
+
   const verificationSaveThanksTitle = 'Updates saved';
   const verificationSaveThanksMessage =
     'Thank you for updating your details. Our team will review and verify the information shortly. After successful verification, the next steps in your store onboarding process will be initiated.';
@@ -922,6 +928,10 @@ const StoreRegistrationForm = () => {
     const hydrateProgress = async () => {
       try {
         const parentKey = (parentIdParam || '').trim();
+        if (!forceNewOnboarding && !selectedStorePublicId) {
+          window.location.replace("/partners/all-stores?picker=1");
+          return;
+        }
         const sessionResume = parentKey ? readOnboardingResume(parentKey) : null;
         // new=1 = intentionally starting a fresh child store; ignore stale resume / parent-latest progress
         if (forceNewOnboarding && !selectedStorePublicId && parentKey) {
@@ -4530,6 +4540,25 @@ const StoreRegistrationForm = () => {
                     <option value="OTHERS">Others</option>
                   </select>
                 </div>
+                {formData.store_type === 'OTHERS' ? (
+                  <div>
+                    <label className="block text-xs font-medium text-slate-600 mb-1.5 tracking-wide">
+                      Custom Store Type *
+                    </label>
+                    <input
+                      type="text"
+                      name="custom_store_type"
+                      value={formData.custom_store_type}
+                      onChange={handleInputChange}
+                      className="w-full px-3.5 py-3 text-sm border-2 border-indigo-200 rounded-xl bg-white shadow-[0_1px_2px_rgba(15,23,42,0.05)] focus:outline-none focus:ring-2 focus:ring-indigo-500/25 focus:border-indigo-400 transition-all"
+                      placeholder="Please specify your store type (e.g., Clothing Store, Electronics, etc.)"
+                      required
+                    />
+                    <p className="text-xs text-slate-500 mt-1">
+                      Please specify what type of store you are registering
+                    </p>
+                  </div>
+                ) : null}
                 <div>
                   <label className="block text-xs font-medium text-slate-600 mb-1.5 tracking-wide">
                     Store Email *
@@ -4545,26 +4574,6 @@ const StoreRegistrationForm = () => {
                   />
                 </div>
               </div>
-
-              {formData.store_type === 'OTHERS' && (
-                <div>
-                  <label className="block text-xs font-medium text-slate-600 mb-1.5 tracking-wide">
-                    Custom Store Type *
-                  </label>
-                  <input
-                    type="text"
-                    name="custom_store_type"
-                    value={formData.custom_store_type}
-                    onChange={handleInputChange}
-                    className="w-full px-3.5 py-3 text-sm border-2 border-indigo-200 rounded-xl bg-white shadow-[0_1px_2px_rgba(15,23,42,0.05)] focus:outline-none focus:ring-2 focus:ring-indigo-500/25 focus:border-indigo-400 transition-all"
-                    placeholder="Please specify your store type (e.g., Clothing Store, Electronics, etc.)"
-                    required
-                  />
-                  <p className="text-xs text-slate-500 mt-1">
-                    Please specify what type of store you are registering
-                  </p>
-                </div>
-              )}
 
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-x-5 gap-y-4 sm:gap-y-5">
                 <div className="flex flex-col">

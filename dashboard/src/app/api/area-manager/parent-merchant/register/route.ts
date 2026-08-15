@@ -14,6 +14,7 @@ import { logAreaManagerActivity } from "@/lib/area-manager/activity";
 import { apiErrorResponse } from "@/lib/api-errors";
 import { uploadWithKey } from "@/lib/services/r2";
 import { getParentLogoKey, toStoredDocumentUrl } from "@/lib/r2-parent-logo";
+import { applyMerchantReferralOnParentCreate } from "@/lib/merchant/applyMerchantReferralOnParent";
 
 export const runtime = "nodejs";
 
@@ -175,6 +176,19 @@ export async function POST(req: NextRequest) {
       action: "PARENT_REGISTERED",
       entityType: "parent",
       entityId: parentId,
+    });
+
+    const referralCode =
+      typeof body.referralCode === "string"
+        ? body.referralCode
+        : typeof data.referralCode === "string"
+          ? data.referralCode
+          : "";
+    await applyMerchantReferralOnParentCreate({
+      parentPk: parentId,
+      referralCode,
+      source: "manual",
+      referredPhone: registered_phone,
     });
 
     return NextResponse.json({

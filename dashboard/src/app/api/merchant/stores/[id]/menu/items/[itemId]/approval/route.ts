@@ -162,18 +162,6 @@ export async function PATCH(
         }
         newStatus = "APPROVED";
       } else {
-        const result = await sql`
-          UPDATE merchant_menu_items
-          SET approval_status = 'REJECTED'::merchant_menu_item_approval_status,
-              approved_at = NULL,
-              approved_by = NULL,
-              rejection_reason = ${rejectionReason},
-              updated_at = NOW()
-          WHERE id = ${menuItemId} AND store_id = ${storeId}
-        `;
-        if ((result.count ?? 0) === 0) {
-          return NextResponse.json({ success: false, error: "Item not found" }, { status: 404 });
-        }
         if (primaryId) {
           await sql`
             UPDATE merchant_menu_item_images
@@ -195,6 +183,19 @@ export async function PATCH(
             WHERE menu_item_id = ${menuItemId} AND is_primary = true
           `;
         }
+        // Photo rejection must not hide the item from customers. Keep the
+        // existing item approval (APPROVED / PENDING); the customer menu
+        // omits the rejected URL and shows a placeholder instead.
+        const result = await sql`
+          UPDATE merchant_menu_items
+          SET rejection_reason = ${rejectionReason},
+              updated_at = NOW()
+          WHERE id = ${menuItemId} AND store_id = ${storeId}
+        `;
+        if ((result.count ?? 0) === 0) {
+          return NextResponse.json({ success: false, error: "Item not found" }, { status: 404 });
+        }
+        newStatus = previousStatus ?? "PENDING";
       }
     } else {
       const result = await sql`

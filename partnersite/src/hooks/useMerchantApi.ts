@@ -38,6 +38,10 @@ export interface WalletSummary {
   total_withdrawn: number;
   pending_withdrawal_total: number;
   in_process_withdrawal_total: number;
+  status?: string;
+  isFrozen?: boolean;
+  freezeReason?: string | null;
+  frozenAt?: string | null;
 }
 
 export type WalletAnalyticsPeriod = 'week' | 'month' | 'quarter';
@@ -196,6 +200,10 @@ async function fetchWallet(storeId: string, options?: { lite?: boolean }): Promi
     total_withdrawn: data.total_withdrawn ?? 0,
     pending_withdrawal_total: data.pending_withdrawal_total ?? 0,
     in_process_withdrawal_total: data.in_process_withdrawal_total ?? 0,
+    status: data.status,
+    isFrozen: data.isFrozen === true || String(data.status ?? "").toUpperCase() === "FROZEN",
+    freezeReason: data.freezeReason ?? null,
+    frozenAt: data.frozenAt ?? null,
   };
 }
 
@@ -565,7 +573,16 @@ export function usePayoutRequestMutation() {
         body: JSON.stringify(body),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error ?? 'Withdrawal request failed');
+      if (!res.ok) {
+        const reason = typeof data.freezeReason === 'string' ? data.freezeReason.trim() : '';
+        throw new Error(
+          data.code === 'WALLET_FROZEN'
+            ? reason
+              ? `Withdrawals are currently disabled. Reason: ${reason}`
+              : data.error ?? 'Withdrawals are currently disabled.'
+            : data.error ?? 'Withdrawal request failed',
+        );
+      }
       if (!data.success) throw new Error(data.error ?? 'Withdrawal request failed');
       return data;
     },

@@ -141,8 +141,19 @@ export async function createPayoutRequest(
     body: JSON.stringify({ amount, bank_account_id: bankAccountId }),
   });
   if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error((err as any).error || "Withdrawal failed");
+    const err = await res.json().catch(() => ({})) as {
+      error?: string;
+      code?: string;
+      freezeReason?: string | null;
+    };
+    const reason = err.freezeReason?.trim();
+    throw new Error(
+      err.code === "WALLET_FROZEN"
+        ? reason
+          ? `Withdrawals are currently disabled. Reason: ${reason}`
+          : err.error || "Withdrawals are currently disabled."
+        : err.error || "Withdrawal failed",
+    );
   }
   const data = await res.json();
   return data as PayoutResult;

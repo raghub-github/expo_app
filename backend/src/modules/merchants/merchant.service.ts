@@ -9,6 +9,11 @@ import {
   getMenuItemEffectiveInStockExpr,
   getMenuItemEffectiveInStockForAliases,
 } from "../../lib/menu-item-effective-stock.js";
+import {
+  getCustomerVisibleApprovalExpr,
+  getCustomerVisibleItemImageExpr,
+  isCustomerVisibleMenuApprovalStatus,
+} from "../../lib/customer-menu-item-visibility.js";
 import { getEnv } from "../../config/env.js";
 import { getRoute, haversineDistanceKm, getMatrixDistances } from "../distance/distance.service.js";
 import { toAbsoluteClientMediaUrl } from "../../utils/publicAttachmentUrl.js";
@@ -920,7 +925,8 @@ export async function getStoreLiveStatus(storeId: string): Promise<"OPEN" | "CLO
 
 /**
  * Get menu items for a store (by string store_id).
- * Only active, approved items that are effectively in stock (OOS fields + category cascade).
+ * Active, in-stock items that are APPROVED or PENDING (photo still in review).
+ * Unverified / rejected photos are omitted; the item still lists with a placeholder.
  * If searchQ is provided, filters items by item_name ILIKE %searchQ%.
  */
 export async function getMenuByStoreId(
@@ -938,6 +944,8 @@ export async function getMenuByStoreId(
   const trimmedSearch = searchQ?.trim() ?? "";
   const pg = getSql();
   const effectiveInStock = getMenuItemEffectiveInStockExpr(pg);
+  const customerImage = getCustomerVisibleItemImageExpr(pg, "m");
+  const customerApproval = getCustomerVisibleApprovalExpr(pg, "m");
 
   const [categoriesRes, itemRows] = await Promise.all([
     supabase
@@ -955,21 +963,7 @@ export async function getMenuByStoreId(
             m.item_id,
             m.item_name,
             m.item_description,
-            COALESCE(
-              NULLIF(TRIM((
-                SELECT img.image_url
-                FROM merchant_menu_item_images img
-                WHERE img.menu_item_id = m.id
-                  AND UPPER(TRIM(COALESCE(img.moderation_status, ''))) = 'APPROVED'
-                ORDER BY CASE WHEN img.is_primary THEN 0 ELSE 1 END, img.created_at DESC, img.id DESC
-                LIMIT 1
-              )), ''),
-              CASE
-                WHEN m.approval_status = 'APPROVED'::merchant_menu_item_approval_status
-                THEN NULLIF(TRIM(m.item_image_url), '')
-                ELSE NULL
-              END
-            ) AS item_image_url,
+            ${customerImage} AS item_image_url,
             m.food_type,
             m.spice_level,
             m.cuisine_type,
@@ -994,7 +988,7 @@ export async function getMenuByStoreId(
           WHERE m.store_id = ${storePk}
             AND COALESCE(m.is_deleted, FALSE) = FALSE
             AND m.is_active = TRUE
-            AND m.approval_status = 'APPROVED'
+            AND ${customerApproval}
             -- Entitlement gate: items locked by the merchant's plan limit are hidden from customers.
             AND COALESCE(m.is_locked_by_plan, FALSE) = FALSE
             AND ${effectiveInStock} = TRUE
@@ -1009,21 +1003,7 @@ export async function getMenuByStoreId(
             m.item_id,
             m.item_name,
             m.item_description,
-            COALESCE(
-              NULLIF(TRIM((
-                SELECT img.image_url
-                FROM merchant_menu_item_images img
-                WHERE img.menu_item_id = m.id
-                  AND UPPER(TRIM(COALESCE(img.moderation_status, ''))) = 'APPROVED'
-                ORDER BY CASE WHEN img.is_primary THEN 0 ELSE 1 END, img.created_at DESC, img.id DESC
-                LIMIT 1
-              )), ''),
-              CASE
-                WHEN m.approval_status = 'APPROVED'::merchant_menu_item_approval_status
-                THEN NULLIF(TRIM(m.item_image_url), '')
-                ELSE NULL
-              END
-            ) AS item_image_url,
+            ${customerImage} AS item_image_url,
             m.food_type,
             m.spice_level,
             m.cuisine_type,
@@ -1048,7 +1028,7 @@ export async function getMenuByStoreId(
           WHERE m.store_id = ${storePk}
             AND COALESCE(m.is_deleted, FALSE) = FALSE
             AND m.is_active = TRUE
-            AND m.approval_status = 'APPROVED'
+            AND ${customerApproval}
             -- Entitlement gate: items locked by the merchant's plan limit are hidden from customers.
             AND COALESCE(m.is_locked_by_plan, FALSE) = FALSE
             AND ${effectiveInStock} = TRUE
@@ -1183,6 +1163,7 @@ export async function getMenuDelta(
   const storePk = Number(store.id);
   const pg = getSql();
   const effectiveInStock = getMenuItemEffectiveInStockExpr(pg);
+  const customerImage = getCustomerVisibleItemImageExpr(pg, "m");
   const since = toTimestamptzParam(sinceVersionMs);
 
   const changedRows = (await pg`
@@ -1193,21 +1174,7 @@ export async function getMenuDelta(
       m.item_id,
       m.item_name,
       m.item_description,
-      COALESCE(
-        NULLIF(TRIM((
-          SELECT img.image_url
-          FROM merchant_menu_item_images img
-          WHERE img.menu_item_id = m.id
-            AND UPPER(TRIM(COALESCE(img.moderation_status, ''))) = 'APPROVED'
-          ORDER BY CASE WHEN img.is_primary THEN 0 ELSE 1 END, img.created_at DESC, img.id DESC
-          LIMIT 1
-        )), ''),
-        CASE
-          WHEN m.approval_status = 'APPROVED'::merchant_menu_item_approval_status
-          THEN NULLIF(TRIM(m.item_image_url), '')
-          ELSE NULL
-        END
-      ) AS item_image_url,
+      ${customerImage} AS item_image_url,
       m.food_type,
       m.spice_level,
       m.cuisine_type,
@@ -1250,11 +1217,11 @@ export async function getMenuDelta(
     const itemId = String(row.item_id ?? "").trim();
     if (!itemId) continue;
 
-    const approved = row.approval_status === "APPROVED";
+    const visibleApproval = isCustomerVisibleMenuApprovalStatus(row.approval_status);
     const active =
       row.is_active === true &&
       row.is_deleted !== true &&
-      approved &&
+      visibleApproval &&
       // Plan-locked items are hidden from customers → tell the SWR client to remove them.
       row.is_locked_by_plan !== true &&
       row.effective_in_stock !== false;
@@ -1566,7 +1533,7 @@ async function queryCoPurchasePairsFromStats(
         AND a.store_id = ${storePk}
         AND a.is_active = TRUE
         AND COALESCE(a.is_deleted, FALSE) = FALSE
-        AND a.approval_status = 'APPROVED' AND COALESCE(a.is_locked_by_plan, FALSE) = FALSE
+        AND a.approval_status::text IN ('APPROVED', 'PENDING') AND COALESCE(a.is_locked_by_plan, FALSE) = FALSE
       LEFT JOIN merchant_menu_categories c_a
         ON c_a.id = a.category_id
         AND c_a.store_id = ${storePk}
@@ -1576,7 +1543,7 @@ async function queryCoPurchasePairsFromStats(
         AND b.store_id = ${storePk}
         AND b.is_active = TRUE
         AND COALESCE(b.is_deleted, FALSE) = FALSE
-        AND b.approval_status = 'APPROVED' AND COALESCE(b.is_locked_by_plan, FALSE) = FALSE
+        AND b.approval_status::text IN ('APPROVED', 'PENDING') AND COALESCE(b.is_locked_by_plan, FALSE) = FALSE
       LEFT JOIN merchant_menu_categories c_b
         ON c_b.id = b.category_id
         AND c_b.store_id = ${storePk}
@@ -1626,7 +1593,7 @@ async function queryCoPurchasePairsFromStats(
       AND a.store_id = ${storePk}
       AND a.is_active = TRUE
       AND COALESCE(a.is_deleted, FALSE) = FALSE
-      AND a.approval_status = 'APPROVED' AND COALESCE(a.is_locked_by_plan, FALSE) = FALSE
+      AND a.approval_status::text IN ('APPROVED', 'PENDING') AND COALESCE(a.is_locked_by_plan, FALSE) = FALSE
     LEFT JOIN merchant_menu_categories c_a
       ON c_a.id = a.category_id
       AND c_a.store_id = ${storePk}
@@ -1636,7 +1603,7 @@ async function queryCoPurchasePairsFromStats(
       AND b.store_id = ${storePk}
       AND b.is_active = TRUE
       AND COALESCE(b.is_deleted, FALSE) = FALSE
-      AND b.approval_status = 'APPROVED' AND COALESCE(b.is_locked_by_plan, FALSE) = FALSE
+      AND b.approval_status::text IN ('APPROVED', 'PENDING') AND COALESCE(b.is_locked_by_plan, FALSE) = FALSE
     LEFT JOIN merchant_menu_categories c_b
       ON c_b.id = b.category_id
       AND c_b.store_id = ${storePk}
@@ -1703,7 +1670,7 @@ async function queryPopularPairFallback(
         WHERE m.store_id = ${storePk}
           AND m.is_active = TRUE
           AND COALESCE(m.is_deleted, FALSE) = FALSE
-          AND m.approval_status = 'APPROVED'
+          AND m.approval_status::text IN ('APPROVED', 'PENDING')
           AND COALESCE(m.is_locked_by_plan, FALSE) = FALSE
           AND ${effM} = TRUE
           AND m.id <> ${anchorPk}
@@ -1766,7 +1733,7 @@ async function queryPopularPairFallback(
       WHERE m.store_id = ${storePk}
         AND m.is_active = TRUE
         AND COALESCE(m.is_deleted, FALSE) = FALSE
-        AND m.approval_status = 'APPROVED'
+        AND m.approval_status::text IN ('APPROVED', 'PENDING')
         AND COALESCE(m.is_locked_by_plan, FALSE) = FALSE
         AND ${effM} = TRUE
       ORDER BY score DESC, m.id ASC
@@ -1897,7 +1864,7 @@ export async function getOrderedTogetherRecommendations(
           AND a.store_id = ${storePk}
           AND a.is_active = TRUE
           AND COALESCE(a.is_deleted, FALSE) = FALSE
-          AND a.approval_status = 'APPROVED' AND COALESCE(a.is_locked_by_plan, FALSE) = FALSE
+          AND a.approval_status::text IN ('APPROVED', 'PENDING') AND COALESCE(a.is_locked_by_plan, FALSE) = FALSE
         LEFT JOIN merchant_menu_categories c_a
           ON c_a.id = a.category_id
           AND c_a.store_id = ${storePk}
@@ -1907,7 +1874,7 @@ export async function getOrderedTogetherRecommendations(
           AND b.store_id = ${storePk}
           AND b.is_active = TRUE
           AND COALESCE(b.is_deleted, FALSE) = FALSE
-          AND b.approval_status = 'APPROVED' AND COALESCE(b.is_locked_by_plan, FALSE) = FALSE
+          AND b.approval_status::text IN ('APPROVED', 'PENDING') AND COALESCE(b.is_locked_by_plan, FALSE) = FALSE
         LEFT JOIN merchant_menu_categories c_b
           ON c_b.id = b.category_id
           AND c_b.store_id = ${storePk}
@@ -2004,7 +1971,7 @@ export async function getMenuItemFullConfig(
     .eq("store_id", store.id)
     .eq("item_id", itemId)
     .eq("is_active", true)
-    .eq("approval_status", "APPROVED")
+    .in("approval_status", ["APPROVED", "PENDING"])
     .maybeSingle();
 
   if (!byItemIdError && byItemId) {
@@ -2018,7 +1985,7 @@ export async function getMenuItemFullConfig(
         .eq("store_id", store.id)
         .eq("id", numericId)
         .eq("is_active", true)
-        .eq("approval_status", "APPROVED")
+        .in("approval_status", ["APPROVED", "PENDING"])
         .maybeSingle();
       if (!byPkError && byPk) itemRow = byPk;
     }
@@ -2028,8 +1995,10 @@ export async function getMenuItemFullConfig(
   const item = itemRow as MerchantMenuItemRow & { has_customizations?: boolean; has_addons?: boolean; has_variants?: boolean };
 
   const menuItemPk = Number(item.id);
+  const pg = getSql();
+  const customerImage = getCustomerVisibleItemImageExpr(pg, "m");
 
-  const [variantRowsRaw, customizationsRes, addonOrderCounts] = await Promise.all([
+  const [variantRowsRaw, customizationsRes, addonOrderCounts, imageRows] = await Promise.all([
     fetchVariantsForFullConfig(Number(item.id)),
     supabase
       .from("merchant_menu_item_customizations")
@@ -2039,7 +2008,16 @@ export async function getMenuItemFullConfig(
     Number.isFinite(menuItemPk) && menuItemPk > 0
       ? fetchAddonOrderCounts(store.id, menuItemPk)
       : Promise.resolve(new Map<number, number>()),
+    Number.isFinite(menuItemPk) && menuItemPk > 0
+      ? pg<{ item_image_url: string | null }[]>`
+          SELECT ${customerImage} AS item_image_url
+          FROM merchant_menu_items m
+          WHERE m.id = ${menuItemPk}
+          LIMIT 1
+        `
+      : Promise.resolve([] as { item_image_url: string | null }[]),
   ]);
+  const visibleImageUrl = imageRows[0]?.item_image_url ?? null;
 
   const variants = dedupeVariantRows(
     variantRowsRaw.map(
@@ -2143,7 +2121,7 @@ export async function getMenuItemFullConfig(
       name: item.item_name,
       description: item.item_description ?? null,
       price: markup(parseFloat(item.selling_price)),
-      imageUrl: toAbsoluteClientMediaUrl(item.item_image_url ?? null),
+      imageUrl: toAbsoluteClientMediaUrl(visibleImageUrl),
       isVeg: (item.food_type ?? "").toLowerCase().startsWith("veg"),
       hasCustomizations: item.has_customizations === true,
       hasAddons: item.has_addons === true,

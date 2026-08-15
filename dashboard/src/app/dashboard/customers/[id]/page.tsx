@@ -3,13 +3,12 @@
 import { useState, useEffect, useRef, useMemo, useCallback, Suspense } from "react";
 import { useAppParams, useAppPathname, useAppSearchParams } from "@/hooks/useAppSearchParams";
 import { useRouter } from "next/navigation";
-import Link from "next/link";
-import { AlertCircle } from "lucide-react";
 import {
   resolveTrustTier,
   type CustomerTrustTier,
 } from "@/lib/customers/trust-tier";
 import type { CustomerAddressRow, CustomerActivityDay, CustomerOrderStats } from "@/lib/db/operations/customers";
+import { CustomerNotFoundState } from "@/components/customers/CustomerNotFoundState";
 import {
   CustomerDetailPremiumView,
 } from "@/components/customers/CustomerDetailPremiumView";
@@ -228,7 +227,7 @@ type CustomerWalletTxnRow = {
 function CustomerDetailsContent() {
   const params = useAppParams();
   const searchParams = useAppSearchParams();
-  const customerId = params.id as string;
+  const customerId = typeof params.id === "string" ? params.id : "";
   const [customer, setCustomer] = useState<CustomerDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -281,13 +280,12 @@ function CustomerDetailsContent() {
   useEffect(() => {
     setAddressIndex(0);
     setAddressMenuOpen(false);
-    if (customerId) {
-      void fetchCustomer();
-      void fetchServiceBlocks();
-    } else {
-      setError("Invalid customer ID");
-      setLoading(false);
-    }
+    // useParams can be empty on the first client-nav paint — keep loading, don't flash not-found.
+    if (!customerId) return;
+    const ac = new AbortController();
+    void fetchCustomer(ac.signal);
+    void fetchServiceBlocks();
+    return () => ac.abort();
     // eslint-disable-next-line react-hooks/exhaustive-deps -- refetch when path id or search identity changes
   }, [customerId, searchQs]);
 
@@ -465,12 +463,15 @@ function CustomerDetailsContent() {
     };
   }, [addressMenuOpen]);
 
-  const fetchCustomer = async () => {
+  const fetchCustomer = async (signal?: AbortSignal) => {
     try {
       setLoading(true);
       setError(null);
 
-      const response = await fetch(`/api/customers/${customerId}`);
+      const response = await fetch(`/api/customers/${encodeURIComponent(customerId)}`, {
+        credentials: "include",
+        signal,
+      });
 
       if (!response.ok) {
         const errorText = await response.text();
@@ -507,10 +508,13 @@ function CustomerDetailsContent() {
         setError(result.error || "Failed to fetch customer");
       }
     } catch (err) {
+      if (signal?.aborted || (err instanceof DOMException && err.name === "AbortError")) {
+        return;
+      }
       console.error("Error fetching customer:", err);
       setError(err instanceof Error ? err.message : "Unknown error");
     } finally {
-      setLoading(false);
+      if (!signal?.aborted) setLoading(false);
     }
   };
 
@@ -581,58 +585,7 @@ function CustomerDetailsContent() {
   }
 
   if (error || !customer) {
-    const backHref = searchQs
-      ? `/dashboard/customers/all?search=${encodeURIComponent(searchQs)}`
-      : "/dashboard/customers/all";
-    return (
-      <div className="w-full max-w-full overflow-x-hidden py-2">
-        <div
-          className="fixed inset-0 z-[12000] flex items-center justify-center bg-slate-900/45 p-4 backdrop-blur-[1px]"
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="customer-fetch-error-title"
-        >
-          <div className="w-full max-w-md rounded-xl border border-red-100 bg-white p-6 shadow-xl">
-            <div className="flex items-start justify-between gap-3">
-              <div className="min-w-0">
-                <h3
-                  id="customer-fetch-error-title"
-                  className="flex items-center gap-2 text-base font-semibold text-gray-900"
-                >
-                  <AlertCircle className="h-5 w-5 shrink-0 text-red-600" />
-                  Couldn’t load customer
-                </h3>
-                <p className="mt-2 text-sm leading-relaxed text-gray-600">
-                  {error || "Customer not found"}
-                </p>
-              </div>
-              <Link
-                href={backHref}
-                className="shrink-0 rounded-md p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-600"
-                aria-label="Close"
-              >
-                ×
-              </Link>
-            </div>
-            <div className="mt-6 flex flex-wrap justify-end gap-2">
-              <Link
-                href={backHref}
-                className="rounded-lg border border-gray-200 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
-              >
-                Back to search
-              </Link>
-              <button
-                type="button"
-                onClick={() => void fetchCustomer()}
-                className="rounded-lg bg-[#0d5c4a] px-4 py-2 text-sm font-semibold text-white hover:bg-[#0a4a3c]"
-              >
-                Retry
-              </button>
-            </div>
-          </div>
-        </div>
-      </div>
-    );
+    return <CustomerNotFoundState />;
   }
 
   const tier = resolveTrustTier(

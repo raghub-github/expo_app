@@ -8,6 +8,7 @@ import { warmDashboardCardCaches } from '@/lib/partner-dashboard-cache';
 import { warmLivePreviewCache } from '@/lib/merchant-growth/growth-insights-cache';
 import { prefetchPartnerRouteData } from '@/lib/partner-route-prefetch';
 import { loadMerchantAppAssets, MX_ASSET, getMerchantAppAssetUrl } from '@/lib/merchantAppAssets';
+import { MerchantOrderEmptyAssetsWarmup } from '@/components/MerchantAppAssetImage';
 
 const EMPTY_ORDER_KEYS = [
   MX_ASSET.ordersEmptyNew,
@@ -26,6 +27,8 @@ function prefetchEmptyOrderImages(): void {
     const url = getMerchantAppAssetUrl(key);
     if (!url) continue;
     const img = new window.Image();
+    img.decoding = 'async';
+    img.fetchPriority = 'high';
     img.src = url;
   }
 }
@@ -67,5 +70,5 @@ export function PartnerShellWarmup() {
     }
   }, [queryClient]);
 
-  return null;
+  return <MerchantOrderEmptyAssetsWarmup />;
 }

@@ -138,6 +138,42 @@ async function probeApplied(file: string): Promise<boolean> {
         WHERE schemaname = 'public'
           AND indexname = 'idx_or_orderid_created_active_refund'
       ) AS ok`,
+    "0535_customer_menu_visible_pending_items.sql": `
+      SELECT EXISTS (
+        SELECT 1 FROM pg_proc p
+        WHERE p.proname = 'store_has_customer_visible_menu'
+          AND pg_get_functiondef(p.oid) LIKE '%PENDING%'
+      ) AS ok`,
+    "0536a_referral_merchant_enum.sql": `
+      SELECT EXISTS (
+        SELECT 1 FROM pg_enum e
+        JOIN pg_type t ON t.oid = e.enumtypid
+        WHERE t.typname = 'referral_user_type' AND e.enumlabel = 'merchant'
+      ) AS ok`,
+    "0536_referral_engine_merchant_and_modes.sql": `
+      SELECT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema='public' AND table_name='referral_settings'
+          AND column_name='campaign_budget'
+      ) AS ok`,
+    "0537_referral_scope_and_rider_code_restore.sql": `
+      SELECT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema='public' AND table_name='referral_settings'
+          AND column_name='merchant_qualification_scope'
+      ) AS ok`,
+    "0539_wallet_freeze_unify.sql": `
+      SELECT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema='public' AND table_name='rider_wallet'
+          AND column_name='freeze_reason'
+      ) AS ok`,
+    "0540_referral_merchant_rule_and_notify.sql": `
+      SELECT EXISTS (
+        SELECT 1 FROM referral_reward_rules WHERE rule_code = 'MERCHANT_STORE_APPROVED'
+      ) OR EXISTS (
+        SELECT 1 FROM notification_templates WHERE code = 'REFERRAL_REWARD_MERCHANT'
+      ) AS ok`,
   };
   const q = probes[file];
   if (!q) return false;
@@ -163,6 +199,10 @@ async function main() {
     const ver = versionKey(f);
     if (applied.has(ver) || applied.has(f)) {
       console.log(`skip (tracked): ${f}`);
+      continue;
+    }
+    if (/backfill/i.test(f)) {
+      console.log(`skip (I/O backfill — run manually if needed): ${f}`);
       continue;
     }
     if (await probeApplied(f)) {

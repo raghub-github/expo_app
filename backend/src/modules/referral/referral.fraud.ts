@@ -116,6 +116,12 @@ export async function isOrderQualifyingForReferral(opts: {
   if (opts.checks.block_cancelled && (row.cancelled_at || status.includes("CANCEL"))) {
     return { ok: false, amount: 0, orderType: row.order_type, reason: "cancelled" };
   }
+  if (
+    opts.checks.block_returned &&
+    (status.includes("RETURN") || status.includes("RTO") || status.includes("UNDELIVER"))
+  ) {
+    return { ok: false, amount: 0, orderType: row.order_type, reason: "returned" };
+  }
 
   // Refund / return heuristics from payment / flags if present
   if (opts.checks.block_refunded) {

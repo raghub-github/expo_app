@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { MerchantSessionProvider } from "@/context/MerchantSessionContext";
 import { QueryProvider } from "@/components/QueryProvider";
+import { PartnerMerchantReferralAttribution } from "@/components/PartnerMerchantReferralAttribution";
 import { Geist_Mono, Lora, Poppins } from "next/font/google";
 import "./globals.css";
 
@@ -65,6 +66,7 @@ export default function RootLayout({
       >
         <QueryProvider>
           <MerchantSessionProvider>
+            <PartnerMerchantReferralAttribution />
             {children}
           </MerchantSessionProvider>
         </QueryProvider>

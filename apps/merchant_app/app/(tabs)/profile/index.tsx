@@ -43,6 +43,7 @@ import { openPartnerRegisterStoreHandoff } from "@/lib/partnerRegisterStoreHando
 import { OffersPercentBadgeIcon } from "@/components/OffersPercentBadgeIcon";
 import { LearningCentreIcon } from "@/components/LearningCentreIcon";
 import { isMerchantAuthError } from "@/services/auth.service";
+import { fetchMerchantReferralConfig } from "@/services/referral.service";
 
 const CONTENT_TOP = 12;
 const TILE_GAP = 12;
@@ -153,6 +154,7 @@ export default function ProfileScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [logoutModalVisible, setLogoutModalVisible] = useState(false);
   const [addingChild, setAddingChild] = useState(false);
+  const [showReferralUi, setShowReferralUi] = useState(false);
   const navLockRef = useRef(false);
   const navUnlockTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const legalUrls = getPartnerLegalUrls();
@@ -166,6 +168,18 @@ export default function ProfileScreen() {
 
   // Do not prefetch nested profile routes here: router.prefetch() can dispatch PRELOAD
   // actions that are not always handled by the profile stack navigator.
+
+  useFocusEffect(
+    useCallback(() => {
+      let cancelled = false;
+      void fetchMerchantReferralConfig().then((config) => {
+        if (!cancelled) setShowReferralUi(config?.referralEnabled === true);
+      });
+      return () => {
+        cancelled = true;
+      };
+    }, [])
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -409,6 +423,14 @@ export default function ProfileScreen() {
             tileWidth={settingsTileWidth}
           />
           <GridCard icon="time-outline" label="Recent Activity" onPress={navigate("activity-feed")} tileWidth={settingsTileWidth} />
+          {showReferralUi ? (
+            <GridCard
+              icon="gift-outline"
+              label="Refer & Earn"
+              onPress={navigate("referrals")}
+              tileWidth={settingsTileWidth}
+            />
+          ) : null}
         </View>
       </View>
 
@@ -471,20 +493,57 @@ export default function ProfileScreen() {
         </View>
       </View>
 
+      <SectionDivider />
+
       {/* Account & more — compact list */}
       <View style={styles.section}>
         <Text variant="brand" style={[styles.sectionTitle, profileSectionTitle]}>Account & support</Text>
         <View style={styles.menuCard}>
-          <Pressable onPress={navigate("bank")} style={({ pressed }) => [styles.menuRow, pressed && styles.menuRowPressed, GatiMitraMerchant.cursorPointer]}>
-            <Ionicons name="card-outline" size={20} color={GatiMitraMerchant.primary} />
-            <Text style={styles.menuLabel}>Bank Account</Text>
-            <Ionicons name="chevron-forward" size={18} color={GatiMitraMerchant.textTertiary} />
-          </Pressable>
-          <Pressable onPress={navigate("status")} style={({ pressed }) => [styles.menuRow, styles.menuRowLast, pressed && styles.menuRowPressed, GatiMitraMerchant.cursorPointer]}>
-            <Ionicons name="pulse-outline" size={20} color={GatiMitraMerchant.primary} />
-            <Text style={styles.menuLabel}>Store Status</Text>
-            <Ionicons name="chevron-forward" size={18} color={GatiMitraMerchant.textTertiary} />
-          </Pressable>
+          {([
+            {
+              key: "bank",
+              icon: "card-outline" as const,
+              label: "Bank Account",
+              onPress: navigate("bank"),
+            },
+            {
+              key: "status",
+              icon: "pulse-outline" as const,
+              label: "Store Status",
+              onPress: navigate("status"),
+            },
+            ...(showReferralUi
+              ? [
+                  {
+                    key: "referral",
+                    icon: "gift-outline" as const,
+                    label: "Refer & Earn",
+                    onPress: navigate("referrals"),
+                  },
+                ]
+              : []),
+            {
+              key: "reward",
+              icon: "wallet-outline" as const,
+              label: "Reward",
+              onPress: () => guardedNavPush("/(tabs)/earnings"),
+            },
+          ]).map((item, index, list) => (
+            <Pressable
+              key={item.key}
+              onPress={item.onPress}
+              style={({ pressed }) => [
+                styles.menuRow,
+                index === list.length - 1 && styles.menuRowLast,
+                pressed && styles.menuRowPressed,
+                GatiMitraMerchant.cursorPointer,
+              ]}
+            >
+              <Ionicons name={item.icon} size={20} color={GatiMitraMerchant.primary} />
+              <Text style={styles.menuLabel}>{item.label}</Text>
+              <Ionicons name="chevron-forward" size={18} color={GatiMitraMerchant.textTertiary} />
+            </Pressable>
+          ))}
         </View>
       </View>
 
@@ -711,8 +770,8 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     gap: 8,
-    marginTop: 4,
-    marginBottom: 4,
+    marginTop: 16,
+    marginBottom: 0,
     paddingVertical: 14,
     paddingHorizontal: 16,
     borderRadius: CARD_RADIUS,
@@ -734,7 +793,7 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     gap: 6,
     paddingVertical: 12,
-    marginTop: 6,
+    marginTop: 16,
   },
   logoutText: { fontSize: 14, fontWeight: "600", color: GatiMitraMerchant.error },
   footer: {

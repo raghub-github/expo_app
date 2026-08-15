@@ -169,7 +169,7 @@ export async function redistributeOverCapacityTickets(
         ticket_id: ticketId,
         activity_type: "assignment",
         activity_category: "assignment",
-        activity_description: `Assigned to ${name ?? "agent"} (queue rebalance)`,
+        activity_description: `Assigned to ${name ?? "agent"} (Auto Assigned)`,
         actor_type: "SYSTEM",
         actor_name: "Queue",
         assigned_to_user_id: toAid,
@@ -190,9 +190,12 @@ export async function redistributeOverCapacityTickets(
  */
 export async function runQueueBalanceAutoAssign(
   sql: SqlClient,
-  opts: { forAgentUserId?: number; groupIds?: number[] }
+  opts: { forAgentUserId?: number; groupIds?: number[]; excludeAgentUserIds?: number[] }
 ): Promise<{ assigned: number }> {
   const maxCap = await getMaxOpenTicketsPerAgent(sql);
+  const excludeIds = (opts.excludeAgentUserIds ?? [])
+    .map((n) => Number(n))
+    .filter((n) => Number.isFinite(n) && n > 0);
   let groupIds: number[] = [];
 
   if (opts.groupIds != null && opts.groupIds.length > 0) {
@@ -265,6 +268,7 @@ export async function runQueueBalanceAutoAssign(
           WHERE (${gid} = ANY (qa.primary_group_ids) OR ${gid} = ANY (qa.secondary_group_ids))
             AND ap.is_online = true
             AND LOWER(COALESCE(ap.current_status::text, '')) = 'online'
+            AND (${excludeIds.length} = 0 OR NOT (qa.system_user_id = ANY(${excludeIds}::bigint[])))
           ORDER BY open_n ASC, qa.system_user_id ASC
         `) as { uid?: unknown; open_n?: unknown; eff_cap?: unknown }[];
 
@@ -300,7 +304,7 @@ export async function runQueueBalanceAutoAssign(
           ticket_id: ticketId,
           activity_type: "assignment",
           activity_category: "assignment",
-          activity_description: `Assigned to ${name ?? "agent"} (queue auto-assign)`,
+          activity_description: `Assigned to ${name ?? "agent"} (Auto Assigned)`,
           actor_type: "SYSTEM",
           actor_name: "Queue",
           assigned_to_user_id: agentId,

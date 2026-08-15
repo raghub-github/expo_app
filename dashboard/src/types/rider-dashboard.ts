@@ -170,6 +170,7 @@ export interface RiderSummary {
     totalWithdrawn: string;
     lastUpdatedAt: string | null;
     isFrozen?: boolean;
+    freezeReason?: string | null;
     frozenAt?: string | null;
     latestFreezeAction?: {
       action: string;

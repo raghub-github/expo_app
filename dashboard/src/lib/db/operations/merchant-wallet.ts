@@ -243,22 +243,58 @@ export async function createWithdrawalRequest(
   if (bankCheck.length === 0) throw new Error("Invalid bank account");
 
   const holdKey = idempotencyKey("payout_hold", walletId, Date.now());
-  const [holdResult] = await sql`
-    SELECT merchant_wallet_debit(
-      ${walletId}, ${amount}, ${"HOLD_LOCK"}, ${"AVAILABLE"},
-      ${"WITHDRAWAL"}, ${0}, ${holdKey},
-      ${"Withdrawal hold"}, ${JSON.stringify({ net: quote.net_payout_amount })}::jsonb
-    ) AS ledger_id
-  `;
-  const holdLedgerId = Number((holdResult as { ledger_id?: number })?.ledger_id);
+  let holdLedgerId = 0;
+  try {
+    await sql.begin(async (tx) => {
+      const [locked] = await tx`
+        SELECT status, frozen_reason
+        FROM merchant_wallet
+        WHERE id = ${walletId}
+        FOR UPDATE
+      `;
+      const status = String((locked as { status?: unknown } | undefined)?.status ?? "ACTIVE").toUpperCase();
+      if (status === "FROZEN") {
+        const freezeReason =
+          typeof (locked as { frozen_reason?: unknown } | undefined)?.frozen_reason === "string"
+            ? String((locked as { frozen_reason: string }).frozen_reason).trim() || null
+            : null;
+        throw Object.assign(
+          new Error(
+            freezeReason
+              ? `Withdrawals are currently disabled. Reason: ${freezeReason}`
+              : "Withdrawals are currently disabled.",
+          ),
+          { code: "WALLET_FROZEN", freezeReason },
+        );
+      }
 
-  await sql`
-    SELECT merchant_wallet_credit(
-      ${walletId}, ${amount}, ${"HOLD_LOCK"}, ${"HOLD"},
-      ${"WITHDRAWAL"}, ${0}, ${holdKey + "_credit_hold"},
-      ${"Withdrawal hold (hold bucket)"}, ${JSON.stringify({ hold_debit_ledger_id: holdLedgerId })}::jsonb
-    )
-  `;
+      const [holdResult] = await tx`
+        SELECT merchant_wallet_debit(
+          ${walletId}, ${amount}, ${"HOLD_LOCK"}, ${"AVAILABLE"},
+          ${"WITHDRAWAL"}, ${0}, ${holdKey},
+          ${"Withdrawal hold"}, ${JSON.stringify({ net: quote.net_payout_amount })}::jsonb
+        ) AS ledger_id
+      `;
+      holdLedgerId = Number((holdResult as { ledger_id?: number })?.ledger_id);
+
+      await tx`
+        SELECT merchant_wallet_credit(
+          ${walletId}, ${amount}, ${"HOLD_LOCK"}, ${"HOLD"},
+          ${"WITHDRAWAL"}, ${0}, ${holdKey + "_credit_hold"},
+          ${"Withdrawal hold (hold bucket)"}, ${JSON.stringify({ hold_debit_ledger_id: holdLedgerId })}::jsonb
+        )
+      `;
+    });
+  } catch (err) {
+    if ((err as { code?: string })?.code === "WALLET_FROZEN") throw err;
+    const msg = err instanceof Error ? err.message : "";
+    if (/wallet not allowed to debit/i.test(msg) && /FROZEN/i.test(msg)) {
+      throw Object.assign(new Error("Withdrawals are currently disabled."), {
+        code: "WALLET_FROZEN",
+      });
+    }
+    throw err;
+  }
 
   const [payoutRow] = await sql`
     INSERT INTO merchant_payout_requests (

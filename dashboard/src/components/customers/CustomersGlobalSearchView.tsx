@@ -6,8 +6,8 @@ import { useRouter } from "next/navigation";
 import { CustomerTable } from "@/components/customers/CustomerTable";
 import { useCustomersQuery } from "@/hooks/queries/useCustomersQuery";
 import { usePermissions } from "@/hooks/queries/usePermissionsQuery";
-import { AlertCircle } from "lucide-react";
 import { isStructuredCustomerSearch } from "@/lib/customers/search-kind";
+import { CustomerNotFoundState } from "@/components/customers/CustomerNotFoundState";
 
 /**
  * Global customer search: matches customer_id, mobile, name, email (API).
@@ -47,7 +47,7 @@ export function CustomersGlobalSearchView() {
   const trimmed = search.trim();
   const shouldFetch = trimmed.length > 0;
 
-  const { data, isLoading, isFetching, isPlaceholderData, error, isError } = useCustomersQuery({
+  const { data, isLoading, isFetching, isPlaceholderData, isError, authGateReady } = useCustomersQuery({
     page,
     limit: 20,
     search: trimmed || undefined,
@@ -57,7 +57,12 @@ export function CustomersGlobalSearchView() {
   const customers = data?.customers ?? [];
   const structured = isStructuredCustomerSearch(trimmed);
   const searchResultsFresh =
-    shouldFetch && !isLoading && !isFetching && !isPlaceholderData && !isError;
+    shouldFetch &&
+    authGateReady &&
+    !isLoading &&
+    !isFetching &&
+    !isPlaceholderData &&
+    !isError;
 
   /** Prefer exact customer_id match when redirecting (e.g. GM100001 before GM1000010). */
   const customersSorted = useMemo(() => {
@@ -114,7 +119,10 @@ export function CustomersGlobalSearchView() {
   };
 
   const showInitialLoading =
-    shouldFetch && !isError && (isLoading || isFetching || isPlaceholderData) && customersSorted.length === 0;
+    shouldFetch &&
+    !isError &&
+    (!authGateReady || isLoading || isFetching || isPlaceholderData) &&
+    customersSorted.length === 0;
 
   // Structured search (GM/phone) that will auto-open detail — one continuous "Loading customer…" instead of list then detail.
   const willAutoOpenDetail =
@@ -167,32 +175,18 @@ export function CustomersGlobalSearchView() {
     );
   }
 
+  if (isError || (trimmed && searchResultsFresh && customersSorted.length === 0)) {
+    return (
+      <div className="w-full max-w-full min-w-0 overflow-x-hidden">
+        <CustomerNotFoundState />
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-6 w-full max-w-full min-w-0 overflow-x-hidden px-2 sm:px-4 md:px-6">
       <div className="rounded-2xl border border-teal-200/40 bg-gradient-to-br from-[#E6F6F5]/50 via-white to-[#f0fdf9] p-4 sm:p-6 ring-1 ring-[#0f2d42]/5">
         <div className="space-y-4">
-          {isError && error && (
-            <div className="rounded-xl bg-red-50/95 border border-red-200/80 p-4">
-              <p className="text-sm text-red-800">
-                {error instanceof Error ? error.message : "Something went wrong. Please try again."}
-              </p>
-            </div>
-          )}
-
-          {trimmed && searchResultsFresh && customersSorted.length === 0 && (
-            <div className="rounded-xl border border-amber-200/80 bg-amber-50/80 p-4">
-              <div className="flex items-start space-x-3">
-                <AlertCircle className="h-5 w-5 text-amber-700 mt-0.5 shrink-0" />
-                <div>
-                  <p className="text-sm font-medium text-amber-900">No customers found</p>
-                  <p className="text-sm text-amber-800/90 mt-1">
-                    No customers match your search. Try a different Customer ID, mobile number, or name.
-                  </p>
-                </div>
-              </div>
-            </div>
-          )}
-
           {showMultiNameList && (
             <CustomerTable
               customers={customersSorted}

@@ -700,7 +700,9 @@ export function OfferFormSheet({
           <ScrollView
             style={styles.menuListScroll}
             contentContainerStyle={
-              menuGrouped.length === 0 ? styles.menuListEmptyContent : undefined
+              menuGrouped.length === 0
+                ? styles.menuListEmptyContent
+                : styles.menuListContent
             }
             keyboardShouldPersistTaps="handled"
             showsVerticalScrollIndicator={false}
@@ -1496,9 +1498,13 @@ export function OfferFormSheet({
   const isLast = navIndex >= steps.length - 1;
   const isApplicability = step === "applicability";
 
-  // iOS needs home-indicator inset; Android full-screen modal already sits above the
-  // system nav, so extra insets.bottom creates a visible gap above the screen edge.
-  const footerBottomPad = Platform.OS === "ios" ? Math.max(insets.bottom, 8) : 8;
+  // Full-screen Android modals often report insets.bottom=0 even with gesture/3-button nav.
+  // Pad enough that Close/Next never sit under the system navigation bar.
+  const systemBottom = Math.max(
+    insets.bottom,
+    Platform.OS === "android" ? 28 : 0
+  );
+  const footerBottomPad = systemBottom + (Platform.OS === "ios" ? 8 : 16);
 
   return (
     <Modal
@@ -1563,7 +1569,10 @@ export function OfferFormSheet({
         ) : (
           <ScrollView
             style={styles.body}
-            contentContainerStyle={styles.bodyContent}
+            contentContainerStyle={[
+              styles.bodyContent,
+              { paddingBottom: 24 + footerBottomPad },
+            ]}
             keyboardShouldPersistTaps="handled"
           >
             {body}
@@ -1720,6 +1729,7 @@ const styles = StyleSheet.create({
     flex: 1,
     paddingHorizontal: 16,
     paddingTop: 12,
+    paddingBottom: 10,
     minHeight: 0,
   },
   countRow: {
@@ -1740,10 +1750,11 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     overflow: "hidden",
     backgroundColor: "#fff",
-    marginBottom: 0,
+    marginBottom: 4,
   },
   menuListScroll: { flex: 1 },
-  menuListEmptyContent: { flexGrow: 1, justifyContent: "center" },
+  menuListContent: { paddingBottom: 12 },
+  menuListEmptyContent: { flexGrow: 1, justifyContent: "center", paddingBottom: 16 },
   catBlock: {
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: "#E5E7EB",

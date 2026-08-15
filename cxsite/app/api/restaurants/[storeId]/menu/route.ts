@@ -86,7 +86,7 @@ export async function GET(
           'id, item_id, item_name, item_description, item_image_url, food_type, base_price, selling_price, discount_percentage, category_id, in_stock, is_active, display_order, is_popular, is_recommended, preparation_time_minutes, out_of_stock_manual, out_of_stock_until, out_of_stock_updated_at, approval_status'
         )
         .eq('store_id', storeIdNum)
-        .eq('approval_status', 'APPROVED')
+        .in('approval_status', ['APPROVED', 'PENDING'])
         .or('is_deleted.eq.false,is_deleted.is.null')
         .order('display_order', { ascending: true }),
     ])
@@ -139,22 +139,47 @@ export async function GET(
       .map((row) => Number(row.id))
       .filter((id) => Number.isFinite(id))
     const approvedImageByItemId = new Map<number, string>()
+    const pendingOrRejectedPrimary = new Set<number>()
     if (itemIds.length > 0) {
       const { data: imageRows } = await db
         .from('merchant_menu_item_images')
         .select('menu_item_id, image_url, is_primary, created_at, moderation_status')
         .in('menu_item_id', itemIds)
-        .eq('moderation_status', 'APPROVED')
-      const grouped = new Map<number, Array<{ menu_item_id: number; image_url: string; is_primary?: boolean | null; created_at?: string | null }>>()
+      const grouped = new Map<
+        number,
+        Array<{
+          menu_item_id: number
+          image_url: string
+          is_primary?: boolean | null
+          created_at?: string | null
+          moderation_status?: string | null
+        }>
+      >()
       for (const img of imageRows ?? []) {
         const menuItemId = Number((img as { menu_item_id: number }).menu_item_id)
         if (!Number.isFinite(menuItemId)) continue
         const list = grouped.get(menuItemId) ?? []
-        list.push(img as { menu_item_id: number; image_url: string; is_primary?: boolean | null; created_at?: string | null })
+        list.push(
+          img as {
+            menu_item_id: number
+            image_url: string
+            is_primary?: boolean | null
+            created_at?: string | null
+            moderation_status?: string | null
+          }
+        )
         grouped.set(menuItemId, list)
       }
       for (const [menuItemId, imgs] of grouped) {
-        const sorted = [...imgs].sort((a, b) => {
+        const primary = imgs.find((i) => i.is_primary)
+        const primaryMod = String(primary?.moderation_status ?? 'PENDING').trim().toUpperCase()
+        if (primaryMod === 'PENDING' || primaryMod === 'REJECTED') {
+          pendingOrRejectedPrimary.add(menuItemId)
+        }
+        const approved = imgs.filter(
+          (i) => String(i.moderation_status ?? '').trim().toUpperCase() === 'APPROVED'
+        )
+        const sorted = [...approved].sort((a, b) => {
           if (a.is_primary && !b.is_primary) return -1
           if (!a.is_primary && b.is_primary) return 1
           return String(b.created_at ?? '').localeCompare(String(a.created_at ?? ''))
@@ -192,9 +217,12 @@ export async function GET(
         if (!effectivelyInStock) return null
 
         const priced = applyCustomerMenuItemPricing(row, commission.percent)
+        const menuItemId = Number(row.id)
         const approvedImage =
-          approvedImageByItemId.get(Number(row.id)) ??
-          ((row.item_image_url as string | null | undefined) ?? null)
+          approvedImageByItemId.get(menuItemId) ??
+          (pendingOrRejectedPrimary.has(menuItemId)
+            ? null
+            : ((row.item_image_url as string | null | undefined) ?? null))
         return {
           id: String(row.id),
           item_id: row.item_id,

@@ -196,7 +196,7 @@ export async function GET(request: NextRequest) {
         Number(r.user_id),
         {
           currentStatus: (r.current_status as string) || "offline",
-          isOnline: Boolean(r.is_online),
+          isOnline: r.is_online === true || r.is_online === ("t" as unknown as boolean),
           lastActivityAt: r.last_activity_at,
         },
       ])

@@ -12,7 +12,11 @@ export async function GET(req: NextRequest) {
   const gate = await requireSuperAdminApi();
   if (!gate.ok) return gate.response;
   try {
-    const userType = req.nextUrl.searchParams.get("userType") as "customer" | "rider" | null;
+    const userType = req.nextUrl.searchParams.get("userType") as
+      | "customer"
+      | "rider"
+      | "merchant"
+      | null;
     const rules = await listReferralRewardRulesAdmin(userType ?? undefined);
     return NextResponse.json({ rules });
   } catch (e) {
@@ -22,7 +26,7 @@ export async function GET(req: NextRequest) {
 }
 
 const createSchema = z.object({
-  user_type: z.enum(["customer", "rider"]),
+  user_type: z.enum(["customer", "rider", "merchant"]),
   rule_code: z.string().min(2).max(64),
   name: z.string().min(1).max(200),
   description: z.string().max(2000).nullable().optional(),
@@ -36,6 +40,8 @@ const createSchema = z.object({
   min_order_amount: z.number().nonnegative().nullable().optional(),
   active: z.boolean().optional(),
   priority: z.number().int().optional(),
+  event_type: z.string().max(64).nullable().optional(),
+  reward_mode: z.enum(["incremental", "highest_only"]).nullable().optional(),
 });
 
 export async function POST(req: NextRequest) {

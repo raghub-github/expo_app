@@ -13,6 +13,12 @@ import { useQuery } from "@tanstack/react-query";
 import { Ionicons } from "@expo/vector-icons";
 import { STORAGE_KEYS } from "@/constants";
 import { profileService, GENDERS, AGE_GROUPS, type Gender } from "@/services/profile.service";
+import { referralService } from "@/services/referral.service";
+import {
+  REFERRAL_CODE_UNAVAILABLE_USER_MESSAGE,
+  userMessageForReferralApplyError,
+} from "@/lib/referralCopy";
+import { storePendingReferral } from "@/lib/pendingReferral";
 import { setItem } from "@/utils/storage";
 import { useAppAssetSource } from "@/components/AppAssetImage";
 import { CX } from "@/lib/appAssetKeys";
@@ -50,6 +56,12 @@ export default function OnboardingProfileScreen() {
     queryFn: () => profileService.getProfile(),
     retry: false,
   });
+  const { data: referralConfig } = useQuery({
+    queryKey: ["referral", "config", "customer"],
+    queryFn: () => referralService.getConfig(),
+    retry: false,
+  });
+  const customerReferralOn = referralConfig?.referralEnabled === true;
 
   useEffect(() => {
     if (profile?.profile_completed === true) {
@@ -62,12 +74,12 @@ export default function OnboardingProfileScreen() {
       if (profile.email) setEmail(profile.email);
       if (profile.age_group) setAgeGroup(profile.age_group);
       if (profile.gender) setGender(profile.gender);
-      if (profile.referred_by) {
+      if (customerReferralOn && profile.referred_by) {
         setReferralId(profile.referred_by);
         setHasReferralCode(true);
       }
     }
-  }, [profile, router]);
+  }, [profile, router, customerReferralOn]);
 
   const validate = (): boolean => {
     const e: Record<string, string> = {};
@@ -82,13 +94,39 @@ export default function OnboardingProfileScreen() {
     if (!validate() || submitting) return;
     setSubmitting(true);
     try {
+      let referredBy: string | undefined;
+      if (customerReferralOn && hasReferralCode && referralId.trim()) {
+        const preview = await referralService.preview(referralId.trim());
+        if (!preview.ok) {
+          setErrors({
+            referral:
+              preview.userMessage ||
+              preview.message ||
+              userMessageForReferralApplyError(preview.error),
+          });
+          return;
+        }
+        const code = (preview.code || referralId).trim().toUpperCase();
+        const applied = await referralService.apply({
+          referralCode: code,
+          source: "manual",
+        });
+        if (!applied.ok && !applied.alreadyApplied) {
+          if (applied.error === "REFERRAL_SERVICE_DISABLED") {
+            setErrors({ referral: userMessageForReferralApplyError(applied.error) });
+            return;
+          }
+          await storePendingReferral({ code, source: "manual" });
+        }
+        referredBy = code;
+      }
       await profileService.updateProfile({
         full_name: fullName.trim(),
         email: email.trim() ? email.trim().toLowerCase() : undefined,
         age_group: ageGroup || undefined,
         gender: (gender as Gender) || undefined,
         profile_completed: true,
-        referred_by: hasReferralCode && referralId.trim() ? referralId.trim() : undefined,
+        referred_by: referredBy,
       });
       router.push("/(onboarding)/address");
     } catch (err: unknown) {
@@ -105,7 +143,8 @@ export default function OnboardingProfileScreen() {
               age_group: ageGroup,
               gender,
               profile_completed: true,
-              referred_by: hasReferralCode && referralId.trim() ? referralId.trim() : undefined,
+              referred_by:
+                customerReferralOn && hasReferralCode && referralId.trim() ? referralId.trim() : undefined,
             })
           );
           router.push("/(onboarding)/address");
@@ -217,6 +256,10 @@ export default function OnboardingProfileScreen() {
           </View>
           {errors.gender ? <AppText style={styles.errorText}>{errors.gender}</AppText> : null}
 
+          {referralConfig && !customerReferralOn ? (
+            <AppText style={styles.referralOffHint}>{REFERRAL_CODE_UNAVAILABLE_USER_MESSAGE}</AppText>
+          ) : (
+            <>
           <View style={styles.referralToggleRow}>
             <AppText style={styles.referralToggleLabel}>I have a referral code</AppText>
             <Switch
@@ -234,10 +277,32 @@ export default function OnboardingProfileScreen() {
                 placeholder="Enter referrer's code"
                 placeholderTextColor={PLACEHOLDER}
                 value={referralId}
-                onChangeText={setReferralId}
+                onChangeText={(v) => {
+                  setReferralId(v);
+                  if (errors.referral) setErrors((e) => ({ ...e, referral: "" }));
+                }}
+                onBlur={() => {
+                  const code = referralId.trim();
+                  if (!code) return;
+                  void (async () => {
+                    const preview = await referralService.preview(code);
+                    if (!preview.ok) {
+                      setErrors((e) => ({
+                        ...e,
+                        referral:
+                          preview.userMessage ||
+                          preview.message ||
+                          "Invalid referral code. Please check the code and try again.",
+                      }));
+                    }
+                  })();
+                }}
                 autoCapitalize="characters"
                 editable={!submitting}
               />
+              {errors.referral ? <AppText style={styles.errorText}>{errors.referral}</AppText> : null}
+            </>
+          )}
             </>
           )}
 
@@ -336,6 +401,7 @@ const styles = StyleSheet.create({
   genderTextActive: { fontWeight: "600", color: ACCENT },
   referralToggleRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginVertical: 8 },
   referralToggleLabel: { fontSize: 15, fontWeight: "500", color: TITLE },
+  referralOffHint: { fontSize: 13, color: BODY, marginVertical: 8 },
   primaryBtn: { backgroundColor: ACCENT, paddingVertical: 14, borderRadius: 14, alignItems: "center", marginTop: 4 },
   primaryBtnText: { color: "#fff", fontSize: 16, fontWeight: "700" },
   modalOverlay: {

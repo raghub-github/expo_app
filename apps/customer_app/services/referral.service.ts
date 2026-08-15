@@ -34,6 +34,10 @@ export type ReferralPublicConfig = {
     rewardType: string;
     alsoCreditReferred: boolean;
     referredRewardAmount: number | null;
+    eventType?: string | null;
+    requireKyc?: boolean;
+    minOrderAmount?: number | null;
+    priority?: number | null;
   }>;
 };
 
@@ -93,6 +97,53 @@ export const referralService = {
     return data as ReferralMeResponse;
   },
 
+  async preview(code: string): Promise<{
+    ok: boolean;
+    valid?: boolean;
+    code?: string;
+    error?: string;
+    message?: string;
+    userMessage?: string;
+  }> {
+    const trimmed = code.trim().toUpperCase();
+    if (trimmed.length < 3) {
+      return {
+        ok: false,
+        valid: false,
+        error: "invalid_code",
+        message: "Invalid referral code. Please check the code and try again.",
+      };
+    }
+    try {
+      const { data } = await api.get(`${PREFIX}/preview`, {
+        params: { code: trimmed, userType: "customer" },
+      });
+      return data as {
+        ok: boolean;
+        valid?: boolean;
+        code?: string;
+        error?: string;
+        message?: string;
+        userMessage?: string;
+      };
+    } catch (err: unknown) {
+      const ax = err as {
+        response?: { data?: { error?: string; code?: string; message?: string; userMessage?: string } };
+      };
+      const payload = ax.response?.data;
+      return {
+        ok: false,
+        valid: false,
+        error: payload?.code || payload?.error,
+        message:
+          payload?.userMessage ||
+          payload?.message ||
+          "Invalid referral code. Please check the code and try again.",
+        userMessage: payload?.userMessage,
+      };
+    }
+  },
+
   async apply(input: {
     referralCode?: string;
     clickToken?: string;
@@ -100,7 +151,28 @@ export const referralService = {
     source?: "deep_link" | "play_install_referrer" | "manual" | "share_sheet" | "unknown";
     deviceFingerprint?: string;
   }): Promise<{ ok: boolean; error?: string; alreadyApplied?: boolean }> {
-    const { data } = await api.post(`${PREFIX}/apply`, input);
-    return data as { ok: boolean; error?: string; alreadyApplied?: boolean };
+    try {
+      const { data } = await api.post(`${PREFIX}/apply`, input);
+      const body = data as { ok?: boolean; error?: string; code?: string; alreadyApplied?: boolean };
+      if (
+        body?.code === "REFERRAL_SERVICE_DISABLED" ||
+        body?.error === "REFERRAL_SERVICE_DISABLED" ||
+        body?.error === "referral_disabled"
+      ) {
+        return { ok: false, error: "REFERRAL_SERVICE_DISABLED" };
+      }
+      return body as { ok: boolean; error?: string; alreadyApplied?: boolean };
+    } catch (err: unknown) {
+      const ax = err as { response?: { data?: { error?: string; code?: string; alreadyApplied?: boolean } } };
+      const payload = ax.response?.data;
+      if (payload?.alreadyApplied) {
+        return { ok: true, alreadyApplied: true };
+      }
+      const code = payload?.code || payload?.error;
+      if (code === "REFERRAL_SERVICE_DISABLED" || code === "referral_disabled") {
+        return { ok: false, error: "REFERRAL_SERVICE_DISABLED" };
+      }
+      return { ok: false, error: code || "apply_failed" };
+    }
   },
 };

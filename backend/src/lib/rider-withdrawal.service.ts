@@ -10,6 +10,7 @@ import {
   maskRiderAccountNumber,
 } from "./rider-bank-payment-method.js";
 import { readRiderWalletBalance } from "./rider-subscription-wallet.js";
+import { WalletFrozenError } from "./wallet-freeze.js";
 
 export const MIN_RIDER_WITHDRAWAL_AMOUNT = 100;
 export const MAX_RIDER_WITHDRAWAL_AMOUNT = 100_000;
@@ -110,13 +111,16 @@ async function getVerifiedBankMethod(riderId: number) {
 async function assertRiderCanWithdraw(riderId: number): Promise<void> {
   const db = getDb();
   const [wallet] = await db
-    .select({ isFrozen: riderWallet.isFrozen })
+    .select({
+      isFrozen: riderWallet.isFrozen,
+      freezeReason: riderWallet.freezeReason,
+    })
     .from(riderWallet)
     .where(eq(riderWallet.riderId, riderId))
     .limit(1);
 
   if (wallet?.isFrozen) {
-    throw new Error("Wallet is frozen. Contact support.");
+    throw new WalletFrozenError(wallet.freezeReason);
   }
 
   const { getRiderAccountRestrictions } = await import("./rider-account-restrictions.js");
@@ -205,11 +209,19 @@ export async function createRiderWithdrawalRequest(
 
   return sql.begin(async (tx) => {
     const [walletRow] = await tx`
-      SELECT total_balance
+      SELECT total_balance, is_frozen, freeze_reason
       FROM rider_wallet
       WHERE rider_id = ${riderId}
       FOR UPDATE
     `;
+    if (!walletRow) {
+      throw new Error("Rider wallet not found");
+    }
+    const frozen = Boolean((walletRow as { is_frozen?: unknown }).is_frozen);
+    if (frozen) {
+      const reason = (walletRow as { freeze_reason?: unknown }).freeze_reason;
+      throw new WalletFrozenError(typeof reason === "string" ? reason : null);
+    }
     const currentBalance = round2(Number((walletRow as { total_balance?: unknown })?.total_balance ?? 0));
     if (amount > currentBalance) {
       throw new Error("Insufficient wallet balance");

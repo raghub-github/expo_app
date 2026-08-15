@@ -149,10 +149,20 @@ export async function sendFcmV1(input: FcmSendInput): Promise<ProviderSendResult
     : { ...baseMessage, topic: input.topic! };
 
   try {
-    await messaging.send(message);
-    return { notificationId: input.notificationId, ok: true };
+    const messageId = await messaging.send(message);
+    console.info(
+      `[fcm] accepted nid=${input.notificationId} messageId=${messageId} target=${
+        input.token ? `token:${input.token.slice(0, 12)}…` : `topic:${input.topic}`
+      }`,
+    );
+    return { notificationId: input.notificationId, ok: true, messageId };
   } catch (e) {
     const err = e as FirebaseMessagingError;
+    console.warn(
+      `[fcm] rejected nid=${input.notificationId} code=${err.code ?? "FCM_UNKNOWN"} msg=${err.message ?? String(e)} target=${
+        input.token ? `token:${input.token.slice(0, 12)}…` : `topic:${input.topic}`
+      }`,
+    );
     return {
       notificationId: input.notificationId,
       ok: false,

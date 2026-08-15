@@ -1,8 +1,6 @@
 import { Alert, Share } from "react-native";
-import {
-  fetchRiderReferralConfig,
-  type RiderReferralRewardSummary,
-} from "@/src/services/referral.service";
+import { fetchRiderReferralConfig } from "@/src/services/referral.service";
+import { presentReferralCopy, type ReferralPresentedCopy } from "@/src/lib/referralCopy";
 
 /** Always share production domain — never localhost / LAN hosts. */
 const PRODUCTION_BASE = "https://gatimitra.com";
@@ -33,49 +31,30 @@ export function buildRiderReferralShareUrl(
 export function buildRiderReferralShareMessage(
   referralCode: string,
   riderName?: string | null,
-  rewardSummary?: RiderReferralRewardSummary | null,
+  presented?: ReferralPresentedCopy | null,
 ): string {
   const name = riderName?.trim() || "A GatiMitra partner";
   const code = referralCode.trim().toUpperCase();
   const url = buildRiderReferralShareUrl(code);
-  const condition =
-    rewardSummary?.conditionLine?.trim() ||
-    "Complete your first delivery milestones and unlock referral rewards.";
-
-  const lines: string[] = [
+  if (presented) {
+    return presented.shareMessage({ referrerName: name, referralCode: code, shareUrl: url });
+  }
+  return [
     `🎉 ${name} invited you to join GatiMitra as a delivery partner!`,
     "",
-    condition,
+    "Join now:",
+    url,
     "",
-  ];
-
-  if (rewardSummary?.inviteeRewardLabel) {
-    lines.push(`🎁 You Get: ${rewardSummary.inviteeRewardLabel}`);
-  }
-  if (rewardSummary?.referrerRewardLabel) {
-    lines.push(`🎁 ${name} Gets: ${rewardSummary.referrerRewardLabel}`);
-  }
-  if (rewardSummary?.inviteeRewardLabel || rewardSummary?.referrerRewardLabel) {
-    lines.push("");
-  } else if (rewardSummary?.shareLines?.length) {
-    for (const line of rewardSummary.shareLines) {
-      if (line?.trim()) lines.push(`🎁 ${line.trim()}`);
-    }
-    lines.push("");
-  }
-
-  lines.push("Join Now:");
-  lines.push(url);
-  lines.push("");
-  lines.push(`Referral Code: ${code}`);
-  lines.push("");
-  lines.push("*T&C Apply.");
-  return lines.join("\n");
+    `Referral code: ${code}`,
+    "",
+    "T&C apply.",
+  ].join("\n");
 }
 
 export async function shareRiderReferralCode(
   referralCode: string | null | undefined,
   riderName?: string | null,
+  presented?: ReferralPresentedCopy | null,
 ): Promise<boolean> {
   const code = referralCode?.trim();
   if (!code) {
@@ -87,13 +66,20 @@ export async function shareRiderReferralCode(
   }
   try {
     const url = buildRiderReferralShareUrl(code);
-    const config = await fetchRiderReferralConfig();
+    const config = presented ? null : await fetchRiderReferralConfig();
+    const copy =
+      presented ??
+      presentReferralCopy({
+        audience: "rider",
+        referralEnabled: config?.referralEnabled,
+        rewardEnabled: config?.rewardEnabled,
+        rewardsPaused: config?.rewardSummary?.rewardsPaused,
+        currency: config?.currency,
+        requireKyc: config?.requireKyc,
+        milestones: config?.milestones,
+      });
     await Share.share({
-      message: buildRiderReferralShareMessage(
-        code,
-        riderName,
-        config?.rewardSummary ?? null,
-      ),
+      message: buildRiderReferralShareMessage(code, riderName, copy),
       url,
       title: "Refer & Earn on GatiMitra",
     });

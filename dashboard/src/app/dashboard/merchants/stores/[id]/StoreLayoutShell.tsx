@@ -11,6 +11,7 @@ import { MerchantAcceptanceTimeoutSync } from "@/components/merchant/MerchantAcc
 import { useStore } from "@/hooks/useStore";
 import type { StoreProfile } from "@/hooks/useStore";
 import { loadMerchantAppAssets, MX_ASSET, getMerchantAppAssetUrl } from "@/lib/merchantAppAssets";
+import { MerchantOrderEmptyAssetsWarmup } from "@/components/MerchantAppAssetImage";
 
 const EMPTY_ORDER_KEYS = [
   MX_ASSET.ordersEmptyNew,
@@ -29,6 +30,8 @@ function prefetchEmptyOrderImages(): void {
     const url = getMerchantAppAssetUrl(key);
     if (!url) continue;
     const img = new window.Image();
+    img.decoding = "async";
+    img.fetchPriority = "high";
     img.src = url;
   }
 }
@@ -93,6 +96,7 @@ function StoreLayoutFallback({
     <StoreProvider storeId={storeId} store={store as StoreContextStore}>
       <div className="flex min-h-0 flex-1 flex-col w-full max-w-full overflow-hidden">
         <StoreQueryHydrator storeId={storeId} store={store as StoreProfile} />
+        <MerchantOrderEmptyAssetsWarmup />
         <MerchantIncomingOrderModal />
         <MerchantAcceptanceTimeoutSync />
         <MerchantPendingNewOrdersBar />
@@ -237,6 +241,7 @@ export function StoreLayoutShell({
         </div>
       )}
 
+        <MerchantOrderEmptyAssetsWarmup />
         <MerchantIncomingOrderModal />
         <MerchantAcceptanceTimeoutSync />
         <MerchantPendingNewOrdersBar />
