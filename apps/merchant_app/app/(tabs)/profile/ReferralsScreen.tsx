@@ -69,7 +69,7 @@ export default function ReferralsScreen() {
     rewardEnabled: data?.config?.rewardEnabled,
     rewardsPaused: data?.config?.rewardSummary?.rewardsPaused,
     currency: data?.config?.currency,
-    minOrderAmount: data?.config?.milestones?.[0]?.minOrderAmount,
+    minOrderAmount: data?.config?.milestones?.[0]?.minOrderAmount ?? undefined,
     requireKyc: data?.config?.requireKyc,
     milestones: data?.config?.milestones,
   });
