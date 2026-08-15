@@ -14,7 +14,7 @@
   "files": ["dist"],
   "scripts": {
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test": "tsx --test src/availabilityEngine.test.ts",
+    "test": "tsx --test src/availabilityEngine.test.ts src/geoDirectory.test.ts",
     "lint": "echo 'no lint configured'",
     "build": "tsc -p tsconfig.build.json"
   },
