@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   Activity,
+  AlertTriangle,
   ArrowUpDown,
   Bike,
   Clock,
@@ -27,6 +28,7 @@ type GeoRider = {
   lng: number;
   distanceKm: number;
   status: string;
+  locationFresh?: boolean;
   localityCode: string | null;
   storeName?: string | null;
   lastUpdatedAt: string | null;
@@ -44,6 +46,7 @@ type GeoSearchData = {
     total: number;
     available: number;
     busy: number;
+    stale: number;
     offline: number;
     coveragePct: number;
   };
@@ -75,6 +78,7 @@ function statusLabel(status: string): string {
   const s = status.toUpperCase();
   if (s === "ONLINE") return "Available";
   if (s === "BUSY") return "On Delivery";
+  if (s === "STALE") return "Stale GPS";
   return "Offline";
 }
 
@@ -82,6 +86,7 @@ function statusBadgeClass(status: string): string {
   const s = status.toUpperCase();
   if (s === "ONLINE") return "bg-emerald-50 text-emerald-700 ring-emerald-200";
   if (s === "BUSY") return "bg-orange-50 text-orange-700 ring-orange-200";
+  if (s === "STALE") return "bg-amber-50 text-amber-700 ring-amber-200";
   return "bg-red-50 text-red-700 ring-red-200";
 }
 
@@ -526,7 +531,7 @@ export function AreaManagerAvailabilityClient() {
           </div>
 
           {/* KPIs — only riders inside selected radius */}
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-6">
             <KpiCard
               label="Total Riders Found"
               value={data.kpis.total}
@@ -543,6 +548,12 @@ export function AreaManagerAvailabilityClient() {
               value={data.kpis.busy}
               valueClass="text-orange-600"
               icon={<Clock className="h-5 w-5 text-orange-500" />}
+            />
+            <KpiCard
+              label="Stale GPS"
+              value={data.kpis.stale}
+              valueClass="text-amber-600"
+              icon={<AlertTriangle className="h-5 w-5 text-amber-500" />}
             />
             <KpiCard
               label="Offline Riders"
@@ -650,6 +661,7 @@ export function AreaManagerAvailabilityClient() {
                 <option value="ALL">All statuses</option>
                 <option value="ONLINE">Available</option>
                 <option value="BUSY">On Delivery</option>
+                <option value="STALE">Stale GPS</option>
                 <option value="OFFLINE">Offline</option>
               </select>
             </div>

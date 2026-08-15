@@ -40,6 +40,7 @@
     "@gatimitra/logger": "*",
     "@gatimitra/queue": "*",
     "@gatimitra/redis": "*",
+    "@gatimitra/rider-availability": "*",
     "@gatimitra/slab-pricing": "*",
     "@gatimitra/store-status": "*",
     "@supabase/supabase-js": "^2.57.4",

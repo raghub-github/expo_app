@@ -264,13 +264,19 @@ export async function handleRiderLocationPing(
     cached,
   });
 
-  // Never broadcast untrusted GPS to customer/merchant live maps.
-  const suppressLiveBroadcast =
+  // Genuinely suspicious signals: never trust this fix for anything, including the
+  // rider's own availability record.
+  const blockLocationWrite =
     fraudSignals.includes("TELEPORT") ||
     fraudSignals.includes("UNREALISTIC_SPEED") ||
-    fraudSignals.includes("MOCK_LOCATION") ||
-    fraudSignals.includes("LOW_ACCURACY");
-  if (suppressLiveBroadcast) {
+    fraudSignals.includes("MOCK_LOCATION");
+  // LOW_ACCURACY (common on a cold GPS fix) is merely imprecise, not fraudulent — it
+  // still updates rider_current_locations (dispatch/availability only cares about
+  // freshness, not precision, so a low-accuracy-but-recent fix beats a stale-but-precise
+  // one), but is still kept off customer/merchant live maps and the permanent
+  // delivery-route trail, same as the three genuinely suspicious signals.
+  const suppressLiveBroadcast = blockLocationWrite || fraudSignals.includes("LOW_ACCURACY");
+  if (blockLocationWrite) {
     return {
       accepted: true,
       serverTsMs: Date.now(),
@@ -303,6 +309,18 @@ export async function handleRiderLocationPing(
         .map((r) => r.orderId?.trim())
         .filter((id): id is string => Boolean(id)),
     }).catch(() => {});
+
+    if (suppressLiveBroadcast) {
+      return {
+        accepted: true,
+        serverTsMs: Date.now(),
+        fraudSignals,
+        fraudScore,
+        eventPersisted: persistDecision.persist,
+        recommendedPingIntervalMs: PING_INTERVAL_MS[trackingMode],
+        trackingMode,
+      };
+    }
 
     const channelIds = new Set<string>();
     for (const row of activeOrdersForRider) {

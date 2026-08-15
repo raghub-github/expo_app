@@ -1,5 +1,6 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Alert } from "react-native";
+import * as Location from "expo-location";
 import { useDutyStore } from "@/src/stores/dutyStore";
 import { riderApi } from "@/src/services/api/riderApi";
 import {
@@ -44,6 +45,30 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T | null> {
     promise,
     new Promise<null>((resolve) => setTimeout(() => resolve(null), ms)),
   ]);
+}
+
+/**
+ * Best-effort fix for the go-ON request only — never blocks or prompts for
+ * permission (that's handled elsewhere in onboarding). Without this, going ON
+ * duty only logged lat/lon into duty_logs (audit trail) and left
+ * rider_current_locations (what dispatch/serviceability actually reads) to the
+ * independent background ping loop, which could lag long enough that a rider
+ * who just went online showed as unavailable everywhere else.
+ */
+async function resolveDutyToggleLocationFix(): Promise<{ lat: number; lon: number } | null> {
+  try {
+    const perm = await Location.getForegroundPermissionsAsync();
+    if (perm.status !== "granted") return null;
+    const fresh = await withTimeout(
+      Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced }),
+      3000
+    );
+    const loc = fresh ?? (await Location.getLastKnownPositionAsync({ maxAge: 30_000 }).catch(() => null));
+    if (!loc) return null;
+    return { lat: loc.coords.latitude, lon: loc.coords.longitude };
+  } catch {
+    return null;
+  }
 }
 
 function isDutyBlockedByServerError(error: unknown): boolean {
@@ -97,12 +122,16 @@ export function useDutyToggle() {
     mutationFn: async ({
       status,
       serviceTypes,
+      lat,
+      lon,
     }: {
       status: boolean;
       serviceTypes?: string[];
+      lat?: number;
+      lon?: number;
     }) => {
       const deviceId = await getOrCreateDeviceId();
-      return riderApi.updateDutyStatus(status, serviceTypes, { deviceId });
+      return riderApi.updateDutyStatus(status, serviceTypes, { deviceId, lat, lon });
     },
     onSuccess: (data) => {
       void useDutyStore.getState().setDutyStatus(data.isOnDuty);
@@ -161,9 +190,12 @@ export function useDutyToggle() {
         }
 
         try {
+          const fix = await resolveDutyToggleLocationFix();
           const data = await updateDutyMutation.mutateAsync({
             status: next,
             serviceTypes,
+            lat: fix?.lat,
+            lon: fix?.lon,
           });
           await useDutyStore.getState().setDutyStatus(data.isOnDuty);
           if (!data.isOnDuty) {

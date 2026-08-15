@@ -1,0 +1,1 @@
+DROP INDEX IF EXISTS rider_current_locations_geo_fresh_idx;

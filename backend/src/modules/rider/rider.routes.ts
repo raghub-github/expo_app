@@ -1656,6 +1656,19 @@ export async function riderRoutes(app: FastifyInstance) {
       });
 
       if (body.lat != null && body.lon != null && Number.isFinite(body.lat) && Number.isFinite(body.lon)) {
+        // Going online must make the rider dispatchable immediately, not after the
+        // next independent location-ping loop tick — write rider_current_locations
+        // right here with the coordinates the toggle already received, instead of
+        // waiting on a best-effort async ping that may lag by up to a full interval
+        // (the root cause of riders showing ON but not actually being dispatchable).
+        await upsertRiderCurrentLocation(db, {
+          userId,
+          riderId,
+          deviceId,
+          lat: body.lat,
+          lng: body.lon,
+        }).catch(() => undefined);
+
         const { resolveZoneWeather } = await import("../weather/weather.service.js");
         void resolveZoneWeather({
           lat: body.lat,
