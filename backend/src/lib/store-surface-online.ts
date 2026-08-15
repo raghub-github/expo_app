@@ -20,7 +20,7 @@ export function effectiveOperationalFromStoreRow(
   if (!storeRow) return "CLOSED";
   const approval = String(storeRow.approval_status || "").toUpperCase();
   const rawOperational = String(storeRow.operational_status || "CLOSED").toUpperCase();
-  const isDelisted = approval === "DELISTED";
+  const isDelisted = approval === "DELISTED" || !!storeRow.delisted_at;
   const ok =
     !isDelisted &&
     approval === "APPROVED" &&

@@ -1,5 +1,5 @@
 /**
- * Partner home ù post-login store picker.
+ * Partner home ? post-login store picker.
  * Exact match to partner dashboard mock (no bottom tab bar, no merchant/store IDs on this screen).
  */
 
@@ -40,6 +40,11 @@ function greetingForNow(date = new Date()): string {
   return "Good Evening";
 }
 
+function canEnterMerchantApp(store: ChildStore): boolean {
+  const status = String(store.approval_status || "").toUpperCase();
+  return status === "APPROVED" || status === "DELISTED";
+}
+
 function isOnboardingPending(store: ChildStore): boolean {
   const status = String(store.approval_status || "").toUpperCase();
   if (status === "APPROVED") return false;
@@ -66,7 +71,7 @@ function storeInitial(name?: string | null): string {
   return trimmed.charAt(0).toUpperCase();
 }
 
-/** My Stores ù circular logo, ID, name, open status (horizontal scroll). */
+/** My Stores ? circular logo, ID, name, open status (horizontal scroll). */
 function StoreScrollCard({
   store,
   onPress,
@@ -84,11 +89,11 @@ function StoreScrollCard({
 
   return (
     <Pressable
-      onPress={delisted ? undefined : onPress}
-      disabled={delisted}
+      onPress={onPress}
+      disabled={false}
       style={({ pressed }) => [
         styles.storeScrollCard,
-        pressed && !delisted && styles.pressedSoft,
+        pressed && styles.pressedSoft,
         delisted && styles.dimmed,
       ]}
       accessibilityRole="button"
@@ -172,7 +177,7 @@ export default function PartnerHomeScreen() {
     router.replace("/(auth)/welcome");
   };
 
-  // Prompt only when OS ùAllow notificationsù is off. Once on, this is a no-op.
+  // Prompt only when OS ?Allow notifications? is off. Once on, this is a no-op.
   useEffect(() => {
     let cancelled = false;
     const t = setTimeout(() => {
@@ -216,13 +221,13 @@ export default function PartnerHomeScreen() {
     const only = partner.childStores[0];
     if (!only) return;
     singleChildBypassRef.current = true;
-    const approved = String(only.approval_status || "").toUpperCase() === "APPROVED";
-    if (approved) {
+    const canEnter = canEnterMerchantApp(only);
+    if (canEnter) {
       setSelectedStore(only);
       router.replace("/(tabs)");
       return;
     }
-    // One incomplete child ù same as tapping the card (partner onboarding).
+    // One incomplete child ? same as tapping the card (partner onboarding).
     void (async () => {
       if (!isAuthenticated || !token) return;
       try {
@@ -286,7 +291,7 @@ export default function PartnerHomeScreen() {
   if (!partner) {
     return (
       <View style={styles.centered}>
-        <Text style={styles.muted}>Loadingù</Text>
+        <Text style={styles.muted}>Loading...</Text>
       </View>
     );
   }
@@ -296,7 +301,7 @@ export default function PartnerHomeScreen() {
     return (
       <View style={styles.centered}>
         <ActivityIndicator color={GatiMitraMerchant.primary} />
-        <Text style={[styles.muted, { marginTop: 12 }]}>Opening your storeù</Text>
+        <Text style={[styles.muted, { marginTop: 12 }]}>Opening your store...</Text>
       </View>
     );
   }
@@ -314,8 +319,7 @@ export default function PartnerHomeScreen() {
   const greeting = greetingForNow();
   const merchantId = parent.parent_merchant_id?.trim() || "";
   const openStore = (store: ChildStore) => {
-    const approved = String(store.approval_status || "").toUpperCase() === "APPROVED";
-    if (approved) {
+    if (canEnterMerchantApp(store)) {
       setSelectedStore(store);
       router.replace("/(tabs)");
       return;
@@ -328,7 +332,7 @@ export default function PartnerHomeScreen() {
   };
 
   const sortLabel =
-    sortMode === "name" ? "Name AùZ" : sortMode === "verified" ? "Verified first" : "Recently Added";
+    sortMode === "name" ? "Name A-Z" : sortMode === "verified" ? "Verified first" : "Recently Added";
 
   return (
     <SafeAreaView style={styles.container} edges={["top"]}>
@@ -373,7 +377,7 @@ export default function PartnerHomeScreen() {
             <View style={styles.sheetRows}>
               <View style={styles.sheetRow}>
                 <Text style={styles.sheetLabel}>Merchant ID</Text>
-                <Text style={styles.sheetValue}>{merchantId || "ù"}</Text>
+                <Text style={styles.sheetValue}>{merchantId || "?"}</Text>
               </View>
               <View style={styles.sheetRow}>
                 <Text style={styles.sheetLabel}>Business</Text>
@@ -385,7 +389,7 @@ export default function PartnerHomeScreen() {
               </View>
               <View style={styles.sheetRow}>
                 <Text style={styles.sheetLabel}>Email</Text>
-                <Text style={styles.sheetValue}>{parent.owner_email || "ù"}</Text>
+                <Text style={styles.sheetValue}>{parent.owner_email || "?"}</Text>
               </View>
               <View style={[styles.sheetRow, styles.sheetRowLast]}>
                 <Text style={styles.sheetLabel}>Stores</Text>
@@ -415,7 +419,7 @@ export default function PartnerHomeScreen() {
             {(
               [
                 { key: "recent", label: "Recently Added" },
-                { key: "name", label: "Name AùZ" },
+                { key: "name", label: "Name A?Z" },
                 { key: "verified", label: "Verified first" },
               ] as const
             ).map((opt) => (
@@ -507,7 +511,7 @@ export default function PartnerHomeScreen() {
                   ) : null}
                 </View>
 
-                {/* Logo stays inside the header card ù dashed ring like mock */}
+                {/* Logo stays inside the header card ? dashed ring like mock */}
                 <View style={styles.logoRing} pointerEvents="none">
                   <View style={styles.logoBubble}>
                     <AppAssetImage
@@ -536,7 +540,7 @@ export default function PartnerHomeScreen() {
             ],
           }}
         >
-          {/* Combined stats card ù exact mock layout */}
+          {/* Combined stats card ? exact mock layout */}
           <View style={styles.statsCard}>
             <View style={styles.statHalf}>
               <View style={styles.statIcon}>
@@ -667,7 +671,7 @@ export default function PartnerHomeScreen() {
               </View>
               <View style={{ flex: 1, minWidth: 0 }}>
                 <Text style={styles.ctaTitle}>
-                  {openingPartner ? "Opening partner portalù" : "+ Add Another Store"}
+                  {openingPartner ? "Opening partner portal?" : "+ Add Another Store"}
                 </Text>
                 <Text style={styles.ctaSub}>Grow your business with GatiMitra</Text>
               </View>

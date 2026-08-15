@@ -56,6 +56,7 @@ import {
 } from './PageSkeletonOrders';
 import { supabase } from '@/lib/supabase/client';
 import { useStore } from '@/hooks/useStore';
+import { isStoreDelisted } from '@/lib/merchants/store-delist';
 import {
   MERCHANT_PORTAL_CLOSE_REASONS,
   merchantPortalCloseReasonWithSuffix,
@@ -684,8 +685,7 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
   const merchantPublicStoreId =
     (storeMeta as { store_id?: string } | null)?.store_id?.trim() || null;
   const [acceptanceSettings, setAcceptanceSettings] = useState<OrderAcceptanceSettings | null>(null);
-  const isDelisted =
-    ((storeMeta as { approval_status?: string } | null)?.approval_status || '').toUpperCase() === 'DELISTED';
+  const isDelisted = isStoreDelisted(storeMeta);
 
   const isStoreOpen = useMemo(() => {
     if (isDelisted) return false;

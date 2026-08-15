@@ -114,6 +114,21 @@ export type DomainEventMap = {
     userId: string;
   };
 
+  "store.delisted": {
+    role: "merchant";
+    userId: string;
+    storeId: number;
+    storeName?: string;
+    reason?: string | null;
+  };
+
+  "store.relisted": {
+    role: "merchant";
+    userId: string;
+    storeId: number;
+    storeName?: string;
+  };
+
   // Any wallet ledger insertion.
   "wallet.updated": {
     userId: string;
@@ -634,6 +649,33 @@ export function registerDomainEventHandlers(): void {
       priority: "high",
       idempotencyKey: `${template}:${e.userId}`,
       metadata: {},
+    });
+  });
+
+  on("store.delisted", async (e) => {
+    await sendNotification({
+      templateCode: "MERCHANT_STORE_DELISTED",
+      variables: {
+        storeName: e.storeName?.trim() || "Your store",
+        reason: e.reason?.trim() || "Contact support.",
+      },
+      target: { store_id: e.storeId },
+      priority: "high",
+      channel: "push",
+      idempotencyKey: `MERCHANT_STORE_DELISTED:${e.storeId}`,
+      metadata: { storeId: e.storeId, url: "/(tabs)", screen: "home" },
+    });
+  });
+
+  on("store.relisted", async (e) => {
+    await sendNotification({
+      templateCode: "MERCHANT_STORE_RELISTED",
+      variables: { storeName: e.storeName?.trim() || "Your store" },
+      target: { store_id: e.storeId },
+      priority: "high",
+      channel: "push",
+      idempotencyKey: `MERCHANT_STORE_RELISTED:${e.storeId}`,
+      metadata: { storeId: e.storeId, url: "/(tabs)", screen: "home" },
     });
   });
 

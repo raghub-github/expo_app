@@ -92,7 +92,7 @@ export async function GET() {
     const { data: stores, error: storesError } = await db
       .from("merchant_stores")
       .select(
-        "id, store_id, store_name, owner_full_name, full_address, store_phones, approval_status, is_active, current_onboarding_step, onboarding_completed, banner_url"
+        "id, store_id, store_name, owner_full_name, full_address, store_phones, approval_status, delisted_at, is_active, current_onboarding_step, onboarding_completed, banner_url"
       )
       .eq("parent_id", parentId);
 
@@ -127,6 +127,9 @@ export async function GET() {
     const storesMutable = [...(stores ?? [])];
     for (const store of storesMutable) {
       if (!store.id || store.onboarding_completed === true) continue;
+      const storeDelistedAt = (store as { delisted_at?: string | null }).delisted_at;
+      if (storeDelistedAt != null && String(storeDelistedAt).trim() !== "") continue;
+      if (String(store.approval_status || "").toUpperCase() === "DELISTED") continue;
       const { data: completedProgress } = await db
         .from("merchant_store_registration_progress")
         .select("completed_at")

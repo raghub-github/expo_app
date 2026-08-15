@@ -141,6 +141,11 @@ export type SendIntent = {
   idempotencyKey?: string;
   /** Extra metadata persisted on the log row for analytics. */
   metadata?: Record<string, unknown>;
+  /**
+   * Limit delivery channels for this send. When omitted, the template channel is used.
+   * Use "push" when the in-app inbox row is written separately (avoids twin Partner/App cards).
+   */
+  channel?: NotificationChannel;
   /** Campaign-level title/body/image/deep-link overrides (applied after template render). */
   overrides?: {
     title?: string | null;

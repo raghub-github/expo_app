@@ -529,6 +529,80 @@ app.get<{ Params: { storeId: string } }>("/v1/internal/stores/:storeId/partner-s
   }
 });
 
+// Internal SSOT: Partner Site / Dashboard proxy into the Fastify merchant wallet engine.
+app.get<{
+  Params: { storeId: string };
+  Querystring: { lite?: string; reconcile?: string };
+}>("/v1/internal/merchant/stores/:storeId/wallet", async (req, reply) => {
+  const secret = process.env.BACKEND_SCHEDULE_TICK_SECRET;
+  if (!secret || (req.headers["x-internal-secret"] as string) !== secret) {
+    return reply.code(401).send({ error: "unauthorized" });
+  }
+  const storeId = Number((req.params as { storeId: string }).storeId);
+  if (!Number.isInteger(storeId) || storeId < 1) {
+    return reply.code(400).send({ error: "invalid_store_id" });
+  }
+  try {
+    const { getWalletSummary } = await import("./lib/merchant-wallet-engine.js");
+    const lite = req.query.lite === "1";
+    const reconcile = req.query.reconcile === "1";
+    const summary = await getWalletSummary(storeId, { lite, reconcile });
+    return reply.send({ success: true, ...summary });
+  } catch (e) {
+    req.log.error({ err: e, storeId }, "internal_merchant_wallet_failed");
+    return reply.code(500).send({ error: "wallet_failed" });
+  }
+});
+
+app.post<{
+  Params: { storeId: string };
+  Body: { amount?: number; bank_account_id?: number; source?: string; idempotency_key?: string };
+}>("/v1/internal/merchant/stores/:storeId/payout-request", async (req, reply) => {
+  const secret = process.env.BACKEND_SCHEDULE_TICK_SECRET;
+  if (!secret || (req.headers["x-internal-secret"] as string) !== secret) {
+    return reply.code(401).send({ error: "unauthorized" });
+  }
+  const storeId = Number((req.params as { storeId: string }).storeId);
+  if (!Number.isInteger(storeId) || storeId < 1) {
+    return reply.code(400).send({ error: "invalid_store_id" });
+  }
+  const body = (req.body || {}) as {
+    amount?: number;
+    bank_account_id?: number;
+    source?: string;
+    idempotency_key?: string;
+  };
+  const amount = Number(body.amount);
+  const bankAccountId = Number(body.bank_account_id);
+  if (!Number.isFinite(amount) || amount < 100) {
+    return reply.code(400).send({ error: "amount must be >= 100" });
+  }
+  if (!Number.isFinite(bankAccountId) || bankAccountId < 1) {
+    return reply.code(400).send({ error: "bank_account_id required" });
+  }
+  const source =
+    body.source === "dashboard" || body.source === "merchant_app" ? body.source : "partnersite";
+  try {
+    const { createWithdrawalRequest } = await import("./lib/merchant-wallet-engine.js");
+    const result = await createWithdrawalRequest(
+      storeId,
+      amount,
+      bankAccountId,
+      source,
+      typeof body.idempotency_key === "string" ? body.idempotency_key : undefined,
+    );
+    return reply.code(201).send({ success: true, ...result });
+  } catch (e) {
+    const { isWalletFrozenError, walletFrozenHttpBody } = await import("./lib/wallet-freeze.js");
+    if (isWalletFrozenError(e)) {
+      return reply.code(403).send({ success: false, ...walletFrozenHttpBody(e) });
+    }
+    const msg = e instanceof Error ? e.message : "Withdrawal failed";
+    const code = (e as { code?: string })?.code;
+    return reply.code(400).send({ success: false, error: msg, ...(code ? { code } : {}) });
+  }
+});
+
 await app.register(authRoutes, { prefix: "/v1/auth" });
 await app.register(riderRoutes, { prefix: "/v1/rider" });
 await app.register(onboardingRoutes, { prefix: "/v1/onboarding" });
@@ -747,6 +821,38 @@ app.post<{ Body: { party?: string; action?: string; riderId?: number; storeId?: 
       return reply.send({ ok: true });
     } catch (e) {
       req.log.error({ err: e }, "wallet_freeze_notify_failed");
+      return reply.code(500).send({ error: "notify_failed" });
+    }
+  },
+);
+
+app.post<{ Body: { storeId?: number; action?: string; reason?: string | null } }>(
+  "/v1/internal/store-delist-notify",
+  async (req, reply) => {
+    const secret = process.env.BACKEND_SCHEDULE_TICK_SECRET;
+    if (!secret || (req.headers["x-internal-secret"] as string) !== secret) {
+      return reply.code(401).send({ error: "unauthorized" });
+    }
+    const body = (req.body ?? {}) as {
+      storeId?: number;
+      action?: string;
+      reason?: string | null;
+    };
+    const action = body.action === "relist" ? "relist" : body.action === "delist" ? "delist" : null;
+    const storeId = Number(body.storeId);
+    if (!action || !Number.isInteger(storeId) || storeId < 1) {
+      return reply.code(400).send({ error: "storeId and action required" });
+    }
+    try {
+      const { notifyStoreDelistChange } = await import("./lib/notify-store-delist.js");
+      await notifyStoreDelistChange({
+        storeId,
+        action,
+        reason: typeof body.reason === "string" ? body.reason : null,
+      });
+      return reply.send({ ok: true });
+    } catch (e) {
+      req.log.error({ err: e }, "store_delist_notify_failed");
       return reply.code(500).send({ error: "notify_failed" });
     }
   },

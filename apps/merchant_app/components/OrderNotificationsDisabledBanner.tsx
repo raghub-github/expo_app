@@ -1,7 +1,6 @@
 import { AppText as Text } from "@/components/AppText";
 import { Pressable, StyleSheet } from "react-native";
 import { useNotificationPermissionGate } from "@/context/NotificationPermissionGateContext";
-import { H_PADDING } from "@/constants/theme";
 
 /**
  * Inline alert when OS order notifications are off — no dismiss (X) control.
@@ -28,13 +27,15 @@ export function OrderNotificationsDisabledBanner({ visible }: { visible: boolean
 
 const styles = StyleSheet.create({
   banner: {
+    flex: 1,
+    height: "100%",
     marginHorizontal: 0,
-    paddingVertical: 8,
-    paddingHorizontal: H_PADDING,
+    paddingVertical: 0,
+    paddingHorizontal: 14,
+    paddingRight: 12,
     marginBottom: 0,
     backgroundColor: "#92600A",
     borderRadius: 0,
-    minHeight: 56,
     justifyContent: "center",
   },
   text: {

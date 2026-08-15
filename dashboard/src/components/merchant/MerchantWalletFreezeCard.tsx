@@ -112,7 +112,7 @@ export function MerchantWalletFreezeCard({
   const latestDate = latest?.createdAt ? new Date(latest.createdAt) : null;
 
   return (
-    <div className="rounded-lg border border-gray-200 bg-white p-4">
+    <div className="h-full rounded-lg border border-gray-200 bg-white p-4">
       <h3 className="text-sm font-semibold text-gray-900 mb-1">Merchant Wallet</h3>
       <p className="text-xs text-gray-500 mb-3">
         Freeze this store wallet to block withdrawals. Store open/closed status is not changed.

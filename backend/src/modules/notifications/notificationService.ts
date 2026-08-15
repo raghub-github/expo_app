@@ -468,7 +468,7 @@ async function sendImpl(intent: SendIntent): Promise<SendResult> {
   // No push tokens: still write in-app inbox rows for explicit user / order /
   // all_customers / all_riders targets when we can resolve user ids.
   let inboxOnlyFallback = false;
-  if (recipients.length === 0) {
+  if (recipients.length === 0 && intent.channel !== "push") {
     const inboxOnly = await resolveInboxOnlyRecipients(intent.target, template.role);
     if (inboxOnly.length > 0) {
       recipients = inboxOnly;
@@ -600,9 +600,11 @@ async function sendImpl(intent: SendIntent): Promise<SendResult> {
   for (const r of realRecipients) {
     const mask = masks.get(r.userId) ?? { push: true, in_app: true, browser: true, email: false };
     // Tokenless / Expo Go fallback: inbox history only — never attempt push.
-    const allowed = inboxOnlyFallback || r.deviceToken === IN_APP_ONLY_TOKEN
+    const channelSource = intent.channel ?? template.channel;
+    const allowed =
+      (inboxOnlyFallback || r.deviceToken === IN_APP_ONLY_TOKEN) && channelSource !== "push"
       ? (["in_app"] as const).filter(() => mask.in_app !== false)
-      : allowedChannelsFor(template.channel, mask);
+      : allowedChannelsFor(channelSource, mask);
     if (allowed.length === 0) {
       skipped++;
       continue;

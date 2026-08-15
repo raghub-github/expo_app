@@ -70,7 +70,7 @@ export function MerchantsSearchProvider({ children }: { children: ReactNode }) {
     setState((prev) => (stateShallowEqual(prev, next) ? prev : next));
   }, []);
   const triggerMerchantSearch = useCallback((value: string, filter: "child" | "parent") => {
-    setState((prev) => ({ ...prev, searchResultStore: null, isLoading: true }));
+    setState((prev) => ({ ...prev, searchResultStore: null, isLoading: true, hasSearched: false }));
     setTriggeredSearch({ value, filter });
     setLastSearchTrigger((t) => t + 1);
   }, []);

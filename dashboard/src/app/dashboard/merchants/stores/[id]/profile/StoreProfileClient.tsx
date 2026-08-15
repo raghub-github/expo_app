@@ -14,6 +14,7 @@ import { ProfilePageContent } from "./ProfilePageContent";
 import { useStoreVerificationSheet } from "@/context/StoreVerificationSheetContext";
 import { useCanStoreVerify } from "@/hooks/useCanStoreVerify";
 import { useMerchantDashboardAccess } from "@/hooks/useMerchantDashboardAccess";
+import { isStoreDelisted } from "@/lib/merchants/store-delist";
 
 export function StoreProfileClient({ storeId }: { storeId: string }) {
   const { toast } = useToast();
@@ -185,7 +186,7 @@ export function StoreProfileClient({ storeId }: { storeId: string }) {
 
   const statusUpper = (displayStore.approval_status || "").toUpperCase();
   const isVerified = statusUpper === "APPROVED";
-  const isDelisted = statusUpper === "DELISTED";
+  const isDelisted = isStoreDelisted(displayStore);
   const agreement = (verificationAgreement ?? agreementAcceptance ?? {}) as Record<string, unknown>;
 
   const revertAlternatePhone = () => {

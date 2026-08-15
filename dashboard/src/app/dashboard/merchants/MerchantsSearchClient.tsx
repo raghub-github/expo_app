@@ -17,6 +17,7 @@ import { EXPIRED_RESUBMITTED_DOCS_LABEL } from "@/lib/merchants/expired-resubmit
 import { dispatchMerchantResubmittedDocsRefresh } from "@/lib/merchants/merchant-resubmitted-docs-refresh";
 import { useStoreVerificationSheetOptional } from "@/context/StoreVerificationSheetContext";
 import { useMerchantDashboardAccess } from "@/hooks/useMerchantDashboardAccess";
+import { writeStoreOperationsCache } from "@/lib/merchants/partner-store-ops-cache";
 
 type FilterMode = "child" | "parent";
 
@@ -40,6 +41,7 @@ type ChildRow = {
   city: string | null;
   store_type?: string | null;
   approval_status: string;
+  delisted_at?: string | null;
   onboarding_step: number | null;
   onboarding_completed: boolean | null;
   store_email?: string | null;
@@ -104,6 +106,11 @@ function formatCreatedDate(created_at: string | null | undefined): string {
 function primaryPhone(store_phones: string[] | null | undefined): string | null {
   if (!store_phones || store_phones.length === 0) return null;
   return store_phones[0] ?? null;
+}
+
+function childDisplayStatus(child: { approval_status?: string | null; delisted_at?: string | null }): string {
+  if (child.delisted_at) return "DELISTED";
+  return (child.approval_status || "").toUpperCase();
 }
 
 function StatusBadge({ status }: { status: string }) {
@@ -184,7 +191,7 @@ function ChildActionButton({
     );
   }
 
-  const status = (child.approval_status || "").toUpperCase();
+  const status = childDisplayStatus(child);
   const isVerified = status === "APPROVED";
   const isDelisted = status === "DELISTED";
   const goesToDashboard = viewOnly || !canVerify || isVerified || isDelisted;
@@ -239,7 +246,7 @@ function ChildStoreRow({
   canVerify?: boolean;
   viewOnly?: boolean;
 }) {
-  const status = (child.approval_status || "").toUpperCase();
+  const status = childDisplayStatus(child);
   const isUnread =
     status !== "APPROVED" &&
     status !== "REJECTED" &&
@@ -321,7 +328,7 @@ function ChildStoreRow({
             Docs pending
           </span>
         ) : (
-          <StatusBadge status={child.approval_status} />
+          <StatusBadge status={childDisplayStatus(child)} />
         )}
         <ChildActionButton
           child={child}
@@ -420,7 +427,7 @@ function buildChildStoreTargetUrl(args: {
     params.set("child", "true");
     return `/dashboard/merchants?${params.toString()}`;
   }
-  const status = (child.approval_status || "").toUpperCase();
+  const status = childDisplayStatus(child);
   const isVerified = status === "APPROVED";
   const isDelisted = status === "DELISTED";
   const isRejectedLike = status === "REJECTED" || status === "BLOCKED" || status === "SUSPENDED";
@@ -632,6 +639,19 @@ export function MerchantsSearchClient({
     });
   }, [portal, hasActiveListSearch, loading, hasSearched, pendingSingleChildRedirect, filter, childItems, merchantsSearch?.setMerchantsSearchState]);
 
+  useEffect(() => {
+    const setState = merchantsSearch?.setMerchantsSearchState;
+    if (!setState) return;
+    return () => {
+      setState({
+        isLoading: false,
+        hasSearched: false,
+        searchResultStore: null,
+        filter: "child",
+      });
+    };
+  }, [merchantsSearch?.setMerchantsSearchState]);
+
   /** router.push from the header runs after triggerMerchantSearch; clearing triggeredSearch in fetch.finally used to run before the URL updated, making shouldFetchList false and wiping results (flash of "not found"). Clear only once ?search= and child/parent match the triggered query. */
   useEffect(() => {
     if (!triggeredSearch) return;
@@ -697,6 +717,19 @@ export function MerchantsSearchClient({
             viewOnly: isViewOnly,
           });
           router.prefetch(targetUrl);
+          // Warm store-status cache before dashboard mounts so the card isn't stuck on skeleton.
+          const opsStoreId = String(child.id);
+          void fetch(`/api/merchant/stores/${opsStoreId}/store-operations`, {
+            credentials: "include",
+            cache: "no-store",
+          })
+            .then((res) => res.json().catch(() => null))
+            .then((ops) => {
+              if (ops && (ops as { success?: boolean }).success) {
+                writeStoreOperationsCache(opsStoreId, ops);
+              }
+            })
+            .catch(() => undefined);
           router.replace(targetUrl);
           return;
         }

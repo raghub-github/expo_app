@@ -132,7 +132,6 @@ export function StoreLayoutShell({
   const searchParams = useAppSearchParams();
   const fromAdmin = searchParams.get("fromAdmin") === "1";
   const [showAdminPopup, setShowAdminPopup] = useState(false);
-  const [showDelistedModal, setShowDelistedModal] = useState(false);
 
   useEffect(() => {
     if (fromAdmin) setShowAdminPopup(true);
@@ -143,14 +142,6 @@ export function StoreLayoutShell({
       .then(() => prefetchEmptyOrderImages())
       .catch(() => undefined);
   }, []);
-
-  useEffect(() => {
-    if (!store) return;
-    const status = (store.approval_status || "").toUpperCase();
-    if (status === "DELISTED") {
-      setShowDelistedModal(true);
-    }
-  }, [store?.id, store?.approval_status]);
 
   const closeAdminPopup = () => {
     setShowAdminPopup(false);
@@ -176,53 +167,6 @@ export function StoreLayoutShell({
     <StoreProvider storeId={storeId} store={store as StoreContextStore}>
       <div className="flex min-h-0 flex-1 flex-col w-full max-w-full overflow-hidden">
         <StoreQueryHydrator storeId={storeId} store={store as StoreProfile} />
-        {showDelistedModal && (
-          <div className="fixed inset-0 z-[90] flex items-center justify-center bg-black/40 p-4" aria-modal="true" role="dialog">
-            <div className="w-full max-w-md rounded-xl border border-amber-200 bg-white p-6 shadow-xl">
-              <div className="mb-3 text-center">
-                <p className="text-xs font-semibold uppercase tracking-wide text-amber-600">Status</p>
-                <p className="mt-1 text-lg font-bold text-red-700">Store Delisted</p>
-              </div>
-              <div className="space-y-1.5 text-sm text-gray-700">
-                {store.delisted_by_name || store.delisted_by_email || store.delisted_by_role ? (
-                  <p>
-                    <span className="font-semibold">Delisted by:</span>{" "}
-                    {store.delisted_by_name ||
-                      store.delisted_by_email ||
-                      store.delisted_by_role ||
-                      "Unknown"}
-                  </p>
-                ) : null}
-                {store.delisted_at && (
-                  <p>
-                    <span className="font-semibold">Delisted at:</span>{" "}
-                    {new Date(store.delisted_at).toLocaleString("en-IN", {
-                      dateStyle: "medium",
-                      timeStyle: "short",
-                    })}
-                  </p>
-                )}
-                {store.delist_reason && (
-                  <p>
-                    <span className="font-semibold">Reason:</span>{" "}
-                    {store.delist_reason}
-                  </p>
-                )}
-              </div>
-              <p className="mt-4 text-xs text-gray-600 text-center">
-                This store is currently delisted and not visible to customers. You may review the store
-                or relist it if required.
-              </p>
-              <button
-                type="button"
-                onClick={() => setShowDelistedModal(false)}
-                className="mt-5 w-full cursor-pointer rounded-lg bg-indigo-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2"
-              >
-                OK
-              </button>
-            </div>
-          </div>
-        )}
         {/* Popup when entering store from Admin dashboard */}
         {showAdminPopup && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" aria-modal="true" role="dialog">

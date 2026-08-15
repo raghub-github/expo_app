@@ -89,6 +89,12 @@ export const WALLET_CONSTANTS = {
     'Funds have been successfully transferred to the registered bank account.',
 } as const;
 
+/** Dashboard freeze → Partner Site Withdraw disable (Supabase broadcast). */
+export const MERCHANT_WALLET_FREEZE_EVENT = "wallet_freeze" as const;
+export function merchantWalletFreezeChannel(storeId: number | string): string {
+  return `merchant_wallet_freeze:${storeId}`;
+}
+
 /** Normalize legacy withdrawal-complete ledger copy for merchant-facing UI. */
 export function formatLedgerDescription(description: string | null | undefined): string {
   if (!description?.trim()) return '';
@@ -107,4 +113,65 @@ export function formatLedgerDescription(description: string | null | undefined):
 
 export function roundMoney(n: number): number {
   return Math.round(n * 100) / 100;
+}
+
+/** Canonical withdrawable: available minus active payouts not already in hold. */
+export function computeMerchantWithdrawalBuckets(input: {
+  available_balance: number;
+  hold_balance?: number;
+  pending_withdrawal_total?: number;
+  in_process_withdrawal_total?: number;
+}): {
+  withdrawable_balance: number;
+  pending_withdrawal_total: number;
+  in_process_withdrawal_total: number;
+  active_payout_total: number;
+} {
+  const available = roundMoney(Math.max(0, Number(input.available_balance) || 0));
+  const hold = roundMoney(Math.max(0, Number(input.hold_balance) || 0));
+  const pendingWithdrawal = roundMoney(Math.max(0, Number(input.pending_withdrawal_total) || 0));
+  const inProcess = roundMoney(Math.max(0, Number(input.in_process_withdrawal_total) || 0));
+  const activePayouts = roundMoney(pendingWithdrawal + inProcess);
+  const uncovered = roundMoney(Math.max(0, activePayouts - hold));
+  return {
+    withdrawable_balance: roundMoney(Math.max(0, available - uncovered)),
+    pending_withdrawal_total: pendingWithdrawal,
+    in_process_withdrawal_total: inProcess,
+    active_payout_total: activePayouts,
+  };
+}
+
+export function calculateMerchantWithdrawalAccounting(input: {
+  available_balance: number;
+  hold_balance?: number;
+  pending_balance?: number;
+  pending_withdrawal_total?: number;
+  in_process_withdrawal_total?: number;
+  paid_amount?: number;
+  failed_amount?: number;
+  is_frozen?: boolean;
+  settlement_paused?: boolean;
+}) {
+  const available = roundMoney(Math.max(0, Number(input.available_balance) || 0));
+  const hold = roundMoney(Math.max(0, Number(input.hold_balance) || 0));
+  const pending = roundMoney(Math.max(0, Number(input.pending_balance) || 0));
+  const buckets = computeMerchantWithdrawalBuckets({
+    available_balance: available,
+    hold_balance: hold,
+    pending_withdrawal_total: input.pending_withdrawal_total,
+    in_process_withdrawal_total: input.in_process_withdrawal_total,
+  });
+  const isFrozen = input.is_frozen === true;
+  return {
+    available_balance: available,
+    held_balance: hold,
+    pending_balance: pending,
+    pending_withdrawal: buckets.pending_withdrawal_total,
+    processing_withdrawal: buckets.in_process_withdrawal_total,
+    withdrawable_balance: buckets.withdrawable_balance,
+    paid_amount: roundMoney(Math.max(0, Number(input.paid_amount) || 0)),
+    failed_amount: roundMoney(Math.max(0, Number(input.failed_amount) || 0)),
+    is_frozen: isFrozen,
+    withdrawal_allowed: !isFrozen && input.settlement_paused !== true,
+  };
 }

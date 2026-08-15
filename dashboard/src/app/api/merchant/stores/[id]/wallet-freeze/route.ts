@@ -271,6 +271,22 @@ export async function POST(
 
   void (async () => {
     try {
+      const { broadcastMerchantWalletFreeze } = await import(
+        "@/lib/merchant-wallet-freeze-broadcast"
+      );
+      await broadcastMerchantWalletFreeze({
+        storeId,
+        action,
+        isFrozen: action === "freeze",
+        freezeReason: action === "freeze" ? reason || null : null,
+      });
+    } catch {
+      /* broadcast is best-effort */
+    }
+  })();
+
+  void (async () => {
+    try {
       const { backendFetch } = await import("@/lib/notif-backend");
       await backendFetch("/v1/internal/wallet-freeze-notify", {
         method: "POST",

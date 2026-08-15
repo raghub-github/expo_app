@@ -17,7 +17,9 @@ import {
   type PartnerStoreOperationsRefreshDetail,
   emitPartnerStoreOperationsRefresh,
 } from '@/lib/partnerStoreOperationsRefresh'
-import { toastStoreOperationsPostFailure, isOutsideOperatingHoursStoreOpsError } from '@/lib/storeOperationsPostFeedback'
+import { toastStoreOperationsPostFailure, isOutsideOperatingHoursStoreOpsError, isStoreDelistedOpsError } from '@/lib/storeOperationsPostFeedback'
+import { StoreDelistedBlockedDialog } from '@/components/StoreDelistedBlockedDialog'
+import { isStoreDelisted, isStoreOpsLockedUntilVerified, needsManualOpenAfterRelist, STORE_RELISTED_MANUAL_OPEN_MARQUEE } from '@/lib/store-delist'
 import { OutsideOperatingHoursModal } from '@/components/OutsideOperatingHoursModal'
 import { CloseStoreSidesheet } from '@/components/CloseStoreSidesheet'
 import {
@@ -300,15 +302,28 @@ function DashboardContent() {
     return null
   }, [cardDisplaySlots])
 
+  const needsRelistManualOpen = needsManualOpenAfterRelist({
+    isDelisted: isStoreDelisted(store) || storeOpsData?.is_delisted === true,
+    isOpen: isStoreOpen,
+    lastToggleType,
+    closeReason: closeReasonFromOps,
+    unavailableReason: storeOpsData?.unavailable_reason ?? null,
+  })
+
   const activeCountdownAt =
-    countdownAt ??
-    opensAt ??
-    (withinOperatingHours === true || withinHoursButRestricted
+    isStoreDelisted(store) || storeOpsData?.is_delisted === true || needsRelistManualOpen
       ? null
-      : nextScheduleTransitionAt) ??
-    null
+      : countdownAt ??
+        opensAt ??
+        (withinOperatingHours === true || withinHoursButRestricted
+          ? null
+          : nextScheduleTransitionAt) ??
+        null
 
   const showScheduleCountdown =
+    !isStoreDelisted(store) &&
+    storeOpsData?.is_delisted !== true &&
+    !needsRelistManualOpen &&
     !isStoreOpen && !withinHoursButRestricted && !!activeCountdownAt
 
   const opensCountdownLabel = useMemo(() => {
@@ -385,6 +400,13 @@ function DashboardContent() {
   )
 
   const storeStatusBadge = useMemo(() => {
+    if (isStoreDelisted(store) || storeOpsData?.is_delisted === true) {
+      return {
+        label: 'Delisted',
+        dot: 'bg-red-600',
+        pill: 'bg-red-500/10 text-red-900 ring-1 ring-red-500/30',
+      }
+    }
     if (scheduledTimeOffs.some((x) => x.phase === 'active')) {
       return {
         label: 'Sheduled-off Active',
@@ -442,10 +464,14 @@ function DashboardContent() {
     restrictionType,
     isStoreOpen,
     countdownKind,
+    store,
+    storeOpsData?.is_delisted,
   ])
 
   /** Earliest upcoming scheduled time-off start (relative to now), live via countdownTick */
   const showScheduledOffStartsCountdown =
+    !isStoreDelisted(store) &&
+    storeOpsData?.is_delisted !== true &&
     isStoreOpen &&
     !scheduledTimeOffs.some((x) => x.phase === 'active') &&
     scheduledTimeOffs.some((x) => x.phase === 'upcoming')
@@ -470,6 +496,7 @@ function DashboardContent() {
   const [closureDate, setClosureDate] = useState<string>('')
   const [closureTime, setClosureTime] = useState<string>('12:00')
   const [showToggleOnWarning, setShowToggleOnWarning] = useState(false)
+  const [showDelistedBlocked, setShowDelistedBlocked] = useState(false)
   const [showOutsideHoursModal, setShowOutsideHoursModal] = useState(false)
   const [toggleOnLoading, setToggleOnLoading] = useState(false)
   const [showStatusModal, setShowStatusModal] = useState(false)
@@ -660,16 +687,24 @@ function DashboardContent() {
 
     setStore(storeRecord)
     const approval = String(storeRecord.approval_status || '').toUpperCase()
-    if (approval === 'APPROVED') {
+    const delisted = isStoreDelisted(storeRecord)
+    if (approval === 'APPROVED' && !delisted) {
       setShowStatusModal(false)
       setStatusNoticeDismissed(false)
       statusNoticeDismissedRef.current = false
       return
     }
     if (!approval) return
+    if (delisted) {
+      setShowStatusModal(false)
+      return
+    }
     setModalStatus({
       status: storeRecord.approval_status ?? '',
-      reason: storeRecord.approval_reason ?? '',
+      reason:
+        approval === 'DELISTED'
+          ? String(storeRecord.delist_reason ?? '').trim()
+          : String(storeRecord.approval_reason ?? '').trim(),
     })
     // Do not re-open modal / wipe dismissed flag on every storeRecord refresh.
     if (statusNoticeDismissedRef.current) {
@@ -728,6 +763,17 @@ function DashboardContent() {
     setScheduledTimeOffs(patch.scheduledTimeOffs)
     setActiveRush(patch.activeRush)
     setStoreOpsPainted(true)
+    if (storeOpsData.is_delisted === true) {
+      setStore((prev) =>
+        prev
+          ? {
+              ...prev,
+              delisted_at: prev.delisted_at || new Date().toISOString(),
+              operational_status: 'CLOSED',
+            }
+          : prev
+      )
+    }
   }, [storeOpsData])
 
   const fetchStoreOperations = React.useCallback(async () => {
@@ -741,6 +787,7 @@ function DashboardContent() {
   /** Hard refresh at schedule boundaries — invalidate + refetch so countdown 0 flips Open without a page reload. */
   const forceStoreOperationsSync = React.useCallback(async () => {
     if (!storeId) return
+    if (isStoreDelisted(store) || storeOpsData?.is_delisted === true) return
     try {
       await queryClient.fetchQuery({
         queryKey: merchantKeys.storeOperations(storeId),
@@ -760,7 +807,7 @@ function DashboardContent() {
     queueMicrotask(() => {
       skipRefreshEventRef.current = false
     })
-  }, [storeId, queryClient])
+  }, [storeId, queryClient, store?.delisted_at, store?.approval_status, storeOpsData?.is_delisted])
 
   // Header / schedule sheet updates store-operations fetch there first — mirror here without reload.
   useEffect(() => {
@@ -769,7 +816,21 @@ function DashboardContent() {
       if (skipRefreshEventRef.current) return
       const ce = ev as CustomEvent<PartnerStoreOperationsRefreshDetail>
       const sid = ce.detail?.storeId
-      if (sid && sid === storeId) void fetchStoreOperations()
+      if (sid && sid === storeId) {
+        if (ce.detail?.forceClosed) setIsStoreOpen(false)
+        if (typeof ce.detail?.isDelisted === 'boolean') {
+          setStore((prev) =>
+            prev
+              ? {
+                  ...prev,
+                  delisted_at: ce.detail?.isDelisted ? prev.delisted_at || new Date().toISOString() : undefined,
+                  operational_status: ce.detail?.isDelisted ? 'CLOSED' : prev.operational_status,
+                }
+              : prev
+          )
+        }
+        void fetchStoreOperations()
+      }
     }
     window.addEventListener(PARTNER_STORE_OPERATIONS_REFRESH_EVENT, onRefresh as EventListener)
     return () => window.removeEventListener(PARTNER_STORE_OPERATIONS_REFRESH_EVENT, onRefresh as EventListener)
@@ -779,6 +840,7 @@ function DashboardContent() {
   // so the store flips OPEN/CLOSED on its own without a manual refresh), otherwise every 30s.
   useEffect(() => {
     if (!storeId) return
+    if (isStoreDelisted(store)) return
     let timer: ReturnType<typeof setTimeout> | undefined
     const boundaryIso = activeCountdownAt ?? nextScheduleTransitionAt
     const nextDelay = () => {
@@ -803,11 +865,11 @@ function DashboardContent() {
     return () => {
       if (timer) clearTimeout(timer)
     }
-  }, [storeId, refetchStoreOperations, nextScheduleTransitionAt, activeCountdownAt])
+  }, [storeId, refetchStoreOperations, nextScheduleTransitionAt, activeCountdownAt, store?.delisted_at, store?.approval_status])
 
   // Exact timer: fire at opens_at / transition (±250ms) so we don't sit on 00:00:00 waiting for a 30s poll.
   useEffect(() => {
-    if (!storeId || !activeCountdownAt || isStoreOpen) {
+    if (!storeId || !activeCountdownAt || isStoreOpen || isStoreDelisted(store)) {
       boundarySyncAttemptsRef.current = 0
       return
     }
@@ -851,7 +913,7 @@ function DashboardContent() {
       cancelled = true
       for (const t of timers) clearTimeout(t)
     }
-  }, [storeId, activeCountdownAt, isStoreOpen, forceStoreOperationsSync])
+  }, [storeId, activeCountdownAt, isStoreOpen, forceStoreOperationsSync, store?.delisted_at, store?.approval_status])
 
   // When close popup opens, set default date (today, local) and time (now + 10 min) for Temporary Closed
   useEffect(() => {
@@ -870,17 +932,28 @@ function DashboardContent() {
   const storeInternalId = (store as { id?: number } | null)?.id ?? null
   useEffect(() => {
     if (!storeInternalId || !storeId) return
+    if (isStoreDelisted(store) || storeOpsData?.is_delisted === true) return
     const supabase = createClient()
+    let debounce: ReturnType<typeof setTimeout> | undefined
+    const kick = () => {
+      if (debounce) clearTimeout(debounce)
+      debounce = setTimeout(() => {
+        void fetchStoreOperations()
+      }, 1500)
+    }
     const ch = supabase
       .channel(`dashboard_store:${storeInternalId}`)
-      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'merchant_stores', filter: `id=eq.${storeInternalId}` }, () => { fetchStoreOperations() })
-      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'merchant_store_availability', filter: `store_id=eq.${storeInternalId}` }, () => { fetchStoreOperations() })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'merchant_store_operating_hours', filter: `store_id=eq.${storeInternalId}` }, () => { fetchStoreOperations() })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'merchant_store_scheduled_closures', filter: `store_id=eq.${storeInternalId}` }, () => { fetchStoreOperations() })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'merchant_store_holidays', filter: `store_id=eq.${storeInternalId}` }, () => { fetchStoreOperations() })
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'merchant_stores', filter: `id=eq.${storeInternalId}` }, kick)
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'merchant_store_availability', filter: `store_id=eq.${storeInternalId}` }, kick)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'merchant_store_operating_hours', filter: `store_id=eq.${storeInternalId}` }, kick)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'merchant_store_scheduled_closures', filter: `store_id=eq.${storeInternalId}` }, kick)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'merchant_store_holidays', filter: `store_id=eq.${storeInternalId}` }, kick)
       .subscribe()
-    return () => { ch.unsubscribe() }
-  }, [storeInternalId, storeId, fetchStoreOperations])
+    return () => {
+      if (debounce) clearTimeout(debounce)
+      ch.unsubscribe()
+    }
+  }, [storeInternalId, storeId, fetchStoreOperations, store?.delisted_at, store?.approval_status, storeOpsData?.is_delisted])
 
   // Live countdown: 1s tick for closed-store opens/break countdown + badge countdown until scheduled time-off starts
   useEffect(() => {
@@ -941,6 +1014,7 @@ function DashboardContent() {
         !manualActivationLock) ||
       countdownPastDue
     if (!needsScheduleSync) return
+    if (isStoreDelisted(store) || storeOpsData?.is_delisted === true) return
     const pollMs =
       countdownPastDue || schedulePhase === 'BREAK' || (!isStoreOpen && withinOperatingHours)
         ? 2_000
@@ -960,6 +1034,9 @@ function DashboardContent() {
     forceStoreOperationsSync,
     manualActivationLock,
     activeCountdownAt,
+    store?.delisted_at,
+    store?.approval_status,
+    storeOpsData?.is_delisted,
   ])
 
   // Delivery mode stays in sync via useStoreSettings (refetches on focus / mount).
@@ -1029,32 +1106,39 @@ function DashboardContent() {
     setStatusNoticeDismissed(true)
   }
 
-  const approvalStatusUpper = String(store?.approval_status || modalStatus.status || '').toUpperCase()
-  const opsCardsLockedUntilVerified =
-    !!approvalStatusUpper && approvalStatusUpper !== 'APPROVED' && approvalStatusUpper !== 'DRAFT'
+  const approvalStatusUpper = String(
+    store?.approval_status || storeOpsData?.approval_status || modalStatus.status || ''
+  ).toUpperCase()
+  const storeIsDelisted = isStoreDelisted(store) || storeOpsData?.is_delisted === true
+  const opsCardsLockedUntilVerified = isStoreOpsLockedUntilVerified(approvalStatusUpper, storeIsDelisted)
 
   const StatusModal = () => {
     if (!showStatusModal) return null
     
     // Determine color based on status
     const getStatusColor = () => {
-      switch(modalStatus.status) {
+      switch(String(modalStatus.status || '').toUpperCase()) {
         case 'SUBMITTED': return 'text-blue-600'
         case 'UNDER_VERIFICATION': return 'text-yellow-600'
         case 'REJECTED': return 'text-red-600'
+        case 'DELISTED': return 'text-red-700'
         case 'ERROR': return 'text-red-600'
         default: return 'text-gray-700'
       }
     }
+    const statusUpper = String(modalStatus.status || '').toUpperCase()
     
     return (
       <Dialog 
         open={showStatusModal} 
         onClose={dismissStatusModal} 
-        className="relative z-50"
+        className="relative z-[1100]"
       >
-        <div className="fixed inset-0 bg-black/30 backdrop-blur-sm" aria-hidden="true" />
-        <div className="fixed inset-0 flex items-center justify-center p-4">
+        <div
+          className="fixed inset-y-0 right-0 left-0 md:left-[var(--mx-partner-sidebar-w,14rem)] bg-black/40 backdrop-blur-sm"
+          aria-hidden="true"
+        />
+        <div className="fixed inset-y-0 right-0 left-0 md:left-[var(--mx-partner-sidebar-w,14rem)] flex items-center justify-center p-4">
           <Dialog.Panel className="relative mx-auto max-w-md rounded-2xl bg-white/95 backdrop-blur-md p-8 shadow-2xl border border-gray-200">
             <button
               type="button"
@@ -1070,25 +1154,39 @@ function DashboardContent() {
             </Dialog.Title>
             
             <div className="mb-6">
-              {modalStatus.status === 'SUBMITTED' && (
+              {statusUpper === 'DELISTED' && (
+                <div className="space-y-3">
+                  <span className="text-lg font-semibold text-red-700">📊 Status: DELISTED</span>
+                  <p className="text-sm text-gray-700 leading-relaxed">
+                    Your store has been delisted from GatiMitra and is currently unavailable to receive new orders.
+                  </p>
+                  <p className="text-sm text-gray-700 leading-relaxed">
+                    Please contact GatiMitra Support for more information or assistance with reactivation.
+                  </p>
+                  <p className="text-sm font-medium text-red-800">
+                    Reason: {modalStatus.reason || '—'}
+                  </p>
+                </div>
+              )}
+              {statusUpper === 'SUBMITTED' && (
                 <div className="space-y-2">
                   <span className="text-lg font-semibold text-blue-700">📋 Submission Received</span>
                   <p className="text-sm text-gray-600">Your store is submitted and under review. We'll notify you once verified.</p>
                 </div>
               )}
-              {modalStatus.status === 'UNDER_VERIFICATION' && (
+              {statusUpper === 'UNDER_VERIFICATION' && (
                 <div className="space-y-2">
                   <span className="text-lg font-semibold text-yellow-700">🔍 Verification in Progress</span>
                   <p className="text-sm text-gray-600">Our team is currently verifying your store details. This usually takes 24-48 hours.</p>
                 </div>
               )}
-              {modalStatus.status === 'REJECTED' && (
+              {statusUpper === 'REJECTED' && (
                 <div className="space-y-2">
                   <span className="text-lg font-semibold text-red-700">❌ Registration Rejected</span>
                   <p className="text-sm text-gray-600">Your store registration could not be approved.</p>
                 </div>
               )}
-              {modalStatus.status === 'ERROR' && (
+              {statusUpper === 'ERROR' && (
                 <div className="space-y-2">
                   <span className="text-lg font-semibold text-red-700">⚠️ Error Occurred</span>
                   <p className="text-sm text-gray-600">{modalStatus.reason}</p>
@@ -1096,7 +1194,7 @@ function DashboardContent() {
               )}
               
               {/* Fallback for unknown status */}
-              {modalStatus.status && !['SUBMITTED','UNDER_VERIFICATION','REJECTED','ERROR'].includes(modalStatus.status) && (
+              {modalStatus.status && !['SUBMITTED','UNDER_VERIFICATION','REJECTED','ERROR','DELISTED'].includes(statusUpper) && (
                 <div className="space-y-2">
                   <span className="text-lg font-semibold text-gray-700">📊 Status: {modalStatus.status}</span>
                   {modalStatus.reason && (
@@ -1105,7 +1203,7 @@ function DashboardContent() {
                 </div>
               )}
               
-              {modalStatus.reason && modalStatus.status === 'REJECTED' && (
+              {modalStatus.reason && statusUpper === 'REJECTED' && (
                 <div className="mt-4 p-3 bg-red-50 border border-red-200 rounded-lg">
                   <p className="text-sm font-medium text-red-800">Reason for rejection:</p>
                   <p className="text-sm text-red-700 mt-1">{modalStatus.reason}</p>
@@ -1116,7 +1214,11 @@ function DashboardContent() {
             <button
               type="button"
               onClick={dismissStatusModal}
-              className="w-full px-4 py-3 bg-gradient-to-r from-blue-600 to-blue-700 text-white rounded-xl font-semibold hover:from-blue-700 hover:to-blue-800 transition-all shadow-md hover:shadow-lg"
+              className={
+                statusUpper === 'DELISTED'
+                  ? 'w-full px-4 py-3 bg-white text-gray-800 rounded-xl font-semibold border-2 border-gray-300 hover:bg-gray-50 transition-all'
+                  : 'w-full px-4 py-3 bg-gradient-to-r from-blue-600 to-blue-700 text-white rounded-xl font-semibold hover:from-blue-700 hover:to-blue-800 transition-all shadow-md hover:shadow-lg'
+              }
             >
               Got It
             </button>
@@ -1127,8 +1229,12 @@ function DashboardContent() {
   }
 
   const handleStoreToggle = () => {
-    const approval = String(store?.approval_status || '').toUpperCase()
-    if (approval !== 'APPROVED') {
+    if (isStoreDelisted(store) || storeOpsData?.is_delisted === true) {
+      setShowDelistedBlocked(true)
+      return
+    }
+    const approval = String(store?.approval_status || storeOpsData?.approval_status || '').toUpperCase()
+    if (isStoreOpsLockedUntilVerified(approval, false)) {
       toast.error('Store status is locked until your store is verified.')
       return
     }
@@ -1163,7 +1269,11 @@ function DashboardContent() {
         toast.success('Store is now OPEN. Orders are being accepted!')
         await fetchStoreOperations()
       } else {
-        if (isOutsideOperatingHoursStoreOpsError(data)) {
+        if (isStoreDelistedOpsError(data)) {
+          setShowToggleOnWarning(false)
+          setShowDelistedBlocked(true)
+          setIsStoreOpen(false)
+        } else if (isOutsideOperatingHoursStoreOpsError(data)) {
           setShowToggleOnWarning(false)
           setShowOutsideHoursModal(true)
         } else {
@@ -1461,31 +1571,47 @@ function DashboardContent() {
         onClose={() => setShowOutsideHoursModal(false)}
         storeId={storeId}
       />
+      <StoreDelistedBlockedDialog
+        open={showDelistedBlocked}
+        onClose={() => setShowDelistedBlocked(false)}
+      />
       <MXLayoutWhite
         restaurantName={store?.store_name || 'Dashboard'}
         restaurantId={storeId || ''}
       >
         <PartnerPageHeader {...PARTNER_PAGE_HEADERS.dashboard} />
         {(() => {
-          const approval = String(store?.approval_status || modalStatus.status || '').toUpperCase()
+          const approval = String(store?.approval_status || storeOpsData?.approval_status || modalStatus.status || '').toUpperCase()
+          const delisted = isStoreDelisted(store) || storeOpsData?.is_delisted === true
+          const relistManualOpen = needsManualOpenAfterRelist({
+            isDelisted: delisted,
+            isOpen: isStoreOpen,
+            lastToggleType,
+            closeReason: closeReasonFromOps,
+            unavailableReason: storeOpsData?.unavailable_reason ?? null,
+          })
           const showMarquee =
-            statusNoticeDismissed &&
-            !showStatusModal &&
-            approval !== 'APPROVED' &&
-            approval !== '' &&
-            approval !== 'DRAFT'
+            delisted ||
+            relistManualOpen ||
+            (statusNoticeDismissed &&
+              !showStatusModal &&
+              isStoreOpsLockedUntilVerified(approval, delisted))
           if (!showMarquee) return null
           const marqueeText =
-            approval === 'REJECTED'
+            delisted
+              ? 'This store is delisted. You cannot go online until GatiMitra relists it. Please contact support.'
+              : relistManualOpen
+              ? STORE_RELISTED_MANUAL_OPEN_MARQUEE
+              : approval === 'REJECTED'
               ? 'Store registration rejected — online/offline controls stay locked until you fix and get verified.'
               : 'Under verification — our team is reviewing your store. Online/offline controls stay locked until verified.'
           return (
             <div
-              className="shrink-0 overflow-hidden border-b border-amber-200 bg-amber-50 py-2"
+              className="shrink-0 overflow-hidden whitespace-nowrap border-b border-amber-200 bg-amber-50 py-2"
               role="status"
               aria-live="polite"
             >
-              <div className="flex w-max animate-store-closed-marquee">
+              <div className="flex w-max animate-store-closed-marquee whitespace-nowrap">
                 {[0, 1].map((copy) => (
                   <span
                     key={copy}
@@ -1585,9 +1711,21 @@ function DashboardContent() {
                       <button
                         type="button"
                         onClick={handleStoreToggle}
-                        disabled={String(store?.approval_status || '').toUpperCase() !== 'APPROVED'}
+                        disabled={
+                          isStoreDelisted(store) || storeOpsData?.is_delisted === true
+                            ? false
+                            : isStoreOpsLockedUntilVerified(
+                                store?.approval_status || storeOpsData?.approval_status,
+                                false
+                              )
+                        }
                         title={
-                          String(store?.approval_status || '').toUpperCase() !== 'APPROVED'
+                          isStoreDelisted(store) || storeOpsData?.is_delisted === true
+                            ? 'Store is delisted'
+                            : isStoreOpsLockedUntilVerified(
+                                store?.approval_status || storeOpsData?.approval_status,
+                                false
+                              )
                             ? 'Available after store is verified'
                             : undefined
                         }
@@ -1659,9 +1797,16 @@ function DashboardContent() {
                           </p>
                         </div>
                       )}
-                      {!isTodayScheduledClosed && scheduleStatusLabel && !isStoreOpen && schedulePhase !== 'BREAK' && (
+                      {!isTodayScheduledClosed && scheduleStatusLabel && !isStoreOpen && schedulePhase !== 'BREAK' && !storeIsDelisted && (
                         <p className="text-[10px] font-medium text-slate-500">{scheduleStatusLabel}</p>
                       )}
+                      {storeIsDelisted ? (
+                        <div className="rounded-lg bg-red-50/90 px-2.5 py-2 ring-1 ring-red-200/80">
+                          <p className="text-[11px] font-semibold text-red-800 leading-snug">
+                            Delisted — this store stays closed until GatiMitra relists it.
+                          </p>
+                        </div>
+                      ) : null}
                       {showScheduleCountdown && activeCountdownAt && (() => {
                         void countdownTick
                         const ms = new Date(activeCountdownAt).getTime() - Date.now()
@@ -1697,13 +1842,13 @@ function DashboardContent() {
                           </div>
                         )
                       })()}
-                      {!isStoreOpen && closeReasonDisplay && (
+                      {!storeIsDelisted && !isStoreOpen && closeReasonDisplay && (
                         <p className="text-[11px] text-slate-600 leading-snug line-clamp-3" title={closeReasonDisplay}>
                           <span className="font-semibold text-slate-700">Close reason: </span>
                           {closeReasonDisplay}
                         </p>
                       )}
-                      {(lastToggledByName || lastToggleBy || lastToggleType) && lastToggledAt && (
+                      {!storeIsDelisted && (lastToggledByName || lastToggleBy || lastToggleType) && lastToggledAt && (
                         <div className="rounded-lg bg-slate-50/90 px-2.5 py-2 ring-1 ring-slate-200/70">
                           <p className="text-[9px] font-medium uppercase tracking-wide text-slate-500 mb-0.5">
                             Last activity

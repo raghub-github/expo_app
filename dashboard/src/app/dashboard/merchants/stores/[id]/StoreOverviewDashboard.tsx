@@ -38,6 +38,7 @@ import { useMerchantStoreOperations } from "@/hooks/useMerchantStoreOperations";
 import { useStoreStatusCardModel, type StoreOperationsSnapshot } from "@/hooks/useStoreStatusCardModel";
 import { useInvalidateMerchantStoreQueries } from "@/hooks/queries/useMerchantStoreQueries";
 import { useMerchantDashboardAccess } from "@/hooks/useMerchantDashboardAccess";
+import { isStoreDelisted } from "@/lib/merchants/store-delist";
 
 function StatCard({
   title,
@@ -107,9 +108,21 @@ export function StoreOverviewDashboard({ storeId }: { storeId: string }) {
     handleCancelClosePopup,
     saveManualActivationLock,
   } = storeOps;
-  const isDelisted = ((storeFromHook?.approval_status || "").toUpperCase() === "DELISTED");
+  const isDelisted = isStoreDelisted(storeFromHook);
 
-  const statusCard = useStoreStatusCardModel(operationsQuery.data as StoreOperationsSnapshot | undefined, {
+  const statusCard = useStoreStatusCardModel(
+    operationsQuery.data || isDelisted
+      ? ({
+          ...(operationsQuery.data as StoreOperationsSnapshot | undefined),
+          operational_status:
+            (operationsQuery.data as StoreOperationsSnapshot | undefined)?.operational_status ??
+            (isDelisted ? "CLOSED" : undefined),
+          is_delisted:
+            isDelisted ||
+            (operationsQuery.data as StoreOperationsSnapshot | undefined)?.is_delisted === true,
+        } as StoreOperationsSnapshot)
+      : undefined,
+    {
     storeTimezone: (storeFromHook as { timezone?: string | null } | null)?.timezone,
     storeIdLabel: storeFromHook?.store_id ?? null,
     onCountdownExpired: () => invalidateStoreQueries(storeId),
@@ -318,6 +331,7 @@ export function StoreOverviewDashboard({ storeId }: { storeId: string }) {
             manualActivationLock={statusCard.manualActivationLock}
             showScheduledOffStartsCountdown={statusCard.showScheduledOffStartsCountdown}
             scheduledOffStartsInMs={statusCard.scheduledOffStartsInMs}
+            isDelisted={statusCard.isDelisted}
             canToggleStore={canOperateStore}
             onStoreToggle={() => storeOps.handleStoreToggle({ isDelisted })}
             onManualLockChange={(enabled) => {

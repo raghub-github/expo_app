@@ -23,6 +23,9 @@ import { merchantKeys } from '@/lib/query-keys'
 import { notifyPartnerTodaySlotsUpdated } from '@/lib/partnerTodaySlotsSync'
 import { normalizeWallTimeToHHMM } from '@/lib/wallTimeHHMM'
 import { toastStoreOperationsPostFailure } from '@/lib/storeOperationsPostFeedback'
+import { StoreDelistedBlockedDialog } from '@/components/StoreDelistedBlockedDialog'
+import { isStoreDelisted } from '@/lib/store-delist'
+import { PARTNER_STORE_OPERATIONS_REFRESH_EVENT } from '@/lib/partnerStoreOperationsRefresh'
 import { SettingsSidebarRail, settingsRailMainPaddingClass } from './components/SettingsSidebarRail'
 import { PlanExpiredWarningModal } from '@/components/merchant/PlanExpiredWarningModal'
 import { PartnerBrowserNotificationSettings } from '@/components/PartnerBrowserNotificationSettings'
@@ -341,6 +344,8 @@ function StoreSettingsContent() {
   const [isStoreOpen, setIsStoreOpen] = useState(true)
   const [manualCloseUntil, setManualCloseUntil] = useState<string | null>(null)
   const [showTempOffModal, setShowTempOffModal] = useState(false)
+  const [showDelistedBlocked, setShowDelistedBlocked] = useState(false)
+  const [storeDelisted, setStoreDelisted] = useState(false)
   const [tempOffDurationInput, setTempOffDurationInput] = useState('30')
   const [mxDeliveryEnabled, setMxDeliveryEnabled] = useState(false)
   const [openingTime, setOpeningTime] = useState('09:00')
@@ -825,25 +830,21 @@ function StoreSettingsContent() {
   const fetchStoreOperations = async () => {
     if (!storeId) return
     try {
-      const res = await fetch(`/api/store-operations?store_id=${encodeURIComponent(storeId)}`)
-      let data;
-      try {
-        data = await res.json()
-      } catch (jsonError) {
-        console.error('Failed to parse store operations JSON:', jsonError);
-        // fallback from store if loaded
-        if (store) {
-          setIsStoreOpen((store as MerchantStore).operational_status === 'OPEN')
-        }
-        return;
-      }
-      if (res.ok) {
-        setIsStoreOpen(data.operational_status === 'OPEN')
+      const { fetchStoreOperations: fetchStoreOperationsShared } = await import('@/hooks/useMerchantApi')
+      const data = await fetchStoreOperationsShared(storeId)
+      if (data) {
+        const delisted = isStoreDelisted({
+          approval_status: data.approval_status,
+          delisted_at: data.delisted_at,
+          is_delisted: data.is_delisted,
+        })
+        setStoreDelisted(delisted)
+        setIsStoreOpen(data.operational_status === 'OPEN' && !delisted)
         setManualCloseUntil(data.manual_close_until || null)
         // Load manual activation lock state from block_auto_open
         setManualActivationLock(data.block_auto_open === true)
         setLicenseBlockedForOps(data.license_blocked === true)
-        writeCachedStoreOperationsPanel(storeId, panelFieldsFromStoreOpsGet(data as Record<string, unknown>))
+        writeCachedStoreOperationsPanel(storeId, panelFieldsFromStoreOpsGet(data))
       }
     } catch {
       // fallback from store if loaded
@@ -854,6 +855,25 @@ function StoreSettingsContent() {
   }
   useEffect(() => {
     if (storeId) fetchStoreOperations()
+  }, [storeId])
+
+  useEffect(() => {
+    if (!storeId || typeof window === 'undefined') return
+    let lastFetch = 0
+    const onRefresh = (ev: Event) => {
+      const ce = ev as CustomEvent<{ storeId?: string; forceClosed?: boolean; isDelisted?: boolean }>
+      const sid = ce.detail?.storeId
+      if (sid && sid === storeId) {
+        if (ce.detail?.forceClosed) setIsStoreOpen(false)
+        if (typeof ce.detail?.isDelisted === 'boolean') setStoreDelisted(ce.detail.isDelisted)
+        const now = Date.now()
+        if (now - lastFetch < 2500) return
+        lastFetch = now
+        void fetchStoreOperations()
+      }
+    }
+    window.addEventListener(PARTNER_STORE_OPERATIONS_REFRESH_EVENT, onRefresh as EventListener)
+    return () => window.removeEventListener(PARTNER_STORE_OPERATIONS_REFRESH_EVENT, onRefresh as EventListener)
   }, [storeId])
 
   // Load delivery settings (toggles + radius comes from store in loadStore)
@@ -1137,10 +1157,10 @@ function StoreSettingsContent() {
   }, [showAutoRenewConfirm])
 
   useEffect(() => {
-    if (!storeId || isStoreOpen || !manualCloseUntil) return
+    if (!storeId || isStoreOpen || !manualCloseUntil || storeDelisted) return
     const t = setInterval(() => fetchStoreOperations(), 30000)
     return () => clearInterval(t)
-  }, [storeId, isStoreOpen, manualCloseUntil])
+  }, [storeId, isStoreOpen, manualCloseUntil, storeDelisted])
 
   // Load POS integration when storeId is set
   useEffect(() => {
@@ -1676,6 +1696,10 @@ function StoreSettingsContent() {
   }
 
   const handleStoreToggle = async () => {
+    if (storeDelisted || isStoreDelisted(store)) {
+      setShowDelistedBlocked(true)
+      return
+    }
     if (isStoreOpen) {
       setShowTempOffModal(true)
     } else {
@@ -5765,6 +5789,11 @@ function StoreSettingsContent() {
           </div>,
           document.body
         )}
+
+        <StoreDelistedBlockedDialog
+          open={showDelistedBlocked}
+          onClose={() => setShowDelistedBlocked(false)}
+        />
 
         {/* Temp Off Modal - portaled so backdrop blurs sidebar */}
         {typeof document !== 'undefined' && showTempOffModal && createPortal(

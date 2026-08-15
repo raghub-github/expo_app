@@ -14,15 +14,12 @@ import {
   FONT_LORA,
 } from "@/constants/theme";
 import {
-  dismissOnboardingBenefits,
-  ensureOnboardingBenefitsStarted,
+  fetchOnboardingTask,
   formatOnboardingDeadline,
-  isImageUploadComplete,
   isOnboardingExpired,
-  loadOnboardingBenefitsState,
-  reviveOnboardingBenefitsIfPending,
+  peekCompletedOnboardingTask,
   shouldShowOnboardingBenefitsCard,
-  syncOnboardingBenefitsFromServer,
+  startOnboardingTask,
 } from "@/lib/onboardingBenefitsStorage";
 
 type Props = {
@@ -62,7 +59,7 @@ export function OnboardingBenefitsCard({ storeName, onView }: Props) {
   );
 }
 
-/** Hook: window + visibility for home card. */
+/** Hook: window + visibility for home card. Card stays hidden until DB state is known. */
 export function useOnboardingBenefitsWindow(
   storeId: string | null,
   eligible: boolean,
@@ -80,68 +77,81 @@ export function useOnboardingBenefitsWindow(
 
   const [startedAt, setStartedAt] = useState<string | null>(null);
   const [packagingTipsDone, setPackagingTipsDone] = useState(false);
-  const [dismissed, setDismissed] = useState(false);
   const [completed, setCompleted] = useState(false);
+  const [ready, setReady] = useState(false);
+  const [visibleFromServer, setVisibleFromServer] = useState(false);
 
   const refresh = useCallback(async () => {
-    if (!storeId) {
+    if (!storeId || !storeDbId || !token) {
       setStartedAt(null);
       setPackagingTipsDone(false);
-      setDismissed(false);
       setCompleted(false);
+      setVisibleFromServer(false);
+      setReady(false);
       return;
     }
 
-    if (storeDbId && token) {
-      await syncOnboardingBenefitsFromServer(storeId, storeDbId, token);
-    }
-
-    const existing = await loadOnboardingBenefitsState(storeId);
-    if (existing?.completedAt) {
-      setStartedAt(existing.startedAt);
-      setPackagingTipsDone(Boolean(existing.packagingTipsCompletedAt));
-      setDismissed(true);
+    // Keep the card hidden until this fetch resolves. Do not assume incomplete.
+    if (peekCompletedOnboardingTask(storeDbId)) {
       setCompleted(true);
+    }
+
+    const dto = await fetchOnboardingTask(storeDbId, token);
+    if (!dto) {
+      setVisibleFromServer(false);
+      setReady(true);
       return;
     }
 
-    if (!eligible && !existing) {
-      setStartedAt(null);
-      setPackagingTipsDone(false);
-      setDismissed(false);
+    if (dto.status === "COMPLETED") {
+      setStartedAt(dto.startedAt);
+      setPackagingTipsDone(Boolean(dto.packagingTipsCompletedAt));
+      setCompleted(true);
+      setVisibleFromServer(false);
+      setReady(true);
+      return;
+    }
+
+    if (dto.status === "INCOMPLETE") {
+      setStartedAt(dto.startedAt);
+      setPackagingTipsDone(Boolean(dto.packagingTipsCompletedAt));
       setCompleted(false);
+      setVisibleFromServer(dto.visible === true);
+      setReady(true);
       return;
     }
 
-    const state = eligible
-      ? await ensureOnboardingBenefitsStarted(storeId, { storeDbId, token })
-      : existing!;
-
-    const revived = await reviveOnboardingBenefitsIfPending(storeId, {
-      itemsWithImages,
-      itemCount,
-    });
-    const latest = revived ?? (await loadOnboardingBenefitsState(storeId)) ?? state;
-    setStartedAt(latest.startedAt);
-    setPackagingTipsDone(Boolean(latest.packagingTipsCompletedAt));
-    setCompleted(Boolean(latest.completedAt));
-
-    const expired = isOnboardingExpired(latest.startedAt);
-    // Permanent hide only via Got it (completedAt). Expiry soft-hides the Home card.
-    if (latest.completedAt) {
-      setDismissed(true);
-      setCompleted(true);
-    } else if (expired) {
-      await dismissOnboardingBenefits(storeId, {
-        storeDbId,
-        token,
-        completed: false,
-      });
-      setDismissed(true);
-    } else {
-      setDismissed(Boolean(latest.dismissedAt));
+    // NOT_FOUND: start only when catalog proves the store is eligible.
+    if (eligible && catalogReady) {
+      const started = await startOnboardingTask(storeDbId, token);
+      if (started?.status === "COMPLETED") {
+        setStartedAt(started.startedAt);
+        setPackagingTipsDone(Boolean(started.packagingTipsCompletedAt));
+        setCompleted(true);
+        setVisibleFromServer(false);
+        setReady(true);
+        return;
+      }
+      setStartedAt(started?.startedAt ?? null);
+      setPackagingTipsDone(Boolean(started?.packagingTipsCompletedAt));
+      setCompleted(false);
+      setVisibleFromServer(started?.visible === true);
+      setReady(true);
+      return;
     }
-  }, [storeId, eligible, itemsWithImages, itemCount, storeDbId, token]);
+
+    setStartedAt(null);
+    setPackagingTipsDone(false);
+    setCompleted(false);
+    setVisibleFromServer(false);
+    setReady(true);
+  }, [storeId, storeDbId, token, eligible, catalogReady]);
+
+  useEffect(() => {
+    setReady(false);
+    setVisibleFromServer(false);
+    setCompleted(false);
+  }, [storeDbId]);
 
   useEffect(() => {
     void refresh();
@@ -159,14 +169,8 @@ export function useOnboardingBenefitsWindow(
   );
 
   const visible = shouldShowOnboardingBenefitsCard({
-    hasItems: eligible,
-    startedAt,
-    packagingTipsDone,
-    itemsWithImages,
-    itemCount,
-    dismissed,
-    completed,
-    catalogReady,
+    ready,
+    visibleFromServer,
   });
 
   return {
@@ -176,6 +180,7 @@ export function useOnboardingBenefitsWindow(
     expired,
     visible,
     deadlineLabel: startedAt ? formatOnboardingDeadline(startedAt) : null,
+    completed,
   };
 }
 

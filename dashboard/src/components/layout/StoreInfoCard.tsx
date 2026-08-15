@@ -16,6 +16,7 @@ export type StoreInfoCardData = {
   store_id: string;
   full_address?: string | null;
   approval_status?: string | null;
+  delisted_at?: string | null;
   created_at?: string | null;
 };
 
@@ -339,7 +340,9 @@ export function StoreInfoCard({ store, className = "", compact = false }: StoreI
   const [detailsLoading, setDetailsLoading] = useState(false);
   const [detailsError, setDetailsError] = useState<string | null>(null);
 
-  const approval = (store.approval_status || "").toUpperCase();
+  const approvalRaw = (store.approval_status || "").toUpperCase();
+  const approval =
+    store.delisted_at || approvalRaw === "DELISTED" ? "DELISTED" : approvalRaw;
 
   const openModal = useCallback(() => {
     setModalOpen(true);
@@ -426,10 +429,10 @@ export function StoreInfoCard({ store, className = "", compact = false }: StoreI
   );
 
   const statusLabel =
-    approval === "APPROVED"
+    approval === "DELISTED"
+      ? "Delisted"
+      : approval === "APPROVED"
       ? "Approved"
-      : approval === "DELISTED"
-        ? "Delisted"
         : approval === "REJECTED"
           ? "Rejected"
           : approval === "BLOCKED"

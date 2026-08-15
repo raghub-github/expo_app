@@ -8,6 +8,8 @@ import { PartnerShellWarmup } from "@/components/PartnerShellWarmup";
 import { PartnerMerchantQueryFocusSync } from "@/components/PartnerMerchantQueryFocusSync";
 import { GlobalToaster } from "@/components/GlobalToaster";
 import { PartnerBrowserPushBootstrap } from "@/components/PartnerBrowserPushBootstrap";
+import { MerchantWalletFreezeLive } from "@/hooks/useMerchantWalletFreezeLive";
+import { MerchantStoreDelistLive } from "@/hooks/useMerchantStoreDelistLive";
 
 /**
  * Global shell for /mx/* — floating pending-order badge on every merchant page.
@@ -23,6 +25,8 @@ export default function MXLayout({ children }: { children: React.ReactNode }) {
       <GlobalToaster />
       <PartnerShellWarmup />
       <PartnerMerchantQueryFocusSync />
+      <MerchantWalletFreezeLive />
+      <MerchantStoreDelistLive />
       <PartnerAcceptanceTimeoutSync />
       <Suspense fallback={null}>
         <PartnerPendingNewOrdersBar />

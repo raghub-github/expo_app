@@ -339,6 +339,7 @@ export function RightSidebar({
       store_id: sidebarStoreData.store_id ?? "",
       full_address: sidebarStoreData.full_address ?? null,
       approval_status: sidebarStoreData.approval_status ?? null,
+      delisted_at: sidebarStoreData.delisted_at ?? null,
       created_at: sidebarStoreData.created_at ?? null,
     };
   }, [sidebarStoreData]);
@@ -367,6 +368,7 @@ export function RightSidebar({
       store_id: s.store_id,
       full_address: s.full_address ?? null,
       approval_status: s.approval_status ?? null,
+      delisted_at: (s as { delisted_at?: string | null }).delisted_at ?? null,
     };
   }, [
     merchantsSearch?.searchResultStore,

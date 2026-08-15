@@ -28,6 +28,7 @@ export function computeStoreStatusBadge(input: {
   isTodayScheduledClosed: boolean;
   countdownKind: string | null;
   scheduledTimeOffs: Array<{ phase: "active" | "upcoming" }>;
+  isDelisted?: boolean;
 }): StoreStatusBadge {
   const {
     isStoreOpen,
@@ -36,7 +37,16 @@ export function computeStoreStatusBadge(input: {
     isTodayScheduledClosed,
     countdownKind,
     scheduledTimeOffs,
+    isDelisted,
   } = input;
+
+  if (isDelisted) {
+    return {
+      label: "Delisted",
+      dot: "bg-red-600",
+      pill: "bg-red-500/10 text-red-900 ring-1 ring-red-500/30",
+    };
+  }
 
   if (scheduledTimeOffs.some((x) => x.phase === "active")) {
     return {
