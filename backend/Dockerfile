@@ -32,6 +32,7 @@ COPY packages/financial-rules/package.json   ./packages/financial-rules/package.
 COPY packages/logger/package.json            ./packages/logger/package.json
 COPY packages/queue/package.json             ./packages/queue/package.json
 COPY packages/redis/package.json             ./packages/redis/package.json
+COPY packages/rider-availability/package.json ./packages/rider-availability/package.json
 COPY packages/slab-pricing/package.json      ./packages/slab-pricing/package.json
 COPY packages/store-status/package.json      ./packages/store-status/package.json
 # @gatimitra/bill-print is consumed at runtime by backend/src/modules/merchant-partner/
@@ -78,6 +79,7 @@ COPY packages/financial-rules ./packages/financial-rules
 COPY packages/logger          ./packages/logger
 COPY packages/queue           ./packages/queue
 COPY packages/redis           ./packages/redis
+COPY packages/rider-availability ./packages/rider-availability
 COPY packages/slab-pricing    ./packages/slab-pricing
 COPY packages/store-status    ./packages/store-status
 COPY packages/bill-print      ./packages/bill-print
@@ -86,7 +88,7 @@ COPY packages/merchant-payout ./packages/merchant-payout
 # No build step here (no source) — it's a config-only workspace.
 COPY packages/shared-config   ./packages/shared-config
 
-# Targeted build — only the 6 workspaces the backend needs.
+# Targeted build — only the workspaces the backend needs.
 #
 # Order matters: npm processes --workspace= flags left-to-right. Each
 # package's `tsc` step imports from its declared @gatimitra/* deps, which
@@ -107,6 +109,7 @@ RUN npm run build \
       --workspace=@gatimitra/contracts \
       --workspace=@gatimitra/merchant-payout \
       --workspace=@gatimitra/redis \
+      --workspace=@gatimitra/rider-availability \
       --workspace=@gatimitra/event-contracts \
       --workspace=@gatimitra/financial-rules \
       --workspace=@gatimitra/slab-pricing \

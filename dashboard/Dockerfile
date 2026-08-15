@@ -30,6 +30,7 @@ COPY package.json package-lock.json ./
 COPY dashboard/package.json            ./dashboard/package.json
 COPY packages/contracts/package.json         ./packages/contracts/package.json
 COPY packages/financial-rules/package.json   ./packages/financial-rules/package.json
+COPY packages/rider-availability/package.json ./packages/rider-availability/package.json
 COPY packages/slab-pricing/package.json      ./packages/slab-pricing/package.json
 COPY packages/shared-config/package.json ./packages/shared-config/package.json
 
@@ -56,6 +57,7 @@ COPY --from=deps /repo /repo
 COPY dashboard            ./dashboard
 COPY packages/contracts         ./packages/contracts
 COPY packages/financial-rules   ./packages/financial-rules
+COPY packages/rider-availability ./packages/rider-availability
 COPY packages/slab-pricing      ./packages/slab-pricing
 COPY packages/shared-config ./packages/shared-config
 
@@ -102,6 +104,7 @@ ENV NEXT_PUBLIC_ENABLE_PHONE_OTP_REGISTER=${NEXT_PUBLIC_ENABLE_PHONE_OTP_REGISTE
 RUN npm run build \
       --workspace=@gatimitra/contracts \
       --workspace=@gatimitra/financial-rules \
+      --workspace=@gatimitra/rider-availability \
       --workspace=@gatimitra/slab-pricing \
       --workspace=dashboard
 
