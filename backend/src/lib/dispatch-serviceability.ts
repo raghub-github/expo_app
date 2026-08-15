@@ -19,12 +19,13 @@
  * remains the dispatch engine's job.
  */
 
-import { getSql } from "../db/client.js";
 import {
   RIDER_DISPATCH_LOCATION_MAX_AGE_MINUTES,
   type DispatchServiceType,
 } from "./order-assignment-engine.js";
 import { resolveGeoCoverage } from "./geo-coverage.js";
+import { getSql } from "../db/client.js";
+import { queryRiderAvailabilityCandidates } from "@gatimitra/rider-availability";
 
 export type FulfillmentMode = "self_pickup" | "delivery";
 
@@ -65,9 +66,11 @@ function geoServiceCode(serviceType: DispatchServiceType): "food" | "parcel" | "
 }
 
 /**
- * Count on-duty riders for a service with a fresh GPS ping inside `radiusMeters` of the
- * pickup. Bounding-box prefilter + haversine; mirrors the on-duty gate used by the
- * dispatch engine (duty ON, service selected, ACTIVE, fresh GPS).
+ * Count dispatchable riders for a service with a fresh GPS ping inside `radiusMeters` of
+ * the pickup. Delegates to the shared `@gatimitra/rider-availability` engine — the single
+ * source of truth also used by the Super Admin Geo Rx dashboard, so both surfaces now
+ * agree on what "available" means (fixed the reported divergence: this check used to be
+ * the only one of three that applied a location-freshness filter at all).
  */
 export async function countAvailableRidersWithinServiceRadius(
   serviceType: DispatchServiceType,
@@ -84,44 +87,15 @@ export async function countAvailableRidersWithinServiceRadius(
   }
 
   const sql = getSql();
-  const serviceJson = JSON.stringify([serviceType]);
-  const latDelta = radiusMeters / 111_320;
-  const cosLat = Math.max(0.01, Math.cos((pickup.lat * Math.PI) / 180));
-  const lngDelta = radiusMeters / (111_320 * cosLat);
+  const candidates = await queryRiderAvailabilityCandidates(sql, {
+    service: serviceType,
+    lat: pickup.lat,
+    lng: pickup.lng,
+    radiusMeters,
+    freshnessMaxAgeMinutes: RIDER_DISPATCH_LOCATION_MAX_AGE_MINUTES,
+  });
 
-  const rows = (await sql`
-    WITH candidates AS (
-      SELECT rcl.lat AS lat, rcl.lng AS lng
-      FROM rider_current_locations rcl
-      INNER JOIN riders r ON r.id = rcl.rider_id
-      INNER JOIN LATERAL (
-        SELECT dl.status, dl.service_types
-        FROM duty_logs dl
-        WHERE dl.rider_id = rcl.rider_id
-        ORDER BY dl.timestamp DESC
-        LIMIT 1
-      ) ld ON true
-      WHERE rcl.updated_at >= NOW() - (${RIDER_DISPATCH_LOCATION_MAX_AGE_MINUTES} * INTERVAL '1 minute')
-        AND r.status = 'ACTIVE'
-        AND r.onboarding_stage = 'ACTIVE'
-        AND r.deleted_at IS NULL
-        AND ld.status = 'ON'
-        AND COALESCE(ld.service_types, '[]'::jsonb) @> ${serviceJson}::jsonb
-        AND rcl.lat BETWEEN ${pickup.lat - latDelta} AND ${pickup.lat + latDelta}
-        AND rcl.lng BETWEEN ${pickup.lng - lngDelta} AND ${pickup.lng + lngDelta}
-    )
-    SELECT COUNT(*)::int AS cnt
-    FROM candidates
-    WHERE (
-      6371008.8 * 2 * ASIN(SQRT(
-        POWER(SIN(RADIANS(lat - ${pickup.lat}) / 2), 2) +
-        COS(RADIANS(${pickup.lat})) * COS(RADIANS(lat)) *
-        POWER(SIN(RADIANS(lng - ${pickup.lng}) / 2), 2)
-      ))
-    ) <= ${radiusMeters}
-  `) as Array<{ cnt: number }>;
-
-  return Number(rows[0]?.cnt ?? 0);
+  return candidates.filter((c) => c.eligible).length;
 }
 
 /** Pre-placement serviceability decision for a pickup location + fulfillment mode. */

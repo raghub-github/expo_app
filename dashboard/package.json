@@ -22,6 +22,7 @@
     "@aws-sdk/s3-request-presigner": "^3.985.0",
     "@gatimitra/contracts": "*",
     "@gatimitra/financial-rules": "*",
+    "@gatimitra/rider-availability": "*",
     "@gatimitra/slab-pricing": "*",
     "@reduxjs/toolkit": "^2.11.2",
     "@supabase/auth-helpers-nextjs": "^0.15.0",

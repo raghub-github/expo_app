@@ -434,10 +434,16 @@ export interface GeoRiderNearPoint {
   lat: number;
   lng: number;
   distanceKm: number;
+  /** ONLINE | BUSY | STALE | OFFLINE. STALE = duty ON but GPS ping older than the
+   *  freshness threshold — same threshold the customer-facing serviceability check
+   *  enforces, so a STALE rider here is exactly a rider the customer app would NOT
+   *  count as available (this is what previously showed as ONLINE unconditionally). */
   status: string;
   localityCode: string | null;
   storeName: string | null;
   lastUpdatedAt: string | null;
+  /** Whether lastUpdatedAt is within the dispatch freshness window right now. */
+  locationFresh: boolean;
   /** Active duty services from latest duty_logs (food / parcel / person_ride). */
   activeServices: string[];
   currentAssignedOrderId: string | null;
@@ -453,6 +459,9 @@ export interface GeoRiderSearchResult {
     total: number;
     available: number;
     busy: number;
+    /** Duty ON but GPS stale — not counted in `available`, shown separately so an
+     *  admin can tell "no rider exists" apart from "rider exists but invisible". */
+    stale: number;
     offline: number;
     coveragePct: number;
   };
@@ -511,7 +520,9 @@ export async function searchRidersNearPoint(params: {
   areaManagerId: number | null;
 }): Promise<GeoRiderSearchResult> {
   const { getSql } = await import("@/lib/db/client");
+  const { DEFAULT_LOCATION_FRESHNESS_MAX_AGE_MINUTES } = await import("@gatimitra/rider-availability");
   const sql = getSql();
+  const freshnessMinutes = DEFAULT_LOCATION_FRESHNESS_MAX_AGE_MINUTES;
   const lat = params.lat;
   const lng = params.lng;
   const radiusKm = isAllowedRadiusKm(params.radiusKm) ? params.radiusKm : 3;
@@ -602,10 +613,23 @@ export async function searchRidersNearPoint(params: {
             ))
           )
         ) AS distance_km,
+        (
+          p.last_updated_at IS NOT NULL
+          AND p.last_updated_at >= NOW() - (${freshnessMinutes} * INTERVAL '1 minute')
+        ) AS location_fresh,
         CASE
           WHEN upper(COALESCE(p.duty_status, '')) = 'ON'
+            AND p.last_updated_at IS NOT NULL
+            AND p.last_updated_at >= NOW() - (${freshnessMinutes} * INTERVAL '1 minute')
             AND p.current_assigned_order_id IS NOT NULL THEN 'BUSY'
-          WHEN upper(COALESCE(p.duty_status, '')) = 'ON' THEN 'ONLINE'
+          WHEN upper(COALESCE(p.duty_status, '')) = 'ON'
+            AND p.last_updated_at IS NOT NULL
+            AND p.last_updated_at >= NOW() - (${freshnessMinutes} * INTERVAL '1 minute')
+            THEN 'ONLINE'
+          -- Duty ON but GPS stale/missing: NOT available (matches the customer-facing
+          -- serviceability check's freshness gate) — surfaced distinctly, not silently
+          -- merged into OFFLINE, so an admin can see the rider exists but is invisible.
+          WHEN upper(COALESCE(p.duty_status, '')) = 'ON' THEN 'STALE'
           ELSE 'OFFLINE'
         END AS status
       FROM positioned p
@@ -618,6 +642,7 @@ export async function searchRidersNearPoint(params: {
       lng,
       distance_km,
       status,
+      location_fresh,
       locality_code,
       city,
       store_name,
@@ -642,7 +667,7 @@ export async function searchRidersNearPoint(params: {
     }
     const status = String(row.status ?? "OFFLINE").toUpperCase();
     const activeServices =
-      status === "ONLINE" || status === "BUSY"
+      status === "ONLINE" || status === "BUSY" || status === "STALE"
         ? parseServiceTypes(row.duty_service_types)
         : [];
     const storeName =
@@ -659,6 +684,7 @@ export async function searchRidersNearPoint(params: {
       lng: Number(row.lng),
       distanceKm: Math.round(Number(row.distance_km) * 1000) / 1000,
       status,
+      locationFresh: Boolean(row.location_fresh),
       localityCode,
       storeName: storeName ?? localityCode,
       lastUpdatedAt,
@@ -677,10 +703,12 @@ export async function searchRidersNearPoint(params: {
 
   let available = 0;
   let busy = 0;
+  let stale = 0;
   let offline = 0;
   for (const r of riders) {
     if (r.status === "ONLINE") available += 1;
     else if (r.status === "BUSY") busy += 1;
+    else if (r.status === "STALE") stale += 1;
     else offline += 1;
   }
   const total = riders.length;
@@ -714,7 +742,7 @@ export async function searchRidersNearPoint(params: {
   return {
     center: { lat, lng },
     radiusKm,
-    kpis: { total, available, busy, offline, coveragePct },
+    kpis: { total, available, busy, stale, offline, coveragePct },
     riders,
     insights: {
       nearest,
