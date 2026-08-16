@@ -551,6 +551,10 @@ export default function OrdersScreen() {
   const [search, setSearch] = useState("");
   const [openMenuOrderId, setOpenMenuOrderId] = useState<string | null>(null);
   const [hiddenOrderIds, setHiddenOrderIds] = useState<Set<string>>(new Set());
+  // Only poll while this tab is actually on screen. `freezeOnBlur` halts renders but
+  // NOT the query's refetch timer, so without this gate the 5s active-orders poll keeps
+  // hitting the network (and waking the JS thread) while the user sits on Home/Food.
+  const [isScreenFocused, setIsScreenFocused] = useState(true);
 
   const coords = useLocationStore((s) => s.coords);
   const locationSource = useLocationStore((s) => s.locationSource);
@@ -587,10 +591,12 @@ export default function OrdersScreen() {
 
   useFocusEffect(
     useCallback(() => {
+      setIsScreenFocused(true);
       seedMyOrdersQueryIfCached(queryClient);
       // Always pull the latest on focus so History fills with just-cancelled /
       // just-delivered orders instead of showing a stale (or empty) cached list.
       void queryClient.invalidateQueries({ queryKey: ["my-orders"] });
+      return () => setIsScreenFocused(false);
     }, [queryClient])
   );
 
@@ -602,7 +608,7 @@ export default function OrdersScreen() {
       return list;
     },
     staleTime: 5_000,
-    refetchInterval: tab === "active" ? 5_000 : false,
+    refetchInterval: tab === "active" && isScreenFocused ? 5_000 : false,
     initialData: cachedOrders,
     initialDataUpdatedAt: getMyOrdersCachedAt(),
     placeholderData: (previous) => previous ?? cachedOrders,

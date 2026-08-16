@@ -46,6 +46,15 @@ function offerBannerArt(
 }
 const PROMO_AUTO_MS = 5500;
 const LIMITED_TIME_MAX_DAYS = 5;
+/**
+ * Hard cap on rendered slides. The home/food carousel previously mapped EVERY
+ * platform+merchant offer into a mounted full-card <Image>, so a location with many
+ * offers decoded a dozen+ banners at once (Glide CPU + texture-memory burst). Users
+ * never swipe past the first few, so cap the set.
+ */
+const MAX_SLIDES = 8;
+/** Only decode the image for slides within this distance of the active one. */
+const IMAGE_WINDOW = 1;
 
 function daysUntilOfferExpiry(validTill: string | null | undefined): number | null {
   if (!validTill?.trim()) return null;
@@ -109,18 +118,18 @@ function pickOffersForCarousel(
   const platform = offers.filter((o) => o.kind === "platform");
 
   if (mode === "ride") {
-    return platform.slice(0, 10);
+    return platform.slice(0, MAX_SLIDES);
   }
 
   if (mode === "food") {
-    return merchant;
+    return merchant.slice(0, MAX_SLIDES);
   }
 
   // Home tab: platform + nearby store offers (API order: platform first, then merchant).
   if (platform.length > 0 || merchant.length > 0) {
-    return [...platform, ...merchant];
+    return [...platform, ...merchant].slice(0, MAX_SLIDES);
   }
-  return offers;
+  return offers.slice(0, MAX_SLIDES);
 }
 
 function slideBackgroundSource(
@@ -203,10 +212,12 @@ type PromoSlideCardProps = {
   index: number;
   cardHeight: number;
   mode: "home" | "food" | "ride";
+  /** Decode the background image only for slides near the active one (memory/CPU guard). */
+  decodeImage: boolean;
   onPress: (slide: Slide) => void;
 };
 
-function PromoSlideCard({ slide, index, cardHeight, mode, onPress }: PromoSlideCardProps) {
+function PromoSlideCard({ slide, index, cardHeight, mode, decodeImage, onPress }: PromoSlideCardProps) {
   const [imageFailed, setImageFailed] = useState(false);
   const customBanner = hasCustomMerchantBanner(slide, imageFailed);
   const showParty = slide.sub.toLowerCase().includes("first order");
@@ -272,7 +283,7 @@ function PromoSlideCard({ slide, index, cardHeight, mode, onPress }: PromoSlideC
       <View style={[styles.promoCard, { height: cardHeight }]}>
         {/* Soft mint base — image paints on top instantly (no skeleton flash). */}
         <View style={[styles.promoBgFallback, { height: cardHeight }]} />
-        {bgSource ? (
+        {bgSource && decodeImage ? (
           <Image
             source={bgSource}
             style={[styles.promoBgImage, { height: cardHeight }]}
@@ -280,6 +291,7 @@ function PromoSlideCard({ slide, index, cardHeight, mode, onPress }: PromoSlideC
             cachePolicy="memory-disk"
             transition={0}
             priority="high"
+            recyclingKey={slide.id}
             onError={() => setImageFailed(true)}
           />
         ) : null}
@@ -392,6 +404,7 @@ export function HomePromoCarousel({
             index={index}
             cardHeight={cardHeight}
             mode={mode}
+            decodeImage={Math.abs(index - activeIndex) <= IMAGE_WINDOW}
             onPress={handlePress}
           />
         ))}

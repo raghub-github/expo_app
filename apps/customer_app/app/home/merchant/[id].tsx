@@ -8,7 +8,6 @@ import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useSta
 import { AppText } from "@/components/AppText";
 
 import { View, TouchableOpacity, StyleSheet, Platform, Modal, Pressable, TextInput, Share, Alert, InteractionManager, StatusBar } from "react-native";
-import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { useLocalSearchParams, useRouter, useFocusEffect } from "expo-router";
 import { useSafeAreaInsets, initialWindowMetrics } from "react-native-safe-area-context";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -2031,7 +2030,7 @@ export default function MerchantDetailScreen() {
   const pageMerchant = displayMerchant ?? merchant;
 
   return (
-    <GestureHandlerRootView style={styles.container}>
+    <View style={styles.container}>
       <StatusBar
         hidden={false}
         translucent={false}
@@ -2353,7 +2352,7 @@ export default function MerchantDetailScreen() {
           animatedStyle={fabStyle}
         />
       ) : null}
-    </GestureHandlerRootView>
+    </View>
   );
 }
 
