@@ -16,6 +16,7 @@ import {
   type SQL,
   type InferInsertModel,
 } from "drizzle-orm";
+import { queryRiderGeoDirectory } from "@gatimitra/rider-availability";
 
 export type RiderScopedUpdate = Partial<
   Pick<InferInsertModel<typeof riders>, "status" | "availabilityStatus" | "localityCode" | "updatedBy">
@@ -494,7 +495,6 @@ export async function searchRidersNearPoint(params: {
   areaManagerId: number | null;
 }): Promise<GeoRiderSearchResult> {
   const { getSql } = await import("@/lib/db/client");
-  const { queryRiderGeoDirectory } = await import("@gatimitra/rider-availability");
   const sql = getSql();
   const lat = params.lat;
   const lng = params.lng;

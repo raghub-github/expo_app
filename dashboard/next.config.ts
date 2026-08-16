@@ -49,7 +49,7 @@ const nextConfig: NextConfig = {
   // only from `dashboard/` left the standalone bundle without a copy of next
   // itself, producing `Cannot find module 'next'` in the runtime container.
   outputFileTracingRoot: monorepoRoot,
-  transpilePackages: ["@gatimitra/contracts", "@gatimitra/slab-pricing", "geist"],
+  transpilePackages: ["@gatimitra/contracts", "@gatimitra/rider-availability", "@gatimitra/slab-pricing", "geist"],
   // Disable dev indicator ("• Rendering..." / "Compiling...") at bottom-left to avoid delay and visual noise
   devIndicators: false,
   // Image optimization: allow quality 75 (default) and 95 for crisp logos/hero images
