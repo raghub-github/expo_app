@@ -13,7 +13,7 @@ export async function triggerStoreScheduleTick(storeInternalId: number): Promise
     await fetchBackend(`/v1/internal/stores/${storeInternalId}/schedule-tick`, {
       method: 'POST',
       headers: { 'X-Internal-Secret': secret },
-      timeoutMs: 8_000,
+      timeoutMs: 2_000,
     });
   } catch (err) {
     console.warn('[triggerStoreScheduleTick] request failed:', err);

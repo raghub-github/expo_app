@@ -114,7 +114,7 @@ export async function proxy(request: NextRequest) {
 
   try {
     return await runWithQuietAuthTimeoutErrors(async () => {
-    const safeFetch = createSafeFetchWithTimeout(5_000);
+    const safeFetch = createSafeFetchWithTimeout(2_500);
 
     const supabase = createServerClient(
       process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder.supabase.co",

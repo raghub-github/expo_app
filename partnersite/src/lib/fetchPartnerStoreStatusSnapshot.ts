@@ -39,7 +39,9 @@ export async function fetchPartnerStoreStatusSnapshot(
     `/v1/internal/stores/${storeInternalId}/partner-status`,
     {
       headers: { 'X-Internal-Secret': secret },
-      timeoutMs: 12_000,
+      // Fail fast when Fastify is down — store-operations falls back to local DB.
+      // Keep above fetch-backend default so a healthy-but-busy Fastify is not dropped.
+      timeoutMs: 3_500,
     }
   );
 }

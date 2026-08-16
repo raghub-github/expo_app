@@ -163,6 +163,28 @@ export type DomainEventMap = {
     reason?: string;
   };
 
+  /** Rider penalty (agent dashboard or order cancellation). */
+  "rider.penalty": {
+    userId: string;
+    amount: number;
+    reason?: string;
+    orderId?: string | number | null;
+    penaltyId?: string | number | null;
+  };
+
+  /** Rider bank account rejected by agent. */
+  "rider.bank_rejected": {
+    userId: string;
+    reason: string;
+    paymentMethodId?: string | number | null;
+  };
+
+  /** Rider bank account approved by agent. */
+  "rider.bank_approved": {
+    userId: string;
+    paymentMethodId?: string | number | null;
+  };
+
   // Withdrawal lifecycle.
   "wallet.withdrawal": {
     userId: string;
@@ -635,8 +657,8 @@ export function registerDomainEventHandlers(): void {
       variables: { reason: e.reason?.trim() || "Contact support." },
       target: { user_id: e.userId },
       priority: "high",
-      idempotencyKey: `${template}:${e.userId}:${e.reason ?? "na"}`,
-      metadata: { reason: e.reason ?? null },
+      idempotencyKey: `${template}:${e.userId}:${Date.now()}`,
+      metadata: { reason: e.reason ?? null, url: e.role === "rider" ? "/(tabs)/earnings" : "/earnings" },
     });
   });
 
@@ -647,8 +669,8 @@ export function registerDomainEventHandlers(): void {
       variables: {},
       target: { user_id: e.userId },
       priority: "high",
-      idempotencyKey: `${template}:${e.userId}`,
-      metadata: {},
+      idempotencyKey: `${template}:${e.userId}:${Date.now()}`,
+      metadata: { url: e.role === "rider" ? "/(tabs)/earnings" : "/earnings" },
     });
   });
 
@@ -726,17 +748,81 @@ export function registerDomainEventHandlers(): void {
   });
 
   on("account.state_changed", async (e) => {
+    // Rider templates are role-scoped; customer ACCOUNT_* codes will role_mismatch for riders.
     const template =
-      e.newState === "SUSPENDED" ? "ACCOUNT_SUSPENDED"
-      : e.newState === "REACTIVATED" ? "ACCOUNT_REACTIVATED"
-      : "RIDER_BLACKLISTED";
+      e.role === "rider"
+        ? e.newState === "REACTIVATED"
+          ? "RIDER_ACCOUNT_ACTIVATED"
+          : e.newState === "SUSPENDED"
+            ? "RIDER_ACCOUNT_DEACTIVATED"
+            : "RIDER_BLACKLISTED"
+        : e.newState === "SUSPENDED"
+          ? "ACCOUNT_SUSPENDED"
+          : e.newState === "REACTIVATED"
+            ? "ACCOUNT_REACTIVATED"
+            : "RIDER_BLACKLISTED";
     await sendNotification({
       templateCode: template,
       variables: { reason: e.reason ?? "" },
       target: { user_id: e.userId },
       priority: "critical",
-      idempotencyKey: `${template}:${e.userId}:${e.newState}:${e.reason ?? "na"}`,
-      metadata: {},
+      idempotencyKey: `${template}:${e.userId}:${e.newState}:${e.reason ?? "na"}:${Date.now()}`,
+      metadata: {
+        newState: e.newState,
+        reason: e.reason ?? null,
+        url: e.role === "rider" ? "/(tabs)/earnings" : "/support",
+      },
+    });
+  });
+
+  on("rider.penalty", async (e) => {
+    await sendNotification({
+      templateCode: "RIDER_PENALTY",
+      variables: {
+        amount: Number(e.amount).toFixed(2),
+        reason: e.reason?.trim() || "Penalty applied to your wallet.",
+      },
+      target: { user_id: e.userId },
+      priority: "high",
+      idempotencyKey: `RIDER_PENALTY:${e.userId}:${e.penaltyId ?? e.orderId ?? Math.round(e.amount * 100)}:${Date.now()}`,
+      metadata: {
+        amount: e.amount,
+        reason: e.reason ?? null,
+        orderId: e.orderId ?? null,
+        penaltyId: e.penaltyId ?? null,
+        url: "/(tabs)/earnings",
+      },
+    });
+  });
+
+  on("rider.bank_rejected", async (e) => {
+    await sendNotification({
+      templateCode: "RIDER_BANK_REJECTED",
+      variables: {
+        reason: e.reason.trim() || "Your bank account was rejected. Please add a valid account.",
+      },
+      target: { user_id: e.userId },
+      priority: "high",
+      idempotencyKey: `RIDER_BANK_REJECTED:${e.userId}:${e.paymentMethodId ?? "na"}:${Date.now()}`,
+      metadata: {
+        reason: e.reason,
+        paymentMethodId: e.paymentMethodId ?? null,
+        url: "/(tabs)/earnings",
+      },
+    });
+  });
+
+  on("rider.bank_approved", async (e) => {
+    await sendNotification({
+      templateCode: "RIDER_BANK_APPROVED",
+      variables: {},
+      target: { user_id: e.userId },
+      priority: "high",
+      idempotencyKey: `RIDER_BANK_APPROVED:${e.userId}:${e.paymentMethodId ?? "na"}:${Date.now()}`,
+      metadata: {
+        paymentMethodId: e.paymentMethodId ?? null,
+        url: "/(tabs)/earnings",
+      },
     });
   });
 

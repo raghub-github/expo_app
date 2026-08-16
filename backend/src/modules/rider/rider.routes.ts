@@ -647,6 +647,15 @@ export async function riderRoutes(app: FastifyInstance) {
     },
   );
 
+  const RiderBankAddGateSchema = z.object({
+    locked: z.boolean(),
+    unlockAt: z.string().nullable(),
+    attemptsInWindow: z.number(),
+    rejectsInWindow: z.number(),
+    maxAttempts: z.number(),
+    windowHours: z.number(),
+  });
+
   const RiderBankPaymentMethodSchema = z.object({
     id: z.number(),
     methodType: z.literal("bank"),
@@ -656,7 +665,12 @@ export async function riderRoutes(app: FastifyInstance) {
     branch: z.string().nullable(),
     accountNumberMasked: z.string(),
     verificationStatus: z.enum(["pending", "verified", "rejected"]),
+    isActive: z.boolean().optional(),
+    isPrimary: z.boolean().optional(),
     createdAt: z.string(),
+    rejectionReason: z.string().nullable().optional(),
+    crossCheckStatus: z.enum(["ok", "mismatch"]).optional(),
+    crossCheckMessages: z.array(z.string()).optional(),
   });
 
   app.get(
@@ -666,6 +680,7 @@ export async function riderRoutes(app: FastifyInstance) {
         response: {
           200: z.object({
             paymentMethod: RiderBankPaymentMethodSchema.nullable(),
+            addGate: RiderBankAddGateSchema,
           }),
         },
       },
@@ -676,11 +691,80 @@ export async function riderRoutes(app: FastifyInstance) {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         return (reply as any).status(403).send({ error: "Invalid rider session" });
       }
-      const { getRiderBankPaymentMethod } = await import(
+      const { getRiderBankPaymentMethod, getRiderBankAddGate } = await import(
         "../../lib/rider-bank-payment-method.js"
       );
-      const paymentMethod = await getRiderBankPaymentMethod(riderId);
-      return { paymentMethod };
+      const [paymentMethod, addGate] = await Promise.all([
+        getRiderBankPaymentMethod(riderId),
+        getRiderBankAddGate(riderId),
+      ]);
+      return { paymentMethod, addGate };
+    },
+  );
+
+  app.get(
+    "/payment-methods/bank/list",
+    {
+      schema: {
+        response: {
+          200: z.object({
+            paymentMethods: z.array(RiderBankPaymentMethodSchema),
+          }),
+        },
+      },
+    },
+    async (req, reply) => {
+      const riderId = parseRiderIdFromAuth(req.auth!.sub);
+      if (riderId == null) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (reply as any).status(403).send({ error: "Invalid rider session" });
+      }
+      const { listRiderBankPaymentMethods } = await import(
+        "../../lib/rider-bank-payment-method.js"
+      );
+      const paymentMethods = await listRiderBankPaymentMethods(riderId);
+      return { paymentMethods };
+    },
+  );
+
+  app.post(
+    "/payment-methods/bank/check-duplicate",
+    {
+      schema: {
+        body: z.object({
+          accountNumber: z.string().regex(/^\d{9,18}$/),
+        }),
+        response: {
+          200: z.object({
+            duplicate: z.boolean(),
+            rejected: z.boolean(),
+            message: z.string().nullable(),
+          }),
+        },
+      },
+    },
+    async (req, reply) => {
+      const riderId = parseRiderIdFromAuth(req.auth!.sub);
+      if (riderId == null) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (reply as any).status(403).send({ error: "Invalid rider session" });
+      }
+      const accountNumber = String(
+        (req.body as { accountNumber?: string }).accountNumber ?? "",
+      ).replace(/\s/g, "");
+      const {
+        findDuplicateRiderBankAccount,
+        duplicateBankAccountMessage,
+      } = await import("../../lib/rider-bank-payment-method.js");
+      const dup = await findDuplicateRiderBankAccount(riderId, accountNumber);
+      if (!dup) {
+        return { duplicate: false, rejected: false, message: null };
+      }
+      return {
+        duplicate: true,
+        rejected: dup.verificationStatus === "rejected",
+        message: duplicateBankAccountMessage(dup.verificationStatus),
+      };
     },
   );
 
@@ -690,7 +774,7 @@ export async function riderRoutes(app: FastifyInstance) {
       schema: {
         body: z.object({
           accountHolderName: z.string().min(2).max(80),
-          bankName: z.string().min(2).max(80),
+          bankName: z.string().min(1).max(80),
           ifsc: z.string().min(11).max(11),
           branch: z.string().max(80).optional(),
           accountNumber: z.string().regex(/^\d{9,18}$/),
@@ -718,9 +802,55 @@ export async function riderRoutes(app: FastifyInstance) {
         );
         return reply.status(201).send({ paymentMethod });
       } catch (error) {
+        const { RiderBankAddLockedError } = await import(
+          "../../lib/rider-bank-payment-method.js"
+        );
+        if (error instanceof RiderBankAddLockedError) {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          return (reply as any).status(429).send({
+            error: error.message,
+            code: error.code,
+            unlockAt: error.unlockAt,
+            addGate: error.gate,
+          });
+        }
         const message =
           error instanceof Error ? error.message : "Could not save bank account";
-        const status = message === "Bank account already linked" ? 409 : 400;
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (reply as any).status(400).send({ error: message });
+      }
+    },
+  );
+
+  app.post(
+    "/payment-methods/bank/:id/set-primary",
+    {
+      schema: {
+        params: z.object({ id: z.coerce.number().int().positive() }),
+        response: {
+          200: z.object({
+            paymentMethod: RiderBankPaymentMethodSchema,
+          }),
+        },
+      },
+    },
+    async (req, reply) => {
+      const riderId = parseRiderIdFromAuth(req.auth!.sub);
+      if (riderId == null) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (reply as any).status(403).send({ error: "Invalid rider session" });
+      }
+      const { id } = req.params as { id: number };
+      const { setRiderBankPaymentMethodPrimary } = await import(
+        "../../lib/rider-bank-payment-method.js"
+      );
+      try {
+        const paymentMethod = await setRiderBankPaymentMethodPrimary(riderId, id);
+        return { paymentMethod };
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "Could not set primary account";
+        const status = message === "Bank account not found" ? 404 : 400;
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         return (reply as any).status(status).send({ error: message });
       }
@@ -1637,6 +1767,13 @@ export async function riderRoutes(app: FastifyInstance) {
           error: "SUBSCRIPTION_DUTY_STOPPED",
           message:
             "Duty stopped due to subscription penalty. Clear dues to go online.",
+        });
+      }
+
+      if (restrictionSnapshot.penaltyDutyStopped) {
+        return reply.status(403).send({
+          error: "WALLET_PENALTY_DUTY_STOPPED",
+          message: "Duty stopped due to wallet penalty. Clear dues to go online.",
         });
       }
 

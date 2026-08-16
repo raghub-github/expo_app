@@ -8,6 +8,8 @@ type Props = {
   missingToken?: boolean;
   /** Native @rnmapbox/maps module unavailable (Expo Go or missing dev build). */
   needsDevBuild?: boolean;
+  /** When provided on home fallback, avoid "Turn ON duty" while already on duty. */
+  isOnDuty?: boolean;
 };
 
 /**
@@ -18,6 +20,7 @@ export function MapboxUnavailablePanel({
   context = "home",
   missingToken = false,
   needsDevBuild = false,
+  isOnDuty = false,
 }: Props) {
   const isNav = context === "navigation";
 
@@ -30,8 +33,9 @@ export function MapboxUnavailablePanel({
           </View>
           <Text style={styles.homeTitle}>You are on the home screen</Text>
           <Text style={styles.homeBody}>
-            Turn ON duty to receive orders. Live map needs a native build — all other controls work
-            now.
+            {isOnDuty
+              ? "Live map needs a native build — all other controls work now."
+              : "Turn ON duty to receive orders. Live map needs a native build — all other controls work now."}
           </Text>
         </View>
       </View>

@@ -20,10 +20,27 @@ type NotificationInboxStore = {
 };
 
 function inferType(data?: Record<string, unknown>): RiderNotificationType {
-  const raw = String(data?.gmType ?? data?.type ?? "").toUpperCase();
+  const raw = String(data?.gmType ?? data?.template_code ?? data?.type ?? "").toUpperCase();
   if (raw.includes("ORDER")) return "order";
-  if (raw.includes("EARN") || raw.includes("PAYOUT") || raw.includes("WALLET")) return "earnings";
-  if (raw.includes("KYC") || raw.includes("VERIFY") || raw.includes("VEHICLE") || raw.includes("ACCOUNT")) {
+  if (
+    raw.includes("EARN") ||
+    raw.includes("PAYOUT") ||
+    raw.includes("WALLET") ||
+    raw.includes("PENALTY")
+  ) {
+    return "earnings";
+  }
+  if (
+    raw.includes("KYC") ||
+    raw.includes("VERIFY") ||
+    raw.includes("VEHICLE") ||
+    raw.includes("ACCOUNT") ||
+    raw.includes("BLACKLIST") ||
+    raw.includes("SUSPEND") ||
+    raw.includes("DEACTIVAT") ||
+    raw.includes("REACTIVAT") ||
+    raw.includes("ACTIVATED")
+  ) {
     return "account";
   }
   if (raw.includes("OFFER") || raw.includes("PROMO")) return "promo";

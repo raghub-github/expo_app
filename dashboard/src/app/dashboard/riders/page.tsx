@@ -31,6 +31,7 @@ import { AddAmountModal } from '@/components/riders/AddAmountModal';
 import { RiderLogoutSessionInline } from '@/components/riders/RiderLogoutSessionInline';
 import { RiderLogoutHistorySideSheet } from '@/components/riders/RiderLogoutHistorySideSheet';
 import { ConfirmModal } from '@/components/ui/ConfirmModal';
+import { RejectBankAccountReasonModal } from '@/components/riders/RejectBankAccountReasonModal';
 
 const RiderBankAccountVerifySideSheet = dynamic(
   () =>
@@ -143,6 +144,7 @@ export default function RidersPage() {
   const [vehicleVerifyLoading, setVehicleVerifyLoading] = useState(false);
   const [bankVerifySheetOpen, setBankVerifySheetOpen] = useState(false);
   const [bankVerifyLoading, setBankVerifyLoading] = useState(false);
+  const [bankRejectReasonOpen, setBankRejectReasonOpen] = useState(false);
   const [selfieImgError, setSelfieImgError] = useState(false);
   const [logoutHistoryOpen, setLogoutHistoryOpen] = useState(false);
   const [sessionHistoryTab, setSessionHistoryTab] = useState<"login" | "logout">("logout");
@@ -474,7 +476,7 @@ export default function RidersPage() {
   }, [riderId, queryClient, refetchRiderSummary]);
 
   const handleBankAccountAction = useCallback(
-    async (action: "verify" | "reject") => {
+    async (action: "verify" | "reject", reason?: string) => {
       if (!riderId) return false;
       setBankVerifyLoading(true);
       try {
@@ -482,7 +484,10 @@ export default function RidersPage() {
           method: "POST",
           credentials: "include",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ action }),
+          body: JSON.stringify({
+            action,
+            ...(action === "reject" ? { reason: reason?.trim() || undefined } : {}),
+          }),
         });
         const data = await res.json().catch(() => ({}));
         if (!res.ok || !data.success) {
@@ -490,6 +495,7 @@ export default function RidersPage() {
         }
         invalidateRiderSummary(queryClient, riderId);
         await refetchRiderSummary();
+        setBankRejectReasonOpen(false);
         setBankVerifySheetOpen(false);
         return true;
       } catch (e) {
@@ -2860,12 +2866,23 @@ export default function RidersPage() {
                     actionLoading={bankVerifyLoading}
                     onAction={async (action) => {
                       if (action === "reject") {
-                        const confirmed = window.confirm(
-                          "Reject this bank account? The rider will need to add a new account.",
-                        );
-                        if (!confirmed) return;
+                        setBankRejectReasonOpen(true);
+                        return;
                       }
                       await handleBankAccountAction(action);
+                    }}
+                  />
+                ) : null}
+
+                {bankRejectReasonOpen && riderId ? (
+                  <RejectBankAccountReasonModal
+                    riderLabel={rider?.name ? `${rider.name} · GMR${riderId}` : `GMR${riderId}`}
+                    saving={bankVerifyLoading}
+                    onClose={() => {
+                      if (!bankVerifyLoading) setBankRejectReasonOpen(false);
+                    }}
+                    onConfirm={async (reason) => {
+                      await handleBankAccountAction("reject", reason);
                     }}
                   />
                 ) : null}

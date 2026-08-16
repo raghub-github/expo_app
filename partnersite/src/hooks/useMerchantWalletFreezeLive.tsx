@@ -18,7 +18,14 @@ import { usePartnerSelectedStore } from '@/lib/partner-selected-store';
 import { setPartnerWalletFreezeOverlay } from '@/lib/merchant-wallet-freeze-overlay';
 import type { WalletSummary } from '@/hooks/useMerchantApi';
 
-const POLL_MS = 1500;
+/** Backup poll — realtime is primary. Keep slow to avoid log/network spam. */
+const POLL_MS = 30_000;
+
+/** One shared poll across /partners + /mx layouts (and React Strict Mode remounts). */
+let sharedPollOwner: symbol | null = null;
+let sharedPollTimer: ReturnType<typeof setInterval> | null = null;
+let sharedPollStoreId: string | null = null;
+let sharedPollFn: (() => void) | null = null;
 
 function freezeFromUnknown(raw: unknown): { isFrozen: boolean; freezeReason: string | null } | null {
   if (!raw || typeof raw !== 'object') return null;
@@ -46,7 +53,7 @@ function patchWalletQueries(
   isFrozen: boolean,
   freezeReason: string | null,
 ) {
-    const patch = (old: WalletSummary | undefined): WalletSummary | undefined => {
+  const patch = (old: WalletSummary | undefined): WalletSummary | undefined => {
     if (!old) return old;
     return {
       ...old,
@@ -71,7 +78,7 @@ function patchWalletQueries(
 
 /**
  * Instant freeze/unfreeze for Withdraw on Payments (and any cached wallet card).
- * Broadcast is the primary path; postgres_changes + 1.5s poll are backups.
+ * Broadcast is the primary path; postgres_changes + slow poll are backups.
  */
 export function MerchantWalletFreezeLive() {
   const queryClient = useQueryClient();
@@ -81,8 +88,8 @@ export function MerchantWalletFreezeLive() {
   useEffect(() => {
     if (!storeId) return undefined;
 
+    const owner = Symbol('freeze-poll');
     let cancelled = false;
-    let pollTimer: ReturnType<typeof setInterval> | null = null;
     let channel: RealtimeChannel | null = null;
     const supabase = createClient();
 
@@ -115,26 +122,41 @@ export function MerchantWalletFreezeLive() {
       }
     };
 
-    const startPoll = () => {
-      if (pollTimer) return;
-      void pollOnce();
-      pollTimer = setInterval(() => {
+    const startSharedPoll = () => {
+      sharedPollFn = () => {
         void pollOnce();
+      };
+      sharedPollStoreId = storeId;
+      if (sharedPollTimer) return;
+      sharedPollOwner = owner;
+      void pollOnce();
+      sharedPollTimer = setInterval(() => {
+        sharedPollFn?.();
       }, POLL_MS);
     };
-    const stopPoll = () => {
-      if (pollTimer) {
-        clearInterval(pollTimer);
-        pollTimer = null;
+
+    const stopSharedPoll = () => {
+      if (sharedPollOwner !== owner) return;
+      if (sharedPollTimer) {
+        clearInterval(sharedPollTimer);
+        sharedPollTimer = null;
       }
+      sharedPollOwner = null;
+      sharedPollFn = null;
+      sharedPollStoreId = null;
     };
 
     const onVis = () => {
-      if (document.visibilityState === 'visible') startPoll();
-      else stopPoll();
+      if (document.visibilityState === 'visible') startSharedPoll();
+      else if (sharedPollOwner === owner) {
+        if (sharedPollTimer) {
+          clearInterval(sharedPollTimer);
+          sharedPollTimer = null;
+        }
+      }
     };
     document.addEventListener('visibilitychange', onVis);
-    startPoll();
+    startSharedPoll();
 
     if (storeInternalId) {
       channel = supabase
@@ -163,7 +185,7 @@ export function MerchantWalletFreezeLive() {
     return () => {
       cancelled = true;
       document.removeEventListener('visibilitychange', onVis);
-      stopPoll();
+      stopSharedPoll();
       if (channel) void supabase.removeChannel(channel);
     };
   }, [queryClient, storeId, storeInternalId]);

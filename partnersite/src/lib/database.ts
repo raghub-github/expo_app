@@ -158,23 +158,26 @@ function isTransientSupabaseError(message: string, code?: string | null): boolea
 
 async function fetchStoreByIdViaApi(storeId: string): Promise<MerchantStore | null> {
   if (typeof window === 'undefined') return null;
-  // Client-side timeout — nginx returns 504 after ~60s if the backend is slow.
-  // Aborting at 20s means the tab never sits blocked for a full minute on a
-  // single stale request, and the query cache moves on to the next component.
+  // Client-side timeout — keep short so Menu does not hang; caller may proceed without row.
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 20_000);
+  const timer = setTimeout(() => controller.abort(), 12_000);
   try {
     const res = await fetch(
       `/api/merchant/store-record?storeId=${encodeURIComponent(storeId)}`,
       { credentials: 'include', cache: 'no-store', signal: controller.signal }
     );
+    // True missing store only — do not treat 401/5xx/timeout as "not found".
     if (res.status === 404) return null;
-    if (!res.ok) return null;
+    if (!res.ok) {
+      throw new Error(`store_record_${res.status}`);
+    }
     const row = (await res.json()) as unknown;
     const { normalizeProfileStore } = await import('@/lib/merchant-profile-cache');
     return normalizeProfileStore(row as Parameters<typeof normalizeProfileStore>[0]) as MerchantStore;
-  } catch {
-    return null;
+  } catch (e) {
+    if (e instanceof Error && e.message.startsWith('store_record_')) throw e;
+    // Abort / network — let caller decide; do not pretend the store does not exist.
+    throw e instanceof Error ? e : new Error('store_record_failed');
   } finally {
     clearTimeout(timer);
   }
@@ -241,7 +244,13 @@ export const fetchStoreById = async (storeId: string): Promise<MerchantStore | n
     // Browser: only the ownership-checked API. Never fall back to raw Supabase
     // (that can paint another merchant's store from a stale selectedStoreId).
     if (typeof window !== 'undefined') {
-      return fetchStoreByIdViaApi(trimmed);
+      try {
+        return await fetchStoreByIdViaApi(trimmed);
+      } catch {
+        // Transient API failure — null means "unknown", not necessarily missing.
+        // Callers with a valid public store id should not show "Store not found".
+        return null;
+      }
     }
 
     return fetchStoreByIdViaSupabase(trimmed);

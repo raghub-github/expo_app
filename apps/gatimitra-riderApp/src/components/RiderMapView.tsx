@@ -47,6 +47,7 @@ interface RiderMapViewProps {
   style?: object;
   showRadar?: boolean;
   demandZones?: DemandZone[];
+  isOnDuty?: boolean;
 }
 
 export type RiderMapViewHandle = {
@@ -65,7 +66,7 @@ const OrderPin: React.FC<{ order: Order; onPress?: () => void }> = ({ order, onP
 );
 
 export const RiderMapView = forwardRef<RiderMapViewHandle, RiderMapViewProps>(function RiderMapView(
-  { riderLocation, orders, onOrderPress, style, showRadar = false, demandZones = [] },
+  { riderLocation, orders, onOrderPress, style, showRadar = false, demandZones = [], isOnDuty = false },
   ref
 ) {
   const cameraRef = useRef<{ setCamera: (opts: object) => void } | null>(null);
@@ -133,7 +134,7 @@ export const RiderMapView = forwardRef<RiderMapViewHandle, RiderMapViewProps>(fu
   if (!resolveMapboxPublicToken()) {
     return (
       <View style={[styles.container, style]}>
-        <MapboxUnavailablePanel context="home" missingToken />
+        <MapboxUnavailablePanel context="home" missingToken isOnDuty={isOnDuty} />
       </View>
     );
   }
@@ -144,6 +145,7 @@ export const RiderMapView = forwardRef<RiderMapViewHandle, RiderMapViewProps>(fu
         <MapboxUnavailablePanel
           context="home"
           needsDevBuild={Constants.appOwnership === "expo"}
+          isOnDuty={isOnDuty}
         />
       </View>
     );

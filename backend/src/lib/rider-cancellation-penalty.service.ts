@@ -753,6 +753,20 @@ export async function applyRiderAppCancellationPenalty(args: {
     catalogReasonId: preview.catalogReasonId,
   });
 
+  void import("./notify-rider-account.js")
+    .then(({ notifyRiderPenaltyApplied }) =>
+      notifyRiderPenaltyApplied({
+        riderId: args.riderId,
+        amount: preview.penaltyAmount,
+        reason: preview.ledgerTitle || preview.ledgerDescription || "Cancellation penalty",
+        orderId: args.orderCoreId,
+        penaltyId,
+      }),
+    )
+    .catch((err) => {
+      console.warn("[rider-cancellation-penalty] push notify failed", err);
+    });
+
   return {
     applied: true,
     amount: preview.penaltyAmount,

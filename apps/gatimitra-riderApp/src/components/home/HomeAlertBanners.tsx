@@ -1,6 +1,6 @@
 // @ts-nocheck — pending strict-mode cleanup; tracked in follow-up issue.
 import React from "react";
-import { View, Text, Pressable, StyleSheet } from "react-native";
+import { View, Text, Pressable, TouchableOpacity, StyleSheet } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useTranslation } from "react-i18next";
 import { router } from "expo-router";
@@ -113,11 +113,12 @@ export function PenaltyBanner({ amount, onPay, paying = false }: PenaltyBannerPr
         </Text>
       </View>
       <View style={styles.ctaCol}>
-        <Pressable
+        <TouchableOpacity
           style={[styles.payBtn, paying && styles.payBtnDisabled]}
           disabled={paying}
-          hitSlop={12}
+          hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
           delayPressIn={0}
+          activeOpacity={0.85}
           onPress={onPay ?? (() => router.push("/(tabs)/earnings"))}
         >
           <Text style={styles.payBtnText}>
@@ -127,7 +128,7 @@ export function PenaltyBanner({ amount, onPay, paying = false }: PenaltyBannerPr
                   amount: Number.isInteger(amount) ? amount : amount.toFixed(2),
                 })}
           </Text>
-        </Pressable>
+        </TouchableOpacity>
         <BannerPagerIndicators />
       </View>
     </View>

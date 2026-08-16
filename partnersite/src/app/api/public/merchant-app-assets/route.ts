@@ -1,30 +1,34 @@
 import { NextResponse } from "next/server";
+import { fetchBackend } from "@/lib/fetch-backend";
 
 export const dynamic = "force-dynamic";
 
-/** Public read-only proxy for merchant CMS images (no auth). */
+/** Public read-only proxy for merchant CMS images (no auth). Never blocks the dashboard. */
 export async function GET() {
-  const backendBase = (
-    process.env.GATIMITRA_BACKEND_API_URL || "http://127.0.0.1:3000"
-  ).replace(/\/+$/, "");
-
   try {
-    const res = await fetch(`${backendBase}/v1/app-assets/merchant`, {
-      cache: "no-store",
+    const res = await fetchBackend("/v1/app-assets/merchant", {
+      timeoutMs: 1_500,
       headers: { "X-Silent-Error": "1" },
     });
-    if (!res.ok) {
+    if (!res?.ok) {
+      // Soft-fail: empty payload so UI keeps working offline / without Fastify.
       return NextResponse.json(
-        { error: "upstream_failed", status: res.status },
-        { status: 502 }
+        { assets: {}, offline: true },
+        {
+          status: 200,
+          headers: { "Cache-Control": "public, max-age=30" },
+        }
       );
     }
     const body = await res.json();
     return NextResponse.json(body, {
-      headers: { "Cache-Control": "no-store" },
+      headers: { "Cache-Control": "public, max-age=60, stale-while-revalidate=300" },
     });
   } catch (e) {
-    console.error("[GET /api/public/merchant-app-assets]", e);
-    return NextResponse.json({ error: "fetch_failed" }, { status: 502 });
+    console.warn("[GET /api/public/merchant-app-assets]", e instanceof Error ? e.message : e);
+    return NextResponse.json(
+      { assets: {}, offline: true },
+      { status: 200, headers: { "Cache-Control": "public, max-age=30" } }
+    );
   }
 }
