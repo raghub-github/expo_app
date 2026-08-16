@@ -877,6 +877,24 @@ const CheckoutCartLineRow = React.memo(function CheckoutCartLineRow({
   );
 });
 
+/**
+ * Dev-only checkout perf tracing (Phase 13). The `__DEV__` guard compiles this out
+ * of release builds — it emits nothing in production. Pair it with the adb
+ * `top -H` / gfxinfo capture to correlate JS timings against the on-device freeze.
+ */
+const perfNow = (): number =>
+  (globalThis as { performance?: { now?: () => number } }).performance?.now?.() ??
+  Date.now();
+function checkoutPerfLog(evt: string, ms?: number): void {
+  if (!__DEV__) return;
+  // eslint-disable-next-line no-console
+  console.log(
+    ms == null
+      ? `[PERF][CHECKOUT] ${evt}`
+      : `[PERF][CHECKOUT] ${evt} ${ms.toFixed(0)}ms`
+  );
+}
+
 export default function CheckoutScreen() {
   const router = useRouter();
   const { variant: checkoutVariant, onSheetClose } = useCheckoutPresentation();
@@ -893,6 +911,15 @@ export default function CheckoutScreen() {
   const scrollRef = useRef<ScrollView>(null);
   const missedOfferSheetPromptKeyRef = useRef<string | null>(null);
   const pendingMissedOfferWalletRef = useRef<import("@/lib/checkout-missed-offer-wallet").MissedOfferWalletCompensation | null>(null);
+
+  // [PERF][CHECKOUT] mount timing — first render → committed mount (dev only).
+  const perfMountStartRef = useRef(perfNow());
+  const perfMountLoggedRef = useRef(false);
+  useEffect(() => {
+    if (perfMountLoggedRef.current) return;
+    perfMountLoggedRef.current = true;
+    checkoutPerfLog("mount", perfNow() - perfMountStartRef.current);
+  }, []);
 
   useLayoutEffect(() => {
     void hydrateSubscriptionPlansCache(queryClient);
@@ -2127,6 +2154,21 @@ export default function CheckoutScreen() {
     refetchOnWindowFocus: false,
     retry: (failureCount, error) => isNetworkError(error) && failureCount < 1,
   });
+
+  // [PERF][CHECKOUT] billing calculate timing — logs each fetch cycle's duration so a
+  // "billing section hang" shows up as a long (or never-ending) billing:end (dev only).
+  const perfBillingStartRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (billingQuery.isFetching) {
+      if (perfBillingStartRef.current == null) {
+        perfBillingStartRef.current = perfNow();
+        checkoutPerfLog("billing:start");
+      }
+    } else if (perfBillingStartRef.current != null) {
+      checkoutPerfLog("billing:end", perfNow() - perfBillingStartRef.current);
+      perfBillingStartRef.current = null;
+    }
+  }, [billingQuery.isFetching]);
 
   // Live location from the location store — geocoded by Mapbox in the app, fresh every session.
   // Pass to backend so geo-bound platform offers resolve even when the saved address has
@@ -3816,6 +3858,20 @@ export default function CheckoutScreen() {
       });
     },
   });
+
+  // [PERF][CHECKOUT] payment-init timing — create-order → Razorpay params ready (dev only).
+  const perfPaymentStartRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (placeOrder.isPending) {
+      if (perfPaymentStartRef.current == null) {
+        perfPaymentStartRef.current = perfNow();
+        checkoutPerfLog("payment:createOrder:start");
+      }
+    } else if (perfPaymentStartRef.current != null) {
+      checkoutPerfLog("payment:createOrder:end", perfNow() - perfPaymentStartRef.current);
+      perfPaymentStartRef.current = null;
+    }
+  }, [placeOrder.isPending]);
 
   const finalizeArgsRef = useRef<{ pendingId: string; result: RazorpayPaymentResult | null } | null>(
     null
@@ -6231,151 +6287,6 @@ export default function CheckoutScreen() {
         </View>
       )}
     </View>
-  );
-}
-
-/**
- * The "GST & other charges" row exposes a single `i` chip that opens a modal
- * listing every GST + ungrouped extra item individually. Keeps the bill itself
- * compact while still being fully transparent.
- */
-function GstOtherChargesRow({
-  label,
-  value,
-  onInfoPress,
-}: {
-  label: string;
-  value: string;
-  onInfoPress: () => void;
-}) {
-  return (
-    <View style={styles.billRow}>
-      <View style={styles.billRowLabelWithInfo}>
-        <CheckoutText style={styles.billLabel}>{label}</CheckoutText>
-        <Pressable
-          onPress={onInfoPress}
-          hitSlop={10}
-          accessibilityRole="button"
-          accessibilityLabel="Show breakdown of GST and other charges"
-        >
-          <Ionicons name="information-circle-outline" size={19} color={GatiMitraColors.textSecondary} />
-        </Pressable>
-      </View>
-      <CheckoutText style={styles.billValue}>{value}</CheckoutText>
-    </View>
-  );
-}
-
-function BillRow({
-  label,
-  value,
-  bold,
-  green,
-  strikethrough,
-}: {
-  label: string;
-  value: string;
-  bold?: boolean;
-  green?: boolean;
-  strikethrough?: boolean;
-}) {
-  return (
-    <View style={styles.billRow}>
-      <CheckoutText style={[styles.billLabel, strikethrough && styles.billValueStrike]}>{label}</CheckoutText>
-      <CheckoutText
-        style={[
-          styles.billValue,
-          bold && styles.billValueBold,
-          green && styles.billValueGreen,
-          strikethrough && styles.billValueStrike,
-        ]}
-      >
-        {value}
-      </CheckoutText>
-    </View>
-  );
-}
-
-/**
- * Bill row that exposes a per-line GST breakdown via an inline "i" affordance.
- * Tapping the info chip toggles a small panel underneath with base/GST/total —
- * matches GatiMitra/Swiggy's transparent fee disclosure.
- *
- * If `breakdown` is omitted the row renders exactly like a plain BillRow (no
- * info icon, no toggle) — that way callers can pass conditional breakdowns
- * without branching at the call site.
- */
-function BillRowExpandable({
-  label,
-  total,
-  green,
-  bold,
-  breakdown,
-  note,
-}: {
-  label: string;
-  total: number;
-  green?: boolean;
-  bold?: boolean;
-  breakdown?: { base: number; gst: number; gstRateLabel?: string | null };
-  note?: string;
-}) {
-  const [open, setOpen] = useState(false);
-  const hasBreakdown =
-    breakdown != null &&
-    (Math.abs(breakdown.gst) > 0.005 || Math.abs(breakdown.base) > 0.005);
-  return (
-    <>
-      <View style={styles.billRow}>
-        <View style={styles.billRowLabelWithInfo}>
-          <CheckoutText style={styles.billLabel}>{label}</CheckoutText>
-          {hasBreakdown ? (
-            <Pressable
-              onPress={() => setOpen((s) => !s)}
-              hitSlop={10}
-              accessibilityRole="button"
-              accessibilityLabel={open ? `Hide breakdown of ${label}` : `Show breakdown of ${label}`}
-            >
-              <Ionicons
-                name={open ? "chevron-up-circle" : "information-circle-outline"}
-                size={18}
-                color={GatiMitraColors.textSecondary}
-              />
-            </Pressable>
-          ) : null}
-        </View>
-        <CheckoutText
-          style={[
-            styles.billValue,
-            bold && styles.billValueBold,
-            green && styles.billValueGreen,
-          ]}
-        >
-          {green && total > 0 ? `-₹${total.toFixed(2)}` : `₹${Math.abs(total).toFixed(2)}`}
-        </CheckoutText>
-      </View>
-      {open && hasBreakdown && breakdown ? (
-        <View style={styles.billBreakdownPanel}>
-          <View style={styles.billBreakdownRow}>
-            <CheckoutText style={styles.billBreakdownLabel}>Base</CheckoutText>
-            <CheckoutText style={styles.billBreakdownValue}>₹{breakdown.base.toFixed(2)}</CheckoutText>
-          </View>
-          <View style={styles.billBreakdownRow}>
-            <CheckoutText style={styles.billBreakdownLabel}>
-              GST{breakdown.gstRateLabel ? ` (${breakdown.gstRateLabel})` : ""}
-            </CheckoutText>
-            <CheckoutText style={styles.billBreakdownValue}>₹{breakdown.gst.toFixed(2)}</CheckoutText>
-          </View>
-          <View style={[styles.billBreakdownRow, styles.billBreakdownTotalRow]}>
-            <CheckoutText style={styles.billBreakdownTotalLabel}>Total</CheckoutText>
-            <CheckoutText style={styles.billBreakdownTotalValue}>
-              ₹{(breakdown.base + breakdown.gst).toFixed(2)}
-            </CheckoutText>
-          </View>
-          {note ? <CheckoutText style={styles.billBreakdownNote}>{note}</CheckoutText> : null}
-        </View>
-      ) : null}
-    </>
   );
 }
 
