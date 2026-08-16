@@ -190,7 +190,7 @@ export async function queryRiderAvailabilityCandidates(sql, args) {
       LIMIT 1
     ) limits ON true
     WHERE s.distance_meters <= ${radiusMeters}
-      AND COALESCE(s.duty_service_types, '[]'::jsonb) @> ${serviceJson}::jsonb
+      AND COALESCE(s.duty_service_types, '[]'::jsonb) @> ${serviceJson}::text::jsonb
     ORDER BY s.distance_meters ASC
     LIMIT ${limit}
   `);
