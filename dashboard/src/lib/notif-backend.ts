@@ -75,9 +75,30 @@ export function backendConfigOrProblem() {
   return { ok: true as const, backendUrl, secret };
 }
 
+export type BackendFetchInit = Omit<RequestInit, "body"> & {
+  /** Plain objects are JSON.stringified; strings/Blob/FormData pass through. */
+  body?: RequestInit["body"] | Record<string, unknown> | unknown[];
+};
+
+function normalizeRequestBody(body: BackendFetchInit["body"]): BodyInit | null | undefined {
+  if (body == null || body === "") return body as null | undefined;
+  if (typeof body === "string") return body;
+  if (typeof Blob !== "undefined" && body instanceof Blob) return body;
+  if (typeof FormData !== "undefined" && body instanceof FormData) return body;
+  if (typeof URLSearchParams !== "undefined" && body instanceof URLSearchParams) return body;
+  if (typeof ReadableStream !== "undefined" && body instanceof ReadableStream) {
+    return body as ReadableStream;
+  }
+  if (body instanceof ArrayBuffer || ArrayBuffer.isView(body)) {
+    return body as BodyInit;
+  }
+  // Plain object / array from dashboard API routes
+  return JSON.stringify(body);
+}
+
 export async function backendFetch(
   path: string,
-  init: RequestInit = {},
+  init: BackendFetchInit = {},
 ): Promise<{ status: number; body: unknown }> {
   const cfg = backendConfig();
   if (!cfg.backendUrl || !cfg.secret) {
@@ -85,7 +106,7 @@ export async function backendFetch(
   }
   const base = cfg.backendUrl.replace(/\/$/, "");
   const method = (init.method ?? "GET").toUpperCase();
-  let requestBody = init.body;
+  let requestBody = normalizeRequestBody(init.body);
   // Fastify rejects POST/PUT/PATCH with Content-Type: application/json and an empty body.
   if (
     (method === "POST" || method === "PUT" || method === "PATCH") &&

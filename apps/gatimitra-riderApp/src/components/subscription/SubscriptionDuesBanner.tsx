@@ -1,5 +1,12 @@
 import React, { useCallback, useState } from "react";
-import { View, Text, Pressable, StyleSheet, ActivityIndicator, Alert } from "react-native";
+import {
+  View,
+  Text,
+  TouchableOpacity,
+  StyleSheet,
+  ActivityIndicator,
+  Alert,
+} from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useTranslation } from "react-i18next";
 import {
@@ -17,6 +24,7 @@ import {
 } from "@/src/lib/razorpay-native";
 import { extractApiErrorMessage } from "@/src/services/http";
 import { BannerPagerIndicators } from "@/src/components/home/HomeAlertBannerCarousel";
+import { openHostedRazorpayCheckout } from "@/src/components/payment/RazorpayCheckoutModal";
 
 function formatRupee(amount: number) {
   return `₹${amount.toLocaleString("en-IN", { maximumFractionDigits: 2 })}`;
@@ -39,11 +47,8 @@ export function SubscriptionDuesBanner({ embedded = false }: { embedded?: boolea
   const [paying, setPaying] = useState(false);
 
   const banner = status?.dues?.alertBanner;
-  if (!banner?.visible) return null;
-
-  const copy = resolveBannerCopy(banner);
-  const totalDue = banner.totalDue;
-  const canPayFromWallet = banner.canPayFromWallet === true;
+  const totalDue = banner?.totalDue ?? 0;
+  const canPayFromWallet = banner?.canPayFromWallet === true;
 
   const handleVerifyPayment = useCallback(
     async (razorpayOrderId: string, razorpayPaymentId: string, razorpaySignature: string) => {
@@ -151,44 +156,52 @@ export function SubscriptionDuesBanner({ embedded = false }: { embedded?: boolea
         return;
       }
 
-      if (!isNativeRazorpayAvailable()) {
-        Alert.alert(
-          t("common.error", "Error"),
-          t(
-            "subscription.nativeMissing",
-            "Native Razorpay is not available in this build. Please install the latest Play Store / APK build (not Expo Go)."
-          )
-        );
-        setPaying(false);
+      if (isNativeRazorpayAvailable()) {
+        try {
+          const result = await openRazorpayCheckout({
+            order: {
+              orderId: order.orderId,
+              amount: order.amount,
+              keyId: order.keyId,
+            },
+            prefill: { name: riderProfile?.name, contact: riderProfile?.mobile },
+            name: "GatiMitra",
+            description: "Subscription dues",
+            themeColor: "#D4A017",
+          });
+          await handleVerifyPayment(
+            result.razorpayOrderId,
+            result.razorpayPaymentId,
+            result.razorpaySignature
+          );
+        } catch (rzpErr) {
+          if (!isRazorpayUserCancel(rzpErr)) {
+            const { description, code } = extractRazorpayError(rzpErr);
+            Alert.alert(
+              t("common.error", "Error"),
+              description || code || t("subscription.payFailed", "Payment failed")
+            );
+          }
+        }
         return;
       }
 
-      try {
-        const result = await openRazorpayCheckout({
-          order: {
-            orderId: order.orderId,
-            amount: order.amount,
-            keyId: order.keyId,
-          },
-          prefill: { name: riderProfile?.name, contact: riderProfile?.mobile },
-          name: "GatiMitra",
-          description: "Subscription dues",
-          themeColor: "#D4A017",
-        });
+      // Expo Go / builds without native SDK — hosted browser checkout.
+      const hosted = await openHostedRazorpayCheckout({
+        orderParams: {
+          orderId: order.orderId,
+          keyId: order.keyId,
+          amount: order.amount,
+        },
+        prefill: { name: riderProfile?.name, contact: riderProfile?.mobile },
+        themeColor: "#D4A017",
+      });
+      if (hosted) {
         await handleVerifyPayment(
-          result.razorpayOrderId,
-          result.razorpayPaymentId,
-          result.razorpaySignature
+          hosted.razorpayOrderId,
+          hosted.razorpayPaymentId,
+          hosted.razorpaySignature
         );
-      } catch (rzpErr) {
-        if (!isRazorpayUserCancel(rzpErr)) {
-          const { description, code } = extractRazorpayError(rzpErr);
-          Alert.alert(
-            t("common.error", "Error"),
-            description || code || t("subscription.payFailed", "Payment failed")
-          );
-        }
-        setPaying(false);
       }
     } catch (e) {
       Alert.alert(
@@ -211,41 +224,40 @@ export function SubscriptionDuesBanner({ embedded = false }: { embedded?: boolea
     totalDue,
   ]);
 
+  if (!banner?.visible) return null;
+
+  const copy = resolveBannerCopy(banner);
+
   return (
-    <>
-      <View
-        style={[
-          styles.wrap,
-          styles.wrapWarning,
-          embedded && styles.wrapEmbedded,
-        ]}
-      >
-        <View style={styles.icon}>
-          <Ionicons name="warning" size={18} color="#ffffff" />
-        </View>
-        <View style={styles.textCol}>
-          <Text style={styles.title}>{copy.title}</Text>
-          <Text style={styles.sub}>{copy.subtitle}</Text>
-        </View>
-        <View style={styles.ctaCol}>
-          <Pressable
-            style={[styles.payBtn, paying && { opacity: 0.7 }]}
-            onPress={() => void handlePay()}
-            disabled={paying}
-            hitSlop={12}
-          >
-            {paying ? (
-              <ActivityIndicator size="small" color="#111827" />
-            ) : (
-              <Text style={styles.payBtnTxt}>
-                {copy.payLabel}
-              </Text>
-            )}
-          </Pressable>
-          <BannerPagerIndicators />
-        </View>
+    <View
+      style={[styles.wrap, styles.wrapWarning, embedded && styles.wrapEmbedded]}
+      collapsable={false}
+    >
+      <View style={styles.icon}>
+        <Ionicons name="warning" size={18} color="#ffffff" />
       </View>
-    </>
+      <View style={styles.textCol}>
+        <Text style={styles.title}>{copy.title}</Text>
+        <Text style={styles.sub}>{copy.subtitle}</Text>
+      </View>
+      <View style={styles.ctaCol} collapsable={false}>
+        <TouchableOpacity
+          style={[styles.payBtn, paying && { opacity: 0.7 }]}
+          onPress={() => void handlePay()}
+          disabled={paying}
+          hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+          activeOpacity={0.85}
+          delayPressIn={0}
+        >
+          {paying ? (
+            <ActivityIndicator size="small" color="#111827" />
+          ) : (
+            <Text style={styles.payBtnTxt}>{copy.payLabel}</Text>
+          )}
+        </TouchableOpacity>
+        <BannerPagerIndicators />
+      </View>
+    </View>
   );
 }
 

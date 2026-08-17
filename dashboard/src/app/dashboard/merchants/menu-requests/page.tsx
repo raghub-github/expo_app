@@ -118,6 +118,20 @@ export default function MenuRequestsPage() {
 
   const photoItems: MenuReviewPhotoItem[] = reviewSummary?.photo_items ?? [];
 
+  const removePhotoFromReviewQueue = (itemId: number) => {
+    setReviewSummary((prev) => {
+      if (!prev) return prev;
+      const photo_items = (prev.photo_items ?? []).filter((row) => Number(row.id) !== Number(itemId));
+      const pending_photo_reviews = photo_items.length;
+      return {
+        ...prev,
+        photo_items,
+        pending_photo_reviews,
+        total_pending: Number(prev.pending_change_requests ?? 0) + pending_photo_reviews,
+      };
+    });
+  };
+
   const closePhotoSheet = () => {
     setPhotoReviewItem(null);
     setPhotoRejectReason("");
@@ -184,6 +198,7 @@ export default function MenuRequestsPage() {
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok || data?.success === false) throw new Error(data?.error || "Approve failed");
+      removePhotoFromReviewQueue(item.id);
       closePhotoSheet();
       fetchReviewSummary();
       dispatchMenuReviewQueueRefresh();
@@ -215,6 +230,7 @@ export default function MenuRequestsPage() {
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok || data?.success === false) throw new Error(data?.error || "Reject failed");
+      removePhotoFromReviewQueue(item.id);
       closePhotoSheet();
       fetchReviewSummary();
       dispatchMenuReviewQueueRefresh();

@@ -78,7 +78,7 @@ export async function getRiderWithdrawableBalance(riderId: number): Promise<numb
 
 async function getVerifiedBankMethod(riderId: number) {
   const db = getDb();
-  const [row] = await db
+  const rows = await db
     .select()
     .from(riderPaymentMethods)
     .where(
@@ -89,7 +89,13 @@ async function getVerifiedBankMethod(riderId: number) {
         isNull(riderPaymentMethods.deletedAt),
       ),
     )
-    .limit(1);
+    .orderBy(desc(riderPaymentMethods.isPrimary), desc(riderPaymentMethods.createdAt));
+
+  const row =
+    rows.find((r) => r.isPrimary === true && r.isActive !== false) ??
+    rows.find((r) => r.isActive !== false) ??
+    rows[0] ??
+    null;
 
   if (!row) return null;
 

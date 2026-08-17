@@ -92,6 +92,15 @@ const OrderSummarySchema = z.object({
   cancellationPenaltyAmount: z.number().nullable().optional(),
 });
 
+const RiderBankAddGateSchema = z.object({
+  locked: z.boolean(),
+  unlockAt: z.string().nullable(),
+  attemptsInWindow: z.number(),
+  rejectsInWindow: z.number(),
+  maxAttempts: z.number(),
+  windowHours: z.number(),
+});
+
 const RiderBankPaymentMethodSchema = z.object({
   id: z.number(),
   methodType: z.literal("bank"),
@@ -101,12 +110,25 @@ const RiderBankPaymentMethodSchema = z.object({
   branch: z.string().nullable(),
   accountNumberMasked: z.string(),
   verificationStatus: z.enum(["pending", "verified", "rejected"]),
+  isActive: z.boolean().optional(),
+  isPrimary: z.boolean().optional(),
   createdAt: z.string(),
+  rejectionReason: z.string().nullable().optional(),
   crossCheckStatus: z.enum(["ok", "mismatch"]).optional(),
   crossCheckMessages: z.array(z.string()).optional(),
 });
 
 export type RiderBankPaymentMethod = z.infer<typeof RiderBankPaymentMethodSchema>;
+export type RiderBankAddGate = z.infer<typeof RiderBankAddGateSchema>;
+
+export const EMPTY_BANK_ADD_GATE: RiderBankAddGate = {
+  locked: false,
+  unlockAt: null,
+  attemptsInWindow: 0,
+  rejectsInWindow: 0,
+  maxAttempts: 2,
+  windowHours: 24,
+};
 
 function normalizeBlockedServiceName(
   value: string
@@ -908,15 +930,49 @@ export const riderApi = {
 
   async getBankPaymentMethod() {
     const client = createApiClient();
-    return client.request<{ paymentMethod: RiderBankPaymentMethod | null }>(
-      "/v1/rider/payment-methods/bank",
+    return client.request<{
+      paymentMethod: RiderBankPaymentMethod | null;
+      addGate: RiderBankAddGate;
+    }>("/v1/rider/payment-methods/bank", {
+      method: "GET",
+      responseSchema: z.object({
+        paymentMethod: RiderBankPaymentMethodSchema.nullable(),
+        addGate: RiderBankAddGateSchema.optional().transform(
+          (v) => v ?? EMPTY_BANK_ADD_GATE,
+        ),
+      }),
+    });
+  },
+
+  async listBankPaymentMethods() {
+    const client = createApiClient();
+    return client.request<{ paymentMethods: RiderBankPaymentMethod[] }>(
+      "/v1/rider/payment-methods/bank/list",
       {
         method: "GET",
         responseSchema: z.object({
-          paymentMethod: RiderBankPaymentMethodSchema.nullable(),
+          paymentMethods: z.array(RiderBankPaymentMethodSchema),
         }),
       },
     );
+  },
+
+  async checkBankAccountDuplicate(accountNumber: string) {
+    const client = createApiClient();
+    return client.request<{
+      duplicate: boolean;
+      rejected: boolean;
+      message: string | null;
+    }>("/v1/rider/payment-methods/bank/check-duplicate", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ accountNumber: accountNumber.replace(/\D/g, "") }),
+      responseSchema: z.object({
+        duplicate: z.boolean(),
+        rejected: z.boolean(),
+        message: z.string().nullable(),
+      }),
+    });
   },
 
   async createBankPaymentMethod(payload: {
@@ -933,6 +989,19 @@ export const riderApi = {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(payload),
+        responseSchema: z.object({
+          paymentMethod: RiderBankPaymentMethodSchema,
+        }),
+      },
+    );
+  },
+
+  async setPrimaryBankPaymentMethod(id: number) {
+    const client = createApiClient();
+    return client.request<{ paymentMethod: RiderBankPaymentMethod }>(
+      `/v1/rider/payment-methods/bank/${id}/set-primary`,
+      {
+        method: "POST",
         responseSchema: z.object({
           paymentMethod: RiderBankPaymentMethodSchema,
         }),

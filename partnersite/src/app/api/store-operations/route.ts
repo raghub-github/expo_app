@@ -248,6 +248,7 @@ export async function GET(req: NextRequest) {
     // Never call syncStoreStatusAfterOperatingHoursChange here — that clears manual holds
     // (intended only after outlet-timings edits) and was reopening stores right after close.
     // Delisted stores stay closed — skip backend snapshot + heal (those GETs were 5–16s each).
+    // Do NOT re-await partner-status after a failed snapshot — that doubled 12s timeouts.
     if (!authoritative && !storeIsDelistedEarly) {
       try {
         const { data: storeForSync } = await db
@@ -281,8 +282,8 @@ export async function GET(req: NextRequest) {
       } catch (e) {
         console.warn('[store-operations] local schedule sync failed', e);
       }
+      // Fire-and-forget — never block the Partner response on a dead Fastify.
       void triggerStoreScheduleTick(storeInternalId);
-      authoritative = await fetchPartnerStoreStatusSnapshot(storeInternalId);
     }
 
     const trace = (step: string, payload: Record<string, unknown>) => {

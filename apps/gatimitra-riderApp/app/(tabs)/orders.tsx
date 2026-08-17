@@ -248,7 +248,9 @@ export default function OrdersScreen() {
   const subscriptionBannerVisible =
     subscriptionStatus?.dues?.alertBanner?.visible ?? false;
   const subscriptionDispatchBlocked = subscriptionStatus?.dues?.dispatchBlocked ?? false;
-  const showPenaltyBanner = negativeWalletDue > 0;
+  // Avoid stacking two yellow Pay banners for the same ₹ dues (subscription + wallet).
+  // Pager dots under Pay looked like a second/duplicate banner.
+  const showPenaltyBanner = negativeWalletDue > 0 && !subscriptionBannerVisible;
   const primaryPaymentHold = ridePaymentHolds[0] ?? null;
 
   const homeBannerSlides = useMemo((): HomeBannerSlide[] => {
@@ -666,6 +668,7 @@ export default function OrdersScreen() {
           style={styles.map}
           showRadar={homeChrome.showSearchingRadar && !!riderLocation}
           demandZones={homeChrome.fetchDemandZones ? demandZones : []}
+          isOnDuty={isOnDuty}
         />
 
         {homeChrome.showSearchingPill ? <SearchingOrdersPill /> : null}

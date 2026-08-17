@@ -75,6 +75,8 @@ function normalizeDevHost(raw: string): string | null {
 
 function isPrivateLanIpv4(host: string): boolean {
   if (!isPlausibleIpv4(host)) return false;
+  // Android emulator / Genymotion host aliases — not a Wi‑Fi LAN address.
+  if (host === "10.0.2.2" || host === "10.0.3.2") return false;
   const [a, b] = host.split(".").map(Number);
   if (a === 10) return true;
   if (a === 192 && b === 168) return true;
@@ -172,26 +174,24 @@ function healStaleLanApiUrl(url: string): string {
 }
 
 /**
- * Android emulator: always 10.0.2.2 (host loopback).
+ * Android emulator: localhost / 127.0.0.1 → 10.0.2.2 (host loopback).
  * Physical device + localhost: Metro LAN IP when available.
+ * Explicit LAN / public URLs from env are left alone — Expo Go on real phones
+ * often reports Constants.isDevice=false, so we must never smash a working
+ * Wi‑Fi IP into the emulator-only 10.0.2.2 alias.
  * Legacy :30000/:4000 → :3000.
  */
 function resolveApiBaseUrl(raw: string): string {
   const trimmed = normalizeLegacyBackendPort(raw.replace(/\/+$/, ""));
   const port = portFromApiUrl(trimmed);
 
-  // Emulator cannot reliably reach a hardcoded LAN IP — use the host alias.
-  if (Platform.OS === "android" && !Constants.isDevice) {
-    return `http://10.0.2.2:${port}`;
-  }
-
   if (isLocalhostApiUrl(trimmed)) {
     if (Constants.isDevice) {
-      const lan = inferLanHostFromExpoBundler();
+      const lan = inferLanHostFromExpoBundler() ?? preferredDevLanHost();
       if (lan) return `http://${lan}:${port}`;
     }
     if (Platform.OS === "android") {
-      return trimmed.replace(/localhost|127\.0\.0\.1/, "10.0.2.2");
+      return `http://10.0.2.2:${port}`;
     }
     return trimmed;
   }
@@ -253,11 +253,13 @@ export function getRiderAppConfig(): RiderAppConfig {
 
   if (__DEV__ && loggedResolvedApiUrl !== apiBaseUrl) {
     loggedResolvedApiUrl = apiBaseUrl;
+    const host = hostFromApiUrl(apiBaseUrl);
+    const emulatorHint =
+      Platform.OS === "android" && (host === "10.0.2.2" || host === "10.0.3.2")
+        ? " (Android emulator host loopback)"
+        : "";
     // eslint-disable-next-line no-console
-    console.log(
-      `[RiderEnv] API base URL: ${apiBaseUrl}` +
-        (Platform.OS === "android" && !Constants.isDevice ? " (Android emulator → 10.0.2.2)" : "")
-    );
+    console.log(`[RiderEnv] API base URL: ${apiBaseUrl}${emulatorHint}`);
   }
 
   const mapboxToken = resolveMapboxPublicToken();
@@ -306,24 +308,26 @@ export function resolveWsBaseUrl(apiBaseUrl: string): string {
   }
 }
 
-/** Normalize API URLs for the current device (emulator loopback, stale LAN heal). */
+/**
+ * Normalize API / asset URLs for the current device.
+ * Only rewrite loopback (localhost / 127.0.0.1). Never rewrite an explicit LAN
+ * IP to 10.0.2.2 — that breaks physical phones when Expo mis-reports isDevice.
+ */
 export function resolveUrlForDevice(url: string): string {
   if (typeof url !== "string" || !url.trim()) return url;
   const trimmed = url.trim().replace(/\/+$/, "");
-  if (Platform.OS === "android" && !Constants.isDevice) {
-    const port = portFromApiUrl(trimmed);
-    return `http://10.0.2.2:${port}`;
-  }
-  if (isLocalhostApiUrl(trimmed)) {
+  const healed = healStaleLanApiUrl(trimmed);
+
+  if (isLocalhostApiUrl(healed)) {
     if (Constants.isDevice) {
-      const lan = inferLanHostFromExpoBundler();
-      if (lan) return `http://${lan}:${portFromApiUrl(trimmed)}`;
+      const lan = inferLanHostFromExpoBundler() ?? preferredDevLanHost();
+      if (lan) return `http://${lan}:${portFromApiUrl(healed)}`;
     }
     if (Platform.OS === "android") {
-      return trimmed.replace(/localhost|127\.0\.0\.1/g, "10.0.2.2");
+      return healed.replace(/localhost|127\.0\.0\.1/g, "10.0.2.2");
     }
   }
-  return healStaleLanApiUrl(trimmed);
+  return healed;
 }
 
 function asNonEmptyString(v: unknown): string | null {

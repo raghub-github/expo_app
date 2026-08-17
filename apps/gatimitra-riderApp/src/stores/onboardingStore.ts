@@ -84,6 +84,16 @@ export type OnboardingData = {
   currentStep?: OnboardingStep;
   riderId?: string; // set after backend creates rider
 
+  /**
+   * Post-OTP referral prompt (before Aadhaar). Set once the rider chooses
+   * with/without referral so cold start does not re-show the screen.
+   */
+  referralPromptHandled?: boolean;
+  /** Manual referral code applied / deferred during onboarding (uppercased). */
+  referralCode?: string;
+  /** True when the rider explicitly continued without a referral code. */
+  skippedReferral?: boolean;
+
   /** Last known server access fields — avoid Aadhaar flash on cold start for approved riders. */
   cachedOnboardingStatus?: string;
   cachedAccountStatus?: string;

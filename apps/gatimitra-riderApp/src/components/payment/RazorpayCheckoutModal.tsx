@@ -111,6 +111,21 @@ async function openBrowserCheckout(args: {
   }
 }
 
+/** Promise API for banners / sheets (Expo Go fallback when native SDK is missing). */
+export async function openHostedRazorpayCheckout(args: {
+  orderParams: RazorpayOrderParams;
+  prefill?: RazorpayPrefill;
+  themeColor?: string;
+}): Promise<RazorpayPaymentResult | null> {
+  return new Promise((resolve) => {
+    void openBrowserCheckout({
+      ...args,
+      onSuccess: (tokens) => resolve(tokens),
+      onCancel: () => resolve(null),
+    });
+  });
+}
+
 export function RazorpayCheckoutModal({
   visible,
   orderParams,

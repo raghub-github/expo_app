@@ -1,6 +1,6 @@
 'use client'
 
-import React, { useState, useEffect, useMemo, useRef } from 'react'
+import React, { useState, useEffect, useLayoutEffect, useMemo, useRef } from 'react'
 import { createPortal } from 'react-dom'
 import { Dialog } from '@headlessui/react'
 import Link from 'next/link'
@@ -45,6 +45,7 @@ import {
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { Suspense } from 'react'
+import { PartnerContentSkeleton } from '@/components/PageSkeleton'
 
 import { UI_STRINGS, useLocalStoreStatusEngineStore } from '@/lib/localStoreStatusEngineStore'
 import { formatCloseReasonForCard } from '@/lib/formatCloseReasonForCard'
@@ -616,8 +617,8 @@ function DashboardContent() {
   const filterZoneOptions = [{ id: 'z1', label: 'South Chennai (1)' }] as const
   const filterSubzoneOptions = [{ id: 'sz1', label: 'Thiruporur, South Chennai (1)' }] as const
 
-  // Resolve store id after mount (localStorage is client-only — keeps SSR/client HTML in sync).
-  useEffect(() => {
+  // Resolve store id before paint when possible (localStorage is client-only).
+  useLayoutEffect(() => {
     const id = resolveStoreIdFromClient(searchParams?.get('storeId'))
     setStoreId(id)
     if (id) {
@@ -1632,7 +1633,7 @@ function DashboardContent() {
               <div className="grid grid-cols-1 xl:grid-cols-12 gap-3 items-stretch pb-1">
                 {/* Store status — primary card (reference layout) */}
                 <section className={PARTNER_DASHBOARD_TOP_CARD_SECTION_CLASS}>
-                  {!storeId || (!storeOpsReady && storeOpsFetching) ? (
+                  {!storeId || (!storeOpsReady && storeOpsFetching && !storeOpsData) ? (
                     <PartnerDashboardStoreStatusSkeleton />
                   ) : (
                   <div
@@ -2348,15 +2349,10 @@ function DashboardContent() {
 }
 
 export default function DashboardPage() {
+  // Suspense is required for useSearchParams in DashboardContent.
+  // Fallback must match PartnerContentSkeleton (same tree as access-gate) so SSR/CSR hydrate.
   return (
-    <Suspense fallback={
-      <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-gray-50 to-blue-50/30">
-        <div className="text-center space-y-4">
-          <div className="animate-spin rounded-full h-14 w-14 border-b-2 border-blue-600 mx-auto"></div>
-          <p className="text-gray-600 font-medium">Loading Dashboard...</p>
-        </div>
-      </div>
-    }>
+    <Suspense fallback={<PartnerContentSkeleton />}>
       <DashboardContent />
     </Suspense>
   )

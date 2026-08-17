@@ -26,6 +26,7 @@ export function useOnboardingGate() {
   const bankAccountOnboardingDone = useOnboardingStore(
     (s) => s.data.bankAccountOnboardingDone
   );
+  const referralPromptHandled = useOnboardingStore((s) => s.data.referralPromptHandled);
   const cachedOnboardingStatus = useOnboardingStore((s) => s.data.cachedOnboardingStatus);
   const cachedAccountStatus = useOnboardingStore((s) => s.data.cachedAccountStatus);
   const cachedApprovalStatus = useOnboardingStore((s) => s.data.cachedApprovalStatus);
@@ -157,6 +158,7 @@ export function useOnboardingGate() {
       completedOnboardingSteps,
       approvalStatus: effectiveApprovalStatus,
       paymentCompleted: riderStatus?.paymentCompleted,
+      referralPromptHandled,
     });
   }, [
     session,
@@ -173,6 +175,7 @@ export function useOnboardingGate() {
     completedOnboardingSteps,
     effectiveApprovalStatus,
     riderStatus?.paymentCompleted,
+    referralPromptHandled,
   ]);
 
   const canAccessTabs = canAccessHome(effectiveOnboardingStatus, effectiveAccountStatus);

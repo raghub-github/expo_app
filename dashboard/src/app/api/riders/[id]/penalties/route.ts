@@ -226,6 +226,25 @@ export async function POST(
       }
     );
 
+    void (async () => {
+      try {
+        const { backendFetch } = await import("@/lib/notif-backend");
+        await backendFetch("/v1/internal/rider-account-notify", {
+          method: "POST",
+          body: {
+            type: "penalty",
+            riderId,
+            amount,
+            reason,
+            orderId: orderId ?? null,
+            penaltyId: penalty.id,
+          },
+        });
+      } catch (err) {
+        console.warn("[penalties] rider push notify failed", err);
+      }
+    })();
+
     return NextResponse.json({ success: true, data: { penalty } });
   } catch (error) {
     console.error("[POST /api/riders/[id]/penalties] Error:", error);

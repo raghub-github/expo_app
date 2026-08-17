@@ -10,7 +10,6 @@ import { clearPushSessionDismissed } from "@/lib/browser-push/partner-push-state
 import {
   beginPartnerSessionBackgroundRefresh,
   endPartnerSessionBackgroundRefresh,
-  isPartnerSessionBackgroundRefreshPending,
 } from "@/lib/auth/partner-session-focus-gate";
 
 interface MerchantSessionUser {
@@ -89,7 +88,10 @@ export function MerchantSessionProvider({ children }: { children: React.ReactNod
       return;
     }
 
-    if (background) setIsRefreshing(true);
+    if (background) {
+      beginPartnerSessionBackgroundRefresh();
+      setIsRefreshing(true);
+    }
     const run = (async () => {
       try {
         lastFetchAtRef.current = Date.now();
@@ -174,20 +176,16 @@ export function MerchantSessionProvider({ children }: { children: React.ReactNod
     const refresh = () => {
       void fetchSession({ background: true });
     };
-    const onFocusCapture = () => {
-      beginPartnerSessionBackgroundRefresh();
-    };
     const onVisibility = () => {
       if (document.visibilityState === "visible") {
-        beginPartnerSessionBackgroundRefresh();
         refresh();
       }
     };
-    window.addEventListener("focus", onFocusCapture, true);
+    // Do not beginPartnerSessionBackgroundRefresh here — begin only when
+    // fetchSession actually starts work (avoids unbalanced counter + 8s waits).
     window.addEventListener("focus", refresh);
     document.addEventListener("visibilitychange", onVisibility);
     return () => {
-      window.removeEventListener("focus", onFocusCapture, true);
       window.removeEventListener("focus", refresh);
       document.removeEventListener("visibilitychange", onVisibility);
     };
@@ -249,7 +247,9 @@ export function usePartnerMerchantQueriesEnabled(storeId?: string | null): boole
   const session = useMerchantSession();
   if (!storeId) return false;
   if (!session) return false;
-  if (session.isLoading || session.isRefreshing) return false;
-  if (isPartnerSessionBackgroundRefreshPending()) return false;
-  return session.isAuthenticated;
+  // Once authenticated, keep queries enabled during background session refresh so
+  // cached dashboard data paints immediately (stale-while-revalidate).
+  if (session.isAuthenticated) return true;
+  if (session.isLoading) return false;
+  return false;
 }

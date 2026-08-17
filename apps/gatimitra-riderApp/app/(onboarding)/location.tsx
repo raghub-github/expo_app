@@ -39,7 +39,7 @@ export default function LocationScreen() {
     // Continue onboarding — method-selection is skipped; Aadhaar applies policy (auto/hybrid/manual).
     const proceed = () => {
       if (session) {
-        router.replace("/(onboarding)/aadhaar");
+        router.replace("/(onboarding)/referral");
       } else {
         // If no session, go to welcome screen to start onboarding
         router.replace("/(onboarding)/welcome");

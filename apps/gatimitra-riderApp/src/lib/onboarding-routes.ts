@@ -343,6 +343,23 @@ export function shouldForwardFromOnboardingScreen(
   return next > cur;
 }
 
+/**
+ * First docs screen after OTP for brand-new riders.
+ * Referral UI is shown when Super Admin "Rider Referral" is on; the referral
+ * screen itself redirects to Aadhaar when the service is off. Once the rider
+ * has handled the prompt (or already started KYC), go straight to Aadhaar.
+ */
+export function resolveNewRiderDocsEntryHref(options?: {
+  referralPromptHandled?: boolean | null;
+  completedOnboardingSteps?: string[] | null;
+}): `/(onboarding)/referral` | `/(onboarding)/aadhaar` {
+  const completed = options?.completedOnboardingSteps ?? [];
+  if (completed.includes("aadhaar_name") || options?.referralPromptHandled === true) {
+    return "/(onboarding)/aadhaar";
+  }
+  return "/(onboarding)/referral";
+}
+
 export function resolveOnboardingHref(
   status?: string | null,
   localStep?: OnboardingStep,
@@ -356,6 +373,7 @@ export function resolveOnboardingHref(
     completedOnboardingSteps?: string[] | null;
     approvalStatus?: string | null;
     paymentCompleted?: boolean | null;
+    referralPromptHandled?: boolean | null;
   }
 ): `/(tabs)/orders` | `/(onboarding)/${string}` {
   const establishedHref = resolveEstablishedRiderHref(
@@ -407,11 +425,26 @@ export function resolveOnboardingHref(
     }
   }
 
+  // Brand-new rider (no KYC progress yet): optional referral prompt before Aadhaar.
+  // The referral screen self-gates on Super Admin rider_referral_enabled.
+  if (
+    !completed.includes("aadhaar_name") &&
+    options?.referralPromptHandled !== true &&
+    (!serverStep ||
+      serverStep === "method_selection" ||
+      serverStep === "aadhaar_name")
+  ) {
+    return "/(onboarding)/referral";
+  }
+
   if (serverRoute) return serverRoute;
 
   if (localStep) {
     return onboardingStepToRoute(localStep);
   }
 
-  return "/(onboarding)/aadhaar";
+  return resolveNewRiderDocsEntryHref({
+    referralPromptHandled: options?.referralPromptHandled,
+    completedOnboardingSteps: options?.completedOnboardingSteps,
+  });
 }
