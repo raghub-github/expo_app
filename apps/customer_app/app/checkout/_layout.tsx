@@ -62,7 +62,13 @@ export default function CheckoutLayout() {
   return (
     <>
       <AndroidBackHandler />
-      <Stack>
+      <Stack
+        screenOptions={{
+          // See app/_layout.tsx — stops screens from re-rendering while a
+          // screen is pushed on top of them.
+          freezeOnBlur: true,
+        }}
+      >
       <Stack.Screen
         name="index"
         options={{

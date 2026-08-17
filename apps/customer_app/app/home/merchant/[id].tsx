@@ -687,7 +687,10 @@ export default function MerchantDetailScreen() {
   const { data: activeLocation } = useQuery({
     queryKey: ["active-location"],
     queryFn: () => addressService.getActiveLocation(),
-    staleTime: 0,
+    // Address changes are explicitly invalidated elsewhere (address picker,
+    // checkout) — staleTime: 0 forced a network round trip on every single
+    // store open, adding latency before the delivery ETA/quote can settle.
+    staleTime: 60_000,
   });
 
   const { data: addresses = EMPTY_ADDRESSES } = useQuery({

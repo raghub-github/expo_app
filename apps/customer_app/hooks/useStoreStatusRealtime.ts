@@ -19,7 +19,7 @@
 
 import { useEffect } from "react";
 import { useQueryClient, type QueryClient } from "@tanstack/react-query";
-import { getConfig } from "@/config/env";
+import { getSupabaseRealtimeClient } from "@/lib/supabaseRealtimeClient";
 import {
   useStoreStatusStore,
   computeLiveStatusFromRow,
@@ -118,16 +118,8 @@ export function useStoreStatusRealtime() {
   const queryClient = useQueryClient();
 
   useEffect(() => {
-    const { supabaseUrl, supabaseAnonKey } = getConfig();
-    if (!supabaseUrl || !supabaseAnonKey) return;
-
-    let client: import("@supabase/supabase-js").SupabaseClient;
-    try {
-      const { createClient } = require("@supabase/supabase-js");
-      client = createClient(supabaseUrl, supabaseAnonKey);
-    } catch {
-      return;
-    }
+    const client = getSupabaseRealtimeClient();
+    if (!client) return;
 
     const channel = client
       .channel("store-status")

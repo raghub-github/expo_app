@@ -12,6 +12,9 @@ export default function LegalLayout() {
         headerTintColor: "#111827",
         headerShadowVisible: false,
         headerTitleAlign: "left",
+        // See app/_layout.tsx — stops screens from re-rendering while a
+        // screen is pushed on top of them.
+        freezeOnBlur: true,
       }}
     >
       <Stack.Screen name="index" options={{ title: "Legal & Policies" }} />
