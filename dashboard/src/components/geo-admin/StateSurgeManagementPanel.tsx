@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { ChevronDown, ChevronUp, Loader2, Plus, RefreshCw, Trash2, Zap } from "lucide-react";
+import { ChevronDown, ChevronUp, Info, Loader2, Plus, RefreshCw, Trash2, Zap } from "lucide-react";
 import { toast } from "sonner";
 import {
   isDefaultStateSurgeName,
@@ -616,6 +616,17 @@ export function StateSurgeManagementPanel({
 
   return (
     <div className={shellCls}>
+      <div className="flex items-start gap-2 rounded-lg border border-sky-200 bg-sky-50 px-3 py-2.5 text-xs text-sky-900">
+        <Info className="mt-0.5 h-4 w-4 shrink-0 text-sky-500" />
+        <p>
+          <span className="font-bold">Rider payout only.</span> These surges are paid to the
+          rider (company-funded) and are <span className="font-semibold">not</span> added to the
+          customer&apos;s bill. To charge <span className="font-semibold">customers</span> a surge —
+          with GST and customer / company / shared funding, per service, vehicle, geo &amp; time —
+          switch the Pricing toggle to <span className="font-semibold">Customer</span> and use the{" "}
+          <span className="font-semibold">Dynamic Pricing</span> panel on this geo node.
+        </p>
+      </div>
       <div className="flex flex-wrap items-center justify-between gap-3">
         {variant === "card" ? (
           <div>
