@@ -591,7 +591,7 @@ async function loadOnDutyRiderIds(
       AND jsonb_array_length(COALESCE(ld.service_types, '[]'::jsonb)) > 0
       AND (
         ${serviceJson}::text IS NULL
-        OR COALESCE(ld.service_types, '[]'::jsonb) @> ${serviceJson}::jsonb
+        OR COALESCE(ld.service_types, '[]'::jsonb) @> ${serviceJson}::text::jsonb
       )
   `) as Array<{ rider_id: number }>;
 
