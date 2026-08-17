@@ -157,7 +157,7 @@ async function sendAndLogNotification(args: {
       ) VALUES (
         ${args.subscriptionId}, ${args.merchantId}, ${args.storeId}, ${args.notificationType},
         'EMAIL', ${args.recipient}, ${args.subject}, ${args.templateKey},
-        'SENT', ${JSON.stringify(args.payload ?? {})}::jsonb, ${args.dedupeKey}
+        'SENT', ${JSON.stringify(args.payload ?? {})}::text::jsonb, ${args.dedupeKey}
       )
     `;
   } catch (err) {
@@ -531,7 +531,7 @@ async function runAutoRenewals(): Promise<{ processed: number; renewed: number; 
         plan_code_snapshot = ${snap.plan_code_snapshot},
         billing_cycle_snapshot = ${snap.billing_cycle_snapshot},
         plan_list_price_paise = ${snap.plan_list_price_paise},
-        plan_benefits_snapshot = ${benefitsJson}::jsonb,
+        plan_benefits_snapshot = ${benefitsJson}::text::jsonb,
         updated_at = NOW()
       WHERE id = ${sub.id}
     `;
@@ -551,11 +551,11 @@ async function runAutoRenewals(): Promise<{ processed: number; renewed: number; 
           ${sub.merchant_id}, ${sub.store_id}, ${sub.id}, ${sub.plan_id}, ${totalAmount},
           ${subtotalPaise}, ${gstPercent}, ${gstAmountPaise}, ${totalPaise},
           'WALLET', ${`wallet_renew_${sub.id}_${billingEndKey}`},
-          ${JSON.stringify({ auto_renew: true, ledger_id: newLedgerId })}::jsonb,
+          ${JSON.stringify({ auto_renew: true, ledger_id: newLedgerId })}::text::jsonb,
           'PAID', ${now.toISOString()}, ${renewedFrom.toISOString()}, ${newExpiry.toISOString()},
           ${`Auto-renew from wallet — ${sub.plan_name}`},
           ${snap.plan_name_snapshot}, ${snap.plan_code_snapshot}, ${snap.billing_cycle_snapshot},
-          ${snap.plan_list_price_paise}, ${benefitsJson}::jsonb
+          ${snap.plan_list_price_paise}, ${benefitsJson}::text::jsonb
         )
         RETURNING id
       `;

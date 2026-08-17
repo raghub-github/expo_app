@@ -128,7 +128,7 @@ export async function applyParcelPickupWaitingToBilling(
       waiting_funding_mode: split.fundingMode,
       company_funded_waiting: split.companyShare,
       pickup_wait_seconds: waitSeconds,
-    })}::jsonb,
+    })}::text::jsonb,
         updated_at = NOW()
     WHERE id = ${orderCorePk}
   `;

@@ -198,8 +198,9 @@ export const notificationRoutes: FastifyPluginAsync = async (app) => {
         return reply.code(400).send({ error: "missing_required_fields" });
       }
       const sql = getSql();
-      // Send jsonb as text + ::jsonb cast — `sql.json(...)` crashes over the
-      // Supabase pooler.
+      // Send jsonb as text + ::text::jsonb cast — `sql.json(...)` crashes over
+      // the Supabase pooler, and plain ::jsonb silently double-encodes under
+      // prepare: false (see notifications/db.ts's createCampaign for detail).
       const variablesSchemaStr = JSON.stringify(b.variables_schema ?? {});
       const buttonsStr = b.buttons ? JSON.stringify(b.buttons) : null;
       const rows = (await sql`
@@ -213,8 +214,8 @@ export const notificationRoutes: FastifyPluginAsync = async (app) => {
           ${b.title_template}, ${b.body_template},
           ${b.image_url ?? null}, ${b.deep_link ?? null},
           ${b.priority ?? "normal"}, ${b.locale ?? "en"},
-          ${variablesSchemaStr}::jsonb,
-          ${buttonsStr === null ? null : sql`${buttonsStr}::jsonb`},
+          ${variablesSchemaStr}::text::jsonb,
+          ${buttonsStr === null ? null : sql`${buttonsStr}::text::jsonb`},
           ${b.retry_count ?? 3}, ${b.expiry_seconds ?? 86400},
           ${req.auth?.sub ?? null}
         )
@@ -934,7 +935,7 @@ export const notificationRoutes: FastifyPluginAsync = async (app) => {
             subscribed_topics, source, created_at, updated_at, last_seen_at
           ) VALUES (
             ${userId}, ${role}, ${"web"}, ${"fcm"}, ${token}, ${storeId},
-            ${JSON.stringify(nextTopics)}::jsonb, ${source}, NOW(), NOW(), NOW()
+            ${JSON.stringify(nextTopics)}::text::jsonb, ${source}, NOW(), NOW(), NOW()
           )
           ON CONFLICT (native_token) DO UPDATE SET
             user_id = EXCLUDED.user_id,

@@ -94,7 +94,7 @@ export async function upsertWeatherCache(args: {
       ${args.mapped.weatherCode},
       ${args.mapped.weatherSeverity},
       ${args.mapped.rainDetected},
-      ${JSON.stringify(payload)}::jsonb,
+      ${JSON.stringify(payload)}::text::jsonb,
       ${expiresAt.toISOString()},
       NOW()
     )
@@ -158,7 +158,7 @@ export async function appendWeatherHistory(args: {
       ${args.mapped.weatherCode},
       ${args.mapped.weatherSeverity},
       ${args.mapped.temperatureC != null ? String(args.mapped.temperatureC) : null},
-      ${JSON.stringify({ mapped: args.mapped })}::jsonb
+      ${JSON.stringify({ mapped: args.mapped })}::text::jsonb
     )
   `;
 }
@@ -175,8 +175,8 @@ export async function logWeatherEvent(args: {
     VALUES (
       ${args.zoneKey},
       ${args.eventType},
-      ${JSON.stringify(args.reasons)}::jsonb,
-      ${args.payload ? JSON.stringify(args.payload) : null}::jsonb
+      ${JSON.stringify(args.reasons)}::text::jsonb,
+      ${args.payload ? JSON.stringify(args.payload) : null}::text::jsonb
     )
   `;
 }

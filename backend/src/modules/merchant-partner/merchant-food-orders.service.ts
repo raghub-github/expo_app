@@ -2935,7 +2935,7 @@ export async function patchMerchantFoodOrderStatus(
       ) VALUES (
         ${ordersFoodId}, ${corePk}, ${storeId},
         ${currentStatus}, ${status}, ${actionSource}, ${"merchant"}, ${actionLabels.actor_label},
-        ${meta}::jsonb
+        ${meta}::text::jsonb
       )
     `;
   } catch {

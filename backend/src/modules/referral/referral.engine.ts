@@ -477,7 +477,7 @@ export async function evaluateMerchantReferralOnEvent(opts: {
                 store_order_counts: storeCounts,
                 qualification_scope: scope,
                 last_qualifying_store_id: storeId,
-              })}::jsonb,
+              })}::text::jsonb,
               status = CASE
                 WHEN status = 'reward_credited' THEN status
                 ELSE 'milestone_pending'::referral_relationship_status

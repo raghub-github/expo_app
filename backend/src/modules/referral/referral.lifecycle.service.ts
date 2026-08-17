@@ -38,7 +38,7 @@ export async function recordLifecycleEvent(opts: {
         ${opts.toState},
         ${opts.eventName},
         ${opts.actor ?? "system"},
-        ${JSON.stringify(opts.metadata ?? {})}::jsonb
+        ${JSON.stringify(opts.metadata ?? {})}::text::jsonb
       )
     `;
   } catch (err) {
@@ -57,7 +57,7 @@ export async function recordLifecycleEvent(opts: {
           ${opts.toState}::referral_lifecycle_state,
           ${opts.eventName},
           ${opts.actor ?? "system"},
-          ${JSON.stringify(opts.metadata ?? {})}::jsonb
+          ${JSON.stringify(opts.metadata ?? {})}::text::jsonb
         )
       `;
     } catch (e2) {

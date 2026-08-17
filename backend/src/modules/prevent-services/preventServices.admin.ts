@@ -137,7 +137,7 @@ async function writeLog(args: {
       ${args.adminId ?? null}::uuid,
       ${args.adminName ?? null},
       ${args.reason ?? null},
-      ${args.snapshot != null ? JSON.stringify(args.snapshot) : null}::jsonb
+      ${args.snapshot != null ? JSON.stringify(args.snapshot) : null}::text::jsonb
     )
   `;
 }

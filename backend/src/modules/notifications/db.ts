@@ -72,7 +72,8 @@ export type CreateLogRow = {
  */
 export async function insertQueuedLog(row: CreateLogRow): Promise<void> {
   const sql = getSql();
-  // jsonb sent as text + ::jsonb cast (Supabase pooler safe).
+  // jsonb sent as text + ::text::jsonb cast — see createCampaign below for why
+  // plain ::jsonb silently double-encodes under prepare: false.
   const metadataStr = row.metadata ? JSON.stringify(row.metadata) : null;
   await sql`
     INSERT INTO public.notification_dispatch_logs (
@@ -84,7 +85,7 @@ export async function insertQueuedLog(row: CreateLogRow): Promise<void> {
       ${row.notificationId}::uuid, ${row.campaignId ?? null}, ${row.templateCode},
       ${row.recipient.userId}, ${row.recipient.role}, ${row.recipient.deviceToken}, ${row.recipient.deviceId}, ${row.recipient.platform},
       ${row.channel}, ${row.title}, ${row.body}, ${row.imageUrl}, ${row.deepLink}, ${row.priority}, 'queued',
-      ${metadataStr === null ? null : sql`${metadataStr}::jsonb`}
+      ${metadataStr === null ? null : sql`${metadataStr}::text::jsonb`}
     )
   `;
 }
@@ -105,7 +106,7 @@ export async function bulkInsertQueuedLogs(rows: CreateLogRow[]): Promise<void> 
           ${r.notificationId}::uuid, ${r.campaignId ?? null}, ${r.templateCode},
           ${r.recipient.userId}, ${r.recipient.role}, ${r.recipient.deviceToken}, ${r.recipient.deviceId}, ${r.recipient.platform},
           ${r.channel}, ${r.title}, ${r.body}, ${r.imageUrl}, ${r.deepLink}, ${r.priority}, 'queued',
-          ${metadataStr === null ? null : tx`${metadataStr}::jsonb`}
+          ${metadataStr === null ? null : tx`${metadataStr}::text::jsonb`}
         )
       `;
     }
@@ -220,6 +221,11 @@ export async function createCampaign(c: CampaignInsert): Promise<{ id: number }>
   // ended up writing the raw object to the wire. Passing a JSON string + cast
   // is stable across pooler configurations and does not require prepared
   // statement support.
+  // IMPORTANT: `::jsonb` alone still isn't enough — with `prepare: false`,
+  // postgres.js auto-encodes the already-JSON string a second time, storing
+  // a jsonb *string* scalar instead of the intended object/array (proven via
+  // jsonb_typeof — silently breaks any `->`/`@>`/`->>'field'` read later).
+  // `::text::jsonb` binds as text first, avoiding the re-encode.
   const targetFilterStr = JSON.stringify(c.targetFilter ?? {});
   const variablesStr = JSON.stringify(c.variables ?? {});
   const rows = (await sql`
@@ -231,8 +237,8 @@ export async function createCampaign(c: CampaignInsert): Promise<{ id: number }>
     VALUES (
       ${c.name}, ${c.description ?? null}, ${c.templateCode},
       ${c.overrideTitle ?? null}, ${c.overrideBody ?? null}, ${c.overrideImage ?? null}, ${c.overrideDeepLink ?? null},
-      ${targetFilterStr}::jsonb,
-      ${variablesStr}::jsonb,
+      ${targetFilterStr}::text::jsonb,
+      ${variablesStr}::text::jsonb,
       ${c.scheduledAt ?? null},
       ${c.status ?? "draft"},
       ${c.createdBy ?? null}
@@ -421,7 +427,7 @@ export async function upsertSetting(
     INSERT INTO public.notification_settings (key, value, description, updated_by, updated_at)
     VALUES (
       ${key},
-      ${valueStr}::jsonb,
+      ${valueStr}::text::jsonb,
       ${opts?.description ?? null},
       ${opts?.updatedBy ?? null},
       now()

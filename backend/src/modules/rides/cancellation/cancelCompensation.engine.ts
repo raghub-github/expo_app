@@ -110,7 +110,7 @@ export async function postPrePickupCancellationCompensation(input: {
           ${result.customerShare}, ${result.companyShare},
           ${result.payerMode}, ${result.calcType},
           'settled', TRUE,
-          ${JSON.stringify(result)}::jsonb
+          ${JSON.stringify(result)}::text::jsonb
         )
       `;
 
@@ -143,7 +143,7 @@ export async function postPrePickupCancellationCompensation(input: {
             customerShare: result.customerShare,
             companyShare: result.companyShare,
             payerMode: result.payerMode,
-          })}::jsonb,
+          })}::text::jsonb,
           'system'
         )
         ON CONFLICT DO NOTHING

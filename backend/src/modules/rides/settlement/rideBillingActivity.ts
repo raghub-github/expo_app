@@ -44,7 +44,7 @@ export async function recordRideBillingActivity(input: {
         ${input.eventType},
         ${input.amount ?? null},
         ${input.summary ?? null},
-        ${JSON.stringify(input.payload ?? {})}::jsonb,
+        ${JSON.stringify(input.payload ?? {})}::text::jsonb,
         ${input.actorType ?? null},
         ${input.actorId ?? null}
       )

@@ -474,7 +474,7 @@ async function insertWalletEntry(input: {
         ${input.ref},
         'subscription',
         ${input.description},
-        ${JSON.stringify(input.metadata ?? {})}::jsonb,
+        ${JSON.stringify(input.metadata ?? {})}::text::jsonb,
         'system'
       )
     `;
@@ -498,7 +498,7 @@ async function insertWalletEntry(input: {
         ${input.ref},
         'subscription',
         ${input.description},
-        ${JSON.stringify(input.metadata ?? {})}::jsonb
+        ${JSON.stringify(input.metadata ?? {})}::text::jsonb
       )
     `;
   }

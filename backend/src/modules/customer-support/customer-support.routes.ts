@@ -437,7 +437,7 @@ async function linkChatSessionToTicket(
         metadata = COALESCE(metadata, '{}'::jsonb) || ${JSON.stringify({
           ticket_display_id: ticketDisplayId,
           ticket_numeric_id: ticketId,
-        })}::jsonb,
+        })}::text::jsonb,
         updated_at = NOW()
     WHERE id = ${chatSessionId}
       AND customer_id = ${customerId}
@@ -451,7 +451,7 @@ async function linkChatSessionToTicket(
       'bot',
       ${confirmationText},
       NULL,
-      ${confirmationPayload}::jsonb,
+      ${confirmationPayload}::text::jsonb,
       COALESCE((SELECT MAX(display_order) FROM customer_support_chat_messages WHERE session_id = ${chatSessionId}), 0) + 1
   `;
 }
@@ -770,7 +770,7 @@ export async function customerSupportRoutes(app: FastifyInstance) {
 
     const insertRows = await sql`
       INSERT INTO customer_support_chat_sessions (customer_id, order_id, metadata)
-      VALUES (${me.id}, ${orderIdNum}, ${metadataJson}::jsonb)
+      VALUES (${me.id}, ${orderIdNum}, ${metadataJson}::text::jsonb)
       RETURNING id, order_id, ticket_id, ticket_title_id, selected_issue_label, status, metadata, created_at, updated_at
     `;
     const row = (insertRows as Array<Record<string, unknown>>)[0];
@@ -1015,7 +1015,7 @@ export async function customerSupportRoutes(app: FastifyInstance) {
         ${roleRaw},
         ${messageText},
         ${menuLevel},
-        ${payloadJson}::jsonb,
+        ${payloadJson}::text::jsonb,
         ${displayOrder}
       )
       RETURNING id, client_message_id, role, message_text, menu_level, payload, display_order, created_at
@@ -1236,7 +1236,7 @@ export async function customerSupportRoutes(app: FastifyInstance) {
           FALSE,
           NULL,
           ${targetType === "merchant" ? "{MERCHANT_FRAUD}" : "{RIDER_FRAUD}"}::text[],
-          ${metadataJson}::jsonb
+          ${metadataJson}::text::jsonb
         )
         RETURNING id, ticket_id, status, priority, subject, description, created_at
       `;
@@ -1456,7 +1456,7 @@ export async function customerSupportRoutes(app: FastifyInstance) {
         FALSE,
         ${groupId},
         ${tagsArrayLiteral}::text[],
-        ${metadataJson}::jsonb
+        ${metadataJson}::text::jsonb
       )
       RETURNING id, ticket_id, status, priority, subject, description, created_at
     `) as Array<Record<string, unknown>>;

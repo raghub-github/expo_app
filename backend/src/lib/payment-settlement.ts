@@ -62,7 +62,7 @@ async function legacyCredit(
         ${walletId}, ${amount}, ${"ORDER_EARNING"}, ${"LOCKED"}, ${"ORDER"},
         ${input.ordersFoodId}, ${`order_earning_${input.ordersFoodId}`},
         ${`Order #${input.ordersCoreId} delivered`},
-        ${JSON.stringify({ orders_core_id: input.ordersCoreId })}::jsonb
+        ${JSON.stringify({ orders_core_id: input.ordersCoreId })}::text::jsonb
       )
     `;
     return { credited: true };

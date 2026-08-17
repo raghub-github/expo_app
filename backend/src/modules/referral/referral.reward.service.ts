@@ -165,7 +165,7 @@ async function creditCustomerGatiCash(opts: {
         referrerId: opts.referrerId ?? null,
         referredUserId: opts.referredUserId ?? null,
         rewardTransactionKey: opts.idempotencyKey,
-      })}::jsonb,
+      })}::text::jsonb,
       'REFERRAL'::public.customer_wallet_balance_lot_type,
       NULL
     )::text AS tx_id
@@ -326,7 +326,7 @@ async function creditRiderWallet(opts: {
         referrerId: opts.referrerId ?? null,
         referredUserId: opts.referredUserId ?? null,
         rewardTransactionKey: opts.idempotencyKey,
-      })}::jsonb,
+      })}::text::jsonb,
       'system'
     )
     ON CONFLICT DO NOTHING
@@ -355,7 +355,7 @@ async function creditRiderWallet(opts: {
           relationshipId: opts.relationshipId,
           ruleId: opts.ruleId,
           milestoneOrders: opts.milestoneOrders,
-        })}::jsonb,
+        })}::text::jsonb,
         'system'
       )
       RETURNING id::text
@@ -545,7 +545,7 @@ async function creditMerchantWallet(opts: {
         referrerId: opts.referrerId ?? null,
         referredUserId: opts.referredUserId ?? null,
         rewardTransactionKey: opts.idempotencyKey,
-      })}::jsonb
+      })}::text::jsonb
     )::text AS id
   `;
   const ledgerId = ledger?.id ? Number(ledger.id) : null;

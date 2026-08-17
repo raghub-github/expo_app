@@ -96,8 +96,8 @@ export async function writeEtaPromiseToOrder(
       eta_confidence_score          = COALESCE(eta_confidence_score, ${snap.confidenceScore.toFixed(2)}),
       eta_version                   = COALESCE(eta_version, 2),
       eta_mapbox_route_id           = COALESCE(eta_mapbox_route_id, ${metadata?.mapboxRouteId ?? null}),
-      eta_route_snapshot            = COALESCE(eta_route_snapshot, ${JSON.stringify(metadata?.routeSnapshot ?? {})}::jsonb),
-      eta_metadata                  = COALESCE(eta_metadata, ${JSON.stringify({ engineVersion: snap.engineVersion, ...snap.context })}::jsonb),
+      eta_route_snapshot            = COALESCE(eta_route_snapshot, ${JSON.stringify(metadata?.routeSnapshot ?? {})}::text::jsonb),
+      eta_metadata                  = COALESCE(eta_metadata, ${JSON.stringify({ engineVersion: snap.engineVersion, ...snap.context })}::text::jsonb),
 
       -- v2 critical-path breakdown (immutable after first freeze)
       eta_food_prep_minutes          = COALESCE(eta_food_prep_minutes, ${snap.breakdown.foodPrepMinutes}),
@@ -113,7 +113,7 @@ export async function writeEtaPromiseToOrder(
       eta_peak_window                = COALESCE(eta_peak_window, ${snap.context.peakWindow}),
       eta_drop_context               = COALESCE(eta_drop_context, ${snap.context.dropContext}),
       eta_engine_version             = COALESCE(eta_engine_version, ${snap.engineVersion}),
-      eta_v2_metadata                = COALESCE(eta_v2_metadata, ${JSON.stringify(snap)}::jsonb),
+      eta_v2_metadata                = COALESCE(eta_v2_metadata, ${JSON.stringify(snap)}::text::jsonb),
 
       promised_eta_minutes           = COALESCE(promised_eta_minutes, ${snap.etaMaxMinutes}),
       -- Seed current ETA once; live engine owns later revisions.
@@ -306,8 +306,8 @@ export async function appendEtaRecalc(args: {
         ${baseValues.riderId},
         ${baseValues.storeId},
         ${baseValues.routeKm},
-        ${JSON.stringify({})}::jsonb,
-        ${baseValues.metaJson}::jsonb,
+        ${JSON.stringify({})}::text::jsonb,
+        ${baseValues.metaJson}::text::jsonb,
         ${orderStatus},
         ${args.stageAware?.currentStage ?? null},
         ${newDisplay != null ? Math.round(Number(newDisplay)) : null},
@@ -316,8 +316,8 @@ export async function appendEtaRecalc(args: {
         ${args.stageAware?.freezeCountdown ?? null},
         ${args.stageAware?.etaSource ?? args.reason},
         ${deltaMinutes},
-        ${JSON.stringify(previousSnapshot)}::jsonb,
-        ${JSON.stringify(newSnapshot)}::jsonb
+        ${JSON.stringify(previousSnapshot)}::text::jsonb,
+        ${JSON.stringify(newSnapshot)}::text::jsonb
       )
       RETURNING id
     `;
@@ -363,8 +363,8 @@ export async function appendEtaRecalc(args: {
         ${baseValues.riderId},
         ${baseValues.storeId},
         ${baseValues.routeKm},
-        ${JSON.stringify({})}::jsonb,
-        ${baseValues.metaJson}::jsonb
+        ${JSON.stringify({})}::text::jsonb,
+        ${baseValues.metaJson}::text::jsonb
       )
       RETURNING id
     `;

@@ -187,8 +187,8 @@ async function insertSettlementRow(
       ${args.gatiCashApplied ?? 0}, ${args.razorpayAmount ?? 0},
       ${args.razorpayOrderId ?? null}, ${args.razorpayPaymentId ?? null},
       'settled', ${args.billingSnapshotId},
-      ${JSON.stringify(args.billingSnapshot)}::jsonb,
-      ${JSON.stringify(c)}::jsonb
+      ${JSON.stringify(args.billingSnapshot)}::text::jsonb,
+      ${JSON.stringify(c)}::text::jsonb
     )
   `;
 }
@@ -224,7 +224,7 @@ async function insertLedgerLines(
         ${line.direction}, ${round2(line.amount)},
         ${line.accountKind}, ${line.reasonCode},
         ${line.description ?? null},
-        ${JSON.stringify(line.metadata ?? {})}::jsonb
+        ${JSON.stringify(line.metadata ?? {})}::text::jsonb
       )
     `;
   }
@@ -345,7 +345,7 @@ async function debitRiderWalletForCashSettlement(
         orderIdText: args.orderIdText,
         settlementId: args.settlementId,
         component: "company_receivable_recovery",
-      })}::jsonb,
+      })}::text::jsonb,
       'system'
     )
     ON CONFLICT DO NOTHING
@@ -426,7 +426,7 @@ async function creditRiderWalletForOnlineSettlement(
         orderIdText: args.orderIdText,
         settlementId: args.settlementId,
         component: "rider_earnings",
-      })}::jsonb,
+      })}::text::jsonb,
       'system'
     )
     ON CONFLICT DO NOTHING
