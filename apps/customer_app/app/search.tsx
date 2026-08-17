@@ -4,10 +4,11 @@
  * Slide-from-right transition, keyboard auto-focus, debounced search, voice support.
  */
 
-import React, { useRef, useEffect, useMemo } from "react";
+import React, { useRef, useEffect, useMemo, useCallback, memo } from "react";
 import { AppText } from "@/components/AppText";
 
-import { View, TextInput, TouchableOpacity, Pressable, StyleSheet, ScrollView, Image, KeyboardAvoidingView, Platform, ActivityIndicator, Dimensions, Vibration } from "react-native";
+import { View, TextInput, TouchableOpacity, Pressable, StyleSheet, ScrollView, KeyboardAvoidingView, Platform, ActivityIndicator, Dimensions, Vibration } from "react-native";
+import { Image } from "expo-image";
 import Animated, {
   useSharedValue,
   useAnimatedStyle,
@@ -254,22 +255,38 @@ export default function SearchScreen() {
     router.push(`/home/category/${slug}`);
   };
 
-  const handleCategoryResultPress = (slug: string) => {
-    addRecentSearch(query.trim());
-    router.push(`/home/category/${slug}`);
-  };
+  // `query` changes on every keystroke; reading it via a ref (instead of as a
+  // dependency) keeps these callbacks referentially stable across typing, so
+  // React.memo on DishRow/RestaurantRow below actually prevents re-renders
+  // while the user types in the search box.
+  const queryRef = useRef(query);
+  queryRef.current = query;
 
-  const handleDishPress = (dish: SearchDish) => {
-    addRecentSearch(query.trim());
-    if (dish.storeId) {
-      navigateToMerchant(router, queryClient, dish.storeId);
-    }
-  };
+  const handleCategoryResultPress = useCallback(
+    (slug: string) => {
+      addRecentSearch(queryRef.current.trim());
+      router.push(`/home/category/${slug}`);
+    },
+    [router, addRecentSearch]
+  );
 
-  const handleRestaurantPress = (id: string) => {
-    addRecentSearch(query.trim());
-    navigateToMerchant(router, queryClient, id);
-  };
+  const handleDishPress = useCallback(
+    (dish: SearchDish) => {
+      addRecentSearch(queryRef.current.trim());
+      if (dish.storeId) {
+        navigateToMerchant(router, queryClient, dish.storeId);
+      }
+    },
+    [router, queryClient, addRecentSearch]
+  );
+
+  const handleRestaurantPress = useCallback(
+    (id: string) => {
+      addRecentSearch(queryRef.current.trim());
+      navigateToMerchant(router, queryClient, id);
+    },
+    [router, queryClient, addRecentSearch]
+  );
 
   return (
     <>
@@ -487,7 +504,8 @@ function SearchResultsList({
           <Image
             source={categoryImageSource ?? undefined}
             style={styles.categoryCardImage}
-            resizeMode="cover"
+            contentFit="cover"
+            cachePolicy="memory-disk"
           />
           <View style={styles.categoryCardContent}>
             <AppText style={styles.categoryCardName}>{category.name}</AppText>
@@ -500,7 +518,7 @@ function SearchResultsList({
       {/* 2. Dish results – section always present for consistent layout */}
       <AppText style={styles.resultSectionTitle}>Dishes</AppText>
       {dishes.length > 0 ? (
-        dishes.map((d) => <DishRow key={d.id} dish={d} onPress={() => onDishPress(d)} />)
+        dishes.map((d) => <DishRow key={d.id} dish={d} onPress={onDishPress} />)
       ) : (
         <AppText style={styles.resultSectionEmpty}>No dishes found</AppText>
       )}
@@ -625,7 +643,7 @@ function SearchEmptyState({
             <Image
               source={emptyImage}
               style={[styles.emptyStateImage, { height: EMPTY_IMAGE_HEIGHT }]}
-              resizeMode="contain"
+              contentFit="contain"
             />
           ) : null}
         </Animated.View>
@@ -673,14 +691,20 @@ function SearchEmptyState({
   );
 }
 
-function DishRow({ dish, onPress }: { dish: SearchDish; onPress: () => void }) {
+const DishRow = memo(function DishRow({
+  dish,
+  onPress,
+}: {
+  dish: SearchDish;
+  onPress: (dish: SearchDish) => void;
+}) {
   const fallback = useAppAssetSource(CX.search.default);
   const url = searchCategoryImageUrl(dish.imageKey);
   const source = url ? { uri: url } : fallback;
   return (
-    <TouchableOpacity style={styles.resultRow} onPress={onPress} activeOpacity={0.8}>
+    <TouchableOpacity style={styles.resultRow} onPress={() => onPress(dish)} activeOpacity={0.8}>
       {source ? (
-        <Image source={source} style={styles.resultRowImage} resizeMode="cover" />
+        <Image source={source} style={styles.resultRowImage} contentFit="cover" cachePolicy="memory-disk" />
       ) : (
         <View style={styles.resultRowImage} />
       )}
@@ -691,9 +715,9 @@ function DishRow({ dish, onPress }: { dish: SearchDish; onPress: () => void }) {
       <Ionicons name="chevron-forward" size={18} color={GatiMitraColors.textSecondary} />
     </TouchableOpacity>
   );
-}
+});
 
-function RestaurantRow({
+const RestaurantRow = memo(function RestaurantRow({
   restaurant,
   onPress,
 }: {
@@ -713,7 +737,8 @@ function RestaurantRow({
         <Image
         source={source}
         style={styles.resultRowImage}
-        resizeMode="cover"
+        contentFit="cover"
+        cachePolicy="memory-disk"
       />
         ) : (
         <View style={styles.resultRowImage} />
@@ -730,7 +755,7 @@ function RestaurantRow({
       <Ionicons name="chevron-forward" size={18} color={GatiMitraColors.textSecondary} />
     </TouchableOpacity>
   );
-}
+});
 
 const styles = StyleSheet.create({
   container: {

@@ -14,6 +14,9 @@ export default function ProfileLayout() {
         headerTintColor: "#1A1A1A",
         headerTitleStyle: { fontWeight: "700", fontSize: 18 },
         headerShadowVisible: false,
+        // See app/_layout.tsx — stops screens from re-rendering while a
+        // screen is pushed on top of them (this stack alone has ~15 screens).
+        freezeOnBlur: true,
       }}
     >
       <Stack.Screen name="index" options={{ headerShown: false }} />

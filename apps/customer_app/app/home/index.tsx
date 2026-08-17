@@ -30,6 +30,9 @@ import Animated, {
   runOnJS,
   interpolate,
   Extrapolation,
+  withTiming,
+  cancelAnimation,
+  Easing,
 } from "react-native-reanimated";
 import { useAppSafeAreaInsets } from "@/hooks/useAppSafeAreaInsets";
 import { StatusBar } from "expo-status-bar";
@@ -338,7 +341,15 @@ export default function FoodMerchantsScreen() {
     return entry?.items?.length ? entry.items : undefined;
   }, [merchantsAnchorCoords?.latitude, merchantsAnchorCoords?.longitude, vegOnly]);
 
-  const { data: merchantsData, isLoading, isFetching, isFetched, isError, refetch } = useQuery({
+  const {
+    data: merchantsData,
+    isLoading,
+    isFetching,
+    isFetched,
+    isError,
+    refetch,
+    dataUpdatedAt: merchantsDataUpdatedAt,
+  } = useQuery({
     queryKey:
       merchantsAnchorCoords?.latitude != null && merchantsAnchorCoords?.longitude != null
         ? merchantsQueryKey(
@@ -392,7 +403,11 @@ export default function FoodMerchantsScreen() {
     merchantsAnchorCoords?.longitude,
   ]);
 
-  const { data: featuredOffersData, refetch: refetchFeaturedOffers } = useFeaturedOffersHome(
+  const {
+    data: featuredOffersData,
+    refetch: refetchFeaturedOffers,
+    dataUpdatedAt: featuredOffersDataUpdatedAt,
+  } = useFeaturedOffersHome(
     offerLocationParams,
     merchantsAnchorCoords?.latitude != null && merchantsAnchorCoords?.longitude != null
   );
@@ -959,17 +974,35 @@ export default function FoodMerchantsScreen() {
     useScreenChromeStore.getState().setStatusBarBackground("transparent", "dark");
   }, [isGridFirstLayout, isNonServiceableScreen]);
 
+  const lastActiveLocationInvalidateRef = useRef(0);
+
   useFocusEffect(
     useCallback(() => {
-      void queryClient.invalidateQueries({ queryKey: ["active-location"] });
+      // Gate on each query's own staleTime instead of force-refetching on every
+      // focus — React Query doesn't auto-refetch-on-focus in RN (tabs stay
+      // mounted, they don't unmount/remount), so this focus effect is the
+      // right place for that, but re-fetching unconditionally meant rapid
+      // tab-switching (Home → Orders → Home) fired a full merchants-list +
+      // offers + location refetch every single time, even when data was
+      // seconds old.
+      if (Date.now() - lastActiveLocationInvalidateRef.current > 60_000) {
+        lastActiveLocationInvalidateRef.current = Date.now();
+        void queryClient.invalidateQueries({ queryKey: ["active-location"] });
+      }
       if (merchantsAnchorCoords?.latitude != null && merchantsAnchorCoords.longitude != null) {
-        void refetch();
-        void refetchFeaturedOffers();
+        if (Date.now() - merchantsDataUpdatedAt > MERCHANTS_LIST_STALE_MS) {
+          void refetch();
+        }
+        if (Date.now() - featuredOffersDataUpdatedAt > 5 * 60 * 1000) {
+          void refetchFeaturedOffers();
+        }
       }
     }, [
       queryClient,
       merchantsAnchorCoords?.latitude,
       merchantsAnchorCoords?.longitude,
+      merchantsDataUpdatedAt,
+      featuredOffersDataUpdatedAt,
       refetch,
       refetchFeaturedOffers,
     ])
@@ -1022,9 +1055,14 @@ export default function FoodMerchantsScreen() {
   const gridFirstSkyHeight = gridFirstHeroReady
     ? gridFirstMeasuredSkyHeight
     : gridFirstCompactSkyHeight;
-  const gridFirstSkyAnimatedHeight = useRef(
-    new NativeAnimated.Value(gridFirstCompactSkyHeight)
-  ).current;
+  // Reanimated shared value (UI-thread driven) — react-native core Animated
+  // can't native-drive a `height` change, so this one ran on the JS thread
+  // and competed with list scrolling for frame budget. gridFirstHeroReveal
+  // below stays on the core Animated API since it's already native-driven.
+  const gridFirstSkyAnimatedHeight = useSharedValue(gridFirstCompactSkyHeight);
+  const gridFirstSkyAnimatedStyle = useAnimatedStyle(() => ({
+    height: gridFirstSkyAnimatedHeight.value,
+  }));
   const gridFirstHeroReveal = useRef(new NativeAnimated.Value(0)).current;
   const prevSkyDefaultRef = useRef(gridFirstSkyHeightDefault);
 
@@ -1054,29 +1092,25 @@ export default function FoodMerchantsScreen() {
   }, []);
 
   useEffect(() => {
-    gridFirstSkyAnimatedHeight.stopAnimation();
+    cancelAnimation(gridFirstSkyAnimatedHeight);
     gridFirstHeroReveal.stopAnimation();
 
     if (!gridFirstHeroReady) {
-      gridFirstSkyAnimatedHeight.setValue(gridFirstCompactSkyHeight);
+      gridFirstSkyAnimatedHeight.value = gridFirstCompactSkyHeight;
       gridFirstHeroReveal.setValue(0);
       return;
     }
 
-    NativeAnimated.parallel([
-      NativeAnimated.timing(gridFirstSkyAnimatedHeight, {
-        toValue: gridFirstSkyHeight,
-        duration: 620,
-        easing: NativeEasing.out(NativeEasing.cubic),
-        useNativeDriver: false,
-      }),
-      NativeAnimated.timing(gridFirstHeroReveal, {
-        toValue: 1,
-        duration: 500,
-        easing: NativeEasing.out(NativeEasing.cubic),
-        useNativeDriver: true,
-      }),
-    ]).start();
+    gridFirstSkyAnimatedHeight.value = withTiming(gridFirstSkyHeight, {
+      duration: 620,
+      easing: Easing.out(Easing.cubic),
+    });
+    NativeAnimated.timing(gridFirstHeroReveal, {
+      toValue: 1,
+      duration: 500,
+      easing: NativeEasing.out(NativeEasing.cubic),
+      useNativeDriver: true,
+    }).start();
   }, [
     gridFirstHeroReady,
     gridFirstSkyHeight,
@@ -1359,11 +1393,11 @@ export default function FoodMerchantsScreen() {
             <>
           <View style={isGridFirstLayout ? styles.gridFirstSkyBlock : styles.offersSection}>
             {isGridFirstLayout ? (
-              <NativeAnimated.View
+              <Animated.View
                 style={[
                   styles.gridFirstSkyInner,
                   !gridFirstHeroReady && styles.gridFirstSkyInnerCompact,
-                  { height: gridFirstSkyAnimatedHeight },
+                  gridFirstSkyAnimatedStyle,
                 ]}
               >
                 <NativeAnimated.View
@@ -1415,7 +1449,7 @@ export default function FoodMerchantsScreen() {
                     heroReady={gridFirstHeroReady}
                   />
                 </View>
-              </NativeAnimated.View>
+              </Animated.View>
             ) : (
               <HomePromoCarousel
                 offers={homeFeaturedOffers}

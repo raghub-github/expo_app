@@ -5,7 +5,7 @@ export default function AuthLayout() {
   return (
     <>
       <AndroidBackHandler />
-      <Stack screenOptions={{ headerShown: false }}>
+      <Stack screenOptions={{ headerShown: false, freezeOnBlur: true }}>
       <Stack.Screen name="login" />
       <Stack.Screen name="otp" />
     </Stack>
