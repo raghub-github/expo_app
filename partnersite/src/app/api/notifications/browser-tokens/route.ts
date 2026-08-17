@@ -170,16 +170,19 @@ export async function POST(req: NextRequest) {
         store_id: storeId,
         source: body.source ?? "partnersite",
       }),
-      timeoutMs: 15_000,
+      timeoutMs: 2_000,
     });
 
     if (!res) {
+      // Soft-skip when Fastify is down — do not 503-spam the browser console / retries.
       return NextResponse.json(
         {
+          ok: false,
+          skipped: true,
           error: "backend_unreachable",
-          message: "Fastify backend not reachable. Start backend on :3000.",
+          message: "Fastify backend not reachable; push registration deferred.",
         },
-        { status: 503 }
+        { status: 200 }
       );
     }
 

@@ -70,9 +70,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         return;
       }
 
-      // Backend is source of truth — drop forged/revoked tokens before first paint.
-      const session = await authService.validateStoredSession(stored);
-      const customerId = customerIdOf(session);
+      const customerId = customerIdOf(stored);
       if (!customerId) {
         await clearCustomerScopedState(null);
         set({ session: null, hydrated: true });
@@ -83,7 +81,22 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       } else {
         setActiveCustomerScopeId(customerId);
       }
-      set({ session, hydrated: true });
+
+      // Optimistic: unblock first paint immediately with the stored session,
+      // validate against the backend in the background instead of gating
+      // hydrated (and therefore the whole app's first screen) behind a live
+      // network round trip (up to 12s on a slow connection). Every API call
+      // already enforces auth per-request (401/403 on a bad token), so this
+      // check is a UX guard against showing authenticated screens on a
+      // forged/revoked token, not the only line of defense — it still runs,
+      // just without blocking the first frame. A definitive 401/403 clears
+      // the session below, same outcome as before, a couple seconds later.
+      set({ session: stored, hydrated: true });
+      void authService.validateStoredSession(stored).then((validated) => {
+        if (validated) return;
+        void clearCustomerScopedState(null);
+        set({ session: null });
+      });
     } catch (e) {
       console.warn("[AuthStore] hydrate failed:", e);
       await clearCustomerScopedState(null);

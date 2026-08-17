@@ -21,6 +21,12 @@ import {
 import { RIDER_AVAILABLE_ORDERS_QUERY_KEY } from "@/src/hooks/useOrders";
 import { setRiderPushUnregister } from "@/src/lib/riderPushUnregister";
 import { setRiderPushRefresh } from "@/src/lib/riderPushRefresh";
+import {
+  parseRiderNumericId,
+  useRiderWalletFreezeLive,
+} from "@/src/hooks/useRiderWalletFreezeLive";
+import { useRiderBankStatusLive } from "@/src/hooks/useRiderBankStatusLive";
+import { handleRiderWalletRelatedPush } from "@/src/lib/riderWalletPushSync";
 
 /**
  * Registers Expo + native tokens via shared push controller (JWT role = rider).
@@ -35,9 +41,32 @@ export function RiderPushSetup() {
   const setPermissionStepGranted = usePermissionStore((s) => s.setPermissionStepGranted);
   const permissionPromptedRef = useRef(false);
   const expoGo = Constants.appOwnership === "expo";
+  const riderId = parseRiderNumericId(session);
+  const sessionRef = useRef(session);
+  sessionRef.current = session;
+
+  useRiderWalletFreezeLive({
+    riderId,
+    accessToken: session?.accessToken ?? null,
+    enabled: Boolean(hydrated && session?.accessToken && session.role === "rider" && riderId),
+    queryClient,
+  });
+
+  useRiderBankStatusLive({
+    riderId,
+    accessToken: session?.accessToken ?? null,
+    enabled: Boolean(hydrated && session?.accessToken && session.role === "rider" && riderId),
+    queryClient,
+  });
 
   const handleOpen = useCallback(
     (payload: PushNotificationOpenPayload) => {
+      handleRiderWalletRelatedPush(
+        queryClient,
+        sessionRef.current,
+        payload.data ?? {},
+        typeof payload.body === "string" ? payload.body : null,
+      );
       navigateFromPushData(router, {
         ...payload.data,
         appRole: "rider",
@@ -45,7 +74,7 @@ export function RiderPushSetup() {
           payload.data.orderId != null ? `/order/${String(payload.data.orderId)}` : undefined,
       });
     },
-    [router]
+    [router, queryClient]
   );
 
   const handleForeground = useCallback(
@@ -60,6 +89,13 @@ export function RiderPushSetup() {
         "";
       useNotificationInboxStore.getState().add(notificationFromPushPayload(title, body, payload.data));
       enqueueInAppBannerFromPush(payload);
+
+      handleRiderWalletRelatedPush(
+        queryClient,
+        sessionRef.current,
+        payload.data ?? {},
+        body,
+      );
 
       const type = typeof payload.data.type === "string" ? payload.data.type : "";
       if (

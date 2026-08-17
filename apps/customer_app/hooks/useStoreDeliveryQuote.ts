@@ -12,7 +12,7 @@
  *   - delivery_fee: geo slab engine with cumulative/progressive slabs
  *     (base once + per-segment km rates, monotonic by distance); fallback to env base+per_km.
  *   - delivery_gst applied when APPLY_GST_ON_DELIVERY_FEE=true.
- *   - serviceable: distance <= store.delivery_radius_km || SERVICE_RADIUS_KM_DEFAULT.
+ *   - serviceable: haversine(store, drop) <= store.delivery_radius_km (else SERVICE_RADIUS_KM_DEFAULT).
  */
 
 import { useQuery, type UseQueryResult } from "@tanstack/react-query";

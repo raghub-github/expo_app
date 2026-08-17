@@ -50,9 +50,32 @@ export default function LoginPage() {
 
     if (reason === "session_invalid" || reason === "session_required") {
       void (async () => {
-        // Local-only clear — do NOT POST /api/auth/logout here.
-        // That wiped httpOnly cookies after refresh races and forced real logouts
-        // (especially when opening Payments as super-admin).
+        // Prefer cookie-first status BEFORE wiping local storage. Opening /order
+        // after a refresh race used to clear local auth while httpOnly cookies
+        // were still valid — then the dashboard tab cascaded 401s.
+        try {
+          const statusRes = await fetch("/api/auth/session-status", {
+            credentials: "include",
+            cache: "no-store",
+          });
+          if (statusRes.ok) {
+            const body = (await statusRes.json().catch(() => null)) as {
+              authenticated?: boolean;
+              expired?: boolean;
+            } | null;
+            if (body?.authenticated === true && body?.expired !== true) {
+              const redirectParam = searchParams.get("redirect");
+              const redirectTo =
+                redirectParam?.startsWith("/") && !redirectParam.startsWith("//")
+                  ? redirectParam
+                  : "/dashboard";
+              window.location.replace(redirectTo);
+              return;
+            }
+          }
+        } catch {
+          // fall through to local clear
+        }
         try {
           await supabase.auth.signOut({ scope: "local" });
         } catch {

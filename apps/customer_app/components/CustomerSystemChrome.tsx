@@ -1,30 +1,12 @@
 import { useEffect } from "react";
 import { AppState, Platform, StatusBar, type AppStateStatus } from "react-native";
-import { ANDROID_SYSTEM_NAV_COLOR } from "@/constants/layout";
+import { applyAndroidNavigationChrome } from "@/lib/androidEdgeToEdgeChrome";
 import { useScreenChromeStore } from "@/store/screenChromeStore";
 
 /**
  * Android system *navigation* bar only.
- *
- * Do NOT call `expo-system-ui` here — that API tints the whole window (including
- * the status-bar region when the bar is translucent). Painting it `#121212`
- * made dark status-bar icons invisible on Home and other screens.
- * Status-bar / root window color is owned by `StatusBarSystemUISync` in `_layout`.
+ * Edge-to-edge builds ignore position/background APIs — visibility + icon style only.
  */
-async function applyAndroidSystemNavigationChrome() {
-  const NavigationBar = await import("expo-navigation-bar");
-  await NavigationBar.setVisibilityAsync("visible");
-  try {
-    await NavigationBar.setPositionAsync("relative");
-  } catch {
-    // Ignored on edge-to-edge builds where position is fixed.
-  }
-  await NavigationBar.setBackgroundColorAsync(ANDROID_SYSTEM_NAV_COLOR);
-  await NavigationBar.setButtonStyleAsync("light");
-  if (typeof NavigationBar.setStyle === "function") {
-    await NavigationBar.setStyle("dark");
-  }
-}
 
 function assertStatusBarVisible() {
   StatusBar.setHidden(false, "none");
@@ -42,15 +24,13 @@ export function CustomerSystemChrome() {
 
     if (Platform.OS !== "android" || bootstrapActive) return;
 
-    void applyAndroidSystemNavigationChrome().catch(() => {
-      // Optional until expo-navigation-bar native module is linked.
-    });
+    void applyAndroidNavigationChrome({ buttonStyle: "light" }).catch(() => {});
 
     const onAppState = (state: AppStateStatus) => {
       if (state !== "active") return;
       assertStatusBarVisible();
       if (useScreenChromeStore.getState().bootstrapActive) return;
-      void applyAndroidSystemNavigationChrome().catch(() => {});
+      void applyAndroidNavigationChrome({ buttonStyle: "light" }).catch(() => {});
     };
 
     const sub = AppState.addEventListener("change", onAppState);

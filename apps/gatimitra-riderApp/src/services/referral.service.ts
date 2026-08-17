@@ -4,7 +4,7 @@
  */
 
 import { ApiError } from "@gatimitra/sdk";
-import { getRiderAppConfig } from "@/src/config/env";
+import { getRiderAppConfig, resolveUrlForDevice } from "@/src/config/env";
 import { riderApi } from "@/src/services/api/riderApi";
 
 export type RiderReferralRewardSummary = {
@@ -74,7 +74,7 @@ export type RiderReferralMeResponse = {
 export async function fetchRiderReferralConfig(
   signal?: AbortSignal,
 ): Promise<RiderReferralConfig | null> {
-  const { apiBaseUrl } = getRiderAppConfig();
+  const apiBaseUrl = resolveUrlForDevice(getRiderAppConfig().apiBaseUrl);
   try {
     const res = await fetch(`${apiBaseUrl}/v1/referral/config?userType=rider`, {
       headers: { Accept: "application/json" },
@@ -85,6 +85,10 @@ export async function fetchRiderReferralConfig(
     return {
       ...body,
       configVersion: Number(body.configVersion) || 0,
+      enabled: body.enabled === true,
+      // Explicit boolean — dashboard "Rider Referral" maps to this field.
+      referralEnabled: body.referralEnabled === true,
+      rewardEnabled: body.rewardEnabled === true,
       milestones: (body.milestones ?? []).map((m) => ({
         ...m,
         milestoneOrders: Number(m.milestoneOrders) || 0,
@@ -119,7 +123,7 @@ export async function previewRiderReferral(code: string): Promise<{
   const { apiBaseUrl } = getRiderAppConfig();
   try {
     const res = await fetch(
-      `${apiBaseUrl}/v1/referral/preview?code=${encodeURIComponent(trimmed)}&userType=rider`,
+      `${resolveUrlForDevice(apiBaseUrl)}/v1/referral/preview?code=${encodeURIComponent(trimmed)}&userType=rider`,
       { headers: { Accept: "application/json" } },
     );
     const body = (await res.json().catch(() => ({}))) as {

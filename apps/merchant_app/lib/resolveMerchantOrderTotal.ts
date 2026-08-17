@@ -120,18 +120,16 @@ function billFromItems(order: MerchantOrderTotalInput, opts?: { forceRecomputeTo
 }
 
 /**
- * Merchant-visible order payout / CTM — same priority as Partner Site resolveMerchantCtm:
- * 1) pricing.total (API SSOT)
- * 2) total_ctm (orders_core frozen)
- * 3) line recompute (items + packaging − precision)
- * 4) food_items_total_value
+ * Merchant-visible order payout / CTM — Partner Site resolveMerchantCtm parity:
+ * Prefer frozen orders_core.total_ctm whenever present (never lose to a drifted pricing.total).
+ * Then pricing.total, line recompute, food_items_total_value, mapped totals.
  */
 export function resolveMerchantOrderTotal(order: MerchantOrderTotalInput): number {
-  const fromPricing = Number(order.pricing?.total);
-  if (Number.isFinite(fromPricing) && fromPricing > 0) return round2(fromPricing);
-
   const fromFrozen = Number(order.total_ctm);
   if (Number.isFinite(fromFrozen) && fromFrozen > 0) return round2(fromFrozen);
+
+  const fromPricing = Number(order.pricing?.total);
+  if (Number.isFinite(fromPricing) && fromPricing > 0) return round2(fromPricing);
 
   const fromItems = billFromItems(order, { forceRecomputeTotal: true });
   if (fromItems && fromItems.total > 0.005) return round2(fromItems.total);
@@ -194,38 +192,36 @@ export function merchantIncomingBillPartsFromOrder(
 }
 
 /**
- * Bill summary parts — API pricing.total is SSOT for headline total; breakdown from items.
+ * Bill summary parts — frozen total_ctm is SSOT; item subtotal is derived by the
+ * shared @gatimitra/bill-print engine so Partner Site and merchant app match.
  */
 export function merchantBillPartsFromOrder(order: MerchantOrderTotalInput): MerchantBillParts {
   const total = resolveMerchantOrderTotal(order);
-  const fromItems = billFromItems(order, { forceRecomputeTotal: true });
+  const packaging = resolvePackaging(order);
+  const discount = resolveMerchantDiscount(order);
+  const items = resolveItems(order);
 
-  const fromPricing = Number(order.pricing?.total);
-  if (Number.isFinite(fromPricing) && fromPricing > 0) {
+  if (items.length === 0) {
     return {
-      itemsSubtotal: fromItems?.itemsSubtotal ?? (Number(order.pricing?.subtotal) || 0),
-      packaging: resolvePackaging(order),
-      discount: resolveMerchantDiscount(order),
+      itemsSubtotal: Math.max(0, total - packaging + discount),
+      packaging,
+      discount,
       taxes: 0,
       total,
     };
   }
 
-  if (fromItems) {
-    return {
-      itemsSubtotal: fromItems.itemsSubtotal,
-      packaging: fromItems.packaging,
-      discount: fromItems.discount,
-      taxes: 0,
-      total,
-    };
-  }
+  const bill = merchantBillPartsFromFoodItems(items, {
+    packaging,
+    discount,
+    total,
+  });
 
   return {
-    itemsSubtotal: Number(order.pricing?.subtotal) || 0,
-    packaging: resolvePackaging(order),
-    discount: resolveMerchantDiscount(order),
+    itemsSubtotal: bill.itemsSubtotal,
+    packaging: bill.packaging,
+    discount: bill.discount,
     taxes: 0,
-    total,
+    total: bill.total,
   };
 }

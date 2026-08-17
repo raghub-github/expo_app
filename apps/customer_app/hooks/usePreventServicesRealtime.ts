@@ -20,7 +20,7 @@
 
 import { useEffect, useRef } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { getConfig } from "@/config/env";
+import { getSupabaseRealtimeClient } from "@/lib/supabaseRealtimeClient";
 
 /** Query key prefixes refetched when a blocking rule changes. */
 const AFFECTED_QUERY_KEYS = [
@@ -37,16 +37,8 @@ export function usePreventServicesRealtime() {
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
-    const { supabaseUrl, supabaseAnonKey } = getConfig();
-    if (!supabaseUrl || !supabaseAnonKey) return;
-
-    let client: import("@supabase/supabase-js").SupabaseClient;
-    try {
-      const { createClient } = require("@supabase/supabase-js");
-      client = createClient(supabaseUrl, supabaseAnonKey);
-    } catch {
-      return;
-    }
+    const client = getSupabaseRealtimeClient();
+    if (!client) return;
 
     // One admin save touches several tables — coalesce, but keep it snappy.
     const scheduleInvalidate = () => {

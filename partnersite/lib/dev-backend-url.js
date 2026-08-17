@@ -97,11 +97,26 @@ function resolveBackendApiBaseUrlCandidates() {
     out.push(n);
   }
 
-  push(normalizeDevBackendUrl(readBackendEnvRaw()));
+  const primary = normalizeDevBackendUrl(readBackendEnvRaw());
+  // In local dev, prefer loopback before a LAN IP that often goes stale (ECONNREFUSED).
+  if (process.env.NODE_ENV === 'development') {
+    const isLanPrimary =
+      primary &&
+      !/^https?:\/\/(127\.0\.0\.1|localhost)(:|\/|$)/i.test(primary);
+    if (isLanPrimary) {
+      push(DEV_BACKEND_FALLBACK);
+      push(primary);
+    } else {
+      push(primary);
+      push(DEV_BACKEND_FALLBACK);
+    }
+  } else {
+    push(primary);
+  }
+
   push(process.env.GATIMITRA_BACKEND_API_FALLBACK);
   if (process.env.NODE_ENV === 'development') {
     push(readMonorepoBackendApiBaseUrl());
-    push(DEV_BACKEND_FALLBACK);
   }
 
   return out;

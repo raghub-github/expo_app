@@ -146,6 +146,13 @@ function OfferRow({
         <CheckoutText style={[styles.offerTitle, locked && styles.offerTitleMuted]} numberOfLines={2}>
           {title}
         </CheckoutText>
+        {couponCode?.trim() ? (
+          <View style={[styles.couponCodeBox, locked && styles.couponCodeBoxLocked]}>
+            <CheckoutText style={[styles.couponCodeText, locked && styles.couponCodeTextLocked]}>
+              {couponCode.trim().toUpperCase()}
+            </CheckoutText>
+          </View>
+        ) : null}
         {locked && lockReason ? (
           <CheckoutText style={styles.offerLockReason} numberOfLines={2}>
             {lockReason}
@@ -154,11 +161,6 @@ function OfferRow({
           <CheckoutText style={styles.offerSub} numberOfLines={2}>
             {subtitle}
           </CheckoutText>
-        ) : null}
-        {couponCode ? (
-          <View style={styles.couponCodeBox}>
-            <CheckoutText style={styles.couponCodeText}>{couponCode}</CheckoutText>
-          </View>
         ) : null}
         {applied && savings != null && savings > 0 ? (
           <CheckoutText style={styles.offerSaved}>You save ₹{Math.round(savings)}</CheckoutText>
@@ -595,6 +597,11 @@ export function CheckoutOffersSheet({
                           }
                           subtitle={
                             data?.platformOffers.find((o) => o.id === appliedPlatformOfferId)?.summary ?? ""
+                          }
+                          couponCode={
+                            data?.platformOffers.find((o) => o.id === appliedPlatformOfferId)?.couponCode ??
+                            data?.platformOffersIneligible?.find((o) => o.id === appliedPlatformOfferId)
+                              ?.couponCode
                           }
                           applied
                           savings={savingsForPlatform(appliedPlatformOfferId)}
@@ -1065,16 +1072,25 @@ const styles = StyleSheet.create({
     alignSelf: "flex-start",
     marginTop: 4,
     borderWidth: 1,
-    borderColor: "#E5E7EB",
+    borderStyle: "dashed",
+    borderColor: "#94A3B8",
     borderRadius: 4,
     paddingHorizontal: 8,
     paddingVertical: 3,
+    backgroundColor: "#F8FAFC",
+  },
+  couponCodeBoxLocked: {
+    borderColor: "#CBD5E1",
+    backgroundColor: "#F1F5F9",
   },
   couponCodeText: {
-    fontSize: 10,
-    fontWeight: "700",
-    color: "#9CA3AF",
-    letterSpacing: 0.6,
+    fontSize: 11,
+    fontWeight: "800",
+    color: "#0F172A",
+    letterSpacing: 0.8,
+  },
+  couponCodeTextLocked: {
+    color: "#475569",
   },
   applyBtn: {
     paddingHorizontal: 10,

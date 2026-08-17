@@ -359,6 +359,12 @@ async function postTokenToBackend(token: string): Promise<boolean> {
     return false;
   }
 
+  const body = (await res.json().catch(() => ({}))) as { skipped?: boolean; ok?: boolean };
+  if (body.skipped === true) {
+    // Backend offline — treat as deferred success so we do not hammer retries.
+    return true;
+  }
+
   return true;
 }
 

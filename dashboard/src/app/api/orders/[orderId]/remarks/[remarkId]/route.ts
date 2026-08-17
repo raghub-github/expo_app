@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine";
-import { getAuthenticatedApiUser } from "@/lib/auth/api-session";
+import { getAuthenticatedApiUser, authFailureResponse } from "@/lib/auth/api-session";
 import { getSystemUserByEmail } from "@/lib/auth/user-mapping";
 import {
   updateOrderRemarkWithHistory,
@@ -10,7 +10,7 @@ import {
 export const runtime = "nodejs";
 
 export async function GET(
-  _request: NextRequest,
+  request: NextRequest,
   context: { params: Promise<{ orderId: string; remarkId: string }> }
 ) {
   try {
@@ -32,9 +32,9 @@ export async function GET(
       );
     }
 
-    const auth = await getAuthenticatedApiUser();
+    const auth = await getAuthenticatedApiUser(request);
     if (!auth.ok) {
-      return NextResponse.json(auth.body, { status: auth.status });
+      return authFailureResponse(auth);
     }
     const { user } = auth;
 
@@ -93,9 +93,9 @@ export async function PATCH(
       );
     }
 
-    const auth = await getAuthenticatedApiUser();
+    const auth = await getAuthenticatedApiUser(request);
     if (!auth.ok) {
-      return NextResponse.json(auth.body, { status: auth.status });
+      return authFailureResponse(auth);
     }
     const { user } = auth;
 

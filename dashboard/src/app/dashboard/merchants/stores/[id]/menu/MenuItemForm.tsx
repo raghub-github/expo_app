@@ -19,6 +19,7 @@ import {
   WEIGHT_PER_SERVING_UNITS,
   NUTRIENT_UNITS,
   normalizeSpiceLevelForForm,
+  ITEM_PLACEHOLDER_SVG,
 } from "./menu-types";
 import { toFiniteMenuId } from "@/lib/menu-customization-normalize";
 import { normalizeMenuItemImageFile } from "@/lib/menuItemImageValidationClient";
@@ -971,7 +972,12 @@ export function MenuItemForm({
                       resolvedImagePreview.startsWith("blob:") || resolvedImagePreview.startsWith("data:") ? (
                         <img src={resolvedImagePreview} alt="" className="w-16 h-16 object-cover rounded" />
                       ) : (
-                        <R2Image src={resolvedImagePreview} alt="" className="w-16 h-16 object-cover rounded" />
+                        <R2Image
+                          src={resolvedImagePreview}
+                          alt=""
+                          className="w-16 h-16 object-cover rounded"
+                          fallbackSrc={ITEM_PLACEHOLDER_SVG}
+                        />
                       )
                     ) : (
                       <ImageIcon size={20} className="text-gray-400 mb-0.5" />
@@ -1008,7 +1014,12 @@ export function MenuItemForm({
                           resolvedImagePreview.startsWith("blob:") || resolvedImagePreview.startsWith("data:") ? (
                             <img src={resolvedImagePreview} alt="" className="w-full h-full object-cover" />
                           ) : (
-                            <R2Image src={resolvedImagePreview} alt="" className="w-full h-full object-cover" />
+                            <R2Image
+                              src={resolvedImagePreview}
+                              alt=""
+                              className="w-full h-full object-cover"
+                              fallbackSrc={ITEM_PLACEHOLDER_SVG}
+                            />
                           )
                         ) : (
                           <ImageIcon size={20} className="text-gray-400" />

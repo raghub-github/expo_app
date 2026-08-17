@@ -686,6 +686,16 @@ export default function PersonRideOrderDetailClient({
                     key={`person-ride-map-${order.riderId}`}
                     className="h-full min-h-[360px] flex flex-col"
                     orderId={order.id}
+                    orderIdText={
+                      order.formattedOrderId?.trim() ||
+                      order.orderId?.trim() ||
+                      (order.id != null ? `GMP${String(order.id).padStart(6, "0")}` : null)
+                    }
+                    orderChannelIds={[
+                      order.formattedOrderId,
+                      order.orderId,
+                      order.id != null ? `GMP${String(order.id).padStart(6, "0")}` : null,
+                    ]}
                     riderId={order.riderId}
                     riderName={order.riderName}
                     storeName="Pickup"

@@ -1,15 +1,17 @@
-import React, { useMemo } from "react";
+import React, { useMemo, useRef, useState } from "react";
 import {
   View,
   Text,
   ScrollView,
-  Pressable,
+  TouchableOpacity,
   StyleSheet,
   ActivityIndicator,
   RefreshControl,
+  Alert,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
+import * as Clipboard from "expo-clipboard";
 import { useTranslation } from "react-i18next";
 import { router } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
@@ -26,6 +28,7 @@ const PAGE_BG = "#F4F6F8";
 const TEXT = "#0F172A";
 const MUTED = "#64748B";
 const BORDER = "#E2E8F0";
+const WHATSAPP = "#16A34A";
 
 export function ReferralsScreen() {
   const { t } = useTranslation();
@@ -33,6 +36,9 @@ export function ReferralsScreen() {
   const riderId = session?.riderId ?? session?.userId;
   const { data: riderStatus } = useRiderStatus(riderId);
   const riderName = riderStatus?.name?.trim() || "GatiMitra Partner";
+  const [sharing, setSharing] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const copiedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const { data, isLoading, isError, refetch, isRefetching } = useQuery({
     queryKey: ["rider", "referral", "me"],
@@ -64,17 +70,53 @@ export function ReferralsScreen() {
 
   const steps = copy.steps;
 
+  const handleShare = async () => {
+    if (sharing) return;
+    if (!referralCode) {
+      Alert.alert(
+        t("profile.referralCodeUnavailableTitle", "Referral code unavailable"),
+        t(
+          "profile.referralCodeUnavailableBody",
+          "Your referral code is still being generated. Pull to refresh in a moment.",
+        ),
+      );
+      return;
+    }
+    setSharing(true);
+    try {
+      await shareRiderReferralCode(referralCode, riderName, copy);
+    } finally {
+      setSharing(false);
+    }
+  };
+
+  const handleCopyCode = async () => {
+    if (!referralCode) return;
+    try {
+      await Clipboard.setStringAsync(referralCode.toUpperCase());
+      setCopied(true);
+      if (copiedTimerRef.current) clearTimeout(copiedTimerRef.current);
+      copiedTimerRef.current = setTimeout(() => setCopied(false), 1800);
+    } catch {
+      Alert.alert(
+        t("common.error", "Error"),
+        t("profile.copyFailed", "Could not copy referral code. Try again."),
+      );
+    }
+  };
+
   return (
     <SafeAreaView style={styles.root} edges={["top", "bottom"]}>
       <View style={styles.header}>
-        <Pressable
+        <TouchableOpacity
           onPress={() => router.back()}
-          style={({ pressed }) => [styles.backBtn, pressed && styles.backBtnPressed]}
+          style={styles.backBtn}
           accessibilityRole="button"
           accessibilityLabel={t("common.back", "Back")}
+          activeOpacity={0.7}
         >
           <Ionicons name="arrow-back" size={22} color={TEXT} />
-        </Pressable>
+        </TouchableOpacity>
         <View style={styles.headerText}>
           <Text style={styles.headerTitle}>{copy.title}</Text>
           <Text style={styles.headerSub}>{copy.subtitle}</Text>
@@ -91,9 +133,9 @@ export function ReferralsScreen() {
           <Text style={styles.centerTitle}>
             {t("profile.referralsLoadFailed", "Could not load referrals")}
           </Text>
-          <Pressable onPress={() => refetch()} style={styles.retryBtn}>
+          <TouchableOpacity onPress={() => refetch()} style={styles.retryBtn} activeOpacity={0.85}>
             <Text style={styles.retryBtnText}>{t("common.retry", "Retry")}</Text>
-          </Pressable>
+          </TouchableOpacity>
         </View>
       ) : data && !referralEnabled ? (
         <View style={styles.centerState}>
@@ -155,17 +197,73 @@ export function ReferralsScreen() {
             ))}
           </View>
 
-          {referralCode ? (
-            <Pressable
-              style={({ pressed }) => [styles.shareBtn, pressed && { opacity: 0.9 }]}
-              onPress={() => void shareRiderReferralCode(referralCode, riderName, copy)}
+          {/* Always-visible refer CTA — NativeWind breaks Pressable style fns (invisible btn). */}
+          <View style={styles.referCard}>
+            <Text style={styles.referCardTitle}>
+              {t("profile.howToRefer", "How to refer")}
+            </Text>
+            <Text style={styles.referCardSub}>
+              {t(
+                "profile.howToReferBody",
+                "Share your code or link. New riders enter it during signup / onboarding.",
+              )}
+            </Text>
+
+            {referralCode ? (
+              <TouchableOpacity
+                style={styles.codeBox}
+                onPress={() => void handleCopyCode()}
+                activeOpacity={0.85}
+                accessibilityRole="button"
+                accessibilityLabel={t("profile.copyReferralCode", "Copy referral code")}
+              >
+                <View style={styles.codeBoxTextCol}>
+                  <Text style={styles.codeLabel}>
+                    {t("profile.yourReferralCode", "Your referral code")}
+                  </Text>
+                  <Text style={styles.codeValue}>{referralCode.toUpperCase()}</Text>
+                </View>
+                <View style={styles.copyAction}>
+                  {copied ? (
+                    <>
+                      <Ionicons name="checkmark-circle" size={20} color={TEAL_DARK} />
+                      <Text style={styles.copiedText}>{t("profile.copied", "Copied")}</Text>
+                    </>
+                  ) : (
+                    <Ionicons name="copy-outline" size={20} color={TEAL_DARK} />
+                  )}
+                </View>
+              </TouchableOpacity>
+            ) : (
+              <View style={styles.codeMissing}>
+                <ActivityIndicator size="small" color={TEAL} />
+                <Text style={styles.codeMissingText}>
+                  {t(
+                    "profile.generatingReferralCode",
+                    "Generating your referral code… Pull to refresh.",
+                  )}
+                </Text>
+              </View>
+            )}
+
+            <TouchableOpacity
+              style={[styles.shareBtn, (!referralCode || sharing) && styles.shareBtnDisabled]}
+              onPress={() => void handleShare()}
+              disabled={!referralCode || sharing}
+              activeOpacity={0.85}
+              accessibilityRole="button"
+              accessibilityLabel={t("profile.shareReferral", "Share referral link")}
             >
-              <Ionicons name="logo-whatsapp" size={18} color="#fff" />
+              {sharing ? (
+                <ActivityIndicator size="small" color="#FFFFFF" />
+              ) : (
+                <Ionicons name="logo-whatsapp" size={20} color="#FFFFFF" />
+              )}
               <Text style={styles.shareBtnText}>
                 {t("profile.shareReferral", "Share referral link")}
               </Text>
-            </Pressable>
-          ) : null}
+            </TouchableOpacity>
+          </View>
 
           <Text style={styles.sectionTitle}>
             {t("profile.yourReferrals", "Your referrals")}
@@ -191,13 +289,11 @@ export function ReferralsScreen() {
                 },
               ] as const
             ).map((card) => (
-              <Pressable
+              <TouchableOpacity
                 key={card.key}
-                style={({ pressed }) => [
-                  styles.statCard,
-                  pressed && styles.statCardPressed,
-                ]}
+                style={styles.statCard}
                 onPress={() => router.push(`/referral-details/${card.key}`)}
+                activeOpacity={0.85}
               >
                 <Text style={styles.statValue} numberOfLines={1}>
                   {card.value}
@@ -205,7 +301,7 @@ export function ReferralsScreen() {
                 <Text style={styles.statLabel} numberOfLines={2}>
                   {card.label}
                 </Text>
-              </Pressable>
+              </TouchableOpacity>
             ))}
           </View>
 
@@ -237,8 +333,8 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     alignItems: "center",
     justifyContent: "center",
+    backgroundColor: "#F8FAFC",
   },
-  backBtnPressed: { backgroundColor: "#F1F5F9" },
   headerText: { flex: 1 },
   headerTitle: { fontSize: 18, fontWeight: "800", color: TEXT },
   headerSub: { fontSize: 12, color: MUTED, marginTop: 2 },
@@ -291,17 +387,68 @@ const styles = StyleSheet.create({
   stepBody: { flex: 1 },
   stepTitle: { fontSize: 14, fontWeight: "700", color: TEXT },
   stepBodyText: { fontSize: 12, color: MUTED, marginTop: 3, lineHeight: 17 },
+  referCard: {
+    backgroundColor: "#fff",
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: BORDER,
+    padding: 16,
+    marginBottom: 16,
+  },
+  referCardTitle: { fontSize: 15, fontWeight: "800", color: TEXT },
+  referCardSub: { marginTop: 4, fontSize: 12, color: MUTED, lineHeight: 17, marginBottom: 12 },
+  codeBox: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    backgroundColor: "#F0FDFA",
+    borderWidth: 1,
+    borderColor: "#99F6E4",
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    marginBottom: 12,
+  },
+  codeBoxTextCol: { flex: 1, minWidth: 0 },
+  codeLabel: { fontSize: 11, fontWeight: "600", color: MUTED },
+  codeValue: {
+    marginTop: 2,
+    fontSize: 22,
+    fontWeight: "800",
+    color: TEAL_DARK,
+    letterSpacing: 1.5,
+  },
+  copyAction: {
+    alignItems: "center",
+    justifyContent: "center",
+    minWidth: 44,
+    gap: 2,
+  },
+  copiedText: {
+    fontSize: 10,
+    fontWeight: "700",
+    color: TEAL_DARK,
+  },
+  codeMissing: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    paddingVertical: 12,
+    marginBottom: 12,
+  },
+  codeMissingText: { flex: 1, fontSize: 13, color: MUTED, lineHeight: 18 },
   shareBtn: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    gap: 8,
-    backgroundColor: "#16A34A",
+    gap: 10,
+    backgroundColor: WHATSAPP,
     borderRadius: 12,
-    paddingVertical: 13,
-    marginBottom: 16,
+    paddingVertical: 14,
+    minHeight: 48,
   },
-  shareBtnText: { color: "#fff", fontWeight: "700", fontSize: 14 },
+  shareBtnDisabled: { opacity: 0.55 },
+  shareBtnText: { color: "#FFFFFF", fontWeight: "800", fontSize: 15 },
   sectionTitle: {
     fontSize: 15,
     fontWeight: "700",
@@ -322,7 +469,6 @@ const styles = StyleSheet.create({
     minHeight: 72,
     justifyContent: "center",
   },
-  statCardPressed: { backgroundColor: "#F8FAFC" },
   statValue: { fontSize: 16, fontWeight: "800", color: TEAL_DARK },
   statLabel: {
     marginTop: 4,

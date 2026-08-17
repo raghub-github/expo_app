@@ -59,6 +59,7 @@
     "expo-linking": "~8.0.12",
     "expo-modules-core": "~3.0.30",
     "expo-notifications": "~0.32.17",
+    "expo-task-manager": "~14.0.9",
     "expo-print": "~15.0.8",
     "expo-router": "~6.0.24",
     "expo-secure-store": "~15.0.8",

@@ -441,7 +441,13 @@ const MenuItemCard = memo(function MenuItemCard({
   const { token } = useAuth();
   const baseNum = Number(item.base_price);
   const sellingNum = Number(item.selling_price);
-  const baseFormatted = baseNum > 0 ? `₹${baseNum.toFixed(0)}` : `₹${sellingNum.toFixed(0)}`;
+  // Always prefer Selling price for merchant catalog display (partnersite parity).
+  const priceFormatted =
+    sellingNum > 0
+      ? `₹${sellingNum.toFixed(0)}`
+      : baseNum > 0
+        ? `₹${baseNum.toFixed(0)}`
+        : "₹0";
   const detailLines = buildCatalogItemDetailLines(item);
   const oosLabel = getItemOosLabel(item);
   const isLocked = isMenuItemPlanLocked(item);
@@ -496,7 +502,7 @@ const MenuItemCard = memo(function MenuItemCard({
               <Text style={[styles.catalogItemName, isLocked && styles.itemNameLocked]} numberOfLines={2}>
                 {item.item_name}
               </Text>
-              <Text style={styles.catalogItemPriceInline}>{baseFormatted}</Text>
+              <Text style={styles.catalogItemPriceInline}>{priceFormatted}</Text>
             </View>
           </View>
           {detailLines.map((line, idx) => (
@@ -2615,7 +2621,7 @@ export default function MenuScreen() {
             </TouchableOpacity>
             <View style={styles.treeRowRight}>
               <Text style={styles.treePrice}>
-                ₹{Number(item.base_price ?? item.selling_price).toFixed(0)}
+                ₹{Number(item.selling_price ?? item.base_price).toFixed(0)}
               </Text>
               <CatalogStockToggle
                 value={effectiveInStock(item)}

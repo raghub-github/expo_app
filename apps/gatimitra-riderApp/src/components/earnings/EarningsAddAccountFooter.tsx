@@ -2,8 +2,11 @@ import React from "react";
 import { View, Text, TouchableOpacity, StyleSheet, Alert } from "react-native";
 import { useTranslation } from "react-i18next";
 import { Ionicons } from "@expo/vector-icons";
+import { router } from "expo-router";
 import { colors } from "@/src/theme";
 import type { RiderBankPaymentMethod } from "@/src/services/api/riderApi";
+import { useRiderBankAddGate } from "@/src/hooks/useRiderBankAccount";
+import { useUnlockCountdown } from "@/src/hooks/useUnlockCountdown";
 
 /** Minimum wallet balance (₹) required before a rider can withdraw. */
 export const MIN_WITHDRAWAL_BALANCE = 300;
@@ -31,8 +34,26 @@ export function EarningsAddAccountFooter({
   onRequestWithdrawal,
 }: Props) {
   const { t } = useTranslation();
+  const { data: addGate } = useRiderBankAddGate();
+  const countdown = useUnlockCountdown(addGate?.unlockAt);
+  const addLocked = Boolean(addGate?.locked && countdown.locked);
+
+  const showFrozenAlert = () => {
+    Alert.alert(
+      t("earnings.walletFrozenTitle", "Wallet Frozen"),
+      freezeReason
+        ? t("earnings.walletFrozenReason", "Withdrawals are currently disabled.\nReason: {{reason}}", {
+            reason: freezeReason,
+          })
+        : t("earnings.walletFrozen", "Withdrawals are currently disabled."),
+    );
+  };
 
   const handleRequestWithdrawal = () => {
+    if (isFrozen) {
+      showFrozenAlert();
+      return;
+    }
     if (!canWithdraw) return;
     if (onRequestWithdrawal) {
       onRequestWithdrawal();
@@ -44,9 +65,31 @@ export function EarningsAddAccountFooter({
     );
   };
 
+  const handleAddAccount = () => {
+    if (isFrozen) {
+      showFrozenAlert();
+      return;
+    }
+    if (addLocked) {
+      Alert.alert(
+        t("earnings.bankAddLockedTitle", "Add account locked"),
+        t(
+          "earnings.bankAddLockedMessage",
+          "Locked due to security reasons. Try after {{time}}.",
+          { time: countdown.label ?? "—" },
+        ),
+      );
+      return;
+    }
+    onAddAccount();
+  };
+
   const status = bankAccount?.verificationStatus;
+  const rejectionReason = bankAccount?.rejectionReason?.trim() || null;
   const showVerifiedFooter =
     status === "verified" || (isLoading && hasBankAccount && status == null);
+
+  const withdrawEnabled = canWithdraw && !isFrozen;
 
   if (showVerifiedFooter) {
     return (
@@ -59,16 +102,25 @@ export function EarningsAddAccountFooter({
           </Text>
         ) : null}
         <TouchableOpacity
-          activeOpacity={canWithdraw ? 0.88 : 1}
+          activeOpacity={withdrawEnabled ? 0.88 : 1}
           onPress={handleRequestWithdrawal}
-          disabled={!canWithdraw}
-          style={[styles.button, !canWithdraw && styles.buttonDisabled]}
+          disabled={!withdrawEnabled && !isFrozen}
+          style={[styles.button, !withdrawEnabled && styles.buttonDisabled]}
           accessibilityRole="button"
-          accessibilityState={{ disabled: !canWithdraw }}
+          accessibilityState={{ disabled: !withdrawEnabled }}
           accessibilityLabel={t("earnings.requestWithdrawal", "Request Withdrawal")}
         >
           <Text style={styles.buttonText}>
             {t("earnings.requestWithdrawal", "Request Withdrawal")}
+          </Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          activeOpacity={0.85}
+          onPress={() => router.push("/payout-accounts")}
+          style={styles.secondaryBtn}
+        >
+          <Text style={styles.secondaryBtnText}>
+            {t("earnings.managePayoutAccounts", "Manage payout accounts")}
           </Text>
         </TouchableOpacity>
         <Text style={styles.withdrawalNote}>
@@ -78,11 +130,11 @@ export function EarningsAddAccountFooter({
                   reason: freezeReason,
                 })
               : t("earnings.walletFrozen", "Withdrawals are currently disabled.")
-            : canWithdraw
-            ? t("earnings.withdrawalNote", "Withdrawals are processed weekly")
-            : t("earnings.withdrawalMinNote", "Minimum ₹{{min}} balance required to withdraw", {
-                min: MIN_WITHDRAWAL_BALANCE,
-              })}
+            : withdrawEnabled
+              ? t("earnings.withdrawalNote", "Withdrawals are processed weekly")
+              : t("earnings.withdrawalMinNote", "Minimum ₹{{min}} balance required to withdraw", {
+                  min: MIN_WITHDRAWAL_BALANCE,
+                })}
         </Text>
       </View>
     );
@@ -112,39 +164,94 @@ export function EarningsAddAccountFooter({
             )}
           </Text>
         </View>
+        <TouchableOpacity
+          activeOpacity={0.85}
+          onPress={() => router.push("/payout-accounts")}
+          style={[styles.button, styles.manageBtn]}
+        >
+          <Text style={styles.buttonText}>
+            {t("earnings.managePayoutAccounts", "Manage payout accounts")}
+          </Text>
+        </TouchableOpacity>
       </View>
     );
   }
 
   const isRejected = status === "rejected";
+  const addEnabled = !isFrozen && !addLocked;
+  const showNote = isFrozen || addLocked || isRejected;
 
   return (
     <View style={styles.wrap}>
-      <Text style={[styles.note, isRejected && styles.rejectedNote]}>
-        {isRejected
-          ? t(
-              "earnings.accountRejectedNote",
-              "Your bank account was rejected. Please add a valid account.",
-            )
-          : t(
-              "earnings.addBankAccountNote",
-              "Add your Bank Account To receive Payouts",
-            )}
-      </Text>
+      {showNote ? (
+        <Text style={[styles.note, (isRejected || addLocked) && styles.rejectedNote]}>
+          {isFrozen
+            ? t(
+                "earnings.addBankFrozenNote",
+                "Wallet is frozen. Adding a bank account is disabled until the GatiMitra Team unfreezes your wallet.",
+              )
+            : addLocked
+              ? t(
+                  "earnings.bankAddLockedMessage",
+                  "Locked due to security reasons. Try after {{time}}.",
+                  { time: countdown.label ?? "—" },
+                )
+              : rejectionReason
+                ? t(
+                    "earnings.accountRejectedReasonNote",
+                    "Your bank account was rejected.\nReason: {{reason}}",
+                    { reason: rejectionReason },
+                  )
+                : t(
+                    "earnings.accountRejectedNote",
+                    "Your bank account was rejected. Please add a valid account.",
+                  )}
+        </Text>
+      ) : null}
       <TouchableOpacity
-        activeOpacity={0.88}
-        onPress={onAddAccount}
-        style={styles.button}
+        activeOpacity={addEnabled ? 0.88 : 1}
+        onPress={handleAddAccount}
+        disabled={!addEnabled}
+        style={[styles.button, !addEnabled && styles.buttonDisabled]}
         accessibilityRole="button"
-        accessibilityLabel={t("earnings.addAccount", "Add Account")}
+        accessibilityState={{ disabled: !addEnabled }}
+        accessibilityLabel={
+          addLocked
+            ? t("earnings.tryAfter", "Try after {{time}}", { time: countdown.label ?? "—" })
+            : t("earnings.addAccount", "Add Account")
+        }
       >
-        <Text style={styles.buttonText}>{t("earnings.addAccount", "Add Account")}</Text>
+        <Text style={styles.buttonText}>
+          {addLocked
+            ? t("earnings.tryAfter", "Try after {{time}}", { time: countdown.label ?? "—" })
+            : t("earnings.addAccount", "Add Account")}
+        </Text>
       </TouchableOpacity>
+      {hasBankAccount || isRejected ? (
+        <TouchableOpacity
+          activeOpacity={0.85}
+          onPress={() => router.push("/payout-accounts")}
+          style={styles.secondaryBtn}
+        >
+          <Text style={styles.secondaryBtnText}>
+            {t("earnings.managePayoutAccounts", "Manage payout accounts")}
+          </Text>
+        </TouchableOpacity>
+      ) : null}
+      {isFrozen ? (
+        <Text style={styles.withdrawalNote}>
+          {freezeReason
+            ? t("earnings.walletFrozenReason", "Withdrawals are currently disabled.\nReason: {{reason}}", {
+                reason: freezeReason,
+              })
+            : t("earnings.walletFrozen", "Withdrawals are currently disabled.")}
+        </Text>
+      ) : null}
     </View>
   );
 }
 
-export const EARNINGS_ADD_ACCOUNT_FOOTER_HEIGHT = 148;
+export const EARNINGS_ADD_ACCOUNT_FOOTER_HEIGHT = 180;
 
 const styles = StyleSheet.create({
   wrap: {
@@ -181,6 +288,25 @@ const styles = StyleSheet.create({
     color: "#FFFFFF",
     fontWeight: "700",
     fontSize: 16,
+  },
+  secondaryBtn: {
+    marginTop: 10,
+    width: "100%",
+    height: 44,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#D1D5DB",
+    backgroundColor: "#FFFFFF",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  secondaryBtnText: {
+    color: colors.primary[700] ?? "#0F766E",
+    fontWeight: "700",
+    fontSize: 14,
+  },
+  manageBtn: {
+    marginTop: 12,
   },
   statusCard: {
     backgroundColor: "#FFFFFF",

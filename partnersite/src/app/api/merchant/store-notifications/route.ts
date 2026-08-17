@@ -188,6 +188,27 @@ export async function POST(req: NextRequest) {
     if (await isPartnerNotificationsPanelClearedForStore(db, gate.storeIdNum)) {
       return NextResponse.json({ created: false, suppressed: true });
     }
+    // Never create a waiting row while the store is closed / not accepting orders.
+    const { data: storeRow } = await db
+      .from('merchant_stores')
+      .select('operational_status, is_accepting_orders, is_available, is_active')
+      .eq('id', gate.storeIdNum)
+      .is('deleted_at', null)
+      .maybeSingle();
+    const isOpen =
+      storeRow != null &&
+      String(storeRow.operational_status ?? '').toUpperCase() === 'OPEN' &&
+      storeRow.is_accepting_orders === true &&
+      storeRow.is_available === true &&
+      storeRow.is_active === true;
+    if (!isOpen) {
+      await db
+        .from('merchant_store_notifications')
+        .delete()
+        .eq('store_id', gate.storeIdNum)
+        .eq('title', WAITING_FOR_ORDER_TITLE);
+      return NextResponse.json({ created: false, suppressed: true });
+    }
     const { data: existing, error: exErr } = await db
       .from('merchant_store_notifications')
       .select('id')

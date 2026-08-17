@@ -4,7 +4,7 @@
  * rounded input with focus glow, green gradient CTA, safe-area aware.
  */
 
-import { useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   View,
   Text,
@@ -12,15 +12,16 @@ import {
   TouchableOpacity,
   ActivityIndicator,
   KeyboardAvoidingView,
+  Keyboard,
   Platform,
   StyleSheet,
   ScrollView,
-  Linking,
   Modal,
   FlatList,
   Pressable,
   Image,
   type ImageSourcePropType,
+  type KeyboardEvent,
 } from "react-native";
 import { AppText } from "@/components/AppText";
 import { LinearGradient } from "expo-linear-gradient";
@@ -147,10 +148,12 @@ const heroStyles = StyleSheet.create({
 export default function LoginScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
+  const scrollRef = useRef<ScrollView>(null);
   const [phone, setPhone] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [inputFocused, setInputFocused] = useState(false);
+  const [keyboardVisible, setKeyboardVisible] = useState(false);
   const [selectedCountry, setSelectedCountry] = useState<CountryOption>(DEFAULT_COUNTRY);
   const [countryPickerVisible, setCountryPickerVisible] = useState(false);
   const [logoError, setLogoError] = useState(false);
@@ -160,6 +163,33 @@ export default function LoginScreen() {
   const [apiUrlInput, setApiUrlInput] = useState("");
   const [apiUrlSaving, setApiUrlSaving] = useState(false);
   const [currentApiUrl, setCurrentApiUrl] = useState<string>(() => getConfig().apiBaseUrl);
+
+  const scrollFormIntoView = useCallback(() => {
+    const end = () => scrollRef.current?.scrollToEnd({ animated: true });
+    requestAnimationFrame(end);
+    setTimeout(end, 100);
+    setTimeout(end, 280);
+  }, []);
+
+  useEffect(() => {
+    const showEvt = Platform.OS === "ios" ? "keyboardWillShow" : "keyboardDidShow";
+    const hideEvt = Platform.OS === "ios" ? "keyboardWillHide" : "keyboardDidHide";
+    const subShow = Keyboard.addListener(showEvt, (_event: KeyboardEvent) => {
+      setKeyboardVisible(true);
+    });
+    const subHide = Keyboard.addListener(hideEvt, () => {
+      setKeyboardVisible(false);
+    });
+    return () => {
+      subShow.remove();
+      subHide.remove();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!keyboardVisible) return;
+    scrollFormIntoView();
+  }, [keyboardVisible, scrollFormIntoView]);
 
   const openApiUrlModal = () => {
     setApiUrlInput(currentApiUrl);
@@ -258,14 +288,21 @@ export default function LoginScreen() {
   return (
     <KeyboardAvoidingView
       behavior={Platform.OS === "ios" ? "padding" : undefined}
-      style={[styles.container, { paddingBottom: insets.bottom }]}
+      keyboardVerticalOffset={Platform.OS === "ios" ? Math.max(insets.top, 8) : 0}
+      style={[styles.container, { paddingBottom: keyboardVisible ? 0 : insets.bottom }]}
     >
       <ScrollView
-        contentContainerStyle={styles.scrollContent}
+        ref={scrollRef}
+        contentContainerStyle={[
+          styles.scrollContent,
+          keyboardVisible && styles.scrollContentKeyboard,
+          { paddingBottom: keyboardVisible ? 24 : 24 + insets.bottom },
+        ]}
         keyboardShouldPersistTaps="handled"
+        keyboardDismissMode="on-drag"
         showsVerticalScrollIndicator={false}
       >
-        <View style={styles.card}>
+        <View style={[styles.card, keyboardVisible && styles.cardKeyboard]}>
           <LinearGradient
             colors={[CARD_GRADIENT_TOP, CARD_GRADIENT_BOTTOM]}
             style={StyleSheet.absoluteFill}
@@ -275,23 +312,27 @@ export default function LoginScreen() {
             <View style={[styles.wave2, { backgroundColor: MINT_MED, opacity: 0.4 }]} />
           </View>
 
-          <View style={styles.cardInner}>
-            <View style={styles.header}>
+          <View style={[styles.cardInner, keyboardVisible && styles.cardInnerKeyboard]}>
+            <View style={[styles.header, keyboardVisible && styles.headerKeyboard]}>
               <Image
                 source={logoSource}
-                style={styles.logoImage}
+                style={[styles.logoImage, keyboardVisible && styles.logoImageKeyboard]}
                 resizeMode="contain"
                 accessibilityLabel="GatiMitra logo"
                 onError={() => setLogoError(true)}
               />
             </View>
 
-            <HeroIllustration />
+            {!keyboardVisible ? <HeroIllustration /> : null}
 
-            <AppText style={styles.title}>Login</AppText>
-            <AppText style={styles.subtitle}>Enter your mobile number to get OTP</AppText>
+            <AppText style={[styles.title, keyboardVisible && styles.titleKeyboard]}>Login</AppText>
+            {!keyboardVisible ? (
+              <AppText style={styles.subtitle}>Enter your mobile number to get OTP</AppText>
+            ) : (
+              <AppText style={styles.subtitleKeyboard}>Enter your mobile number to get OTP</AppText>
+            )}
 
-            <View style={styles.fieldWrap}>
+            <View style={[styles.fieldWrap, keyboardVisible && styles.fieldWrapKeyboard]}>
               <View style={styles.labelRow}>
                 <AppText style={styles.label}>Mobile number</AppText>
                 {phoneDigits.length > 0 ? (
@@ -335,7 +376,10 @@ export default function LoginScreen() {
                   maxLength={phoneInputMaxLen}
                   value={phoneDisplay}
                   onChangeText={handlePhoneChange}
-                  onFocus={() => setInputFocused(true)}
+                  onFocus={() => {
+                    setInputFocused(true);
+                    scrollFormIntoView();
+                  }}
                   onBlur={() => setInputFocused(false)}
                   editable={!loading}
                   underlineColorAndroid="transparent"
@@ -376,24 +420,28 @@ export default function LoginScreen() {
               </LinearGradient>
             </TouchableOpacity>
 
-            <AppText style={styles.footerLine1}>By continuing, you agree to our</AppText>
-            <View style={styles.footerLinksRow}>
-              <Pressable
-                onPress={() => router.push("/legal/terms-of-service" as never)}
-                hitSlop={8}
-                accessibilityRole="link"
-              >
-                <AppText style={styles.footerLink}>Terms of Service</AppText>
-              </Pressable>
-              <AppText style={styles.footerLine2}> & </AppText>
-              <Pressable
-                onPress={() => router.push("/legal/privacy-policy" as never)}
-                hitSlop={8}
-                accessibilityRole="link"
-              >
-                <AppText style={styles.footerLink}>Privacy Policy</AppText>
-              </Pressable>
-            </View>
+            {!keyboardVisible ? (
+              <>
+                <AppText style={styles.footerLine1}>By continuing, you agree to our</AppText>
+                <View style={styles.footerLinksRow}>
+                  <Pressable
+                    onPress={() => router.push("/legal/terms-of-service" as never)}
+                    hitSlop={8}
+                    accessibilityRole="link"
+                  >
+                    <AppText style={styles.footerLink}>Terms of Service</AppText>
+                  </Pressable>
+                  <AppText style={styles.footerLine2}> & </AppText>
+                  <Pressable
+                    onPress={() => router.push("/legal/privacy-policy" as never)}
+                    hitSlop={8}
+                    accessibilityRole="link"
+                  >
+                    <AppText style={styles.footerLink}>Privacy Policy</AppText>
+                  </Pressable>
+                </View>
+              </>
+            ) : null}
           </View>
         </View>
 
@@ -595,8 +643,13 @@ const styles = StyleSheet.create({
     flexGrow: 1,
     justifyContent: "center",
     alignItems: "center",
-    paddingVertical: 24,
+    paddingTop: 24,
+    paddingBottom: 24,
     paddingHorizontal: 20,
+  },
+  scrollContentKeyboard: {
+    justifyContent: "flex-start",
+    paddingTop: 12,
   },
   card: {
     width: "100%",
@@ -609,6 +662,9 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.06,
     shadowRadius: 24,
     elevation: 8,
+  },
+  cardKeyboard: {
+    minHeight: 0,
   },
   waveWrap: {
     position: "absolute",
@@ -642,14 +698,25 @@ const styles = StyleSheet.create({
     paddingBottom: 32,
     alignItems: "center",
   },
+  cardInnerKeyboard: {
+    paddingTop: 14,
+    paddingBottom: 20,
+  },
   header: {
     alignSelf: "stretch",
     alignItems: "flex-start",
     marginBottom: 8,
   },
+  headerKeyboard: {
+    marginBottom: 4,
+  },
   logoImage: {
     width: 120,
     height: 36,
+  },
+  logoImageKeyboard: {
+    width: 100,
+    height: 30,
   },
   title: {
     fontSize: 26,
@@ -659,6 +726,10 @@ const styles = StyleSheet.create({
     textAlign: "center",
     letterSpacing: 0.3,
   },
+  titleKeyboard: {
+    fontSize: 22,
+    marginBottom: 4,
+  },
   subtitle: {
     fontSize: 15,
     color: TEXT_GRAY,
@@ -666,9 +737,19 @@ const styles = StyleSheet.create({
     textAlign: "center",
     lineHeight: 22,
   },
+  subtitleKeyboard: {
+    fontSize: 13,
+    color: TEXT_GRAY,
+    marginBottom: 14,
+    textAlign: "center",
+    lineHeight: 18,
+  },
   fieldWrap: {
     width: "100%",
     marginBottom: 22,
+  },
+  fieldWrapKeyboard: {
+    marginBottom: 14,
   },
   labelRow: {
     flexDirection: "row",

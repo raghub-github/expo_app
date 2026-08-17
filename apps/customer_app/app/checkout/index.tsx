@@ -14,7 +14,6 @@ import {
   ActivityIndicator,
   Share,
   TextInput,
-  Image,
   Pressable,
   Modal,
   BackHandler,
@@ -24,6 +23,7 @@ import {
   KeyboardAvoidingView,
   Animated as RNAnimated,
 } from "react-native";
+import { Image } from "expo-image";
 import * as Location from "expo-location";
 import * as Contacts from "expo-contacts";
 import { useRouter, useFocusEffect } from "expo-router";
@@ -51,6 +51,7 @@ import { addressService, type Address } from "@/services/address.service";
 import { shareAddressViaLink } from "@/services/addressShare.service";
 import { profileService } from "@/services/profile.service";
 import { RazorpayCheckoutModal, type RazorpayPaymentResult, type RazorpayOrderParams } from "@/components/RazorpayCheckoutModal";
+import { AppAlertModal } from "@/components/AppAlertModal";
 import { merchantService, type MerchantSummary, type MenuItem } from "@/services/merchant.service";
 import { ItemCustomizationSheet } from "@/components/ItemCustomizationSheet";
 import { GatiMitraColors } from "@/constants/gatimitra";
@@ -66,7 +67,8 @@ import { seedOrderDetailCache } from "@/lib/orderDetailCache";
 import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
 import { reverseGeocode } from "@/services/location.service";
 import { checkDispatchServiceability } from "@/services/geoServices.service";
-import { getRoute, getStoreDeliveryQuote, type StoreDeliveryQuote } from "@/services/distance.service";
+import { subscribeRiderOnlineCheckSignal } from "@/hooks/useRiderOnlineCheckRealtime";
+import { getStoreDeliveryQuote, type StoreDeliveryQuote } from "@/services/distance.service";
 import { checkoutRouterBack } from "@/lib/safeRouterBack";
 import { evaluateCartCheckoutEligibility } from "@/lib/cartCheckoutGate";
 import { useCartCheckoutGateStore } from "@/store/cartCheckoutGateStore";
@@ -384,33 +386,22 @@ function checkoutAddressRowIcon(
   return "location-outline";
 }
 
-function formatAddressToStoreDistance(
-  storeLat: number | null | undefined,
-  storeLng: number | null | undefined,
-  addr: Address
-): string {
-  if (storeLat == null || storeLng == null) return "—";
-  const km = haversineKm(Number(storeLat), Number(storeLng), addr.latitude, addr.longitude);
-  const m = km * 1000;
-  if (!Number.isFinite(m)) return "—";
-  if (m < 1000) return `${Math.round(m)} m`;
+function formatCanonicalQuoteDistance(quote: StoreDeliveryQuote | undefined): string {
+  const km = quote?.distance_km;
+  if (km == null || !Number.isFinite(km)) return "—";
+  if (km < 1) return `${Math.round(km * 1000)} m`;
   return `${km.toFixed(1)} km`;
 }
 
 function isCheckoutSheetAddressOutOfZone(
   quote: StoreDeliveryQuote | undefined,
-  storeLat: number | null | undefined,
-  storeLng: number | null | undefined,
-  addr: Address
+  _storeLat: number | null | undefined,
+  _storeLng: number | null | undefined,
+  _addr: Address
 ): boolean {
-  if (quote?.serviceable === false) return true;
-  if (quote?.unserviceable_reason === "out_of_range") return true;
-  if (storeLat == null || storeLng == null) return false;
-  const km = haversineKm(Number(storeLat), Number(storeLng), addr.latitude, addr.longitude);
-  if (!Number.isFinite(km)) return false;
-  const radiusKm = quote?.service_radius_km ?? SERVICE_RADIUS_KM;
-  if (quote != null) return !quote.serviceable;
-  return km > radiusKm;
+  if (quote == null) return false;
+  if (quote.unserviceable_reason === "out_of_range") return true;
+  return quote.serviceable === false;
 }
 
 /** One-line summary in the checkout card (GatiMitra-style). */
@@ -1013,6 +1004,23 @@ export default function CheckoutScreen() {
   const [addressSheetVisible, setAddressSheetVisible] = useState(false);
   const [addressSheetBusyId, setAddressSheetBusyId] = useState<number | null>(null);
   const [outOfZoneMessageVisible, setOutOfZoneMessageVisible] = useState(false);
+  const [deliveryUnavailableAlert, setDeliveryUnavailableAlert] = useState<{
+    title: string;
+    message: string;
+  } | null>(null);
+  const recheckDeliveryUnavailableGateRef = useRef<(forceShow: boolean) => Promise<boolean>>(
+    async () => true
+  );
+  useEffect(
+    () =>
+      subscribeRiderOnlineCheckSignal((payload) => {
+        if (payload.require_rider_online_check === false) {
+          setDeliveryUnavailableAlert(null);
+        }
+        void recheckDeliveryUnavailableGateRef.current(payload.require_rider_online_check === true);
+      }),
+    []
+  );
   const [receiverSheetVisible, setReceiverSheetVisible] = useState(false);
   const [communityInitiativeSheetVisible, setCommunityInitiativeSheetVisible] = useState(false);
   const [donateWithSheetVisible, setDonateWithSheetVisible] = useState(false);
@@ -1105,7 +1113,10 @@ export default function CheckoutScreen() {
   const { data: activeLocation } = useQuery({
     queryKey: ["active-location"],
     queryFn: () => addressService.getActiveLocation(),
-    staleTime: 0,
+    // Address changes are explicitly invalidated elsewhere (address picker,
+    // handoff flow below) — staleTime: 0 forced a network round trip on
+    // every checkout open, adding latency before pricing/quote can settle.
+    staleTime: 60_000,
   });
 
   useFocusEffect(
@@ -1164,7 +1175,6 @@ export default function CheckoutScreen() {
       void queryClient.invalidateQueries({ queryKey: ["store-delivery-quote"] });
       void queryClient.invalidateQueries({ queryKey: ["billing-calculate"] });
       void queryClient.invalidateQueries({ queryKey: ["billing-checkout-offers"] });
-      void queryClient.invalidateQueries({ queryKey: ["checkout-route-distance"] });
       void invalidateFoodHomeLocationQueries(queryClient);
     }, [merchantId, queryClient])
   );
@@ -1662,6 +1672,64 @@ export default function CheckoutScreen() {
 
   const storeFullAddress = merchantAbout?.full_address ?? merchant?.address ?? merchant?.city ?? merchantName;
 
+  const recheckDeliveryUnavailableGate = useCallback(
+    async (forceShow: boolean): Promise<boolean> => {
+      if (deliveryType === "self_pickup") {
+        setDeliveryUnavailableAlert(null);
+        return true;
+      }
+      if (merchant?.latitude == null || merchant?.longitude == null) return true;
+      const svc = await checkDispatchServiceability({
+        service: "food",
+        fulfillment: "delivery",
+        lat: Number(merchant.latitude),
+        lng: Number(merchant.longitude),
+        ...(merchantAbout?.postal_code ? { pincode: String(merchantAbout.postal_code) } : {}),
+        ...(merchantAbout?.state ? { state: String(merchantAbout.state) } : {}),
+        ...(merchantId ? { merchantStoreId: String(merchantId) } : {}),
+      });
+      if (!svc.ok) return true;
+      if (svc.result.serviceable || svc.result.riderOnlineCheckRequired === false) {
+        setDeliveryUnavailableAlert(null);
+        return true;
+      }
+      const isNoRider = svc.result.reason === "no_rider_available";
+      const alert = {
+        title: isNoRider ? "Oops! No Rider Available" : "Delivery unavailable",
+        message: isNoRider
+          ? "All nearby delivery partners are currently busy. Please try again shortly."
+          : svc.result.message ||
+            "All nearby delivery partners are currently busy. Please try again shortly.",
+      };
+      if (forceShow) {
+        setDeliveryUnavailableAlert(alert);
+      } else {
+        setDeliveryUnavailableAlert((prev) => (prev ? alert : null));
+      }
+      return false;
+    },
+    [
+      deliveryType,
+      merchant?.latitude,
+      merchant?.longitude,
+      merchantAbout?.postal_code,
+      merchantAbout?.state,
+      merchantId,
+    ]
+  );
+
+  useEffect(() => {
+    recheckDeliveryUnavailableGateRef.current = recheckDeliveryUnavailableGate;
+  }, [recheckDeliveryUnavailableGate]);
+
+  useEffect(() => {
+    if (!deliveryUnavailableAlert) return;
+    const id = setInterval(() => {
+      void recheckDeliveryUnavailableGate(false);
+    }, 1200);
+    return () => clearInterval(id);
+  }, [deliveryUnavailableAlert, recheckDeliveryUnavailableGate]);
+
   const openCheckoutAddressSheet = useCallback(() => {
     setAddressSheetVisible(true);
   }, []);
@@ -1743,7 +1811,6 @@ export default function CheckoutScreen() {
         await queryClient.invalidateQueries({ queryKey: ["store-delivery-quote"] });
         await queryClient.invalidateQueries({ queryKey: ["billing-calculate"] });
         await queryClient.invalidateQueries({ queryKey: ["billing-checkout-offers"] });
-        await queryClient.invalidateQueries({ queryKey: ["checkout-route-distance"] });
         void invalidateFoodHomeLocationQueries(queryClient);
         setAddressSheetVisible(false);
       } catch {
@@ -1856,32 +1923,6 @@ export default function CheckoutScreen() {
     setCheckoutReceiverMobile(contactMobile);
     setReceiverSheetVisible(false);
   }, [selectedAddress, receiverDraftName, receiverDraftMobile]);
-
-  const routeDistanceQuery = useQuery({
-    queryKey: [
-      "checkout-route-distance",
-      merchant?.id ?? merchantId,
-      selectedAddress?.id,
-      merchant?.latitude,
-      merchant?.longitude,
-      selectedAddress?.latitude,
-      selectedAddress?.longitude,
-    ],
-    queryFn: () =>
-      getRoute({
-        origin: { lat: Number(merchant!.latitude), lng: Number(merchant!.longitude) },
-        destination: { lat: selectedAddress!.latitude, lng: selectedAddress!.longitude },
-        profile: "driving",
-      }),
-    enabled:
-      !!selectedAddress &&
-      merchant?.latitude != null &&
-      merchant?.longitude != null,
-    staleTime: 5 * 60 * 1000,
-  });
-
-  /** Store→drop km from backend routing engine (UI hint while bill loads). */
-  const routeDistanceKm = routeDistanceQuery.data?.distanceKm ?? null;
 
   const currentVsSelectedDistanceKm = useMemo(() => {
     if (!selectedAddress || !currentLocationCoords) return null;
@@ -2209,10 +2250,9 @@ export default function CheckoutScreen() {
     }
     return map;
   }, [serverBill?.orderLineEligibility]);
-  /** Store→drop km from backend routing (authoritative for pricing); client route is for UI hint only. */
+  /** Store→drop km from the billing engine (same canonical getRoute as listing). */
   const serverDistanceKm = serverBill?.distanceKm ?? null;
-  /** Distance shown to user in checkout, always backend-computed. */
-  const uiDistanceKm = serverDistanceKm ?? routeDistanceKm;
+  const uiDistanceKm = serverDistanceKm;
   /** Serviceability comes from the server (respects store.delivery_radius_km + env fallback),
    * falling back to the platform default if the server hasn't been updated yet.
    * Only treat as out-of-zone once a delivery address is selected and the bill matches it.
@@ -3968,23 +4008,8 @@ export default function CheckoutScreen() {
     }
     // Pre-placement serviceability gate (delivery). Fail-open on API/network error so a
     // transient issue never blocks checkout — only a definitive "not serviceable" stops it.
-    if (merchant?.latitude != null && merchant?.longitude != null) {
-      const svc = await checkDispatchServiceability({
-        service: "food",
-        fulfillment: "delivery",
-        lat: Number(merchant.latitude),
-        lng: Number(merchant.longitude),
-      });
-      if (svc.ok && !svc.result.serviceable) {
-        Alert.alert(
-          "Delivery unavailable",
-          svc.result.message ||
-            "No riders are currently available right now. Please try again shortly.",
-          [{ text: "OK" }]
-        );
-        return;
-      }
-    }
+    const allowed = await recheckDeliveryUnavailableGate(true);
+    if (!allowed) return;
     if (hasValidPayment) {
       setRazorpayCreating(true);
       try {
@@ -4061,6 +4086,7 @@ export default function CheckoutScreen() {
     checkoutReceiverName,
     checkoutReceiverMobile,
     openReceiverSheet,
+    recheckDeliveryUnavailableGate,
   ]);
 
   const handleRazorpaySuccess = useCallback(
@@ -4695,6 +4721,8 @@ export default function CheckoutScreen() {
                             <Image
                               source={{ uri: m.imageUrl }}
                               style={[styles.upsellImage, { borderRadius: radius }]}
+                              contentFit="cover"
+                              cachePolicy="memory-disk"
                             />
                           ) : (
                             <View
@@ -5697,9 +5725,9 @@ export default function CheckoutScreen() {
                 <View style={[styles.addressSelectActionPanel, styles.addressSelectActionPanelInScroll]}>
                   {addresses.map((addr, index) => {
                     const busy = addressSheetBusyId === addr.id;
-                    const dist = formatAddressToStoreDistance(merchant?.latitude, merchant?.longitude, addr);
-                    const title = addr.contactName?.trim() || addr.label || "Saved address";
                     const quote = checkoutAddressServiceability[index]?.data;
+                    const dist = formatCanonicalQuoteDistance(quote);
+                    const title = addr.contactName?.trim() || addr.label || "Saved address";
                     const isOutOfDeliveryZone = isCheckoutSheetAddressOutOfZone(
                       quote,
                       merchant?.latitude,
@@ -6164,6 +6192,18 @@ export default function CheckoutScreen() {
         }}
         onSuccess={handleRazorpaySuccess}
         onCancel={handleRazorpayCancel}
+      />
+
+      <AppAlertModal
+        visible={deliveryUnavailableAlert != null}
+        title={deliveryUnavailableAlert?.title ?? "Oops! No Rider Available"}
+        message={
+          deliveryUnavailableAlert?.message ??
+          "All nearby delivery partners are currently busy. Please try again shortly."
+        }
+        confirmLabel="OK"
+        variant="warning"
+        onClose={() => setDeliveryUnavailableAlert(null)}
       />
 
       {/* Dummy / simulated payment sheet (backend has PAYMENT_DUMMY_MODE=true

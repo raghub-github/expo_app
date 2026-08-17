@@ -28,6 +28,23 @@ export type GetRouteOptions = {
 };
 
 /**
+ * Canonical restaurant → customer pair for listing, store-quote, checkout, and billing.
+ * Do not reverse these points — Mapbox driving is not symmetric.
+ */
+export function canonicalStoreToCustomerRouteArgs(
+  store: LatLng,
+  drop: LatLng,
+  extras?: Omit<GetRouteOptions, "origin" | "destination">
+): GetRouteOptions {
+  return {
+    origin: store,
+    destination: drop,
+    profile: extras?.profile ?? "driving",
+    ...extras,
+  };
+}
+
+/**
  * Two-layer cache: in-process Map for sub-ms hits within a single request
  * burst, plus Redis for cross-replica consistency. Behind a load balancer,
  * a Mapbox quote computed by replica A becomes immediately reusable by

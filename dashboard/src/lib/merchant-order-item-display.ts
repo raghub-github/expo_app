@@ -208,8 +208,14 @@ export function merchantBillPartsFromItems(
   const frozen = Number(pricing.total);
   const total =
     Number.isFinite(frozen) && frozen > 0 ? round2(frozen) : computed;
+  const fromLines = round2(itemsLineTotal);
+  const reconstructed = round2(Math.max(0, fromLines + packaging - discount));
+  const itemsSubtotal =
+    frozen > 0 && Math.abs(reconstructed - total) > 0.5
+      ? round2(Math.max(0, total - packaging + discount))
+      : fromLines;
   return {
-    itemsSubtotal: itemsLineTotal,
+    itemsSubtotal,
     itemBaseTotal: round2(baseSubtotal),
     customizationsTotal: round2(customizationsTotal),
     showCustomizations: customizationsTotal > 0.005,

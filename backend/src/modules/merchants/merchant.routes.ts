@@ -38,10 +38,82 @@ import {
 } from "./merchant-menu-prep.js";
 import { toAbsoluteClientMediaUrl } from "../../utils/publicAttachmentUrl.js";
 import { previewEtaRange } from "../eta/eta.preview.js";
+import { getSql } from "../../db/client.js";
 import type { MerchantMenuItemRow } from "./merchant.types.js";
 import { getSupabase } from "../../lib/supabase.js";
 import { auth } from "../../plugins/auth.js";
 import { resolveCustomerPkForRequest } from "../../lib/customer-auth.js";
+
+function isBrandOrPlaceholderHeroUrl(url: string | null | undefined): boolean {
+  const u = String(url ?? "").trim().toLowerCase();
+  if (!u) return false;
+  return (
+    u.includes("partner-control") ||
+    u.includes("partner_control") ||
+    u.includes("mxappicon") ||
+    u.includes("store_logo") ||
+    u.includes("store-logo") ||
+    u.includes("parent_logo") ||
+    u.includes("merchant_logo") ||
+    u.includes("/logo.") ||
+    u.includes("default-banner") ||
+    u.includes("default_banner") ||
+    u.includes("placeholder")
+  );
+}
+
+function isFoodHeroMediaUrl(url: string | null | undefined): boolean {
+  const abs = toAbsoluteClientMediaUrl(url);
+  return Boolean(abs && !isBrandOrPlaceholderHeroUrl(abs));
+}
+
+async function getStoreMenuHeroPhotos(storeInternalIds: number[]): Promise<Map<number, string>> {
+  const out = new Map<number, string>();
+  if (storeInternalIds.length === 0) return out;
+  try {
+    const rows = (await getSql()`
+      SELECT DISTINCT ON (m.store_id)
+        m.store_id,
+        COALESCE(
+          NULLIF(TRIM(m.item_image_url), ''),
+          (
+            SELECT img.image_url FROM merchant_menu_item_images img
+            WHERE img.menu_item_id = m.id AND img.is_primary = true
+            ORDER BY img.id ASC LIMIT 1
+          ),
+          (
+            SELECT img.image_url FROM merchant_menu_item_images img
+            WHERE img.menu_item_id = m.id
+            ORDER BY img.display_order ASC NULLS LAST, img.id ASC LIMIT 1
+          )
+        ) AS item_image_url
+      FROM merchant_menu_items m
+      WHERE m.store_id = ANY(${storeInternalIds}::int[])
+        AND (m.is_deleted IS NULL OR m.is_deleted = false)
+        AND COALESCE(m.is_active, true) = true
+      ORDER BY
+        m.store_id,
+        (
+          COALESCE(
+            NULLIF(TRIM(m.item_image_url), ''),
+            (SELECT img.image_url FROM merchant_menu_item_images img WHERE img.menu_item_id = m.id LIMIT 1)
+          ) IS NOT NULL
+        ) DESC,
+        m.is_popular DESC NULLS LAST,
+        m.is_recommended DESC NULLS LAST,
+        m.id ASC
+    `) as Array<{ store_id: number; item_image_url: string | null }>;
+    for (const r of rows) {
+      const url = typeof r.item_image_url === "string" ? r.item_image_url.trim() : "";
+      if (!url || isBrandOrPlaceholderHeroUrl(url)) continue;
+      const abs = toAbsoluteClientMediaUrl(url);
+      if (abs) out.set(Number(r.store_id), abs);
+    }
+  } catch {
+    return out;
+  }
+  return out;
+}
 
 function toFiniteInt(v: unknown): number | undefined {
   if (v == null || v === "") return undefined;
@@ -98,11 +170,11 @@ const querySchema = z.object({
   offset: z.coerce.number().int().min(0).optional().default(0),
   lat: z.coerce.number().optional(),
   lng: z.coerce.number().optional(),
-  /** Distance mode: air = straight-line (DB/RPC), road = routing engine (Mapbox/OSRM). */
+  /** Distance mode: air = straight-line (internal filter); road = canonical routing engine (listing + checkout). */
   distanceMode: z
     .enum(["air", "road"])
     .optional()
-    .default("air"),
+    .default("road"),
   veg: z
     .string()
     .optional()
@@ -306,7 +378,7 @@ export async function merchantRoutes(app: FastifyInstance) {
           return empty;
         }
       };
-      const [offerHeadlines, ratingSummaries, scheduleTimes, orderCounts, menuPrepAvgs, prepBuffers] =
+      const [offerHeadlines, ratingSummaries, scheduleTimes, orderCounts, menuPrepAvgs, prepBuffers, menuHeroPhotos] =
         await Promise.all([
         settleEnrichment("offer-headlines", getPrimaryOfferHeadlinesForStores(storeInternalIds), new Map()),
         settleEnrichment("rating-summaries", getStoreRatingsForStores(storeInternalIds), new Map()),
@@ -322,6 +394,7 @@ export async function merchantRoutes(app: FastifyInstance) {
           getPreparationBufferMinutesForStores(storeInternalIds),
           new Map()
         ),
+        settleEnrichment("menu-hero-photos", getStoreMenuHeroPhotos(storeInternalIds), new Map()),
       ]);
 
       const body = items.map((s) => {
@@ -341,7 +414,6 @@ export async function merchantRoutes(app: FastifyInstance) {
           (Array.isArray(s.gallery_images) && s.gallery_images[0] ? s.gallery_images[0] : null) ??
           (mediaGallery[0] ?? null) ??
           null;
-        const displayImage = toAbsoluteClientMediaUrl(displayImageRaw);
         const bannerAbs = toAbsoluteClientMediaUrl(s.banner_url ?? mediaRow?.banner_url ?? null);
         const galleryRaw = Array.isArray(s.gallery_images) && s.gallery_images.length > 0
           ? s.gallery_images
@@ -349,7 +421,18 @@ export async function merchantRoutes(app: FastifyInstance) {
         const galleryImages = galleryRaw
           .map((u) => toAbsoluteClientMediaUrl(typeof u === "string" ? u : null))
           .filter((u): u is string => Boolean(u))
-          .filter((u) => u !== bannerAbs && u !== displayImage);
+          .filter((u) => isFoodHeroMediaUrl(u));
+        const menuHero =
+          Number.isFinite(storeInternalId) && storeInternalId > 0
+            ? menuHeroPhotos.get(storeInternalId) ?? null
+            : null;
+        const displayImage =
+          (isFoodHeroMediaUrl(bannerAbs) ? bannerAbs : null) ??
+          galleryImages[0] ??
+          (isFoodHeroMediaUrl(displayImageRaw) ? toAbsoluteClientMediaUrl(displayImageRaw) : null) ??
+          menuHero;
+        const heroBanner = displayImage ?? null;
+        const galleryDeduped = galleryImages.filter((u) => u !== heroBanner);
         const storeLevelPrep = nearby.avg_preparation_time_minutes ?? s.avg_preparation_time_minutes;
         const menuAvgPrep =
           Number.isFinite(storeInternalId) && storeInternalId > 0
@@ -397,7 +480,7 @@ export async function merchantRoutes(app: FastifyInstance) {
           id: s.store_id,
           name: s.store_display_name ?? s.store_name,
           displayImage,
-          banner_url: bannerAbs ?? displayImage ?? null,
+          banner_url: heroBanner,
           deliveryTime: `${etaRange.etaMinMinutes}-${etaRange.etaMaxMinutes} min`,
           etaMinMinutes: etaRange.etaMinMinutes,
           etaMaxMinutes: etaRange.etaMaxMinutes,
@@ -409,7 +492,7 @@ export async function merchantRoutes(app: FastifyInstance) {
           isOpen,
           liveStatus,
           distanceKm: "distance_km" in s ? nearby.distance_km : undefined,
-          galleryImages: galleryImages.length > 0 ? galleryImages : undefined,
+          galleryImages: galleryDeduped.length > 0 ? galleryDeduped : undefined,
           offerText:
             Number.isFinite(storeInternalId) && storeInternalId > 0
               ? offerHeadlines.get(storeInternalId) ?? null
@@ -659,7 +742,7 @@ export async function merchantRoutes(app: FastifyInstance) {
             avg_preparation_time_minutes: z.number().nullable(),
             packaging_charge_amount: z.number().nullable().optional(),
             delivery_charge_per_km: z.number().nullable().optional(),
-            delivery_radius_km: z.number().nullable().optional(),
+            delivery_radius_km: z.coerce.number().nullable().optional(),
             banner_url: z.string().nullable(),
             is_active: z.boolean().nullable(),
             created_at: z.string().nullable().optional(),

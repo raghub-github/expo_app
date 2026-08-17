@@ -64,7 +64,13 @@ async function sendBatch(
     try {
       const res = await fetch(EXPO_PUSH_URL, {
         method: "POST",
-        headers: { Accept: "application/json", "Content-Type": "application/json" },
+        headers: {
+          Accept: "application/json",
+          "Content-Type": "application/json",
+          ...(process.env.EXPO_ACCESS_TOKEN?.trim()
+            ? { Authorization: `Bearer ${process.env.EXPO_ACCESS_TOKEN.trim()}` }
+            : {}),
+        },
         body: JSON.stringify(message),
       });
       const status = res.status;

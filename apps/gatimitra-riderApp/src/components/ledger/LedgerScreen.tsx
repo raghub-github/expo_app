@@ -198,7 +198,11 @@ export function LedgerScreen() {
               <Text style={styles.headerLabel}>{t("ledger.today", "Today")}</Text>
               {toggleWithPeriodControl}
             </View>
-            <LedgerEmptyState />
+            <LedgerEmptyState
+              walletBalance={walletBalance}
+              period={period}
+              onViewAllPeriod={() => setPeriod("all")}
+            />
           </>
         ) : (
           <View style={styles.list}>

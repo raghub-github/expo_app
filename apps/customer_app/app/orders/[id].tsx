@@ -1071,8 +1071,13 @@ export default function OrderDetailsScreen() {
           ) : null}
 
           <CustomerEtaTimeline
-            orderId={order.formattedOrderId ?? order.orderId}
-            enabled={Boolean(isInProgress || order.status === "DELIVERED")}
+            order={order}
+            enabled={Boolean(
+              isInProgress ||
+                order.status === "DELIVERED" ||
+                order.status === "CANCELLED" ||
+                order.status === "REJECTED"
+            )}
           />
 
           <View style={styles.card}>

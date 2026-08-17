@@ -431,7 +431,8 @@ export function useMerchantWallet(
   const enabled = (options?.enabled ?? true) && authReady;
   const lite = options?.lite !== false;
   const hydrated = useHydrated();
-  const cached = hydrated && enabled && storeId ? readDashboardWalletCache(storeId) : null;
+  // Read cache even while auth gate is closed so placeholder paints instantly.
+  const cached = hydrated && storeId ? readDashboardWalletCache(storeId) : null;
   return useQuery({
     queryKey: [...merchantKeys.wallet(storeId ?? ''), lite ? 'lite' : 'full'],
     queryFn: async () => {
@@ -440,12 +441,12 @@ export function useMerchantWallet(
       return data;
     },
     enabled,
-    staleTime: 5 * 1000,
+    staleTime: 15 * 1000,
     gcTime: 5 * 60 * 1000,
     placeholderData: cached
       ? applyPartnerWalletFreezeOverlay(storeId!, cached)
       : keepPreviousData,
-    refetchOnMount: 'always',
+    refetchOnMount: true,
     refetchOnWindowFocus: true,
     refetchInterval: options?.live ? 2000 : false,
   });
@@ -550,7 +551,7 @@ export function useStoreOperations(
 ) {
   const enabled = (options?.enabled ?? true) && !!storeId;
   const hydrated = useHydrated();
-  const cached = hydrated && enabled && storeId ? readStoreOperationsCache(storeId) : null;
+  const cached = hydrated && storeId ? readStoreOperationsCache(storeId) : null;
   return useQuery({
     queryKey: merchantKeys.storeOperations(storeId ?? ''),
     queryFn: () => fetchStoreOperations(storeId!),
@@ -574,7 +575,7 @@ export function useStoreSettings(storeId: string | null, options?: { enabled?: b
     queryFn: () => fetchStoreSettings(storeId!),
     enabled,
     staleTime: 15 * 1000,
-    refetchOnMount: 'always',
+    refetchOnMount: true,
     refetchOnWindowFocus: false,
   });
 }

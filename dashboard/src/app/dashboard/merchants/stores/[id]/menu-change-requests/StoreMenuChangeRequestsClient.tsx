@@ -119,7 +119,8 @@ export function StoreMenuChangeRequestsClient({ storeId }: { storeId: string }) 
 
   const pendingPhotoItems = useMemo(() => {
     const fromSummary = reviewSummary?.photo_items;
-    if (Array.isArray(fromSummary) && fromSummary.length > 0) {
+    // Prefer API list when loaded — including empty (cleared after approve/reject).
+    if (Array.isArray(fromSummary)) {
       return fromSummary.map(
         (row): MenuItem => ({
           id: row.id,
@@ -137,21 +138,33 @@ export function StoreMenuChangeRequestsClient({ storeId }: { storeId: string }) 
         })
       );
     }
+    // Fallback before summary loads: only primary-image PENDING (not item approval).
     return menuItems.filter((item) => {
       const hasImage =
         Boolean(item.item_image_url?.trim()) ||
         (Array.isArray(item.images) && item.images.some((img) => String(img.image_url ?? "").trim()));
       if (!hasImage) return false;
-      const primaryMod = String(item.primary_image_moderation_status ?? "").toUpperCase();
-      if (primaryMod === "PENDING") return true;
-      return String(item.approval_status ?? "").toUpperCase() === "PENDING";
+      return String(item.primary_image_moderation_status ?? "").toUpperCase() === "PENDING";
     });
   }, [reviewSummary?.photo_items, menuItems]);
+
+  const removePhotoFromReviewQueue = useCallback((itemId: number) => {
+    setReviewSummary((prev) => {
+      if (!prev) return prev;
+      const photo_items = (prev.photo_items ?? []).filter((row) => Number(row.id) !== Number(itemId));
+      const pending_photo_reviews = photo_items.length;
+      return {
+        ...prev,
+        photo_items,
+        pending_photo_reviews,
+        total_pending: Number(prev.pending_change_requests ?? 0) + pending_photo_reviews,
+      };
+    });
+  }, []);
 
   const fetchReviewSummary = useCallback(() => {
     const id = requestStoreKey;
     if (!id) return;
-    setPhotosLoading(true);
     fetch(`/api/merchant-menu/review-queue-summary?storeId=${encodeURIComponent(id)}`)
       .then((r) => (r.ok ? r.json() : null))
       .then((body) => {
@@ -163,11 +176,14 @@ export function StoreMenuChangeRequestsClient({ storeId }: { storeId: string }) 
           photo_items: Array.isArray(body.photo_items) ? body.photo_items : [],
         });
       })
-      .catch(() => setReviewSummary(null))
+      .catch(() => {
+        /* keep last known summary */
+      })
       .finally(() => setPhotosLoading(false));
   }, [requestStoreKey]);
 
   useEffect(() => {
+    setPhotosLoading(true);
     fetchReviewSummary();
   }, [fetchReviewSummary]);
 
@@ -436,12 +452,13 @@ export function StoreMenuChangeRequestsClient({ storeId }: { storeId: string }) 
         actionStatus: "SUCCESS",
         requestMethod: "PATCH",
       });
-      await refreshMenu();
-      fetchReviewSummary();
-      dispatchMenuReviewQueueRefresh();
+      removePhotoFromReviewQueue(item.id);
       setPhotoReviewItem(null);
       setPhotoRejectReason("");
       setPhotoRejectError(null);
+      await refreshMenu();
+      fetchReviewSummary();
+      dispatchMenuReviewQueueRefresh();
     } catch (e) {
       toast(e instanceof Error ? e.message : "Approve failed");
       trackAudit({
@@ -493,12 +510,13 @@ export function StoreMenuChangeRequestsClient({ storeId }: { storeId: string }) 
         actionStatus: "SUCCESS",
         requestMethod: "PATCH",
       });
-      await refreshMenu();
-      fetchReviewSummary();
-      dispatchMenuReviewQueueRefresh();
+      removePhotoFromReviewQueue(item.id);
       setPhotoReviewItem(null);
       setPhotoRejectReason("");
       setPhotoRejectError(null);
+      await refreshMenu();
+      fetchReviewSummary();
+      dispatchMenuReviewQueueRefresh();
     } catch (e) {
       toast(e instanceof Error ? e.message : "Reject failed");
       trackAudit({

@@ -110,6 +110,15 @@ export const geoAdminApi = baseApi.injectEndpoints({
       invalidatesTags: [{ type: "Geo" }],
     }),
 
+    geoRiderOnlineCheck: build.mutation<void, { id: string; value: boolean }>({
+      query: (body) => ({
+        url: "/super-admin/geo/rider-online-check",
+        method: "POST",
+        body,
+      }),
+      invalidatesTags: [{ type: "Geo" }],
+    }),
+
     geoUpsert: build.mutation<
       { result: unknown },
       {
@@ -377,6 +386,7 @@ export const {
   useLazyGeoChildrenQuery,
   useLazyGeoSearchQuery,
   useGeoToggleMutation,
+  useGeoRiderOnlineCheckMutation,
   useGeoUpsertMutation,
   useGeoUpdateNodeMutation,
   useGeoDeleteNodeMutation,

@@ -53,18 +53,23 @@ export type RiderStatusResponse = {
 /** Set after successful `POST /v1/auth/otp/request`; cleared on new send or successful backend verify. */
 let _lastBackendOtpRequestId: string | null = null;
 
-function shouldSendPhoneOtpViaBackend(): boolean {
-  const { phoneOtpUseBackendOnly } = getRiderAppConfig();
-  if (phoneOtpUseBackendOnly) return true;
-  return getSupabaseAuth() == null;
-}
-
 async function fetchWithTimeout(input: RequestInfo | URL, init: RequestInit & { timeoutMs?: number } = {}) {
   const { timeoutMs = 15000, ...rest } = init;
   const controller = new AbortController();
   const id = setTimeout(() => controller.abort(), timeoutMs);
   try {
     return await fetch(input, { ...rest, signal: controller.signal });
+  } catch (err) {
+    const aborted =
+      (err instanceof Error && err.name === "AbortError") ||
+      (typeof err === "object" && err != null && (err as { name?: string }).name === "AbortError");
+    if (aborted) {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : String(input);
+      throw new Error(
+        `Request timed out after ${Math.round(timeoutMs / 1000)}s contacting ${url}. Check that the backend is running and EXPO_PUBLIC_API_BASE_URL matches this device's network.`,
+      );
+    }
+    throw err;
   } finally {
     clearTimeout(id);
   }
@@ -205,66 +210,64 @@ export const riderAuthService = {
    *   - real number    → { useSupabase: true }; deliver via Supabase signInWithOtp
    *     (the only channel that delivers — the backend MSG91 endpoints ack but do
    *     not deliver on this account), then verify via Supabase + exchange-rider.
-   *
-   * When the backend is unreachable / not selected, fall back to Supabase directly.
    */
   async sendOtp(payload: SendOtpPayload): Promise<void> {
     _lastBackendOtpRequestId = null;
 
     const envInfo = getSupabaseOtpEnvDebugInfo();
-    const viaBackend = shouldSendPhoneOtpViaBackend();
+    const otpUrl = `${apiBaseUrl()}${AUTH_PREFIX}/otp/request`;
     if (__DEV__) {
       const tail = payload.phoneE164.replace(/\D/g, "").slice(-4);
       // eslint-disable-next-line no-console
       console.log("[RiderAuth] sendOtp: start", {
         phoneTail: tail ? `…${tail}` : "(short)",
-        channel: viaBackend ? "backend" : "supabase",
+        channel: "backend-first",
+        apiBaseUrl: apiBaseUrl(),
         supabase: envInfo,
       });
     }
 
-    if (viaBackend) {
-      const res = await fetchWithTimeout(`${apiBaseUrl()}${AUTH_PREFIX}/otp/request`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ phoneE164: payload.phoneE164, appType: "rider" }),
-      });
-      const raw = await res.text();
-      let dataJson: Record<string, unknown> = {};
-      try {
-        dataJson = raw ? (JSON.parse(raw) as Record<string, unknown>) : {};
-      } catch {
-        throw new Error("Invalid response from server while requesting OTP.");
-      }
-      if (!res.ok) {
-        const msg =
-          (typeof dataJson.message === "string" && dataJson.message) ||
-          (typeof dataJson.error === "string" && dataJson.error) ||
-          `Could not send OTP (HTTP ${res.status}).`;
-        throw new Error(msg);
-      }
-
-      // Review number: backend seeded a fixed OTP → verify via the backend.
-      const rid = typeof dataJson.requestId === "string" ? dataJson.requestId : "";
-      if (!dataJson.useSupabase && rid) {
-        _lastBackendOtpRequestId = rid;
-        if (__DEV__) {
-          // eslint-disable-next-line no-console
-          console.log("[RiderAuth] sendOtp: backend fixed-OTP path (review number).");
-        }
-        return;
-      }
-
-      // Real number: backend asks us to deliver via Supabase (the delivering path).
-      if (dataJson.useSupabase) {
-        await deliverOtpViaSupabase(payload.phoneE164);
-        return;
-      }
-
-      throw new Error("Unexpected OTP response from server.");
+    // ALWAYS ask the backend first (same as merchant). Backend alone decides
+    // review-number bypass vs Supabase delivery. Never skip this for a review phone.
+    const res = await fetchWithTimeout(otpUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ phoneE164: payload.phoneE164, appType: "rider" }),
+      timeoutMs: 30000,
+    });
+    const raw = await res.text();
+    let dataJson: Record<string, unknown> = {};
+    try {
+      dataJson = raw ? (JSON.parse(raw) as Record<string, unknown>) : {};
+    } catch {
+      throw new Error("Invalid response from server while requesting OTP.");
+    }
+    if (!res.ok) {
+      const msg =
+        (typeof dataJson.message === "string" && dataJson.message) ||
+        (typeof dataJson.error === "string" && dataJson.error) ||
+        `Could not send OTP (HTTP ${res.status}).`;
+      throw new Error(msg);
     }
 
-    await deliverOtpViaSupabase(payload.phoneE164);
+    // Review number: backend seeded a fixed OTP → verify via the backend.
+    const rid = typeof dataJson.requestId === "string" ? dataJson.requestId : "";
+    if (!dataJson.useSupabase && rid) {
+      _lastBackendOtpRequestId = rid;
+      if (__DEV__) {
+        // eslint-disable-next-line no-console
+        console.log("[RiderAuth] sendOtp: backend fixed-OTP path (review number).");
+      }
+      return;
+    }
+
+    // Real number: backend asks us to deliver via Supabase (the delivering path).
+    if (dataJson.useSupabase) {
+      await deliverOtpViaSupabase(payload.phoneE164);
+      return;
+    }
+
+    throw new Error("Unexpected OTP response from server.");
   },
 
   /** Verify OTP — same branching as merchant (backend requestId vs Supabase verify + exchange). */

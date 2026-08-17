@@ -16,6 +16,10 @@ type BankAccountDetails = {
   verificationStatus: "pending" | "verified" | "rejected";
   verifiedAt: string | null;
   createdAt: string;
+  rejectionReason?: string | null;
+  pendingReason?: string | null;
+  crossCheckStatus?: "ok" | "mismatch" | null;
+  crossCheckMessages?: string[];
 };
 
 type RiderBankAccountVerifySideSheetProps = {
@@ -173,8 +177,39 @@ export function RiderBankAccountVerifySideSheet({
                 </span>
               </div>
 
+              {account.verificationStatus === "pending" && account.pendingReason ? (
+                <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-amber-800">
+                    Why pending
+                  </p>
+                  <p className="mt-1.5 text-sm leading-relaxed text-amber-950">
+                    {account.pendingReason}
+                  </p>
+                  {account.crossCheckStatus === "mismatch" ? (
+                    <p className="mt-2 text-xs font-medium text-amber-800">
+                      Cashfree bank verify can pass while GatiMitra still needs manual approval when
+                      the account holder name does not match Aadhaar / rider name.
+                    </p>
+                  ) : null}
+                </div>
+              ) : null}
+
+              {account.verificationStatus === "rejected" && account.rejectionReason ? (
+                <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-red-800">
+                    Rejection reason
+                  </p>
+                  <p className="mt-1.5 text-sm leading-relaxed text-red-950">
+                    {account.rejectionReason}
+                  </p>
+                </div>
+              ) : null}
+
               <div className="rounded-xl border border-gray-200 bg-gray-50/80 px-4 py-1">
                 <DetailRow label="Account holder" value={account.accountHolderName} />
+                {riderName?.trim() ? (
+                  <DetailRow label="Rider name" value={riderName.trim()} />
+                ) : null}
                 <DetailRow label="Bank name" value={account.bankName || "—"} />
                 <DetailRow label="IFSC code" value={account.ifsc || "—"} />
                 <DetailRow label="Branch" value={account.branch || "—"} />

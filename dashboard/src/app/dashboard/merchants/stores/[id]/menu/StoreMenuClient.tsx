@@ -25,7 +25,7 @@ import {
 import { useToast } from "@/context/ToastContext";
 import { useMerchantDashboardAccess } from "@/hooks/useMerchantDashboardAccess";
 import { R2Image } from "@/components/ui/R2Image";
-import { withAttachmentCacheBust } from "@/lib/attachments/resolve-attachment-proxy-url";
+import { withAttachmentCacheBust, resolveAttachmentProxyUrl } from "@/lib/attachments/resolve-attachment-proxy-url";
 import { MenuItemsGridSkeleton } from "@/components/ui/MenuItemsGridSkeleton";
 import { MenuItemForm, type ItemFormData } from "./MenuItemForm";
 import { buildEditOptionsRefs } from "@/lib/map-menu-item-options";
@@ -182,12 +182,13 @@ function normalizeItem(
     has_variants: (item.has_variants as boolean) ?? false,
     is_popular: (item.is_popular as boolean) ?? false,
     is_recommended: (item.is_recommended as boolean) ?? false,
-    item_image_url: (item.item_image_url as string) ?? undefined,
+    item_image_url: resolveAttachmentProxyUrl((item.item_image_url as string) ?? "") || undefined,
     item_description: (item.item_description as string) ?? undefined,
     food_type: (item.food_type as string) ?? undefined,
     spice_level: (item.spice_level as string) ?? undefined,
     cuisine_type: (item.cuisine_type as string) ?? undefined,
     is_active: (item.is_active as boolean) ?? true,
+    is_deleted: Boolean(item.is_deleted),
     preparation_time_minutes: (item.preparation_time_minutes as number) ?? undefined,
     packaging_charges:
       item.packaging_charges == null ? undefined : Number(item.packaging_charges as number),
@@ -905,7 +906,7 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
     visibilityFilter === "ALL"
       ? filteredByChangeRequest
       : filteredByChangeRequest.filter((item) => {
-          const deleted = Boolean((item as any).is_deleted);
+          const deleted = Boolean(item.is_deleted);
           return visibilityFilter === "LIVE" ? !deleted : deleted;
         });
 
@@ -1058,10 +1059,12 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
         variants: dedupeVariants(form.variants),
       };
       setEditOptionsRefs(deduped);
-      setEditForm(deduped);
-      const imageUrl =
-        deduped.item_image_url || itemCardImageUrl(item) || item.item_image_url || "";
-      setEditImagePreview(imageUrl ? withAttachmentCacheBust(imageUrl) : "");
+      const imageUrl = resolveAttachmentProxyUrl(
+        deduped.item_image_url || itemCardImageUrl(item) || item.item_image_url || ""
+      );
+      const previewUrl = imageUrl ? withAttachmentCacheBust(imageUrl) : "";
+      setEditForm({ ...deduped, item_image_url: imageUrl || deduped.item_image_url });
+      setEditImagePreview(previewUrl);
     },
     [setEditOptionsRefs, itemCardImageUrl]
   );
@@ -1086,28 +1089,33 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
         variants: dedupeVariants(form.variants),
       };
       setEditOptionsRefs(deduped);
-      const imageUrl = String(form.item_image_url ?? data.item_image_url ?? "").trim();
-      const cacheBustedImageUrl = imageUrl ? withAttachmentCacheBust(imageUrl, seq) : imageUrl;
+      const imageUrl = resolveAttachmentProxyUrl(
+        String(form.item_image_url ?? data.item_image_url ?? "").trim()
+      );
+      const cacheBustedImageUrl = imageUrl ? withAttachmentCacheBust(imageUrl, seq) : "";
       if (editModalItemIdRef.current === menuItemId) {
-        setEditForm(deduped);
-        setEditImagePreview(cacheBustedImageUrl || form.item_image_url || "");
+        setEditForm({ ...deduped, item_image_url: imageUrl || deduped.item_image_url });
+        setEditImagePreview(cacheBustedImageUrl || imageUrl);
       }
       if (seq !== editItemReloadSeqRef.current) {
         return deduped;
       }
       patchMenuItemInCache(menuItemId, {
         ...data,
-        item_image_url: cacheBustedImageUrl || data.item_image_url,
+        item_image_url: cacheBustedImageUrl || imageUrl || data.item_image_url,
         customizations: deduped.customizations,
         variants: deduped.variants,
         has_variants: deduped.has_variants,
         has_customizations: deduped.has_customizations,
         has_addons: deduped.has_addons,
       });
-      if (cacheBustedImageUrl) {
-        setCardImageByItemId((prev) => ({ ...prev, [menuItemId]: cacheBustedImageUrl }));
+      if (cacheBustedImageUrl || imageUrl) {
+        setCardImageByItemId((prev) => ({
+          ...prev,
+          [menuItemId]: cacheBustedImageUrl || imageUrl,
+        }));
       }
-      return deduped;
+      return { ...deduped, item_image_url: imageUrl || deduped.item_image_url };
     },
     [storeId, setEditOptionsRefs, patchMenuItemInCache]
   );
@@ -1130,6 +1138,7 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
     setEditError("");
     setEditImageFile(null);
     setEditImageValidationError("");
+    setEditImageValidating(false);
     editImagePendingFileRef.current = null;
     hydrateEditFormFromItem(latest);
     setShowEditModal(true);

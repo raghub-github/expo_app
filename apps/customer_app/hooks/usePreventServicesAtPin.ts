@@ -14,7 +14,7 @@ import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useLocationStore } from "@/store/locationStore";
 import { useDebouncedCoords } from "@/hooks/useDebouncedCoords";
-import { useAddresses } from "@/hooks/useAddresses";
+import { useAddresses, useActiveLocation } from "@/hooks/useAddresses";
 import { resolveMerchantListingCoords } from "@/lib/resolveMerchantListingCoords";
 import { checkPreventServices } from "@/services/preventServices.service";
 
@@ -44,6 +44,7 @@ export function usePreventServicesAtPin() {
   const locationSource = useLocationStore((s) => s.locationSource);
   const debouncedCoords = useDebouncedCoords(coords, 250);
   const { data: addresses = [] } = useAddresses();
+  const { data: activeLocation } = useActiveLocation();
 
   // Instant for saved/selected address; debounce only live GPS drift.
   const listingCoords =
@@ -55,8 +56,9 @@ export function usePreventServicesAtPin() {
         locationSource,
         listingCoords,
         addresses,
+        activeLocation,
       }),
-    [locationSource, listingCoords, addresses]
+    [locationSource, listingCoords, addresses, activeLocation]
   );
 
   const lat =

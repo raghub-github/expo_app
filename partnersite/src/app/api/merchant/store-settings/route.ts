@@ -240,9 +240,12 @@ export async function PATCH(req: NextRequest) {
 
     const self_delivery = typeof body.self_delivery === 'boolean' ? body.self_delivery : undefined;
     const platform_delivery = typeof body.platform_delivery === 'boolean' ? body.platform_delivery : undefined;
-    const delivery_radius_km = typeof body.delivery_radius_km === 'number' && !Number.isNaN(body.delivery_radius_km) && body.delivery_radius_km >= 0
-      ? body.delivery_radius_km
-      : undefined;
+    const delivery_radius_km = (() => {
+      const n = typeof body.delivery_radius_km === 'number'
+        ? body.delivery_radius_km
+        : Number(body.delivery_radius_km);
+      return Number.isFinite(n) && n > 0 && n <= 50 ? n : undefined;
+    })();
     const addressPayload = body?.address && typeof body.address === 'object' ? body.address : undefined;
     const order_notification_enabled =
       typeof body.order_notification_enabled === 'boolean' ? body.order_notification_enabled : undefined;

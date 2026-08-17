@@ -826,6 +826,96 @@ app.post<{ Body: { party?: string; action?: string; riderId?: number; storeId?: 
   },
 );
 
+app.post<{
+  Body: {
+    type?: string;
+    riderId?: number;
+    newState?: string;
+    amount?: number;
+    reason?: string | null;
+    orderId?: number | string | null;
+    penaltyId?: number | string | null;
+    paymentMethodId?: number | string | null;
+  };
+}>(
+  "/v1/internal/rider-account-notify",
+  async (req, reply) => {
+    const secret = process.env.BACKEND_SCHEDULE_TICK_SECRET;
+    if (!secret || (req.headers["x-internal-secret"] as string) !== secret) {
+      return reply.code(401).send({ error: "unauthorized" });
+    }
+    const body = (req.body ?? {}) as {
+      type?: string;
+      riderId?: number;
+      newState?: string;
+      amount?: number;
+      reason?: string | null;
+      orderId?: number | string | null;
+      penaltyId?: number | string | null;
+      paymentMethodId?: number | string | null;
+    };
+    const riderId = Number(body.riderId);
+    if (!Number.isInteger(riderId) || riderId < 1) {
+      return reply.code(400).send({ error: "riderId required" });
+    }
+    try {
+      const {
+        notifyRiderAccountStateChange,
+        notifyRiderPenaltyApplied,
+        notifyRiderBankRejected,
+        notifyRiderBankApproved,
+      } = await import("./lib/notify-rider-account.js");
+      if (body.type === "penalty") {
+        await notifyRiderPenaltyApplied({
+          riderId,
+          amount: Number(body.amount) || 0,
+          reason: typeof body.reason === "string" ? body.reason : null,
+          orderId: body.orderId ?? null,
+          penaltyId: body.penaltyId ?? null,
+        });
+        return reply.send({ ok: true });
+      }
+      if (body.type === "account_state") {
+        const newState =
+          body.newState === "REACTIVATED" || body.newState === "SUSPENDED"
+            ? body.newState
+            : "BLACKLISTED";
+        await notifyRiderAccountStateChange({
+          riderId,
+          newState,
+          reason: typeof body.reason === "string" ? body.reason : null,
+        });
+        return reply.send({ ok: true });
+      }
+      if (body.type === "bank_rejected") {
+        const reason = typeof body.reason === "string" ? body.reason.trim() : "";
+        if (reason.length < 3) {
+          return reply.code(400).send({ error: "reason required" });
+        }
+        await notifyRiderBankRejected({
+          riderId,
+          reason,
+          paymentMethodId: body.paymentMethodId ?? null,
+        });
+        return reply.send({ ok: true });
+      }
+      if (body.type === "bank_approved") {
+        await notifyRiderBankApproved({
+          riderId,
+          paymentMethodId: body.paymentMethodId ?? null,
+        });
+        return reply.send({ ok: true });
+      }
+      return reply.code(400).send({
+        error: "type must be penalty, account_state, bank_rejected, or bank_approved",
+      });
+    } catch (e) {
+      req.log.error({ err: e }, "rider_account_notify_failed");
+      return reply.code(500).send({ error: "notify_failed" });
+    }
+  },
+);
+
 app.post<{ Body: { storeId?: number; action?: string; reason?: string | null } }>(
   "/v1/internal/store-delist-notify",
   async (req, reply) => {

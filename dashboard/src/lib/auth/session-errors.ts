@@ -100,7 +100,12 @@ export async function signOutIfSessionDead(
 /** True when an API error code means the browser session is dead (hard logout). */
 export function isHardSessionDeathCode(code: string | undefined | null): boolean {
   const c = String(code ?? "").toUpperCase();
-  return c === "SESSION_INVALID" || c === "SESSION_EXPIRED";
+  return (
+    c === "SESSION_INVALID" ||
+    c === "SESSION_EXPIRED" ||
+    c === "SESSION_IDLE_EXPIRED" ||
+    c === "SESSION_ABSOLUTE_EXPIRED"
+  );
 }
 
 /** Transient auth/network failures — return 503, never logout. */

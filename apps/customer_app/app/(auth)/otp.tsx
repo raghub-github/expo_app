@@ -6,7 +6,20 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { AppText } from "@/components/AppText";
 
-import { View, TextInput, TouchableOpacity, ActivityIndicator, KeyboardAvoidingView, Platform, StyleSheet, ScrollView, Image } from "react-native";
+import {
+  View,
+  TextInput,
+  TouchableOpacity,
+  ActivityIndicator,
+  KeyboardAvoidingView,
+  Keyboard,
+  Platform,
+  StyleSheet,
+  ScrollView,
+  Image,
+  Pressable,
+  type KeyboardEvent,
+} from "react-native";
 import { startAndroidSmsOtpListener } from "@/lib/androidSmsOtpRetriever";
 import { LinearGradient } from "expo-linear-gradient";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -48,10 +61,14 @@ export default function OtpScreen() {
   const [error, setError] = useState("");
   const [logoError, setLogoError] = useState(false);
   const logoSource = useAppAssetSource(CX.auth.logo);
-  const [focusedIndex, setFocusedIndex] = useState<number | null>(null);
+  const [focusedIndex, setFocusedIndex] = useState<number | null>(0);
   const [resendSeconds, setResendSeconds] = useState(60);
   const [resending, setResending] = useState(false);
   const inputRef = useRef<TextInput>(null);
+  const inputFocusedRef = useRef(false);
+  const keyboardVisibleRef = useRef(false);
+  const otpRef = useRef(otp);
+  otpRef.current = otp;
   const digits = otp.split("").concat(Array(OTP_LENGTH).fill("")).slice(0, OTP_LENGTH);
 
   const timerActive = resendSeconds > 0;
@@ -63,12 +80,74 @@ export default function OtpScreen() {
     return () => clearInterval(id);
   }, [timerActive]);
 
+  /**
+   * Android often leaves the TextInput focused after the soft keyboard is
+   * dismissed (back gesture / down arrow). A later focus() is then a no-op
+   * so the keyboard never reopens. Sync by blurring when the keyboard hides.
+   */
+  useEffect(() => {
+    const showEvt = Platform.OS === "ios" ? "keyboardWillShow" : "keyboardDidShow";
+    const hideEvt = Platform.OS === "ios" ? "keyboardWillHide" : "keyboardDidHide";
+    const onShow = Keyboard.addListener(showEvt, (_e: KeyboardEvent) => {
+      keyboardVisibleRef.current = true;
+    });
+    const onHide = Keyboard.addListener(hideEvt, () => {
+      keyboardVisibleRef.current = false;
+      if (inputFocusedRef.current) {
+        inputRef.current?.blur();
+      }
+    });
+    return () => {
+      onShow.remove();
+      onHide.remove();
+    };
+  }, []);
+
+  const placeCaret = useCallback((index: number) => {
+    const input = inputRef.current;
+    if (!input) return;
+    const pos = Math.max(0, Math.min(index, otpRef.current.length, OTP_LENGTH));
+    input.setNativeProps({ selection: { start: pos, end: pos } });
+  }, []);
+
+  /** Focus the real OTP TextInput; recover from stuck-focused / keyboard-dismissed state. */
+  const focusOtpInput = useCallback(
+    (boxIndex: number) => {
+      if (loading) return;
+      const clamped = Math.max(0, Math.min(boxIndex, OTP_LENGTH - 1));
+      setFocusedIndex(clamped);
+
+      const input = inputRef.current;
+      if (!input) return;
+
+      const doFocus = () => {
+        input.focus();
+        placeCaret(Math.min(clamped, otpRef.current.length));
+      };
+
+      // Already focused but keyboard gone (or race before blur listener): blur→focus.
+      if (inputFocusedRef.current && !keyboardVisibleRef.current) {
+        input.blur();
+        requestAnimationFrame(() => {
+          requestAnimationFrame(doFocus);
+        });
+        return;
+      }
+
+      if (inputFocusedRef.current && keyboardVisibleRef.current) {
+        placeCaret(Math.min(clamped, otpRef.current.length));
+        return;
+      }
+
+      doFocus();
+    },
+    [loading, placeCaret]
+  );
+
   const goToLogin = () => router.replace("/(auth)/login");
 
   const setSession = useAuthStore((s) => s.setSession);
   const verifyInFlightRef = useRef(false);
-  const otpRef = useRef(otp);
-  otpRef.current = otp;
 
   const handleResend = async () => {
     if (resendSeconds > 0 || resending) return;
@@ -188,7 +267,8 @@ export default function OtpScreen() {
       </View>
       <ScrollView
         contentContainerStyle={styles.scrollContent}
-        keyboardShouldPersistTaps="handled"
+        keyboardShouldPersistTaps="always"
+        keyboardDismissMode="none"
         showsVerticalScrollIndicator={false}
       >
         <View style={styles.card}>
@@ -224,45 +304,62 @@ export default function OtpScreen() {
 
             <View style={styles.fieldWrap}>
               <AppText style={styles.label}>Enter 6-digit code</AppText>
-              <View style={styles.otpBoxesRow}>
+              <Pressable
+                style={styles.otpBoxesRow}
+                onPress={() =>
+                  focusOtpInput(otp.length < OTP_LENGTH ? otp.length : OTP_LENGTH - 1)
+                }
+                accessibilityLabel="OTP input"
+              >
                 {digits.map((d, i) => (
-                  <TouchableOpacity
+                  <Pressable
                     key={i}
                     style={[
                       styles.otpBox,
                       focusedIndex === i && styles.otpBoxFocused,
                       d !== "" && styles.otpBoxFilled,
                     ]}
-                    onPress={() => {
-                      inputRef.current?.focus();
-                      setFocusedIndex(i);
-                    }}
-                    activeOpacity={0.8}
+                    onPress={() => focusOtpInput(i)}
+                    accessibilityRole="button"
+                    accessibilityLabel={`OTP digit ${i + 1}`}
                   >
                     <AppText style={[styles.otpBoxDigit, d === "" && styles.otpBoxDigitPlaceholder]}>
                       {d || "0"}
                     </AppText>
-                  </TouchableOpacity>
+                  </Pressable>
                 ))}
                 <TextInput
                   ref={inputRef}
                   style={styles.otpInputHidden}
                   keyboardType="number-pad"
                   maxLength={OTP_LENGTH}
-                  // Hint OS/keyboard that this is a one-time code field, so SMS OTP can be auto-filled.
                   textContentType="oneTimeCode"
                   autoComplete="sms-otp"
+                  importantForAutofill="yes"
+                  showSoftInputOnFocus
+                  autoFocus
+                  caretHidden
                   value={otp}
                   onChangeText={(t) => {
                     const next = t.replace(/\D/g, "").slice(0, OTP_LENGTH);
                     setOtp(next);
                     setFocusedIndex(next.length < OTP_LENGTH ? next.length : OTP_LENGTH - 1);
                   }}
-                  onFocus={() => setFocusedIndex(otp.length < OTP_LENGTH ? otp.length : OTP_LENGTH - 1)}
-                  onBlur={() => setFocusedIndex(null)}
+                  onFocus={() => {
+                    inputFocusedRef.current = true;
+                    setFocusedIndex(otpRef.current.length < OTP_LENGTH ? otpRef.current.length : OTP_LENGTH - 1);
+                  }}
+                  onBlur={() => {
+                    inputFocusedRef.current = false;
+                    // Keep ring only while keyboard is up; hide after dismiss/blur.
+                    if (!keyboardVisibleRef.current) {
+                      setFocusedIndex(null);
+                    }
+                  }}
                   editable={!loading}
+                  contextMenuHidden
                 />
-              </View>
+              </Pressable>
               {error ? <AppText style={styles.errorText}>{error}</AppText> : null}
               <View style={styles.helperRow}>
                 <TouchableOpacity
@@ -447,6 +544,16 @@ const styles = StyleSheet.create({
     gap: 10,
     position: "relative",
   },
+  otpInputHidden: {
+    ...StyleSheet.absoluteFillObject,
+    // Non-zero layout + tiny opacity so Android will attach the soft keyboard.
+    opacity: 0.02,
+    color: "transparent",
+    fontSize: 16,
+    zIndex: 0,
+    padding: 0,
+    margin: 0,
+  },
   otpBox: {
     flex: 1,
     aspectRatio: 1,
@@ -458,6 +565,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     minHeight: 52,
+    zIndex: 1,
   },
   otpBoxFocused: {
     borderColor: MINT_MED,
@@ -479,13 +587,6 @@ const styles = StyleSheet.create({
   otpBoxDigitPlaceholder: {
     color: PLACEHOLDER_GRAY,
     fontWeight: "500",
-  },
-  otpInputHidden: {
-    position: "absolute",
-    opacity: 0,
-    width: 1,
-    height: 1,
-    padding: 0,
   },
   errorText: {
     fontSize: 14,

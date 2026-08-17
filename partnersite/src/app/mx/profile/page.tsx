@@ -92,6 +92,7 @@ import {
   normalizeProfileStore,
   readCachedMerchantProfile,
   writeCachedMerchantProfile,
+  formatDeliveryRadiusKm,
 } from "@/lib/merchant-profile-cache";
 
 function readProfileCacheForStore(storeId: string | null) {
@@ -1204,7 +1205,7 @@ export default function ProfilePage() {
                           <div className="text-[10px] text-gray-500">Prep Time</div>
                         </div>
                         <div className="text-center px-2 py-1 bg-white rounded-lg border border-gray-200 min-w-[70px]">
-                          <div className="text-xs font-bold text-gray-900">{store?.delivery_radius_km ?? '—'}</div>
+                          <div className="text-xs font-bold text-gray-900">{formatDeliveryRadiusKm(store?.delivery_radius_km)}</div>
                           <div className="text-[10px] text-gray-500">Delivery Radius</div>
                         </div>
                         <div className="text-center px-2 py-1 bg-white rounded-lg border border-gray-200 min-w-[100px]">

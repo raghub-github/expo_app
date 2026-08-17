@@ -426,6 +426,35 @@ export default function OrderDetailScreen() {
     if (!active) {
       const isTerminal = stage === "rejected" || stage === "rto";
       if (isTerminal) return null;
+      const deliveredRider =
+        stage === "delivered"
+          ? displayRider ??
+            ridersLog.find(
+              (r) =>
+                (r.delivered_at != null ||
+                  String(r.assignment_status ?? "").toUpperCase() === "DELIVERED") &&
+                !isInactiveRiderAssignment(r.assignment_status, r.cancelled_at, r.rejected_at)
+            ) ??
+            null
+          : null;
+      if (deliveredRider) {
+        return {
+          ...withBoard,
+          riderId: deliveredRider.rider_id || withBoard.riderId,
+          riderName: (deliveredRider.rider_name ?? "").trim() || withBoard.riderName,
+          riderMobile: (deliveredRider.rider_mobile ?? "").trim() || withBoard.riderMobile,
+          riderSelfieUrl: deliveredRider.selfie_url ?? withBoard.riderSelfieUrl,
+          riderAssignmentStatus:
+            deliveredRider.assignment_status || withBoard.riderAssignmentStatus,
+          riderReachedAt:
+            deliveredRider.reached_merchant_at ??
+            displayRiderReachedAt ??
+            withBoard.riderReachedAt,
+          reachedMerchantAt:
+            deliveredRider.reached_merchant_at ?? withBoard.reachedMerchantAt,
+          riderPickedUpAt: deliveredRider.picked_up_at ?? withBoard.riderPickedUpAt,
+        };
+      }
       return orderHasAssignedRider(withBoard) ? withBoard : null;
     }
     return {
@@ -446,6 +475,7 @@ export default function OrderDetailScreen() {
     displayRiderReachedAt,
     order,
     ordersFoodId,
+    ridersLog,
     selectedStore?.id,
     selectedStore?.store_name,
     stage,

@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { StyleSheet, View } from "react-native";
+import { LinearGradient } from "expo-linear-gradient";
 import Animated, {
   Extrapolation,
   interpolate,
@@ -11,8 +12,8 @@ import Animated, {
 } from "react-native-reanimated";
 import { FoodHomeGridFirstHeader } from "@/components/home/FoodHomeGridFirstHeader";
 import {
-  GRID_FIRST_FILTER_SHOW_SCROLL_Y,
   GRID_FIRST_STICK_HANDOFF_PX,
+  GRID_FIRST_STICKY_SEARCH_CATEGORY_GAP,
   gridFirstStickyCategoryTop,
   gridFirstStickyFilterTop,
   gridFirstStickySearchTop,
@@ -64,8 +65,7 @@ export function FoodHomeGridFirstStickyChrome({
     () => scrollY.value >= searchStickAt.value - STICK_FADE_PX,
     (on, prev) => {
       if (on !== prev) runOnJS(setSearchStickyOn)(on);
-    },
-    [searchStickAt]
+    }
   );
 
   useAnimatedReaction(
@@ -76,12 +76,13 @@ export function FoodHomeGridFirstStickyChrome({
     (on, prev) => {
       if (on !== prev) runOnJS(setCategoryStickyOn)(on);
     },
-    [categoryStickAt, enableCategorySticky]
+    [enableCategorySticky]
   );
 
+  const hasFilters = Boolean(filters);
   useAnimatedReaction(
     () => {
-      if (!enableFilterSticky || !filters) return false;
+      if (!enableFilterSticky || !hasFilters) return false;
       const y = scrollY.value;
       const showAt = categoryStickAt.value - STICK_FADE_PX;
       const handoffAt = filterStickAt.value + GRID_FIRST_STICK_HANDOFF_PX;
@@ -90,7 +91,7 @@ export function FoodHomeGridFirstStickyChrome({
     (on, prev) => {
       if (on !== prev) runOnJS(setFilterStickyOn)(on);
     },
-    [categoryStickAt, filterStickAt, enableFilterSticky, filters]
+    [enableFilterSticky, hasFilters]
   );
 
   const chromeActive = searchStickyOn || categoryStickyOn || filterStickyOn;
@@ -116,10 +117,6 @@ export function FoodHomeGridFirstStickyChrome({
       Extrapolation.CLAMP
     );
     const on = progress > 0.01;
-    const categoryOn =
-      enableCategorySticky &&
-      categoryStickAt.value > 1 &&
-      y >= categoryStickAt.value - STICK_FADE_PX;
     return {
       opacity: progress,
       backgroundColor: interpolateColor(
@@ -127,8 +124,8 @@ export function FoodHomeGridFirstStickyChrome({
         [0, 1],
         ["rgba(255,255,255,0)", "rgba(255,255,255,1)"]
       ),
-      elevation: on && !categoryOn ? 10 : 0,
-      shadowOpacity: on && !categoryOn ? 0.08 : 0,
+      elevation: 0,
+      shadowOpacity: 0,
       borderBottomWidth: 0,
       transform: [
         {
@@ -163,13 +160,6 @@ export function FoodHomeGridFirstStickyChrome({
       Extrapolation.CLAMP
     );
     const on = progress > 0.01;
-    const searchOn = y >= searchStickAt.value - STICK_FADE_PX;
-    const filterOverlayOn =
-      enableFilterSticky &&
-      !!filters &&
-      y >= stickAt - STICK_FADE_PX &&
-      y < filterStickAt.value + GRID_FIRST_STICK_HANDOFF_PX;
-    const showBottomChrome = on && !filterOverlayOn;
     return {
       opacity: progress,
       backgroundColor: interpolateColor(
@@ -177,8 +167,8 @@ export function FoodHomeGridFirstStickyChrome({
         [0, 1],
         ["rgba(255,255,255,0)", "rgba(255,255,255,1)"]
       ),
-      elevation: showBottomChrome ? 6 : 0,
-      shadowOpacity: showBottomChrome && !searchOn ? 0.04 : 0,
+      elevation: 0,
+      shadowOpacity: 0,
       borderBottomWidth: 0,
       transform: [
         {
@@ -254,7 +244,8 @@ export function FoodHomeGridFirstStickyChrome({
         [0, 1],
         ["rgba(255,255,255,0)", "rgba(255,255,255,1)"]
       ),
-      elevation: on ? 5 : 0,
+      elevation: 0,
+      shadowOpacity: 0,
       transform: [
         {
           translateY: interpolate(progress, [0, 1], [-8, 0], Extrapolation.CLAMP),
@@ -273,7 +264,7 @@ export function FoodHomeGridFirstStickyChrome({
         <View
           style={[
             styles.searchInner,
-            { paddingTop: searchTop, paddingBottom: categoryStickyOn ? 0 : 6 },
+            { paddingTop: searchTop, paddingBottom: GRID_FIRST_STICKY_SEARCH_CATEGORY_GAP },
           ]}
           pointerEvents="box-none"
         >
@@ -296,6 +287,13 @@ export function FoodHomeGridFirstStickyChrome({
           <View style={styles.categoryInner} pointerEvents="box-none">
             {categories}
           </View>
+          {categoryStickyOn && !filterStickyOn ? (
+            <LinearGradient
+              pointerEvents="none"
+              colors={["rgba(15, 23, 42, 0.14)", "rgba(15, 23, 42, 0.05)", "transparent"]}
+              style={styles.categoryBottomShadow}
+            />
+          ) : null}
         </Animated.View>
       ) : null}
 
@@ -307,6 +305,13 @@ export function FoodHomeGridFirstStickyChrome({
           <View style={styles.filterInner} pointerEvents="box-none">
             {filters}
           </View>
+          {filterStickyOn ? (
+            <LinearGradient
+              pointerEvents="none"
+              colors={["rgba(15, 23, 42, 0.14)", "rgba(15, 23, 42, 0.05)", "transparent"]}
+              style={styles.categoryBottomShadow}
+            />
+          ) : null}
         </Animated.View>
       ) : null}
     </View>
@@ -323,36 +328,33 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     backgroundColor: "transparent",
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 2 },
-    shadowRadius: 8,
   },
   searchInner: {
-    paddingBottom: 6,
+    paddingBottom: GRID_FIRST_STICKY_SEARCH_CATEGORY_GAP,
   },
   categoryLayer: {
     position: "absolute",
     left: 0,
     right: 0,
     backgroundColor: "transparent",
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 1 },
-    shadowRadius: 4,
+    overflow: "visible",
   },
   categoryInner: {
-    paddingBottom: 6,
+    paddingBottom: 4,
+  },
+  categoryBottomShadow: {
+    position: "absolute",
+    left: 0,
+    right: 0,
+    bottom: -12,
+    height: 12,
   },
   filterLayer: {
     position: "absolute",
     left: 0,
     right: 0,
     backgroundColor: "transparent",
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: "rgba(0, 0, 0, 0.06)",
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.05,
-    shadowRadius: 4,
+    overflow: "visible",
   },
   filterInner: {
     paddingHorizontal: 16,

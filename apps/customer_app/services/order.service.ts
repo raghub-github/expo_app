@@ -72,7 +72,7 @@ export type OrderDetail = OrderSummary & {
   /** Numeric orders_core.id — required for order-linked support tickets. */
   coreOrderId?: number | null;
   billingSnapshot?: Record<string, unknown> | null;
-  statusHistory?: { status: string; at: string }[];
+  statusHistory?: { status: string; at: string; label?: string }[];
   /** Minutes the restaurant committed at accept. */
   prepTimeMinutes?: number | null;
   /** ISO timestamp when food should be ready (merchant accept). */

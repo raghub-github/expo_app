@@ -75,7 +75,7 @@ function isDutyBlockedByServerError(error: unknown): boolean {
   if (!(error instanceof HttpError)) return false;
   if (error.status !== 403) return false;
   const haystack = `${error.message}\n${error.body ?? ""}`;
-  return /SUBSCRIPTION_DUTY_STOPPED|ALL_SERVICES_BLOCKED|subscription penalty|Clear dues|all requested services are restricted/i.test(
+  return /SUBSCRIPTION_DUTY_STOPPED|WALLET_PENALTY_DUTY_STOPPED|ALL_SERVICES_BLOCKED|subscription penalty|wallet penalty|Clear dues|all requested services are restricted/i.test(
     haystack
   );
 }
@@ -114,9 +114,19 @@ export function useDutyToggle() {
   const subscriptionDutyBlocked =
     subscriptionStatus?.dues?.dispatchBlocked === true ||
     subscriptionStatus?.dues?.alertBanner?.variant === "restricted";
+  const subscriptionAlertVisible =
+    subscriptionStatus?.dues?.alertBanner?.visible === true;
+  const walletBalance = Number(earnings?.totalBalance ?? 0);
+  // Match PenaltyBanner: claim "duty stopped" only when we actually block go-ON.
+  // While a subscription warning banner is up (day 1–2), duty may stay ON — do not
+  // also treat a negative wallet as a hard stop (that was the ON-DUTY + yellow mismatch).
+  const walletPenaltyBlocksDuty =
+    restrictions?.penaltyDutyStopped === true ||
+    (walletBalance < 0 && !subscriptionAlertVisible);
 
   /** Client-side hard lock — never call PUT /duty ON while true. */
-  const dutyGoOnBlocked = accountFullyBlocked || subscriptionDutyBlocked;
+  const dutyGoOnBlocked =
+    accountFullyBlocked || subscriptionDutyBlocked || walletPenaltyBlocksDuty;
 
   const updateDutyMutation = useMutation({
     mutationFn: async ({

@@ -4,53 +4,36 @@ import { useEffect, useState } from 'react';
 import {
   fetchRidersLogCached,
   getCachedRidersLog,
-  isInactiveRiderLogEntry,
-  prefetchRidersLog,
+  isEligibleForOldRidersLog,
 } from '@/lib/ridersLogCache';
 
 /**
- * True when an order had a prior rider assignment (re-assign / cancelled / unassigned).
+ * True when an order had a prior rider assignment (re-assign / cancelled / unassigned)
+ * or multiple distinct riders — not for a single live assignee alone.
  * Prefetches riders-log into cache so the sidesheet can open instantly.
  */
 export function usePastRidersEligibility(
   foodOrderId: number | null | undefined,
   enabled = true
 ): boolean {
-  const cached = foodOrderId != null ? getCachedRidersLog(foodOrderId) : undefined;
-  const [eligible, setEligible] = useState(() => {
-    if (!cached) return false;
-    const distinct = Number(cached.summary?.distinct_riders ?? 0);
-    const total = Number(cached.summary?.total_assignments ?? cached.riders.length);
-    const hasPast = cached.riders.some(isInactiveRiderLogEntry);
-    return hasPast || distinct > 1 || total > 1;
-  });
+  const [eligible, setEligible] = useState(false);
 
   useEffect(() => {
-    if (!enabled || foodOrderId == null || !Number.isFinite(foodOrderId)) {
+    if (!enabled || foodOrderId == null || !Number.isFinite(foodOrderId) || foodOrderId <= 0) {
       setEligible(false);
       return;
     }
 
     let cancelled = false;
 
+    // Reset immediately so a previous order's "true" never flashes on a new order.
     const hit = getCachedRidersLog(foodOrderId);
-    if (hit) {
-      const distinct = Number(hit.summary?.distinct_riders ?? 0);
-      const total = Number(hit.summary?.total_assignments ?? hit.riders.length);
-      const hasPast = hit.riders.some(isInactiveRiderLogEntry);
-      setEligible(hasPast || distinct > 1 || total > 1);
-      // Soft refresh in background
-      prefetchRidersLog(foodOrderId);
-      return;
-    }
+    setEligible(isEligibleForOldRidersLog(hit));
 
     (async () => {
-      const data = await fetchRidersLogCached(foodOrderId);
+      const data = await fetchRidersLogCached(foodOrderId, { force: Boolean(hit) });
       if (cancelled) return;
-      const distinct = Number(data.summary?.distinct_riders ?? 0);
-      const total = Number(data.summary?.total_assignments ?? data.riders.length);
-      const hasPast = data.riders.some(isInactiveRiderLogEntry);
-      setEligible(hasPast || distinct > 1 || total > 1);
+      setEligible(isEligibleForOldRidersLog(data));
     })();
 
     return () => {

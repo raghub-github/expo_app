@@ -44,6 +44,7 @@ import {
   resolveOrderSupportAnchorAt,
 } from "@/lib/order-support-ticket-window";
 import type { FraudReportTargetType } from "@/services/customerSupport.service";
+import { resolveTopSafeInset } from "@/constants/layout";
 
 const GREEN = "#22C55E";
 const PAGE_BG = "#F5F5F5";
@@ -144,6 +145,7 @@ export default function OrderRaiseTicketScreen() {
     coreOrderId?: string | string[];
     chat?: string | string[];
     ticketDisplayId?: string | string[];
+    ticketId?: string | string[];
   }>();
 
   const orderIdParam = paramOne(params.orderId)?.trim() ?? "";
@@ -157,6 +159,7 @@ export default function OrderRaiseTicketScreen() {
 
   const chatParam = paramOne(params.chat) === "1";
   const pendingTicketDisplayId = paramOne(params.ticketDisplayId)?.trim() ?? null;
+  const pendingTicketId = paramOne(params.ticketId)?.trim() ?? null;
 
   const [step, setStep] = useState<Step>(() => (chatParam ? "chat" : "hub"));
   const [chatBootstrapped, setChatBootstrapped] = useState(chatParam);
@@ -859,6 +862,7 @@ export default function OrderRaiseTicketScreen() {
           isRideOrder={isRideOrder}
           ticketWindowOpen={ticketWindowOpen}
           pendingTicketDisplayId={pendingTicketDisplayId}
+          pendingTicketId={pendingTicketId}
           onEndChat={() => router.back()}
           onSwitchOrder={handleSwitchSupportOrder}
         />
@@ -924,7 +928,7 @@ export default function OrderRaiseTicketScreen() {
           <LinearGradient
             colors={[HERO_TOP, HERO_BOTTOM, PAGE_BG]}
             locations={[0, 0.28, 0.52]}
-            style={[styles.hero, { paddingTop: insets.top }]}
+            style={[styles.hero, { paddingTop: resolveTopSafeInset(insets.top) + 6 }]}
           >
             <TouchableOpacity onPress={handleBack} style={styles.heroBack} hitSlop={12}>
               <Ionicons name="arrow-back" size={22} color={TEXT} />
@@ -945,7 +949,7 @@ export default function OrderRaiseTicketScreen() {
             </View>
           </LinearGradient>
         ) : (
-          <View style={[styles.header, { paddingTop: Math.max(insets.top - 8, 0) }]}>
+          <View style={[styles.header, { paddingTop: resolveTopSafeInset(insets.top) + 6 }]}>
             <TouchableOpacity onPress={handleBack} style={styles.headerSide} hitSlop={12}>
               <Ionicons name="arrow-back" size={22} color={TEXT} />
             </TouchableOpacity>
@@ -1050,18 +1054,20 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     paddingHorizontal: 12,
-    paddingBottom: 10,
+    paddingBottom: 12,
+    minHeight: 48,
     backgroundColor: CARD,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: BORDER,
   },
-  headerSide: { width: 40, alignItems: "flex-start" },
+  headerSide: { width: 40, height: 40, alignItems: "flex-start", justifyContent: "center" },
   headerTitle: {
     flex: 1,
     textAlign: "center",
     fontSize: 17,
     fontWeight: "700",
     color: TEXT,
+    lineHeight: 22,
   },
   centered: {
     flex: 1,

@@ -30,6 +30,7 @@ import { colors } from "@/src/theme";
 import {
   useCreateRiderBankPaymentMethod,
   useRiderBankPaymentMethod,
+  useRiderBankAddGate,
 } from "@/src/hooks/useRiderBankAccount";
 import {
   useVerificationModes,
@@ -44,6 +45,8 @@ import {
 } from "@/src/components/onboarding/OnboardingFormUi";
 import { notifyOnboardingToast } from "@/src/lib/rider-onboarding-toast";
 import type { EvState } from "@/src/components/onboarding/ElectronicVerifyCard";
+import { useUnlockCountdown } from "@/src/hooks/useUnlockCountdown";
+import { useBankAccountDuplicateCheck } from "@/src/hooks/useBankAccountDuplicateCheck";
 
 const ACCENT_DARK = "#22a745";
 const BG = "#f4fbf6";
@@ -66,6 +69,9 @@ export default function BankAccountOnboardingScreen() {
   const createBank = useCreateRiderBankPaymentMethod();
   const bankQuery = useRiderBankPaymentMethod();
   const existingBank = bankQuery.data;
+  const { data: addGate } = useRiderBankAddGate();
+  const countdown = useUnlockCountdown(addGate?.unlockAt);
+  const addLocked = Boolean(addGate?.locked && countdown.locked);
   const { data: modesData } = useVerificationModes();
   const verifyDocument = useVerifyDocument();
 
@@ -93,6 +99,7 @@ export default function BankAccountOnboardingScreen() {
 
   useEffect(() => {
     if (!existingBank) return;
+    if (existingBank.verificationStatus === "rejected") return;
     if (data.bankAccountOnboardingDone) return;
     void setData({ bankAccountOnboardingDone: true });
   }, [existingBank, data.bankAccountOnboardingDone, setData]);
@@ -118,13 +125,37 @@ export default function BankAccountOnboardingScreen() {
   const accountMismatch =
     confirmAccountNumber.length > 0 && confirmAccountNumber !== accountNumber;
 
-  const canVerify = accountOk && ifscOk && Boolean(data.riderId);
+  const alreadyLinked =
+    existingBank?.verificationStatus === "verified" ||
+    existingBank?.verificationStatus === "pending";
+  const rejectedExisting =
+    existingBank?.verificationStatus === "rejected" ? existingBank : null;
+
+  const dupCheck = useBankAccountDuplicateCheck(accountNumber, accountOk && !alreadyLinked);
+
+  useEffect(() => {
+    if (!dupCheck.duplicate) return;
+    setBankEv({ phase: "idle" });
+    if (bankElectronic) setShowFallbackForm(false);
+    if (dupCheck.message) setError(dupCheck.message);
+  }, [dupCheck.duplicate, dupCheck.message, bankElectronic]);
+
+  const canVerify =
+    accountOk &&
+    ifscOk &&
+    Boolean(data.riderId) &&
+    !dupCheck.duplicate &&
+    !dupCheck.checking &&
+    !addLocked;
   const canFallbackSubmit =
     aadhaarName.length >= 2 &&
     accountOk &&
     ifscOk &&
     confirmAccountNumber === accountNumber &&
-    (bankName.trim().length >= 1 || bankEv.phase === "verified");
+    (bankName.trim().length >= 1 || bankEv.phase === "verified") &&
+    !dupCheck.duplicate &&
+    !dupCheck.checking &&
+    !addLocked;
 
   const handleBack = () => {
     if (data.vehicleOnboardingFlow === "rental_ev") {
@@ -159,6 +190,12 @@ export default function BankAccountOnboardingScreen() {
     setSubmitting(true);
     setError(null);
     try {
+      if (addLocked) {
+        const msg = `Locked due to security reasons. Try after ${countdown.label ?? "—"}.`;
+        setError(msg);
+        notifyOnboardingToast(msg);
+        return;
+      }
       const details =
         bankEv.phase === "verified" ? bankEv.details : ({} as Record<string, unknown>);
       const resolvedBankName =
@@ -239,7 +276,6 @@ export default function BankAccountOnboardingScreen() {
     }
   };
 
-  const alreadyLinked = Boolean(existingBank);
   const verifiedDetails =
     bankEv.phase === "verified" ? bankEv.details : null;
 
@@ -299,6 +335,20 @@ export default function BankAccountOnboardingScreen() {
             <View style={styles.body}>
               {error ? <ErrorBanner message={error} /> : null}
 
+              {rejectedExisting && !addLocked ? (
+                <Text style={styles.warnText}>
+                  {rejectedExisting.rejectionReason
+                    ? `Previous account rejected: ${rejectedExisting.rejectionReason}`
+                    : "Previous bank account was rejected. Add a valid account to continue."}
+                </Text>
+              ) : null}
+
+              {addLocked ? (
+                <Text style={styles.warnText}>
+                  Locked due to security reasons. Try after {countdown.label ?? "—"}.
+                </Text>
+              ) : null}
+
               {alreadyLinked ? (
                 <View style={styles.linkedCard}>
                   <Ionicons name="shield-checkmark" size={20} color="#059669" />
@@ -342,7 +392,6 @@ export default function BankAccountOnboardingScreen() {
                         placeholderTextColor={colors.gray[400]}
                         keyboardType="number-pad"
                         maxLength={18}
-                        secureTextEntry
                         editable={bankEv.phase !== "verifying"}
                       />
                     </View>
@@ -452,7 +501,6 @@ export default function BankAccountOnboardingScreen() {
                             placeholderTextColor={colors.gray[400]}
                             keyboardType="number-pad"
                             maxLength={18}
-                            secureTextEntry
                           />
                         </View>
                         {accountMismatch ? (
@@ -488,15 +536,23 @@ export default function BankAccountOnboardingScreen() {
                 label={
                   alreadyLinked || data.bankAccountOnboardingDone
                     ? "Continue to payment"
-                    : bankEv.phase === "verified"
-                      ? "Continue"
-                      : showFallbackForm || !bankElectronic
-                        ? "Save & continue"
-                        : "Verify & continue"
+                    : addLocked
+                      ? `Try after ${countdown.label ?? "—"}`
+                      : bankEv.phase === "verified"
+                        ? "Continue"
+                        : showFallbackForm || !bankElectronic
+                          ? "Save & continue"
+                          : "Verify & continue"
                 }
                 onPress={() => {
                   if (alreadyLinked || data.bankAccountOnboardingDone) {
                     void goToPayment();
+                    return;
+                  }
+                  if (addLocked) {
+                    const msg = `Locked due to security reasons. Try after ${countdown.label ?? "—"}.`;
+                    setError(msg);
+                    notifyOnboardingToast(msg);
                     return;
                   }
                   if (bankEv.phase === "verified") {
@@ -522,13 +578,15 @@ export default function BankAccountOnboardingScreen() {
                   createBank.isPending ||
                   !vehicleReady ||
                   bankEv.phase === "verifying" ||
-                  (alreadyLinked
+                  (alreadyLinked || data.bankAccountOnboardingDone
                     ? false
-                    : bankEv.phase === "verified"
-                      ? false
-                      : showFallbackForm || !bankElectronic
-                        ? !canFallbackSubmit
-                        : !canVerify)
+                    : addLocked
+                      ? true
+                      : bankEv.phase === "verified"
+                        ? false
+                        : showFallbackForm || !bankElectronic
+                          ? !canFallbackSubmit
+                          : !canVerify)
                 }
                 loading={submitting || createBank.isPending || bankQuery.isLoading}
               />

@@ -281,8 +281,14 @@ export function merchantBillPartsFromItems(
   const frozen = Number(pricing.total);
   const total =
     Number.isFinite(frozen) && frozen > 0 ? menuRupee(frozen) : computed;
+  const fromLines = menuRupee(itemsLineTotal);
+  const reconstructed = menuRupee(Math.max(0, fromLines + packaging - discount));
+  const itemsSubtotal =
+    frozen > 0 && Math.abs(reconstructed - total) > 0.5
+      ? menuRupee(Math.max(0, total - packaging + discount))
+      : fromLines;
   return {
-    itemsSubtotal: menuRupee(itemsLineTotal),
+    itemsSubtotal,
     itemBaseTotal: menuRupee(baseSubtotal),
     customizationsTotal: menuRupee(customizationsTotal),
     showCustomizations: customizationsTotal > 0.005,
@@ -292,7 +298,7 @@ export function merchantBillPartsFromItems(
   };
 }
 
-/** Single merchant-visible order total (CTM) — prefer frozen pricing.total from accept. */
+/** Single merchant-visible order total (CTM) — prefer frozen orders_core.total_ctm, then pricing.total. */
 export function resolveMerchantCtm(order: {
   pricing?: { total?: number | null; packaging?: number; discount?: number } | null;
   total_ctm?: number | string | null;
@@ -300,11 +306,11 @@ export function resolveMerchantCtm(order: {
   merchant_precision_discount?: number | string | null;
   items?: NormalizedOrderLineItem[] | null;
 }): number {
-  const fromPricing = Number(order.pricing?.total);
-  if (Number.isFinite(fromPricing) && fromPricing > 0) return round2(fromPricing);
-
   const fromFrozen = Number(order.total_ctm);
   if (Number.isFinite(fromFrozen) && fromFrozen > 0) return round2(fromFrozen);
+
+  const fromPricing = Number(order.pricing?.total);
+  if (Number.isFinite(fromPricing) && fromPricing > 0) return round2(fromPricing);
 
   const items = order.items ?? [];
   if (items.length > 0) {

@@ -23,6 +23,7 @@ import {
   fetchVariantsForMenuItem,
 } from "@/lib/menu-item-detail-sql";
 import { mapAddonsFromApiRows } from "@/lib/map-menu-item-options";
+import { resolveAttachmentProxyUrl } from "@/lib/attachments/resolve-attachment-proxy-url";
 
 export const runtime = "nodejs";
 
@@ -236,6 +237,10 @@ export async function GET(
       success: true,
       item: {
         ...(item as any),
+        item_image_url:
+          resolveAttachmentProxyUrl((item as any).item_image_url) ||
+          (item as any).item_image_url ||
+          null,
         available_for_delivery:
           (item as any).available_for_delivery ?? attrAvailableForDelivery ?? true,
         weight_per_serving:
@@ -267,7 +272,11 @@ export async function GET(
           variant_price: v.variant_price,
         })),
         customizations: customizationsWithOptions,
-        images: imagesRows,
+        images: (imagesRows as Array<Record<string, unknown>>).map((img) => ({
+          ...img,
+          image_url:
+            resolveAttachmentProxyUrl(img.image_url) || img.image_url || null,
+        })),
         linked_modifier_groups,
       },
     });
