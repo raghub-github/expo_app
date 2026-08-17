@@ -24,9 +24,17 @@ import {
   shouldHighlightDropZone,
   shouldHighlightPickupZone,
 } from "@/lib/food-delivery-map-phase";
+import { useDashboardRiderLocation } from "@/hooks/useDashboardRiderLocation";
 
 interface RiderRouteMapProps {
   orderId: number;
+  /**
+   * Business order id for ws-gateway `order:{id}` (e.g. GMF100001).
+   * Same channel the rider/merchant/customer apps subscribe to.
+   */
+  orderIdText?: string | null;
+  /** Extra channel ids published by backend (raw order_id + formatted). */
+  orderChannelIds?: Array<string | null | undefined>;
   riderId?: number | null;
   riderName?: string | null;
   storeName?: string | null;
@@ -72,11 +80,12 @@ type RouteEndpoints = {
 };
 
 /**
- * Rider app writes live location every ~3–5s.
+ * Rider app writes live location every ~3–5s via /v1/rider/location/ping →
+ * Redis `rider.location.updated.v1` → ws-gateway. HTTP poll is fallback only.
  * Poll after the previous request finishes + this delay — never overlap.
- * (setInterval @ 2s while each GET took 2–9s flooded the dev server and crashed Node.)
  */
 const POLL_MS = 5_000;
+const POLL_MS_WHEN_WS = 45_000;
 const ROUTE_SOURCE_ID = "active-route";
 const ROUTE_CASING_LAYER_ID = "active-route-casing";
 const ROUTE_LAYER_ID = "active-route-line";
@@ -554,6 +563,8 @@ function createLocationMarkerElement(config: {
 
 export default function RiderRouteMap({
   orderId,
+  orderIdText = null,
+  orderChannelIds,
   riderId,
   riderName,
   storeName,
@@ -582,6 +593,41 @@ export default function RiderRouteMap({
   alwaysShowDropMarker = false,
   pickupPinStyle = "building",
 }: RiderRouteMapProps) {
+  const resolvedOrderIdText = useMemo(() => {
+    const fromProp = String(orderIdText ?? "").trim();
+    if (fromProp) return fromProp.toUpperCase();
+    if (orderId != null && Number.isFinite(orderId) && orderId > 0) {
+      return `GMF${String(orderId).padStart(6, "0")}`;
+    }
+    return null;
+  }, [orderIdText, orderId]);
+
+  const isTerminalOrder = useMemo(() => {
+    return [orderStatus, coreStatus, foodOrderStatus]
+      .map((s) => String(s ?? "").toUpperCase())
+      .some((s) =>
+        ["DELIVERED", "CANCELLED", "FAILED", "REJECTED", "COMPLETED"].includes(s)
+      );
+  }, [orderStatus, coreStatus, foodOrderStatus]);
+
+  const hasRiderAssignmentEarly =
+    riderId != null && Number.isFinite(Number(riderId)) && Number(riderId) > 0;
+
+  const stableChannelIds = useMemo(() => {
+    const ids = [
+      resolvedOrderIdText,
+      ...(orderChannelIds ?? []),
+    ]
+      .map((id) => String(id ?? "").trim().toUpperCase())
+      .filter((id) => /^[A-Z0-9-]{4,32}$/.test(id));
+    return Array.from(new Set(ids));
+  }, [resolvedOrderIdText, orderChannelIds?.join("|")]);
+
+  const { liveFix, wsConnected } = useDashboardRiderLocation({
+    orderIdText: resolvedOrderIdText,
+    channelOrderIds: stableChannelIds,
+    enabled: Boolean(hasRiderAssignmentEarly && !isTerminalOrder),
+  });
   const storePoint = useMemo(
     () =>
       resolveStoreMapLngLat({
@@ -1198,49 +1244,155 @@ export default function RiderRouteMap({
       const res = await fetch(`/api/orders/${orderId}/rider-tracking`, { cache: "no-store" });
       if (!res.ok) return;
       const json = (await res.json()) as OrderRiderTrackingPayload;
-      setTracking(json);
 
-      const loc = json.location;
-      if (!loc) {
+      setTracking((prev) => {
+        const pollLoc = json.location;
+        const curLoc = prev?.location;
+        if (pollLoc && curLoc) {
+          const pollMs = Date.parse(pollLoc.updated_at);
+          const curMs = Date.parse(curLoc.updated_at);
+          if (
+            Number.isFinite(pollMs) &&
+            Number.isFinite(curMs) &&
+            curMs > pollMs &&
+            curLoc.source === "live_location"
+          ) {
+            return {
+              ...json,
+              location: curLoc,
+              trail:
+                (json.trail?.length ?? 0) >= (prev?.trail?.length ?? 0)
+                  ? json.trail
+                  : (prev?.trail ?? json.trail),
+            };
+          }
+        }
+        if (!pollLoc && curLoc?.source === "live_location") {
+          return { ...json, location: curLoc, trail: prev?.trail?.length ? prev.trail : json.trail };
+        }
+        return json;
+      });
+
+      const mergedLoc = json.location ?? trackingRef.current?.location ?? null;
+      if (!mergedLoc) {
         setMovementLabel(riderId ? "Awaiting GPS" : "Rider not assigned");
-        prevRiderPosRef.current = null;
+        if (!json.location) prevRiderPosRef.current = null;
         return;
       }
 
-      const assignmentStatus = json.rider?.assignment_status;
+      const assignmentStatus =
+        json.rider?.assignment_status ?? trackingRef.current?.rider?.assignment_status;
       setMovementLabel(
-        json.location
-          ? `${routeStatusLabel(json, riderId)} · ${movementPhaseLabel(
-              buildPhaseArgs(assignmentStatus),
-              movementLabelsRef.current
-            )}`
-          : routeStatusLabel(json, riderId)
+        `Live route · ${movementPhaseLabel(
+          buildPhaseArgs(assignmentStatus),
+          movementLabelsRef.current
+        )}`
       );
     } catch {
       /* keep last tracking */
     }
   }, [orderId, riderId, buildPhaseArgs]);
 
+  /** Merge realtime GPS from the same ws-gateway channel apps use. */
+  useEffect(() => {
+    if (!liveFix) return;
+    if (!isValidLatLon(liveFix.latitude, liveFix.longitude)) return;
+
+    setTracking((prev) => {
+      const base: OrderRiderTrackingPayload = prev ?? {
+        rider: {
+          id: riderId ?? liveFix.riderId,
+          name: riderName ?? null,
+          mobile: null,
+          selfie_url: null,
+          assignment_status: null,
+        },
+        location: null,
+        trail: [],
+      };
+
+      const prevLoc = base.location;
+      if (prevLoc) {
+        const prevMs = Date.parse(prevLoc.updated_at);
+        const nextMs = Date.parse(liveFix.updatedAt);
+        if (Number.isFinite(prevMs) && Number.isFinite(nextMs) && nextMs < prevMs) {
+          return base;
+        }
+      }
+
+      const nextLocation = {
+        latitude: liveFix.latitude,
+        longitude: liveFix.longitude,
+        heading_degrees: liveFix.headingDegrees,
+        updated_at: liveFix.updatedAt,
+        source: "live_location" as const,
+      };
+
+      const trail = [...(base.trail ?? [])];
+      const last = trail[trail.length - 1];
+      if (
+        !last ||
+        haversineMeters(
+          [last.longitude, last.latitude],
+          [liveFix.longitude, liveFix.latitude]
+        ) > 8
+      ) {
+        trail.push({
+          latitude: liveFix.latitude,
+          longitude: liveFix.longitude,
+          created_at: liveFix.updatedAt,
+        });
+        if (trail.length > 80) trail.splice(0, trail.length - 80);
+      } else {
+        trail[trail.length - 1] = {
+          latitude: liveFix.latitude,
+          longitude: liveFix.longitude,
+          created_at: liveFix.updatedAt,
+        };
+      }
+
+      return {
+        ...base,
+        rider: {
+          ...base.rider,
+          id: base.rider.id ?? riderId ?? liveFix.riderId,
+          name: base.rider.name ?? riderName ?? null,
+        },
+        location: nextLocation,
+        trail,
+      };
+    });
+
+    setMovementLabel(
+      `Live route · ${movementPhaseLabel(
+        buildPhaseArgs(trackingRef.current?.rider?.assignment_status ?? null),
+        movementLabelsRef.current
+      )}${wsConnected ? " · live" : ""}`
+    );
+  }, [liveFix, riderId, riderName, buildPhaseArgs, wsConnected]);
+
   const trackingPollInFlightRef = useRef(false);
+  const wsConnectedRef = useRef(wsConnected);
+  wsConnectedRef.current = wsConnected;
 
   useEffect(() => {
     if (!orderId) return;
 
-    const terminal = [orderStatus, coreStatus, foodOrderStatus]
-      .map((s) => String(s ?? "").toUpperCase())
-      .some((s) =>
-        ["DELIVERED", "CANCELLED", "FAILED", "REJECTED", "COMPLETED"].includes(s)
-      );
-    if (terminal) return;
+    // Terminal: still load last-known GPS / trail once (do not leave "Awaiting GPS").
+    if (isTerminalOrder) {
+      void fetchTracking();
+      return;
+    }
 
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
 
     const scheduleNext = () => {
       if (cancelled) return;
+      const delay = wsConnectedRef.current ? POLL_MS_WHEN_WS : POLL_MS;
       timer = setTimeout(() => {
         void tick();
-      }, POLL_MS);
+      }, delay);
     };
 
     const tick = async () => {
@@ -1275,7 +1427,7 @@ export default function RiderRouteMap({
       if (timer != null) clearTimeout(timer);
       document.removeEventListener("visibilitychange", onVisibility);
     };
-  }, [orderId, orderStatus, coreStatus, foodOrderStatus, fetchTracking]);
+  }, [orderId, isTerminalOrder, fetchTracking]);
 
   const updateTrailOnMap = useCallback((map: any, payload: OrderRiderTrackingPayload | null) => {
     const trail = payload?.trail ?? [];

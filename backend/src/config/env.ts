@@ -368,12 +368,8 @@ const EnvSchema = z.object({
   ).default(22),
 
   /**
-   * MERCHANT + RIDER ("partner") app review login OTP bypass (Play Store / App
-   * Store reviewers). Both apps sign in through the same backend OTP endpoints
-   * with the same review phone, so ONE bypass serves both; verify's appType
-   * routes to the correct pipeline (merchant session vs rider profile / KYC).
-   *
-   * Completely independent of the customer-app bypass below — separate flag,
+   * MERCHANT ("partner") app review login OTP bypass (Play Store / App Store
+   * reviewers). Independent of the rider and customer bypasses — separate flag,
    * separate phone, separate OTP. Neither falls back to the other.
    *
    * When all three are set AND `REVIEW_LOGIN_BYPASS_ENABLED=true`, the OTP
@@ -412,7 +408,12 @@ const EnvSchema = z.object({
    * so verify's appType routes to the rider profile / onboarding / KYC pipeline.
    */
   RIDER_REVIEW_LOGIN_BYPASS_ENABLED: z.preprocess(
-    (v) => v === true || v === "true" || v === "1",
+    (v) => {
+      if (v === true || v === 1) return true;
+      if (typeof v !== "string") return false;
+      const s = v.trim().toLowerCase();
+      return s === "true" || s === "1";
+    },
     z.boolean()
   ).default(false),
   RIDER_REVIEW_LOGIN_PHONE: z.preprocess(emptyToUndefined, z.string().min(10).max(20).optional()),

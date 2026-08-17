@@ -1,14 +1,17 @@
-import React, { useCallback, useState } from "react";
+import React, { useCallback, useMemo, useState } from "react";
 import {
   View,
   Text,
   Pressable,
   StyleSheet,
   ScrollView,
+  TouchableOpacity,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useTranslation } from "react-i18next";
 import { useFocusEffect } from "@react-navigation/native";
+import { router } from "expo-router";
+import { Ionicons } from "@expo/vector-icons";
 import { useEarningsSummary, DEFAULT_EARNINGS_SUMMARY } from "@/src/hooks/useEarnings";
 import { useRiderBankPaymentMethod } from "@/src/hooks/useRiderBankAccount";
 import {
@@ -19,6 +22,11 @@ import { useEarningsBankSheetStore } from "@/src/stores/earningsBankSheetStore";
 import { EarningsWithdrawalModal } from "@/src/components/earnings/EarningsWithdrawalModal";
 import { NegativeWalletPayCard } from "@/src/components/earnings/NegativeWalletPayCard";
 import { colors } from "@/src/theme";
+import { useSessionStore } from "@/src/stores/sessionStore";
+import {
+  parseRiderNumericId,
+  useRiderWalletFreezeState,
+} from "@/src/hooks/useRiderWalletFreezeLive";
 
 export default function EarningsScreen() {
   const { t } = useTranslation();
@@ -30,7 +38,19 @@ export default function EarningsScreen() {
   } = useRiderBankPaymentMethod();
   const bankSheetOpen = useEarningsBankSheetStore((s) => s.visible);
   const openBankSheet = useEarningsBankSheetStore((s) => s.open);
-  const display = earnings ?? DEFAULT_EARNINGS_SUMMARY;
+  const session = useSessionStore((s) => s.session);
+  const riderId = parseRiderNumericId(session);
+  const liveFreeze = useRiderWalletFreezeState(riderId);
+  const display = useMemo(() => {
+    const base = earnings ?? DEFAULT_EARNINGS_SUMMARY;
+    if (!liveFreeze) return base;
+    return {
+      ...base,
+      isFrozen: liveFreeze.isFrozen,
+      freezeReason: liveFreeze.isFrozen ? liveFreeze.freezeReason : null,
+      canWithdraw: liveFreeze.isFrozen ? false : base.canWithdraw,
+    };
+  }, [earnings, liveFreeze]);
   const [withdrawOpen, setWithdrawOpen] = useState(false);
 
   useFocusEffect(
@@ -59,6 +79,7 @@ export default function EarningsScreen() {
   }
 
   const formatCurrency = (amount: number) => `₹${amount.toLocaleString("en-IN")}`;
+  const balanceNegative = Number(display.totalBalance) < 0;
 
   return (
     <SafeAreaView style={styles.safe} edges={[]}>
@@ -68,12 +89,50 @@ export default function EarningsScreen() {
           contentContainerStyle={styles.mainScrollContent}
           showsVerticalScrollIndicator={false}
         >
-          <View style={styles.balanceCard}>
-            <Text style={styles.balanceLabel}>{t("earnings.totalBalance")}</Text>
-            <Text style={styles.balanceAmount}>
+          <View style={[styles.balanceCard, balanceNegative && styles.balanceCardNegative]}>
+            <View style={styles.balanceTopRow}>
+              <Text style={[styles.balanceLabel, balanceNegative && styles.balanceLabelNegative]}>
+                {t("earnings.totalBalance")}
+              </Text>
+              <TouchableOpacity
+                style={[styles.activeAccountBtn, balanceNegative && styles.activeAccountBtnNegative]}
+                onPress={() => router.push("/payout-accounts")}
+                activeOpacity={0.85}
+                accessibilityRole="button"
+                accessibilityLabel={t("earnings.payoutAccount", "Payout Account")}
+              >
+                <Ionicons
+                  name="card-outline"
+                  size={12}
+                  color={balanceNegative ? "#991B1B" : "#FFFFFF"}
+                />
+                <Text
+                  style={[
+                    styles.activeAccountBtnText,
+                    balanceNegative && styles.activeAccountBtnTextNegative,
+                  ]}
+                  numberOfLines={1}
+                >
+                  {t("earnings.payoutAccount", "Payout Account")}
+                </Text>
+              </TouchableOpacity>
+            </View>
+            <Text style={[styles.balanceAmount, balanceNegative && styles.balanceAmountNegative]}>
               {formatCurrency(display.totalBalance)}
             </Text>
-            <Text style={styles.balanceHint}>{t("earnings.availableForWithdrawal")}</Text>
+            <Text style={[styles.balanceHint, balanceNegative && styles.balanceHintNegative]}>
+              {t("earnings.availableForWithdrawal")}
+            </Text>
+            <Text
+              style={[styles.activeAccountHint, balanceNegative && styles.activeAccountHintNegative]}
+              numberOfLines={1}
+            >
+              {bankAccount?.verificationStatus === "verified"
+                ? [bankAccount.bankName, bankAccount.accountNumberMasked]
+                    .filter(Boolean)
+                    .join(" · ")
+                : "XXXXXXXXXXXXXXX"}
+            </Text>
           </View>
 
           {display.isFrozen ? (
@@ -194,16 +253,19 @@ export default function EarningsScreen() {
             canWithdraw={Boolean(display.canWithdraw) && !display.isFrozen}
             isFrozen={Boolean(display.isFrozen)}
             freezeReason={display.freezeReason ?? null}
-            onAddAccount={openBankSheet}
-            onRequestWithdrawal={() => {
+            onAddAccount={() => {
               if (display.isFrozen) return;
+              openBankSheet();
+            }}
+            onRequestWithdrawal={() => {
+              if (display.isFrozen || !display.canWithdraw) return;
               setWithdrawOpen(true);
             }}
           />
         ) : null}
 
         <EarningsWithdrawalModal
-          visible={withdrawOpen}
+          visible={withdrawOpen && !display.isFrozen}
           withdrawable={display.withdrawable}
           bankAccount={bankAccount}
           onClose={() => setWithdrawOpen(false)}
@@ -340,10 +402,27 @@ const styles = StyleSheet.create({
     shadowRadius: 8,
     elevation: 6,
   },
+  balanceCardNegative: {
+    backgroundColor: "#FEE2E2",
+    borderWidth: 1,
+    borderColor: "#FECACA",
+    shadowOpacity: 0.08,
+  },
   balanceLabel: {
     fontSize: 13,
     color: "#FFE0D1",
+    flexShrink: 1,
+    marginRight: 8,
+  },
+  balanceLabelNegative: {
+    color: "#B91C1C",
+  },
+  balanceTopRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
     marginBottom: 6,
+    gap: 8,
   },
   balanceAmount: {
     fontSize: 32,
@@ -351,9 +430,51 @@ const styles = StyleSheet.create({
     color: "#FFFFFF",
     marginBottom: 2,
   },
+  balanceAmountNegative: {
+    color: "#991B1B",
+  },
   balanceHint: {
     fontSize: 13,
     color: "#FFE0D1",
+  },
+  balanceHintNegative: {
+    color: "#DC2626",
+  },
+  activeAccountBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 4,
+    alignSelf: "flex-start",
+    backgroundColor: "rgba(255,255,255,0.2)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.4)",
+    borderRadius: 10,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    maxWidth: 132,
+    height: 28,
+  },
+  activeAccountBtnNegative: {
+    backgroundColor: "rgba(153, 27, 27, 0.08)",
+    borderColor: "rgba(153, 27, 27, 0.28)",
+  },
+  activeAccountBtnText: {
+    color: "#FFFFFF",
+    fontSize: 11,
+    fontWeight: "700",
+  },
+  activeAccountBtnTextNegative: {
+    color: "#991B1B",
+  },
+  activeAccountHint: {
+    marginTop: 8,
+    fontSize: 12,
+    color: "rgba(255,255,255,0.85)",
+    fontWeight: "600",
+  },
+  activeAccountHintNegative: {
+    color: "#B91C1C",
   },
   frozenBanner: {
     backgroundColor: "#FEF2F2",

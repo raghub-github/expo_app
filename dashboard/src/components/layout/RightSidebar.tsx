@@ -502,15 +502,17 @@ export function RightSidebar({
       )}
       <aside
         onClickCapture={handleSidebarNavClickCapture}
-        className={`fixed z-40 flex flex-col shadow-none transition-[transform,width] duration-300 ease-out ${
+        className={`fixed z-40 flex flex-col overflow-hidden shadow-none transition-[transform,width] duration-300 ease-out ${
           queueLeftRail ? "left-0 right-auto" : dockLeft ? "left-0 right-auto" : "right-0 left-auto"
         } ${
           /* Queue left rail: full viewport height (matches queue home). Right-docked ticket detail: start below header row. */
-          isTicketDetailPage && !(queueLeftRail && dockLeft) ? "bottom-0 top-14" : "inset-y-0"
+          isTicketDetailPage && !(queueLeftRail && dockLeft)
+            ? "bottom-0 top-14"
+            : "inset-y-0 h-dvh max-h-dvh"
         }
           ${isOpen ? (isTicketDetailPage && !queueDetailFromHome ? "w-64" : "w-56") : "w-14"}
           max-lg:w-72 ${isOpen ? "max-lg:translate-x-0" : dockLeft ? "max-lg:-translate-x-full" : "max-lg:translate-x-full"}
-          ${queueLeftRail ? "dark-sidebar-chrome overflow-hidden border-r border-white/10" : ""}`}
+          ${queueLeftRail ? "dark-sidebar-chrome border-r border-white/10" : ""}`}
         style={
           queueLeftRail
             ? {
@@ -859,7 +861,7 @@ export function RightSidebar({
               <div className="min-h-0" aria-hidden />
             ) : (
               <div className="flex min-h-0 flex-1 flex-col">
-              <nav className="flex-1 min-h-0 overflow-y-auto overscroll-y-contain space-y-2 px-2.5 pb-3 pt-2" dir="ltr">
+              <nav className="min-h-0 flex-1 space-y-2 overflow-y-auto overscroll-y-contain px-2.5 pb-4 pt-2" dir="ltr">
               {(() => {
                 // Wallet & Earnings sub-pages (wallet-history, earnings) should highlight "Wallet & Earnings", not Rider Information
                 const isWalletOrEarningsPath =
@@ -1135,11 +1137,11 @@ export function RightSidebar({
         </div>
 
         {!isTicketsDashboard && (
-          <div className="relative z-20 shrink-0 border-t border-[#121212]/08 bg-[#F3F7FA] p-2">
+          <div className="relative z-30 mt-auto shrink-0 border-t border-[#121212]/08 bg-[#F3F7FA] p-2">
             <button
               type="button"
               onClick={onToggle}
-              className={`flex h-10 w-full cursor-pointer items-center justify-center rounded-[10px] border border-[#121212]/10 bg-white text-[#121212] transition-colors duration-200 hover:bg-white/90 ${
+              className={`flex h-10 w-full cursor-pointer items-center justify-center rounded-[10px] border border-[#121212]/10 bg-white text-[#121212] shadow-sm transition-colors duration-200 hover:bg-white/90 ${
                 isOpen ? "gap-2 px-3" : ""
               }`}
               title={isOpen ? "Collapse sidebar" : "Expand sidebar"}

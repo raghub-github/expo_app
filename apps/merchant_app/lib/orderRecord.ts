@@ -148,6 +148,17 @@ export type OrderRecord = {
   scheduledDeliverySummary?: string | null;
   merchantResponseDeadlineAt?: string | null;
   merchantResponseTimeoutSeconds?: number | null;
+  storeRating?: StoreOrderRating | null;
+};
+
+export type StoreOrderRating = {
+  reviewId: number;
+  rating: number;
+  reviewText: string | null;
+  reviewTitle: string | null;
+  createdAt: string;
+  replyText: string | null;
+  repliedAt: string | null;
 };
 
 export type OrderCounts = {
@@ -397,7 +408,94 @@ export function mapApiOrder(
       Number.isFinite(Number(o.merchant_response_timeout_seconds))
         ? Math.max(0, Math.floor(Number(o.merchant_response_timeout_seconds)))
         : null,
+    storeRating: mapStoreRating(o.store_rating),
   };
+}
+
+function mapStoreRating(
+  raw: ApiFoodOrder["store_rating"] | null | undefined
+): StoreOrderRating | null {
+  if (!raw || typeof raw !== "object") return null;
+  const rating = Number(raw.rating);
+  const reviewId = Number(raw.review_id);
+  if (!Number.isFinite(rating) || rating < 1 || !Number.isFinite(reviewId) || reviewId < 1) {
+    return null;
+  }
+  return {
+    reviewId,
+    rating: Math.min(5, Math.max(1, rating)),
+    reviewText: raw.review_text != null ? String(raw.review_text).trim() || null : null,
+    reviewTitle: raw.review_title != null ? String(raw.review_title).trim() || null : null,
+    createdAt: coerceTimestamp(raw.created_at) ?? new Date().toISOString(),
+    replyText: raw.reply_text != null ? String(raw.reply_text).trim() || null : null,
+    repliedAt: coerceTimestamp(raw.replied_at),
+  };
+}
+
+export type StoreReviewMatchRow = {
+  id: number;
+  orderId?: number | null;
+  overallRating: number;
+  reviewTitle: string | null;
+  reviewText: string | null;
+  createdAt: string;
+  replyText?: string | null;
+  repliedAt?: string | null;
+  formattedOrderId?: string | null;
+};
+
+function publicOrderKey(value: unknown): string | null {
+  const text = String(value ?? "").trim().toUpperCase();
+  return text.length > 0 ? text : null;
+}
+
+/** Attach Reviews-tab rows onto delivered cards that the food-orders payload missed. */
+export function attachStoreRatingsFromReviews(
+  orders: OrderRecord[],
+  reviews: StoreReviewMatchRow[]
+): OrderRecord[] {
+  if (orders.length === 0 || reviews.length === 0) return orders;
+  const byCoreId = new Map<number, StoreReviewMatchRow>();
+  const byFoodId = new Map<number, StoreReviewMatchRow>();
+  const byPublicId = new Map<string, StoreReviewMatchRow>();
+  for (const row of reviews) {
+    const rating = Number(row.overallRating);
+    const reviewId = Number(row.id);
+    if (!Number.isFinite(rating) || rating < 1 || !Number.isFinite(reviewId) || reviewId < 1) {
+      continue;
+    }
+    const orderId = Number(row.orderId);
+    if (Number.isFinite(orderId) && orderId > 0) {
+      if (!byCoreId.has(orderId)) byCoreId.set(orderId, row);
+      if (!byFoodId.has(orderId)) byFoodId.set(orderId, row);
+    }
+    const publicId = publicOrderKey(row.formattedOrderId);
+    if (publicId && !byPublicId.has(publicId)) byPublicId.set(publicId, row);
+  }
+
+  return orders.map((order) => {
+    if (order.status !== "delivered" || order.storeRating != null) return order;
+    const foodId = Number(order.id);
+    const matched =
+      (order.ordersCoreId > 0 ? byCoreId.get(order.ordersCoreId) : undefined) ??
+      (Number.isFinite(foodId) && foodId > 0 ? byFoodId.get(foodId) : undefined) ??
+      byPublicId.get(publicOrderKey(order.formattedOrderId) ?? "") ??
+      byPublicId.get(publicOrderKey(order.orderNumber) ?? "") ??
+      null;
+    if (!matched) return order;
+    return {
+      ...order,
+      storeRating: {
+        reviewId: Number(matched.id),
+        rating: Math.min(5, Math.max(1, Number(matched.overallRating))),
+        reviewText: matched.reviewText != null ? String(matched.reviewText).trim() || null : null,
+        reviewTitle: matched.reviewTitle != null ? String(matched.reviewTitle).trim() || null : null,
+        createdAt: coerceTimestamp(matched.createdAt) ?? new Date().toISOString(),
+        replyText: matched.replyText != null ? String(matched.replyText).trim() || null : null,
+        repliedAt: coerceTimestamp(matched.repliedAt),
+      },
+    };
+  });
 }
 
 /** Minimal ApiFoodOrder from a board OrderRecord — paints detail while GET refreshes. */
@@ -509,6 +607,17 @@ export function orderRecordToApiFoodOrder(r: OrderRecord): ApiFoodOrder | null {
     scheduled_delivery_summary: r.scheduledDeliverySummary ?? null,
     merchant_response_deadline_at: r.merchantResponseDeadlineAt ?? null,
     merchant_response_timeout_seconds: r.merchantResponseTimeoutSeconds ?? null,
+    store_rating: r.storeRating
+      ? {
+          review_id: r.storeRating.reviewId,
+          rating: r.storeRating.rating,
+          review_text: r.storeRating.reviewText,
+          review_title: r.storeRating.reviewTitle,
+          created_at: r.storeRating.createdAt,
+          reply_text: r.storeRating.replyText,
+          replied_at: r.storeRating.repliedAt,
+        }
+      : null,
   };
 }
 

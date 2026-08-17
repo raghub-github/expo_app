@@ -131,6 +131,17 @@ export type ApiFoodOrder = {
   scheduled_delivery_summary?: string | null;
   merchant_response_deadline_at?: string | null;
   merchant_response_timeout_seconds?: number | null;
+  store_rating?: ApiStoreOrderRating | null;
+};
+
+export type ApiStoreOrderRating = {
+  review_id: number;
+  rating: number;
+  review_text: string | null;
+  review_title: string | null;
+  created_at: string;
+  reply_text: string | null;
+  replied_at: string | null;
 };
 
 /**

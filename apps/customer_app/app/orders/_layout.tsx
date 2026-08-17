@@ -7,15 +7,13 @@ export default function OrdersLayout() {
       <AndroidBackHandler />
       <Stack
       screenOptions={{
-        headerShown: true,
+        headerShown: false,
         // See app/_layout.tsx — stops screens (incl. the live-tracking map on
         // "[id]") from re-rendering while a screen is pushed on top of them.
         freezeOnBlur: true,
       }}
     >
-      {/* Hide the native stack header on the tracking screen — the screen
-          renders its own header with merchant name + order id + help button.
-          The duplicate "Order tracking" bar above looked broken. */}
+      {/* Screens own their headers — avoid native Stack title duplicating in-app titles. */}
       <Stack.Screen name="[id]" options={{ headerShown: false }} />
       <Stack.Screen name="partner-chat" options={{ headerShown: false }} />
       <Stack.Screen name="raise-ticket" options={{ headerShown: false }} />

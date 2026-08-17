@@ -146,7 +146,17 @@ module.exports = {
           color: "#C4E8D1",
           sounds: [],
           defaultChannel: "default",
+          enableBackgroundRemoteNotifications: true,
         }
+      ],
+      [
+        "../../packages/expo-push-kit/plugin/withAndroidPushChannels.js",
+        {
+          channels: [
+            { id: "default", name: "Orders & alerts", importance: 4 },
+            { id: "rider_default", name: "Orders & alerts", importance: 4 },
+          ],
+        },
       ],
       [
         "./plugins/withBootReconnectNotification",

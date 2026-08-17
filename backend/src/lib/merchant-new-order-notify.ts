@@ -2,7 +2,7 @@
  * Push + in-app notification when a new CREATED food order lands for a merchant store.
  */
 import type { Sql } from "postgres";
-import { getMerchantStorePushTokens, insertMerchantStoreNotification } from "./merchant-push-notify.js";
+import { insertMerchantStoreNotification } from "./merchant-push-notify.js";
 import { resolveMerchantVisibleOrderTotal } from "./merchant-visible-pricing.js";
 import { send as sendNotification } from "../modules/notifications/notificationService.js";
 
@@ -68,34 +68,29 @@ export async function notifyMerchantStoreNewOrder(
     actionUrl: foodId ? `/order/${foodId}` : "/(tabs)/",
   });
 
-  // v2 send — provides audit log + preference handling + super-admin visibility.
-  // Uses direct device_tokens (merchant_store_push_tokens, not expo_push_tokens
-  // by user_id) so this works even when the merchant has multiple stores on
-  // different phones. Idempotency key = MERCHANT_NEW_ORDER:<order-id>:<store-id>
+  // v2 send — store_id resolves Expo + native FCM for this store's merchants
+  // (multi-device). Idempotency key = MERCHANT_NEW_ORDER:<order-id>:<store-id>
   // dedupes if the placement service retries mid-transaction.
-  const tokens = await getMerchantStorePushTokens(sql, merchantStoreId);
-  if (tokens.length > 0) {
-    await sendNotification({
-      templateCode: "MERCHANT_NEW_ORDER",
-      variables: {
-        orderId: orderIdText,
-        orderShortId: displayId,
-        itemCount: 1, // template body uses this — template can be edited to omit
-        amount: total ?? 0,
-        customerName: "Customer",
-      },
-      target: { device_tokens: tokens },
-      priority: "critical",
-      idempotencyKey: `MERCHANT_NEW_ORDER:${orderIdText}:${merchantStoreId}`,
-      metadata: {
-        type: "merchant_new_order",
-        orderId: orderIdText,
-        foodOrderId: foodId,
-        url: foodId ? `/order/${foodId}` : "/(tabs)/",
-        screen: "new_order",
-      },
-    }).catch((e) =>
-      console.warn("[merchant-new-order] v2 send failed (tolerated)", (e as Error).message)
-    );
-  }
+  await sendNotification({
+    templateCode: "MERCHANT_NEW_ORDER",
+    variables: {
+      orderId: orderIdText,
+      orderShortId: displayId,
+      itemCount: 1, // template body uses this — template can be edited to omit
+      amount: total ?? 0,
+      customerName: "Customer",
+    },
+    target: { store_id: merchantStoreId },
+    priority: "critical",
+    idempotencyKey: `MERCHANT_NEW_ORDER:${orderIdText}:${merchantStoreId}`,
+    metadata: {
+      type: "merchant_new_order",
+      orderId: orderIdText,
+      foodOrderId: foodId,
+      url: foodId ? `/order/${foodId}` : "/(tabs)/",
+      screen: "new_order",
+    },
+  }).catch((e) =>
+    console.warn("[merchant-new-order] v2 send failed (tolerated)", (e as Error).message)
+  );
 }

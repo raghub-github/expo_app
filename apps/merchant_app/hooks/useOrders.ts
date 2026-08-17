@@ -9,6 +9,7 @@ export type {
   OrderPricing,
   LineItem,
   OrderRecord,
+  StoreOrderRating,
   OrderCounts,
   OrdersState,
 } from "@/lib/orderRecord";

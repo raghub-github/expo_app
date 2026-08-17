@@ -240,12 +240,18 @@ async function persistMerchantDeviceSessionForMerchant(
  */
 export async function authRoutes(app: FastifyInstance) {
   const env = getEnv();
-  const reviewBypasses = createReviewBypasses(env);
-  const merchantReview = reviewBypasses.find((s) => s.app === "partner");
+  // Resolve bypasses from live env on each OTP call so a process.env refresh
+  // (or late-loaded RIDER_REVIEW_* / REVIEW_LOGIN_*) cannot leave a stale closure
+  // that silently skips the review path and falls through to useSupabase / SMS.
+  const getReviewBypasses = () => createReviewBypasses(getEnv());
+  const reviewBypassesAtBoot = getReviewBypasses();
+  const merchantReview = reviewBypassesAtBoot.find((s) => s.app === "partner");
+  const riderReview = reviewBypassesAtBoot.find((s) => s.app === "rider");
   if (merchantReview?.isArmed()) {
     app.log.info(
       {
         event: "REVIEW_LOGIN_BYPASS_ARMED",
+        surface: "partner",
         environment: env.NODE_ENV,
         phone: maskReviewPhone(env.REVIEW_LOGIN_PHONE),
       },
@@ -253,8 +259,24 @@ export async function authRoutes(app: FastifyInstance) {
     );
   } else {
     app.log.info(
-      { event: "REVIEW_LOGIN_BYPASS_OFF", environment: env.NODE_ENV },
+      { event: "REVIEW_LOGIN_BYPASS_OFF", surface: "partner", environment: env.NODE_ENV },
       "[ReviewMode] merchant review login bypass is off",
+    );
+  }
+  if (riderReview?.isArmed()) {
+    app.log.info(
+      {
+        event: "REVIEW_LOGIN_BYPASS_ARMED",
+        surface: "rider",
+        environment: env.NODE_ENV,
+        phone: maskReviewPhone(env.RIDER_REVIEW_LOGIN_PHONE),
+      },
+      "[ReviewMode] rider review login bypass is armed",
+    );
+  } else {
+    app.log.info(
+      { event: "REVIEW_LOGIN_BYPASS_OFF", surface: "rider", environment: env.NODE_ENV },
+      "[ReviewMode] rider review login bypass is off",
     );
   }
 
@@ -615,6 +637,7 @@ export async function authRoutes(app: FastifyInstance) {
       const requestId = ulid();
       const expiresInSec = env.MSG91_OTP_EXPIRY_SEC;
       const phoneTail = phoneE164.replace(/\D/g, "").slice(-4);
+      const reviewBypasses = getReviewBypasses();
 
       req.log?.info?.({ phoneE164, phoneTail, requestId, appType }, "[OTP] Requested");
 
@@ -720,7 +743,7 @@ export async function authRoutes(app: FastifyInstance) {
       // 6-digit OTP (SMS standard; MSG91 and partnersite use 6).
       // Never collide with an armed review fixed OTP for a non-review phone.
       let otp = Math.floor(100000 + Math.random() * 900000).toString();
-      if (isReviewOtpOnForeignPhone(reviewBypasses, phoneE164, otp)) {
+      if (isReviewOtpOnForeignPhone(getReviewBypasses(), phoneE164, otp)) {
         otp = Math.floor(100000 + Math.random() * 900000).toString();
       }
       otpStore.set(requestId, {
@@ -826,6 +849,7 @@ export async function authRoutes(app: FastifyInstance) {
       const { requestId, phoneE164, deviceId, otp } = body;
       const appType = body.appType ?? "unknown";
       const phoneTail = phoneE164.replace(/\D/g, "").slice(-4);
+      const reviewBypasses = getReviewBypasses();
 
       req.log?.info?.({ requestId, appType, phoneTail }, "[OTP] Verify attempted");
 

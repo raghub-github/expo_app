@@ -16,6 +16,7 @@ const assetItemSchema = z.object({
   proxyUrl: z.string().nullable(),
   url: z.string().nullable(),
   sortOrder: z.number(),
+  updatedAt: z.string().nullable().optional(),
 });
 
 export async function appAssetsRoutes(app: FastifyInstance) {

@@ -66,23 +66,23 @@ export function BannerPagerIndicators() {
 
 const pagerStyles = StyleSheet.create({
   row: {
-    flexDirection: "column",
+    flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
     gap: 4,
     marginTop: 4,
-    minHeight: 10,
+    minHeight: 8,
   },
   dot: {
-    width: 4,
-    height: 4,
-    borderRadius: 2,
+    width: 5,
+    height: 5,
+    borderRadius: 2.5,
     backgroundColor: "rgba(255,255,255,0.5)",
   },
   dotActive: {
-    width: 12,
-    height: 3,
-    borderRadius: 2,
+    width: 14,
+    height: 5,
+    borderRadius: 2.5,
     backgroundColor: "#ffffff",
   },
 });
@@ -207,6 +207,17 @@ export function HomeAlertBannerCarousel({ slides }: Props) {
 
   if (visibleSlides.length === 0) return null;
 
+  // Single slide: skip FlatList so Pay / Support presses are not swallowed by the pager.
+  if (!canScroll) {
+    return (
+      <BannerPagerContext.Provider value={pagerValue}>
+        <View style={styles.wrap} onLayout={handleLayout}>
+          <View style={styles.slide}>{visibleSlides[0]?.element}</View>
+        </View>
+      </BannerPagerContext.Provider>
+    );
+  }
+
   return (
     <BannerPagerContext.Provider value={pagerValue}>
       <View style={styles.wrap} onLayout={handleLayout}>
@@ -218,11 +229,12 @@ export function HomeAlertBannerCarousel({ slides }: Props) {
             horizontal
             pagingEnabled
             bounces={false}
-            scrollEnabled={canScroll}
+            scrollEnabled
             nestedScrollEnabled
             // Android can drop Pressable taps inside horizontal lists when
             // clipped offscreen neighbors are removed from the native tree.
             removeClippedSubviews={false}
+            keyboardShouldPersistTaps="handled"
             showsHorizontalScrollIndicator={false}
             decelerationRate="fast"
             snapToInterval={containerWidth}
@@ -238,7 +250,7 @@ export function HomeAlertBannerCarousel({ slides }: Props) {
             })}
             style={styles.list}
             renderItem={({ item }) => (
-              <View style={[styles.slide, { width: containerWidth }]}>
+              <View style={[styles.slide, { width: containerWidth }]} collapsable={false}>
                 {item.element}
               </View>
             )}

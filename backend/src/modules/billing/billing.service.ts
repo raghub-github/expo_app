@@ -57,7 +57,7 @@ import {
   resolveDropGeoRefsFromPincode,
   resolvePlatformOfferGeoBindingEffectiveIds,
 } from "./geoRefFromPincode.js";
-import { getRoute } from "../distance/distance.service.js";
+import { canonicalStoreToCustomerRouteArgs, getRoute } from "../distance/distance.service.js";
 import { computeItemPackagingTotal } from "./packagingFromItems.js";
 import { formatDeliverySlabExplainSubtext } from "../delivery-slab-pricing/formatDeliverySlabExplain.js";
 import { getDeliveryFallbackRates } from "../delivery/deliveryFallback.config.js";
@@ -1106,13 +1106,16 @@ export async function listCheckoutBillOffers(
   const pickupLat = resolved.pickupLat;
   const pickupLon = resolved.pickupLon;
   const env = getEnv();
-  const route = await getRoute({
-    origin: { lat: pickupLat, lng: pickupLon },
-    destination: { lat: dropLat, lng: dropLon },
-    profile: "driving",
-    mapboxToken: env.MAPBOX_ACCESS_TOKEN ?? undefined,
-    osrmBaseUrl: env.OSRM_BASE_URL ?? undefined,
-  });
+  const route = await getRoute(
+    canonicalStoreToCustomerRouteArgs(
+      { lat: pickupLat, lng: pickupLon },
+      { lat: dropLat, lng: dropLon },
+      {
+        mapboxToken: env.MAPBOX_ACCESS_TOKEN ?? undefined,
+        osrmBaseUrl: env.OSRM_BASE_URL ?? undefined,
+      }
+    )
+  );
   const distanceKm = route.distanceKm;
 
   const serviceType = (input.serviceType ?? "FOOD").trim().toUpperCase();
@@ -1397,10 +1400,7 @@ export async function listCheckoutBillOffers(
       }),
       summary: describeMerchantOfferRow(m),
       autoApply: m.autoApply !== false,
-      requiresCouponCode:
-        m.offerType.toUpperCase() === "COUPON" && (m.couponCode ?? "").trim()
-          ? String(m.couponCode).trim()
-          : null,
+      requiresCouponCode: (m.couponCode ?? "").trim() ? String(m.couponCode).trim() : null,
       minOrderAmount: m.minOrderAmount != null && m.minOrderAmount > 0 ? m.minOrderAmount : null,
       estimatedSavingsInr: estimateMerchantOfferSavingsInr(m, grossCart),
       displaySurface: resolveOfferDisplaySurface({
@@ -1433,10 +1433,7 @@ export async function listCheckoutBillOffers(
       }),
       summary: describeMerchantOfferRow(m),
       autoApply: m.autoApply !== false,
-      requiresCouponCode:
-        m.offerType.toUpperCase() === "COUPON" && (m.couponCode ?? "").trim()
-          ? String(m.couponCode).trim()
-          : null,
+      requiresCouponCode: (m.couponCode ?? "").trim() ? String(m.couponCode).trim() : null,
       minOrderAmount: m.minOrderAmount != null && m.minOrderAmount > 0 ? m.minOrderAmount : null,
       estimatedSavingsInr: estimateMerchantOfferSavingsInr(m, grossCart),
       displaySurface: resolveOfferDisplaySurface({

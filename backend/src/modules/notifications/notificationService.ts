@@ -220,6 +220,7 @@ function pushDataForRow(row: CreateLogRow): Record<string, unknown> {
         }
       : {}),
     ...(row.metadata ?? {}),
+    appRole: row.recipient.role,
   };
 }
 
@@ -268,6 +269,7 @@ async function dispatchExpoRow(
           imageUrl: row.imageUrl ?? null,
           deepLink: row.deepLink ?? null,
           channelId: channelIdForRecipient(row.recipient, row.priority, row),
+          appRole: row.recipient.role,
           data: {
             template_code: row.templateCode,
             gmType: row.templateCode,
@@ -276,6 +278,7 @@ async function dispatchExpoRow(
             gmTitle: row.title,
             gmMessage: row.body,
             gmBanner: "true",
+            appRole: row.recipient.role,
             ...(row.campaignId != null ? { campaign_id: String(row.campaignId) } : {}),
           },
           priority: row.priority as never,
@@ -677,7 +680,7 @@ async function sendImpl(intent: SendIntent): Promise<SendResult> {
   let accepted = 0;
   let failedProvider = 0;
   let failedSync = 0;
-  const forceInline = intent.deliverNow === true;
+  const forceInline = intent.deliverNow === true || intent.campaignId == null;
   const maxRetries = Math.max(1, Number(template.retry_count) || 4);
   console.info(
     `[notifications] dispatch_start campaign=${intent.campaignId ?? "n/a"} template=${template.code} rows=${logRows.length} deliverNow=${forceInline}`,
@@ -703,8 +706,10 @@ async function sendImpl(intent: SendIntent): Promise<SendResult> {
           deepLink: row.deepLink ?? null,
           webLink,
           channelId: channelIdForRecipient(row.recipient, row.priority, row),
+          appRole: row.recipient.role,
           data: {
             template_code: row.templateCode,
+            appRole: row.recipient.role,
             ...(row.campaignId != null ? { campaign_id: String(row.campaignId) } : {}),
           },
           priority: row.priority as never,
@@ -742,8 +747,10 @@ async function sendImpl(intent: SendIntent): Promise<SendResult> {
           imageUrl: row.imageUrl ?? null,
           deepLink: row.deepLink ?? null,
           channelId: channelIdForRecipient(row.recipient, row.priority, row),
+          appRole: row.recipient.role,
           data: {
             template_code: row.templateCode,
+            appRole: row.recipient.role,
             ...(row.campaignId != null ? { campaign_id: String(row.campaignId) } : {}),
           },
           priority: row.priority as never,
@@ -804,6 +811,7 @@ async function sendImpl(intent: SendIntent): Promise<SendResult> {
           channelId: isWeb
             ? undefined
             : channelIdForRecipient(row.recipient, row.priority, row),
+          appRole: isWeb ? undefined : row.recipient.role,
           data: {
             template_code: row.templateCode,
             gmType: row.templateCode,
@@ -812,6 +820,7 @@ async function sendImpl(intent: SendIntent): Promise<SendResult> {
             gmTitle: row.title,
             gmMessage: row.body,
             gmBanner: "true",
+            ...(isWeb ? {} : { appRole: row.recipient.role }),
             ...(row.campaignId != null ? { campaign_id: String(row.campaignId) } : {}),
           },
           priority: row.priority as never,

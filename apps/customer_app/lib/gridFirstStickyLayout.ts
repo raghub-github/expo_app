@@ -4,6 +4,9 @@ import { GRID_FIRST_LOCATION_ROW_H } from "@/components/home/FoodHomeGridFirstHe
 /** Default search row height (pill + veg toggle). */
 export const GRID_FIRST_SEARCH_ROW_H = 44;
 
+/** Breathing room between pinned search pill and pinned category icons. */
+export const GRID_FIRST_STICKY_SEARCH_CATEGORY_GAP = 8;
+
 /** Default category tabs block height incl. section padding. */
 export function gridFirstCategoryBlockHeight(circle: number): number {
   return circle + 40;
@@ -59,7 +62,8 @@ export function gridFirstSearchStickScrollY(m: GridFirstStickyMetrics): number {
 
 /** Scroll offset when the category row should pin below the sticky search bar. */
 export function gridFirstCategoryStickScrollY(m: GridFirstStickyMetrics): number {
-  const stickySearchBottom = m.topInset + m.searchRowHeight;
+  const stickySearchBottom =
+    m.topInset + m.searchRowHeight + GRID_FIRST_STICKY_SEARCH_CATEGORY_GAP;
   return Math.max(0, m.categoryBlockY - stickySearchBottom);
 }
 
@@ -70,7 +74,7 @@ export function gridFirstStickySearchTop(m: GridFirstStickyMetrics): number {
 
 /** Screen Y for the sticky category row top edge. */
 export function gridFirstStickyCategoryTop(m: GridFirstStickyMetrics): number {
-  return m.topInset + m.searchRowHeight;
+  return m.topInset + m.searchRowHeight + GRID_FIRST_STICKY_SEARCH_CATEGORY_GAP;
 }
 
 /** Screen Y for the sticky filter row top edge. */
@@ -85,6 +89,18 @@ export function gridFirstFilterStickScrollY(m: GridFirstStickyMetrics): number {
     gridFirstCategoryStickScrollY(m),
     m.filterBlockY - stickyTop
   );
+}
+
+/** Header row + search overlay height on hero (excl. status bar). */
+export const GRID_FIRST_HEADER_OVERLAY_H = 122;
+/** Default media band when aspect ratio is unknown (legacy look). */
+export const GRID_FIRST_HERO_VISIBLE_H = 210;
+
+export function gridFirstSkySectionHeight(
+  topInset: number,
+  mediaVisibleH: number = GRID_FIRST_HERO_VISIBLE_H
+): number {
+  return topInset + GRID_FIRST_HEADER_OVERLAY_H + mediaVisibleH;
 }
 
 export { STICK_HANDOFF_PX as GRID_FIRST_STICK_HANDOFF_PX };

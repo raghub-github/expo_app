@@ -5,6 +5,7 @@ export async function fetchStoreReviews(params: {
   storeId: number;
   from?: string;
   to?: string;
+  orderId?: number;
 }) {
   const { apiBaseUrl } = getConfig();
   const url = new URL(
@@ -12,6 +13,9 @@ export async function fetchStoreReviews(params: {
   );
   if (params.from) url.searchParams.set("from", params.from);
   if (params.to) url.searchParams.set("to", params.to);
+  if (params.orderId != null && Number.isFinite(params.orderId) && params.orderId > 0) {
+    url.searchParams.set("orderId", String(params.orderId));
+  }
 
   const res = await fetch(url.toString(), {
     headers: {
@@ -31,12 +35,15 @@ export async function fetchStoreReviews(params: {
     success: boolean;
     data: Array<{
       id: number;
+      orderId?: number | null;
       overallRating: number;
       reviewTitle: string | null;
       reviewText: string | null;
       createdAt: string;
       replyText?: string | null;
       repliedAt?: string | null;
+      customerName?: string | null;
+      formattedOrderId?: string | null;
     }>;
   };
 }

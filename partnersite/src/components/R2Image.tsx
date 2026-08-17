@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { resolvePartnerMenuImageSrc } from '@/lib/menu-image-url';
+import { extractMenuImageR2Key, resolvePartnerMenuImageSrc } from '@/lib/menu-image-url';
 
 const RENEW_ENDPOINT = '/api/media/renew-signed-url';
 const MAX_RETRIES = 3;
@@ -69,6 +69,11 @@ function getCachedOrFetch(key: string): Promise<string> {
   });
 }
 
+function proxyUrlForKey(key: string, bust?: number): string {
+  const q = bust != null ? `&r=${bust}` : '';
+  return `/api/attachments/proxy?key=${encodeURIComponent(key)}${q}`;
+}
+
 export type R2ImageProps = {
   /** R2 object key (e.g. menuitems/xyz.jpg) or legacy full URL. Keys are preferred. */
   src: string | null | undefined;
@@ -86,10 +91,9 @@ export type R2ImageProps = {
 };
 
 /**
- * R2Image: loads R2 media via signed URLs with auto-renewal.
- * - Treats signed URLs as temporary; uses fileKey to get fresh URLs.
- * - On load error (expired/broken): fetches new signed URL and retries (up to MAX_RETRIES).
- * - Caches renewed URLs briefly to avoid repeated API calls.
+ * R2Image: loads R2 media via attachment proxy (preferred) or signed URLs.
+ * - Keys and proxy URLs resolve to `/api/attachments/proxy?key=…` (CDN when configured).
+ * - On load error: extract key → cache-bust proxy → renew-signed-url (up to MAX_RETRIES).
  * - Shows fallback image only after retries are exhausted.
  */
 export function R2Image({
@@ -111,12 +115,13 @@ export function R2Image({
   const mountedRef = useRef(true);
   const rootRef = useRef<HTMLDivElement | null>(null);
 
+  const keyFromSrc = src?.trim() ? extractMenuImageR2Key(src.trim()) : null;
   const effectiveKey =
     fileKeyProp && String(fileKeyProp).trim()
       ? String(fileKeyProp).trim()
       : src && isKey(src)
         ? src.trim()
-        : null;
+        : keyFromSrc;
   const isLegacyUrl =
     !!src &&
     !isAttachmentProxyUrl(src) &&
@@ -131,10 +136,15 @@ export function R2Image({
     loadingRef.current = true;
     setError(false);
     try {
-      const signedUrl = await getCachedOrFetch(key);
-      if (mountedRef.current) setDisplayUrl(signedUrl);
+      // Prefer same-origin proxy (backend fallback inside the route) over signed URLs.
+      if (mountedRef.current) setDisplayUrl(proxyUrlForKey(key));
     } catch {
-      if (mountedRef.current) setError(true);
+      try {
+        const signedUrl = await getCachedOrFetch(key);
+        if (mountedRef.current) setDisplayUrl(signedUrl);
+      } catch {
+        if (mountedRef.current) setError(true);
+      }
     } finally {
       loadingRef.current = false;
     }
@@ -171,7 +181,18 @@ export function R2Image({
     }
     const trimmedSrc = src.trim();
     const resolved = resolvePartnerMenuImageSrc(trimmedSrc);
-    if (resolved && (isAttachmentProxyUrl(trimmedSrc) || resolved.startsWith('http'))) {
+    // Prefer CDN / same-origin attachment proxy — no signed-URL round-trip.
+    // Bug: keys resolved to `/api/attachments/proxy?key=…` were skipped because
+    // only the raw `src` was checked for proxy/http, so renew-signed-url ran and
+    // often failed → placeholder icons on Menu.
+    if (
+      resolved &&
+      (isAttachmentProxyUrl(resolved) ||
+        resolved.startsWith('http://') ||
+        resolved.startsWith('https://') ||
+        resolved.startsWith('data:') ||
+        resolved.startsWith('blob:'))
+    ) {
       setDisplayUrl(resolved);
       setError(false);
       setRetryCount(0);
@@ -201,27 +222,44 @@ export function R2Image({
       setError(true);
       return;
     }
-    const doRenew = effectiveKey
-      ? fetchSignedUrlByKey(effectiveKey)
-      : isLegacyUrl && src && !isAttachmentProxyUrl(src)
-        ? fetchSignedUrlByUrl(src)
-        : null;
-    if (!doRenew) {
+    const key =
+      effectiveKey ||
+      (src?.trim() ? extractMenuImageR2Key(src.trim()) : null) ||
+      (displayUrl ? extractMenuImageR2Key(displayUrl) : null);
+
+    const nextRetry = retryCount + 1;
+    setRetryCount(nextRetry);
+
+    // 1) Cache-bust attachment proxy (triggers backend R2 fallback server-side).
+    // 2) Else renew signed URL by key / legacy URL.
+    const attempt =
+      key != null
+        ? Promise.resolve(proxyUrlForKey(key, nextRetry)).then((proxy) => {
+            if (nextRetry <= 1) return proxy;
+            return fetchSignedUrlByKey(key).catch(() => proxy);
+          })
+        : isLegacyUrl && src && !isAttachmentProxyUrl(src)
+          ? fetchSignedUrlByUrl(src)
+          : null;
+
+    if (!attempt) {
       setDisplayUrl(fallbackSrc);
       setError(true);
       return;
     }
-    setRetryCount((c) => c + 1);
+
     setDisplayUrl(null);
-    doRenew
+    attempt
       .then((signedUrl) => {
         if (mountedRef.current) setDisplayUrl(signedUrl);
       })
       .catch(() => {
-        if (mountedRef.current) setDisplayUrl(fallbackSrc);
-        setError(true);
+        if (mountedRef.current) {
+          setDisplayUrl(fallbackSrc);
+          setError(true);
+        }
       });
-  }, [effectiveKey, isLegacyUrl, src, retryCount, fallbackSrc]);
+  }, [effectiveKey, isLegacyUrl, src, retryCount, fallbackSrc, displayUrl]);
 
   if (!src?.trim()) {
     return (

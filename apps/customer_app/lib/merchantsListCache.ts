@@ -33,7 +33,8 @@ export function merchantsGeoBucket(lat: number, lng: number): string {
 }
 
 export function merchantsListCacheKey(lat: number, lng: number, vegOnly: boolean): string {
-  return `${merchantsGeoBucket(lat, lng)}:veg=${vegOnly ? 1 : 0}`;
+  // `:road` busts stale air-haversine buckets (3.7 km vs checkout 7.2 km).
+  return `${merchantsGeoBucket(lat, lng)}:veg=${vegOnly ? 1 : 0}:road`;
 }
 
 /** Bucketed query key so GPS jitter does not cancel in-flight listing fetches. */
@@ -151,14 +152,13 @@ export async function fetchAndCacheMerchantsList(
   lng: number,
   vegOnly: boolean
 ): Promise<MerchantSummary[]> {
-  // Air distance first = instant nearby list; road sort is optional polish.
-  // Avoids Mapbox enrich latency blocking home when stores are already in range.
+  // Canonical road km via the same `getRoute` engine as store-quote / checkout.
   const items = await merchantService.getMerchants({
     limit: 20,
     lat,
     lng,
     vegOnly,
-    distanceMode: "air",
+    distanceMode: "road",
   });
   void writeCachedMerchantsList(lat, lng, vegOnly, items);
   return items;

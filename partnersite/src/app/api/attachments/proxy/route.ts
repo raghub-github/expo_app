@@ -443,6 +443,45 @@ function isAllowedR2Url(decodedUrl: string): boolean {
   return false;
 }
 
+/**
+ * When Partner Site has no R2 credentials (or local GetObject misses), use the
+ * Fastify attachments proxy — same path Merchant App uses successfully.
+ */
+async function fallbackViaBackendProxy(
+  key: string,
+  rangeHeader: string | null,
+): Promise<NextResponse | null> {
+  const base = (process.env.GATIMITRA_BACKEND_API_URL || "").trim().replace(/\/+$/, "");
+  if (!base || !key.trim()) return null;
+  try {
+    const url = `${base}/v1/attachments/proxy?key=${encodeURIComponent(key.trim())}`;
+    const res = await fetch(url, {
+      redirect: "manual",
+      headers: rangeHeader ? { Range: rangeHeader } : undefined,
+    });
+    if (res.status >= 300 && res.status < 400) {
+      const loc = res.headers.get("location");
+      if (loc) {
+        return NextResponse.redirect(loc, 302);
+      }
+    }
+    if (!res.ok || !res.body) return null;
+    const headers = new Headers();
+    const contentType = res.headers.get("content-type") ?? "application/octet-stream";
+    headers.set("Content-Type", contentType);
+    headers.set("Cache-Control", "public, max-age=3600, stale-while-revalidate=86400");
+    headers.set("Access-Control-Allow-Origin", "*");
+    headers.set("X-Attachment-Fallback", "backend-proxy");
+    if (contentType.toLowerCase().startsWith("image/")) {
+      headers.set("Content-Disposition", "inline");
+    }
+    return new NextResponse(res.body, { status: res.status, headers });
+  } catch (e) {
+    console.error("[attachments/proxy] backend fallback failed:", e);
+    return null;
+  }
+}
+
 export async function GET(request: NextRequest) {
   try {
     const keyParam = request.nextUrl.searchParams.get("key");
@@ -512,17 +551,20 @@ export async function GET(request: NextRequest) {
     }
 
     const bucket = process.env.R2_BUCKET_NAME;
+    const rangeHeader = request.headers.get("range");
     if (
       !bucket ||
       !process.env.R2_ACCESS_KEY ||
       !process.env.R2_SECRET_KEY ||
       !process.env.R2_ENDPOINT
     ) {
+      // Partner Site often lacks direct R2 creds; Merchant App still works via Fastify.
+      const viaBackend = await fallbackViaBackendProxy(key.trim(), rangeHeader);
+      if (viaBackend) return viaBackend;
       return NextResponse.json({ error: "R2 not configured" }, { status: 500 });
     }
 
     const client = getR2Client();
-    const rangeHeader = request.headers.get("range");
     const candidates = expandR2LookupCandidates(key.trim());
     let lastError: unknown = null;
 
@@ -628,6 +670,10 @@ export async function GET(request: NextRequest) {
         lastError,
       );
     }
+
+    const viaBackend = await fallbackViaBackendProxy(key.trim(), rangeHeader);
+    if (viaBackend) return viaBackend;
+
     // Image URLs (loaded via <img>): return a placeholder 200 so the browser
     // renders a fallback without logging a red 404 in the console. Documents
     // (PDF, CSV, other) still 404 — those hit dedicated viewers that need to
@@ -637,7 +683,9 @@ export async function GET(request: NextRequest) {
       IMAGE_EXT.test(key) ||
       /\/onboarding\/assets\/(banner|gallery)\//i.test(key) ||
       /\/store-media(-gallery)?\//i.test(key) ||
-      /\/assets\/(banners|gallery)\//i.test(key);
+      /\/assets\/(banners|gallery)\//i.test(key) ||
+      /\/menu(-images)?\//i.test(key) ||
+      /menuitems\//i.test(key);
     if (looksLikeStoreImage) {
       const placeholder = MISSING_IMAGE_SVG();
       return new NextResponse(placeholder, {
@@ -652,6 +700,24 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: "Not found" }, { status: 404 });
   } catch (err: unknown) {
     console.error("[attachments/proxy] Error:", err);
+    try {
+      const keyParam = request.nextUrl.searchParams.get("key");
+      if (keyParam?.trim()) {
+        let recovered = keyParam.trim();
+        try {
+          recovered = decodeURIComponent(recovered);
+        } catch {
+          /* keep */
+        }
+        const viaBackend = await fallbackViaBackendProxy(
+          normalizeR2ObjectKey(recovered),
+          request.headers.get("range"),
+        );
+        if (viaBackend) return viaBackend;
+      }
+    } catch {
+      /* ignore */
+    }
     return NextResponse.json(
       { error: "Failed to load attachment" },
       { status: 500 },

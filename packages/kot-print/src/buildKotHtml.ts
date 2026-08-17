@@ -1,6 +1,6 @@
 import type { KotLineItem, KotPrintPayload } from "./types";
 import { resolveKotPrintSpec } from "./types";
-import { pickupTokenToQrDataUri } from "./qr";
+import { pickupTokenToQrDataUri, pickupTokenToQrTableHtml } from "./qr";
 
 function escapeHtml(s: string): string {
   return s
@@ -159,6 +159,10 @@ export function buildKotHtml(payload: KotPrintPayload): string {
   const printAt = formatKotTime(payload.printTimestamp ?? new Date().toISOString());
   const orderAt = formatKotTime(payload.orderCreatedAt);
   const qrSrc = pickupTokenToQrDataUri(payload.pickupToken, spec.qrModuleScale);
+  const qrTable = pickupTokenToQrTableHtml(payload.pickupToken, spec.qrModuleScale);
+  const qrMarkup = qrTable || (qrSrc
+    ? `<div class="qr-wrap"><img src="${qrSrc}" alt="Pickup QR" width="${spec.paperMm === 58 ? 108 : 132}" height="${spec.paperMm === 58 ? 108 : 132}" /></div>`
+    : "");
   const otp = String(payload.pickupOtp ?? "").trim();
   const orderType = formatOrderType(payload.orderType);
   const paymentMode = formatPaymentMode(payload.paymentMode);
@@ -179,7 +183,7 @@ export function buildKotHtml(payload: KotPrintPayload): string {
     : "";
 
   const metaRow = (label: string, value: string) =>
-    `<div class="meta-row"><span class="meta-label">${escapeHtml(label)}</span><span class="meta-colon">:</span><span class="meta-value">${escapeHtml(value)}</span></div>`;
+    `<tr><td class="meta-label">${escapeHtml(label)}</td><td class="meta-colon">:</td><td class="meta-value">${escapeHtml(value)}</td></tr>`;
 
   const metaBlock = [
     metaRow("Order ID", payload.orderId || "—"),
@@ -278,18 +282,22 @@ export function buildKotHtml(payload: KotPrintPayload): string {
       letter-spacing: 0.04em;
       margin-top: 2px;
     }
-    .meta-row {
-      display: flex;
-      align-items: flex-start;
-      gap: 4px;
+    .meta-table {
+      width: 100%;
+      border-collapse: collapse;
+      border-spacing: 0;
+      table-layout: auto;
+    }
+    .meta-table td {
       font-size: ${spec.paperMm === 58 ? "10px" : "11px"};
       font-weight: 700;
-      margin: 2px 0;
       line-height: 1.35;
+      padding: 1px 0;
+      vertical-align: top;
     }
-    .meta-label { flex: 0 0 auto; font-weight: 800; white-space: nowrap; }
-    .meta-colon { flex: 0 0 auto; }
-    .meta-value { flex: 1 1 auto; min-width: 0; word-break: break-word; }
+    .meta-label { white-space: nowrap; font-weight: 800; width: 1%; padding-right: 4px; }
+    .meta-colon { width: 1%; padding-right: 6px; }
+    .meta-value { word-break: break-word; }
     .section-title {
       font-size: ${spec.paperMm === 58 ? "10px" : "11px"};
       font-weight: 900;
@@ -379,6 +387,11 @@ export function buildKotHtml(payload: KotPrintPayload): string {
       display: block;
       margin: 0 auto;
     }
+    .qr-table {
+      display: table;
+      margin: 10px auto 0;
+    }
+    .qr-table td { padding: 0; margin: 0; border: 0; font-size: 0; line-height: 0; }
     .scan-caption {
       font-size: ${spec.paperMm === 58 ? "9px" : "10px"};
       font-weight: 700;
@@ -407,6 +420,10 @@ export function buildKotHtml(payload: KotPrintPayload): string {
         -webkit-print-color-adjust: exact;
         print-color-adjust: exact;
       }
+      .qr-table td {
+        -webkit-print-color-adjust: exact;
+        print-color-adjust: exact;
+      }
     }
   </style>
 </head>
@@ -421,7 +438,7 @@ export function buildKotHtml(payload: KotPrintPayload): string {
     <div class="kot-num">${escapeHtml(payload.kotNumber || "—")}</div>
   </div>
   <hr class="rule" />
-  ${metaBlock}
+  ${metaBlock ? `<table class="meta-table">${metaBlock}</table>` : ""}
   <hr class="rule" />
   ${customerBlock}
   <div class="items-title">ITEMS (${lineCount})</div>
@@ -441,12 +458,12 @@ export function buildKotHtml(payload: KotPrintPayload): string {
   </div>`
         : ""
     }
-    ${otp && qrSrc ? `<hr class="verify-code-sep" />` : ""}
+    ${otp && qrMarkup ? `<hr class="verify-code-sep" />` : ""}
     ${
-      qrSrc
+      qrMarkup
         ? `<div class="verify-qr-section">
     <div class="qr-label">SCAN QR FOR PICKUP</div>
-    <div class="qr-wrap"><img src="${qrSrc}" alt="Pickup QR" width="${spec.paperMm === 58 ? 108 : 132}" height="${spec.paperMm === 58 ? 108 : 132}" /></div>
+    ${qrMarkup}
     <div class="scan-caption">Scan QR to verify pickup</div>
   </div>`
         : // A KOT without its QR is never silent — staff must know to reprint.

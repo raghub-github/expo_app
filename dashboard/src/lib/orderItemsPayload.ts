@@ -1,12 +1,17 @@
 /** Shared types + helpers for GET /api/orders/[orderId]/items (order detail + refund modal). */
 
 import type { OrderItemCustomisationDetail } from "@/lib/order-item-customisation";
-import { customerDiscountLinesFromBilling, discountTotalFromBilling } from "@/lib/merchant-billing-discount";
+import {
+  customerDiscountLinesFromBilling,
+  discountTotalFromBilling,
+  type OrderDiscountOfferSource,
+} from "@/lib/merchant-billing-discount";
 import {
   extractGatiCashAppliedFromBilling,
   resolveCustomerCtcPaidAmount,
   roundCtcMoney,
 } from "@/lib/orders/customer-ctc";
+import { resolveAttachmentProxyUrl } from "@/lib/attachments/resolve-attachment-proxy-url";
 
 export type OrderItemLineAmounts = {
   amountPerQuantity: number;
@@ -388,8 +393,12 @@ export function buildOrderPricingSummary(
   const deliveryFee = round2(asNum(snap.delivery_fee));
   const deliveryDisplay = resolveDeliveryFeeDisplayFromBilling(snap);
   const gst = round2(asNum(snap.tax_total));
-  const tipAmount = round2(asNum(snap.tip_amount));
-  const donationAmount = round2(asNum(snap.donation_amount));
+  const tipAmount = round2(
+    asNum(snap.tip_amount) || asNum(core.tip_amount) || asNum(core.tipAmount)
+  );
+  const donationAmount = round2(
+    asNum(snap.donation_amount) || asNum(core.donation_amount) || asNum(core.donationAmount)
+  );
   const discount = discountTotalFromBilling(snap);
 
   pushCharge("packaging", "Packaging", packaging);
@@ -457,8 +466,6 @@ export function buildOrderPricingSummary(
   if (gst > 0) {
     lines.push({ key: "gst", label: "GST", amount: gst, kind: "tax" });
   }
-  pushCharge("tip", "Tip", tipAmount);
-  pushCharge("donation", "Donation", donationAmount);
 
   if (discount > 0) {
     const discountLines = customerDiscountLinesFromBilling(snap);
@@ -473,7 +480,12 @@ export function buildOrderPricingSummary(
         });
       });
     } else {
-      lines.push({ key: "discount", label: "Discount", amount: discount, kind: "discount" });
+      lines.push({
+        key: "discount",
+        label: resolveNamedDiscountFallbackLabel(snap) ?? "Discount",
+        amount: discount,
+        kind: "discount",
+      });
     }
   }
 
@@ -493,10 +505,39 @@ export function buildOrderPricingSummary(
       asNum(snap.final_payable) ||
       0
   );
-  const { ctc: totalOrderAmount, cashin: cashinAmount } = resolveCustomerCtcPaidAmount({
+  const { ctc: baseCtc, cashin: cashinAmount } = resolveCustomerCtcPaidAmount({
     netPayable,
     gatiCashUsed,
   });
+
+  const sumBeforeTipDonation = round2(
+    lines.reduce((s, l) => (l.kind === "discount" ? s - l.amount : s + l.amount), 0)
+  );
+
+  // Only show tip when it is part of CTC. Phantom tip_amount (not in grand_total)
+  // previously produced Tip +5 cancelled by fake "Bill credit" −5.
+  let shownTip = 0;
+  if (tipAmount > 0.005) {
+    const withTip = round2(sumBeforeTipDonation + tipAmount);
+    if (Math.abs(withTip - baseCtc) <= 0.05) {
+      pushCharge("tip", "Tip", tipAmount);
+      shownTip = tipAmount;
+    }
+  }
+
+  let sumAfterTip = round2(
+    lines.reduce((s, l) => (l.kind === "discount" ? s - l.amount : s + l.amount), 0)
+  );
+  let shownDonation = 0;
+  if (donationAmount > 0.005) {
+    const withDonation = round2(sumAfterTip + donationAmount);
+    if (Math.abs(withDonation - baseCtc) <= 0.05) {
+      pushCharge("donation", "Donation", donationAmount);
+      shownDonation = donationAmount;
+    }
+  }
+
+  const totalOrderAmount = baseCtc;
 
   const linesSum = round2(
     lines.reduce((s, l) => {
@@ -505,15 +546,26 @@ export function buildOrderPricingSummary(
     }, 0)
   );
 
-  // Anchor bill lines to CTC (Cashin + GatiCash), not post-wallet grand_total.
   const diff = round2(totalOrderAmount - linesSum);
   if (Math.abs(diff) >= 0.01) {
-    lines.push({
-      key: "adjustment",
-      label: diff > 0 ? "Bill rounding" : "Bill credit",
-      amount: Math.abs(diff),
-      kind: diff > 0 ? "charge" : "discount",
-    });
+    const abs = Math.abs(diff);
+    // GatiCash is payment settlement (CTC split) — never a bill discount line.
+    const isGatiResidual =
+      diff < 0 && gatiCashUsed > 0.005 && Math.abs(abs - gatiCashUsed) <= 0.02;
+    if (!isGatiResidual) {
+      const label =
+        diff > 0
+          ? "Bill rounding"
+          : resolveBillCreditLabel(snap, abs, lines) ??
+            resolveNamedDiscountFallbackLabel(snap) ??
+            "Discount";
+      lines.push({
+        key: "adjustment",
+        label,
+        amount: abs,
+        kind: diff > 0 ? "charge" : "discount",
+      });
+    }
   }
 
   return {
@@ -531,12 +583,69 @@ export function buildOrderPricingSummary(
     smallOrderFee,
     convenienceFee,
     miscFee,
-    tipAmount,
-    donationAmount,
+    tipAmount: shownTip,
+    donationAmount: shownDonation,
     totalOrderAmount,
     cashinAmount,
     gatiCashUsed: gatiCashUsed > 0.005 ? roundCtcMoney(gatiCashUsed) : undefined,
   };
+}
+
+/** Prefer real offer/coupon titles over generic "Discount" / "Bill credit". */
+function resolveNamedDiscountFallbackLabel(snap: Record<string, unknown>): string | null {
+  const candidates = [
+    snap.offer_title,
+    snap.offerTitle,
+    snap.coupon_title,
+    snap.couponTitle,
+    snap.promo_title,
+    snap.promoTitle,
+    snap.coupon_code,
+    snap.couponCode,
+  ];
+  for (const c of candidates) {
+    const s = String(c ?? "").trim();
+    if (s) return s;
+  }
+  const discounts = Array.isArray(snap.discounts) ? snap.discounts : [];
+  for (const d of discounts) {
+    if (!d || typeof d !== "object") continue;
+    const row = d as Record<string, unknown>;
+    const label = String(row.label ?? row.step ?? row.title ?? "").trim();
+    if (label) return label;
+  }
+  return null;
+}
+
+function resolveBillCreditLabel(
+  snap: Record<string, unknown>,
+  amount: number,
+  existingLines: OrderPricingLine[]
+): string | null {
+  const existing = new Set(existingLines.map((l) => l.label.trim().toLowerCase()));
+  const discountLines = customerDiscountLinesFromBilling(snap);
+  for (const d of discountLines) {
+    if (Math.abs(d.amount - amount) > 0.02) continue;
+    if (existing.has(d.label.trim().toLowerCase())) continue;
+    return d.label;
+  }
+  const named = resolveNamedDiscountFallbackLabel(snap);
+  if (named && !existing.has(named.trim().toLowerCase())) return named;
+
+  const steps = Array.isArray(snap.breakdown_steps) ? snap.breakdown_steps : [];
+  for (const step of steps) {
+    if (!step || typeof step !== "object") continue;
+    const row = step as Record<string, unknown>;
+    const amt = round2(Math.abs(asNum(row.amount)));
+    if (Math.abs(amt - amount) > 0.02) continue;
+    const kind = String(row.kind ?? row.type ?? "").toLowerCase();
+    const stepLabel = String(row.step ?? row.label ?? row.title ?? "").trim();
+    if (!stepLabel) continue;
+    if (kind && !kind.includes("discount") && asNum(row.amount) >= 0) continue;
+    if (existing.has(stepLabel.toLowerCase())) continue;
+    return stepLabel;
+  }
+  return null;
 }
 
 function parsePricingSummary(pr: Record<string, unknown>): OrderPricingSummary {
@@ -588,8 +697,6 @@ function parsePricingBlock(pr: Record<string, unknown>): OrderItemsPricing {
     customer,
   };
 }
-
-import type { OrderDiscountOfferSource } from "@/lib/merchant-billing-discount";
 
 /** Customer-facing discount from items API pricing (CTC bill, incl. platform offers). */
 export function customerDiscountFromOrderPricing(
@@ -675,9 +782,10 @@ export function preloadOrderItemImages(urls: string[]): void {
   if (typeof window === "undefined") return;
   for (const url of urls) {
     if (!url) continue;
+    const resolved = resolveAttachmentProxyUrl(url) || url;
     const img = new window.Image();
     img.decoding = "async";
-    img.src = url;
+    img.src = resolved;
   }
 }
 

@@ -6,7 +6,9 @@ const DELIVERY_STATS_SESSION_PREFIX = 'mx_dashboard_delivery_stats_v1:';
 const DELIVERY_STATS_LOCAL_PREFIX = 'mx_dashboard_delivery_stats_v1_ls:';
 const STORE_OVERVIEW_SESSION_PREFIX = 'mx_dashboard_store_overview_v1:';
 const STORE_OVERVIEW_LOCAL_PREFIX = 'mx_dashboard_store_overview_v1_ls:';
-const WALLET_TTL_MS = 8 * 1000;
+/** Align with store-ops / overview — short TTL made SWR placeholders useless. */
+const WALLET_SESSION_TTL_MS = 15 * 60 * 1000;
+const WALLET_LOCAL_TTL_MS = 24 * 60 * 60 * 1000;
 const SESSION_TTL_MS = 15 * 60 * 1000;
 const LOCAL_TTL_MS = 24 * 60 * 60 * 1000;
 
@@ -52,8 +54,8 @@ export function readDashboardWalletCache(storeId: string): WalletSummary | null 
   return readLayer<WalletSummary>(
     `${WALLET_SESSION_PREFIX}${id}`,
     `${WALLET_LOCAL_PREFIX}${id}`,
-    WALLET_TTL_MS,
-    WALLET_TTL_MS,
+    WALLET_SESSION_TTL_MS,
+    WALLET_LOCAL_TTL_MS,
   );
 }
 

@@ -89,6 +89,33 @@ export async function ensureWaitingForOrderInbox(storeId: number): Promise<{
   suppressed?: boolean;
 }> {
   const sql = getSql();
+
+  // Never create / keep a waiting row while the store is not actually open.
+  const storeRows = await sql`
+    SELECT operational_status, is_accepting_orders, is_available, is_active
+    FROM merchant_stores
+    WHERE id = ${storeId} AND deleted_at IS NULL
+    LIMIT 1
+  `;
+  const store = storeRows[0] as
+    | {
+        operational_status?: string | null;
+        is_accepting_orders?: boolean | null;
+        is_available?: boolean | null;
+        is_active?: boolean | null;
+      }
+    | undefined;
+  const isOpen =
+    store != null &&
+    String(store.operational_status ?? "").toUpperCase() === "OPEN" &&
+    store.is_accepting_orders === true &&
+    store.is_available === true &&
+    store.is_active === true;
+  if (!isOpen) {
+    await deleteWaitingForOrderInbox(storeId);
+    return { id: null, created: false, suppressed: true };
+  }
+
   const settingsRows = await sql`
     SELECT settings_metadata
     FROM merchant_store_settings

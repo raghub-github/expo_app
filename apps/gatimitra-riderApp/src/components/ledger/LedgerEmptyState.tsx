@@ -1,11 +1,23 @@
 import React from "react";
-import { View, Text, StyleSheet } from "react-native";
+import { View, Text, TouchableOpacity, StyleSheet } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useTranslation } from "react-i18next";
 import { LEDGER_PAGE_BG, LEDGER_TEAL } from "@/src/components/ledger/ledgerUiTokens";
 
-export function LedgerEmptyState() {
+type Props = {
+  walletBalance?: number;
+  period?: "this_month" | "last_month" | "all";
+  onViewAllPeriod?: () => void;
+};
+
+export function LedgerEmptyState({
+  walletBalance = 0,
+  period = "this_month",
+  onViewAllPeriod,
+}: Props) {
   const { t } = useTranslation();
+  const negativeWallet = walletBalance < 0;
+  const periodScoped = period !== "all";
 
   return (
     <View style={styles.root}>
@@ -25,13 +37,35 @@ export function LedgerEmptyState() {
         </View>
       </View>
 
-      <Text style={styles.title}>{t("ledger.noTransactions", "No transactions yet")}</Text>
-      <Text style={styles.message}>
-        {t(
-          "ledger.emptyDescription",
-          "Transactions will appear here once you start earning or receive adjustments.",
-        )}
+      <Text style={styles.title}>
+        {negativeWallet
+          ? t("ledger.noRowsThisPeriod", "No transactions in this period")
+          : t("ledger.noTransactions", "No transactions yet")}
       </Text>
+      <Text style={styles.message}>
+        {negativeWallet
+          ? t(
+              "ledger.emptyNegativeWallet",
+              "Your wallet balance is ₹{{amount}}. The list below only shows entries for the selected period — open All time, or pay dues from Earnings / the home Pay button.",
+              {
+                amount: Math.abs(walletBalance).toLocaleString("en-IN", {
+                  maximumFractionDigits: 2,
+                }),
+              },
+            )
+          : t(
+              "ledger.emptyDescription",
+              "Transactions will appear here once you start earning or receive adjustments.",
+            )}
+      </Text>
+
+      {negativeWallet && periodScoped && onViewAllPeriod ? (
+        <TouchableOpacity style={styles.ctaBtn} onPress={onViewAllPeriod} activeOpacity={0.85}>
+          <Text style={styles.ctaBtnText}>
+            {t("ledger.viewAllTransactions", "View all transactions")}
+          </Text>
+        </TouchableOpacity>
+      ) : null}
 
       <View style={styles.tipRow}>
         <View style={styles.tipIcon}>
@@ -39,10 +73,15 @@ export function LedgerEmptyState() {
         </View>
         <Text style={styles.tipText}>
           <Text style={styles.tipLabel}>{t("ledger.tipLabel", "Tip:")} </Text>
-          {t(
-            "ledger.tipBody",
-            "Transactions may take up to 24 hours to reflect in your ledger.",
-          )}
+          {negativeWallet
+            ? t(
+                "ledger.tipNegativeWallet",
+                "Subscription / penalty dues update wallet balance immediately; ledger rows appear after the debit is recorded. Try period filter: All.",
+              )
+            : t(
+                "ledger.tipBody",
+                "Transactions may take up to 24 hours to reflect in your ledger.",
+              )}
         </Text>
       </View>
     </View>
@@ -140,9 +179,21 @@ const styles = StyleSheet.create({
     lineHeight: 21,
     color: "#64748B",
     textAlign: "center",
-    marginBottom: 20,
+    marginBottom: 16,
     paddingHorizontal: 8,
     maxWidth: 320,
+  },
+  ctaBtn: {
+    backgroundColor: LEDGER_TEAL,
+    borderRadius: 10,
+    paddingHorizontal: 18,
+    paddingVertical: 12,
+    marginBottom: 20,
+  },
+  ctaBtnText: {
+    color: "#FFFFFF",
+    fontWeight: "800",
+    fontSize: 14,
   },
   tipRow: {
     flexDirection: "row",

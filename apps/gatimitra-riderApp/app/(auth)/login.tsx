@@ -209,18 +209,10 @@ export default function LoginScreen() {
     setBusy(true);
     setError(null);
     try {
-      const timeoutPromise = new Promise<never>((_, reject) => {
-        setTimeout(
-          () => reject(new Error("Request timeout. Please check your internet connection and try again.")),
-          20000
-        );
-      });
-
       const normalizedPhone = phoneDigits.length === 10 ? `+91${phoneDigits}` : phoneE164.trim();
-      await Promise.race([
-        riderAuthService.sendOtp({ phoneE164: normalizedPhone }),
-        timeoutPromise,
-      ]);
+      // Timeout is handled inside riderAuthService.fetchWithTimeout — do not race
+      // a second AbortController here (that produced opaque AbortError with no URL).
+      await riderAuthService.sendOtp({ phoneE164: normalizedPhone });
 
       setDeviceSessionRetry(false);
       setStep("otp");
@@ -229,8 +221,12 @@ export default function LoginScreen() {
     } catch (e) {
       const err = e instanceof Error ? e : new Error(String(e));
       let errorMessage = err.message || "Unable to send OTP. Please try again.";
-      if (/network request failed|failed to fetch|network error|aborted/i.test(errorMessage)) {
+      // Keep timeout diagnostics (they include the API URL). Only collapse pure network failures.
+      if (/network request failed|failed to fetch|network error/i.test(errorMessage)) {
         errorMessage = "Unable to send OTP. Please try again.";
+      } else if (/^Aborted$/i.test(errorMessage) || err.name === "AbortError") {
+        errorMessage =
+          "Unable to reach the auth server. Check your connection and that the backend is running on this network.";
       }
       setError(errorMessage);
       if (__DEV__) {
@@ -297,10 +293,22 @@ export default function LoginScreen() {
         status.paymentCompleted === true
       ) {
         router.replace("/(onboarding)/pending");
-      } else if (status.exists) {
-        router.replace("/");
+      } else if (
+        !status.exists ||
+        status.onboardingStatus === "not_started" ||
+        status.onboardingStatus == null
+      ) {
+        // Fresh rider — always enter via referral screen (self-gates on dashboard toggle).
+        // Clear a stale auto-skip so Rider Referral ON is not permanently bypassed.
+        await setOnboardingData({
+          ...(riderId ? { riderId } : {}),
+          referralPromptHandled: false,
+          skippedReferral: false,
+        });
+        router.replace("/(onboarding)/referral");
       } else {
-        router.replace("/(onboarding)/aadhaar");
+        // Mid-onboarding resume (in_progress, etc.)
+        router.replace("/");
       }
     } catch (e) {
       setError(e instanceof Error ? e.message : t("login.failedVerify"));

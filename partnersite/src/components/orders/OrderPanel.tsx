@@ -9,7 +9,6 @@ import {
   MapPin,
   Phone,
   Printer,
-  UtensilsCrossed,
   X,
 } from 'lucide-react';
 import type { OrdersFoodRow } from '@/hooks/useFoodOrders';
@@ -264,7 +263,10 @@ export function OrderPanel({
       : otps;
   const merchantInstructions = resolveMerchantInstructionsForDisplay(order);
   const rtoDisplay = formatRtoOtpDisplay(status, displayOtps.rto);
-  const hadPastRiderAssign = usePastRidersEligibility(order.id, showPendingRiderAssign);
+  const hadPastRiderAssign = usePastRidersEligibility(
+    order.id,
+    Boolean(onViewPastRiders) || showPendingRiderAssign
+  );
   const isHistory = panelMode === 'history';
   const historyHasRider = isHistory && orderHasAssignedRider(order);
   /** Live preview only — history uses top-right “View rider” + sidesheet. */
@@ -292,6 +294,8 @@ export function OrderPanel({
     riderCardVariant === 'arrived' &&
     (storeWait.live || (storeWait.finalizedSeconds != null && storeWait.finalizedSeconds > 0));
 
+  const showOldRidersLogButton = Boolean(onViewPastRiders) && hadPastRiderAssign;
+
   const riderCardProps: RiderDeliveryPartnerCardProps = {
     riderName: riderName ?? 'Delivery partner',
     riderPhone: riderMobile,
@@ -312,8 +316,8 @@ export function OrderPanel({
     storeWaitLive: showStoreWait ? storeWait.live : undefined,
     storeWaitFinalizedSeconds:
       showStoreWait && !storeWait.live ? storeWait.finalizedSeconds : undefined,
-    showOldRidersLog: Boolean(onViewPastRiders),
-    onViewOldRidersLog: onViewPastRiders,
+    showOldRidersLog: showOldRidersLogButton,
+    onViewOldRidersLog: showOldRidersLogButton ? onViewPastRiders : undefined,
   };
 
   const viewRiderButton =
@@ -356,19 +360,19 @@ export function OrderPanel({
                 <button
                   type="button"
                   onClick={onPrintKot}
-                  className="inline-flex items-center gap-1 rounded-lg border border-amber-300 bg-white px-2 py-1 text-[11px] font-semibold text-amber-800 hover:bg-amber-50"
+                  className="inline-flex items-center justify-center rounded-lg border border-amber-300 bg-white px-2.5 py-1 text-[11px] font-semibold text-amber-800 hover:bg-amber-50"
                 >
-                  <UtensilsCrossed size={13} />
                   KOT
                 </button>
               ) : null}
               <button
                 type="button"
                 onClick={onPrintBill}
-                className="inline-flex items-center gap-1 rounded-lg border border-blue-200 bg-white px-2 py-1 text-[11px] font-semibold text-blue-700 hover:bg-blue-50"
+                aria-label="Print bill"
+                title="Print bill"
+                className="inline-flex items-center justify-center rounded-lg border border-blue-200 bg-white px-2 py-1 text-blue-700 hover:bg-blue-50"
               >
-                <Printer size={13} />
-                Print bill
+                <Printer size={14} />
               </button>
               <button
                 type="button"
@@ -483,7 +487,7 @@ export function OrderPanel({
           ) : null}
 
           <div className="flex flex-col gap-2.5 pt-1">
-            {showPendingRiderAssign && onViewPastRiders ? (
+            {showPendingRiderAssign && showOldRidersLogButton ? (
               <button
                 type="button"
                 onClick={onViewPastRiders}
@@ -546,19 +550,19 @@ export function OrderPanel({
                 <button
                   type="button"
                   onClick={onPrintKot}
-                  className="inline-flex items-center gap-1 rounded-lg border border-amber-300 bg-white px-2 py-1 text-[11px] font-semibold text-amber-800 hover:bg-amber-50"
+                  className="inline-flex items-center justify-center rounded-lg border border-amber-300 bg-white px-2.5 py-1 text-[11px] font-semibold text-amber-800 hover:bg-amber-50"
                 >
-                  <UtensilsCrossed size={13} />
                   KOT
                 </button>
               ) : null}
               <button
                 type="button"
                 onClick={onPrintBill}
-                className="inline-flex items-center gap-1 rounded-lg border border-blue-200 bg-white px-2 py-1 text-[11px] font-semibold text-blue-700 hover:bg-blue-50"
+                aria-label="Print bill"
+                title="Print bill"
+                className="inline-flex items-center justify-center rounded-lg border border-blue-200 bg-white px-2 py-1 text-blue-700 hover:bg-blue-50"
               >
-                <Printer size={13} />
-                Print bill
+                <Printer size={14} />
               </button>
             </div>
           </div>
@@ -676,7 +680,7 @@ export function OrderPanel({
 
           {isHistory ? (
             <div className="mt-auto shrink-0 flex flex-col gap-2.5 pt-5 w-full">
-              {onViewPastRiders ? (
+              {showOldRidersLogButton ? (
                 <button
                   type="button"
                   onClick={onViewPastRiders}
@@ -733,7 +737,7 @@ export function OrderPanel({
             ) : null}
 
             <div className="mt-auto shrink-0 flex flex-col gap-2.5 pt-5 w-full">
-              {showPendingRiderAssign && onViewPastRiders ? (
+              {showPendingRiderAssign && showOldRidersLogButton ? (
                 <button
                   type="button"
                   onClick={onViewPastRiders}

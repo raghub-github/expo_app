@@ -37,6 +37,7 @@ import { resetPartnerNotificationsPanelCleared } from '@/lib/partner-notificatio
 import { syncOperationalStatusFromSchedule, type AvailabilityRow } from '@/lib/storeScheduleSync';
 import { triggerStoreScheduleTick } from '@/lib/triggerStoreScheduleTick';
 import { isStoreDelisted } from '@/lib/store-delist';
+import { WAITING_FOR_ORDER_TITLE } from '@/lib/partner-notification-constants';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
@@ -248,6 +249,7 @@ export async function GET(req: NextRequest) {
     // Never call syncStoreStatusAfterOperatingHoursChange here — that clears manual holds
     // (intended only after outlet-timings edits) and was reopening stores right after close.
     // Delisted stores stay closed — skip backend snapshot + heal (those GETs were 5–16s each).
+    // Do NOT re-await partner-status after a failed snapshot — that doubled 12s timeouts.
     if (!authoritative && !storeIsDelistedEarly) {
       try {
         const { data: storeForSync } = await db
@@ -281,8 +283,8 @@ export async function GET(req: NextRequest) {
       } catch (e) {
         console.warn('[store-operations] local schedule sync failed', e);
       }
+      // Fire-and-forget — never block the Partner response on a dead Fastify.
       void triggerStoreScheduleTick(storeInternalId);
-      authoritative = await fetchPartnerStoreStatusSnapshot(storeInternalId);
     }
 
     const trace = (step: string, payload: Record<string, unknown>) => {
@@ -1200,9 +1202,10 @@ export async function POST(req: NextRequest) {
             ? String(avail.close_reason).trim()
             : null;
 
-      const closeReasonText = mergedManualCloseUntil
-        ? mergedCloseReason || 'Temporarily closed'
-        : 'Closed until manually reopened';
+      // Prefer the merchant-chosen reason; only fall back to a generic label when none was provided.
+      const closeReasonText =
+        mergedCloseReason ||
+        (mergedManualCloseUntil ? 'Temporarily closed' : 'Closed until manually reopened');
       const unavailReason = mergedManualCloseUntil ? 'manual_close' : 'manual_indefinite';
       const logRestrictionBefore = (avail?.restriction_type as string | null) ?? null;
       const lastCloseToggledAt = nowIso;
@@ -1247,6 +1250,16 @@ export async function POST(req: NextRequest) {
       }
 
       await insertStatusLog('manual_close', logRestrictionBefore, mergedCloseReason);
+
+      // Clear idle "waiting for orders" inbox so it cannot linger while closed.
+      const { error: waitingDelErr } = await db
+        .from('merchant_store_notifications')
+        .delete()
+        .eq('store_id', storeInternalId)
+        .eq('title', WAITING_FOR_ORDER_TITLE);
+      if (waitingDelErr) {
+        console.error('[store-operations POST] waiting-for-order delete failed', waitingDelErr);
+      }
 
       const displayRestriction = deriveDisplayRestrictionType({
         restriction_type: 'manual',

@@ -118,7 +118,7 @@ export function isCustomerOrderOnTheWayStatus(status: string | null | undefined)
   );
 }
 
-/** Live tracking — show delivery OTP only after rider enters drop radius / arrives. */
+/** Live tracking — show delivery OTP after pickup / OTW (and while rider is at drop). */
 export function shouldShowCustomerDeliveryOtp(
   status: string | null | undefined,
   deliveryOtp: string | null | undefined
@@ -126,7 +126,7 @@ export function shouldShowCustomerDeliveryOtp(
   if (!deliveryOtp?.trim()) return false;
   const s = normalizeCustomerOrderStatus(status);
   if (isTerminalOrderStatus(s)) return false;
-  return isRiderAtCustomerStatus(s);
+  return isCustomerOrderOnTheWayStatus(s) || isRiderAtCustomerStatus(s);
 }
 
 /** Live tracking — show pickup PIN until trip/pickup is started. */
@@ -496,9 +496,9 @@ export function getFloatingOrderStatusText(
 }
 
 /**
- * Floating dock CTA: never show "arriving in X min" until a partner is
- * actually on the job (assigned / at pickup / en route). Quote/trip ETA
- * alone must not drive the pill when still searching for a captain.
+ * Floating dock CTA: never show "arriving in X min" until the order is
+ * actually en route to the customer. Prep / quote ETAs must not drive this
+ * wording (preparing still showed "arriving in 13 min" otherwise).
  */
 export function shouldShowFloatingOrderEta(
   status: string | null | undefined,
@@ -533,8 +533,90 @@ export function shouldShowFloatingOrderEta(
     );
   }
 
-  // Food: prep / promise ETA is valid before rider assignment.
-  return true;
+  // Food: "arriving in" only once the rider is heading to the customer.
+  return isCustomerOrderOnTheWayStatus(s) || isRiderAtCustomerStatus(s);
+}
+
+export type FloatingTrackCtaStageLines = {
+  /** Short stage label — e.g. "Preparing", "Arriving in". */
+  title: string;
+  /** ETA or secondary line — e.g. "13 min", "Soon". */
+  subtitle: string;
+};
+
+/**
+ * Green dock CTA "ETA face" — stage label + minutes for the current order phase.
+ * Updates as status / etaMinutes change. Null when there is nothing useful to alternate.
+ */
+export function getFloatingTrackCtaStageLines(
+  status: string | null | undefined,
+  etaMinutes: number | null | undefined,
+  serviceType?: "food" | "ride" | "parcel" | null
+): FloatingTrackCtaStageLines | null {
+  const s = normalizeCustomerOrderStatus(status);
+  if (!s || isTerminalOrderStatus(s)) return null;
+
+  const mins =
+    etaMinutes != null && Number.isFinite(etaMinutes) && etaMinutes > 0
+      ? Math.round(etaMinutes)
+      : null;
+  const minLabel = mins == null ? null : mins === 1 ? "1 min" : `${mins} min`;
+  const service = String(serviceType ?? "").trim().toLowerCase();
+  const isParcelOrRide = service === "parcel" || service === "ride";
+
+  if (isRiderAtCustomerStatus(s)) {
+    return { title: isParcelOrRide ? "Captain here" : "Nearby", subtitle: "Arrived" };
+  }
+
+  if (isCustomerOrderOnTheWayStatus(s) || s === "RIDE_IN_PROGRESS") {
+    return {
+      title: "Arriving in",
+      subtitle: minLabel ?? "Soon",
+    };
+  }
+
+  if (isRiderAtStoreStatus(s)) {
+    return {
+      title: "Pickup",
+      subtitle: minLabel ?? "Handoff",
+    };
+  }
+
+  if (s === "RIDER_ASSIGNED" || s === "ASSIGNED") {
+    return {
+      title: "Pickup",
+      subtitle: minLabel ?? "Soon",
+    };
+  }
+
+  // Food already marked ready — don't show "Ready" + leftover prep clock.
+  if (s === "READY_FOR_PICKUP" || s === "READY" || s === "SEARCHING_RIDER") {
+    return {
+      title: "Pickup",
+      subtitle: minLabel ?? (isParcelOrRide ? "Finding…" : "Soon"),
+    };
+  }
+
+  if (s === "PREPARING" || s === "ACCEPTED") {
+    // Prefer real minutes when present; still alternate with a stage label otherwise.
+    return {
+      title: "Preparing",
+      subtitle: minLabel ?? "Live",
+    };
+  }
+
+  if (s === "ORDER_PLACED" || s === "PLACED" || s === "CREATED" || s === "NEW") {
+    return {
+      title: isParcelOrRide ? "Finding…" : "Confirmed",
+      subtitle: minLabel ?? "Live",
+    };
+  }
+
+  if (minLabel != null) {
+    return { title: "ETA", subtitle: minLabel };
+  }
+
+  return null;
 }
 
 /** Primary banner line on the order details screen. */

@@ -835,6 +835,25 @@ export async function applyRiderCancellationPenalty(
       await updateCancellationReasonPenalty(input.cancellationReasonId, amount);
     }
 
+    void (async () => {
+      try {
+        const { backendFetch } = await import("@/lib/notif-backend");
+        await backendFetch("/v1/internal/rider-account-notify", {
+          method: "POST",
+          body: {
+            type: "penalty",
+            riderId: input.riderId,
+            amount,
+            reason: ledgerTitle || scenario.ledger_description || "Cancellation penalty",
+            orderId: input.orderCoreId,
+            penaltyId,
+          },
+        });
+      } catch (err) {
+        console.warn("[applyRiderCancellationPenalty] push notify failed", err);
+      }
+    })();
+
     return {
       applied: true,
       scenarioCode,

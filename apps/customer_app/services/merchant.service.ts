@@ -9,6 +9,7 @@ import {
   setCachedMenuItemFullConfig,
 } from "@/lib/menu-item-config-cache";
 import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
+import { isFoodHeroImageUrl } from "@/lib/merchantHeroMedia";
 
 const MERCHANTS_PREFIX = "/v1/merchants";
 
@@ -253,8 +254,14 @@ function normalizeMerchantListItem(item: MerchantSummary & Record<string, unknow
     (item as Record<string, unknown>).logo_url,
     (item as Record<string, unknown>).logoUrl
   );
-  const chosen = pickFirstString(bannerRaw, item.displayImage, item.imageUrl, logoRaw);
   const bannerAbs = toAbsoluteImageUrl(bannerRaw) ?? bannerRaw;
+  const displayAbs = toAbsoluteImageUrl(item.displayImage);
+  const heroBanner =
+    bannerAbs && isFoodHeroImageUrl(bannerAbs)
+      ? bannerAbs
+      : displayAbs && isFoodHeroImageUrl(displayAbs)
+        ? displayAbs
+        : null;
   const rawGallery = Array.isArray(item.galleryImages)
     ? item.galleryImages
     : Array.isArray(item.gallery_images)
@@ -262,12 +269,12 @@ function normalizeMerchantListItem(item: MerchantSummary & Record<string, unknow
       : [];
   const galleryImages = rawGallery
     .map((u) => (typeof u === "string" ? toAbsoluteImageUrl(u) ?? u.trim() : null))
-    .filter((u): u is string => Boolean(u))
-    .filter((u) => u !== bannerAbs);
+    .filter((u): u is string => Boolean(u && isFoodHeroImageUrl(u)))
+    .filter((u) => u !== heroBanner);
   return {
     ...item,
-    banner_url: bannerAbs ?? bannerRaw,
-    displayImage: toAbsoluteImageUrl(chosen),
+    banner_url: heroBanner ?? bannerAbs ?? bannerRaw,
+    displayImage: heroBanner ?? displayAbs ?? toAbsoluteImageUrl(logoRaw),
     galleryImages: galleryImages.length > 0 ? galleryImages : undefined,
     nextOpenAt: pickOpenAtValue(
       item.nextOpenAt,

@@ -72,6 +72,7 @@ export const CX = {
   },
   store: {
     footerPromo: "store.footer_promo",
+    longDistanceSheet: "store.long_distance_sheet",
   },
   shop: {
     product: (n: number) => `shop.product_${n}` as const,

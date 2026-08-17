@@ -73,25 +73,46 @@ export function formatRiderStoreWaitLabel(
   return opts?.live ? `Waiting ${clock} (live)` : `Waiting ${clock}`;
 }
 
+export function riderDisplayName(riderName: string | null | undefined): string | null {
+  const n = (riderName ?? "").trim();
+  if (!n) return null;
+  const lower = n.toLowerCase();
+  if (lower === "delivery partner" || lower === "rider") return null;
+  return n;
+}
+
+/** Merchant-visible rider phone: `contact :- 73xxxxxx81` (real first 2 + last 2). */
+export function formatMaskedRiderContact(phone: string | null | undefined): string | null {
+  const digits = String(phone ?? "").replace(/\D/g, "");
+  if (!digits) return null;
+  let local = digits;
+  if (local.length >= 12 && local.startsWith("91")) local = local.slice(-10);
+  else if (local.length === 11 && local.startsWith("0")) local = local.slice(-10);
+  else if (local.length > 10) local = local.slice(-10);
+  if (local.length < 4) return `contact :- ${local}`;
+  return `contact :- ${local.slice(0, 2)}xxxxxx${local.slice(-2)}`;
+}
+
 /** Partnersite-style status headline for the rider card. */
 export function riderStatusHeadline(
   variant: RiderCardVariant,
   riderName: string
 ): string {
+  const name = riderDisplayName(riderName);
   switch (variant) {
     case "delivered":
-      return "Order delivered";
+      return name ?? "Order delivered";
     case "cancelled":
       return "Delivery cancelled";
     case "rto":
       return "Return to origin (RTO)";
     case "picked_up":
-      return `${riderName} is out for delivery`;
+      return `${name ?? "Delivery partner"} is out for delivery`;
     case "arrived":
-      return `${riderName} has arrived`;
+      return `${name ?? "Delivery partner"} has arrived`;
     case "on_the_way":
     default:
-      return `${riderName} is on the way`;
+      return `${name ?? "Delivery partner"} is on the way`;
   }
 }
 
@@ -101,6 +122,17 @@ export function riderStatusSubline(
   arrivalSubtitle?: string | null,
   storeWaitLabel?: string | null
 ): string | null {
+  if (variant === "delivered") {
+    return riderDisplayName(riderName) ? "Order delivered" : "Delivered by delivery partner";
+  }
+  if (variant === "cancelled") {
+    const n = (riderName ?? "").trim();
+    return n ? `Assigned rider: ${n}` : "This order was cancelled before delivery.";
+  }
+  if (variant === "rto") {
+    const n = (riderName ?? "").trim();
+    return n ? `Rider: ${n}` : null;
+  }
   if (variant === "arrived") {
     return storeWaitLabel ?? "Waiting at your store for pickup";
   }

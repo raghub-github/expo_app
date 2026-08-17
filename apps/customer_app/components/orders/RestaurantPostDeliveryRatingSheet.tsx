@@ -5,13 +5,20 @@
 import { useEffect, useMemo, useState } from "react";
 import { AppText } from "@/components/AppText";
 
-import { View, TouchableOpacity, StyleSheet, TextInput, ActivityIndicator, ScrollView } from "react-native";
+import {
+  View,
+  TouchableOpacity,
+  StyleSheet,
+  TextInput,
+  ActivityIndicator,
+  ScrollView,
+  Platform,
+} from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { StoreBottomSheetShell } from "@/components/store/StoreBottomSheetShell";
 import { GatiMitraColors } from "@/constants/gatimitra";
 
-const MINT = GatiMitraColors.primaryMint;
 const ACCENT = GatiMitraColors.warmOrange;
 const TEXT = GatiMitraColors.textPrimaryNew;
 const MUTED = GatiMitraColors.textSecondary;
@@ -34,7 +41,7 @@ type RestaurantPostDeliveryRatingSheetProps = {
 
 export function RestaurantPostDeliveryRatingSheet({
   visible,
-  storeName,
+  storeName: _storeName,
   initialRating = 0,
   submitting = false,
   onClose,
@@ -56,7 +63,12 @@ export function RestaurantPostDeliveryRatingSheet({
   const canSubmit = rating >= 1 && !submitting;
 
   return (
-    <StoreBottomSheetShell visible={visible} onClose={onClose} maxHeightRatio={0.82}>
+    <StoreBottomSheetShell
+      visible={visible}
+      onClose={onClose}
+      maxHeightRatio={0.82}
+      keyboardAvoiding
+    >
       <ScrollView
         contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 16) }}
         keyboardShouldPersistTaps="handled"
@@ -75,7 +87,6 @@ export function RestaurantPostDeliveryRatingSheet({
         </View>
 
         <AppText style={styles.headline}>{headline}</AppText>
-        <AppText style={styles.storeName}>{storeName}</AppText>
 
         <TouchableOpacity
           style={styles.recommendRow}
@@ -99,13 +110,15 @@ export function RestaurantPostDeliveryRatingSheet({
         <AppText style={styles.noteLabel}>Send a note to the restaurant</AppText>
         <TextInput
           style={styles.noteInput}
-          placeholder="Add your thoughts here"
+          placeholder={reviewText.length > 0 ? undefined : "Add your thoughts here"}
           placeholderTextColor="#9CA3AF"
           value={reviewText}
           onChangeText={setReviewText}
           multiline
           maxLength={500}
           textAlignVertical="top"
+          underlineColorAndroid="transparent"
+          {...(Platform.OS === "android" ? { includeFontPadding: false } : null)}
         />
 
         <TouchableOpacity style={styles.photoRow} activeOpacity={0.8}>
@@ -150,12 +163,6 @@ const styles = StyleSheet.create({
     color: TEXT,
     textAlign: "center",
     paddingHorizontal: 20,
-  },
-  storeName: {
-    fontSize: 15,
-    color: MUTED,
-    textAlign: "center",
-    marginTop: 6,
     marginBottom: 18,
   },
   recommendRow: {
@@ -177,13 +184,15 @@ const styles = StyleSheet.create({
   },
   noteInput: {
     marginHorizontal: 20,
-    minHeight: 88,
+    minHeight: 96,
     borderWidth: 1,
     borderColor: GatiMitraColors.border,
     borderRadius: 12,
     paddingHorizontal: 14,
-    paddingVertical: 12,
-    fontSize: 14,
+    paddingTop: Platform.OS === "android" ? 14 : 12,
+    paddingBottom: 12,
+    fontSize: 15,
+    lineHeight: 22,
     color: TEXT,
     backgroundColor: "#FAFAFA",
     marginBottom: 12,

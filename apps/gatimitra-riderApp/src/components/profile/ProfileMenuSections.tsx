@@ -86,6 +86,18 @@ export function ProfileMenuSections({
             onPress: () => router.push("/my-rides"),
           },
           {
+            key: "payout-accounts",
+            icon: "card-outline",
+            iconColor: "#0F766E",
+            iconBg: "#CCFBF1",
+            title: t("profile.payoutAccount", "Payout Account"),
+            subtitle: t(
+              "profile.payoutAccountSub",
+              "Manage bank accounts & set primary for withdrawals",
+            ),
+            onPress: () => router.push("/payout-accounts"),
+          },
+          {
             key: "payment-details",
             icon: "receipt-outline",
             iconColor: "#0369A1",

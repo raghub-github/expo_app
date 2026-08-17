@@ -12,8 +12,10 @@
 const DEFAULT_TIMEOUT_MS = 5_000;
 
 function timeoutResponse(): Response {
+  // Use 408-like body but status 499 so @supabase/auth-js does not treat this as
+  // AuthRetryableFetchError (502/503/504) and burn 3×3s retries on every page load.
   return new Response(JSON.stringify({ error: "request_timeout", message: "Upstream timeout" }), {
-    status: 408,
+    status: 499,
     headers: { "Content-Type": "application/json" },
   });
 }
@@ -21,7 +23,7 @@ function timeoutResponse(): Response {
 function isQuietAuthTimeoutLogArg(arg: unknown): boolean {
   if (!arg || typeof arg !== "object") return false;
   const e = arg as { __isAuthError?: boolean; status?: number; message?: string; name?: string };
-  if (e.__isAuthError && (e.status === 408 || e.status === 0)) return true;
+  if (e.__isAuthError && (e.status === 408 || e.status === 499 || e.status === 0)) return true;
   const msg = String(e.message ?? "").toLowerCase();
   return (
     msg.includes("upstream timeout") ||

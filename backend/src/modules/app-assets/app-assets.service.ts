@@ -16,6 +16,7 @@ export type AppStaticAssetRow = {
   r2Key: string | null;
   proxyUrl: string | null;
   sortOrder: number;
+  updatedAt: string | null;
 };
 
 export type AppStaticAssetClientItem = {
@@ -26,6 +27,7 @@ export type AppStaticAssetClientItem = {
   proxyUrl: string | null;
   url: string | null;
   sortOrder: number;
+  updatedAt: string | null;
 };
 
 /** Signed GET URLs for mobile — phone hits R2 directly (avoids LAN proxy bottleneck). */
@@ -41,6 +43,12 @@ function mapRow(r: Record<string, unknown>): AppStaticAssetRow {
     r2Key: r.r2_key != null ? String(r.r2_key) : null,
     proxyUrl: r.proxy_url != null ? String(r.proxy_url) : null,
     sortOrder: Number(r.sort_order ?? 0),
+    updatedAt:
+      r.updated_at instanceof Date
+        ? r.updated_at.toISOString()
+        : r.updated_at != null
+          ? String(r.updated_at)
+          : null,
   };
 }
 
@@ -66,6 +74,7 @@ async function toClientItem(row: AppStaticAssetRow): Promise<AppStaticAssetClien
     proxyUrl,
     url,
     sortOrder: row.sortOrder,
+    updatedAt: row.updatedAt,
   };
 }
 
@@ -105,7 +114,7 @@ export async function listAppStaticAssets(app: AppStaticAssetApp): Promise<AppSt
   await ensureAppStaticAssetSeedsOnce().catch(() => undefined);
   const sql = getSql();
   const rows = await sql`
-    SELECT id, app, section, label, description, r2_key, proxy_url, sort_order
+    SELECT id, app, section, label, description, r2_key, proxy_url, sort_order, updated_at
     FROM app_static_assets
     WHERE app = ${app}
     ORDER BY section ASC, sort_order ASC, id ASC
@@ -116,7 +125,7 @@ export async function listAppStaticAssets(app: AppStaticAssetApp): Promise<AppSt
 export async function getAppStaticAssetById(id: string): Promise<AppStaticAssetRow | null> {
   const sql = getSql();
   const rows = await sql`
-    SELECT id, app, section, label, description, r2_key, proxy_url, sort_order
+    SELECT id, app, section, label, description, r2_key, proxy_url, sort_order, updated_at
     FROM app_static_assets
     WHERE id = ${id}
     LIMIT 1
@@ -145,7 +154,7 @@ export async function setAppStaticAssetImage(
       proxy_url = ${proxyUrl},
       updated_at = now()
     WHERE id = ${id}
-    RETURNING id, app, section, label, description, r2_key, proxy_url, sort_order
+    RETURNING id, app, section, label, description, r2_key, proxy_url, sort_order, updated_at
   `;
   const row = (rows as Record<string, unknown>[])[0];
   return row ? mapRow(row) : null;
@@ -160,7 +169,7 @@ export async function clearAppStaticAssetImage(id: string): Promise<AppStaticAss
       proxy_url = NULL,
       updated_at = now()
     WHERE id = ${id}
-    RETURNING id, app, section, label, description, r2_key, proxy_url, sort_order
+    RETURNING id, app, section, label, description, r2_key, proxy_url, sort_order, updated_at
   `;
   const row = (rows as Record<string, unknown>[])[0];
   return row ? mapRow(row) : null;

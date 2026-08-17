@@ -52,6 +52,8 @@ export type GeoChildRow = {
   rider_rate_summaries?: RiderRateSummaries | null;
   /** Merged platform offer bindings up the ancestor chain (closest wins per offer id). */
   effective_platform_offers?: GeoEffectivePlatformOffer[] | null;
+  /** State-only: Super Admin rider-online checkout gate. Null on non-state rows. */
+  require_rider_online_check?: boolean | null;
 };
 
 export type GeoSearchRow = {
@@ -83,6 +85,7 @@ export type GeoSearchRow = {
   customer_ride_delivery_slabs_preview?: string | null;
   rider_rate_summaries?: RiderRateSummaries | null;
   effective_platform_offers?: GeoEffectivePlatformOffer[] | null;
+  require_rider_online_check?: boolean | null;
 };
 
 export type GeoPricingRuleRow = {

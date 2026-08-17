@@ -248,3 +248,42 @@ export function pickupTokenToQrDataUri(
     return "";
   }
 }
+
+/**
+ * HTML table QR — expo-print / Android WebView often drop PNG data-URI images.
+ * Partner Site and Merchant App share this so the printed ticket always matches.
+ */
+export function pickupTokenToQrTableHtml(
+  token: string | null | undefined,
+  modulePx = 3
+): string {
+  const value = String(token ?? "").trim();
+  if (!value) return "";
+  try {
+    const factory = resolveQrFactory();
+    if (!factory) return "";
+    const qr = createQrSymbol(factory, value);
+    const size = qr.modules.size;
+    const quiet = 4;
+    const dim = size + quiet * 2;
+    const px = Math.max(2, Math.floor(modulePx));
+    const rows: string[] = [];
+    for (let y = 0; y < dim; y++) {
+      const cells: string[] = [];
+      const row = y - quiet;
+      for (let x = 0; x < dim; x++) {
+        const col = x - quiet;
+        const dark =
+          row >= 0 && row < size && col >= 0 && col < size && Boolean(qr.modules.get(row, col));
+        cells.push(
+          `<td style="width:${px}px;height:${px}px;padding:0;margin:0;border:0;background:${dark ? "#000" : "#fff"};font-size:0;line-height:0;"></td>`
+        );
+      }
+      rows.push(`<tr>${cells.join("")}</tr>`);
+    }
+    const side = dim * px;
+    return `<table class="qr-table" cellspacing="0" cellpadding="0" border="0" style="border-collapse:collapse;border-spacing:0;margin:10px auto 0;width:${side}px;height:${side}px;">${rows.join("")}</table>`;
+  } catch {
+    return "";
+  }
+}

@@ -6,6 +6,12 @@ import { client as sql } from '@/lib/drizzle';
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
+function coerceNumeric(raw: unknown): number | null {
+  if (raw == null || raw === '') return null;
+  const n = typeof raw === 'number' ? raw : Number(String(raw).trim());
+  return Number.isFinite(n) ? n : null;
+}
+
 function normalizeStoreRecordRow(row: Record<string, unknown>): Record<string, unknown> {
   const bannerUrl =
     normalizeMerchantStoreMediaUrl(row.banner_url as string | null | undefined) ??
@@ -15,10 +21,16 @@ function normalizeStoreRecordRow(row: Record<string, unknown>): Record<string, u
         .map((u) => normalizeMerchantStoreMediaUrl(String(u)) ?? String(u).trim())
         .filter((u): u is string => typeof u === 'string' && u.length > 0)
     : row.gallery_images;
+  const deliveryRadiusKm = coerceNumeric(row.delivery_radius_km);
+  const minOrder = coerceNumeric(row.min_order_amount);
+  const prep = coerceNumeric(row.avg_preparation_time_minutes);
   return {
     ...row,
     banner_url: bannerUrl ?? row.banner_url,
     gallery_images: galleryImages ?? row.gallery_images,
+    ...(deliveryRadiusKm != null ? { delivery_radius_km: deliveryRadiusKm } : {}),
+    ...(minOrder != null ? { min_order_amount: minOrder } : {}),
+    ...(prep != null ? { avg_preparation_time_minutes: prep } : {}),
   };
 }
 
@@ -33,7 +45,12 @@ export async function GET(req: NextRequest) {
     }
 
     const trimmed = storeId.trim();
-    const gate = await assertStoreAccess(trimmed);
+    let gate = await assertStoreAccess(trimmed);
+    // Brief cookie/session race — one soft retry avoids flaky 401s during Menu load.
+    if (!gate.ok && gate.status === 401) {
+      await new Promise((r) => setTimeout(r, 150));
+      gate = await assertStoreAccess(trimmed);
+    }
     if (!gate.ok) {
       return NextResponse.json({ error: gate.error }, { status: gate.status });
     }

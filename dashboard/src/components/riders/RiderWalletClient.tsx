@@ -8,6 +8,7 @@ import { RiderSectionHeader } from "./RiderSectionHeader";
 import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
 import { AddPenaltyModal } from "./AddPenaltyModal";
 import { AddAmountModal } from "./AddAmountModal";
+import { RiderPayoutAccountsSideSheet } from "./RiderPayoutAccountsSideSheet";
 import { useRiderAccessQuery } from "@/hooks/queries/useRiderAccessQuery";
 import { useGetRiderWalletQuery, useGetRiderLedgerQuery } from "@/store/api/riderApi";
 import {
@@ -29,6 +30,7 @@ import {
   ArrowUpRight,
   MoreVertical,
   ChevronRight,
+  Building2,
 } from "lucide-react";
 import { formatLedgerDisplay } from "@/lib/riders/rider-ledger-display";
 
@@ -88,9 +90,19 @@ function WalletStatCard({
   tone: WalletStatTone;
   negative?: boolean;
 }) {
-  const styles = TONE_STYLES[tone];
+  const n = Number(value);
+  const isNegativeBalance = negative || n < 0;
+  const styles = isNegativeBalance && tone !== "red" && n < 0
+    ? TONE_STYLES.red
+    : TONE_STYLES[tone];
   return (
-    <div className="flex items-center gap-3 rounded-xl border border-gray-100 bg-white px-3 py-3 shadow-[0_1px_2px_rgba(15,23,42,0.04)]">
+    <div
+      className={`flex items-center gap-3 rounded-xl border px-3 py-3 shadow-[0_1px_2px_rgba(15,23,42,0.04)] ${
+        isNegativeBalance && n < 0
+          ? "border-red-200 bg-red-50"
+          : "border-gray-100 bg-white"
+      }`}
+    >
       <div
         className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-xl ${styles.wrap}`}
       >
@@ -100,7 +112,7 @@ function WalletStatCard({
         <p className="text-[11px] font-medium uppercase tracking-wide text-gray-500">{label}</p>
         <p
           className={`mt-0.5 text-base font-bold tabular-nums ${
-            negative ? "text-red-600" : "text-gray-900"
+            isNegativeBalance ? "text-red-600" : "text-gray-900"
           }`}
         >
           {formatWalletAmount(value, negative)}
@@ -168,6 +180,7 @@ export function RiderWalletClient() {
   const [error, setError] = useState<string | null>(null);
   const [addPenaltyOpen, setAddPenaltyOpen] = useState(false);
   const [addAmountOpen, setAddAmountOpen] = useState(false);
+  const [payoutAccountsOpen, setPayoutAccountsOpen] = useState(false);
 
   const { data: riderAccess } = useRiderAccessQuery();
   const canAddPenalty =
@@ -336,11 +349,21 @@ export function RiderWalletClient() {
             )}
 
             <div className="border-b border-gray-100 px-4 py-4 sm:px-6">
-              <div className="flex items-center gap-2.5">
-                <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-violet-50 text-violet-600">
-                  <Wallet className="h-5 w-5" aria-hidden />
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex items-center gap-2.5">
+                  <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-violet-50 text-violet-600">
+                    <Wallet className="h-5 w-5" aria-hidden />
+                  </div>
+                  <h2 className="text-lg font-bold text-gray-900">Current Wallet</h2>
                 </div>
-                <h2 className="text-lg font-bold text-gray-900">Current Wallet</h2>
+                <button
+                  type="button"
+                  onClick={() => setPayoutAccountsOpen(true)}
+                  className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-violet-200 bg-violet-50 px-3 py-1.5 text-xs font-semibold text-violet-700 hover:bg-violet-100"
+                >
+                  <Building2 className="h-3.5 w-3.5" aria-hidden />
+                  View Payout account
+                </button>
               </div>
             </div>
 
@@ -674,6 +697,12 @@ export function RiderWalletClient() {
               void refetchWallet();
               void refetchLedger();
             }}
+          />
+          <RiderPayoutAccountsSideSheet
+            riderId={riderId}
+            riderName={rider?.name ?? riderFromContext?.name ?? null}
+            open={payoutAccountsOpen}
+            onClose={() => setPayoutAccountsOpen(false)}
           />
           <AddAmountModal
             riderId={riderId}

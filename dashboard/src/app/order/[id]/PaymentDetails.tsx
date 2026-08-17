@@ -176,6 +176,7 @@ interface PaymentDetailsModalProps {
     deliveryFee: number | null;
     deliveryFeeQuoted?: number | null;
     deliveryFeeWaived?: boolean;
+    taxes?: number | null;
     gatiCashUsed?: number | null;
   };
 }
@@ -367,6 +368,7 @@ function PaymentDetailsModal({
                 <th className={TH}>GatiCash Used</th>
                 <th className={TH}>CTM</th>
                 <th className={TH}>Delivery Fee</th>
+                <th className={TH}>Taxes</th>
                 <th className={TH}>PG Name</th>
                 <th className={TH}>PG Transaction Id</th>
                 <th className={TH}>Refunded</th>
@@ -432,6 +434,9 @@ function PaymentDetailsModal({
                       className="text-[11px] text-gray-900"
                     />
                   </td>
+                  <td className={`${TD} tabular-nums`}>
+                    {formatNum(record.taxes ?? summary.taxes)}
+                  </td>
                   <td className={TD}>{formatPlain(record.pgName)}</td>
                   <td className={`${TD} font-mono`}>
                     {formatPlain(record.pgTransactionId)}
@@ -461,7 +466,7 @@ function PaymentDetailsModal({
               })}
               {records.length === 0 && (
                 <tr>
-                  <td className="py-4 px-4 text-sm text-gray-500 text-center" colSpan={15}>
+                  <td className="py-4 px-4 text-sm text-gray-500 text-center" colSpan={16}>
                     No payment records found for this order.
                   </td>
                 </tr>
@@ -788,6 +793,8 @@ export default function PaymentDetails({
     const merchantFromItems = orderItemsPricing?.totalOrderAmount;
     const itemsDiscount = customerDiscountFromOrderPricing(orderItemsPricing);
     const itemsDelivery = customerDeliveryFromOrderPricing(orderItemsPricing);
+    const taxesFromItems =
+      orderItemsPricing?.customer?.gst ?? orderItemsPricing?.gst ?? null;
 
     const pickMerchantAmount = (
       apiCtm: number | null | undefined,
@@ -877,6 +884,12 @@ export default function PaymentDetails({
           ? delivery.amount
           : null;
       const gatiForRows = paymentDetail.gatiCashUsed ?? null;
+      const taxesResolved =
+        paymentDetail.taxes != null && paymentDetail.taxes > 0
+          ? paymentDetail.taxes
+          : taxesFromItems != null && taxesFromItems > 0
+            ? taxesFromItems
+            : null;
 
       const refundAmtResolved =
         paymentDetail.refundAmount != null && paymentDetail.refundAmount > 0
@@ -914,6 +927,7 @@ export default function PaymentDetails({
           ...r,
           ctm: totalCtm,
           deliveryFee: rowDeliveryFee ?? r.deliveryFee,
+          taxes: r.taxes ?? taxesResolved,
           paymentMode: r.paymentMode ?? paymentMode,
           source: r.source ?? source,
           gatiCashUsed: gati != null && gati > 0 ? gati : null,
@@ -936,6 +950,7 @@ export default function PaymentDetails({
         deliveryFee: delivery.amount,
         deliveryFeeQuoted: delivery.quoted,
         deliveryFeeWaived: delivery.waived,
+        taxes: taxesResolved,
         source,
         paymentMode,
         partialRefunded: isPartialResolved,
@@ -975,6 +990,7 @@ export default function PaymentDetails({
       deliveryFee: delivery.amount,
       deliveryFeeQuoted: delivery.quoted,
       deliveryFeeWaived: delivery.waived,
+      taxes: taxesFromItems != null && taxesFromItems > 0 ? taxesFromItems : null,
       source,
       paymentMode,
       partialRefunded: false,
@@ -1000,6 +1016,7 @@ export default function PaymentDetails({
           gatiCashUsed: null,
           ctm: totalCtm,
           deliveryFee: delivery.amount,
+          taxes: taxesFromItems != null && taxesFromItems > 0 ? taxesFromItems : null,
           pgName: null,
           pgTransactionId: null,
         },
@@ -1172,6 +1189,7 @@ export default function PaymentDetails({
           deliveryFee: resolved.deliveryFeeWaived ? 0 : resolved.deliveryFee,
           deliveryFeeQuoted: resolved.deliveryFeeQuoted,
           deliveryFeeWaived: resolved.deliveryFeeWaived,
+          taxes: resolved.taxes,
           gatiCashUsed: resolved.gatiCashUsed,
         }}
       />

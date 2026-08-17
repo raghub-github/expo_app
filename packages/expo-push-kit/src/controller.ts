@@ -1,4 +1,4 @@
-import { AppState, Platform, type AppStateStatus, type NativeEventSubscription } from "react-native";
+import { AppState, Platform, InteractionManager, type AppStateStatus, type NativeEventSubscription } from "react-native";
 import {
   isExpoGoRuntime,
   loadNotificationsModule,
@@ -44,6 +44,24 @@ function deviceType(): "ios" | "android" | "web" | "unknown" {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
+}
+
+let lastOpenSig = "";
+let lastOpenAt = 0;
+
+function emitNotificationOpen(
+  options: PushControllerOptions,
+  payload: PushNotificationOpenPayload,
+): void {
+  const sig = `${payload.title ?? ""}|${JSON.stringify(payload.data ?? {})}`;
+  const now = Date.now();
+  if (sig === lastOpenSig && now - lastOpenAt < 2500) return;
+  lastOpenSig = sig;
+  lastOpenAt = now;
+  const run = () => options.onNotificationOpen?.(payload);
+  InteractionManager.runAfterInteractions(() => {
+    setTimeout(run, 350);
+  });
 }
 
 function notificationIdFromData(data: Record<string, unknown>): string | null {
@@ -365,7 +383,7 @@ export function createPushPermissionController(
           data: (c.data ?? {}) as Record<string, unknown>,
         };
         void reportClickIfPresent(options.apiBaseUrl, options.getAuth, payload.data);
-        options.onNotificationOpen?.(payload);
+        emitNotificationOpen(options, payload);
       });
     }
 
@@ -400,7 +418,7 @@ export function createPushPermissionController(
             data: (c.data ?? {}) as Record<string, unknown>,
           };
           void reportClickIfPresent(options.apiBaseUrl, options.getAuth, payload.data);
-          options.onNotificationOpen?.(payload);
+          emitNotificationOpen(options, payload);
         }
       } catch {
         // ignore
@@ -412,6 +430,9 @@ export function createPushPermissionController(
     if (lifecycleStarted) return;
     lifecycleStarted = true;
     void setNotificationHandlerDefaults();
+    if (options.androidChannels?.length) {
+      void ensureAndroidChannels(options.androidChannels);
+    }
     void attachNotificationListeners();
     void refresh({ syncIfGranted: true });
 

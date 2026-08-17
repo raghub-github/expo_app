@@ -193,6 +193,7 @@ type ServiceFlagRow = {
   has_children: boolean;
   latitude: string | null;
   longitude: string | null;
+  require_rider_online_check?: boolean | null;
 };
 
 async function withEffectiveBaseFees(
@@ -314,6 +315,8 @@ async function geoFetchChildRowSnapshot(
     customer_ride_delivery_slabs_preview: null,
     rider_rate_summaries: null,
     effective_platform_offers: null,
+    require_rider_online_check:
+      level === "state" ? (f.require_rider_online_check !== false) : null,
   });
 
   if (level === "state") {
@@ -321,7 +324,8 @@ async function geoFetchChildRowSnapshot(
       SELECT s.is_food_enabled, s.is_parcel_enabled, s.is_ride_enabled,
              s.food_override, s.parcel_override, s.ride_override,
              EXISTS (SELECT 1 FROM regions r2 WHERE r2.state_id = s.id LIMIT 1) AS has_children,
-             NULL::numeric AS latitude, NULL::numeric AS longitude
+             NULL::numeric AS latitude, NULL::numeric AS longitude,
+             s.require_rider_online_check
       FROM states s WHERE s.id = ${id}::uuid`;
     if (!r) throw new Error("Geo state not found");
     return withEffectiveBaseFees(level, id, base(r));
@@ -492,11 +496,57 @@ export async function geoGetChildren(params: {
       geo_effective_platform_offers_json(ch.kind::geo_pricing_level, ch.id) AS effective_platform_offers
     FROM ch
   `;
-  return raw.map((r) => ({
+  const mapped = raw.map((r) => ({
     ...r,
     rider_rate_summaries: parseRiderRateSummaries(r.rider_rate_summaries),
     effective_platform_offers: parseGeoEffectivePlatformOffers(r.effective_platform_offers) ?? [],
+    require_rider_online_check: r.kind === "state" ? true : null,
   }));
+  return attachRiderOnlineCheckFlags(mapped);
+}
+
+async function attachRiderOnlineCheckFlags(rows: GeoChildRow[]): Promise<GeoChildRow[]> {
+  const stateIds = rows.filter((r) => r.kind === "state").map((r) => r.id);
+  if (stateIds.length === 0) return rows;
+  try {
+    const sql = getSql();
+    const flags = await sql<{ id: string; require_rider_online_check: boolean }[]>`
+      SELECT id::text AS id, require_rider_online_check
+      FROM states
+      WHERE id IN ${sql(stateIds)}
+    `;
+    const byId = new Map(flags.map((f) => [f.id, f.require_rider_online_check !== false]));
+    return rows.map((r) =>
+      r.kind === "state"
+        ? { ...r, require_rider_online_check: byId.get(r.id) ?? true }
+        : r
+    );
+  } catch {
+    return rows;
+  }
+}
+
+export async function geoSetRiderOnlineCheck(params: {
+  stateId: string;
+  value: boolean;
+}): Promise<{ require_rider_online_check: boolean }> {
+  const sql = getSql();
+  // Literal TRUE/FALSE — do not bind a JS boolean through pgbouncer (unnamed-statement collisions).
+  const [row] = params.value
+    ? await sql<{ id: string; require_rider_online_check: boolean }[]>`
+        UPDATE states
+        SET require_rider_online_check = TRUE
+        WHERE id = ${params.stateId}::uuid
+        RETURNING id::text AS id, require_rider_online_check
+      `
+    : await sql<{ id: string; require_rider_online_check: boolean }[]>`
+        UPDATE states
+        SET require_rider_online_check = FALSE
+        WHERE id = ${params.stateId}::uuid
+        RETURNING id::text AS id, require_rider_online_check
+      `;
+  if (!row) throw new Error("State not found");
+  return { require_rider_online_check: row.require_rider_online_check !== false };
 }
 
 export async function geoSearchLocations(params: {

@@ -11,6 +11,7 @@ import { useAppAssetsStore } from "@/store/appAssetsStore";
 
 const prefetched = new Set<string>();
 const RETRY_MS = [0, 2_000, 5_000, 10_000];
+const FOREGROUND_RELOAD_MIN_MS = 8_000;
 
 function prefetchRemainingAssetUrls(assets: Record<string, { url: string | null }>) {
   for (const item of Object.values(assets)) {
@@ -56,6 +57,7 @@ export function AppAssetsPrefetch() {
   const attemptRef = useRef(0);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const networkDoneRef = useRef(false);
+  const lastForegroundReloadAt = useRef(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -97,10 +99,16 @@ export function AppAssetsPrefetch() {
       void run();
 
       const sub = AppState.addEventListener("change", (state: AppStateStatus) => {
-        if (state === "active" && !networkDoneRef.current) {
+        if (state !== "active") return;
+        if (!networkDoneRef.current) {
           attemptRef.current = 0;
           void run();
+          return;
         }
+        const now = Date.now();
+        if (now - lastForegroundReloadAt.current < FOREGROUND_RELOAD_MIN_MS) return;
+        lastForegroundReloadAt.current = now;
+        void loadAppAssets();
       });
       removeAppState = () => sub.remove();
     };

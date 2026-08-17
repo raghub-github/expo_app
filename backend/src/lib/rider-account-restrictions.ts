@@ -354,6 +354,7 @@ export async function getRiderDispatchBlockSnapshot(riderId: number): Promise<{
   accountRestricted: boolean;
   allServicesBlocked: boolean;
   blockedServices: RiderDispatchService[];
+  penaltyDutyStopped: boolean;
 }> {
   const restrictions = await getRiderAccountRestrictions(riderId);
   return {
@@ -363,6 +364,7 @@ export async function getRiderDispatchBlockSnapshot(riderId: number): Promise<{
       (s): s is RiderDispatchService =>
         s === "food" || s === "parcel" || s === "person_ride"
     ),
+    penaltyDutyStopped: restrictions.penaltyDutyStopped,
   };
 }
 
@@ -438,6 +440,21 @@ export async function syncRiderDutyWithRestrictions(riderId: number): Promise<{
   const subscriptionDutyStopped = await isRiderSubscriptionDispatchBlocked(riderId);
 
   if (subscriptionDutyStopped) {
+    if (row?.status === "ON") {
+      await forceRiderOffDutyForSubscriptionPenalty(riderId);
+    }
+    return {
+      isOnDuty: false,
+      allowedServiceTypes: [],
+      blockedServiceTypes,
+      accountRestricted: restrictions.accountRestricted,
+      allServicesBlacklisted: restrictions.allServicesBlacklisted,
+      lastUpdated: new Date().toISOString(),
+    };
+  }
+
+  // Wallet penalty stop — same AUTO_OFF path as subscription (toggle must not stay ON).
+  if (restrictions.penaltyDutyStopped) {
     if (row?.status === "ON") {
       await forceRiderOffDutyForSubscriptionPenalty(riderId);
     }

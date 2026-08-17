@@ -143,6 +143,19 @@ async function resolveAuthenticatedUser(
         return { ok: true, user: sessionUser };
       }
 
+      // Cookie / refresh races: getUser can briefly fail while getSession still
+      // has a valid user — prefer that over a flaky 401 that breaks Menu.
+      try {
+        const {
+          data: { session },
+        } = await supabaseServer.auth.getSession();
+        if (session?.user?.id) {
+          return { ok: true, user: session.user };
+        }
+      } catch {
+        /* ignore */
+      }
+
       if (userError && isNetworkOrTransientError(userError)) {
         if (attempt < maxAttempts - 1) continue;
         return { ok: false, error: 'Auth service unavailable', status: 503 };

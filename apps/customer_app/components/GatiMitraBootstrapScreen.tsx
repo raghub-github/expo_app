@@ -11,8 +11,7 @@ import {
 } from "react-native";
 import { StatusBar } from "expo-status-bar";
 import { LinearGradient } from "expo-linear-gradient";
-import * as NavigationBar from "expo-navigation-bar";
-import * as SystemUI from "expo-system-ui";
+import { applyAndroidNavigationChrome } from "@/lib/androidEdgeToEdgeChrome";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import Animated, {
   Easing,
@@ -35,16 +34,9 @@ const SPINNER_BOTTOM_GAP = 28;
 function applySplashStatusBarChrome() {
   NativeStatusBar.setHidden(false, "none");
   if (Platform.OS === "android") {
-    NativeStatusBar.setTranslucent(true);
-    // Transparent lets the mint gradient show through under edge-to-edge chrome.
-    NativeStatusBar.setBackgroundColor("transparent", true);
     NativeStatusBar.setBarStyle("light-content", true);
+    void applyAndroidNavigationChrome({ buttonStyle: "light" }).catch(() => {});
   }
-  void SystemUI.setBackgroundColorAsync(SPLASH_STATUS_BAR).catch(() => {});
-  void NavigationBar.setVisibilityAsync("visible").catch(() => {});
-  void NavigationBar.setPositionAsync("relative").catch(() => {});
-  void NavigationBar.setBackgroundColorAsync(SPLASH_STATUS_BAR).catch(() => {});
-  void NavigationBar.setButtonStyleAsync("light").catch(() => {});
 }
 
 export type GatiMitraBootstrapScreenProps = {

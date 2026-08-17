@@ -6,7 +6,9 @@
  *   1. service enabled + Prevent Services  -> resolveGeoServiceAvailability (existing)
  *   2. self-pickup / delivery / internal-rider / 3PL toggles + service radius
  *      -> resolveGeoCoverage (dispatch-extension layer)
- *   3. rider availability within the service radius (the genuinely new gate)
+ *   3. rider availability within the service radius (the genuinely new gate),
+ *      **unless** Super Admin turned off `states.require_rider_online_check`
+ *      for that state (Geo & coverage → Rider online check).
  *
  * Rules (per product decisions):
  *   - Self-pickup: skip the rider check entirely (allow if self-pickup enabled here).
@@ -26,6 +28,7 @@ import {
 import { resolveGeoCoverage } from "./geo-coverage.js";
 import { getSql } from "../db/client.js";
 import { queryRiderAvailabilityCandidates } from "@gatimitra/rider-availability";
+import { stateNameFromPincode } from "../modules/billing/pincodePrefixToState.js";
 
 export type FulfillmentMode = "self_pickup" | "delivery";
 
@@ -52,7 +55,112 @@ export type DispatchServiceabilityResult = {
   serviceRadiusMeters: number;
   /** True when placement is allowed only because 3PL is enabled (no internal rider). */
   usedTpl: boolean;
+  /**
+   * Super Admin Geo & coverage per-state toggle. When false, the nearby-rider
+   * gate is skipped (order may still be placed). Defaults true.
+   */
+  riderOnlineCheckRequired: boolean;
 };
+
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+async function flagFromStateRow(
+  sql: ReturnType<typeof getSql>,
+  stateId?: string | null,
+  stateName?: string | null
+): Promise<boolean | null> {
+  const id = String(stateId ?? "").trim();
+  if (id && UUID_RE.test(id)) {
+    const [row] = (await sql`
+      SELECT require_rider_online_check
+      FROM states
+      WHERE id = ${id}::uuid
+      LIMIT 1
+    `) as Array<{ require_rider_online_check: boolean }>;
+    if (row) return row.require_rider_online_check !== false;
+  }
+  const name = String(stateName ?? "").trim();
+  if (!name) return null;
+  const [row] = (await sql`
+    SELECT require_rider_online_check
+    FROM states
+    WHERE LOWER(TRIM(name)) = LOWER(TRIM(${name}))
+       OR LOWER(REPLACE(TRIM(name), ' ', '')) = LOWER(REPLACE(TRIM(${name}), ' ', ''))
+    LIMIT 1
+  `) as Array<{ require_rider_online_check: boolean }>;
+  return row ? row.require_rider_online_check !== false : null;
+}
+
+/**
+ * State flag: ON = run nearby-rider gate; OFF = skip.
+ * Resolves state from UUID, name, pincode prefix, reverse-geocode chain, then merchant store.
+ */
+async function isRiderOnlineCheckRequired(opts: {
+  stateId?: string | null;
+  stateName?: string | null;
+  pincode?: string | null;
+  lat: number;
+  lng: number;
+  merchantStoreId?: string | null;
+}): Promise<boolean> {
+  try {
+    const sql = getSql();
+
+    const direct = await flagFromStateRow(sql, opts.stateId, opts.stateName);
+    if (direct != null) return direct;
+
+    const fromPinPrefix = await flagFromStateRow(sql, null, stateNameFromPincode(opts.pincode));
+    if (fromPinPrefix != null) return fromPinPrefix;
+
+    if (Number.isFinite(opts.lat) && Number.isFinite(opts.lng)) {
+      const { resolveGeoLocation } = await import("../modules/billing/geoLocationResolver.js");
+      const geo = await resolveGeoLocation({
+        livePincode: opts.pincode,
+        liveState: opts.stateName,
+        latitude: opts.lat,
+        longitude: opts.lng,
+      });
+      const fromGeo = await flagFromStateRow(
+        sql,
+        geo.refs?.state ?? null,
+        geo.stateName ?? stateNameFromPincode(geo.pincode)
+      );
+      if (fromGeo != null) return fromGeo;
+    }
+
+    const storeKey = String(opts.merchantStoreId ?? "").trim();
+    if (storeKey) {
+      const numericId = Number(storeKey);
+      const rows = Number.isFinite(numericId) && numericId >= 1
+        ? ((await sql`
+            SELECT state, postal_code
+            FROM merchant_stores
+            WHERE id = ${numericId}
+               OR LOWER(TRIM(COALESCE(store_id, ''))) = LOWER(TRIM(${storeKey}))
+            LIMIT 1
+          `) as Array<{ state: string | null; postal_code: string | null }>)
+        : ((await sql`
+            SELECT state, postal_code
+            FROM merchant_stores
+            WHERE LOWER(TRIM(COALESCE(store_id, ''))) = LOWER(TRIM(${storeKey}))
+            LIMIT 1
+          `) as Array<{ state: string | null; postal_code: string | null }>);
+      const store = rows[0];
+      if (store) {
+        const fromStore = await flagFromStateRow(
+          sql,
+          null,
+          store.state ?? stateNameFromPincode(store.postal_code)
+        );
+        if (fromStore != null) return fromStore;
+      }
+    }
+  } catch (err) {
+    console.warn("[dispatch-serviceability] rider-online-check lookup failed; default ON", err);
+  }
+  return true;
+}
 
 const SERVICE_LABEL: Record<DispatchServiceType, string> = {
   food: "Food delivery",
@@ -107,6 +215,7 @@ export async function checkDispatchServiceability(args: {
     lng: number;
     pincode?: string | null;
     state?: string | null;
+    merchantStoreId?: string | null;
   };
 }): Promise<DispatchServiceabilityResult> {
   const { serviceType, fulfillment, pickup } = args;
@@ -143,6 +252,7 @@ export async function checkDispatchServiceability(args: {
     ridersAvailable: 0,
     serviceRadiusMeters: cov.serviceRadiusMeters,
     usedTpl: false,
+    riderOnlineCheckRequired: true,
   };
 
   if (!avail.found) {
@@ -200,6 +310,24 @@ export async function checkDispatchServiceability(args: {
     };
   }
 
+  const riderOnlineCheckRequired = await isRiderOnlineCheckRequired({
+    stateId: avail.stateId,
+    stateName: avail.stateName ?? pickup.state,
+    pincode: avail.pincode ?? pickup.pincode,
+    lat: pickup.lat,
+    lng: pickup.lng,
+    merchantStoreId: pickup.merchantStoreId,
+  });
+  if (!riderOnlineCheckRequired) {
+    return {
+      serviceable: true,
+      reason: "serviceable",
+      message: "",
+      ...base,
+      riderOnlineCheckRequired: false,
+    };
+  }
+
   let ridersAvailable = 0;
   if (cov.internalRiderEnabled) {
     ridersAvailable = await countAvailableRidersWithinServiceRadius(
@@ -225,7 +353,7 @@ export async function checkDispatchServiceability(args: {
   return {
     serviceable: false,
     reason: "no_rider_available",
-    message: "No riders are currently available. Please try again shortly.",
+    message: "All nearby delivery partners are currently busy. Please try again shortly.",
     ...base,
     ridersAvailable,
   };

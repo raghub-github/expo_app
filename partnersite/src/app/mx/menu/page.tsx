@@ -182,7 +182,6 @@ import { PARTNER_PAGE_HEADERS } from '@/lib/partner-page-headers'
 import { MobileHamburgerButton } from '@/components/MobileHamburgerButton'
 import { 
   fetchStoreById, 
-  fetchStoreByName, 
   fetchMenuItems,
   deleteMenuItem, 
   getImageUploadStatus, 
@@ -197,6 +196,7 @@ import {
 import { MenuItemsGridSkeleton, MenuPageSkeleton } from '@/components/PageSkeleton'
 import { R2Image } from '@/components/R2Image'
 import { CatalogItemPhotoModal } from '@/components/menu/CatalogItemPhotoModal'
+import { CustomerMenuMobilePreview } from '@/components/menu/CustomerMenuMobilePreview'
 import {
   CatalogPhotoUploadOptionsModal,
   type CatalogPhotoUploadCallbacks,
@@ -363,6 +363,9 @@ interface ItemFormProps {
     avg_preparation_time_minutes?: number | null;
     packaging_charge_amount?: number | null;
   };
+  /** Already-loaded menu rows for Customer App–style phone preview (no extra fetch). */
+  previewMenuItems?: MenuItem[];
+  storeName?: string | null;
 }
 
 export const dynamic = 'force-dynamic'
@@ -432,6 +435,8 @@ function ItemForm(props: ItemFormProps) {
     onNormalizeMenuItemImage,
     cuisineOptions,
     storeDefaults,
+    previewMenuItems = [],
+    storeName = null,
   } = props;
 
   const categoryPickerRef = React.useRef<HTMLDivElement>(null);
@@ -551,19 +556,25 @@ function ItemForm(props: ItemFormProps) {
 
   const fileInputRef = React.useRef<HTMLInputElement>(null);
 
-  // Auto-calculate selling price from base discount (tax comes from agreement later, not shown here)
+  // Keep selling_price in sync when merchant edits base on legacy paths.
+  // Merchant UI now edits Selling price only; on add, base mirrors selling.
+  // Do not overwrite selling from base while editing an existing item (price is frozen).
   useEffect(() => {
-    const base = parseFloat(formData.base_price) || 0;
-    const discount = parseFloat(formData.discount_percentage) || 0;
-    if (base > 0) {
-      const selling = base - (base * discount / 100);
-      if (!isNaN(selling)) {
-        setFormData((prev: any) => ({ ...prev, selling_price: selling.toFixed(2) }));
-      }
-    } else {
-      setFormData((prev: any) => ({ ...prev, selling_price: '' }));
+    if (isEdit || readOnly) return;
+    const sell = parseFloat(formData.selling_price) || 0;
+    if (sell > 0) {
+      setFormData((prev: any) => {
+        if (String(prev.base_price) === sell.toFixed(2) && String(prev.discount_percentage || '0') === '0') {
+          return prev;
+        }
+        return {
+          ...prev,
+          base_price: sell.toFixed(2),
+          discount_percentage: prev.discount_percentage === '' || prev.discount_percentage == null ? '0' : prev.discount_percentage,
+        };
+      });
     }
-  }, [formData.base_price, formData.discount_percentage, setFormData]);
+  }, [formData.selling_price, isEdit, readOnly, setFormData]);
 
   const [activeSection, setActiveSection] = useState<'main' | 'customization'>('main');
   const [showFoodDropdown, setShowFoodDropdown] = useState(false);
@@ -727,51 +738,30 @@ function ItemForm(props: ItemFormProps) {
   return (
     <div className="bg-white rounded-xl shadow-xl w-full max-w-6xl mx-2 md:mx-0 border border-gray-100 overflow-hidden">
       <div className="flex min-h-0 max-h-[85vh]">
-        {/* Left: item preview (desktop only) */}
+        {/* Left: Customer App–style menu list preview (desktop only) */}
         <div className="hidden md:flex w-[300px] shrink-0 border-r border-gray-100 bg-gradient-to-b from-gray-50 to-white flex-col items-center justify-between p-3">
           <div className="flex-1 w-full flex items-center justify-center">
             <div className="relative w-[210px] h-[420px] rounded-[2.2rem] bg-black shadow-[0_16px_48px_rgba(0,0,0,0.22)] p-[8px]">
-              <div className="absolute top-[6px] left-1/2 -translate-x-1/2 w-[80px] h-[18px] bg-black rounded-b-2xl" />
-              <div className="h-full w-full rounded-[1.9rem] bg-white overflow-hidden border border-black/10">
-                <div className="px-3 pt-3">
-                  <p className="text-xs font-semibold text-gray-900 truncate">
-                    {formData.item_name?.trim() ? formData.item_name : 'Item name'}
-                  </p>
-                  <p className="mt-0.5 text-[10px] text-gray-500 line-clamp-2">
-                    {formData.item_description?.trim() ? formData.item_description : 'Item description'}
-                  </p>
-                </div>
-                <div className="px-3 mt-2">
-                  <div className="flex items-center justify-between">
-                    <p className="text-xs font-bold text-gray-900">
-                      ₹{String(formData.selling_price || formData.base_price || '').trim() || '—'}
-                    </p>
-                    <span className="text-[9px] font-semibold px-1.5 py-0.5 rounded-full bg-gray-100 text-gray-700 border border-gray-200">
-                      Preview
-                    </span>
-                  </div>
-                </div>
-                <div className="px-3 mt-2">
-                  <div className="h-28 w-full rounded-xl bg-gray-100 overflow-hidden border border-gray-200 flex items-center justify-center">
-                    {imagePreview ? (
-                      imagePreview.startsWith('blob:') || imagePreview.startsWith('data:') ? (
-                        <img src={imagePreview} alt="" className="h-full w-full object-cover" />
-                      ) : (
-                        <R2Image src={imagePreview} alt="" className="h-full w-full object-cover" />
-                      )
-                    ) : (
-                      <div className="flex flex-col items-center justify-center text-gray-400">
-                        <ImageIcon size={22} />
-                        <p className="mt-2 text-xs font-medium">No image</p>
-                      </div>
-                    )}
-                  </div>
-                </div>
-                <div className="px-4 mt-3">
-                  <div className="h-2 w-24 rounded-full bg-gray-200" />
-                  <div className="mt-2 h-2 w-40 rounded-full bg-gray-200" />
-                  <div className="mt-2 h-2 w-32 rounded-full bg-gray-200" />
-                </div>
+              <div className="absolute top-[6px] left-1/2 -translate-x-1/2 w-[80px] h-[18px] bg-black rounded-b-2xl z-10" />
+              <div className="h-full w-full overflow-hidden rounded-[1.9rem]">
+                <CustomerMenuMobilePreview
+                  menuItems={previewMenuItems}
+                  selectedItemId={currentItemId || null}
+                  draft={{
+                    item_name: formData.item_name,
+                    item_description: formData.item_description,
+                    item_image_url: formData.item_image_url,
+                    food_type: formData.food_type,
+                    base_price: formData.base_price,
+                    selling_price: formData.selling_price,
+                    discount_percentage: formData.discount_percentage,
+                    is_popular: formData.is_popular,
+                    is_recommended: formData.is_recommended,
+                    category_id: formData.category_id ?? null,
+                  }}
+                  imagePreview={imagePreview}
+                  storeName={storeName}
+                />
               </div>
             </div>
           </div>
@@ -1205,22 +1195,55 @@ function ItemForm(props: ItemFormProps) {
                 <input type="text" readOnly={readOnly} placeholder="e.g. Nuts, Dairy" className={`w-full px-2.5 py-1.5 border rounded text-sm ${readOnly ? 'bg-gray-50 border-gray-200' : 'border-gray-200'}`} value={formData.allergens || ''} onChange={e => !readOnly && setFormData({ ...formData, allergens: e.target.value })} />
               </div>
             </div>
-            {/* Pricing row: base, selling, discount% */}
-            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-              <div>
-                <label className="text-xs font-medium text-gray-600">Base price (₹) *</label>
-                <input type="number" min="0" step="0.01" readOnly={readOnly} className={`w-full px-2.5 py-1.5 border rounded text-sm ${readOnly ? 'bg-gray-50' : ''} ${isBasePriceInvalid ? 'border-red-300' : 'border-gray-200'}`} value={formData.base_price} onChange={e => !readOnly && setFormData({ ...formData, base_price: e.target.value })} required />
-                {isBasePriceInvalid && <span className="text-xs text-red-500">&gt; 0</span>}
-              </div>
-              <div>
-                <label className="text-xs font-medium text-gray-600">Selling (₹) *</label>
-                <input type="number" min="0" step="0.01" readOnly className={`w-full px-2.5 py-1.5 border rounded text-sm bg-gray-50 ${isSellingPriceInvalid ? 'border-red-300' : 'border-gray-200'}`} value={formData.selling_price} required />
+            {/* Pricing: merchant sees Selling price only (frozen on edit). */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              <div className={isEdit || readOnly ? 'sm:col-span-2' : ''}>
+                <label className="text-xs font-medium text-gray-600">Selling price (₹) *</label>
+                <input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  readOnly={isEdit || readOnly}
+                  className={`w-full px-2.5 py-1.5 border rounded text-sm ${
+                    isEdit || readOnly ? 'bg-gray-50 text-gray-800 cursor-default' : ''
+                  } ${isSellingPriceInvalid ? 'border-red-300' : 'border-gray-200'}`}
+                  value={formData.selling_price}
+                  onChange={(e) => {
+                    if (isEdit || readOnly) return;
+                    const v = e.target.value;
+                    setFormData({
+                      ...formData,
+                      selling_price: v,
+                      base_price: v,
+                      discount_percentage:
+                        formData.discount_percentage === '' || formData.discount_percentage == null
+                          ? '0'
+                          : formData.discount_percentage,
+                    });
+                  }}
+                  required
+                />
                 {isSellingPriceInvalid && <span className="text-xs text-red-500">&gt; 0</span>}
+                {(isEdit || readOnly) && (
+                  <p className="text-[10px] text-gray-500 mt-0.5">
+                    Locked — price changes are managed by GatiMitra.
+                  </p>
+                )}
               </div>
-              <div>
-                <label className="text-xs font-medium text-gray-600">Discount %</label>
-                <input type="number" min="0" max="100" step="0.01" readOnly={readOnly} className={`w-full px-2.5 py-1.5 border rounded text-sm ${readOnly ? 'bg-gray-50' : ''} ${isOfferPercentInvalid ? 'border-red-300' : 'border-gray-200'}`} value={formData.discount_percentage} onChange={e => !readOnly && setFormData({ ...formData, discount_percentage: e.target.value })} />
-              </div>
+              {!(isEdit || readOnly) && (
+                <div>
+                  <label className="text-xs font-medium text-gray-600">Discount %</label>
+                  <input
+                    type="number"
+                    min="0"
+                    max="100"
+                    step="0.01"
+                    className={`w-full px-2.5 py-1.5 border rounded text-sm ${isOfferPercentInvalid ? 'border-red-300' : 'border-gray-200'}`}
+                    value={formData.discount_percentage}
+                    onChange={(e) => setFormData({ ...formData, discount_percentage: e.target.value })}
+                  />
+                </div>
+              )}
             </div>
             {/* Stock & prep */}
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
@@ -1648,7 +1671,7 @@ function ItemForm(props: ItemFormProps) {
             <button
               type="submit"
               className="px-4 py-1.5 rounded-lg text-sm font-bold text-white bg-orange-500 hover:bg-orange-600 disabled:opacity-60 flex items-center gap-2"
-              disabled={isSaving || !!imageValidationError || isOfferPercentInvalid || isBasePriceInvalid || isSellingPriceInvalid || !formData.base_price || !formData.discount_percentage || !formData.selling_price}
+              disabled={isSaving || !!imageValidationError || isOfferPercentInvalid || isSellingPriceInvalid || !formData.selling_price || (!(isEdit || readOnly) && !formData.base_price)}
             >
               {isSaving && <span className="inline-block w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />}
               {isSaving ? 'Saving...' : (onSaveAndNext ? 'Save and Next' : (isEdit ? 'Save' : 'Add Item'))}
@@ -2169,6 +2192,16 @@ function MenuContent() {
     void getStoreId();
   }, [searchParams]);
 
+  // Prefill from React Query cache so cards paint before the network round-trip.
+  useEffect(() => {
+    if (!storeId) return;
+    const cached = queryClient.getQueryData<MenuItem[]>(merchantKeys.menuItems(storeId));
+    if (cached?.length) {
+      setMenuItems(cached);
+      setIsLoading(false);
+    }
+  }, [storeId, queryClient]);
+
   // Fetch categories for the store
   useEffect(() => {
     if (!storeId) return;
@@ -2322,12 +2355,38 @@ function MenuContent() {
         setIsLoading(true);
       }
       setStoreError(null);
+
+      // Prefer warm React Query / session profile — never block Menu on a cold store-record.
+      const cachedStore =
+        queryClient.getQueryData<MerchantStore | null>(merchantKeys.storeRecord(storeId)) ??
+        null;
+
       try {
-        const [data, itemsRes, comboRes] = await Promise.all([
-          (async () => {
-            let storeData = await fetchStoreById(storeId);
-            if (!storeData) storeData = await fetchStoreByName(storeId);
-            return storeData;
+        const [storeResult, itemsRes, comboRes] = await Promise.all([
+          (async (): Promise<{ store: MerchantStore | null; hardMiss: boolean }> => {
+            if (cachedStore?.store_id) {
+              // Refresh in background; paint from cache immediately below.
+              void fetchStoreById(storeId).then((fresh) => {
+                if (fresh) {
+                  setStore(fresh as MerchantStore);
+                  queryClient.setQueryData(merchantKeys.storeRecord(storeId), fresh);
+                }
+              });
+              return { store: cachedStore as MerchantStore, hardMiss: false };
+            }
+            try {
+              const res = await fetch(
+                `/api/merchant/store-record?storeId=${encodeURIComponent(storeId)}`,
+                { credentials: 'include', cache: 'no-store' }
+              );
+              if (res.status === 404) return { store: null, hardMiss: true };
+              if (!res.ok) return { store: null, hardMiss: false };
+              const row = (await res.json()) as MerchantStore;
+              queryClient.setQueryData(merchantKeys.storeRecord(storeId), row);
+              return { store: row, hardMiss: false };
+            } catch {
+              return { store: null, hardMiss: false };
+            }
           })(),
           fetch(`/api/merchant/menu-items?storeId=${encodeURIComponent(storeId)}&view=list`, {
             credentials: 'include',
@@ -2337,16 +2396,35 @@ function MenuContent() {
           }),
         ]);
 
-        if (!data) {
+        const itemsOk = itemsRes.ok;
+        const items = itemsOk ? await itemsRes.json().catch(() => []) : [];
+        const nextItems = Array.isArray(items) ? items : [];
+
+        // Menu APIs succeeding means the outlet is valid for this session — never show
+        // "Store not found" just because store-record was slow/failed during compile.
+        if (!storeResult.store && !itemsOk && storeResult.hardMiss) {
           setStoreError(`Store not found with ID/Name: ${storeId}`);
           setIsLoading(false);
           return;
         }
 
-        setStore(data);
+        if (!storeResult.store && !itemsOk && !storeResult.hardMiss) {
+          // Transient failure with no menu either — soft retry message, not "not selected".
+          setStoreError('Could not load store data. Please refresh and try again.');
+          setIsLoading(false);
+          return;
+        }
 
-        const items = itemsRes.ok ? await itemsRes.json() : [];
-        const nextItems = Array.isArray(items) ? items : [];
+        const resolvedStore: MerchantStore =
+          storeResult.store ??
+          ({
+            store_id: storeId,
+            store_name: storeId,
+          } as MerchantStore);
+
+        setStore(resolvedStore);
+        setStoreError(null);
+
         setMenuItems(nextItems);
         queryClient.setQueryData(merchantKeys.menuItems(storeId), nextItems);
 
@@ -2363,12 +2441,14 @@ function MenuContent() {
 
         setIsLoading(false);
 
-        const storeDbId = (data as { id?: number })?.id;
+        const storeDbId = (resolvedStore as { id?: number })?.id;
         void loadMenuSecondaryData(storeId, storeDbId, comboRows);
       } catch (error) {
         console.error('Error loading menu:', error);
-        setStoreError('Error loading store data. Please try again.');
         setIsLoading(false);
+        if (!cachedItems?.length) {
+          setStoreError('Error loading store data. Please try again.');
+        }
       }
     };
     loadData();
@@ -3113,7 +3193,7 @@ function MenuContent() {
       spice_level: normalizeSpiceLevelForForm(item.spice_level) || '',
       cuisine_type: item.cuisine_type || '',
       base_price: basePriceStr,
-      selling_price: sellingPriceStr,
+      selling_price: sellingPriceStr || basePriceStr,
       discount_percentage: item.discount_percentage?.toString() ?? '0',
       tax_percentage: item.tax_percentage?.toString() ?? '0',
       in_stock: item.in_stock ?? true,
@@ -4015,22 +4095,39 @@ function MenuContent() {
 
   // Show error if no store is selected
   if (storeError) {
+    const isMissingId = /no store id found/i.test(storeError);
+    const isNotFound = /store not found/i.test(storeError);
     return (
       <MXLayoutWhite restaurantName={store?.store_name || "Unknown Store"} restaurantId={storeId ?? undefined}>
         <div className="min-h-screen bg-white flex items-center justify-center">
           <div className="text-center p-8">
             <Package size={64} className="text-gray-300 mb-4 mx-auto" />
-            <h2 className="text-2xl font-bold text-gray-800 mb-2">Store Not Selected</h2>
+            <h2 className="text-2xl font-bold text-gray-800 mb-2">
+              {isMissingId ? 'Store Not Selected' : isNotFound ? 'Store Not Found' : 'Unable to Load Menu'}
+            </h2>
             <p className="text-gray-600 mb-6">{storeError}</p>
-            <div className="space-y-3">
-              <p className="text-gray-500 text-sm">How to select a store:</p>
-              <ul className="text-left text-gray-600 text-sm max-w-md mx-auto">
-                <li className="mb-2">1. Go to the Stores dashboard</li>
-                <li className="mb-2">2. Select a store from the list</li>
-                <li className="mb-2">3. Click on "Menu Management" for that store</li>
-                <li>4. Or make sure the URL contains <code className="bg-gray-100 px-2 py-1 rounded">?storeId=YOUR_STORE_ID</code></li>
-              </ul>
-            </div>
+            {isMissingId ? (
+              <div className="space-y-3">
+                <p className="text-gray-500 text-sm">How to select a store:</p>
+                <ul className="text-left text-gray-600 text-sm max-w-md mx-auto">
+                  <li className="mb-2">1. Go to the Stores dashboard</li>
+                  <li className="mb-2">2. Select a store from the list</li>
+                  <li className="mb-2">3. Click on &quot;Menu Management&quot; for that store</li>
+                  <li>4. Or make sure the URL contains <code className="bg-gray-100 px-2 py-1 rounded">?storeId=YOUR_STORE_ID</code></li>
+                </ul>
+              </div>
+            ) : (
+              <button
+                type="button"
+                onClick={() => {
+                  setStoreError(null);
+                  if (typeof window !== 'undefined') window.location.reload();
+                }}
+                className="rounded-lg bg-orange-600 px-4 py-2 text-sm font-semibold text-white hover:bg-orange-700"
+              >
+                Retry
+              </button>
+            )}
           </div>
         </div>
       </MXLayoutWhite>
@@ -5176,6 +5273,8 @@ function MenuContent() {
               title="Add New Menu Item"
               categories={categories}
               storeDefaults={itemFormStoreDefaults}
+              previewMenuItems={menuItems}
+              storeName={store?.store_name ?? null}
             />
           </div>
         </div>,
@@ -5276,6 +5375,8 @@ function MenuContent() {
               categories={categories}
               currentItemId={editingId || ''}
               storeDefaults={itemFormStoreDefaults}
+              previewMenuItems={menuItems}
+              storeName={store?.store_name ?? null}
             />
           </div>
         </div>,

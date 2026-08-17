@@ -219,12 +219,46 @@ export async function POST(
     if (action === "blacklist" && isPermanent && serviceType === "all") {
       // Permanent blacklist for all services → status = BLOCKED
       await db.update(riders).set({ status: "BLOCKED" }).where(eq(riders.id, riderId));
+      void (async () => {
+        try {
+          const { backendFetch } = await import("@/lib/notif-backend");
+          await backendFetch("/v1/internal/rider-account-notify", {
+            method: "POST",
+            body: {
+              type: "account_state",
+              riderId,
+              newState: "BLACKLISTED",
+              reason,
+            },
+          });
+        } catch (err) {
+          console.warn("[blacklist] rider push notify failed", err);
+        }
+      })();
     } else if (action === "whitelist") {
       // Unblocking: Only activate if rider has completed onboarding
       // If onboardingStage is ACTIVE, set status to ACTIVE
       // Otherwise, keep INACTIVE (rider must complete onboarding first)
       const newStatus = rider.onboardingStage === "ACTIVE" ? "ACTIVE" : "INACTIVE";
       await db.update(riders).set({ status: newStatus }).where(eq(riders.id, riderId));
+      if (serviceType === "all") {
+        void (async () => {
+          try {
+            const { backendFetch } = await import("@/lib/notif-backend");
+            await backendFetch("/v1/internal/rider-account-notify", {
+              method: "POST",
+              body: {
+                type: "account_state",
+                riderId,
+                newState: "REACTIVATED",
+                reason: reason || "Account unrestricted",
+              },
+            });
+          } catch (err) {
+            console.warn("[blacklist] rider reactivate push notify failed", err);
+          }
+        })();
+      }
     }
 
     await logActionByAuth(

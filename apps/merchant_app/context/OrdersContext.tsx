@@ -28,11 +28,13 @@ import { requestMerchantDashboardStatsRefresh } from "@/lib/merchantDashboardSta
 import { refreshLiveOrdersOngoingNotification } from "@/lib/liveOrdersOngoingNotification";
 import {
   mapApiOrder,
+  attachStoreRatingsFromReviews,
   stageTransitionToApi,
   type OrderCounts,
   type OrderRecord,
   type OrderStage,
 } from "@/lib/orderRecord";
+import { fetchStoreReviews } from "@/services/ratingsApi";
 import { isActiveMerchantOrderStage } from "@/lib/merchantActiveOrders";
 import { shortLocalityFromAddress } from "@/lib/selectedStoreStorage";
 
@@ -205,9 +207,28 @@ export function OrdersProvider({ children }: { children: ReactNode }) {
         const batches = await mapInBatches(orderStoreIds, ORDERS_FETCH_CONCURRENCY, async (sid) => {
           const list = await fetchFoodOrders(sid, token, { limit: 40 });
           cacheFoodOrders(sid, list);
-          return list
+          let mapped = list
             .filter((row) => row != null && (row.orders_core_id != null || row.orders_food_id != null))
             .map((row) => mapWithStore(row, sid));
+          const missingDeliveredRating = mapped.some(
+            (order) => order.status === "delivered" && order.storeRating == null
+          );
+          if (missingDeliveredRating) {
+            try {
+              const from = new Date();
+              from.setDate(from.getDate() - 45);
+              const reviews = await fetchStoreReviews({
+                token,
+                storeId: sid,
+                from: from.toISOString(),
+                to: new Date().toISOString(),
+              });
+              mapped = attachStoreRatingsFromReviews(mapped, reviews.data ?? []);
+            } catch {
+              /* Reviews hydrate is best-effort — board still renders. */
+            }
+          }
+          return mapped;
         });
         const merged = batches.flat();
         // Newest first across stores

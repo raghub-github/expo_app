@@ -103,6 +103,16 @@ export type MerchantOrderPricing = {
   total: number;
 };
 
+export type MerchantStoreOrderRating = {
+  review_id: number;
+  rating: number;
+  review_text: string | null;
+  review_title: string | null;
+  created_at: string;
+  reply_text: string | null;
+  replied_at: string | null;
+};
+
 export type MerchantFoodOrderDto = {
   orders_food_id: number;
   orders_core_id: number;
@@ -189,6 +199,8 @@ export type MerchantFoodOrderDto = {
   prepared_late_minutes: number | null;
   merchant_response_deadline_at: string | null;
   merchant_response_timeout_seconds: number | null;
+  /** Customer store rating for this order, if submitted. */
+  store_rating: MerchantStoreOrderRating | null;
 };
 
 function num(v: unknown): number {
@@ -473,6 +485,7 @@ function assembleMerchantOrderPricing(
     merchantDiscount: number;
     precisionFromCore: number;
     allCtmFrozen: boolean;
+    frozenCtm?: number;
   }
 ): MerchantOrderPricing {
   const { packaging, merchantDiscount, precisionFromCore, allCtmFrozen } = opts;
@@ -486,9 +499,13 @@ function assembleMerchantOrderPricing(
     ? Math.max(0, precisionFromCore - precisionOnLines)
     : 0;
   const resolvedDisc = allCtmFrozen ? precisionFromCore : merchantDiscount;
-  const resolvedTotal = allCtmFrozen
-    ? round2(Math.max(0, ctmNetSum - missingPrecision + packaging))
-    : 0;
+  const frozenCtm = num(opts.frozenCtm);
+  const resolvedTotal =
+    frozenCtm > 0
+      ? round2(frozenCtm)
+      : allCtmFrozen
+        ? round2(Math.max(0, ctmNetSum - missingPrecision + packaging))
+        : 0;
 
   const bill = merchantBillPartsFromItems(billItems, {
     subtotal: merchantSubtotal,
@@ -1086,7 +1103,10 @@ async function loadActiveRidersByCoreIds(
   coreIds: number[]
 ): Promise<Map<number, ActiveRiderSnapshot>> {
   const result = new Map<number, ActiveRiderSnapshot>();
-  if (coreIds.length === 0) return result;
+  const ids = [
+    ...new Set(coreIds.map((id) => coerceCustomerId(id)).filter((n): n is number => n != null)),
+  ];
+  if (ids.length === 0) return result;
 
   const assignments = await sql<
     Array<{
@@ -1100,6 +1120,7 @@ async function loadActiveRidersByCoreIds(
       assigned_at: string | null;
       reached_merchant_at: string | null;
       picked_up_at: string | null;
+      delivered_at: string | null;
       cancelled_at: string | null;
       unassigned_at: string | null;
     }>
@@ -1115,15 +1136,21 @@ async function loadActiveRidersByCoreIds(
       ora.assigned_at,
       ora.reached_merchant_at,
       ora.picked_up_at,
+      ora.delivered_at,
       ora.cancelled_at,
       ora.unassigned_at
     FROM order_rider_assignments ora
-    WHERE ora.order_core_id IN ${sql(coreIds)}
+    WHERE (ora.order_core_id IN ${sql(ids)} OR ora.order_id IN ${sql(ids)})
       AND ora.cancelled_at IS NULL
-      AND ora.unassigned_at IS NULL
+      AND (
+        ora.unassigned_at IS NULL
+        OR ora.delivered_at IS NOT NULL
+        OR UPPER(COALESCE(ora.assignment_status::text, '')) = 'DELIVERED'
+      )
       AND UPPER(COALESCE(ora.assignment_status::text, '')) NOT IN ('CANCELLED', 'REJECTED', 'UNASSIGNED')
     ORDER BY
-      ora.order_core_id,
+      COALESCE(ora.order_core_id, ora.order_id),
+      CASE WHEN ora.delivered_at IS NOT NULL THEN 0 ELSE 1 END,
       CASE WHEN ora.is_active THEN 0 ELSE 1 END,
       ora.assignment_sequence DESC NULLS LAST,
       ora.assigned_at DESC NULLS LAST
@@ -1131,13 +1158,49 @@ async function loadActiveRidersByCoreIds(
 
   const byCore = new Map<number, (typeof assignments)[number]>();
   for (const row of assignments) {
-    const coreId = Number(row.core_id);
-    if (!Number.isFinite(coreId) || byCore.has(coreId)) continue;
+    const coreId = coerceCustomerId(row.core_id);
+    if (coreId == null || byCore.has(coreId)) continue;
     byCore.set(coreId, row);
   }
+
+  const missingCoreIds = ids.filter((id) => !byCore.has(id));
+  if (missingCoreIds.length > 0) {
+    const coreRiderRows = await sql<Array<{ id: number; rider_id: number | null }>>`
+      SELECT id, rider_id FROM orders_core
+      WHERE id IN ${sql(missingCoreIds)}
+        AND rider_id IS NOT NULL
+    `;
+    for (const row of coreRiderRows) {
+      const coreId = coerceCustomerId(row.id);
+      const riderId = coerceCustomerId(row.rider_id);
+      if (coreId == null || riderId == null || byCore.has(coreId)) continue;
+      byCore.set(coreId, {
+        core_id: coreId,
+        rider_id: riderId,
+        rider_name: null,
+        rider_mobile: null,
+        assignment_status: "DELIVERED",
+        is_active: false,
+        assignment_sequence: null,
+        assigned_at: null,
+        reached_merchant_at: null,
+        picked_up_at: null,
+        delivered_at: null,
+        cancelled_at: null,
+        unassigned_at: null,
+      });
+    }
+  }
+
   if (byCore.size === 0) return result;
 
-  const riderIds = [...new Set([...byCore.values()].map((a) => a.rider_id))];
+  const riderIds = [
+    ...new Set(
+      [...byCore.values()]
+        .map((a) => coerceCustomerId(a.rider_id))
+        .filter((n): n is number => n != null)
+    ),
+  ];
   const riders = await sql<
     Array<{ id: number; name: string | null; mobile: string | null; selfie_url: string | null }>
   >`
@@ -1146,9 +1209,9 @@ async function loadActiveRidersByCoreIds(
   const riderMap = new Map(riders.map((r) => [Number(r.id), r]));
 
   for (const [coreId, assignment] of byCore) {
-    const rider = riderMap.get(assignment.rider_id);
+    const rider = riderMap.get(Number(assignment.rider_id));
     result.set(coreId, {
-      rider_id: assignment.rider_id,
+      rider_id: Number(assignment.rider_id),
       rider_name: rider?.name?.trim() || assignment.rider_name?.trim() || null,
       rider_mobile: assignment.rider_mobile ?? rider?.mobile ?? null,
       rider_selfie_url: toAbsoluteClientMediaUrl(rider?.selfie_url ?? null),
@@ -1185,16 +1248,19 @@ async function buildOrderDto(
     pickupTokenByCoreId: Map<number, { token: string | null; kot_number: string | null }>;
     /** Payout-engine SSOT: order_settlement_breakdown.merchant_gross by core id. */
     settlementGrossByCoreId: Map<number, number>;
+    storeRatingByCoreId?: Map<number, MerchantStoreOrderRating>;
     /** Board list path — skip heavy per-row commission rescale. */
     boardList?: boolean;
   }
 ): Promise<MerchantFoodOrderDto> {
-  const otps = opts.otpByCoreId.get(core.id);
-  const pickupMeta = opts.pickupTokenByCoreId.get(core.id);
+  const corePk = coerceCustomerId(core.id);
+  const otps = corePk != null ? opts.otpByCoreId.get(corePk) : undefined;
+  const pickupMeta = corePk != null ? opts.pickupTokenByCoreId.get(corePk) : undefined;
   const coreOnly = food == null;
-  const tl = opts.timelineSnapByCoreId?.get(core.id);
+  const tl = corePk != null ? opts.timelineSnapByCoreId?.get(corePk) : undefined;
   const scheduledMeta = resolveScheduledMeta(core);
-  const activeRider = opts.activeRiderByCoreId.get(core.id);
+  const activeRider =
+    corePk != null ? opts.activeRiderByCoreId.get(corePk) ?? undefined : undefined;
   const resolvedRiderId =
     core.rider_id != null && Number.isFinite(Number(core.rider_id))
       ? Number(core.rider_id)
@@ -1289,8 +1355,13 @@ async function buildOrderDto(
     merchantDiscount,
     precisionFromCore,
     allCtmFrozen,
+    frozenCtm: fromCoreCtm,
   });
-  const merchantTotal = pricing.total;
+  // orders_core.total_ctm is payout / Partner Site SSOT — never let a recompute drift the card total.
+  if (fromCoreCtm > 0) {
+    pricing.total = round2(fromCoreCtm);
+  }
+  const merchantTotal = fromCoreCtm > 0 ? round2(fromCoreCtm) : pricing.total;
   const riderReachedPickupAt = toIsoOrNull(food?.rider_reached_pickup_at);
   const riderDisplayInput = {
     order_status: pipeline,
@@ -1424,6 +1495,10 @@ async function buildOrderDto(
         ? Math.max(0, Math.floor(Number(food.merchant_acceptance_window_seconds)))
         : null,
     cancellation_compensation: null,
+    store_rating: (() => {
+      const pk = coerceCustomerId(core.id);
+      return pk != null ? opts.storeRatingByCoreId?.get(pk) ?? null : null;
+    })(),
   };
 }
 
@@ -1626,17 +1701,23 @@ export async function loadMerchantFoodOrderRidersLog(
   >`
     SELECT id, name, mobile, selfie_url FROM riders WHERE id IN ${sql(riderIds)}
   `;
-  const riderMap = new Map(riders.map((r) => [r.id, r]));
+  const riderMap = new Map(riders.map((r) => [Number(r.id), r]));
 
   return assignments.map((a) => {
-    const r = riderMap.get(a.rider_id);
-    const endedAt = a.cancelled_at ?? a.unassigned_at ?? null;
+    const r = riderMap.get(Number(a.rider_id));
+    const deliveredAt = toIsoOrNull(a.delivered_at);
+    const endedAt = a.cancelled_at ?? (deliveredAt ? null : a.unassigned_at) ?? null;
     let status = a.assignment_status ?? "pending";
     if (
       endedAt &&
-      !["CANCELLED", "REJECTED", "UNASSIGNED"].includes(String(status).toUpperCase())
+      !deliveredAt &&
+      !["CANCELLED", "REJECTED", "UNASSIGNED", "DELIVERED"].includes(
+        String(status).toUpperCase()
+      )
     ) {
       status = "CANCELLED";
+    } else if (deliveredAt && String(status).toUpperCase() !== "DELIVERED") {
+      status = "DELIVERED";
     }
     return {
       rider_id: a.rider_id,
@@ -1720,6 +1801,7 @@ export async function loadMerchantFoodOrders(
   const settlementGrossByCoreId = new Map<number, number>();
   let commissionPercent: number | undefined;
   let activeRiderByCoreId = new Map<number, ActiveRiderSnapshot>();
+  let storeRatingByCoreId = new Map<number, MerchantStoreOrderRating>();
 
   const ingestTokenRows = (
     rows: Array<{ order_id: number; token: string | null; kot_number?: string | null }>
@@ -1759,6 +1841,7 @@ export async function loadMerchantFoodOrders(
       otpRows,
       tokPack,
       riders,
+      ratings,
     ] = await Promise.all([
       withTimeout(
         sql`SELECT self_delivery FROM merchant_store_settings WHERE store_id = ${storeId} LIMIT 1`.then(
@@ -1825,7 +1908,7 @@ export async function loadMerchantFoodOrders(
                 }
               }
             })(),
-            800,
+            3_000,
             [] as Array<{ order_id: number; token: string | null; kot_number?: string | null }>
           )
         : Promise.resolve(
@@ -1834,6 +1917,7 @@ export async function loadMerchantFoodOrders(
       coreIds.length > 0
         ? withTimeout(loadActiveRidersByCoreIds(sql, coreIds), 1_000, new Map())
         : Promise.resolve(new Map() as Map<number, ActiveRiderSnapshot>),
+      loadStoreRatingsForOrders(sql, storeId, cores, foods),
     ]);
 
     selfDeliveryEnabled = settingsRows[0]?.self_delivery === true;
@@ -1855,6 +1939,7 @@ export async function loadMerchantFoodOrders(
     }
     ingestTokenRows(tokPack);
     activeRiderByCoreId = riders;
+    storeRatingByCoreId = ratings;
   } else {
     // ── Single-order detail: parallel lite enrich (no ordinal / KOT mint / hung COUNTs) ──
     const [
@@ -1866,6 +1951,7 @@ export async function loadMerchantFoodOrders(
       riders,
       tlRows,
       snapMap,
+      ratings,
     ] = await Promise.all([
       withTimeout(
         sql`SELECT self_delivery FROM merchant_store_settings WHERE store_id = ${storeId} LIMIT 1`.then(
@@ -1954,6 +2040,7 @@ export async function loadMerchantFoodOrders(
       textOrderIds.length > 0
         ? withTimeout(loadSnapshotsByOrderTexts(sql, textOrderIds, storeId), 1_500, new Map())
         : Promise.resolve(new Map() as Map<string, ItemCommissionSnapshot[]>),
+      loadStoreRatingsForOrders(sql, storeId, cores, foods),
     ]);
 
     selfDeliveryEnabled = settingsRows[0]?.self_delivery === true;
@@ -1987,6 +2074,7 @@ export async function loadMerchantFoodOrders(
       absorbTimelineRow(snap, String(row.status ?? ""), row.occurred_at);
     }
     snapshotsByOrderText = snapMap;
+    storeRatingByCoreId = ratings;
 
     try {
       commissionPercent = await withTimeout(
@@ -2017,6 +2105,7 @@ export async function loadMerchantFoodOrders(
     activeRiderByCoreId,
     pickupTokenByCoreId,
     settlementGrossByCoreId,
+    storeRatingByCoreId,
     boardList: ordersFoodId == null,
   };
 
@@ -2165,6 +2254,155 @@ export async function loadMerchantFoodOrders(
     })
   );
   return built.filter((o): o is MerchantFoodOrderDto => o != null);
+}
+
+function validStoreStars(value: unknown): number | null {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n < 1 || n > 5) return null;
+  return n;
+}
+
+function resolveBoardStoreStars(row: {
+  rating: unknown;
+  food_rating: unknown;
+  service_rating: unknown;
+  review_text: unknown;
+  review_title: unknown;
+}): number | null {
+  const foodStars = validStoreStars(row.food_rating);
+  if (foodStars != null) return foodStars;
+  const overallStars = validStoreStars(row.rating);
+  if (overallStars == null) return null;
+  const serviceStars = validStoreStars(row.service_rating);
+  const hasStoreCopy =
+    String(row.review_text ?? "").trim().length > 0 ||
+    String(row.review_title ?? "").trim().length > 0;
+  // Rider-only rows copy delivery stars into `rating` with no store copy.
+  if (serviceStars != null && !hasStoreCopy) return null;
+  return overallStars;
+}
+
+function ratingPublicId(value: unknown): string | null {
+  const text = String(value ?? "").trim().toUpperCase();
+  return text.length > 0 ? text : null;
+}
+
+/**
+ * Same source as merchant Reviews: `merchant_store_ratings` by store_id.
+ * Ratings.order_id may be orders_core.id, orders_food.id, or a formatted id join.
+ * Map keys are always numeric core PKs so bigint/string core.id lookups still hit.
+ */
+async function loadStoreRatingsForOrders(
+  sql: Sql,
+  storeId: number,
+  cores: CoreRow[],
+  foods: FoodRow[]
+): Promise<Map<number, MerchantStoreOrderRating>> {
+  const result = new Map<number, MerchantStoreOrderRating>();
+  if (cores.length === 0) return result;
+
+  const coreIdSet = new Set<number>();
+  const formattedToCoreId = new Map<string, number>();
+  for (const core of cores) {
+    const pk = coerceCustomerId(core.id);
+    if (pk == null) continue;
+    coreIdSet.add(pk);
+    const formatted = ratingPublicId(core.formatted_order_id);
+    if (formatted) formattedToCoreId.set(formatted, pk);
+    const textId = ratingPublicId(core.order_id);
+    if (textId) formattedToCoreId.set(textId, pk);
+  }
+  if (coreIdSet.size === 0) return result;
+
+  const foodIdToCoreId = new Map<number, number>();
+  for (const food of foods) {
+    const foodId = coerceCustomerId(food.id);
+    const corePk =
+      coerceCustomerId(food.order_id) ??
+      (ratingPublicId(food.core_order_id)
+        ? formattedToCoreId.get(ratingPublicId(food.core_order_id) as string) ?? null
+        : null);
+    if (foodId != null && corePk != null && coreIdSet.has(corePk)) {
+      foodIdToCoreId.set(foodId, corePk);
+      const foodFormatted = ratingPublicId(food.formatted_order_id);
+      if (foodFormatted) formattedToCoreId.set(foodFormatted, corePk);
+    }
+  }
+
+  try {
+    const rows = (await sql`
+      SELECT
+        msr.id,
+        msr.order_id,
+        msr.rating,
+        msr.food_rating,
+        msr.service_rating,
+        msr.review_text,
+        msr.review_title,
+        msr.merchant_response,
+        msr.merchant_responded_at,
+        msr.created_at,
+        oc.formatted_order_id AS core_formatted_order_id,
+        oc.order_id AS core_order_text_id,
+        ofd.order_id AS food_core_order_id,
+        ofd.core_order_id AS food_core_order_text,
+        ofd.formatted_order_id AS food_formatted_order_id
+      FROM merchant_store_ratings msr
+      LEFT JOIN orders_core oc ON oc.id = msr.order_id
+      LEFT JOIN orders_food ofd ON ofd.id = msr.order_id
+      WHERE msr.store_id = ${storeId}
+        AND coalesce(msr.is_flagged, false) = false
+      ORDER BY msr.created_at DESC
+      LIMIT 250
+    `) as unknown as Array<{
+      id: number;
+      order_id: number | null;
+      rating: number | null;
+      food_rating: number | null;
+      service_rating: number | null;
+      review_text: string | null;
+      review_title: string | null;
+      merchant_response: string | null;
+      merchant_responded_at: Date | string | null;
+      created_at: Date | string;
+      core_formatted_order_id: string | null;
+      core_order_text_id: string | null;
+      food_core_order_id: number | null;
+      food_core_order_text: string | null;
+      food_formatted_order_id: string | null;
+    }>;
+
+    for (const r of rows) {
+      const storeStars = resolveBoardStoreStars(r);
+      if (storeStars == null) continue;
+
+      const ratingOrderId = coerceCustomerId(r.order_id);
+      const foodCorePk = coerceCustomerId(r.food_core_order_id);
+      const coreId =
+        (ratingOrderId != null && coreIdSet.has(ratingOrderId) ? ratingOrderId : null) ??
+        (ratingOrderId != null ? foodIdToCoreId.get(ratingOrderId) ?? null : null) ??
+        (foodCorePk != null && coreIdSet.has(foodCorePk) ? foodCorePk : null) ??
+        formattedToCoreId.get(ratingPublicId(r.core_formatted_order_id) ?? "") ??
+        formattedToCoreId.get(ratingPublicId(r.core_order_text_id) ?? "") ??
+        formattedToCoreId.get(ratingPublicId(r.food_formatted_order_id) ?? "") ??
+        formattedToCoreId.get(ratingPublicId(r.food_core_order_text) ?? "") ??
+        null;
+      if (coreId == null || result.has(coreId)) continue;
+
+      result.set(coreId, {
+        review_id: Number(r.id),
+        rating: storeStars,
+        review_text: r.review_text != null ? String(r.review_text) : null,
+        review_title: r.review_title != null ? String(r.review_title) : null,
+        created_at: toIsoOrNull(r.created_at) ?? new Date().toISOString(),
+        reply_text: r.merchant_response != null ? String(r.merchant_response) : null,
+        replied_at: toIsoOrNull(r.merchant_responded_at),
+      });
+    }
+  } catch {
+    return result;
+  }
+  return result;
 }
 
 function normalizeOrderStatusForTransition(raw: string | null | undefined): string {
@@ -2872,4 +3110,129 @@ export async function loadMerchantFoodOrderTimeline(
     ORDER BY occurred_at ASC, id ASC
   `;
   return rows as unknown as MerchantOrderTimelineEntry[];
+}
+
+export type MerchantKotPrintFields = {
+  pickup_token: string | null;
+  kot_number: string | null;
+  orders_core_id: number | null;
+};
+
+/**
+ * Partner Site parity: KOT print always needs the pickup QR token + store KOT number.
+ * Board list may drop these under timeout — this path has no short-circuit.
+ */
+export async function ensureMerchantKotPrintFields(
+  sql: Sql,
+  storeId: number,
+  opts: { ordersFoodId?: number | null; ordersCoreId?: number | null }
+): Promise<MerchantKotPrintFields> {
+  const empty: MerchantKotPrintFields = {
+    pickup_token: null,
+    kot_number: null,
+    orders_core_id: null,
+  };
+
+  let coreId =
+    opts.ordersCoreId != null && Number.isFinite(Number(opts.ordersCoreId))
+      ? Number(opts.ordersCoreId)
+      : null;
+
+  if (coreId == null && opts.ordersFoodId != null && Number.isFinite(Number(opts.ordersFoodId))) {
+    const foodId = Number(opts.ordersFoodId);
+    const foodRows = await sql`
+      SELECT order_id
+      FROM orders_food
+      WHERE id = ${foodId} AND merchant_store_id = ${storeId}
+      LIMIT 1
+    `;
+    const fromFood = Number((foodRows[0] as { order_id?: number } | undefined)?.order_id);
+    coreId = Number.isFinite(fromFood) && fromFood > 0 ? fromFood : null;
+  }
+
+  if (coreId == null || coreId < 1) return empty;
+
+  const owned = await sql`
+    SELECT id FROM orders_core
+    WHERE id = ${coreId} AND merchant_store_id = ${storeId}
+    LIMIT 1
+  `;
+  if (!owned[0]) return empty;
+
+  const readFields = async (): Promise<MerchantKotPrintFields> => {
+    try {
+      const rows = await sql`
+        SELECT token, kot_number
+        FROM order_pickup_tokens
+        WHERE order_id = ${coreId}
+        LIMIT 1
+      `;
+      const row = rows[0] as { token?: string | null; kot_number?: string | null } | undefined;
+      return {
+        pickup_token: row?.token != null ? String(row.token).trim() || null : null,
+        kot_number: row?.kot_number != null ? String(row.kot_number).trim() || null : null,
+        orders_core_id: coreId,
+      };
+    } catch {
+      try {
+        const rows = await sql`
+          SELECT token
+          FROM order_pickup_tokens
+          WHERE order_id = ${coreId}
+          LIMIT 1
+        `;
+        const row = rows[0] as { token?: string | null } | undefined;
+        return {
+          pickup_token: row?.token != null ? String(row.token).trim() || null : null,
+          kot_number: null,
+          orders_core_id: coreId,
+        };
+      } catch {
+        return { ...empty, orders_core_id: coreId };
+      }
+    }
+  };
+
+  let fields = await readFields();
+
+  if (!fields.pickup_token) {
+    try {
+      await sql`
+        INSERT INTO order_pickup_tokens (
+          order_id, merchant_id, store_id, token, status, generated_at, expires_at, kot_number, kot_version
+        )
+        SELECT
+          oc.id,
+          oc.merchant_parent_id,
+          oc.merchant_store_id,
+          gm_generate_pickup_token(),
+          'ACTIVE',
+          now(),
+          NULL,
+          gm_allocate_kot_number(oc.merchant_store_id),
+          1
+        FROM orders_core oc
+        WHERE oc.id = ${coreId} AND oc.merchant_store_id = ${storeId}
+        ON CONFLICT (order_id) DO NOTHING
+      `;
+    } catch {
+      /* trigger / functions may already have minted the row */
+    }
+    fields = await readFields();
+  }
+
+  if (fields.pickup_token && !fields.kot_number) {
+    try {
+      await sql`
+        UPDATE order_pickup_tokens
+        SET kot_number = gm_allocate_kot_number(${storeId}), updated_at = now()
+        WHERE order_id = ${coreId} AND kot_number IS NULL
+      `;
+    } catch {
+      /* older DBs without gm_allocate_kot_number */
+    }
+    fields = await readFields();
+  }
+
+  return fields;
 }

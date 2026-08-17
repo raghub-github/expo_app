@@ -56,26 +56,19 @@ export async function GET(request: NextRequest) {
       ${storeCond}
     `;
 
+    // Photo queue = primary image still awaiting moderation only.
+    // Do not use item approval_status=PENDING: after photo reject the item can stay
+    // PENDING while image is REJECTED, and must leave this list.
     const [photoRow] = await sql`
       SELECT COUNT(*)::int AS c
       FROM merchant_menu_items m
       WHERE COALESCE(m.is_deleted, FALSE) = FALSE
-        AND (
-          m.approval_status = 'PENDING'::merchant_menu_item_approval_status
-          OR EXISTS (
-            SELECT 1
-            FROM merchant_menu_item_images img
-            WHERE img.menu_item_id = m.id
-              AND img.is_primary = true
-              AND UPPER(TRIM(COALESCE(img.moderation_status, 'PENDING'))) = 'PENDING'
-          )
-        )
-        AND (
-          NULLIF(TRIM(m.item_image_url), '') IS NOT NULL
-          OR EXISTS (
-            SELECT 1 FROM merchant_menu_item_images img
-            WHERE img.menu_item_id = m.id
-          )
+        AND EXISTS (
+          SELECT 1
+          FROM merchant_menu_item_images img
+          WHERE img.menu_item_id = m.id
+            AND img.is_primary = true
+            AND UPPER(TRIM(COALESCE(img.moderation_status, 'PENDING'))) = 'PENDING'
         )
         ${itemStoreCond}
     `;
@@ -124,22 +117,12 @@ export async function GET(request: NextRequest) {
         FROM merchant_menu_items m
         LEFT JOIN merchant_stores s ON s.id = m.store_id
         WHERE COALESCE(m.is_deleted, FALSE) = FALSE
-          AND (
-            m.approval_status = 'PENDING'::merchant_menu_item_approval_status
-            OR EXISTS (
-              SELECT 1
-              FROM merchant_menu_item_images img
-              WHERE img.menu_item_id = m.id
-                AND img.is_primary = true
-                AND UPPER(TRIM(COALESCE(img.moderation_status, 'PENDING'))) = 'PENDING'
-            )
-          )
-          AND (
-            NULLIF(TRIM(m.item_image_url), '') IS NOT NULL
-            OR EXISTS (
-              SELECT 1 FROM merchant_menu_item_images img
-              WHERE img.menu_item_id = m.id
-            )
+          AND EXISTS (
+            SELECT 1
+            FROM merchant_menu_item_images img
+            WHERE img.menu_item_id = m.id
+              AND img.is_primary = true
+              AND UPPER(TRIM(COALESCE(img.moderation_status, 'PENDING'))) = 'PENDING'
           )
           ${itemStoreCond}
         ORDER BY m.updated_at DESC NULLS LAST, m.id DESC

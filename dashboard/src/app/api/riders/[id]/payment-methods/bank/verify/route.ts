@@ -17,6 +17,8 @@ export const runtime = "nodejs";
 const BodySchema = z.object({
   action: z.enum(["verify", "reject"]),
   reason: z.string().max(500).optional(),
+  /** When set, act on this payment method; otherwise latest bank row. */
+  paymentMethodId: z.number().int().positive().optional(),
 });
 
 export async function POST(
@@ -79,19 +81,36 @@ export async function POST(
       );
     }
 
-    const { action, reason } = parsed.data;
+    const { action } = parsed.data;
+    const reason = parsed.data.reason?.trim() ?? "";
+    const paymentMethodId = parsed.data.paymentMethodId;
+
+    if (action === "reject" && reason.length < 3) {
+      return NextResponse.json(
+        { success: false, error: "Rejection reason is required (min 3 characters)" },
+        { status: 400 },
+      );
+    }
+
     const db = getDb();
+
+    const whereClause = paymentMethodId
+      ? and(
+          eq(riderPaymentMethods.id, paymentMethodId),
+          eq(riderPaymentMethods.riderId, riderId),
+          eq(riderPaymentMethods.methodType, "bank"),
+          isNull(riderPaymentMethods.deletedAt),
+        )
+      : and(
+          eq(riderPaymentMethods.riderId, riderId),
+          eq(riderPaymentMethods.methodType, "bank"),
+          isNull(riderPaymentMethods.deletedAt),
+        );
 
     const [bankAccount] = await db
       .select()
       .from(riderPaymentMethods)
-      .where(
-        and(
-          eq(riderPaymentMethods.riderId, riderId),
-          eq(riderPaymentMethods.methodType, "bank"),
-          isNull(riderPaymentMethods.deletedAt),
-        ),
-      )
+      .where(whereClause)
       .orderBy(desc(riderPaymentMethods.createdAt))
       .limit(1);
 
@@ -112,8 +131,27 @@ export async function POST(
           paymentMethodId: bankAccount.id,
           verificationStatus: nextStatus,
           alreadySet: true,
+          reason: action === "reject" ? reason || bankAccount.rejectionReason || null : null,
         },
       });
+    }
+
+    if (action === "verify") {
+      // Only one primary active payout account.
+      await db
+        .update(riderPaymentMethods)
+        .set({
+          isPrimary: false,
+          isActive: false,
+          updatedAt: now,
+        })
+        .where(
+          and(
+            eq(riderPaymentMethods.riderId, riderId),
+            eq(riderPaymentMethods.methodType, "bank"),
+            isNull(riderPaymentMethods.deletedAt),
+          ),
+        );
     }
 
     await db
@@ -122,9 +160,44 @@ export async function POST(
         verificationStatus: nextStatus,
         verifiedAt: action === "verify" ? now : null,
         verifiedBy: agent.id,
+        rejectionReason: action === "reject" ? reason : null,
+        pendingReason: null,
         updatedAt: now,
+        // Keep the row forever — never soft-delete on reject. Rider still sees Rejected tag.
+        deletedAt: null,
+        ...(action === "reject"
+          ? { isActive: false, isPrimary: false }
+          : { isActive: true, isPrimary: true }),
       })
       .where(eq(riderPaymentMethods.id, bankAccount.id));
+
+    void (async () => {
+      try {
+        const { backendFetch } = await import("@/lib/notif-backend");
+        if (action === "reject") {
+          await backendFetch("/v1/internal/rider-account-notify", {
+            method: "POST",
+            body: {
+              type: "bank_rejected",
+              riderId,
+              reason,
+              paymentMethodId: bankAccount.id,
+            },
+          });
+        } else {
+          await backendFetch("/v1/internal/rider-account-notify", {
+            method: "POST",
+            body: {
+              type: "bank_approved",
+              riderId,
+              paymentMethodId: bankAccount.id,
+            },
+          });
+        }
+      } catch (err) {
+        console.warn("[bank/verify] rider push notify failed", err);
+      }
+    })();
 
     return NextResponse.json({
       success: true,
@@ -132,7 +205,7 @@ export async function POST(
         paymentMethodId: bankAccount.id,
         verificationStatus: nextStatus,
         verifiedAt: action === "verify" ? now.toISOString() : null,
-        reason: action === "reject" ? reason ?? null : null,
+        reason: action === "reject" ? reason : null,
       },
     });
   } catch (error) {

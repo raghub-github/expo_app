@@ -4,4 +4,5 @@
  */
 require("./lib/installGlobalTypography").installGlobalTypography();
 require("./lib/installProductionErrorHandlers").installProductionErrorHandlers();
+require("./pushBackgroundTask");
 require("expo-router/entry");

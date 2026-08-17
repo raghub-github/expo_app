@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { getRoute, haversineDistanceKm } from "./distance.service.js";
+import { getRoute, haversineDistanceKm, canonicalStoreToCustomerRouteArgs } from "./distance.service.js";
 
 describe("distance.service", () => {
   it("falls back to Haversine when no routing provider is configured", async () => {
@@ -17,5 +17,14 @@ describe("distance.service", () => {
       Math.abs(route.distanceKm - haversineDistanceKm(origin, destination)) < 0.2,
       `fallback distance ${route.distanceKm} should match Haversine approximation`
     );
+  });
+
+  it("canonical store→customer args always use pickup origin and drop destination", () => {
+    const store = { lat: 29.3909, lng: 76.9635 };
+    const drop = { lat: 29.3901, lng: 76.979 };
+    const args = canonicalStoreToCustomerRouteArgs(store, drop);
+    assert.deepEqual(args.origin, store);
+    assert.deepEqual(args.destination, drop);
+    assert.strictEqual(args.profile, "driving");
   });
 });

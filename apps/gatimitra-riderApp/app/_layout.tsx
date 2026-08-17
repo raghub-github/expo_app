@@ -166,6 +166,7 @@ function RootLayoutNav() {
             <Stack.Screen name="referral-details/[filter]" />
 
             <Stack.Screen name="payment-details" />
+            <Stack.Screen name="payout-accounts" />
 
             <Stack.Screen name="notification-settings" />
             <Stack.Screen name="notifications" />

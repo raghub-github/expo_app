@@ -26,7 +26,7 @@ export const DEFAULT_EARNINGS_SUMMARY: EarningsSummary = {
   },
 };
 
-const EARNINGS_QUERY_KEY = ["rider", "earnings", "summary"] as const;
+export const EARNINGS_QUERY_KEY = ["rider", "earnings", "summary"] as const;
 
 export function useEarningsSummary() {
   return useQuery({

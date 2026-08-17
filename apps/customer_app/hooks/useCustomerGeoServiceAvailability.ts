@@ -1,7 +1,7 @@
 import { useMemo } from "react";
 import { useLocationStore } from "@/store/locationStore";
 import { useDebouncedCoords } from "@/hooks/useDebouncedCoords";
-import { useAddresses } from "@/hooks/useAddresses";
+import { useAddresses, useActiveLocation } from "@/hooks/useAddresses";
 import { extractCustomerGeoHints } from "@/lib/customer-geo-hints";
 import { resolveMerchantListingCoords } from "@/lib/resolveMerchantListingCoords";
 import { useGeoServiceAvailability } from "@/hooks/useGeoServiceAvailability";
@@ -18,6 +18,7 @@ export function useCustomerGeoServiceAvailability() {
   const locationSource = useLocationStore((s) => s.locationSource);
   const debouncedCoords = useDebouncedCoords(coords);
   const { data: addresses = [] } = useAddresses();
+  const { data: activeLocation } = useActiveLocation();
 
   const listingCoords = locationSource === "selected" ? coords : debouncedCoords;
   const servicePin = useMemo(
@@ -26,8 +27,9 @@ export function useCustomerGeoServiceAvailability() {
         locationSource,
         listingCoords,
         addresses,
+        activeLocation,
       }),
-    [locationSource, listingCoords, addresses]
+    [locationSource, listingCoords, addresses, activeLocation]
   );
 
   const hints = useMemo(() => {

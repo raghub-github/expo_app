@@ -38,7 +38,7 @@ import {
   shouldForwardFromOnboardingScreen,
   type ServerOnboardingStep,
 } from "@/src/lib/onboarding-routes";
-import { goBackOrReplace } from "@/src/lib/onboarding-navigation";
+import { goBackFromOnboardingEntry } from "@/src/lib/onboarding-navigation";
 import { notifyOnboardingToast } from "@/src/lib/rider-onboarding-toast";
 import { useSessionStore } from "@/src/stores/sessionStore";
 import { uploadToR2, deleteFromR2, buildRiderDocumentKey } from "@/src/services/storage/cloudflareR2";
@@ -638,7 +638,8 @@ export default function AadhaarScreen() {
   }, [hydrate]);
 
   const handleBack = useCallback(() => {
-    goBackOrReplace("/(auth)/login");
+    // Logged-in riders stay in onboarding — never bounce to login / re-OTP.
+    goBackFromOnboardingEntry({ previousOnboardingHref: "/(onboarding)/referral" });
   }, []);
 
   useEffect(() => {

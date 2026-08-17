@@ -434,7 +434,10 @@ async function linkChatSessionToTicket(
         status = 'submitted',
         selected_issue_label = COALESCE(${patch?.selected_issue_label ?? null}, selected_issue_label),
         ticket_title_id = COALESCE(${patch?.ticket_title_id ?? null}, ticket_title_id),
-        metadata = COALESCE(metadata, '{}'::jsonb) || ${JSON.stringify({ ticket_display_id: ticketDisplayId })}::text::jsonb,
+        metadata = COALESCE(metadata, '{}'::jsonb) || ${JSON.stringify({
+          ticket_display_id: ticketDisplayId,
+          ticket_numeric_id: ticketId,
+        })}::text::jsonb,
         updated_at = NOW()
     WHERE id = ${chatSessionId}
       AND customer_id = ${customerId}
@@ -974,6 +977,25 @@ export async function customerSupportRoutes(app: FastifyInstance) {
       const dup = (dupRows as Array<Record<string, unknown>>)[0];
       if (dup) {
         return reply.send({ ok: true, message: mapChatMessageRow(dup), duplicate: true });
+      }
+    }
+
+    // Content dedupe: identical consecutive user/bot text (e.g. same issue title tapped twice).
+    if (messageText) {
+      const lastRows = await sql`
+        SELECT id, client_message_id, role, message_text, menu_level, payload, display_order, created_at
+        FROM customer_support_chat_messages
+        WHERE session_id = ${sessionId}
+        ORDER BY display_order DESC, id DESC
+        LIMIT 1
+      `;
+      const last = (lastRows as Array<Record<string, unknown>>)[0];
+      if (
+        last &&
+        String(last.role ?? "").toLowerCase() === roleRaw &&
+        String(last.message_text ?? "").trim() === messageText
+      ) {
+        return reply.send({ ok: true, message: mapChatMessageRow(last), duplicate: true });
       }
     }
 

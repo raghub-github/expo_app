@@ -15,7 +15,7 @@ import { StatusBar } from "expo-status-bar";
 import { useQueryClient } from "@tanstack/react-query";
 import { useRouter } from "expo-router";
 import { GatiMitraColors } from "@/constants/gatimitra";
-import { DEFAULT_STATUS_BAR_HEIGHT, STATUS_BAR_TO_HEADER_GAP } from "@/constants/layout";
+import { resolveTopSafeInset, STATUS_BAR_TO_HEADER_GAP } from "@/constants/layout";
 import { useScreenChromeStore } from "@/store/screenChromeStore";
 import type { OrderDetail } from "@/services/order.service";
 import { orderService } from "@/services/order.service";
@@ -50,8 +50,9 @@ const BORDER = GatiMitraColors.border;
 const TEXT = GatiMitraColors.textPrimaryNew;
 const MUTED = GatiMitraColors.textSecondary;
 const ZOMATO_RED = "#E23744";
-const CALL_BTN_BG = "#FFF0F0";
-const CALL_BTN_BORDER = "#FFD6D6";
+const CALL_BTN_BG = "#E8F8EE";
+const CALL_BTN_BORDER = "#86EFAC";
+const CALL_ICON = ZOMATO_GREEN;
 
 type FoodOrderDeliveredScreenProps = {
   order: OrderDetail;
@@ -509,8 +510,7 @@ export function FoodOrderDeliveredScreen({
       </View>
     );
 
-  const headerTopPadding =
-    (insets.top > 0 ? insets.top : DEFAULT_STATUS_BAR_HEIGHT) + STATUS_BAR_TO_HEADER_GAP;
+  const headerTopPadding = resolveTopSafeInset(insets.top) + STATUS_BAR_TO_HEADER_GAP + 6;
 
   return (
     <View style={styles.screen}>
@@ -599,7 +599,7 @@ export function FoodOrderDeliveredScreen({
               onPress={handleCallRestaurant}
               activeOpacity={0.85}
             >
-              <Ionicons name="call" size={18} color={ZOMATO_RED} />
+              <Ionicons name="call" size={18} color={CALL_ICON} />
             </TouchableOpacity>
           </View>
 
@@ -642,7 +642,7 @@ export function FoodOrderDeliveredScreen({
             <View style={styles.rateRow}>
               <Ionicons name="hand-left-outline" size={18} color={MUTED} style={styles.rowIcon} />
               <View style={styles.rateTextWrap}>
-                <AppText style={styles.rateTitle}>Rate {restaurantName}</AppText>
+                <AppText style={styles.rateTitle}>Rate your order</AppText>
                 <InlineStars
                   value={localStoreRating}
                   onPress={(n) => handleStoreStarPress(n)}
@@ -865,7 +865,8 @@ const styles = StyleSheet.create({
   },
   receiptThanks: { fontSize: 16, fontWeight: "700", color: TEXT, marginBottom: 14 },
   tipCta: {
-    backgroundColor: ZOMATO_RED,
+    backgroundColor: ZOMATO_GREEN,
+    marginTop: 14,
     borderRadius: 999,
     paddingHorizontal: 34,
     paddingVertical: 14,

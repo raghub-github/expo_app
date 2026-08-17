@@ -15,7 +15,12 @@ import {
   isCustomerVisibleMenuApprovalStatus,
 } from "../../lib/customer-menu-item-visibility.js";
 import { getEnv } from "../../config/env.js";
-import { getRoute, haversineDistanceKm, getMatrixDistances } from "../distance/distance.service.js";
+import {
+  canonicalStoreToCustomerRouteArgs,
+  getRoute,
+  haversineDistanceKm,
+  getMatrixDistances,
+} from "../distance/distance.service.js";
 import { toAbsoluteClientMediaUrl } from "../../utils/publicAttachmentUrl.js";
 import { toTimestamptzParam } from "../../lib/sql-timestamps.js";
 import type {
@@ -342,7 +347,10 @@ export async function listNearbyStoresByRoadDistance(params: {
     return { items: [], mapboxFailures: 0, cacheHit: false };
   }
 
-  // --- Stage 3: Mapbox Matrix — single HTTP call for all candidates ---
+  // --- Stage 3: Mapbox Matrix — candidate ranking only ---
+  // Displayed / billed km for the customer listing uses `listStores` +
+  // `getRoute(store → drop)` (same engine as store-quote). Do not surface
+  // Matrix km as the canonical restaurant→customer distance.
   const env = getEnv();
   const mapboxToken = env.MAPBOX_ACCESS_TOKEN ?? null;
   let mapboxFailures = 0;
@@ -578,8 +586,9 @@ export async function listStoresNearby(params: {
 }
 
 /**
- * List stores: with lat/lng uses nearby RPC (strict 15 km, veg filter at DB).
- * Without valid lat/lng returns empty — no frontend geo filtering; all filtering at DB/API.
+ * List stores: with lat/lng uses nearby RPC then the canonical `getRoute` engine
+ * so listing `distance_km` matches checkout / store-quote / billing.
+ * `distanceMode: "air"` skips routing (internal discovery only).
  */
 export async function listStores(params: {
   limit?: number;
@@ -587,7 +596,7 @@ export async function listStores(params: {
   lat?: number;
   lng?: number;
   veg_mode?: boolean;
-  /** air (default): DB/RPC straight-line; road: routing engine via Mapbox/OSRM */
+  /** air: RPC haversine only; road (default): canonical getRoute billable km */
   distanceMode?: "air" | "road";
 }): Promise<{ items: MerchantStoreRow[] | NearbyStoreRow[] }> {
   if (
@@ -602,7 +611,8 @@ export async function listStores(params: {
       limit: params.limit ?? DEFAULT_LIMIT,
       veg_mode: params.veg_mode,
     });
-    if (params.distanceMode === "road") {
+    const mode = params.distanceMode ?? "road";
+    if (mode === "road") {
       const env = getEnv();
       const withRoad = await enrichNearbyWithRoadDistance({
         userLat: params.lat,
@@ -635,13 +645,16 @@ async function enrichNearbyWithRoadDistance(params: {
     const lng = toNumber(s.longitude);
     if (lat == null || lng == null) return s;
     try {
-      const route = await getRoute({
-        origin: { lat: params.userLat, lng: params.userLng },
-        destination: { lat, lng },
-        profile: "driving",
-        mapboxToken: token,
-        osrmBaseUrl: osrm,
-      });
+      const route = await getRoute(
+        canonicalStoreToCustomerRouteArgs(
+          { lat, lng },
+          { lat: params.userLat, lng: params.userLng },
+          {
+            mapboxToken: token,
+            osrmBaseUrl: osrm,
+          }
+        )
+      );
       return {
         ...s,
         distance_km: Number((route.distanceKm ?? 0).toFixed(2)),
@@ -737,7 +750,10 @@ export async function getMerchantAboutPayload(storeId: string) {
     avg_preparation_time_minutes: store.avg_preparation_time_minutes ?? null,
     packaging_charge_amount: (store as { packaging_charge_amount?: number | null }).packaging_charge_amount ?? null,
     delivery_charge_per_km: (store as { delivery_charge_per_km?: number | null }).delivery_charge_per_km ?? null,
-    delivery_radius_km: (store as { delivery_radius_km?: number | null }).delivery_radius_km ?? null,
+    delivery_radius_km: (() => {
+      const n = Number((store as { delivery_radius_km?: number | string | null }).delivery_radius_km);
+      return Number.isFinite(n) && n > 0 ? n : null;
+    })(),
     banner_url: store.banner_url ?? null,
     is_active: store.is_active ?? null,
     created_at: store.created_at ?? null,

@@ -5456,9 +5456,10 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
                 WHERE store_id = ${storeId}
               `;
             } else {
-              const closeReasonText = mergedManualCloseUntil
-                ? (mergedCloseReason || "Temporarily closed")
-                : "Closed until manually reopened";
+              // Prefer the merchant-chosen reason; only fall back when none was provided.
+              const closeReasonText =
+                mergedCloseReason ||
+                (mergedManualCloseUntil ? "Temporarily closed" : "Closed until manually reopened");
               const unavailReason = mergedManualCloseUntil ? "manual_close" : "manual_indefinite";
               await sql`
                 UPDATE merchant_store_availability
@@ -5485,7 +5486,8 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
           }
         } else {
           const closeReasonText = closingStore
-            ? (mergedManualCloseUntil ? (mergedCloseReason || "Temporarily closed") : "Closed until manually reopened")
+            ? mergedCloseReason ||
+              (mergedManualCloseUntil ? "Temporarily closed" : "Closed until manually reopened")
             : null;
           const unavailReason = closingStore ? (mergedManualCloseUntil ? "manual_close" : "manual_indefinite") : null;
           await sql`
@@ -5499,7 +5501,7 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
             )
             VALUES (
               ${storeId}, ${mergedAvailable}, ${mergedAvailAccepting}, ${mergedAutoOpen}, ${mergedBlockAutoOpen},
-              ${mergedManualCloseUntil}, ${mergedCloseReason}, ${mergedRestrictionType},
+              ${mergedManualCloseUntil}, ${closeReasonText}, ${mergedRestrictionType},
               ${unavailReason}, ${closingStore ? nowIso : null}, ${openingStore ? nowIso : null},
               ${openingStore ? "MANUAL_OPEN" : closingStore ? "MANUAL_CLOSE" : null},
               ${false},
@@ -6227,7 +6229,7 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
       /** GET /merchant-partner/stores/:storeId/ratings/reviews — list reviews with optional date & rating filters. */
       protectedApp.get<{
         Params: { storeId: string };
-        Querystring: { from?: string; to?: string; minRating?: string };
+        Querystring: { from?: string; to?: string; minRating?: string; orderId?: string };
       }>("/stores/:storeId/ratings/reviews", async (req, reply) => {
         if (req.auth?.role !== "merchant" || !req.auth?.sub) {
           return reply.code(401).send({ error: "merchant_required" });
@@ -6248,6 +6250,7 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
         if (storeRows.length === 0) return reply.code(404).send({ error: "store_not_found" });
 
         const minRating = req.query.minRating ? Number(req.query.minRating) : null;
+        const orderIdFilter = req.query.orderId ? Number(req.query.orderId) : null;
         const from =
           req.query.from && !Number.isNaN(Date.parse(req.query.from))
             ? new Date(req.query.from)
@@ -6258,19 +6261,23 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
             : null;
 
         const rows = await sql`
-          SELECT id,
-                 store_id,
-                 order_id,
-                 customer_id,
-                 rating,
-                 review_title,
-                 review_text,
-                 merchant_response,
-                 merchant_responded_at,
-                 created_at
-          FROM merchant_store_ratings
-          WHERE store_id = ${storeId}
-          ORDER BY created_at DESC
+          SELECT msr.id,
+                 msr.store_id,
+                 msr.order_id,
+                 msr.customer_id,
+                 msr.rating,
+                 msr.review_title,
+                 msr.review_text,
+                 msr.merchant_response,
+                 msr.merchant_responded_at,
+                 msr.created_at,
+                 c.full_name AS customer_name,
+                 oc.formatted_order_id
+          FROM merchant_store_ratings msr
+          LEFT JOIN customers c ON c.id = msr.customer_id
+          LEFT JOIN orders_core oc ON oc.id = msr.order_id
+          WHERE msr.store_id = ${storeId}
+          ORDER BY msr.created_at DESC
           LIMIT 200
         `;
 
@@ -6285,15 +6292,26 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
           merchant_response: string | null;
           merchant_responded_at: Date | string | null;
           created_at: Date | string;
+          customer_name: string | null;
+          formatted_order_id: string | null;
         }>;
 
         const filteredRows = typedRows.filter((r) => {
+          if (
+            orderIdFilter != null &&
+            Number.isFinite(orderIdFilter) &&
+            Number(r.order_id) !== orderIdFilter
+          ) {
+            return false;
+          }
           const created =
             r.created_at instanceof Date ? r.created_at : new Date(String(r.created_at));
           if (Number.isNaN(created.getTime())) return false;
 
-          if (from && created < from) return false;
-          if (to && created > to) return false;
+          if (!orderIdFilter) {
+            if (from && created < from) return false;
+            if (to && created > to) return false;
+          }
           if (minRating != null && Number.isFinite(minRating) && r.rating < minRating) {
             return false;
           }
@@ -6302,6 +6320,7 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
 
         const data = filteredRows.map((r) => ({
           id: r.id,
+          orderId: r.order_id,
           overallRating: r.rating,
           reviewTitle: r.review_title,
           reviewText: r.review_text,
@@ -6312,6 +6331,8 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
               : r.merchant_responded_at ? String(r.merchant_responded_at) : null,
           createdAt:
             r.created_at instanceof Date ? r.created_at.toISOString() : String(r.created_at),
+          customerName: r.customer_name != null ? String(r.customer_name).trim() || null : null,
+          formattedOrderId: r.formatted_order_id != null ? String(r.formatted_order_id).trim() || null : null,
         }));
 
         return reply.send({ success: true, data });
@@ -8712,6 +8733,39 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
           req.log.warn({ err, storeId, orderId }, "[kot-print] audit failed");
         }
         return reply.send({ ok: true });
+      });
+
+      /** GET /merchant-partner/stores/:storeId/food-orders/:orderId/kot-fields — token + KOT number for print. */
+      protectedApp.get<{
+        Params: { storeId: string; orderId: string };
+        Querystring: { by?: string };
+      }>("/stores/:storeId/food-orders/:orderId/kot-fields", async (req, reply) => {
+        if (req.auth?.role !== "merchant" || !req.auth?.sub) {
+          return reply.code(401).send({ error: "merchant_required" });
+        }
+        const storeId = Number(req.params.storeId);
+        const orderId = parseInt(req.params.orderId, 10);
+        if (!Number.isInteger(storeId) || storeId < 1 || !Number.isFinite(orderId) || orderId < 1) {
+          return reply.code(400).send({ error: "invalid_id" });
+        }
+        const sql = getSql();
+        const parentId = await getPartnerParentId(sql, req.auth.sub);
+        if (parentId == null) return reply.code(404).send({ error: "partner_not_found" });
+        const storeRows = await sql`
+          SELECT id FROM merchant_stores
+          WHERE id = ${storeId} AND parent_id = ${parentId} AND deleted_at IS NULL
+          LIMIT 1
+        `;
+        if (storeRows.length === 0) return reply.code(404).send({ error: "store_not_found" });
+
+        const { ensureMerchantKotPrintFields } = await import("./merchant-food-orders.service.js");
+        const byCore = String(req.query?.by ?? "").toLowerCase() === "core";
+        const fields = await ensureMerchantKotPrintFields(
+          sql,
+          storeId,
+          byCore ? { ordersCoreId: orderId } : { ordersFoodId: orderId }
+        );
+        return reply.send(fields);
       });
 
       /** GET /merchant-partner/stores/:storeId/food-orders/:orderId — single food order. */
