@@ -8,6 +8,9 @@ export default function OrdersLayout() {
       <Stack
       screenOptions={{
         headerShown: true,
+        // See app/_layout.tsx — stops screens (incl. the live-tracking map on
+        // "[id]") from re-rendering while a screen is pushed on top of them.
+        freezeOnBlur: true,
       }}
     >
       {/* Hide the native stack header on the tracking screen — the screen

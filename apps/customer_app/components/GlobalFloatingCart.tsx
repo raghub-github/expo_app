@@ -9,7 +9,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AppText } from "@/components/AppText";
 
-import { View, TouchableOpacity, StyleSheet, Platform, ScrollView, Image, Modal, Pressable, Alert, useWindowDimensions, type NativeSyntheticEvent, type NativeScrollEvent } from "react-native";
+import { View, TouchableOpacity, StyleSheet, Platform, ScrollView, Modal, Pressable, Alert, useWindowDimensions, type NativeSyntheticEvent, type NativeScrollEvent } from "react-native";
+import { Image } from "expo-image";
 import { useRouter, useSegments, usePathname } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useAppSafeAreaInsets } from "@/hooks/useAppSafeAreaInsets";
@@ -57,10 +58,15 @@ const FLOAT_CART_RADIUS = 10;
 const FLOAT_BAR_BG = "#E8F5EE";
 const FLOAT_BAR_BORDER = "rgba(19, 114, 67, 0.22)";
 
+/**
+ * Route-derived visibility rules below take `pathname`/`segments` as
+ * parameters (computed once in GlobalFloatingCart) rather than each calling
+ * `usePathname()`/`useSegments()` independently — this component previously
+ * subscribed to the router 7 separate times per render.
+ */
+
 /** Show on: /home, /home/merchant/*, /home/category/*. Not meals-under-price or /search. */
-function useIsFoodServicePage(): boolean {
-  const pathname = usePathname();
-  const segments = useSegments() as string[];
+function computeIsFoodServicePage(pathname: string | null, segments: string[]): boolean {
   if (typeof pathname !== "string") return false;
   const p = pathname as string;
   if (segments[0] === "(auth)" || segments[0] === "(onboarding)") return false;
@@ -77,8 +83,7 @@ function useIsFoodServicePage(): boolean {
 }
 
 /** Courier home only — floating track for parcel must never appear on food routes. */
-function useIsParcelServiceHome(): boolean {
-  const pathname = usePathname();
+function computeIsParcelServiceHome(pathname: string | null): boolean {
   if (typeof pathname !== "string") return false;
   const p = pathname as string;
   return p === "/home/service/parcels" || p.startsWith("/home/service/parcels?");
@@ -88,26 +93,24 @@ function useIsParcelServiceHome(): boolean {
  * Which service home the floating track dock belongs to on this route.
  * Ride keeps its own bottom sheet — excluded here.
  */
-function useTrackingDockService(): ActiveOrder["serviceType"] | null {
-  const isFood = useIsFoodServicePage();
-  const isParcelHome = useIsParcelServiceHome();
+function computeTrackingDockService(
+  isFood: boolean,
+  isParcelHome: boolean
+): ActiveOrder["serviceType"] | null {
   if (isFood) return "food";
   if (isParcelHome) return "parcel";
   return null;
 }
 
 /** Show dock on orders list or order detail when user has active orders (switch between orders). */
-function useIsOnOrdersArea(): boolean {
-  const pathname = usePathname();
+function computeIsOnOrdersArea(pathname: string | null): boolean {
   if (typeof pathname !== "string") return false;
   const p = pathname as string;
   return p === "/orders" || p.startsWith("/orders/") || p.includes("orders");
 }
 
 /** Hide floating track pill on screens where tracking is redundant or clutters checkout/payment flow. */
-function useHideFloatingOrderTrackingPill(): boolean {
-  const pathname = usePathname();
-  const segments = useSegments() as string[];
+function computeHideFloatingOrderTrackingPill(pathname: string | null, segments: string[]): boolean {
   if (typeof pathname !== "string") return false;
   const p = pathname as string;
 
@@ -140,9 +143,7 @@ function useHideFloatingOrderTrackingPill(): boolean {
 }
 
 /** Hide floating cart on order detail / live tracking — map + status already on screen. */
-function useHideFloatingCart(): boolean {
-  const segments = useSegments() as string[];
-  const pathname = usePathname();
+function computeHideFloatingCart(pathname: string | null, segments: string[]): boolean {
   if (segments[0] === "orders" && segments.length === 2 && String(segments[1] ?? "").length > 0) {
     return true;
   }
@@ -177,9 +178,7 @@ function useHideFloatingCart(): boolean {
 }
 
 /** True when current route is restaurant detail and it's the same as cart merchant */
-function useIsInsideCartRestaurant(): boolean {
-  const segments = useSegments() as string[];
-  const cartMerchantId = useCartStore((s) => s.merchantId);
+function computeIsInsideCartRestaurant(segments: string[], cartMerchantId: string | null): boolean {
   const isMerchantPage = segments[0] === "home" && segments[1] === "merchant";
   const currentMerchantId = isMerchantPage ? (segments[2] as string) : null;
   return isMerchantPage && !!cartMerchantId && currentMerchantId === cartMerchantId;
@@ -213,12 +212,16 @@ export function GlobalFloatingCart() {
   const queryClient = useQueryClient();
   const session = useAuthStore((s) => s.session);
   const segments = useSegments() as string[];
-  const isFoodServicePage = useIsFoodServicePage();
-  const isParcelServiceHome = useIsParcelServiceHome();
-  const trackingDockService = useTrackingDockService();
-  const isOnOrdersArea = useIsOnOrdersArea();
-  const hideFloatingOrderTrackingPill = useHideFloatingOrderTrackingPill();
-  const hideFloatingCart = useHideFloatingCart();
+  const merchantId = useCartStore((s) => s.merchantId);
+  // Computed once from the single pathname/segments subscription above,
+  // instead of each of these independently calling usePathname()/useSegments().
+  const isFoodServicePage = computeIsFoodServicePage(pathname, segments);
+  const isParcelServiceHome = computeIsParcelServiceHome(pathname);
+  const trackingDockService = computeTrackingDockService(isFoodServicePage, isParcelServiceHome);
+  const isOnOrdersArea = computeIsOnOrdersArea(pathname);
+  const hideFloatingOrderTrackingPill = computeHideFloatingOrderTrackingPill(pathname, segments);
+  const hideFloatingCart = computeHideFloatingCart(pathname, segments);
+  const isInsideCartRestaurant = computeIsInsideCartRestaurant(segments, merchantId);
   const suppressMealsUnderFloating = useMealsUnderPriceCartUiStore((s) => s.suppressFloatingCart);
   const checkoutSheetVisible = useCheckoutSheetStore((s) => s.visible);
   const outsideRangeVisible = useCartCheckoutGateStore((s) => s.outsideRangeVisible);
@@ -228,12 +231,10 @@ export function GlobalFloatingCart() {
    */
   const [hideForCheckoutNav, setHideForCheckoutNav] = useState(false);
   const checkoutNavLockRef = useRef(false);
-  const isInsideCartRestaurant = useIsInsideCartRestaurant();
   const merchantScrollY = useMerchantScrollStore((s) => s.scrollY);
   const isCartCompact = isInsideCartRestaurant && merchantScrollY > 80;
 
   const items = useCartStore((s) => s.items);
-  const merchantId = useCartStore((s) => s.merchantId);
   const merchantName = useCartStore((s) => s.merchantName);
   const merchantBannerUrl = useCartStore((s) => s.merchantBannerUrl);
   const stashedCarts = useCartStore((s) => s.stashedCarts);
@@ -527,7 +528,8 @@ export function GlobalFloatingCart() {
               <Image
                 source={{ uri: resolvedThumbUri }}
                 style={styles.gmThumbImg}
-                resizeMode="cover"
+                contentFit="cover"
+                cachePolicy="memory-disk"
                 onError={() => setFloatThumbLoadFailed(true)}
               />
             ) : (
@@ -850,7 +852,8 @@ function AllCartsSheetModal({
                       <Image
                         source={{ uri: thumbUri }}
                         style={styles.gmThumbImg}
-                        resizeMode="cover"
+                        contentFit="cover"
+                        cachePolicy="memory-disk"
                         onError={() => setThumbLoadFailed(true)}
                       />
                     ) : (

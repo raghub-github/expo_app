@@ -14,7 +14,6 @@ import {
   ActivityIndicator,
   Share,
   TextInput,
-  Image,
   Pressable,
   Modal,
   BackHandler,
@@ -24,6 +23,7 @@ import {
   KeyboardAvoidingView,
   Animated as RNAnimated,
 } from "react-native";
+import { Image } from "expo-image";
 import * as Location from "expo-location";
 import * as Contacts from "expo-contacts";
 import { useRouter, useFocusEffect } from "expo-router";
@@ -1105,7 +1105,10 @@ export default function CheckoutScreen() {
   const { data: activeLocation } = useQuery({
     queryKey: ["active-location"],
     queryFn: () => addressService.getActiveLocation(),
-    staleTime: 0,
+    // Address changes are explicitly invalidated elsewhere (address picker,
+    // handoff flow below) — staleTime: 0 forced a network round trip on
+    // every checkout open, adding latency before pricing/quote can settle.
+    staleTime: 60_000,
   });
 
   useFocusEffect(
@@ -4695,6 +4698,8 @@ export default function CheckoutScreen() {
                             <Image
                               source={{ uri: m.imageUrl }}
                               style={[styles.upsellImage, { borderRadius: radius }]}
+                              contentFit="cover"
+                              cachePolicy="memory-disk"
                             />
                           ) : (
                             <View

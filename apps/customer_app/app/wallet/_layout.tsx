@@ -8,6 +8,9 @@ export default function WalletLayout() {
         headerShown: false,
         contentStyle: { backgroundColor: ProfileTheme.pageBg },
         animation: "slide_from_right",
+        // See app/_layout.tsx — stops screens from re-rendering while a
+        // screen is pushed on top of them.
+        freezeOnBlur: true,
       }}
     />
   );
