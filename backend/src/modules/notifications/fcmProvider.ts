@@ -11,7 +11,7 @@
  * Android and APNs for iOS. This provider is only for cases where we need
  * to bypass Expo.
  */
-import { FirebaseMessagingError } from "firebase-admin/messaging";
+import { FirebaseMessagingError, type Message } from "firebase-admin/messaging";
 import { getFirebaseMessaging } from "../../config/firebase.js";
 import { getEnv } from "../../config/env.js";
 import type { ProviderSendResult, NotificationPriority } from "./types.js";
@@ -111,7 +111,7 @@ export async function sendFcmV1(input: FcmSendInput): Promise<ProviderSendResult
   // render anything; the app's background handler picks them up.
   const wantsNotificationBlock = !input.silent;
   const androidPriority = mapPriorityAndroid(input.priority);
-  const notifPriority =
+  const notifPriority: "min" | "low" | "default" | "high" | "max" =
     input.priority === "critical" ? "max" : androidPriority === "high" ? "high" : "default";
 
   const baseMessage = {
@@ -177,9 +177,13 @@ export async function sendFcmV1(input: FcmSendInput): Promise<ProviderSendResult
       : undefined,
   };
 
-  const message = input.token
-    ? { ...baseMessage, token: input.token }
-    : { ...baseMessage, topic: input.topic! };
+  // `baseMessage` is inferred with widened string fields (e.g. notification `visibility` /
+  // `priority`); the values are all valid FCM enums, so assert the send payload as `Message`.
+  const message = (
+    input.token
+      ? { ...baseMessage, token: input.token }
+      : { ...baseMessage, topic: input.topic! }
+  ) as Message;
 
   try {
     const messageId = await messaging.send(message);

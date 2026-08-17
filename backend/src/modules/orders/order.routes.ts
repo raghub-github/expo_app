@@ -1373,6 +1373,10 @@ export async function orderRoutes(app: FastifyInstance) {
           alternateContactSetAt: ordersCore.alternateContactSetAt,
           deliveryPrimaryContactName: ordersCore.deliveryPrimaryContactName,
           deliveryPrimaryContactPhone: ordersCore.deliveryPrimaryContactPhone,
+          riderPickedUpAt: ordersCore.riderPickedUpAt,
+          actualPickupTime: ordersCore.actualPickupTime,
+          actualDeliveryTime: ordersCore.actualDeliveryTime,
+          cancelledAt: ordersCore.cancelledAt,
         })
         .from(ordersCore)
         .where(customerOrderRefWhere(customerPk, orderIdParam))
