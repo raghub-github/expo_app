@@ -120,6 +120,13 @@ export declare const WalletSummarySchema: z.ZodObject<{
     isFrozen: z.ZodOptional<z.ZodBoolean>;
     freezeReason: z.ZodOptional<z.ZodNullable<z.ZodString>>;
     frozenAt: z.ZodOptional<z.ZodNullable<z.ZodString>>;
+    held_balance: z.ZodOptional<z.ZodNumber>;
+    pending_withdrawal: z.ZodOptional<z.ZodNumber>;
+    processing_withdrawal: z.ZodOptional<z.ZodNumber>;
+    paid_amount: z.ZodOptional<z.ZodNumber>;
+    failed_amount: z.ZodOptional<z.ZodNumber>;
+    is_frozen: z.ZodOptional<z.ZodBoolean>;
+    withdrawal_allowed: z.ZodOptional<z.ZodBoolean>;
 }, z.core.$strip>;
 export type WalletSummary = z.infer<typeof WalletSummarySchema>;
 export declare const LedgerEntrySchema: z.ZodObject<{
@@ -190,6 +197,7 @@ export declare const CreateWithdrawalRequestSchema: z.ZodObject<{
     store_id: z.ZodUnion<[z.ZodString, z.ZodNumber]>;
     amount: z.ZodNumber;
     bank_account_id: z.ZodNumber;
+    idempotency_key: z.ZodOptional<z.ZodString>;
 }, z.core.$strip>;
 export type CreateWithdrawalRequest = z.infer<typeof CreateWithdrawalRequestSchema>;
 export declare const ReconciliationReportSchema: z.ZodObject<{
@@ -201,6 +209,9 @@ export declare const ReconciliationReportSchema: z.ZodObject<{
     difference: z.ZodNumber;
     is_consistent: z.ZodBoolean;
     checked_at: z.ZodString;
+    hold_vs_active_payouts: z.ZodOptional<z.ZodNumber>;
+    available_vs_last_ledger: z.ZodOptional<z.ZodNumber>;
+    issues: z.ZodOptional<z.ZodArray<z.ZodString>>;
 }, z.core.$strip>;
 export type ReconciliationReport = z.infer<typeof ReconciliationReportSchema>;
 export declare const WALLET_CONSTANTS: {
@@ -210,8 +221,49 @@ export declare const WALLET_CONSTANTS: {
     readonly MAX_LEDGER_PAGE_SIZE: 100;
     readonly DEFAULT_LEDGER_PAGE_SIZE: 50;
 };
+/** Dashboard freeze → Merchant App / Partner Site Withdraw disable (Supabase broadcast). */
+export declare const MERCHANT_WALLET_FREEZE_EVENT: "wallet_freeze";
+export declare function merchantWalletFreezeChannel(storeId: number | string): string;
 export declare function roundMoney(n: number): number;
 export declare function idempotencyKey(prefix: string, ...parts: (string | number)[]): string;
+/** Unified balance buckets for merchant app, partnersite, and dashboard. */
+export declare function computeMerchantWithdrawalBuckets(input: {
+    available_balance: number;
+    hold_balance?: number;
+    pending_withdrawal_total?: number;
+    in_process_withdrawal_total?: number;
+}): {
+    withdrawable_balance: number;
+    pending_withdrawal_total: number;
+    in_process_withdrawal_total: number;
+    active_payout_total: number;
+};
+/**
+ * Canonical merchant withdrawal accounting. Frontends must display these fields
+ * from the backend — they must not recompute remaining wallet locally.
+ */
+export declare function calculateMerchantWithdrawalAccounting(input: {
+    available_balance: number;
+    hold_balance?: number;
+    pending_balance?: number;
+    pending_withdrawal_total?: number;
+    in_process_withdrawal_total?: number;
+    paid_amount?: number;
+    failed_amount?: number;
+    is_frozen?: boolean;
+    settlement_paused?: boolean;
+}): {
+    available_balance: number;
+    held_balance: number;
+    pending_balance: number;
+    pending_withdrawal: number;
+    processing_withdrawal: number;
+    withdrawable_balance: number;
+    paid_amount: number;
+    failed_amount: number;
+    is_frozen: boolean;
+    withdrawal_allowed: boolean;
+};
 /** Unified balance buckets for merchant app, partnersite, and dashboard. */
 export declare function normalizeMerchantWalletDisplay(summary: WalletSummary): {
     withdrawable: number;
@@ -220,5 +272,7 @@ export declare function normalizeMerchantWalletDisplay(summary: WalletSummary): 
     pending: number;
     total: number;
     settlement_paused: boolean;
+    pending_withdrawal: number;
+    in_process_withdrawal: number;
 };
 //# sourceMappingURL=wallet.d.ts.map
