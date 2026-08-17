@@ -1113,7 +1113,11 @@ function HeaderComponent() {
   };
 
   return (
-    <header className="flex h-14 shrink-0 items-center justify-between bg-white px-4 sm:px-6 z-50 relative gap-2 sm:gap-4">
+    <header
+      className={`flex shrink-0 items-center justify-between bg-white px-4 sm:px-6 z-50 relative gap-2 sm:gap-4 ${
+        cleanPathname === GEO_LIST_PATH ? "min-h-14 py-1.5" : "h-14"
+      }`}
+    >
       {/* Mobile: Hamburger (left) + Logo + Page name. Desktop: no hamburger. */}
       <div className="flex items-center space-x-3 sm:space-x-4 min-w-0">
         {/* Hamburger - only on tablet/mobile (<1024px) */}
@@ -1277,6 +1281,23 @@ function HeaderComponent() {
               <h2 className="truncate text-base font-semibold text-[#121212]">
                 {notificationsPageLabel}
               </h2>
+            </div>
+          </div>
+        ) : cleanPathname === GEO_LIST_PATH ? (
+          <div className="flex min-w-0 items-center gap-2 sm:gap-2.5">
+            <Link
+              href={SUPER_ADMIN_HUB_PATH}
+              className="shrink-0 cursor-pointer rounded-md p-1.5 text-gray-600 transition hover:bg-gray-100"
+              aria-label="Back to Super Admin"
+              title="Back to Super Admin"
+            >
+              <ArrowLeft className="h-4 w-4" />
+            </Link>
+            <div className="min-w-0 leading-tight">
+              <h2 className="truncate text-base font-semibold text-gray-900 sm:text-lg">{pageName}</h2>
+              <p className="mt-0.5 hidden max-w-2xl truncate text-[11px] text-gray-500 sm:block">
+                Hierarchy from state to pincode; lazy load, service rules, and search.
+              </p>
             </div>
           </div>
         ) : isSuperAdminSubRoute ? (

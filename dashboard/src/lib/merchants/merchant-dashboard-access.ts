@@ -164,11 +164,12 @@ export function filterStoreScopedRoutesByMerchantAccess(
   }
 
   const groups = new Set(getMerchantAccessGroups(args.accessPoints));
-  if (groups.size === 0) return [];
 
+  // Empty groups (access still loading, or dashboard grant without access-point
+  // rows) must not wipe the rail — treat like view-only; mutations stay gated in UI/API.
   // View Merchant Details → full store nav (read-only actions enforced in UI/API),
   // minus Menu change requests for view-only.
-  if (groups.has("MERCHANT_VIEW") || isMerchantViewOnlyAccess(args)) {
+  if (groups.size === 0 || groups.has("MERCHANT_VIEW") || isMerchantViewOnlyAccess(args)) {
     return applyMenuChangeVisibility(routes);
   }
 

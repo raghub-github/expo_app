@@ -7,6 +7,7 @@ import {
   mapCustomizationsFromApi,
   mapVariantsFromApi,
 } from "@/lib/map-menu-item-options";
+import { resolveAttachmentProxyUrl } from "@/lib/attachments/resolve-attachment-proxy-url";
 
 export const DEFAULT_ITEM_FORM_DATA: ItemFormData = {
   item_name: "",
@@ -62,14 +63,23 @@ function parseNullableInt(v: unknown): number | null {
 
 /** Prefer item_image_url column; fall back to primary row in merchant_menu_item_images. */
 function resolveItemImageUrl(source: Record<string, unknown>): string {
+  const candidates: string[] = [];
   const direct = String(source.item_image_url ?? "").trim();
-  if (direct) return direct;
+  if (direct) candidates.push(direct);
   const images = source.images;
   if (Array.isArray(images) && images.length > 0) {
     const rows = images as Array<{ is_primary?: boolean; image_url?: unknown }>;
     const primary = rows.find((img) => img.is_primary === true) ?? rows[0];
     const url = String(primary?.image_url ?? "").trim();
-    if (url) return url;
+    if (url) candidates.push(url);
+    for (const row of rows) {
+      const u = String(row?.image_url ?? "").trim();
+      if (u) candidates.push(u);
+    }
+  }
+  for (const raw of candidates) {
+    const resolved = resolveAttachmentProxyUrl(raw);
+    if (resolved) return resolved;
   }
   return "";
 }

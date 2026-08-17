@@ -139,6 +139,18 @@ module.exports = {
         },
       ],
       [
+        "../../packages/expo-push-kit/plugin/withAndroidPushChannels.js",
+        {
+          channels: [
+            { id: "customer_default", name: "Orders & updates", importance: 4 },
+            { id: "customer_ride_cx", name: "Ride updates", importance: 4 },
+            { id: "customer_live_order", name: "Live trip progress", importance: 3 },
+            { id: "customer_cx", name: "Orders & updates", importance: 4 },
+            { id: "default", name: "Orders & updates", importance: 4 },
+          ],
+        },
+      ],
+      [
         "expo-navigation-bar",
         {
           backgroundColor: LAUNCHER_SPLASH_BG,

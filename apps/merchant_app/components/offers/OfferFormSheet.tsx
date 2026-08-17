@@ -100,6 +100,8 @@ function pickPreviewItems<T extends { item_id: string }>(items: T[], count: numb
 
 export type OfferFormSheetProps = {
   visible: boolean;
+  /** Changes only when opening a new create/edit session — keeps wizard step across Android picker suspend. */
+  formSessionKey?: number;
   editing: boolean;
   /** When true (create with a preset type), skip the choose step. */
   skipChoose?: boolean;
@@ -325,6 +327,7 @@ function BoostDiscountSlider({
 
 export function OfferFormSheet({
   visible,
+  formSessionKey = 0,
   editing,
   skipChoose = false,
   saving,
@@ -372,18 +375,19 @@ export function OfferFormSheet({
   const progressIndex = progressSteps.findIndex((s) => s.id === step);
 
   useEffect(() => {
-    if (visible) {
-      setNavIndex(0);
-      setSelectedRecommendedId(null);
-      setExpandedCats({});
-      setShowStartDatePicker(false);
-      setShowTimePicker(null);
-      const from = v.validFrom || todayYmd();
-      if (from === todayYmd()) setStartDateMode("today");
-      else if (from === plusDaysYmd(1)) setStartDateMode("tomorrow");
-      else setStartDateMode("custom");
-    }
-  }, [visible, editing, skipChoose]);
+    // Reset wizard only for a new form session — not when Android briefly
+    // hides the Modal so ImagePicker can register its ActivityResultLauncher.
+    setNavIndex(0);
+    setSelectedRecommendedId(null);
+    setExpandedCats({});
+    setShowStartDatePicker(false);
+    setShowTimePicker(null);
+    const from = v.validFrom || todayYmd();
+    if (from === todayYmd()) setStartDateMode("today");
+    else if (from === plusDaysYmd(1)) setStartDateMode("tomorrow");
+    else setStartDateMode("custom");
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- session key owns reset; values read at open
+  }, [formSessionKey, editing, skipChoose]);
 
   const filteredMenu = useMemo(() => {
     const term = menuSearch.trim().toLowerCase();

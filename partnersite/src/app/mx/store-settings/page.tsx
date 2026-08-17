@@ -47,6 +47,10 @@ import {
 } from '@/lib/store-operations-panel-cache'
 import { getSettlementNotePhase } from '@/lib/refund-settlement'
 import { billingCycleLabel, billingCycleSuffix } from '@/lib/billingCycleLabel'
+import {
+  coerceDeliveryRadiusKm,
+  patchCachedMerchantProfileStore,
+} from '@/lib/merchant-profile-cache'
 
 const StoreLocationMapboxGL = dynamicImport(() => import('@/components/StoreLocationMapboxGL'), { ssr: false })
 const mapboxToken = process.env.NEXT_PUBLIC_MAPBOX_TOKEN || ''
@@ -782,12 +786,14 @@ function StoreSettingsContent() {
             latitude: latStr,
             longitude: lngStr,
           }
-          const radius = typeof s.delivery_radius_km === 'number' && !isNaN(s.delivery_radius_km) ? s.delivery_radius_km : 5
-          setDeliveryRadiusKm(radius)
-          if (initialDeliverySettingsRef.current) {
-            initialDeliverySettingsRef.current = {
-              ...initialDeliverySettingsRef.current,
-              deliveryRadiusKm: radius,
+          const radius = coerceDeliveryRadiusKm(s.delivery_radius_km)
+          if (radius != null) {
+            setDeliveryRadiusKm(radius)
+            if (initialDeliverySettingsRef.current) {
+              initialDeliverySettingsRef.current = {
+                ...initialDeliverySettingsRef.current,
+                deliveryRadiusKm: radius,
+              }
             }
           }
         }
@@ -905,12 +911,9 @@ function StoreSettingsContent() {
 
         setGatimitraDeliveryEnabled(data.platform_delivery !== false)
         setSelfDeliveryEnabled(data.self_delivery === true)
-        const loadedRadius =
-          typeof data.delivery_radius_km === 'number' && !isNaN(data.delivery_radius_km)
-            ? data.delivery_radius_km
-            : 5
-        if (typeof data.delivery_radius_km === 'number' && !isNaN(data.delivery_radius_km)) {
-          setDeliveryRadiusKm(data.delivery_radius_km)
+        const loadedRadius = coerceDeliveryRadiusKm(data.delivery_radius_km)
+        if (loadedRadius != null) {
+          setDeliveryRadiusKm(loadedRadius)
         }
         const loadedPerKm =
           data.delivery_charge_per_km != null && !isNaN(Number(data.delivery_charge_per_km))
@@ -924,7 +927,7 @@ function StoreSettingsContent() {
         initialDeliverySettingsRef.current = {
           gatimitraDeliveryEnabled: data.platform_delivery !== false,
           selfDeliveryEnabled: data.self_delivery === true,
-          deliveryRadiusKm: loadedRadius,
+          deliveryRadiusKm: loadedRadius ?? coerceDeliveryRadiusKm(deliveryRadiusKm) ?? 5,
           deliveryChargePerKm: loadedPerKm,
         }
         if (data.delivery_charge_per_km_last_updated_at != null) {
@@ -1840,7 +1843,7 @@ function StoreSettingsContent() {
         storeId,
         self_delivery: selfDeliveryEnabled,
         platform_delivery: gatimitraDeliveryEnabled,
-        delivery_radius_km: typeof deliveryRadiusKm === 'number' && !isNaN(deliveryRadiusKm) ? deliveryRadiusKm : 5,
+        delivery_radius_km: coerceDeliveryRadiusKm(deliveryRadiusKm) ?? 5,
       }
       const perKmStr = deliveryChargePerKm.trim()
       if (perKmStr !== '') {
@@ -1868,10 +1871,13 @@ function StoreSettingsContent() {
       }
       toast.success('✅ Delivery settings saved successfully!')
       await queryClient.invalidateQueries({ queryKey: merchantKeys.storeSettings(storeId) })
+      const savedRadius = coerceDeliveryRadiusKm(deliveryRadiusKm) ?? deliveryRadiusKm
+      setStore((prev) => (prev ? { ...prev, delivery_radius_km: savedRadius } : prev))
+      patchCachedMerchantProfileStore(storeId, { delivery_radius_km: savedRadius })
       initialDeliverySettingsRef.current = {
         gatimitraDeliveryEnabled,
         selfDeliveryEnabled,
-        deliveryRadiusKm,
+        deliveryRadiusKm: savedRadius,
         deliveryChargePerKm: deliveryChargePerKm.trim(),
       }
     } catch {

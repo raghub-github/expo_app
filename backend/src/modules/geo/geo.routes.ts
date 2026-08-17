@@ -33,6 +33,7 @@ const DispatchServiceabilityQuerySchema = z.object({
   lng: z.coerce.number().min(-180).max(180),
   pincode: z.string().min(3).max(12).optional(),
   state: z.string().min(2).max(80).optional(),
+  merchantStoreId: z.string().min(1).max(80).optional(),
 });
 
 /**
@@ -153,7 +154,7 @@ export async function geoRoutes(app: FastifyInstance) {
     if (!q.success) {
       return reply.code(400).send({ error: "invalid_query", details: q.error.flatten() });
     }
-    const { service, fulfillment, lat, lng, pincode, state } = q.data;
+    const { service, fulfillment, lat, lng, pincode, state, merchantStoreId } = q.data;
     const serviceType = service === "ride" ? "person_ride" : service;
     try {
       const { checkDispatchServiceability } = await import(
@@ -162,7 +163,7 @@ export async function geoRoutes(app: FastifyInstance) {
       const result = await checkDispatchServiceability({
         serviceType,
         fulfillment,
-        pickup: { lat, lng, pincode, state },
+        pickup: { lat, lng, pincode, state, merchantStoreId },
       });
       return reply.send({ ok: true, ...result });
     } catch (e) {

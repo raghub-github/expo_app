@@ -5,6 +5,7 @@
  * Polls GET /api/orders/:id/eta; upgrades to eta.updated.v1 when WS env + token exist.
  */
 import { useCallback, useEffect, useRef, useState } from "react";
+import { resolveDashboardWsBaseUrl } from "@/lib/realtime/resolve-ws-base-url";
 
 export type DashboardStageAwareEta = {
   currentStage: string;
@@ -74,9 +75,8 @@ export function useDashboardOrderEta(orderIdText: string | null | undefined) {
 
   useEffect(() => {
     const id = String(orderIdText ?? "").trim().toUpperCase();
-    const wsBase = (process.env.NEXT_PUBLIC_WS_BASE_URL ?? "").replace(/\/+$/, "");
-    const apiBase = (process.env.NEXT_PUBLIC_BACKEND_URL ?? "").replace(/\/+$/, "");
-    if (!id || !wsBase || !apiBase || !/^[A-Z0-9-]{4,32}$/.test(id)) {
+    const wsBase = resolveDashboardWsBaseUrl();
+    if (!id || !wsBase || !/^[A-Z0-9-]{4,32}$/.test(id)) {
       setWsConnected(false);
       return;
     }
@@ -88,8 +88,7 @@ export function useDashboardOrderEta(orderIdText: string | null | undefined) {
     const connect = async () => {
       if (cancelled) return;
       try {
-        // Prefer cookie session via same-origin proxy if present; else skip WS.
-        const ticketRes = await fetch(`${apiBase}/v1/auth/ws-ticket`, {
+        const ticketRes = await fetch("/api/auth/ws-ticket", {
           method: "POST",
           credentials: "include",
           headers: { "content-type": "application/json" },

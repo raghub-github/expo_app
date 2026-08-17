@@ -55,6 +55,7 @@ import {
   type StoreFoodItemsUnderPrice,
 } from "@/services/foodHomeItemsUnderPrice.service";
 import { addressService } from "@/services/address.service";
+import { useActiveLocation } from "@/hooks/useAddresses";
 import { type UserAppCategoryItem } from "@/services/userAppCategory.service";
 import { useLocationStore } from "@/store/locationStore";
 import { useDietaryPreferenceStore } from "@/store/dietaryPreferenceStore";
@@ -129,6 +130,7 @@ export default function MealsUnderPriceScreen() {
     queryFn: () => addressService.getAddresses(),
     staleTime: 60 * 1000,
   });
+  const { data: activeLocation } = useActiveLocation();
 
   const merchantsAnchorCoords = useMemo(
     () =>
@@ -136,8 +138,9 @@ export default function MealsUnderPriceScreen() {
         locationSource,
         listingCoords,
         addresses,
+        activeLocation,
       }),
-    [locationSource, listingCoords, addresses]
+    [locationSource, listingCoords, addresses, activeLocation]
   );
 
   const {

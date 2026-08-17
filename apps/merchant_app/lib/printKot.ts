@@ -187,6 +187,46 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+type KotPrintFields = {
+  pickup_token: string | null;
+  kot_number: string | null;
+};
+
+async function fetchKotPrintFields(
+  storeId: number,
+  token: string,
+  args: { foodId?: number | null; coreId?: number | null }
+): Promise<KotPrintFields | null> {
+  const base = getConfig().apiBaseUrl.replace(/\/+$/, "");
+  const foodId = Number(args.foodId);
+  const coreId = Number(args.coreId);
+  const attempts: Array<{ id: number; byCore: boolean }> = [];
+  if (Number.isFinite(foodId) && foodId > 0) attempts.push({ id: foodId, byCore: false });
+  if (Number.isFinite(coreId) && coreId > 0 && coreId !== foodId) {
+    attempts.push({ id: coreId, byCore: true });
+  } else if (Number.isFinite(coreId) && coreId > 0 && attempts.length === 0) {
+    attempts.push({ id: coreId, byCore: true });
+  }
+
+  for (const attempt of attempts) {
+    try {
+      const qs = attempt.byCore ? "?by=core" : "";
+      const res = await authFetch(
+        `${base}/v1/merchant-partner/stores/${storeId}/food-orders/${attempt.id}/kot-fields${qs}`,
+        token
+      );
+      if (!res.ok) continue;
+      const data = (await res.json()) as Partial<KotPrintFields>;
+      const pickup_token = data.pickup_token?.trim() || null;
+      const kot_number = data.kot_number?.trim() || null;
+      if (pickup_token || kot_number) return { pickup_token, kot_number };
+    } catch {
+      /* try next id */
+    }
+  }
+  return null;
+}
+
 /**
  * The backend mints the pickup token and KOT number on read, so one retry is
  * enough to cover a first call that raced that write or dropped on the network.
@@ -211,37 +251,55 @@ async function fetchFoodOrderForPrint(
   return last;
 }
 
-/** Refresh order from API so KOT number + pickup QR always match Partner Site. */
+/** Refresh order so KOT number + pickup QR always match Partner Site. */
 export async function ensureOrderKotPrintFields(
   order: OrderRecord,
   ctx?: KotPrintContext | null
 ): Promise<OrderRecord> {
   const storeId = Number(ctx?.storeId ?? order.merchantStoreId);
   const token = ctx?.authToken?.trim();
-  const foodId = Number.parseInt(String(order.id), 10);
-  if (!token || !Number.isFinite(storeId) || storeId < 1 || !Number.isFinite(foodId) || foodId < 1) {
+  if (!token || !Number.isFinite(storeId) || storeId < 1) {
     return order;
   }
-  if (String(order.id).startsWith("core-")) return order;
-  try {
-    const fresh = await fetchFoodOrderForPrint(storeId, foodId, token);
-    if (!fresh) return order;
-    const mapped = mapApiOrder(fresh, {
-      storeId,
-      storeName: order.merchantStoreName ?? ctx?.storeName ?? null,
-      storeLocality: order.merchantStoreLocality ?? null,
-    });
-    return {
-      ...order,
-      ...mapped,
-      // Prefer freshly minted values; keep any prior token if refresh omits them.
-      kotNumber: mapped.kotNumber?.trim() || order.kotNumber?.trim() || null,
-      pickupToken: mapped.pickupToken?.trim() || order.pickupToken?.trim() || null,
-      pickupOtp: mapped.pickupOtp?.trim() || order.pickupOtp?.trim() || undefined,
-    };
-  } catch {
-    return order;
+
+  const foodIdRaw = Number.parseInt(String(order.id), 10);
+  const foodId =
+    !String(order.id).startsWith("core-") && Number.isFinite(foodIdRaw) && foodIdRaw > 0
+      ? foodIdRaw
+      : null;
+  const coreId = Number(order.ordersCoreId);
+
+  let next = order;
+
+  if (foodId != null) {
+    try {
+      const fresh = await fetchFoodOrderForPrint(storeId, foodId, token);
+      if (fresh) {
+        const mapped = mapApiOrder(fresh, {
+          storeId,
+          storeName: order.merchantStoreName ?? ctx?.storeName ?? null,
+          storeLocality: order.merchantStoreLocality ?? null,
+        });
+        next = {
+          ...order,
+          ...mapped,
+          kotNumber: mapped.kotNumber?.trim() || order.kotNumber?.trim() || null,
+          pickupToken: mapped.pickupToken?.trim() || order.pickupToken?.trim() || null,
+          pickupOtp: mapped.pickupOtp?.trim() || order.pickupOtp?.trim() || undefined,
+        };
+      }
+    } catch {
+      /* fall through to dedicated kot-fields */
+    }
   }
+
+  const fields = await fetchKotPrintFields(storeId, token, { foodId, coreId });
+  if (!fields) return next;
+  return {
+    ...next,
+    kotNumber: fields.kot_number || next.kotNumber?.trim() || null,
+    pickupToken: fields.pickup_token || next.pickupToken?.trim() || null,
+  };
 }
 
 export async function ensureApiOrderKotPrintFields(
@@ -250,23 +308,40 @@ export async function ensureApiOrderKotPrintFields(
 ): Promise<ApiFoodOrder> {
   const storeId = Number(ctx?.storeId);
   const token = ctx?.authToken?.trim();
+  if (!token || !Number.isFinite(storeId) || storeId < 1) {
+    return order;
+  }
   const foodId = Number(order.orders_food_id);
-  if (!token || !Number.isFinite(storeId) || storeId < 1 || !Number.isFinite(foodId) || foodId < 1) {
-    return order;
+  const coreId = Number(order.orders_core_id);
+  let next = order;
+
+  if (Number.isFinite(foodId) && foodId > 0) {
+    try {
+      const fresh = await fetchFoodOrderForPrint(storeId, foodId, token);
+      if (fresh) {
+        next = {
+          ...order,
+          ...fresh,
+          kot_number: fresh.kot_number?.trim() || order.kot_number?.trim() || null,
+          pickup_token: fresh.pickup_token?.trim() || order.pickup_token?.trim() || null,
+          pickup_otp: fresh.pickup_otp?.trim() || order.pickup_otp?.trim() || null,
+        };
+      }
+    } catch {
+      /* fall through */
+    }
   }
-  try {
-    const fresh = await fetchFoodOrderForPrint(storeId, foodId, token);
-    if (!fresh) return order;
-    return {
-      ...order,
-      ...fresh,
-      kot_number: fresh.kot_number?.trim() || order.kot_number?.trim() || null,
-      pickup_token: fresh.pickup_token?.trim() || order.pickup_token?.trim() || null,
-      pickup_otp: fresh.pickup_otp?.trim() || order.pickup_otp?.trim() || null,
-    };
-  } catch {
-    return order;
-  }
+
+  const fields = await fetchKotPrintFields(storeId, token, {
+    foodId: Number.isFinite(foodId) && foodId > 0 ? foodId : null,
+    coreId,
+  });
+  if (!fields) return next;
+  return {
+    ...next,
+    kot_number: fields.kot_number || next.kot_number?.trim() || null,
+    pickup_token: fields.pickup_token || next.pickup_token?.trim() || null,
+  };
 }
 
 /** Open the system print dialog with the production KOT. */

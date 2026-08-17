@@ -117,6 +117,38 @@ function gatiCashFromBilling(billing: Record<string, unknown> | null): number | 
   return null;
 }
 
+/** Customer-facing taxes / GST from billing_snapshot (or orders_core fallback). */
+function taxesFromBilling(
+  billing: Record<string, unknown> | null,
+  core: Record<string, unknown>
+): number | null {
+  const fromBilling =
+    asNum(billing?.tax_total) ??
+    asNum(billing?.taxTotal) ??
+    asNum(billing?.gst_total) ??
+    asNum(billing?.gstTotal) ??
+    asNum(billing?.total_tax) ??
+    asNum(billing?.totalTax);
+  if (fromBilling != null && fromBilling > 0.005) return round2(fromBilling);
+
+  const fromCore =
+    asNum(core.tax_total) ??
+    asNum(core.taxTotal) ??
+    asNum(core.gst_total) ??
+    asNum(core.total_tax);
+  if (fromCore != null && fromCore > 0.005) return round2(fromCore);
+
+  const taxes = Array.isArray(billing?.taxes) ? billing!.taxes : [];
+  let sum = 0;
+  for (const t of taxes) {
+    if (!t || typeof t !== "object") continue;
+    const row = t as Record<string, unknown>;
+    sum += asNum(row.tax) ?? asNum(row.amount) ?? 0;
+  }
+  if (sum > 0.005) return round2(sum);
+  return null;
+}
+
 async function fetchDiscountFromOrderTables(input: {
   orderCoreId: number;
   orderIdText: string | null;
@@ -847,6 +879,7 @@ export async function fetchOrderPaymentDetail(input: {
 
   const deliveryResolved = resolveDeliveryFee(billing, core, settlementDelivery);
   const deliveryFee = deliveryResolved.fee;
+  const taxes = taxesFromBilling(billing, core);
 
   // CTM and the discount fallback both only need `core` / `billing`, which are
   // already resolved — run them together rather than back to back.
@@ -950,6 +983,7 @@ export async function fetchOrderPaymentDetail(input: {
         totalRefunded != null && totalRefunded > 0 ? round2(totalRefunded) : null,
       amount: ctc > 0 ? ctc : null,
       deliveryFee,
+      taxes,
       ctc: ctc > 0 ? ctc : null,
       cashin: cashin >= 0 ? cashin : null,
       gatiCashUsed: gati,
@@ -969,6 +1003,7 @@ export async function fetchOrderPaymentDetail(input: {
     deliveryFee,
     deliveryFeeQuoted: deliveryResolved.quoted,
     deliveryFeeWaived: deliveryResolved.waived,
+    taxes,
     source: paymentSourceDisplay,
     paymentMode: paymentModeDisplay,
     partialRefunded,

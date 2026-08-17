@@ -8,6 +8,7 @@ export type AppAssetItem = {
   proxyUrl: string | null;
   url: string | null;
   sortOrder: number;
+  updatedAt?: string | null;
 };
 
 export type AppAssetsResponse = {

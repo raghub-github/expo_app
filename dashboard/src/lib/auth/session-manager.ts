@@ -1,37 +1,29 @@
 /**
- * Session Management Utilities
+ * Unified Control Dashboard session metadata (cookie-based).
  *
- * Session rules (cookie-based, validated in proxy on every request):
+ * One session for ALL protected routes (/dashboard/*, /order/*, tickets, etc.).
  *
- * 1. On login: session is valid for 24 hours from that moment (session_start_time
- *    and last_activity_time are set to now).
+ * Rules:
+ * 1. Rolling window: session_expires_at = last_activity_at + 48 hours
+ * 2. Idle timeout: invalidate if no meaningful activity for 24 hours
+ * 3. Absolute max: login_time + 7 days (never extended by activity)
+ * 4. effective_expiry = MIN(last_activity + 48h, login + 7d)
+ * 5. Activity updates are throttled (I/O budget) and skip background polls
  *
- * 2. Activity-based renewal: if the user accesses any protected page/API again
- *    within 24 hours, last_activity_time is updated to now (updateActivity in
- *    proxy). That effectively renews the session for another 24 hours from
- *    that visit. This renewal happens on every request while the session is valid.
- *
- * 3. Maximum lifetime: no matter how often they visit, the session expires 7 days
- *    after the first login (session_start_time never changes). After 7 days they
- *    must log in again.
- *
- * 4. Inactivity expiry: if the user does NOT access the app for 24 hours, the
- *    session expires (timeSinceLastActivity > 24h). No renewal; they must log in again.
- *
- * 5. Logout / expire: expireSession() clears session cookies; proxy re-inits stale
- *    metadata instead of wiping sb-* auth cookies.
- *
- * Cookie management: only POST /api/auth/set-cookie sets these cookies (on login).
- * Middleware only reads them and updates last_activity_time. Logout and
- * expireSession clear them.
+ * Cookies are set only on login (POST /api/auth/set-cookie). Proxy/session-status
+ * update last_activity_time. Logout/expire clear them. Expired sessions must NOT
+ * be re-initialized — that caused "always logged in forever" and masked real expiry.
  */
 
-// Constants
-export const SESSION_DURATION = 24 * 60 * 60 * 1000; // 24 hours in milliseconds
-export const MAX_SESSION_DURATION = 7 * 24 * 60 * 60 * 1000; // 7 days in milliseconds
-export const INACTIVITY_TIMEOUT = 24 * 60 * 60 * 1000; // 24 hours in milliseconds
+export const ROLLING_SESSION_DURATION = 48 * 60 * 60 * 1000; // 48 hours
+export const MAX_SESSION_DURATION = 7 * 24 * 60 * 60 * 1000; // 7 days
+export const INACTIVITY_TIMEOUT = 24 * 60 * 60 * 1000; // 24 hours
+/** @deprecated use ROLLING_SESSION_DURATION — kept for display helpers */
+export const SESSION_DURATION = ROLLING_SESSION_DURATION;
 
-// Cookie names
+/** Min gap between last_activity cookie writes (I/O budget). */
+export const ACTIVITY_UPDATE_THROTTLE_MS = 5 * 60 * 1000; // 5 minutes
+
 const SESSION_START_COOKIE = "session_start_time";
 const LAST_ACTIVITY_COOKIE = "last_activity_time";
 const SESSION_ID_COOKIE = "session_id";
@@ -44,22 +36,46 @@ export interface SessionMetadata {
 
 export interface SessionValidity {
   isValid: boolean;
-  reason?: "expired_inactivity" | "expired_max_duration" | "no_session";
+  reason?: "expired_inactivity" | "expired_max_duration" | "expired_rolling" | "no_session";
   timeRemaining?: number;
   daysRemaining?: number;
+  idleExpiresAt?: number;
+  rollingExpiresAt?: number;
+  absoluteExpiresAt?: number;
+  effectiveExpiresAt?: number;
 }
 
-/**
- * Generate a unique session ID
- */
+type CookieGetter = { get: (name: string) => { value: string } | undefined };
+type CookieSetter = {
+  set: (
+    name: string,
+    value: string,
+    options: {
+      maxAge: number;
+      path: string;
+      httpOnly?: boolean;
+      sameSite?: string;
+      secure?: boolean;
+    }
+  ) => void;
+};
+
 function generateSessionId(): string {
   return `sess_${Date.now()}_${Math.random().toString(36).substring(2, 15)}`;
 }
 
-/**
- * Get session metadata from cookies
- */
-export function getSessionMetadata(cookies: { get: (name: string) => { value: string } | undefined }): SessionMetadata | null {
+function sessionCookieOptions() {
+  return {
+    maxAge: MAX_SESSION_DURATION / 1000,
+    path: "/",
+    // HttpOnly: server is source of truth; clients use /api/auth/session-status.
+    httpOnly: true,
+    sameSite: "lax" as const,
+    secure: typeof process !== "undefined" && process.env?.NODE_ENV === "production",
+  };
+}
+
+export function getSessionMetadata(cookies: CookieGetter): SessionMetadata | null {
   try {
     const sessionStart = cookies.get(SESSION_START_COOKIE)?.value;
     const lastActivity = cookies.get(LAST_ACTIVITY_COOKIE)?.value;
@@ -69,9 +85,15 @@ export function getSessionMetadata(cookies: { get: (name: string) => { value: st
       return null;
     }
 
+    const sessionStartTime = parseInt(sessionStart, 10);
+    const lastActivityTime = parseInt(lastActivity, 10);
+    if (!Number.isFinite(sessionStartTime) || !Number.isFinite(lastActivityTime)) {
+      return null;
+    }
+
     return {
-      sessionStartTime: parseInt(sessionStart, 10),
-      lastActivityTime: parseInt(lastActivity, 10),
+      sessionStartTime,
+      lastActivityTime,
       sessionId,
     };
   } catch (error) {
@@ -81,74 +103,80 @@ export function getSessionMetadata(cookies: { get: (name: string) => { value: st
 }
 
 /**
- * Check if session is valid
+ * Effective expiry = min(last_activity + 48h, login + 7d).
+ * Also invalid if idle (last_activity + 24h) has passed.
  */
 export function checkSessionValidity(
   metadata: SessionMetadata | null,
   currentTime: number = Date.now()
 ): SessionValidity {
   if (!metadata) {
-    return {
-      isValid: false,
-      reason: "no_session",
-    };
+    return { isValid: false, reason: "no_session" };
   }
 
   const { sessionStartTime, lastActivityTime } = metadata;
+  const idleExpiresAt = lastActivityTime + INACTIVITY_TIMEOUT;
+  const rollingExpiresAt = lastActivityTime + ROLLING_SESSION_DURATION;
+  const absoluteExpiresAt = sessionStartTime + MAX_SESSION_DURATION;
+  const effectiveExpiresAt = Math.min(rollingExpiresAt, absoluteExpiresAt);
 
-  // Check 1: Has user been inactive for more than 24 hours?
-  const timeSinceLastActivity = currentTime - lastActivityTime;
-  if (timeSinceLastActivity > INACTIVITY_TIMEOUT) {
+  if (currentTime >= idleExpiresAt) {
     return {
       isValid: false,
       reason: "expired_inactivity",
+      idleExpiresAt,
+      rollingExpiresAt,
+      absoluteExpiresAt,
+      effectiveExpiresAt,
     };
   }
 
-  // Check 2: Has total session duration exceeded 7 days?
-  const totalSessionDuration = currentTime - sessionStartTime;
-  if (totalSessionDuration > MAX_SESSION_DURATION) {
+  if (currentTime >= absoluteExpiresAt) {
     return {
       isValid: false,
       reason: "expired_max_duration",
+      idleExpiresAt,
+      rollingExpiresAt,
+      absoluteExpiresAt,
+      effectiveExpiresAt,
     };
   }
 
-  // Session is valid
-  const timeRemaining = SESSION_DURATION - (currentTime - lastActivityTime);
-  const daysRemaining = Math.ceil((MAX_SESSION_DURATION - totalSessionDuration) / (24 * 60 * 60 * 1000));
+  if (currentTime >= rollingExpiresAt) {
+    return {
+      isValid: false,
+      reason: "expired_rolling",
+      idleExpiresAt,
+      rollingExpiresAt,
+      absoluteExpiresAt,
+      effectiveExpiresAt,
+    };
+  }
+
+  const timeRemaining = Math.max(0, effectiveExpiresAt - currentTime);
+  const daysRemaining = Math.ceil((absoluteExpiresAt - currentTime) / (24 * 60 * 60 * 1000));
 
   return {
     isValid: true,
-    timeRemaining: Math.max(0, timeRemaining),
+    timeRemaining,
     daysRemaining: Math.max(0, daysRemaining),
+    idleExpiresAt,
+    rollingExpiresAt,
+    absoluteExpiresAt,
+    effectiveExpiresAt,
   };
 }
 
-/**
- * Initialize session (call on login)
- */
-export function initializeSession(cookies: {
-  set: (name: string, value: string, options: { maxAge: number; path: string; httpOnly?: boolean; sameSite?: string; secure?: boolean }) => void;
-}): SessionMetadata {
+export function initializeSession(cookies: CookieSetter): SessionMetadata {
   const now = Date.now();
   const sessionId = generateSessionId();
-
   const metadata: SessionMetadata = {
     sessionStartTime: now,
     lastActivityTime: now,
     sessionId,
   };
 
-  // Set cookies with 7 day expiration (max session duration)
-  const cookieOptions = {
-    maxAge: MAX_SESSION_DURATION / 1000, // seconds
-    path: "/",
-    httpOnly: false, // allow client read for session status display
-    sameSite: "lax" as const,
-    secure: typeof process !== "undefined" && process.env?.NODE_ENV === "production",
-  };
-
+  const cookieOptions = sessionCookieOptions();
   cookies.set(SESSION_START_COOKIE, now.toString(), cookieOptions);
   cookies.set(LAST_ACTIVITY_COOKIE, now.toString(), cookieOptions);
   cookies.set(SESSION_ID_COOKIE, sessionId, cookieOptions);
@@ -157,14 +185,14 @@ export function initializeSession(cookies: {
 }
 
 /**
- * Update last activity time (call on each request)
+ * Update last_activity_at when meaningful user activity occurs.
+ * Throttled to ACTIVITY_UPDATE_THROTTLE_MS to limit Set-Cookie I/O.
+ * Returns true if the cookie was written.
  */
 export function updateActivity(
-  cookies: {
-    get: (name: string) => { value: string } | undefined;
-    set: (name: string, value: string, options: { maxAge: number; path: string; httpOnly?: boolean; sameSite?: string; secure?: boolean }) => void;
-  },
-  currentTime: number = Date.now()
+  cookies: CookieGetter & CookieSetter,
+  currentTime: number = Date.now(),
+  options?: { force?: boolean }
 ): boolean {
   try {
     const metadata = getSessionMetadata(cookies);
@@ -172,16 +200,14 @@ export function updateActivity(
       return false;
     }
 
-    const cookieOptions = {
-      maxAge: MAX_SESSION_DURATION / 1000,
-      path: "/",
-      httpOnly: false,
-      sameSite: "lax" as const,
-      secure: typeof process !== "undefined" && process.env?.NODE_ENV === "production",
-    };
+    if (
+      !options?.force &&
+      currentTime - metadata.lastActivityTime < ACTIVITY_UPDATE_THROTTLE_MS
+    ) {
+      return false;
+    }
 
-    cookies.set(LAST_ACTIVITY_COOKIE, currentTime.toString(), cookieOptions);
-
+    cookies.set(LAST_ACTIVITY_COOKIE, currentTime.toString(), sessionCookieOptions());
     return true;
   } catch (error) {
     console.error("[session-manager] Error updating activity:", error);
@@ -189,28 +215,56 @@ export function updateActivity(
   }
 }
 
-/**
- * Expire session (call on logout or expiration)
- */
-export function expireSession(cookies: {
-  set: (name: string, value: string, options: { maxAge: number; path: string; httpOnly?: boolean; sameSite?: string; secure?: boolean }) => void;
-}): void {
-  const expireOptions = {
+export function expireSession(cookies: CookieSetter): void {
+  const base = {
     maxAge: 0,
     path: "/",
-    httpOnly: false,
     sameSite: "lax" as const,
     secure: typeof process !== "undefined" && process.env?.NODE_ENV === "production",
   };
 
-  cookies.set(SESSION_START_COOKIE, "", expireOptions);
-  cookies.set(LAST_ACTIVITY_COOKIE, "", expireOptions);
-  cookies.set(SESSION_ID_COOKIE, "", expireOptions);
+  // Clear both httpOnly variants so pre-migration (readable) cookies are removed too.
+  for (const httpOnly of [true, false]) {
+    const expireOptions = { ...base, httpOnly };
+    cookies.set(SESSION_START_COOKIE, "", expireOptions);
+    cookies.set(LAST_ACTIVITY_COOKIE, "", expireOptions);
+    cookies.set(SESSION_ID_COOKIE, "", expireOptions);
+  }
 }
 
 /**
- * Get formatted time remaining
+ * Background polls / health probes must not extend the rolling or idle window.
  */
+export function isBackgroundPollRequest(pathname: string, search: string = ""): boolean {
+  const path = pathname.toLowerCase();
+  const qs = search.toLowerCase();
+
+  if (path.startsWith("/api/audit/")) return true;
+  if (path.startsWith("/api/public/")) return true;
+  if (path.startsWith("/api/health")) return true;
+  if (path.startsWith("/api/auth/session-status")) return true;
+  if (path.startsWith("/api/auth/permissions")) return true;
+  if (path.startsWith("/api/auth/dashboard-access")) return true;
+  if (path.startsWith("/api/auth/bootstrap")) return true;
+  if (path.includes("/pending-new-orders-count")) return true;
+  if (path.includes("/sync-acceptance-timeout")) return true;
+  if (path.includes("/review-queue-summary")) return true;
+  if (qs.includes("lightweight=1")) return true;
+  return false;
+}
+
+/** Page navigations + mutating APIs + non-poll GETs count as meaningful activity. */
+export function isMeaningfulActivityRequest(
+  pathname: string,
+  method: string,
+  search: string = ""
+): boolean {
+  if (!pathname.startsWith("/api/")) return true;
+  const m = method.toUpperCase();
+  if (m !== "GET" && m !== "HEAD" && m !== "OPTIONS") return true;
+  return !isBackgroundPollRequest(pathname, search);
+}
+
 export function formatTimeRemaining(ms: number): string {
   if (ms <= 0) return "Expired";
 

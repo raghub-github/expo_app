@@ -25,9 +25,18 @@ function ongoingId(orderId: string): string {
   return `customer-live-order-${orderId}`;
 }
 
+/**
+ * Text progress for shade notifications (no View / CSS).
+ * Uses rounded dots instead of sharp █ blocks so the bar reads like a ~30px-radius pill.
+ */
 function progressBar(step: number, steps: number): string {
   const filled = Math.max(0, Math.min(BAR_LEN, Math.round((step / Math.max(1, steps)) * BAR_LEN)));
-  return `${"█".repeat(filled)}${"░".repeat(BAR_LEN - filled)}`;
+  const empty = BAR_LEN - filled;
+  if (filled <= 0) return "○".repeat(BAR_LEN);
+  // Soft rounded ends: ◖ ●…● ◗  + ○ track (approximates border-radius ~30 on a pill bar)
+  if (filled === 1) return `●${"○".repeat(empty)}`;
+  if (filled === 2) return `◖◗${"○".repeat(empty)}`;
+  return `◖${"●".repeat(filled - 2)}◗${"○".repeat(empty)}`;
 }
 
 type LiveUi = {

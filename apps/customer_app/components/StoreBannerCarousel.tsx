@@ -15,6 +15,8 @@ import {
 import { Image } from "expo-image";
 import { enqueueImagePrefetch } from "@/lib/prefetchQueue";
 import { useCardAnimationsEnabled } from "@/hooks/useCardAnimationsEnabled";
+import { isFoodHeroImageUrl } from "@/lib/merchantHeroMedia";
+import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
 import Animated, {
   cancelAnimation,
   Easing,
@@ -28,7 +30,6 @@ import Animated, {
 } from "react-native-reanimated";
 import { LinearGradient } from "expo-linear-gradient";
 import { GatiMitraColors } from "@/constants/gatimitra";
-import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
 
 export type StoreBannerCarouselProps = {
   bannerUri: string | null | undefined;
@@ -98,12 +99,12 @@ function buildSlides(banner: string | null | undefined, gallery: string[]) {
   const out: string[] = [];
   const add = (raw: string | null | undefined) => {
     const abs = toAbsoluteImageUrl(raw) ?? (typeof raw === "string" ? raw.trim() : "");
-    if (!abs || seen.has(abs)) return;
+    if (!abs || seen.has(abs) || !isFoodHeroImageUrl(abs)) return;
     seen.add(abs);
     out.push(abs);
   };
-  add(banner ?? null);
   for (const g of gallery) add(g);
+  add(banner ?? null);
   return out;
 }
 

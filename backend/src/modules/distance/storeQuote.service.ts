@@ -26,7 +26,11 @@ import { getEnv } from "../../config/env.js";
 import { getSupabase } from "../../lib/supabase.js";
 import { and, eq, isNull } from "drizzle-orm";
 import { customerAddresses } from "../../db/schema.js";
-import { getRoute } from "./distance.service.js";
+import {
+  canonicalStoreToCustomerRouteArgs,
+  getRoute,
+  haversineDistanceKm,
+} from "./distance.service.js";
 import {
   getStoreByIdForOrder,
   getStoreByStoreId,
@@ -154,8 +158,8 @@ async function getStoreServiceRadiusKm(storeId: number): Promise<number | null> 
       .single();
     if (error || !data) return null;
     const raw = (data as { delivery_radius_km?: number | string | null }).delivery_radius_km;
-    const n = raw == null ? null : typeof raw === "number" ? raw : parseFloat(String(raw));
-    return Number.isFinite(n ?? NaN) && (n as number) > 0 ? (n as number) : null;
+    const n = raw == null ? NaN : Number(raw);
+    return Number.isFinite(n) && n > 0 ? n : null;
   } catch {
     return null;
   }
@@ -193,9 +197,7 @@ async function resolveStore(
     lat: s.latitude != null ? Number(s.latitude) : 0,
     lng: s.longitude != null ? Number(s.longitude) : 0,
     active: (s as { is_accepting_orders?: boolean | null }).is_accepting_orders === true,
-    radiusKm: (s as { delivery_radius_km?: number | string | null }).delivery_radius_km != null
-      ? Number((s as { delivery_radius_km?: number | string | null }).delivery_radius_km)
-      : radius,
+    radiusKm: radius,
   };
 }
 
@@ -276,20 +278,32 @@ export async function resolveStoreDeliveryQuote(
   const drop = await resolveDrop(input);
   if (!drop.ok) return drop;
 
-  const route = await getRoute({
-    origin: { lat: store.lat, lng: store.lng },
-    destination: { lat: drop.lat, lng: drop.lng },
-    profile: "driving",
-    mapboxToken: env.MAPBOX_ACCESS_TOKEN ?? undefined,
-    osrmBaseUrl: env.OSRM_BASE_URL ?? undefined,
-    skipCache: input.skipCache === true,
-  });
+  const route = await getRoute(
+    canonicalStoreToCustomerRouteArgs(
+      { lat: store.lat, lng: store.lng },
+      { lat: drop.lat, lng: drop.lng },
+      {
+        mapboxToken: env.MAPBOX_ACCESS_TOKEN ?? undefined,
+        osrmBaseUrl: env.OSRM_BASE_URL ?? undefined,
+        skipCache: input.skipCache === true,
+      }
+    )
+  );
 
   const distanceKm = route.distanceKm;
   const durationMin = route.etaMinutes;
 
   const serviceRadiusKm = store.radiusKm ?? env.SERVICE_RADIUS_KM_DEFAULT;
-  const outOfRange = distanceKm > serviceRadiusKm;
+  const hasStoreCoords =
+    Number.isFinite(store.lat) &&
+    Number.isFinite(store.lng) &&
+    !(store.lat === 0 && store.lng === 0);
+  const airKm = hasStoreCoords
+    ? haversineDistanceKm({ lat: store.lat, lng: store.lng }, { lat: drop.lat, lng: drop.lng })
+    : 0;
+  // Merchant delivery radius is a coverage circle (km as-the-crow-flies), not road km.
+  // Road distance still drives fee / ETA; using it here falsely blocked nearby customers.
+  const outOfRange = hasStoreCoords && airKm > serviceRadiusKm;
 
   // Geo slab resolution (must run before serviceability is computed).
   //
@@ -628,10 +642,9 @@ export async function resolveStoreDeliveryQuote(
         }
       }
     } else {
-      // Pincode is known in geo tables but no delivery slab is configured at any ancestor level.
-      // Mark area as not serviceable — do NOT silently fall back to env defaults here.
+      // Pincode is known but no slab is configured — still price with fallback.
+      // Do not treat this as "outside delivery range".
       pricingEngine = "no_slab_configured";
-      deliveryFee = 0;
     }
   } else if (!dropGeoRefs) {
     // Pincode is completely unknown in the geo tables — use env defaults as a last resort
@@ -653,7 +666,8 @@ export async function resolveStoreDeliveryQuote(
   if (
     pricingEngine === "fallback_per_km" ||
     pricingEngine === "no_geo_match" ||
-    pricingEngine === "slab_invalid"
+    pricingEngine === "slab_invalid" ||
+    pricingEngine === "no_slab_configured"
   ) {
     const fallback = await computeFallbackCustomerFee({
       service: serviceTypeSlab,
@@ -685,9 +699,8 @@ export async function resolveStoreDeliveryQuote(
 
   deliveryFee = round2(deliveryFee);
 
-  // Serviceability: not serviceable when store inactive, out of range, OR no slab configured for this geo.
   const noSlabConfigured = pricingEngine === "no_slab_configured";
-  const serviceable = store.active && !outOfRange && !noSlabConfigured;
+  const serviceable = !outOfRange;
 
   const gstPct = env.APPLY_GST_ON_DELIVERY_FEE
     ? Math.max(0, Math.min(100, env.DELIVERY_FEE_GST_PERCENT ?? 5))
@@ -748,10 +761,10 @@ export async function resolveStoreDeliveryQuote(
       delivery_gst: deliveryGst,
       final_delivery_fee: finalDeliveryFee,
       serviceable,
-      unserviceable_reason: !store.active
-        ? "store_inactive"
-        : outOfRange
-          ? "out_of_range"
+      unserviceable_reason: outOfRange
+        ? "out_of_range"
+        : !store.active
+          ? "store_inactive"
           : noSlabConfigured
             ? "no_delivery_slab"
             : null,

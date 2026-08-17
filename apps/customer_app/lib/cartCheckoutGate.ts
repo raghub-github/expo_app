@@ -115,9 +115,10 @@ export function tryEvaluateCartCheckoutEligibilitySync(
 
   const cached = readCachedQuote(queryClient, merchantId, drop);
   if (cached != null) {
-    return cached.serviceable
-      ? { allowed: true }
-      : { allowed: false, reason: "out_of_range" };
+    if (cached.unserviceable_reason === "out_of_range" || cached.serviceable === false) {
+      return { allowed: false, reason: "out_of_range" };
+    }
+    return { allowed: true };
   }
 
   return null;
@@ -150,7 +151,7 @@ export async function evaluateCartCheckoutEligibility(
       serviceType: "FOOD",
     });
     queryClient.setQueryData(quoteQueryKey(merchantId, drop), quote);
-    if (!quote.serviceable) {
+    if (quote.unserviceable_reason === "out_of_range" || quote.serviceable === false) {
       return { allowed: false, reason: "out_of_range" };
     }
     return { allowed: true };

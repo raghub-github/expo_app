@@ -176,6 +176,8 @@ export interface MenuItem {
   spice_level?: string;
   cuisine_type?: string;
   is_active?: boolean;
+  /** Soft-deleted items are hidden by the default LIVE visibility filter. */
+  is_deleted?: boolean;
   store_id?: number;
   approval_status?: "PENDING" | "APPROVED" | "REJECTED" | null;
   primary_image_moderation_status?: "PENDING" | "APPROVED" | "REJECTED" | null;

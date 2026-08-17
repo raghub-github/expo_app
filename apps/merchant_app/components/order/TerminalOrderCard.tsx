@@ -18,6 +18,7 @@ import {
 } from "@/components/order/orderFormatters";
 import { formatMerchantRs } from "@/lib/merchant-line-total";
 import { formatTerminalOrderFooter } from "@/lib/terminalOrderFooter";
+import { MerchantOrderRatingBlock } from "@/components/order/MerchantOrderRatingBlock";
 
 type Props = {
   order: OrderRecord;
@@ -25,6 +26,7 @@ type Props = {
   rejectedReason?: string | null;
   vegOnly?: boolean;
   onPress: () => void;
+  onReviewPress?: () => void;
 };
 
 function statusMeta(status: OrderStage) {
@@ -64,6 +66,7 @@ export function TerminalOrderCard({
   rejectedReason,
   vegOnly = false,
   onPress,
+  onReviewPress,
 }: Props) {
   const [copied, setCopied] = useState(false);
   const meta = statusMeta(order.status);
@@ -192,6 +195,11 @@ export function TerminalOrderCard({
       </View>
 
       {/* Optional footer (delay / rejection) */}
+      {order.status === "delivered" && order.storeRating ? (
+        <View style={styles.ratingWrap}>
+          <MerchantOrderRatingBlock rating={order.storeRating} onPress={onReviewPress} />
+        </View>
+      ) : null}
       {footerMeta ? (
         <View style={styles.footerRow}>
           <Ionicons
@@ -343,6 +351,12 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: 6,
     marginTop: 10,
+  },
+  ratingWrap: {
+    marginTop: 10,
+    paddingTop: 10,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: "#E5E7EB",
   },
   footerText: { flex: 1, fontSize: 12, fontWeight: "600" },
   footerSuccess: { color: "#166534" },

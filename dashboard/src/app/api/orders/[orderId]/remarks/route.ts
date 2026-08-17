@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine";
-import { getAuthenticatedApiUser } from "@/lib/auth/api-session";
+import { getAuthenticatedApiUser, authFailureResponse } from "@/lib/auth/api-session";
 import { getSystemUserByEmail } from "@/lib/auth/user-mapping";
 import { createOrderRemark, listOrderRemarks } from "@/lib/db/operations/order-remarks";
 import { stampOrderRoutedTo } from "@/lib/orders/stamp-order-routed-to";
@@ -14,7 +14,7 @@ function parseOrderId(param: string | undefined): number | null {
 }
 
 export async function GET(
-  _request: NextRequest,
+  request: NextRequest,
   context: { params: Promise<{ orderId: string }> }
 ) {
   try {
@@ -27,9 +27,9 @@ export async function GET(
       );
     }
 
-    const auth = await getAuthenticatedApiUser();
+    const auth = await getAuthenticatedApiUser(request);
     if (!auth.ok) {
-      return NextResponse.json(auth.body, { status: auth.status });
+      return authFailureResponse(auth);
     }
     const { user } = auth;
 
@@ -80,9 +80,9 @@ export async function POST(
       );
     }
 
-    const auth = await getAuthenticatedApiUser();
+    const auth = await getAuthenticatedApiUser(request);
     if (!auth.ok) {
-      return NextResponse.json(auth.body, { status: auth.status });
+      return authFailureResponse(auth);
     }
     const { user } = auth;
 

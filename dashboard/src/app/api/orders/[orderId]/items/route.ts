@@ -39,6 +39,7 @@ import {
   merchantLineTotalForItem,
 } from "@/lib/merchant-order-item-display";
 import { resolvePartnerOrderItems } from "@/lib/partnerFoodOrderItems";
+import { resolveAttachmentProxyUrl } from "@/lib/attachments/resolve-attachment-proxy-url";
 
 export const runtime = "nodejs";
 
@@ -62,7 +63,8 @@ function imageFromSnapshot(snap: Record<string, unknown> | null | undefined): st
   const url = String(
     snap.item_image_url ?? snap.imageUrl ?? snap.itemImageUrl ?? snap.image_url ?? ""
   ).trim();
-  return url || null;
+  if (!url) return null;
+  return resolveAttachmentProxyUrl(url) || url;
 }
 
 function packagingPerUnitFromSnapshot(snap: Record<string, unknown> | null | undefined): number {
@@ -317,7 +319,9 @@ export async function GET(
     for (const m of menuRows || []) {
       const id = Number((m as { id: number }).id);
       const url = String((m as { item_image_url?: string }).item_image_url ?? "").trim();
-      if (Number.isFinite(id) && url) menuImageById.set(id, url);
+      if (Number.isFinite(id) && url) {
+        menuImageById.set(id, resolveAttachmentProxyUrl(url) || url);
+      }
     }
 
     const cartLineSources: unknown[] = [];
@@ -635,7 +639,9 @@ export async function GET(
         },
         lineTotal: amounts.lineTotal,
         hasImage: Boolean(line.imageUrl),
-        imageUrl: line.imageUrl,
+        imageUrl: line.imageUrl
+          ? resolveAttachmentProxyUrl(line.imageUrl) || line.imageUrl
+          : null,
         variantName: line.variant,
         addons: line.addonList,
         vegNonveg: line.vegNonveg,

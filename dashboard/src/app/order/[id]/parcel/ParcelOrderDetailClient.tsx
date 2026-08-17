@@ -519,6 +519,16 @@ export default function ParcelOrderDetailClient({
       key={`parcel-map-${order.riderId ?? "static"}-${order.id}`}
       className="h-full min-h-[360px] flex flex-col"
       orderId={order.id}
+      orderIdText={
+        order.formattedOrderId?.trim() ||
+        order.orderId?.trim() ||
+        (order.id != null ? `GMC${String(order.id).padStart(6, "0")}` : null)
+      }
+      orderChannelIds={[
+        order.formattedOrderId,
+        order.orderId,
+        order.id != null ? `GMC${String(order.id).padStart(6, "0")}` : null,
+      ]}
       riderId={hasAssignedRider ? order.riderId : null}
       riderName={order.riderName}
       storeName="Pickup"

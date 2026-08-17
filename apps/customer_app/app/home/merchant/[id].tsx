@@ -39,8 +39,8 @@ import {
   writeCachedMyOrders,
 } from "@/lib/myOrdersCache";
 import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
-import { getRoute } from "@/services/distance.service";
 import { useStoreDeliveryQuote } from "@/hooks/useStoreDeliveryQuote";
+import { useLongDistanceSheet } from "@/hooks/useLongDistanceSheet";
 import { useMenuItemBookmarks, useMenuItemBookmarkMutations } from "@/hooks/useMenuItemBookmarks";
 import { addressService, type Address } from "@/services/address.service";
 import { resolveCheckoutDeliveryAddress } from "@/lib/deliveryDropResolution";
@@ -144,6 +144,7 @@ import {
 } from "@/components/store/StoreMenuSheet";
 import { StoreOffersSheet } from "@/components/store/StoreOffersSheet";
 import { StoreScheduleSheet } from "@/components/store/StoreScheduleSheet";
+import { LongDistanceBottomSheet } from "@/components/store/LongDistanceBottomSheet";
 import { MerchantRatingExplainerSheet } from "@/components/store/MerchantRatingExplainerSheet";
 import type { PastOrderItem } from "@/components/store/StorePastOrderRow";
 import { orderService, type OrderSummary } from "@/services/order.service";
@@ -666,18 +667,6 @@ export default function MerchantDetailScreen() {
     return trimmed.filter((u) => u !== hero);
   }, [merchant?.id, merchant?.bannerImages, merchantBannerHeroUri]);
 
-  /** Distance from the list API (already backend-computed). Used as a fast fallback while route loads. */
-  const listCachedDistanceKm = useMemo(() => {
-    const entries = queryClient.getQueriesData<MerchantSummary[]>({ queryKey: ["merchants"] });
-    for (const [, list] of entries) {
-      if (!Array.isArray(list)) continue;
-      const m = list.find((x) => x.id === merchantId);
-      const km = (m as { distanceKm?: number | null } | undefined)?.distanceKm ?? null;
-      if (km != null && Number.isFinite(km)) return km;
-    }
-    return null;
-  }, [merchantId, queryClient]);
-
   const coords = useLocationStore((s) => s.coords);
   const locationSource = useLocationStore((s) => s.locationSource);
   const locationAddress = useLocationStore((s) => s.address);
@@ -770,6 +759,13 @@ export default function MerchantDetailScreen() {
         : null,
     enabled: !!merchantId && (!!resolvedDeliveryAddress || !!routingDropCoords),
   });
+
+  const { visible: longDistanceSheetVisible, onClose: closeLongDistanceSheet } =
+    useLongDistanceSheet({
+      merchantId,
+      distanceKm: storeQuote?.distance_km ?? null,
+      serviceable: storeQuote?.serviceable,
+    });
 
   const pincode = locationAddress?.pincode ?? undefined;
   const state = locationAddress?.state ?? undefined;
@@ -1087,18 +1083,6 @@ export default function MerchantDetailScreen() {
     [storeOffersData]
   );
 
-  // Kept for legacy fields (polyline for map) while we migrate to canonical quote.
-  void getRoute;
-  const routeResult = useMemo(
-    () =>
-      storeQuote
-        ? {
-            distanceKm: storeQuote.distance_km,
-            etaMinutes: storeQuote.duration_min,
-          }
-        : null,
-    [storeQuote]
-  );
   const addItem = useCartStore((s) => s.addItem);
   const replaceLine = useCartStore((s) => s.replaceLine);
   const removeItem = useCartStore((s) => s.removeItem);
@@ -1904,7 +1888,7 @@ export default function MerchantDetailScreen() {
     };
   }, [catalogSections]);
 
-  const distanceKm = routeResult?.distanceKm ?? listCachedDistanceKm ?? null;
+  const distanceKm = storeQuote?.distance_km ?? null;
   const storeEtaLabel = useMemo(() => {
     if (storeQuote?.duration_min != null && Number.isFinite(storeQuote.duration_min)) {
       const mins = Math.round(storeQuote.duration_min);
@@ -1990,6 +1974,10 @@ export default function MerchantDetailScreen() {
           merchantId={merchantId}
           startMessageIndex={loadingMessageIndex}
           edgeToEdge
+        />
+        <LongDistanceBottomSheet
+          visible={longDistanceSheetVisible}
+          onClose={closeLongDistanceSheet}
         />
       </View>
     );
@@ -2176,6 +2164,11 @@ export default function MerchantDetailScreen() {
         visible={scheduleSheetVisible}
         onClose={closeScheduleSheet}
         storeName={merchant.name}
+      />
+
+      <LongDistanceBottomSheet
+        visible={longDistanceSheetVisible}
+        onClose={closeLongDistanceSheet}
       />
 
       <MerchantRatingExplainerSheet

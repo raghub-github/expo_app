@@ -33,6 +33,7 @@ export function isSafeMerchantPushHref(url: string): boolean {
   const path = (raw.startsWith("/") ? raw : `/${raw}`).split("?")[0]?.split("#")[0] ?? "";
   if (!path.startsWith("/")) return false;
   if (/^\/order\/\d+$/.test(path)) return true;
+  if (/^\/order-review\/\d+$/.test(path)) return true;
   if (path === "/restaurant-status" || path.startsWith("/restaurant-status/")) return true;
   if (path === "/order-history" || path.startsWith("/order-history/")) return true;
   if (path === "/(tabs)" || path.startsWith("/(tabs)/")) return true;
@@ -64,6 +65,7 @@ function resolveTabGroup(path: string): MerchantTabGroup {
   const p = normalizePath(path);
   if (p === "/order-history" || p.endsWith("/order-history")) return "root";
   if (p.includes("/restaurant-status")) return "root";
+  if (p.includes("/order-review/")) return "order-detail";
   if (p.includes("/order/")) return "order-detail";
   if (p.includes("/profile")) return "profile";
   if (p.includes("/menu")) return "menu";
@@ -88,6 +90,10 @@ function shouldRememberReturnRoute(fromPath: string, toPath: string): boolean {
 
   if (fromGroup !== toGroup) return true;
 
+  // Nested order stack (review ↔ order details) must keep the original tab return
+  // so Completed → Review → Order details can unwind one screen at a time.
+  if (fromGroup === "order-detail" && toGroup === "order-detail") return false;
+
   // Root stack screens (sibling of tabs) always remember where we came from.
   if (toGroup === "root" || toGroup === "order-detail") return true;
 
@@ -102,6 +108,7 @@ export function inferMerchantBackFallback(pathname: string | undefined): string 
   if (p.includes("/orders")) return "/(tabs)/orders";
   if (p === "/order-history") return "/(tabs)/orders";
   if (p.includes("/restaurant-status")) return "/(tabs)";
+  if (p.includes("/order-review/")) return "/(tabs)/orders?tab=completed";
   if (p.includes("/order/")) return "/(tabs)/orders";
   if (p.includes("/support/chat")) return "/(tabs)/profile/tickets";
   return "/(tabs)";
@@ -114,7 +121,12 @@ function isCrossTabEntryScreen(pathname: string | undefined): boolean {
 
 function isRootStackScreen(pathname: string | undefined): boolean {
   const p = normalizePath(pathname);
-  return p.includes("/order/") || p === "/order-history" || p.includes("/restaurant-status");
+  return (
+    p.includes("/order/") ||
+    p.includes("/order-review/") ||
+    p === "/order-history" ||
+    p.includes("/restaurant-status")
+  );
 }
 
 function isProfileRootPath(pathname: string | undefined): boolean {
@@ -145,6 +157,13 @@ export function merchantGoBack(
   ) {
     options.clearReturnRoute?.();
     router.replace(returnRoute as never);
+    return;
+  }
+
+  // Order details / review / history live on the root stack. Prefer native back so
+  // Completed → Review → Order details unwinds one screen at a time.
+  if (isRootStackScreen(pathname) && router.canGoBack()) {
+    router.back();
     return;
   }
 

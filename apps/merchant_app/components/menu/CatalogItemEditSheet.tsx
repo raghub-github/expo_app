@@ -44,7 +44,12 @@ export function CatalogItemEditSheet({
 
   const baseNum = Number(item.base_price);
   const sellingNum = Number(item.selling_price);
-  const priceLabel = baseNum > 0 ? `₹${baseNum.toFixed(0)}` : `₹${sellingNum.toFixed(0)}`;
+  const priceLabel =
+    sellingNum > 0
+      ? `₹${sellingNum.toFixed(0)}`
+      : baseNum > 0
+        ? `₹${baseNum.toFixed(0)}`
+        : "₹0";
   const imageUri = resolveImageUrl(item.item_image_url);
   const showImage = Boolean(imageUri && !imageError);
   const photoRejected = item.approval_status === "REJECTED" && showImage;
@@ -95,6 +100,9 @@ export function CatalogItemEditSheet({
               <Text style={styles.itemName} numberOfLines={2}>
                 {item.item_name}
               </Text>
+            </View>
+            <View style={styles.priceRow}>
+              <Text style={styles.priceCaption}>Selling price</Text>
               <Text style={styles.itemPrice}>{priceLabel}</Text>
             </View>
             {item.item_description?.trim() ? (
@@ -234,6 +242,19 @@ const styles = StyleSheet.create({
     fontWeight: "800",
     color: GatiMitraMerchant.textPrimary,
     lineHeight: 22,
+  },
+  priceRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginLeft: 22,
+    marginTop: 2,
+    gap: 8,
+  },
+  priceCaption: {
+    fontSize: 12,
+    fontWeight: "600",
+    color: GatiMitraMerchant.textTertiary,
   },
   itemPrice: {
     fontSize: 17,

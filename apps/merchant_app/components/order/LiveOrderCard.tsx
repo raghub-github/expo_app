@@ -130,6 +130,7 @@ export type LiveOrderCardProps = {
   onAdvance: () => void;
   onNeedMoreTime?: () => void;
   onViewDetail: () => void;
+  onReviewPress?: () => void;
   actionLoading?: boolean;
 };
 
@@ -143,6 +144,7 @@ export function LiveOrderCard({
   onAdvance,
   onNeedMoreTime,
   onViewDetail,
+  onReviewPress,
   actionLoading,
 }: LiveOrderCardProps) {
   const localNow = useNowMs(nowMs == null);
@@ -159,6 +161,7 @@ export function LiveOrderCard({
         rejectedReason={order.rejectedReason}
         storeName={storeName}
         onPress={onViewDetail}
+        onReviewPress={onReviewPress}
         onItemPress={onItemPress}
       />
     ) : (
@@ -167,6 +170,7 @@ export function LiveOrderCard({
         rejectedReason={order.rejectedReason}
         storeName={storeName}
         onPress={onViewDetail}
+        onReviewPress={onReviewPress}
       />
     );
   } else if (

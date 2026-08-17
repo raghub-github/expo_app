@@ -259,15 +259,7 @@ export function MerchantOrderCardLayout({
 
         {showRider ? riderContent ?? defaultRiderContent : null}
 
-        {footer ? (
-          <View
-            style={styles.footer}
-            onStartShouldSetResponder={() => true}
-            onMoveShouldSetResponder={() => true}
-          >
-            {footer}
-          </View>
-        ) : null}
+        {footer ? <View style={styles.footer}>{footer}</View> : null}
       </CardShell>
     </View>
   );

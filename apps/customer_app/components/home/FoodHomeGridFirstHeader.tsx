@@ -129,12 +129,18 @@ export function FoodHomeGridFirstHeader({
   const showLocation = variant === "full" || variant === "location";
   const showSearch = variant === "full" || variant === "search";
 
+  const fallbackScrollY = useSharedValue(0);
+  const fallbackStickAt = useSharedValue(Number.MAX_SAFE_INTEGER);
+  const scrollYSv = stickyScrollY ?? fallbackScrollY;
+  const stickAtSv = searchStickAt ?? fallbackStickAt;
+  const stickyEnabled = Boolean(stickyScrollY && searchStickAt);
+
   const inFlowSearchFadeStyle = useAnimatedStyle(() => {
-    if (!stickyScrollY || !searchStickAt) return { opacity: 1 };
-    const stickAt = searchStickAt.value;
+    if (!stickyEnabled) return { opacity: 1 };
+    const stickAt = stickAtSv.value;
     return {
       opacity: interpolate(
-        stickyScrollY.value,
+        scrollYSv.value,
         [stickAt - 10, stickAt + 10],
         [1, 0],
         Extrapolation.CLAMP
@@ -369,11 +375,6 @@ const styles = StyleSheet.create({
   searchPillSticky: {
     borderWidth: 1.5,
     borderColor: "#D1D5DB",
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.1,
-    shadowRadius: 3,
-    elevation: 2,
   },
   searchPlaceholder: {
     flex: 1,

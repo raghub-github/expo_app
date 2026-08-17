@@ -40,6 +40,7 @@ export type DispatchServiceability = {
   ridersAvailable: number;
   serviceRadiusMeters: number;
   usedTpl: boolean;
+  riderOnlineCheckRequired?: boolean;
 };
 
 export type DispatchServiceabilityResult =
@@ -57,6 +58,7 @@ export async function checkDispatchServiceability(params: {
   lng: number;
   pincode?: string;
   state?: string;
+  merchantStoreId?: string;
 }): Promise<DispatchServiceabilityResult> {
   try {
     const { data } = await api.get<DispatchServiceability & { ok: true }>(
@@ -69,6 +71,7 @@ export async function checkDispatchServiceability(params: {
           lng: params.lng,
           ...(params.pincode ? { pincode: params.pincode } : {}),
           ...(params.state ? { state: params.state } : {}),
+          ...(params.merchantStoreId ? { merchantStoreId: params.merchantStoreId } : {}),
         },
       }
     );

@@ -114,6 +114,17 @@ module.exports = ({ config }) => ({
           enableBackgroundRemoteNotifications: true,
         },
       ],
+      [
+        "../../packages/expo-push-kit/plugin/withAndroidPushChannels.js",
+        {
+          channels: [
+            { id: "merchant_new_orders", name: "New orders", importance: 5 },
+            { id: "merchant_default", name: "Store & Orders", importance: 4 },
+            { id: "merchant_online", name: "Store online status", importance: 4 },
+            { id: "default", name: "Store & Orders", importance: 4 },
+          ],
+        },
+      ],
       // react-native-razorpay autolinks into the native binary.
       // Native checkout requires a Dev Client / EAS build — Expo Go has no Razorpay native module
       // and there is intentionally no WebView/browser fallback.

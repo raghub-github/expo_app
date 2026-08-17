@@ -282,18 +282,23 @@ export async function GET(req: NextRequest) {
     const platformOrdinalByCoreId = new Map<number, number>();
 
     if (customerIds.length > 0) {
-      const [{ storeByCustomer, platformByCustomer }, ordinals] = await Promise.all([
-        loadCustomerOrderCounts(store.id, customerIds),
-        loadOrderOrdinalsByCoreId(
-          store.id,
-          coreRows.map((c) => Number(c.id)),
-          customerIds
-        ),
-      ]);
-      for (const [cid, cnt] of storeByCustomer) customerOrderCountById.set(cid, cnt);
-      for (const [cid, cnt] of platformByCustomer) customerPlatformCountById.set(cid, cnt);
-      for (const [id, ord] of ordinals.storeOrdinalByCoreId) storeOrdinalByCoreId.set(id, ord);
-      for (const [id, ord] of ordinals.platformOrdinalByCoreId) platformOrdinalByCoreId.set(id, ord);
+      try {
+        const [{ storeByCustomer, platformByCustomer }, ordinals] = await Promise.all([
+          loadCustomerOrderCounts(store.id, customerIds),
+          loadOrderOrdinalsByCoreId(
+            store.id,
+            coreRows.map((c) => Number(c.id)),
+            customerIds
+          ),
+        ]);
+        for (const [cid, cnt] of storeByCustomer) customerOrderCountById.set(cid, cnt);
+        for (const [cid, cnt] of platformByCustomer) customerPlatformCountById.set(cid, cnt);
+        for (const [id, ord] of ordinals.storeOrdinalByCoreId) storeOrdinalByCoreId.set(id, ord);
+        for (const [id, ord] of ordinals.platformOrdinalByCoreId) platformOrdinalByCoreId.set(id, ord);
+      } catch (statsErr) {
+        // Pool/auth timeouts here must not fail the whole orders board (500 / "Internal server error").
+        console.warn('[food-orders GET] customer order stats skipped:', statsErr);
+      }
     }
 
     const orderIdTexts = [
@@ -537,11 +542,12 @@ export async function GET(req: NextRequest) {
           ? Math.max(0, ctmNetSum - missingPrecision + (customerPricing.packaging || 0))
           : 0;
 
+        const frozenCtm = Number((core as { total_ctm?: unknown }).total_ctm);
         const bill = merchantBillPartsFromItems(items, {
           subtotal: merchantSubtotal,
           packaging: customerPricing.packaging,
           discount: resolvedDisc,
-          total: resolvedTotal,
+          total: Number.isFinite(frozenCtm) && frozenCtm > 0 ? frozenCtm : resolvedTotal,
         });
         const pricing = {
           subtotal: bill.itemsSubtotal,

@@ -21,6 +21,8 @@ export type GeoServiceAvailability = {
   coverageRide: boolean;
   pincode: string | null;
   stateName: string | null;
+  /** `states.id` from the resolved geo chain — used by rider-online-check and similar flags. */
+  stateId: string | null;
   resolvedLevel: string | null;
   /**
    * Service codes disabled by an active Prevent Services rule at this point —
@@ -122,6 +124,7 @@ async function resolveFromPincodeRpc(args: {
     coverageRide: results[2]?.available === true,
     pincode: args.pincode.trim(),
     stateName: null,
+    stateId: null,
     resolvedLevel: "pincode",
     preventBlocked: [],
     preventReason: null,
@@ -151,6 +154,7 @@ async function resolveFromGeoRefs(
     coverageRide: flags.is_ride_enabled,
     pincode,
     stateName,
+    stateId: refs.state ?? null,
     resolvedLevel: anchor.level,
     preventBlocked: [],
     preventReason: null,
@@ -163,8 +167,8 @@ async function resolveFromGeoRefs(
 
 async function resolveFromStateName(stateName: string): Promise<GeoServiceAvailability | null> {
   const sql = getSql();
-  const [row] = await sql<ServiceFlagRow[]>`
-    SELECT is_food_enabled, is_parcel_enabled, is_ride_enabled
+  const [row] = await sql<(ServiceFlagRow & { id: string })[]>`
+    SELECT id::text AS id, is_food_enabled, is_parcel_enabled, is_ride_enabled
     FROM states
     WHERE LOWER(TRIM(name)) = LOWER(TRIM(${stateName}))
     LIMIT 1
@@ -180,6 +184,7 @@ async function resolveFromStateName(stateName: string): Promise<GeoServiceAvaila
     coverageRide: row.is_ride_enabled,
     pincode: null,
     stateName: stateName.trim(),
+    stateId: row.id,
     resolvedLevel: "state",
     preventBlocked: [],
     preventReason: null,
@@ -236,6 +241,7 @@ export async function resolveGeoServiceAvailability(args: {
       coverageRide: false,
       pincode,
       stateName,
+      stateId: null,
       resolvedLevel: null,
       preventBlocked: [],
       preventReason: null,
@@ -267,6 +273,8 @@ export async function resolveGeoServiceAvailability(args: {
     });
     return {
       ...base,
+      stateId: geo.refs?.state ?? base.stateId ?? null,
+      stateName: base.stateName ?? geo.stateName,
       coverageFood,
       coverageParcel,
       coverageRide,
@@ -283,6 +291,8 @@ export async function resolveGeoServiceAvailability(args: {
   } catch {
     return {
       ...base,
+      stateId: geo.refs?.state ?? base.stateId ?? null,
+      stateName: base.stateName ?? geo.stateName,
       coverageFood,
       coverageParcel,
       coverageRide,

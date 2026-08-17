@@ -7,13 +7,12 @@ import {
   RiderDeliveryPartnerCard,
   type RiderDeliveryPartnerCardProps,
 } from '@/components/orders/RiderDeliveryPartnerCard';
-import { ORDER_SHELL_HEADER_OFFSET } from '@/components/orders/OrderRidersHistorySidesheet';
 
 export type OrderRiderSidesheetProps = {
   open: boolean;
   onClose: () => void;
   riderCard: RiderDeliveryPartnerCardProps;
-  /** CSS top offset so the sheet sits below the fixed app header. */
+  /** @deprecated Ignored — sheet matches Store status (covers header, inset-0). */
   topOffset?: string;
 };
 
@@ -22,7 +21,6 @@ export function OrderRiderSidesheet({
   open,
   onClose,
   riderCard,
-  topOffset = ORDER_SHELL_HEADER_OFFSET,
 }: OrderRiderSidesheetProps) {
   useEffect(() => {
     if (!open) return;
@@ -35,26 +33,17 @@ export function OrderRiderSidesheet({
 
   if (!open || typeof document === 'undefined') return null;
 
+  // Same shell as Store status / notifications: full viewport, over the top bar.
   return createPortal(
-    <div
-      className="fixed inset-0 z-[1100] flex justify-end"
-      role="presentation"
-      style={{ ['--order-sheet-top' as string]: topOffset }}
-    >
+    <div className="fixed inset-0 z-[1100] flex justify-end" role="presentation">
       <button
         type="button"
-        className="absolute left-0 right-0 bottom-0 bg-black/40 backdrop-blur-[2px]"
-        style={{ top: 'var(--order-sheet-top)' }}
+        className="absolute inset-0 bg-black/40 backdrop-blur-[2px]"
         aria-label="Close rider details"
         onClick={onClose}
       />
       <aside
-        className="relative flex w-full max-w-md flex-col border-l border-gray-200 bg-white shadow-2xl"
-        style={{
-          marginTop: 'var(--order-sheet-top)',
-          height: 'calc(100dvh - var(--order-sheet-top))',
-          maxHeight: 'calc(100dvh - var(--order-sheet-top))',
-        }}
+        className="relative flex h-dvh min-h-0 w-full max-w-md flex-col border-l border-gray-200 bg-white shadow-2xl"
         role="dialog"
         aria-modal="true"
         aria-labelledby="order-rider-sheet-title"

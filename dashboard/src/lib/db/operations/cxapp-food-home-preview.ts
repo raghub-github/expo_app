@@ -360,8 +360,8 @@ export async function fetchBackendFoodHomePreview(opts: {
       limit: String(limit),
       lat: String(anchor.lat),
       lng: String(anchor.lng),
-      // Road distance is slower; air is enough for admin preview cards.
-      distanceMode: "air",
+      // Road distance matches listing / checkout (GET /v1/merchants default).
+      distanceMode: "road",
     });
     try {
       const merchantRes = await fetch(`${base}/v1/merchants?${merchantQs.toString()}`, {

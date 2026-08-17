@@ -655,9 +655,11 @@ export default function AddEditItemScreen() {
     setCategoryId(itemData.category_id ?? null);
     setCuisineType(itemData.cuisine_type ?? "");
     setBasePrice(itemData.base_price ?? "");
-    // Selling price is recomputed from base + active commission on save anyway,
-    // so we seed it for preview but never trust the stored value for display.
-    setSellingPrice(itemData.selling_price ?? "");
+    setSellingPrice(
+      itemData.selling_price != null && String(itemData.selling_price).trim() !== ""
+        ? String(itemData.selling_price)
+        : itemData.base_price ?? ""
+    );
     setPrepTimeMinutes(itemData.preparation_time_minutes != null ? String(itemData.preparation_time_minutes) : "");
     const packRaw = (itemData as { packaging_charges?: number | string | null }).packaging_charges;
     const packNum = packRaw == null ? null : Number(packRaw);
@@ -826,17 +828,27 @@ export default function AddEditItemScreen() {
     const baseParsed = parseOptionalNonNegativeNumber(basePrice || "");
     const sellingParsed = parseOptionalNonNegativeNumber(sellingPrice || "");
 
-    if (baseParsed == null && sellingParsed == null) {
-      Alert.alert("Invalid price", "Enter a valid non-negative base or selling price.");
-      return;
+    // Edit: never overwrite stored prices from a frozen field — keep existing item prices.
+    let base: number;
+    let selling: number;
+    if (isEdit && itemData) {
+      const existingSell = parseOptionalNonNegativeNumber(String(itemData.selling_price ?? ""));
+      const existingBase = parseOptionalNonNegativeNumber(String(itemData.base_price ?? ""));
+      selling = existingSell ?? existingBase ?? sellingParsed ?? baseParsed ?? 0;
+      base = existingBase ?? existingSell ?? baseParsed ?? sellingParsed ?? 0;
+      if (selling <= 0 && base <= 0) {
+        Alert.alert("Invalid price", "This item has no valid selling price.");
+        return;
+      }
+    } else {
+      if (baseParsed == null && sellingParsed == null) {
+        Alert.alert("Invalid price", "Enter a valid non-negative selling price.");
+        return;
+      }
+      // New items: merchant enters selling price; store both fields the same (no base-only UI).
+      base = sellingParsed ?? baseParsed ?? 0;
+      selling = sellingParsed ?? baseParsed ?? 0;
     }
-
-    const base = baseParsed ?? sellingParsed ?? 0;
-    // We write base_price = selling_price = merchant's NET menu price intent.
-    // The customer-facing markup is applied at read time on the server (single
-    // source of truth), so the form must NOT pre-compute commission here or it
-    // would double-apply when the customer menu API marks it up again.
-    const selling = base;
     const servesNumber = servesLabel ? parseServesFromLabel(servesLabel) : null;
 
     const categoryIdNumber =
@@ -993,16 +1005,25 @@ export default function AddEditItemScreen() {
     availableForDelivery, weightPerServing, weightUnit, caloriesKcal,
     proteinVal, proteinUnit, carbsVal, carbsUnit, fatVal, fatUnit,
     fibreVal, fibreUnit, selectedAllergens, selectedTags, router,
-    createMutation, updateMutation, itemData?.approval_status,
+    createMutation, updateMutation, itemData?.approval_status, itemData,
   ]);
 
   const handleSaveConfirm = useCallback(() => {
     if (!token || !storeId || !itemName.trim()) return;
-    const baseParsed = parseOptionalNonNegativeNumber(basePrice || "");
-    const sellingParsed = parseOptionalNonNegativeNumber(sellingPrice || "");
-    if (baseParsed == null && sellingParsed == null) {
-      Alert.alert("Invalid price", "Enter a valid non-negative base or selling price.");
-      return;
+    if (isEdit) {
+      const existingSell = parseOptionalNonNegativeNumber(String(itemData?.selling_price ?? sellingPrice ?? ""));
+      const existingBase = parseOptionalNonNegativeNumber(String(itemData?.base_price ?? basePrice ?? ""));
+      if ((existingSell == null || existingSell <= 0) && (existingBase == null || existingBase <= 0)) {
+        Alert.alert("Invalid price", "This item has no valid selling price.");
+        return;
+      }
+    } else {
+      const sellingParsed = parseOptionalNonNegativeNumber(sellingPrice || "");
+      const baseParsed = parseOptionalNonNegativeNumber(basePrice || "");
+      if (sellingParsed == null && baseParsed == null) {
+        Alert.alert("Invalid price", "Enter a valid non-negative selling price.");
+        return;
+      }
     }
     Alert.alert(
       isEdit ? "Save changes?" : "Create item?",
@@ -1013,7 +1034,7 @@ export default function AddEditItemScreen() {
       ]
     );
   }, [
-    token, storeId, itemName, basePrice, sellingPrice, isEdit,
+    token, storeId, itemName, basePrice, sellingPrice, isEdit, itemData,
     handleSave,
   ]);
 
@@ -1837,27 +1858,42 @@ export default function AddEditItemScreen() {
 
         <SectionDivider />
 
-        {/* ── Item price ── */}
+        {/* ── Item price (selling only; frozen on edit — GatiMitra manages price changes) ── */}
         <View style={styles.section}>
-          <Text style={styles.sectionHeading}>Your payout per item</Text>
+          <Text style={styles.sectionHeading}>Selling price (₹)</Text>
           <Text style={styles.sectionSubheading}>
-            Enter the amount you want to receive after the platform commission is applied. The customer
-            will see this price plus our commission on top — handled automatically.
+            {isEdit
+              ? "Menu price shown to customers. Price changes are managed by GatiMitra — this field is locked."
+              : "Enter the menu price customers will see. This is saved as your item selling price."}
           </Text>
-          <View style={styles.inputWithIcon}>
-            <TextInput
-              style={styles.textInput}
-              value={basePrice}
-              onChangeText={(v) => {
-                setBasePrice(v);
-                setSellingPrice(v);
-              }}
-              placeholder="₹0"
-              placeholderTextColor={GatiMitraMerchant.textTertiary}
-              keyboardType="decimal-pad"
-            />
-            <Ionicons name="pencil-outline" size={18} color={GatiMitraMerchant.textTertiary} />
-          </View>
+          {isEdit ? (
+            <View style={[styles.inputWithIcon, styles.priceFrozenRow]}>
+              <Text style={styles.priceFrozenValue}>
+                {(() => {
+                  const sell = parseOptionalNonNegativeNumber(sellingPrice || "");
+                  const base = parseOptionalNonNegativeNumber(basePrice || "");
+                  const n = sell ?? base;
+                  return n != null ? `₹${Number(n).toFixed(2)}` : "—";
+                })()}
+              </Text>
+              <Ionicons name="lock-closed-outline" size={16} color={GatiMitraMerchant.textTertiary} />
+            </View>
+          ) : (
+            <View style={styles.inputWithIcon}>
+              <TextInput
+                style={styles.textInput}
+                value={sellingPrice}
+                onChangeText={(v) => {
+                  setSellingPrice(v);
+                  setBasePrice(v);
+                }}
+                placeholder="₹0"
+                placeholderTextColor={GatiMitraMerchant.textTertiary}
+                keyboardType="decimal-pad"
+              />
+              <Ionicons name="pencil-outline" size={18} color={GatiMitraMerchant.textTertiary} />
+            </View>
+          )}
         </View>
 
         {/* ── Prep / ETA & packaging (store defaults; editable per item only) ── */}
@@ -2517,6 +2553,17 @@ const styles = StyleSheet.create({
     borderRadius: BUTTON_RADIUS,
     paddingHorizontal: 14,
     backgroundColor: GatiMitraMerchant.cardBg,
+  },
+  priceFrozenRow: {
+    backgroundColor: GatiMitraMerchant.surfaceSubtle,
+    opacity: 0.95,
+  },
+  priceFrozenValue: {
+    flex: 1,
+    fontSize: 16,
+    fontWeight: "700",
+    color: GatiMitraMerchant.textPrimary,
+    paddingVertical: 14,
   },
   textInput: {
     flex: 1,

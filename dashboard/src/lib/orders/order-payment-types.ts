@@ -28,6 +28,8 @@ export type OrderPaymentRecord = {
   gatiCashUsed: number | null;
   /** Merchant amount (CTM) — same SSOT as summary. */
   ctm: number | null;
+  /** Taxes / GST charged on the order (CTC bill). */
+  taxes: number | null;
   pgName: string | null;
   pgTransactionId: string | null;
 };
@@ -48,6 +50,8 @@ export type OrderPaymentDetail = {
   deliveryFeeQuoted?: number | null;
   /** True when membership benefit made delivery ₹0. */
   deliveryFeeWaived?: boolean;
+  /** Taxes / GST on the customer bill. */
+  taxes: number | null;
   /** Payment instrument: UPI / QR / Card / Wallet / Pay later / … */
   source: string | null;
   /** Online or Cash. */

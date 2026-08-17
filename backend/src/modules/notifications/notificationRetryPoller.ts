@@ -80,9 +80,11 @@ async function redispatchRow(row: Awaited<ReturnType<typeof claimDueRetryLogs>>[
     body: row.body ?? "",
     imageUrl: row.image_url,
     deepLink: row.deep_link ?? null,
+    appRole: row.recipient_role ?? undefined,
     data: {
       ...(row.template_code ? { template_code: row.template_code } : {}),
       ...(row.campaign_id != null ? { campaign_id: String(row.campaign_id) } : {}),
+      ...(row.recipient_role ? { appRole: String(row.recipient_role) } : {}),
     },
     priority: (row.priority as "low" | "normal" | "high" | "critical" | undefined) ?? "normal",
     silent: false,

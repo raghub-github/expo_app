@@ -4,6 +4,8 @@
 
 import { Image } from "expo-image";
 import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
+import { resolveMerchantFoodHeroUris } from "@/lib/merchantHeroMedia";
+import type { MerchantSummary } from "@/services/merchant.service";
 
 export const IMAGE_CACHE_POLICY = "memory-disk" as const;
 
@@ -57,7 +59,9 @@ export function prefetchMerchantCardImages(merchants: Array<{
 }>): void {
   const urls: Array<string | null | undefined> = [];
   for (const m of merchants.slice(0, 12)) {
-    urls.push(m.displayImage, m.banner_url, m.galleryImages?.[0]);
+    for (const uri of resolveMerchantFoodHeroUris(m as MerchantSummary)) {
+      urls.push(uri);
+    }
   }
   prefetchImages(urls, { priority: "high", limit: 16 });
 }

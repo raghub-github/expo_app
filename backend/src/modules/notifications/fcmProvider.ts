@@ -32,7 +32,34 @@ type FcmSendInput = {
   priority?: NotificationPriority;
   collapseKey?: string | null;
   silent?: boolean;
+  /** Customer / merchant / rider — stamps Expo experienceId so killed-app FCM still renders. */
+  appRole?: string | null;
 };
+
+/** Expo project slugs — required on direct FCM so expo-notifications does not drop background messages. */
+const EXPO_EXPERIENCE_BY_ROLE: Record<string, string> = {
+  customer: "@raghubhunia/gatimitra-customer",
+  merchant: "@raghubhunia/merchantapp",
+  rider: "@raghubhunia/gatimitra-riderapp",
+};
+
+function stampExpoIdentity(data: Record<string, string>, input: FcmSendInput): void {
+  const role = String(input.appRole ?? data.appRole ?? "")
+    .trim()
+    .toLowerCase();
+  const experienceId = EXPO_EXPERIENCE_BY_ROLE[role];
+  if (experienceId) {
+    data.experienceId = experienceId;
+    data.scopeKey = experienceId;
+    data.appRole = role;
+  }
+  if (input.title && !data.title) data.title = input.title;
+  if (input.body) {
+    if (!data.body) data.body = input.body;
+    // Expo Android NotificationDeserializer reads `message` as the body.
+    if (!data.message) data.message = input.body;
+  }
+}
 
 function mapPriorityAndroid(p?: NotificationPriority): "normal" | "high" {
   return p === "high" || p === "critical" ? "high" : "normal";
@@ -78,15 +105,19 @@ export async function sendFcmV1(input: FcmSendInput): Promise<ProviderSendResult
       data[k] = typeof v === "string" ? v : JSON.stringify(v);
     }
   }
+  stampExpoIdentity(data, input);
 
   // Silent (data-only) payloads omit the notification block so the OS doesn't
   // render anything; the app's background handler picks them up.
   const wantsNotificationBlock = !input.silent;
+  const androidPriority = mapPriorityAndroid(input.priority);
+  const notifPriority =
+    input.priority === "critical" ? "max" : androidPriority === "high" ? "high" : "default";
 
   const baseMessage = {
     data,
     android: {
-      priority: mapPriorityAndroid(input.priority),
+      priority: androidPriority,
       collapseKey: input.collapseKey ?? undefined,
       notification: wantsNotificationBlock
         ? {
@@ -101,6 +132,8 @@ export async function sendFcmV1(input: FcmSendInput): Promise<ProviderSendResult
             channelId: input.channelId?.trim() || "default",
             defaultSound: true,
             defaultVibrateTimings: true,
+            visibility: "public",
+            priority: notifPriority,
           }
         : undefined,
     },

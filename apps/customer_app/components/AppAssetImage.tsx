@@ -11,6 +11,11 @@ type Props = {
   accessibilityLabel?: string;
   /** Shown when CMS URL is not ready yet (e.g. bundled ride service PNG). */
   fallbackSource?: ImageSourcePropType | null;
+  /**
+   * Skip stale disk cache / last-good URI so Super Admin Change/Remove
+   * is visible as soon as the asset payload refreshes.
+   */
+  fresh?: boolean;
 };
 
 /** Renders a CMS-managed image from backend (R2 signed / proxy), with optional bundled fallback. */
@@ -20,9 +25,11 @@ export function AppAssetImage({
   contentFit = "contain",
   accessibilityLabel,
   fallbackSource = null,
+  fresh = false,
 }: Props) {
   const rawUrl = useAppAssetsStore((s) => s.assets[assetKey]?.url ?? null);
   const proxyUrl = useAppAssetsStore((s) => s.assets[assetKey]?.proxyUrl ?? null);
+  const updatedAt = useAppAssetsStore((s) => s.assets[assetKey]?.updatedAt ?? null);
   const [primaryFailed, setPrimaryFailed] = useState(false);
   /** Keep last good URI so asset refresh / signed-URL rotate never blanks the tile. */
   const lastGoodUriRef = useRef<string | null>(null);
@@ -46,11 +53,11 @@ export function AppAssetImage({
       ? fallbackUri
       : primaryUri;
 
-  if (preferredUri) {
+  if (preferredUri && !fresh) {
     lastGoodUriRef.current = preferredUri;
   }
 
-  const uri = preferredUri ?? lastGoodUriRef.current;
+  const uri = fresh ? preferredUri : preferredUri ?? lastGoodUriRef.current;
 
   const source: ImageSourcePropType | null = uri
     ? { uri }
@@ -61,11 +68,13 @@ export function AppAssetImage({
   return (
     <Image
       // Stable key — remounting on every signed-URL change blanked all home tiles.
-      recyclingKey={assetKey}
+      recyclingKey={
+        fresh ? `${assetKey}:${updatedAt ?? ""}:${proxyUrl ?? ""}` : assetKey
+      }
       source={source}
       style={style}
       contentFit={contentFit}
-      cachePolicy="memory-disk"
+      cachePolicy={fresh ? "none" : "memory-disk"}
       priority="high"
       transition={0}
       accessibilityLabel={accessibilityLabel}

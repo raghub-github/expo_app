@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getAuthenticatedApiUser } from "@/lib/auth/api-session";
+import { getAuthenticatedApiUser, authFailureResponse } from "@/lib/auth/api-session";
 import { listOrderRoutedToHistory } from "@/lib/orders/stamp-order-routed-to";
 
 export const runtime = "nodejs";
@@ -15,7 +15,7 @@ function parseOrderId(param: string | undefined): number | null {
  * Fast path: session auth only (caller is already on the order page).
  */
 export async function GET(
-  _request: NextRequest,
+  request: NextRequest,
   context: { params: Promise<{ orderId: string }> }
 ) {
   try {
@@ -28,9 +28,9 @@ export async function GET(
       );
     }
 
-    const auth = await getAuthenticatedApiUser();
+    const auth = await getAuthenticatedApiUser(request);
     if (!auth.ok) {
-      return NextResponse.json(auth.body, { status: auth.status });
+      return authFailureResponse(auth);
     }
 
     const history = await listOrderRoutedToHistory(orderId);

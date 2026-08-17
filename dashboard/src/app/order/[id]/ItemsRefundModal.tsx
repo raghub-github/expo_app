@@ -41,6 +41,8 @@ import {
 import { resolveMerchantOfferBadge } from '@/lib/merchant-offer-display';
 import { OrderMixedText, OrderNum } from '@/components/orders/orders-typography';
 import { itemRefundBalances } from '@/lib/orders/item-refund-balances';
+import { resolveAttachmentProxyUrl } from '@/lib/attachments/resolve-attachment-proxy-url';
+import { ITEM_PLACEHOLDER_SVG } from '@/app/dashboard/merchants/stores/[id]/menu/menu-types';
 
 type RiderPenaltyPreviewRider = {
   riderId: number;
@@ -919,7 +921,7 @@ export default function ItemsRefundModal({
   useEffect(() => {
     const urls = refundItems
       .filter((i) => i.hasImage && i.imageUrl)
-      .map((i) => i.imageUrl as string);
+      .map((i) => resolveAttachmentProxyUrl(i.imageUrl as string) || (i.imageUrl as string));
     preloadOrderItemImages(urls);
     urls.forEach((url) => {
       if (loadedImageUrls.has(url)) return;
@@ -933,9 +935,25 @@ export default function ItemsRefundModal({
           return next;
         });
       };
+      img.onerror = () => {
+        // Still mark as "attempted" so modal does not spin forever.
+        setLoadedImageUrls((prev) => {
+          if (prev.has(url)) return prev;
+          const next = new Set(prev);
+          next.add(url);
+          return next;
+        });
+      };
       img.src = url;
     });
   }, [refundItems]);
+
+  // Never leave the Item Image modal spinning if the network hangs.
+  useEffect(() => {
+    if (!showImageModal || !imagePanelLoading) return;
+    const t = window.setTimeout(() => setImagePanelLoading(false), 4000);
+    return () => window.clearTimeout(t);
+  }, [showImageModal, imagePanelLoading, selectedItemImage?.imageUrl]);
 
   useEffect(() => {
     const allItemsSelected = refundItems.every(item => item.isSelected);
@@ -1309,15 +1327,30 @@ export default function ItemsRefundModal({
 
   const handleImageClick = (item: RefundItem) => {
     if (!item.hasImage || !item.imageUrl) return;
-    const url = item.imageUrl;
+    const url = resolveAttachmentProxyUrl(item.imageUrl) || item.imageUrl;
+    const alreadyReady = loadedImageUrls.has(url);
     setSelectedItemImage({ id: item.id, name: item.name, imageUrl: url });
-    setImagePanelLoading(!loadedImageUrls.has(url));
+    setImagePanelLoading(!alreadyReady);
     setShowImageModal(true);
   };
 
   const handleImageHover = (item: RefundItem) => {
     if (!item.imageUrl) return;
-    preloadOrderItemImages([item.imageUrl]);
+    const url = resolveAttachmentProxyUrl(item.imageUrl) || item.imageUrl;
+    preloadOrderItemImages([url]);
+    // Warm decode so modal opens without spinner when possible.
+    if (typeof window === 'undefined' || loadedImageUrls.has(url)) return;
+    const img = new window.Image();
+    img.decoding = 'async';
+    img.onload = () => {
+      setLoadedImageUrls((prev) => {
+        if (prev.has(url)) return prev;
+        const next = new Set(prev);
+        next.add(url);
+        return next;
+      });
+    };
+    img.src = url;
   };
 
   const closeImageModal = () => {
@@ -2041,21 +2074,34 @@ export default function ItemsRefundModal({
               <h4 className="text-lg font-semibold text-gray-800 text-center mb-4">{selectedItemImage.name}</h4>
               <div className="rounded-xl overflow-hidden border border-gray-200 shadow-lg min-h-[200px] flex items-center justify-center bg-gray-50 relative">
                 {imagePanelLoading ? (
-                  <Loader2 className="w-8 h-8 animate-spin text-emerald-600 absolute" aria-hidden />
+                  <Loader2 className="w-8 h-8 animate-spin text-emerald-600 absolute z-10" aria-hidden />
                 ) : null}
                 <img
-                  src={selectedItemImage.imageUrl}
+                  key={selectedItemImage.imageUrl}
+                  src={resolveAttachmentProxyUrl(selectedItemImage.imageUrl) || selectedItemImage.imageUrl}
                   alt={selectedItemImage.name}
                   loading="eager"
-                  decoding="sync"
-                  className={`w-full h-auto object-cover max-h-[400px] transition-opacity duration-150 ${imagePanelLoading ? 'opacity-0' : 'opacity-100'}`}
-                  onLoad={() => {
+                  decoding="async"
+                  className="w-full h-auto object-cover max-h-[400px]"
+                  ref={(el) => {
+                    if (!el) return;
+                    // Cached images often skip a late onLoad — clear spinner immediately.
+                    if (el.complete && el.naturalWidth > 0) {
+                      setLoadedImageUrls((prev) => new Set(prev).add(selectedItemImage.imageUrl));
+                      setImagePanelLoading(false);
+                    }
+                  }}
+                  onLoad={(e) => {
                     setLoadedImageUrls((prev) => new Set(prev).add(selectedItemImage.imageUrl));
                     setImagePanelLoading(false);
+                    void (e.currentTarget.decode?.() ?? Promise.resolve()).catch(() => undefined);
                   }}
                   onError={(e) => {
                     setImagePanelLoading(false);
-                    (e.target as HTMLImageElement).src = 'https://via.placeholder.com/400x300?text=Image+Not+Available';
+                    const t = e.currentTarget;
+                    if (t.src !== ITEM_PLACEHOLDER_SVG) {
+                      t.src = ITEM_PLACEHOLDER_SVG;
+                    }
                   }}
                 />
               </div>

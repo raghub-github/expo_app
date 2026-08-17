@@ -12,6 +12,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import { LinearGradient } from "expo-linear-gradient";
 import { StoreBottomSheetShell } from "@/components/store/StoreBottomSheetShell";
 import { RazorpayCheckoutModal, type RazorpayPaymentResult } from "@/components/RazorpayCheckoutModal";
+import { AppAlertModal } from "@/components/AppAlertModal";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import { STORAGE_KEYS } from "@/constants";
 import { paymentService } from "@/services/payment.service";
@@ -75,6 +76,9 @@ export function FoodOrderTipSheet({
     orderId: string;
     amount: number;
   } | null>(null);
+  const [thankYouAlert, setThankYouAlert] = useState<{ title: string; message: string } | null>(
+    null
+  );
 
   const tipAmount = useMemo(() => {
     if (customMode) {
@@ -118,10 +122,10 @@ export function FoodOrderTipSheet({
       setSimulatedPayment(null);
       onClose();
       onTipPaid(amount);
-      Alert.alert(
-        "Thank you!",
-        `₹${amount} tip has been sent to ${partnerName.split(" ")[0] ?? "your delivery partner"}.`
-      );
+      setThankYouAlert({
+        title: "Thank you!",
+        message: `₹${amount} tip has been sent to ${partnerName.split(" ")[0] ?? "your delivery partner"}.`,
+      });
     },
     [saveForNext, onClose, onTipPaid, partnerName]
   );
@@ -415,6 +419,15 @@ export function FoodOrderTipSheet({
           </TouchableOpacity>
         </View>
       </Modal>
+
+      <AppAlertModal
+        visible={thankYouAlert != null}
+        title={thankYouAlert?.title ?? "Thank you!"}
+        message={thankYouAlert?.message ?? ""}
+        confirmLabel="OK"
+        variant="success"
+        onClose={() => setThankYouAlert(null)}
+      />
     </>
   );
 }

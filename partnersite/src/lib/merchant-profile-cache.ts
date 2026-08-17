@@ -11,18 +11,66 @@ export type CachedMerchantProfile = {
 
 const CACHE_KEY = (storeId: string) => `mx_merchant_profile_v1_${storeId.trim()}`;
 
+export function coerceNumeric(raw: unknown): number | null {
+  if (raw == null || raw === "") return null;
+  const n = typeof raw === "number" ? raw : Number(String(raw).trim());
+  return Number.isFinite(n) ? n : null;
+}
+
+/** Postgres `numeric` often arrives as `"7.00"` — never treat that as missing. */
+export function coerceDeliveryRadiusKm(raw: unknown): number | null {
+  const n = coerceNumeric(raw);
+  if (n == null || n <= 0) return null;
+  return n;
+}
+
+export function formatDeliveryRadiusKm(raw: unknown): string {
+  const n = coerceDeliveryRadiusKm(raw);
+  if (n == null) return "—";
+  return Number.isInteger(n) ? String(n) : String(Number(n.toFixed(2)));
+}
+
 export function normalizeProfileStore(store: MerchantStore): MerchantStore {
   const bannerUrl = normalizeMerchantStoreMediaUrl(store.banner_url) ?? store.banner_url;
   const galleryImages = Array.isArray(store.gallery_images)
     ? store.gallery_images
         .map((u) => normalizeMerchantStoreMediaUrl(u) ?? u)
-        .filter((u): u is string => typeof u === 'string' && u.trim().length > 0)
+        .filter((u): u is string => typeof u === "string" && u.trim().length > 0)
     : store.gallery_images;
+  const radius = coerceDeliveryRadiusKm(store.delivery_radius_km);
+  const minOrder = coerceNumeric(store.min_order_amount);
+  const prep = coerceNumeric(store.avg_preparation_time_minutes);
   return {
     ...store,
     banner_url: bannerUrl || store.banner_url,
-    gallery_images: (galleryImages ?? store.gallery_images) as MerchantStore['gallery_images'],
+    gallery_images: (galleryImages ?? store.gallery_images) as MerchantStore["gallery_images"],
+    ...(radius != null ? { delivery_radius_km: radius } : {}),
+    ...(minOrder != null ? { min_order_amount: minOrder } : {}),
+    ...(prep != null ? { avg_preparation_time_minutes: prep } : {}),
   };
+}
+
+export function clearCachedMerchantProfile(storeId: string): void {
+  if (typeof sessionStorage === "undefined" || !storeId.trim()) return;
+  try {
+    sessionStorage.removeItem(CACHE_KEY(storeId.trim()));
+  } catch {
+    /* ignore */
+  }
+}
+
+export function patchCachedMerchantProfileStore(
+  storeId: string,
+  patch: Partial<MerchantStore>
+): void {
+  const cached = readCachedMerchantProfile(storeId);
+  if (!cached) return;
+  writeCachedMerchantProfile(storeId, {
+    operatingHours: cached.operatingHours,
+    storeDocuments: cached.storeDocuments,
+    bankAccounts: cached.bankAccounts,
+    store: { ...cached.store, ...patch },
+  });
 }
 
 export function readCachedMerchantProfile(storeId: string): CachedMerchantProfile | null {

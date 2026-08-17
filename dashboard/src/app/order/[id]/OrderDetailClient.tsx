@@ -1797,6 +1797,29 @@ export default function OrderDetailClient({
     hasRider: hasAssignedRider,
   });
 
+  const actionBannerEtaAt = (() => {
+    if (order.firstEtaAt) {
+      const d = new Date(order.firstEtaAt);
+      return Number.isNaN(d.getTime()) ? null : d;
+    }
+    if (order.etaSeconds != null && order.createdAt) {
+      const d = new Date(
+        new Date(order.createdAt).getTime() + Number(order.etaSeconds) * 1000
+      );
+      return Number.isNaN(d.getTime()) ? null : d;
+    }
+    return null;
+  })();
+  const actionBannerStatusLower = (order.currentStatus ?? order.status ?? "")
+    .toLowerCase()
+    .trim();
+  const actionBannerEtaBreached =
+    actionBannerEtaAt != null &&
+    actionBannerStatusLower !== "delivered" &&
+    actionBannerStatusLower !== "cancelled" &&
+    actionBannerStatusLower !== "rejected" &&
+    Date.now() > actionBannerEtaAt.getTime();
+
   const mapDrop = resolveMapCoordinatePair(
     order.dropLat,
     order.dropLon,
@@ -2082,7 +2105,10 @@ export default function OrderDetailClient({
             })()}
           />
           {actionBannerMessage ? (
-            <OrderActionBanner message={actionBannerMessage} />
+            <OrderActionBanner
+              message={actionBannerMessage}
+              etaBreached={actionBannerEtaBreached}
+            />
           ) : null}
         </div>
 
@@ -2241,6 +2267,16 @@ export default function OrderDetailClient({
                 key={`rider-map-${order.riderId}`}
                 className="h-full flex flex-col"
                 orderId={order.id}
+                orderIdText={
+                  order.formattedOrderId?.trim() ||
+                  order.orderId?.trim() ||
+                  (order.id != null ? `GMF${String(order.id).padStart(6, "0")}` : null)
+                }
+                orderChannelIds={[
+                  order.formattedOrderId,
+                  order.orderId,
+                  order.id != null ? `GMF${String(order.id).padStart(6, "0")}` : null,
+                ]}
                 riderId={order.riderId ?? null}
                 riderName={order.riderName}
                 storeName={

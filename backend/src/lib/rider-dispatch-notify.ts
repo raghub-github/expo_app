@@ -4,9 +4,6 @@
  * Fare/earnings come from Rider Fare Engine v3.0 (service_payout_rules %).
  */
 
-import { and, eq } from "drizzle-orm";
-import { getDb } from "../db/client.js";
-import { expoPushTokens } from "../db/schema.js";
 import { publishRiderEvent } from "../modules/realtime/publish.js";
 import { send as sendNotification } from "../modules/notifications/notificationService.js";
 import type { DispatchOrderTarget, EligibleDispatchRider } from "./order-assignment-engine.js";
@@ -25,17 +22,6 @@ function formatDistanceKm(meters: number): string {
   const km = meters / 1000;
   if (km < 1) return `${Math.round(meters)} m`;
   return `${km.toFixed(1)} km`;
-}
-
-async function loadRiderPushTokens(riderId: number): Promise<string[]> {
-  const userId = `usr_${riderId}`;
-  const db = getDb();
-  const rows = await db
-    .select({ token: expoPushTokens.expoPushToken })
-    .from(expoPushTokens)
-    .where(and(eq(expoPushTokens.userId, userId), eq(expoPushTokens.role, "rider")));
-
-  return rows.map((r) => r.token).filter((t): t is string => Boolean(t));
 }
 
 export type DispatchOfferPayload = {
@@ -143,9 +129,6 @@ export async function notifyRiderDispatchOffer(
     ...payload,
   });
 
-  const tokens = await loadRiderPushTokens(rider.riderId);
-  if (tokens.length === 0) return;
-
   const earningLabel =
     earnings != null && earnings.estimatedEarning > 0
       ? `₹${earnings.estimatedEarning}`
@@ -164,7 +147,8 @@ export async function notifyRiderDispatchOffer(
       estimatedEarning: earningLabel,
       earningAmount: earnings?.estimatedEarning != null ? String(earnings.estimatedEarning) : "",
     },
-    target: { device_tokens: tokens },
+    target: { user_id: `usr_${rider.riderId}` },
+    priority: "high",
     metadata: {
       type: "dispatch_offer",
       gmType: "DISPATCH_OFFER",

@@ -13,6 +13,7 @@ import {
   fetchCustomizationsForMenuItems,
   fetchVariantsForMenuItems,
 } from "@/lib/menu-item-detail-sql";
+import { resolveAttachmentProxyUrl } from "@/lib/attachments/resolve-attachment-proxy-url";
 
 export const runtime = "nodejs";
 
@@ -195,6 +196,8 @@ export async function GET(
       const id = Number(row.id);
       return {
         ...row,
+        item_image_url:
+          resolveAttachmentProxyUrl(row.item_image_url) || row.item_image_url || null,
         variants: variantsByItemId.get(id) ?? [],
         customizations: customizationsByItemId.get(id) ?? [],
       };

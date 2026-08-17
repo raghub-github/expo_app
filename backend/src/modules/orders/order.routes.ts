@@ -255,7 +255,15 @@ const orderDetailResponseSchema = z.object({
   riderPickedUpAt: z.string().optional().nullable(),
   pickupOtpVerifiedAt: z.string().optional().nullable(),
   rideStarted: z.boolean().optional(),
-  statusHistory: z.array(z.object({ status: z.string(), at: z.string() })).optional(),
+  statusHistory: z
+    .array(
+      z.object({
+        status: z.string(),
+        at: z.string(),
+        label: z.string().optional(),
+      })
+    )
+    .optional(),
   rider: z
     .object({
       name: z.string(),
@@ -437,6 +445,48 @@ function toAppStatus(dbStatus: string | null): string {
     failed: "FAILED",
   };
   return map[s] ?? dbStatus ?? "ORDER_PLACED";
+}
+
+function toIsoTimestamp(v: unknown): string | null {
+  if (v == null) return null;
+  if (v instanceof Date) return Number.isFinite(v.getTime()) ? v.toISOString() : null;
+  const d = new Date(String(v));
+  return Number.isFinite(d.getTime()) ? d.toISOString() : null;
+}
+
+/**
+ * Customer-facing milestone timeline (placed → accepted → picked up → delivered/cancelled).
+ * Uses real event timestamps — not ETA revision history.
+ */
+function buildCustomerMilestoneHistory(args: {
+  placedAt: unknown;
+  createdAt: unknown;
+  acceptedAt: unknown;
+  preparingAt: unknown;
+  pickedUpAt: unknown;
+  deliveredAt: unknown;
+  cancelledAt: unknown;
+}): Array<{ status: string; at: string; label: string }> {
+  const entries: Array<{ status: string; at: string; label: string }> = [];
+  const placed = toIsoTimestamp(args.placedAt) ?? toIsoTimestamp(args.createdAt);
+  if (placed) entries.push({ status: "PLACED", at: placed, label: "Order placed" });
+
+  const accepted = toIsoTimestamp(args.acceptedAt) ?? toIsoTimestamp(args.preparingAt);
+  if (accepted) entries.push({ status: "ACCEPTED", at: accepted, label: "Accepted" });
+
+  const pickedUp = toIsoTimestamp(args.pickedUpAt);
+  if (pickedUp) entries.push({ status: "PICKED_UP", at: pickedUp, label: "Picked up" });
+
+  const cancelled = toIsoTimestamp(args.cancelledAt);
+  const delivered = toIsoTimestamp(args.deliveredAt);
+  if (cancelled) {
+    entries.push({ status: "CANCELLED", at: cancelled, label: "Cancelled" });
+  } else if (delivered) {
+    entries.push({ status: "DELIVERED", at: delivered, label: "Delivered" });
+  }
+
+  entries.sort((a, b) => new Date(a.at).getTime() - new Date(b.at).getTime());
+  return entries;
 }
 
 /** Uppercase OMS / rider statuses for the customer app. */
@@ -1430,6 +1480,10 @@ export async function orderRoutes(app: FastifyInstance) {
           riderReachedPickupAt: ordersFood.riderReachedPickupAt,
           riderPickedUpAt: ordersFood.riderPickedUpAt,
           orderStatus: ordersFood.orderStatus,
+          acceptedAt: ordersFood.acceptedAt,
+          preparingAt: ordersFood.preparingAt,
+          deliveredAt: ordersFood.deliveredAt,
+          cancelledAt: ordersFood.cancelledAt,
         })
         .from(ordersFood)
         .where(ordersFoodMatchForCoreRow(coreRow.id, coreRow.orderId))
@@ -1974,14 +2028,28 @@ export async function orderRoutes(app: FastifyInstance) {
         })(),
         deliveryOtp: (() => {
           const orderType = String(coreRow.orderType ?? "").toLowerCase();
-          const atDropRadius =
+          const cur = String(coreRow.currentStatus ?? "").toUpperCase();
+          const afterPickup =
+            riderPickedUpAtResolved != null ||
             deliveryOtpRadiusNotified ||
-            String(coreRow.currentStatus ?? "").toUpperCase() === "REACHED_CUSTOMER" ||
-            String(coreRow.currentStatus ?? "").toUpperCase() === "RIDER_AT_DROP" ||
-            String(coreRow.currentStatus ?? "").toUpperCase() === "AT_CUSTOMER";
-          // Never expose delivery OTP before drop radius (food + parcel).
+            cur === "PICKED_UP" ||
+            cur === "PICKED_BY_RIDER" ||
+            cur === "ON_THE_WAY" ||
+            cur === "OUT_FOR_DELIVERY" ||
+            cur === "IN_TRANSIT" ||
+            cur === "DISPATCHED" ||
+            cur === "REACHED_CUSTOMER" ||
+            cur === "RIDER_AT_DROP" ||
+            cur === "AT_CUSTOMER" ||
+            appStatus === "PICKED_UP" ||
+            appStatus === "ON_THE_WAY" ||
+            appStatus === "OUT_FOR_DELIVERY" ||
+            appStatus === "IN_TRANSIT" ||
+            appStatus === "DISPATCHED" ||
+            appStatus === "REACHED_CUSTOMER";
+          // Food + parcel: expose delivery OTP once rider has picked up / OTW.
           if (orderType === "food" || orderType === "parcel") {
-            return atDropRadius ? resolvedDeliveryOtp : null;
+            return afterPickup ? resolvedDeliveryOtp : null;
           }
           return null;
         })(),
@@ -2016,7 +2084,31 @@ export async function orderRoutes(app: FastifyInstance) {
         riderPickedUpAt: riderPickedUpAtResolved,
         pickupOtpVerifiedAt: pickupOtpVerifiedAtResolved,
         rideStarted: rideStartedForCustomer,
-        statusHistory: [{ status: appStatus, at: (createdAt instanceof Date ? createdAt : new Date(createdAt)).toISOString() }],
+        statusHistory: (() => {
+          const milestones = buildCustomerMilestoneHistory({
+            placedAt: coreRow.placedAt,
+            createdAt,
+            acceptedAt: foodRow?.acceptedAt ?? null,
+            preparingAt: foodRow?.preparingAt ?? null,
+            pickedUpAt:
+              riderPickedUpAtResolved ??
+              foodRow?.riderPickedUpAt ??
+              coreRow.riderPickedUpAt ??
+              coreRow.actualPickupTime ??
+              null,
+            deliveredAt:
+              foodRow?.deliveredAt ?? coreRow.actualDeliveryTime ?? null,
+            cancelledAt: foodRow?.cancelledAt ?? coreRow.cancelledAt ?? null,
+          });
+          if (milestones.length > 0) return milestones;
+          return [
+            {
+              status: appStatus,
+              at: (createdAt instanceof Date ? createdAt : new Date(createdAt)).toISOString(),
+              label: "Order placed",
+            },
+          ];
+        })(),
         rider,
         items: items.length > 0 ? items : undefined,
         billingSnapshot: billingSnap,

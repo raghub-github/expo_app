@@ -384,6 +384,12 @@ function OrdersPageContent() {
 
   const [orderSort, setOrderSort] = useState<'remaining' | 'newest' | 'oldest'>('remaining');
   const [orderIdSearch, setOrderIdSearch] = useState('');
+  /**
+   * After a user tab click we clear `orderId` via router.replace (async).
+   * Until the URL catches up, ignore stale `orderId` so hydration cannot yank the tab back
+   * (that caused stage pills / actions to need a second click).
+   */
+  const suppressStaleOrderIdHydrationRef = useRef(false);
   const updateUrlParams = useCallback((updates: { filter?: string; orderId?: string | null }) => {
     if (typeof window === 'undefined') return;
     const params = new URLSearchParams(searchParams?.toString() || '');
@@ -449,6 +455,7 @@ function OrdersPageContent() {
   );
 
   const openOrder = useCallback((order: OrdersFoodRow) => {
+    suppressStaleOrderIdHydrationRef.current = false;
     setSelectedOrder(order);
     setRightPanelOpen(true);
     updateUrlParams({ orderId: String(order.order_id || order.id) });
@@ -466,6 +473,7 @@ function OrdersPageContent() {
   const closeOrderPanel = useCallback(() => {
     setRightPanelOpen(false);
     setSelectedOrder(null);
+    suppressStaleOrderIdHydrationRef.current = true;
     updateUrlParams({ orderId: null });
   }, [updateUrlParams]);
 
@@ -473,6 +481,7 @@ function OrdersPageContent() {
     setFilter(f);
     setRightPanelOpen(false);
     setSelectedOrder(null);
+    suppressStaleOrderIdHydrationRef.current = true;
     updateUrlParams({ filter: f, orderId: null });
   }, [updateUrlParams]);
 
@@ -481,6 +490,7 @@ function OrdersPageContent() {
     (order: OrdersFoodRow, keepPanelOpen = true) => {
       const tab = pipelineTabForSidebarStatus(resolveOrderSidebarPipelineStatus(order));
       if (!tab) return false;
+      suppressStaleOrderIdHydrationRef.current = false;
       setFilter(tab);
       if (keepPanelOpen) {
         setSelectedOrder(order);
@@ -490,6 +500,7 @@ function OrdersPageContent() {
           orderId: String(order.order_id || order.id),
         });
       } else {
+        suppressStaleOrderIdHydrationRef.current = true;
         updateUrlParams({ filter: tab, orderId: null });
       }
       return true;
@@ -556,26 +567,40 @@ function OrdersPageContent() {
     const valid = new Set<string>(['NEW_ORDERS', 'SCHEDULED', 'PREPARING', 'READY_FOR_PICKUP', 'OUT_FOR_DELIVERY', 'RTO']);
     if (f && valid.has(f)) {
       setFilter(f);
-    } else {
-      setFilter('NEW_ORDERS');
+      return;
+    }
+    // Only default when filter is missing/invalid — do not fight in-flight tab navigations.
+    setFilter((prev) => (valid.has(prev) ? prev : 'NEW_ORDERS'));
+    if (!f) {
       updateUrlParams({ filter: 'NEW_ORDERS' });
     }
-  }, [searchParams?.toString(), updateUrlParams]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- sync from URL string only; updateUrlParams identity churn causes races
+  }, [searchParams?.toString()]);
 
   const orderIdFromUrl = searchParams?.get('orderId') || null;
 
   useEffect(() => {
+    if (!orderIdFromUrl) {
+      suppressStaleOrderIdHydrationRef.current = false;
+      return;
+    }
+    if (suppressStaleOrderIdHydrationRef.current) {
+      // User cleared selection / changed tab; wait until router drops orderId.
+      return;
+    }
     if (loading || orders.length === 0) return;
-    if (!orderIdFromUrl) return;
     const id = parseInt(orderIdFromUrl, 10);
     if (isNaN(id)) return;
     const order = orders.find((o) => o.order_id === id || o.id === id);
-    if (order && orderMatchesFoodOrdersSidebar(order, filter)) {
+    if (!order) return;
+    if (orderMatchesFoodOrdersSidebar(order, filter)) {
       setSelectedOrder(order);
       setRightPanelOpen(true);
-    } else if (order) {
-      switchToOrderTab(order, true);
+      return;
     }
+    // Deep-link: open the order's own tab. Never run this path after a user tab click
+    // (that path is blocked by suppressStaleOrderIdHydrationRef above).
+    switchToOrderTab(order, true);
   }, [loading, orderIdFromUrl, orders, filter, switchToOrderTab]);
 
   /** Close detail panel when the open order no longer belongs on the active tab (e.g. after Complete). */

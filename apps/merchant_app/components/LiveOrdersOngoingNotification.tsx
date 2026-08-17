@@ -14,6 +14,7 @@ import { useStoreStatus } from "@/context/StoreStatusContext";
 import {
   dismissLiveOrdersOngoingNotification,
   refreshLiveOrdersOngoingNotification,
+  setKitchenStickyAllowed,
 } from "@/lib/liveOrdersOngoingNotification";
 
 const POLL_MS = 25_000;
@@ -31,13 +32,20 @@ export default function LiveOrdersOngoingNotification() {
 
   const storeId = selectedStore?.id ?? null;
   const storeName = selectedStore?.store_name?.trim() || "Your restaurant";
-  // Sticky kitchen status while online (matches Zomato). Floating setting only
-  // gates the in-app FAB — tray sticky stays on whenever the store is online.
   const enabled =
     Platform.OS === "android" &&
     !!token &&
     !!storeId &&
     isOnline;
+
+  // Sync gate with online status. No cleanup→false thrash (that caused
+  // schedule/dismiss races and Android process crashes under Strict Mode).
+  useEffect(() => {
+    setKitchenStickyAllowed(enabled);
+    if (!enabled) {
+      void dismissLiveOrdersOngoingNotification();
+    }
+  }, [enabled]);
 
   useEffect(() => {
     if (isExpoGo()) return undefined;
@@ -46,10 +54,7 @@ export default function LiveOrdersOngoingNotification() {
 
     async function tick() {
       if (cancelled) return;
-      if (!enabled || !token || !storeId) {
-        await dismissLiveOrdersOngoingNotification();
-        return;
-      }
+      if (!enabled || !token || !storeId) return;
       await refreshLiveOrdersOngoingNotification({
         storeId,
         token,
@@ -58,7 +63,6 @@ export default function LiveOrdersOngoingNotification() {
     }
 
     if (!enabled) {
-      void dismissLiveOrdersOngoingNotification();
       return () => {
         cancelled = true;
       };
@@ -81,7 +85,6 @@ export default function LiveOrdersOngoingNotification() {
         pollTimerRef.current = null;
       }
       appStateSub.remove();
-      if (!enabled) void dismissLiveOrdersOngoingNotification();
     };
   }, [enabled, token, storeId, storeName]);
 

@@ -15,6 +15,8 @@ import { OrderTimelineSheet } from "@/components/order/OrderTimelineSheet";
 import { OrderCustomerBottomSheet } from "@/components/order/OrderCustomerBottomSheet";
 import { formatOrderDateTime } from "@/components/order/orderFormatters";
 import { formatTerminalOrderFooter } from "@/lib/terminalOrderFooter";
+import { printOrderBill } from "@/lib/orderCardActions";
+import { MerchantOrderRatingBlock } from "@/components/order/MerchantOrderRatingBlock";
 import { Ionicons } from "@expo/vector-icons";
 
 type Props = {
@@ -22,6 +24,7 @@ type Props = {
   storeName?: string | null;
   rejectedReason?: string | null;
   onPress: () => void;
+  onReviewPress?: () => void;
   onItemPress?: (item: LineItem) => void;
 };
 
@@ -39,6 +42,7 @@ export function RecentCompletedOrderCard({
   order,
   storeName,
   onPress,
+  onReviewPress,
   onItemPress,
 }: Props) {
   const [menuOpen, setMenuOpen] = useState(false);
@@ -54,38 +58,55 @@ export function RecentCompletedOrderCard({
   const footerMeta = formatTerminalOrderFooter(order);
   const badge = statusBadge(order);
 
+  const storeLine = useMemo(() => {
+    const name = storeName?.trim() || "";
+    const locality = order.merchantStoreLocality?.trim() || "";
+    if (name && locality) return `${name}, ${locality}`;
+    return name || locality || null;
+  }, [storeName, order.merchantStoreLocality]);
+
+  const showRating = order.status === "delivered" && order.storeRating != null;
+
   const footer = useMemo(() => {
-    if (!footerMeta) return null;
+    if (!showRating && !footerMeta) return null;
     return (
-      <View style={styles.footerRow}>
-        <Ionicons
-          name="stopwatch-outline"
-          size={14}
-          color={footerMeta.tone === "success" ? "#166534" : "#CA8A04"}
-        />
-        <Text
-          style={[
-            styles.footerText,
-            footerMeta.tone === "success" ? styles.footerSuccess : styles.footerWarn,
-          ]}
-          numberOfLines={2}
-        >
-          {footerMeta.text}
-        </Text>
+      <View style={styles.footerStack}>
+        {showRating && order.storeRating ? (
+          <MerchantOrderRatingBlock rating={order.storeRating} onPress={onReviewPress} />
+        ) : null}
+        {footerMeta ? (
+          <View style={styles.footerRow}>
+            <Ionicons
+              name="stopwatch-outline"
+              size={14}
+              color={footerMeta.tone === "success" ? "#166534" : "#CA8A04"}
+            />
+            <Text
+              style={[
+                styles.footerText,
+                footerMeta.tone === "success" ? styles.footerSuccess : styles.footerWarn,
+              ]}
+              numberOfLines={2}
+            >
+              {footerMeta.text}
+            </Text>
+          </View>
+        ) : null}
       </View>
     );
-  }, [footerMeta]);
+  }, [footerMeta, onReviewPress, order.storeRating, showRating]);
 
   return (
     <>
       <MerchantOrderCardLayout
         order={order}
-        storeName={storeName}
+        storeName={storeLine}
         placedAt={placedAt}
         onViewDetail={onPress}
         onItemPress={onItemPress}
         speakingActive={speaking}
         onSpeak={() => void speak(order)}
+        onPrint={() => void printOrderBill(order, printContext)}
         onMenu={() => setMenuOpen(true)}
         showRider={false}
         detailsDefaultOpen={false}
@@ -137,6 +158,7 @@ const styles = StyleSheet.create({
     fontWeight: "800",
     letterSpacing: 0.5,
   },
+  footerStack: { gap: 8 },
   footerRow: {
     flexDirection: "row",
     alignItems: "center",

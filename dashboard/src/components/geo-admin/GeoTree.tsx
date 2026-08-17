@@ -2,7 +2,7 @@
 
 import React, { useMemo, useState } from "react";
 import { GeoNode } from "./GeoNode";
-import { useGeoChildrenQuery, useGeoToggleMutation } from "@/store/api/geoAdminApi";
+import { useGeoChildrenQuery, useGeoToggleMutation, useGeoRiderOnlineCheckMutation } from "@/store/api/geoAdminApi";
 import type { GeoChildRow } from "@/lib/geo/geo-shared";
 import type { GeoHierarchyLevel } from "@/store/api/geoAdminApi";
 import { RefreshCw } from "lucide-react";
@@ -46,6 +46,8 @@ function GeoTreeNode(props: {
   });
 
   const [toggleMut] = useGeoToggleMutation();
+  const [riderCheckMut] = useGeoRiderOnlineCheckMutation();
+  const [pendingRiderOnlineCheck, setPendingRiderOnlineCheck] = useState(false);
 
   const onServiceToggle = async (service: "food" | "parcel" | "ride", value: boolean) => {
     setPendingService(service);
@@ -56,20 +58,32 @@ function GeoTreeNode(props: {
     }
   };
 
+  const onRiderOnlineCheckToggle = async (value: boolean) => {
+    if (props.row.kind !== "state") return;
+    setPendingRiderOnlineCheck(true);
+    try {
+      await riderCheckMut({ id: props.row.id, value }).unwrap();
+    } finally {
+      setPendingRiderOnlineCheck(false);
+    }
+  };
+
   const showChildLoader = expanded && props.row.has_children && (isFetching || isLoading) && !data?.rows?.length;
 
   return (
-    <div>
+    <div className="w-full min-w-0">
       <GeoNode
         row={props.row}
         expanded={expanded}
         onToggleExpand={() => setExpanded((e) => !e)}
         onServiceToggle={onServiceToggle}
+        onRiderOnlineCheckToggle={props.row.kind === "state" ? onRiderOnlineCheckToggle : undefined}
         onEdit={() => props.onEdit(props.row)}
         onPlatformOfferMap={() => props.onPlatformOfferMap(props.row)}
         onDeliverySlabs={() => props.onDeliverySlabs(props.row)}
         depth={props.depth}
         pendingService={pendingService}
+        pendingRiderOnlineCheck={pendingRiderOnlineCheck}
       />
       {expanded && props.row.has_children && (
         <div className="relative ml-3 border-l-2 border-teal-100/80 pl-1 sm:ml-4">
@@ -115,7 +129,7 @@ export const GeoTree = React.memo(function GeoTree(props: {
   const rootLoading = isLoading || (isFetching && !data?.rows?.length);
 
   return (
-    <div className="relative min-w-0 overflow-hidden rounded-xl border border-slate-200/80 bg-white/90 shadow-md shadow-slate-200/30 sm:rounded-2xl">
+    <div className="relative min-w-0 w-full overflow-hidden rounded-xl border border-slate-200/80 bg-white/90 shadow-md shadow-slate-200/30 sm:rounded-2xl">
       <div className="flex flex-col gap-3 border-b border-slate-100 bg-gradient-to-r from-slate-50/80 to-teal-50/40 px-3 py-3 sm:flex-row sm:items-start sm:justify-between sm:px-4">
         <div className="min-w-0">
           <h3 className="text-sm font-semibold text-slate-800">Hierarchy</h3>

@@ -5,8 +5,8 @@ import { AlertTriangle, Bike, Phone, X } from 'lucide-react';
 import { RiderAssignmentHorizontalTimeline } from '@/components/orders/RiderAssignmentHorizontalTimeline';
 import { isInactiveRiderLogEntry } from '@/lib/ridersLogCache';
 
-/** Partner / dashboard shell top bar height (matches fixed h-14 headers). */
-export const ORDER_SHELL_HEADER_OFFSET = '3.5rem';
+/** Partner shell top bar — use live CSS var (topbar can grow past 3.5rem). */
+export const ORDER_SHELL_HEADER_OFFSET = 'var(--mx-partner-topbar-h, 3.5rem)';
 
 export type RiderLogEntry = {
   rider_id: number;
@@ -32,7 +32,7 @@ export type OrderRidersHistorySidesheetProps = {
   loading?: boolean;
   onClose: () => void;
   onRiderPhotoClick?: (url: string) => void;
-  /** CSS top offset so the sheet sits below the fixed app header (default: below h-14 bar). */
+  /** @deprecated Ignored — sheet matches Store status (covers header, inset-0). */
   topOffset?: string;
 };
 
@@ -43,32 +43,22 @@ export function OrderRidersHistorySidesheet({
   loading = false,
   onClose,
   onRiderPhotoClick,
-  topOffset = ORDER_SHELL_HEADER_OFFSET,
 }: OrderRidersHistorySidesheetProps) {
   if (!open || typeof document === 'undefined') return null;
 
   const showLoading = loading && riders.length === 0;
 
+  // Same shell as Store status: full viewport over the partner top bar.
   return createPortal(
-    <div
-      className="fixed inset-0 z-[1100] flex justify-end"
-      role="presentation"
-      style={{ ['--order-sheet-top' as string]: topOffset }}
-    >
+    <div className="fixed inset-0 z-[1100] flex justify-end" role="presentation">
       <button
         type="button"
-        className="absolute left-0 right-0 bottom-0 bg-black/40 backdrop-blur-[2px]"
-        style={{ top: 'var(--order-sheet-top)' }}
+        className="absolute inset-0 bg-black/40 backdrop-blur-[2px]"
         aria-label="Close rider history"
         onClick={onClose}
       />
       <aside
-        className="relative flex w-full max-w-lg flex-col border-l border-gray-200 bg-white shadow-2xl"
-        style={{
-          marginTop: 'var(--order-sheet-top)',
-          height: 'calc(100dvh - var(--order-sheet-top))',
-          maxHeight: 'calc(100dvh - var(--order-sheet-top))',
-        }}
+        className="relative flex h-dvh min-h-0 w-full max-w-lg flex-col border-l border-gray-200 bg-white shadow-2xl"
         role="dialog"
         aria-modal="true"
         aria-labelledby="riders-history-title"

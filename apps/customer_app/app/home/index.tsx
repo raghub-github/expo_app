@@ -79,12 +79,11 @@ import {
   LovedMerchantsGridSkeleton,
   RestaurantListSkeleton,
 } from "@/components/ShimmerSkeleton";
-import { HomePromoCarousel } from "@/components/home/HomePromoCarousel";
+import { FoodOffersRibbonCarousel } from "@/components/home/FoodOffersRibbonCarousel";
 import {
   FoodHomeHeroCarousel,
-  gridFirstSkySectionHeight,
   GRID_FIRST_HEADER_OVERLAY_H,
-  GRID_FIRST_SKY_TOP,
+  gridFirstSkySectionHeight,
 } from "@/components/home/FoodHomeHeroCarousel";
 import { FoodHomeGoldStrip } from "@/components/home/FoodHomeGoldStrip";
 import { FoodHomeGridFirstHeader } from "@/components/home/FoodHomeGridFirstHeader";
@@ -146,7 +145,7 @@ const RAIL_ROW_GAP = 10;
 const CATEGORY_RAIL_TARGET_COLUMNS = 4;
 
 const OFFERS_SECTION_PAD = 10;
-const OFFER_CARD_HEIGHT = 136;
+const OFFER_CARD_HEIGHT = 72;
 const OFFER_GAP = 12;
 
 /** Grid-first food home immersive hero — scoped via screenChromeStore on focus. */
@@ -253,9 +252,8 @@ export default function FoodMerchantsScreen() {
   const { data: addresses = [] } = useAddresses();
   const { data: activeLocation } = useActiveLocation();
   /**
-   * Canonical delivery anchor for merchant listing:
-   * selected pin (snapped to nearby saved) → live GPS.
-   * Never use server active-location / default saved address (stale city bug).
+   * Canonical delivery drop for listing km: same saved address as checkout
+   * when one is resolved; live GPS only when it is the active pin.
    */
   const merchantsAnchorCoords = useMemo(
     () =>
@@ -263,8 +261,9 @@ export default function FoodMerchantsScreen() {
         locationSource,
         listingCoords,
         addresses,
+        activeLocation,
       }),
-    [locationSource, listingCoords, addresses]
+    [locationSource, listingCoords, addresses, activeLocation]
   );
 
   const { data: weather } = useLocationWeather({
@@ -394,7 +393,11 @@ export default function FoodMerchantsScreen() {
 
   const { data: featuredOffersData, refetch: refetchFeaturedOffers } = useFeaturedOffersHome(
     offerLocationParams,
-    merchantsAnchorCoords?.latitude != null && merchantsAnchorCoords?.longitude != null
+    Boolean(
+      offerLocationParams.pincode ||
+        offerLocationParams.state ||
+        (merchantsAnchorCoords?.latitude != null && merchantsAnchorCoords?.longitude != null)
+    )
   );
 
   const homeFeaturedOffers = featuredOffersData?.offers ?? [];
@@ -1054,6 +1057,13 @@ export default function FoodMerchantsScreen() {
   }, []);
 
   useEffect(() => {
+    if (gridFirstHeroMedia.length === 0) {
+      setGridFirstHeroReady(false);
+      gridFirstSkyMeasuredFromHeroRef.current = false;
+    }
+  }, [gridFirstHeroMedia.length]);
+
+  useEffect(() => {
     gridFirstSkyAnimatedHeight.stopAnimation();
     gridFirstHeroReveal.stopAnimation();
 
@@ -1174,9 +1184,6 @@ export default function FoodMerchantsScreen() {
     gridFirstSearchStickAt,
     gridFirstCategoryStickAt,
     gridFirstFilterStickAt,
-    gridFirstSearchStickAtSv,
-    gridFirstCategoryStickAtSv,
-    gridFirstFilterStickAtSv,
   ]);
 
   const onGridFirstScroll = useCallback(
@@ -1296,8 +1303,7 @@ export default function FoodMerchantsScreen() {
   }
 
   const foodHomeLayoutKey = resolvedFoodHomeLayoutKey;
-  const promoCardHeight =
-    foodHomeLayoutKey === "discovery" ? OFFER_CARD_HEIGHT + 16 : OFFER_CARD_HEIGHT;
+  const promoCardHeight = OFFER_CARD_HEIGHT;
   const showLovedGrid =
     foodHomeLayoutKey === "classic" || foodHomeLayoutKey === "grid_first";
   const showLovedHorizontal = foodHomeLayoutKey === "discovery";
@@ -1357,8 +1363,8 @@ export default function FoodMerchantsScreen() {
           }
           ListHeaderComponent={
             <>
-          <View style={isGridFirstLayout ? styles.gridFirstSkyBlock : styles.offersSection}>
-            {isGridFirstLayout ? (
+          {isGridFirstLayout ? (
+            <View style={styles.gridFirstSkyBlock}>
               <NativeAnimated.View
                 style={[
                   styles.gridFirstSkyInner,
@@ -1387,7 +1393,6 @@ export default function FoodMerchantsScreen() {
                   <FoodHomeHeroCarousel
                     heroMedia={gridFirstHeroMedia}
                     offers={homeFeaturedOffers}
-                    merchantFallbacks={merchants}
                     embeddedInSky
                     immersive
                     topInset={statusBarTopInset}
@@ -1415,16 +1420,39 @@ export default function FoodMerchantsScreen() {
                     heroReady={gridFirstHeroReady}
                   />
                 </View>
+                {gridFirstHeroReady ? (
+                  <View style={styles.gridFirstOffersOverlay} pointerEvents="box-none">
+                    <FoodOffersRibbonCarousel
+                      offers={homeFeaturedOffers}
+                      merchantFallbacks={merchants}
+                      cardHeight={promoCardHeight}
+                      showDefaultWhenEmpty={false}
+                      embedOnHero
+                    />
+                  </View>
+                ) : null}
               </NativeAnimated.View>
-            ) : (
-              <HomePromoCarousel
+              {!gridFirstHeroReady ? (
+                <View style={styles.offersSection}>
+                  <FoodOffersRibbonCarousel
+                    offers={homeFeaturedOffers}
+                    merchantFallbacks={merchants}
+                    cardHeight={promoCardHeight}
+                    showDefaultWhenEmpty={false}
+                  />
+                </View>
+              ) : null}
+            </View>
+          ) : (
+            <View style={styles.offersSection}>
+              <FoodOffersRibbonCarousel
                 offers={homeFeaturedOffers}
+                merchantFallbacks={merchants}
                 cardHeight={promoCardHeight}
-                mode="food"
-                showDefaultWhenEmpty
+                showDefaultWhenEmpty={false}
               />
-            )}
-          </View>
+            </View>
+          )}
 
           {isGridFirstLayout ? (
             <View
@@ -1761,8 +1789,20 @@ const styles = StyleSheet.create({
     backgroundColor: GatiMitraColors.softBackground,
   },
   gridFirstSkyBlock: {
-    marginBottom: 4,
-    overflow: "hidden",
+    marginBottom: 0,
+    overflow: "visible",
+  },
+  gridFirstOffersOnHero: {
+    zIndex: 3,
+    elevation: 3,
+  },
+  gridFirstOffersOverlay: {
+    position: "absolute",
+    left: 0,
+    right: 0,
+    bottom: 0,
+    zIndex: 6,
+    elevation: 6,
   },
   gridFirstSkyInner: {
     position: "relative",
@@ -1803,7 +1843,6 @@ const styles = StyleSheet.create({
     marginBottom: SECTION_GAP,
   },
   offersSection: {
-    paddingVertical: OFFERS_SECTION_PAD,
     marginBottom: 4,
   },
   offersScrollContent: {
@@ -1861,7 +1900,7 @@ const styles = StyleSheet.create({
     marginBottom: SECTION_GAP_SM,
   },
   categoryTabsSection: {
-    paddingTop: 4,
+    paddingTop: 8,
     paddingBottom: 10,
     marginBottom: 0,
   },

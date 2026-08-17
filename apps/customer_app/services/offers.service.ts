@@ -65,6 +65,13 @@ export type HomeBannerOffer = {
   discount_percentage?: number | null;
   discount_value?: number | null;
   offer_image_url?: string | null;
+  /** Photo of the menu item this offer applies to. */
+  item_image_url?: string | null;
+  /** All targeted item photos when one offer applies to multiple menu items. */
+  item_image_urls?: string[] | null;
+  item_names?: string[] | null;
+  menu_item_ids?: string[] | null;
+  conditions_mode?: "boost" | "precision" | null;
   /** ISO timestamp — offer expires at this time. */
   valid_till?: string | null;
 };

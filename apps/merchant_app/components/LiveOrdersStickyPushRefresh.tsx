@@ -2,8 +2,8 @@
  * Keeps the sticky "N active orders" tray in sync when order lifecycle pushes
  * arrive — including while the app is backgrounded (JS process still alive).
  *
- * Killed apps still get the OS heads-up from FCM (merchant_order_lifecycle /
- * merchant_order_cancelled / merchant_new_order); sticky refreshes on next open.
+ * Must never re-show the "is online · Waiting for orders" sticky while the
+ * store is closed.
  */
 
 import { useEffect, useRef } from "react";
@@ -11,8 +11,10 @@ import { AppState, Platform } from "react-native";
 import Constants from "expo-constants";
 import { useAuth } from "@/context/AuthContext";
 import { useSelectedStore } from "@/context/SelectedStoreContext";
+import { useStoreStatus } from "@/context/StoreStatusContext";
 import {
   applyLiveOrdersCountFromPush,
+  isKitchenStickyAllowed,
   refreshLiveOrdersOngoingNotification,
 } from "@/lib/liveOrdersOngoingNotification";
 import {
@@ -62,9 +64,10 @@ function stageNum(data: Record<string, unknown>, ...keys: string[]): number | nu
 export default function LiveOrdersStickyPushRefresh() {
   const { token } = useAuth();
   const { selectedStore } = useSelectedStore();
+  const { isOnline } = useStoreStatus();
   const storeId = selectedStore?.id ?? null;
   const storeName = selectedStore?.store_name?.trim() || "Your restaurant";
-  const enabled = Platform.OS === "android" && !!token && !!storeId;
+  const enabled = Platform.OS === "android" && !!token && !!storeId && isOnline;
 
   const tokenRef = useRef(token);
   const storeIdRef = useRef(storeId);
@@ -94,7 +97,7 @@ export default function LiveOrdersStickyPushRefresh() {
     })();
 
     async function applyFromData(data: Record<string, unknown>) {
-      if (!enabledRef.current) return;
+      if (!enabledRef.current || !isKitchenStickyAllowed()) return;
       if (!isLifecycleRefreshPush(data)) return;
       const subtitle = subtitleFromData(data);
       const embedded = countFromData(data);
@@ -131,7 +134,8 @@ export default function LiveOrdersStickyPushRefresh() {
     });
 
     const appSub = AppState.addEventListener("change", (s) => {
-      if (s !== "active" || !enabledRef.current) return;
+      if (s !== "active") return;
+      if (!enabledRef.current || !isKitchenStickyAllowed()) return;
       const sid = storeIdRef.current;
       const tok = tokenRef.current;
       if (sid == null || !tok) return;

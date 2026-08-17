@@ -48,8 +48,13 @@ function isExpoGo(): boolean {
 }
 
 function isMerchantNewOrderPush(data: Record<string, unknown>): boolean {
-  const t = String(data.type ?? data.event ?? "").toLowerCase();
-  return t === "merchant_new_order" || t === "new_order" || data.screen === "new_order";
+  const t = String(data.type ?? data.event ?? data.gmType ?? data.template_code ?? "").toLowerCase();
+  return (
+    t === "merchant_new_order" ||
+    t === "new_order" ||
+    data.screen === "new_order" ||
+    String(data.template_code ?? "").toUpperCase() === "MERCHANT_NEW_ORDER"
+  );
 }
 
 /**

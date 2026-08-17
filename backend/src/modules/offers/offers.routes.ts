@@ -58,6 +58,7 @@ type MerchantBannerRow = {
   storeId: number;
   offerTitle: string | null;
   offerType: string | null;
+  offerSubType?: string | null;
   couponCode: string | null;
   discountValue: unknown;
   discountPercentage: unknown;
@@ -70,6 +71,37 @@ type MerchantBannerRow = {
   offerMetadata: unknown;
   validTill: Date | null;
 };
+
+function isBogoOfferType(type: string | null | undefined): boolean {
+  const t = String(type ?? "").toUpperCase();
+  return t === "BOGO" || t === "BUY_X_GET_Y" || t === "BUY_N_GET_M";
+}
+
+function isCheckoutCartOfferType(type: string | null | undefined): boolean {
+  const t = String(type ?? "").toUpperCase();
+  return (
+    t === "COUPON" ||
+    t === "CART_PERCENTAGE" ||
+    t === "CART_FLAT" ||
+    t === "FREE_DELIVERY" ||
+    t === "TIERED" ||
+    t === "BUNDLE"
+  );
+}
+
+/** Home "Offers for you" — store Boost / BOGO / Precision only, never checkout coupons. */
+function isStoreRibbonMerchantRow(row: MerchantBannerRow): boolean {
+  if (isCheckoutCartOfferType(row.offerType)) return false;
+  if (isBogoOfferType(row.offerType)) return true;
+  const meta =
+    row.offerMetadata && typeof row.offerMetadata === "object"
+      ? (row.offerMetadata as Record<string, unknown>)
+      : null;
+  const mode = parseConditionsModeFromMeta(meta);
+  if (mode === "boost" || mode === "precision") return true;
+  const t = String(row.offerType ?? "").toUpperCase();
+  return t === "PERCENTAGE" || t === "FLAT" || t === "BOOST" || t === "PRECISION";
+}
 
 /** One carousel card per store — prefer the offer that has a custom banner image. */
 function pickBestMerchantOfferPerStore(rows: MerchantBannerRow[]): MerchantBannerRow[] {
@@ -102,6 +134,169 @@ function pickBestMerchantOfferPerStore(rows: MerchantBannerRow[]): MerchantBanne
     if (bImg !== aImg) return bImg - aImg;
     return Number(b.displayPriority ?? 0) - Number(a.displayPriority ?? 0);
   });
+}
+
+/** First targeted menu-item photo per offer; store-wide offers get a popular in-stock photo. */
+async function resolveAppliedItemImageUrls(
+  rows: MerchantBannerRow[]
+): Promise<Map<number, { url: string | null; urls: string[]; names: string[]; name: string | null }>> {
+  const out = new Map<number, { url: string | null; urls: string[]; names: string[]; name: string | null }>();
+  if (rows.length === 0) return out;
+
+  const targeted: { offerId: number; storeId: number; itemKeys: string[] }[] = [];
+  const storeIdsNeedingFallback = new Set<number>();
+
+  for (const row of rows) {
+    const meta =
+      row.offerMetadata && typeof row.offerMetadata === "object"
+        ? (row.offerMetadata as Record<string, unknown>)
+        : null;
+    const ids = parseMenuItemIdsFromMeta(meta) ?? [];
+    if (ids.length > 0) {
+      targeted.push({ offerId: Number(row.id), storeId: Number(row.storeId), itemKeys: ids });
+    } else {
+      storeIdsNeedingFallback.add(Number(row.storeId));
+    }
+  }
+
+  const sqlClient = getSql();
+  const allKeys = [...new Set(targeted.flatMap((t) => t.itemKeys))];
+
+  type ItemImgRow = {
+    store_id: number;
+    pk: string;
+    item_id: string | null;
+    item_name: string | null;
+    item_image_url: string | null;
+  };
+
+  if (allKeys.length > 0) {
+    const itemRows = (await sqlClient`
+      SELECT
+        m.store_id,
+        m.id::text AS pk,
+        m.item_id,
+        m.item_name,
+        COALESCE(
+          NULLIF(TRIM(m.item_image_url), ''),
+          (
+            SELECT img.image_url FROM merchant_menu_item_images img
+            WHERE img.menu_item_id = m.id AND img.is_primary = true
+            ORDER BY img.id ASC LIMIT 1
+          ),
+          (
+            SELECT img.image_url FROM merchant_menu_item_images img
+            WHERE img.menu_item_id = m.id
+            ORDER BY img.display_order ASC NULLS LAST, img.id ASC LIMIT 1
+          )
+        ) AS item_image_url
+      FROM merchant_menu_items m
+      WHERE (m.is_deleted IS NULL OR m.is_deleted = false)
+        AND (
+          m.id::text = ANY(${allKeys}::text[])
+          OR CAST(m.item_id AS text) = ANY(${allKeys}::text[])
+        )
+    `) as ItemImgRow[];
+
+    const byKey = new Map<string, ItemImgRow[]>();
+    for (const r of itemRows) {
+      const url = typeof r.item_image_url === "string" ? r.item_image_url.trim() : "";
+      const storeId = Number(r.store_id);
+      const keys = [String(r.pk ?? "").trim(), String(r.item_id ?? "").trim()].filter(Boolean);
+      for (const key of keys) {
+        const list = byKey.get(key) ?? [];
+        list.push({ ...r, store_id: storeId, item_image_url: url || null });
+        byKey.set(key, list);
+      }
+    }
+
+    for (const t of targeted) {
+      const urls: string[] = [];
+      const names: string[] = [];
+      const seenItem = new Set<string>();
+      for (const key of t.itemKeys) {
+        const matches = byKey.get(key) ?? [];
+        const row = matches.find((m) => Number(m.store_id) === t.storeId) ?? matches[0];
+        if (!row) continue;
+        const itemKey = String(row.pk || row.item_id || key).trim();
+        if (itemKey && seenItem.has(itemKey)) continue;
+        if (itemKey) seenItem.add(itemKey);
+        const abs = row.item_image_url
+          ? toAbsoluteClientMediaUrl(row.item_image_url) ?? row.item_image_url
+          : "";
+        const itemName = typeof row.item_name === "string" ? row.item_name.trim() || "" : "";
+        if (!abs && !itemName) continue;
+        urls.push(abs);
+        names.push(itemName);
+      }
+      out.set(t.offerId, {
+        url: urls.find(Boolean) ?? null,
+        urls,
+        names,
+        name: names.find(Boolean) ?? null,
+      });
+    }
+  }
+
+  if (storeIdsNeedingFallback.size > 0) {
+    const storeIds = [...storeIdsNeedingFallback];
+    const fallbackRows = (await sqlClient`
+      SELECT
+        m.store_id,
+        m.item_name,
+        COALESCE(
+          NULLIF(TRIM(m.item_image_url), ''),
+          (
+            SELECT img.image_url FROM merchant_menu_item_images img
+            WHERE img.menu_item_id = m.id AND img.is_primary = true
+            ORDER BY img.id ASC LIMIT 1
+          ),
+          (
+            SELECT img.image_url FROM merchant_menu_item_images img
+            WHERE img.menu_item_id = m.id
+            ORDER BY img.display_order ASC NULLS LAST, img.id ASC LIMIT 1
+          )
+        ) AS item_image_url
+      FROM merchant_menu_items m
+      WHERE m.store_id = ANY(${storeIds}::int[])
+        AND (m.is_deleted IS NULL OR m.is_deleted = false)
+        AND COALESCE(m.is_active, true) = true
+      ORDER BY
+        m.store_id,
+        m.is_popular DESC NULLS LAST,
+        m.is_recommended DESC NULLS LAST,
+        m.id ASC
+    `) as Array<{ store_id: number; item_name: string | null; item_image_url: string | null }>;
+
+    const byStore = new Map<number, { url: string; name: string | null }[]>();
+    for (const r of fallbackRows) {
+      const url = typeof r.item_image_url === "string" ? r.item_image_url.trim() : "";
+      const name = typeof r.item_name === "string" ? r.item_name.trim() || null : null;
+      if (!url && !name) continue;
+      const sid = Number(r.store_id);
+      const abs = url ? toAbsoluteClientMediaUrl(url) ?? url : "";
+      const list = byStore.get(sid) ?? [];
+      if (abs && list.some((x) => x.url === abs)) continue;
+      if (!abs && name && list.some((x) => !x.url && x.name === name)) continue;
+      if (list.length >= 8) continue;
+      list.push({ url: abs, name });
+      byStore.set(sid, list);
+    }
+    for (const row of rows) {
+      if (out.has(Number(row.id))) continue;
+      const hits = byStore.get(Number(row.storeId)) ?? [];
+      const urls = hits.map((h) => h.url);
+      const names = hits.map((h) => h.name ?? "");
+      out.set(Number(row.id), {
+        url: urls[0] ?? null,
+        urls,
+        names,
+        name: names.find(Boolean) ?? null,
+      });
+    }
+  }
+
+  return out;
 }
 
 function n(v: unknown): number | null {
@@ -137,6 +332,45 @@ function buildOfferLabel(
   if (t === "FREE_ITEM") return "Free Item";
   if (maxDiscount != null && maxDiscount > 0) return `Up to ₹${Math.round(maxDiscount)} OFF`;
   return "Special Offer";
+}
+
+function buildCarouselOfferTitle(input: {
+  customTitle: string;
+  type: string;
+  discountPct: number | null;
+  discountVal: number | null;
+  itemName: string | null;
+}): string {
+  const custom = input.customTitle.trim();
+  const item = input.itemName?.trim() || "";
+  if (
+    custom &&
+    custom.length >= 8 &&
+    !/^(offer|special offer|flat deals nearby)$/i.test(custom)
+  ) {
+    return custom;
+  }
+  const label = buildOfferLabel(input.type, input.discountPct, input.discountVal, null);
+  if (item && !/free delivery/i.test(label)) {
+    if (/%\s*OFF/i.test(label) || /₹/.test(label)) return `${label} on ${item}`;
+  }
+  if (label === "Free Delivery") return "Enjoy FREE delivery";
+  return label.startsWith("Flat ") ? label : `Flat ${label}`;
+}
+
+function buildCarouselOfferSub(input: {
+  minOrder: number | null;
+  firstOrderOnly: boolean;
+  newUserOnly: boolean;
+  storeName: string | null;
+}): string {
+  const min = input.minOrder != null && input.minOrder > 0 ? Math.round(input.minOrder) : null;
+  if (input.firstOrderOnly || input.newUserOnly) {
+    return min != null ? `On your first order above ₹${min}` : "On your first order";
+  }
+  if (min != null) return `On orders above ₹${min}`;
+  if (input.storeName?.trim()) return `At ${input.storeName.trim()}`;
+  return "Explore this deal on GatiMitra";
 }
 
 function buildOfferSublabel(minOrder: number | null, maxDiscount: number | null, firstOrderOnly: boolean, newUserOnly: boolean): string {
@@ -462,6 +696,12 @@ export type HomeBannerOffer = {
   discount_percentage?: number | null;
   discount_value?: number | null;
   offer_image_url?: string | null;
+  /** Menu item photo the offer applies to (first targeted item, else a store item). */
+  item_image_url?: string | null;
+  item_image_urls?: string[] | null;
+  item_names?: string[] | null;
+  menu_item_ids?: string[] | null;
+  conditions_mode?: "boost" | "precision" | null;
   /** ISO timestamp — offer expires at this time. */
   valid_till?: string | null;
 };
@@ -514,6 +754,7 @@ async function fetchMerchantBannerOffers(nearby: NearbyStoreRef[]): Promise<Home
       storeId: merchantOffers.storeId,
       offerTitle: merchantOffers.offerTitle,
       offerType: merchantOffers.offerType,
+      offerSubType: merchantOffers.offerSubType,
       couponCode: merchantOffers.couponCode,
       discountValue: merchantOffers.discountValue,
       discountPercentage: merchantOffers.discountPercentage,
@@ -532,12 +773,20 @@ async function fetchMerchantBannerOffers(nearby: NearbyStoreRef[]): Promise<Home
         inArray(merchantOffers.storeId, internalIds),
         eq(merchantOffers.isActive, true),
         lte(merchantOffers.validFrom, now),
-        gte(merchantOffers.validTill, now)
+        gte(merchantOffers.validTill, now),
+        sql`COALESCE(${merchantOffers.lifecycleStatus}, 'ACTIVE') IN ('ACTIVE', 'SCHEDULED')`
       )
     )
     .orderBy(sql`${merchantOffers.displayPriority} DESC NULLS LAST`, asc(merchantOffers.id));
 
-  const pickedRows = pickBestMerchantOfferPerStore(rows as MerchantBannerRow[]);
+  const ribbonRows = (rows as MerchantBannerRow[]).filter(isStoreRibbonMerchantRow);
+  const pickedRows = pickBestMerchantOfferPerStore(ribbonRows);
+  let itemImages = new Map<number, { url: string | null; urls: string[]; names: string[]; name: string | null }>();
+  try {
+    itemImages = await resolveAppliedItemImageUrls(pickedRows);
+  } catch {
+    itemImages = new Map();
+  }
   const banners: HomeBannerOffer[] = [];
   for (const r of pickedRows) {
     const store = meta.get(Number(r.storeId));
@@ -547,15 +796,28 @@ async function fetchMerchantBannerOffers(nearby: NearbyStoreRef[]): Promise<Home
     const maxDisc = n(r.maxDiscountAmount);
     const minOrder = n(r.minOrderAmount);
     const type = String(r.offerType ?? "PERCENTAGE");
+    const metaObj =
+      r.offerMetadata && typeof r.offerMetadata === "object"
+        ? (r.offerMetadata as Record<string, unknown>)
+        : null;
+    const itemHit = itemImages.get(Number(r.id));
     banners.push({
       id: `merchant-${r.id}-${store.storeId}`,
       store_id: store.storeId,
       store_name: store.name,
-      title: buildOfferLabel(type, discPct, discVal, maxDisc),
-      sub:
-        buildOfferSublabel(minOrder, maxDisc, r.firstOrderOnly ?? false, r.newUserOnly ?? false) ||
-        String(r.offerTitle ?? "").trim() ||
-        store.name,
+      title: buildCarouselOfferTitle({
+        customTitle: String(r.offerTitle ?? "").trim(),
+        type,
+        discountPct: discPct,
+        discountVal: discVal,
+        itemName: null,
+      }),
+      sub: buildCarouselOfferSub({
+        minOrder,
+        firstOrderOnly: r.firstOrderOnly ?? false,
+        newUserOnly: r.newUserOnly ?? false,
+        storeName: store.name,
+      }),
       kind: "merchant",
       source_offer_id: r.id,
       offer_type: type,
@@ -565,6 +827,11 @@ async function fetchMerchantBannerOffers(nearby: NearbyStoreRef[]): Promise<Home
       discount_percentage: discPct,
       discount_value: discVal,
       offer_image_url: resolveMerchantOfferImageUrl(r.offerImageUrl, r.offerMetadata),
+      item_image_url: itemHit?.url ?? null,
+      item_image_urls: itemHit?.urls?.length ? itemHit.urls : null,
+      item_names: itemHit?.names?.length ? itemHit.names : null,
+      menu_item_ids: parseMenuItemIdsFromMeta(metaObj),
+      conditions_mode: parseConditionsModeFromMeta(metaObj),
       valid_till: r.validTill ? new Date(r.validTill).toISOString() : null,
     });
   }
@@ -1052,6 +1319,11 @@ export async function offersRoutes(app: FastifyInstance) {
               discount_percentage:   z.number().nullable().optional(),
               discount_value:        z.number().nullable().optional(),
               offer_image_url:       z.string().nullable().optional(),
+              item_image_url:        z.string().nullable().optional(),
+              item_image_urls:       z.array(z.string()).nullable().optional(),
+              item_names:            z.array(z.string()).nullable().optional(),
+              menu_item_ids:         z.array(z.string()).nullable().optional(),
+              conditions_mode:       z.enum(["boost", "precision"]).nullable().optional(),
               valid_till:            z.string().nullable().optional(),
             })),
           }),
