@@ -36,6 +36,7 @@ import { runExclusiveActiveLocationReconcile } from "@/lib/activeLocationReconci
 import { useStoreStatusStore } from "@/store/storeStatusStore";
 import { useStoreStatusRealtime } from "@/hooks/useStoreStatusRealtime";
 import { usePreventServicesRealtime } from "@/hooks/usePreventServicesRealtime";
+import { useRiderOnlineCheckRealtime } from "@/hooks/useRiderOnlineCheckRealtime";
 import { useOrderRealtime } from "@/hooks/useOrderRealtime";
 import { useActiveOrdersHydration } from "@/hooks/useActiveOrdersHydration";
 import { LocationWatchSync } from "@/components/LocationWatchSync";
@@ -126,8 +127,6 @@ function isLightBarColor(color: string): boolean {
 // App-wide invariant: the system status bar is never hidden, including startup.
 NativeStatusBar.setHidden(false, "none");
 if (Platform.OS === "android") {
-  NativeStatusBar.setTranslucent(true);
-  NativeStatusBar.setBackgroundColor("transparent", true);
   NativeStatusBar.setBarStyle("light-content", true);
 }
 
@@ -161,22 +160,9 @@ void (async () => {
   if (Platform.OS !== "android") return;
   try {
     NativeStatusBar.setHidden(false, "none");
-    NativeStatusBar.setTranslucent(true);
-    NativeStatusBar.setBackgroundColor("transparent", true);
     NativeStatusBar.setBarStyle("light-content", true);
-    const [SystemUI, NavigationBar] = await Promise.all([
-      import("expo-system-ui"),
-      import("expo-navigation-bar"),
-    ]);
-    await SystemUI.setBackgroundColorAsync(SPLASH_CHROME_COLOR);
-    await NavigationBar.setVisibilityAsync("visible");
-    try {
-      await NavigationBar.setPositionAsync("relative");
-    } catch {
-      // Ignored on builds where nav position is fixed by the OS.
-    }
-    await NavigationBar.setBackgroundColorAsync(SPLASH_CHROME_COLOR);
-    await NavigationBar.setButtonStyleAsync("light");
+    const { applyAndroidNavigationChrome } = await import("@/lib/androidEdgeToEdgeChrome");
+    await applyAndroidNavigationChrome({ buttonStyle: "light" });
   } catch {
     // Keep startup resilient; config-plugin defaults still apply natively.
   }
@@ -374,6 +360,7 @@ export default function RootLayout() {
                   <ReactQueryFocusSync />
                   <StoreStatusRealtimeSync />
                   <PreventServicesRealtimeSync />
+                  <RiderOnlineCheckRealtimeSync />
                   <OrderRealtimeSync />
                   <SessionRevokedHandler />
                   <CustomerPermissionsRealtimeSync />
@@ -469,6 +456,12 @@ function ReactQueryFocusSync() {
 /** Emergency service blocks (Geo & coverage → Prevent Services) land within ~1s. */
 function PreventServicesRealtimeSync() {
   usePreventServicesRealtime();
+  return null;
+}
+
+/** Super Admin rider-online checkout gate — applies without app reload. */
+function RiderOnlineCheckRealtimeSync() {
+  useRiderOnlineCheckRealtime();
   return null;
 }
 
@@ -773,19 +766,6 @@ function StatusBarSystemUISync({ splashChromeActive }: { splashChromeActive: boo
     if (Platform.OS !== "android") return;
     // Keep the system StatusBar visible whenever chrome syncs (modals / nav can flip it).
     NativeStatusBar.setHidden(false, "none");
-    if (splashChromeActive) {
-      void import("expo-system-ui")
-        .then((SystemUI) => SystemUI.setBackgroundColorAsync(SPLASH_CHROME_COLOR))
-        .catch(() => {});
-      return;
-    }
-    // Transparent immersive still needs a LIGHT window root so dark status icons stay visible.
-    // Never leave a dark SystemUI root behind translucent status chrome.
-    const rootColor =
-      statusBarBackground === "transparent" ? "#FFFFFF" : statusBarBackground;
-    void import("expo-system-ui")
-      .then((SystemUI) => SystemUI.setBackgroundColorAsync(rootColor))
-      .catch(() => {});
   }, [statusBarBackground, splashChromeActive]);
 
   return null;

@@ -93,6 +93,15 @@ export const APP_STATIC_ASSET_SEEDS: AppStaticAssetSeed[] = [
 
   // ── Customer: Store ──
   { id: "customer.store.footer_promo", app: "customer", section: "Store", label: "Store footer promo", description: "Merchant store footer section", sortOrder: 10 },
+  {
+    id: "customer.store.long_distance_sheet",
+    app: "customer",
+    section: "Store",
+    label: "Long distance bottom sheet image",
+    description:
+      "Shown when a store is farther than the membership free-delivery distance. Extra distance charges may apply.",
+    sortOrder: 20,
+  },
 
   // ── Customer: Shop demo ──
   ...Array.from({ length: 12 }, (_, i) => ({

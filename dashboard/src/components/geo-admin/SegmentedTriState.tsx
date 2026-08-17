@@ -17,9 +17,9 @@ export const SegmentedTriState = React.memo(function SegmentedTriState(props: {
       disabled={props.disabled}
       onClick={() => props.onChange(v)}
       className={cn(
-        "relative z-10 min-w-0 flex-1 whitespace-nowrap rounded-[0.375rem] px-2 py-1.5 text-[11px] font-semibold transition-all duration-150 sm:text-xs",
+        "relative z-10 min-w-0 flex-1 whitespace-nowrap rounded-md px-2 py-1 text-[11px] font-semibold transition-all duration-150",
         props.value === v
-          ? "bg-white text-slate-900 shadow-sm ring-1 ring-slate-200/80"
+          ? "bg-white text-slate-900 shadow-sm ring-1 ring-teal-200"
           : "text-slate-500 hover:text-slate-800"
       )}
     >
@@ -28,13 +28,13 @@ export const SegmentedTriState = React.memo(function SegmentedTriState(props: {
   );
 
   return (
-    <div className="flex w-full min-w-0 flex-col items-center gap-1.5">
-      <span className="w-full text-center text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+    <div className="flex min-w-0 items-center gap-2">
+      <span className="shrink-0 text-[10px] font-semibold uppercase tracking-wide text-slate-500">
         {props.label}
       </span>
       <div
         className={cn(
-          "mx-auto flex w-full max-w-[11.5rem] rounded-lg bg-slate-100 p-0.5 ring-1 ring-slate-200/90 lg:mx-0 lg:max-w-none",
+          "flex w-[9.5rem] shrink-0 rounded-lg bg-white/80 p-0.5 ring-1 ring-slate-200/90",
           props.disabled && "pointer-events-none opacity-50"
         )}
         role="group"

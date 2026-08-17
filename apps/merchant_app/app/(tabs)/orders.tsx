@@ -703,6 +703,18 @@ export function OrdersListScreen({ mode }: { mode: OrdersListMode }) {
     [router, pathname, setReturnRoute]
   );
 
+  const handleOpenReview = useCallback(
+    (order: OrderRecord) => {
+      if (order.status !== "delivered" || !order.storeRating) return;
+      const id = String(order.id ?? "").trim();
+      if (!id || id.startsWith("core-")) return;
+      const returnTo =
+        filterKey === "completed" ? "/(tabs)/orders?tab=completed" : pathname;
+      navPush(`/order-review/${id}`, returnTo);
+    },
+    [filterKey, navPush, pathname]
+  );
+
   const handleNeedMoreTime = useCallback((order: OrderRecord) => {
     setPrepDelayOrder(order);
   }, []);
@@ -760,6 +772,7 @@ export function OrdersListScreen({ mode }: { mode: OrdersListMode }) {
             rejectedReason={item.rejectedReason}
             storeName={orderStoreName}
             onPress={() => handleViewDetail(item)}
+            onReviewPress={() => handleOpenReview(item)}
           />
         );
       }
@@ -769,6 +782,7 @@ export function OrdersListScreen({ mode }: { mode: OrdersListMode }) {
           rejectedReason={item.rejectedReason}
           storeName={orderStoreName}
           onPress={() => handleViewDetail(item)}
+          onReviewPress={() => handleOpenReview(item)}
         />
       );
     }
@@ -782,6 +796,7 @@ export function OrdersListScreen({ mode }: { mode: OrdersListMode }) {
         onAdvance={() => handleAdvance(item)}
         onNeedMoreTime={() => handleNeedMoreTime(item)}
         onViewDetail={() => handleViewDetail(item)}
+        onReviewPress={() => handleOpenReview(item)}
       />
     );
   };

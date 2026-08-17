@@ -137,7 +137,7 @@ export async function listFoodItemsUnderPrice(params: {
     lng: params.lng,
     limit: 40,
     veg_mode: params.vegOnly,
-    distanceMode: "air",
+    distanceMode: "road",
   });
   const storeIds = stores.map((s) => Number(s.id)).filter((id) => Number.isFinite(id) && id > 0);
   if (storeIds.length === 0) return [];
@@ -207,7 +207,7 @@ export async function listFoodItemsUnderPriceGrouped(params: {
     lng: params.lng,
     limit: 40,
     veg_mode: params.vegOnly,
-    distanceMode: "air",
+    distanceMode: "road",
   });
   const storeIds = stores
     .map((s) => Number((s as { id: number }).id))

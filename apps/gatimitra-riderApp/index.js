@@ -3,4 +3,5 @@
  */
 require("./lib/installGlobalTypography").installGlobalTypography();
 require("./src/services/location/riderBackgroundLocationTask");
+require("./pushBackgroundTask");
 require("expo-router/entry");

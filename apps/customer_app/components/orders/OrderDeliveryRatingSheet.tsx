@@ -13,12 +13,14 @@ import {
   Alert,
   Modal,
   Pressable,
+  Platform,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { LinearGradient } from "expo-linear-gradient";
 import { StoreBottomSheetShell } from "@/components/store/StoreBottomSheetShell";
 import { RazorpayCheckoutModal, type RazorpayPaymentResult } from "@/components/RazorpayCheckoutModal";
+import { AppAlertModal } from "@/components/AppAlertModal";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import {
   RESTAURANT_RATING_TAGS,
@@ -156,6 +158,9 @@ export function OrderDeliveryRatingSheet({
     orderId: string;
     amount: number;
   } | null>(null);
+  const [thankYouAlert, setThankYouAlert] = useState<{ title: string; message: string } | null>(
+    null
+  );
 
   const paidTip = Math.max(existingTipAmount, localTipPaid);
   const canOfferTip = paidTip <= 0;
@@ -225,10 +230,10 @@ export function OrderDeliveryRatingSheet({
         setSimulatedPayment(null);
         setLocalTipPaid(tipAmount);
         onTipPaid?.(tipAmount);
-        Alert.alert(
-          "Thank you!",
-          `₹${tipAmount} tip has been sent to ${partnerLabel.split(" ")[0] ?? "your delivery partner"}.`
-        );
+        setThankYouAlert({
+          title: "Thank you!",
+          message: `₹${tipAmount} tip has been sent to ${partnerLabel.split(" ")[0] ?? "your delivery partner"}.`,
+        });
       } catch (e) {
         const msg =
           (e as { response?: { data?: { message?: string } } })?.response?.data?.message ??
@@ -346,13 +351,15 @@ export function OrderDeliveryRatingSheet({
             <AppText style={styles.reviewLabel}>Review restaurant (optional)</AppText>
             <TextInput
               style={styles.reviewInput}
-              placeholder="Food quality, packaging, taste…"
+              placeholder={reviewText.length > 0 ? undefined : "Food quality, packaging, taste…"}
               placeholderTextColor={MUTED}
               value={reviewText}
               onChangeText={setReviewText}
               multiline
               maxLength={500}
               textAlignVertical="top"
+              underlineColorAndroid="transparent"
+              {...(Platform.OS === "android" ? { includeFontPadding: false } : null)}
             />
           </View>
 
@@ -378,13 +385,17 @@ export function OrderDeliveryRatingSheet({
             <AppText style={styles.reviewLabel}>Review delivery (optional)</AppText>
             <TextInput
               style={styles.reviewInput}
-              placeholder="Delivery speed, rider behaviour, handling…"
+              placeholder={
+                riderReviewText.length > 0 ? undefined : "Delivery speed, rider behaviour, handling…"
+              }
               placeholderTextColor={MUTED}
               value={riderReviewText}
               onChangeText={setRiderReviewText}
               multiline
               maxLength={500}
               textAlignVertical="top"
+              underlineColorAndroid="transparent"
+              {...(Platform.OS === "android" ? { includeFontPadding: false } : null)}
             />
 
             {canOfferTip ? (
@@ -537,6 +548,15 @@ export function OrderDeliveryRatingSheet({
           </TouchableOpacity>
         </View>
       </Modal>
+
+      <AppAlertModal
+        visible={thankYouAlert != null}
+        title={thankYouAlert?.title ?? "Thank you!"}
+        message={thankYouAlert?.message ?? ""}
+        confirmLabel="OK"
+        variant="success"
+        onClose={() => setThankYouAlert(null)}
+      />
     </>
   );
 }
@@ -618,14 +638,16 @@ const styles = StyleSheet.create({
   tagChipTextActive: { color: GatiMitraColors.warmOrange },
   reviewLabel: { fontSize: 12, fontWeight: "600", color: MUTED, marginBottom: 6, marginTop: 2 },
   reviewInput: {
-    minHeight: 64,
-    maxHeight: 96,
+    minHeight: 72,
+    maxHeight: 110,
     borderWidth: 1,
     borderColor: "#EBEBEB",
     borderRadius: 10,
     paddingHorizontal: 12,
-    paddingVertical: 10,
+    paddingTop: Platform.OS === "android" ? 12 : 10,
+    paddingBottom: 10,
     fontSize: 14,
+    lineHeight: 20,
     color: TEXT,
     backgroundColor: "#FAFAFA",
   },

@@ -6,6 +6,8 @@ import {
   checkSessionValidity,
   updateActivity,
   initializeSession,
+  expireSession,
+  isMeaningfulActivityRequest,
 } from "@/lib/auth/session-manager";
 import {
   isRefreshTokenAlreadyUsed,
@@ -13,6 +15,10 @@ import {
   isTimeoutOrAbortError,
 } from "@/lib/auth/session-errors";
 import { fetchWithTimeout } from "@/lib/supabase/fetch-timeout";
+import {
+  isCookieAccessTokenUsable,
+  readCookieAccessSession,
+} from "@/lib/auth/read-cookie-access-session";
 
 /** Normalize cookie options so `sameSite` matches Next.js ResponseCookie (not plain string). */
 function setSafeResponseCookie(
@@ -261,7 +267,16 @@ export async function proxy(request: NextRequest) {
       if (!isApiRoute) {
         const probe = await probeAuthUserForPageNavigation(supabase);
         if (!probe.user && isDeadRefreshError(probe.error)) {
-          return deadSessionRedirect(request, normalizedRedirectPath, pathname);
+          // Soft-pass when the access JWT cookie is still usable. Hard-clearing
+          // sb-* on refresh races was wiping the shared session for other tabs
+          // (dashboard still open → cascade of 401s after /order → /login).
+          const cookieSession = readCookieAccessSession({
+            get: (name) => request.cookies.get(name),
+            getAll: () => request.cookies.getAll(),
+          });
+          if (!isCookieAccessTokenUsable(cookieSession)) {
+            return deadSessionRedirect(request, normalizedRedirectPath, pathname);
+          }
         }
       }
 
@@ -288,12 +303,19 @@ export async function proxy(request: NextRequest) {
       const metadata = getSessionMetadata(cookieWrapper);
       const validity = checkSessionValidity(metadata);
 
-      if (!metadata || !validity.isValid) {
-        if (debugProxy) {
-          console.log("[proxy] Partner session metadata stale — re-init:", validity.reason);
-        }
+      // Missing partner cookies (first login after deploy / legacy): create once.
+      // Expired idle/rolling/absolute: force re-login — never re-init.
+      if (!metadata || validity.reason === "no_session") {
         initializeSession(cookieManager);
-      } else {
+      } else if (!validity.isValid) {
+        if (debugProxy) {
+          console.log("[proxy] Unified session expired:", validity.reason);
+        }
+        expireSession(cookieManager);
+        return deadSessionRedirect(request, normalizedRedirectPath, pathname);
+      } else if (
+        isMeaningfulActivityRequest(pathname, request.method, request.nextUrl.search)
+      ) {
         updateActivity(cookieManager);
       }
 
@@ -414,8 +436,16 @@ export async function proxy(request: NextRequest) {
     }
 
     if (session && pathname === "/login") {
-      if (debugProxy) console.log("[proxy] Session exists, redirecting from login to dashboard");
-      return NextResponse.redirect(new URL("/dashboard", request.url), 303);
+      if (debugProxy) console.log("[proxy] Session exists, redirecting from login to requested path");
+      const redirectParam = request.nextUrl.searchParams.get("redirect");
+      const safeRedirect =
+        redirectParam?.startsWith("/") &&
+        !redirectParam.startsWith("//") &&
+        !redirectParam.startsWith("/login") &&
+        !redirectParam.startsWith("/auth")
+          ? redirectParam
+          : "/dashboard";
+      return NextResponse.redirect(new URL(safeRedirect, request.url), 303);
     }
 
     if (session && pathname === "/") {
@@ -463,14 +493,19 @@ export async function proxy(request: NextRequest) {
         },
       };
 
-      if (!validity.isValid) {
-        if (debugProxy) {
-          console.log("[proxy] Partner session metadata stale — re-init:", validity.reason);
-        }
+      if (!metadata || validity.reason === "no_session") {
         initializeSession(cookieManager);
+      } else if (!validity.isValid) {
+        if (debugProxy) {
+          console.log("[proxy] Unified session expired:", validity.reason);
+        }
+        expireSession(cookieManager);
+        return deadSessionRedirect(request, normalizedRedirectPath, pathname);
+      } else if (
+        isMeaningfulActivityRequest(pathname, request.method, request.nextUrl.search)
+      ) {
+        updateActivity(cookieManager);
       }
-
-      updateActivity(cookieManager);
 
       const shouldTrack =
         pathname !== "/api/audit/track" &&

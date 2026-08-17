@@ -8,6 +8,9 @@
  *                + unicode progress bar (prep / ready / OFD)
  *
  * Shared by LiveOrdersOngoingNotification (poll) and push/lifecycle handlers.
+ *
+ * Crash hardening: never schedule/dismiss in a tight loop. Gate flips only
+ * dismiss on true→false; writers no-op when gated off (no nested dismiss).
  */
 
 import { Platform } from "react-native";
@@ -25,6 +28,28 @@ export const LIVE_ORDERS_CHANNEL_ID = "merchant_live_orders";
 export const LIVE_ORDERS_HREF = "/(tabs)/orders?tab=active";
 
 const BAR_LEN = 12;
+
+/** When false, sticky must not be shown (store closed / logged out). */
+let kitchenStickyAllowed = false;
+/** Serialize native schedule/dismiss so they cannot overlap and crash the process. */
+let nativeBusy = false;
+let pendingDismiss = false;
+
+/**
+ * Gate for all kitchen sticky writers (poll, push, order transitions).
+ * Dismisses only when transitioning from allowed → blocked.
+ */
+export function setKitchenStickyAllowed(allowed: boolean): void {
+  const was = kitchenStickyAllowed;
+  kitchenStickyAllowed = allowed;
+  if (was && !allowed) {
+    void dismissLiveOrdersOngoingNotification();
+  }
+}
+
+export function isKitchenStickyAllowed(): boolean {
+  return kitchenStickyAllowed;
+}
 
 function isExpoGo(): boolean {
   return Constants.appOwnership === "expo";
@@ -57,14 +82,27 @@ async function ensureChannel(
   }
 }
 
+/**
+ * Text progress for shade notifications (no View / CSS).
+ * Rounded unicode instead of sharp █/▓/░ blocks (≈ 30px-radius pill look).
+ * Segments: preparing · ready · out-for-delivery.
+ */
 function progressBar(prep: number, ready: number, ofd: number): string {
   const total = prep + ready + ofd;
   if (total <= 0) return "";
   const prepSeg = Math.round((prep / total) * BAR_LEN);
   const readySeg = Math.round((ready / total) * BAR_LEN);
   const ofdSeg = Math.max(0, BAR_LEN - prepSeg - readySeg);
-  // ▓ prep · █ ready · ░ ofd / empty
-  return `${"▓".repeat(prepSeg)}${"█".repeat(readySeg)}${"░".repeat(ofdSeg)}`;
+  const chars = [
+    ..."◕".repeat(prepSeg),
+    ..."●".repeat(readySeg),
+    ..."○".repeat(ofdSeg),
+  ];
+  if (chars.length === 0) return "";
+  if (chars.length === 1) return "●";
+  chars[0] = "◖";
+  chars[chars.length - 1] = "◗";
+  return chars.join("");
 }
 
 export function formatKitchenStickyBody(
@@ -102,12 +140,25 @@ export function formatKitchenStickyTitle(storeName: string): string {
 export async function dismissLiveOrdersOngoingNotification(): Promise<void> {
   if (Platform.OS !== "android" || isExpoGo()) return;
   lastSignature = null;
+  if (nativeBusy) {
+    pendingDismiss = true;
+    return;
+  }
+  nativeBusy = true;
   try {
     const Notifications = await loadNotifications();
     await Notifications.dismissNotificationAsync(LIVE_ORDERS_ONGOING_ID);
     await Notifications.dismissNotificationAsync(LEGACY_ONLINE_NOTIF_ID);
   } catch {
     /* best-effort */
+  } finally {
+    nativeBusy = false;
+    if (pendingDismiss) {
+      pendingDismiss = false;
+      if (!kitchenStickyAllowed) {
+        void dismissLiveOrdersOngoingNotification();
+      }
+    }
   }
 }
 
@@ -123,6 +174,9 @@ export async function showOrUpdateKitchenSticky(
   opts: KitchenStickyOpts
 ): Promise<void> {
   if (Platform.OS !== "android" || isExpoGo()) return;
+  // Soft gate — do not dismiss here (avoids schedule/dismiss thrash → native crash).
+  if (!kitchenStickyAllowed) return;
+  if (nativeBusy) return;
 
   const title = formatKitchenStickyTitle(opts.storeName);
   const body = formatKitchenStickyBody(opts.breakdown, {
@@ -131,10 +185,11 @@ export async function showOrUpdateKitchenSticky(
   const signature = `${title}|${body}|${opts.breakdown.active_orders}`;
   if (!opts.force && signature === lastSignature) return;
 
+  nativeBusy = true;
   try {
+    if (!kitchenStickyAllowed) return;
     const Notifications = await loadNotifications();
     await ensureChannel(Notifications);
-    // Collapse legacy separate “waiting” sticky into this one row.
     try {
       await Notifications.dismissNotificationAsync(LEGACY_ONLINE_NOTIF_ID);
     } catch {
@@ -166,6 +221,12 @@ export async function showOrUpdateKitchenSticky(
     lastSignature = signature;
   } catch {
     /* best-effort */
+  } finally {
+    nativeBusy = false;
+    if (pendingDismiss || !kitchenStickyAllowed) {
+      pendingDismiss = false;
+      void dismissLiveOrdersOngoingNotification();
+    }
   }
 }
 
@@ -199,10 +260,12 @@ export async function refreshLiveOrdersOngoingNotification(args: {
   force?: boolean;
 }): Promise<void> {
   if (Platform.OS !== "android" || isExpoGo()) return;
-  if (inFlight) return;
+  if (!kitchenStickyAllowed) return;
+  if (inFlight || nativeBusy) return;
   inFlight = true;
   try {
     const breakdown = await getActiveOrdersBreakdown(args.storeId, args.token);
+    if (!kitchenStickyAllowed) return;
     await showOrUpdateKitchenSticky({
       storeName: args.storeName?.trim() || "Your restaurant",
       breakdown,
@@ -228,6 +291,7 @@ export async function applyLiveOrdersCountFromPush(args: {
   outForDelivery?: number | null;
   pendingAccept?: number | null;
 }): Promise<void> {
+  if (!kitchenStickyAllowed) return;
   const active = Math.max(0, Math.floor(Number(args.activeOrdersCount) || 0));
   const preparing = Math.max(0, Math.floor(Number(args.preparing ?? 0) || 0));
   const ready = Math.max(0, Math.floor(Number(args.ready ?? 0) || 0));
@@ -257,4 +321,8 @@ export async function applyLiveOrdersCountFromPush(args: {
 export function resetLiveOrdersOngoingCache(): void {
   lastSignature = null;
   channelReady = false;
+  kitchenStickyAllowed = false;
+  inFlight = false;
+  nativeBusy = false;
+  pendingDismiss = false;
 }

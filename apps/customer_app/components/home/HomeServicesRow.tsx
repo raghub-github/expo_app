@@ -249,11 +249,12 @@ const styles = StyleSheet.create({
     paddingTop: 9,
     paddingBottom: 8,
     paddingHorizontal: 9,
-    shadowColor: "#0f172a",
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.05,
-    shadowRadius: 5,
-    elevation: 2,
+    // Match offer + brand banners: no elevation (white cards show even light shadows heavily).
+    shadowColor: "transparent",
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0,
+    shadowRadius: 0,
+    elevation: 0,
     overflow: "hidden",
   },
   disabledWash: {

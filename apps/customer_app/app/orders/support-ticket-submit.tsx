@@ -18,6 +18,7 @@ import {
   isOrderSupportTicketWindowOpen,
   resolveOrderSupportAnchorAt,
 } from "@/lib/order-support-ticket-window";
+import { resolveTopSafeInset } from "@/constants/layout";
 
 const PAGE_BG = "#F5F5F5";
 const CARD = "#FFFFFF";
@@ -85,11 +86,17 @@ export default function SupportTicketSubmitScreen() {
       }
 
       const subject = `${isRideOrder ? "Ride" : "Order"} #${displayOrderId} — ${optionLabel}`;
+      // Never persist the catalog issue title as the ticket description body.
+      const description =
+        payload.description.trim() === optionLabel.trim() ? "" : payload.description.trim();
+      if (description.length < 10) {
+        throw new Error("Please describe what happened in a few more words.");
+      }
       return customerSupportService.createTicketWithPhotos({
         ticket_title_id: ticketTitleId,
         section_code: sectionCode,
         subject,
-        description: payload.description,
+        description,
         order_id: coreOrderId,
         display_order_id: displayOrderId || null,
         selected_issue_label: optionLabel,
@@ -111,6 +118,7 @@ export default function SupportTicketSubmitScreen() {
             ? { chatSessionId: String(chatSessionId) }
             : {}),
           ...(ticket.ticket_id ? { ticketDisplayId: ticket.ticket_id } : {}),
+          ...(ticket.id ? { ticketId: String(ticket.id) } : {}),
         },
       });
     },
@@ -136,12 +144,12 @@ export default function SupportTicketSubmitScreen() {
       <AndroidBackHandler />
       <StatusBar style="dark" backgroundColor="#FFFFFF" />
       <View style={styles.screen}>
-        <View style={[styles.header, { paddingTop: Math.max(insets.top - 8, 0) }]}>
+        <View style={[styles.header, { paddingTop: resolveTopSafeInset(insets.top) + 6 }]}>
           <TouchableOpacity onPress={handleBack} style={styles.headerSide} hitSlop={12}>
             <Ionicons name="arrow-back" size={22} color={TEXT} />
           </TouchableOpacity>
           <View style={styles.headerCenter}>
-            <AppText style={styles.headerTitle}>Submit ticket</AppText>
+            <AppText style={styles.headerTitle}>Share details</AppText>
             {displayOrderId ? (
               <AppText style={styles.headerSubtitle}>
                 {isRideOrder ? "Ride" : "Order"} #{displayOrderId}
@@ -165,7 +173,7 @@ export default function SupportTicketSubmitScreen() {
             <AppText style={styles.lead}>Please share a few more details so we can help.</AppText>
             <CustomerSupportTicketIntakeForm
               issueTitle={optionLabel}
-              initialDescription={optionLabel}
+              initialDescription=""
               submitting={submitMutation.isPending}
               onSubmit={(payload) => submitMutation.mutate(payload)}
             />

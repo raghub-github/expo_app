@@ -556,19 +556,25 @@ function ItemForm(props: ItemFormProps) {
 
   const fileInputRef = React.useRef<HTMLInputElement>(null);
 
-  // Auto-calculate selling price from base discount (tax comes from agreement later, not shown here)
+  // Keep selling_price in sync when merchant edits base on legacy paths.
+  // Merchant UI now edits Selling price only; on add, base mirrors selling.
+  // Do not overwrite selling from base while editing an existing item (price is frozen).
   useEffect(() => {
-    const base = parseFloat(formData.base_price) || 0;
-    const discount = parseFloat(formData.discount_percentage) || 0;
-    if (base > 0) {
-      const selling = base - (base * discount / 100);
-      if (!isNaN(selling)) {
-        setFormData((prev: any) => ({ ...prev, selling_price: selling.toFixed(2) }));
-      }
-    } else {
-      setFormData((prev: any) => ({ ...prev, selling_price: '' }));
+    if (isEdit || readOnly) return;
+    const sell = parseFloat(formData.selling_price) || 0;
+    if (sell > 0) {
+      setFormData((prev: any) => {
+        if (String(prev.base_price) === sell.toFixed(2) && String(prev.discount_percentage || '0') === '0') {
+          return prev;
+        }
+        return {
+          ...prev,
+          base_price: sell.toFixed(2),
+          discount_percentage: prev.discount_percentage === '' || prev.discount_percentage == null ? '0' : prev.discount_percentage,
+        };
+      });
     }
-  }, [formData.base_price, formData.discount_percentage, setFormData]);
+  }, [formData.selling_price, isEdit, readOnly, setFormData]);
 
   const [activeSection, setActiveSection] = useState<'main' | 'customization'>('main');
   const [showFoodDropdown, setShowFoodDropdown] = useState(false);
@@ -1189,22 +1195,55 @@ function ItemForm(props: ItemFormProps) {
                 <input type="text" readOnly={readOnly} placeholder="e.g. Nuts, Dairy" className={`w-full px-2.5 py-1.5 border rounded text-sm ${readOnly ? 'bg-gray-50 border-gray-200' : 'border-gray-200'}`} value={formData.allergens || ''} onChange={e => !readOnly && setFormData({ ...formData, allergens: e.target.value })} />
               </div>
             </div>
-            {/* Pricing row: base, selling, discount% */}
-            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-              <div>
-                <label className="text-xs font-medium text-gray-600">Base price (₹) *</label>
-                <input type="number" min="0" step="0.01" readOnly={readOnly} className={`w-full px-2.5 py-1.5 border rounded text-sm ${readOnly ? 'bg-gray-50' : ''} ${isBasePriceInvalid ? 'border-red-300' : 'border-gray-200'}`} value={formData.base_price} onChange={e => !readOnly && setFormData({ ...formData, base_price: e.target.value })} required />
-                {isBasePriceInvalid && <span className="text-xs text-red-500">&gt; 0</span>}
-              </div>
-              <div>
-                <label className="text-xs font-medium text-gray-600">Selling (₹) *</label>
-                <input type="number" min="0" step="0.01" readOnly className={`w-full px-2.5 py-1.5 border rounded text-sm bg-gray-50 ${isSellingPriceInvalid ? 'border-red-300' : 'border-gray-200'}`} value={formData.selling_price} required />
+            {/* Pricing: merchant sees Selling price only (frozen on edit). */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              <div className={isEdit || readOnly ? 'sm:col-span-2' : ''}>
+                <label className="text-xs font-medium text-gray-600">Selling price (₹) *</label>
+                <input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  readOnly={isEdit || readOnly}
+                  className={`w-full px-2.5 py-1.5 border rounded text-sm ${
+                    isEdit || readOnly ? 'bg-gray-50 text-gray-800 cursor-default' : ''
+                  } ${isSellingPriceInvalid ? 'border-red-300' : 'border-gray-200'}`}
+                  value={formData.selling_price}
+                  onChange={(e) => {
+                    if (isEdit || readOnly) return;
+                    const v = e.target.value;
+                    setFormData({
+                      ...formData,
+                      selling_price: v,
+                      base_price: v,
+                      discount_percentage:
+                        formData.discount_percentage === '' || formData.discount_percentage == null
+                          ? '0'
+                          : formData.discount_percentage,
+                    });
+                  }}
+                  required
+                />
                 {isSellingPriceInvalid && <span className="text-xs text-red-500">&gt; 0</span>}
+                {(isEdit || readOnly) && (
+                  <p className="text-[10px] text-gray-500 mt-0.5">
+                    Locked — price changes are managed by GatiMitra.
+                  </p>
+                )}
               </div>
-              <div>
-                <label className="text-xs font-medium text-gray-600">Discount %</label>
-                <input type="number" min="0" max="100" step="0.01" readOnly={readOnly} className={`w-full px-2.5 py-1.5 border rounded text-sm ${readOnly ? 'bg-gray-50' : ''} ${isOfferPercentInvalid ? 'border-red-300' : 'border-gray-200'}`} value={formData.discount_percentage} onChange={e => !readOnly && setFormData({ ...formData, discount_percentage: e.target.value })} />
-              </div>
+              {!(isEdit || readOnly) && (
+                <div>
+                  <label className="text-xs font-medium text-gray-600">Discount %</label>
+                  <input
+                    type="number"
+                    min="0"
+                    max="100"
+                    step="0.01"
+                    className={`w-full px-2.5 py-1.5 border rounded text-sm ${isOfferPercentInvalid ? 'border-red-300' : 'border-gray-200'}`}
+                    value={formData.discount_percentage}
+                    onChange={(e) => setFormData({ ...formData, discount_percentage: e.target.value })}
+                  />
+                </div>
+              )}
             </div>
             {/* Stock & prep */}
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
@@ -1632,7 +1671,7 @@ function ItemForm(props: ItemFormProps) {
             <button
               type="submit"
               className="px-4 py-1.5 rounded-lg text-sm font-bold text-white bg-orange-500 hover:bg-orange-600 disabled:opacity-60 flex items-center gap-2"
-              disabled={isSaving || !!imageValidationError || isOfferPercentInvalid || isBasePriceInvalid || isSellingPriceInvalid || !formData.base_price || !formData.discount_percentage || !formData.selling_price}
+              disabled={isSaving || !!imageValidationError || isOfferPercentInvalid || isSellingPriceInvalid || !formData.selling_price || (!(isEdit || readOnly) && !formData.base_price)}
             >
               {isSaving && <span className="inline-block w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />}
               {isSaving ? 'Saving...' : (onSaveAndNext ? 'Save and Next' : (isEdit ? 'Save' : 'Add Item'))}
@@ -3154,7 +3193,7 @@ function MenuContent() {
       spice_level: normalizeSpiceLevelForForm(item.spice_level) || '',
       cuisine_type: item.cuisine_type || '',
       base_price: basePriceStr,
-      selling_price: sellingPriceStr,
+      selling_price: sellingPriceStr || basePriceStr,
       discount_percentage: item.discount_percentage?.toString() ?? '0',
       tax_percentage: item.tax_percentage?.toString() ?? '0',
       in_stock: item.in_stock ?? true,

@@ -28,6 +28,8 @@ export function prefetchFeaturedOfferHeroImages(offers: HomeBannerOffer[] | unde
   if (!offers?.length) return;
   for (const offer of offers) {
     if (offer.kind !== "merchant") continue;
+    for (const u of offer.item_image_urls ?? []) prefetchFoodHomeImageUri(u);
+    prefetchFoodHomeImageUri(offer.item_image_url);
     prefetchFoodHomeImageUri(offer.offer_image_url);
   }
 }

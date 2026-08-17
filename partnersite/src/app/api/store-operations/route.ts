@@ -37,6 +37,7 @@ import { resetPartnerNotificationsPanelCleared } from '@/lib/partner-notificatio
 import { syncOperationalStatusFromSchedule, type AvailabilityRow } from '@/lib/storeScheduleSync';
 import { triggerStoreScheduleTick } from '@/lib/triggerStoreScheduleTick';
 import { isStoreDelisted } from '@/lib/store-delist';
+import { WAITING_FOR_ORDER_TITLE } from '@/lib/partner-notification-constants';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
@@ -1201,9 +1202,10 @@ export async function POST(req: NextRequest) {
             ? String(avail.close_reason).trim()
             : null;
 
-      const closeReasonText = mergedManualCloseUntil
-        ? mergedCloseReason || 'Temporarily closed'
-        : 'Closed until manually reopened';
+      // Prefer the merchant-chosen reason; only fall back to a generic label when none was provided.
+      const closeReasonText =
+        mergedCloseReason ||
+        (mergedManualCloseUntil ? 'Temporarily closed' : 'Closed until manually reopened');
       const unavailReason = mergedManualCloseUntil ? 'manual_close' : 'manual_indefinite';
       const logRestrictionBefore = (avail?.restriction_type as string | null) ?? null;
       const lastCloseToggledAt = nowIso;
@@ -1248,6 +1250,16 @@ export async function POST(req: NextRequest) {
       }
 
       await insertStatusLog('manual_close', logRestrictionBefore, mergedCloseReason);
+
+      // Clear idle "waiting for orders" inbox so it cannot linger while closed.
+      const { error: waitingDelErr } = await db
+        .from('merchant_store_notifications')
+        .delete()
+        .eq('store_id', storeInternalId)
+        .eq('title', WAITING_FOR_ORDER_TITLE);
+      if (waitingDelErr) {
+        console.error('[store-operations POST] waiting-for-order delete failed', waitingDelErr);
+      }
 
       const displayRestriction = deriveDisplayRestrictionType({
         restriction_type: 'manual',

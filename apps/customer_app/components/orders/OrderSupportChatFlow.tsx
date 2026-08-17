@@ -10,6 +10,7 @@ import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { useQuery } from "@tanstack/react-query";
+import { resolveTopSafeInset } from "@/constants/layout";
 import {
   buildEmailFallbackMessage,
   buildChatResumeMessages,
@@ -57,6 +58,8 @@ type Props = {
   isRideOrder: boolean;
   ticketWindowOpen: boolean;
   pendingTicketDisplayId?: string | null;
+  /** Numeric unified_tickets.id for opening the live ticket thread. */
+  pendingTicketId?: string | null;
   onEndChat: () => void;
   onSwitchOrder: (order: RecentOrder) => void;
 };
@@ -188,6 +191,7 @@ export function OrderSupportChatFlow({
   isRideOrder,
   ticketWindowOpen,
   pendingTicketDisplayId,
+  pendingTicketId,
   onEndChat,
   onSwitchOrder,
 }: Props) {
@@ -200,6 +204,13 @@ export function OrderSupportChatFlow({
     buildInitialChatMessages({ firstName, merchantName, chatTopics: [] })
   );
   const [orderOffset, setOrderOffset] = useState(0);
+  const [trackedTicketId, setTrackedTicketId] = useState<number | null>(() => {
+    const n = Number(pendingTicketId);
+    return Number.isFinite(n) && n > 0 ? n : null;
+  });
+  const [trackedTicketDisplayId, setTrackedTicketDisplayId] = useState<string | null>(
+    () => pendingTicketDisplayId?.trim() || null
+  );
 
   const chatSessionQ = useQuery({
     queryKey: ["support-chat-session", linkedCoreOrderId, firstName, merchantName],
@@ -224,21 +235,53 @@ export function OrderSupportChatFlow({
     if (!data) return;
     setChatSessionId(data.session.id);
 
+    const sessionTicketId =
+      data.session.ticket_id != null && Number(data.session.ticket_id) > 0
+        ? Number(data.session.ticket_id)
+        : null;
+    if (sessionTicketId != null) setTrackedTicketId(sessionTicketId);
+
     if (data.messages.length > 0) {
       const loaded = data.messages.map(supportChatMessageFromRow);
+      // Collapse consecutive duplicate user bubbles (same issue title re-tapped / re-saved).
+      const deduped: SupportChatMessage[] = [];
+      for (const message of loaded) {
+        const prev = deduped[deduped.length - 1];
+        if (
+          message.role === "user" &&
+          prev?.role === "user" &&
+          prev.text.trim() === message.text.trim()
+        ) {
+          continue;
+        }
+        deduped.push(message);
+      }
       const ticketFromPayload = data.messages
         .map((row) => row.payload?.ticket_id)
         .find((value): value is string => typeof value === "string" && value.trim().length > 0)
         ?.trim();
+      const ticketNumericFromPayload = data.messages
+        .map((row) => row.payload?.ticket_numeric_id)
+        .map((value) => (value != null ? Number(value) : NaN))
+        .find((value) => Number.isFinite(value) && value > 0);
+      if (ticketNumericFromPayload != null) setTrackedTicketId(ticketNumericFromPayload);
+
       const ticketDisplayId =
         typeof data.session.metadata?.ticket_display_id === "string"
           ? data.session.metadata.ticket_display_id.trim()
           : ticketFromPayload ?? "";
-      const hasTicketIdMessage = loaded.some((message) => /ticket ID is/i.test(message.text));
-      if (ticketDisplayId && !hasTicketIdMessage) {
-        loaded.push(buildTicketSubmittedMessage(ticketDisplayId));
+      if (ticketDisplayId) setTrackedTicketDisplayId(ticketDisplayId);
+
+      const metaNumeric = Number(data.session.metadata?.ticket_numeric_id);
+      if (Number.isFinite(metaNumeric) && metaNumeric > 0) {
+        setTrackedTicketId(metaNumeric);
       }
-      setMessages(loaded);
+
+      const hasTicketIdMessage = deduped.some((message) => /ticket ID is/i.test(message.text));
+      if (ticketDisplayId && !hasTicketIdMessage) {
+        deduped.push(buildTicketSubmittedMessage(ticketDisplayId));
+      }
+      setMessages(deduped);
       bootstrapRef.current = true;
       return;
     }
@@ -272,12 +315,33 @@ export function OrderSupportChatFlow({
 
   useEffect(() => {
     const ticketDisplayId = pendingTicketDisplayId?.trim();
-    if (!ticketDisplayId) return;
-    setMessages((prev) => {
-      if (prev.some((message) => /ticket ID is/i.test(message.text))) return prev;
-      return [...prev, buildTicketSubmittedMessage(ticketDisplayId)];
-    });
-  }, [pendingTicketDisplayId]);
+    if (ticketDisplayId) {
+      setTrackedTicketDisplayId(ticketDisplayId);
+      setMessages((prev) => {
+        if (prev.some((message) => /ticket ID is/i.test(message.text))) return prev;
+        return [...prev, buildTicketSubmittedMessage(ticketDisplayId)];
+      });
+    }
+    const n = Number(pendingTicketId);
+    if (Number.isFinite(n) && n > 0) setTrackedTicketId(n);
+  }, [pendingTicketDisplayId, pendingTicketId]);
+
+  const openTrackedTicket = useCallback(() => {
+    if (trackedTicketId != null && trackedTicketId > 0) {
+      router.push({ pathname: "/support/[ticketId]", params: { ticketId: String(trackedTicketId) } });
+      return;
+    }
+    Alert.alert(
+      "Ticket pending",
+      trackedTicketDisplayId
+        ? `Your ticket ${trackedTicketDisplayId.startsWith("#") ? trackedTicketDisplayId : `#${trackedTicketDisplayId}`} was created. Open My Support to continue the chat.`
+        : "Your ticket was created. Open My Support to continue the chat."
+    );
+  }, [router, trackedTicketDisplayId, trackedTicketId]);
+
+  const showTrackStatus =
+    (trackedTicketId != null && trackedTicketId > 0) ||
+    Boolean(trackedTicketDisplayId?.trim());
 
   useEffect(() => {
     setMessages((prev) => {
@@ -317,16 +381,29 @@ export function OrderSupportChatFlow({
 
   const appendUser = useCallback(
     (text: string) => {
+      const trimmed = text.trim();
+      if (!trimmed) return;
+      let shouldPersist = false;
       const message: SupportChatMessage = {
-        id: `user-${Date.now()}`,
+        id:
+          chatSessionId != null
+            ? `user-issue-${chatSessionId}-${trimmed.slice(0, 80)}`
+            : `user-${Date.now()}`,
         role: "user",
-        text,
+        text: trimmed,
         sentAt: new Date(),
       };
-      setMessages((prev) => [...prev, message]);
-      persistMessage(message);
+      setMessages((prev) => {
+        const last = prev[prev.length - 1];
+        if (last?.role === "user" && last.text.trim() === trimmed) {
+          return prev;
+        }
+        shouldPersist = true;
+        return [...prev, message];
+      });
+      if (shouldPersist) persistMessage(message);
     },
-    [persistMessage]
+    [chatSessionId, persistMessage]
   );
 
   const appendBot = useCallback(
@@ -518,7 +595,7 @@ export function OrderSupportChatFlow({
 
   return (
     <View style={styles.shell}>
-      <View style={[styles.header, { paddingTop: Math.max(insets.top - 8, 0) }]}>
+      <View style={[styles.header, { paddingTop: resolveTopSafeInset(insets.top) + 6 }]}>
         <TouchableOpacity onPress={onEndChat} style={styles.headerSide} hitSlop={12}>
           <Ionicons name="arrow-back" size={22} color={TEXT} />
         </TouchableOpacity>
@@ -563,7 +640,31 @@ export function OrderSupportChatFlow({
           ) : null}
         </ScrollView>
 
-        {showChatWithUsFooter ? (
+        {showTrackStatus ? (
+          <View
+            style={[
+              styles.trackBar,
+              { paddingBottom: Math.max(insets.bottom + 12, 20) },
+            ]}
+          >
+            <TouchableOpacity
+              style={styles.trackBtn}
+              onPress={openTrackedTicket}
+              activeOpacity={0.9}
+            >
+              <Ionicons name="chatbubbles-outline" size={18} color="#FFFFFF" />
+              <AppText style={styles.trackBtnText}>Track Status</AppText>
+            </TouchableOpacity>
+            {trackedTicketDisplayId ? (
+              <AppText style={styles.trackHint}>
+                Ticket{" "}
+                {trackedTicketDisplayId.startsWith("#")
+                  ? trackedTicketDisplayId
+                  : `#${trackedTicketDisplayId}`}
+              </AppText>
+            ) : null}
+          </View>
+        ) : showChatWithUsFooter ? (
           <View
             style={[
               styles.footerBar,
@@ -724,5 +825,33 @@ const styles = StyleSheet.create({
     color: GREEN,
     fontWeight: "700",
     textDecorationLine: "underline",
+  },
+  trackBar: {
+    paddingHorizontal: 16,
+    paddingTop: 12,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: BORDER,
+    backgroundColor: PAGE_BG,
+    gap: 8,
+  },
+  trackBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    backgroundColor: GREEN,
+    borderRadius: 12,
+    minHeight: 48,
+  },
+  trackBtnText: {
+    color: "#FFFFFF",
+    fontSize: 15,
+    fontWeight: "700",
+  },
+  trackHint: {
+    textAlign: "center",
+    fontSize: 12,
+    color: MUTED,
+    fontWeight: "600",
   },
 });

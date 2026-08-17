@@ -46,7 +46,7 @@ const FULL_MENU: {
   label: string;
   icon: keyof typeof Ionicons.glyphMap;
 }[] = [
-  { id: "view_details", label: "View order details", icon: "document-text-outline" },
+  { id: "view_details", label: "View order details", icon: "restaurant-outline" },
   { id: "support", label: "Live order support", icon: "chatbubble-ellipses-outline" },
   { id: "timeline", label: "Order timeline", icon: "time-outline" },
   { id: "call", label: "Call customer", icon: "call-outline" },
@@ -60,6 +60,7 @@ const COMPACT_MENU: {
   label: string;
   icon: keyof typeof Ionicons.glyphMap;
 }[] = [
+  { id: "view_details", label: "View order details", icon: "restaurant-outline" },
   { id: "timeline", label: "Order timeline", icon: "time-outline" },
   { id: "print_kot", label: "Print KOT", icon: "print-outline" },
   { id: "print_order", label: "Print order", icon: "print-outline" },
@@ -95,6 +96,7 @@ export function MerchantOrderActionsSheet({
     order?.status === "delivered" || order?.status === "rejected" || order?.status === "rto";
 
   const menu = (variant === "compact" ? COMPACT_MENU : FULL_MENU).filter((item) => {
+    if (item.id === "view_details" && !onViewDetails) return false;
     // After delivery / cancel, kitchen ticket is closed — bill only.
     if (isTerminal && item.id === "print_kot") return false;
     // New (unaccepted) orders — no print KOT / bill from the card menu.

@@ -163,6 +163,28 @@ export async function getOrderRiderTracking(
         source: "live_location",
       };
     }
+
+    // Direct table read if the compatibility view is missing / empty.
+    if (!liveLocation) {
+      const [cur] = await sql`
+        SELECT lat, lng, heading_deg, updated_at
+        FROM rider_current_locations
+        WHERE rider_id = ${riderId}
+        LIMIT 1
+      `;
+      const curLat = parseCoord(cur?.lat);
+      const curLng = parseCoord(cur?.lng);
+      const curAt = toIso(cur?.updated_at);
+      if (curLat != null && curLng != null && curAt) {
+        liveLocation = {
+          latitude: curLat,
+          longitude: curLng,
+          heading_degrees: cur?.heading_deg != null ? Number(cur.heading_deg) : null,
+          updated_at: curAt,
+          source: "live_location",
+        };
+      }
+    }
   }
 
   if (liveLocation && location) {

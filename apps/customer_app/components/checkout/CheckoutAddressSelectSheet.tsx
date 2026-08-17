@@ -14,14 +14,12 @@ import {
 } from "react-native";
 import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
-import { useQuery, useQueries } from "@tanstack/react-query";
+import { useQueries } from "@tanstack/react-query";
 import { useAppSafeAreaInsets } from "@/hooks/useAppSafeAreaInsets";
 import { useAddresses } from "@/hooks/useAddresses";
 import { CheckoutText } from "@/components/checkout/CheckoutText";
 import { DeliveryAddressText } from "@/components/address/DeliveryAddressText";
-import { haversineKm, SERVICE_RADIUS_KM } from "@/lib/billSummary";
 import { getStoreDeliveryQuote, type StoreDeliveryQuote } from "@/services/distance.service";
-import { merchantService } from "@/services/merchant.service";
 import type { Address } from "@/services/address.service";
 
 import { openCheckoutAddAddress } from "@/lib/openCheckoutAddAddress";
@@ -43,33 +41,17 @@ function checkoutAddressRowIcon(
   return "location-outline";
 }
 
-function formatAddressToStoreDistance(
-  storeLat: number | null | undefined,
-  storeLng: number | null | undefined,
-  addr: Address
-): string {
-  if (storeLat == null || storeLng == null) return "—";
-  const km = haversineKm(Number(storeLat), Number(storeLng), addr.latitude, addr.longitude);
-  const m = km * 1000;
-  if (!Number.isFinite(m)) return "—";
-  if (m < 1000) return `${Math.round(m)} m`;
+function formatCanonicalQuoteDistance(quote: StoreDeliveryQuote | undefined): string {
+  const km = quote?.distance_km;
+  if (km == null || !Number.isFinite(km)) return "—";
+  if (km < 1) return `${Math.round(km * 1000)} m`;
   return `${km.toFixed(1)} km`;
 }
 
-function isAddressOutOfZone(
-  quote: StoreDeliveryQuote | undefined,
-  storeLat: number | null | undefined,
-  storeLng: number | null | undefined,
-  addr: Address
-): boolean {
-  if (quote?.serviceable === false) return true;
-  if (quote?.unserviceable_reason === "out_of_range") return true;
-  if (storeLat == null || storeLng == null) return false;
-  const km = haversineKm(Number(storeLat), Number(storeLng), addr.latitude, addr.longitude);
-  if (!Number.isFinite(km)) return false;
-  const radiusKm = quote?.service_radius_km ?? SERVICE_RADIUS_KM;
-  if (quote != null) return !quote.serviceable;
-  return km > radiusKm;
+function isAddressOutOfZone(quote: StoreDeliveryQuote | undefined): boolean {
+  if (quote == null) return false;
+  if (quote.unserviceable_reason === "out_of_range") return true;
+  return quote.serviceable === false;
 }
 
 export type CheckoutAddressSelectSheetProps = {
@@ -93,13 +75,6 @@ export function CheckoutAddressSelectSheet({
   const { data: addresses = [], isLoading: addressesLoading } = useAddresses();
   const [busyId, setBusyId] = useState<number | null>(null);
   const [outOfZoneMessageVisible, setOutOfZoneMessageVisible] = useState(false);
-
-  const { data: merchant } = useQuery({
-    queryKey: ["merchant", merchantId, "address-sheet"],
-    queryFn: () => merchantService.getMerchantById(merchantId!),
-    enabled: visible && !!merchantId,
-    staleTime: 5 * 60 * 1000,
-  });
 
   const serviceability = useQueries({
     queries: addresses.map((addr) => ({
@@ -145,8 +120,6 @@ export function CheckoutAddressSelectSheet({
     [busyId, merchantId, onSelectAddress]
   );
 
-  const storeLat = merchant?.latitude ?? null;
-  const storeLng = merchant?.longitude ?? null;
   const listMaxHeight = Math.min(420, Math.round(windowHeight * 0.55));
 
   return (
@@ -222,10 +195,10 @@ export function CheckoutAddressSelectSheet({
               <View style={[styles.actionPanel, styles.actionPanelInScroll]}>
                 {addresses.map((addr, index) => {
                   const busy = busyId === addr.id;
-                  const dist = formatAddressToStoreDistance(storeLat, storeLng, addr);
-                  const title = addr.contactName?.trim() || addr.label || "Saved address";
                   const quote = serviceability[index]?.data;
-                  const isOutOfZone = isAddressOutOfZone(quote, storeLat, storeLng, addr);
+                  const dist = formatCanonicalQuoteDistance(quote);
+                  const title = addr.contactName?.trim() || addr.label || "Saved address";
+                  const isOutOfZone = isAddressOutOfZone(quote);
                   const isDeliverable = quote?.serviceable === true;
                   const isChecking = serviceability[index]?.isPending === true;
                   const isSelected = selectedAddressId === addr.id && isDeliverable;

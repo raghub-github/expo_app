@@ -1,7 +1,7 @@
 import React, { useCallback, useMemo, useState } from "react";
 import { AppText } from "@/components/AppText";
 
-import { View, TextInput, Pressable, Image, StyleSheet, Alert, TouchableOpacity, ActivityIndicator } from "react-native";
+import { View, TextInput, Pressable, Image, StyleSheet, Alert, TouchableOpacity, ActivityIndicator, Platform } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import * as ImagePicker from "expo-image-picker";
 
@@ -129,10 +129,12 @@ export function CustomerSupportTicketIntakeForm({
           value={description}
           onChangeText={(value) => setDescription(value.slice(0, MAX_CHARS))}
           style={styles.textArea}
-          placeholder="Describe the issue in detail"
+          placeholder={description.length > 0 ? undefined : "Describe the issue in detail"}
           placeholderTextColor={MUTED}
           multiline
           textAlignVertical="top"
+          underlineColorAndroid="transparent"
+          {...(Platform.OS === "android" ? { includeFontPadding: false } : null)}
         />
         <AppText style={styles.counter}>
           {description.length}/{MAX_CHARS}
@@ -237,8 +239,11 @@ const styles = StyleSheet.create({
     borderColor: "#E8E8E8",
     borderRadius: 10,
     minHeight: 110,
-    padding: 12,
-    fontSize: 14,
+    paddingHorizontal: 12,
+    paddingTop: Platform.OS === "android" ? 14 : 12,
+    paddingBottom: 12,
+    fontSize: 15,
+    lineHeight: 22,
     color: TEXT,
     backgroundColor: "#FAFAFA",
   },

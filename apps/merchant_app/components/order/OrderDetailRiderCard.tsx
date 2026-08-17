@@ -125,27 +125,72 @@ export function OrderDetailRiderCard({
     [ridersLog, rider]
   );
 
+  /** "View old" only when more than one distinct rider was involved. */
+  const showLogButton = useMemo(() => {
+    if (historyRiders.length === 0) return false;
+    const ids = new Set<number>();
+    for (const r of ridersLog) {
+      const id = Number(r.rider_id);
+      if (Number.isFinite(id) && id > 0) ids.add(id);
+    }
+    if (rider?.rider_id != null) {
+      const id = Number(rider.rider_id);
+      if (Number.isFinite(id) && id > 0) ids.add(id);
+    }
+    return ids.size > 1;
+  }, [historyRiders.length, ridersLog, rider]);
+
   const assignedOrder = useMemo(() => {
     if (!orderRecord) return null;
-    if (orderHasAssignedRider(orderRecord)) return orderRecord;
-    if (
+    const activeLogRider =
       rider &&
       !isInactiveRiderAssignment(rider.assignment_status, rider.cancelled_at, rider.rejected_at)
-    ) {
-      return {
-        ...orderRecord,
-        riderId: rider.rider_id || orderRecord.riderId,
-        riderName: (rider.rider_name ?? "").trim() || orderRecord.riderName,
-        riderMobile: (rider.rider_mobile ?? "").trim() || orderRecord.riderMobile,
-        riderSelfieUrl: rider.selfie_url ?? orderRecord.riderSelfieUrl,
-        riderAssignmentStatus: rider.assignment_status || orderRecord.riderAssignmentStatus,
-        riderReachedAt:
-          rider.reached_merchant_at ?? riderReachedAt ?? orderRecord.riderReachedAt,
-        riderPickedUpAt: rider.picked_up_at ?? orderRecord.riderPickedUpAt,
-      };
-    }
-    return null;
-  }, [orderRecord, rider, riderReachedAt]);
+        ? rider
+        : null;
+    const deliveredLogRider =
+      orderRecord.status === "delivered"
+        ? rider ??
+          ridersLog.find(
+            (r) =>
+              (r.delivered_at != null ||
+                String(r.assignment_status ?? "").toUpperCase() === "DELIVERED") &&
+              !isInactiveRiderAssignment(r.assignment_status, r.cancelled_at, r.rejected_at)
+          ) ??
+          ridersLog.find((r) => (r.rider_name ?? "").trim().length > 0) ??
+          null
+        : null;
+
+    const resolvedRider = activeLogRider ?? deliveredLogRider;
+    const hasRiderIdentity =
+      orderHasAssignedRider(orderRecord) ||
+      (resolvedRider != null &&
+        (Number(resolvedRider.rider_id) > 0 || Boolean((resolvedRider.rider_name ?? "").trim())));
+
+    if (!hasRiderIdentity) return null;
+
+    return {
+      ...orderRecord,
+      riderId: resolvedRider?.rider_id || orderRecord.riderId,
+      riderName:
+        (resolvedRider?.rider_name ?? "").trim() ||
+        (orderRecord.riderName ?? "").trim() ||
+        null,
+      riderMobile:
+        (resolvedRider?.rider_mobile ?? "").trim() ||
+        (orderRecord.riderMobile ?? "").trim() ||
+        null,
+      riderSelfieUrl: resolvedRider?.selfie_url ?? orderRecord.riderSelfieUrl,
+      riderAssignmentStatus:
+        resolvedRider?.assignment_status || orderRecord.riderAssignmentStatus,
+      riderReachedAt:
+        resolvedRider?.reached_merchant_at ??
+        riderReachedAt ??
+        orderRecord.riderReachedAt,
+      reachedMerchantAt:
+        resolvedRider?.reached_merchant_at ?? orderRecord.reachedMerchantAt,
+      riderPickedUpAt: resolvedRider?.picked_up_at ?? orderRecord.riderPickedUpAt,
+    };
+  }, [orderRecord, rider, riderReachedAt, ridersLog]);
 
   if (!isGatiMitra && !rider && historyRiders.length === 0 && !assignedOrder) return null;
 
@@ -153,8 +198,7 @@ export function OrderDetailRiderCard({
     rider != null &&
     isInactiveRiderAssignment(rider.assignment_status, rider.cancelled_at, rider.rejected_at);
 
-  const showLogButton = historyRiders.length > 0;
-  const showLiveAssigned = assignedOrder != null && orderHasAssignedRider(assignedOrder);
+  const showLiveAssigned = assignedOrder != null;
   const hasContent =
     (showPendingAssign && !showLiveAssigned) ||
     showLiveAssigned ||
@@ -173,10 +217,10 @@ export function OrderDetailRiderCard({
             hitSlop={8}
             style={({ pressed }) => [styles.logBtn, pressed && styles.pressed]}
             accessibilityRole="button"
-            accessibilityLabel="View old rider's log"
+            accessibilityLabel="View old riders"
           >
             <Ionicons name="time-outline" size={14} color={GatiMitraMerchant.primary} />
-            <Text style={styles.logBtnText}>View Old Rider's Log</Text>
+            <Text style={styles.logBtnText}>View old</Text>
           </Pressable>
         ) : null}
       </View>

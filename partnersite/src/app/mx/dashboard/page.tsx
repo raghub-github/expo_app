@@ -1631,7 +1631,7 @@ function DashboardContent() {
           <div className="px-3 sm:px-5 lg:px-8 pt-3 sm:pt-4 pb-4">
             <div className="max-w-[1600px] mx-auto">
               <div className="grid grid-cols-1 xl:grid-cols-12 gap-3 items-stretch pb-1">
-                {/* Store status — primary card (reference layout) */}
+                {/* Store status — equal height with siblings; lock pinned to bottom */}
                 <section className={PARTNER_DASHBOARD_TOP_CARD_SECTION_CLASS}>
                   {!storeId || (!storeOpsReady && storeOpsFetching && !storeOpsData) ? (
                     <PartnerDashboardStoreStatusSkeleton />
@@ -1646,12 +1646,12 @@ function DashboardContent() {
                     }`}
                   >
                     <VerificationLockedCardOverlay locked={opsCardsLockedUntilVerified} />
-                    <>
-                    <div className="flex items-start justify-between gap-2 shrink-0">
+                    <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+                    <div className="flex items-start justify-between gap-2 shrink-0 min-w-0">
                       <div className="min-w-0">
-                        <div className="flex flex-wrap items-center gap-1.5 mb-1">
-                          <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-emerald-500 text-white shadow-sm">
-                            <Store className="h-[16px] w-[16px]" strokeWidth={2} />
+                        <div className="mb-2.5 flex flex-wrap items-center gap-1.5">
+                          <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-emerald-500 text-white shadow-sm">
+                            <Store className="h-3.5 w-3.5" strokeWidth={2} />
                           </span>
                           <h2 className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">Store status</h2>
                           <span
@@ -1674,15 +1674,15 @@ function DashboardContent() {
                           </span>
                         </div>
                         {cardDisplaySlots.length === 0 ? (
-                          <div className="rounded-lg bg-slate-50/90 px-2.5 py-2 ring-1 ring-slate-200/70">
+                          <div className="rounded-md bg-slate-50/90 px-2 py-1.5 ring-1 ring-slate-200/70">
                             <p className="text-sm font-semibold text-slate-500">—</p>
                           </div>
                         ) : cardDisplaySlots.length === 1 ? (
-                          <div className="rounded-lg bg-slate-50/90 px-2.5 py-2 ring-1 ring-slate-200/70">
-                            <p className="text-[9px] font-medium uppercase tracking-wide text-slate-500 mb-0.5">
+                          <div className="rounded-md bg-slate-50/90 px-2 py-1 ring-1 ring-slate-200/70">
+                            <p className="mb-0.5 text-[9px] font-medium uppercase tracking-wide text-slate-500">
                               Today&apos;s hours
                             </p>
-                            <p className="text-lg sm:text-xl font-bold text-slate-900 tabular-nums leading-tight tracking-tight">
+                            <p className="text-sm font-bold leading-tight tracking-tight text-slate-900 tabular-nums sm:text-base">
                               {formatTimeHMS(cardDisplaySlots[0].start)} – {formatTimeHMS(cardDisplaySlots[0].end)}
                             </p>
                           </div>
@@ -1730,7 +1730,7 @@ function DashboardContent() {
                             ? 'Available after store is verified'
                             : undefined
                         }
-                        className={`shrink-0 flex h-10 w-10 items-center justify-center rounded-full text-white shadow-sm transition-transform hover:scale-105 active:scale-95 focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-45 disabled:hover:scale-100 ${
+                        className={`shrink-0 flex h-9 w-9 items-center justify-center rounded-full text-white shadow-sm transition-transform hover:scale-105 active:scale-95 focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-45 disabled:hover:scale-100 ${
                           isStoreOpen
                             ? 'bg-emerald-500 hover:bg-emerald-600 focus-visible:ring-emerald-500'
                             : restrictionType === 'MANUAL_HOLD'
@@ -1739,19 +1739,27 @@ function DashboardContent() {
                         }`}
                         aria-label={isStoreOpen ? 'Close store' : 'Open store'}
                       >
-                        <Power size={18} strokeWidth={2.25} />
+                        <Power size={16} strokeWidth={2.25} />
                       </button>
                     </div>
-                    <div className="flex flex-col gap-1.5 mt-2">
+                    <div
+                      className={`flex min-h-0 min-w-0 flex-1 flex-col gap-1 ${
+                        !storeIsDelisted &&
+                        (lastToggledByName || lastToggleBy || lastToggleType) &&
+                        lastToggledAt
+                          ? 'mt-2.5'
+                          : 'mt-1'
+                      }`}
+                    >
                       {scheduledTimeOffs.length > 0 && (
-                        <div className="rounded-lg bg-amber-50/95 px-2.5 py-2 ring-1 ring-amber-200/80">
+                        <div className="rounded-md bg-amber-50/95 px-2 py-1.5 ring-1 ring-amber-200/80">
                           <div className="flex items-start gap-2">
                             <CalendarClock className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-800" aria-hidden />
                             <div className="min-w-0 flex-1">
                               <p className="text-[10px] font-bold uppercase tracking-wide text-amber-950">
                                 Scheduled time-off
                               </p>
-                              <ul className="mt-1.5 space-y-1.5">
+                              <ul className="mt-1 space-y-1">
                                 {scheduledTimeOffs.map((row) => {
                                   const { primary, secondary } = formatScheduledTimeOffWindow(
                                     row.starts_at,
@@ -1784,9 +1792,9 @@ function DashboardContent() {
                         </div>
                       )}
                       {activeRush && activeRush.remaining_minutes > 0 && (
-                        <div className="rounded-lg bg-orange-50/95 px-2.5 py-2 ring-1 ring-orange-200/80">
+                        <div className="rounded-md bg-orange-50/95 px-2 py-1.5 ring-1 ring-orange-200/80">
                           <p className="text-[10px] font-bold uppercase tracking-wide text-orange-950">Rush hour</p>
-                          <p className="mt-1 text-[11px] leading-snug text-orange-950">
+                          <p className="mt-0.5 text-[11px] leading-snug text-orange-950">
                             <span className="font-semibold text-orange-900">Active</span>
                             <span className="text-orange-950/90">
                               {' '}
@@ -1802,7 +1810,7 @@ function DashboardContent() {
                         <p className="text-[10px] font-medium text-slate-500">{scheduleStatusLabel}</p>
                       )}
                       {storeIsDelisted ? (
-                        <div className="rounded-lg bg-red-50/90 px-2.5 py-2 ring-1 ring-red-200/80">
+                        <div className="rounded-md bg-red-50/90 px-2 py-1.5 ring-1 ring-red-200/80">
                           <p className="text-[11px] font-semibold text-red-800 leading-snug">
                             Delisted — this store stays closed until GatiMitra relists it.
                           </p>
@@ -1815,8 +1823,8 @@ function DashboardContent() {
                         const isPreBreak =
                           countdownKind === 'break_starts_in' || schedulePhase === 'PRE_BREAK'
                         const boxClass = isPreBreak
-                          ? 'rounded-lg bg-amber-50/90 px-2.5 py-2 ring-1 ring-amber-200/80'
-                          : 'rounded-lg bg-red-50/90 px-2.5 py-2 ring-1 ring-red-200/80'
+                          ? 'rounded-md bg-amber-50/90 px-2 py-1.5 ring-1 ring-amber-200/80'
+                          : 'rounded-md bg-red-50/90 px-2 py-1.5 ring-1 ring-red-200/80'
                         const textClass = isPreBreak ? 'text-amber-900' : 'text-red-800'
                         const subClass = isPreBreak ? 'text-amber-700/90' : 'text-red-600/90'
                         const dotClass = isPreBreak ? 'text-amber-400/90' : 'text-red-400/90'
@@ -1844,52 +1852,47 @@ function DashboardContent() {
                         )
                       })()}
                       {!storeIsDelisted && !isStoreOpen && closeReasonDisplay && (
-                        <p className="text-[11px] text-slate-600 leading-snug line-clamp-3" title={closeReasonDisplay}>
+                        <p className="text-[11px] text-slate-600 leading-snug line-clamp-2" title={closeReasonDisplay}>
                           <span className="font-semibold text-slate-700">Close reason: </span>
                           {closeReasonDisplay}
                         </p>
                       )}
                       {!storeIsDelisted && (lastToggledByName || lastToggleBy || lastToggleType) && lastToggledAt && (
-                        <div className="rounded-lg bg-slate-50/90 px-2.5 py-2 ring-1 ring-slate-200/70">
-                          <p className="text-[9px] font-medium uppercase tracking-wide text-slate-500 mb-0.5">
-                            Last activity
-                          </p>
-                          <p className="text-[11px] text-slate-600 leading-snug">
-                            {(() => {
-                              const typeUp = String(lastToggleType || '').toUpperCase()
-                              const toggledAtDate = new Date(lastToggledAt)
-                              const timeStr = toggledAtDate.toLocaleTimeString('en-IN', {
-                                hour: '2-digit',
-                                minute: '2-digit',
-                                second: '2-digit',
-                                hour12: true,
-                              })
-                              const dateStr = toggledAtDate.toLocaleDateString('en-IN', {
-                                day: 'numeric',
-                                month: 'short',
-                                year: 'numeric',
-                              })
-                              const email = lastToggleBy || ''
-                              const emailNorm = String(email).toLowerCase()
-                              const isGatiMitraAgent =
-                                emailNorm.includes('gatimitra') || emailNorm.endsWith('@gatimitra.in') || emailNorm.endsWith('@gatimitra.com')
-                              if (typeUp.startsWith('AUTO')) {
-                                return `${isStoreOpen ? 'Auto on' : 'Auto closed'} · ${timeStr} · ${dateStr}`
-                              }
-                              if (isGatiMitraAgent) {
-                                return `${isStoreOpen ? 'Opened' : 'Closed'} by GatiMitra (agent: ${email || 'unknown'}) · ${timeStr} · ${dateStr}`
-                              }
-                              const who = lastToggledByName || lastToggleBy || 'Owner'
-                              return `${isStoreOpen ? 'Opened' : 'Closed'} by ${who}${storeId ? ` (ID: ${storeId})` : ''} · ${timeStr} · ${dateStr}`
-                            })()}
-                          </p>
-                        </div>
+                        <p className="mt-2 text-[10px] text-slate-500 leading-snug line-clamp-2">
+                          {(() => {
+                            const typeUp = String(lastToggleType || '').toUpperCase()
+                            const toggledAtDate = new Date(lastToggledAt)
+                            const timeStr = toggledAtDate.toLocaleTimeString('en-IN', {
+                              hour: '2-digit',
+                              minute: '2-digit',
+                              second: '2-digit',
+                              hour12: true,
+                            })
+                            const dateStr = toggledAtDate.toLocaleDateString('en-IN', {
+                              day: 'numeric',
+                              month: 'short',
+                              year: 'numeric',
+                            })
+                            const email = lastToggleBy || ''
+                            const emailNorm = String(email).toLowerCase()
+                            const isGatiMitraAgent =
+                              emailNorm.includes('gatimitra') || emailNorm.endsWith('@gatimitra.in') || emailNorm.endsWith('@gatimitra.com')
+                            if (typeUp.startsWith('AUTO')) {
+                              return `${isStoreOpen ? 'Auto on' : 'Auto closed'} · ${timeStr} · ${dateStr}`
+                            }
+                            if (isGatiMitraAgent) {
+                              return `${isStoreOpen ? 'Opened' : 'Closed'} by GatiMitra (agent: ${email || 'unknown'}) · ${timeStr} · ${dateStr}`
+                            }
+                            const who = lastToggledByName || lastToggleBy || 'Owner'
+                            return `${isStoreOpen ? 'Opened' : 'Closed'} by ${who}${storeId ? ` (ID: ${storeId})` : ''} · ${timeStr} · ${dateStr}`
+                          })()}
+                        </p>
                       )}
                     </div>
-                    <div className="mt-3 flex items-center justify-between gap-2 pt-2.5 border-t border-slate-200/80 shrink-0">
+                    <div className="mt-auto flex shrink-0 items-center justify-between gap-2 border-t border-slate-200/80 pt-2">
                       <div className="min-w-0">
                         <p className="text-[11px] font-semibold text-slate-800">Manual activation lock</p>
-                        <p className="text-[10px] text-slate-500 mt-0.5 leading-snug">
+                        <p className="mt-0.5 text-[10px] leading-snug text-slate-500">
                           {licenseBlockedForOps
                             ? 'Locked while licence is expired — upload & verify first'
                             : 'Prevents automatic opening'}
@@ -1920,7 +1923,7 @@ function DashboardContent() {
                         <div className="relative h-6 w-11 rounded-full bg-slate-200 transition-colors after:absolute after:left-[3px] after:top-[3px] after:h-[18px] after:w-[18px] after:rounded-full after:border after:border-slate-200/80 after:bg-white after:shadow-sm after:transition-transform after:content-[''] peer-focus-visible:ring-2 peer-focus-visible:ring-orange-400 peer-focus-visible:ring-offset-2 peer-checked:bg-red-600 peer-checked:after:translate-x-[22px]" />
                       </label>
                     </div>
-                    </>
+                    </div>
                   </div>
                   )}
                 </section>

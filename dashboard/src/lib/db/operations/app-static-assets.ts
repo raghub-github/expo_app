@@ -151,6 +151,14 @@ export async function listAppStaticAssets(app: AppStaticAssetApp): Promise<AppSt
           'Packaging tips video',
           'Merchant onboarding — View packaging tips (MP4). Must play to the end to complete the task.',
           10
+        ),
+        (
+          'customer.store.long_distance_sheet',
+          'customer',
+          'Store',
+          'Long distance bottom sheet image',
+          'Shown when a store is farther than the membership free-delivery distance. Extra distance charges may apply.',
+          20
         )
       ON CONFLICT (id) DO NOTHING
     `;

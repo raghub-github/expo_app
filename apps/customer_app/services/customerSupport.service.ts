@@ -326,11 +326,19 @@ export const customerSupportService = {
     }
 
     const desc = payload.description.trim();
-    if (desc || attachments.length > 0) {
+    const issueLabel = (payload.selected_issue_label ?? "").trim();
+    // Skip opening chat message when body is only the catalog issue title (already on ticket subject).
+    const descIsIssueTitleOnly =
+      issueLabel.length > 0 && desc.toLowerCase() === issueLabel.toLowerCase();
+    if ((desc && !descIsIssueTitleOnly) || attachments.length > 0) {
       try {
         await customerSupportService.sendMessage(ticket.id, {
           message_text:
-            desc || (attachments.length > 1 ? "Shared attachments" : "Shared an attachment"),
+            desc && !descIsIssueTitleOnly
+              ? desc
+              : attachments.length > 1
+                ? "Shared attachments"
+                : "Shared an attachment",
           attachments: attachments.length ? attachments : undefined,
         });
       } catch (err) {

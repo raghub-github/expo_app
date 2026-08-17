@@ -1,39 +1,28 @@
 import type { MerchantSummary } from "@/services/merchant.service";
 import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
+import {
+  isFoodHeroImageUrl,
+  resolveMerchantFoodHeroPrimaryUri,
+  resolveMerchantFoodHeroUris,
+} from "@/lib/merchantHeroMedia";
 
-/** Hero banner for carousel — banner_url / displayImage only (not gallery fallback). */
+/** Hero banner for carousel — food photos only (skips parent logos / placeholders). */
 export function resolveMerchantCarouselBannerUri(merchant: MerchantSummary): string | null {
-  const candidates = [merchant.banner_url, merchant.displayImage];
-  for (const raw of candidates) {
-    const abs = toAbsoluteImageUrl(raw) ?? (typeof raw === "string" ? raw.trim() : "");
-    if (abs) return abs;
-  }
-  return null;
+  return resolveMerchantFoodHeroPrimaryUri(merchant);
 }
 
-/** Gallery URIs for carousel — excludes hero banner duplicate. */
+/** Gallery URIs for carousel — food photos only, excludes hero duplicate. */
 export function resolveMerchantCarouselGalleryUris(merchant: MerchantSummary): string[] {
   const hero = resolveMerchantCarouselBannerUri(merchant);
-  const raw = merchant.galleryImages ?? [];
-  const out: string[] = [];
-  const seen = new Set<string>();
-  for (const u of raw) {
-    const abs = toAbsoluteImageUrl(u) ?? (typeof u === "string" ? u.trim() : "");
-    if (!abs || seen.has(abs) || abs === hero) continue;
-    seen.add(abs);
-    out.push(abs);
-  }
-  return out;
+  return resolveMerchantFoodHeroUris(merchant).filter((u) => u !== hero);
 }
 
-/** Hero banner URI — banner → displayImage → gallery[0] → logo. */
+/** Hero banner URI — food photo → gallery → logo fallback for detail screens. */
 export function resolveMerchantBannerUri(merchant: MerchantSummary): string | null {
-  const candidates = [
-    merchant.banner_url,
-    merchant.displayImage,
-    merchant.galleryImages?.[0],
-    (merchant as MerchantSummary & { logo_url?: string | null }).logo_url,
-  ];
+  const food = resolveMerchantFoodHeroPrimaryUri(merchant);
+  if (food) return food;
+  const logo = (merchant as MerchantSummary & { logo_url?: string | null }).logo_url;
+  const candidates = [logo];
   for (const raw of candidates) {
     const abs = toAbsoluteImageUrl(raw) ?? (typeof raw === "string" ? raw.trim() : "");
     if (abs) return abs;
@@ -49,6 +38,7 @@ export function resolveMerchantGalleryUris(merchant: MerchantSummary): string[] 
   for (const u of raw) {
     const abs = toAbsoluteImageUrl(u) ?? (typeof u === "string" ? u.trim() : "");
     if (!abs || seen.has(abs) || abs === banner) continue;
+    if (!isFoodHeroImageUrl(abs) && abs !== banner) continue;
     seen.add(abs);
     out.push(abs);
   }

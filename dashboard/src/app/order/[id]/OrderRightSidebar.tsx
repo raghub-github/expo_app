@@ -871,10 +871,27 @@ export default function OrderRightSidebar({
             res = await fetchRemarks();
           }
         }
+        if (res.status === 503 && !options?.signal?.aborted) {
+          await new Promise((r) => setTimeout(r, 400));
+          if (!options?.signal?.aborted) {
+            res = await fetchRemarks();
+          }
+        }
+        if (options?.signal?.aborted) return;
         if (!res.ok) {
+          const text = await res.text();
+          let code = "";
+          try {
+            code = String(JSON.parse(text)?.code ?? "");
+          } catch {
+            /* ignore */
+          }
+          if (res.status === 503 || code === "SERVICE_UNAVAILABLE") {
+            return;
+          }
           if (res.status !== 401 || remarks.length === 0) {
             // eslint-disable-next-line no-console
-            console.error("Failed to load remarks", await res.text());
+            console.error("Failed to load remarks", text);
           }
           return;
         }

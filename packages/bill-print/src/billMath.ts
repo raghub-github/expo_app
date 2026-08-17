@@ -149,6 +149,21 @@ export function orderItemsTotals(items: BillLineItem[]) {
   return { itemsLineTotal, baseSubtotal, customizationsTotal };
 }
 
+/** When frozen total_ctm is present, item subtotal + packaging − discount must equal that total. */
+function reconcileItemsSubtotal(params: {
+  lineSum: number;
+  packaging: number;
+  discount: number;
+  total: number;
+  frozenTotal: number;
+}): number {
+  const fromLines = menuRupee(params.lineSum);
+  if (!(params.frozenTotal > 0)) return fromLines;
+  const reconstructed = menuRupee(Math.max(0, fromLines + params.packaging - params.discount));
+  if (Math.abs(reconstructed - params.total) <= 0.5) return fromLines;
+  return menuRupee(Math.max(0, params.total - params.packaging + params.discount));
+}
+
 export function merchantBillPartsFromItems(
   items: BillLineItem[],
   pricing: BillPricingBreakdown
@@ -160,8 +175,16 @@ export function merchantBillPartsFromItems(
   const frozen = Number(pricing.total);
   const total =
     Number.isFinite(frozen) && frozen > 0 ? menuRupee(frozen) : computed;
+  // Frozen CTM is SSOT. Catalog line sums must not drift from that total.
+  const itemsSubtotal = reconcileItemsSubtotal({
+    lineSum: itemsLineTotal,
+    packaging,
+    discount,
+    total,
+    frozenTotal: frozen,
+  });
   return {
-    itemsSubtotal: menuRupee(itemsLineTotal),
+    itemsSubtotal,
     itemBaseTotal: menuRupee(baseSubtotal),
     customizationsTotal: menuRupee(customizationsTotal),
     showCustomizations: customizationsTotal > 0.005,

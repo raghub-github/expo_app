@@ -30,8 +30,8 @@ export type RiderDeliveryPartnerCardProps = {
   /** Opens OrderRidersHistorySidesheet (merchant “View Old Rider's Log”). */
   onViewOldRidersLog?: () => void;
   /**
-   * When true (default if `onViewOldRidersLog` is set), show a full-width
-   * “View Old Rider's Log” button under Track live / Call.
+   * When true, show a full-width “View Old Rider's Log” button under Track live / Call.
+   * Must be set explicitly after eligibility check — never default to on.
    */
   showOldRidersLog?: boolean;
   showHeader?: boolean;
@@ -201,11 +201,10 @@ export function RiderDeliveryPartnerCard({
   }
 
   const showTrackLive = Boolean(onTrackRider) && !isTerminalVariant && variant !== 'picked_up';
-  const showActions = Boolean(showTrackLive || riderPhone);
-  // Prefer explicit flag; otherwise show whenever a handler is wired.
-  const showLogControl = Boolean(
-    onViewOldRidersLog && (showOldRidersLog ?? true)
-  );
+  // Terminal (delivered / cancelled / RTO): details only — no Call / Track actions.
+  const showActions = Boolean(showTrackLive || (riderPhone && !isTerminalVariant));
+  // Require explicit eligibility flag — never show for a single successful assignment.
+  const showLogControl = Boolean(onViewOldRidersLog && showOldRidersLog);
 
   return (
     <div

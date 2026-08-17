@@ -9,7 +9,9 @@ import {
   orderHasAssignedRider,
 } from "@/lib/orderAssignedRider";
 import {
+  formatMaskedRiderContact,
   resolveRiderCardVariant,
+  riderDisplayName,
   riderStatusHeadline,
   riderStatusSubline,
 } from "@/lib/riderMerchantArrivalDisplay";
@@ -98,9 +100,14 @@ export function MerchantAssignedRiderRow({
   if (!hasRider) return null;
 
   const riderName = enrichment.riderName;
+  const deliveredRiderName = riderDisplayName(riderName);
   const headline = riderStatusHeadline(variant, riderName);
-  const subline =
-    variant === "arrived"
+  const isTerminal =
+    variant === "delivered" || variant === "cancelled" || variant === "rto";
+  const showDeliveredRecord = variant === "delivered" && Boolean(deliveredRiderName);
+  const subline = showDeliveredRecord
+    ? null
+    : variant === "arrived"
       ? waitPhase === "countdown"
         ? "Free wait time — hand over before it ends"
         : waitPhase === "waiting"
@@ -108,11 +115,13 @@ export function MerchantAssignedRiderRow({
           : "Waiting at your store for pickup"
       : riderStatusSubline(variant, riderName, enrichment.arrivalSubtitle, null);
   const mobile = (enrichment.riderMobile ?? order.riderMobile ?? "").trim() || null;
+  const maskedContact = formatMaskedRiderContact(mobile);
   const isOutForDelivery = variant === "picked_up";
   const trackEnabled = showTrack && canTrackAssignedRider(order);
-  const showCallBtn = showCall && !!mobile;
+  // After delivery / cancel / RTO: show details only — no Call button.
+  const showCallBtn = showCall && !!mobile && !isTerminal;
   const showArrivedMeta = variant === "arrived" && !isOutForDelivery;
-  const showActions = !isOutForDelivery && !showArrivedMeta && (trackEnabled || showCallBtn);
+  const showActions = !isOutForDelivery && !showArrivedMeta && !isTerminal && (trackEnabled || showCallBtn);
 
   const timerLabel = useMemo(() => {
     if (waitPhase === "countdown") return formatMmSs(remaining);
@@ -143,23 +152,50 @@ export function MerchantAssignedRiderRow({
             {!isOutForDelivery && !embedded ? (
               <Text style={styles.sectionLabel}>Delivery partner</Text>
             ) : null}
-            <Text
-              style={[styles.headline, isOutForDelivery && styles.headlineCompact]}
-              numberOfLines={isOutForDelivery ? 1 : 2}
-            >
-              {headline}
-            </Text>
-            {!isOutForDelivery && subline ? (
-              <Text
-                style={[
-                  styles.subline,
-                  waitPhase === "waiting" && styles.sublineUrgent,
-                ]}
-                numberOfLines={2}
-              >
-                {subline}
-              </Text>
-            ) : null}
+            {showDeliveredRecord ? (
+              <>
+                <View style={styles.deliveredMetaRow}>
+                  <Text style={styles.deliveredName} numberOfLines={1}>
+                    {deliveredRiderName}
+                  </Text>
+                  <Text style={styles.deliveredSep}> | </Text>
+                  <Text style={styles.deliveredStatus} numberOfLines={1}>
+                    Order delivered
+                  </Text>
+                </View>
+                {maskedContact ? (
+                  <Text style={styles.phoneLine} numberOfLines={1}>
+                    {maskedContact}
+                  </Text>
+                ) : null}
+              </>
+            ) : (
+              <>
+                <Text
+                  style={[styles.headline, isOutForDelivery && styles.headlineCompact]}
+                  numberOfLines={isOutForDelivery ? 1 : 2}
+                >
+                  {headline}
+                </Text>
+                {!isOutForDelivery && subline ? (
+                  <Text
+                    style={[
+                      styles.subline,
+                      waitPhase === "waiting" && styles.sublineUrgent,
+                      isTerminal && styles.sublineTerminal,
+                    ]}
+                    numberOfLines={2}
+                  >
+                    {subline}
+                  </Text>
+                ) : null}
+                {(isTerminal || isOutForDelivery) && maskedContact ? (
+                  <Text style={styles.phoneLine} numberOfLines={1}>
+                    {maskedContact}
+                  </Text>
+                ) : null}
+              </>
+            )}
 
             {showArrivedMeta ? (
               <View style={styles.metaRow}>
@@ -353,6 +389,33 @@ const styles = StyleSheet.create({
     fontWeight: "600",
     lineHeight: 18,
   },
+  deliveredMetaRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    flexWrap: "nowrap",
+    minWidth: 0,
+  },
+  deliveredName: {
+    flexShrink: 1,
+    fontSize: 15,
+    fontWeight: "800",
+    color: GatiMitraMerchant.textPrimary,
+    lineHeight: 20,
+  },
+  deliveredSep: {
+    flexShrink: 0,
+    fontSize: 13,
+    fontWeight: "600",
+    color: GatiMitraMerchant.textTertiary,
+    lineHeight: 20,
+  },
+  deliveredStatus: {
+    flexShrink: 0,
+    fontSize: 13,
+    fontWeight: "600",
+    color: GatiMitraMerchant.textSecondary,
+    lineHeight: 20,
+  },
   subline: {
     fontSize: 12,
     fontWeight: "600",
@@ -361,6 +424,17 @@ const styles = StyleSheet.create({
   },
   sublineUrgent: {
     color: "#C2410C",
+  },
+  sublineTerminal: {
+    color: GatiMitraMerchant.textSecondary,
+    fontWeight: "600",
+  },
+  phoneLine: {
+    marginTop: 2,
+    fontSize: 12,
+    fontWeight: "600",
+    color: GatiMitraMerchant.textSecondary,
+    fontVariant: ["tabular-nums"],
   },
   metaRow: {
     flexDirection: "row",

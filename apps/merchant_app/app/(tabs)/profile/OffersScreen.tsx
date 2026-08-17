@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback, useMemo, useRef } from "react";
 import { AppText as Text } from "@/components/AppText";
-import { View, StyleSheet, ActivityIndicator, Alert } from "react-native";
+import { View, StyleSheet, ActivityIndicator, Alert, Platform } from "react-native";
 import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { GatiMitraMerchant } from "@/constants/theme";
@@ -35,6 +35,7 @@ import { OffersPageTabs } from "@/components/offers/OffersPageTabs";
 import { OfferStorePickSheet } from "@/components/offers/OfferStorePickSheet";
 import type { ChildStore } from "@/context/AuthContext";
 import { offersSharedStyles } from "@/components/offers/offers-theme";
+import { pickOfferBannerImage } from "@/lib/offerBannerImagePick";
 
 type PageTab = "create" | "track";
 
@@ -125,6 +126,10 @@ export default function OffersScreen() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [showForm, setShowForm] = useState(false);
+  /** Hide form Modal while Android image picker runs (avoids ActivityResultLauncher crash). */
+  const [pickerSuspended, setPickerSuspended] = useState(false);
+  /** Bumped on each fresh open so wizard resets only then — not after picker suspend. */
+  const [formSessionKey, setFormSessionKey] = useState(0);
   const [storePickVisible, setStorePickVisible] = useState(false);
   const pendingCreateRef = useRef<{
     presetType?: OfferType;
@@ -260,6 +265,8 @@ export default function OffersScreen() {
     setEditing(null);
     // Always show choose unless a concrete path was picked from Create tab cards.
     setCreateSkipChoose(Boolean(createPath));
+    setFormSessionKey((k) => k + 1);
+    setPickerSuspended(false);
     setShowForm(true);
   };
 
@@ -303,11 +310,14 @@ export default function OffersScreen() {
     setImageFile(null);
     setMenuSearch("");
     setCreateSkipChoose(false);
+    setFormSessionKey((k) => k + 1);
+    setPickerSuspended(false);
     setShowForm(true);
   };
 
   const closeForm = () => {
     setShowForm(false);
+    setPickerSuspended(false);
     setEditing(null);
     setCreateSkipChoose(false);
     resetForm();
@@ -328,27 +338,22 @@ export default function OffersScreen() {
   const openImagePicker = useCallback(async () => {
     if (!token || !storeId) return;
     try {
-      const ImagePicker = await import("expo-image-picker");
-      const perm = await ImagePicker.requestMediaLibraryPermissionsAsync?.();
-      if (perm?.status !== "granted" && perm?.status !== "undetermined") {
-        Alert.alert("Permission needed", "Allow access to photos to upload an offer image.");
-        return;
+      // Full-screen Create Offer Modal stacks under the system gallery on Android and
+      // leaves ImagePicker's ActivityResultLauncher unregistered — hide first.
+      if (Platform.OS === "android") {
+        setPickerSuspended(true);
+        await new Promise((r) => setTimeout(r, 180));
       }
-      const result = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: (ImagePicker as any).MediaTypeOptions?.Images ?? "images",
-        allowsEditing: true,
-        aspect: [2, 1],
-        quality: 0.85,
-      });
-      if (result.canceled || !result.assets?.[0]?.uri) return;
-      const asset = result.assets[0];
-      setImageFile({
-        uri: asset.uri,
-        type: (asset as { mimeType?: string }).mimeType ?? "image/jpeg",
-        name: (asset as { fileName?: string }).fileName ?? "offer.jpg",
-      });
-      patchForm({ imagePreview: asset.uri });
+      const file = await pickOfferBannerImage();
+      if (Platform.OS === "android") {
+        await new Promise((r) => setTimeout(r, 280));
+        setPickerSuspended(false);
+      }
+      if (!file) return;
+      setImageFile(file);
+      patchForm({ imagePreview: file.uri });
     } catch (e) {
+      if (Platform.OS === "android") setPickerSuspended(false);
       Alert.alert("Error", e instanceof Error ? e.message : "Could not pick image.");
     }
   }, [storeId, token, patchForm]);
@@ -500,7 +505,8 @@ export default function OffersScreen() {
       ) : null}
 
       <OfferFormSheet
-        visible={showForm}
+        visible={showForm && !pickerSuspended}
+        formSessionKey={formSessionKey}
         editing={!!editing}
         skipChoose={createSkipChoose}
         saving={saving}

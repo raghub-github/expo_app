@@ -1,9 +1,22 @@
 import { useCallback, useEffect, useRef } from "react";
-import type { RealtimeChannel } from "@supabase/supabase-js";
+import type { RealtimeChannel, SupabaseClient } from "@supabase/supabase-js";
 import { getSupabaseAuth } from "@/lib/supabaseClient";
 import { fetchRealtimeAuthToken } from "@/services/ordersApi";
 
 const DEBOUNCE_MS = 250;
+
+function channelNameOf(topic: string): string {
+  return topic.startsWith("realtime:") ? topic.slice("realtime:".length) : topic;
+}
+
+async function dropStoreOrderChannels(supabase: SupabaseClient, topicBase: string): Promise<void> {
+  const stale = supabase.getChannels().filter((ch) => {
+    const name = channelNameOf(ch.topic);
+    return name === topicBase || name.startsWith(`${topicBase}:`);
+  });
+  if (stale.length === 0) return;
+  await Promise.all(stale.map((ch) => supabase.removeChannel(ch)));
+}
 
 /**
  * Supabase postgres_changes on orders_core + orders_food — same pattern as partnersite food-orders page.
@@ -75,27 +88,34 @@ export function useMerchantOrdersRealtime(options: {
       ids.length === 1
         ? `merchant_store_id=eq.${ids[0]}`
         : `merchant_store_id=in.(${ids.join(",")})`;
-    const topic = `merchant_store_orders:${ids.join("_")}`;
+    const topicBase = `merchant_store_orders:${ids.join("_")}`;
 
     let cancelled = false;
     let channel: RealtimeChannel | null = null;
     let refreshTimer: ReturnType<typeof setInterval> | null = null;
 
-    const subscribe = () => {
+    const subscribe = async () => {
       if (cancelled || channel) return;
-      channel = supabase
-        .channel(topic)
-        .on(
-          "postgres_changes",
-          { event: "*", schema: "public", table: "orders_core", filter },
-          scheduleRefetch
-        )
-        .on(
-          "postgres_changes",
-          { event: "*", schema: "public", table: "orders_food", filter },
-          handleFoodRow
-        )
-        .subscribe();
+      try {
+        await dropStoreOrderChannels(supabase, topicBase);
+        if (cancelled) return;
+        const topic = `${topicBase}:${Date.now().toString(36)}`;
+        channel = supabase
+          .channel(topic)
+          .on(
+            "postgres_changes",
+            { event: "*", schema: "public", table: "orders_core", filter },
+            scheduleRefetch
+          )
+          .on(
+            "postgres_changes",
+            { event: "*", schema: "public", table: "orders_food", filter },
+            handleFoodRow
+          )
+          .subscribe();
+      } catch {
+        channel = null;
+      }
     };
 
     void (async () => {
@@ -119,7 +139,7 @@ export function useMerchantOrdersRealtime(options: {
           /* subscribe anyway; RLS may still deliver for some policies */
         }
       }
-      if (!cancelled) subscribe();
+      if (!cancelled) await subscribe();
     })();
 
     return () => {

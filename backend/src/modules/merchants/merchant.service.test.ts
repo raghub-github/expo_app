@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { __test__enrichNearbyWithRoadDistance } from "./merchant.service.js";
+import {
+  canonicalStoreToCustomerRouteArgs,
+  getRoute,
+} from "../distance/distance.service.js";
 
 describe("merchant.service distanceMode=road", () => {
   it("enriches nearby items with backend-computed road distance (haversine fallback when providers unset)", async () => {
@@ -57,5 +61,42 @@ describe("merchant.service distanceMode=road", () => {
     // Rounded to 2 decimals.
     assert.strictEqual(Number(out[0].distance_km.toFixed(2)), out[0].distance_km);
   });
-});
 
+  it("listing enrich km matches getRoute(store → customer) — same engine as store-quote / billing", async () => {
+    const drop = { lat: 29.3909, lng: 76.979 };
+    const store = { lat: 29.3901, lng: 76.9635 };
+    const items = [
+      {
+        id: 1,
+        store_id: "ptd",
+        store_name: "PTD",
+        store_display_name: "PTD",
+        store_description: null,
+        banner_url: null,
+        cuisine_types: null,
+        city: null,
+        latitude: store.lat,
+        longitude: store.lng,
+        operational_status: "OPEN",
+        avg_preparation_time_minutes: null,
+        is_active: true,
+        is_available: true,
+        is_accepting_orders: true,
+        status: "ACTIVE",
+        distance_km: 99,
+      },
+    ] as any;
+
+    const [enriched, quoteRoute] = await Promise.all([
+      __test__enrichNearbyWithRoadDistance({
+        userLat: drop.lat,
+        userLng: drop.lng,
+        items,
+      }),
+      getRoute(canonicalStoreToCustomerRouteArgs(store, drop)),
+    ]);
+
+    assert.strictEqual(enriched[0].distance_km, quoteRoute.distanceKm);
+    assert.strictEqual(enriched[0].distance_km, Number(quoteRoute.distanceKm.toFixed(2)));
+  });
+});
