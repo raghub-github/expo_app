@@ -725,7 +725,7 @@ export async function applyRidePickupWaitingToBilling(
         waiting_company_share: waitingSplit.companyShare,
         waiting_funding_mode: waitingSplit.fundingMode,
         company_funded_waiting: waitingSplit.companyShare,
-      })}::jsonb,
+      })}::text::jsonb,
           updated_at = NOW()
       WHERE id = ${orderCorePk}
     `;

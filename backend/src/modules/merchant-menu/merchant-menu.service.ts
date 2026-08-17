@@ -2305,7 +2305,7 @@ export async function createCombo(
       ${body.display_order ?? 0},
       ${body.combo_type ?? "FIXED"},
       ${body.pricing_strategy ?? "FIXED_PRICE"},
-      ${JSON.stringify(body.combo_metadata ?? {})}::jsonb
+      ${JSON.stringify(body.combo_metadata ?? {})}::text::jsonb
     )
     RETURNING id
   `;
@@ -2435,7 +2435,7 @@ export async function updateCombo(
           body.combo_metadata !== undefined
             ? JSON.stringify(body.combo_metadata ?? {})
             : JSON.stringify(e.combo_metadata ?? {})
-        }::jsonb,
+        }::text::jsonb,
         updated_at = NOW()
     WHERE id = ${comboId} AND store_id = ${storeIdNum}
   `;
@@ -2609,7 +2609,7 @@ export async function createChangeRequest(
       (store_id, menu_item_id, request_type, status, requested_payload, current_snapshot, reason, created_by, created_by_role, updated_at)
     VALUES
       (${storeIdNum}, ${menuItemId}, ${requestType}::merchant_menu_item_change_request_type, 'PENDING'::merchant_menu_item_change_request_status,
-       ${JSON.stringify(requestedPayload)}::jsonb, ${currentSnapshot ? JSON.stringify(currentSnapshot) : null}::jsonb,
+       ${JSON.stringify(requestedPayload)}::text::jsonb, ${currentSnapshot ? JSON.stringify(currentSnapshot) : null}::text::jsonb,
        ${opts.reason ?? null}, ${opts.created_by}, ${opts.created_by_role ?? "merchant"}, NOW())
     RETURNING id
   `;

@@ -767,7 +767,7 @@ export async function riderSupportRoutes(app: FastifyInstance) {
         FALSE,
         ${groupId},
         ${tagsArrayLiteral}::text[],
-        ${metadataJson}::jsonb
+        ${metadataJson}::text::jsonb
       )
       RETURNING id, ticket_id, status, priority, subject, description, created_at
     `;

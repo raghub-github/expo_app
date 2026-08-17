@@ -233,7 +233,7 @@ async function insertEarning(input: {
       ${input.ref},
       'order',
       ${input.description},
-      ${JSON.stringify(input.metadata)}::jsonb,
+      ${JSON.stringify(input.metadata)}::text::jsonb,
       'system'
     )
   `;

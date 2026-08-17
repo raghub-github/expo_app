@@ -154,7 +154,7 @@ async function syncPayoutApprovalOnCreate(
         'PENDING',
         ${amount.toFixed(2)},
         ${amount.toFixed(2)},
-        ${JSON.stringify({ rider_id: riderId, source: "rider_app" })}::jsonb
+        ${JSON.stringify({ rider_id: riderId, source: "rider_app" })}::text::jsonb
       )
       ON CONFLICT (payout_request_id, payout_type) DO NOTHING
     `;
@@ -256,7 +256,7 @@ export async function createRiderWithdrawalRequest(
         ${bank.accountNumberMasked},
         ${bank.ifsc},
         ${bank.accountHolderName},
-        ${JSON.stringify({ source: "rider_app", bank_name: bank.bankName })}::jsonb
+        ${JSON.stringify({ source: "rider_app", bank_name: bank.bankName })}::text::jsonb
       )
       RETURNING id, amount, status, bank_acc, ifsc, account_holder_name,
                 transaction_id, failure_reason, created_at, processed_at
@@ -298,7 +298,7 @@ export async function createRiderWithdrawalRequest(
         ${ledgerRef},
         'withdrawal',
         ${`Withdrawal request #${withdrawalId}`},
-        ${JSON.stringify({ withdrawal_id: withdrawalId, source: "rider_app" })}::jsonb,
+        ${JSON.stringify({ withdrawal_id: withdrawalId, source: "rider_app" })}::text::jsonb,
         'rider'
       )
     `;
@@ -385,7 +385,7 @@ export async function revertRiderWithdrawalWalletDebit(
         ${ref},
         'withdrawal',
         ${`Withdrawal failed #${withdrawalId} — amount reverted`},
-        ${JSON.stringify({ withdrawal_id: withdrawalId, reason })}::jsonb,
+        ${JSON.stringify({ withdrawal_id: withdrawalId, reason })}::text::jsonb,
         'system'
       )
     `;

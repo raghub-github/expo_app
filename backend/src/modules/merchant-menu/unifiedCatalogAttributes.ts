@@ -179,9 +179,9 @@ export async function upsertItemAttributes(
 
     await sql`
       INSERT INTO item_attributes (item_id, attribute_id, value)
-      VALUES (${itemId}, ${def.id}, ${JSON.stringify(value)}::jsonb)
+      VALUES (${itemId}, ${def.id}, ${JSON.stringify(value)}::text::jsonb)
       ON CONFLICT (item_id, attribute_id)
-      DO UPDATE SET value = ${JSON.stringify(value)}::jsonb, updated_at = NOW()
+      DO UPDATE SET value = ${JSON.stringify(value)}::text::jsonb, updated_at = NOW()
     `;
   }
 }
@@ -235,9 +235,9 @@ export async function upsertVariantAttributes(
 
     await sql`
       INSERT INTO item_variant_attributes (variant_id, attribute_id, value)
-      VALUES (${variantId}, ${def.id}, ${JSON.stringify(value)}::jsonb)
+      VALUES (${variantId}, ${def.id}, ${JSON.stringify(value)}::text::jsonb)
       ON CONFLICT (variant_id, attribute_id)
-      DO UPDATE SET value = ${JSON.stringify(value)}::jsonb, updated_at = NOW()
+      DO UPDATE SET value = ${JSON.stringify(value)}::text::jsonb, updated_at = NOW()
     `;
   }
 }

@@ -507,7 +507,7 @@ async function stampRefundSourceSnapshot(
       UPDATE order_refunds
       SET original_gati_cash_amount = COALESCE(original_gati_cash_amount, ${args.gatiCashUsed}),
           original_gateway_amount   = COALESCE(original_gateway_amount, ${args.gatewayAmount}),
-          refund_timeline           = ${args.timelineJson}::jsonb,
+          refund_timeline           = ${args.timelineJson}::text::jsonb,
           original_gati_cash_txn_id = COALESCE(
             NULLIF(TRIM(original_gati_cash_txn_id), ''),
             NULLIF(TRIM(${args.originalGatiCashTxnId ?? null}), '')
@@ -531,7 +531,7 @@ async function stampRefundSourceSnapshot(
         UPDATE order_refunds
         SET original_gati_cash_amount = COALESCE(original_gati_cash_amount, ${args.gatiCashUsed}),
             original_gateway_amount   = COALESCE(original_gateway_amount, ${args.gatewayAmount}),
-            refund_timeline           = ${args.timelineJson}::jsonb,
+            refund_timeline           = ${args.timelineJson}::text::jsonb,
             refund_reference          = CASE
               WHEN refund_reference IS NOT NULL
                 AND TRIM(refund_reference) ~* '^RRN-[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}$'
@@ -915,7 +915,7 @@ export async function executeOrderRefund(
             executed_at         = NOW(),
             razorpay_refund_id  = ${refund.id},
             razorpay_payment_id = ${snap.razorpayPaymentId},
-            razorpay_response   = ${JSON.stringify(refund)}::jsonb,
+            razorpay_response   = ${JSON.stringify(refund)}::text::jsonb,
             split_razorpay_amount = ${gatewayRefundAmount},
             split_wallet_amount   = 0,
             refund_status       = 'processing'
@@ -1001,7 +1001,7 @@ export async function executeOrderRefund(
             completed_at              = NOW(),
             razorpay_refund_id        = ${refundIdRazorpay},
             razorpay_payment_id       = ${snap.razorpayPaymentId},
-            razorpay_response         = ${razorpayPayload ? JSON.stringify(razorpayPayload) : null}::jsonb,
+            razorpay_response         = ${razorpayPayload ? JSON.stringify(razorpayPayload) : null}::text::jsonb,
             customer_wallet_ledger_id = ${ledgerId},
             split_razorpay_amount     = ${razorpayPart},
             split_wallet_amount       = ${walletPart},
@@ -1016,7 +1016,7 @@ export async function executeOrderRefund(
             executed_at               = NOW(),
             razorpay_refund_id        = ${refundIdRazorpay},
             razorpay_payment_id       = ${snap.razorpayPaymentId},
-            razorpay_response         = ${razorpayPayload ? JSON.stringify(razorpayPayload) : null}::jsonb,
+            razorpay_response         = ${razorpayPayload ? JSON.stringify(razorpayPayload) : null}::text::jsonb,
             customer_wallet_ledger_id = ${ledgerId},
             split_razorpay_amount     = ${razorpayPart},
             split_wallet_amount       = ${walletPart},
@@ -1146,7 +1146,7 @@ async function creditCustomerWallet(
         actor_email: args.actor.actorEmail,
         actor_role: args.actor.actorRole,
         original_gati_cash_txn_id: args.originalGatiCashTxnId ?? null,
-      })}::jsonb
+      })}::text::jsonb
     ) AS id
   `;
   const rowId = rows[0]?.id;
@@ -1217,7 +1217,7 @@ export async function completeOrderRefundFromRazorpayWebhook(args: {
           confirmed_at: new Date().toISOString(),
           refund_status: args.refundStatus,
           razorpay_payment_id: args.razorpayPaymentId,
-        })}::jsonb
+        })}::text::jsonb
     WHERE id = ${refundId}
   `;
 

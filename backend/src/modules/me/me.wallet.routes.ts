@@ -766,7 +766,7 @@ export async function meWalletRoutes(app: FastifyInstance) {
               offerKind: body.offerKind ?? null,
               offerTitle: description,
               source: "customer_app_checkout",
-            })}::jsonb,
+            })}::text::jsonb,
             'BONUS'::public.customer_wallet_balance_lot_type,
             ${null}
           ) AS tx_id
@@ -919,7 +919,7 @@ export async function meWalletRoutes(app: FastifyInstance) {
             'PAYMENT_PENDING',
             ${razorpayOrderId},
             NOW() + INTERVAL '30 minutes',
-            ${JSON.stringify({ source: "customer_app_add_money" })}::jsonb
+            ${JSON.stringify({ source: "customer_app_add_money" })}::text::jsonb
           )
         `;
       } catch (err) {
@@ -1086,7 +1086,7 @@ export async function meWalletRoutes(app: FastifyInstance) {
               intent_id: body.intent_id,
               razorpay_order_id: body.razorpay_order_id,
               razorpay_payment_id: body.razorpay_payment_id,
-            })}::jsonb,
+            })}::text::jsonb,
             'ADDED'::public.customer_wallet_balance_lot_type,
             ${null}
           ) AS tx_id

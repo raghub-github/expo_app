@@ -194,7 +194,7 @@ export async function referralAdminRoutes(app: FastifyInstance) {
           'manual_credit',
           'referral_relationships',
           ${String(body.relationshipId)},
-          ${JSON.stringify({ ruleId: rule.id, amount: body.amount ?? rule.reward_amount })}::jsonb,
+          ${JSON.stringify({ ruleId: rule.id, amount: body.amount ?? rule.reward_amount })}::text::jsonb,
           ${body.reason ?? null}
         )
       `.catch(() => undefined);

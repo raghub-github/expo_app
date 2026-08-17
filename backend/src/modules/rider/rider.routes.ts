@@ -3504,7 +3504,7 @@ export async function riderRoutes(app: FastifyInstance) {
           SET billing_snapshot = COALESCE(billing_snapshot, '{}'::jsonb) || ${JSON.stringify({
             toll_charge: totalToll,
             toll_charges: totalToll,
-          })}::jsonb,
+          })}::text::jsonb,
               updated_at = NOW()
           WHERE id = ${orderCoreId}
         `;

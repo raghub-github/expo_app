@@ -130,7 +130,7 @@ export async function recordDispatchAssignmentAudit(
       ${input.removalReason ?? null},
       ${input.actorType ?? null},
       ${input.actorId ?? null},
-      ${JSON.stringify(input.metadata ?? {})}::jsonb,
+      ${JSON.stringify(input.metadata ?? {})}::text::jsonb,
       ${now.toISOString()}::timestamptz
     )
   `;

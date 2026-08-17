@@ -39,7 +39,7 @@ export async function resolveGeoCustomerDeliveryFee(params: {
         ${pc},
         ${geoService}::geo_service,
         'customer_delivery_fee'::pricing_rule_type,
-        ${ctxJson}::jsonb
+        ${ctxJson}::text::jsonb
       ) AS pricing_rules_resolve_totals
     `;
     const raw = row?.pricing_rules_resolve_totals;

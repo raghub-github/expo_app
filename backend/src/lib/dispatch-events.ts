@@ -51,7 +51,7 @@ export async function recordDispatchEvent(input: DispatchEventInput): Promise<vo
         ${input.waveNumber ?? null},
         ${input.riderId ?? null},
         ${input.radiusMeters ?? null},
-        ${JSON.stringify(input.metadata ?? {})}::jsonb
+        ${JSON.stringify(input.metadata ?? {})}::text::jsonb
       )
     `;
   } catch (err) {

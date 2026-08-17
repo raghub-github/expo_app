@@ -136,7 +136,7 @@ export async function debitCustomerGatiCashForRideFare(
       ${"ride_fare_payment"},
       ${"GatiCash applied on ride fare"},
       ${debitKey},
-      ${JSON.stringify({ orderId: args.orderIdText, gatiCashTxnId: debitKey })}::jsonb,
+      ${JSON.stringify({ orderId: args.orderIdText, gatiCashTxnId: debitKey })}::text::jsonb,
       FALSE
     )
   `;
@@ -191,7 +191,7 @@ export async function fulfillCheckoutGatiCashWalletOps(
             orderId: orderIdText,
             merchantStoreId,
             gatiCashTxnId,
-          })}::jsonb,
+          })}::text::jsonb,
           FALSE
         )
       `;
@@ -231,7 +231,7 @@ export async function fulfillCheckoutGatiCashWalletOps(
             offerTitle: description,
             source: "order_finalize",
             gatiCashTxnId,
-          })}::jsonb,
+          })}::text::jsonb,
           'BONUS'::public.customer_wallet_balance_lot_type,
           ${null}
         )

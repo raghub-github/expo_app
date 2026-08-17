@@ -189,7 +189,7 @@ export async function getNearbyRideSupply(input: {
       WHERE r.deleted_at IS NULL
         AND r.status <> 'BLOCKED'
         AND ld.status = 'ON'
-        AND ld.service_types @> ${JSON.stringify([dutyService])}::jsonb
+        AND ld.service_types @> ${JSON.stringify([dutyService])}::text::jsonb
         AND rv.deleted_at IS NULL
         AND rv.is_active = true
         AND rv.verified = true
