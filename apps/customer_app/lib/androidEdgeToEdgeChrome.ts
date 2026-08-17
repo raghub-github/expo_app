@@ -9,11 +9,17 @@ export async function applyAndroidNavigationChrome(options?: {
 }): Promise<void> {
   if (Platform.OS !== "android") return;
   const NavigationBar = await import("expo-navigation-bar");
-  await NavigationBar.setVisibilityAsync("visible").catch(() => {});
   const style = options?.buttonStyle ?? "light";
-  await NavigationBar.setButtonStyleAsync(style).catch(() => {});
-  if (typeof NavigationBar.setStyle === "function") {
-    await NavigationBar.setStyle(style === "light" ? "dark" : "light").catch(() => {});
+  // Best-effort: on edge-to-edge SDK 53+ some of these warn/no-op, and the
+  // synchronous `setStyle` returns void (no `.catch`), so guard them together.
+  try {
+    await NavigationBar.setVisibilityAsync("visible");
+    await NavigationBar.setButtonStyleAsync(style);
+    if (typeof NavigationBar.setStyle === "function") {
+      NavigationBar.setStyle(style === "light" ? "dark" : "light");
+    }
+  } catch {
+    // unsupported / edge-to-edge navigation-bar API — safe no-op
   }
 }
 
