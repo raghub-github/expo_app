@@ -23,6 +23,13 @@ on:
       - "packages/contracts/**"
       - "packages/shared-utils/**"
       - "packages/shared-config/**"
+      # Every @gatimitra/* package dashboard/Dockerfile actually COPYs/builds —
+      # missing one here means a push that only touches that package silently
+      # never rebuilds/redeploys dashboard (see backend.yml for the same fix
+      # after this exact gap left a production bug fix undeployed for hours).
+      - "packages/rider-availability/**"
+      - "packages/financial-rules/**"
+      - "packages/slab-pricing/**"
       - ".github/workflows/dashboard.yml"
       - "infra/scripts/deploy-service.sh"
   workflow_dispatch:

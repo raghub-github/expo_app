@@ -21,6 +21,16 @@ on:
       - "packages/contracts/**"
       - "packages/shared-utils/**"
       - "packages/shared-config/**"
+      # Every @gatimitra/* package partnersite/Dockerfile actually COPYs/builds —
+      # missing one here means a push that only touches that package silently
+      # never rebuilds/redeploys partnersite (see backend.yml for the same fix
+      # after this exact gap left a production bug fix undeployed for hours).
+      - "packages/merchant-payout/**"
+      - "packages/financial-rules/**"
+      - "packages/store-status/**"
+      - "packages/print-utils/**"
+      - "packages/bill-print/**"
+      - "packages/kot-print/**"
       - ".github/workflows/partnersite.yml"
       - "infra/scripts/deploy-service.sh"
   workflow_dispatch:

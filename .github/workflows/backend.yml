@@ -25,6 +25,16 @@ on:
       - "packages/shared-utils/**"
       - "packages/constants/**"
       - "packages/auth/**"
+      # Every @gatimitra/* package backend/Dockerfile actually COPYs/builds —
+      # missing one here means a push that only touches that package silently
+      # never rebuilds/redeploys backend (confirmed: rider-availability was
+      # missing and a live production bug fix sat undeployed for hours).
+      - "packages/rider-availability/**"
+      - "packages/merchant-payout/**"
+      - "packages/financial-rules/**"
+      - "packages/slab-pricing/**"
+      - "packages/store-status/**"
+      - "packages/bill-print/**"
       - ".github/workflows/backend.yml"
       - "infra/scripts/deploy-service.sh"
   workflow_dispatch:
