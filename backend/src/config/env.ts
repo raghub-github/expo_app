@@ -274,6 +274,21 @@ const EnvSchema = z.object({
   SERVICE_RADIUS_KM_DEFAULT: z.preprocess(emptyToUndefined, z.coerce.number().positive().max(200)).default(15),
 
   /**
+   * P3 route-distance serviceability (OPTIONAL, default OFF). When enabled, the canonical
+   * store-quote engine additionally requires a real road route within
+   * `radius * ROUTE_DISTANCE_MULTIPLIER` (further capped by MAX_DELIVERY_ROUTE_DISTANCE_KM
+   * when set), on top of the always-on air-radius coverage circle. OFF → no behavior change.
+   */
+  ROUTE_SERVICEABILITY_ENABLED: z.preprocess(
+    (v) => v === true || v === "true" || v === "1",
+    z.boolean()
+  ).default(false),
+  /** Operational multiplier applied to the merchant radius for the route limit (road detours). */
+  ROUTE_DISTANCE_MULTIPLIER: z.preprocess(emptyToUndefined, z.coerce.number().positive().max(10)).default(1.5),
+  /** Optional absolute cap (km) for the delivery route distance; the stricter limit wins. */
+  MAX_DELIVERY_ROUTE_DISTANCE_KM: z.preprocess(emptyToUndefined, z.coerce.number().positive().max(500)).optional(),
+
+  /**
    * When a customer has an active saved delivery address, keep it if live GPS is still
    * within this radius (meters). Beyond it, reconcile switches to Current Location.
    * Default 500m when unset; set e.g. 300 in .env to override.

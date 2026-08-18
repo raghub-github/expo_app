@@ -35,6 +35,7 @@ import {
   getStoreByIdForOrder,
   getStoreByStoreId,
 } from "../merchants/merchant.service.js";
+import { resolveRouteServiceability } from "./serviceability.js";
 import { resolveDropGeoRefsFromPincode } from "../billing/geoRefFromPincode.js";
 import { loadDirectDeliveryRateSlabs } from "../delivery-slab-pricing/deliverySlabPricing.repository.js";
 import {
@@ -107,7 +108,14 @@ export type StoreQuoteResult =
         final_delivery_fee: number;
         serviceable: boolean;
         /** Reason when not serviceable, for UI copy. */
-        unserviceable_reason?: "out_of_range" | "store_inactive" | "no_delivery_slab" | "no_geo_match" | null;
+        unserviceable_reason?:
+          | "out_of_range"
+          | "route_out_of_range"
+          | "no_route"
+          | "store_inactive"
+          | "no_delivery_slab"
+          | "no_geo_match"
+          | null;
         service_radius_km: number;
         source: "mapbox" | "osrm" | "haversine";
         cached: boolean;
@@ -304,6 +312,19 @@ export async function resolveStoreDeliveryQuote(
   // Merchant delivery radius is a coverage circle (km as-the-crow-flies), not road km.
   // Road distance still drives fee / ETA; using it here falsely blocked nearby customers.
   const outOfRange = hasStoreCoords && airKm > serviceRadiusKm;
+
+  // P3 (feature-gated, default OFF): optional road-route constraint on top of the air
+  // radius. When ROUTE_SERVICEABILITY_ENABLED is false this returns serviceable/null, so
+  // the final decision below reduces exactly to the air-only model (no behavior change).
+  const routeServiceability = resolveRouteServiceability({
+    enabled: env.ROUTE_SERVICEABILITY_ENABLED,
+    hasStoreCoords,
+    routeDistanceKm: distanceKm,
+    routeSource: route.source,
+    serviceRadiusKm,
+    multiplier: env.ROUTE_DISTANCE_MULTIPLIER,
+    maxRouteDistanceKm: env.MAX_DELIVERY_ROUTE_DISTANCE_KM ?? null,
+  });
 
   // Geo slab resolution (must run before serviceability is computed).
   //
@@ -700,7 +721,7 @@ export async function resolveStoreDeliveryQuote(
   deliveryFee = round2(deliveryFee);
 
   const noSlabConfigured = pricingEngine === "no_slab_configured";
-  const serviceable = !outOfRange;
+  const serviceable = !outOfRange && routeServiceability.serviceable;
 
   const gstPct = env.APPLY_GST_ON_DELIVERY_FEE
     ? Math.max(0, Math.min(100, env.DELIVERY_FEE_GST_PERCENT ?? 5))
@@ -763,11 +784,13 @@ export async function resolveStoreDeliveryQuote(
       serviceable,
       unserviceable_reason: outOfRange
         ? "out_of_range"
-        : !store.active
-          ? "store_inactive"
-          : noSlabConfigured
-            ? "no_delivery_slab"
-            : null,
+        : routeServiceability.reason
+          ? routeServiceability.reason
+          : !store.active
+            ? "store_inactive"
+            : noSlabConfigured
+              ? "no_delivery_slab"
+              : null,
       applied_geo_level: appliedGeoLevel,
       service_radius_km: round2(serviceRadiusKm),
       source: route.source,
