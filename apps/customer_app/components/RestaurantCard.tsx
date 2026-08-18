@@ -12,6 +12,7 @@ import { useRouter } from "expo-router";
 import { useQueryClient } from "@tanstack/react-query";
 import { navigateToMerchant } from "@/lib/navigateToMerchant";
 import { warmMerchantHeroImage } from "@/lib/merchantHeroWarmCache";
+import { formatMerchantDistanceKm } from "@/lib/merchantDistance";
 import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
 import type { MerchantSummary } from "@/services/merchant.service";
@@ -54,12 +55,6 @@ export type RestaurantCardProps = {
   initialSaved?: boolean;
 };
 
-function formatDistance(km?: number): string | null {
-  if (km == null || !Number.isFinite(km)) return null;
-  if (km < 1) return `${Math.round(km * 1000)} m`;
-  return `${km.toFixed(1)} km`;
-}
-
 export function RestaurantCard({ merchant, initialSaved = false }: RestaurantCardProps) {
   const router = useRouter();
   const queryClient = useQueryClient();
@@ -96,7 +91,7 @@ export function RestaurantCard({ merchant, initialSaved = false }: RestaurantCar
   );
 
   const hasImage = Boolean(heroUri && !imageError);
-  const distanceStr = formatDistance(merchant.distanceKm);
+  const distanceStr = formatMerchantDistanceKm(merchant.distanceKm);
   const hasRating = merchant.avgRating != null && merchant.avgRating >= 0;
   const ratingLabel =
     hasRating && merchant.totalReviews != null && merchant.totalReviews > 0

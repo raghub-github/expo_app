@@ -6,6 +6,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { StoreTheme } from "@/constants/storeTheme";
 import { MerchantRatingBadge } from "@/components/home/MerchantRatingBadge";
 import { MerchantOfferRow } from "@/components/home/MerchantOfferRow";
+import { formatMerchantDistanceKm } from "@/lib/merchantDistance";
 
 export type StoreInfoCardProps = {
   name: string;
@@ -47,7 +48,7 @@ export function StoreInfoCard({
   onRatingHintPress,
 }: StoreInfoCardProps) {
   const locationText = [
-    distanceKm != null ? `${distanceKm.toFixed(1)} km` : null,
+    formatMerchantDistanceKm(distanceKm),
     areaLabel,
   ]
     .filter(Boolean)
