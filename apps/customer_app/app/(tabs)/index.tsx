@@ -3,7 +3,7 @@
  * Fixed one-screen layout — no vertical scroll.
  */
 
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { View, StyleSheet, ScrollView, RefreshControl, StatusBar as NativeStatusBar, Platform } from "react-native";
 import { useQueryClient } from "@tanstack/react-query";
 import { useFocusEffect, useRouter } from "expo-router";
@@ -41,6 +41,9 @@ export default function HomeScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [weatherSheetVisible, setWeatherSheetVisible] = useState(false);
   const openBlockSheet = useCustomerServiceBlockSheetStore((s) => s.open);
+  // Throttle the on-focus service-blocks refetch: returning to Home (e.g. rapid tab
+  // toggling) previously fired a network invalidation + re-render every single time.
+  const lastBlocksRefetchRef = useRef(0);
   const locationHydrated = useLocationStore((s) => s.locationHydrated);
   const locationSource = useLocationStore((s) => s.locationSource);
   const coords = useLocationStore((s) => s.coords);
@@ -145,10 +148,14 @@ export default function HomeScreen() {
         statusBarStyle: "dark",
         hideStatusBarSpacer: false,
       });
-      void queryClient.invalidateQueries({
-        queryKey: CUSTOMER_SERVICE_BLOCKS_QUERY_KEY,
-        refetchType: "active",
-      });
+      const now = Date.now();
+      if (now - lastBlocksRefetchRef.current > 30_000) {
+        lastBlocksRefetchRef.current = now;
+        void queryClient.invalidateQueries({
+          queryKey: CUSTOMER_SERVICE_BLOCKS_QUERY_KEY,
+          refetchType: "active",
+        });
+      }
     }, [queryClient])
   );
 
