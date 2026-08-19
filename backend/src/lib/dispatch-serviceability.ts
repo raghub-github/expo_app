@@ -180,18 +180,26 @@ function geoServiceCode(serviceType: DispatchServiceType): "food" | "parcel" | "
  * agree on what "available" means (fixed the reported divergence: this check used to be
  * the only one of three that applied a location-freshness filter at all).
  */
+export type RiderAvailabilityCounts = {
+  /** Fully dispatchable now: online + fresh + service-eligible + has spare capacity. */
+  available: number;
+  /** Online + fresh + service-eligible in the area, IGNORING capacity — i.e. present but
+   *  possibly all busy. Lets callers say "all busy" vs "none online" accurately. */
+  onlineInArea: number;
+};
+
 export async function countAvailableRidersWithinServiceRadius(
   serviceType: DispatchServiceType,
   pickup: { lat: number; lng: number },
   radiusMeters: number
-): Promise<number> {
+): Promise<RiderAvailabilityCounts> {
   if (
     !Number.isFinite(pickup.lat) ||
     !Number.isFinite(pickup.lng) ||
     !Number.isFinite(radiusMeters) ||
     radiusMeters <= 0
   ) {
-    return 0;
+    return { available: 0, onlineInArea: 0 };
   }
 
   const sql = getSql();
@@ -203,7 +211,12 @@ export async function countAvailableRidersWithinServiceRadius(
     freshnessMaxAgeMinutes: RIDER_DISPATCH_LOCATION_MAX_AGE_MINUTES,
   });
 
-  return candidates.filter((c) => c.eligible).length;
+  return {
+    available: candidates.filter((c) => c.eligible).length,
+    onlineInArea: candidates.filter(
+      (c) => c.accountActive && c.onDuty && c.serviceEligible && c.locationFresh
+    ).length,
+  };
 }
 
 /** Pre-placement serviceability decision for a pickup location + fulfillment mode. */
@@ -329,12 +342,15 @@ export async function checkDispatchServiceability(args: {
   }
 
   let ridersAvailable = 0;
+  let onlineRidersInArea = 0;
   if (cov.internalRiderEnabled) {
-    ridersAvailable = await countAvailableRidersWithinServiceRadius(
+    const counts = await countAvailableRidersWithinServiceRadius(
       serviceType,
       { lat: pickup.lat, lng: pickup.lng },
       cov.serviceRadiusMeters
     );
+    ridersAvailable = counts.available;
+    onlineRidersInArea = counts.onlineInArea;
   }
 
   if (ridersAvailable > 0) {
@@ -350,10 +366,16 @@ export async function checkDispatchServiceability(args: {
       usedTpl: true,
     };
   }
+  // Accurate copy: only say "busy" when partners are genuinely online in the area but at
+  // capacity; otherwise say none are available (the common real case — no online/fresh
+  // rider nearby), instead of the misleading "all busy".
   return {
     serviceable: false,
     reason: "no_rider_available",
-    message: "All nearby delivery partners are currently busy. Please try again shortly.",
+    message:
+      onlineRidersInArea > 0
+        ? "All delivery partners near you are busy right now. Please try again shortly."
+        : "No delivery partner is available in your area right now. Please try again shortly.",
     ...base,
     ridersAvailable,
   };

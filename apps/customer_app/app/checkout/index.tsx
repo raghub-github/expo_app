@@ -1721,12 +1721,13 @@ export default function CheckoutScreen() {
         return true;
       }
       const isNoRider = svc.result.reason === "no_rider_available";
+      // Trust the backend's accurate copy (it distinguishes "all busy" from "none
+      // online in your area"); only fall back if it didn't send one.
       const alert = {
-        title: isNoRider ? "Oops! No Rider Available" : "Delivery unavailable",
-        message: isNoRider
-          ? "All nearby delivery partners are currently busy. Please try again shortly."
-          : svc.result.message ||
-            "All nearby delivery partners are currently busy. Please try again shortly.",
+        title: isNoRider ? "No delivery partner available" : "Delivery unavailable",
+        message:
+          svc.result.message ||
+          "We couldn't find a delivery partner for your area right now. Please try again shortly.",
       };
       if (forceShow) {
         setDeliveryUnavailableAlert(alert);
@@ -5503,11 +5504,21 @@ export default function CheckoutScreen() {
                       />
                     </View>
                     <View style={styles.ctaSolidTotalRow}>
-                      <CheckoutText style={styles.ctaSolidTotal} bold numberOfLines={1}>
+                      <CheckoutText
+                        style={styles.ctaSolidTotal}
+                        bold
+                        numberOfLines={1}
+                        maxFontSizeMultiplier={1.3}
+                      >
                         TOTAL
                       </CheckoutText>
                       {fullyPaidByGatiCash ? (
-                        <CheckoutText style={styles.ctaSolidGatiCashHint} bold numberOfLines={1}>
+                        <CheckoutText
+                          style={styles.ctaSolidGatiCashHint}
+                          bold
+                          numberOfLines={1}
+                          maxFontSizeMultiplier={1.3}
+                        >
                           · 100% GatiCash
                         </CheckoutText>
                       ) : null}
@@ -5520,7 +5531,12 @@ export default function CheckoutScreen() {
                     ) : (
                       <>
                         <View style={styles.ctaSolidRightRow}>
-                          <CheckoutText style={styles.ctaSolidTitle} bold numberOfLines={1}>
+                          <CheckoutText
+                            style={styles.ctaSolidTitle}
+                            bold
+                            numberOfLines={1}
+                            maxFontSizeMultiplier={1.3}
+                          >
                             Place Order
                           </CheckoutText>
                           {canPlaceOrder ? (
@@ -6252,10 +6268,10 @@ export default function CheckoutScreen() {
 
       <AppAlertModal
         visible={deliveryUnavailableAlert != null}
-        title={deliveryUnavailableAlert?.title ?? "Oops! No Rider Available"}
+        title={deliveryUnavailableAlert?.title ?? "No delivery partner available"}
         message={
           deliveryUnavailableAlert?.message ??
-          "All nearby delivery partners are currently busy. Please try again shortly."
+          "We couldn't find a delivery partner for your area right now. Please try again shortly."
         }
         confirmLabel="OK"
         variant="warning"
