@@ -11,6 +11,7 @@
 import { and, asc, desc, eq, inArray, isNull, notInArray, or, sql } from "drizzle-orm";
 import { incrCounter } from "@gatimitra/logger";
 import { getDb, getSql } from "../db/client.js";
+import { getEnv } from "../config/env.js";
 import {
   customerRideServiceCatalog,
   dutyLogs,
@@ -42,8 +43,20 @@ import {
 /** WGS-84 mean Earth radius in meters (ITRF-grade haversine). */
 const EARTH_RADIUS_METERS = 6_371_008.8;
 
-/** Max age of rider GPS ping before the rider is ineligible for new dispatch offers. */
-export const RIDER_DISPATCH_LOCATION_MAX_AGE_MINUTES = 10;
+/**
+ * Max age (seconds) of a rider GPS ping before they're ineligible for NEW dispatch offers.
+ * Configurable via env RIDER_DISPATCH_LOCATION_MAX_AGE_SECONDS (default 120). Read lazily so
+ * a tuned value takes effect without a redeploy of dependents.
+ */
+export function riderDispatchLocationMaxAgeSeconds(): number {
+  return getEnv().RIDER_DISPATCH_LOCATION_MAX_AGE_SECONDS;
+}
+
+/** @deprecated Legacy minutes view of the dispatch freshness gate — prefer
+ *  `riderDispatchLocationMaxAgeSeconds()`. Kept for any external minute-based callers. */
+export function riderDispatchLocationMaxAgeMinutes(): number {
+  return riderDispatchLocationMaxAgeSeconds() / 60;
+}
 
 export type DispatchServiceType = "food" | "parcel" | "person_ride";
 
@@ -457,7 +470,7 @@ export async function loadRiderGps(
 
   const updatedAt = new Date(position.updated_at);
   const freshEnough =
-    Date.now() - updatedAt.getTime() <= RIDER_DISPATCH_LOCATION_MAX_AGE_MINUTES * 60_000;
+    Date.now() - updatedAt.getTime() <= riderDispatchLocationMaxAgeSeconds() * 1000;
 
   if (!freshEnough) return null;
 
@@ -583,7 +596,7 @@ async function loadOnDutyRiderIds(
       ORDER BY dl.timestamp DESC
       LIMIT 1
     ) ld ON true
-    WHERE rcl.updated_at >= NOW() - (${RIDER_DISPATCH_LOCATION_MAX_AGE_MINUTES} * INTERVAL '1 minute')
+    WHERE rcl.updated_at >= NOW() - (${riderDispatchLocationMaxAgeSeconds()} * INTERVAL '1 second')
       AND r.status = 'ACTIVE'
       AND r.onboarding_stage = 'ACTIVE'
       AND r.deleted_at IS NULL
