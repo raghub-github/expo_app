@@ -285,6 +285,22 @@ const EnvSchema = z.object({
     .default(120),
 
   /**
+   * P2 "wake + fresh ping": before finalizing an offer to the top candidate, ask that
+   * rider's app to report its location RIGHT NOW (via the rider:{id} realtime channel),
+   * wait briefly, then price/route the offer off that <2s point. OFF by default — needs
+   * the rider-app location_wake handler shipped + validated first. Falls back to the
+   * existing (already <=120s fresh) point if no fresh ping arrives in time.
+   */
+  DISPATCH_WAKE_PING_ENABLED: z.preprocess(
+    (v) => v === true || v === "true" || v === "1",
+    z.boolean()
+  ).default(false),
+  /** Max ms to wait for the woken rider's fresh ping before falling back. */
+  DISPATCH_WAKE_PING_TIMEOUT_MS: z
+    .preprocess(emptyToUndefined, z.coerce.number().int().min(300).max(5000))
+    .default(1500),
+
+  /**
    * P3 route-distance serviceability (OPTIONAL, default OFF). When enabled, the canonical
    * store-quote engine additionally requires a real road route within
    * `radius * ROUTE_DISTANCE_MULTIPLIER` (further capped by MAX_DELIVERY_ROUTE_DISTANCE_KM
