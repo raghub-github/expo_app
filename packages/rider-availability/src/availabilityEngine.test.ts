@@ -113,3 +113,20 @@ test("multiple simultaneous failures all appear in reasons", () => {
   assert.ok(result.reasons.includes("location_stale"));
   assert.ok(result.reasons.includes("no_capacity"));
 });
+
+test("tighter 120s eligibility gate excludes a 3-min-old rider the old 10-min gate allowed", () => {
+  const threeMinOld = new Date(NOW.getTime() - 3 * 60_000);
+  // Old lenient gate (10 min): a 3-min-old location was still 'fresh' → eligible.
+  const lenient = deriveAvailability(baseInput({ locationUpdatedAt: threeMinOld, freshnessMaxAgeMinutes: 10 }));
+  assert.equal(lenient.eligible, true);
+  // New tight gate (120s = 2 min): the same 3-min-old location is stale → ineligible.
+  const tight = deriveAvailability(baseInput({ locationUpdatedAt: threeMinOld, freshnessMaxAgeMinutes: 2 }));
+  assert.equal(tight.eligible, false);
+  assert.ok(tight.reasons.includes("location_stale"));
+});
+
+test("120s gate: a rider pinging normally (<30s) stays eligible", () => {
+  const twentySecOld = new Date(NOW.getTime() - 20_000);
+  const r = deriveAvailability(baseInput({ locationUpdatedAt: twentySecOld, freshnessMaxAgeMinutes: 2 }));
+  assert.equal(r.eligible, true);
+});

@@ -22,7 +22,7 @@
  */
 
 import {
-  RIDER_DISPATCH_LOCATION_MAX_AGE_MINUTES,
+  riderDispatchLocationMaxAgeSeconds,
   type DispatchServiceType,
 } from "./order-assignment-engine.js";
 import { resolveGeoCoverage } from "./geo-coverage.js";
@@ -208,7 +208,7 @@ export async function countAvailableRidersWithinServiceRadius(
     lat: pickup.lat,
     lng: pickup.lng,
     radiusMeters,
-    freshnessMaxAgeMinutes: RIDER_DISPATCH_LOCATION_MAX_AGE_MINUTES,
+    freshnessMaxAgeMinutes: riderDispatchLocationMaxAgeSeconds() / 60,
   });
 
   return {

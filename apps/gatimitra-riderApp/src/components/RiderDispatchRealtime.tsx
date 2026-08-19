@@ -7,6 +7,9 @@ import { getRiderAppConfig, resolveUrlForDevice } from "@/src/config/env";
 import { RIDER_AVAILABLE_ORDERS_QUERY_KEY } from "@/src/hooks/useOrders";
 import { showAcceptedByAnotherRiderToast } from "@/src/lib/riderDispatchTakenToast";
 import { riderDispatchLog, riderDispatchWarn } from "@/src/lib/rider-dispatch-log";
+import { acquireAndCommitRiderLocation } from "@/src/services/location/riderLocationController";
+import { getOrCreateDeviceId } from "@/src/utils/deviceId";
+import { pingLocation } from "@/src/services/location/locationPinger";
 import { useRiderWsStore } from "@/src/stores/riderWsStore";
 import { useRiderToastStore } from "@/src/stores/riderToastStore";
 import {
@@ -232,6 +235,34 @@ export function RiderDispatchRealtime() {
               message?: string;
             };
             if (payload.type === "pong") return;
+            // P2 "wake + fresh ping": dispatch is about to offer an order to THIS rider and
+            // wants a <2s-fresh location to price/route the pre-pickup leg. Capture GPS and
+            // push it immediately; best-effort (dispatch falls back to the last point).
+            if (payload.type === "location_wake") {
+              void (async () => {
+                try {
+                  const result = await acquireAndCommitRiderLocation({
+                    assumeReady: true,
+                    requireFresh: true,
+                  });
+                  if (!result.ok) return;
+                  const deviceId = await getOrCreateDeviceId();
+                  await pingLocation({
+                    session,
+                    deviceId,
+                    fix: {
+                      tsMs: Date.now(),
+                      lat: result.coords.latitude,
+                      lng: result.coords.longitude,
+                      accuracyM: result.coords.accuracy ?? undefined,
+                    },
+                  });
+                } catch {
+                  // Non-blocking — dispatch uses the existing (still-fresh) point on timeout.
+                }
+              })();
+              return;
+            }
             // Tracking watchdog warning (location off / wrong direction / no
             // movement). Backend re-emits at most every N min, so surface each
             // one directly — it warns the rider their order may be auto-cancelled.

@@ -274,6 +274,33 @@ const EnvSchema = z.object({
   SERVICE_RADIUS_KM_DEFAULT: z.preprocess(emptyToUndefined, z.coerce.number().positive().max(200)).default(15),
 
   /**
+   * Max age (seconds) of a rider's GPS ping before they are INELIGIBLE for NEW dispatch
+   * offers — i.e. dispatch only ever assigns using a genuinely-fresh location. A healthy
+   * rider pings every 3–30s, so 120s excludes only devices that stopped reporting (crash,
+   * background-kill, no network). Kept separate from any looser map-display freshness.
+   * Bounds guard against a mis-set value silently starving or over-loosening dispatch.
+   */
+  RIDER_DISPATCH_LOCATION_MAX_AGE_SECONDS: z
+    .preprocess(emptyToUndefined, z.coerce.number().int().min(30).max(3600))
+    .default(120),
+
+  /**
+   * P2 "wake + fresh ping": before finalizing an offer to the top candidate, ask that
+   * rider's app to report its location RIGHT NOW (via the rider:{id} realtime channel),
+   * wait briefly, then price/route the offer off that <2s point. OFF by default — needs
+   * the rider-app location_wake handler shipped + validated first. Falls back to the
+   * existing (already <=120s fresh) point if no fresh ping arrives in time.
+   */
+  DISPATCH_WAKE_PING_ENABLED: z.preprocess(
+    (v) => v === true || v === "true" || v === "1",
+    z.boolean()
+  ).default(false),
+  /** Max ms to wait for the woken rider's fresh ping before falling back. */
+  DISPATCH_WAKE_PING_TIMEOUT_MS: z
+    .preprocess(emptyToUndefined, z.coerce.number().int().min(300).max(5000))
+    .default(1500),
+
+  /**
    * P3 route-distance serviceability (OPTIONAL, default OFF). When enabled, the canonical
    * store-quote engine additionally requires a real road route within
    * `radius * ROUTE_DISTANCE_MULTIPLIER` (further capped by MAX_DELIVERY_ROUTE_DISTANCE_KM
