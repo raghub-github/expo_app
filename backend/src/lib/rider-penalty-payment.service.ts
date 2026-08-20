@@ -1,4 +1,4 @@
-import { and, desc, eq, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import { ulid } from "ulid";
 import { getDb } from "../db/client.js";
 import {
@@ -14,6 +14,7 @@ import { getEnv } from "../config/env.js";
 import { logPaymentEvent } from "../modules/orders/order.placement.service.js";
 import {
   createRazorpayOrder,
+  fetchRazorpayOrderPayments,
   verifyRazorpayPaymentDetails,
   verifyRazorpaySignature,
 } from "../services/payment/razorpayService.js";
@@ -182,6 +183,15 @@ async function notifyRiderWalletRecovered(
  * `initiated` audit row. Rider cannot edit the amount — it is the abs(balance).
  */
 export async function createRiderPenaltyPaymentOrder(riderId: number) {
+  // Self-heal first: if a previous attempt was actually captured at Razorpay but never
+  // confirmed (app died / lost network / missing webhook), settle it now so we don't
+  // charge the rider a second time and `payable` reflects the true outstanding.
+  try {
+    await reconcileRiderWalletPayments(riderId);
+  } catch {
+    // reconciliation is best-effort — never block starting a new payment
+  }
+
   const payable = await getPayableNegativeRupees(riderId);
   if (payable <= 0) {
     return { ok: false as const, status: 400, error: "no_due" };
@@ -271,13 +281,45 @@ export async function recordRiderWalletPaymentAttempt(args: {
 }) {
   const db = getDb();
   try {
+    // The client says the sheet was cancelled/failed — but the payment may actually
+    // have been captured (a UPI collect that succeeded after the app gave up, a lost
+    // success callback). Ask Razorpay before trusting "cancelled": if it was captured
+    // we settle the wallet instead of burying a real payment as cancelled.
+    const [row] = await db
+      .select({
+        riderId: riderWalletPayments.riderId,
+        razorpayOrderId: riderWalletPayments.razorpayOrderId,
+        amountPaise: riderWalletPayments.amountPaise,
+        status: riderWalletPayments.status,
+        gateway: riderWalletPayments.gateway,
+        createdAt: riderWalletPayments.createdAt,
+      })
+      .from(riderWalletPayments)
+      .where(
+        and(
+          eq(riderWalletPayments.riderId, args.riderId),
+          eq(riderWalletPayments.razorpayOrderId, args.razorpayOrderId)
+        )
+      )
+      .orderBy(desc(riderWalletPayments.createdAt))
+      .limit(1);
+
+    if (row && row.status !== "success") {
+      const outcome = await reconcileOneWalletOrder(row);
+      if (outcome.result === "settled" || outcome.result === "already_settled") {
+        // Real payment — do not overwrite the now-success row with cancelled/failed.
+        return { ok: true as const, settled: true };
+      }
+    }
+
     await db
       .update(riderWalletPayments)
       .set({ status: args.status, remarks: args.reason ?? args.status, updatedAt: new Date(), updatedBy: "rider" })
       .where(
         and(
           eq(riderWalletPayments.riderId, args.riderId),
-          eq(riderWalletPayments.razorpayOrderId, args.razorpayOrderId)
+          eq(riderWalletPayments.razorpayOrderId, args.razorpayOrderId),
+          inArray(riderWalletPayments.status, ["initiated"])
         )
       );
     await logPaymentEvent(db, {
@@ -635,6 +677,174 @@ export async function finalizeRiderWalletPaymentFromWebhook(args: {
     method: "razorpay",
     source: "webhook",
   });
+}
+
+/**
+ * How long an `initiated`/`cancelled` order may sit unresolved before, if Razorpay
+ * shows no successful payment against it, the reconciler marks it `failed`. Razorpay
+ * keeps an order open for payment retries for a while; 20 min is comfortably past a
+ * normal checkout so we never fail an order the rider is still paying.
+ */
+const RECONCILE_ABANDON_AFTER_MS = 20 * 60 * 1000;
+
+type ReconcileOutcome =
+  | { orderId: string; result: "settled"; creditedAmount: number; totalBalance: number }
+  | { orderId: string; result: "already_settled" }
+  | { orderId: string; result: "pending" }
+  | { orderId: string; result: "failed_marked" }
+  | { orderId: string; result: "skipped"; reason: string };
+
+type ReconcileAction =
+  | { action: "settle"; paymentId: string }
+  | { action: "pending" }
+  | { action: "fail" };
+
+/**
+ * Pure decision for what to do with a rider-wallet order given Razorpay's payments
+ * for it. Extracted so the reconcile policy is unit-testable without DB/network:
+ *   - a captured payment            → settle (money is real; idempotent downstream)
+ *   - any authorized/created attempt OR order still young → pending (rider may pay)
+ *   - otherwise (old, nothing live) → fail (abandoned)
+ */
+export function classifyReconcileAction(input: {
+  payments: Array<{ id: string; status: string }>;
+  ageMs: number;
+  abandonAfterMs?: number;
+}): ReconcileAction {
+  const abandonAfterMs = input.abandonAfterMs ?? RECONCILE_ABANDON_AFTER_MS;
+  const captured = input.payments.find((p) => p.status === "captured");
+  if (captured) return { action: "settle", paymentId: captured.id };
+  const hasLivePending = input.payments.some(
+    (p) => p.status === "authorized" || p.status === "created"
+  );
+  if (hasLivePending || input.ageMs < abandonAfterMs) return { action: "pending" };
+  return { action: "fail" };
+}
+
+/**
+ * Reconcile ONE rider-wallet payment order against Razorpay's authoritative record.
+ *
+ * This is the safety net for "the money left the rider but nothing updated": the
+ * client verify never ran (app died / lost network) AND no webhook arrived (or it
+ * was lost). We ask Razorpay what actually happened to the order and converge:
+ *   - a captured payment  → settle the wallet (idempotent with verify + webhook)
+ *   - only created/failed AND the order is old → mark our row `failed`
+ *   - still authorized / too new → leave `pending` for the next sweep
+ * Never throws — a transient Razorpay/DB error just yields `skipped`.
+ */
+async function reconcileOneWalletOrder(row: {
+  riderId: number;
+  razorpayOrderId: string | null;
+  amountPaise: number;
+  status: string;
+  gateway: string | null;
+  createdAt: Date | string;
+}): Promise<ReconcileOutcome> {
+  const orderId = row.razorpayOrderId ?? "";
+  if (!orderId) return { orderId, result: "skipped", reason: "no_order_id" };
+  if (row.gateway === "dummy") return { orderId, result: "skipped", reason: "dummy" };
+
+  let payments;
+  try {
+    payments = await fetchRazorpayOrderPayments(orderId);
+  } catch (err) {
+    // Transient gateway/network error, or an order id from rotated keys — leave it
+    // for the next sweep rather than wrongly failing a possibly-good order.
+    return { orderId, result: "skipped", reason: (err as Error)?.message ?? "fetch_failed" };
+  }
+
+  const ageMs = Date.now() - new Date(row.createdAt).getTime();
+  const decision = classifyReconcileAction({ payments, ageMs });
+
+  if (decision.action === "settle") {
+    const settle = await settleRiderWalletPayment({
+      riderId: row.riderId,
+      razorpayOrderId: orderId,
+      razorpayPaymentId: decision.paymentId,
+      expectedPaise: row.amountPaise,
+      method: "razorpay",
+      source: "webhook", // reconciler is a server-authoritative path, like the webhook
+    });
+    if (!settle.ok) return { orderId, result: "skipped", reason: settle.error };
+    return settle.idempotent
+      ? { orderId, result: "already_settled" }
+      : {
+          orderId,
+          result: "settled",
+          creditedAmount: settle.creditedAmount,
+          totalBalance: settle.totalBalance,
+        };
+  }
+
+  if (decision.action === "pending") {
+    return { orderId, result: "pending" };
+  }
+
+  // decision.action === "fail": old order, nothing captured/authorized → genuinely
+  // abandoned/failed. Only move
+  // rows the rider can no longer complete; never touch a settled/verification_failed row.
+  const db = getDb();
+  await db
+    .update(riderWalletPayments)
+    .set({ status: "failed", remarks: "reconciled: no successful payment at gateway", updatedAt: new Date(), updatedBy: "system" })
+    .where(
+      and(
+        eq(riderWalletPayments.riderId, row.riderId),
+        eq(riderWalletPayments.razorpayOrderId, orderId),
+        inArray(riderWalletPayments.status, ["initiated", "cancelled"])
+      )
+    );
+  await logPaymentEvent(db, {
+    eventType: "NEG_WALLET_PAYMENT_RECONCILED_FAILED",
+    source: "system",
+    razorpayOrderId: orderId,
+    payload: { riderId: row.riderId, ageMs },
+  });
+  return { orderId, result: "failed_marked" };
+}
+
+/**
+ * Sweep a rider's non-terminal wallet-payment orders and reconcile each against
+ * Razorpay. Call this cheaply on read paths (opening the pay card, creating a new
+ * order, fetching history) so a captured-but-unconfirmed payment self-heals the
+ * next time the rider's app talks to us — no cron required. Idempotent + safe.
+ */
+export async function reconcileRiderWalletPayments(
+  riderId: number
+): Promise<ReconcileOutcome[]> {
+  const db = getDb();
+  const rows = await db
+    .select({
+      riderId: riderWalletPayments.riderId,
+      razorpayOrderId: riderWalletPayments.razorpayOrderId,
+      amountPaise: riderWalletPayments.amountPaise,
+      status: riderWalletPayments.status,
+      gateway: riderWalletPayments.gateway,
+      createdAt: riderWalletPayments.createdAt,
+    })
+    .from(riderWalletPayments)
+    .where(
+      and(
+        eq(riderWalletPayments.riderId, riderId),
+        inArray(riderWalletPayments.status, ["initiated", "cancelled"])
+      )
+    )
+    .orderBy(desc(riderWalletPayments.createdAt))
+    .limit(20);
+
+  const outcomes: ReconcileOutcome[] = [];
+  for (const row of rows) {
+    try {
+      outcomes.push(await reconcileOneWalletOrder(row));
+    } catch (err) {
+      outcomes.push({
+        orderId: row.razorpayOrderId ?? "",
+        result: "skipped",
+        reason: (err as Error)?.message ?? "reconcile_failed",
+      });
+    }
+  }
+  return outcomes;
 }
 
 /** Rider's own negative-wallet payment history (latest first). */

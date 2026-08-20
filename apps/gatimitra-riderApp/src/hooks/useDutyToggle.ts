@@ -114,15 +114,13 @@ export function useDutyToggle() {
   const subscriptionDutyBlocked =
     subscriptionStatus?.dues?.dispatchBlocked === true ||
     subscriptionStatus?.dues?.alertBanner?.variant === "restricted";
-  const subscriptionAlertVisible =
-    subscriptionStatus?.dues?.alertBanner?.visible === true;
-  const walletBalance = Number(earnings?.totalBalance ?? 0);
-  // Match PenaltyBanner: claim "duty stopped" only when we actually block go-ON.
-  // While a subscription warning banner is up (day 1–2), duty may stay ON — do not
-  // also treat a negative wallet as a hard stop (that was the ON-DUTY + yellow mismatch).
-  const walletPenaltyBlocksDuty =
-    restrictions?.penaltyDutyStopped === true ||
-    (walletBalance < 0 && !subscriptionAlertVisible);
+  // Penalty blocks duty ONLY when the server says so — and the server now decides
+  // that against the Super-Admin wallet threshold (penaltyFullyStopsDuty), not on
+  // "balance is negative". A sub-threshold penalty (or a brief order-time debit that
+  // dips the balance negative) must NOT block go-ON or flip the toggle off; it only
+  // shows a "pay it down" banner. Re-deriving a hard stop from walletBalance < 0 here
+  // was the bug that turned the toggle off on any penalty / on order assignment.
+  const walletPenaltyBlocksDuty = restrictions?.penaltyDutyStopped === true;
 
   /** Client-side hard lock — never call PUT /duty ON while true. */
   const dutyGoOnBlocked =
