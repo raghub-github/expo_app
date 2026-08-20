@@ -672,6 +672,10 @@ export function prepareCtmRows(
       orderItemId: line.orderItemId,
       menuItemId: line.menuItemId,
       quantity: line.quantity,
+      // Carry the customer-facing line + offer discount through so the final CTM rows
+      // (built via `...p` below) satisfy the row type — they were dropped here before.
+      customerCatalogLine: line.customerCatalogLine,
+      customerOfferDiscount: line.customerOfferDiscount,
       selling,
       gross,
       disc: Math.min(selling, customerDisc),
