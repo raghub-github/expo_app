@@ -30,6 +30,7 @@ import { riders, userProfiles, customers } from "../../db/schema.js";
 import { eq } from "drizzle-orm";
 import { auth } from "../../plugins/auth.js";
 import { applyRiderDeviceLoginPolicy, RiderDeviceChangeLimitError } from "../../lib/rider-device-change-policy.js";
+import { markDeviceSessionActive } from "../../lib/device-session-cache.js";
 import { resolveRiderLoginGeoForSession, type RiderLoginGeo } from "../../lib/login-geo.js";
 import {
   phonesMatch,
@@ -200,7 +201,10 @@ async function persistMerchantDeviceSessionForMerchant(
     RETURNING id
   `;
   const touched = Array.isArray(updated) ? updated.length : 0;
-  if (touched > 0) return;
+  if (touched > 0) {
+    markDeviceSessionActive(userId, deviceId);
+    return;
+  }
 
   await sql`
     INSERT INTO user_device_sessions (
@@ -228,6 +232,7 @@ async function persistMerchantDeviceSessionForMerchant(
       ${deviceId}
     )
   `;
+  markDeviceSessionActive(userId, deviceId);
 }
 
 /**

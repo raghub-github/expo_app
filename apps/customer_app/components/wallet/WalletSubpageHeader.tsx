@@ -9,16 +9,24 @@ type Props = {
   title: string;
   onBack: () => void;
   backgroundColor?: string;
+  dark?: boolean;
 };
 
 /** Left-aligned back + title (Zomato wallet settings reference). */
-export function WalletSubpageHeader({ title, onBack, backgroundColor = "#F5F5F7" }: Props) {
+export function WalletSubpageHeader({
+  title,
+  onBack,
+  backgroundColor,
+  dark = false,
+}: Props) {
+  const bg = backgroundColor ?? (dark ? "#121212" : "#F5F5F7");
+  const fg = dark ? "#FFFFFF" : TEXT;
   return (
-    <View style={[styles.header, { backgroundColor }]}>
+    <View style={[styles.header, { backgroundColor: bg }]}>
       <TouchableOpacity onPress={onBack} style={styles.backBtn} hitSlop={12} activeOpacity={0.7}>
-        <Ionicons name="arrow-back" size={22} color={TEXT} />
+        <Ionicons name="arrow-back" size={22} color={fg} />
       </TouchableOpacity>
-      <AppText style={styles.title} numberOfLines={1}>
+      <AppText style={[styles.title, { color: fg }]} numberOfLines={1}>
         {title}
       </AppText>
     </View>

@@ -332,6 +332,9 @@ function applyPercentageOrFlat(
         ) {
           continue;
         }
+        if (line.boostAlreadyInPrice) {
+          continue;
+        }
         const base = Math.max(0, line.baseLineTotal ?? line.lineTotal);
         if (base <= 0) continue;
         let off = 0;

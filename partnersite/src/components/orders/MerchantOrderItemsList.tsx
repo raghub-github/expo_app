@@ -57,7 +57,7 @@ type Props = {
   totalLineCount?: number;
   /** Optional control aligned to the top-right of the ORDER ITEMS header (e.g. View rider). */
   headerRight?: ReactNode;
-  /** Incoming-order: item name + qty sub-row | Amount (no separate QTY column). */
+  /** Incoming-order: Item | Qty box | Amount (same as bill sidesheet). */
   showQuantityColumn?: boolean;
   /** Card-footer "view all" (Order panel / incoming modal). */
   onViewMore?: () => void;
@@ -125,8 +125,9 @@ export function MerchantOrderItemsList({
         ) : (
           <>
             {showQuantityColumn ? (
-              <div className="grid grid-cols-[minmax(0,1fr)_96px] items-center gap-x-2 border-b border-stone-200 bg-stone-50 px-2.5 py-2 text-[10px] font-semibold text-stone-600">
-                <span>Items to be packed</span>
+              <div className="grid grid-cols-[minmax(0,1fr)_48px_96px] items-center gap-x-2 border-b border-stone-200 bg-stone-50 px-2.5 py-2 text-[10px] font-semibold uppercase tracking-wide text-stone-500">
+                <span>Item</span>
+                <span className="text-center">Qty</span>
                 <span className="text-right">Amount</span>
               </div>
             ) : null}
@@ -160,7 +161,7 @@ export function MerchantOrderItemsList({
                   <div
                     className={
                       showQuantityColumn
-                        ? 'grid grid-cols-[minmax(0,1fr)_96px] items-start gap-x-2'
+                        ? 'grid grid-cols-[minmax(0,1fr)_48px_96px] items-center gap-x-2'
                         : `flex justify-between gap-3 ${compact ? 'items-center' : 'items-start'}`
                     }
                   >
@@ -211,11 +212,6 @@ export function MerchantOrderItemsList({
                             {item.name || `Item ${i + 1}`}
                           </span>
                         )}
-                        {showQuantityColumn ? (
-                          <p className="mt-0.5 text-[11px] font-medium leading-snug text-stone-500">
-                            qty - {qty}
-                          </p>
-                        ) : null}
                         {cookingNote ? (
                           <p className="mt-1 text-[11px] font-semibold leading-snug text-amber-800">
                             Cooking: {cookingNote}
@@ -259,6 +255,14 @@ export function MerchantOrderItemsList({
                         ) : null}
                       </div>
                     </div>
+
+                    {showQuantityColumn ? (
+                      <div className="relative z-10 flex min-w-0 justify-center self-center">
+                        <span className="incoming-num inline-flex h-7 min-w-8 items-center justify-center rounded border border-stone-300 bg-white px-1.5 text-[13px] font-semibold text-stone-900">
+                          {qty}
+                        </span>
+                      </div>
+                    ) : null}
 
                     {clickable ? (
                       <button

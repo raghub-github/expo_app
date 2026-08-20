@@ -10,7 +10,7 @@ import { computeBillForOrder } from "../billing/billing.service.js";
 import { loadBillingDatasetUncached } from "../billing/billing.repository.js";
 import type { MerchantOfferRow } from "../billing/types.js";
 import type { NormalizedOrderItem } from "../orders/orderNormalizer.js";
-import { pickBestMerchantOfferForLine } from "./offer-discount-estimator.js";
+import { resolveItemPricing } from "./canonicalItemPricing.js";
 import { detectOfferConflicts, type ConflictCheckInput } from "./offer-conflict.service.js";
 import type {
   CartPriceResult,
@@ -150,9 +150,6 @@ export async function calculateProductPrice(input: {
   const commission = await resolveStoreCommission(input.storeId);
   const merchantBase = num(item.selling_price);
   const mrpBase = num(item.base_price) > 0 ? num(item.base_price) : merchantBase;
-  const mrp = customerPriceFromMerchantBase(mrpBase, commission.percent);
-  const sellingPrice = customerPriceFromMerchantBase(merchantBase, commission.percent);
-  const lineTotal = round2(sellingPrice * qty);
 
   let offers = await loadActiveMerchantOffers(input.storeId);
   if (input.previewOffer) {
@@ -163,17 +160,17 @@ export async function calculateProductPrice(input: {
     offers = [...input.extraOffers, ...offers];
   }
 
-  const best = pickBestMerchantOfferForLine(
+  const priced = resolveItemPricing({
+    baseCtmUnit: merchantBase,
+    quantity: qty,
+    commissionPercent: commission.percent,
     offers,
-    lineTotal,
-    input.menuItemId,
-    item.category_id
-  );
-  const merchantDiscount = round2(best?.discount ?? 0);
-  const finalLine = round2(Math.max(0, lineTotal - merchantDiscount));
-  const finalPerUnit = round2(finalLine / qty);
-  const platformCommission = round2(sellingPrice - merchantBase);
-  const merchantSettlement = round2(merchantBase * qty - merchantDiscount);
+    menuItemId: input.menuItemId,
+    extraAliases: item.item_id ? [item.item_id] : [],
+  });
+  const mrp = customerPriceFromMerchantBase(mrpBase, commission.percent);
+  const merchantDiscount = round2(priced.merchantDiscountAmount);
+  const platformCommission = round2(priced.commissionAmount);
 
   return {
     menuItemId: input.menuItemId,
@@ -181,18 +178,18 @@ export async function calculateProductPrice(input: {
     itemName: item.item_name,
     quantity: qty,
     mrp: round2(mrp),
-    sellingPrice: round2(sellingPrice),
+    sellingPrice: round2(priced.customerStrikeUnit),
     merchantDiscount,
     platformDiscount: 0,
     couponDiscount: 0,
     walletDiscount: 0,
     subscriptionDiscount: 0,
-    finalPrice: finalPerUnit,
+    finalPrice: round2(priced.customerItemPriceUnit),
     merchantBasePerUnit: round2(merchantBase),
     platformCommission,
-    merchantSettlement,
-    appliedOfferIds: best ? [best.offer.id] : [],
-    appliedOfferTitles: best ? [best.offer.title] : [],
+    merchantSettlement: round2(priced.merchantSettlementCtm),
+    appliedOfferIds: priced.merchantOfferId ? [priced.merchantOfferId] : [],
+    appliedOfferTitles: priced.merchantOfferName ? [priced.merchantOfferName] : [],
     cacheVersion,
   };
 }

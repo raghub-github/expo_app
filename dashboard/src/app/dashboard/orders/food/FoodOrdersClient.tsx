@@ -5,6 +5,12 @@ import { useQuery, useQueries, useQueryClient } from "@tanstack/react-query";
 import { useAppSearchParams } from "@/hooks/useAppSearchParams";
 import { useRouter } from "next/navigation";
 import { useFoodOrdersListActive } from "@/hooks/useFoodOrdersListActive";
+import {
+  endOrderListSearch,
+  getOrderListSearchSnapshot,
+  ORDER_LIST_SEARCH_REPEAT_EVENT,
+  useOrderListSearchPending,
+} from "@/lib/orders/order-list-search-ui";
 import Link from "next/link";
 import { X, RefreshCw, Filter, CheckCircle2, ChevronDown, ArrowUpDown } from "lucide-react";
 import { type CSSProperties } from "react";
@@ -170,17 +176,6 @@ export interface OrdersFilters {
   limit: number;
   foodFilters?: FoodFiltersPayload;
   listSort?: ListSortMode;
-}
-
-function useDebouncedValue<T>(value: T, delay: number): T {
-  const [debounced, setDebounced] = useState(value);
-
-  useEffect(() => {
-    const handle = setTimeout(() => setDebounced(value), delay);
-    return () => clearTimeout(handle);
-  }, [value, delay]);
-
-  return debounced;
 }
 
 export async function fetchFoodOrders(
@@ -378,7 +373,6 @@ export default function FoodOrdersClient() {
 
   const [page] = useState(1);
   const [limit] = useState(20);
-  const debouncedSearch = useDebouncedValue(urlSearch, 400);
   const [showDeliveryDropdown, setShowDeliveryDropdown] = useState(false);
   const [showUserTypeDropdown, setShowUserTypeDropdown] = useState(false);
   const deliveryRef = useRef<HTMLDivElement>(null);
@@ -423,14 +417,14 @@ export default function FoodOrdersClient() {
     () => ({
       orderType: "food",
       statusFilter: selectedStatus,
-      search: debouncedSearch,
+      search: urlSearch,
       searchType: urlSearchType,
       page,
       limit,
       foodFilters: foodFiltersPayload,
       listSort,
     }),
-    [selectedStatus, debouncedSearch, urlSearchType, page, limit, foodFiltersPayload, listSort]
+    [selectedStatus, urlSearch, urlSearchType, page, limit, foodFiltersPayload, listSort]
   );
 
   const SNAPSHOT_TTL_MS = 5 * 60 * 1000;
@@ -462,6 +456,28 @@ export default function FoodOrdersClient() {
     isPending,
     refetch: refetchOrders,
   } = useFoodOrdersQuery(filtersForQuery, shouldFetch, snapshotKey, initialListData);
+  const searchPending = useOrderListSearchPending();
+  const sawSearchFetchRef = useRef(false);
+
+  useEffect(() => {
+    if (!searchPending) {
+      sawSearchFetchRef.current = false;
+      return;
+    }
+    if (isFetching) sawSearchFetchRef.current = true;
+    const submitted = getOrderListSearchSnapshot().query;
+    if ((urlSearch ?? "") !== submitted) return;
+    if (!sawSearchFetchRef.current || isFetching) return;
+    endOrderListSearch();
+  }, [searchPending, urlSearch, isFetching]);
+
+  useEffect(() => {
+    const onRepeat = () => {
+      void refetchOrders();
+    };
+    window.addEventListener(ORDER_LIST_SEARCH_REPEAT_EVENT, onRepeat);
+    return () => window.removeEventListener(ORDER_LIST_SEARCH_REPEAT_EVENT, onRepeat);
+  }, [refetchOrders]);
 
   // Stage tab counts (ignore active search so CTAs always show stage volume).
   const statusCountFilters = useMemo(
@@ -520,10 +536,12 @@ export default function FoodOrdersClient() {
 
   const orders = ordersData?.orders ?? cachedListData?.orders ?? initialSnapshot?.orders ?? [];
   const total = ordersData?.total ?? cachedListData?.total ?? initialSnapshot?.total ?? 0;
-  const showTableLoading = hasMounted && isPending && orders.length === 0;
+  const hasActiveSearch = Boolean(urlSearch.trim());
+  const searchInFlight = searchPending;
+  const showTableLoading =
+    hasMounted && ((isPending && orders.length === 0) || searchInFlight);
   const [manualRefreshing, setManualRefreshing] = useState(false);
   const isRefreshing = manualRefreshing || (hasMounted && isFetching && orders.length > 0);
-  const hasActiveSearch = Boolean(debouncedSearch.trim());
   // Close dropdowns when clicking outside
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -1150,7 +1168,7 @@ export default function FoodOrdersClient() {
             {showTableLoading ? (
               <tr>
                 <td colSpan={9} className="px-2 py-8 text-center text-xs" style={{ color: TABLE_TEXT }}>
-                  Loading orders…
+                  {hasActiveSearch || searchPending ? "Searching…" : "Loading orders…"}
                 </td>
               </tr>
             ) : orders.length === 0 ? (

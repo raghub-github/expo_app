@@ -67,11 +67,13 @@
 import { useEffect, useRef, useState, useMemo } from "react";
 import { AppText } from "@/components/AppText";
 
-import { Modal, View, ActivityIndicator, Pressable, StatusBar, Platform, Linking, StyleSheet, BackHandler } from "react-native";
+import { Modal, View, ActivityIndicator, Pressable, StatusBar, Platform, StyleSheet, BackHandler } from "react-native";
 import { WebView } from "react-native-webview";
 import type { WebViewMessageEvent, WebViewNavigation } from "react-native-webview";
 import { Ionicons } from "@expo/vector-icons";
 import { SafeAreaView } from "react-native-safe-area-context";
+import Constants from "expo-constants";
+import { openUpiApp, upiAppDisplayName } from "@/lib/openUpiApp";
 
 /* -------------------------------------------------------------------- */
 /* Public types (same shape as before — checkout/index.tsx unchanged)   */
@@ -87,6 +89,7 @@ export type RazorpayOrderParams = {
   orderId: string;
   keyId: string;
   amount: number; // paise (from create-order response)
+  pendingId?: string;
 };
 
 export type RazorpayPrefill = {
@@ -96,13 +99,25 @@ export type RazorpayPrefill = {
   name?: string | null;
 };
 
+/** Restrict Standard Checkout to the method the user picked in Pay using. */
+export type RazorpayCheckoutMethod = {
+  method: "upi" | "card" | "wallet" | "netbanking";
+  upiApp?: string;
+  wallet?: string;
+};
+
 type Props = {
   visible: boolean;
   orderParams: RazorpayOrderParams | null;
   prefill?: RazorpayPrefill;
   themeColor?: string;
+  checkoutMethod?: RazorpayCheckoutMethod | null;
   onSuccess: (result: RazorpayPaymentResult) => void;
   onCancel: () => void;
+  /** Gateway / checkout failed — parent shows Payment Failed, not Razorpay's empty-method dialog. */
+  onFailure?: () => void;
+  /** UPI app was opened — parent should wait for webhook (payment-confirming). */
+  onUpiAppOpened?: () => void;
 };
 
 /* -------------------------------------------------------------------- */
@@ -112,6 +127,30 @@ type Props = {
 const DEFAULT_THEME = "#16a34a";
 const COMPANY_NAME = "GatiMitra";
 const COMPANY_DESCRIPTION = "Complete your food order";
+
+function applyCheckoutMethod(
+  options: Record<string, unknown>,
+  method: RazorpayCheckoutMethod | null | undefined
+): void {
+  if (!method?.method) return;
+  // Razorpay Standard Checkout: focus the family the customer picked.
+  // Never use config.display.blocks / show_default_blocks:false (Custom Checkout).
+  // Never zero-out other methods — WebView/Expo Go then shows
+  // "No appropriate payment method found" even when Cards/UPI are live.
+  options.prefill = {
+    ...((options.prefill as Record<string, unknown> | undefined) ?? {}),
+    method: method.method,
+  };
+  if (method.method === "wallet" && method.wallet) {
+    options.wallet = method.wallet;
+  }
+}
+
+function isRazorpayNoMethodError(err: unknown): boolean {
+  const errAny = err as { description?: string; error?: { description?: string } };
+  const desc = String(errAny?.description ?? errAny?.error?.description ?? err ?? "").toLowerCase();
+  return desc.includes("no appropriate payment method") || desc.includes("no payment method");
+}
 
 /* -------------------------------------------------------------------- */
 /* Tier 1 — Native SDK invocation                                       */
@@ -135,6 +174,7 @@ async function openNativeSdk(args: {
   orderParams: RazorpayOrderParams;
   prefill: RazorpayPrefill | undefined;
   themeColor: string;
+  checkoutMethod?: RazorpayCheckoutMethod | null;
 }): Promise<RazorpayPaymentResult> {
   // Dynamic import — see file header for the "why lazy" rationale.
   // Wrap in try/catch because require() inside catch is ugly with TS; use a
@@ -182,6 +222,7 @@ async function openNativeSdk(args: {
     // still get the final result via the promise resolve/reject.
     retry: { enabled: true, max_count: 2 },
   };
+  applyCheckoutMethod(options, args.checkoutMethod);
 
   try {
     const data = await RazorpayCheckoutModule.open(options);
@@ -285,6 +326,7 @@ function buildCheckoutHtml(args: {
   orderParams: RazorpayOrderParams;
   prefill: RazorpayPrefill | undefined;
   themeColor: string;
+  checkoutMethod?: RazorpayCheckoutMethod | null;
 }): string {
   const key = escapeForJs(args.orderParams.keyId);
   const orderId = escapeForJs(args.orderParams.orderId);
@@ -295,6 +337,11 @@ function buildCheckoutHtml(args: {
   const prefillContact = escapeForJs(normalizeContact(args.prefill?.contact));
   const name = escapeForJs(COMPANY_NAME);
   const desc = escapeForJs(COMPANY_DESCRIPTION);
+  const methodJson = JSON.stringify({
+    method: args.checkoutMethod?.method ?? null,
+    upiApp: args.checkoutMethod?.upiApp ?? null,
+    wallet: args.checkoutMethod?.wallet ?? null,
+  }).replace(/</g, "\\u003c");
 
   return `<!DOCTYPE html>
 <html>
@@ -304,11 +351,11 @@ function buildCheckoutHtml(args: {
   <title>Complete payment</title>
   <style>
     html,body { margin:0; padding:0; height:100%; background:#ffffff; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; }
-    .center { display:flex; flex-direction:column; align-items:center; justify-content:center; height:100%; color:#475569; gap:12px; padding:24px; box-sizing:border-box; text-align:center; }
+    .center { display:none; }
     .spinner { width:36px; height:36px; border:3px solid #d1fae5; border-top-color:${themeColor}; border-radius:50%; animation:spin 0.9s linear infinite; }
     @keyframes spin { to { transform: rotate(360deg); } }
     .hint { font-size:14px; }
-    .err { color:#dc2626; font-size:14px; display:none; }
+    .err { color:#dc2626; font-size:14px; display:none; padding:24px; text-align:center; }
   </style>
 </head>
 <body>
@@ -367,10 +414,18 @@ function buildCheckoutHtml(args: {
             backdropclose: false
           }
         };
+        var methodPick = ${methodJson};
+        if (methodPick && methodPick.method) {
+          opts.prefill.method = methodPick.method;
+          if (methodPick.method === 'wallet' && methodPick.wallet) {
+            opts.wallet = methodPick.wallet;
+          }
+        }
         try {
           var rzp = new Razorpay(opts);
           rzp.on('payment.failed', function (resp) {
             var e = (resp && resp.error) || {};
+            try { rzp.close(); } catch (closeErr) {}
             post({ type: 'error', error: { code: e.code, description: e.description, reason: e.reason, source: e.source, step: e.step } });
           });
           rzp.open();
@@ -387,45 +442,39 @@ function buildCheckoutHtml(args: {
 </html>`;
 }
 
-/**
- * WebView URL/intent interceptor. Razorpay's UPI Collect step launches
- *   intent://…#Intent;…
- * URLs to open GPay / PhonePe / Paytm directly. On Android these are handled
- * by the system's intent resolver — we just need to forward them to Linking.
- * If the intent has a `browser_fallback_url` (some SDK variants), we honor it.
- */
-function extractIntentFallbackUrl(intentUrl: string): string | null {
-  try {
-    const idx = intentUrl.indexOf("#Intent;");
-    if (idx < 0) return null;
-    const tail = intentUrl.slice(idx + "#Intent;".length);
-    for (const p of tail.split(";")) {
-      if (p.startsWith("S.browser_fallback_url=")) {
-        return decodeURIComponent(p.replace("S.browser_fallback_url=", ""));
-      }
-    }
-  } catch {}
-  return null;
+function isUpiLaunchUrl(url: string): boolean {
+  return (
+    url.startsWith("upi://") ||
+    url.startsWith("intent://") ||
+    url.startsWith("phonepe://") ||
+    url.startsWith("tez://") ||
+    url.startsWith("gpay://") ||
+    url.startsWith("paytmmp://") ||
+    url.startsWith("bhim://") ||
+    url.startsWith("cred://") ||
+    url.startsWith("whatsapp://") ||
+    url.startsWith("amazonpay://") ||
+    url.startsWith("ppe://")
+  );
 }
 
-async function openExternalUpiUrl(url: string): Promise<boolean> {
-  try {
-    if (url.startsWith("intent://")) {
-      const ok = await Linking.openURL(url).then(() => true).catch(() => false);
-      if (ok) return true;
-      const fallback = extractIntentFallbackUrl(url);
-      if (fallback) {
-        await Linking.openURL(fallback);
-        return true;
-      }
-      return false;
-    }
-    await Linking.openURL(url);
-    return true;
-  } catch {
-    return false;
+const UPI_INTERCEPT_JS = `
+(function() {
+  function report(url) {
+    if (!url) return;
+    try {
+      window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'launch_url', url: String(url) }));
+    } catch (e) {}
   }
-}
+  var wo = window.open;
+  window.open = function(url) { report(url); return null; };
+  document.addEventListener('click', function(e) {
+    var a = e.target && e.target.closest ? e.target.closest('a') : null;
+    if (a && a.href) report(a.href);
+  }, true);
+})();
+true;
+`;
 
 /* -------------------------------------------------------------------- */
 /* Component                                                            */
@@ -438,71 +487,97 @@ export function RazorpayCheckoutModal({
   orderParams,
   prefill,
   themeColor,
+  checkoutMethod,
   onSuccess,
   onCancel,
+  onFailure,
+  onUpiAppOpened,
 }: Props): React.ReactElement | null {
   const theme = themeColor ?? DEFAULT_THEME;
   const [tier, setTier] = useState<Tier | null>(null);
   const [webviewError, setWebviewError] = useState<string | null>(null);
+  const [waitingUpiLaunch, setWaitingUpiLaunch] = useState(false);
   const inFlightRef = useRef(false);
   const completedRef = useRef(false);
+  const upiOpenedRef = useRef(false);
 
-  // Reset per-checkout state whenever visibility flips from closed→open with a
-  // new orderId. We key on orderId so re-renders (theme change, prefill change)
-  // don't relaunch the sheet mid-flight.
+  const upiAppLabel = upiAppDisplayName(checkoutMethod?.upiApp);
+
+  const failOrCancel = () => {
+    if (onFailure) onFailure();
+    else onCancel();
+  };
+
+  const markUpiOpened = () => {
+    if (completedRef.current || upiOpenedRef.current) return;
+    upiOpenedRef.current = true;
+    completedRef.current = true;
+    if (onUpiAppOpened) onUpiAppOpened();
+  };
+
   const orderKey = orderParams?.orderId ?? null;
+  const checkoutMethodKey = `${checkoutMethod?.method ?? ""}:${checkoutMethod?.upiApp ?? ""}:${checkoutMethod?.wallet ?? ""}`;
   const launchGenRef = useRef(0);
   useEffect(() => {
     if (!visible) {
       inFlightRef.current = false;
       completedRef.current = false;
+      upiOpenedRef.current = false;
       setTier(null);
       setWebviewError(null);
+      setWaitingUpiLaunch(false);
       return;
     }
     if (!orderParams) return;
-    if (inFlightRef.current) return;
-    inFlightRef.current = true;
 
-    // Attempt Tier 1 (native SDK). If it throws with the `fallback` flag,
-    // switch to Tier 2 (WebView). Explicit user cancel → onCancel.
-    // Ambiguous native failures (empty payload / Expo bridge quirks) → WebView,
-    // otherwise Pay taps look like an instant "Payment cancelled".
     const launchGen = ++launchGenRef.current;
     let cancelled = false;
+    inFlightRef.current = true;
+    completedRef.current = false;
+    upiOpenedRef.current = false;
+    setTier(null);
+    setWebviewError(null);
+
+    const isExpoGo = Constants.appOwnership === "expo";
+
     (async () => {
-      // Survive React Strict Mode double-invoke: first effect cleans up before
-      // the native sheet is opened, so only the live generation proceeds.
       await new Promise((r) => setTimeout(r, 60));
       if (cancelled || launchGen !== launchGenRef.current) return;
+
+      const goWebview = () => {
+        inFlightRef.current = false;
+        setWaitingUpiLaunch(false);
+        setTier("webview");
+      };
+
+      if (isExpoGo) {
+        goWebview();
+        return;
+      }
 
       try {
         const result = await openNativeSdk({
           orderParams,
           prefill,
           themeColor: theme,
+          checkoutMethod,
         });
         if (cancelled || completedRef.current || launchGen !== launchGenRef.current) return;
-        // Sanity guard — partial payloads usually mean the native bridge
-        // aborted; fall back to WebView instead of faking a user cancel.
         if (!result.razorpayPaymentId || !result.razorpayOrderId || !result.razorpaySignature) {
-          inFlightRef.current = false;
-          setTier("webview");
+          goWebview();
           return;
         }
         completedRef.current = true;
         onSuccess(result);
       } catch (e) {
+        if (cancelled || launchGen !== launchGenRef.current) return;
         const errObj = e as Error & {
           fallback?: boolean;
           code?: number | string;
           error?: { code?: number | string };
         };
-        if (cancelled || launchGen !== launchGenRef.current) return;
         if (errObj.fallback === true) {
-          // Native missing / broken — activate Tier 2.
-          inFlightRef.current = false;
-          setTier("webview");
+          goWebview();
           return;
         }
         if (isExplicitUserCancel(e)) {
@@ -510,36 +585,39 @@ export function RazorpayCheckoutModal({
           onCancel();
           return;
         }
-        const codeRaw = errObj.code ?? errObj.error?.code;
-        const code = typeof codeRaw === "string" ? Number(codeRaw) : codeRaw;
-        // Gateway declined the attempt after the sheet was shown — don't reopen.
-        if (code === 2) {
+        if (isRazorpayNoMethodError(e)) {
           completedRef.current = true;
-          onCancel();
+          failOrCancel();
           return;
         }
-        // Unexpected native rejection — try WebView so Pay doesn't look like
-        // an instant cancel.
-        inFlightRef.current = false;
-        setTier("webview");
+        const codeRaw = errObj.code ?? errObj.error?.code;
+        const code = typeof codeRaw === "string" ? Number(codeRaw) : codeRaw;
+        if (code === 2) {
+          completedRef.current = true;
+          failOrCancel();
+          return;
+        }
+        goWebview();
       }
     })();
 
     return () => {
       cancelled = true;
+      inFlightRef.current = false;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [visible, orderKey]);
+  }, [visible, orderKey, checkoutMethodKey]);
 
   // ── Tier 2 — WebView modal render                                   ──
   const html = useMemo(() => {
     if (tier !== "webview" || !orderParams) return "";
-    return buildCheckoutHtml({ orderParams, prefill, themeColor: theme });
-  }, [tier, orderParams, prefill, theme]);
+    return buildCheckoutHtml({ orderParams, prefill, themeColor: theme, checkoutMethod });
+  }, [tier, orderParams, prefill, theme, checkoutMethod]);
 
-  // Android back button while WebView is open = same as dismiss
+  // Android back while payment overlay is open = same as dismiss
   useEffect(() => {
-    if (tier !== "webview" || Platform.OS !== "android") return;
+    if (!visible || Platform.OS !== "android") return;
+    if (!waitingUpiLaunch && tier !== "webview") return;
     const sub = BackHandler.addEventListener("hardwareBackPress", () => {
       if (!completedRef.current) {
         completedRef.current = true;
@@ -548,24 +626,169 @@ export function RazorpayCheckoutModal({
       return true;
     });
     return () => sub.remove();
-  }, [tier, onCancel]);
+  }, [visible, tier, waitingUpiLaunch, onCancel]);
 
   useEffect(() => {
-    if (!visible || tier !== "webview") return;
+    if (!visible || (tier !== "webview" && !waitingUpiLaunch)) return;
     StatusBar.setHidden(false, "none");
-  }, [visible, tier]);
+  }, [visible, tier, waitingUpiLaunch]);
 
   if (!visible || !orderParams) return null;
+
+  const handleLaunchUrl = (url: string) => {
+    if (!isUpiLaunchUrl(url) || completedRef.current) return;
+    void (async () => {
+      const ok = await openUpiApp(url, checkoutMethod?.upiApp);
+      if (ok) markUpiOpened();
+    })();
+  };
+
+  const webView = webviewError ? (
+    <View style={styles.errorWrap}>
+      <Ionicons name="alert-circle-outline" size={40} color="#dc2626" />
+      <AppText style={styles.errorTitle}>Payment could not start</AppText>
+      <AppText style={styles.errorBody}>{webviewError}</AppText>
+      <Pressable
+        onPress={() => {
+          if (!completedRef.current) {
+            completedRef.current = true;
+            onCancel();
+          }
+        }}
+        style={[styles.retryBtn, { backgroundColor: theme }]}
+      >
+        <AppText style={styles.retryTxt}>Close</AppText>
+      </Pressable>
+    </View>
+  ) : (
+    <WebView
+      originWhitelist={["*"]}
+      source={{ html, baseUrl: "https://checkout.razorpay.com" }}
+      javaScriptEnabled
+      domStorageEnabled
+      thirdPartyCookiesEnabled
+      mixedContentMode="always"
+      setSupportMultipleWindows={true}
+      allowsBackForwardNavigationGestures={false}
+      keyboardDisplayRequiresUserAction={false}
+      injectedJavaScript={UPI_INTERCEPT_JS}
+      style={styles.webview}
+      startInLoadingState
+      renderLoading={() => (
+        <View style={styles.spinnerWrap}>
+          <ActivityIndicator size="large" color={theme} />
+        </View>
+      )}
+      onShouldStartLoadWithRequest={(req: WebViewNavigation) => {
+        const url = String(req.url || "");
+        if (isUpiLaunchUrl(url)) {
+          handleLaunchUrl(url);
+          return false;
+        }
+        return true;
+      }}
+      onOpenWindow={(e) => {
+        const url = String(e.nativeEvent.targetUrl || "");
+        if (isUpiLaunchUrl(url)) handleLaunchUrl(url);
+      }}
+      onMessage={(evt: WebViewMessageEvent) => {
+        let parsed: {
+          type?: string;
+          payload?: Record<string, unknown>;
+          error?: Record<string, unknown>;
+          url?: string;
+        } = {};
+        try {
+          parsed = JSON.parse(String(evt.nativeEvent.data));
+        } catch {
+          return;
+        }
+        if (parsed.type === "launch_url" && parsed.url) {
+          handleLaunchUrl(String(parsed.url));
+          return;
+        }
+        if (completedRef.current) return;
+        if (parsed.type === "success" && parsed.payload) {
+          const p = parsed.payload as {
+            razorpay_payment_id?: string;
+            razorpay_order_id?: string;
+            razorpay_signature?: string;
+          };
+          if (p.razorpay_payment_id && p.razorpay_order_id && p.razorpay_signature) {
+            completedRef.current = true;
+            onSuccess({
+              razorpayPaymentId: String(p.razorpay_payment_id),
+              razorpayOrderId: String(p.razorpay_order_id),
+              razorpaySignature: String(p.razorpay_signature),
+            });
+          }
+          return;
+        }
+        if (parsed.type === "dismiss") {
+          completedRef.current = true;
+          onCancel();
+          return;
+        }
+        if (parsed.type === "error") {
+          completedRef.current = true;
+          failOrCancel();
+        }
+      }}
+      onError={(syntheticEvent) => {
+        if (completedRef.current) return;
+        completedRef.current = true;
+        failOrCancel();
+      }}
+    />
+  );
+
+  // Spinner only while minting / opening PhonePe. Never sit this overlay on
+  // top of a loaded Razorpay sheet — that made Continue untappable.
+  if (waitingUpiLaunch) {
+    return (
+      <Modal
+        visible
+        transparent
+        animationType="fade"
+        onRequestClose={() => {
+          if (!completedRef.current) {
+            completedRef.current = true;
+            onCancel();
+          }
+        }}
+      >
+        <View style={styles.upiLaunchRoot}>
+          <View style={styles.upiLaunchDim}>
+            <View style={styles.upiLaunchCard}>
+              <ActivityIndicator color={theme} />
+              <AppText style={styles.upiLaunchText}>Redirecting {upiAppLabel}</AppText>
+              <Pressable
+                onPress={() => {
+                  if (!completedRef.current) {
+                    completedRef.current = true;
+                    onCancel();
+                  }
+                }}
+                hitSlop={10}
+                style={styles.upiLaunchCancelHit}
+              >
+                <AppText style={styles.upiLaunchCancel}>Cancel</AppText>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
+    );
+  }
+
   if (tier !== "webview") {
-    // Tier 1 is being attempted — no UI needed; native SDK renders its own
-    // system-level bottom sheet. We just render nothing.
     return null;
   }
 
   return (
     <Modal
       visible
-      animationType="slide"
+      animationType="fade"
       presentationStyle="fullScreen"
       statusBarTranslucent={false}
       onRequestClose={() => {
@@ -577,116 +800,7 @@ export function RazorpayCheckoutModal({
     >
       <StatusBar hidden={false} barStyle="dark-content" backgroundColor="#ffffff" />
       <SafeAreaView style={styles.safe} edges={["top", "left", "right"]}>
-        <View style={styles.header}>
-          <Pressable
-            onPress={() => {
-              if (!completedRef.current) {
-                completedRef.current = true;
-                onCancel();
-              }
-            }}
-            hitSlop={16}
-            style={styles.closeBtn}
-            accessibilityRole="button"
-            accessibilityLabel="Close payment"
-          >
-            <Ionicons name="close" size={24} color="#0f172a" />
-          </Pressable>
-          <AppText style={styles.headerTitle} numberOfLines={1}>Complete payment</AppText>
-          <View style={styles.headerSpacer} />
-        </View>
-
-        {webviewError ? (
-          <View style={styles.errorWrap}>
-            <Ionicons name="alert-circle-outline" size={40} color="#dc2626" />
-            <AppText style={styles.errorTitle}>Payment could not start</AppText>
-            <AppText style={styles.errorBody}>{webviewError}</AppText>
-            <Pressable
-              onPress={() => {
-                if (!completedRef.current) {
-                  completedRef.current = true;
-                  onCancel();
-                }
-              }}
-              style={[styles.retryBtn, { backgroundColor: theme }]}
-            >
-              <AppText style={styles.retryTxt}>Close</AppText>
-            </Pressable>
-          </View>
-        ) : (
-          <WebView
-            originWhitelist={["*"]}
-            source={{ html, baseUrl: "https://checkout.razorpay.com" }}
-            javaScriptEnabled
-            domStorageEnabled
-            thirdPartyCookiesEnabled
-            mixedContentMode="always"
-            setSupportMultipleWindows={false}
-            allowsBackForwardNavigationGestures={false}
-            keyboardDisplayRequiresUserAction={false}
-            style={styles.webview}
-            startInLoadingState
-            renderLoading={() => (
-              <View style={styles.spinnerWrap}>
-                <ActivityIndicator size="large" color={theme} />
-              </View>
-            )}
-            onShouldStartLoadWithRequest={(req: WebViewNavigation) => {
-              const url = String(req.url || "");
-              // Razorpay checkout redirects to UPI intent URLs to launch
-              // GPay/PhonePe/etc. These are not HTTP loads — forward to
-              // the system Linking API instead of trying to navigate the WV.
-              if (url.startsWith("upi://") || url.startsWith("intent://") || url.startsWith("phonepe://") || url.startsWith("tez://")) {
-                void openExternalUpiUrl(url);
-                return false;
-              }
-              return true;
-            }}
-            onMessage={(evt: WebViewMessageEvent) => {
-              let parsed: { type?: string; payload?: Record<string, unknown>; error?: Record<string, unknown> } = {};
-              try {
-                parsed = JSON.parse(String(evt.nativeEvent.data));
-              } catch {
-                return;
-              }
-              if (completedRef.current) return;
-              if (parsed.type === "success" && parsed.payload) {
-                const p = parsed.payload as {
-                  razorpay_payment_id?: string;
-                  razorpay_order_id?: string;
-                  razorpay_signature?: string;
-                };
-                if (p.razorpay_payment_id && p.razorpay_order_id && p.razorpay_signature) {
-                  completedRef.current = true;
-                  onSuccess({
-                    razorpayPaymentId: String(p.razorpay_payment_id),
-                    razorpayOrderId: String(p.razorpay_order_id),
-                    razorpaySignature: String(p.razorpay_signature),
-                  });
-                }
-                return;
-              }
-              if (parsed.type === "dismiss") {
-                completedRef.current = true;
-                onCancel();
-                return;
-              }
-              if (parsed.type === "error") {
-                const errDesc = String((parsed.error as { description?: string } | undefined)?.description ?? "");
-                completedRef.current = true;
-                // Show human-friendly error, then bubble up as cancel so the
-                // checkout screen doesn't finalize.
-                setWebviewError(errDesc || "Something went wrong. Please try again.");
-              }
-            }}
-            onError={(syntheticEvent) => {
-              const { nativeEvent } = syntheticEvent;
-              if (completedRef.current) return;
-              completedRef.current = true;
-              setWebviewError(nativeEvent.description || "Payment page failed to load.");
-            }}
-          />
-        )}
+        {webView}
       </SafeAreaView>
     </Modal>
   );
@@ -711,6 +825,51 @@ const styles = StyleSheet.create({
   headerTitle: { flex: 1, fontSize: 16, fontWeight: "600", color: "#0f172a", textAlign: "center" },
   headerSpacer: { width: 36 },
   webview: { flex: 1, backgroundColor: "#ffffff" },
+  webviewBehind: {
+    flex: 1,
+    backgroundColor: "transparent",
+  },
+  upiLaunchRoot: {
+    flex: 1,
+  },
+  upiWebviewHost: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 0,
+  },
+  upiLaunchDim: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 1,
+    backgroundColor: "rgba(0,0,0,0.55)",
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 28,
+  },
+  upiLaunchCard: {
+    backgroundColor: "#1E1E1E",
+    borderRadius: 16,
+    paddingHorizontal: 28,
+    paddingVertical: 22,
+    alignItems: "center",
+    minWidth: 220,
+  },
+  upiLaunchText: {
+    fontSize: 15,
+    fontWeight: "600",
+    color: "#FFFFFF",
+    marginTop: 12,
+    textAlign: "center",
+  },
+  upiLaunchCancelHit: {
+    marginTop: 14,
+    paddingVertical: 4,
+    paddingHorizontal: 8,
+  },
+  upiLaunchCancel: {
+    fontSize: 14,
+    fontWeight: "600",
+    color: "#2DD4BF",
+    textAlign: "center",
+  },
   spinnerWrap: {
     position: "absolute",
     top: 0, left: 0, right: 0, bottom: 0,
@@ -722,7 +881,6 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     padding: 24,
-    gap: 8,
   },
   errorTitle: { fontSize: 17, fontWeight: "600", color: "#0f172a", marginTop: 8 },
   errorBody: { fontSize: 14, color: "#475569", textAlign: "center", lineHeight: 20 },

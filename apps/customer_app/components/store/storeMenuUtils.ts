@@ -23,6 +23,15 @@ export function getSellingPrice(item: MenuItem): number {
 
 export function getBasePrice(item: MenuItem): number | null {
   if (item.basePrice != null && item.basePrice > item.price) return item.basePrice;
+  const canon = item.canonicalPricing;
+  if (canon && typeof canon === "object") {
+    const strike = Number(
+      (canon as { customer_strike_unit?: unknown; customerStrikeUnit?: unknown })
+        .customer_strike_unit ??
+        (canon as { customerStrikeUnit?: unknown }).customerStrikeUnit
+    );
+    if (Number.isFinite(strike) && strike > item.price) return strike;
+  }
   if (item.discountPercentage != null && item.discountPercentage > 0) {
     const pct = item.discountPercentage / 100;
     if (pct < 1) return Math.round(item.price / (1 - pct));

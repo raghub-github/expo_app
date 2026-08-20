@@ -5,6 +5,7 @@
 
 import type { QueryClient } from "@tanstack/react-query";
 import { queryKeys } from "@/lib/queryKeys";
+import { prefetchStoreMenu } from "@/hooks/queries/useMerchantStoreQueries";
 import { fetchCustomers } from "@/hooks/queries/useCustomersQuery";
 import { fetchUsersByState } from "@/components/customers/CustomerUsersByStateClient";
 import { fetchTickets, DEFAULT_TICKETS_LIST_FILTERS, compactTicketFilters } from "@/hooks/tickets/useTickets";
@@ -31,6 +32,12 @@ export function prefetchDashboardSection(queryClient: QueryClient, href: string)
   }
 
   const path = href.split("?")[0];
+
+  const storeIdFromHref = path.match(/^\/dashboard\/merchants\/stores\/(\d+)(?:\/|$)/)?.[1];
+  if (storeIdFromHref) {
+    prefetchStoreMenu(queryClient, storeIdFromHref);
+    return;
+  }
 
   if (path.startsWith("/dashboard/merchants")) {
     void queryClient.prefetchQuery({

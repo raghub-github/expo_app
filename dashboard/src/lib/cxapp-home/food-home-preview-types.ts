@@ -1,4 +1,4 @@
-import type { FoodHomeLayoutKey } from "@/lib/cxapp-home/food-home-layout";
+import type { DiscoveryCtaTile, FoodHomeLayoutKey } from "@/lib/cxapp-home/food-home-layout";
 import type { GridFirstHeroMediaItem } from "@/lib/cxapp-home/grid-first-hero-media";
 
 export type FoodHomePreviewCategory = {
@@ -56,4 +56,9 @@ export type FoodHomePreviewPayload = {
   gridFirstUnder250FilterLabel: string;
   gridFirstUnder250TabImageUrl: string | null;
   gridFirstUnder250HeroImageUrl: string | null;
+  discoveryDealsAtMaxPrice: number | null;
+  discoveryDealsAtImageUrl: string | null;
+  discoveryCrazyDealsImageUrl: string | null;
+  discoveryFreePackagingImageUrl: string | null;
+  discoveryCtaTiles?: DiscoveryCtaTile[] | null;
 };

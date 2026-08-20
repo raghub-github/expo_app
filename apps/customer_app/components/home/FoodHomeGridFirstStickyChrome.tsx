@@ -11,6 +11,7 @@ import Animated, {
   type SharedValue,
 } from "react-native-reanimated";
 import { FoodHomeGridFirstHeader } from "@/components/home/FoodHomeGridFirstHeader";
+import { GatiMitraColors } from "@/constants/gatimitra";
 import {
   GRID_FIRST_STICK_HANDOFF_PX,
   GRID_FIRST_STICKY_SEARCH_CATEGORY_GAP,
@@ -21,6 +22,8 @@ import {
 } from "@/lib/gridFirstStickyLayout";
 
 const STICK_FADE_PX = 10;
+const PAGE_BG = GatiMitraColors.softBackground;
+const PAGE_BG_CLEAR = "rgba(248, 250, 249, 0)";
 
 type Props = {
   scrollY: SharedValue<number>;
@@ -122,7 +125,7 @@ export function FoodHomeGridFirstStickyChrome({
       backgroundColor: interpolateColor(
         progress,
         [0, 1],
-        ["rgba(255,255,255,0)", "rgba(255,255,255,1)"]
+        [PAGE_BG_CLEAR, PAGE_BG]
       ),
       elevation: 0,
       shadowOpacity: 0,
@@ -165,7 +168,7 @@ export function FoodHomeGridFirstStickyChrome({
       backgroundColor: interpolateColor(
         progress,
         [0, 1],
-        ["rgba(255,255,255,0)", "rgba(255,255,255,1)"]
+        [PAGE_BG_CLEAR, PAGE_BG]
       ),
       elevation: 0,
       shadowOpacity: 0,
@@ -242,7 +245,7 @@ export function FoodHomeGridFirstStickyChrome({
       backgroundColor: interpolateColor(
         progress,
         [0, 1],
-        ["rgba(255,255,255,0)", "rgba(255,255,255,1)"]
+        [PAGE_BG_CLEAR, PAGE_BG]
       ),
       elevation: 0,
       shadowOpacity: 0,
@@ -287,13 +290,6 @@ export function FoodHomeGridFirstStickyChrome({
           <View style={styles.categoryInner} pointerEvents="box-none">
             {categories}
           </View>
-          {categoryStickyOn && !filterStickyOn ? (
-            <LinearGradient
-              pointerEvents="none"
-              colors={["rgba(15, 23, 42, 0.14)", "rgba(15, 23, 42, 0.05)", "transparent"]}
-              style={styles.categoryBottomShadow}
-            />
-          ) : null}
         </Animated.View>
       ) : null}
 
@@ -305,13 +301,6 @@ export function FoodHomeGridFirstStickyChrome({
           <View style={styles.filterInner} pointerEvents="box-none">
             {filters}
           </View>
-          {filterStickyOn ? (
-            <LinearGradient
-              pointerEvents="none"
-              colors={["rgba(15, 23, 42, 0.14)", "rgba(15, 23, 42, 0.05)", "transparent"]}
-              style={styles.categoryBottomShadow}
-            />
-          ) : null}
         </Animated.View>
       ) : null}
     </View>
@@ -337,24 +326,17 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     backgroundColor: "transparent",
-    overflow: "visible",
+    overflow: "hidden",
   },
   categoryInner: {
     paddingBottom: 4,
-  },
-  categoryBottomShadow: {
-    position: "absolute",
-    left: 0,
-    right: 0,
-    bottom: -12,
-    height: 12,
   },
   filterLayer: {
     position: "absolute",
     left: 0,
     right: 0,
     backgroundColor: "transparent",
-    overflow: "visible",
+    overflow: "hidden",
   },
   filterInner: {
     paddingHorizontal: 16,

@@ -1,5 +1,7 @@
 /** Person-ride detail helpers (isolated from food order UI). */
 
+import { titleCaseStatusWords } from "@/lib/riders/rider-order-status-display";
+
 export const PR_GREEN = "#16A34A";
 export const PR_RED = "#DC2626";
 export const PR_BLACK = "#121212";
@@ -91,7 +93,7 @@ export function formatRideStatusLabel(status: string | null | undefined): string
   if (key === "accepted" || key === "rider_on_the_way") return "Captain On The Way";
   if (key === "assigned" || key === "rider_assigned") return "Captain Assigned";
   if (key === "cancelled" || key === "canceled") return "Cancelled";
-  return key.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+  return titleCaseStatusWords(key);
 }
 
 /** 0–1 progress for active rides; cancelled stays at last reached stage. */
@@ -187,7 +189,7 @@ export function formatDateTime(iso: string | null | undefined): string {
 
 export function formatLabel(raw: string | null | undefined): string {
   if (!raw?.trim()) return "—";
-  return raw.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+  return titleCaseStatusWords(raw);
 }
 
 export function statusTone(

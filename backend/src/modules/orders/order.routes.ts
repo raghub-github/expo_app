@@ -76,19 +76,38 @@ import {
   resolveRidePickupWaitingChargePerMin,
 } from "../../lib/ride-pickup-wait.js";
 
+function readFoodBilledDistanceKm(raw: unknown): number | null {
+  if (!raw || typeof raw !== "object") return null;
+  const rec = raw as Record<string, unknown>;
+  const direct = Number(rec.distanceKm ?? rec.distance_km);
+  if (Number.isFinite(direct) && direct > 0) return direct;
+  const nested = [rec.slabQuote, rec.slab_quote, rec.storeQuote, rec.store_quote, rec.quote];
+  for (const item of nested) {
+    if (!item || typeof item !== "object") continue;
+    const obj = item as Record<string, unknown>;
+    const n = Number(obj.distanceKm ?? obj.distance_km);
+    if (Number.isFinite(n) && n > 0) return n;
+  }
+  return null;
+}
+
 function resolveCustomerRideDistanceKm(args: {
   orderType?: string | null;
   checkoutMetadata: unknown;
   billingSnapshot: unknown;
   coreDistanceKm: string | null;
 }): number | null {
-  if (args.orderType !== "person_ride") {
+  if (args.orderType === "person_ride") {
+    const snap = readRideRiderPayoutSnapshot(args.billingSnapshot);
+    if (snap?.tripDistanceKm != null) return snap.tripDistanceKm;
+    const fromMeta = rideTripDistanceFromCheckoutMetadata(args.checkoutMetadata);
+    if (fromMeta != null) return fromMeta;
     return args.coreDistanceKm != null ? Number(args.coreDistanceKm) : null;
   }
-  const snap = readRideRiderPayoutSnapshot(args.billingSnapshot);
-  if (snap?.tripDistanceKm != null) return snap.tripDistanceKm;
-  const fromMeta = rideTripDistanceFromCheckoutMetadata(args.checkoutMetadata);
-  if (fromMeta != null) return fromMeta;
+  const billed =
+    readFoodBilledDistanceKm(args.billingSnapshot) ??
+    readFoodBilledDistanceKm(args.checkoutMetadata);
+  if (billed != null) return billed;
   return args.coreDistanceKm != null ? Number(args.coreDistanceKm) : null;
 }
 
@@ -171,6 +190,7 @@ import {
 import { enrichAddonsWithMenuMetadata } from "../commission/resolveMenuAddonMetadata.js";
 import { persistOrderItemAddonsWithSnapshots } from "../commission/persistOrderItemAddons.js";
 import { resolveMenuAddonPk } from "../commission/resolveMenuAddonPk.js";
+import { resolveStoreCommission } from "../commission/commission.resolver.js";
 import type { Sql } from "postgres";
 import {
   customers,
@@ -2356,6 +2376,15 @@ export async function orderRoutes(app: FastifyInstance) {
         });
       }
 
+      let routeCommissionPercent = 0;
+      try {
+        const resolved = await resolveStoreCommission(merchantStoreId);
+        const pct = Number(resolved?.percent);
+        if (Number.isFinite(pct) && pct >= 0 && pct < 100) routeCommissionPercent = pct;
+      } catch {
+        routeCommissionPercent = 0;
+      }
+
       // Immutable store snapshot at place time — never fall back pickup → drop.
       const pickupLatNum =
         storeForOrder?.latitude != null && Number.isFinite(storeForOrder.latitude)
@@ -2563,14 +2592,15 @@ export async function orderRoutes(app: FastifyInstance) {
                   appliedOfferType: ins.appliedOfferType ?? null,
                   appliedOfferLabel: ins.appliedOfferLabel ?? null,
                   appliedOfferId: ins.appliedOfferId ?? null,
-                  isItemPromo:
-                    String(ins.ineligibilityReason ?? "").trim().toUpperCase() === "ITEM_PROMO",
-                };
+              isItemPromo:
+                String(ins.ineligibilityReason ?? "").trim().toUpperCase() === "ITEM_PROMO",
+              itemSnapshot: (ins.itemSnapshot as Record<string, unknown> | undefined) ?? null,
+            };
               })
             );
             await writeMerchantCtmPricingSnapshots(tx, {
               coreOrderId: orderIdNumRoute,
-              commissionPercent: 0,
+              commissionPercent: routeCommissionPercent,
               billingSnapshot: billingSnapRoute,
               lines: ctmLines,
             });

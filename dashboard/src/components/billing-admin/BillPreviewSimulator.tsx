@@ -30,6 +30,20 @@ type SimParsed = {
   finalAmount?: number | null;
   itemsNetAfterDiscounts?: number;
   taxesByGroup?: Record<string, number>;
+  orderLinePricing?: Array<{
+    menuItemId?: string;
+    catalogLineTotal?: number;
+    effectiveLineTotal?: number;
+    appliedOfferType?: string | null;
+    canonicalPricing?: {
+      calculation_version?: number;
+      base_ctm_line?: number;
+      discounted_ctm_line?: number;
+      customer_item_price_unit?: number;
+      merchant_settlement_ctm?: number;
+      commission_amount?: number;
+    } | null;
+  }>;
   /** GST audit (matches POST /v1/billing/calculate). */
   components?: {
     items: GstLine;
@@ -164,6 +178,49 @@ export function BillPreviewSimulator({
                 </div>
               )}
               <BillingFlowViewer simParsed={simParsed} breakdownRows={breakdownRows} />
+              {simParsed.orderLinePricing && simParsed.orderLinePricing.length > 0 ? (
+                <div className="overflow-x-auto rounded-xl border border-slate-200/80 bg-white/95 px-3 py-2.5 text-xs shadow-sm">
+                  <div className="mb-2 font-semibold text-slate-800">Item CTM trace (backend canonical)</div>
+                  <table className="min-w-full text-[11px]">
+                    <thead>
+                      <tr className="border-b border-slate-100 text-left text-slate-600">
+                        <th className="py-1 pr-2">Item</th>
+                        <th className="py-1 pr-2 text-right">Base CTM</th>
+                        <th className="py-1 pr-2 text-right">Discounted CTM</th>
+                        <th className="py-1 pr-2 text-right">Customer</th>
+                        <th className="py-1 text-right">Settlement</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {simParsed.orderLinePricing.map((row, i) => {
+                        const c = row.canonicalPricing;
+                        return (
+                          <tr key={`${row.menuItemId ?? i}`} className="border-t border-slate-50">
+                            <td className="py-1 pr-2 font-medium text-slate-800">
+                              {row.menuItemId ?? `#${i + 1}`}
+                              {row.appliedOfferType ? (
+                                <span className="ml-1 text-slate-500">({row.appliedOfferType})</span>
+                              ) : null}
+                            </td>
+                            <td className="py-1 pr-2 text-right">
+                              {c?.base_ctm_line != null ? `₹${c.base_ctm_line}` : "—"}
+                            </td>
+                            <td className="py-1 pr-2 text-right">
+                              {c?.discounted_ctm_line != null ? `₹${c.discounted_ctm_line}` : "—"}
+                            </td>
+                            <td className="py-1 pr-2 text-right">
+                              {c?.customer_item_price_unit != null ? `₹${c.customer_item_price_unit}` : "—"}
+                            </td>
+                            <td className="py-1 text-right">
+                              {c?.merchant_settlement_ctm != null ? `₹${c.merchant_settlement_ctm}` : "—"}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              ) : null}
               <details className="text-xs">
                 <summary className="cursor-pointer font-semibold text-indigo-600">Raw JSON response</summary>
                 <pre className="mt-2 max-h-80 overflow-auto rounded-xl bg-slate-900 p-3 text-[11px] text-slate-100 shadow-inner">{simResult}</pre>

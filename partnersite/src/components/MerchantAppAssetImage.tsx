@@ -28,11 +28,12 @@ export function MerchantAppAssetImage({
   className,
   style,
   refresh = false,
-  fallbackSrc = DEFAULT_LOGO_FALLBACK,
+  fallbackSrc,
 }: Props) {
+  const resolvedFallback =
+    fallbackSrc ?? (assetKey === MX_ASSET.authLogo ? DEFAULT_LOGO_FALLBACK : undefined);
   const stickyRef = useRef<string | null>(
-    getMerchantAppAssetUrl(assetKey) ??
-      (assetKey === MX_ASSET.authLogo ? fallbackSrc : null)
+    getMerchantAppAssetUrl(assetKey) ?? resolvedFallback ?? null
   );
   const [src, setSrc] = useState<string | null>(() => stickyRef.current);
 
@@ -42,31 +43,32 @@ export function MerchantAppAssetImage({
     if (cached) {
       stickyRef.current = cached;
       setSrc(cached);
+    } else if (resolvedFallback && !stickyRef.current) {
+      stickyRef.current = resolvedFallback;
+      setSrc(resolvedFallback);
     }
 
     void loadMerchantAppAssets({ refresh })
       .then(() => {
         if (cancelled) return;
-        const next =
-          getMerchantAppAssetUrl(assetKey) ??
-          (assetKey === MX_ASSET.authLogo ? fallbackSrc : null);
+        const next = getMerchantAppAssetUrl(assetKey) ?? resolvedFallback ?? null;
         if (next) {
           stickyRef.current = next;
           setSrc(next);
-        } else if (!stickyRef.current && assetKey === MX_ASSET.authLogo) {
-          setSrc(fallbackSrc);
+        } else if (!stickyRef.current && resolvedFallback) {
+          setSrc(resolvedFallback);
         }
         // Never clear a previously shown stage image on tab switch.
       })
       .catch(() => {
-        if (!cancelled && assetKey === MX_ASSET.authLogo && !stickyRef.current) {
-          setSrc(fallbackSrc);
+        if (!cancelled && resolvedFallback && !stickyRef.current) {
+          setSrc(resolvedFallback);
         }
       });
     return () => {
       cancelled = true;
     };
-  }, [assetKey, refresh, fallbackSrc]);
+  }, [assetKey, refresh, resolvedFallback]);
 
   const display = src ?? stickyRef.current;
   if (!display) return null;
@@ -82,8 +84,8 @@ export function MerchantAppAssetImage({
       decoding="async"
       fetchPriority="high"
       onError={() => {
-        if (fallbackSrc && display !== fallbackSrc && assetKey === MX_ASSET.authLogo) {
-          setSrc(fallbackSrc);
+        if (resolvedFallback && display !== resolvedFallback) {
+          setSrc(resolvedFallback);
         }
       }}
     />

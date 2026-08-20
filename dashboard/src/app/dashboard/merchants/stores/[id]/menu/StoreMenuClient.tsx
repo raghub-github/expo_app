@@ -2,9 +2,19 @@
 
 import { useEffect, useState, useRef, useCallback, useMemo } from "react";
 import { createPortal } from "react-dom";
-import { useQueryClient } from "@tanstack/react-query";
+import { getQueryClient } from "@/lib/react-query";
 import { useStoreMenuQuery } from "@/hooks/queries/useMerchantStoreQueries";
 import { queryKeys } from "@/lib/queryKeys";
+import { useAppPathname, useAppParams, useAppSearchParams } from "@/hooks/useAppSearchParams";
+import { useRouter } from "next/navigation";
+import { useStoreContext } from "../StoreContext";
+import {
+  merchantStoreHref,
+  resolveEffectiveStoreId,
+  storeIdFromPathname,
+  storePageSuffix,
+  writeLastMerchantStoreId,
+} from "@/lib/merchants/effective-store-id";
 import {
   Plus,
   Edit2,
@@ -228,16 +238,33 @@ function normalizeItem(
   };
 }
 
-export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: string; onSwitchToAddonLibrary?: () => void }) {
+export function StoreMenuClient({ storeId: storeIdProp, onSwitchToAddonLibrary }: { storeId: string; onSwitchToAddonLibrary?: () => void }) {
   const { toast } = useToast();
-  const queryClient = useQueryClient();
+  const queryClient = getQueryClient();
+  const router = useRouter();
+  const pathname = useAppPathname();
+  const searchParams = useAppSearchParams();
+  const params = useAppParams<{ id?: string }>();
+  const storeCtx = useStoreContext();
+  const storeId =
+    resolveEffectiveStoreId([
+      storeIdProp,
+      params.id,
+      Array.isArray(params.id) ? params.id[0] : undefined,
+      storeIdFromPathname(pathname),
+      storeCtx.storeId,
+    ]) ?? "";
+  const menuSearch = searchParams.toString();
   const { canManageStore, canApproveMenuItems, isViewOnly, canMutate } = useMerchantDashboardAccess();
   /** Pure VIEW (or no store/menu manage grant): no add/edit/delete/stock/approve. */
   const menuReadOnly = isViewOnly || !canManageStore || !canMutate;
   const canReviewApprove = canApproveMenuItems && !menuReadOnly;
-  const menuQuery = useStoreMenuQuery(storeId);
+  const menuQuery = useStoreMenuQuery(storeId || null);
   const data = menuQuery.data ?? null;
-  const loading = menuQuery.isLoading && !data;
+  const menuRequestPending =
+    !storeId || menuQuery.isPending || (menuQuery.isFetching && data == null);
+  const menuRequestFailed = menuQuery.isError && data == null;
+  const loading = menuRequestPending;
   const menuScrollRef = useRef<HTMLDivElement>(null);
   const preserveMenuScroll = useCallback(() => {
     const el = menuScrollRef.current;
@@ -249,6 +276,16 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
       });
     });
   }, []);
+
+  useEffect(() => {
+    writeLastMerchantStoreId(storeId);
+  }, [storeId]);
+
+  useEffect(() => {
+    if (!storeId) return;
+    if (storeIdFromPathname(pathname) === storeId) return;
+    router.replace(merchantStoreHref(storeId, storePageSuffix(pathname), menuSearch));
+  }, [storeId, pathname, router, menuSearch]);
 
   const categories = useMemo((): MenuCategory[] => {
     const raw = (data && "categories" in data && Array.isArray(data.categories) ? data.categories : []) as Record<
@@ -530,6 +567,8 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
   const [deleteCategoryId, setDeleteCategoryId] = useState<number | null>(null);
   const [categoryDeleteError, setCategoryDeleteError] = useState<string | null>(null);
   const [isDeletingCategory, setIsDeletingCategory] = useState(false);
+  const [moveItemsToCategoryId, setMoveItemsToCategoryId] = useState<number | null>(null);
+  const [isMovingCategoryItems, setIsMovingCategoryItems] = useState(false);
   const [parentCategoryIdInForm, setParentCategoryIdInForm] = useState<number | null>(null);
   const [categoryUiConfig, setCategoryUiConfig] = useState<{
     cuisine_field: { visible: boolean; required_for_root: boolean; inherit_on_subcategory: boolean };
@@ -2077,11 +2116,67 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
       await refreshMenu();
       setShowDeleteCategoryModal(false);
       setDeleteCategoryId(null);
+      setMoveItemsToCategoryId(null);
       setShowManageCategoriesModal(false);
     } catch {
       setCategoryDeleteError("Error deleting category");
+    } finally {
+      setIsDeletingCategory(false);
     }
+  };
+
+  const closeDeleteCategoryModal = () => {
     setIsDeletingCategory(false);
+    setIsMovingCategoryItems(false);
+    setShowDeleteCategoryModal(false);
+    setDeleteCategoryId(null);
+    setCategoryDeleteError(null);
+    setMoveItemsToCategoryId(null);
+  };
+
+  const handleMoveCategoryItemsThenDelete = async () => {
+    if (deleteCategoryId == null || moveItemsToCategoryId == null) return;
+    setCategoryDeleteError(null);
+    setIsMovingCategoryItems(true);
+    try {
+      const moveRes = await fetch(`/api/merchant/stores/${storeId}/menu/categories/${deleteCategoryId}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "move_items", targetCategoryId: moveItemsToCategoryId }),
+      });
+      const moveJson = await moveRes.json().catch(() => ({}));
+      if (!moveRes.ok || moveJson?.success === false) {
+        setCategoryDeleteError(
+          typeof moveJson?.message === "string" && moveJson.message.trim()
+            ? moveJson.message
+            : String(moveJson?.error ?? "Could not move items")
+        );
+        return;
+      }
+      const delRes = await fetch(`/api/merchant/stores/${storeId}/menu/categories/${deleteCategoryId}`, {
+        method: "DELETE",
+      });
+      const delJson = await delRes.json().catch(() => ({}));
+      if (!delRes.ok || delJson?.success === false) {
+        setCategoryDeleteError(
+          typeof delJson?.message === "string" && delJson.message.trim()
+            ? delJson.message
+            : "Items moved, but the empty category could not be deleted. Try Delete again."
+        );
+        await refreshMenu();
+        return;
+      }
+      toast("Items moved and category removed.");
+      await refreshMenu();
+      setShowDeleteCategoryModal(false);
+      setDeleteCategoryId(null);
+      setMoveItemsToCategoryId(null);
+      setShowManageCategoriesModal(false);
+    } catch {
+      setCategoryDeleteError("Error moving items");
+    } finally {
+      setIsMovingCategoryItems(false);
+    }
   };
 
   async function handleCustOptionStockToggle(
@@ -2364,6 +2459,21 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
         <div ref={menuScrollRef} className="flex-1 min-w-0 overflow-y-auto px-3 sm:px-4 py-3 bg-white">
           {loading ? (
             <MenuItemsGridSkeleton />
+          ) : menuRequestFailed ? (
+            <div className="flex flex-col items-center justify-center py-12 text-center">
+              <Package size={48} className="text-gray-300 mb-4" />
+              <h3 className="text-xl font-bold text-gray-700">Couldn’t load menu items</h3>
+              <p className="text-gray-500 mt-2">
+                {menuQuery.error instanceof Error ? menuQuery.error.message : "Please try again."}
+              </p>
+              <button
+                type="button"
+                onClick={() => void menuQuery.refetch()}
+                className="mt-4 px-4 py-2 text-sm font-semibold rounded-lg bg-orange-600 text-white hover:bg-orange-700"
+              >
+                Retry
+              </button>
+            </div>
           ) : (contentScope === "item"
               ? searchedItems.length === 0
               : custScopeItems.length === 0) ? (
@@ -4112,7 +4222,7 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
                         <button type="button" onClick={() => openEditCategory(parent)} className="p-1.5 text-gray-500 hover:bg-gray-200 rounded" aria-label="Edit">
                           <Edit2 size={14} />
                         </button>
-                        <button type="button" onClick={() => { setDeleteCategoryId(parent.id); setCategoryDeleteError(null); setShowDeleteCategoryModal(true); }} className="p-1.5 text-gray-500 hover:text-red-600 hover:bg-red-50 rounded" aria-label="Delete">
+                        <button type="button" onClick={() => { setDeleteCategoryId(parent.id); setCategoryDeleteError(null); setMoveItemsToCategoryId(null); setIsDeletingCategory(false); setShowDeleteCategoryModal(true); }} className="p-1.5 text-gray-500 hover:text-red-600 hover:bg-red-50 rounded" aria-label="Delete">
                           <Trash2 size={14} />
                         </button>
                       </div>
@@ -4126,7 +4236,7 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
                           <button type="button" onClick={() => openEditCategory(child)} className="p-1.5 text-gray-500 hover:bg-gray-200 rounded" aria-label="Edit">
                             <Edit2 size={14} />
                           </button>
-                          <button type="button" onClick={() => { setDeleteCategoryId(child.id); setCategoryDeleteError(null); setShowDeleteCategoryModal(true); }} className="p-1.5 text-gray-500 hover:text-red-600 hover:bg-red-50 rounded" aria-label="Delete">
+                          <button type="button" onClick={() => { setDeleteCategoryId(child.id); setCategoryDeleteError(null); setMoveItemsToCategoryId(null); setIsDeletingCategory(false); setShowDeleteCategoryModal(true); }} className="p-1.5 text-gray-500 hover:text-red-600 hover:bg-red-50 rounded" aria-label="Delete">
                             <Trash2 size={14} />
                           </button>
                         </div>
@@ -4146,29 +4256,71 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
           <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/40 backdrop-blur-md">
             <div className="bg-white rounded-xl shadow-xl w-full max-w-sm mx-4 p-6" onClick={(e) => e.stopPropagation()}>
               <h3 className="text-lg font-bold text-gray-900 mb-2">Delete category?</h3>
-              <p className="text-sm text-gray-600 mb-4">
-                {(() => {
-                  const cat = categories.find((c) => c.id === deleteCategoryId);
-                  return cat ? `"${cat.category_name}" will be removed. Categories with menu items cannot be deleted.` : "This category will be removed.";
-                })()}
-              </p>
-              {categoryDeleteError && <p className="text-sm text-red-600 mb-4">{categoryDeleteError}</p>}
-              <div className="flex gap-3">
-                <button
-                  onClick={() => { setShowDeleteCategoryModal(false); setDeleteCategoryId(null); setCategoryDeleteError(null); }}
-                  className="flex-1 px-4 py-2 rounded-lg font-semibold text-gray-700 bg-gray-100 hover:bg-gray-200"
-                  disabled={isDeletingCategory}
-                >
-                  Cancel
-                </button>
-                <button
-                  onClick={handleDeleteCategory}
-                  className="flex-1 px-4 py-2 rounded-lg font-semibold text-white bg-red-500 hover:bg-red-600 disabled:opacity-50"
-                  disabled={isDeletingCategory}
-                >
-                  {isDeletingCategory ? "Deleting..." : "Delete"}
-                </button>
-              </div>
+              {(() => {
+                const cat = categories.find((c) => c.id === deleteCategoryId);
+                const itemCount = menuItems.filter((item) => Number(item.category_id) === Number(deleteCategoryId)).length;
+                const moveTargets = categories.filter((c) => c.id !== deleteCategoryId);
+                const categoryBusy = isDeletingCategory || isMovingCategoryItems;
+                return (
+                  <>
+                    <p className="text-sm text-gray-600 mb-4">
+                      {cat
+                        ? `"${cat.category_name}" will be removed.${itemCount > 0 ? ` ${itemCount} item(s) are in this category — move them first, then delete.` : ""}`
+                        : "This category will be removed."}
+                    </p>
+                    {itemCount > 0 ? (
+                      <div className="mb-4 space-y-2">
+                        <label className="block text-xs font-semibold text-gray-700" htmlFor="move-category-select">
+                          Move items to
+                        </label>
+                        <select
+                          id="move-category-select"
+                          value={moveItemsToCategoryId ?? ""}
+                          onChange={(e) => setMoveItemsToCategoryId(e.target.value ? Number(e.target.value) : null)}
+                          disabled={categoryBusy || moveTargets.length === 0}
+                          className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-900 bg-white disabled:bg-gray-50"
+                        >
+                          <option value="">Select a category</option>
+                          {moveTargets.map((c) => (
+                            <option key={c.id} value={c.id}>
+                              {formatCategoryLabel(categories, c.id)}
+                            </option>
+                          ))}
+                        </select>
+                        {moveTargets.length === 0 ? (
+                          <p className="text-xs text-gray-500">Create another category first, then move these items.</p>
+                        ) : null}
+                        <button
+                          type="button"
+                          onClick={() => void handleMoveCategoryItemsThenDelete()}
+                          disabled={categoryBusy || moveItemsToCategoryId == null}
+                          className="w-full px-4 py-2 rounded-lg font-semibold text-white bg-orange-500 hover:bg-orange-600 disabled:opacity-50"
+                        >
+                          {isMovingCategoryItems ? "Moving..." : "Move items & delete"}
+                        </button>
+                      </div>
+                    ) : null}
+                    {categoryDeleteError && <p className="text-sm text-red-600 mb-4">{categoryDeleteError}</p>}
+                    <div className="flex gap-3">
+                      <button
+                        type="button"
+                        onClick={closeDeleteCategoryModal}
+                        className="flex-1 px-4 py-2 rounded-lg font-semibold text-gray-700 bg-gray-100 hover:bg-gray-200"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void handleDeleteCategory()}
+                        className="flex-1 px-4 py-2 rounded-lg font-semibold text-white bg-red-500 hover:bg-red-600 disabled:opacity-50"
+                        disabled={categoryBusy || itemCount > 0}
+                      >
+                        {isDeletingCategory ? "Deleting..." : "Delete"}
+                      </button>
+                    </div>
+                  </>
+                );
+              })()}
             </div>
           </div>,
           document.body

@@ -1,7 +1,13 @@
 import { Stack } from "expo-router";
 import { AndroidBackHandler } from "@/components/AndroidBackHandler";
+import { useDiscoveryLayout } from "@/hooks/useDiscoveryLayout";
+import { DiscoveryColors } from "@/features/discovery-home/discoveryTheme";
 
 export default function HomeLayout() {
+  const discovery = useDiscoveryLayout();
+  const barStyle = discovery ? "light" : "dark";
+  const barBg = discovery ? DiscoveryColors.bg : "#FFFFFF";
+
   return (
     <>
       <AndroidBackHandler />
@@ -28,7 +34,12 @@ export default function HomeLayout() {
         options={{
           statusBarTranslucent: true,
           statusBarHidden: false,
-          statusBarStyle: "dark",
+          statusBarStyle: barStyle,
+          statusBarBackgroundColor: barBg,
+          navigationBarColor: barBg,
+          // Opaque native surface — translucent status bar otherwise shows
+          // the previous route (tabs / merchant) through discovery home.
+          contentStyle: { backgroundColor: barBg },
         }}
       />
       <Stack.Screen
@@ -36,10 +47,41 @@ export default function HomeLayout() {
         options={{
           statusBarTranslucent: true,
           statusBarHidden: false,
-          statusBarStyle: "dark",
+          statusBarStyle: barStyle,
+          statusBarBackgroundColor: barBg,
+          contentStyle: { backgroundColor: barBg },
         }}
       />
-      <Stack.Screen name="category/[slug]" />
+      <Stack.Screen
+        name="free-packaging"
+        options={{
+          statusBarTranslucent: true,
+          statusBarHidden: false,
+          statusBarStyle: "light",
+          statusBarBackgroundColor: DiscoveryColors.bg,
+          contentStyle: { backgroundColor: DiscoveryColors.bg },
+        }}
+      />
+      <Stack.Screen
+        name="crazy-deals"
+        options={{
+          statusBarTranslucent: true,
+          statusBarHidden: false,
+          statusBarStyle: "light",
+          statusBarBackgroundColor: DiscoveryColors.bg,
+          contentStyle: { backgroundColor: DiscoveryColors.bg },
+        }}
+      />
+      <Stack.Screen
+        name="category/[slug]"
+        options={{
+          statusBarTranslucent: true,
+          statusBarHidden: false,
+          statusBarStyle: barStyle,
+          statusBarBackgroundColor: barBg,
+          contentStyle: { backgroundColor: barBg },
+        }}
+      />
       <Stack.Screen name="service/[slug]" />
       <Stack.Screen name="service/ride" />
       <Stack.Screen name="service/ride-pickup" />
@@ -56,10 +98,11 @@ export default function HomeLayout() {
           animationDuration: 0,
           statusBarTranslucent: false,
           statusBarHidden: false,
-          statusBarStyle: "dark",
-          statusBarBackgroundColor: "#FFFFFF",
+          statusBarStyle: barStyle,
+          statusBarBackgroundColor: barBg,
+          navigationBarColor: barBg,
           // Match shutter / skeleton — never flash a grey/blank route.
-          contentStyle: { backgroundColor: "#FFFFFF" },
+          contentStyle: { backgroundColor: barBg },
           gestureEnabled: true,
         }}
       />

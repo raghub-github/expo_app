@@ -13,6 +13,8 @@ type Props = {
   showPaid?: boolean;
   onTotalClick?: () => void;
   className?: string;
+  compact?: boolean;
+  discountLabel?: string;
 };
 
 export function MerchantOrderBillSummary({
@@ -21,8 +23,48 @@ export function MerchantOrderBillSummary({
   showPaid = true,
   onTotalClick,
   className = '',
+  compact = false,
+  discountLabel,
 }: Props) {
   const bill = merchantBillPartsFromItems(items, pricing);
+
+  if (compact) {
+    return (
+      <div className={className}>
+        <div className="rounded-xl bg-white px-3 py-2.5 ring-1 ring-stone-200/80">
+          {bill.discount > 0 || bill.packaging > 0.005 ? (
+            <div
+              className={`mb-2 grid gap-2 ${
+                bill.discount > 0 && bill.packaging > 0.005 ? 'grid-cols-2' : 'grid-cols-1'
+              }`}
+            >
+              {bill.discount > 0 ? (
+                <div className="min-w-0 truncate text-[11px] leading-tight text-emerald-700">
+                  <span className="font-semibold">{discountLabel ?? 'Discount'} </span>
+                  <span className="font-bold tabular-nums">−{formatOrderRs(bill.discount)}</span>
+                </div>
+              ) : null}
+              {bill.packaging > 0.005 ? (
+                <div className="min-w-0 truncate text-right text-[11px] leading-tight text-stone-600">
+                  <span className="font-medium">Packaging </span>
+                  <span className="font-bold tabular-nums text-stone-900">
+                    {formatOrderRs(bill.packaging)}
+                  </span>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+          {onTotalClick ? (
+            <button type="button" onClick={onTotalClick} className="group w-full text-left">
+              <CompactTotal billTotal={bill.total} showPaid={showPaid} clickable />
+            </button>
+          ) : (
+            <CompactTotal billTotal={bill.total} showPaid={showPaid} />
+          )}
+        </div>
+      </div>
+    );
+  }
 
   const totalBlock = (
     <>
@@ -70,6 +112,40 @@ export function MerchantOrderBillSummary({
           totalBlock
         )}
       </div>
+    </div>
+  );
+}
+
+function CompactTotal({
+  billTotal,
+  showPaid,
+  clickable = false,
+}: {
+  billTotal: number;
+  showPaid: boolean;
+  clickable?: boolean;
+}) {
+  return (
+    <div className="flex items-center justify-between gap-2">
+      <span className="flex items-center gap-1.5">
+        <span
+          className={
+            clickable
+              ? 'text-sm font-semibold text-stone-900 underline decoration-dashed decoration-emerald-500 underline-offset-2 group-hover:decoration-emerald-700'
+              : 'text-sm font-semibold text-stone-900'
+          }
+        >
+          Total
+        </span>
+        {showPaid ? (
+          <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-[9px] font-extrabold tracking-wide text-emerald-800">
+            PAID
+          </span>
+        ) : null}
+      </span>
+      <span className="text-xl font-extrabold leading-none tabular-nums text-emerald-600">
+        {formatOrderRs(billTotal)}
+      </span>
     </div>
   );
 }

@@ -329,18 +329,16 @@ function resolveDeliveryFee(
   }
 
   const fromBilling = asNum(billing?.delivery_fee);
-  const quoted =
-    fromSnap.quoted ??
-    asNum(billing?.deliveryFeeQuotedInr ?? billing?.delivery_fee_quoted);
   const fee =
     (fromBilling != null ? fromBilling : null) ??
     settlementDelivery ??
     asNum(core.total_delivery_fee) ??
-    (quoted != null && quoted > 0 ? quoted : null);
+    null;
   return {
     fee: fee != null ? round2(Math.max(0, fee)) : null,
-    quoted: quoted != null && quoted > 0 ? round2(quoted) : null,
-    waived: false,
+    /** Only when membership reduced the fee — never the raw pipeline quote. */
+    quoted: fromSnap.quoted,
+    waived: fromSnap.waived,
   };
 }
 
@@ -928,7 +926,12 @@ export async function fetchOrderPaymentDetail(input: {
     (totalRefunded != null && totalRefunded > 0);
 
   const cashbackEarned = cashbackFromBilling(billing);
-  const discountSummary = discountFromOrderTables ?? billingDiscountSummary;
+  const discountSummary = {
+    amount: discountFromOrderTables?.amount ?? billingDiscountSummary.amount,
+    merchantStoreOffer: billingDiscountSummary.merchantStoreOffer,
+    offerSource:
+      discountFromOrderTables?.offerSource ?? billingDiscountSummary.offerSource,
+  };
 
   // CTC = Cashin + GatiCash. grand_total alone is post-wallet to-pay (₹0 on full wallet).
   const { ctc, cashin, gatiCashUsed: gatiResolved } = resolveCustomerCtcPaidAmount({
@@ -999,6 +1002,7 @@ export async function fetchOrderPaymentDetail(input: {
     totalCashbackEarned: cashbackEarned,
     gatiCashUsed: gati,
     totalDiscountGranted: discountSummary.amount,
+    merchantStoreOfferDiscount: discountSummary.merchantStoreOffer,
     discountOfferSource: discountSummary.offerSource,
     deliveryFee,
     deliveryFeeQuoted: deliveryResolved.quoted,

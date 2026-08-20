@@ -22,6 +22,8 @@ import {
   useWindowDimensions,
   KeyboardAvoidingView,
   Animated as RNAnimated,
+  StatusBar as RNStatusBar,
+  InteractionManager,
 } from "react-native";
 import { Image } from "expo-image";
 import * as Location from "expo-location";
@@ -51,6 +53,17 @@ import { addressService, type Address } from "@/services/address.service";
 import { shareAddressViaLink } from "@/services/addressShare.service";
 import { profileService } from "@/services/profile.service";
 import { RazorpayCheckoutModal, type RazorpayPaymentResult, type RazorpayOrderParams } from "@/components/RazorpayCheckoutModal";
+import { CheckoutDeliveryTypeToggle } from "@/components/checkout/CheckoutDeliveryTypeToggle";
+import { CheckoutPayUsingButton } from "@/components/checkout/CheckoutPayUsingButton";
+import { CheckoutPaymentMethodsSheet } from "@/components/checkout/CheckoutPaymentMethodsSheet";
+import {
+  DEFAULT_PAY_INSTRUMENT,
+  orderPayloadPaymentMethod,
+  payInstrumentShortLabel,
+  type CheckoutPayMethodItem,
+} from "@/lib/razorpayPaymentMethods";
+import { CheckoutPaymentFailedSheet, CheckoutPaymentReturnOverlay } from "@/components/checkout/CheckoutPaymentFailedSheet";
+import { useCheckoutPaymentFailureStore } from "@/store/checkoutPaymentFailureStore";
 import { AppAlertModal } from "@/components/AppAlertModal";
 import { merchantService, type MerchantSummary, type MenuItem } from "@/services/merchant.service";
 import { ItemCustomizationSheet } from "@/components/ItemCustomizationSheet";
@@ -158,6 +171,10 @@ import {
   resolveFullConfigItemId,
 } from "@/lib/menu-item-config-query";
 import { useScreenChromeStore } from "@/store/screenChromeStore";
+import { useDiscoveryLayout } from "@/hooks/useDiscoveryLayout";
+import { DiscoveryColors } from "@/features/discovery-home/discoveryTheme";
+import { MerchantUiThemeProvider, useMerchantUiDark } from "@/features/merchant-detail/merchantUiTheme";
+import { AppErrorBoundary } from "@/components/AppErrorBoundary";
 import {
   useCheckoutSubscriptionPlan,
   useCurrentSubscription,
@@ -543,17 +560,12 @@ const dietStyles = StyleSheet.create({
 const ORDER_FAILED_REFUND_NOTE =
   " If you were charged, the amount will be reverted within 24–48 working hours. In some cases, refunds may be instant. For any issues, contact support with your payment details.";
 
-const PAYMENT_OPTIONS = [
-  { id: "upi", label: "UPI (GPay, PhonePe, Paytm & more)", displayName: "UPI" },
-  { id: "card", label: "Credit / Debit Card", displayName: "Card" },
-  { id: "wallet", label: "Wallets (Paytm, Amazon Pay & more)", displayName: "Wallet" },
-] as const;
-
 /** Max tip amount (₹) for custom "Other" — was 60 and silently capped every larger tip to ₹60. */
 const TIP_CUSTOM_MAX = 10_000;
 
 /** Horizontal marquee for restaurant note below utility pills. */
 function RestaurantNoteMarquee({ note }: { note: string }) {
+  const dark = useMerchantUiDark();
   const translateX = useRef(new RNAnimated.Value(0)).current;
   const textW = useRef(0);
   const viewW = useRef(0);
@@ -587,14 +599,14 @@ function RestaurantNoteMarquee({ note }: { note: string }) {
 
   return (
     <View
-      style={restaurantNoteMarqueeStyles.wrap}
+      style={[restaurantNoteMarqueeStyles.wrap, dark && restaurantNoteMarqueeStyles.wrapDark]}
       onLayout={(e) => {
         viewW.current = e.nativeEvent.layout.width;
       }}
     >
       <RNAnimated.View style={{ flexDirection: "row", transform: [{ translateX }] }}>
         <CheckoutText
-          style={restaurantNoteMarqueeStyles.text}
+          style={[restaurantNoteMarqueeStyles.text, dark && restaurantNoteMarqueeStyles.textDark]}
           onLayout={(e) => {
             textW.current = e.nativeEvent.layout.width;
           }}
@@ -624,6 +636,11 @@ const restaurantNoteMarqueeStyles = StyleSheet.create({
     color: CX.mintDark,
     flexShrink: 0,
   },
+  wrapDark: {
+    backgroundColor: "rgba(45, 212, 191, 0.12)",
+    borderColor: "rgba(45, 212, 191, 0.35)",
+  },
+  textDark: { color: DiscoveryColors.teal },
 });
 
 /** Footer delivery / takeaway — active segment matches Place Order CTA green. */
@@ -646,7 +663,7 @@ const CHECKOUT_FOOTER_CTA_RADIUS = 14;
 /** Scroll clearance for fixed footer (toggle + legal) without GatiCash row — keep in sync with `fixedBottom`. */
 const CHECKOUT_SCROLL_FOOTER_BASE = 108;
 /** Extra scroll inset when GatiCash wallet bar is visible above the place-order row. */
-const CHECKOUT_SCROLL_GATICASH_BAR_EXTRA = 76;
+const CHECKOUT_SCROLL_GATICASH_BAR_EXTRA = 90;
 /** Breathing room so `BrandingFooter` tagline + watermark sit fully above the fixed footer. */
 const CHECKOUT_SCROLL_BRANDING_CLEARANCE = 20;
 
@@ -683,6 +700,7 @@ const CheckoutCartLineRow = React.memo(function CheckoutCartLineRow({
   onIncrement,
   onDecrement,
 }: CheckoutCartLineRowProps) {
+  const dark = useMerchantUiDark();
   const sub = item.checkoutSubtext;
   const baseId = cartItemBaseId(item.menuItemId);
   const itemOffer = itemOfferById.get(item.menuItemId) ?? itemOfferById.get(baseId) ?? null;
@@ -779,19 +797,19 @@ const CheckoutCartLineRow = React.memo(function CheckoutCartLineRow({
       </View>
       <View style={styles.orderItemMid}>
         <View style={styles.orderItemNameRow}>
-          <CheckoutText style={styles.orderItemName} numberOfLines={2}>
+          <CheckoutText style={[styles.orderItemName, dark && styles.darkText]} numberOfLines={2}>
             {item.name}
           </CheckoutText>
           {itemOffer?.kind === "bogo" ? (
-            <View style={styles.orderItemBogoPill} accessibilityLabel={itemOffer.label}>
-              <CheckoutText style={styles.orderItemBogoPillText} numberOfLines={1}>
+            <View style={[styles.orderItemBogoPill, dark && styles.darkBogoPill]} accessibilityLabel={itemOffer.label}>
+              <CheckoutText style={[styles.orderItemBogoPillText, dark && styles.darkTealText]} numberOfLines={1}>
                 {itemOffer.label}
               </CheckoutText>
             </View>
           ) : null}
         </View>
         {sub ? (
-          <CheckoutText style={styles.orderItemCustom} numberOfLines={2}>
+          <CheckoutText style={[styles.orderItemCustom, dark && styles.darkMuted]} numberOfLines={2}>
             {sub}
           </CheckoutText>
         ) : null}
@@ -801,12 +819,13 @@ const CheckoutCartLineRow = React.memo(function CheckoutCartLineRow({
           </CheckoutText>
         ) : null}
         <TouchableOpacity
-          style={styles.orderItemEditRow}
+          style={styles.orderItemEditHit}
           onPress={handleEditPress}
           activeOpacity={0.7}
           hitSlop={{ top: 4, bottom: 4, left: 4, right: 4 }}
           accessibilityLabel="Edit item"
         >
+          <View style={styles.orderItemEditRow}>
           <CheckoutText style={styles.orderItemEditText}>Edit</CheckoutText>
           <Ionicons
             name="chevron-forward"
@@ -814,6 +833,7 @@ const CheckoutCartLineRow = React.memo(function CheckoutCartLineRow({
             color={CX.mint}
             style={styles.orderItemEditChevron}
           />
+          </View>
         </TouchableOpacity>
         {showCheckoutOfferIneligible ? (
           <CheckoutText style={styles.orderItemIneligible}>
@@ -822,7 +842,7 @@ const CheckoutCartLineRow = React.memo(function CheckoutCartLineRow({
         ) : null}
       </View>
       <View style={styles.orderItemRightCol}>
-        <View style={styles.orderItemStepperPill}>
+        <View style={[styles.orderItemStepperPill, dark && styles.darkStepper]}>
           <Pressable
             onPressIn={handleDecPressIn}
             onPressOut={clearRepeatTimers}
@@ -835,7 +855,7 @@ const CheckoutCartLineRow = React.memo(function CheckoutCartLineRow({
           >
             <CheckoutText style={styles.qtyGlyph}>−</CheckoutText>
           </Pressable>
-          <CheckoutText style={styles.qtyValueSmall}>{animatedQuantity}</CheckoutText>
+          <CheckoutText style={[styles.qtyValueSmall, dark && styles.darkText]}>{animatedQuantity}</CheckoutText>
           <Pressable
             onPressIn={handleIncPressIn}
             onPressOut={clearRepeatTimers}
@@ -859,9 +879,9 @@ const CheckoutCartLineRow = React.memo(function CheckoutCartLineRow({
             </CheckoutText>
           </View>
         ) : (
-          <CheckoutText style={styles.orderItemLinePrice}>
-            {fmtLine(animatedCatalogLineTotal)}
-          </CheckoutText>
+            <CheckoutText style={[styles.orderItemLinePrice, dark && styles.darkText]}>
+              {fmtLine(animatedCatalogLineTotal)}
+            </CheckoutText>
         )}
       </View>
     </View>
@@ -886,10 +906,19 @@ function checkoutPerfLog(evt: string, ms?: number): void {
   );
 }
 
-export default function CheckoutScreen() {
+export default function CheckoutRoute() {
+  return (
+    <AppErrorBoundary source="checkout" resetKey="checkout">
+      <CheckoutScreen />
+    </AppErrorBoundary>
+  );
+}
+
+function CheckoutScreen() {
   const router = useRouter();
   const { variant: checkoutVariant, onSheetClose } = useCheckoutPresentation();
   const isCheckoutSheet = checkoutVariant === "sheet";
+  const isDiscoveryDark = useDiscoveryLayout();
   const insets = useAppSafeAreaInsets();
   const rawInsets = useSafeAreaInsets();
   const checkoutHeaderTopPadding = useMemo(() => {
@@ -1001,6 +1030,10 @@ export default function CheckoutScreen() {
 
   const [selectedAddressId, setSelectedAddressId] = useState<number | null>(null);
   const [paymentMethod, setPaymentMethod] = useState<string>("upi");
+  const [selectedPayInstrument, setSelectedPayInstrument] =
+    useState<CheckoutPayMethodItem>(DEFAULT_PAY_INSTRUMENT);
+  const selectedPayInstrumentRef = useRef(selectedPayInstrument);
+  selectedPayInstrumentRef.current = selectedPayInstrument;
   /** Delivery / Self pickup toggle. Self pickup waives the delivery fee server-side. */
   const [deliveryType, setDeliveryType] = useState<"delivery" | "self_pickup">("delivery");
   const [tipSliderValue, setTipSliderValue] = useState(0);
@@ -1093,6 +1126,10 @@ export default function CheckoutScreen() {
   const [razorpayOrderParams, setRazorpayOrderParams] = useState<(RazorpayOrderParams & { pendingId?: string }) | null>(null);
   const [razorpayModalVisible, setRazorpayModalVisible] = useState(false);
   const [razorpayCreating, setRazorpayCreating] = useState(false);
+  const [paymentReturnBusy, setPaymentReturnBusy] = useState(false);
+  const paymentFailVisible = useCheckoutPaymentFailureStore((s) => s.visible);
+  const paymentFailAmount = useCheckoutPaymentFailureStore((s) => s.amountInr);
+  const paymentFailMethod = useCheckoutPaymentFailureStore((s) => s.methodLabel);
   const [simulatedPaymentOrder, setSimulatedPaymentOrder] = useState<{ orderId: string; amount: number; pendingId?: string } | null>(null);
   /**
    * Idempotency key for the current checkout attempt. Generated on first
@@ -1126,6 +1163,25 @@ export default function CheckoutScreen() {
     staleTime: 60_000,
     retry: false,
   });
+
+  const payMethodsQuery = useQuery({
+    queryKey: ["checkout", "razorpay-methods"],
+    queryFn: () => paymentService.getAvailableMethods(),
+    enabled: authHydrated && !!authSession,
+    staleTime: 5 * 60_000,
+    retry: 1,
+    placeholderData: (previous) => previous,
+  });
+  const payMethodSections = payMethodsQuery.data?.sections ?? [];
+
+  useEffect(() => {
+    const items = payMethodSections.flatMap((section) => section.items);
+    if (items.length === 0) return;
+    setSelectedPayInstrument((current) => {
+      if (items.some((item) => item.id === current.id)) return current;
+      return items.find((item) => item.method === "upi") ?? items[0]!;
+    });
+  }, [payMethodSections]);
 
   const gatiCashAvailable = useMemo(() => {
     const raw = gatiCashBalanceQ.data?.available_balance ?? gatiCashBalanceQ.data?.balance ?? 0;
@@ -1206,15 +1262,27 @@ export default function CheckoutScreen() {
     }, [merchantId, queryClient])
   );
 
-  const setStatusBarBackground = useScreenChromeStore((s) => s.setStatusBarBackground);
   const resetStatusBarBackground = useScreenChromeStore((s) => s.resetStatusBarBackground);
 
   useFocusEffect(
     useCallback(() => {
       if (isCheckoutSheet) return;
-      setStatusBarBackground(CHECKOUT_HEADER_BG);
+      const headerBg = isDiscoveryDark ? DiscoveryColors.bg : CHECKOUT_HEADER_BG;
+      useScreenChromeStore.setState({
+        statusBarBackground: headerBg,
+        statusBarStyle: isDiscoveryDark ? "light" : "dark",
+        // Checkout stack already owns top inset. Keep spacer off-guard: `true` here
+        // gets overwritten to a white bar by StatusBarRouteChromeGuard.
+        hideStatusBarSpacer: false,
+      });
+      RNStatusBar.setHidden(false, "none");
+      RNStatusBar.setBarStyle(isDiscoveryDark ? "light-content" : "dark-content", true);
+      if (Platform.OS === "android") {
+        RNStatusBar.setTranslucent(false);
+        RNStatusBar.setBackgroundColor(headerBg, true);
+      }
       return () => resetStatusBarBackground();
-    }, [isCheckoutSheet, setStatusBarBackground, resetStatusBarBackground])
+    }, [isCheckoutSheet, isDiscoveryDark, resetStatusBarBackground])
   );
 
   // Only a serviceability-validated id can become the checkout address.
@@ -1557,7 +1625,7 @@ export default function CheckoutScreen() {
     };
   }, []);
 
-  const { data: merchant, isLoading: merchantLoading } = useQuery({
+  const { data: merchant } = useQuery({
     queryKey: ["merchant", merchantId],
     queryFn: () => merchantService.getMerchantById(merchantId!),
     enabled: !!merchantId,
@@ -1614,6 +1682,7 @@ export default function CheckoutScreen() {
       id: m.id,
       menuItemId: m.menuItemId ?? null,
       price: m.price,
+      customerStrikePrice: m.basePrice != null && m.basePrice > m.price ? m.basePrice : null,
     }));
     return buildItemOfferDisplayMap(offers, catalog);
   }, [storeOffersData?.merchant_offers, merchant?.menu]);
@@ -2150,6 +2219,16 @@ export default function CheckoutScreen() {
     return Math.round(lon * 1e5) / 1e5;
   }, [sessionCoords?.longitude, currentLocationCoords?.longitude]);
 
+  const pickupLat =
+    merchant?.latitude != null && Number.isFinite(Number(merchant.latitude))
+      ? Number(merchant.latitude)
+      : null;
+  const pickupLon =
+    merchant?.longitude != null && Number.isFinite(Number(merchant.longitude))
+      ? Number(merchant.longitude)
+      : null;
+  const hasPickupCoords = pickupLat != null && pickupLon != null;
+
   const billingCalculateKeyParams: BillingCalculateKeyParams = {
     merchantId,
     addressId: selectedAddress?.id != null ? String(selectedAddress.id) : null,
@@ -2166,13 +2245,16 @@ export default function CheckoutScreen() {
     subscriptionBillingCycle,
     subscriptionPlanId: checkoutPlan?.id,
     deliveryType,
+    pickupLat,
+    pickupLon,
   };
 
   const canRequestBilling =
     !!merchantId &&
     items.length > 0 &&
-    !merchantLoading &&
-    (selectedAddress != null ||
+    hasPickupCoords &&
+    (deliveryType === "self_pickup" ||
+      selectedAddress != null ||
       (provisionalDropLat != null && provisionalDropLon != null));
 
   const billingQuery = useQuery({
@@ -2184,8 +2266,8 @@ export default function CheckoutScreen() {
           items: debouncedItemsWithSnapshots,
           showSubscriptionPromo,
           cityName: selectedAddress?.city ?? liveLocationAddress?.city ?? undefined,
-          pickupLat: merchant?.latitude != null ? Number(merchant.latitude) : undefined,
-          pickupLon: merchant?.longitude != null ? Number(merchant.longitude) : undefined,
+          pickupLat: pickupLat ?? undefined,
+          pickupLon: pickupLon ?? undefined,
         }),
         { signal }
       ),
@@ -2220,13 +2302,11 @@ export default function CheckoutScreen() {
   const liveCity = liveLocationAddress?.city ?? undefined;
 
   /**
-   * After address selection/change, `keepPreviousData` can briefly show the prior
-   * (provisional GPS or other-address) bill. Do not treat that as settled.
+   * Keep the last bill on screen while address / cart refetches.
+   * Place Order still waits on `billMatchesSelectedAddress` so we never charge
+   * a stale provisional total.
    */
-  const serverBill =
-    hasDeliveryAddress && billingQuery.isPlaceholderData
-      ? null
-      : (billingQuery.data ?? null);
+  const serverBill = billingQuery.data ?? null;
 
   /**
    * Live tip/donation vs last settled bill — keeps Total / GatiCash / CTA in sync while
@@ -3379,7 +3459,7 @@ export default function CheckoutScreen() {
     if (deliveryFeePending) return true;
     if (!serverBill) return false;
     return (
-      serverBill.components.delivery.taxable_value > 0.005 ||
+      (serverBill.components?.delivery?.taxable_value ?? 0) > 0.005 ||
       (deliveryFeeStrikeAmount ?? 0) > 0.005
     );
   }, [serverBill, deliveryType, deliveryFeeStrikeAmount, deliveryFeePending]);
@@ -3400,9 +3480,10 @@ export default function CheckoutScreen() {
     const feeForLabel =
       deliveryFeeStrikeAmount ??
       serverBill.deliveryFee ??
-      serverBill.components.delivery.taxable_value;
+      serverBill.components?.delivery?.taxable_value ??
+      0;
     if (feeForLabel <= 0.005) return "Delivery fee";
-    const found = serverBill.charges.find(
+    const found = (serverBill.charges ?? []).find(
       (c) =>
         c.kind === "charge" &&
         !c.hidden &&
@@ -3468,6 +3549,7 @@ export default function CheckoutScreen() {
   const gstAndOtherBreakdown = useMemo(() => {
     if (!serverBill) return null;
     const comp = serverBill.components;
+    if (!comp?.items || !comp.delivery || !comp.packaging || !comp.platform) return null;
 
     // Subscription row the bill renders outside (deduped checkout charge).
     const displayedMiscTotal = subscriptionDisplayMiscTotal;
@@ -3496,9 +3578,9 @@ export default function CheckoutScreen() {
       comp.platform.gst,
       "Tax applied on the platform fee per billing rules."
     );
-    push("surge_gst", "GST on surge fee", comp.surge.gst);
-    push("small_order_gst", "GST on small-order fee", comp.small_order.gst);
-    push("convenience_gst", "GST on convenience fee", comp.convenience.gst);
+    push("surge_gst", "GST on surge fee", comp.surge?.gst ?? 0);
+    push("small_order_gst", "GST on small-order fee", comp.small_order?.gst ?? 0);
+    push("convenience_gst", "GST on convenience fee", comp.convenience?.gst ?? 0);
     if (comp.subscription) {
       push(
         "subscription_gst",
@@ -3544,15 +3626,13 @@ export default function CheckoutScreen() {
     return gatiCashMaxApply;
   }, [useGatiCashWallet, gatiCashMaxApply]);
 
-  const showGatiCashWalletBar = gatiCashAvailable > 0.005;
-
   const checkoutScrollBottomInset = useMemo(
     () =>
       footerBottomInset +
       CHECKOUT_SCROLL_FOOTER_BASE +
       CHECKOUT_SCROLL_BRANDING_CLEARANCE +
-      (showGatiCashWalletBar ? CHECKOUT_SCROLL_GATICASH_BAR_EXTRA : 0),
-    [footerBottomInset, showGatiCashWalletBar]
+      CHECKOUT_SCROLL_GATICASH_BAR_EXTRA,
+    [footerBottomInset]
   );
 
   /** Authoritative total from the last SETTLED server bill (not a mid-flight placeholder). */
@@ -3564,7 +3644,7 @@ export default function CheckoutScreen() {
       deliveryFeePending,
       pendingDeliveryFee: Math.max(
         0,
-        serverBill.deliveryFee ?? serverBill.components.delivery.taxable_value ?? 0
+        serverBill.deliveryFee ?? serverBill.components?.delivery?.taxable_value ?? 0
       ),
       gatiCashApplyAmount,
       missedOfferUnlockDiscount,
@@ -3591,37 +3671,63 @@ export default function CheckoutScreen() {
    * PRE-tap value). Only updates once `billingQuery` has finished fetching.
    */
   const lastSettledBillRef = useRef<{ items: CartItem[]; toPayAmount: number } | null>(null);
+  /** Address + delivery type + store coords — qty taps must not count as a new scope. */
+  const billingDisplayScope = `${selectedAddress?.id ?? "none"}|${deliveryType}|${pickupLat ?? ""}|${pickupLon ?? ""}`;
+  const lastSettledScopeRef = useRef<string | null>(null);
   useEffect(() => {
     if (confirmedToPayAmount == null || billingQuery.isFetching) return;
     lastSettledBillRef.current = { items, toPayAmount: confirmedToPayAmount };
-  }, [confirmedToPayAmount, billingQuery.isFetching, items]);
+    lastSettledScopeRef.current = billingDisplayScope;
+  }, [confirmedToPayAmount, billingQuery.isFetching, items, billingDisplayScope]);
 
   /**
-   * Instant, optimistic grand total. As soon as `items` changes (a +/- tap, remove, or
-   * clear), this recomputes IMMEDIATELY from the last settled bill plus the exact known
-   * price delta of that change — it does not wait for `billingQuery`'s debounced network
-   * round trip. Once that round trip resolves, `confirmedToPayAmount` catches up and this
-   * snaps to the authoritative value (silently, usually identical; only visibly corrects
-   * itself in the rare case where the tap crossed a delivery-fee/discount threshold whose
-   * exact rule lives server-side). This is purely a DISPLAY value — order submission
-   * (`baseOrderPayload`) always sends the live cart and is priced authoritatively by the
-   * server at that time, so an optimistic estimate here can never cause a wrong charge.
-   *
-   * CRITICAL: when the cart delta is ~0 but `confirmedToPayAmount` moved (e.g. delivery
-   * fee unlocked after address select, GatiCash toggle, missed-offer unlock), always
-   * trust `confirmedToPayAmount`. Preferring a stale snapshot here caused Bill Summary
-   * (₹128.53) to disagree with the sticky Place Order bar (₹53.65).
+   * Display total. Never show cart-only / placeholder / previous-address amounts.
+   * Qty +/- on the same address uses the last settled server bill plus the known
+   * line-price delta so the number updates instantly without a skeleton flash.
    */
   const toPayAmount = useMemo(() => {
+    if (deliveryType === "delivery" && !hasDeliveryAddress) return undefined;
+    const scopeSettled = lastSettledScopeRef.current === billingDisplayScope;
+    const stalePlaceholder =
+      billingQuery.isPlaceholderData ||
+      (hasDeliveryAddress && !billMatchesSelectedAddress);
+    if (!scopeSettled && (confirmedToPayAmount == null || stalePlaceholder || billingQuery.isFetching)) {
+      return undefined;
+    }
     if (confirmedToPayAmount == null) return undefined;
     const snapshot = lastSettledBillRef.current;
     if (!snapshot || snapshot.items === items) return confirmedToPayAmount;
     const delta =
       effectiveCartValue(items, itemOfferById) - effectiveCartValue(snapshot.items, itemOfferById);
-    // Non-cart bill changes (address / wallet / unlock) → never stick to stale snapshot.
     if (Math.abs(delta) < 0.005) return confirmedToPayAmount;
     return Math.max(0, roundBillAmount(snapshot.toPayAmount + delta));
-  }, [confirmedToPayAmount, items, itemOfferById]);
+  }, [
+    confirmedToPayAmount,
+    items,
+    itemOfferById,
+    hasDeliveryAddress,
+    deliveryType,
+    billingDisplayScope,
+    billingQuery.isPlaceholderData,
+    billingQuery.isFetching,
+    billMatchesSelectedAddress,
+  ]);
+
+  const showPaymentFailedSheet = useCallback(
+    (amountOverride?: number | null) => {
+      idempotencyKeyRef.current = null;
+      setRazorpayModalVisible(false);
+      setRazorpayOrderParams(null);
+      setSimulatedPaymentOrder(null);
+      setPaymentReturnBusy(false);
+      useCheckoutPaymentFailureStore.getState().show({
+        amountInr:
+          amountOverride ?? (typeof toPayAmount === "number" ? toPayAmount : null),
+        methodLabel: payInstrumentShortLabel(selectedPayInstrumentRef.current),
+      });
+    },
+    [toPayAmount]
+  );
   /** List price strike — only when payable is actually lower (hide when wallet top-up inflates total).
    * Also when GatiCash covers 100% (₹0 to-pay), strike the pre-wallet amount so CTA/Total Bill
    * explain why the bold total is zero.
@@ -3643,9 +3749,10 @@ export default function CheckoutScreen() {
       const list = Math.round((preWalletTotal + checkoutSavingsTotal) * 100) / 100;
       if (list > toPayAmount + 0.005) return list;
     }
-    // 100% GatiCash settlement — strike the amount wallet just covered (incl. tip/donation).
-    if (toPayAmount <= 0.005 && gatiCashApplyAmount > 0.005) {
-      return Math.round(gatiCashApplyAmount * 100) / 100;
+    // GatiCash (partial or 100%) — strike the pre-wallet bill so ₹100 off is visible
+    // next to the remaining payable (e.g. ~~₹107.93~~ ₹7.93).
+    if (gatiCashApplyAmount > 0.005 && preWalletTotal > toPayAmount + 0.005) {
+      return preWalletTotal;
     }
     return null;
   }, [
@@ -3659,14 +3766,15 @@ export default function CheckoutScreen() {
    * the Place Order CTA so both numbers always read the same value at the same instant.
    * `ready` snaps the first real bill straight in instead of visibly counting up from
    * the 0 placeholder used before billingQuery resolves. */
-  const billingReady = serverBill != null;
+  const billingReady = toPayAmount != null;
   // The two animated totals used to be driven from here, which re-rendered this
   // entire component once per animation tick on every bill change. They now live
   // inside <AnimatedRupeeAmount>, so each tick re-renders only that leaf.
   /** Payable is fully covered by wallet — explain ₹0 on the Place Order CTA. */
   const fullyPaidByGatiCash =
     toPayAmount != null && toPayAmount <= 0.005 && gatiCashApplyAmount > 0.005;
-  const hasValidPayment = paymentMethod !== "cod" && ["upi", "card", "wallet"].includes(paymentMethod);
+  const hasValidPayment =
+    paymentMethod !== "cod" && ["upi", "card", "wallet", "online"].includes(paymentMethod);
   /** Placeable only when the bill is settled for the selected address (not keepPreviousData). */
   const canPlaceOrder =
     !isStoreClosed &&
@@ -3850,8 +3958,7 @@ export default function CheckoutScreen() {
         }),
       });
     },
-    onSuccess: async (order) => {
-      await fulfillPendingMissedOfferWallet();
+    onSuccess: (order) => {
       setRazorpayModalVisible(false);
       setRazorpayOrderParams(null);
       const { label: etaLabel, etaMaxMinutes } = checkoutDeliveryEtaRef.current;
@@ -3865,7 +3972,8 @@ export default function CheckoutScreen() {
         placedAt: Date.now(),
         serviceType: "food",
       });
-      // See comment in finalizeOrder.onSuccess — same React batching pitfall.
+      // Navigate first — wallet refresh / cart clear must not delay or unmount
+      // the checkout tree before expo-router dispatches payment-success.
       router.replace({
         pathname: "/orders/payment-success",
         params: {
@@ -3875,10 +3983,13 @@ export default function CheckoutScreen() {
           ...(etaMaxMinutes > 0 ? { etaMinutes: String(etaMaxMinutes) } : {}),
         },
       });
-      setTimeout(() => {
-        clearCart();
-        queryClient.invalidateQueries({ queryKey: ["my-orders"] });
-      }, 0);
+      void fulfillPendingMissedOfferWallet();
+      InteractionManager.runAfterInteractions(() => {
+        setTimeout(() => {
+          clearCart();
+          queryClient.invalidateQueries({ queryKey: ["my-orders"] });
+        }, 80);
+      });
     },
     onError: (err: Error & { response?: { data?: { message?: string; error?: string; code?: string; title?: string } } }) => {
       setRazorpayModalVisible(false);
@@ -3890,13 +4001,17 @@ export default function CheckoutScreen() {
         ? data?.message ??
           "This service is temporarily unavailable in your current location. Please try again later or choose another nearby location."
         : data?.message ?? err?.message ?? "Could not place order.";
-      router.replace({
-        pathname: "/orders/payment-failure",
-        params: {
-          message: blocked ? msg : msg + ORDER_FAILED_REFUND_NOTE,
-          ...(blocked && data?.title ? { title: data.title } : {}),
-        },
-      });
+      if (blocked) {
+        router.replace({
+          pathname: "/orders/payment-failure",
+          params: {
+            message: msg,
+            ...(data?.title ? { title: data.title } : {}),
+          },
+        });
+        return;
+      }
+      showPaymentFailedSheet();
     },
   });
 
@@ -3940,8 +4055,7 @@ export default function CheckoutScreen() {
         { retries: 3, delayMs: 1500 }
       );
     },
-    onSuccess: async (order) => {
-      await fulfillPendingMissedOfferWallet();
+    onSuccess: (order) => {
       const recoveryPendingId = finalizeArgsRef.current?.pendingId ?? "";
       finalizeArgsRef.current = null;
       setRazorpayModalVisible(false);
@@ -3965,12 +4079,10 @@ export default function CheckoutScreen() {
         return;
       }
       const { label: etaLabel, etaMaxMinutes } = checkoutDeliveryEtaRef.current;
-      const placedStatus =
-        order.status === "PLACED" ? "ORDER_PLACED" : (order.status as import("@/store/orderStore").OrderStatus);
-      seedTrackingOrderCache(orderId, placedStatus);
+      seedTrackingOrderCache(orderId, "ORDER_PLACED");
       setActiveOrder({
         orderId,
-        status: placedStatus,
+        status: "ORDER_PLACED",
         etaMinutes: etaMaxMinutes,
         storeId: merchantId ?? null,
         storeName: merchantName ?? null,
@@ -3980,14 +4092,9 @@ export default function CheckoutScreen() {
       if (isCheckoutSheet) {
         useCheckoutSheetStore.getState().hide();
       }
-      // CRITICAL: navigate FIRST and defer clearCart into a separate
-      // macrotask. React batches every state update inside this callback into
-      // ONE render. If clearCart fires in the same batch, the checkout's
-      // `items.length === 0` guard swaps the JSX to <CartEmptyView/> and
-      // tears down the navigator subtree BEFORE expo-router's passive-effect
-      // dispatch fires — resulting in "Do you have a route named 'orders'?"
-      // and the user stuck on the previous screen. setTimeout pushes the
-      // cart clear out of the current render batch.
+      // CRITICAL: navigate FIRST. Wallet refresh and clearCart must not run in
+      // the same React batch — emptying the cart swaps checkout to CartEmptyView
+      // and tears down the navigator before expo-router can open payment-success.
       router.replace({
         pathname: "/orders/payment-success",
         params: {
@@ -3997,10 +4104,13 @@ export default function CheckoutScreen() {
           ...(etaMaxMinutes > 0 ? { etaMinutes: String(etaMaxMinutes) } : {}),
         },
       });
-      setTimeout(() => {
-        clearCart();
-        queryClient.invalidateQueries({ queryKey: ["my-orders"] });
-      }, 0);
+      void fulfillPendingMissedOfferWallet();
+      InteractionManager.runAfterInteractions(() => {
+        setTimeout(() => {
+          clearCart();
+          queryClient.invalidateQueries({ queryKey: ["my-orders"] });
+        }, 80);
+      });
     },
     onError: (err: Error & { response?: { data?: { message?: string } }; code?: string }) => {
       setRazorpayModalVisible(false);
@@ -4037,24 +4147,14 @@ export default function CheckoutScreen() {
           },
         });
       } else {
-        // Pass the error code through to the failure screen so it can pick the
-        // right primary CTA ("Try a different payment method" vs "Retry payment"
-        // vs "Check connection & retry").
-        router.replace({
-          pathname: "/orders/payment-failure",
-          // No refund note for wallet-settled failures — the balance was never debited.
-          params: {
-            message: walletSettled ? msg : msg + ORDER_FAILED_REFUND_NOTE,
-            code: apiCode ?? "",
-          },
-        });
+        showPaymentFailedSheet();
       }
     },
   });
 
   const handlePlaceOrderPress = useCallback(async () => {
     if (deliveryType === "self_pickup") return;
-    if (!canPlaceOrder || placeOrder.isPending || finalizeOrder.isPending || razorpayCreating) return;
+    if (!canPlaceOrder || placeOrder.isPending || finalizeOrder.isPending || razorpayCreating || paymentReturnBusy) return;
     if (!checkoutReceiverName.trim() || !checkoutReceiverMobile.trim()) {
       Alert.alert(
         "Contact details required",
@@ -4084,12 +4184,29 @@ export default function CheckoutScreen() {
         }
         const pending = await orderService.createPendingOrderWithRetry({
           ...payload,
+          paymentMethod: orderPayloadPaymentMethod(selectedPayInstrumentRef.current),
           idempotencyKey: idempotencyKeyRef.current,
         });
         // GatiCash covered the whole bill: there is nothing to charge, so skip Razorpay
         // entirely and let the backend settle the order off the wallet ledger. Minting a
         // ₹0 gateway order is impossible and used to fail checkout outright.
+        //
+        // Never trust a ₹0 pending amount if the checkout UI still shows a payable —
+        // that mismatch used to place the order with GatiCash only while PhonePe ₹7.93
+        // was still on the CTA.
         if (pending.amount <= 0) {
+          const uiPayablePaise =
+            typeof toPayAmount === "number" && Number.isFinite(toPayAmount)
+              ? Math.round(toPayAmount * 100)
+              : null;
+          if (uiPayablePaise != null && uiPayablePaise > 0) {
+            console.warn("[checkout] refusing wallet-only finalize; UI still has payable", {
+              pendingAmount: pending.amount,
+              uiPayablePaise,
+            });
+            showPaymentFailedSheet(toPayAmount);
+            return;
+          }
           finalizeOrder.mutate({ pendingId: pending.pendingId, result: null });
           return;
         }
@@ -4144,7 +4261,17 @@ export default function CheckoutScreen() {
     checkoutReceiverMobile,
     openReceiverSheet,
     recheckDeliveryUnavailableGate,
+    toPayAmount,
+    showPaymentFailedSheet,
+    paymentReturnBusy,
   ]);
+
+  const handleSelectPayInstrument = useCallback((item: CheckoutPayMethodItem) => {
+    selectedPayInstrumentRef.current = item;
+    setSelectedPayInstrument(item);
+    setPaymentMethod(orderPayloadPaymentMethod(item));
+    setPaymentSheetVisible(false);
+  }, []);
 
   const handleRazorpaySuccess = useCallback(
     (result: RazorpayPaymentResult) => {
@@ -4161,10 +4288,103 @@ export default function CheckoutScreen() {
   const handleRazorpayCancel = useCallback(() => {
     setRazorpayModalVisible(false);
     setRazorpayOrderParams(null);
+    setPaymentReturnBusy(false);
+    setRazorpayCreating(false);
     // Let the user re-tap "Place order" with a fresh intent — most cancels mean
     // "I changed my mind" not "retry the same idempotent attempt".
     idempotencyKeyRef.current = null;
   }, []);
+
+  const handleUpiAppOpened = useCallback(async () => {
+    const pendingId = razorpayOrderParams?.pendingId;
+    const amount = typeof toPayAmount === "number" ? toPayAmount : null;
+    setRazorpayModalVisible(false);
+    setRazorpayOrderParams(null);
+    if (!pendingId) {
+      showPaymentFailedSheet(amount);
+      return;
+    }
+
+    setPaymentReturnBusy(true);
+    try {
+      const deadline = Date.now() + 14000;
+      while (Date.now() < deadline) {
+        const status = await orderService.getPendingOrderStatus(pendingId);
+        if (status.finalized && status.orderId) {
+          const orderId = status.orderId;
+          const { label: etaLabel, etaMaxMinutes } = checkoutDeliveryEtaRef.current;
+          seedTrackingOrderCache(orderId, "ORDER_PLACED");
+          setActiveOrder({
+            orderId,
+            status: "ORDER_PLACED",
+            etaMinutes: etaMaxMinutes,
+            storeId: merchantId ?? null,
+            storeName: merchantName ?? null,
+            placedAt: Date.now(),
+            serviceType: "food",
+          });
+          if (isCheckoutSheet) {
+            useCheckoutSheetStore.getState().hide();
+          }
+          router.replace({
+            pathname: "/orders/payment-success",
+            params: {
+              orderId,
+              ...(merchantName ? { merchantName } : {}),
+              ...(etaLabel ? { deliveryEtaLabel: etaLabel } : {}),
+              ...(etaMaxMinutes > 0 ? { etaMinutes: String(etaMaxMinutes) } : {}),
+            },
+          });
+          void fulfillPendingMissedOfferWallet();
+          InteractionManager.runAfterInteractions(() => {
+            setTimeout(() => {
+              clearCart();
+              queryClient.invalidateQueries({ queryKey: ["my-orders"] });
+            }, 80);
+          });
+          return;
+        }
+        if (
+          status.paymentState === "failed" ||
+          status.paymentState === "refunded" ||
+          status.paymentState === "refund_pending"
+        ) {
+          showPaymentFailedSheet(amount);
+          return;
+        }
+        await new Promise((r) => setTimeout(r, 2000));
+      }
+      const { label: etaLabel } = checkoutDeliveryEtaRef.current;
+      router.replace({
+        pathname: "/orders/payment-confirming",
+        params: {
+          pendingId,
+          merchantName: merchantName ?? "",
+          message: "We're confirming your payment. Keep this screen open.",
+          amount: amount != null ? String(amount) : "",
+          method: payInstrumentShortLabel(selectedPayInstrumentRef.current),
+          ...(etaLabel ? { deliveryEtaLabel: etaLabel } : {}),
+        },
+      });
+    } catch {
+      showPaymentFailedSheet(amount);
+    } finally {
+      setPaymentReturnBusy(false);
+    }
+  }, [
+    clearCart,
+    fulfillPendingMissedOfferWallet,
+    isCheckoutSheet,
+    merchantId,
+    merchantName,
+    queryClient,
+    razorpayOrderParams?.pendingId,
+    router,
+    seedTrackingOrderCache,
+    setActiveOrder,
+    showPaymentFailedSheet,
+    toPayAmount,
+  ]);
 
   // When payment modal or simulated payment overlay is open, hardware back should close it, not leave checkout
   useEffect(() => {
@@ -4223,19 +4443,15 @@ export default function CheckoutScreen() {
       // to the failure screen so they don't get stuck on checkout.
       console.warn("[checkout] dummy fail call errored", e);
     } finally {
-      // Reset idempotency so the next "Place order" tap starts a fresh attempt.
       idempotencyKeyRef.current = null;
       setSimulatedSubmitting(false);
-      router.replace({
-        pathname: "/orders/payment-failure",
-        params: {
-          title: "Payment couldn't be completed",
-          message: "Your simulated payment was declined. You can try a different payment method.",
-          code: "DUMMY_USER_DECLINED",
-        },
-      });
+      showPaymentFailedSheet(
+        typeof simulatedPaymentOrder?.amount === "number"
+          ? simulatedPaymentOrder.amount / 100
+          : undefined
+      );
     }
-  }, [simulatedPaymentOrder, simulatedSubmitting, router]);
+  }, [simulatedPaymentOrder, simulatedSubmitting, showPaymentFailedSheet]);
 
   const handleSimulatedPaymentCancel = useCallback(() => {
     if (simulatedSubmitting) return;
@@ -4429,8 +4645,6 @@ export default function CheckoutScreen() {
     [merchantId, merchant?.menu, router]
   );
 
-  const paymentLabel = PAYMENT_OPTIONS.find((p) => p.id === paymentMethod)?.displayName ?? "UPI";
-
   const completeYourMealItems = useMemo(() => {
     const raw = merchant?.menu ?? (merchant as { menu_items?: import("@/services/merchant.service").MenuItem[] } | undefined)?.menu_items;
     const menu = Array.isArray(raw) ? raw : [];
@@ -4545,35 +4759,57 @@ export default function CheckoutScreen() {
   // changed the hook count when the cart emptied → "fewer hooks than expected".
   const cartIsEmpty = !merchantId || items.length === 0;
 
-  const showBillSkeleton =
-    merchantLoading ||
-    (serverBill == null &&
-      (billingQuery.isLoading ||
-        billingQuery.isFetching ||
-        (hasDeliveryAddress && billingQuery.isPlaceholderData)));
+  const showBillSkeleton = toPayAmount == null && !billingQuery.isError;
 
   const showDistanceBanner =
     isDeliveryOutOfRange ||
     (currentVsSelectedDistanceKm != null && currentVsSelectedDistanceKm > 1.5);
 
+  const checkoutPageBg = isDiscoveryDark ? DiscoveryColors.bg : "#F2F2F2";
+  const checkoutHeaderBg = isDiscoveryDark ? DiscoveryColors.bg : CHECKOUT_HEADER_BG;
+  const checkoutText = isDiscoveryDark ? DiscoveryColors.text : "#1A1A1A";
+  const checkoutMuted = isDiscoveryDark ? DiscoveryColors.textMuted : "#4B5563";
+  const dCard = isDiscoveryDark ? styles.darkCard : null;
+  const dText = isDiscoveryDark ? styles.darkText : null;
+  const dMuted = isDiscoveryDark ? styles.darkMuted : null;
+  const dIcon = isDiscoveryDark ? DiscoveryColors.textDim : GatiMitraColors.textSecondary;
+
   if (cartIsEmpty) {
     return (
-      <View style={[styles.center, { paddingBottom: insets.bottom }]}>
-        <CheckoutText style={styles.emptyText}>Cart is empty</CheckoutText>
+      <MerchantUiThemeProvider dark={isDiscoveryDark}>
+      <View style={[styles.center, { paddingBottom: insets.bottom, backgroundColor: checkoutPageBg }]}>
+        <CheckoutText style={[styles.emptyText, isDiscoveryDark && { color: DiscoveryColors.textMuted }]}>
+          Cart is empty
+        </CheckoutText>
         <TouchableOpacity onPress={handleCheckoutBack} style={styles.ctaSecondary}>
           <CheckoutText style={styles.ctaSecondaryText}>Back to cart</CheckoutText>
         </TouchableOpacity>
       </View>
+      </MerchantUiThemeProvider>
     );
   }
 
   return (
-    <View style={styles.container}>
+    <MerchantUiThemeProvider dark={isDiscoveryDark}>
+    <View style={[styles.container, { backgroundColor: checkoutPageBg }]}>
       {/* GatiMitra-style header: back · merchant name (top, small) + eta + address (with chevron) · share icon */}
       <View
         style={[
           styles.header,
-          { paddingTop: checkoutHeaderTopPadding },
+          {
+            paddingTop: checkoutHeaderTopPadding,
+            backgroundColor: checkoutHeaderBg,
+            borderBottomWidth: isDiscoveryDark ? 0 : StyleSheet.hairlineWidth,
+            borderBottomColor: isDiscoveryDark ? "transparent" : "#E8E8E8",
+            ...(isDiscoveryDark
+              ? {
+                  shadowColor: "transparent",
+                  shadowOpacity: 0,
+                  shadowRadius: 0,
+                  elevation: 0,
+                }
+              : null),
+          },
         ]}
       >
         <View style={styles.headerRow}>
@@ -4581,33 +4817,53 @@ export default function CheckoutScreen() {
             <View style={styles.headerBack} />
           ) : (
             <TouchableOpacity onPress={handleCheckoutBack} style={styles.headerBack} hitSlop={12}>
-              <Ionicons name="chevron-back" size={22} color="#1A1A1A" />
+              <Ionicons name="chevron-back" size={22} color={checkoutText} />
             </TouchableOpacity>
           )}
           <View style={styles.headerCenter}>
-            <CheckoutText style={styles.headerStoreName} numberOfLines={1}>
+            <CheckoutText
+              style={[
+                styles.headerStoreName,
+                { color: isDiscoveryDark ? DiscoveryColors.text : "#4B5563" },
+              ]}
+              numberOfLines={1}
+            >
               {merchantName ?? storeFullAddress}
             </CheckoutText>
             <TouchableOpacity
-              style={styles.headerAddressRow}
+              style={styles.headerAddressHit}
               onPress={openCheckoutAddressSheet}
               activeOpacity={0.7}
               hitSlop={6}
             >
-              <CheckoutText style={styles.headerEtaText} numberOfLines={1}>
-                <CheckoutText style={styles.headerEtaStrong}>{deliveryEta}</CheckoutText>
+              <View style={styles.headerAddressRow}>
+              <CheckoutText
+                style={[styles.headerEtaText, isDiscoveryDark && { color: DiscoveryColors.text }]}
+                numberOfLines={1}
+              >
+                <CheckoutText style={[styles.headerEtaStrong, isDiscoveryDark && { color: DiscoveryColors.teal }]}>
+                  {deliveryEta}
+                </CheckoutText>
                 {hasDeliveryAddress ? (
                   <>
-                    <CheckoutText style={styles.headerEtaSecondary}>
+                    <CheckoutText style={[styles.headerEtaSecondary, isDiscoveryDark && { color: DiscoveryColors.text }]}>
                       {" "}to {selectedAddress?.label?.toLowerCase() ?? "address"}
                     </CheckoutText>
-                    <CheckoutText style={styles.headerAddressSep}>{"  |  "}</CheckoutText>
-                    <CheckoutText style={styles.headerFullAddressInline} numberOfLines={1}>
+                    <CheckoutText style={[styles.headerAddressSep, isDiscoveryDark && { color: DiscoveryColors.textDim }]}>
+                      {"  |  "}
+                    </CheckoutText>
+                    <CheckoutText
+                      style={[
+                        styles.headerFullAddressInline,
+                        isDiscoveryDark && { color: DiscoveryColors.textMuted },
+                      ]}
+                      numberOfLines={1}
+                    >
                       {selectedAddress?.fullAddress ?? "Tap to choose address"}
                     </CheckoutText>
                   </>
                 ) : (
-                  <CheckoutText style={styles.headerEtaSecondary}>
+                  <CheckoutText style={[styles.headerEtaSecondary, isDiscoveryDark && { color: DiscoveryColors.text }]}>
                     {" "}· Select delivery address
                   </CheckoutText>
                 )}
@@ -4615,9 +4871,10 @@ export default function CheckoutScreen() {
               <Ionicons
                 name="chevron-down"
                 size={14}
-                color="#888888"
+                color={isDiscoveryDark ? DiscoveryColors.text : "#888888"}
                 style={styles.headerChevron}
               />
+              </View>
             </TouchableOpacity>
           </View>
           <TouchableOpacity
@@ -4626,17 +4883,30 @@ export default function CheckoutScreen() {
             hitSlop={10}
             accessibilityLabel="Share restaurant"
           >
-            <Ionicons name="share-social-outline" size={20} color="#1A1A1A" />
+            <Ionicons name="share-social-outline" size={20} color={checkoutText} />
           </TouchableOpacity>
         </View>
       </View>
 
       {/* One-line distance banner — GatiMitra style ("Selected address is N km away from your location") */}
       {showDistanceBanner && (
-        <Animated.View entering={FadeIn.duration(ANIM_DURATION)} style={styles.distanceBannerOuter}>
+        <Animated.View
+          entering={FadeIn.duration(ANIM_DURATION)}
+          style={[
+            styles.distanceBannerOuter,
+            { backgroundColor: checkoutPageBg },
+            isDiscoveryDark && styles.darkDistanceBannerOuter,
+          ]}
+        >
           <View style={styles.distanceBannerNotch} />
-          <View style={styles.distanceBannerCompact}>
-            <CheckoutText style={styles.distanceBannerCompactText} numberOfLines={2}>
+          <View style={[styles.distanceBannerCompact, isDiscoveryDark && styles.darkDistanceBannerInner]}>
+            <CheckoutText
+              style={[
+                styles.distanceBannerCompactText,
+                isDiscoveryDark && styles.darkDistanceBannerText,
+              ]}
+              numberOfLines={2}
+            >
               {isDeliveryOutOfRange
                 ? "This address is outside the restaurant delivery zone. Choose another address to place your order."
                 : `Selected address is ${(currentVsSelectedDistanceKm)?.toFixed(
@@ -4648,8 +4918,8 @@ export default function CheckoutScreen() {
       )}
 
       {checkoutSavingsTotal > 0.005 ? (
-        <View style={styles.checkoutSavingsTag}>
-          <CheckoutText style={styles.checkoutSavingsTagText} bold>
+        <View style={[styles.checkoutSavingsTag, isDiscoveryDark && styles.darkSavingsTag]}>
+          <CheckoutText style={[styles.checkoutSavingsTagText, isDiscoveryDark && styles.darkSavingsTagText]} bold>
             {`🥳 You saved ₹${formatCheckoutSavingsRupees(checkoutSavingsTotal)} on this order`}
           </CheckoutText>
         </View>
@@ -4657,7 +4927,7 @@ export default function CheckoutScreen() {
 
       <ScrollView
         ref={scrollRef}
-        style={styles.scroll}
+        style={[styles.scroll, { backgroundColor: checkoutPageBg }]}
         contentContainerStyle={[
           styles.scrollContent,
           {
@@ -4669,7 +4939,7 @@ export default function CheckoutScreen() {
       >
         {/* Order summary card — diet icon + lines + mint stepper, utility pills */}
         <Animated.View entering={FadeInDown.duration(ANIM_DURATION)} style={styles.section}>
-          <View style={styles.checkoutFullBleedSection}>
+          <View style={[styles.checkoutFullBleedSection, dCard]}>
             <View style={styles.orderItemsPreview}>
               {itemsWithImage.map((item) => (
                 <CheckoutCartLineRow
@@ -4691,34 +4961,45 @@ export default function CheckoutScreen() {
             >
               <TouchableOpacity
                 onPress={() => router.push({ pathname: "/home/merchant/[id]", params: { id: merchantId } })}
-                style={styles.checkoutActionPill}
+                style={[styles.checkoutActionPillHit, isDiscoveryDark && styles.darkPill]}
                 activeOpacity={0.8}
               >
+                <View style={styles.checkoutActionPill}>
                 <CheckoutText style={styles.checkoutActionPillPlus}>+</CheckoutText>
                 <CheckoutText style={styles.checkoutActionPillTextMint}>Add more items</CheckoutText>
+                </View>
               </TouchableOpacity>
               <TouchableOpacity
                 style={[
-                  styles.checkoutActionPill,
+                  styles.checkoutActionPillHit,
+                  isDiscoveryDark && styles.darkPill,
                   restaurantNote.trim().length > 0 && styles.checkoutActionPillActive,
                 ]}
                 onPress={() => setRestaurantNoteModalVisible(true)}
                 activeOpacity={0.8}
               >
-                <Ionicons name="document-text-outline" size={14} color={CX.textSecondary} />
-                <CheckoutText style={styles.checkoutActionPillText} numberOfLines={1}>
+                <View style={styles.checkoutActionPill}>
+                <Ionicons name="document-text-outline" size={14} color={isDiscoveryDark ? DiscoveryColors.textMuted : CX.textSecondary} />
+                <CheckoutText style={[styles.checkoutActionPillText, dMuted]} numberOfLines={1}>
                   Add a note for the restaurant
                 </CheckoutText>
+                </View>
               </TouchableOpacity>
               <TouchableOpacity
-                style={[styles.checkoutActionPill, skipCutlery && styles.checkoutActionPillActive]}
+                style={[
+                  styles.checkoutActionPillHit,
+                  isDiscoveryDark && styles.darkPill,
+                  skipCutlery && styles.checkoutActionPillActive,
+                ]}
                 onPress={() => setSkipCutlery((v) => !v)}
                 activeOpacity={0.8}
               >
-                <Ionicons name="restaurant-outline" size={14} color={CX.textSecondary} />
-                <CheckoutText style={styles.checkoutActionPillText} numberOfLines={1}>
+                <View style={styles.checkoutActionPill}>
+                <Ionicons name="restaurant-outline" size={14} color={isDiscoveryDark ? DiscoveryColors.textMuted : CX.textSecondary} />
+                <CheckoutText style={[styles.checkoutActionPillText, dMuted]} numberOfLines={1}>
                   {"Don't send cutlery"}
                 </CheckoutText>
+                </View>
               </TouchableOpacity>
             </ScrollView>
             {restaurantNote.trim().length > 0 ? (
@@ -4732,15 +5013,15 @@ export default function CheckoutScreen() {
         {/* Complete your meal with — above coupons/subscription; ~3.5 cards visible; names wrap */}
         {completeYourMealItems.length > 0 ? (
           <Animated.View entering={FadeInDown.duration(ANIM_DURATION).delay(40)} style={styles.section}>
-            <View style={styles.checkoutFullBleedSection}>
+            <View style={[styles.checkoutFullBleedSection, dCard]}>
               <View style={styles.upsellSectionHeader}>
-                <View style={styles.upsellSectionIcon}>
-                  <Ionicons name="grid-outline" size={14} color="#9CA3AF" />
+                <View style={[styles.upsellSectionIcon, isDiscoveryDark && styles.darkUpsellIcon]}>
+                  <Ionicons name="grid-outline" size={14} color={isDiscoveryDark ? DiscoveryColors.textDim : "#9CA3AF"} />
                   <View style={styles.upsellSectionIconPlus}>
-                    <Ionicons name="add" size={8} color="#9CA3AF" />
+                    <Ionicons name="add" size={8} color={isDiscoveryDark ? DiscoveryColors.textDim : "#9CA3AF"} />
                   </View>
                 </View>
-                <CheckoutText style={styles.upsellSectionTitle}>Complete your meal with</CheckoutText>
+                <CheckoutText style={[styles.upsellSectionTitle, dText]}>Complete your meal with</CheckoutText>
               </View>
               <View style={styles.upsellScrollWrap}>
                 <ScrollView
@@ -4800,10 +5081,10 @@ export default function CheckoutScreen() {
                             )}
                           </View>
                           <View style={styles.upsellAddBtnOnImage} pointerEvents="none">
-                            <Ionicons name="add" size={18} color={CX.mint} />
+                            <Ionicons name="add" size={16} color="#FFFFFF" />
                           </View>
                         </View>
-                        <CheckoutText style={[styles.upsellName, { width: chipW }]} numberOfLines={2}>
+                        <CheckoutText style={[styles.upsellName, { width: chipW }, dText]} numberOfLines={2}>
                           {m.name}
                         </CheckoutText>
                       </Pressable>
@@ -4817,26 +5098,37 @@ export default function CheckoutScreen() {
 
         {/* Offers — blue banner, GMitra plus, applied savings, coupons */}
         <Animated.View entering={FadeInDown.duration(ANIM_DURATION).delay(50)} style={styles.section}>
-          <View style={styles.offersCard}>
+          <View style={[styles.offersCard, dCard]}>
             <LinearGradient
-              colors={["#C8DCF2", "#EAF4FC", "#F5FAFF"]}
+              colors={
+                isDiscoveryDark
+                  ? ["#134E4A", "#1A2E2C", "#1E1E1E"]
+                  : ["#C8DCF2", "#EAF4FC", "#F5FAFF"]
+              }
               start={{ x: 0.5, y: 0 }}
               end={{ x: 0.5, y: 1 }}
               style={styles.offersCardBanner}
             >
-              <CheckoutText style={styles.offersCardBannerTitle}>
+              <CheckoutText style={[styles.offersCardBannerTitle, isDiscoveryDark && styles.darkOffersBannerTitle]}>
                 Save extra by applying coupons on every order
               </CheckoutText>
               <View style={styles.offersCardBannerIconGlow}>
-                <View style={styles.offersCardBannerIconOuter}>
-                  <View style={styles.offersCardBannerIconBox}>
-                    <CheckoutText style={styles.offersCardBannerPct}>%</CheckoutText>
+                <View style={[styles.offersCardBannerIconOuter, isDiscoveryDark && styles.darkOffersIconOuter]}>
+                  <View style={[styles.offersCardBannerIconBox, isDiscoveryDark && styles.darkOffersIconBox]}>
+                    <CheckoutText
+                      style={[
+                        styles.offersCardBannerPct,
+                        isDiscoveryDark && styles.darkOffersPct,
+                      ]}
+                    >
+                      %
+                    </CheckoutText>
                   </View>
                 </View>
               </View>
             </LinearGradient>
 
-            <View style={styles.offersDottedSep} />
+            <View style={[styles.offersDottedSep, isDiscoveryDark && styles.darkDash]} />
 
             {showMembershipUpsell ? (
               <>
@@ -4848,8 +5140,8 @@ export default function CheckoutScreen() {
                     style={styles.offersSubIcon}
                   />
                   <View style={styles.offersBodyTextCol}>
-                    <CheckoutText style={styles.offersSubLineBold}>{gmitraPlusPromoCopy.offersTitle}</CheckoutText>
-                    <CheckoutText style={styles.offersSubLineMuted} numberOfLines={2}>
+                    <CheckoutText style={[styles.offersSubLineBold, dText]}>{gmitraPlusPromoCopy.offersTitle}</CheckoutText>
+                    <CheckoutText style={[styles.offersSubLineMuted, dMuted]} numberOfLines={2}>
                       {gmitraPlusPromoCopy.offersSub}
                     </CheckoutText>
                     <TouchableOpacity
@@ -4882,6 +5174,7 @@ export default function CheckoutScreen() {
                       style={[
                         styles.offersApplyOutline,
                         { borderColor: subscriptionAccentColor },
+                        isDiscoveryDark && styles.darkApplyOutline,
                         subscriptionOptIn && {
                           backgroundColor: subscriptionAccentColor,
                           borderColor: subscriptionAccentColor,
@@ -4903,7 +5196,7 @@ export default function CheckoutScreen() {
                   </View>
                 </View>
 
-                <View style={styles.offersDottedSep} />
+                <View style={[styles.offersDottedSep, isDiscoveryDark && styles.darkDash]} />
               </>
             ) : null}
 
@@ -4921,11 +5214,11 @@ export default function CheckoutScreen() {
                 </View>
               )}
               <View style={styles.offersBodyTextCol}>
-                <CheckoutText style={styles.offersAppliedHeadline} numberOfLines={2}>
+                <CheckoutText style={[styles.offersAppliedHeadline, dText]} numberOfLines={2}>
                   {offersAppliedHeadline}
                 </CheckoutText>
                 {offersAppliedSubline ? (
-                  <CheckoutText style={styles.offersSubLineMuted} numberOfLines={2}>
+                  <CheckoutText style={[styles.offersSubLineMuted, dMuted]} numberOfLines={2}>
                     {offersAppliedSubline}
                   </CheckoutText>
                 ) : null}
@@ -4945,7 +5238,10 @@ export default function CheckoutScreen() {
                 </TouchableOpacity>
               ) : hasEligibleCheckoutOfferBase && !membershipFreeDeliveryOnBill ? (
                 <TouchableOpacity
-                  style={styles.offersApplyOutline}
+                  style={[
+                    styles.offersApplyOutline,
+                    isDiscoveryDark && styles.darkApplyOutline,
+                  ]}
                   onPress={() => {
                     if (featuredCoupon) setCouponCodeInput(featuredCoupon.code);
                     setCouponSheetVisible(true);
@@ -4974,47 +5270,48 @@ export default function CheckoutScreen() {
 
         {/* Delivery + bill — GatiMitra-style single card: savings banner, dashed rules, ETA, address, bill, GMitra bubble */}
         <Animated.View entering={FadeInDown.duration(ANIM_DURATION).delay(60)} style={styles.section}>
-          <View style={styles.gmCheckoutCard}>
+          <View style={[styles.gmCheckoutCard, dCard]}>
             <View style={styles.gmCardPad}>
               <View style={styles.deliveryEtaRow}>
-                <Ionicons name="flash" size={18} color={GatiMitraColors.emerald} style={styles.gmEtaFlashIcon} />
+                <Ionicons name="flash" size={18} color={isDiscoveryDark ? DiscoveryColors.teal : GatiMitraColors.emerald} style={styles.gmEtaFlashIcon} />
                 <View style={styles.gmEtaTextCol}>
-                  <CheckoutText style={styles.gmEtaLine}>
-                    Delivery in <CheckoutText style={styles.gmEtaBold}>{deliveryEta}</CheckoutText>
+                  <CheckoutText style={[styles.gmEtaLine, dText]}>
+                    Delivery in <CheckoutText style={[styles.gmEtaBold, isDiscoveryDark && styles.darkTealText]}>{deliveryEta}</CheckoutText>
                   </CheckoutText>
                   {deliveryEtaImpactLabel ? (
                     <CheckoutText style={styles.weatherEtaImpact}>{deliveryEtaImpactLabel}</CheckoutText>
                   ) : null}
-                  <CheckoutText style={styles.gmScheduleLine} onPress={() => setScheduleSheetVisible(true)}>
+                  <CheckoutText style={[styles.gmScheduleLine, dMuted, isDiscoveryDark && styles.darkScheduleLine]} onPress={() => setScheduleSheetVisible(true)}>
                     Want this later? Schedule it
                   </CheckoutText>
                 </View>
               </View>
             </View>
 
-            <View style={styles.gmCardDash} />
+            <View style={[styles.gmCardDash, isDiscoveryDark && styles.darkDash]} />
 
             {hasDeliveryAddress ? (
               <>
             <TouchableOpacity
-              style={[styles.gmCardPad, styles.gmMetaRow]}
+              style={styles.gmCardPad}
               onPress={openCheckoutAddressSheet}
               activeOpacity={0.75}
               accessibilityRole="button"
               accessibilityLabel="Change delivery address"
             >
+              <View style={styles.gmMetaRow}>
               <Ionicons
                 name="location-outline"
                 size={20}
-                color={GatiMitraColors.textSecondary}
+                color={dIcon}
                 style={styles.gmAddrIcon}
               />
               <View style={styles.gmMetaTextCol}>
                 <View style={styles.deliveryAddrTitleRow}>
                   <View style={styles.deliveryAddrTitleTextWrap}>
-                    <CheckoutText style={styles.deliveryAddrLabel} numberOfLines={2}>
-                      <CheckoutText style={styles.deliveryAddrPre}>Delivery at </CheckoutText>
-                      <CheckoutText style={styles.deliveryAddrName}>
+                    <CheckoutText style={[styles.deliveryAddrLabel, dText]} numberOfLines={2}>
+                      <CheckoutText style={[styles.deliveryAddrPre, dText]}>Delivery at </CheckoutText>
+                      <CheckoutText style={[styles.deliveryAddrName, dText]}>
                         {selectedAddress?.label ?? "—"}
                       </CheckoutText>
                     </CheckoutText>
@@ -5024,7 +5321,7 @@ export default function CheckoutScreen() {
                   variant="checkout"
                   address={selectedAddress?.fullAddress}
                   emptyLabel="Tap to choose delivery address"
-                  style={styles.deliveryAddrSub}
+                  style={[styles.deliveryAddrSub, dMuted]}
                 />
                 {leaveAtDoor ? (
                   <View style={[styles.leaveAtDoorChip, styles.leaveAtDoorChipBelowAddr]}>
@@ -5037,23 +5334,25 @@ export default function CheckoutScreen() {
                 <Ionicons
                   name="chevron-forward"
                   size={CHECKOUT_META_CHEVRON_SIZE}
-                  color={GatiMitraColors.textSecondary}
+                  color={dIcon}
                 />
+              </View>
               </View>
             </TouchableOpacity>
 
-            <View style={styles.gmCardDash} />
+            <View style={[styles.gmCardDash, isDiscoveryDark && styles.darkDash]} />
 
             <TouchableOpacity
-              style={[styles.gmCardPad, styles.instructionPartnerRow]}
+              style={styles.gmCardPad}
               onPress={() => setInstructionSheetVisible(true)}
               activeOpacity={0.75}
             >
-              <Ionicons name="chatbox-ellipses-outline" size={20} color={GatiMitraColors.textSecondary} />
+              <View style={styles.instructionPartnerRow}>
+              <Ionicons name="chatbox-ellipses-outline" size={20} color={dIcon} />
               <View style={styles.instructionPartnerTextCol}>
-                <CheckoutText style={styles.instructionPartnerTitle}>Add instructions for delivery partner</CheckoutText>
+                <CheckoutText style={[styles.instructionPartnerTitle, dText]}>Add instructions for delivery partner</CheckoutText>
                 {partnerInstructionSummary ? (
-                  <CheckoutText style={styles.instructionPartnerSummary} numberOfLines={2}>
+                  <CheckoutText style={[styles.instructionPartnerSummary, dMuted]} numberOfLines={2}>
                     {partnerInstructionSummary}
                   </CheckoutText>
                 ) : null}
@@ -5062,22 +5361,24 @@ export default function CheckoutScreen() {
                 <Ionicons
                   name="chevron-forward"
                   size={CHECKOUT_META_CHEVRON_SIZE}
-                  color={GatiMitraColors.textSecondary}
+                  color={dIcon}
                 />
+              </View>
               </View>
             </TouchableOpacity>
 
-            <View style={styles.gmCardDash} />
+            <View style={[styles.gmCardDash, isDiscoveryDark && styles.darkDash]} />
             <TouchableOpacity
-              style={[styles.gmCardPad, styles.checkoutReceiverRow]}
+              style={styles.gmCardPad}
               onPress={openReceiverSheet}
               activeOpacity={0.75}
               accessibilityLabel="Edit name and phone number"
               accessibilityHint="Shows your contact for this order. Tap to change."
             >
-              <Ionicons name="call-outline" size={20} color={GatiMitraColors.textSecondary} />
+              <View style={styles.checkoutReceiverRow}>
+              <Ionicons name="call-outline" size={20} color={dIcon} />
               <View style={styles.checkoutReceiverTextCol}>
-                <CheckoutText style={styles.checkoutReceiverText} numberOfLines={1}>
+                <CheckoutText style={[styles.checkoutReceiverText, dText]} numberOfLines={1}>
                   {checkoutReceiverSummary}
                 </CheckoutText>
                 {!hasCheckoutReceiverDetails ? (
@@ -5090,25 +5391,27 @@ export default function CheckoutScreen() {
                 <Ionicons
                   name="chevron-forward"
                   size={CHECKOUT_META_CHEVRON_SIZE}
-                  color={GatiMitraColors.textSecondary}
+                  color={dIcon}
                 />
+              </View>
               </View>
             </TouchableOpacity>
 
-            <View style={styles.gmCardDash} />
+            <View style={[styles.gmCardDash, isDiscoveryDark && styles.darkDash]} />
               </>
             ) : null}
 
             <TouchableOpacity
-              style={[styles.gmBillHeader, showGmitraPlusAttachRow && styles.gmBillHeaderWithAttach]}
+              style={[styles.gmBillHeaderHit, showGmitraPlusAttachRow && styles.gmBillHeaderWithAttach]}
               onPress={() => setBillSummarySheetVisible(true)}
               activeOpacity={0.8}
             >
-              <Ionicons name="receipt-outline" size={22} color={GatiMitraColors.textSecondary} />
+              <View style={styles.gmBillHeader}>
+              <Ionicons name="receipt-outline" size={22} color={dIcon} />
               <View style={styles.gmBillHeaderContent}>
                 <View style={styles.gmBillTopRow}>
                   <View style={styles.gmBillTitleCol}>
-                    <CheckoutText style={styles.gmBillTitle}>Total Bill</CheckoutText>
+                    <CheckoutText style={[styles.gmBillTitle, dText]}>Total Bill</CheckoutText>
                     {fullyPaidByGatiCash ? (
                       <CheckoutText style={styles.gmBillGatiCashHint}>100% GatiCash used</CheckoutText>
                     ) : null}
@@ -5126,11 +5429,11 @@ export default function CheckoutScreen() {
                         <AnimatedRupeeAmount
                           value={toPayAmount}
                           ready={billingReady}
-                          style={styles.gmBillFinal}
+                          style={[styles.gmBillFinal, dText]}
                         />
                         {checkoutSavingsTotal > 0.005 ? (
-                          <View style={styles.gmSavedPill}>
-                            <CheckoutText style={styles.gmSavedPillText}>
+                          <View style={[styles.gmSavedPill, isDiscoveryDark && styles.darkSavedPill]}>
+                            <CheckoutText style={[styles.gmSavedPillText, isDiscoveryDark && styles.darkSavedPillText]}>
                               You saved ₹{formatCheckoutSavingsRupees(checkoutSavingsTotal)}
                             </CheckoutText>
                           </View>
@@ -5140,15 +5443,15 @@ export default function CheckoutScreen() {
                         <Ionicons
                           name="chevron-forward"
                           size={CHECKOUT_META_CHEVRON_SIZE}
-                          color={GatiMitraColors.textSecondary}
+                          color={dIcon}
                         />
                       </View>
                     </>
                   ) : (
-                    <GMSkeleton style={{ width: 72, height: 18, borderRadius: 4 }} />
+                    <GMSkeleton dark={isDiscoveryDark} style={{ width: 72, height: 18, borderRadius: 4 }} />
                   )}
                 </View>
-                <CheckoutText style={styles.gmBillSub}>
+                <CheckoutText style={[styles.gmBillSub, dMuted]}>
                   {deliveryFeePending
                     ? "Incl. taxes · Delivery fee after address"
                     : "Incl. taxes and charges"}
@@ -5168,12 +5471,13 @@ export default function CheckoutScreen() {
                   </CheckoutText>
                 ) : null}
               </View>
+              </View>
             </TouchableOpacity>
 
             {showBillSkeleton ? (
               <View style={[styles.billSkeletonWrap, styles.gmCardPadH]}>
-                <GMSkeleton style={styles.billSkeletonLine} />
-                <GMSkeleton style={styles.billSkeletonLastLine} />
+                <GMSkeleton dark={isDiscoveryDark} style={styles.billSkeletonLine} />
+                <GMSkeleton dark={isDiscoveryDark} style={styles.billSkeletonLastLine} />
               </View>
             ) : null}
 
@@ -5190,7 +5494,7 @@ export default function CheckoutScreen() {
                   <CheckoutText style={[styles.gmGoldTitle, { color: subscriptionAttachTheme.accent }]}>
                     {gmitraPlusPromoCopy.attachTitle}
                   </CheckoutText>
-                  <CheckoutText style={styles.gmGoldSub} numberOfLines={2}>
+                  <CheckoutText style={[styles.gmGoldSub, dMuted]} numberOfLines={2}>
                     {gmitraPlusPromoCopy.attachSub}
                   </CheckoutText>
                 </View>
@@ -5198,6 +5502,7 @@ export default function CheckoutScreen() {
                   style={[
                     styles.gmGoldAddBtn,
                     { borderColor: subscriptionAttachTheme.accent },
+                    isDiscoveryDark && styles.darkApplyOutline,
                     subscriptionOptIn && { borderColor: subscriptionAttachTheme.accent, backgroundColor: subscriptionAttachTheme.accent },
                   ]}
                   onPress={() => setSubscriptionOptIn(!subscriptionOptIn)}
@@ -5225,10 +5530,10 @@ export default function CheckoutScreen() {
 
         {/* Cancellation policy — above footer */}
         <View style={styles.cancellationBlock}>
-          <CheckoutText style={styles.cancellationTitle}>CANCELLATION POLICY</CheckoutText>
-          <CheckoutText style={styles.cancellationText}>
+          <CheckoutText style={[styles.cancellationTitle, dMuted]}>CANCELLATION POLICY</CheckoutText>
+          <CheckoutText style={[styles.cancellationText, dMuted]}>
             A 100% cancellation fee will be applied if you cancel the order after it is confirmed from your end.{" "}
-            See our <LegalLink id="refund-cancellation-policy" />.
+            See our <LegalLink id="refund-cancellation-policy" style={isDiscoveryDark ? { color: DiscoveryColors.teal } : undefined} />.
           </CheckoutText>
         </View>
 
@@ -5328,42 +5633,48 @@ export default function CheckoutScreen() {
       />
 
       {/* Payment method selector sheet */}
-      {paymentSheetVisible && (
-        <View style={styles.paymentSheetOverlay}>
-          <Pressable style={StyleSheet.absoluteFill} onPress={() => setPaymentSheetVisible(false)} />
-          <Animated.View entering={FadeIn.duration(200)} style={[styles.paymentSheet, { paddingBottom: insets.bottom + 24 }]}>
-            <CheckoutText style={styles.paymentSheetTitle}>Pay using</CheckoutText>
-            <CheckoutText style={styles.paymentSheetSubtitle}>Razorpay will show your UPI apps, cards & wallets</CheckoutText>
-            {PAYMENT_OPTIONS.map((opt) => (
-              <TouchableOpacity
-                key={opt.id}
-                onPress={() => {
-                  setPaymentMethod(opt.id);
-                  setPaymentSheetVisible(false);
-                }}
-                style={[styles.paymentOptionRow, paymentMethod === opt.id && styles.paymentOptionActive]}
-              >
-                <CheckoutText style={styles.paymentOptionText}>{opt.label}</CheckoutText>
-                {paymentMethod === opt.id && <Ionicons name="checkmark-circle" size={24} color={GatiMitraColors.emerald} />}
-              </TouchableOpacity>
-            ))}
-          </Animated.View>
-        </View>
-      )}
+      <CheckoutPaymentMethodsSheet
+        visible={paymentSheetVisible}
+        onClose={() => setPaymentSheetVisible(false)}
+        billTotal={typeof toPayAmount === "number" ? toPayAmount : null}
+        sections={payMethodSections}
+        loading={payMethodsQuery.isLoading && payMethodSections.length === 0}
+        loadFailed={payMethodsQuery.isError && payMethodSections.length === 0}
+        onRetryLoad={() => void payMethodsQuery.refetch()}
+        selectedId={selectedPayInstrument.id}
+        onSelect={handleSelectPayInstrument}
+      />
 
-      {/* Footer: fixed-width delivery / takeaway toggle + Place Order CTA (width = screen − padding − gap − toggle; same corner radius as toggle shell). */}
-      <View style={[styles.fixedBottom, { paddingBottom: footerBottomInset }]}>
-        {showGatiCashWalletBar && (
-          <View style={styles.gatiCashWalletBarWrap}>
+      {/* Footer: Pay using + Place Order CTA. Delivery/takeaway sits on the GatiCash row. */}
+      <View
+        style={[
+          styles.fixedBottom,
+          {
+            paddingBottom: footerBottomInset,
+            backgroundColor: checkoutPageBg,
+            borderTopColor: isDiscoveryDark ? DiscoveryColors.border : "#E5E7EB",
+            ...(isDiscoveryDark ? { shadowOpacity: 0, elevation: 0 } : null),
+          },
+        ]}
+      >
+        <View
+          style={[
+            styles.gatiCashWalletBarWrap,
+            isDiscoveryDark && { borderBottomColor: DiscoveryColors.border },
+          ]}
+        >
             <CheckoutGatiCashWalletBar
               balance={gatiCashAvailable}
               maxApplyAmount={gatiCashMaxApply}
               applyAmount={gatiCashApplyAmount}
               checked={useGatiCashWallet}
               onToggle={() => setUseGatiCashWallet((v) => !v)}
+              loading={gatiCashBalanceQ.isLoading && authHydrated && !!authSession}
+              trailing={
+                <CheckoutDeliveryTypeToggle value={deliveryType} onChange={setDeliveryType} />
+              }
             />
           </View>
-        )}
         {needsDeliveryAddress ? (
           <Pressable
             onPress={openCheckoutAddressSheet}
@@ -5384,52 +5695,10 @@ export default function CheckoutScreen() {
         ) : (
           <View style={styles.footerRow}>
             <View style={styles.footerToggleCol}>
-              <View style={styles.deliveryTypeToggle}>
-              <TouchableOpacity
-                style={[
-                  styles.deliveryTypeSeg,
-                  deliveryType === "delivery" && styles.deliveryTypeSegActive,
-                ]}
-                onPress={() => setDeliveryType("delivery")}
-                activeOpacity={0.88}
-              >
-                <MaterialCommunityIcons
-                  name="motorbike"
-                  size={18}
-                  color={deliveryType === "delivery" ? "#FFFFFF" : "#111111"}
-                />
-                <CheckoutText
-                  style={[
-                    styles.deliveryTypeSegText,
-                    deliveryType === "delivery" && styles.deliveryTypeSegTextActive,
-                  ]}
-                >
-                  Delivery
-                </CheckoutText>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[
-                  styles.deliveryTypeSeg,
-                  deliveryType === "self_pickup" && styles.deliveryTypeSegActive,
-                ]}
-                onPress={() => setDeliveryType("self_pickup")}
-                activeOpacity={0.88}
-              >
-                <MaterialCommunityIcons
-                  name="shopping-outline"
-                  size={18}
-                  color={deliveryType === "self_pickup" ? "#FFFFFF" : "#111111"}
-                />
-                <CheckoutText
-                  style={[
-                    styles.deliveryTypeSegText,
-                    deliveryType === "self_pickup" && styles.deliveryTypeSegTextActive,
-                  ]}
-                >
-                  Takeaway
-                </CheckoutText>
-              </TouchableOpacity>
-              </View>
+              <CheckoutPayUsingButton
+                instrument={selectedPayInstrument}
+                onPress={() => setPaymentSheetVisible(true)}
+              />
             </View>
             <View style={styles.footerCtaCol}>
             {isStoreClosed ? (
@@ -5474,7 +5743,10 @@ export default function CheckoutScreen() {
                 }}
                 disabled={
                   canPlaceOrder &&
-                  (placeOrder.isPending || finalizeOrder.isPending || razorpayCreating)
+                  (placeOrder.isPending ||
+                    finalizeOrder.isPending ||
+                    razorpayCreating ||
+                    paymentReturnBusy)
                 }
                 accessibilityRole="button"
                 accessibilityLabel={canPlaceOrder ? "Place order" : "Place order unavailable"}
@@ -5486,6 +5758,13 @@ export default function CheckoutScreen() {
                 >
                   <View style={styles.ctaSolidLeft}>
                     <View style={styles.ctaSolidAmountRow}>
+                      {showBillSkeleton ? (
+                        <GMSkeleton
+                          dark={false}
+                          style={{ width: 76, height: 18, borderRadius: 4, backgroundColor: "rgba(255,255,255,0.28)" }}
+                        />
+                      ) : (
+                        <>
                       {gmStrikethroughTotal != null ? (
                         <AnimatedRupeeAmount
                           value={gmStrikethroughTotal}
@@ -5502,6 +5781,8 @@ export default function CheckoutScreen() {
                         bold
                         numberOfLines={1}
                       />
+                        </>
+                      )}
                     </View>
                     <View style={styles.ctaSolidTotalRow}>
                       <CheckoutText
@@ -5526,7 +5807,10 @@ export default function CheckoutScreen() {
                   </View>
                   <View style={styles.ctaSolidRight}>
                     {canPlaceOrder &&
-                    (placeOrder.isPending || finalizeOrder.isPending || razorpayCreating) ? (
+                    (placeOrder.isPending ||
+                      finalizeOrder.isPending ||
+                      razorpayCreating ||
+                      paymentReturnBusy) ? (
                       <ActivityIndicator color="#FFFFFF" size="small" />
                     ) : (
                       <>
@@ -5551,12 +5835,10 @@ export default function CheckoutScreen() {
                                 ? "Out of delivery zone"
                               : billingQuery.isError
                                 ? "Bill error"
-                                : billingQuery.isLoading ||
-                                    billingQuery.isPlaceholderData ||
-                                    billingQuery.isFetching
+                                : toPayAmount == null
                                   ? "Loading bill…"
-                                  : !serverBill
-                                    ? "Waiting for bill"
+                                  : !hasValidPayment
+                                    ? "Select payment"
                                     : "Select payment"}
                           </CheckoutText>
                         ) : null}
@@ -5656,28 +5938,28 @@ export default function CheckoutScreen() {
             style={styles.noteSheetDim}
             onPress={() => setRestaurantNoteModalVisible(false)}
           />
-          <View style={[styles.noteSheetCard, { paddingBottom: Math.max(insets.bottom, 16) + 8 }]}>
+          <View style={[styles.noteSheetCard, { paddingBottom: Math.max(insets.bottom, 16) + 8 }, isDiscoveryDark && styles.darkSheet]}>
             <View style={styles.noteSheetTitleRow}>
-              <CheckoutText style={styles.noteSheetTitle}>Add a note for the restaurant</CheckoutText>
+              <CheckoutText style={[styles.noteSheetTitle, dText]}>Add a note for the restaurant</CheckoutText>
               <TouchableOpacity
                 onPress={() => setRestaurantNoteModalVisible(false)}
                 hitSlop={12}
                 accessibilityLabel="Close"
               >
-                <Ionicons name="close" size={26} color="#111827" />
+                <Ionicons name="close" size={26} color={isDiscoveryDark ? DiscoveryColors.text : "#111827"} />
               </TouchableOpacity>
             </View>
             <TextInput
-              style={styles.noteSheetInput}
+              style={[styles.noteSheetInput, isDiscoveryDark && styles.darkInput]}
               value={restaurantNote}
               onChangeText={setRestaurantNote}
               placeholder="e.g. Note for the entire order"
-              placeholderTextColor="#9CA3AF"
+              placeholderTextColor={isDiscoveryDark ? DiscoveryColors.textDim : "#9CA3AF"}
               multiline
               maxLength={280}
               textAlignVertical="top"
             />
-            <CheckoutText style={styles.noteSheetDisclaimer}>
+            <CheckoutText style={[styles.noteSheetDisclaimer, dMuted]}>
               {`The restaurant will try its best to follow your requests. However, refunds or cancellations in this regard won't be possible.`}
             </CheckoutText>
             <View style={styles.noteSheetFooter}>
@@ -5715,6 +5997,7 @@ export default function CheckoutScreen() {
         }
         initialInstructions={checkoutDeliveryInstructionSeed}
         onSave={saveDeliveryPartnerInstructions}
+        dark={isDiscoveryDark}
       />
 
       <Modal
@@ -5730,6 +6013,7 @@ export default function CheckoutScreen() {
             style={[
               styles.noteSheetCard,
               styles.addressSelectSheetCard,
+              isDiscoveryDark && styles.darkSheet,
               {
                 paddingBottom: Math.max(insets.bottom, 4),
               },
@@ -5745,11 +6029,11 @@ export default function CheckoutScreen() {
                 <Ionicons name="close" size={22} color="#FFFFFF" />
               </Pressable>
             </View>
-            <CheckoutText style={styles.addressSelectSheetTitle}>Select an address</CheckoutText>
+            <CheckoutText style={[styles.addressSelectSheetTitle, dText]}>Select an address</CheckoutText>
 
-            <View style={styles.addressSelectActionPanel}>
+            <View style={[styles.addressSelectActionPanel, isDiscoveryDark && styles.darkElevatedPanel]}>
               <Pressable
-                style={styles.addressSelectActionRow}
+                style={styles.addressSelectActionHit}
                 onPress={() => {
                   void openCheckoutAddAddress({
                     router,
@@ -5760,20 +6044,22 @@ export default function CheckoutScreen() {
                 }}
                 android_ripple={{ color: "rgba(45, 181, 160, 0.12)" }}
               >
+                <View style={styles.addressSelectActionRow}>
                 <View style={styles.addressSelectActionLeft}>
                   <Ionicons name="add" size={22} color={CX.mint} />
                   <View style={styles.addressSelectActionTextCol}>
-                    <CheckoutText style={styles.addressSelectActionTitle}>Add Address</CheckoutText>
-                    <CheckoutText style={styles.addressSelectActionSub} numberOfLines={1}>
+                    <CheckoutText style={[styles.addressSelectActionTitle, dText]}>Add Address</CheckoutText>
+                    <CheckoutText style={[styles.addressSelectActionSub, dMuted]} numberOfLines={1}>
                       Search area or drop a pin on the map
                     </CheckoutText>
                   </View>
                 </View>
                 <Ionicons name="chevron-forward" size={18} color="#9CA3AF" />
+                </View>
               </Pressable>
             </View>
 
-            <CheckoutText style={styles.addressSelectSectionLabel}>SAVED ADDRESSES</CheckoutText>
+            <CheckoutText style={[styles.addressSelectSectionLabel, dMuted]}>SAVED ADDRESSES</CheckoutText>
 
             {addressesLoading ? (
               <View style={styles.addressSelectLoading}>
@@ -5794,7 +6080,7 @@ export default function CheckoutScreen() {
                 showsVerticalScrollIndicator={false}
                 bounces={false}
               >
-                <View style={[styles.addressSelectActionPanel, styles.addressSelectActionPanelInScroll]}>
+                <View style={[styles.addressSelectActionPanel, styles.addressSelectActionPanelInScroll, isDiscoveryDark && styles.darkElevatedPanel]}>
                   {addresses.map((addr, index) => {
                     const busy = addressSheetBusyId === addr.id;
                     const quote = checkoutAddressServiceability[index]?.data;
@@ -5818,9 +6104,9 @@ export default function CheckoutScreen() {
                       <Pressable
                         key={addr.id}
                         style={[
-                          styles.addressSelectActionRow,
-                          isSelected && styles.addressSelectActionRowSelected,
-                          isOutOfDeliveryZone && styles.addressSelectActionRowUnavailable,
+                          styles.addressSelectActionHit,
+                          isSelected && (isDiscoveryDark ? styles.darkRowSelected : styles.addressSelectActionRowSelected),
+                          isOutOfDeliveryZone && (isDiscoveryDark ? styles.darkRowUnavailable : styles.addressSelectActionRowUnavailable),
                           index === addresses.length - 1 && styles.addressSelectActionRowLast,
                         ]}
                         onPress={() => {
@@ -5841,6 +6127,7 @@ export default function CheckoutScreen() {
                             : { color: "rgba(45, 181, 160, 0.1)" }
                         }
                       >
+                        <View style={styles.addressSelectActionRow}>
                         <View style={styles.addressSelectActionLeft}>
                           {busy ? (
                             <ActivityIndicator size="small" color={CX.mint} />
@@ -5859,7 +6146,7 @@ export default function CheckoutScreen() {
                                 </CheckoutText>
                               </View>
                             ) : null}
-                            <CheckoutText style={styles.addressSelectActionTitle} numberOfLines={1}>
+                            <CheckoutText style={[styles.addressSelectActionTitle, dText]} numberOfLines={1}>
                               {title}
                             </CheckoutText>
                             {showLabel ? (
@@ -5870,7 +6157,7 @@ export default function CheckoutScreen() {
                             <DeliveryAddressText
                               variant="checkout"
                               address={addr.fullAddress}
-                              style={styles.addressSelectActionSub}
+                              style={[styles.addressSelectActionSub, dMuted]}
                             />
                             {dist !== "—" ? (
                               <CheckoutText style={styles.addressSelectActionDist}>{dist}</CheckoutText>
@@ -5886,6 +6173,7 @@ export default function CheckoutScreen() {
                         ) : isDeliverable ? (
                           <Ionicons name="chevron-forward" size={18} color="#9CA3AF" />
                         ) : null}
+                        </View>
                       </Pressable>
                     );
                   })}
@@ -5914,15 +6202,15 @@ export default function CheckoutScreen() {
           keyboardVerticalOffset={0}
         >
           <Pressable style={styles.noteSheetDim} onPress={() => setReceiverSheetVisible(false)} />
-          <View style={[styles.noteSheetCard, styles.receiverSheetCard, { paddingBottom: Math.max(insets.bottom, 16) + 12 }]}>
+          <View style={[styles.noteSheetCard, styles.receiverSheetCard, { paddingBottom: Math.max(insets.bottom, 16) + 12 }, isDiscoveryDark && styles.darkSheet]}>
             <View style={styles.noteSheetTitleRow}>
-              <CheckoutText style={styles.noteSheetTitle}>Your contact for this order</CheckoutText>
+              <CheckoutText style={[styles.noteSheetTitle, dText]}>Your contact for this order</CheckoutText>
               <TouchableOpacity
                 onPress={() => setReceiverSheetVisible(false)}
                 hitSlop={12}
                 accessibilityLabel="Close"
               >
-                <Ionicons name="close" size={26} color="#111827" />
+                <Ionicons name="close" size={26} color={isDiscoveryDark ? DiscoveryColors.text : "#111827"} />
               </TouchableOpacity>
             </View>
             <DeliveryAddressText
@@ -5933,12 +6221,12 @@ export default function CheckoutScreen() {
                   : ""
               }
               emptyLabel=""
-              style={styles.receiverSheetAddr}
+              style={[styles.receiverSheetAddr, dMuted]}
             />
-            <CheckoutText style={styles.receiverFieldLabel}>Receiver&apos;s name</CheckoutText>
-            <View style={styles.receiverInputRow}>
+            <CheckoutText style={[styles.receiverFieldLabel, dMuted]}>Receiver&apos;s name</CheckoutText>
+            <View style={[styles.receiverInputRow, isDiscoveryDark && styles.darkInput]}>
               <TextInput
-                style={styles.receiverTextInput}
+                style={[styles.receiverTextInput, dText]}
                 value={receiverDraftName}
                 onChangeText={setReceiverDraftName}
                 placeholder="Name on the order"
@@ -5954,10 +6242,10 @@ export default function CheckoutScreen() {
                 <Ionicons name="book-outline" size={22} color={CX.mint} />
               </Pressable>
             </View>
-            <CheckoutText style={styles.receiverFieldLabel}>Receiver&apos;s mobile number</CheckoutText>
-            <View style={styles.receiverInputRow}>
+            <CheckoutText style={[styles.receiverFieldLabel, dMuted]}>Receiver&apos;s mobile number</CheckoutText>
+            <View style={[styles.receiverInputRow, isDiscoveryDark && styles.darkInput]}>
               <TextInput
-                style={styles.receiverTextInput}
+                style={[styles.receiverTextInput, dText]}
                 value={receiverDraftMobile}
                 onChangeText={setReceiverDraftMobile}
                 placeholder="+91 9876543210"
@@ -6099,15 +6387,15 @@ export default function CheckoutScreen() {
       >
         <View style={styles.noteSheetRoot}>
           <Pressable style={styles.noteSheetDim} onPress={() => setGmitraPlusSheetVisible(false)} />
-          <View style={[styles.noteSheetCard, { paddingBottom: Math.max(insets.bottom, 16) + 8 }]}>
+          <View style={[styles.noteSheetCard, { paddingBottom: Math.max(insets.bottom, 16) + 8 }, isDiscoveryDark && styles.darkSheet]}>
             <View style={styles.noteSheetTitleRow}>
-              <CheckoutText style={styles.noteSheetTitle}>{subscriptionPlanName}</CheckoutText>
+              <CheckoutText style={[styles.noteSheetTitle, dText]}>{subscriptionPlanName}</CheckoutText>
               <TouchableOpacity
                 onPress={() => setGmitraPlusSheetVisible(false)}
                 hitSlop={12}
                 accessibilityLabel="Close"
               >
-                <Ionicons name="close" size={26} color="#111827" />
+                <Ionicons name="close" size={26} color={isDiscoveryDark ? DiscoveryColors.text : "#111827"} />
               </TouchableOpacity>
             </View>
             <ScrollView
@@ -6115,21 +6403,21 @@ export default function CheckoutScreen() {
               showsVerticalScrollIndicator={false}
               keyboardShouldPersistTaps="handled"
             >
-              <CheckoutText style={styles.gmitraSheetLead}>
+              <CheckoutText style={[styles.gmitraSheetLead, dMuted]}>
                 {checkoutPlan?.description ??
                   `${subscriptionPlanName} is a membership that helps you save on every order with better delivery pricing and exclusive offers.`}
               </CheckoutText>
-              <CheckoutText style={styles.gmitraSheetSectionTitle}>What you get</CheckoutText>
+              <CheckoutText style={[styles.gmitraSheetSectionTitle, dText]}>What you get</CheckoutText>
               {(checkoutPlan?.benefits ?? []).map((benefit) => (
-                <CheckoutText key={benefit} style={styles.gmitraSheetBullet}>
+                <CheckoutText key={benefit} style={[styles.gmitraSheetBullet, dMuted]}>
                   • {benefit}
                 </CheckoutText>
               ))}
               {gmitraPlusPromoCopy.freeDeliveryNote ? (
-                <CheckoutText style={styles.gmitraSheetBullet}>• {gmitraPlusPromoCopy.freeDeliveryNote}</CheckoutText>
+                <CheckoutText style={[styles.gmitraSheetBullet, dMuted]}>• {gmitraPlusPromoCopy.freeDeliveryNote}</CheckoutText>
               ) : null}
               {defaultPrice ? (
-                <CheckoutText style={styles.gmitraSheetBullet}>
+                <CheckoutText style={[styles.gmitraSheetBullet, dMuted]}>
                   • {formatPlanPriceLine(defaultPrice)} (incl. GST)
                 </CheckoutText>
               ) : null}
@@ -6176,34 +6464,43 @@ export default function CheckoutScreen() {
       >
         <View style={styles.gstModalBackdrop}>
           <Pressable style={StyleSheet.absoluteFill} onPress={() => setGstBreakdownModalVisible(false)} />
-          <View style={styles.gstModalCard}>
+          <View
+            style={[
+              styles.gstModalCard,
+              isDiscoveryDark && {
+                backgroundColor: DiscoveryColors.bg,
+                shadowOpacity: 0,
+                elevation: 0,
+              },
+            ]}
+          >
             <View style={styles.gstModalHeader}>
-              <CheckoutText style={styles.gstModalTitle}>GST & other charges</CheckoutText>
+              <CheckoutText style={[styles.gstModalTitle, dText]}>GST & other charges</CheckoutText>
               <Pressable
                 onPress={() => setGstBreakdownModalVisible(false)}
                 hitSlop={12}
                 accessibilityRole="button"
               >
-                <Ionicons name="close" size={24} color={GatiMitraColors.textSecondary} />
+                <Ionicons name="close" size={24} color={isDiscoveryDark ? DiscoveryColors.textMuted : GatiMitraColors.textSecondary} />
               </Pressable>
             </View>
-            <CheckoutText style={styles.gstModalSubtitle}>
+            <CheckoutText style={[styles.gstModalSubtitle, dMuted]}>
               Every GST and platform charge on this order, broken out one by one.
             </CheckoutText>
             <ScrollView style={styles.gstModalScroll} showsVerticalScrollIndicator={false}>
               {gstAndOtherBreakdown?.lines.map((row) => (
                 <View key={row.key} style={styles.gstModalLine}>
                   <View style={styles.gstModalLineLeft}>
-                    <CheckoutText style={styles.gstModalLineLabel}>{row.label}</CheckoutText>
-                    {row.sub ? <CheckoutText style={styles.gstModalLineSub}>{row.sub}</CheckoutText> : null}
+                    <CheckoutText style={[styles.gstModalLineLabel, dText]}>{row.label}</CheckoutText>
+                    {row.sub ? <CheckoutText style={[styles.gstModalLineSub, dMuted]}>{row.sub}</CheckoutText> : null}
                   </View>
-                  <CheckoutText style={styles.gstModalLineValue}>₹{row.amount.toFixed(2)}</CheckoutText>
+                  <CheckoutText style={[styles.gstModalLineValue, dText]}>₹{row.amount.toFixed(2)}</CheckoutText>
                 </View>
               ))}
-              <View style={styles.gstModalDivider} />
+              <View style={[styles.gstModalDivider, isDiscoveryDark && { backgroundColor: DiscoveryColors.border }]} />
               <View style={styles.gstModalLine}>
-                <CheckoutText style={styles.gstModalTotalLabel}>Total</CheckoutText>
-                <CheckoutText style={styles.gstModalTotalValue}>
+                <CheckoutText style={[styles.gstModalTotalLabel, dText]}>Total</CheckoutText>
+                <CheckoutText style={[styles.gstModalTotalValue, dText]}>
                   ₹{(gstAndOtherBreakdown?.total ?? 0).toFixed(2)}
                 </CheckoutText>
               </View>
@@ -6257,6 +6554,11 @@ export default function CheckoutScreen() {
       <RazorpayCheckoutModal
         visible={razorpayModalVisible && !!razorpayOrderParams}
         orderParams={razorpayOrderParams}
+        checkoutMethod={{
+          method: selectedPayInstrument.method,
+          upiApp: selectedPayInstrument.upiApp,
+          wallet: selectedPayInstrument.wallet,
+        }}
         prefill={{
           contact: checkoutReceiverMobile.trim() || profileContactMobile || null,
           name: checkoutReceiverName.trim() || profileContactName || null,
@@ -6264,7 +6566,26 @@ export default function CheckoutScreen() {
         }}
         onSuccess={handleRazorpaySuccess}
         onCancel={handleRazorpayCancel}
+        onFailure={() => showPaymentFailedSheet(typeof toPayAmount === "number" ? toPayAmount : null)}
+        onUpiAppOpened={handleUpiAppOpened}
       />
+
+      <CheckoutPaymentFailedSheet
+        visible={paymentFailVisible}
+        amountInr={paymentFailAmount}
+        methodLabel={paymentFailMethod}
+        onRetry={() => {
+          useCheckoutPaymentFailureStore.getState().hide();
+          handlePlaceOrderPress();
+        }}
+        onChooseMethod={() => {
+          useCheckoutPaymentFailureStore.getState().hide();
+          setPaymentSheetVisible(true);
+        }}
+        onLeave={() => useCheckoutPaymentFailureStore.getState().hide()}
+      />
+
+      <CheckoutPaymentReturnOverlay visible={paymentReturnBusy} />
 
       <AppAlertModal
         visible={deliveryUnavailableAlert != null}
@@ -6310,6 +6631,7 @@ export default function CheckoutScreen() {
                 activeOpacity={0.85}
                 disabled={simulatedSubmitting}
               >
+                <View style={styles.simulatedConfirmBtnRow}>
                 {simulatedSubmitting ? (
                   <ActivityIndicator color="#fff" size="small" />
                 ) : (
@@ -6318,6 +6640,7 @@ export default function CheckoutScreen() {
                     <CheckoutText style={styles.simulatedConfirmBtnText}>Simulate Success</CheckoutText>
                   </>
                 )}
+                </View>
               </TouchableOpacity>
 
               <TouchableOpacity
@@ -6326,8 +6649,10 @@ export default function CheckoutScreen() {
                 activeOpacity={0.85}
                 disabled={simulatedSubmitting}
               >
+                <View style={styles.simulatedFailBtnRow}>
                 <Ionicons name="close-circle" size={18} color="#dc2626" style={{ marginRight: 8 }} />
                 <CheckoutText style={styles.simulatedFailBtnText}>Simulate Failure</CheckoutText>
+                </View>
               </TouchableOpacity>
 
               <TouchableOpacity
@@ -6343,6 +6668,7 @@ export default function CheckoutScreen() {
         </View>
       )}
     </View>
+    </MerchantUiThemeProvider>
   );
 }
 
@@ -6383,11 +6709,14 @@ const styles = StyleSheet.create({
     paddingBottom: 0,
     ...Platform.select({ android: { includeFontPadding: false } }),
   },
+  headerAddressHit: {
+    minWidth: 0,
+    marginTop: 0,
+  },
   headerAddressRow: {
     flexDirection: "row",
     alignItems: "center",
     minWidth: 0,
-    marginTop: 0,
   },
   headerEtaText: {
     flex: 1,
@@ -6746,12 +7075,14 @@ const styles = StyleSheet.create({
     marginTop: 2,
     lineHeight: 16,
   },
+  orderItemEditHit: {
+    marginTop: 4,
+    alignSelf: "flex-start",
+  },
   orderItemEditRow: {
     flexDirection: "row",
     alignItems: "center",
     gap: 0,
-    marginTop: 4,
-    alignSelf: "flex-start",
   },
   orderItemEditText: { fontSize: 12, fontWeight: "600", color: CX.mint },
   orderItemEditChevron: { marginLeft: -1, marginTop: 1 },
@@ -6852,16 +7183,18 @@ const styles = StyleSheet.create({
     gap: 8,
     paddingHorizontal: 16,
   },
-  checkoutActionPill: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
+  checkoutActionPillHit: {
     paddingVertical: 8,
     paddingHorizontal: 12,
     borderRadius: 20,
     borderWidth: 1,
     borderColor: "#E5E7EB",
     backgroundColor: "#FFFFFF",
+  },
+  checkoutActionPill: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
   },
   checkoutActionPillActive: {
     borderColor: CX.mintBorder,
@@ -7104,13 +7437,18 @@ const styles = StyleSheet.create({
     bottom: 6,
     width: 26,
     height: 26,
-    borderRadius: 4,
-    backgroundColor: "#FFFFFF",
-    borderWidth: 1,
-    borderColor: CX.mintBorder,
+    borderRadius: 7,
+    backgroundColor: "#111111",
+    borderWidth: 2,
+    borderColor: "#FFFFFF",
     alignItems: "center",
     justifyContent: "center",
     zIndex: 2,
+    shadowColor: "#000000",
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.45,
+    shadowRadius: 3,
+    elevation: 5,
   },
   upsellName: {
     alignSelf: "stretch",
@@ -7237,12 +7575,14 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     paddingHorizontal: 14,
   },
+  gmBillHeaderHit: {
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+  },
   gmBillHeader: {
     flexDirection: "row",
     alignItems: "flex-start",
     gap: 10,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
   },
   gmBillHeaderWithAttach: {
     paddingBottom: 8,
@@ -8372,14 +8712,16 @@ const styles = StyleSheet.create({
   addressSelectActionPanelInScroll: {
     marginBottom: 0,
   },
-  addressSelectActionRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
+  addressSelectActionHit: {
     paddingHorizontal: 16,
     paddingVertical: 16,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: "#E8ECF0",
+  },
+  addressSelectActionRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
     gap: 10,
   },
   addressSelectActionRowLast: { borderBottomWidth: 0 },
@@ -8735,25 +9077,29 @@ const styles = StyleSheet.create({
   simulatedAmountLabel: { fontSize: 14, color: GatiMitraColors.textSecondary, fontWeight: "500" },
   simulatedAmountValue: { fontSize: 20, fontWeight: "700", color: GatiMitraColors.textPrimary },
   simulatedConfirmBtn: {
-    flexDirection: "row",
     backgroundColor: CX.mint,
     paddingVertical: 14,
     borderRadius: 14,
+    marginBottom: 8,
+  },
+  simulatedConfirmBtnRow: {
+    flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    marginBottom: 8,
   },
   simulatedConfirmBtnText: { fontSize: 16, fontWeight: "700", color: "#fff" },
   simulatedFailBtn: {
-    flexDirection: "row",
     backgroundColor: "#FEF2F2",
     borderWidth: 1.5,
     borderColor: "#dc2626",
     paddingVertical: 14,
     borderRadius: 14,
+    marginBottom: 4,
+  },
+  simulatedFailBtnRow: {
+    flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    marginBottom: 4,
   },
   simulatedFailBtnText: { fontSize: 16, fontWeight: "700", color: "#dc2626" },
   simulatedBtnDisabled: { opacity: 0.55 },
@@ -8774,11 +9120,15 @@ const styles = StyleSheet.create({
   },
   gatiCashWalletBarWrap: {
     marginHorizontal: -CHECKOUT_PAGE_H_MARGIN,
+    marginBottom: 0,
+    borderBottomWidth: 0,
   },
   footerRow: {
     flexDirection: "row",
-    alignItems: "stretch",
+    flexWrap: "nowrap",
+    alignItems: "center",
     width: "100%",
+    marginTop: 0,
   },
   footerToggleCol: {
     width: CHECKOUT_FOOTER_TOGGLE_WIDTH,
@@ -8786,6 +9136,8 @@ const styles = StyleSheet.create({
     flexGrow: 0,
     flexShrink: 0,
     flexBasis: CHECKOUT_FOOTER_TOGGLE_WIDTH,
+    justifyContent: "center",
+    alignSelf: "center",
   },
   footerCtaCol: {
     flex: 1,
@@ -8795,6 +9147,8 @@ const styles = StyleSheet.create({
     minWidth: 0,
     marginLeft: CHECKOUT_FOOTER_GAP,
     paddingLeft: CHECKOUT_FOOTER_CTA_LEFT_INSET,
+    justifyContent: "center",
+    alignSelf: "center",
   },
   footerAddressCtaPressable: {
     marginTop: 2,
@@ -9122,4 +9476,72 @@ const styles = StyleSheet.create({
   couponListItemLeft: { flex: 1 },
   couponListCode: { fontSize: 15, fontWeight: "700", color: GatiMitraColors.textPrimary },
   couponListDesc: { fontSize: 13, color: GatiMitraColors.textSecondary, marginTop: 2 },
+  darkCard: {
+    backgroundColor: DiscoveryColors.card,
+    borderColor: DiscoveryColors.border,
+    shadowColor: "transparent",
+    shadowOpacity: 0,
+    shadowRadius: 0,
+    elevation: 0,
+  },
+  darkText: { color: DiscoveryColors.text },
+  darkMuted: { color: DiscoveryColors.textMuted },
+  darkTealText: { color: DiscoveryColors.teal },
+  darkDash: { borderBottomColor: DiscoveryColors.dashed },
+  darkPill: {
+    backgroundColor: DiscoveryColors.pill,
+    borderColor: DiscoveryColors.border,
+  },
+  darkStepper: {
+    backgroundColor: "rgba(45, 212, 191, 0.12)",
+    borderColor: DiscoveryColors.teal,
+  },
+  darkBogoPill: {
+    backgroundColor: "rgba(45, 212, 191, 0.16)",
+    borderColor: DiscoveryColors.teal,
+  },
+  darkOffersBannerTitle: { color: DiscoveryColors.teal },
+  darkOffersIconOuter: {
+    backgroundColor: DiscoveryColors.card,
+    borderColor: DiscoveryColors.border,
+    shadowOpacity: 0,
+    elevation: 0,
+  },
+  darkOffersIconBox: { backgroundColor: DiscoveryColors.teal },
+  darkOffersPct: { color: "#111111" },
+  darkApplyOutline: { backgroundColor: DiscoveryColors.card },
+  darkSavedPill: { backgroundColor: "rgba(45, 212, 191, 0.16)" },
+  darkSavedPillText: { color: DiscoveryColors.teal },
+  darkScheduleLine: { textDecorationColor: DiscoveryColors.dashed },
+  darkUpsellIcon: { backgroundColor: DiscoveryColors.search },
+  darkToggle: {
+    backgroundColor: DiscoveryColors.card,
+    borderColor: DiscoveryColors.border,
+  },
+  darkToggleSegText: { color: DiscoveryColors.text },
+  darkSheet: { backgroundColor: DiscoveryColors.card },
+  darkInput: {
+    backgroundColor: DiscoveryColors.search,
+    borderColor: DiscoveryColors.border,
+    color: DiscoveryColors.text,
+  },
+  darkElevatedPanel: {
+    backgroundColor: DiscoveryColors.cardElevated,
+    borderColor: DiscoveryColors.border,
+  },
+  darkRowSelected: { backgroundColor: "rgba(45, 212, 191, 0.12)" },
+  darkRowUnavailable: { backgroundColor: DiscoveryColors.search },
+  darkDistanceBannerOuter: { backgroundColor: DiscoveryColors.bg },
+  darkDistanceBannerInner: {
+    backgroundColor: "#2A2416",
+    borderTopColor: "#5C4A1F",
+    borderBottomColor: "#5C4A1F",
+  },
+  darkDistanceBannerText: { color: "#E8D48B" },
+  darkSavingsTag: {
+    backgroundColor: "rgba(45, 212, 191, 0.12)",
+    borderTopColor: DiscoveryColors.border,
+    borderBottomColor: DiscoveryColors.border,
+  },
+  darkSavingsTagText: { color: DiscoveryColors.teal },
 });

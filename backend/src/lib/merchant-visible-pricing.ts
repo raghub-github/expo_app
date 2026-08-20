@@ -32,6 +32,7 @@ export type MerchantOrderItemLike = {
   offer_label?: string | null;
   is_item_promo?: boolean;
   applied_offer_type?: string | null;
+  ctm_from_snapshot?: boolean;
 };
 
 function num(v: unknown): number {
@@ -318,32 +319,117 @@ function normalizeItemsForMerchantTotal(raw: unknown): MerchantOrderItemLike[] {
           }))
         : undefined,
       has_customizations: Boolean(r.has_customizations),
+      catalog_line_total:
+        r.catalog_line_total != null || r.catalogLineTotal != null
+          ? num(r.catalog_line_total ?? r.catalogLineTotal)
+          : undefined,
+      net_line_total:
+        r.net_line_total != null || r.netLineTotal != null
+          ? num(r.net_line_total ?? r.netLineTotal)
+          : undefined,
+      offer_discount:
+        r.offer_discount != null || r.offerDiscount != null
+          ? num(r.offer_discount ?? r.offerDiscount)
+          : undefined,
+      ctm_from_snapshot: Boolean(r.ctm_from_snapshot ?? r.ctmFromSnapshot),
     });
   }
   return out;
 }
 
+/** Qty shown in merchant new-order templates (`N item(s)`). */
+export function merchantNotifyItemCount(items: Array<{ qty?: number }>): number {
+  const n = items.reduce((s, it) => s + Math.max(1, Number(it.qty) || 1), 0);
+  return n > 0 ? n : items.length;
+}
+
+/**
+ * What GatiMitra pays the merchant for frozen CTM lines — discounted MX (net),
+ * never original catalog / gross. ₹149 pizza with 40% store offer → ₹89.40, not ₹149.
+ */
+export function merchantCtmNetSumFromItems(items: MerchantOrderItemLike[]): number {
+  return round2(
+    items.reduce((s, it) => {
+      const net = num(it.net_line_total);
+      if (net > 0.005) return s + net;
+      const catalog = num(it.catalog_line_total ?? it.price);
+      const disc = num(it.offer_discount);
+      return s + Math.max(0, catalog - disc);
+    }, 0)
+  );
+}
+
+/** Billing `order_line_pricing[].canonical_pricing.discounted_ctm_line` — MX after store offer. */
+export function merchantNetCtmFromBillingCanonical(
+  billing: Record<string, unknown> | null | undefined
+): number {
+  if (!billing || typeof billing !== "object") return 0;
+  const rows = billing.order_line_pricing ?? billing.orderLinePricing;
+  if (!Array.isArray(rows)) return 0;
+  return round2(
+    rows.reduce((s, row) => {
+      if (!row || typeof row !== "object") return s;
+      const r = row as Record<string, unknown>;
+      const canon = r.canonical_pricing ?? r.canonicalPricing;
+      if (!canon || typeof canon !== "object") return s;
+      const c = canon as Record<string, unknown>;
+      const net = num(c.discounted_ctm_line ?? c.discountedCtmLine);
+      return net > 0.005 ? s + net : s;
+    }, 0)
+  );
+}
+
+export type MerchantVisibleOrderNotify = {
+  amount: number;
+  itemCount: number;
+  customerName: string;
+};
+
 /**
  * Same merchant order value as merchant app incoming modal (pricing.total / merchantOrderBillTotal).
- * Used for push + in-app notifications — not customer grand_total.
+ * Used for push + in-app notifications — payout CTM, not original MX catalog / customer grand_total.
  */
 export async function resolveMerchantVisibleOrderTotal(
   sql: Sql,
   args: { merchantStoreId: number; orderIdText: string }
 ): Promise<number | null> {
+  const resolved = await resolveMerchantVisibleOrderNotify(sql, args);
+  return resolved?.amount ?? null;
+}
+
+export async function resolveMerchantVisibleOrderNotify(
+  sql: Sql,
+  args: { merchantStoreId: number; orderIdText: string }
+): Promise<MerchantVisibleOrderNotify | null> {
   const orderIdText = String(args.orderIdText ?? "").trim();
   const storeId = Number(args.merchantStoreId);
   if (!orderIdText || !Number.isFinite(storeId) || storeId <= 0) return null;
 
-  const coreRows = await sql<
-    Array<{ billing_snapshot: unknown; items: unknown }>
-  >`
-    SELECT billing_snapshot, items
-    FROM orders_core
-    WHERE order_id = ${orderIdText}
-      AND merchant_store_id = ${storeId}
-    LIMIT 1
-  `;
+  type CoreRow = {
+    billing_snapshot: unknown;
+    items: unknown;
+    merchant_precision_discount: unknown;
+    total_ctm?: unknown;
+  };
+  let coreRows: CoreRow[];
+  try {
+    coreRows = await sql<CoreRow[]>`
+      SELECT billing_snapshot, items, merchant_precision_discount, total_ctm
+      FROM orders_core
+      WHERE order_id = ${orderIdText}
+        AND merchant_store_id = ${storeId}
+      LIMIT 1
+    `;
+  } catch (err) {
+    if ((err as { code?: string })?.code !== "42703") throw err;
+    coreRows = await sql<CoreRow[]>`
+      SELECT billing_snapshot, items, merchant_precision_discount
+      FROM orders_core
+      WHERE order_id = ${orderIdText}
+        AND merchant_store_id = ${storeId}
+      LIMIT 1
+    `;
+  }
   const core = coreRows[0];
   if (!core) return null;
 
@@ -360,7 +446,29 @@ export async function resolveMerchantVisibleOrderTotal(
   if (!items.length) {
     items = normalizeItemsForMerchantTotal(core.items);
   }
+
+  const itemCount = merchantNotifyItemCount(items);
+  const customerName = "Customer";
+  const wrap = (amount: number | null): MerchantVisibleOrderNotify | null =>
+    amount != null && amount > 0.005 ? { amount: round2(amount), itemCount, customerName } : null;
+
+  const frozenTotalCtm = num(core.total_ctm);
+  if (frozenTotalCtm > 0.005) return wrap(frozenTotalCtm);
+
   if (!items.length) return null;
+
+  const packaging = num(billingSnap?.packaging_fee ?? 0);
+  const precisionFromCore = Math.max(0, num(core.merchant_precision_discount));
+  const allCtmFrozen = items.length > 0 && items.every((it) => it.ctm_from_snapshot === true);
+  if (allCtmFrozen) {
+    const ctmNetSum = merchantCtmNetSumFromItems(items);
+    return wrap(Math.max(0, ctmNetSum + packaging - precisionFromCore));
+  }
+
+  const canonNet = merchantNetCtmFromBillingCanonical(billingSnap);
+  if (canonNet > 0.005) {
+    return wrap(Math.max(0, canonNet + packaging - precisionFromCore));
+  }
 
   let commissionPercent: number | undefined;
   try {
@@ -387,11 +495,10 @@ export async function resolveMerchantVisibleOrderTotal(
     }, 0)
   );
 
-  const packaging = num(billingSnap?.packaging_fee ?? 0);
   const total = merchantOrderTotalFromBilling(
     itemsSubtotal > 0.005 ? itemsSubtotal : merchantSubtotal,
     billingSnap,
     packaging
   );
-  return total > 0.005 ? total : null;
+  return wrap(total);
 }

@@ -16,6 +16,11 @@ export function toAbsoluteClientMediaUrl(stored: string | null | undefined): str
   if (path.startsWith("/api/attachments/proxy")) {
     path = "/v1/attachments/proxy" + path.slice("/api/attachments/proxy".length);
   }
+  if (!path.startsWith("/") && !path.includes("://") && path.includes("/")) {
+    const key = encodeURIComponent(path.replace(/^\/+/, ""));
+    const proxy = `/v1/attachments/proxy?key=${key}`;
+    return base ? `${base}${proxy}` : proxy;
+  }
   if (!path.startsWith("/")) path = `/${path}`;
   if (!base) return path;
   return `${base}${path}`;

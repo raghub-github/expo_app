@@ -17,6 +17,7 @@ import { GatiMitraColors } from "@/constants/gatimitra";
 import { useProfile } from "@/hooks/useProfile";
 import { formatIndianPhoneMasked } from "@/lib/formatIndianPhone";
 import { walletService } from "@/services/wallet.service";
+import { useWalletDark } from "@/hooks/useWalletDark";
 
 const PAGE_BG = "#F5F5F7";
 const TEXT = "#111827";
@@ -49,6 +50,7 @@ function ActionRow({ label, iconShape, onPress, leadingIcon, ionIcon }: ActionRo
 export default function WalletSettingsScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  const dark = useWalletDark();
   const { data: profile } = useProfile();
   const [phoneModalVisible, setPhoneModalVisible] = useState(false);
   const [phoneInput, setPhoneInput] = useState("");
@@ -107,9 +109,9 @@ export default function WalletSettingsScreen() {
   return (
     <>
       <AndroidBackHandler />
-      <StatusBar style="dark" backgroundColor={PAGE_BG} />
-      <View style={styles.screen}>
-        <WalletSubpageHeader title="Settings" onBack={() => router.back()} />
+      <StatusBar style={dark ? "light" : "dark"} backgroundColor={dark ? "#121212" : PAGE_BG} />
+      <View style={[styles.screen, dark && { backgroundColor: "#121212" }]}>
+        <WalletSubpageHeader title="Settings" onBack={() => router.back()} dark={dark} />
 
         <ScrollView
           style={styles.scroll}

@@ -8,6 +8,7 @@ import { getBasePrice, getSellingPrice } from "@/components/store/storeMenuUtils
 import type { FoodItemUnderPrice, StoreFoodItemsUnderPrice } from "@/services/foodHomeItemsUnderPrice.service";
 import type { MenuItem } from "@/services/merchant.service";
 import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
+import { MerchantDarkPalette, useMerchantUiDark } from "@/features/merchant-detail/merchantUiTheme";
 
 type Props = {
   store: StoreFoodItemsUnderPrice;
@@ -70,16 +71,17 @@ function MealsUnderPriceItemCard({
   const sellingPrice = getSellingPrice(menuItem);
   const basePrice = getBasePrice(menuItem);
   const showStrike = basePrice != null && basePrice > sellingPrice;
+  const dark = useMerchantUiDark();
 
   return (
-    <View style={[styles.itemCard, { width: cardWidth }]}>
+    <View style={[styles.itemCard, dark && styles.itemCardDark, { width: cardWidth }]}>
       <TouchableOpacity activeOpacity={0.94} onPress={onPressItem}>
-        <View style={[styles.imageWrap, { height: imageHeight }]}>
+        <View style={[styles.imageWrap, dark && styles.imageWrapDark, { height: imageHeight }]}>
           {uri ? (
             <Image source={{ uri }} style={styles.image} contentFit="cover" cachePolicy="memory-disk" />
           ) : (
-            <View style={styles.imagePlaceholder}>
-              <Ionicons name="restaurant-outline" size={28} color="#9CA3AF" />
+            <View style={[styles.imagePlaceholder, dark && styles.imagePlaceholderDark]}>
+              <Ionicons name="restaurant-outline" size={28} color={dark ? MerchantDarkPalette.textDim : "#9CA3AF"} />
             </View>
           )}
         </View>
@@ -87,30 +89,34 @@ function MealsUnderPriceItemCard({
         <View style={styles.cardBody}>
           <View style={styles.nameRow}>
             <DietIndicator type={item.isVeg ? "veg" : "nonveg"} />
-            <AppText style={styles.itemName} numberOfLines={2}>
+            <AppText style={[styles.itemName, dark && styles.itemNameDark]} numberOfLines={2}>
               {item.name}
             </AppText>
           </View>
 
           <View style={styles.priceActionRow}>
             <View style={styles.priceCol}>
-              <AppText style={styles.itemPrice}>{formatPrice(sellingPrice)}</AppText>
-              {showStrike ? <AppText style={styles.itemStrike}>{formatPrice(basePrice!)}</AppText> : null}
+              <AppText style={[styles.itemPrice, dark && styles.itemPriceDark]}>{formatPrice(sellingPrice)}</AppText>
+              {showStrike ? (
+                <AppText style={[styles.itemStrike, dark && styles.itemStrikeDark]}>{formatPrice(basePrice!)}</AppText>
+              ) : null}
             </View>
             <TouchableOpacity
-              style={styles.viewCartBtn}
+              style={[styles.viewCartBtn, dark && styles.viewCartBtnDark]}
               activeOpacity={0.86}
               onPress={(e) => {
                 e.stopPropagation?.();
                 onPressViewCart();
               }}
             >
-              <AppText style={styles.viewCartBtnText}>View cart</AppText>
-              <Ionicons name="chevron-forward" size={11} color={ZOMATO_GREEN} />
+              <AppText style={[styles.viewCartBtnText, dark && styles.viewCartBtnTextDark]}>View cart</AppText>
+              <Ionicons name="chevron-forward" size={11} color={dark ? MerchantDarkPalette.accent : ZOMATO_GREEN} />
             </TouchableOpacity>
           </View>
 
-          {showStrike ? <AppText style={styles.offerHint}>Best offer applied</AppText> : null}
+          {showStrike ? (
+            <AppText style={[styles.offerHint, dark && styles.offerHintDark]}>Best offer applied</AppText>
+          ) : null}
         </View>
       </TouchableOpacity>
     </View>
@@ -131,25 +137,30 @@ export function MealsUnderPriceStoreBlock({
   const reviewHint = formatReviewHint(store.totalReviews);
   const ratingLabel = formatRating(store.avgRating);
   const visibleItems = store.items;
+  const dark = useMerchantUiDark();
 
   if (visibleItems.length === 0) return null;
 
   return (
-    <View style={styles.section}>
+    <View style={[styles.section, dark && styles.sectionDark]}>
       <View style={styles.headerRow}>
         <View style={styles.headerLeft}>
-          <AppText style={styles.storeName} numberOfLines={2}>
+          <AppText style={[styles.storeName, dark && styles.storeNameDark]} numberOfLines={2}>
             {store.storeName}
           </AppText>
           <View style={styles.metaRow}>
             {store.deliveryTime ? (
               <>
-                <Ionicons name="flash" size={12} color={ZOMATO_GREEN} />
-                <AppText style={[styles.metaText, styles.metaHighlight]}>{store.deliveryTime}</AppText>
-                <AppText style={styles.metaDot}>|</AppText>
+                <Ionicons name="flash" size={12} color={dark ? MerchantDarkPalette.accent : ZOMATO_GREEN} />
+                <AppText style={[styles.metaText, styles.metaHighlight, dark && styles.metaHighlightDark]}>
+                  {store.deliveryTime}
+                </AppText>
+                <AppText style={[styles.metaDot, dark && styles.metaDotDark]}>|</AppText>
               </>
             ) : null}
-            <AppText style={styles.secureDeliveryText}>Secure and Fast Delivery</AppText>
+            <AppText style={[styles.secureDeliveryText, dark && styles.secureDeliveryTextDark]}>
+              Secure and Fast Delivery
+            </AppText>
           </View>
         </View>
         <View style={styles.ratingCol}>
@@ -157,7 +168,9 @@ export function MealsUnderPriceStoreBlock({
             <AppText style={styles.ratingText}>{ratingLabel}</AppText>
             <Ionicons name="star" size={9} color="#FFFFFF" />
           </View>
-          {reviewHint ? <AppText style={styles.reviewHint}>{reviewHint}</AppText> : null}
+          {reviewHint ? (
+            <AppText style={[styles.reviewHint, dark && styles.reviewHintDark]}>{reviewHint}</AppText>
+          ) : null}
         </View>
       </View>
 
@@ -183,12 +196,12 @@ export function MealsUnderPriceStoreBlock({
       </ScrollView>
 
       <TouchableOpacity
-        style={styles.menuBtn}
+        style={[styles.menuBtn, dark && styles.menuBtnDark]}
         activeOpacity={0.88}
         onPress={() => onPressViewMenu(store.storePublicId)}
       >
-        <AppText style={styles.menuBtnText}>View full menu</AppText>
-        <Ionicons name="chevron-forward" size={14} color="#9CA3AF" />
+        <AppText style={[styles.menuBtnText, dark && styles.menuBtnTextDark]}>View full menu</AppText>
+        <Ionicons name="chevron-forward" size={14} color={dark ? MerchantDarkPalette.textDim : "#9CA3AF"} />
       </TouchableOpacity>
     </View>
   );
@@ -386,5 +399,60 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: "600",
     color: "#374151",
+  },
+  sectionDark: {
+    backgroundColor: MerchantDarkPalette.bg,
+    borderBottomColor: MerchantDarkPalette.elevated,
+  },
+  storeNameDark: {
+    color: MerchantDarkPalette.text,
+  },
+  metaHighlightDark: {
+    color: MerchantDarkPalette.accent,
+  },
+  metaDotDark: {
+    color: MerchantDarkPalette.border,
+  },
+  secureDeliveryTextDark: {
+    color: MerchantDarkPalette.textMuted,
+  },
+  reviewHintDark: {
+    color: MerchantDarkPalette.textDim,
+  },
+  itemCardDark: {
+    backgroundColor: MerchantDarkPalette.card,
+    borderColor: MerchantDarkPalette.border,
+  },
+  imageWrapDark: {
+    backgroundColor: MerchantDarkPalette.elevated,
+  },
+  imagePlaceholderDark: {
+    backgroundColor: MerchantDarkPalette.elevated,
+  },
+  itemNameDark: {
+    color: MerchantDarkPalette.text,
+  },
+  itemPriceDark: {
+    color: MerchantDarkPalette.accent,
+  },
+  itemStrikeDark: {
+    color: MerchantDarkPalette.textDim,
+  },
+  offerHintDark: {
+    color: MerchantDarkPalette.offer,
+  },
+  viewCartBtnDark: {
+    backgroundColor: "transparent",
+    borderColor: MerchantDarkPalette.accent,
+  },
+  viewCartBtnTextDark: {
+    color: MerchantDarkPalette.accent,
+  },
+  menuBtnDark: {
+    backgroundColor: MerchantDarkPalette.card,
+    borderColor: MerchantDarkPalette.border,
+  },
+  menuBtnTextDark: {
+    color: MerchantDarkPalette.text,
   },
 });

@@ -28,6 +28,7 @@ import { PartnerChatUnreadBadge } from "@/components/orders/PartnerChatUnreadBad
 import { merchantService } from "@/services/merchant.service";
 import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
 import { resolveDockVehicleImage } from "@/lib/dock-vehicle-image";
+import { DiscoveryColors } from "@/features/discovery-home/discoveryTheme";
 
 const FLOAT_CART_GREEN = "#137243";
 const FLOAT_CART_RADIUS = 10;
@@ -47,12 +48,15 @@ type FloatingOrderTrackingPillProps = {
   chatUnreadCount?: number;
   /** Kept for call-site compat; cart-matching UI is always the same height/chrome. */
   emphasis?: "primary" | "secondary";
+  /** Discovery food home — charcoal bar, keep the green Track CTA. */
+  dark?: boolean;
 };
 
 export function FloatingOrderTrackingPill({
   order,
   onPress,
   chatUnreadCount = 0,
+  dark = false,
 }: FloatingOrderTrackingPillProps) {
   const [thumbFailed, setThumbFailed] = useState(false);
   const storeId = order.storeId?.trim() || null;
@@ -177,7 +181,7 @@ export function FloatingOrderTrackingPill({
       : `Track order from ${storeLabel}`;
 
   return (
-    <View style={styles.shell}>
+    <View style={[styles.shell, dark && styles.shellDark]}>
       <PartnerChatUnreadBadge count={chatUnreadCount} style={styles.floatingUnreadBadge} />
       <Pressable
         style={styles.leftPress}
@@ -200,13 +204,13 @@ export function FloatingOrderTrackingPill({
               onError={() => setThumbFailed(true)}
             />
           ) : (
-            <View style={styles.thumbPlaceholder}>
-              <Ionicons name="bicycle" size={20} color={GatiMitraColors.textSecondary} />
+            <View style={[styles.thumbPlaceholder, dark && styles.thumbPlaceholderDark]}>
+              <Ionicons name="bicycle" size={20} color={dark ? DiscoveryColors.textMuted : GatiMitraColors.textSecondary} />
             </View>
           )}
         </View>
         <View style={styles.leftTextCol}>
-          <StoreText style={styles.storeName} bold numberOfLines={1}>
+          <StoreText style={[styles.storeName, dark && styles.storeNameDark]} bold numberOfLines={1}>
             {storeLabel}
           </StoreText>
           <View style={styles.statusRow}>
@@ -263,6 +267,10 @@ const styles = StyleSheet.create({
     borderColor: FLOAT_BAR_BORDER,
     position: "relative",
   },
+  shellDark: {
+    backgroundColor: DiscoveryColors.card,
+    borderColor: DiscoveryColors.border,
+  },
   floatingUnreadBadge: {
     position: "absolute",
     top: 4,
@@ -299,6 +307,9 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     backgroundColor: GatiMitraColors.mintSoft,
   },
+  thumbPlaceholderDark: {
+    backgroundColor: DiscoveryColors.search,
+  },
   leftTextCol: {
     flex: 1,
     minWidth: 0,
@@ -308,6 +319,9 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontFamily: StoreFonts.loraBold,
     color: GatiMitraColors.textPrimary,
+  },
+  storeNameDark: {
+    color: DiscoveryColors.text,
   },
   statusRow: {
     flexDirection: "row",

@@ -9,9 +9,9 @@ import { StoreText } from "./StoreText";
 import { DietIndicator } from "./DietIndicator";
 import { MenuItemImagePlaceholder } from "./MenuItemImagePlaceholder";
 import { StoreMenuInstantCartControl, MENU_ADD_CONTROL_HEIGHT } from "./StoreMenuCartControls";
-import { getItemDiet, getSellingPrice } from "./storeMenuUtils";
+import { getBasePrice, getItemDiet, getSellingPrice } from "./storeMenuUtils";
 import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
-import { formatOfferRupee, type ItemOfferDisplay } from "@/lib/itemOfferDisplay";
+import { formatOfferRupee, resolveMenuOfferPriceDisplay, type ItemOfferDisplay } from "@/lib/itemOfferDisplay";
 import { useMenuItemCartQty } from "@/hooks/useMenuItemCartQty";
 
 export type PastOrderItem = {
@@ -67,14 +67,12 @@ export const StorePastOrderRow = React.memo(function StorePastOrderRow({
   );
   const diet = getItemDiet(menuItem);
   const sellingPrice = getSellingPrice(menuItem);
-  const offerUnitPrice =
-    itemOffer?.kind !== "bogo" && itemOffer?.offerPrice != null ? itemOffer.offerPrice : null;
-  const showOfferPrice =
-    offerUnitPrice != null && offerUnitPrice < sellingPrice - 0.001;
-  const strikeAmount = showOfferPrice
-    ? Math.round(itemOffer?.strikePrice ?? sellingPrice)
-    : sellingPrice;
-  const payableAmount = showOfferPrice ? offerUnitPrice! : sellingPrice;
+  const { payable: payableAmount, strike: strikeAmount, showStrike: showOfferPrice } =
+    resolveMenuOfferPriceDisplay({
+      sellingPrice,
+      basePrice: getBasePrice(menuItem),
+      itemOffer,
+    });
   const imageUri = useMemo(
     () =>
       menuItem.imageUrl?.trim()
@@ -149,7 +147,7 @@ export const StorePastOrderRow = React.memo(function StorePastOrderRow({
                   <AppText style={styles.boostBadgeText}>{itemOffer.label}</AppText>
                 </View>
               ) : null}
-              <AppText style={styles.basePriceStrike}>{formatOfferRupee(strikeAmount)}</AppText>
+              <AppText style={styles.basePriceStrike}>{formatOfferRupee(strikeAmount ?? payableAmount)}</AppText>
             </View>
             <AppText style={styles.discountPrice}>Get for {formatOfferRupee(payableAmount)}</AppText>
           </>

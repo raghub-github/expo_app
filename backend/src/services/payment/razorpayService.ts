@@ -290,3 +290,148 @@ export async function createRazorpayRefund(params: RefundParams): Promise<Refund
   return refund as unknown as RefundResponse;
 }
 
+function extractUpiIntentUrl(payload: Record<string, unknown>): string | null {
+  const asString = (v: unknown): string | null =>
+    typeof v === "string" && v.length > 0 ? v : null;
+  const direct =
+    asString(payload.link) ??
+    asString(payload.intent_url) ??
+    asString(payload.intentUrl);
+  if (direct) return direct;
+  const data = payload.data as Record<string, unknown> | undefined;
+  if (data) {
+    const nested = asString(data.link) ?? asString(data.intent_url);
+    if (nested) return nested;
+  }
+  const upi = payload.upi as Record<string, unknown> | undefined;
+  if (upi) {
+    const nested = asString(upi.link) ?? asString(upi.intent_url);
+    if (nested) return nested;
+  }
+  const next = payload.next;
+  if (Array.isArray(next)) {
+    for (const step of next) {
+      if (!step || typeof step !== "object") continue;
+      const url = asString((step as Record<string, unknown>).url);
+      if (url) return url;
+    }
+  }
+  return null;
+}
+
+function isRazorpayRouteMissing(status: number, json: Record<string, unknown>): boolean {
+  if (status === 404) return true;
+  const err = json.error as { description?: string; code?: string } | undefined;
+  const desc = String(err?.description ?? json.message ?? "").toLowerCase();
+  return desc.includes("requested url was not found") || desc.includes("not found on the server");
+}
+
+/**
+ * Create a UPI Intent payment on an existing Razorpay order.
+ * Prefer POST /v1/payments/create/upi; if that route is not enabled on the
+ * account, fall back to POST /v1/payments/create/json (same body).
+ * Returns the `upi://pay?…` link the customer app opens in PhonePe / GPay / Paytm.
+ */
+export async function createRazorpayUpiIntent(params: {
+  orderId: string;
+  amountPaise: number;
+  contact: string;
+  email: string;
+  ip: string;
+  userAgent: string;
+  notes?: Record<string, string>;
+}): Promise<{ paymentId: string | null; intentUrl: string | null }> {
+  const env = getEnv();
+  if (!env.RAZORPAY_KEY_ID || !env.RAZORPAY_KEY_SECRET) {
+    throw new Error("Razorpay credentials not configured");
+  }
+
+  const auth = Buffer.from(`${env.RAZORPAY_KEY_ID}:${env.RAZORPAY_KEY_SECRET}`).toString("base64");
+  const body = JSON.stringify({
+    amount: params.amountPaise,
+    currency: "INR",
+    order_id: params.orderId,
+    email: params.email,
+    contact: params.contact,
+    method: "upi",
+    ip: params.ip,
+    referer: "https://gatimitra.app",
+    user_agent: params.userAgent,
+    description: "Food order",
+    notes: params.notes ?? {},
+    upi: { flow: "intent" },
+  });
+
+  const postCreate = async (url: string) => {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: {
+        Authorization: `Basic ${auth}`,
+        "Content-Type": "application/json",
+      },
+      body,
+    });
+    const json = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+    return { res, json };
+  };
+
+  let { res, json } = await postCreate("https://api.razorpay.com/v1/payments/create/upi");
+  if (!res.ok && isRazorpayRouteMissing(res.status, json)) {
+    console.warn("[razorpay] create/upi unavailable, falling back to create/json", {
+      status: res.status,
+      error: json.error ?? json,
+    });
+    ({ res, json } = await postCreate("https://api.razorpay.com/v1/payments/create/json"));
+  }
+
+  if (!res.ok) {
+    const err = json.error as { description?: string; code?: string } | undefined;
+    console.warn("[razorpay] UPI intent create failed", {
+      status: res.status,
+      error: err ?? json,
+    });
+    // Account does not expose S2S UPI Intent — caller should open Checkout instead.
+    if (isRazorpayRouteMissing(res.status, json)) {
+      return { paymentId: null, intentUrl: null };
+    }
+    throw new Error(err?.description || `Razorpay UPI intent ${res.status}`);
+  }
+
+  const paymentId =
+    (typeof json.razorpay_payment_id === "string" && json.razorpay_payment_id) ||
+    (typeof json.id === "string" && json.id) ||
+    null;
+
+  return { paymentId, intentUrl: extractUpiIntentUrl(json) };
+}
+
+/**
+ * Fetch enabled payment methods for this Razorpay account.
+ * Docs: GET https://api.razorpay.com/v1/methods with Basic KEY_ID: (no secret).
+ * Falls back to KEY_ID:SECRET if the key-only call is rejected.
+ */
+export async function fetchRazorpayAccountMethods(): Promise<unknown> {
+  const env = getEnv();
+  if (!env.RAZORPAY_KEY_ID) {
+    throw new Error("Razorpay key id not configured");
+  }
+
+  const tryFetch = async (password: string) => {
+    const auth = Buffer.from(`${env.RAZORPAY_KEY_ID}:${password}`).toString("base64");
+    const res = await fetch("https://api.razorpay.com/v1/methods", {
+      headers: { Authorization: `Basic ${auth}` },
+    });
+    return res;
+  };
+
+  let res = await tryFetch("");
+  if (res.status === 401 && env.RAZORPAY_KEY_SECRET) {
+    res = await tryFetch(env.RAZORPAY_KEY_SECRET);
+  }
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`Razorpay methods ${res.status}: ${text.slice(0, 240)}`);
+  }
+  return res.json();
+}
+

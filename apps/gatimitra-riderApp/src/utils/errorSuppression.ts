@@ -23,9 +23,10 @@ export function installErrorSuppression() {
     "`setPositionAsync` is not supported with edge-to-edge enabled",
     "`setBackgroundColorAsync` is not supported with edge-to-edge enabled",
     "[expo-av]: Expo AV has been deprecated",
-    // @supabase/auth-js logs TypeError: Network request failed before returning AuthRetryableFetchError
     "Network request failed",
     "TypeError: Network request failed",
+    "expo-notifications",
+    "Push notifications (remote notifications) functionality provided by expo-notifications was removed from Expo Go",
   ]);
 
   const rejectionHandler = (event: PromiseRejectionEvent) => {

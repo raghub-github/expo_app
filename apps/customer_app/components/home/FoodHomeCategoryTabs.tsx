@@ -13,6 +13,7 @@ import { UserAppCategoryImage } from "@/components/category/UserAppCategoryImage
 import { GatiMitraColors } from "@/constants/gatimitra";
 import type { FoodHomeCategoryItem } from "@/components/home/FoodHomeCategoryVariants";
 import { AppText } from "@/components/AppText";
+import { MerchantDarkPalette, useMerchantUiDark } from "@/features/merchant-detail/merchantUiTheme";
 
 export type FoodHomeCategoryTabLayout = {
   itemW: number;
@@ -50,7 +51,7 @@ export function computeGridFirstCategoryTabMetrics(
   const itemW = Math.floor((inner - gap * (cols - 1)) / cols);
   const used = itemW * cols + gap * (cols - 1);
   const trailingSlack = Math.max(0, inner - used);
-  const circle = Math.min(56, Math.max(44, itemW - 2));
+  const circle = Math.min(50, Math.max(42, itemW - 2));
   const imgSize = circle;
   return {
     itemW,
@@ -96,6 +97,7 @@ function CategoryPhoto({
 }) {
   const { circle, imgSize } = layout;
   const hasImage = !!imageUrl?.trim();
+  const dark = useMerchantUiDark();
 
   return (
     <View
@@ -115,11 +117,11 @@ function CategoryPhoto({
           style={{ width: imgSize, height: imgSize, borderRadius: imgSize / 2 }}
         />
       ) : (
-        <View style={[styles.photoFallback, { width: imgSize, height: imgSize, borderRadius: imgSize / 2 }]}>
+        <View style={[styles.photoFallback, dark && styles.photoFallbackDark, { width: imgSize, height: imgSize, borderRadius: imgSize / 2 }]}>
           <Ionicons
             name={fallbackIcon}
             size={Math.max(20, Math.round(circle * 0.38))}
-            color="#94A3B8"
+            color={dark ? MerchantDarkPalette.textMuted : "#94A3B8"}
           />
         </View>
       )}
@@ -274,6 +276,7 @@ export function FoodHomeCategoryTabs({
   const { itemW, columnGap, circle, pagePadLeft, pagePadRight } = layout;
   const mealsCardH = Math.round(circle * 1.34);
   const tabMinHeight = circle + 38;
+  const dark = useMerchantUiDark();
   const resolvedMaxPrice = useMemo(() => {
     if (Number.isFinite(underPriceMaxPrice) && underPriceMaxPrice > 0) {
       return Math.trunc(underPriceMaxPrice);
@@ -321,12 +324,21 @@ export function FoodHomeCategoryTabs({
             fallbackIcon="apps-outline"
           />
           <AppText
-            style={[styles.tabText, { width: itemW }, active && styles.tabTextActive]}
+            style={[
+              styles.tabText,
+              dark && styles.tabTextDark,
+              { width: itemW },
+              active && (dark ? styles.tabTextActiveDark : styles.tabTextActive),
+            ]}
             numberOfLines={2}
           >
             {allTabLabel}
           </AppText>
-          {active ? <View style={styles.tabUnderline} /> : <View style={styles.tabUnderlineSpacer} />}
+          {active ? (
+            <View style={[styles.tabUnderline, dark && styles.tabUnderlineDark]} />
+          ) : (
+            <View style={styles.tabUnderlineSpacer} />
+          )}
         </TouchableOpacity>
       );
     }
@@ -349,12 +361,21 @@ export function FoodHomeCategoryTabs({
           layout={layout}
         />
         <AppText
-          style={[styles.tabText, { width: itemW }, active && styles.tabTextActive]}
+          style={[
+            styles.tabText,
+            dark && styles.tabTextDark,
+            { width: itemW },
+            active && (dark ? styles.tabTextActiveDark : styles.tabTextActive),
+          ]}
           numberOfLines={2}
         >
           {cat.name}
         </AppText>
-        {active ? <View style={styles.tabUnderline} /> : <View style={styles.tabUnderlineSpacer} />}
+        {active ? (
+          <View style={[styles.tabUnderline, dark && styles.tabUnderlineDark]} />
+        ) : (
+          <View style={styles.tabUnderlineSpacer} />
+        )}
       </TouchableOpacity>
     );
   };
@@ -477,15 +498,25 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     backgroundColor: "#F8FAFC",
   },
+  photoFallbackDark: {
+    backgroundColor: MerchantDarkPalette.elevated,
+  },
   tabText: {
     fontSize: 11,
     fontWeight: "500",
     color: "#64748B",
     textAlign: "center",
   },
+  tabTextDark: {
+    color: MerchantDarkPalette.textMuted,
+  },
   tabTextActive: {
     fontWeight: "700",
     color: GatiMitraColors.textPrimaryNew,
+  },
+  tabTextActiveDark: {
+    fontWeight: "700",
+    color: MerchantDarkPalette.text,
   },
   tabUnderline: {
     marginTop: 4,
@@ -493,6 +524,9 @@ const styles = StyleSheet.create({
     width: 28,
     borderRadius: 2,
     backgroundColor: "#E11D48",
+  },
+  tabUnderlineDark: {
+    backgroundColor: MerchantDarkPalette.accent,
   },
   tabUnderlineSpacer: {
     marginTop: 4,

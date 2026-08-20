@@ -3,6 +3,10 @@
  */
 import { getSql } from "../../db/client.js";
 import { send as sendNotification } from "../notifications/notificationService.js";
+import {
+  lookupFoodOrderIdByCoreOrderText,
+  merchantAppOrderHref,
+} from "../../lib/merchant-new-order-notify.js";
 
 type EscalationLevel = 1 | 2 | 3;
 
@@ -116,10 +120,16 @@ export async function processRiderWaitEscalations(args: {
       const copy = LEVEL_COPY[level];
       const tokens = await merchantTokensForStore(sql, args.merchantStoreId);
       if (tokens.length > 0) {
+        const foodOrderId = await lookupFoodOrderIdByCoreOrderText(sql, {
+          orderIdText: args.orderIdText,
+          merchantStoreId: args.merchantStoreId,
+        });
+        const href = merchantAppOrderHref(foodOrderId);
         await sendNotification({
           templateCode: "MERCHANT_RIDER_WAIT_ESCALATION",
           variables: {
-            orderId: args.orderIdText,
+            orderId: foodOrderId ?? args.orderIdText,
+            foodOrderId: foodOrderId ?? "",
             title: copy.title,
             body: copy.body,
             waitMinutes: args.riderWaitMinutes,
@@ -128,8 +138,11 @@ export async function processRiderWaitEscalations(args: {
           target: { device_tokens: tokens },
           priority: level >= 2 ? "critical" : "high",
           metadata: {
+            type: "merchant_rider_wait_priority",
             gmType: "RIDER_WAIT_ESCALATION",
             orderId: args.orderIdText,
+            foodOrderId,
+            url: href,
             escalationLevel: level,
           },
         }).catch((e) =>

@@ -224,7 +224,8 @@ export function OffDutyBanner({ visible, onTurnOn, loading, dutyLocked = false }
         style={[styles.turnOnBtn, loading && { opacity: 0.7 }, dutyLocked && styles.turnOnBtnLocked]}
         onPress={onTurnOn}
         disabled={loading}
-        hitSlop={12}
+        hitSlop={16}
+        delayPressIn={0}
         accessibilityRole="button"
       >
         <Text style={[styles.turnOnBtnText, dutyLocked && styles.turnOnBtnTextLocked]}>

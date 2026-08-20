@@ -25,6 +25,7 @@ import {
   getNotificationPermissions,
   requestNotificationPermissions,
 } from "@/src/services/permissions/notificationsWrapper";
+import { runRiderPushRefresh } from "@/src/lib/riderPushRefresh";
 
 const TEAL = colors.primary[600];
 const PAGE_BG = "#F4F6F8";
@@ -108,6 +109,9 @@ export function NotificationSettingsScreen() {
     const live = await getNotificationPermissions();
     setLiveGranted(live.status === "granted");
     await refreshPermissions();
+    if (live.status === "granted") {
+      void runRiderPushRefresh();
+    }
   }, [refreshPermissions]);
 
   useEffect(() => {
@@ -133,6 +137,7 @@ export function NotificationSettingsScreen() {
       await refreshPermissions();
       if (granted) {
         await setPref("pushEnabled", true);
+        await runRiderPushRefresh();
       } else {
         await setPref("pushEnabled", false);
       }

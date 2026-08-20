@@ -27,6 +27,7 @@ import { WalletSubpageHeader } from "@/components/wallet/WalletSubpageHeader";
 import { RazorpayCheckoutModal, type RazorpayPaymentResult } from "@/components/RazorpayCheckoutModal";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import { walletService } from "@/services/wallet.service";
+import { useWalletDark } from "@/hooks/useWalletDark";
 
 const PAGE_BG = "#F5F5F7";
 const TEXT = "#111827";
@@ -51,6 +52,7 @@ function parseDigits(value: string, max = 50000): number {
 export default function WalletAddMoneyScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  const dark = useWalletDark();
   const [amount, setAmount] = useState(2000);
   const [amountInputFocused, setAmountInputFocused] = useState(false);
   const [keyboardHeight, setKeyboardHeight] = useState(0);
@@ -198,9 +200,9 @@ export default function WalletAddMoneyScreen() {
   return (
     <>
       <AndroidBackHandler />
-      <StatusBar style="dark" backgroundColor={PAGE_BG} />
-      <View style={styles.screen}>
-        <WalletSubpageHeader title="Add money" onBack={() => router.back()} />
+      <StatusBar style={dark ? "light" : "dark"} backgroundColor={dark ? "#121212" : PAGE_BG} />
+      <View style={[styles.screen, dark && { backgroundColor: "#121212" }]}>
+        <WalletSubpageHeader title="Add money" onBack={() => router.back()} dark={dark} />
 
         <ScrollView
           style={styles.scroll}

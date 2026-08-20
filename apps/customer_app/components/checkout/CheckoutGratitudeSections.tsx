@@ -13,6 +13,7 @@ import {
 } from "@/components/checkout/DonateWithBottomSheet";
 import { useAppAssetSource } from "@/components/AppAssetImage";
 import { CX } from "@/lib/appAssetKeys";
+import { MerchantDarkPalette, useMerchantUiDark } from "@/features/merchant-detail/merchantUiTheme";
 
 const GM = GatiMitraColors;
 
@@ -39,12 +40,12 @@ export type CheckoutGratitudeSectionsProps = {
   sectionOrder?: "tip-first" | "feeding-first";
 };
 
-function GratitudeDivider() {
+function GratitudeDivider({ dark }: { dark: boolean }) {
   return (
     <View style={styles.gratitudeDivider}>
-      <View style={styles.gratitudeLine} />
-      <CheckoutText style={styles.gratitudeLabel}>GRATITUDE CORNER</CheckoutText>
-      <View style={styles.gratitudeLine} />
+      <View style={[styles.gratitudeLine, dark && styles.lineDark]} />
+      <CheckoutText style={[styles.gratitudeLabel, dark && styles.mutedDark]}>GRATITUDE CORNER</CheckoutText>
+      <View style={[styles.gratitudeLine, dark && styles.lineDark]} />
     </View>
   );
 }
@@ -67,6 +68,7 @@ export function CheckoutGratitudeSections({
   donationScope = "every_order",
   sectionOrder = "feeding-first",
 }: CheckoutGratitudeSectionsProps) {
+  const dark = useMerchantUiDark();
   const rxTipImg = useAppAssetSource(CX.checkout.rxTip);
   const fedImg = useAppAssetSource(CX.checkout.fed);
   const donationValue =
@@ -83,17 +85,17 @@ export function CheckoutGratitudeSections({
   const showTipConfirm = tipValue > 0;
 
   const tipSection = (
-    <View style={[styles.tipCard, sectionOrder === "feeding-first" && styles.gratitudeSectionAfter]}>
+    <View style={[styles.tipCard, dark && styles.cardDark, sectionOrder === "feeding-first" && styles.gratitudeSectionAfter]}>
       <LinearGradient
-        colors={["#F0F9FF", "#FFFFFF"]}
+        colors={dark ? ["#1A2A2E", MerchantDarkPalette.card] : ["#F0F9FF", "#FFFFFF"]}
         style={StyleSheet.absoluteFill}
         start={{ x: 0, y: 0 }}
         end={{ x: 1, y: 1 }}
       />
       <View style={styles.tipCardInner}>
         <View style={styles.tipTextCol}>
-          <CheckoutText style={styles.tipTitle}>Tip your delivery partner</CheckoutText>
-          <CheckoutText style={styles.tipSub}>
+          <CheckoutText style={[styles.tipTitle, dark && styles.textDark]}>Tip your delivery partner</CheckoutText>
+          <CheckoutText style={[styles.tipSub, dark && styles.mutedDark]}>
             They&apos;ll get notified instantly. The full tip is sent after delivery
           </CheckoutText>
           <View style={styles.tipChipRow}>
@@ -103,27 +105,27 @@ export function CheckoutGratitudeSections({
                 <Pressable
                   key={amt}
                   onPress={() => onTipSelect(active ? 0 : amt)}
-                  style={[styles.tipChip, active && styles.tipChipActive]}
+                  style={[styles.tipChip, dark && styles.chipDark, active && styles.tipChipActive]}
                 >
-                  <CheckoutText style={[styles.tipChipText, active && styles.tipChipTextActive]}>₹{amt}</CheckoutText>
+                  <CheckoutText style={[styles.tipChipText, dark && styles.textDark, active && styles.tipChipTextActive]}>₹{amt}</CheckoutText>
                 </Pressable>
               );
             })}
             <Pressable
               onPress={onTipCustomMode}
-              style={[styles.tipChip, tipCustomMode && styles.tipChipActive]}
+              style={[styles.tipChip, dark && styles.chipDark, tipCustomMode && styles.tipChipActive]}
             >
-              <CheckoutText style={[styles.tipChipText, tipCustomMode && styles.tipChipTextActive]}>Other</CheckoutText>
+              <CheckoutText style={[styles.tipChipText, dark && styles.textDark, tipCustomMode && styles.tipChipTextActive]}>Other</CheckoutText>
             </Pressable>
           </View>
           {tipCustomMode ? (
             <View style={styles.tipCustomRow}>
               <CheckoutText style={styles.tipCustomRupee}>₹</CheckoutText>
               <TextInput
-                style={styles.tipCustomInput}
+                style={[styles.tipCustomInput, dark && styles.textDark]}
                 keyboardType="numeric"
                 placeholder="Enter amount"
-                placeholderTextColor="#9CA3AF"
+                placeholderTextColor={dark ? MerchantDarkPalette.textDim : "#9CA3AF"}
                 value={tipCustomInput}
                 onChangeText={onTipCustomInputChange}
               />
@@ -139,7 +141,7 @@ export function CheckoutGratitudeSections({
           <Ionicons name="checkmark-circle" size={18} color={GM.emerald} />
           <CheckoutText style={styles.gratitudeConfirmText}>Amount added to your order</CheckoutText>
           <Pressable onPress={() => onTipSelect(0)} hitSlop={10}>
-            <CheckoutText style={styles.gratitudeClearText}>Clear</CheckoutText>
+            <CheckoutText style={[styles.gratitudeClearText, dark && styles.mutedDark]}>Clear</CheckoutText>
           </Pressable>
         </View>
       ) : null}
@@ -147,24 +149,24 @@ export function CheckoutGratitudeSections({
   );
 
   const feedingSection = (
-    <View style={[styles.feedingCard, sectionOrder === "tip-first" && styles.gratitudeSectionAfter]}>
+    <View style={[styles.feedingCard, dark && styles.cardDark, sectionOrder === "tip-first" && styles.gratitudeSectionAfter]}>
       <Pressable onPress={onFeedingInfoPress} hitSlop={10} style={styles.feedingInfoTopRight}>
-        <Ionicons name="information-circle-outline" size={18} color="#1E3A8A" />
+        <Ionicons name="information-circle-outline" size={18} color={dark ? MerchantDarkPalette.accent : "#1E3A8A"} />
       </Pressable>
       <LinearGradient
-        colors={["#DBEAFE", "#E0F2FE", "#EFF6FF"]}
+        colors={dark ? ["#0F2A3A", "#1A2A2E", MerchantDarkPalette.card] : ["#DBEAFE", "#E0F2FE", "#EFF6FF"]}
         start={{ x: 0, y: 0 }}
         end={{ x: 1, y: 1 }}
         style={styles.feedingHero}
       >
         <View style={styles.feedingHeroText}>
           <CheckoutText style={styles.feedingHeadline} numberOfLines={2}>
-            <CheckoutText style={styles.feedingJoin}>Join us at </CheckoutText>
-            <CheckoutText style={styles.feedingBrand}>feeding</CheckoutText>
+            <CheckoutText style={[styles.feedingJoin, dark && styles.textDark]}>Join us at </CheckoutText>
+            <CheckoutText style={[styles.feedingBrand, dark && styles.textDark]}>feeding</CheckoutText>
             <CheckoutText style={styles.feedingHeart}> ❤️</CheckoutText>
-            <CheckoutText style={styles.feedingBrand}> india</CheckoutText>
+            <CheckoutText style={[styles.feedingBrand, dark && styles.textDark]}> india</CheckoutText>
           </CheckoutText>
-          <CheckoutText style={styles.feedingTagline}>
+          <CheckoutText style={[styles.feedingTagline, dark && styles.mutedDark]}>
             Together, we can fuel young minds to grow, learn, and thrive
           </CheckoutText>
         </View>
@@ -173,12 +175,12 @@ export function CheckoutGratitudeSections({
         ) : null}
       </LinearGradient>
 
-      <Pressable style={styles.feedingDonateRowWrap} onPress={onDonateEveryOrderPress}>
+      <Pressable style={[styles.feedingDonateRowWrap, dark && styles.donateRowDark]} onPress={onDonateEveryOrderPress}>
         <View style={styles.feedingDonateRow}>
-          <CheckoutText style={styles.feedingDonateLine}>
-            Donate with <CheckoutText style={styles.feedingDonateScope}>{scopeLabel}</CheckoutText>
+          <CheckoutText style={[styles.feedingDonateLine, dark && styles.mutedDark]}>
+            Donate with <CheckoutText style={[styles.feedingDonateScope, dark && styles.textDark]}>{scopeLabel}</CheckoutText>
           </CheckoutText>
-          <Ionicons name="chevron-forward" size={13} color="#111827" style={styles.feedingDonateChevron} />
+          <Ionicons name="chevron-forward" size={13} color={dark ? MerchantDarkPalette.text : "#111827"} style={styles.feedingDonateChevron} />
         </View>
       </Pressable>
 
@@ -194,9 +196,9 @@ export function CheckoutGratitudeSections({
               ) : null}
               <Pressable
                 onPress={() => onDonationPresetPress(amt)}
-                style={[styles.feedingPresetBtn, active && styles.feedingPresetBtnActive]}
+                style={[styles.feedingPresetBtn, dark && styles.chipDark, active && styles.feedingPresetBtnActive]}
               >
-                <CheckoutText style={[styles.feedingPresetText, active && styles.feedingPresetTextActive]}>₹{amt}</CheckoutText>
+                <CheckoutText style={[styles.feedingPresetText, dark && styles.textDark, active && styles.feedingPresetTextActive]}>₹{amt}</CheckoutText>
               </Pressable>
             </View>
           );
@@ -205,12 +207,14 @@ export function CheckoutGratitudeSections({
           onPress={() => onDonationPresetPress("custom")}
           style={[
             styles.feedingPresetBtn,
+            dark && styles.chipDark,
             donationEnabled && donationPreset === "custom" && styles.feedingPresetBtnActive,
           ]}
         >
           <CheckoutText
             style={[
               styles.feedingPresetText,
+              dark && styles.textDark,
               donationEnabled && donationPreset === "custom" && styles.feedingPresetTextActive,
             ]}
           >
@@ -223,10 +227,10 @@ export function CheckoutGratitudeSections({
         <View style={styles.feedingCustomRow}>
           <CheckoutText style={styles.tipCustomRupee}>₹</CheckoutText>
           <TextInput
-            style={styles.tipCustomInput}
+            style={[styles.tipCustomInput, dark && styles.textDark]}
             keyboardType="numeric"
             placeholder="0"
-            placeholderTextColor="#9CA3AF"
+            placeholderTextColor={dark ? MerchantDarkPalette.textDim : "#9CA3AF"}
             value={donationAmount}
             onChangeText={onDonationAmountChange}
           />
@@ -238,7 +242,7 @@ export function CheckoutGratitudeSections({
           <Ionicons name="checkmark-circle" size={18} color={GM.emerald} />
           <CheckoutText style={styles.gratitudeConfirmText}>Amount added to your order</CheckoutText>
           <Pressable onPress={onDonationClear} hitSlop={10}>
-            <CheckoutText style={styles.gratitudeClearText}>Clear</CheckoutText>
+            <CheckoutText style={[styles.gratitudeClearText, dark && styles.mutedDark]}>Clear</CheckoutText>
           </Pressable>
         </View>
       ) : null}
@@ -247,7 +251,7 @@ export function CheckoutGratitudeSections({
 
   return (
     <View>
-      <GratitudeDivider />
+      <GratitudeDivider dark={dark} />
       {sectionOrder === "tip-first" ? (
         <>
           {tipSection}
@@ -428,6 +432,18 @@ const styles = StyleSheet.create({
   },
   gratitudeConfirmText: { flex: 1, fontSize: 12, fontWeight: "600", color: GM.emerald },
   gratitudeClearText: { fontSize: 12, fontWeight: "700", color: "#64748B" },
+  cardDark: {
+    backgroundColor: MerchantDarkPalette.card,
+    borderColor: MerchantDarkPalette.border,
+  },
+  lineDark: { backgroundColor: MerchantDarkPalette.border },
+  mutedDark: { color: MerchantDarkPalette.textMuted },
+  textDark: { color: MerchantDarkPalette.text },
+  chipDark: {
+    backgroundColor: MerchantDarkPalette.elevated,
+    borderColor: MerchantDarkPalette.chipBorder,
+  },
+  donateRowDark: { borderTopColor: MerchantDarkPalette.border },
 });
 
 /** Zomato-style initial viewport — bill + savings + gratitude peek; scroll for rest. */

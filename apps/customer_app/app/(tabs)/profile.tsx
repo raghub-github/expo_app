@@ -10,6 +10,7 @@ import { Image } from "expo-image";
 import * as ImagePicker from "expo-image-picker";
 import { useAppSafeAreaInsets } from "@/hooks/useAppSafeAreaInsets";
 import { useFocusEffect, useRouter } from "expo-router";
+import { markWalletEntrySource } from "@/store/walletChromeStore";
 import { StatusBar } from "expo-status-bar";
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import { useTranslation } from "react-i18next";
@@ -422,7 +423,11 @@ export default function ProfileScreen() {
             <TouchableOpacity
               key={item.id}
               style={[styles.menuRow, index < menuItems.length - 1 && styles.menuRowBorder]}
-              onPress={() => (item.path ? router.push(item.path as never) : null)}
+              onPress={() => {
+                if (!item.path) return;
+                if (item.path === "/wallet") markWalletEntrySource("default");
+                router.push(item.path as never);
+              }}
               activeOpacity={0.75}
             >
               <Ionicons name={item.icon} size={20} color={TEXT} />

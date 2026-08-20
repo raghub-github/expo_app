@@ -3,7 +3,7 @@
  * subscription penalty / dues block dispatch.
  * Layout matches "Subscription Payment Required" product design.
  */
-import React, { useCallback, useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import {
   View,
   Text,
@@ -30,6 +30,7 @@ import {
 } from "@/src/lib/razorpay-native";
 import { extractApiErrorMessage } from "@/src/services/http";
 import { colors } from "@/src/theme";
+import { showRiderPaymentSuccess } from "@/src/stores/paymentSuccessSheetStore";
 
 type Props = {
   visible: boolean;
@@ -82,6 +83,11 @@ export function SubscriptionDutyBlockedSheet({ visible, onClose }: Props) {
   const duesPayment = useRiderSubscriptionDuesPayment();
   const [paying, setPaying] = useState(false);
 
+  useEffect(() => {
+    if (!visible) return;
+    void refetch();
+  }, [visible, refetch]);
+
   const banner = status?.dues?.alertBanner;
   const totalDue = banner?.totalDue ?? status?.dues?.totalDue ?? 0;
   const canPayFromWallet = banner?.canPayFromWallet === true;
@@ -100,7 +106,7 @@ export function SubscriptionDutyBlockedSheet({ visible, onClose }: Props) {
         });
         await refetch();
         onClose();
-        Alert.alert(
+        showRiderPaymentSuccess(
           t("subscription.duesPaidTitle", "Payment successful"),
           t("subscription.duesPaidMessage", "Subscription dues cleared. You can go on duty now.")
         );
@@ -125,7 +131,7 @@ export function SubscriptionDutyBlockedSheet({ visible, onClose }: Props) {
         await refetch();
         if (result.totalDueAfter <= 0) {
           onClose();
-          Alert.alert(
+          showRiderPaymentSuccess(
             t("subscription.duesPaidTitle", "Payment successful"),
             t(
               "subscription.duesPaidFromWallet",

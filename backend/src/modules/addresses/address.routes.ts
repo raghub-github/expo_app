@@ -7,7 +7,7 @@
 import type { FastifyInstance } from "fastify";
 import multipart from "@fastify/multipart";
 import { z } from "zod";
-import { getDb } from "../../db/client.js";
+import { getDb, withSqlRetry, isDbConnectionError } from "../../db/client.js";
 import { auth } from "../../plugins/auth.js";
 import type { AuthContext } from "../../plugins/auth.js";
 import { resolveCustomerPkForRequest } from "../../lib/customer-auth.js";
@@ -123,7 +123,7 @@ export async function addressRoutes(app: FastifyInstance) {
       const customerPk = await resolveCustomerPk(request.auth!);
       if (customerPk === null) return reply.status(403).send({ error: "Customer only" });
       try {
-        const rows = await listAddresses(customerPk);
+        const rows = await withSqlRetry(() => listAddresses(customerPk));
         return reply.send(
           rows.map((r) => ({
             id: r.id,
@@ -151,8 +151,17 @@ export async function addressRoutes(app: FastifyInstance) {
           }))
         );
       } catch (err: unknown) {
+        if (isDbConnectionError(err)) throw err;
+        const code = String(
+          (err as { code?: string; cause?: { code?: string } })?.code ??
+            (err as { cause?: { code?: string } })?.cause?.code ??
+            ""
+        );
         const msg = err instanceof Error ? err.message : String(err);
-        if (msg.includes("does not exist") || msg.includes("customer_addresses")) {
+        // 42P01 = undefined_table. Do NOT match the table name in "Failed query: …"
+        // — a pooler blip wraps the SQL text and was returning [] as if the
+        // table were missing (empty checkout address list).
+        if (code === "42P01" || /\brelation ["']?customer_addresses["']? does not exist\b/i.test(msg)) {
           request.log.warn({ err: msg }, "customer_addresses table missing – run migration backend/drizzle/0070_*");
           return reply.send([]);
         }

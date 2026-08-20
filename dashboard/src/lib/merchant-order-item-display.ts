@@ -1,4 +1,10 @@
 import type { NormalizedOrderLineItem } from "@/lib/orderLineItems";
+import {
+  formatBogoOfferBadge,
+  formatBoostOfferBadge,
+  isBogoOfferType,
+  resolveMerchantOfferBadge,
+} from "@/lib/merchant-offer-display";
 
 export function formatOrderRs(amount: number, decimals = 0): string {
   const n = Number.isFinite(amount) ? amount : 0;
@@ -10,8 +16,24 @@ export function orderItemHasBreakdown(item: NormalizedOrderLineItem): boolean {
   return Boolean(
     item.hasCustomizations ||
       (item.customizationLines && item.customizationLines.length > 0) ||
-      (item.customizations && item.customizations.length > 0)
+      (item.customizations && item.customizations.length > 0) ||
+      orderItemCookingNote(item)
   );
+}
+
+/** Per-line cooking request — matches bill / KOT "Cooking: …" copy. */
+export function orderItemCookingNote(item: NormalizedOrderLineItem): string | null {
+  const direct = String(
+    item.specialInstructions ??
+      (item as { special_instructions?: string | null }).special_instructions ??
+      ""
+  ).trim();
+  if (direct) return direct;
+  const fromLines = (item.customizationLines ?? [])
+    .filter((l) => l.kind === "note")
+    .map((l) => String(l.name ?? "").trim())
+    .filter((t) => t && !t.toLowerCase().startsWith("category:"));
+  return fromLines[0] ?? null;
 }
 
 function normLabel(s: string): string {
@@ -161,6 +183,61 @@ export function merchantLineTotalForItem(item: NormalizedOrderLineItem): number 
   return menuRupee(Number(item.total) || Number(item.price) * qty);
 }
 
+/** Catalog vs effective selling price from frozen order snapshot (no recalculation). */
+export function merchantItemCatalogAndNet(item: NormalizedOrderLineItem): {
+  catalog: number;
+  net: number;
+  showStrike: boolean;
+  offerBadge: string | null;
+  offerKind: 'bogo' | 'boost' | 'other' | null;
+} {
+  const lineTotal = merchantLineTotalForItem(item);
+  const hasCatalog =
+    item.catalogLineTotal != null && Number(item.catalogLineTotal) > 0.005;
+  const catalog = hasCatalog ? menuRupee(Number(item.catalogLineTotal)) : lineTotal;
+
+  let net = catalog;
+  if (item.netLineTotal != null && Number.isFinite(Number(item.netLineTotal))) {
+    net = menuRupee(Number(item.netLineTotal));
+  } else if (
+    item.isItemPromo &&
+    item.offerDiscount != null &&
+    item.offerDiscount > 0.005
+  ) {
+    net = menuRupee(Math.max(0, catalog - Number(item.offerDiscount)));
+  } else if (!hasCatalog && !item.ctmFromSnapshot) {
+    net = lineTotal;
+  }
+
+  const { kind, badge } = resolveMerchantOfferBadge({
+    offerType: item.appliedOfferType,
+    offerLabel: item.offerLabel,
+  });
+
+  if (kind === 'bogo' || isBogoOfferType(item.appliedOfferType)) {
+    return {
+      catalog,
+      net: catalog,
+      showStrike: false,
+      offerBadge: badge ?? formatBogoOfferBadge(item.offerLabel),
+      offerKind: 'bogo',
+    };
+  }
+
+  const showStrike = net < catalog - 0.005;
+  return {
+    catalog,
+    net,
+    showStrike,
+    offerBadge: showStrike
+      ? badge ?? (kind === 'boost' ? formatBoostOfferBadge() : item.offerLabel ?? null)
+      : kind === 'boost'
+        ? badge ?? formatBoostOfferBadge()
+        : null,
+    offerKind: kind,
+  };
+}
+
 export function orderItemsTotals(items: NormalizedOrderLineItem[]) {
   const itemsLineTotal = items.reduce((acc, it) => acc + merchantLineTotalForItem(it), 0);
   const baseSubtotal = items.reduce((acc, it) => acc + baseAmountForItem(it), 0);
@@ -225,29 +302,32 @@ export function merchantBillPartsFromItems(
   };
 }
 
-/** Single merchant-visible order total (CTM) — prefer frozen pricing.total from accept. */
+/** Single merchant-visible order total (CTM) — prefer frozen orders_core.total_ctm, then pricing.total. */
 export function resolveMerchantCtm(order: {
   pricing?: { total?: number | null; packaging?: number; discount?: number } | null;
   total_ctm?: number | string | null;
   food_items_total_value?: number | string | null;
+  merchant_precision_discount?: number | string | null;
   items?: Array<Partial<NormalizedOrderLineItem> & { name?: string }> | null;
 }): number {
   const itemsTyped = (order.items ?? []) as NormalizedOrderLineItem[];
-  const fromPricing = Number(order.pricing?.total);
-  if (Number.isFinite(fromPricing) && fromPricing > 0) return round2(fromPricing);
-
   const fromFrozen = Number(order.total_ctm);
   if (Number.isFinite(fromFrozen) && fromFrozen > 0) return round2(fromFrozen);
 
+  const fromPricing = Number(order.pricing?.total);
+  if (Number.isFinite(fromPricing) && fromPricing > 0) return round2(fromPricing);
+
   const items = itemsTyped;
   if (items.length > 0) {
-    const bill = merchantBillPartsFromItems(items, {
-      subtotal: 0,
-      packaging: order.pricing?.packaging ?? 0,
-      discount: order.pricing?.discount ?? 0,
-      total: 0,
-    });
-    if (bill.total > 0) return bill.total;
+    const packaging = Number(order.pricing?.packaging) || 0;
+    const precision = Math.max(
+      0,
+      Number(order.merchant_precision_discount) || Number(order.pricing?.discount) || 0
+    );
+    const lineSum = items.reduce((s, it) => s + merchantLineTotalForItem(it), 0);
+    if (lineSum > 0.005) {
+      return round2(Math.max(0, lineSum + packaging - precision));
+    }
   }
 
   const fromField = Number(order.food_items_total_value);

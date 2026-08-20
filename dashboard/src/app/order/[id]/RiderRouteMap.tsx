@@ -111,7 +111,8 @@ const MAP_STYLE = "mapbox://styles/mapbox/streets-v12";
 const MAP_INITIAL_ZOOM = 15;
 const MAP_FIT_MAX_ZOOM = 17;
 const SAME_POINT_METERS = 18;
-const ROUTE_REFRESH_METERS = 35;
+/** Same off-route reroute threshold as customer / rider / merchant maps. */
+const OFF_ROUTE_REROUTE_M = 45;
 const CONNECTOR_MIN_METERS = 6;
 const RIDER_ANIM_MIN_MS = 400;
 const RIDER_ANIM_MAX_MS = 2800;
@@ -213,6 +214,64 @@ function samePoint(a: [number, number], b: [number, number]): boolean {
   return haversineMeters(a, b) < SAME_POINT_METERS;
 }
 
+function projectOnLngLatSegment(
+  p: [number, number],
+  a: [number, number],
+  b: [number, number]
+): [number, number] {
+  const dx = b[0] - a[0];
+  const dy = b[1] - a[1];
+  const lenSq = dx * dx + dy * dy;
+  if (lenSq < 1e-18) return a;
+  const t = Math.max(0, Math.min(1, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / lenSq));
+  return [a[0] + dx * t, a[1] + dy * t];
+}
+
+function closestPointOnLngLatRoute(
+  route: [number, number][],
+  rider: [number, number]
+): { point: [number, number]; segmentIndex: number; distanceM: number } {
+  if (route.length === 0) {
+    return { point: rider, segmentIndex: 0, distanceM: 0 };
+  }
+  if (route.length === 1) {
+    return {
+      point: route[0]!,
+      segmentIndex: 0,
+      distanceM: haversineMeters(rider, route[0]!),
+    };
+  }
+  let bestPoint = route[0]!;
+  let bestSeg = 0;
+  let bestDist = Infinity;
+  for (let i = 0; i < route.length - 1; i++) {
+    const snap = projectOnLngLatSegment(rider, route[i]!, route[i + 1]!);
+    const d = haversineMeters(rider, snap);
+    if (d < bestDist) {
+      bestDist = d;
+      bestPoint = snap;
+      bestSeg = i;
+    }
+  }
+  return { point: bestPoint, segmentIndex: bestSeg, distanceM: bestDist };
+}
+
+/** Remaining road polyline from rider snap → destination (customer / merchant live maps). */
+function remainingRouteFromRider(
+  full: [number, number][],
+  rider: [number, number]
+): { remaining: [number, number][]; offRouteM: number } {
+  if (full.length < 2) {
+    return { remaining: full.length ? [...full] : [rider], offRouteM: 0 };
+  }
+  const { point, segmentIndex, distanceM } = closestPointOnLngLatRoute(full, rider);
+  const remaining: [number, number][] = [point, ...full.slice(segmentIndex + 1)];
+  if (remaining.length < 2) {
+    remaining.push(full[full.length - 1]!);
+  }
+  return { remaining, offRouteM: distanceM };
+}
+
 function formatMeters(m: number): string {
   if (!Number.isFinite(m) || m <= 0) return "—";
   if (m < 1000) return `${Math.round(m)} m`;
@@ -252,12 +311,25 @@ function isPostPickupPhase(args: PostPickupPhaseArgs): boolean {
   });
 }
 
-function emptyPolygonFeature(): GeoJSON.Feature<GeoJSON.Polygon> {
+function emptyFeatureCollection(): GeoJSON.FeatureCollection {
+  return { type: "FeatureCollection", features: [] };
+}
+
+function lineStringFeature(coordinates: [number, number][]): GeoJSON.Feature | GeoJSON.FeatureCollection {
+  const coords = (coordinates ?? []).filter(
+    (c): c is [number, number] =>
+      Array.isArray(c) && c.length >= 2 && Number.isFinite(c[0]) && Number.isFinite(c[1])
+  );
+  if (coords.length < 2) return emptyFeatureCollection();
   return {
     type: "Feature",
     properties: {},
-    geometry: { type: "Polygon", coordinates: [[]] },
+    geometry: { type: "LineString", coordinates: coords },
   };
+}
+
+function emptyPolygonFeature(): GeoJSON.FeatureCollection {
+  return emptyFeatureCollection();
 }
 
 function ensureZoneLayers(
@@ -717,7 +789,7 @@ export default function RiderRouteMap({
   const lastRouteFromRef = useRef<[number, number] | null>(null);
   const lastRouteModeRef = useRef<"live" | "planned" | null>(null);
   const lastRouteBearingRef = useRef<number | null>(null);
-  const lastRouteGeometryRef = useRef<{ coordinates?: [number, number][] } | null>(null);
+  const lastRouteGeometryRef = useRef<{ type?: string; coordinates?: [number, number][] } | null>(null);
   const lastRouteEndpointsRef = useRef<RouteEndpoints | null>(null);
   const lastDeliveryLegKeyRef = useRef<string | null>(null);
   const storeRef = useRef(storePoint);
@@ -840,7 +912,7 @@ export default function RiderRouteMap({
   const applyConnectorLines = useCallback(
     (
       map: any,
-      geometry: { coordinates?: [number, number][] },
+      geometry: { type?: string; coordinates?: [number, number][] },
       endpoints: RouteEndpoints,
       riderRouteAnchor: [number, number] | null,
       assignmentStatus: string | null
@@ -918,9 +990,9 @@ export default function RiderRouteMap({
   );
 
   const applyRouteGeometry = useCallback(
-    (map: any, geometry: { coordinates?: [number, number][] }, mode: "live" | "planned") => {
-      if (!geometry?.coordinates?.length) return;
-      const geojson = { type: "Feature", geometry };
+    (map: any, geometry: { type?: string; coordinates?: [number, number][] }, mode: "live" | "planned") => {
+      if (!geometry?.coordinates || geometry.coordinates.length < 2) return;
+      const geojson = lineStringFeature(geometry.coordinates);
       const isLive = mode === "live";
       const lineColor = isLive ? ROUTE_GREEN : ROUTE_PLANNED_COLOR;
       const lineWidth = isLive ? ROUTE_LIVE_LINE_WIDTH : 3;
@@ -976,8 +1048,8 @@ export default function RiderRouteMap({
 
   const applyDeliveryLegGeometry = useCallback(
     (map: any, geometry: { coordinates?: [number, number][] }) => {
-      if (!geometry?.coordinates?.length) return;
-      const geojson = { type: "Feature", geometry };
+      if (!geometry?.coordinates || geometry.coordinates.length < 2) return;
+      const geojson = lineStringFeature(geometry.coordinates);
 
       if (map.getSource(DELIVERY_ROUTE_SOURCE_ID)) {
         map.getSource(DELIVERY_ROUTE_SOURCE_ID).setData(geojson);
@@ -1086,10 +1158,7 @@ export default function RiderRouteMap({
         lastRouteFromRef.current = null;
         lastRouteModeRef.current = null;
         if (map.getSource(ROUTE_SOURCE_ID)) {
-          map.getSource(ROUTE_SOURCE_ID).setData({
-            type: "Feature",
-            geometry: { type: "LineString", coordinates: [] },
-          });
+          map.getSource(ROUTE_SOURCE_ID).setData(emptyFeatureCollection());
         }
         if (map.getSource(CONNECTOR_SOURCE_ID)) {
           map.getSource(CONNECTOR_SOURCE_ID).setData({ type: "FeatureCollection", features: [] });
@@ -1097,19 +1166,27 @@ export default function RiderRouteMap({
         return;
       }
 
-      if (endpoints.mode === "live" && lastRouteFromRef.current) {
-        const moved = haversineMeters(lastRouteFromRef.current, endpoints.from);
-        const modeSame = lastRouteModeRef.current === endpoints.mode;
-        if (modeSame && moved < ROUTE_REFRESH_METERS) {
-          if (lastRouteGeometryRef.current) {
-            applyConnectorLines(
-              map,
-              lastRouteGeometryRef.current,
-              endpoints,
-              riderRouteAnchor,
-              assignmentStatus
-            );
-          }
+      const destUnchanged =
+        lastRouteEndpointsRef.current != null &&
+        samePoint(lastRouteEndpointsRef.current.to, endpoints.to);
+      const fullCoords = lastRouteGeometryRef.current?.coordinates;
+
+      if (
+        endpoints.mode === "live" &&
+        destUnchanged &&
+        fullCoords &&
+        fullCoords.length >= 2
+      ) {
+        const { remaining, offRouteM } = remainingRouteFromRider(fullCoords, endpoints.from);
+        if (offRouteM <= OFF_ROUTE_REROUTE_M && remaining.length >= 2) {
+          applyRouteGeometry(map, { type: "LineString", coordinates: remaining }, "live");
+          applyConnectorLines(
+            map,
+            { type: "LineString", coordinates: remaining },
+            endpoints,
+            riderRouteAnchor,
+            assignmentStatus
+          );
           return;
         }
       }
@@ -1124,8 +1201,28 @@ export default function RiderRouteMap({
           }
           lastRouteGeometryRef.current = geometry;
           lastRouteEndpointsRef.current = endpoints;
-          applyRouteGeometry(map, geometry, endpoints.mode);
-          applyConnectorLines(map, geometry, endpoints, riderRouteAnchor, assignmentStatus);
+          const displayCoords =
+            endpoints.mode === "live"
+              ? remainingRouteFromRider(coords, endpoints.from).remaining
+              : coords;
+          applyRouteGeometry(
+            map,
+            {
+              type: "LineString",
+              coordinates: displayCoords.length >= 2 ? displayCoords : coords,
+            },
+            endpoints.mode
+          );
+          applyConnectorLines(
+            map,
+            {
+              type: "LineString",
+              coordinates: displayCoords.length >= 2 ? displayCoords : coords,
+            },
+            endpoints,
+            riderRouteAnchor,
+            assignmentStatus
+          );
           setRouteSheet(parseMapboxRouteSheet(json));
           lastRouteFromRef.current = endpoints.from;
           lastRouteModeRef.current = endpoints.mode;
@@ -1449,10 +1546,7 @@ export default function RiderRouteMap({
 
     if (trailCoords.length < 2) return;
 
-    const geojson = {
-      type: "Feature",
-      geometry: { type: "LineString", coordinates: trailCoords },
-    };
+    const geojson = lineStringFeature(trailCoords);
     if (map.getSource(TRAIL_SOURCE_ID)) {
       map.getSource(TRAIL_SOURCE_ID).setData(geojson);
     } else {
@@ -1894,7 +1988,8 @@ export default function RiderRouteMap({
             errorType === "StyleImageMissing";
           const isModelError =
             msg.includes("Could not load model") || msg.includes(".glb");
-          if (msg && !cancelled && !isTileError && !isModelError) {
+          const isGeoJsonError = /valid GeoJSON|GeoJSON object/i.test(msg);
+          if (msg && !cancelled && !isTileError && !isModelError && !isGeoJsonError) {
             setError(`Map error: ${msg.slice(0, 120)}`);
           }
         });

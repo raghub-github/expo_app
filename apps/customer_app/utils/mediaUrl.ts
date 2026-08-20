@@ -43,6 +43,10 @@ export function toAbsoluteImageUrl(uri: string | null | undefined): string | nul
   if (path.startsWith("/api/attachments/proxy")) {
     path = "/v1/attachments/proxy" + path.slice("/api/attachments/proxy".length);
   }
+  // Bare R2 object keys (cxapp-home/discovery-cta/...) must go through the proxy.
+  if (!path.startsWith("/") && !path.includes("://") && path.includes("/")) {
+    return `${base}/v1/attachments/proxy?key=${encodeURIComponent(path.replace(/^\/+/, ""))}`;
+  }
   if (!path.startsWith("/")) path = `/${path}`;
   return `${base}${path}`;
 }

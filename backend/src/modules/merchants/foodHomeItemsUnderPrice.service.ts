@@ -1,6 +1,9 @@
 import { getSql } from "../../db/client.js";
 import { customerPriceFromBase } from "../commission/pricing.js";
 import { resolveStoreCommission } from "../commission/commission.resolver.js";
+import { resolveItemPricing } from "../pricing/canonicalItemPricing.js";
+import { loadMerchantOffersForPricing } from "../pricing/loadMerchantOffersForPricing.js";
+import type { MerchantOfferRow } from "../billing/types.js";
 import { toAbsoluteClientMediaUrl } from "../../utils/publicAttachmentUrl.js";
 import { listStores } from "./merchant.service.js";
 import {
@@ -86,17 +89,28 @@ async function commissionPercentByStorePk(storePks: unknown[]): Promise<Map<numb
 function mapItemRow(
   r: ItemRow,
   commissionPercent: number,
-  maxPrice: number
+  maxPrice: number,
+  offers: MerchantOfferRow[]
 ): FoodItemUnderPriceDto | null {
   const netSelling = Number(r.selling_price);
-  const price = customerPriceFromNetRupees(netSelling, commissionPercent);
+  const priced = resolveItemPricing({
+    baseCtmUnit: netSelling,
+    quantity: 1,
+    commissionPercent,
+    offers,
+    menuItemId: Number(r.id),
+    extraAliases: r.item_id ? [String(r.item_id)] : [],
+  });
+  const price = priced.customerItemPriceUnit;
   if (!Number.isFinite(price) || price <= 0 || price > maxPrice) return null;
 
-  const netBase = r.base_price != null ? Number(r.base_price) : null;
+  const strike = priced.merchantOfferType === "BOOST" ? priced.customerStrikeUnit : null;
   const customerBase =
-    netBase != null && Number.isFinite(netBase) && netBase > 0
-      ? customerPriceFromNetRupees(netBase, commissionPercent)
-      : null;
+    strike != null && strike > price
+      ? strike
+      : r.base_price != null
+        ? customerPriceFromNetRupees(Number(r.base_price), commissionPercent)
+        : null;
   const basePrice =
     customerBase != null && Number.isFinite(customerBase) && customerBase > price
       ? customerBase
@@ -179,11 +193,15 @@ export async function listFoodItemsUnderPrice(params: {
   `;
 
   const commissionMap = await commissionPercentByStorePk(rows.map((r) => r.store_pk));
+  const offerCache = new Map<number, MerchantOfferRow[]>();
   const items: FoodItemUnderPriceDto[] = [];
   for (const row of rows) {
     const storePk = normalizeStorePk(row.store_pk);
     const percent = commissionMap.get(storePk) ?? DEFAULT_COMMISSION_PERCENT;
-    const mapped = mapItemRow(row, percent, maxPrice);
+    if (!offerCache.has(storePk)) {
+      offerCache.set(storePk, await loadMerchantOffersForPricing(storePk));
+    }
+    const mapped = mapItemRow(row, percent, maxPrice, offerCache.get(storePk) ?? []);
     if (mapped) items.push(mapped);
     if (items.length >= limit) break;
   }
@@ -279,6 +297,7 @@ export async function listFoodItemsUnderPriceGrouped(params: {
   `;
 
   const commissionMap = await commissionPercentByStorePk(rows.map((r) => r.store_pk));
+  const offerCache = new Map<number, MerchantOfferRow[]>();
   const grouped = new Map<string, FoodItemUnderPriceDto[]>();
   for (const row of rows) {
     const storePublicId = String(row.store_public_id);
@@ -287,7 +306,10 @@ export async function listFoodItemsUnderPriceGrouped(params: {
     if (bucket.length >= itemsPerStore) continue;
     const storePk = normalizeStorePk(row.store_pk);
     const percent = commissionMap.get(storePk) ?? DEFAULT_COMMISSION_PERCENT;
-    const mapped = mapItemRow(row, percent, maxPrice);
+    if (!offerCache.has(storePk)) {
+      offerCache.set(storePk, await loadMerchantOffersForPricing(storePk));
+    }
+    const mapped = mapItemRow(row, percent, maxPrice, offerCache.get(storePk) ?? []);
     if (!mapped) continue;
     bucket.push(mapped);
     grouped.set(storePublicId, bucket);

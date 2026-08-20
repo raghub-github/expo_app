@@ -2,6 +2,7 @@
 import { useAppPathname } from "@/hooks/useAppSearchParams";
 
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import type { QueryClient } from "@tanstack/react-query";
 import { queryKeys } from "@/lib/queryKeys";
 import { STORE_KEY } from "@/hooks/useStore";
 import { useAuthOptional } from "@/providers/AuthProvider";
@@ -136,17 +137,41 @@ export function useMerchantStoresStatsQuery(fromDate?: string, toDate?: string, 
   });
 }
 
-/** Store menu (categories + items). Cached 3min so menu tab revisits are instant. */
+export type StoreMenuPayload = { success: boolean; categories?: unknown[]; items?: unknown[] };
+
+const MENU_STALE_MS = 3 * 60 * 1000;
+const MENU_GC_MS = 10 * 60 * 1000;
+
+export function fetchStoreMenu(storeId: string): Promise<StoreMenuPayload> {
+  return fetchJson<StoreMenuPayload>(`/api/merchant/stores/${storeId}/menu`);
+}
+
+export function prefetchStoreMenu(queryClient: QueryClient, storeId: string | null | undefined): void {
+  const id = (storeId ?? "").trim();
+  if (!/^\d+$/.test(id)) return;
+  void queryClient.prefetchQuery({
+    queryKey: queryKeys.merchantStore.menu(id),
+    queryFn: () => fetchStoreMenu(id),
+    staleTime: MENU_STALE_MS,
+  });
+}
+
+/** Store menu (categories + items). Uses cache so sidebar tab switches do not reload. */
 export function useStoreMenuQuery(storeId: string | null) {
-  const url = storeId ? `/api/merchant/stores/${storeId}/menu` : null;
+  const id = (storeId ?? "").trim();
+  const enabled = /^\d+$/.test(id);
   return useQuery({
-    queryKey: queryKeys.merchantStore.menu(storeId ?? ""),
-    queryFn: () => fetchJson<{ success: boolean; categories?: unknown[]; items?: unknown[] }>(url!),
-    enabled: Boolean(storeId && url),
-    staleTime: 3 * 60 * 1000,
-    gcTime: 10 * 60 * 1000,
+    queryKey: queryKeys.merchantStore.menu(enabled ? id : ""),
+    queryFn: () => fetchStoreMenu(id),
+    enabled,
+    staleTime: MENU_STALE_MS,
+    gcTime: MENU_GC_MS,
     refetchOnWindowFocus: false,
-    refetchOnMount: false,
+    refetchOnMount: true,
+    refetchOnReconnect: true,
+    // Override QueryClient keep-previous placeholder so an empty/disabled query
+    // cannot paint as "No menu items" for the real store.
+    placeholderData: () => undefined,
     retry: 1,
   });
 }

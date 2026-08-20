@@ -5,23 +5,42 @@ export type SettleOrderOnDeliveredInput = {
   merchantStoreId: number;
   ordersFoodId: number;
   ordersCoreId: number;
+  /** OSB merchant_gross. v2 is already discounted CTM — do not × commission factor again. */
   merchantGross: number;
   newStatus: string;
   previousStatus: string;
 };
 
+/** Stable per-order key. Webhook / placement / DELIVERED retries must reuse this. */
+export function merchantDeliveredSettlementIdempotencyKey(ordersCoreId: number): string {
+  return `settle:order:${ordersCoreId}`;
+}
+
+/** Wallet credit only on the first transition into DELIVERED. */
+export function shouldCreditMerchantOnDelivered(
+  newStatus: string,
+  previousStatus: string
+): boolean {
+  const next = String(newStatus ?? "").toUpperCase();
+  const prev = String(previousStatus ?? "").toUpperCase();
+  return next === "DELIVERED" && prev !== "DELIVERED";
+}
+
 export async function settleMerchantOrderOnDelivered(
   input: SettleOrderOnDeliveredInput
 ): Promise<{ credited: boolean; error?: string }> {
   const sql = getSql();
-  const next = String(input.newStatus ?? "").toUpperCase();
-  const prev = String(input.previousStatus ?? "").toUpperCase();
-  if (next !== "DELIVERED" || prev === "DELIVERED") return { credited: false };
+  if (!shouldCreditMerchantOnDelivered(input.newStatus, input.previousStatus)) {
+    return { credited: false };
+  }
 
   const gross = Number(input.merchantGross);
   if (!Number.isFinite(gross) || gross <= 0) return { credited: false };
 
-  const idempotencyKey = `settle:order:${input.ordersCoreId}`;
+  // Pass OSB merchant_gross as-is. v2 rows are discounted CTM rupees (not customer catalog).
+  // payment_process_delivered_settlement may record payment_commission_rules as payout_meta;
+  // that mechanism fee stays informational by default and must not re-scale v2 CTM.
+  const idempotencyKey = merchantDeliveredSettlementIdempotencyKey(input.ordersCoreId);
 
   try {
     const rows = await sql`

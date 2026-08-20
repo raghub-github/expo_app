@@ -13,6 +13,7 @@ import {
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
+import { MerchantDarkPalette, useMerchantUiDark } from "@/features/merchant-detail/merchantUiTheme";
 
 export type StoreBottomSheetShellProps = {
   visible: boolean;
@@ -38,6 +39,7 @@ export function StoreBottomSheetShell({
   keyboardAvoiding = false,
 }: StoreBottomSheetShellProps) {
   const insets = useSafeAreaInsets();
+  const dark = useMerchantUiDark();
   const { height: winH } = useWindowDimensions();
   const maxH = Math.round(winH * maxHeightRatio);
   const [keyboardInset, setKeyboardInset] = useState(0);
@@ -84,6 +86,7 @@ export function StoreBottomSheetShell({
           <View
             style={[
               styles.sheet,
+              dark && styles.sheetDark,
               flushBottom ? [styles.sheetFlush, { maxHeight: maxH - 54 }] : { paddingBottom: Math.max(insets.bottom, 12) },
               sheetStyle,
             ]}
@@ -127,6 +130,9 @@ const styles = StyleSheet.create({
     borderTopLeftRadius: 20,
     borderTopRightRadius: 20,
     overflow: "hidden",
+  },
+  sheetDark: {
+    backgroundColor: MerchantDarkPalette.surface,
   },
   sheetFlush: {
     paddingBottom: 0,

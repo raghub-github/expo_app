@@ -223,7 +223,9 @@ export function OfferTrackCard({
                 {status.label}
               </span>
             </div>
-            {offer.offer_title && offer.offer_title.toLowerCase() !== headline.toLowerCase() ? (
+            {offer.offer_title &&
+            offer.offer_title.toLowerCase() !== headline.toLowerCase() &&
+            !/^(?:flat\s+)?\d+(\.\d+)?%\s+off/i.test(offer.offer_title) ? (
               <p className="text-xs text-gray-600 truncate mt-0.5">{offer.offer_title}</p>
             ) : null}
             <p className="text-[11px] text-gray-500 mt-0.5 truncate" title={dateRange}>

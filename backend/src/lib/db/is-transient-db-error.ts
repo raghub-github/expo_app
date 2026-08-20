@@ -20,6 +20,7 @@ export function isTransientDbError(reason: unknown): boolean {
     "CONNECT_TIMEOUT", // postgres.js connect timeout to pooler
     "CONNECTION_DESTROYED",
     "CONNECTION_CLOSED",
+    "CONNECTION_ENDED",
   ]);
   if (codes.some((c) => transientCodes.has(c))) return true;
 
@@ -38,6 +39,8 @@ export function isTransientDbError(reason: unknown): boolean {
     msg.includes("getaddrinfo enotfound") ||
     msg.includes("getaddrinfo eai_again") ||
     msg.includes("write connection_closed") ||
+    msg.includes("write connection_ended") ||
+    msg.includes("connection ended") ||
     msg.includes("read econnreset") ||
     msg.includes("econnreset")
   );
@@ -69,6 +72,7 @@ function isConnectionErr(err: unknown): boolean {
     code === "57P01" ||
     code === "08006" ||
     code === "CONNECTION_CLOSED" ||
+    code === "CONNECTION_ENDED" ||
     code === "XX000"
   ) {
     return true;

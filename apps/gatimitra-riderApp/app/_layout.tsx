@@ -34,6 +34,8 @@ import { ServiceRestrictedSheet } from "@/src/components/ServiceRestrictedSheet"
 import { RiderDutyLocationPing } from "@/src/components/RiderDutyLocationPing";
 import { isRiderWsEnabled } from "@/src/config/env";
 import { IncomingRideOrderHost } from "@/src/components/orders/IncomingRideOrderHost";
+import { SubscriptionDutyBlockedSheetHost } from "@/src/components/subscription/SubscriptionDutyBlockedSheetHost";
+import { RiderPaymentSuccessSheet } from "@/src/components/ui/RiderPaymentSuccessSheet";
 import { ActiveOrderResumeBootstrap } from "@/src/components/orders/ActiveOrderResumeBootstrap";
 import { RiderPostDeliveryTipHost } from "@/src/components/orders/RiderPostDeliveryTipHost";
 import { RiderToastHost } from "@/src/components/RiderToastHost";
@@ -101,11 +103,8 @@ export default function RootLayout() {
     SplashScreen.hideAsync().catch(() => {});
   }, [chromeFontsReady]);
 
-  // Wait for icon fonts so header/tabs never flash blank white boxes.
-  if (!chromeFontsReady) {
-    return <View style={{ flex: 1, backgroundColor: "#ffffff" }} />;
-  }
-
+  // Always mount the navigator on first render. Returning a blank View here
+  // triggers Expo Router: "Attempted to navigate before mounting the Root Layout".
   try {
     return <RootLayoutNav />;
   } catch (renderError) {
@@ -154,7 +153,10 @@ function RootLayoutNav() {
               contentStyle: { backgroundColor: "#ffffff" },
             }}
           >
-            <Stack.Screen name="index" />
+            <Stack.Screen
+              name="index"
+              options={{ contentStyle: { backgroundColor: "#C4E8D1" } }}
+            />
             <Stack.Screen name="(permissions)" />
             <Stack.Screen name="(auth)" />
             <Stack.Screen name="(onboarding)" />
@@ -209,6 +211,8 @@ function RootLayoutNav() {
           </Stack>
 
           <IncomingRideOrderHost />
+          <SubscriptionDutyBlockedSheetHost />
+          <RiderPaymentSuccessSheet />
           <RiderPostDeliveryTipHost />
           <RiderToastHost />
         </ThemeProvider>

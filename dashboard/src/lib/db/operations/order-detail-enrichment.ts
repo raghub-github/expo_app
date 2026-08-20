@@ -86,6 +86,11 @@ export type OrderDetailEnrichment = {
   riderRestaurantWaitAnchorAt: string | null;
   /** Latest rider delivery proof image for this order (proxy URL when possible). */
   deliveryProofImageUrl: string | null;
+  /**
+   * Store → customer road km billed on checkout (`billing_snapshot.distanceKm`),
+   * same source as the customer app bill / store quote.
+   */
+  billedDistanceKm: number | null;
 };
 
 function asNum(v: unknown): number | null {
@@ -97,6 +102,39 @@ function asNum(v: unknown): number | null {
 function readRecord(raw: unknown): Record<string, unknown> | null {
   if (!raw || typeof raw !== "object") return null;
   return raw as Record<string, unknown>;
+}
+
+function readPositiveKm(value: unknown): number | null {
+  const n = asNum(value);
+  return n != null && n > 0 ? n : null;
+}
+
+/** Checkout / billing snapshot km — same fields the customer app displays. */
+function readBilledTripDistanceKm(
+  billing: Record<string, unknown> | null,
+  checkout: Record<string, unknown> | null
+): number | null {
+  const fromRecord = (rec: Record<string, unknown> | null): number | null => {
+    if (!rec) return null;
+    const direct = readPositiveKm(rec.distanceKm) ?? readPositiveKm(rec.distance_km);
+    if (direct != null) return direct;
+    const nested = [
+      rec.slabQuote,
+      rec.slab_quote,
+      rec.storeQuote,
+      rec.store_quote,
+      rec.quote,
+      rec.deliveryQuote,
+    ];
+    for (const raw of nested) {
+      const obj = readRecord(raw);
+      if (!obj) continue;
+      const n = readPositiveKm(obj.distanceKm) ?? readPositiveKm(obj.distance_km);
+      if (n != null) return n;
+    }
+    return null;
+  };
+  return fromRecord(billing) ?? fromRecord(checkout);
 }
 
 async function fetchCoreExtras(
@@ -1178,6 +1216,7 @@ export async function getOrderDetailEnrichment(
       riderRestaurantWaitLive: riderRestaurantWait.live,
       riderRestaurantWaitAnchorAt: riderRestaurantWait.anchorAt,
       deliveryProofImageUrl,
+      billedDistanceKm: readBilledTripDistanceKm(billing, checkout),
     };
   } catch (err) {
     console.error("[getOrderDetailEnrichment] failed for order", orderId, err);

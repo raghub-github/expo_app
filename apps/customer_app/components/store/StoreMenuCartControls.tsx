@@ -29,6 +29,8 @@ const QTY_FILL = "#E8F5EE";
 export const MENU_ADD_CONTROL_HEIGHT = 40;
 /** Slightly taller in-cart stepper; touch zones remain at least 48dp. */
 export const MENU_STEPPER_CONTROL_HEIGHT = 48;
+/** Masonry card ADD / stepper — keeps the same gesture model at a smaller size. */
+export const MENU_COMPACT_CONTROL_HEIGHT = 36;
 
 function merchantCartTotal(merchantId: string): number {
   const cart = useCartStore.getState();
@@ -61,6 +63,8 @@ type InstantCartControlProps = {
   merchantId?: string;
   quantity: number;
   disabled?: boolean;
+  /** Compact mint “+” square + slim stepper for masonry cards. */
+  size?: "default" | "compact";
   /**
    * When false (customisable dishes), skip local optimistic qty — ADD opens a sheet
    * and does not write cart until confirm. Prevents a stuck stepper on sheet cancel.
@@ -90,12 +94,14 @@ export const StoreMenuInstantCartControl = React.memo(function StoreMenuInstantC
   merchantId,
   quantity,
   disabled = false,
+  size = "default",
   allowOptimisticAdd = true,
   onAdd,
   onIncrement,
   onDecrement,
   accessibilityLabel,
 }: InstantCartControlProps) {
+  const compact = size === "compact";
   const [optimisticQty, setOptimisticQty] = useState<number | null>(null);
   const displayQty = optimisticQty ?? quantity;
   const showingAdd = displayQty === 0;
@@ -590,6 +596,7 @@ export const StoreMenuInstantCartControl = React.memo(function StoreMenuInstantC
       }
       style={({ pressed }) => [
         styles.controlShell,
+        compact && styles.controlShellCompact,
         showingAdd && pressed && !disabled && !addSuppressed && styles.addPressablePressed,
       ]}
       collapsable={false}
@@ -599,25 +606,80 @@ export const StoreMenuInstantCartControl = React.memo(function StoreMenuInstantC
         style={[styles.morphLayer, { opacity: stepperOpacity, transform: [{ scale: stepperScale }] }]}
         pointerEvents="none"
       >
-        <View style={[styles.qtyWrap, disabled && styles.qtyWrapDisabled]} collapsable={false}>
-          <View style={styles.qtyVisualRow} pointerEvents="none" collapsable={false}>
-            <AppText style={[styles.qtyGlyph, disabled && styles.qtyGlyphDisabled]}>−</AppText>
-            <AppText style={[styles.qtyText, disabled && styles.qtyTextDisabled]}>
+        <View
+          style={[
+            styles.qtyWrap,
+            compact && styles.qtyWrapCompact,
+            disabled && styles.qtyWrapDisabled,
+          ]}
+          collapsable={false}
+        >
+          <View
+            style={[styles.qtyVisualRow, compact && styles.qtyVisualRowCompact]}
+            pointerEvents="none"
+            collapsable={false}
+          >
+            <AppText
+              style={[
+                styles.qtyGlyph,
+                compact && styles.qtyGlyphCompact,
+                disabled && styles.qtyGlyphDisabled,
+              ]}
+            >
+              −
+            </AppText>
+            <AppText
+              style={[
+                styles.qtyText,
+                compact && styles.qtyTextCompact,
+                disabled && styles.qtyTextDisabled,
+              ]}
+            >
               {stepperQtyLabel}
             </AppText>
-            <AppText style={[styles.qtyGlyph, disabled && styles.qtyGlyphDisabled]}>+</AppText>
+            <AppText
+              style={[
+                styles.qtyGlyph,
+                compact && styles.qtyGlyphCompact,
+                disabled && styles.qtyGlyphDisabled,
+              ]}
+            >
+              +
+            </AppText>
           </View>
         </View>
       </Animated.View>
 
       {/* Add layer — on top at rest so qty 0 shows the "+ Add" pill. */}
       <Animated.View
-        style={[styles.morphLayer, { opacity: addOpacity, transform: [{ scale: addScale }] }]}
+        style={[
+          styles.morphLayer,
+          compact && styles.morphLayerCompactAdd,
+          { opacity: addOpacity, transform: [{ scale: addScale }] },
+        ]}
         pointerEvents="none"
       >
-        <View style={[styles.addBtn, disabled ? styles.addBtnDisabled : null]} pointerEvents="none">
+        <View
+          style={[
+            styles.addBtn,
+            compact && styles.addBtnCompact,
+            disabled ? styles.addBtnDisabled : null,
+            compact && disabled && styles.addBtnCompactDisabled,
+          ]}
+          pointerEvents="none"
+        >
           {disabled ? (
-            <AppText style={[styles.addBtnText, styles.addBtnTextDisabled]}>Closed</AppText>
+            <AppText
+              style={[
+                styles.addBtnText,
+                styles.addBtnTextDisabled,
+                compact && styles.addBtnTextCompactDisabled,
+              ]}
+            >
+              {compact ? "—" : "Closed"}
+            </AppText>
+          ) : compact ? (
+            <AppText style={styles.addPlusGlyphCompact}>+</AppText>
           ) : (
             <View style={styles.addLabelRow}>
               <AppText style={styles.addPlusGlyph}>+</AppText>
@@ -747,11 +809,19 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     alignItems: "stretch",
   },
+  controlShellCompact: {
+    height: MENU_COMPACT_CONTROL_HEIGHT,
+    borderRadius: 10,
+    alignItems: "flex-end",
+  },
   /** Absolutely-stacked visual layer; opacity is driven by morphProgress. */
   morphLayer: {
     ...StyleSheet.absoluteFillObject,
     justifyContent: "center",
     alignItems: "stretch",
+  },
+  morphLayerCompactAdd: {
+    alignItems: "flex-end",
   },
   addPressablePressed: {
     opacity: 0.9,
@@ -786,6 +856,29 @@ const styles = StyleSheet.create({
     borderColor: "#D1D5DB",
     shadowOpacity: 0,
     elevation: 0,
+  },
+  addBtnCompact: {
+    width: MENU_COMPACT_CONTROL_HEIGHT,
+    height: MENU_COMPACT_CONTROL_HEIGHT,
+    borderRadius: 10,
+    borderWidth: 0,
+    paddingHorizontal: 0,
+    backgroundColor: "#D1FAE5",
+    shadowOpacity: 0,
+    elevation: 0,
+  },
+  addBtnCompactDisabled: {
+    backgroundColor: "#F3F4F6",
+  },
+  addPlusGlyphCompact: {
+    fontSize: 22,
+    fontWeight: "700",
+    color: ADD_GREEN,
+    lineHeight: 24,
+    marginTop: Platform.OS === "android" ? -1 : 0,
+  },
+  addBtnTextCompactDisabled: {
+    fontSize: 14,
   },
   addLabelRow: {
     flexDirection: "row",
@@ -842,6 +935,22 @@ const styles = StyleSheet.create({
     borderColor: "#D1D5DB",
     shadowOpacity: 0,
     elevation: 0,
+  },
+  qtyWrapCompact: {
+    height: MENU_COMPACT_CONTROL_HEIGHT,
+    borderRadius: 10,
+  },
+  qtyVisualRowCompact: {
+    paddingHorizontal: 8,
+  },
+  qtyGlyphCompact: {
+    fontSize: 16,
+    lineHeight: 18,
+    minWidth: 12,
+  },
+  qtyTextCompact: {
+    fontSize: 13,
+    minWidth: 18,
   },
   /** Always horizontal: −  qty  + */
   qtyVisualRow: {

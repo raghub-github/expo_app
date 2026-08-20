@@ -4,24 +4,29 @@ import { AppText } from "@/components/AppText";
 
 const TEXT = "#111827";
 
+export type GatiCashWalletHeaderProps = {
+  onBack: () => void;
+  onSettings: () => void;
+  dark?: boolean;
+};
+
 /** Centered title header — Zomato Money / GatiCash wallet reference. */
 export function GatiCashWalletHeader({
   onBack,
   onSettings,
-}: {
-  onBack: () => void;
-  onSettings: () => void;
-}) {
+  dark = false,
+}: GatiCashWalletHeaderProps) {
+  const icon = dark ? "#FFFFFF" : TEXT;
   return (
-    <View style={styles.header}>
+    <View style={[styles.header, dark && styles.headerDark]}>
       <TouchableOpacity onPress={onBack} style={styles.side} hitSlop={12} activeOpacity={0.7}>
-        <Ionicons name="arrow-back" size={22} color={TEXT} />
+        <Ionicons name="arrow-back" size={22} color={icon} />
       </TouchableOpacity>
-      <AppText style={styles.title} numberOfLines={1}>
+      <AppText style={[styles.title, dark && styles.titleDark]} numberOfLines={1}>
         GatiCash
       </AppText>
       <TouchableOpacity onPress={onSettings} style={styles.side} hitSlop={12} activeOpacity={0.7}>
-        <Ionicons name="settings-outline" size={21} color={TEXT} />
+        <Ionicons name="settings-outline" size={21} color={icon} />
       </TouchableOpacity>
     </View>
   );
@@ -50,5 +55,12 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     color: TEXT,
     letterSpacing: -0.2,
+  },
+  headerDark: {
+    backgroundColor: "#121212",
+    borderBottomColor: "#2F2F2F",
+  },
+  titleDark: {
+    color: "#FFFFFF",
   },
 });

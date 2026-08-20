@@ -53,7 +53,9 @@ function StoreMenuTabsInner({
         ) : null}
       </div>
       <div className="flex-1 min-h-0 overflow-hidden">
-        {tab === "items" && menuItemsChild}
+        <div className={tab === "items" ? "h-full min-h-0" : "hidden"}>
+          {menuItemsChild}
+        </div>
         {tab === "addons" && children[1]}
         {tab === "combos" && children[2]}
       </div>

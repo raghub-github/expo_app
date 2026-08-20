@@ -6,6 +6,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { Check } from "lucide-react";
 
+import { DiscoveryCtaPanel } from "@/components/cxapp-home/DiscoveryCtaPanel";
 import { FoodHomeLayoutPhonePreview } from "@/components/cxapp-home/FoodHomeLayoutPhonePreview";
 import { GridFirstHeroMediaPanel } from "@/components/cxapp-home/GridFirstHeroMediaPanel";
 import { GridFirstSubscriptionRowPanel } from "@/components/cxapp-home/GridFirstSubscriptionRowPanel";
@@ -13,10 +14,14 @@ import { GridFirstUnder250Panel } from "@/components/cxapp-home/GridFirstUnder25
 import { Spinner } from "@/components/geo-admin/Loader";
 import { useGeoStatesQuery } from "@/store/api/geoAdminApi";
 import {
+  DEFAULT_DISCOVERY_CTA,
   DEFAULT_FOOD_HOME_LAYOUT,
   DEFAULT_GRID_FIRST_SUBSCRIPTION_ROW,
   DEFAULT_GRID_FIRST_UNDER_250,
   FOOD_HOME_LAYOUT_CATALOG,
+  parseDiscoveryCtaTiles,
+  parseDiscoveryDealsAtMaxPrice,
+  type DiscoveryCtaTile,
   type FoodHomeLayoutKey,
 } from "@/lib/cxapp-home/food-home-layout";
 import type { GridFirstHeroMediaItem } from "@/lib/cxapp-home/grid-first-hero-media";
@@ -36,6 +41,15 @@ type LayoutApiPayload = {
   gridFirstUnder250FilterLabel?: string;
   gridFirstUnder250TabImageUrl?: string | null;
   gridFirstUnder250HeroImageUrl?: string | null;
+  discoveryDealsAtMaxPrice?: number | null;
+  discoveryDealsAtImageUrl?: string | null;
+  discoveryDealsAtHeroImageUrl?: string | null;
+  discoveryCrazyDealsImageUrl?: string | null;
+  discoveryFreePackagingImageUrl?: string | null;
+  discoveryDealsAtLabel?: string | null;
+  discoveryCrazyDealsLabel?: string | null;
+  discoveryFreePackagingLabel?: string | null;
+  discoveryCtaTiles?: DiscoveryCtaTile[] | null;
 };
 
 function readLayoutCache(stateId: string): LayoutApiPayload | null {
@@ -51,7 +65,11 @@ function readLayoutCache(stateId: string): LayoutApiPayload | null {
 function writeLayoutCache(stateId: string, payload: LayoutApiPayload) {
   if (typeof window === "undefined" || !stateId) return;
   try {
-    sessionStorage.setItem(`${LAYOUT_CACHE_PREFIX}${stateId}`, JSON.stringify(payload));
+    const prev = readLayoutCache(stateId) ?? {};
+    sessionStorage.setItem(
+      `${LAYOUT_CACHE_PREFIX}${stateId}`,
+      JSON.stringify({ ...prev, ...payload })
+    );
   } catch {
     // ignore quota errors
   }
@@ -93,19 +111,34 @@ function LayoutPreviewMock({ layoutKey }: { layoutKey: FoodHomeLayoutKey }) {
 
   if (layoutKey === "discovery") {
     return (
-      <div className="mt-3 space-y-1.5 rounded-lg border border-slate-200 bg-slate-50 p-2">
-        <div className="h-10 rounded bg-slate-200/80" />
-        <div className="flex gap-1 overflow-hidden">
-          {Array.from({ length: 5 }).map((_, i) => (
-            <div key={i} className="h-4 w-10 shrink-0 rounded-full bg-white ring-1 ring-slate-200" />
-          ))}
-        </div>
+      <div className="mt-3 space-y-1.5 rounded-lg border border-zinc-800 bg-[#121212] p-2">
+        <div className="h-6 rounded-full bg-zinc-800" />
         <div className="flex gap-1 overflow-hidden">
           {Array.from({ length: 3 }).map((_, i) => (
-            <div key={i} className="h-12 w-16 shrink-0 rounded bg-white ring-1 ring-slate-200" />
+            <div
+              key={i}
+              className={cn(
+                "h-10 w-10 shrink-0 rounded-xl bg-zinc-900 ring-1",
+                i === 0 ? "ring-teal-400/70" : i === 1 ? "ring-orange-400/70" : "ring-amber-400/70"
+              )}
+            />
           ))}
         </div>
-        <div className="h-8 rounded bg-white ring-1 ring-slate-200" />
+        <div className="flex gap-1 overflow-hidden">
+          {Array.from({ length: 4 }).map((_, i) => (
+            <div key={i} className="flex shrink-0 flex-col gap-1">
+              <div className="flex flex-col items-center gap-0.5">
+                <div className="h-5 w-5 rounded-full bg-zinc-700" />
+                <div className="h-1 w-5 rounded bg-zinc-700" />
+              </div>
+              <div className="flex flex-col items-center gap-0.5">
+                <div className="h-5 w-5 rounded-full bg-zinc-700" />
+                <div className="h-1 w-5 rounded bg-zinc-700" />
+              </div>
+            </div>
+          ))}
+        </div>
+        <div className="h-8 rounded-lg bg-zinc-900" />
       </div>
     );
   }
@@ -146,45 +179,32 @@ export default function CxAppHomeStateDetailPage() {
     [states, stateId]
   );
 
-  const cached = useMemo(() => (stateId ? readLayoutCache(stateId) : null), [stateId]);
-
-  const [activeLayout, setActiveLayout] = useState<FoodHomeLayoutKey>(
-    cached?.layoutKey ?? DEFAULT_FOOD_HOME_LAYOUT
-  );
-  const [previewLayout, setPreviewLayout] = useState<FoodHomeLayoutKey>(
-    cached?.layoutKey ?? DEFAULT_FOOD_HOME_LAYOUT
-  );
-  const [subscriptionRowEnabled, setSubscriptionRowEnabled] = useState(
-    cached?.gridFirstSubscriptionRowEnabled === true
-  );
-  const [subscriptionRowText, setSubscriptionRowText] = useState(
-    cached?.gridFirstSubscriptionRowText ?? DEFAULT_GRID_FIRST_SUBSCRIPTION_ROW.text
-  );
+  const [activeLayout, setActiveLayout] = useState<FoodHomeLayoutKey>(DEFAULT_FOOD_HOME_LAYOUT);
+  const [previewLayout, setPreviewLayout] = useState<FoodHomeLayoutKey>(DEFAULT_FOOD_HOME_LAYOUT);
+  const [subscriptionRowEnabled, setSubscriptionRowEnabled] = useState(false);
+  const [subscriptionRowText, setSubscriptionRowText] = useState(DEFAULT_GRID_FIRST_SUBSCRIPTION_ROW.text);
   const [subscriptionRowBgColor, setSubscriptionRowBgColor] = useState(
-    cached?.gridFirstSubscriptionRowBgColor ?? DEFAULT_GRID_FIRST_SUBSCRIPTION_ROW.backgroundColor
+    DEFAULT_GRID_FIRST_SUBSCRIPTION_ROW.backgroundColor
   );
-  const [under250Enabled, setUnder250Enabled] = useState(
-    cached?.gridFirstUnder250Enabled !== false
+  const [under250Enabled, setUnder250Enabled] = useState(DEFAULT_GRID_FIRST_UNDER_250.enabled);
+  const [under250Title, setUnder250Title] = useState(DEFAULT_GRID_FIRST_UNDER_250.title);
+  const [under250FilterLabel, setUnder250FilterLabel] = useState(DEFAULT_GRID_FIRST_UNDER_250.filterLabel);
+  const [under250MaxPrice, setUnder250MaxPrice] = useState(DEFAULT_GRID_FIRST_UNDER_250.maxPrice);
+  const [under250TabImageUrl, setUnder250TabImageUrl] = useState<string | null>(null);
+  const [under250HeroImageUrl, setUnder250HeroImageUrl] = useState<string | null>(null);
+  const [discoveryDealsAtMaxPrice, setDiscoveryDealsAtMaxPrice] = useState<number | null>(
+    DEFAULT_DISCOVERY_CTA.dealsAtMaxPrice
   );
-  const [under250Title, setUnder250Title] = useState(
-    cached?.gridFirstUnder250Title ?? DEFAULT_GRID_FIRST_UNDER_250.title
-  );
-  const [under250FilterLabel, setUnder250FilterLabel] = useState(
-    cached?.gridFirstUnder250FilterLabel ?? DEFAULT_GRID_FIRST_UNDER_250.filterLabel
-  );
-  const [under250MaxPrice, setUnder250MaxPrice] = useState(
-    cached?.gridFirstUnder250MaxPrice ?? DEFAULT_GRID_FIRST_UNDER_250.maxPrice
-  );
-  const [under250TabImageUrl, setUnder250TabImageUrl] = useState<string | null>(
-    cached?.gridFirstUnder250TabImageUrl ?? null
-  );
-  const [under250HeroImageUrl, setUnder250HeroImageUrl] = useState<string | null>(
-    cached?.gridFirstUnder250HeroImageUrl ?? null
-  );
-  const [heroMediaItems, setHeroMediaItems] = useState<GridFirstHeroMediaItem[] | undefined>(
-    cached?.gridFirstHeroMedia
-  );
-  const [syncingLayout, setSyncingLayout] = useState(!cached?.layoutKey);
+  const [discoveryDealsAtImageUrl, setDiscoveryDealsAtImageUrl] = useState<string | null>(null);
+  const [discoveryDealsAtHeroImageUrl, setDiscoveryDealsAtHeroImageUrl] = useState<string | null>(null);
+  const [discoveryCrazyDealsImageUrl, setDiscoveryCrazyDealsImageUrl] = useState<string | null>(null);
+  const [discoveryFreePackagingImageUrl, setDiscoveryFreePackagingImageUrl] = useState<string | null>(null);
+  const [discoveryDealsAtLabel, setDiscoveryDealsAtLabel] = useState<string | null>(null);
+  const [discoveryCrazyDealsLabel, setDiscoveryCrazyDealsLabel] = useState<string | null>(null);
+  const [discoveryFreePackagingLabel, setDiscoveryFreePackagingLabel] = useState<string | null>(null);
+  const [discoveryCtaTiles, setDiscoveryCtaTiles] = useState<DiscoveryCtaTile[] | null>(null);
+  const [heroMediaItems, setHeroMediaItems] = useState<GridFirstHeroMediaItem[] | undefined>(undefined);
+  const [syncingLayout, setSyncingLayout] = useState(true);
   const [savingLayout, setSavingLayout] = useState<FoodHomeLayoutKey | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
   /** Mount live preview after first paint so layout cards aren't blocked. */
@@ -239,6 +259,37 @@ export default function CxAppHomeStateDetailPage() {
       if (json.gridFirstUnder250HeroImageUrl !== undefined) {
         setUnder250HeroImageUrl(json.gridFirstUnder250HeroImageUrl?.trim() || null);
       }
+      if (json.discoveryDealsAtMaxPrice !== undefined) {
+        setDiscoveryDealsAtMaxPrice(parseDiscoveryDealsAtMaxPrice(json.discoveryDealsAtMaxPrice));
+      }
+      if (json.discoveryDealsAtImageUrl !== undefined) {
+        setDiscoveryDealsAtImageUrl(json.discoveryDealsAtImageUrl?.trim() || null);
+      }
+      if (json.discoveryDealsAtHeroImageUrl !== undefined) {
+        setDiscoveryDealsAtHeroImageUrl(json.discoveryDealsAtHeroImageUrl?.trim() || null);
+      }
+      if (json.discoveryCrazyDealsImageUrl !== undefined) {
+        setDiscoveryCrazyDealsImageUrl(json.discoveryCrazyDealsImageUrl?.trim() || null);
+      }
+      if (json.discoveryFreePackagingImageUrl !== undefined) {
+        setDiscoveryFreePackagingImageUrl(json.discoveryFreePackagingImageUrl?.trim() || null);
+      }
+      if (json.discoveryDealsAtLabel !== undefined) {
+        setDiscoveryDealsAtLabel(json.discoveryDealsAtLabel?.trim() || null);
+      }
+      if (json.discoveryCrazyDealsLabel !== undefined) {
+        setDiscoveryCrazyDealsLabel(json.discoveryCrazyDealsLabel?.trim() || null);
+      }
+      if (json.discoveryFreePackagingLabel !== undefined) {
+        setDiscoveryFreePackagingLabel(json.discoveryFreePackagingLabel?.trim() || null);
+      }
+      if (json.discoveryCtaTiles !== undefined) {
+        setDiscoveryCtaTiles(
+          Array.isArray(json.discoveryCtaTiles)
+            ? parseDiscoveryCtaTiles(json.discoveryCtaTiles, [])
+            : []
+        );
+      }
       if (json.gridFirstHeroMedia !== undefined) {
         setHeroMediaItems(Array.isArray(json.gridFirstHeroMedia) ? json.gridFirstHeroMedia : []);
       }
@@ -246,6 +297,12 @@ export default function CxAppHomeStateDetailPage() {
     },
     [stateId]
   );
+
+  useEffect(() => {
+    if (!stateId) return;
+    const cached = readLayoutCache(stateId);
+    if (cached) applyLayoutPayload(cached);
+  }, [applyLayoutPayload, stateId]);
 
   const loadLayout = useCallback(async () => {
     if (!stateId) return;
@@ -291,6 +348,7 @@ export default function CxAppHomeStateDetailPage() {
   };
 
   const gridFirstPanelEnabled = activeLayout === "grid_first" || previewLayout === "grid_first";
+  const discoveryPanelEnabled = activeLayout === "discovery" || previewLayout === "discovery";
 
   return (
     <div className="w-full min-w-0 max-w-none space-y-4">
@@ -410,6 +468,44 @@ export default function CxAppHomeStateDetailPage() {
             }}
           />
 
+          <DiscoveryCtaPanel
+            stateId={stateId}
+            enabled={discoveryPanelEnabled}
+            fallbackMaxPrice={under250MaxPrice}
+            initialDealsAtMaxPrice={discoveryDealsAtMaxPrice}
+            initialDealsAtImageUrl={discoveryDealsAtImageUrl}
+            initialDealsAtHeroImageUrl={discoveryDealsAtHeroImageUrl}
+            initialTiles={discoveryCtaTiles}
+            initialCrazyDealsImageUrl={discoveryCrazyDealsImageUrl}
+            initialFreePackagingImageUrl={discoveryFreePackagingImageUrl}
+            initialDealsAtLabel={discoveryDealsAtLabel}
+            initialCrazyDealsLabel={discoveryCrazyDealsLabel}
+            initialFreePackagingLabel={discoveryFreePackagingLabel}
+            onSaved={(config) => {
+              setDiscoveryDealsAtMaxPrice(config.dealsAtMaxPrice);
+              setDiscoveryDealsAtImageUrl(config.dealsAtImageUrl);
+              setDiscoveryDealsAtHeroImageUrl(config.dealsAtHeroImageUrl);
+              setDiscoveryCrazyDealsImageUrl(config.crazyDealsImageUrl);
+              setDiscoveryFreePackagingImageUrl(config.freePackagingImageUrl);
+              setDiscoveryDealsAtLabel(config.dealsAtLabel);
+              setDiscoveryCrazyDealsLabel(config.crazyDealsLabel);
+              setDiscoveryFreePackagingLabel(config.freePackagingLabel);
+              setDiscoveryCtaTiles(config.tiles);
+              writeLayoutCache(stateId, {
+                layoutKey: activeLayout,
+                discoveryDealsAtMaxPrice: config.dealsAtMaxPrice,
+                discoveryDealsAtImageUrl: config.dealsAtImageUrl,
+                discoveryDealsAtHeroImageUrl: config.dealsAtHeroImageUrl,
+                discoveryCrazyDealsImageUrl: config.crazyDealsImageUrl,
+                discoveryFreePackagingImageUrl: config.freePackagingImageUrl,
+                discoveryDealsAtLabel: config.dealsAtLabel,
+                discoveryCrazyDealsLabel: config.crazyDealsLabel,
+                discoveryFreePackagingLabel: config.freePackagingLabel,
+                discoveryCtaTiles: config.tiles,
+              });
+            }}
+          />
+
           {gridFirstPanelEnabled && !syncingLayout ? (
             <GridFirstHeroMediaPanel
               stateId={stateId}
@@ -431,6 +527,14 @@ export default function CxAppHomeStateDetailPage() {
               under250Enabled={under250Enabled}
               under250FilterLabel={under250FilterLabel}
               under250TabImageUrl={under250TabImageUrl}
+              discoveryDealsAtMaxPrice={discoveryDealsAtMaxPrice}
+              discoveryDealsAtImageUrl={discoveryDealsAtImageUrl}
+              discoveryCrazyDealsImageUrl={discoveryCrazyDealsImageUrl}
+              discoveryFreePackagingImageUrl={discoveryFreePackagingImageUrl}
+              discoveryDealsAtLabel={discoveryDealsAtLabel}
+              discoveryCrazyDealsLabel={discoveryCrazyDealsLabel}
+              discoveryFreePackagingLabel={discoveryFreePackagingLabel}
+              discoveryCtaTiles={discoveryCtaTiles}
             />
           ) : (
             <div className="mb-2 rounded-xl border border-slate-200 bg-slate-50 p-3">

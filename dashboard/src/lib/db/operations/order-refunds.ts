@@ -5,6 +5,7 @@
 
 import { randomUUID } from "crypto";
 import { getSql } from "../client";
+import { pickGatewayRefundId } from "@/lib/orders/refund-log-ids";
 
 export type RefundTypeDb = "full" | "partial" | "item" | "delivery_fee" | "tip" | "penalty";
 
@@ -237,6 +238,7 @@ export async function listOrderRefunds(orderId: number): Promise<OrderRefundList
         r.original_gati_cash_txn_id AS "originalGatiCashTxnId",
         r.razorpay_refund_id AS "razorpayRefundId",
         r.pg_refund_id AS "pgRefundId",
+        NULLIF(TRIM(r.razorpay_response->>'id'), '') AS "razorpayResponseId",
         r.customer_wallet_ledger_id AS "customerWalletLedgerId",
         r.split_wallet_amount AS "splitWalletAmount",
         r.split_razorpay_amount AS "splitRazorpayAmount",
@@ -255,6 +257,12 @@ export async function listOrderRefunds(orderId: number): Promise<OrderRefundList
     `;
     mapped = (rows as Record<string, unknown>[]).map((row) => ({
       ...(row as unknown as OrderRefundListItem),
+      razorpayRefundId: pickGatewayRefundId(
+        row.razorpayRefundId,
+        row.pgRefundId,
+        row.razorpayResponseId
+      ),
+      pgRefundId: pickGatewayRefundId(row.pgRefundId, row.razorpayRefundId, row.razorpayResponseId),
       splitWalletAmount:
         row.splitWalletAmount != null && Number.isFinite(Number(row.splitWalletAmount))
           ? Number(row.splitWalletAmount)
@@ -276,7 +284,7 @@ export async function listOrderRefunds(orderId: number): Promise<OrderRefundList
     // Older DBs may lack razorpay_refund_id / wallet ledger / RRN columns — fall back.
     const msg = e instanceof Error ? e.message : String(e);
     if (
-      !/razorpay_refund_id|customer_wallet_ledger_id|split_wallet|refund_reference|original_gati_cash_txn|42703/i.test(
+      !/razorpay_refund_id|razorpay_response|customer_wallet_ledger_id|split_wallet|refund_reference|original_gati_cash_txn|42703/i.test(
         msg
       )
     ) {
@@ -318,6 +326,8 @@ export async function listOrderRefunds(orderId: number): Promise<OrderRefundList
       ...(row as unknown as OrderRefundListItem),
       refundReference: null,
       originalGatiCashTxnId: null,
+      razorpayRefundId: pickGatewayRefundId(row.razorpayRefundId, row.pgRefundId),
+      pgRefundId: pickGatewayRefundId(row.pgRefundId, row.razorpayRefundId),
       splitWalletAmount: null,
       splitRazorpayAmount: null,
       customerWalletAmount: null,

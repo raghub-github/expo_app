@@ -38,7 +38,8 @@ import {
   type HomeBannerSlide,
 } from "@/src/components/home/HomeAlertBannerCarousel";
 import { SubscriptionDuesBanner } from "@/src/components/subscription/SubscriptionDuesBanner";
-import { SubscriptionDutyBlockedSheet } from "@/src/components/subscription/SubscriptionDutyBlockedSheet";
+import { openSubscriptionDutyBlockedSheet } from "@/src/stores/subscriptionDutyBlockedSheetStore";
+import { showRiderPaymentSuccess } from "@/src/stores/paymentSuccessSheetStore";
 import { useRiderSubscriptionStatus } from "@/src/hooks/useRiderSubscription";
 import { MapRightControls } from "@/src/components/home/MapRightControls";
 import { SearchingOrdersPill } from "@/src/components/home/SearchingOrdersPill";
@@ -82,7 +83,6 @@ export default function OrdersScreen() {
   const { data: riderProfile } = useRiderProfile();
   const penaltyPayment = useRiderPenaltyPayment();
   const [penaltyPaying, setPenaltyPaying] = useState(false);
-  const [dutyBlockedSheetVisible, setDutyBlockedSheetVisible] = useState(false);
   const restrictions = earnings?.accountRestrictions;
   const walletBalance = earnings?.totalBalance ?? 0;
   // Negative-wallet recovery: the ONLY payable amount is the exact current
@@ -128,7 +128,7 @@ export default function OrdersScreen() {
           razorpaySignature,
         });
         refreshRestrictionQueries();
-        Alert.alert(
+        showRiderPaymentSuccess(
           t("home.penaltyPaidTitle", "Payment successful"),
           t("home.penaltyPaidMessage", "₹{{amount}} added to your wallet.", {
             amount: Number.isInteger(result.creditedAmount)
@@ -700,12 +700,12 @@ export default function OrdersScreen() {
               onTurnOn={() => {
                 if (dutyPending) return;
                 if (dutyGoOnBlocked || subscriptionDispatchBlocked) {
-                  setDutyBlockedSheetVisible(true);
+                  openSubscriptionDutyBlockedSheet();
                   return;
                 }
                 void setDuty(true).then((result) => {
                   if (result?.blockedFromGoingOn) {
-                    setDutyBlockedSheetVisible(true);
+                    openSubscriptionDutyBlockedSheet();
                   }
                 });
               }}
@@ -714,11 +714,6 @@ export default function OrdersScreen() {
           </View>
         ) : null}
       </View>
-
-      <SubscriptionDutyBlockedSheet
-        visible={dutyBlockedSheetVisible}
-        onClose={() => setDutyBlockedSheetVisible(false)}
-      />
     </View>
   );
 }
@@ -747,8 +742,8 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     bottom: 0,
-    zIndex: 40,
-    elevation: 24,
+    zIndex: 60,
+    elevation: 28,
   },
   map: {
     flex: 1,

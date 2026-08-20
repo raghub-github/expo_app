@@ -186,3 +186,76 @@ export async function DELETE(
   }
 }
 
+/** Move every live item in this category into another category of the same store. */
+export async function POST(
+  request: NextRequest,
+  { params }: { params: Promise<{ id: string; categoryId: string }> }
+) {
+  try {
+    const { id, categoryId } = await params;
+    const storeId = parseInt(id, 10);
+    const catId = parseInt(categoryId, 10);
+    if (!Number.isFinite(storeId) || !Number.isFinite(catId)) {
+      return NextResponse.json({ success: false, error: "Invalid id" }, { status: 400 });
+    }
+    const access = await assertStoreAccess(storeId);
+    if (!access.ok) return NextResponse.json({ success: false, error: access.error }, { status: access.status });
+
+    const body = (await request.json().catch(() => ({}))) as {
+      action?: string;
+      targetCategoryId?: number;
+    };
+    if (body.action !== "move_items") {
+      return NextResponse.json({ success: false, error: "Unsupported action" }, { status: 400 });
+    }
+    const targetId = Number(body.targetCategoryId);
+    if (!Number.isFinite(targetId) || targetId === catId) {
+      return NextResponse.json({ success: false, error: "targetCategoryId required" }, { status: 400 });
+    }
+
+    const sql = getSql();
+    const [source] = await sql`
+      SELECT 1 FROM merchant_menu_categories
+      WHERE id = ${catId} AND store_id = ${storeId}
+        AND COALESCE(is_deleted, FALSE) = FALSE
+      LIMIT 1
+    `;
+    if (!source) {
+      return NextResponse.json({ success: false, error: "Category not found" }, { status: 404 });
+    }
+    const [target] = await sql`
+      SELECT 1 FROM merchant_menu_categories
+      WHERE id = ${targetId} AND store_id = ${storeId}
+        AND COALESCE(is_deleted, FALSE) = FALSE
+      LIMIT 1
+    `;
+    if (!target) {
+      return NextResponse.json({ success: false, error: "Target category not found" }, { status: 404 });
+    }
+
+    const moved = await sql`
+      UPDATE merchant_menu_items
+      SET category_id = ${targetId}, updated_at = NOW()
+      WHERE store_id = ${storeId}
+        AND category_id = ${catId}
+        AND COALESCE(is_deleted, FALSE) = FALSE
+    `;
+    const movedCount = Number((moved as { count?: number })?.count ?? 0);
+    try {
+      await logStoreActivity({
+        storeId,
+        section: "category",
+        action: "update",
+        entityId: catId,
+        summary: `Moved ${movedCount} item(s) from category #${catId} to #${targetId}`,
+        actorType: "agent",
+        source: "dashboard",
+      });
+    } catch (_) {}
+    return NextResponse.json({ success: true, ok: true, movedCount });
+  } catch (e) {
+    console.error("[POST /api/merchant/stores/[id]/menu/categories/[categoryId]]", e);
+    return NextResponse.json({ success: false, error: "Internal error" }, { status: 500 });
+  }
+}
+

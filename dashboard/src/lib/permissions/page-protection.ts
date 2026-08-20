@@ -29,9 +29,29 @@ import {
 import { isOpenDashboardPath } from "./path-mapping";
 import type { AccessPointGroup, ActionType, DashboardType } from "../db/schema";
 
+function rethrowIfNextControlFlow(err: unknown): void {
+  if (err == null || typeof err !== "object" || !("digest" in err)) return;
+  const digest = String((err as { digest?: unknown }).digest ?? "");
+  if (
+    digest.startsWith("NEXT_REDIRECT") ||
+    digest.startsWith("NEXT_NOT_FOUND") ||
+    digest.startsWith("NEXT_HTTP_ERROR_FALLBACK")
+  ) {
+    throw err;
+  }
+}
+
 async function getAuthenticatedUser() {
-  const { user, error } = await resolveSupabaseUser({ maxAttempts: 2 });
-  return { user, error };
+  try {
+    const { user, error } = await resolveSupabaseUser({ maxAttempts: 2 });
+    return { user, error };
+  } catch (err) {
+    rethrowIfNextControlFlow(err);
+    if (isTransientPageAuthFailure(err)) {
+      return { user: null, error: err };
+    }
+    throw err;
+  }
 }
 
 function isTransientPageAuthFailure(error: unknown): boolean {

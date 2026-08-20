@@ -6,6 +6,7 @@ import api from "./api";
 import { getConfig } from "@/config/env";
 import { ORDER_PLACEMENT_TIMEOUT_MS } from "@/constants";
 import { isRetriableCheckoutError } from "@/utils/networkError";
+import type { CheckoutPayMethodsResponse } from "@/lib/razorpayPaymentMethods";
 
 const PAYMENT_PREFIX = "/v1/payment";
 
@@ -108,5 +109,34 @@ export const paymentService = {
       cancel_url: cancel,
     });
     return `${base}/v1/razorpay-checkout?${q.toString()}`;
+  },
+
+  /**
+   * Enabled Razorpay methods for this account (UPI apps, cards, wallets),
+   * mapped by the backend from GET https://api.razorpay.com/v1/methods.
+   */
+  async getAvailableMethods(): Promise<CheckoutPayMethodsResponse> {
+    const { data } = await api.get<CheckoutPayMethodsResponse>(`${PAYMENT_PREFIX}/methods`);
+    return data;
+  },
+
+  /**
+   * Server-to-server UPI Intent URL for the given Razorpay order.
+   * Open the returned `intentUrl` with Linking (upi:// / phonepe://) — this is
+   * the path that actually launches PhonePe / GPay from Expo Go.
+   */
+  async createUpiIntent(params: {
+    orderId: string;
+    amountPaise: number;
+    contact: string;
+    email?: string;
+    pendingId?: string;
+  }): Promise<{ intentUrl: string | null; paymentId: string | null }> {
+    const { data } = await api.post<{ intentUrl: string | null; paymentId: string | null }>(
+      `${PAYMENT_PREFIX}/upi-intent`,
+      params,
+      { timeout: ORDER_PLACEMENT_TIMEOUT_MS, headers: { "X-Silent-Error": "1" } }
+    );
+    return data;
   },
 };

@@ -3,7 +3,7 @@ import { AppText } from "@/components/AppText";
 
 import { NativeScrollEvent, NativeSyntheticEvent, Platform, ScrollView, Share, StatusBar as RNStatusBar, StyleSheet, TouchableOpacity, View, useWindowDimensions } from "react-native";
 import { Image } from "expo-image";
-import { useRouter, useFocusEffect } from "expo-router";
+import { useRouter, useFocusEffect, useLocalSearchParams } from "expo-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -24,6 +24,8 @@ import { useFoodHomeLayout } from "@/hooks/useFoodHomeLayout";
 import {
   DEFAULT_GRID_FIRST_UNDER_250,
   parseGridFirstUnder250ImageUrl,
+  parseDiscoveryDealsAtMaxPrice,
+  resolveDiscoveryDealsAtMaxPrice,
 } from "@/lib/foodHomeLayout";
 import { extractCustomerGeoHints } from "@/lib/customer-geo-hints";
 import { getSyncFoodHomeLayoutFromQueryClient } from "@/lib/foodHomeLayoutCache";
@@ -68,11 +70,12 @@ import { useCheckoutSheetStore } from "@/store/checkoutSheetStore";
 import { useCartCheckoutGateStore } from "@/store/cartCheckoutGateStore";
 import { useMealsUnderPriceCartUiStore } from "@/store/mealsUnderPriceCartUiStore";
 import { MealsUnderPriceLoadingSkeleton } from "@/components/meals-under-price/MealsUnderPriceLoadingSkeleton";
+import { MerchantDarkPalette, MerchantUiThemeProvider } from "@/features/merchant-detail/merchantUiTheme";
+import { DiscoveryWaveDivider } from "@/features/discovery-home/DiscoveryWaveDivider";
+import { filterVegSafeCategories, isMerchantPureVeg, textLooksNonVeg } from "@/lib/pureVegFilter";
 
 const STORE_TYPE = "FOOD";
 const PAD = 16;
-/** Sky tint while hero bitmap decodes — matches under-₹250 promo art. */
-const MEALS_HERO_PLACEHOLDER_BG = "#7DD3FC";
 
 function dedupeCategories(rows: UserAppCategoryItem[]): UserAppCategoryItem[] {
   const byId = new Map<number, UserAppCategoryItem>();
@@ -113,6 +116,16 @@ export default function MealsUnderPriceScreen() {
   const insets = useSafeAreaInsets();
   const { width: windowWidth } = useWindowDimensions();
   const router = useRouter();
+  const routeParams = useLocalSearchParams<{
+    tileId?: string | string[];
+    maxPrice?: string | string[];
+    title?: string | string[];
+  }>();
+  const paramTileId = Array.isArray(routeParams.tileId) ? routeParams.tileId[0] : routeParams.tileId;
+  const paramMaxPriceRaw = Array.isArray(routeParams.maxPrice)
+    ? routeParams.maxPrice[0]
+    : routeParams.maxPrice;
+  const paramTitle = Array.isArray(routeParams.title) ? routeParams.title[0] : routeParams.title;
   const queryClient = useQueryClient();
   const address = useLocationStore((s) => s.address);
   const coords = useLocationStore((s) => s.coords);
@@ -144,13 +157,36 @@ export default function MealsUnderPriceScreen() {
   );
 
   const {
+    layoutKey,
+    cachedLayoutKey,
     gridFirstUnder250MaxPrice,
     gridFirstUnder250Title,
     gridFirstUnder250HeroImageUrl,
+    discoveryDealsAtMaxPrice,
+    discoveryDealsAtHeroImageUrl,
+    discoveryCtaTiles,
   } = useFoodHomeLayout(address, merchantsAnchorCoords);
 
-  const maxPrice = gridFirstUnder250MaxPrice || DEFAULT_GRID_FIRST_UNDER_250.maxPrice;
-  const pageTitle = gridFirstUnder250Title?.trim() || DEFAULT_GRID_FIRST_UNDER_250.title;
+  const isDiscoveryDark = (layoutKey ?? cachedLayoutKey) === "discovery";
+
+  const mealsTile = useMemo(() => {
+    if (!paramTileId) return null;
+    return discoveryCtaTiles.find((tile) => tile.id === paramTileId && tile.action === "meals") ?? null;
+  }, [discoveryCtaTiles, paramTileId]);
+
+  const under250Price = gridFirstUnder250MaxPrice || DEFAULT_GRID_FIRST_UNDER_250.maxPrice;
+  const maxPrice =
+    parseDiscoveryDealsAtMaxPrice(paramMaxPriceRaw) ??
+    mealsTile?.maxPrice ??
+    (layoutKey === "discovery"
+      ? resolveDiscoveryDealsAtMaxPrice(discoveryDealsAtMaxPrice, under250Price)
+      : under250Price);
+  const pageTitle =
+    paramTitle?.trim() ||
+    mealsTile?.label?.trim() ||
+    (layoutKey === "discovery"
+      ? `Deals at ₹${maxPrice}`
+      : gridFirstUnder250Title?.trim() || DEFAULT_GRID_FIRST_UNDER_250.title);
   const layoutHints = useMemo(
     () => extractCustomerGeoHints(address, merchantsAnchorCoords),
     [address, merchantsAnchorCoords]
@@ -162,18 +198,35 @@ export default function MealsUnderPriceScreen() {
   );
 
   const heroImageUri = useMemo(() => {
+    if (isDiscoveryDark) {
+      const raw =
+        mealsTile?.heroImageUrl?.trim() ||
+        discoveryDealsAtHeroImageUrl?.trim() ||
+        parseGridFirstUnder250ImageUrl(syncLayout?.discoveryDealsAtHeroImageUrl)?.trim() ||
+        "";
+      if (!raw) return null;
+      return toAbsoluteImageUrl(raw) ?? raw;
+    }
     const raw =
       gridFirstUnder250HeroImageUrl?.trim() ||
       parseGridFirstUnder250ImageUrl(syncLayout?.gridFirstUnder250HeroImageUrl)?.trim();
     if (!raw) return null;
     return toAbsoluteImageUrl(raw) ?? raw;
-  }, [gridFirstUnder250HeroImageUrl, syncLayout?.gridFirstUnder250HeroImageUrl]);
+  }, [
+    isDiscoveryDark,
+    mealsTile?.heroImageUrl,
+    discoveryDealsAtHeroImageUrl,
+    gridFirstUnder250HeroImageUrl,
+    syncLayout?.discoveryDealsAtHeroImageUrl,
+    syncLayout?.gridFirstUnder250HeroImageUrl,
+  ]);
 
   const heroTabImageUri = useMemo(() => {
+    if (isDiscoveryDark) return null;
     const raw = parseGridFirstUnder250ImageUrl(syncLayout?.gridFirstUnder250TabImageUrl)?.trim();
     if (!raw) return null;
     return toAbsoluteImageUrl(raw) ?? raw;
-  }, [syncLayout?.gridFirstUnder250TabImageUrl]);
+  }, [isDiscoveryDark, syncLayout?.gridFirstUnder250TabImageUrl]);
 
   const heroImageHeight = Math.round(windowWidth / 1.55);
   const statusBarInset = Math.max(
@@ -195,11 +248,11 @@ export default function MealsUnderPriceScreen() {
 
   const applyImmersiveStatusBar = useCallback(() => {
     useScreenChromeStore.setState({
-      statusBarBackground: "transparent",
-      statusBarStyle: heroImageUri ? "light" : "dark",
+      statusBarBackground: isDiscoveryDark && !heroImageUri ? MerchantDarkPalette.bg : "transparent",
+      statusBarStyle: isDiscoveryDark || heroImageUri ? "light" : "dark",
       hideStatusBarSpacer: true,
     });
-  }, [heroImageUri]);
+  }, [heroImageUri, isDiscoveryDark]);
 
   useFocusEffect(
     useCallback(() => {
@@ -258,13 +311,20 @@ export default function MealsUnderPriceScreen() {
     categoriesResponse ?? readSyncUserAppCategories(STORE_TYPE);
 
   const categoryItems = useMemo(() => {
-    return dedupeCategories(resolvedCategoriesResponse?.items ?? []).map((r) => ({
+    return filterVegSafeCategories(dedupeCategories(resolvedCategoriesResponse?.items ?? []), vegOnly).map((r) => ({
       id: String(r.id),
       name: r.name,
       slug: String(r.id),
       imageUrl: r.imageUrl,
     }));
-  }, [resolvedCategoriesResponse?.items]);
+  }, [resolvedCategoriesResponse?.items, vegOnly]);
+
+  useEffect(() => {
+    if (categoryTabId === "all") return;
+    if (!categoryItems.some((c) => c.id === categoryTabId)) {
+      setCategoryTabId("all");
+    }
+  }, [categoryItems, categoryTabId]);
 
   const allTab = resolvedCategoriesResponse?.allTab ?? { label: "All", imageUrl: null };
 
@@ -299,7 +359,11 @@ export default function MealsUnderPriceScreen() {
     enabled: merchantsAnchorCoords?.latitude != null && merchantsAnchorCoords?.longitude != null,
     staleTime: 60_000,
     gcTime: 5 * 60_000,
-    placeholderData: (prev) => prev,
+    placeholderData: (previousData, previousQuery) => {
+      const prevVeg = previousQuery?.queryKey?.[4];
+      if (prevVeg !== vegOnly) return undefined;
+      return previousData;
+    },
     refetchOnMount: true,
   });
 
@@ -348,6 +412,13 @@ export default function MealsUnderPriceScreen() {
 
   const filteredStores = useMemo(() => {
     let list = enrichedStores;
+    if (vegOnly) {
+      list = list.filter((store) => {
+        const merchant = merchantById.get(store.storePublicId);
+        if (merchant) return isMerchantPureVeg(merchant);
+        return !textLooksNonVeg(store.storeName);
+      });
+    }
     if (selectedCategoryName) {
       const needle = selectedCategoryName.toLowerCase();
       list = list.filter((store) => {
@@ -376,7 +447,7 @@ export default function MealsUnderPriceScreen() {
       );
     }
     return list;
-  }, [enrichedStores, selectedCategoryName, merchantById, nearFast, sortBy]);
+  }, [enrichedStores, selectedCategoryName, merchantById, nearFast, sortBy, vegOnly]);
 
   const storeIdsKey = useMemo(
     () => enrichedStores.map((s) => s.storePublicId).join("|"),
@@ -553,20 +624,30 @@ export default function MealsUnderPriceScreen() {
   };
 
   return (
-    <View style={styles.screen}>
-      <StatusBar style={heroImageUri ? "light" : stickyFiltersVisible ? "dark" : "light"} translucent />
+    <MerchantUiThemeProvider dark={isDiscoveryDark}>
+    <View style={[styles.screen, isDiscoveryDark && styles.screenDark]}>
+      <StatusBar
+        style={isDiscoveryDark || heroImageUri ? "light" : stickyFiltersVisible ? "dark" : "light"}
+        translucent
+      />
 
       {stickyFiltersVisible ? (
-        <View style={[styles.stickyHeader, { height: stickyChromeHeight }]}>
+        <View
+          style={[
+            styles.stickyHeader,
+            isDiscoveryDark && styles.stickyHeaderDark,
+            { height: stickyChromeHeight },
+          ]}
+        >
           <View style={[styles.stickyTitleBar, { paddingTop: stickyTitleTop }]}>
             <TouchableOpacity
               style={styles.stickyIconBtn}
               onPress={handleBack}
               accessibilityLabel="Go back"
             >
-              <Ionicons name="arrow-back" size={22} color="#0F172A" />
+              <Ionicons name="arrow-back" size={22} color={isDiscoveryDark ? "#FFFFFF" : "#0F172A"} />
             </TouchableOpacity>
-            <AppText style={styles.stickyTitle} numberOfLines={1}>
+            <AppText style={[styles.stickyTitle, isDiscoveryDark && styles.stickyTitleDark]} numberOfLines={1}>
               {pageTitle}
             </AppText>
             <TouchableOpacity
@@ -574,7 +655,11 @@ export default function MealsUnderPriceScreen() {
               onPress={() => void handleShare()}
               accessibilityLabel="Share"
             >
-              <Ionicons name="share-social-outline" size={20} color="#0F172A" />
+              <Ionicons
+                name="share-social-outline"
+                size={20}
+                color={isDiscoveryDark ? "#FFFFFF" : "#0F172A"}
+              />
             </TouchableOpacity>
           </View>
           <MealsUnderPriceFilterRow {...filterRowProps} />
@@ -591,13 +676,12 @@ export default function MealsUnderPriceScreen() {
         <View
           style={[
             styles.heroSection,
-            heroImageUri
-              ? { marginTop: -statusBarInset, backgroundColor: MEALS_HERO_PLACEHOLDER_BG }
-              : null,
+            isDiscoveryDark && styles.heroSectionDark,
+            heroImageUri ? { marginTop: -statusBarInset } : null,
           ]}
         >
           {heroImageUri ? (
-            <View style={styles.heroBannerWrap}>
+            <View style={[styles.heroBannerWrap, isDiscoveryDark && styles.heroBannerWrapDark]}>
               <Image
                 source={{ uri: heroImageUri }}
                 placeholder={heroTabImageUri ? { uri: heroTabImageUri } : undefined}
@@ -613,9 +697,18 @@ export default function MealsUnderPriceScreen() {
                 transition={0}
                 recyclingKey="meals-under-price-hero"
               />
+              {isDiscoveryDark ? (
+                <View style={styles.heroWaveOverlay} pointerEvents="none">
+                  <DiscoveryWaveDivider
+                    width={windowWidth}
+                    color={MerchantDarkPalette.bg}
+                    fromBottom
+                  />
+                </View>
+              ) : null}
             </View>
           ) : (
-            <View style={[styles.heroPlaceholder, { height: statusBarInset + 52 }]} />
+            <View style={[styles.heroPlaceholder, isDiscoveryDark && styles.heroPlaceholderDark, { height: statusBarInset + 52 }]} />
           )}
           <View style={[styles.topBarOverlay, { top: heroTopBarOffset }]}>
             <TouchableOpacity
@@ -635,6 +728,7 @@ export default function MealsUnderPriceScreen() {
           </View>
         </View>
 
+        <View style={isDiscoveryDark ? { backgroundColor: MerchantDarkPalette.bg } : undefined}>
         <FoodHomeCategoryTabs
           items={categoryItems}
           allTabLabel={allTab.label}
@@ -644,6 +738,7 @@ export default function MealsUnderPriceScreen() {
           onSelect={(id) => setCategoryTabId(id)}
           showUnderPriceTab={false}
         />
+        </View>
 
         <View style={styles.categoryTabsSpacer} />
 
@@ -659,10 +754,10 @@ export default function MealsUnderPriceScreen() {
           <MealsUnderPriceLoadingSkeleton listOnly />
         ) : showEmpty ? (
           <View style={styles.emptyWrap}>
-            <AppText style={styles.emptyTitle}>
+            <AppText style={[styles.emptyTitle, isDiscoveryDark && styles.emptyTitleDark]}>
               {isError ? "Couldn’t load meals" : "No meals found nearby"}
             </AppText>
-            <AppText style={styles.emptySub}>
+            <AppText style={[styles.emptySub, isDiscoveryDark && styles.emptySubDark]}>
               {isError
                 ? "Check your connection and try again."
                 : "Try another category or check back when more restaurants are open."}
@@ -711,6 +806,7 @@ export default function MealsUnderPriceScreen() {
         />
       ) : null}
     </View>
+    </MerchantUiThemeProvider>
   );
 }
 
@@ -719,16 +815,31 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: "#FFFFFF",
   },
+  screenDark: {
+    backgroundColor: MerchantDarkPalette.bg,
+  },
   heroSection: {
     position: "relative",
     width: "100%",
     backgroundColor: "#FFFFFF",
   },
+  heroSectionDark: {
+    backgroundColor: MerchantDarkPalette.bg,
+  },
   heroBannerWrap: {
     width: "100%",
     overflow: "hidden",
-    paddingBottom: 10,
-    backgroundColor: MEALS_HERO_PLACEHOLDER_BG,
+    paddingBottom: 0,
+    backgroundColor: "#FFFFFF",
+  },
+  heroBannerWrapDark: {
+    backgroundColor: MerchantDarkPalette.bg,
+  },
+  heroWaveOverlay: {
+    position: "absolute",
+    left: 0,
+    right: 0,
+    bottom: 0,
   },
   heroBanner: {
     alignSelf: "center",
@@ -736,6 +847,9 @@ const styles = StyleSheet.create({
   heroPlaceholder: {
     width: "100%",
     backgroundColor: "#FFFFFF",
+  },
+  heroPlaceholderDark: {
+    backgroundColor: MerchantDarkPalette.bg,
   },
   topBarOverlay: {
     position: "absolute",
@@ -778,6 +892,11 @@ const styles = StyleSheet.create({
     shadowRadius: 6,
     elevation: 4,
   },
+  stickyHeaderDark: {
+    backgroundColor: MerchantDarkPalette.bg,
+    borderBottomColor: MerchantDarkPalette.border,
+    shadowColor: "#000000",
+  },
   stickyTitleBar: {
     height: MEALS_UNDER_PRICE_TITLE_BAR_HEIGHT,
     flexDirection: "row",
@@ -800,6 +919,9 @@ const styles = StyleSheet.create({
     color: "#111827",
     marginHorizontal: 8,
   },
+  stickyTitleDark: {
+    color: MerchantDarkPalette.text,
+  },
   emptyWrap: {
     paddingHorizontal: PAD,
     paddingVertical: 40,
@@ -811,11 +933,17 @@ const styles = StyleSheet.create({
     fontWeight: "800",
     color: "#0F172A",
   },
+  emptyTitleDark: {
+    color: MerchantDarkPalette.text,
+  },
   emptySub: {
     fontSize: 13,
     color: "#64748B",
     textAlign: "center",
     lineHeight: 18,
+  },
+  emptySubDark: {
+    color: MerchantDarkPalette.textMuted,
   },
   retryBtn: {
     marginTop: 8,

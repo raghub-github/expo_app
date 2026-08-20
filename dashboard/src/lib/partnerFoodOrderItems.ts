@@ -183,14 +183,14 @@ export async function loadCoreDbItemsByOrderTextIds(
           String(ctm.merchant_offer_name ?? '').trim() || frozenLabel || null;
         // Type alone is enough (BOGO often has ₹0 line discount; Boost may omit name).
         const hasMerchantOffer = !isNone;
-        const displayNet = moneyPromo ? ctm.net_ctm_value : ctm.gross_value;
+        const displayCatalog = ctm.gross_value;
         raw[i] = {
           ...raw[i],
-          total: displayNet,
-          total_price: displayNet,
-          price: displayNet / qty,
+          total: displayCatalog,
+          total_price: displayCatalog,
+          price: displayCatalog / qty,
           catalog_line_total: ctm.gross_value,
-          net_line_total: isBogo ? ctm.gross_value : ctm.net_ctm_value,
+          net_line_total: ctm.net_ctm_value,
           offer_discount: moneyPromo ? ctm.merchant_offer_discount : 0,
           offer_label: hasMerchantOffer ? offerName : null,
           is_item_promo: moneyPromo || isBogo,

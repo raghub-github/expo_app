@@ -8,10 +8,18 @@ import { StoreProvider, type StoreContextStore } from "./StoreContext";
 import { MerchantIncomingOrderModal } from "@/components/merchant/MerchantIncomingOrderModal";
 import { MerchantPendingNewOrdersBar } from "@/components/merchant/MerchantPendingNewOrdersBar";
 import { MerchantAcceptanceTimeoutSync } from "@/components/merchant/MerchantAcceptanceTimeoutSync";
-import { useStore } from "@/hooks/useStore";
+import { STORE_KEY } from "@/hooks/useStore";
 import type { StoreProfile } from "@/hooks/useStore";
+import { getQueryClient } from "@/lib/react-query";
 import { loadMerchantAppAssets, MX_ASSET, getMerchantAppAssetUrl } from "@/lib/merchantAppAssets";
 import { MerchantOrderEmptyAssetsWarmup } from "@/components/MerchantAppAssetImage";
+import {
+  merchantStoreHref,
+  parseNumericStoreId,
+  storeIdFromPathname,
+  storePageSuffix,
+  writeLastMerchantStoreId,
+} from "@/lib/merchants/effective-store-id";
 
 const EMPTY_ORDER_KEYS = [
   MX_ASSET.ordersEmptyNew,
@@ -54,7 +62,23 @@ export type StoreInfo = {
   delisted_by_role?: string | null;
 } | null;
 
-/** When layout has no store (e.g. slow server or client nav), use React Query cache or fetch once; show skeleton or not found. */
+async function fetchStoreProfile(storeId: string): Promise<StoreProfile | null> {
+  const res = await fetch(`/api/merchant/stores/${storeId}?verification=1`, {
+    credentials: "include",
+    cache: "no-store",
+  });
+  const data = (await res.json().catch(() => null)) as
+    | { success?: boolean; store?: StoreProfile }
+    | null;
+  if (!res.ok || !data?.success) return null;
+  return data.store ?? null;
+}
+
+/**
+ * When the server layout has no store (timeout / 503 / client nav), load it on the
+ * client. Do not call useStore/useQuery here — Fast Refresh and PersistQueryClient
+ * remounts can run this tree without QueryClientProvider and throw.
+ */
 function StoreLayoutFallback({
   storeId,
   children,
@@ -64,9 +88,49 @@ function StoreLayoutFallback({
 }) {
   const router = useRouter();
   const pathname = useAppPathname();
-  const { store, isLoading } = useStore(storeId);
+  const [store, setStore] = useState<StoreProfile | null>(() => {
+    try {
+      return getQueryClient().getQueryData<StoreProfile>(STORE_KEY(storeId)) ?? null;
+    } catch {
+      return null;
+    }
+  });
+  const [isLoading, setIsLoading] = useState(!store);
   const isOrdersPage = pathname.includes("/orders");
   const isFullHeightScrollPage = isOrdersPage || pathname.includes("/menu");
+
+  useEffect(() => {
+    if (store) return;
+    let cancelled = false;
+    setIsLoading(true);
+    void (async () => {
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          const next = await fetchStoreProfile(storeId);
+          if (cancelled) return;
+          if (next) {
+            try {
+              getQueryClient().setQueryData(STORE_KEY(storeId), next);
+            } catch {
+              /* ignore */
+            }
+            setStore(next);
+            setIsLoading(false);
+            return;
+          }
+        } catch {
+          /* retry */
+        }
+        if (attempt < 2) {
+          await new Promise((r) => setTimeout(r, 400 * (attempt + 1)));
+        }
+      }
+      if (!cancelled) setIsLoading(false);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [storeId, store]);
 
   if (isLoading && !store) {
     return (
@@ -154,6 +218,19 @@ export function StoreLayoutShell({
 
   const isOrdersPage = pathname.includes("/orders");
   const isFullHeightScrollPage = isOrdersPage || pathname.includes("/menu");
+  const numericStoreId = parseNumericStoreId(storeId);
+
+  useEffect(() => {
+    writeLastMerchantStoreId(numericStoreId);
+  }, [numericStoreId]);
+
+  const search = searchParams.toString();
+
+  useEffect(() => {
+    if (!numericStoreId) return;
+    if (storeIdFromPathname(pathname) === numericStoreId) return;
+    router.replace(merchantStoreHref(numericStoreId, storePageSuffix(pathname), search));
+  }, [numericStoreId, pathname, router, search]);
 
   if (!store) {
     return (

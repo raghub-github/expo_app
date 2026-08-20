@@ -1406,12 +1406,21 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
       {modalOrder && !rejectOpen
         ? portal(
             <div
-              className={`${incomingLora.variable} ${incomingPoppins.variable} partner-incoming-modal fixed inset-0 z-[110] flex items-end justify-center bg-stone-950/55 p-2 backdrop-blur-[3px] sm:items-start sm:justify-center sm:px-4 sm:pb-4 sm:pt-[4.75rem]`}
+              className={`${incomingLora.variable} ${incomingPoppins.variable} partner-incoming-modal pointer-events-none fixed inset-0 z-[110]`}
               role="dialog"
               aria-modal="true"
               aria-labelledby="partner-incoming-title"
             >
-              <div className="relative w-full max-w-2xl">
+              <div
+                className="pointer-events-auto absolute inset-y-0 right-0 bg-stone-950/55 backdrop-blur-[3px]"
+                style={{ left: 'var(--mx-partner-sidebar-w, 0px)' }}
+                aria-hidden
+              />
+              <div
+                className="pointer-events-none absolute inset-y-0 right-0 flex items-end justify-center p-2 sm:items-start sm:justify-center sm:px-4 sm:pb-4 sm:pt-[4.75rem]"
+                style={{ left: 'var(--mx-partner-sidebar-w, 0px)' }}
+              >
+              <div className="pointer-events-auto relative w-full max-w-2xl">
                 <div className="relative flex max-h-[min(88dvh,calc(100dvh-5rem))] w-full min-h-0 flex-col overflow-hidden rounded-t-[1.25rem] bg-[#fafaf9] shadow-[0_24px_64px_rgba(28,25,23,0.28)] ring-1 ring-stone-900/10 sm:max-h-[min(85dvh,calc(100dvh-6rem))] sm:rounded-[1.25rem]">
                   {/* Header */}
                   <div className="flex shrink-0 items-center justify-between gap-2 border-b border-stone-200/80 bg-white px-4 py-2.5 sm:px-5">
@@ -1717,6 +1726,7 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
                     </div>
                   </div>
                 </div>
+              </div>
               </div>
             </div>
           )

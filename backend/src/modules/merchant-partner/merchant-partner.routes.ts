@@ -5,6 +5,7 @@ import { SignJWT } from "jose";
 import { getSql } from "../../db/client.js";
 import { getEnv } from "../../config/env.js";
 import { logStoreActivity } from "../../lib/store-activity-feed.js";
+import { syncedGeneratedOfferTitle } from "../../lib/merchant-offer-title.js";
 import { auth } from "../../plugins/auth.js";
 import { send as sendNotification } from "../notifications/notificationService.js";
 import {
@@ -3295,6 +3296,7 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
         const mergedIds = canonicalizeOfferMenuItemIds([...fromMeta, ...fromApp], itemIdByPk);
         return {
           ...row,
+          offer_title: syncedGeneratedOfferTitle(row as never),
           menu_item_ids: mergedIds.length > 0 ? mergedIds : null,
           offer_metadata: {
             ...meta,
@@ -3466,14 +3468,17 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
             );
             for (const offer of offers as Array<Record<string, unknown>>) {
               const pk = Number(offer.id);
-              const stat = stats.get(pk);
-              if (!stat) continue;
+              const stat = stats.get(pk) ?? {
+                offerPk: pk,
+                orders: 0,
+                gross: 0,
+                discount: 0,
+                effectiveDiscountPct: 0,
+              };
               const meta = (offer.offer_metadata as Record<string, unknown>) ?? {};
-              offer.offer_metadata = mergeOfferTrackStatsIntoMetadata(
-                meta,
-                stat,
-                offer.current_uses as number | null | undefined,
-              );
+              offer.offer_title = syncedGeneratedOfferTitle(offer as never);
+              offer.offer_metadata = mergeOfferTrackStatsIntoMetadata(meta, stat);
+              offer.current_uses = stat.orders;
             }
           } catch (e) {
             req.log?.warn?.({ err: e, storeId }, "offer track stats enrichment failed");

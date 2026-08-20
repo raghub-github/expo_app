@@ -2,19 +2,21 @@ import { supabaseAdmin } from "@/lib/supabase/server";
 import { resolvePartnerPipeline } from "@/lib/partner-orders-unify";
 import {
   extractItemsArray,
-  mapCoreDbItemsToRaw,
   normalizeOrderItems,
-  orderRawItemsMissingDisplayNames,
   parseMerchantBillingBreakdown,
 } from "@/lib/orderLineItems";
-import { enrichRawOrderItemFromCoreRow } from "@/lib/order-item-customisation";
 import { computeOrderItemQuantityCount } from "@/lib/merchantOrderFoodActions";
 import { merchantFundedDiscountFromBilling, parseBillingSnapshot } from "@/lib/merchant-billing-discount";
 import { merchantBillPartsFromItems } from "@/lib/merchant-order-item-display";
 import {
   applyMerchantBaseToOrderItems,
   loadSnapshotsByOrderTexts,
+  merchantMenuRupee,
 } from "@/lib/merchant-visible-pricing";
+import {
+  loadCoreDbItemsByOrderTextIds,
+  resolvePartnerOrderItems,
+} from "@/lib/partnerFoodOrderItems";
 import type { OrdersFoodRow } from "@/lib/types/food-orders";
 import { parseMerchantInstructionsList } from "@/lib/merchant-order-instructions";
 import {
@@ -327,94 +329,7 @@ export async function loadMerchantStoreFoodOrders(
           .filter((s) => s.length > 0)
       ),
     ];
-    const rawItemsByOrderTextId = new Map<string, Record<string, unknown>[]>();
-    if (orderIdTexts.length > 0) {
-      const { data: coreItemRows, error: itemsErr } = await db
-        .from('orders_core_items')
-        .select(
-          'id, order_id, menu_item_id, item_name, variant_name, category_name, quantity, base_price, addon_price, total_price, veg_nonveg, item_snapshot'
-        )
-        .in('order_id', orderIdTexts)
-        .order('id');
-      if (itemsErr) {
-        console.warn('[food-orders GET] orders_core_items:', itemsErr.message);
-      } else if (coreItemRows && coreItemRows.length > 0) {
-        const itemIds = coreItemRows
-          .map((r) => Number((r as { id: number }).id))
-          .filter((n) => Number.isFinite(n));
-        const cartByOrderText = new Map<string, Record<string, unknown>[]>();
-        const { data: pendingRows } = await db
-          .from('pending_orders')
-          .select('finalized_order_id, items_snapshot')
-          .in('finalized_order_id', orderIdTexts);
-        for (const p of pendingRows || []) {
-          const key = String((p as { finalized_order_id?: string }).finalized_order_id ?? '').trim();
-          if (!key) continue;
-          const lines = extractItemsArray((p as { items_snapshot?: unknown }).items_snapshot).map(
-            (r) => (r && typeof r === 'object' ? (r as Record<string, unknown>) : {})
-          );
-          if (lines.length > 0) cartByOrderText.set(key, lines);
-        }
-
-        const addonsByItemId = new Map<
-          number,
-          {
-            order_item_id: number;
-            addon_name?: string | null;
-            quantity: number;
-            addon_price?: string | number | null;
-          }[]
-        >();
-        if (itemIds.length > 0) {
-          const { data: addonRows } = await db
-            .from('orders_core_item_addons')
-            .select('order_item_id, addon_name, quantity, addon_price')
-            .in('order_item_id', itemIds);
-          for (const a of addonRows || []) {
-            const itemId = Number((a as { order_item_id: number }).order_item_id);
-            if (!Number.isFinite(itemId)) continue;
-            const list = addonsByItemId.get(itemId) ?? [];
-            list.push(a as { order_item_id: number; addon_name?: string | null; quantity: number });
-            addonsByItemId.set(itemId, list);
-          }
-        }
-        const grouped = new Map<string, Parameters<typeof mapCoreDbItemsToRaw>[0]>();
-        for (const row of coreItemRows) {
-          const r = row as {
-            id: number;
-            order_id: string;
-            menu_item_id?: number | null;
-            item_name: string;
-            variant_name?: string | null;
-            category_name?: string | null;
-            quantity: number;
-            base_price: string | number;
-            addon_price?: string | number | null;
-            total_price: string | number;
-            veg_nonveg?: string | null;
-            item_snapshot?: Record<string, unknown> | null;
-          };
-          const oid = String(r.order_id);
-          const list = grouped.get(oid) ?? [];
-          list.push(r);
-          grouped.set(oid, list);
-        }
-        for (const [oid, rows] of grouped) {
-          const cartLines = cartByOrderText.get(oid) ?? [];
-          const raw = mapCoreDbItemsToRaw(rows, addonsByItemId);
-          for (let i = 0; i < rows.length; i++) {
-            raw[i] = enrichRawOrderItemFromCoreRow({
-              row: rows[i],
-              dbAddons: addonsByItemId.get(rows[i].id) ?? [],
-              cartLines,
-              lineIndex: i,
-              raw: raw[i],
-            });
-          }
-          rawItemsByOrderTextId.set(oid, raw);
-        }
-      }
-    }
+    const rawItemsByOrderTextId = await loadCoreDbItemsByOrderTextIds(db, orderIdTexts);
 
     const snapshotsByOrderText = await loadSnapshotsByOrderTexts(
       db,
@@ -465,36 +380,85 @@ export async function loadMerchantStoreFoodOrders(
           riderPickedUpAt
         );
 
+        let items = resolvePartnerOrderItems(core, food, rawItemsByOrderTextId);
         const textOrderId = String(core.order_id ?? '').trim();
-        const fromDb = textOrderId ? rawItemsByOrderTextId.get(textOrderId) : undefined;
-        let rawItems: unknown =
-          food != null &&
-          food.items != null &&
-          Array.isArray(food.items) &&
-          (food.items as unknown[]).length > 0
-            ? food.items
-            : core.items != null && extractItemsArray(core.items).length > 0
-              ? core.items
-              : [];
-        if (
-          (extractItemsArray(rawItems).length === 0 || orderRawItemsMissingDisplayNames(rawItems)) &&
-          fromDb?.length
-        ) {
-          rawItems = fromDb;
-        }
-        let items = normalizeOrderItems(rawItems);
-        if (fromDb?.length) {
-          if (items.length === 0) {
-            items = normalizeOrderItems(fromDb);
-          } else {
-            const enriched = normalizeOrderItems(fromDb);
-            items = items.map((it, i) => {
-              const dbLine = enriched[i];
-              if (!dbLine?.customizations?.length) return it;
-              return { ...it, customizations: dbLine.customizations };
-            });
-            if (enriched.length > items.length) items = enriched;
-          }
+        const snaps = textOrderId ? snapshotsByOrderText.get(textOrderId) ?? [] : [];
+        const allCtmFrozen =
+          items.length > 0 && items.every((it) => it.ctmFromSnapshot === true);
+
+        if (!allCtmFrozen) {
+          const { items: merchantMapped } = applyMerchantBaseToOrderItems(
+            items.map((it) => ({
+              ...it,
+              qty: it.quantity,
+              price: it.total,
+              total: it.total,
+              base_amount: it.baseAmount,
+              baseAmount: it.baseAmount,
+              customizations_total: it.customizationsTotal,
+              customizationsTotal: it.customizationsTotal,
+              customization_lines: it.customizationLines,
+              customizationLines: it.customizationLines,
+            })),
+            snaps
+          );
+          items = items.map((it, i) => {
+            const m = merchantMapped[i];
+            if (!m) return it;
+            const qty = Math.max(1, it.quantity || 1);
+            const lineTotal = Number(m.total ?? m.price ?? it.total);
+            const oldBase =
+              Number(it.baseAmount) > 0.005
+                ? Number(it.baseAmount)
+                : Number(it.capturedBaseAmount) > 0.005
+                  ? Number(it.capturedBaseAmount)
+                  : 0;
+            const oldCust =
+              Number(it.customizationsTotal) > 0.005
+                ? Number(it.customizationsTotal)
+                : Number(it.capturedAddonAmount) > 0.005
+                  ? Number(it.capturedAddonAmount)
+                  : 0;
+            const oldLine =
+              oldBase + oldCust > 0.005 ? oldBase + oldCust : Number(it.total) || lineTotal;
+            const factor = oldLine > 0.005 ? lineTotal / oldLine : 1;
+            const newBase = merchantMenuRupee(oldBase * factor);
+            const newCust = merchantMenuRupee(oldCust * factor);
+            const finalLine = merchantMenuRupee(newBase + newCust) || lineTotal;
+            return {
+              ...it,
+              baseAmount: newBase > 0.005 ? newBase : it.baseAmount,
+              customizationsTotal: newCust > 0.005 ? newCust : it.customizationsTotal,
+              capturedBaseAmount:
+                it.capturedBaseAmount != null
+                  ? merchantMenuRupee(Number(it.capturedBaseAmount) * factor)
+                  : undefined,
+              capturedAddonAmount:
+                it.capturedAddonAmount != null
+                  ? merchantMenuRupee(Number(it.capturedAddonAmount) * factor)
+                  : undefined,
+              customizationLines: it.customizationLines?.map((l) => ({
+                ...l,
+                amount: merchantMenuRupee((Number(l.amount) || 0) * factor),
+              })),
+              total: finalLine,
+              price: finalLine / qty,
+            };
+          });
+        } else {
+          items = items.map((it) => {
+            const qty = Math.max(1, it.quantity || 1);
+            const gross = Number(it.catalogLineTotal ?? it.total) || 0;
+            const net = Number(it.netLineTotal ?? gross) || gross;
+            const promo =
+              it.isItemPromo === true ||
+              (it.offerDiscount != null && it.offerDiscount > 0.005);
+            return {
+              ...it,
+              total: promo ? net : gross,
+              price: (promo ? net : gross) / qty,
+            };
+          });
         }
 
         const riderId = core.rider_id != null ? Number(core.rider_id) : null;
@@ -511,67 +475,6 @@ export async function loadMerchantStoreFoodOrders(
               }
             : null;
 
-        const snaps = textOrderId ? snapshotsByOrderText.get(textOrderId) ?? [] : [];
-        const { items: merchantMapped, merchantSubtotal } = applyMerchantBaseToOrderItems(
-          items.map((it) => ({
-            ...it,
-            qty: it.quantity,
-            price: it.total,
-            total: it.total,
-            base_amount: it.baseAmount,
-            baseAmount: it.baseAmount,
-            customizations_total: it.customizationsTotal,
-            customizationsTotal: it.customizationsTotal,
-            customization_lines: it.customizationLines,
-            customizationLines: it.customizationLines,
-          })),
-          snaps
-        );
-        items = items.map((it, i) => {
-          const m = merchantMapped[i];
-          if (!m) return it;
-          const qty = Math.max(1, it.quantity || 1);
-          const lineTotal = Number(m.total ?? m.price ?? it.total);
-          const oldBase =
-            Number(it.baseAmount) > 0.005
-              ? Number(it.baseAmount)
-              : Number(it.capturedBaseAmount) > 0.005
-                ? Number(it.capturedBaseAmount)
-                : 0;
-          const oldCust =
-            Number(it.customizationsTotal) > 0.005
-              ? Number(it.customizationsTotal)
-              : Number(it.capturedAddonAmount) > 0.005
-                ? Number(it.capturedAddonAmount)
-                : 0;
-          const oldLine =
-            oldBase + oldCust > 0.005 ? oldBase + oldCust : Number(it.total) || lineTotal;
-          const factor = oldLine > 0.005 ? lineTotal / oldLine : 1;
-          const newBase = Math.round(oldBase * factor * 100) / 100;
-          const newCust = Math.round(oldCust * factor * 100) / 100;
-          const recomposed = Math.round((newBase + newCust) * 100) / 100;
-          const finalLine = recomposed > 0.005 ? recomposed : lineTotal;
-          return {
-            ...it,
-            baseAmount: newBase > 0.005 ? newBase : it.baseAmount,
-            customizationsTotal: newCust > 0.005 ? newCust : it.customizationsTotal,
-            capturedBaseAmount:
-              it.capturedBaseAmount != null
-                ? Math.round(Number(it.capturedBaseAmount) * factor * 100) / 100
-                : undefined,
-            capturedAddonAmount:
-              it.capturedAddonAmount != null
-                ? Math.round(Number(it.capturedAddonAmount) * factor * 100) / 100
-                : undefined,
-            customizationLines: it.customizationLines?.map((l) => ({
-              ...l,
-              amount: Math.round((Number(l.amount) || 0) * factor * 100) / 100,
-            })),
-            total: finalLine,
-            price: finalLine / qty,
-          };
-        });
-
         const foodTotalRaw = food != null ? food.food_items_total_value : null;
         const coreGrandRaw = core.grand_total ?? core.item_total;
         const pricingTotal =
@@ -583,17 +486,31 @@ export async function loadMerchantStoreFoodOrders(
         const customerPricing = parseMerchantBillingBreakdown(core, pricingTotal);
         const billingSnap = parseBillingSnapshot(core.billing_snapshot);
         const merchantDiscount = merchantFundedDiscountFromBilling(billingSnap);
+        const merchantSubtotal = items.reduce((s, it) => s + (Number(it.total) || 0), 0);
+        const ctmNetSum = items.reduce(
+          (s, it) => s + (Number(it.netLineTotal ?? it.total) || 0),
+          0
+        );
+        const precisionFromCore = Math.max(
+          0,
+          Number((core as { merchant_precision_discount?: unknown }).merchant_precision_discount) || 0
+        );
+        const resolvedDisc = allCtmFrozen ? precisionFromCore : merchantDiscount;
+        const resolvedTotal = allCtmFrozen
+          ? Math.max(0, ctmNetSum - 0 + (customerPricing.packaging || 0))
+          : 0;
+        const frozenCtm = Number((core as { total_ctm?: unknown }).total_ctm);
         const bill = merchantBillPartsFromItems(items, {
           subtotal: merchantSubtotal,
           packaging: customerPricing.packaging,
-          discount: merchantDiscount,
-          total: 0,
+          discount: resolvedDisc,
+          total: Number.isFinite(frozenCtm) && frozenCtm > 0 ? frozenCtm : resolvedTotal,
         });
         const pricing = {
           subtotal: bill.itemsSubtotal,
           packaging: bill.packaging,
           taxes: 0,
-          discount: merchantDiscount,
+          discount: resolvedDisc,
           total: bill.total,
         };
         const displayItemCount = computeOrderItemQuantityCount({
@@ -635,6 +552,7 @@ export async function loadMerchantStoreFoodOrders(
             core.total_ctm != null && core.total_ctm !== ''
               ? Number(core.total_ctm)
               : bill.total,
+          merchant_precision_discount: precisionFromCore,
           requires_utensils: food?.requires_utensils ?? null,
           is_fragile: food?.is_fragile ?? false,
           is_high_value: food?.is_high_value ?? false,

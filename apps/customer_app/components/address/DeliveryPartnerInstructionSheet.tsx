@@ -10,6 +10,7 @@ import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { StoreBottomSheetShell } from "@/components/store/StoreBottomSheetShell";
 import { GatiMitraColors } from "@/constants/gatimitra";
+import { MerchantDarkPalette, useMerchantUiDark } from "@/features/merchant-detail/merchantUiTheme";
 import {
   buildDeliveryInstructionsList,
   parseDeliveryInstructionsList,
@@ -25,6 +26,8 @@ type DeliveryPartnerInstructionSheetProps = {
   initialInstructions?: string[];
   saveLabel?: string;
   onSave: (instructions: string[]) => Promise<void>;
+  /** Optional override — Modal can drop theme context on some Android builds. */
+  dark?: boolean;
 };
 
 export function DeliveryPartnerInstructionSheet({
@@ -34,8 +37,11 @@ export function DeliveryPartnerInstructionSheet({
   initialInstructions = [],
   saveLabel = "Save",
   onSave,
+  dark: darkProp,
 }: DeliveryPartnerInstructionSheetProps) {
   const insets = useSafeAreaInsets();
+  const ctxDark = useMerchantUiDark();
+  const dark = darkProp ?? ctxDark;
   const [note, setNote] = useState("");
   const [leaveAtDoor, setLeaveAtDoor] = useState(true);
   const [leaveWithGuard, setLeaveWithGuard] = useState(false);
@@ -90,74 +96,92 @@ export function DeliveryPartnerInstructionSheet({
     onSave,
   ]);
 
+  const iconColor = dark ? MerchantDarkPalette.text : GatiMitraColors.textPrimary;
+  const mutedIcon = dark ? MerchantDarkPalette.textDim : "#9CA3AF";
+
   return (
-    <StoreBottomSheetShell visible={visible} onClose={onClose} maxHeightRatio={0.88} keyboardAvoiding>
+    <StoreBottomSheetShell
+      visible={visible}
+      onClose={onClose}
+      maxHeightRatio={0.88}
+      keyboardAvoiding
+      sheetStyle={dark ? styles.sheetDark : undefined}
+    >
       <ScrollView
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
         contentContainerStyle={[styles.content, { paddingBottom: Math.max(insets.bottom, 16) }]}
       >
-        <AppText style={styles.title}>Instruction for Delivery partner</AppText>
-        <AppText style={styles.addr} numberOfLines={4}>
+        <AppText style={[styles.title, dark && styles.titleDark]}>Instruction for Delivery partner</AppText>
+        <AppText style={[styles.addr, dark && styles.addrDark]} numberOfLines={4}>
           {addressLine}
         </AppText>
 
         <TextInput
-          style={styles.noteInput}
+          style={[styles.noteInput, dark && styles.noteInputDark]}
           value={note}
           onChangeText={setNote}
           placeholder="Add a short note for your delivery partner (optional)"
-          placeholderTextColor="#9CA3AF"
+          placeholderTextColor={dark ? MerchantDarkPalette.textDim : "#9CA3AF"}
           multiline
           maxLength={240}
           textAlignVertical="top"
           editable={!saving}
         />
 
-        <View style={[styles.voiceRow, styles.disabledBlock]} pointerEvents="none">
-          <Ionicons name="mic-outline" size={20} color="#9CA3AF" />
-          <AppText style={styles.voiceHintDisabled}>Tap and hold to record instruction</AppText>
-          <AppText style={styles.comingSoon}>Soon</AppText>
+        <View style={[styles.voiceRow, dark && styles.voiceRowDark, styles.disabledBlock]} pointerEvents="none">
+          <Ionicons name="mic-outline" size={20} color={mutedIcon} />
+          <AppText style={[styles.voiceHintDisabled, dark && styles.mutedDark]}>
+            Tap and hold to record instruction
+          </AppText>
+          <AppText style={[styles.comingSoon, dark && styles.comingSoonDark]}>Soon</AppText>
         </View>
 
-        <AppText style={[styles.imageLabel, styles.disabledLabel]}>Door/building image (optional)</AppText>
-        <View style={[styles.imageDashed, styles.disabledBlock]} pointerEvents="none">
-          <Ionicons name="camera-outline" size={22} color="#9CA3AF" />
-          <AppText style={styles.imageCtaDisabled}>Add an image</AppText>
+        <AppText style={[styles.imageLabel, styles.disabledLabel, dark && styles.mutedDark]}>
+          Door/building image (optional)
+        </AppText>
+        <View style={[styles.imageDashed, dark && styles.imageDashedDark, styles.disabledBlock]} pointerEvents="none">
+          <Ionicons name="camera-outline" size={22} color={mutedIcon} />
+          <AppText style={[styles.imageCtaDisabled, dark && styles.mutedDark]}>Add an image</AppText>
         </View>
-        <AppText style={[styles.imageHelp, styles.disabledLabel]}>
+        <AppText style={[styles.imageHelp, styles.disabledLabel, dark && styles.mutedDark]}>
           This helps our delivery partners find your exact location faster
         </AppText>
 
         <CheckRow
-          icon={<MaterialCommunityIcons name="door-open" size={22} color={GatiMitraColors.textPrimary} />}
+          icon={<MaterialCommunityIcons name="door-open" size={22} color={iconColor} />}
           label="Leave at door"
           checked={leaveAtDoor}
           onToggle={() => setLeaveAtDoor((v) => !v)}
+          dark={dark}
         />
         <CheckRow
-          icon={<Ionicons name="shield-checkmark-outline" size={22} color={GatiMitraColors.textPrimary} />}
+          icon={<Ionicons name="shield-checkmark-outline" size={22} color={iconColor} />}
           label="Leave with guard"
           checked={leaveWithGuard}
           onToggle={() => setLeaveWithGuard((v) => !v)}
+          dark={dark}
         />
         <CheckRow
-          icon={<MaterialCommunityIcons name="phone-off-outline" size={22} color={GatiMitraColors.textPrimary} />}
+          icon={<MaterialCommunityIcons name="phone-off-outline" size={22} color={iconColor} />}
           label="Avoid calling"
           checked={avoidCalling}
           onToggle={() => setAvoidCalling((v) => !v)}
+          dark={dark}
         />
         <CheckRow
-          icon={<Ionicons name="notifications-off-outline" size={22} color={GatiMitraColors.textPrimary} />}
+          icon={<Ionicons name="notifications-off-outline" size={22} color={iconColor} />}
           label="Don't ring the bell"
           checked={dontRingBell}
           onToggle={() => setDontRingBell((v) => !v)}
+          dark={dark}
         />
         <CheckRow
-          icon={<Ionicons name="paw-outline" size={22} color={GatiMitraColors.textPrimary} />}
+          icon={<Ionicons name="paw-outline" size={22} color={iconColor} />}
           label="Pet at home"
           checked={petAtHome}
           onToggle={() => setPetAtHome((v) => !v)}
+          dark={dark}
           last
         />
 
@@ -183,19 +207,21 @@ function CheckRow({
   label,
   checked,
   onToggle,
+  dark,
   last = false,
 }: {
   icon: ReactNode;
   label: string;
   checked: boolean;
   onToggle: () => void;
+  dark: boolean;
   last?: boolean;
 }) {
   return (
-    <View style={[styles.checkLine, last && styles.checkLineLast]}>
+    <View style={[styles.checkLine, dark && styles.checkLineDark, last && styles.checkLineLast]}>
       <View style={styles.checkLeft}>
         {icon}
-        <AppText style={styles.checkLabel}>{label}</AppText>
+        <AppText style={[styles.checkLabel, dark && styles.checkLabelDark]}>{label}</AppText>
       </View>
       <Pressable
         onPress={onToggle}
@@ -211,6 +237,9 @@ function CheckRow({
 }
 
 const styles = StyleSheet.create({
+  sheetDark: {
+    backgroundColor: MerchantDarkPalette.surface,
+  },
   content: {
     paddingHorizontal: 16,
     paddingTop: 4,
@@ -221,11 +250,17 @@ const styles = StyleSheet.create({
     color: "#111827",
     marginBottom: 8,
   },
+  titleDark: {
+    color: MerchantDarkPalette.text,
+  },
   addr: {
     fontSize: 12,
     color: "#6B7280",
     lineHeight: 17,
     marginBottom: 12,
+  },
+  addrDark: {
+    color: MerchantDarkPalette.textMuted,
   },
   noteInput: {
     borderWidth: 1,
@@ -237,6 +272,11 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: "#111827",
     marginBottom: 12,
+  },
+  noteInputDark: {
+    borderColor: MerchantDarkPalette.border,
+    backgroundColor: MerchantDarkPalette.elevated,
+    color: MerchantDarkPalette.text,
   },
   voiceRow: {
     flexDirection: "row",
@@ -250,7 +290,12 @@ const styles = StyleSheet.create({
     marginBottom: 14,
     backgroundColor: "#FAFAFA",
   },
+  voiceRowDark: {
+    borderColor: MerchantDarkPalette.border,
+    backgroundColor: MerchantDarkPalette.elevated,
+  },
   voiceHintDisabled: { flex: 1, fontSize: 13, color: "#9CA3AF" },
+  mutedDark: { color: MerchantDarkPalette.textDim },
   comingSoon: {
     fontSize: 10,
     fontWeight: "700",
@@ -259,6 +304,10 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8,
     paddingVertical: 3,
     borderRadius: 6,
+  },
+  comingSoonDark: {
+    color: MerchantDarkPalette.textMuted,
+    backgroundColor: MerchantDarkPalette.chip,
   },
   disabledBlock: { opacity: 0.42 },
   disabledLabel: { opacity: 0.55 },
@@ -274,6 +323,9 @@ const styles = StyleSheet.create({
     gap: 6,
     marginBottom: 6,
   },
+  imageDashedDark: {
+    borderColor: MerchantDarkPalette.border,
+  },
   imageCtaDisabled: { fontSize: 14, fontWeight: "700", color: "#9CA3AF" },
   imageHelp: { fontSize: 11, color: "#9CA3AF", marginBottom: 4, lineHeight: 15 },
   checkLine: {
@@ -284,9 +336,13 @@ const styles = StyleSheet.create({
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: "#E5E7EB",
   },
+  checkLineDark: {
+    borderBottomColor: MerchantDarkPalette.border,
+  },
   checkLineLast: { borderBottomWidth: 0 },
   checkLeft: { flexDirection: "row", alignItems: "center", gap: 10, flex: 1, minWidth: 0 },
   checkLabel: { fontSize: 14, fontWeight: "500", color: "#111827", flex: 1 },
+  checkLabelDark: { color: MerchantDarkPalette.text },
   checkBox: {
     width: 24,
     height: 24,

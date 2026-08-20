@@ -8,6 +8,7 @@ import { createServerSupabaseClient } from '@/lib/supabase/server';
 import { validateMerchantFromSession } from '@/lib/auth/validate-merchant';
 import { getAuditActor, logMerchantAudit } from '@/lib/audit-merchant';
 import { logStoreActivity } from '@/lib/store-activity-feed';
+import { syncedGeneratedOfferTitle } from '@/lib/merchant-offer-title';
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder.supabase.co";
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "placeholder-service-role-key";
@@ -103,6 +104,7 @@ function shapeOfferRow(
   const rawImageUrl = row.offer_image_url ?? row.image_url ?? null;
   return {
     ...row,
+    offer_title: syncedGeneratedOfferTitle(row as never),
     menu_item_ids: mergedIds.length > 0 ? mergedIds : null,
     offer_metadata: {
       ...meta,
@@ -247,14 +249,17 @@ export async function GET(req: NextRequest) {
       const stats = await loadMerchantOfferTrackStats(sql as never, resolved.store.id, offerPks);
       for (const offer of offers as Array<Record<string, unknown>>) {
         const pk = Number(offer.id);
-        const stat = stats.get(pk);
-        if (!stat) continue;
+        const stat = stats.get(pk) ?? {
+          offerPk: pk,
+          orders: 0,
+          gross: 0,
+          discount: 0,
+          effectiveDiscountPct: 0,
+        };
         const meta = (offer.offer_metadata as Record<string, unknown>) ?? {};
-        offer.offer_metadata = mergeOfferTrackStatsIntoMetadata(
-          meta,
-          stat,
-          offer.current_uses as number | null | undefined,
-        );
+        offer.offer_title = syncedGeneratedOfferTitle(offer as never);
+        offer.offer_metadata = mergeOfferTrackStatsIntoMetadata(meta, stat);
+        offer.current_uses = stat.orders;
       }
     } catch (e) {
       console.warn('[merchant/offers] track stats enrichment failed', e);

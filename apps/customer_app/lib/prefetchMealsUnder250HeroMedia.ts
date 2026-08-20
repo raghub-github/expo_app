@@ -17,10 +17,24 @@ function prefetchUri(raw: string | null | undefined): void {
 export function prefetchMealsUnder250HeroMedia(
   layout: Pick<
     FoodHomeLayoutResult,
-    "gridFirstUnder250HeroImageUrl" | "gridFirstUnder250TabImageUrl"
+    | "gridFirstUnder250HeroImageUrl"
+    | "gridFirstUnder250TabImageUrl"
+    | "discoveryDealsAtHeroImageUrl"
+    | "discoveryDealsAtImageUrl"
+    | "discoveryCrazyDealsImageUrl"
+    | "discoveryFreePackagingImageUrl"
+    | "discoveryCtaTiles"
   > | null | undefined
 ): void {
   if (!layout) return;
   prefetchUri(layout.gridFirstUnder250HeroImageUrl);
   prefetchUri(layout.gridFirstUnder250TabImageUrl);
+  prefetchUri(layout.discoveryDealsAtHeroImageUrl);
+  prefetchUri(layout.discoveryDealsAtImageUrl);
+  prefetchUri(layout.discoveryCrazyDealsImageUrl);
+  prefetchUri(layout.discoveryFreePackagingImageUrl);
+  for (const tile of layout.discoveryCtaTiles ?? []) {
+    prefetchUri(tile.imageUrl);
+    prefetchUri(tile.heroImageUrl);
+  }
 }

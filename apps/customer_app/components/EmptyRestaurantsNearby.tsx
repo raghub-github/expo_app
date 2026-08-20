@@ -10,6 +10,8 @@ import { View, StyleSheet, TouchableOpacity, Animated, Platform } from "react-na
 import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
+import { FOOD_HOME_FALLBACK, safeRouterBack } from "@/lib/safeRouterBack";
+import { DiscoveryColors } from "@/features/discovery-home/discoveryTheme";
 
 const CONTAINER_MAX_WIDTH = 420;
 const ILLUSTRATION_SIZE = 130;
@@ -17,7 +19,17 @@ const HEADING_COLOR = "#1F2937";
 const DESC_COLOR = "#6B7280";
 const CTA_GRADIENT = ["#27AE60", "#2ECC71"] as const;
 
-export function EmptyRestaurantsNearby() {
+type EmptyRestaurantsNearbyProps = {
+  ctaLabel?: string;
+  onPress?: () => void;
+  dark?: boolean;
+};
+
+export function EmptyRestaurantsNearby({
+  ctaLabel = "Back to home",
+  onPress,
+  dark = false,
+}: EmptyRestaurantsNearbyProps) {
   const router = useRouter();
   const float = useRef(new Animated.Value(0)).current;
   const fade = useRef(new Animated.Value(0)).current;
@@ -54,26 +66,36 @@ export function EmptyRestaurantsNearby() {
     outputRange: [0, -10],
   });
 
-  const onChangeLocation = () => {
+  const onCtaPress = () => {
     if (Platform.OS !== "web" && "vibrate" in navigator) {
       (navigator as { vibrate?: (ms: number) => void }).vibrate?.(40);
     }
-    router.push("/location");
+    if (onPress) {
+      onPress();
+      return;
+    }
+    safeRouterBack(router, FOOD_HOME_FALLBACK);
   };
 
   return (
     <Animated.View style={[styles.wrap, { opacity: fade }]}>
-      <Animated.View style={[styles.iconWrap, { transform: [{ translateY }] }]}>
-        <Ionicons name="leaf" size={64} color="#27AE60" />
+      <Animated.View
+        style={[
+          styles.iconWrap,
+          dark && styles.iconWrapDark,
+          { transform: [{ translateY }] },
+        ]}
+      >
+        <Ionicons name="leaf" size={64} color={dark ? DiscoveryColors.teal : "#27AE60"} />
       </Animated.View>
-      <AppText style={styles.title}>
+      <AppText style={[styles.title, dark && styles.titleDark]}>
         Looks like we're still finding great kitchens near you 🌿
       </AppText>
-      <AppText style={styles.subtitle}>
+      <AppText style={[styles.subtitle, dark && styles.subtitleDark]}>
         We're expanding fast — try another nearby location or check back soon.
       </AppText>
       <TouchableOpacity
-        onPress={onChangeLocation}
+        onPress={onCtaPress}
         activeOpacity={0.85}
         style={styles.ctaTouchable}
       >
@@ -83,8 +105,8 @@ export function EmptyRestaurantsNearby() {
           end={{ x: 1, y: 1 }}
           style={styles.cta}
         >
-          <Ionicons name="location" size={20} color="#fff" />
-          <AppText style={styles.ctaText}>Change Location</AppText>
+          <Ionicons name="home-outline" size={20} color="#fff" />
+          <AppText style={styles.ctaText}>{ctaLabel}</AppText>
         </LinearGradient>
       </TouchableOpacity>
     </Animated.View>
@@ -110,6 +132,9 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     marginBottom: 24,
   },
+  iconWrapDark: {
+    backgroundColor: "rgba(45, 212, 191, 0.16)",
+  },
   title: {
     fontSize: 18,
     fontWeight: "600",
@@ -118,6 +143,9 @@ const styles = StyleSheet.create({
     marginBottom: 10,
     paddingHorizontal: 8,
   },
+  titleDark: {
+    color: DiscoveryColors.text,
+  },
   subtitle: {
     fontSize: 14,
     color: DESC_COLOR,
@@ -125,6 +153,9 @@ const styles = StyleSheet.create({
     lineHeight: 21,
     maxWidth: 320,
     marginBottom: 28,
+  },
+  subtitleDark: {
+    color: DiscoveryColors.textMuted,
   },
   ctaTouchable: {
     borderRadius: 14,

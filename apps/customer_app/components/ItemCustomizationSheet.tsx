@@ -23,8 +23,11 @@ import {
 } from "react-native";
 import { Ionicons, Feather } from "@expo/vector-icons";
 import { StoreTheme } from "@/constants/storeTheme";
+import { MerchantDarkPalette, useMerchantUiDark } from "@/features/merchant-detail/merchantUiTheme";
 import { DietIndicator } from "@/components/store/DietIndicator";
-import { MenuItemImagePlaceholder } from "@/components/store/MenuItemImagePlaceholder";
+import { getItemDiet } from "@/components/store/storeMenuUtils";
+import { isMerchantBrandOrPlaceholderImageUrl } from "@/lib/merchantHeroMedia";
+import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
 import type { MenuItem, MenuItemFullConfig } from "@/services/merchant.service";
 import { merchantService } from "@/services/merchant.service";
 import { mapAnchorPairsToCompanionItems } from "@/components/store/storeMenuUtils";
@@ -124,17 +127,18 @@ function SectionHeader({
   subtitle: string;
   required?: boolean;
 }) {
+  const dark = useMerchantUiDark();
   return (
-    <View style={styles.sectionHeader}>
+    <View style={[styles.sectionHeader, dark && styles.sectionHeaderDark]}>
       <View style={styles.sectionTitleRow}>
-        <AppText style={styles.sectionTitle}>{title}</AppText>
+        <AppText style={[styles.sectionTitle, dark && styles.headerNameDark]}>{title}</AppText>
         {required ? (
           <View style={styles.requiredPill}>
             <AppText style={styles.requiredPillText}>Required</AppText>
           </View>
         ) : null}
       </View>
-      <AppText style={styles.sectionSub}>{subtitle}</AppText>
+      <AppText style={[styles.sectionSub, dark && styles.sectionSubDark]}>{subtitle}</AppText>
     </View>
   );
 }
@@ -156,8 +160,16 @@ type CustomizationOptionRowProps = {
   imageUrl?: string | null;
   showImage?: boolean;
   highlight?: boolean;
+  diet?: "veg" | "egg" | "nonveg";
   onPress: () => void;
 };
+
+function guessAddonDiet(name: string, fallback: "veg" | "egg" | "nonveg"): "veg" | "egg" | "nonveg" {
+  const n = name.toLowerCase();
+  if (/\begg\b|\banda\b/.test(n)) return "egg";
+  if (/chicken|mutton|fish|prawn|keema|bacon|meat|non.?veg/.test(n)) return "nonveg";
+  return fallback === "nonveg" ? "veg" : fallback;
+}
 
 function CustomizationOptionRow({
   name,
@@ -173,8 +185,18 @@ function CustomizationOptionRow({
   imageUrl,
   showImage = false,
   highlight = false,
+  diet = "veg",
   onPress,
 }: CustomizationOptionRowProps) {
+  const dark = useMerchantUiDark();
+  const resolvedImage = imageUrl?.trim() ? (toAbsoluteImageUrl(imageUrl) ?? imageUrl) : null;
+  const absImage =
+    resolvedImage && !isMerchantBrandOrPlaceholderImageUrl(resolvedImage) ? resolvedImage : null;
+  const [imageFailed, setImageFailed] = useState(false);
+  const showThumb = Boolean(absImage) && !imageFailed;
+  useEffect(() => {
+    setImageFailed(false);
+  }, [absImage]);
   const showOfferStrike =
     offerPrice != null && strikePrice != null && strikePrice > offerPrice + 0.001;
   const displayPayable = showOfferStrike ? offerPrice! : price;
@@ -183,13 +205,14 @@ function CustomizationOptionRow({
   const a11yLabel = formatMenuOptionDisplayName(name, sizeValue, sizeUnit);
 
   const control = singleSelect ? (
-    <View style={[styles.radioOuter, selected && styles.radioOuterSelected]}>
+    <View style={[styles.radioOuter, dark && styles.radioOuterDark, selected && styles.radioOuterSelected]}>
       {selected ? <View style={styles.radioInner} /> : null}
     </View>
   ) : (
     <View
       style={[
         styles.checkboxOuter,
+        dark && styles.checkboxOuterDark,
         selected && styles.checkboxOuterSelected,
         disabled && styles.checkboxOuterDisabled,
       ]}
@@ -204,12 +227,17 @@ function CustomizationOptionRow({
       numberOfLines={1}
       ellipsizeMode="tail"
     >
-      <AppText style={styles.optionNameInline}>{name.trim()}</AppText>
-      <AppText style={styles.optionQtyInline}> · {portionLabel}</AppText>
+      <AppText style={[styles.optionNameInline, dark && styles.optionNameInlineDark]}>{name.trim()}</AppText>
+      <AppText style={[styles.optionQtyInline, dark && styles.optionQtyInlineDark]}> · {portionLabel}</AppText>
     </AppText>
   ) : (
     <AppText
-      style={[styles.optionNameInline, styles.optionLineText, disabled && styles.optionNameDisabled]}
+      style={[
+        styles.optionNameInline,
+        styles.optionLineText,
+        dark && styles.optionNameInlineDark,
+        disabled && styles.optionNameDisabled,
+      ]}
       numberOfLines={1}
       ellipsizeMode="tail"
     >
@@ -221,8 +249,9 @@ function CustomizationOptionRow({
     <Pressable
       style={({ pressed }) => [
         styles.optionRowCard,
-        selected && styles.optionRowCardSelected,
-        highlight && !selected && styles.optionRowCardHighlight,
+        dark && styles.optionRowCardDark,
+        selected && (dark ? styles.optionRowCardSelectedDark : styles.optionRowCardSelected),
+        highlight && !selected && !dark && styles.optionRowCardHighlight,
         pressed && !disabled && styles.rowPressed,
         disabled && styles.optionRowDisabled,
       ]}
@@ -242,17 +271,24 @@ function CustomizationOptionRow({
                 </AppText>
               </View>
             ) : null}
-            <View style={styles.optionThumb}>
-              {imageUrl ? (
-                <Image source={{ uri: imageUrl }} style={styles.optionThumbImage} resizeMode="cover" />
+            <View style={[styles.optionThumb, dark && styles.optionThumbDark, !showThumb && styles.optionThumbEmpty]}>
+              {showThumb ? (
+                <>
+                  <Image
+                    source={{ uri: absImage! }}
+                    style={styles.optionThumbImage}
+                    resizeMode="cover"
+                    onError={() => setImageFailed(true)}
+                  />
+                  <View style={[styles.dietOnThumbSmall, dark && styles.dietOnThumbSmallDark]}>
+                    <DietIndicator type={diet} />
+                  </View>
+                </>
               ) : (
-                <View style={styles.optionThumbPlaceholder}>
-                  <MenuItemImagePlaceholder size="sm" />
+                <View style={styles.optionThumbEmptyInner}>
+                  <DietIndicator type={diet} />
                 </View>
               )}
-              <View style={styles.dietOnThumbSmall}>
-                <DietIndicator type="veg" />
-              </View>
             </View>
           </View>
         ) : null}
@@ -275,7 +311,9 @@ function CustomizationOptionRow({
                   <AppText style={styles.optionPriceOffer}>{formatOfferRupee(displayPayable)}</AppText>
                 </View>
               ) : (
-                <AppText style={styles.optionPrice}>{formatOfferRupee(displayPayable)}</AppText>
+                <AppText style={[styles.optionPrice, dark && styles.optionPriceDark]}>
+                  {formatOfferRupee(displayPayable)}
+                </AppText>
               )}
             </View>
           ) : null}
@@ -328,6 +366,7 @@ export function ItemCustomizationSheet({
   onAdd,
 }: ItemCustomizationSheetProps) {
   const queryClient = useQueryClient();
+  const dark = useMerchantUiDark();
   const { height: screenHeight } = useWindowDimensions();
   const sheetMaxHeight = Math.round(screenHeight * SHEET_MAX_HEIGHT_RATIO);
   const { keyboardLift, reset } = useCookingSheetKeyboardDock(visible);
@@ -370,6 +409,13 @@ export function ItemCustomizationSheet({
     () => (config ? normalizeMenuItemFullConfig(config) : null),
     [config]
   );
+
+  const itemPhotoUrl = useMemo(() => {
+    const raw = displayConfig?.item?.imageUrl ?? item.imageUrl ?? null;
+    const abs = raw?.trim() ? (toAbsoluteImageUrl(raw) ?? raw) : null;
+    if (!abs || isMerchantBrandOrPlaceholderImageUrl(abs)) return null;
+    return abs;
+  }, [displayConfig?.item?.imageUrl, item.imageUrl]);
 
   const loading = visible && !displayConfig && (configLoading || configFetching);
 
@@ -590,12 +636,12 @@ export function ItemCustomizationSheet({
 
   const cookingField = (
     <View style={styles.cookingSection}>
-      <AppText style={styles.cookingLabel}>Add a cooking request (optional)</AppText>
+      <AppText style={[styles.cookingLabel, dark && styles.cookingLabelDark]}>Add a cooking request (optional)</AppText>
       <View style={styles.cookingInputWrap}>
         <TextInput
-          style={styles.cookingInput}
+          style={[styles.cookingInput, dark && styles.cookingInputDark]}
           placeholder="e.g. Don’t make it too spicy"
-          placeholderTextColor={StoreTheme.textMuted}
+          placeholderTextColor={dark ? MerchantDarkPalette.textDim : StoreTheme.textMuted}
           value={cookingRequest}
           onChangeText={(t) =>
             setCookingRequest(t.slice(0, ORDER_ITEM_SPECIAL_INSTRUCTIONS_MAX_LENGTH))
@@ -606,7 +652,7 @@ export function ItemCustomizationSheet({
           blurOnSubmit={false}
           accessibilityLabel="Cooking request"
         />
-        <AppText style={styles.cookingCounter}>
+        <AppText style={[styles.cookingCounter, dark && styles.cookingCounterDark]}>
           {ORDER_ITEM_SPECIAL_INSTRUCTIONS_MAX_LENGTH - cookingRequest.length}
         </AppText>
       </View>
@@ -614,7 +660,7 @@ export function ItemCustomizationSheet({
   );
 
   const footerBar = (
-    <View style={[styles.footer, { paddingBottom: 8 }]}>
+    <View style={[styles.footer, dark && styles.footerDark, { paddingBottom: 8 }]}>
       <View style={styles.stepper}>
         <TouchableOpacity
           accessibilityRole="button"
@@ -714,40 +760,42 @@ export function ItemCustomizationSheet({
             <Ionicons name="close" size={22} color="#fff" />
           </TouchableOpacity>
 
-          <View style={[styles.sheet, { maxHeight: sheetMaxHeight - 54 }]}>
-            <View style={styles.sheetHandle} />
+          <View style={[styles.sheet, dark && styles.sheetDark, { maxHeight: sheetMaxHeight - 54 }]}>
+            <View style={[styles.sheetHandle, dark && styles.sheetHandleDark]} />
             {loading ? (
               <View style={styles.loadingWrap}>
-                <ActivityIndicator size="large" color={StoreTheme.accentMint} />
-                <AppText style={styles.loadingText}>Loading options…</AppText>
+                <ActivityIndicator size="large" color={dark ? MerchantDarkPalette.accent : StoreTheme.accentMint} />
+                <AppText style={[styles.loadingText, dark && styles.loadingTextDark]}>Loading options…</AppText>
               </View>
             ) : (
               <View style={styles.sheetBody}>
-                <View style={styles.header}>
+                <View style={[styles.header, dark && styles.headerDark]}>
                   <View style={styles.headerTopRow}>
-                    <View style={styles.headerImageWrap}>
-                      {item.imageUrl ? (
+                    <View style={[styles.headerImageWrap, dark && styles.headerImageWrapDark]}>
+                      {itemPhotoUrl ? (
                         <Image
-                          source={{ uri: item.imageUrl }}
+                          source={{ uri: itemPhotoUrl }}
                           style={styles.headerImage}
                           resizeMode="cover"
                         />
                       ) : (
-                        <View style={styles.headerImagePlaceholder}>
-                          <MenuItemImagePlaceholder size="sm" />
+                        <View style={[styles.headerImagePlaceholder, dark && styles.headerImagePlaceholderDark]}>
+                          <DietIndicator type={getItemDiet(item)} />
                         </View>
                       )}
-                      <View style={styles.dietOnThumb}>
-                        <DietIndicator type={item.isVeg ? "veg" : "nonveg"} />
-                      </View>
+                      {itemPhotoUrl ? (
+                        <View style={[styles.dietOnThumb, dark && styles.dietOnThumbDark]}>
+                          <DietIndicator type={getItemDiet(item)} />
+                        </View>
+                      ) : null}
                     </View>
 
                     <View style={styles.headerTitleCol}>
-                      <AppText style={styles.headerName} numberOfLines={2}>
+                      <AppText style={[styles.headerName, dark && styles.headerNameDark]} numberOfLines={2}>
                         {item.name}
                       </AppText>
                       {selectedVariantDisplayName ? (
-                        <AppText style={styles.headerPortion} numberOfLines={2}>
+                        <AppText style={[styles.headerPortion, dark && styles.headerPortionDark]} numberOfLines={2}>
                           {selectedVariantDisplayName}
                         </AppText>
                       ) : null}
@@ -756,28 +804,17 @@ export function ItemCustomizationSheet({
                     <View style={styles.headerIcons}>
                       <TouchableOpacity
                         hitSlop={8}
-                        style={styles.headerIconCircle}
+                        style={[styles.headerIconCircle, dark && styles.headerIconCircleDark]}
                         activeOpacity={0.75}
                       >
-                        <Ionicons
-                          name="bookmark-outline"
-                          size={18}
-                          color={StoreTheme.textPrimary}
-                        />
-                      </TouchableOpacity>
-                      <TouchableOpacity
-                        hitSlop={8}
-                        style={styles.headerIconCircle}
-                        activeOpacity={0.75}
-                      >
-                        <Feather name="share-2" size={17} color={StoreTheme.textPrimary} />
+                        <Feather name="share-2" size={17} color={dark ? MerchantDarkPalette.text : StoreTheme.textPrimary} />
                       </TouchableOpacity>
                     </View>
                   </View>
                 </View>
 
                 <ScrollView
-                  style={[styles.scroll, { maxHeight: Math.max(sheetMaxHeight - 200, 180) }]}
+                  style={[styles.scroll, dark && styles.scrollDark, { maxHeight: Math.max(sheetMaxHeight - 200, 180) }]}
                   contentContainerStyle={styles.scrollContent}
                   showsVerticalScrollIndicator={false}
                   keyboardShouldPersistTaps="always"
@@ -825,6 +862,9 @@ export function ItemCustomizationSheet({
                               }
                               selected={selectedVariantId === v.id}
                               singleSelect
+                              showImage
+                              imageUrl={itemPhotoUrl}
+                              diet={getItemDiet(item)}
                               onPress={() => setSelectedVariantId(v.id)}
                             />
                           );
@@ -876,7 +916,11 @@ export function ItemCustomizationSheet({
                   {displayConfig?.customizations?.map((c, groupIdx) => (
                     <View
                       key={c.id}
-                      style={[styles.sectionBlock, groupIdx > 0 && styles.sectionBlockGap]}
+                      style={[
+                        styles.sectionBlock,
+                        groupIdx > 0 && styles.sectionBlockGap,
+                        dark && groupIdx > 0 && styles.sectionBlockGapDark,
+                      ]}
                     >
                       <SectionHeader
                         title={c.title}
@@ -903,6 +947,7 @@ export function ItemCustomizationSheet({
                               imageUrl={a.imageUrl}
                               showImage
                               highlight={a.isMostOrdered === true}
+                              diet={guessAddonDiet(a.name, getItemDiet(item))}
                               onPress={() => toggleAddon(c.id, a.id)}
                             />
                           );
@@ -962,6 +1007,9 @@ const styles = StyleSheet.create({
     overflow: "hidden",
     ...StoreTheme.cardShadow,
   },
+  sheetDark: {
+    backgroundColor: MerchantDarkPalette.surface,
+  },
   sheetHandle: {
     alignSelf: "center",
     width: 40,
@@ -970,6 +1018,9 @@ const styles = StyleSheet.create({
     backgroundColor: "#D1D5DB",
     marginTop: 10,
     marginBottom: 4,
+  },
+  sheetHandleDark: {
+    backgroundColor: MerchantDarkPalette.border,
   },
   sheetBody: {
     flexDirection: "column",
@@ -985,6 +1036,9 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: StoreTheme.textSecondary,
   },
+  loadingTextDark: {
+    color: MerchantDarkPalette.textMuted,
+  },
   header: {
     paddingHorizontal: 16,
     paddingTop: 8,
@@ -992,6 +1046,10 @@ const styles = StyleSheet.create({
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: StoreTheme.border,
     backgroundColor: "#fff",
+  },
+  headerDark: {
+    backgroundColor: MerchantDarkPalette.surface,
+    borderBottomColor: MerchantDarkPalette.border,
   },
   headerTopRow: {
     flexDirection: "row",
@@ -1010,6 +1068,9 @@ const styles = StyleSheet.create({
     lineHeight: 18,
     marginTop: 2,
   },
+  headerPortionDark: {
+    color: MerchantDarkPalette.textMuted,
+  },
   headerImageWrap: {
     width: THUMB,
     height: THUMB,
@@ -1020,12 +1081,19 @@ const styles = StyleSheet.create({
     borderColor: "#EEEEEE",
     position: "relative",
   },
+  headerImageWrapDark: {
+    backgroundColor: MerchantDarkPalette.elevated,
+    borderWidth: 0,
+  },
   headerImagePlaceholder: {
     width: THUMB,
     height: THUMB,
     alignItems: "center",
     justifyContent: "center",
     backgroundColor: "#F5F5F5",
+  },
+  headerImagePlaceholderDark: {
+    backgroundColor: MerchantDarkPalette.elevated,
   },
   headerImage: {
     width: THUMB,
@@ -1039,12 +1107,18 @@ const styles = StyleSheet.create({
     borderRadius: 2,
     padding: 1,
   },
+  dietOnThumbDark: {
+    backgroundColor: "rgba(18,18,18,0.88)",
+  },
   headerName: {
     fontSize: 17,
     fontWeight: "800",
     color: StoreTheme.textPrimary,
     lineHeight: 22,
     letterSpacing: -0.2,
+  },
+  headerNameDark: {
+    color: MerchantDarkPalette.text,
   },
   headerIcons: {
     flexDirection: "row",
@@ -1061,22 +1135,31 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     backgroundColor: "#fff",
   },
+  headerIconCircleDark: {
+    backgroundColor: MerchantDarkPalette.elevated,
+    borderColor: MerchantDarkPalette.border,
+  },
   scroll: {
     flexGrow: 0,
     flexShrink: 1,
     backgroundColor: "#fff",
   },
+  scrollDark: {
+    backgroundColor: MerchantDarkPalette.surface,
+  },
   scrollContent: {
     paddingBottom: 8,
   },
   sectionBlock: {
-    backgroundColor: "#fff",
     paddingHorizontal: 16,
     paddingBottom: 4,
   },
   sectionBlockGap: {
     borderTopWidth: 8,
     borderTopColor: "#F4F4F5",
+  },
+  sectionBlockGapDark: {
+    borderTopColor: MerchantDarkPalette.bg,
   },
   companionSection: {
     marginTop: 16,
@@ -1145,6 +1228,9 @@ const styles = StyleSheet.create({
     paddingBottom: 8,
     marginBottom: 2,
   },
+  sectionHeaderDark: {
+    backgroundColor: MerchantDarkPalette.surface,
+  },
   sectionTitleRow: {
     flexDirection: "row",
     alignItems: "center",
@@ -1178,6 +1264,9 @@ const styles = StyleSheet.create({
     marginTop: 4,
     lineHeight: 17,
   },
+  sectionSubDark: {
+    color: MerchantDarkPalette.textMuted,
+  },
   rowPressed: {
     opacity: 0.92,
   },
@@ -1208,6 +1297,14 @@ const styles = StyleSheet.create({
     borderColor: StoreTheme.cartAction,
     backgroundColor: "#ECFDF5",
   },
+  optionRowCardDark: {
+    backgroundColor: MerchantDarkPalette.card,
+    borderColor: MerchantDarkPalette.border,
+  },
+  optionRowCardSelectedDark: {
+    borderColor: MerchantDarkPalette.accent,
+    backgroundColor: MerchantDarkPalette.accentSoft,
+  },
   optionRowCardHighlight: {
     borderColor: "rgba(21, 128, 61, 0.35)",
     backgroundColor: "#F6FEF9",
@@ -1233,6 +1330,20 @@ const styles = StyleSheet.create({
     borderColor: "#EEEEEE",
     position: "relative",
   },
+  optionThumbDark: {
+    backgroundColor: MerchantDarkPalette.elevated,
+    borderWidth: 0,
+  },
+  optionThumbEmpty: {
+    borderWidth: 0,
+  },
+  optionThumbEmptyInner: {
+    flex: 1,
+    width: "100%",
+    height: "100%",
+    alignItems: "center",
+    justifyContent: "center",
+  },
   optionThumbPlaceholder: {
     width: ADDON_IMG,
     height: ADDON_IMG,
@@ -1253,6 +1364,9 @@ const styles = StyleSheet.create({
     borderRadius: 2,
     padding: 1,
   },
+  dietOnThumbSmallDark: {
+    backgroundColor: "rgba(18,18,18,0.88)",
+  },
   optionCenter: {
     flex: 1,
     minWidth: 0,
@@ -1268,10 +1382,16 @@ const styles = StyleSheet.create({
     fontWeight: "600",
     color: StoreTheme.textPrimary,
   },
+  optionNameInlineDark: {
+    color: MerchantDarkPalette.text,
+  },
   optionQtyInline: {
     fontSize: 14,
     fontWeight: "500",
     color: StoreTheme.textSecondary,
+  },
+  optionQtyInlineDark: {
+    color: MerchantDarkPalette.textMuted,
   },
   optionNameDisabled: {
     color: StoreTheme.textMuted,
@@ -1290,6 +1410,9 @@ const styles = StyleSheet.create({
     color: StoreTheme.textPrimary,
     textAlign: "right",
     flexShrink: 0,
+  },
+  optionPriceDark: {
+    color: MerchantDarkPalette.text,
   },
   optionPriceCol: {
     alignItems: "flex-end",
@@ -1346,6 +1469,10 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
+  radioOuterDark: {
+    borderColor: MerchantDarkPalette.chipBorder,
+    backgroundColor: "transparent",
+  },
   radioOuterSelected: {
     borderColor: StoreTheme.cartAction,
   },
@@ -1384,6 +1511,10 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     backgroundColor: "#fff",
   },
+  checkboxOuterDark: {
+    backgroundColor: MerchantDarkPalette.elevated,
+    borderColor: MerchantDarkPalette.accent,
+  },
   checkboxOuterSelected: {
     backgroundColor: StoreTheme.cartAction,
     borderColor: StoreTheme.cartAction,
@@ -1409,6 +1540,10 @@ const styles = StyleSheet.create({
       },
       android: { elevation: 8 },
     }),
+  },
+  footerDark: {
+    backgroundColor: MerchantDarkPalette.surface,
+    borderTopColor: MerchantDarkPalette.border,
   },
   stepper: {
     width: STEPPER_WIDTH,
@@ -1501,6 +1636,9 @@ const styles = StyleSheet.create({
     textTransform: "uppercase",
     letterSpacing: 0.4,
   },
+  cookingLabelDark: {
+    color: MerchantDarkPalette.textMuted,
+  },
   cookingInputWrap: {
     position: "relative",
   },
@@ -1517,11 +1655,19 @@ const styles = StyleSheet.create({
     textAlignVertical: "top",
     backgroundColor: "#FAFAFA",
   },
+  cookingInputDark: {
+    backgroundColor: MerchantDarkPalette.card,
+    borderColor: MerchantDarkPalette.border,
+    color: MerchantDarkPalette.text,
+  },
   cookingCounter: {
     position: "absolute",
     right: 10,
     bottom: 8,
     fontSize: 11,
     color: StoreTheme.textMuted,
+  },
+  cookingCounterDark: {
+    color: MerchantDarkPalette.textDim,
   },
 });

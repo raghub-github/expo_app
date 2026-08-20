@@ -101,6 +101,20 @@ async function resolveMerchantCtmAmount(
   sql: Sql,
   args: { orderCoreId: number; ordersFoodId: number }
 ): Promise<number> {
+  // Prefer OSB merchant_gross (v2 = merchant_settlement_ctm) so cancel matches delivery.
+  try {
+    const osbRows = await sql<{ merchant_gross: string | null }[]>`
+      SELECT merchant_gross::text
+      FROM order_settlement_breakdown
+      WHERE order_id = ${args.orderCoreId}
+      LIMIT 1
+    `;
+    const fromOsb = Number(osbRows[0]?.merchant_gross ?? 0);
+    if (Number.isFinite(fromOsb) && fromOsb > 0) return round2(fromOsb);
+  } catch {
+    /* pre-0380 schemas */
+  }
+
   const rows = await sql<{ total_ctm: string | null; food_items_total_value: string | null }[]>`
     SELECT c.total_ctm::text, f.food_items_total_value::text
     FROM orders_core c

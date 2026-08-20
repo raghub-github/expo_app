@@ -39,6 +39,9 @@ export type BillContext = {
     appliedOfferDiscountPct?: number | null;
     /** Merchant-configured flat ₹ off per unit when offer is FLAT. */
     appliedOfferDiscountFlat?: number | null;
+    /** v2: Boost already baked into customer catalog via resolveItemPricing. */
+    boostAlreadyInPrice?: boolean;
+    canonicalPricing?: Record<string, unknown> | null;
   }[];
   /**
    * Cart menu PK → catalog item_id aliases (and similar).
@@ -323,6 +326,8 @@ export type BillingResult = {
     appliedOfferDiscountFlat: number | null;
     isDiscountEligible: boolean;
     ineligibilityReason: "ITEM_PROMO" | "MRP" | null;
+    boostAlreadyInPrice?: boolean;
+    canonical_pricing?: Record<string, unknown> | null;
   }>;
 };
 

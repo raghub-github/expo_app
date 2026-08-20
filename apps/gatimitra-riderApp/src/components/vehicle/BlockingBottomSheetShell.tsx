@@ -5,7 +5,7 @@ import {
   StyleSheet,
   Platform,
   Keyboard,
-  KeyboardAvoidingView,
+  ScrollView,
   useWindowDimensions,
   type ViewStyle,
 } from "react-native";
@@ -51,7 +51,7 @@ export function BlockingBottomSheetShell({
   const maxH = Math.round(winH * maxHeightRatio);
   const sheetMaxHeight =
     keyboardHeight > 0
-      ? Math.max(200, winH - keyboardHeight - insets.top - 12)
+      ? Math.max(280, winH - keyboardHeight - insets.top - 12)
       : maxH;
 
   return (
@@ -61,42 +61,29 @@ export function BlockingBottomSheetShell({
       animationType="slide"
       statusBarTranslucent
       presentationStyle="overFullScreen"
+      hardwareAccelerated
       onRequestClose={() => {}}
     >
-      <KeyboardAvoidingView
-        style={styles.keyboardRoot}
-        behavior={Platform.OS === "ios" ? "padding" : keyboardHeight > 0 ? "height" : undefined}
-        enabled={Platform.OS === "ios" || keyboardHeight > 0}
-        keyboardVerticalOffset={Platform.OS === "ios" ? insets.top : 0}
-      >
-        <View style={styles.root}>
-          <View style={styles.backdrop} />
-          <View
-            style={[
-              styles.sheet,
-              { maxHeight: sheetMaxHeight },
-              sheetStyle,
-            ]}
+      <View style={styles.root}>
+        <View style={styles.backdrop} />
+        <View style={[styles.sheet, { maxHeight: sheetMaxHeight }, sheetStyle]}>
+          <View style={styles.handle} />
+          <ScrollView
+            bounces={false}
+            keyboardShouldPersistTaps="handled"
+            showsVerticalScrollIndicator={false}
+            contentContainerStyle={styles.sheetBody}
           >
-            <View style={styles.handle} />
-            <View style={styles.sheetBody}>{children}</View>
-            <View
-              style={[
-                styles.bottomSafeFill,
-                { height: systemBottom },
-              ]}
-            />
-          </View>
+            {children}
+          </ScrollView>
+          <View style={[styles.bottomSafeFill, { height: systemBottom }]} />
         </View>
-      </KeyboardAvoidingView>
+      </View>
     </Modal>
   );
 }
 
 const styles = StyleSheet.create({
-  keyboardRoot: {
-    flex: 1,
-  },
   root: {
     flex: 1,
     justifyContent: "flex-end",
@@ -123,7 +110,7 @@ const styles = StyleSheet.create({
         shadowOpacity: 0.12,
         shadowRadius: 16,
       },
-      android: { elevation: 12 },
+      android: { elevation: 24 },
     }),
   },
   handle: {

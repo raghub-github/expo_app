@@ -1,6 +1,7 @@
 'use client';
 
 import { useMemo, useRef, useEffect, useState } from 'react';
+import { Check, Copy } from 'lucide-react';
 import type { OrderPaymentDetail, OrderPaymentRecord } from '@/lib/orders/order-payment-types';
 import {
   formatPaymentInstrumentSource,
@@ -18,6 +19,7 @@ import {
   isRefundFailed,
   settledRefundTotal,
 } from '@/lib/orders/refund-status';
+import { resolveRefundLogIds, refundInitiatedByLabel } from '@/lib/orders/refund-log-ids';
 import {
   resolveCustomerCtcPaidAmount,
 } from '@/lib/orders/customer-ctc';
@@ -58,6 +60,7 @@ interface OrderRefundForDisplay {
   customerWalletLedgerId?: number | null;
   splitWalletAmount?: number | null;
   splitRazorpayAmount?: number | null;
+  refundInitiatedBy?: string | null;
   initiatedByEmail: string | null;
   createdAt: string;
   refundType?: string | null;
@@ -161,8 +164,8 @@ function discountOfferPillClass(source: OrderDiscountOfferSource): string {
 }
 
 const TH =
-  'text-left py-2 px-3 text-[10px] font-semibold text-gray-600 uppercase tracking-wider border-b border-gray-200 whitespace-nowrap';
-const TD = 'py-2 px-3 text-[11px] text-gray-900 whitespace-nowrap';
+  'text-left py-2.5 px-3 text-[10px] font-semibold text-gray-600 uppercase tracking-wider border-b border-gray-200 whitespace-nowrap align-middle';
+const TD = 'py-3 px-3 text-[11px] text-gray-900 whitespace-nowrap align-middle';
 
 interface PaymentDetailsModalProps {
   isOpen: boolean;
@@ -202,18 +205,59 @@ function impactBadge(impact: 'debit' | 'credit' | 'info'): {
   return { label: 'No credit', className: 'bg-slate-100 text-slate-600' };
 }
 
-/** Prefer unique RRN; never invent ordinal placeholders like RFND-{id}. */
-function refundDisplayId(r: OrderRefundForDisplay): string {
-  const rrn = (r.refundReference ?? '').trim();
-  if (rrn && !/^RFND-\d+$/i.test(rrn)) return rrn;
-  const gateway = (r.razorpayRefundId ?? r.pgRefundId ?? '').trim();
-  if (gateway) return gateway;
-  if (r.customerWalletLedgerId != null && Number(r.customerWalletLedgerId) > 0) {
-    return `WALLET-${r.customerWalletLedgerId}`;
+function RefundLogIdsCell({ r }: { r: OrderRefundForDisplay }) {
+  const [copiedSource, setCopiedSource] = useState<string | null>(null);
+  const lines = resolveRefundLogIds(r);
+  if (lines.length === 0) {
+    return <span className="text-slate-400">—</span>;
   }
-  // Weak legacy RFND-{id} / missing ref — show pending label, not a fake RRN.
-  if (rrn) return rrn;
-  return 'Pending RRN';
+
+  const copyId = (source: string, id: string) => {
+    if (typeof navigator === 'undefined' || !navigator.clipboard?.writeText) return;
+    void navigator.clipboard.writeText(id).then(() => {
+      setCopiedSource(source);
+      window.setTimeout(() => {
+        setCopiedSource((cur) => (cur === source ? null : cur));
+      }, 1400);
+    });
+  };
+
+  return (
+    <ul className="space-y-1">
+      {lines.map((line) => (
+        <li key={line.source} className="whitespace-nowrap">
+          <span className="inline-flex items-center gap-1.5">
+            <span className="text-[9px] font-semibold uppercase tracking-wide text-slate-500">
+              {line.label}
+            </span>
+            <span
+              className={`font-mono text-[10px] font-semibold whitespace-nowrap ${
+                line.pending ? 'text-amber-800' : 'text-red-700'
+              }`}
+            >
+              {line.id}
+            </span>
+            {!line.pending ? (
+              <button
+                type="button"
+                className="inline-flex shrink-0 items-center justify-center opacity-80 hover:opacity-100"
+                onClick={() => copyId(line.source, line.id)}
+                aria-label={`Copy ${line.label} refund id`}
+                title="Copy ID"
+              >
+                {copiedSource === line.source ? (
+                  <Check className="h-3 w-3 text-emerald-600" />
+                ) : (
+                  <Copy className="h-3 w-3 text-gati-primary" />
+                )}
+                <span className="sr-only">Copy</span>
+              </button>
+            ) : null}
+          </span>
+        </li>
+      ))}
+    </ul>
+  );
 }
 
 function DeliveryFeeAmount({
@@ -233,10 +277,12 @@ function DeliveryFeeAmount({
       : null;
   const chargedNum =
     charged != null && Number.isFinite(Number(charged)) ? Number(charged) : null;
+  const paidDisplay = waived ? 0 : chargedNum;
+  /** Strike only for membership: waived to ₹0, or quoted (pre-benefit) > what the customer paid. */
   const showStrike =
     quotedNum != null &&
-    (Boolean(waived) || (chargedNum != null && quotedNum > chargedNum + 0.009));
-  const paidDisplay = waived ? 0 : chargedNum;
+    (Boolean(waived) ||
+      (paidDisplay != null && quotedNum > paidDisplay + 0.009));
 
   if (showStrike) {
     return (
@@ -497,19 +543,17 @@ function PaymentDetailsModal({
               <p className="text-lg font-bold text-gray-900 orders-num mt-1">
                 {formatCurrency(totalAmount)}
               </p>
-              {showGatiCash ? (
-                <div className="mt-1.5 min-w-0">
-                  <CustomerCtcIconSplit
-                    cashin={Math.max(
-                      0,
-                      (Number(totalAmount) || 0) - (Number(totalGatiCash) || 0)
-                    )}
-                    gatiCashUsed={Number(totalGatiCash) || 0}
-                    formatCurrency={formatCurrency}
-                    className="max-w-full"
-                  />
-                </div>
-              ) : null}
+              <div className="mt-1.5 min-w-0">
+                <CustomerCtcIconSplit
+                  cashin={Math.max(
+                    0,
+                    (Number(totalAmount) || 0) - (Number(totalGatiCash) || 0)
+                  )}
+                  gatiCashUsed={Number(totalGatiCash) || 0}
+                  formatCurrency={formatCurrency}
+                  className="max-w-full"
+                />
+              </div>
             </div>
             <div className="bg-white p-3 rounded-md border border-emerald-200">
               <p className="text-[11px] font-medium text-emerald-800">Merchant amount (CTM)</p>
@@ -558,12 +602,11 @@ function PaymentDetailsModal({
           <div>
             {orderRefunds.length > 0 ? (
               <>
-                <h3 className="text-sm font-semibold text-slate-800 mb-2">Refund records</h3>
                 <div className="overflow-x-auto overscroll-x-contain rounded-lg border border-gray-200 [-webkit-overflow-scrolling:touch]">
                   <table className="w-full min-w-[1100px] border-collapse">
                     <thead className="bg-gray-50">
                       <tr>
-                        <th className={TH}>Refund RRN</th>
+                        <th className={TH}>Refund ID(s)</th>
                         <th className={TH}>Reason</th>
                         <th className={TH}>Item(s)</th>
                         <th className={TH}>Amount</th>
@@ -592,8 +635,8 @@ function PaymentDetailsModal({
                         const itemLines = refundItemLines(r);
                         return (
                           <tr key={r.id} className="hover:bg-gray-50 transition-colors">
-                            <td className={`${TD} font-mono font-semibold text-red-700`}>
-                              {refundDisplayId(r)}
+                            <td className={TD}>
+                              <RefundLogIdsCell r={r} />
                             </td>
                             <td className={TD}>{formatPlain(r.refundReason)}</td>
                             <td className={`${TD} max-w-[220px]`}>
@@ -631,7 +674,7 @@ function PaymentDetailsModal({
                                 {statusLabel}
                               </span>
                             </td>
-                            <td className={TD}>{formatPlain(r.initiatedByEmail)}</td>
+                            <td className={TD}>{refundInitiatedByLabel(r)}</td>
                             <td className={TD}>
                               {new Date(r.createdAt).toLocaleString('en-IN', {
                                 dateStyle: 'medium',
@@ -660,9 +703,6 @@ function PaymentDetailsModal({
           <div>
             {recoveryRecords.length > 0 ? (
               <>
-                <h3 className="text-sm font-semibold text-slate-800 mb-2">
-                  Penalty &amp; recovery records
-                </h3>
                 <div className="overflow-x-auto overscroll-x-contain rounded-lg border border-gray-200 [-webkit-overflow-scrolling:touch]">
                   <table className="w-full min-w-[960px] border-collapse">
                     <thead className="bg-gray-50">
@@ -701,7 +741,11 @@ function PaymentDetailsModal({
                               </span>
                             </td>
                             <td className={TD}>{formatPlain(rec.kind)}</td>
-                            <td className={TD}>{formatPlain(rec.reason)}</td>
+                            <td className="py-3 px-3 text-[11px] text-gray-900 align-middle min-w-[200px] max-w-[280px]">
+                              <p className="whitespace-normal break-words leading-snug">
+                                {formatPlain(rec.reason)}
+                              </p>
+                            </td>
                             <td className={`${TD} tabular-nums font-semibold ${amountClass}`}>
                               {formatSignedCurrency(rec.amount, rec.impact)}
                             </td>
@@ -816,19 +860,24 @@ export default function PaymentDetails({
     };
 
     const pickDiscount = (
-      apiAmount: number | null | undefined,
+      apiCustomer: number | null | undefined,
+      apiMerchant: number | null | undefined,
       apiSource: OrderDiscountOfferSource | null | undefined
     ) => {
-      if (itemsDiscount.amount != null && itemsDiscount.amount > 0) {
-        return {
-          amount: itemsDiscount.amount,
-          offerSource: itemsDiscount.offerSource ?? apiSource ?? null,
-        };
-      }
-      return {
-        amount: apiAmount ?? null,
-        offerSource: apiSource ?? null,
-      };
+      const fromItems =
+        itemsDiscount.amount != null && itemsDiscount.amount > 0 ? itemsDiscount.amount : 0;
+      const fromMerchantLines = (orderItemsPricing?.lines ?? [])
+        .filter((l) => l.key === 'store_offer')
+        .reduce((s, l) => s + Math.abs(l.amount), 0);
+      const fromApiCustomer = apiCustomer != null && apiCustomer > 0 ? apiCustomer : 0;
+      const fromApiMerchant = apiMerchant != null && apiMerchant > 0 ? apiMerchant : 0;
+      const customerAmount = Math.max(fromItems, fromApiCustomer);
+      const merchantAmount = Math.max(fromMerchantLines, fromApiMerchant);
+      const offerSource =
+        merchantAmount > 0.005 || customerAmount > 0.005
+          ? apiSource ?? itemsDiscount.offerSource ?? (merchantAmount > 0.005 ? 'Store' : null)
+          : apiSource ?? itemsDiscount.offerSource ?? null;
+      return { customerAmount, merchantAmount, offerSource };
     };
 
     const pickDelivery = (
@@ -863,6 +912,7 @@ export default function PaymentDetails({
       const totalCtm = pickMerchantAmount(paymentDetail.totalCtm, totalCtc);
       const discount = pickDiscount(
         paymentDetail.totalDiscountGranted,
+        paymentDetail.merchantStoreOfferDiscount,
         paymentDetail.discountOfferSource
       );
       const delivery = pickDelivery(
@@ -945,7 +995,8 @@ export default function PaymentDetails({
         totalCtm,
         totalCashbackEarned: paymentDetail.totalCashbackEarned,
         gatiCashUsed: paymentDetail.gatiCashUsed ?? null,
-        totalDiscountGranted: discount.amount,
+        totalDiscountGranted: discount.customerAmount > 0.005 ? discount.customerAmount : 0,
+        merchantStoreOfferDiscount: discount.merchantAmount > 0.005 ? discount.merchantAmount : 0,
         discountOfferSource: discount.offerSource,
         deliveryFee: delivery.amount,
         deliveryFeeQuoted: delivery.quoted,
@@ -972,7 +1023,7 @@ export default function PaymentDetails({
       (customerFromItems != null && customerFromItems > 0 ? customerFromItems : null) ??
       null;
 
-    const discount = pickDiscount(null, null);
+    const discount = pickDiscount(null, null, null);
     const delivery = pickDelivery(null, null, false);
     const paymentMode = formatPaymentModeOnlineOrCash(order.paymentMethod);
     const source =
@@ -985,7 +1036,8 @@ export default function PaymentDetails({
       totalCtm,
       totalCashbackEarned: null,
       gatiCashUsed: null,
-      totalDiscountGranted: discount.amount,
+      totalDiscountGranted: discount.customerAmount > 0.005 ? discount.customerAmount : 0,
+      merchantStoreOfferDiscount: discount.merchantAmount > 0.005 ? discount.merchantAmount : 0,
       discountOfferSource: discount.offerSource,
       deliveryFee: delivery.amount,
       deliveryFeeQuoted: delivery.quoted,
@@ -1071,20 +1123,13 @@ export default function PaymentDetails({
                   <span className="text-gati-text-primary font-semibold orders-num shrink-0">
                     {formatCurrency(ctc > 0 ? ctc : resolved.totalAmount)}
                   </span>
-                  {gati > 0.005 ? (
-                    <>
-                      <span className="text-gati-text-secondary font-semibold shrink-0" aria-hidden>
-                        -
-                      </span>
-                      <CustomerCtcIconSplit
-                        cashin={cashin}
-                        gatiCashUsed={gati}
-                        formatCurrency={formatCurrency}
-                        nowrap
-                        className="shrink-0"
-                      />
-                    </>
-                  ) : null}
+                  <CustomerCtcIconSplit
+                    cashin={cashin}
+                    gatiCashUsed={gati}
+                    formatCurrency={formatCurrency}
+                    nowrap
+                    className="shrink-0"
+                  />
                 </div>
               </div>
             );
@@ -1095,31 +1140,55 @@ export default function PaymentDetails({
               {formatCurrency(resolved.totalCtm)}
             </span>
           </p>
-          {resolved.gatiCashUsed != null &&
-          Number.isFinite(resolved.gatiCashUsed) &&
-          resolved.gatiCashUsed > 0 ? (
-            <p className={paymentDetailRowClass}>
-              <span className="text-gati-text-secondary font-medium shrink-0">GatiCash used:</span>
-              <span className="text-gati-text-primary font-semibold orders-num shrink-0">
-                {formatCurrency(resolved.gatiCashUsed)}
-              </span>
-            </p>
-          ) : null}
-          <p className={paymentDetailRowClass}>
-            <span className="text-gati-text-secondary font-medium shrink-0">
-              Total Discount Granted on Ord:
-            </span>
-            <span className="text-gati-text-primary font-medium orders-num shrink-0">
-              {formatCurrency(resolved.totalDiscountGranted)}
-            </span>
-            {resolved.discountOfferSource ? (
+          {(() => {
+            const merchOffer = Number(resolved.merchantStoreOfferDiscount ?? 0) || 0;
+            const customerOffer = Number(resolved.totalDiscountGranted ?? 0) || 0;
+            const showMerchant = merchOffer > 0.005;
+            const showCustomerVsList =
+              showMerchant && customerOffer > 0.005 && Math.abs(customerOffer - merchOffer) > 0.01;
+            const offerPill = resolved.discountOfferSource ? (
               <span
                 className={`inline-flex shrink-0 items-center rounded-full border px-1.5 py-px text-[9px] font-semibold leading-none ${discountOfferPillClass(resolved.discountOfferSource)}`}
               >
                 {resolved.discountOfferSource}
               </span>
-            ) : null}
-          </p>
+            ) : null;
+            return (
+              <>
+                {showMerchant ? (
+                  <p className={paymentDetailRowClass}>
+                    <span className="text-gati-text-secondary font-medium shrink-0">
+                      Restaurant store offer (CTM):
+                    </span>
+                    <span className="text-gati-text-primary font-medium orders-num shrink-0">
+                      {formatCurrency(merchOffer)}
+                    </span>
+                    {offerPill}
+                  </p>
+                ) : (
+                  <p className={paymentDetailRowClass}>
+                    <span className="text-gati-text-secondary font-medium shrink-0">
+                      Total Discount Granted on Ord:
+                    </span>
+                    <span className="text-gati-text-primary font-medium orders-num shrink-0">
+                      {formatCurrency(customerOffer)}
+                    </span>
+                    {offerPill}
+                  </p>
+                )}
+                {showCustomerVsList ? (
+                  <p className={paymentDetailRowClass}>
+                    <span className="text-gati-text-secondary font-medium shrink-0">
+                      Customer discount vs list (CTC):
+                    </span>
+                    <span className="text-gati-text-primary font-medium orders-num shrink-0">
+                      {formatCurrency(customerOffer)}
+                    </span>
+                  </p>
+                ) : null}
+              </>
+            );
+          })()}
           <p className={paymentDetailRowClass}>
             <span className="text-gati-text-secondary font-medium shrink-0">Delivery Fee:</span>
             <span className="text-gati-text-primary font-medium inline-flex shrink-0 items-center">
@@ -1133,8 +1202,9 @@ export default function PaymentDetails({
           <p className={paymentDetailRowClass}>
             <span className="text-gati-text-secondary font-medium shrink-0">Source:</span>
             <span className="text-gati-text-primary font-medium shrink-0">{resolved.source ?? '—'}</span>
-          </p>
-          <p className={paymentDetailRowClass}>
+            <span className="text-gati-text-secondary shrink-0" aria-hidden>
+              |
+            </span>
             <span className="text-gati-text-secondary font-medium shrink-0">PaymentMode:</span>
             <span className="text-gati-text-primary font-medium shrink-0">
               {resolved.paymentMode ?? '—'}

@@ -1,4 +1,5 @@
 import type { NextConfig } from "next";
+import os from "os";
 import path from "path";
 
 /** Where Fastify lives in local dev (backend `npm run dev` → port 3000). */
@@ -73,10 +74,20 @@ const nextConfig: NextConfig = {
 
   webpack: (config, { dev, isServer }) => {
     const onOneDrive = process.platform === "win32" && __dirname.includes("OneDrive");
-    if (dev || onOneDrive) {
-      // Disk pack cache + OneDrive / Windows file locking causes ENOENT on manifests and
-      // "rename ... 0.pack.gz_" webpack cache errors. In-memory cache avoids disk locks.
-      config.cache = { type: "memory" };
+    if (dev) {
+      // In-memory webpack cache OOMs this dashboard (Next restarts: "used memory threshold").
+      // OneDrive/.next pack files also lock; keep the cache off OneDrive in %TEMP%.
+      config.cache = {
+        type: "filesystem",
+        cacheDirectory: path.join(os.tmpdir(), "gatimitra-dashboard-webpack"),
+        compression: false,
+      };
+    } else if (onOneDrive) {
+      config.cache = {
+        type: "filesystem",
+        cacheDirectory: path.join(os.tmpdir(), "gatimitra-dashboard-webpack"),
+        compression: false,
+      };
     }
     // Prevent postgres (Node-only) from entering the client bundle if imported accidentally.
     if (!isServer) {

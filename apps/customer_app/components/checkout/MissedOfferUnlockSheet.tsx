@@ -109,9 +109,10 @@ export function MissedOfferUnlockSheet({
 
             <View style={styles.optionsBlock}>
               <Pressable
-                style={[styles.optionCard, styles.optionPrimary, pending && styles.optionSelected]}
+                style={[styles.optionHit, styles.optionPrimary, pending && styles.optionSelected]}
                 onPress={pending ? onRemoveFromWallet : onAddToWallet}
               >
+                <View style={styles.optionRow}>
                 <View style={styles.optionIconWrap}>
                   <MaterialCommunityIcons name="wallet-plus-outline" size={22} color={BRAND_DARK} />
                 </View>
@@ -128,9 +129,11 @@ export function MissedOfferUnlockSheet({
                 ) : (
                   <Ionicons name="chevron-forward" size={20} color={BRAND} />
                 )}
+                </View>
               </Pressable>
 
-              <Pressable style={styles.optionCard} onPress={onAddMoreItems}>
+              <Pressable style={styles.optionHit} onPress={onAddMoreItems}>
+                <View style={styles.optionRow}>
                 <View style={[styles.optionIconWrap, styles.optionIconWrapMuted]}>
                   <MaterialCommunityIcons name="cart-plus" size={22} color="#334155" />
                 </View>
@@ -141,6 +144,7 @@ export function MissedOfferUnlockSheet({
                   </CheckoutText>
                 </View>
                 <Ionicons name="chevron-forward" size={20} color="#94A3B8" />
+                </View>
               </Pressable>
             </View>
           </Animated.View>
@@ -240,16 +244,18 @@ const styles = StyleSheet.create({
     paddingBottom: 4,
     gap: 10,
   },
-  optionCard: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 12,
+  optionHit: {
     borderWidth: 1,
     borderColor: "#E2E8F0",
     borderRadius: 14,
     paddingHorizontal: 14,
     paddingVertical: 14,
     backgroundColor: "#FFFFFF",
+  },
+  optionRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
   },
   optionPrimary: {
     borderColor: "#99F6E4",

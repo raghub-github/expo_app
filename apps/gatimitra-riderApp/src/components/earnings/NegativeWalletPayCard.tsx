@@ -18,6 +18,7 @@ import {
 } from "@/src/lib/razorpay-native";
 import { extractApiErrorMessage } from "@/src/services/http";
 import { colors } from "@/src/theme";
+import { showRiderPaymentSuccess } from "@/src/stores/paymentSuccessSheetStore";
 
 function formatRupee(amount: number) {
   return Number.isInteger(amount) ? String(amount) : amount.toFixed(2);
@@ -114,7 +115,7 @@ export function NegativeWalletPayCard() {
           const walletRes = await payDuesFromWallet.mutateAsync();
           await refreshAll();
           if (walletRes.totalDueAfter <= 0) {
-            Alert.alert(
+            showRiderPaymentSuccess(
               t("subscription.duesPaidTitle", "Payment successful"),
               t("subscription.duesPaidFromWallet", "{{amount}} cleared from wallet.", {
                 amount: `₹${formatRupee(walletRes.paidAmount ?? 0)}`,
@@ -135,7 +136,7 @@ export function NegativeWalletPayCard() {
               razorpaySignature: sig,
             });
             await refreshAll();
-            Alert.alert(
+            showRiderPaymentSuccess(
               t("subscription.duesPaidTitle", "Payment successful"),
               t("subscription.duesPaidMessage", "Subscription dues cleared.")
             );
@@ -160,7 +161,7 @@ export function NegativeWalletPayCard() {
             razorpaySignature: r.razorpaySignature,
           });
           await refreshAll();
-          Alert.alert(
+          showRiderPaymentSuccess(
             t("subscription.duesPaidTitle", "Payment successful"),
             t("subscription.duesPaidMessage", "Subscription dues cleared.")
           );
@@ -189,7 +190,7 @@ export function NegativeWalletPayCard() {
             razorpaySignature: sig,
           });
           await refreshAll();
-          Alert.alert(
+          showRiderPaymentSuccess(
             t("earnings.paySuccessTitle", "Payment successful"),
             t("earnings.paySuccessBody", "Your wallet balance has been updated.")
           );
@@ -214,7 +215,7 @@ export function NegativeWalletPayCard() {
           razorpaySignature: r.razorpaySignature,
         });
         await refreshAll();
-        Alert.alert(
+        showRiderPaymentSuccess(
           t("earnings.paySuccessTitle", "Payment successful"),
           t("earnings.paySuccessBody", "Your wallet balance has been updated.")
         );

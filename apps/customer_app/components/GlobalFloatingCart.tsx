@@ -6,7 +6,7 @@
  * Parcel tracking must never appear on food home (and vice versa).
  */
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { AppText } from "@/components/AppText";
 
 import { View, TouchableOpacity, StyleSheet, Platform, ScrollView, Modal, Pressable, Alert, useWindowDimensions, type NativeSyntheticEvent, type NativeScrollEvent } from "react-native";
@@ -44,6 +44,9 @@ import { useCheckoutSheetStore } from "@/store/checkoutSheetStore";
 import { useCartCheckoutGateStore } from "@/store/cartCheckoutGateStore";
 import { useMealsUnderPriceCartUiStore } from "@/store/mealsUnderPriceCartUiStore";
 import { tryNavigateToFoodCheckout } from "@/lib/cartCheckoutGate";
+import { useFloatingDockUiStore } from "@/store/floatingDockUiStore";
+import { useDiscoveryLayout } from "@/hooks/useDiscoveryLayout";
+import { DiscoveryColors } from "@/features/discovery-home/discoveryTheme";
 
 /** Shown instead of multi-cart checkout until the feature exists. */
 const CHECKOUT_ALL_COMING_SOON = "Checkout all functionality coming soon";
@@ -76,7 +79,15 @@ function computeIsFoodServicePage(pathname: string | null, segments: string[]): 
   if (segments[0] === "home" && segments[1] === "meals-under-price") return false;
   // Search owns full-screen discovery — no floating cart dock.
   if (p === "/search" || p.startsWith("/search")) return false;
-  if (p === "/home" || p.startsWith("/home/merchant") || p.startsWith("/home/category")) return true;
+  if (
+    p === "/home" ||
+    p.startsWith("/home/merchant") ||
+    p.startsWith("/home/category") ||
+    p.startsWith("/home/free-packaging") ||
+    p.startsWith("/home/crazy-deals")
+  ) {
+    return true;
+  }
   if (p.startsWith("/home/service") || p.startsWith("/home/shop")) return false;
   if (p === "/" || p.startsWith("/(tabs)")) return false;
   return false;
@@ -188,10 +199,12 @@ function FloatingOrderTrackingPillWithUnread({
   order,
   onPress,
   emphasis = "primary",
+  dark = false,
 }: {
   order: ActiveOrder;
   onPress: () => void;
   emphasis?: "primary" | "secondary";
+  dark?: boolean;
 }) {
   const { data: chatUnread } = usePartnerChatUnread(order.orderId, true);
   return (
@@ -200,6 +213,7 @@ function FloatingOrderTrackingPillWithUnread({
       onPress={onPress}
       chatUnreadCount={chatUnread?.unreadCount ?? 0}
       emphasis={emphasis}
+      dark={dark}
     />
   );
 }
@@ -217,6 +231,8 @@ export function GlobalFloatingCart() {
   // instead of each of these independently calling usePathname()/useSegments().
   const isFoodServicePage = computeIsFoodServicePage(pathname, segments);
   const isParcelServiceHome = computeIsParcelServiceHome(pathname);
+  const discoveryLayout = useDiscoveryLayout();
+  const dockDark = discoveryLayout && isFoodServicePage;
   const trackingDockService = computeTrackingDockService(isFoodServicePage, isParcelServiceHome);
   const isOnOrdersArea = computeIsOnOrdersArea(pathname);
   const hideFloatingOrderTrackingPill = computeHideFloatingOrderTrackingPill(pathname, segments);
@@ -434,17 +450,14 @@ export function GlobalFloatingCart() {
     const currentPath = typeof pathname === "string" ? pathname : "";
     if (currentPath.startsWith("/checkout")) return;
 
-    // Gate Outside Delivery Range only on explicit View Cart — never on app entry.
+    // Hide immediately so the first tap feels instant; pathname still lags a few frames.
     checkoutNavLockRef.current = true;
+    setHideForCheckoutNav(true);
     void prefetchSubscriptionPlans(queryClient);
     void (async () => {
       try {
         const navigated = await tryNavigateToFoodCheckout(router, queryClient);
-        if (navigated) {
-          setHideForCheckoutNav(true);
-          return;
-        }
-        // Unserviceable → gate shown; keep floating cart after user dismisses.
+        if (navigated) return;
         checkoutNavLockRef.current = false;
         setHideForCheckoutNav(false);
       } catch {
@@ -477,6 +490,17 @@ export function GlobalFloatingCart() {
     showFloatingFoodCart ||
     (showActiveOrderTracking &&
       (isFoodServicePage || isParcelServiceHome || isOnOrdersArea));
+
+  useLayoutEffect(() => {
+    useFloatingDockUiStore.getState().setDockVisible(visible);
+  }, [visible]);
+
+  useEffect(() => {
+    return () => {
+      useFloatingDockUiStore.getState().setDockVisible(false);
+    };
+  }, []);
+
   if (!visible) return null;
 
   const inTabs = segments[0] === "(tabs)";
@@ -503,7 +527,7 @@ export function GlobalFloatingCart() {
     >
       {!compact && showAllCartsTab ? (
         <Pressable
-          style={styles.allCartsTab}
+          style={[styles.allCartsTab, dockDark && styles.allCartsTabDark]}
           onPress={() => setAllCartsSheetVisible(true)}
           hitSlop={6}
           accessibilityRole="button"
@@ -516,7 +540,7 @@ export function GlobalFloatingCart() {
         </Pressable>
       ) : null}
 
-      <View style={[styles.gmBar, compact && styles.gmBarCompact, styles.dockPillHeight]}>
+      <View style={[styles.gmBar, compact && styles.gmBarCompact, styles.dockPillHeight, dockDark && styles.gmBarDark]}>
         <Pressable
           style={styles.gmLeftPress}
           onPress={handleViewMenuPress}
@@ -533,14 +557,14 @@ export function GlobalFloatingCart() {
                 onError={() => setFloatThumbLoadFailed(true)}
               />
             ) : (
-              <View style={styles.gmThumbPlaceholder}>
-                <Ionicons name="restaurant" size={compact ? 18 : 20} color={GatiMitraColors.textSecondary} />
+              <View style={[styles.gmThumbPlaceholder, dockDark && styles.gmThumbPlaceholderDark]}>
+                <Ionicons name="restaurant" size={compact ? 18 : 20} color={dockDark ? DiscoveryColors.textMuted : GatiMitraColors.textSecondary} />
               </View>
             )}
           </View>
           <View style={styles.gmLeftTextCol}>
             <StoreText
-              style={[styles.gmStoreName, compact && styles.gmStoreNameCompact]}
+              style={[styles.gmStoreName, compact && styles.gmStoreNameCompact, dockDark && styles.gmStoreNameDark]}
               bold
               numberOfLines={1}
             >
@@ -555,8 +579,7 @@ export function GlobalFloatingCart() {
           </View>
         </Pressable>
 
-        <TouchableOpacity
-          activeOpacity={isCartStoreClosed ? 1 : 0.92}
+        <Pressable
           onPress={handleCartPress}
           disabled={isCartStoreClosed}
           style={[
@@ -564,6 +587,7 @@ export function GlobalFloatingCart() {
             compact && styles.gmViewCartCtaCompact,
             isCartStoreClosed && styles.gmViewCartCtaClosed,
           ]}
+          accessibilityRole="button"
           accessibilityState={{ disabled: isCartStoreClosed }}
           accessibilityLabel={isCartStoreClosed ? "Store closed, cart unavailable" : "View cart"}
         >
@@ -591,17 +615,17 @@ export function GlobalFloatingCart() {
               {isCartStoreClosed ? cartClosedCta.sub : itemLabel}
             </StoreText>
           </View>
-        </TouchableOpacity>
+        </Pressable>
 
-        <View style={[styles.gmRightActions, cartRemoveExpanded && styles.gmRightActionsExpanded]}>
+        <View style={[styles.gmRightActions, cartRemoveExpanded && styles.gmRightActionsExpanded, cartRemoveExpanded && dockDark && styles.gmRightActionsExpandedDark]}>
           <Pressable
-            style={[styles.gmCloseBtn, compact && styles.gmCloseBtnCompact]}
+            style={[styles.gmCloseBtn, compact && styles.gmCloseBtnCompact, dockDark && styles.gmCloseBtnDark]}
             onPress={cartRemoveExpanded ? handleCancelRemoveCart : handleDismissCartPress}
             hitSlop={10}
             accessibilityRole="button"
             accessibilityLabel={cartRemoveExpanded ? "Cancel remove cart" : "Remove cart"}
           >
-            <Ionicons name="close" size={compact ? 18 : 20} color={GatiMitraColors.textSecondary} />
+            <Ionicons name="close" size={compact ? 18 : 20} color={dockDark ? DiscoveryColors.textMuted : GatiMitraColors.textSecondary} />
           </Pressable>
           {cartRemoveExpanded ? (
             <Pressable
@@ -664,6 +688,7 @@ export function GlobalFloatingCart() {
                   <FloatingOrderTrackingPillWithUnread
                     order={ord}
                     emphasis={trackingEmphasis}
+                    dark={dockDark}
                     onPress={() => openOrderTracking(ord)}
                   />
                 </View>
@@ -721,6 +746,7 @@ export function GlobalFloatingCart() {
         <FloatingOrderTrackingPillWithUnread
           order={activeOrder}
           emphasis="primary"
+          dark={dockDark}
           onPress={() => openOrderTracking(activeOrder)}
         />
       </Animated.View>
@@ -938,6 +964,7 @@ const styles = StyleSheet.create({
     left: 16,
     right: 16,
     zIndex: 999,
+    elevation: 24,
     alignItems: "center",
     justifyContent: "flex-end",
   },
@@ -986,6 +1013,10 @@ const styles = StyleSheet.create({
       android: { elevation: 3 },
     }),
   },
+  allCartsTabDark: {
+    backgroundColor: DiscoveryColors.cardElevated,
+    borderColor: DiscoveryColors.border,
+  },
   allCartsTabText: {
     fontSize: 12,
     fontFamily: StoreFonts.loraBold,
@@ -1003,6 +1034,19 @@ const styles = StyleSheet.create({
     gap: 4,
     borderWidth: 1,
     borderColor: FLOAT_BAR_BORDER,
+    ...Platform.select({
+      android: { elevation: 20 },
+      ios: {
+        shadowColor: "#000",
+        shadowOffset: { width: 0, height: 8 },
+        shadowOpacity: 0.18,
+        shadowRadius: 16,
+      },
+    }),
+  },
+  gmBarDark: {
+    backgroundColor: DiscoveryColors.card,
+    borderColor: DiscoveryColors.border,
   },
   gmBarCompact: {
     borderRadius: 14,
@@ -1040,6 +1084,9 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     backgroundColor: "#F3F4F6",
   },
+  gmThumbPlaceholderDark: {
+    backgroundColor: DiscoveryColors.search,
+  },
   gmLeftTextCol: {
     flex: 1,
     minWidth: 0,
@@ -1049,6 +1096,9 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontFamily: StoreFonts.loraBold,
     color: GatiMitraColors.textPrimary,
+  },
+  gmStoreNameDark: {
+    color: DiscoveryColors.text,
   },
   gmStoreNameCompact: {
     fontSize: 13,
@@ -1121,6 +1171,10 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
+  gmCloseBtnDark: {
+    backgroundColor: "rgba(42, 42, 42, 0.95)",
+    borderColor: DiscoveryColors.border,
+  },
   gmCloseBtnCompact: {
     width: 34,
     height: 34,
@@ -1137,6 +1191,9 @@ const styles = StyleSheet.create({
     borderRadius: 22,
     paddingRight: 4,
     overflow: "hidden",
+  },
+  gmRightActionsExpandedDark: {
+    backgroundColor: "#3F1D22",
   },
   gmRemovePanel: {
     paddingHorizontal: 14,

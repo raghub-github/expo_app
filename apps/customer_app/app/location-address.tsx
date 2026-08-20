@@ -3,10 +3,10 @@
  * Reverse-geocode auto-fills city/state/pincode; Home/Work uniqueness; 500m nearby check; double-tap guard.
  */
 
-import { useState, useEffect, useRef, useMemo } from "react";
+import { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { AppText } from "@/components/AppText";
 
-import { View, TextInput, TouchableOpacity, StyleSheet, KeyboardAvoidingView, Platform, ScrollView, FlatList, ActivityIndicator, Alert, Modal, Pressable, Animated, Easing, Image, useWindowDimensions } from "react-native";
+import { View, TextInput, TouchableOpacity, StyleSheet, KeyboardAvoidingView, Keyboard, Platform, ScrollView, FlatList, ActivityIndicator, Alert, Modal, Pressable, Animated, Easing, Image, useWindowDimensions, type KeyboardEvent } from "react-native";
 import * as ImagePicker from "expo-image-picker";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -14,12 +14,14 @@ import { Ionicons } from "@expo/vector-icons";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import * as Contacts from "expo-contacts";
 import * as Location from "expo-location";
-import { MapboxWebPannableMap } from "@/components/maps/MapboxWebPannableMap";
+import { MapboxWebPannableMap, type MapRegion } from "@/components/maps/MapboxWebPannableMap";
 import type { CustomerMapRef } from "@/lib/customer-map-handle";
 import { addressService, type Address } from "@/services/address.service";
 import {
   reverseGeocode,
   searchPlacesEnriched,
+  resolveMapboxEnrichedPlace,
+  geocodeAddressToCoord,
   MAPBOX_SEARCH_DEBOUNCE_MS,
   isPincodeSearchMode,
   getRoadDistance,
@@ -27,18 +29,21 @@ import {
   type ReverseGeocodeResult,
 } from "@/services/location.service";
 import { profileService } from "@/services/profile.service";
+import { getStoreDeliveryQuote } from "@/services/distance.service";
 import { useLocationStore, type LocationSource } from "@/store/locationStore";
 import { useCheckoutAddressHandoffStore } from "@/store/checkoutAddressHandoffStore";
 import { useCartStore } from "@/store/cartStore";
 import { invalidateFoodHomeLocationQueries } from "@/lib/invalidateFoodHomeLocationQueries";
-import { parseMapCoordParam, resolveMapCenter } from "@/lib/map-coordinates";
+import { isValidMapCoordinate, parseMapCoordParam, resolveMapCenter } from "@/lib/map-coordinates";
 import { useRecentLocationStore } from "@/store/recentLocationStore";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
-import { getStoreDeliveryQuote } from "@/services/distance.service";
+import { useCookingSheetKeyboardDock } from "@/hooks/useCookingSheetKeyboardDock";
 
 const NEARBY_RADIUS_METERS = 500;
 const BRAND = GatiMitraColors.splashMint;
+/** Map strip while the address form keyboard is open so Save stays visible. */
+const COMPACT_MAP_HEIGHT = 96;
 
 /** Best-effort split of saved `fullAddress` into flat/area lines using structured fields. */
 function splitSavedAddressLines(addr: Address): { line1: string; line2: string } {
@@ -111,6 +116,52 @@ const BORDER = "#E5E7EB";
 const TEAL = "#14b8a6";
 const DEFAULT_LAT = 20.5937;
 const DEFAULT_LNG = 78.9629;
+const INDIA_FALLBACK = { latitude: DEFAULT_LAT, longitude: DEFAULT_LNG };
+
+function looksLikeBareCoordinates(text: string): boolean {
+  return /^-?\d+\.\d{2,},\s*-?\d+\.\d{2,}$/.test(text.trim());
+}
+
+function formatDistanceShort(meters: number): string {
+  if (!Number.isFinite(meters) || meters < 0) return "";
+  if (meters < 1000) return `${Math.max(1, Math.round(meters))} m`;
+  return `${(meters / 1000).toFixed(1)} km`;
+}
+
+function isPlaceholderLocationText(value?: string | null): boolean {
+  if (!value?.trim()) return true;
+  const trimmed = value.trim();
+  const lower = trimmed.toLowerCase();
+  return (
+    trimmed === "—" ||
+    trimmed === "-" ||
+    lower === "n/a" ||
+    lower === "na" ||
+    lower === "unknown" ||
+    lower === "current location"
+  );
+}
+
+function cleanDisplayName(value?: string | null): string | null {
+  const text = value?.trim();
+  if (!text || looksLikeBareCoordinates(text) || isPlaceholderLocationText(text)) return null;
+  return text;
+}
+
+function formatCurrentLocationAddress(result: ReverseGeocodeResult | null | undefined): string | null {
+  if (!result) return null;
+  const candidates = [
+    result.fullAddress,
+    result.secondary,
+    [result.primary, result.city, result.state].filter(Boolean).join(", "),
+  ];
+  for (const candidate of candidates) {
+    const text = cleanDisplayName(candidate);
+    if (text) return text;
+  }
+  return null;
+}
+
 type PrefilledField = "line2" | "city" | "state" | "pincode";
 type DeviceContact = { id: string; name: string; phone: string };
 type LocationListItem = {
@@ -121,6 +172,7 @@ type LocationListItem = {
   latitude: number;
   longitude: number;
   icon: "location-outline" | "time-outline";
+  place?: EnrichedPlaceResult;
 };
 
 function SheetSkeleton({ opacity }: { opacity: Animated.AnimatedInterpolation<number> }) {
@@ -140,12 +192,17 @@ function SheetSkeleton({ opacity }: { opacity: Animated.AnimatedInterpolation<nu
 export default function LocationAddressScreen() {
   const insets = useSafeAreaInsets();
   const { height: windowHeight } = useWindowDimensions();
-  const mapHeight = Math.round(Math.min(300, Math.max(220, windowHeight * 0.3)));
+  /** Freeze first layout height so Android adjustResize cannot shrink the expanded map target. */
+  const expandedMapHeightRef = useRef(Math.round(Math.min(300, Math.max(220, windowHeight * 0.3))));
+  const mapHeightAnim = useRef(new Animated.Value(expandedMapHeightRef.current)).current;
+  const skipMapCompactRef = useRef(false);
+  const [mapCompact, setMapCompact] = useState(false);
   const router = useRouter();
   const queryClient = useQueryClient();
   const submittingRef = useRef(false);
   const storeCoords = useLocationStore((s) => s.coords);
   const locationSource = useLocationStore((s) => s.locationSource);
+  const storeAddress = useLocationStore((s) => s.address);
 
   const params = useLocalSearchParams<{
     latitude?: string;
@@ -166,10 +223,11 @@ export default function LocationAddressScreen() {
 
   const isEditMode = editAddressId != null;
 
-  const fallbackCenter = {
-    latitude: storeCoords?.latitude ?? DEFAULT_LAT,
-    longitude: storeCoords?.longitude ?? DEFAULT_LNG,
-  };
+  const fallbackCenter = resolveMapCenter(
+    storeCoords?.latitude ?? DEFAULT_LAT,
+    storeCoords?.longitude ?? DEFAULT_LNG,
+    INDIA_FALLBACK
+  );
   const parsedLat = parseMapCoordParam(params.latitude, fallbackCenter.latitude);
   const parsedLng = parseMapCoordParam(params.longitude, fallbackCenter.longitude);
   const { latitude: initialLat, longitude: initialLon } = resolveMapCenter(
@@ -205,6 +263,15 @@ export default function LocationAddressScreen() {
     source: LocationSource | null;
   } | null>(null);
   const [mapCenter, setMapCenter] = useState({ latitude: initialLat, longitude: initialLon });
+  const mapCenterRef = useRef(mapCenter);
+  mapCenterRef.current = mapCenter;
+  const mapCoordRafRef = useRef<number | null>(null);
+  const mapInitialRegion = useRef({
+    latitude: initialLat,
+    longitude: initialLon,
+    latitudeDelta: 0.008,
+    longitudeDelta: 0.008,
+  }).current;
   /** When true, skip reverse-geocode so saved city/state/pin are not overwritten until the user moves the pin. */
   const [editGeoLocked, setEditGeoLocked] = useState(isEditMode);
 
@@ -241,11 +308,60 @@ export default function LocationAddressScreen() {
   const [deviceContacts, setDeviceContacts] = useState<DeviceContact[]>([]);
   const [contactSearch, setContactSearch] = useState("");
   const [locationSearchVisible, setLocationSearchVisible] = useState(false);
+  const { keyboardLift: locationSearchKeyboardLift, reset: resetLocationSearchKeyboard } =
+    useCookingSheetKeyboardDock(locationSearchVisible);
+
+  skipMapCompactRef.current = locationSearchVisible || contactsModalVisible;
+
+  useEffect(() => {
+    const showEvt = Platform.OS === "ios" ? "keyboardWillShow" : "keyboardDidShow";
+    const hideEvt = Platform.OS === "ios" ? "keyboardWillHide" : "keyboardDidHide";
+
+    const animateMapHeight = (toValue: number, duration?: number) => {
+      Animated.timing(mapHeightAnim, {
+        toValue,
+        duration: duration && duration > 0 ? duration : 220,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: false,
+      }).start();
+    };
+
+    const onShow = (e: KeyboardEvent) => {
+      if (skipMapCompactRef.current) return;
+      setMapCompact(true);
+      animateMapHeight(COMPACT_MAP_HEIGHT, e.duration);
+    };
+    const onHide = (e: KeyboardEvent) => {
+      setMapCompact(false);
+      animateMapHeight(expandedMapHeightRef.current, e.duration);
+    };
+
+    const showSub = Keyboard.addListener(showEvt, onShow);
+    const hideSub = Keyboard.addListener(hideEvt, onHide);
+    return () => {
+      showSub.remove();
+      hideSub.remove();
+    };
+  }, [mapHeightAnim]);
+
+  useEffect(() => {
+    if (!focusedField || skipMapCompactRef.current) return;
+    setMapCompact(true);
+    Animated.timing(mapHeightAnim, {
+      toValue: COMPACT_MAP_HEIGHT,
+      duration: 220,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: false,
+    }).start();
+  }, [focusedField, mapHeightAnim]);
   const [locationSearchQuery, setLocationSearchQuery] = useState("");
   const [locationSearchResults, setLocationSearchResults] = useState<EnrichedPlaceResult[]>([]);
   const [locationSearchLoading, setLocationSearchLoading] = useState(false);
+  const [resolvingSearchPlace, setResolvingSearchPlace] = useState(false);
   const [resultRoadDistances, setResultRoadDistances] = useState<Record<string, number>>({});
   const [isCurrentLocationSheetLoading, setIsCurrentLocationSheetLoading] = useState(false);
+  const [sheetCurrentLocationLabel, setSheetCurrentLocationLabel] = useState<string | null>(null);
+  const [sheetCurrentLocationLoading, setSheetCurrentLocationLoading] = useState(false);
   const [distanceOrigin, setDistanceOrigin] = useState<{
     latitude: number;
     longitude: number;
@@ -256,6 +372,57 @@ export default function LocationAddressScreen() {
     kind: "road" | "straight";
   } | null>(null);
   const [pinDistanceLoading, setPinDistanceLoading] = useState(false);
+  const [pinnedPlaceName, setPinnedPlaceName] = useState<string | null>(() =>
+    cleanDisplayName(typeof params.primary === "string" ? params.primary : "")
+  );
+  const [pinnedPlaceAddress, setPinnedPlaceAddress] = useState<string | null>(() =>
+    cleanDisplayName(typeof params.fullAddress === "string" ? params.fullAddress : "")
+  );
+  const searchSelectionLockRef = useRef<{ lat: number; lon: number } | null>(
+    cleanDisplayName(typeof params.primary === "string" ? params.primary : "") &&
+      isValidMapCoordinate(initialLat, initialLon)
+      ? { lat: initialLat, lon: initialLon }
+      : null
+  );
+
+  const applyMapCenter = useCallback((latitude: number, longitude: number) => {
+    mapCenterRef.current = { latitude, longitude };
+    setMapCenter({ latitude, longitude });
+    const lock = searchSelectionLockRef.current;
+    if (lock && haversineMeters(lock.lat, lock.lon, latitude, longitude) >= 8) {
+      searchSelectionLockRef.current = null;
+    }
+  }, []);
+
+  const handleMapRegionChange = useCallback((region: MapRegion) => {
+    const { latitude, longitude } = region;
+    if (!isValidMapCoordinate(latitude, longitude)) return;
+    mapCenterRef.current = { latitude, longitude };
+    if (mapCoordRafRef.current != null) return;
+    mapCoordRafRef.current = requestAnimationFrame(() => {
+      mapCoordRafRef.current = null;
+      applyMapCenter(mapCenterRef.current.latitude, mapCenterRef.current.longitude);
+    });
+  }, [applyMapCenter]);
+
+  const handleMapRegionChangeComplete = useCallback(
+    (region: MapRegion) => {
+      const { latitude, longitude } = region;
+      if (!isValidMapCoordinate(latitude, longitude)) return;
+      if (mapCoordRafRef.current != null) {
+        cancelAnimationFrame(mapCoordRafRef.current);
+        mapCoordRafRef.current = null;
+      }
+      applyMapCenter(latitude, longitude);
+      if (isEditMode && editBaselineRef.current) {
+        const b = editBaselineRef.current;
+        if (haversineMeters(b.lat, b.lon, latitude, longitude) > 35) {
+          setEditGeoLocked(false);
+        }
+      }
+    },
+    [applyMapCenter, isEditMode]
+  );
   const [doorImageLocalUri, setDoorImageLocalUri] = useState<string | null>(null);
   const [doorImageRemoteUrl, setDoorImageRemoteUrl] = useState<string | null>(null);
   const [doorImageUploading, setDoorImageUploading] = useState(false);
@@ -291,6 +458,7 @@ export default function LocationAddressScreen() {
     addRecentLocation,
     getRecentLocationKeys,
     hydrate: hydrateRecentLocations,
+    clearRecentLocations,
   } = useRecentLocationStore();
 
   const { data: savedAddresses = [] } = useQuery({
@@ -354,7 +522,7 @@ export default function LocationAddressScreen() {
       setPincode(resolvedPincode);
       setPrefilled((p) => ({ ...p, pincode: true }));
     }
-    if (result.secondary && result.secondary !== "—") {
+    if (result.secondary && result.secondary !== "—" && !looksLikeBareCoordinates(result.secondary)) {
       setLine2(result.secondary);
       setPrefilled((p) => ({ ...p, line2: true }));
     }
@@ -365,21 +533,38 @@ export default function LocationAddressScreen() {
       setGeocodeLoading(false);
       return;
     }
+    if (!isValidMapCoordinate(mapCenter.latitude, mapCenter.longitude)) {
+      setGeocodeLoading(false);
+      return;
+    }
     let cancelled = false;
-    setGeocodeLoading(true);
-    reverseGeocode(mapCenter.longitude, mapCenter.latitude)
-      .then((result) => {
-        if (cancelled) return;
-        applyReverseResult(result);
-      })
-      .catch(() => {
-        if (!cancelled) setError("Could not fetch location details.");
-      })
-      .finally(() => {
-        if (!cancelled) setGeocodeLoading(false);
-      });
+    const timer = setTimeout(() => {
+      setGeocodeLoading(true);
+      reverseGeocode(mapCenter.longitude, mapCenter.latitude)
+        .then((result) => {
+          if (cancelled) return;
+          applyReverseResult(result);
+          const lock = searchSelectionLockRef.current;
+          const             stillLocked =
+            lock != null &&
+            haversineMeters(lock.lat, lock.lon, mapCenter.latitude, mapCenter.longitude) < 8;
+          if (stillLocked) return;
+          searchSelectionLockRef.current = null;
+          const name = cleanDisplayName(result.primary);
+          if (name) setPinnedPlaceName(name);
+          const addr = cleanDisplayName(result.fullAddress);
+          if (addr) setPinnedPlaceAddress(addr);
+        })
+        .catch(() => {
+          if (!cancelled) setError("Could not fetch location details.");
+        })
+        .finally(() => {
+          if (!cancelled) setGeocodeLoading(false);
+        });
+    }, 280);
     return () => {
       cancelled = true;
+      clearTimeout(timer);
     };
   }, [mapCenter.latitude, mapCenter.longitude, isEditMode, editGeoLocked]);
 
@@ -494,7 +679,14 @@ export default function LocationAddressScreen() {
 
       searchPlacesEnriched(query, {
         signal: controller.signal,
-        proximity: { latitude: selectedLat, longitude: selectedLon },
+        proximity:
+          distanceOrigin && isValidMapCoordinate(distanceOrigin.latitude, distanceOrigin.longitude)
+            ? { latitude: distanceOrigin.latitude, longitude: distanceOrigin.longitude }
+            : storeCoords && isValidMapCoordinate(storeCoords.latitude, storeCoords.longitude)
+              ? { latitude: storeCoords.latitude, longitude: storeCoords.longitude }
+              : isValidMapCoordinate(selectedLat, selectedLon)
+                ? { latitude: selectedLat, longitude: selectedLon }
+                : fallbackCenter,
         sessionContext: "add-address",
         recentLocationKeys: getRecentLocationKeys(),
       })
@@ -519,6 +711,10 @@ export default function LocationAddressScreen() {
     locationSearchQuery,
     selectedLat,
     selectedLon,
+    distanceOrigin?.latitude,
+    distanceOrigin?.longitude,
+    storeCoords?.latitude,
+    storeCoords?.longitude,
     getRecentLocationKeys,
   ]);
 
@@ -564,10 +760,72 @@ export default function LocationAddressScreen() {
   }, [storeCoords?.latitude, storeCoords?.longitude, locationSource]);
 
   useEffect(() => {
+    if (!locationSearchVisible) return;
+    let cancelled = false;
+    (async () => {
+      setSheetCurrentLocationLoading(true);
+      const instantLabel =
+        locationSource === "current" ? formatCurrentLocationAddress(storeAddress) : null;
+      if (instantLabel) setSheetCurrentLocationLabel(instantLabel);
+      try {
+        let lat: number | undefined = distanceOrigin?.latitude;
+        let lon: number | undefined = distanceOrigin?.longitude;
+        if (
+          typeof lat !== "number" ||
+          typeof lon !== "number" ||
+          !isValidMapCoordinate(lat, lon)
+        ) {
+          const { status } = await Location.getForegroundPermissionsAsync();
+          if (status === "granted") {
+            const last = await Location.getLastKnownPositionAsync();
+            const pos =
+              last ??
+              (await Location.getCurrentPositionAsync({
+                accuracy: Location.Accuracy.Balanced,
+              }));
+            lat = pos.coords.latitude;
+            lon = pos.coords.longitude;
+            if (!cancelled && isValidMapCoordinate(lat, lon)) {
+              setDistanceOrigin({
+                latitude: lat,
+                longitude: lon,
+                label: "your current location",
+              });
+            }
+          }
+        }
+        if (
+          typeof lat !== "number" ||
+          typeof lon !== "number" ||
+          !isValidMapCoordinate(lat, lon) ||
+          cancelled
+        ) {
+          return;
+        }
+        const result = await reverseGeocode(lon, lat);
+        if (!cancelled) {
+          setSheetCurrentLocationLabel(
+            formatCurrentLocationAddress(result) ?? instantLabel
+          );
+        }
+      } catch {
+        if (!cancelled) setSheetCurrentLocationLabel(instantLabel);
+      } finally {
+        if (!cancelled) setSheetCurrentLocationLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // Only refresh the GPS address when the sheet opens.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [locationSearchVisible]);
+
+  useEffect(() => {
     if (
       !distanceOrigin ||
-      !Number.isFinite(selectedLat) ||
-      !Number.isFinite(selectedLon)
+      !isValidMapCoordinate(selectedLat, selectedLon) ||
+      !isValidMapCoordinate(distanceOrigin.latitude, distanceOrigin.longitude)
     ) {
       setPinDistance(null);
       setPinDistanceLoading(false);
@@ -610,26 +868,55 @@ export default function LocationAddressScreen() {
     selectedLon,
   ]);
 
+  const listDistanceOrigin = useMemo(() => {
+    if (distanceOrigin && isValidMapCoordinate(distanceOrigin.latitude, distanceOrigin.longitude)) {
+      return { latitude: distanceOrigin.latitude, longitude: distanceOrigin.longitude };
+    }
+    if (storeCoords && isValidMapCoordinate(storeCoords.latitude, storeCoords.longitude)) {
+      return { latitude: storeCoords.latitude, longitude: storeCoords.longitude };
+    }
+    return null;
+  }, [distanceOrigin, storeCoords]);
+
+  const showingRecentLocations = locationSearchQuery.trim().length < 2;
+
   useEffect(() => {
-    if (!locationSearchVisible || locationSearchResults.length === 0) return;
-    if (selectedLat == null || selectedLon == null) return;
-    const topVisible = locationSearchResults.slice(0, 3);
-    topVisible.forEach((item) => {
+    if (!locationSearchVisible || !listDistanceOrigin) return;
+    const items =
+      locationSearchQuery.trim().length >= 2
+        ? locationSearchResults.slice(0, 8)
+        : recentLocations
+            .filter((item) => isValidMapCoordinate(item.latitude, item.longitude))
+            .slice(0, 7);
+    items.forEach((item) => {
+      if (!isValidMapCoordinate(item.latitude, item.longitude)) return;
       const key = getDistanceKey(item.latitude, item.longitude);
       if (resultRoadDistances[key] != null || roadDistanceInflightRef.current.has(key)) return;
       roadDistanceInflightRef.current.add(key);
-      getRoadDistance(selectedLon, selectedLat, item.longitude, item.latitude)
+      getRoadDistance(
+        listDistanceOrigin.longitude,
+        listDistanceOrigin.latitude,
+        item.longitude,
+        item.latitude
+      )
         .then(({ distanceMeters }) => {
           setResultRoadDistances((prev) => ({ ...prev, [key]: distanceMeters }));
         })
         .catch(() => {
-          // keep quiet if route unavailable
+          // Haversine still fills the label if routing is unavailable.
         })
         .finally(() => {
           roadDistanceInflightRef.current.delete(key);
         });
     });
-  }, [locationSearchVisible, locationSearchResults, selectedLat, selectedLon, resultRoadDistances]);
+  }, [
+    locationSearchVisible,
+    locationSearchQuery,
+    locationSearchResults,
+    recentLocations,
+    listDistanceOrigin,
+    resultRoadDistances,
+  ]);
 
   const handleSave = async () => {
     if (submittingRef.current) return;
@@ -985,6 +1272,7 @@ export default function LocationAddressScreen() {
         Alert.alert("Location not found", "Please enable location and try again.");
         return;
       }
+      searchSelectionLockRef.current = null;
       const latest = await Location.getCurrentPositionAsync({
         accuracy: Location.Accuracy.Highest,
       });
@@ -1005,6 +1293,10 @@ export default function LocationAddressScreen() {
       });
       const result = await reverseGeocode(nextLon, nextLat);
       applyReverseResult(result);
+      const name = cleanDisplayName(result.primary);
+      const addr = cleanDisplayName(result.fullAddress);
+      if (name) setPinnedPlaceName(name);
+      if (addr) setPinnedPlaceAddress(addr);
     } catch {
       setError("Could not fetch current location details.");
     } finally {
@@ -1057,17 +1349,62 @@ export default function LocationAddressScreen() {
     }
   };
 
-  const applySearchedLocation = (latitude: number, longitude: number, primary: string, fullAddress?: string) => {
-    setIsCurrentLocationSheetLoading(false);
-    setMapCenter({ latitude, longitude });
-    if (isEditMode) setEditGeoLocked(false);
-    mapRef.current?.animateToRegion?.({
-      latitude,
-      longitude,
-      latitudeDelta: 0.008,
-      longitudeDelta: 0.008,
-    });
-    addRecentLocation({ latitude, longitude, primary, fullAddress });
+  const applySearchedLocation = async (item: LocationListItem) => {
+    if (resolvingSearchPlace) return;
+    setResolvingSearchPlace(true);
+    try {
+      let latitude = item.latitude;
+      let longitude = item.longitude;
+      if (item.place) {
+        let resolved = await resolveMapboxEnrichedPlace(item.place, "add-address");
+        if (!isValidMapCoordinate(resolved.latitude, resolved.longitude)) {
+          const geocoded = await geocodeAddressToCoord(resolved.fullAddress || resolved.primary);
+          if (geocoded && isValidMapCoordinate(geocoded.latitude, geocoded.longitude)) {
+            resolved = {
+              ...resolved,
+              latitude: geocoded.latitude,
+              longitude: geocoded.longitude,
+              pendingRetrieve: false,
+            };
+          }
+        }
+        latitude = resolved.latitude;
+        longitude = resolved.longitude;
+      }
+      if (!isValidMapCoordinate(latitude, longitude)) {
+        Alert.alert(
+          "Location unavailable",
+          "Could not load map coordinates for this place. Try another search result."
+        );
+        return;
+      }
+      setIsCurrentLocationSheetLoading(false);
+      const placeName =
+        cleanDisplayName(item.title) ||
+        cleanDisplayName(item.place?.primary) ||
+        cleanDisplayName(item.subtitle);
+      const placeAddress = cleanDisplayName(item.subtitle) || placeName;
+      searchSelectionLockRef.current = { lat: latitude, lon: longitude };
+      setPinnedPlaceName(placeName);
+      setPinnedPlaceAddress(placeAddress);
+      setMapCenter({ latitude, longitude });
+      if (isEditMode) setEditGeoLocked(false);
+      mapRef.current?.animateToRegion?.({
+        latitude,
+        longitude,
+        latitudeDelta: 0.008,
+        longitudeDelta: 0.008,
+      });
+      addRecentLocation({ latitude, longitude, primary: item.title, fullAddress: item.subtitle });
+      closeLocationSearch();
+    } finally {
+      setResolvingSearchPlace(false);
+    }
+  };
+
+  const closeLocationSearch = () => {
+    Keyboard.dismiss();
+    resetLocationSearchKeyboard();
     setLocationSearchVisible(false);
     setLocationSearchQuery("");
     setLocationSearchResults([]);
@@ -1075,28 +1412,33 @@ export default function LocationAddressScreen() {
 
   const locationListData: LocationListItem[] =
     locationSearchQuery.trim().length >= 2
-      ? locationSearchResults.map((item) => ({
-          key: `search-${item.latitude.toFixed(6)}-${item.longitude.toFixed(6)}-${item.primary}`,
+      ? locationSearchResults.map((item, index) => ({
+          key: `search-${index}-${item.primary}`,
           kind: "search" as const,
           title: item.primary,
           subtitle: item.fullAddress,
           latitude: item.latitude,
           longitude: item.longitude,
           icon: "location-outline" as const,
+          place: item,
         }))
-      : recentLocations.slice(0, 7).map((item) => ({
-          key: `recent-${item.latitude.toFixed(6)}-${item.longitude.toFixed(6)}-${item.primary}`,
-          kind: "recent" as const,
-          title: item.primary,
-          subtitle: item.fullAddress || "Recent location",
-          latitude: item.latitude,
-          longitude: item.longitude,
-          icon: "time-outline" as const,
-        }));
+      : recentLocations
+          .filter((item) => isValidMapCoordinate(item.latitude, item.longitude))
+          .slice(0, 7)
+          .map((item) => ({
+            key: `recent-${item.latitude.toFixed(6)}-${item.longitude.toFixed(6)}-${item.primary}`,
+            kind: "recent" as const,
+            title: item.primary,
+            subtitle: item.fullAddress || "Recent location",
+            latitude: item.latitude,
+            longitude: item.longitude,
+            icon: "time-outline" as const,
+          }));
 
   return (
     <KeyboardAvoidingView
-      behavior={Platform.OS === "ios" ? "padding" : "height"}
+      enabled={!locationSearchVisible && !contactsModalVisible}
+      behavior={Platform.OS === "ios" ? "padding" : undefined}
       style={styles.container}
     >
       <View style={styles.header}>
@@ -1109,43 +1451,35 @@ export default function LocationAddressScreen() {
         </TouchableOpacity>
       </View>
       <View style={styles.mapCard}>
-        <View style={[styles.mapSlot, { height: mapHeight }]}>
+        <Animated.View style={[styles.mapSlot, { height: mapHeightAnim }]}>
           <MapboxWebPannableMap
             key={isEditMode && editAddressId != null ? `edit-addr-${editAddressId}` : "new-address-map"}
             ref={mapRef}
             style={StyleSheet.absoluteFillObject}
-            initialRegion={{
-              latitude: mapCenter.latitude,
-              longitude: mapCenter.longitude,
-              latitudeDelta: 0.008,
-              longitudeDelta: 0.008,
-            }}
-            onRegionChangeComplete={(region) => {
-              const latitude = region.latitude;
-              const longitude = region.longitude;
-              setMapCenter({ latitude, longitude });
-              if (isEditMode && editBaselineRef.current) {
-                const b = editBaselineRef.current;
-                if (haversineMeters(b.lat, b.lon, latitude, longitude) > 35) {
-                  setEditGeoLocked(false);
-                }
-              }
-            }}
+            initialRegion={mapInitialRegion}
+            onRegionChange={handleMapRegionChange}
+            onRegionChangeComplete={handleMapRegionChangeComplete}
           />
-          <View style={styles.mapTooltipWrap} pointerEvents="none">
-            <View style={styles.mapTooltip}>
-              <AppText style={styles.mapTooltipText}>Move pin to your exact delivery location</AppText>
+          {!mapCompact ? (
+            <View style={styles.mapTooltipWrap} pointerEvents="none">
+              <View style={styles.mapTooltip}>
+                <AppText style={styles.mapTooltipText}>Move pin to your exact delivery location</AppText>
+              </View>
             </View>
-          </View>
+          ) : null}
           <View pointerEvents="none" style={styles.mapPinOverlay}>
-            <Ionicons name="location" size={34} color={TEAL} />
+            <Ionicons name="location" size={mapCompact ? 26 : 34} color={TEAL} />
           </View>
-          <TouchableOpacity style={styles.mapUseCurrentPill} onPress={handleUseCurrentLocationOnMap} activeOpacity={0.85}>
-            <Ionicons name="locate" size={15} color={TEAL} />
-            <AppText style={styles.mapUseCurrentText}>Use current location</AppText>
-          </TouchableOpacity>
-        </View>
-        <AppText style={styles.mapHint}>Move map to set exact delivery location</AppText>
+          {!mapCompact ? (
+            <TouchableOpacity style={styles.mapUseCurrentPill} onPress={handleUseCurrentLocationOnMap} activeOpacity={0.85}>
+              <Ionicons name="locate" size={15} color={TEAL} />
+              <AppText style={styles.mapUseCurrentText}>Use current location</AppText>
+            </TouchableOpacity>
+          ) : null}
+        </Animated.View>
+        {!mapCompact ? (
+          <AppText style={styles.mapHint}>Move map to set exact delivery location</AppText>
+        ) : null}
       </View>
       <View style={styles.sheet}>
         <ScrollView
@@ -1165,31 +1499,54 @@ export default function LocationAddressScreen() {
                 <AppText style={styles.sectionTitle}>Address details</AppText>
               </View>
 
-              <View style={styles.summaryBox}>
-                <AppText style={styles.summaryTitle}>Map location</AppText>
-                <AppText style={styles.summaryText} numberOfLines={2}>
-                  {liveMapAddress || params.primary || "Location selected on map"}
+              <TouchableOpacity
+                style={styles.summaryBox}
+                onPress={() => setLocationSearchVisible(true)}
+                activeOpacity={0.85}
+              >
+                <View style={styles.summaryRow}>
+                  <Ionicons name="location" size={20} color={TEAL} style={styles.summaryPin} />
+                  <View style={styles.summaryTextCol}>
+                    {pinnedPlaceName &&
+                    pinnedPlaceName !== (pinnedPlaceAddress || liveMapAddress) ? (
+                      <AppText style={styles.summaryTitle} numberOfLines={1}>
+                        {pinnedPlaceName}
+                      </AppText>
+                    ) : null}
+                    <AppText style={styles.summaryText} numberOfLines={3}>
+                      {geocodeLoading
+                        ? "Updating location…"
+                        : pinnedPlaceAddress || liveMapAddress || "Selected on map"}
+                    </AppText>
+                  </View>
+                  <Ionicons name="chevron-forward" size={16} color={TEXT_GRAY} />
+                </View>
+              </TouchableOpacity>
+              {pinDistanceLoading ? (
+                <AppText style={styles.summaryDistanceTextMuted}>Calculating distance…</AppText>
+              ) : pinDistance != null && distanceOrigin && pinDistance.meters >= 50 ? (
+                <View style={styles.awayBanner}>
+                  <AppText style={styles.awayBannerText}>
+                    This address is{" "}
+                    <AppText style={styles.awayBannerDistance}>
+                      {formatDistanceShort(pinDistance.meters)}
+                    </AppText>{" "}
+                    away from your current location
+                  </AppText>
+                  <TouchableOpacity
+                    style={styles.awayBannerAction}
+                    onPress={() => void handleUseCurrentLocationOnMap()}
+                    activeOpacity={0.85}
+                  >
+                    <AppText style={styles.awayBannerActionText}>Use current location</AppText>
+                    <Ionicons name="chevron-forward" size={14} color={TEAL} />
+                  </TouchableOpacity>
+                </View>
+              ) : !distanceOrigin ? (
+                <AppText style={styles.summaryDistanceTextMuted}>
+                  Allow location access to see distance from you to this pin.
                 </AppText>
-                {pinDistanceLoading ? (
-                  <AppText style={styles.summaryDistanceTextMuted}>Calculating distance…</AppText>
-                ) : pinDistance != null && distanceOrigin ? (
-                  <AppText style={styles.summaryDistanceText}>
-                    {pinDistance.meters < 50
-                      ? `Same area as ${distanceOrigin.label}`
-                      : pinDistance.meters < 1000
-                        ? `${Math.round(pinDistance.meters)} m${
-                            pinDistance.kind === "road" ? " by road" : " (approx., straight line)"
-                          } from ${distanceOrigin.label}`
-                        : `${(pinDistance.meters / 1000).toFixed(1)} km${
-                            pinDistance.kind === "road" ? " by road" : " approx. (straight line)"
-                          } from ${distanceOrigin.label}`}
-                  </AppText>
-                ) : !distanceOrigin ? (
-                  <AppText style={styles.summaryDistanceTextMuted}>
-                    Allow location access to see distance from you to this pin.
-                  </AppText>
-                ) : null}
-              </View>
+              ) : null}
 
               <AppText style={styles.label}>Flat / House / Building *</AppText>
           <TextInput
@@ -1420,101 +1777,163 @@ export default function LocationAddressScreen() {
           </TouchableOpacity>
         </View>
       </View>
-      <Modal visible={locationSearchVisible} transparent animationType="fade" statusBarTranslucent>
-        <View style={styles.modalOverlay}>
-          <Pressable style={styles.modalTopSpace} onPress={() => setLocationSearchVisible(false)} />
-          <View style={styles.modalBottomWrap}>
-            <View style={styles.locationSearchCard}>
-              <TouchableOpacity style={styles.floatingCutBtn} onPress={() => setLocationSearchVisible(false)} hitSlop={8}>
-                <Ionicons name="close" size={18} color={TEXT_GRAY} />
-              </TouchableOpacity>
-              <View style={styles.modalHeader}>
-                <AppText style={styles.modalTitle}>Select a location</AppText>
+      <Modal
+        visible={locationSearchVisible}
+        transparent
+        animationType="fade"
+        statusBarTranslucent
+        presentationStyle={Platform.OS === "ios" ? "overFullScreen" : undefined}
+        onRequestClose={closeLocationSearch}
+      >
+        <Animated.View
+          style={[styles.locationSearchOverlay, { paddingBottom: locationSearchKeyboardLift }]}
+        >
+          <View style={[styles.locationSearchTopChrome, { paddingTop: Math.max(insets.top, 10) }]}>
+            <Pressable style={StyleSheet.absoluteFill} onPress={closeLocationSearch} />
+            <TouchableOpacity
+              style={styles.locationSearchCloseBtn}
+              onPress={closeLocationSearch}
+              hitSlop={8}
+            >
+              <Ionicons name="close" size={18} color={TEXT_GRAY} />
+            </TouchableOpacity>
+          </View>
+          <View style={styles.locationSearchSheet}>
+            <View style={styles.modalHeader}>
+              <AppText style={styles.modalTitle}>Select a location</AppText>
+            </View>
+            <View style={styles.modalSearchWrap}>
+              <Ionicons name="search" size={18} color={TEAL} />
+              <TextInput
+                style={styles.modalSearchInput}
+                placeholder="Search for area, street name..."
+                placeholderTextColor={TEXT_GRAY}
+                value={locationSearchQuery}
+                onChangeText={setLocationSearchQuery}
+                autoFocus
+                autoCapitalize="none"
+                autoCorrect={false}
+                returnKeyType="search"
+              />
+              {locationSearchQuery.length > 0 && (
+                <TouchableOpacity onPress={() => setLocationSearchQuery("")} hitSlop={8}>
+                  <Ionicons name="close-circle" size={16} color={TEXT_GRAY} />
+                </TouchableOpacity>
+              )}
+            </View>
+            <TouchableOpacity
+              style={styles.locationSearchActionRow}
+              onPress={async () => {
+                closeLocationSearch();
+                await handleUseCurrentLocationOnMap();
+              }}
+              activeOpacity={0.85}
+            >
+              <Ionicons name="locate" size={20} color={TEAL} />
+              <View style={styles.locationSearchActionTextWrap}>
+                <AppText style={styles.locationSearchActionTitle}>Use current location</AppText>
+                {sheetCurrentLocationLoading && !sheetCurrentLocationLabel ? (
+                  <AppText style={styles.locationSearchActionSub} numberOfLines={1}>
+                    Getting location...
+                  </AppText>
+                ) : sheetCurrentLocationLabel ? (
+                  <AppText style={styles.locationSearchActionSub} numberOfLines={2}>
+                    {sheetCurrentLocationLabel}
+                  </AppText>
+                ) : null}
               </View>
-              <View style={styles.modalSearchWrap}>
-                <Ionicons name="search" size={18} color={TEAL} />
-                <TextInput
-                  style={styles.modalSearchInput}
-                  placeholder="Search for area, street name..."
-                  placeholderTextColor={TEXT_GRAY}
-                  value={locationSearchQuery}
-                  onChangeText={setLocationSearchQuery}
-                  autoFocus
-                  autoCapitalize="none"
-                  autoCorrect={false}
-                />
-                {locationSearchQuery.length > 0 && (
-                  <TouchableOpacity onPress={() => setLocationSearchQuery("")} hitSlop={8}>
-                    <Ionicons name="close-circle" size={16} color={TEXT_GRAY} />
-                  </TouchableOpacity>
-                )}
-              </View>
-              <TouchableOpacity
-                style={styles.locationSearchActionRow}
-                onPress={async () => {
-                  await handleUseCurrentLocationOnMap();
-                  setLocationSearchVisible(false);
-                }}
-                activeOpacity={0.85}
-              >
-                <Ionicons name="locate" size={18} color={TEAL} />
-                <View style={{ flex: 1 }}>
-                  <AppText style={styles.locationSearchActionTitle}>Use current location</AppText>
-                </View>
+              {sheetCurrentLocationLoading && !sheetCurrentLocationLabel ? (
+                <ActivityIndicator size="small" color={TEAL} />
+              ) : (
                 <Ionicons name="chevron-forward" size={16} color={TEXT_GRAY} />
-              </TouchableOpacity>
+              )}
+            </TouchableOpacity>
+            {showingRecentLocations && locationListData.length > 0 ? (
+              <View style={styles.locationSearchSectionHead}>
+                <AppText style={styles.locationSearchSectionLabel}>RECENT LOCATIONS</AppText>
+                <TouchableOpacity onPress={() => clearRecentLocations()} hitSlop={8}>
+                  <AppText style={styles.locationSearchClearText}>Clear</AppText>
+                </TouchableOpacity>
+              </View>
+            ) : locationSearchQuery.trim().length >= 2 ? (
+              <AppText style={[styles.locationSearchSectionLabel, { marginBottom: 6, marginTop: 2 }]}>
+                SEARCH RESULTS
+              </AppText>
+            ) : null}
 
-              <FlatList
-                data={locationListData}
-                style={styles.modalList}
-                keyExtractor={(item) => item.key}
-                removeClippedSubviews
-                initialNumToRender={8}
-                maxToRenderPerBatch={8}
-                windowSize={7}
-                keyboardShouldPersistTaps="handled"
-                contentContainerStyle={{ paddingBottom: 8 }}
-                renderItem={({ item }) => {
-                  const roadMeters =
-                    resultRoadDistances[getDistanceKey(item.latitude, item.longitude)] ?? null;
-                  return (
-                    <TouchableOpacity
-                      style={styles.locationResultRow}
-                      onPress={() => applySearchedLocation(item.latitude, item.longitude, item.title, item.subtitle)}
-                    >
+            <FlatList
+              data={locationListData}
+              style={styles.modalList}
+              keyExtractor={(item) => item.key}
+              removeClippedSubviews
+              initialNumToRender={8}
+              maxToRenderPerBatch={8}
+              windowSize={7}
+              keyboardShouldPersistTaps="handled"
+              keyboardDismissMode="none"
+              contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 12) }}
+              renderItem={({ item }) => {
+                const key = getDistanceKey(item.latitude, item.longitude);
+                const roadMeters = resultRoadDistances[key];
+                const straightMeters =
+                  listDistanceOrigin && isValidMapCoordinate(item.latitude, item.longitude)
+                    ? haversineMeters(
+                        listDistanceOrigin.latitude,
+                        listDistanceOrigin.longitude,
+                        item.latitude,
+                        item.longitude
+                      )
+                    : null;
+                const suggestMeters =
+                  item.place?.distanceKm != null && Number.isFinite(item.place.distanceKm)
+                    ? item.place.distanceKm * 1000
+                    : null;
+                const meters = roadMeters ?? straightMeters ?? suggestMeters;
+                const distanceLabel =
+                  meters != null && Number.isFinite(meters) && meters >= 0
+                    ? formatDistanceShort(meters)
+                    : "";
+                return (
+                  <TouchableOpacity
+                    style={styles.locationResultRow}
+                    onPress={() => void applySearchedLocation(item)}
+                  >
+                    <View style={styles.locationResultIconCol}>
                       <Ionicons name={item.icon} size={18} color="#64748B" />
-                      <View style={styles.locationResultTextWrap}>
-                        <AppText style={styles.locationResultTitle}>{item.title}</AppText>
-                        <AppText style={styles.locationResultSubtitle}>{item.subtitle}</AppText>
-                        {roadMeters != null && (
-                          <AppText style={styles.locationResultDistance}>
-                            {roadMeters < 1000
-                              ? `${Math.round(roadMeters)} m`
-                              : `${(roadMeters / 1000).toFixed(1)} km`}
-                          </AppText>
-                        )}
-                      </View>
-                    </TouchableOpacity>
-                  );
-                }}
-                ListEmptyComponent={
-                  locationSearchLoading ? (
-                    <View style={styles.emptyContactsWrap}>
-                      <ActivityIndicator size="small" color={TEAL} />
-                      <AppText style={[styles.emptyContactsText, { marginTop: 8 }]}>Searching locations...</AppText>
+                      {distanceLabel ? (
+                      <AppText style={styles.locationResultDistance} numberOfLines={1}>
+                        {distanceLabel}
+                      </AppText>
+                      ) : null}
                     </View>
-                  ) : (
-                    <View style={styles.emptyContactsWrap}>
-                      <AppText style={styles.emptyContactsText}>
-                        {locationSearchQuery.trim().length >= 2 ? "No location found." : "No recent locations."}
+                    <View style={styles.locationResultTextWrap}>
+                      <AppText style={styles.locationResultTitle} numberOfLines={1}>
+                        {item.title}
+                      </AppText>
+                      <AppText style={styles.locationResultSubtitle} numberOfLines={2}>
+                        {item.subtitle}
                       </AppText>
                     </View>
-                  )
-                }
-              />
-            </View>
+                  </TouchableOpacity>
+                );
+              }}
+              ListEmptyComponent={
+                locationSearchLoading ? (
+                  <View style={styles.emptyContactsWrap}>
+                    <ActivityIndicator size="small" color={TEAL} />
+                    <AppText style={[styles.emptyContactsText, { marginTop: 8 }]}>Searching locations...</AppText>
+                  </View>
+                ) : (
+                  <View style={styles.emptyContactsWrap}>
+                    <AppText style={styles.emptyContactsText}>
+                      {locationSearchQuery.trim().length >= 2 ? "No location found." : "No recent locations."}
+                    </AppText>
+                  </View>
+                )
+              }
+            />
           </View>
-        </View>
+        </Animated.View>
       </Modal>
       <Modal visible={contactsModalVisible} transparent animationType="fade" statusBarTranslucent>
         <View style={styles.modalOverlay}>
@@ -1762,14 +2181,49 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: BORDER,
     borderRadius: 10,
-    padding: 10,
-    marginBottom: 12,
-    backgroundColor: "#F9FAFB",
+    padding: 12,
+    marginBottom: 10,
+    backgroundColor: "#FFFFFF",
   },
-  summaryTitle: { fontSize: 13, fontWeight: "600", color: TITLE_DARK, marginBottom: 4 },
-  summaryText: { fontSize: 13, color: TEXT_GRAY },
-  summaryDistanceText: { fontSize: 12, color: TEAL, fontWeight: "700", marginTop: 6 },
-  summaryDistanceTextMuted: { fontSize: 12, color: TEXT_GRAY, fontWeight: "500", marginTop: 6 },
+  summaryRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 10,
+  },
+  summaryPin: { marginTop: 2 },
+  summaryTextCol: { flex: 1, minWidth: 0 },
+  summaryTitle: { fontSize: 14, fontWeight: "700", color: TITLE_DARK, marginBottom: 4 },
+  summaryText: { fontSize: 13, color: TEXT_GRAY, lineHeight: 18 },
+  summaryDistanceTextMuted: { fontSize: 12, color: TEXT_GRAY, fontWeight: "500", marginBottom: 12 },
+  awayBanner: {
+    backgroundColor: "#FFF6D9",
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+    marginBottom: 12,
+  },
+  awayBannerText: {
+    fontSize: 13,
+    color: TITLE_DARK,
+    lineHeight: 19,
+  },
+  awayBannerDistance: {
+    fontSize: 13,
+    fontWeight: "800",
+    color: TITLE_DARK,
+  },
+  awayBannerAction: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 2,
+    marginTop: 8,
+    alignSelf: "flex-start",
+  },
+  awayBannerActionText: {
+    fontSize: 13,
+    fontWeight: "700",
+    color: TEAL,
+  },
   errorText: { fontSize: 13, color: "#DC2626", marginTop: 4, marginBottom: 4 },
   primaryBtn: {
     marginTop: 4,
@@ -1835,6 +2289,56 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: "transparent",
   },
+  locationSearchOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(15,23,42,0.5)",
+  },
+  locationSearchTopChrome: {
+    alignItems: "center",
+    justifyContent: "flex-end",
+    paddingBottom: 10,
+    minHeight: 52,
+  },
+  locationSearchCloseBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: "#fff",
+    borderWidth: 1,
+    borderColor: BORDER,
+    alignItems: "center",
+    justifyContent: "center",
+    zIndex: 2,
+    elevation: 3,
+  },
+  locationSearchSheet: {
+    flex: 1,
+    backgroundColor: "#fff",
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    paddingHorizontal: 14,
+    paddingTop: 14,
+    width: "100%",
+    minHeight: 0,
+  },
+  locationSearchSectionHead: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: 6,
+    marginTop: 2,
+  },
+  locationSearchSectionLabel: {
+    fontSize: 11,
+    fontWeight: "700",
+    color: TEXT_GRAY,
+    letterSpacing: 0.6,
+  },
+  locationSearchClearText: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: TEAL,
+  },
   modalTopSpace: { flex: 1 },
   modalBottomWrap: { justifyContent: "flex-end" },
   locationSearchCard: {
@@ -1860,7 +2364,14 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
     marginBottom: 10,
   },
+  locationSearchActionTextWrap: { flex: 1, minWidth: 0 },
   locationSearchActionTitle: { fontSize: 15, fontWeight: "700", color: TEAL },
+  locationSearchActionSub: {
+    fontSize: 12,
+    color: TEXT_GRAY,
+    marginTop: 3,
+    lineHeight: 16,
+  },
   locationResultRow: {
     flexDirection: "row",
     alignItems: "flex-start",
@@ -1871,10 +2382,22 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: "#EEF2F7",
   },
-  locationResultTextWrap: { flex: 1 },
+  locationResultIconCol: {
+    width: 52,
+    alignItems: "center",
+    paddingTop: 2,
+  },
+  locationResultDistance: {
+    fontSize: 10,
+    color: "#475569",
+    marginTop: 4,
+    fontWeight: "700",
+    textAlign: "center",
+    minWidth: 44,
+  },
+  locationResultTextWrap: { flex: 1, minWidth: 0 },
   locationResultTitle: { fontSize: 14, fontWeight: "700", color: TITLE_DARK },
   locationResultSubtitle: { fontSize: 13, color: TEXT_GRAY, marginTop: 2 },
-  locationResultDistance: { fontSize: 12, color: TEAL, marginTop: 4, fontWeight: "700" },
   modalCard: {
     backgroundColor: "#fff",
     borderTopLeftRadius: 20,

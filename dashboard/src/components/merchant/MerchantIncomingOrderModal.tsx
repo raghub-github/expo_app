@@ -5,7 +5,8 @@ import { createPortal } from 'react-dom';
 import { useToast } from '@/context/ToastContext';
 import { MerchantIncomingAcceptPanel } from '@/components/merchant/MerchantIncomingAcceptPanel';
 import { OrderBillSidesheet } from '@/components/orders/OrderBillSidesheet';
-import type { OrderPricingBreakdown } from '@/lib/orderLineItems';
+import { RejectOrderSidesheet } from '@/components/orders/RejectOrderSidesheet';
+import type { OrderPricingBreakdown, NormalizedOrderLineItem } from '@/lib/orderLineItems';
 import {
   resolveInitialPrepMinutesForOrder,
   resolveStoreDefaultPrepMinutes,
@@ -25,9 +26,11 @@ import {
   dispatchMerchantStoreOrderUpdated,
   setIncomingOrderModalOpen,
 } from '@/lib/merchant-incoming-order-modal-bus';
+import { merchantBillPartsFromItems } from '@/lib/merchant-order-item-display';
 
 const MUTE_KEY = 'merchant_incoming_order_mute_sound';
 const FALLBACK_POLL_MS = 20_000;
+const OPEN_ORDER_SYNC_MS = 2_500;
 const FALLBACK_SCAN_LIMIT = 12;
 const DISMISS_KEY = 'merchant_incoming_order_dismissed_v1';
 const DEFAULT_ALERT_SOUND = '/notification.wav';
@@ -116,6 +119,21 @@ function shouldPlayIncomingSound(alertStoreKey: string | null | undefined) {
   return true;
 }
 
+function isIncomingPending(row: OrdersFoodRow | null): boolean {
+  if (!row) return false;
+  const ext = row as OrdersFoodRow & { core_status?: string; current_status?: string | null };
+  const st = resolvePartnerPipeline(
+    row.order_status,
+    ext.core_status ?? 'assigned',
+    ext.current_status ?? null
+  );
+  return st === 'CREATED';
+}
+
+function isInvalidOrderTransitionError(message: string): boolean {
+  return /invalid transition/i.test(message);
+}
+
 /**
  * Global overlay for new store orders (CREATED pipeline). Merchant portal — parity with partnersite.
  */
@@ -128,8 +146,8 @@ export function MerchantIncomingOrderModal() {
 
   const [modalOrder, setModalOrder] = useState<OrdersFoodRow | null>(null);
   const [itemsSheetOpen, setItemsSheetOpen] = useState(false);
+  const [billSheetOpen, setBillSheetOpen] = useState(false);
   const [rejectOpen, setRejectOpen] = useState(false);
-  const [rejectReason, setRejectReason] = useState('');
   const [actionLoading, setActionLoading] = useState(false);
   const [nowTick, setNowTick] = useState(() => Date.now());
   const [settings, setSettings] = useState<AcceptanceSettings>(DEFAULT_SETTINGS);
@@ -138,6 +156,8 @@ export function MerchantIncomingOrderModal() {
   const chimeRunIdRef = useRef(0);
   const chimeAudioRef = useRef<HTMLAudioElement | null>(null);
   const autoCancelFiredForOrderIdRef = useRef<number | null>(null);
+  const modalOrderRef = useRef<OrdersFoodRow | null>(null);
+  const closeRef = useRef<(opts?: { markDismissed?: boolean }) => void>(() => {});
   const [prepMinutes, setPrepMinutes] = useState(30);
   const [menuItemFormOpen, setMenuItemFormOpen] = useState(false);
   const [soundMuted, setSoundMuted] = useState(() => {
@@ -148,6 +168,8 @@ export function MerchantIncomingOrderModal() {
       return false;
     }
   });
+
+  modalOrderRef.current = modalOrder;
 
   const storeDefaultPrepMinutes = useMemo(
     () =>
@@ -248,7 +270,10 @@ export function MerchantIncomingOrderModal() {
       !modalOrder.customer_name ||
       !Array.isArray(modalOrder.items) ||
       modalOrder.items.length === 0 ||
-      (modalOrder as unknown as Record<string, unknown>).is_bulk_order === undefined;
+      (modalOrder as unknown as Record<string, unknown>).is_bulk_order === undefined ||
+      !(modalOrder.items as NormalizedOrderLineItem[]).some(
+        (it) => it.ctmFromSnapshot === true || (it.netLineTotal != null && it.netLineTotal > 0)
+      );
     if (!needsHydrate) return;
     if (hydrateBusyRef.current) return;
     hydrateBusyRef.current = true;
@@ -356,13 +381,14 @@ export function MerchantIncomingOrderModal() {
         );
         if (st !== 'CREATED') continue;
         if (dismissed.has(o.order_id)) continue;
-        const opened = await openIfNew(o);
+        const full = (await fetchByCoreId(o.order_id)) ?? o;
+        const opened = await openIfNew(full);
         if (opened) break;
       }
     } catch {
       /* ignore */
     }
-  }, [storeId, modalOrder, openIfNew]);
+  }, [storeId, modalOrder, openIfNew, fetchByCoreId]);
 
   useEffect(() => {
     if (!Number.isFinite(storeInternalId) || !storeId) return () => {};
@@ -381,9 +407,17 @@ export function MerchantIncomingOrderModal() {
           const prev = payload.old as { status?: string } | null;
           const nextStatus = String(row.status || '').toLowerCase();
           const prevStatus = String(prev?.status || '').toLowerCase();
+          const cid = Number(row.id);
+          if (
+            Number.isFinite(cid) &&
+            nextStatus !== 'assigned' &&
+            Number(modalOrderRef.current?.order_id) === cid
+          ) {
+            closeRef.current({ markDismissed: true });
+            return;
+          }
           if (nextStatus !== 'assigned') return;
           if (prevStatus === 'assigned') return;
-          const cid = Number(row.id);
           if (!Number.isFinite(cid)) return;
           void (async () => {
             const full = await fetchByCoreId(cid);
@@ -400,11 +434,23 @@ export function MerchantIncomingOrderModal() {
           filter: `merchant_store_id=eq.${storeInternalId}`,
         },
         (payload) => {
-          const row = payload.new as { id?: number; order_status?: string };
+          const row = payload.new as { id?: number; order_id?: number; order_status?: string };
           const prev = payload.old as { order_status?: string } | null;
           const prevSt = resolvePartnerPipeline(prev?.order_status ?? null, 'assigned', null);
           const st = resolvePartnerPipeline(row.order_status, 'assigned', null);
-          if (st !== 'CREATED') return;
+          if (st !== 'CREATED') {
+            const rowFoodId = Number(row.id);
+            const rowCoreId = Number(row.order_id);
+            const open = modalOrderRef.current;
+            if (
+              open &&
+              ((Number.isFinite(rowFoodId) && rowFoodId === Number(open.id)) ||
+                (Number.isFinite(rowCoreId) && rowCoreId === Number(open.order_id)))
+            ) {
+              closeRef.current({ markDismissed: true });
+            }
+            return;
+          }
           if (prevSt === 'CREATED') return;
           const fid = Number(row.id);
           if (!Number.isFinite(fid)) return;
@@ -487,6 +533,10 @@ export function MerchantIncomingOrderModal() {
 
   const deadlineMs = useMemo(() => {
     if (!modalOrder) return 0;
+    const snap = (modalOrder as OrdersFoodRow & { merchant_response_deadline_at?: string | null })
+      .merchant_response_deadline_at;
+    const snapMs = snap ? new Date(String(snap)).getTime() : NaN;
+    if (Number.isFinite(snapMs)) return snapMs;
     return new Date(modalOrder.created_at).getTime() + acceptWindowMs;
   }, [modalOrder, acceptWindowMs]);
 
@@ -515,9 +565,24 @@ export function MerchantIncomingOrderModal() {
     if (!modalOrder) {
       return { subtotal: 0, packaging: 0, taxes: 0, discount: 0, total: 0 };
     }
+    const precision = Math.max(0, Number(modalOrder.merchant_precision_discount) || 0);
+    const packaging = Number(modalOrder.pricing?.packaging) || 0;
+    const bill = merchantBillPartsFromItems(
+      (Array.isArray(modalOrder.items) ? modalOrder.items : []) as NormalizedOrderLineItem[],
+      { subtotal: incomingOrderLineSum, packaging, discount: precision, total: 0 }
+    );
+    if (bill.total > 0.005) {
+      return {
+        subtotal: bill.itemsSubtotal,
+        packaging: bill.packaging,
+        taxes: 0,
+        discount: bill.discount,
+        total: bill.total,
+      };
+    }
     const p = modalOrder.pricing;
-    if (p) return p;
-    const total = Number(modalOrder.food_items_total_value ?? incomingOrderLineSum);
+    if (p && Number(p.total) > 0.005) return p;
+    const total = Number(modalOrder.total_ctm ?? modalOrder.food_items_total_value ?? incomingOrderLineSum);
     return {
       subtotal: incomingOrderLineSum,
       packaging: 0,
@@ -529,9 +594,12 @@ export function MerchantIncomingOrderModal() {
 
   useEffect(() => {
     setItemsSheetOpen(false);
+    setBillSheetOpen(false);
   }, [modalOrder?.order_id]);
 
-  const close = () => {
+  const close = useCallback((opts?: { markDismissed?: boolean }) => {
+    const current = modalOrderRef.current;
+    const markDismissed = opts?.markDismissed !== false;
     chimeRunIdRef.current += 1;
     try {
       if (chimeAudioRef.current) {
@@ -542,18 +610,20 @@ export function MerchantIncomingOrderModal() {
       /* ignore */
     }
     chimeAudioRef.current = null;
-    if (modalOrder) addDismissed(modalOrder.order_id);
+    if (current && markDismissed) addDismissed(current.order_id);
+    else if (current) shownInsertIds.current.delete(`o:${current.order_id}`);
     setIncomingOrderModalOpen(false);
     setModalOrder(null);
     setRejectOpen(false);
     setItemsSheetOpen(false);
-    setRejectReason('');
+    setBillSheetOpen(false);
     try {
       window.dispatchEvent(new CustomEvent('merchant-pending-orders-refresh'));
     } catch {
       /* ignore */
     }
-  };
+  }, []);
+  closeRef.current = close;
 
   const toggleMute = () => {
     setSoundMuted((prev) => {
@@ -620,9 +690,14 @@ export function MerchantIncomingOrderModal() {
       const updated = (result.data as { order?: OrdersFoodRow } | null)?.order;
       if (updated) dispatchMerchantStoreOrderUpdated(updated);
       toast(status === 'ACCEPTED' ? 'Order accepted' : 'Order rejected', 'success');
-      close();
+      close({ markDismissed: true });
     } catch (e) {
-      toast(e instanceof Error ? e.message : 'Could not update order', 'error');
+      const msg = e instanceof Error ? e.message : 'Could not update order';
+      if (isInvalidOrderTransitionError(msg)) {
+        close({ markDismissed: true });
+        return;
+      }
+      toast(msg, 'error');
     } finally {
       setActionLoading(false);
     }
@@ -652,6 +727,28 @@ export function MerchantIncomingOrderModal() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [secondsLeft, modalOrder, actionLoading, storeId]);
 
+  useEffect(() => {
+    if (!modalOrder || !storeId) return;
+    const sync = async () => {
+      const open = modalOrderRef.current;
+      if (!open) return;
+      const syncCoreId = Number(open.order_id);
+      if (!Number.isFinite(syncCoreId)) return;
+      try {
+        const full = await fetchByCoreId(syncCoreId);
+        if (Number(modalOrderRef.current?.order_id) !== syncCoreId) return;
+        if (full && !isIncomingPending(full)) {
+          close({ markDismissed: true });
+        }
+      } catch {
+        /* ignore */
+      }
+    };
+    void sync();
+    const t = window.setInterval(() => void sync(), OPEN_ORDER_SYNC_MS);
+    return () => window.clearInterval(t);
+  }, [modalOrder?.order_id, storeId, fetchByCoreId, close]);
+
   if (typeof document === 'undefined') return null;
   if (!storeId || !Number.isFinite(storeInternalId)) return null;
 
@@ -663,31 +760,57 @@ export function MerchantIncomingOrderModal() {
         !rejectOpen &&
         portal(
           <div
-            className="fixed inset-0 z-[110] flex items-end justify-center bg-black/50 p-3 backdrop-blur-[2px] sm:items-center sm:p-4"
+            className="pointer-events-none fixed inset-0 z-[110]"
             role="dialog"
             aria-modal="true"
             aria-labelledby="merchant-incoming-title"
           >
-            <MerchantIncomingAcceptPanel
-              order={modalOrder}
-              prepMinutes={prepMinutes}
-              onPrepMinutesChange={setPrepMinutes}
-              storeDefaultPrepMinutes={storeDefaultPrepMinutes}
-              soundMuted={soundMuted}
-              onMuteToggle={toggleMute}
-              onClose={close}
-              onAccept={() => void patchStatus('ACCEPTED', undefined, 'manual')}
-              onReject={() => setRejectOpen(true)}
-              onViewAllItems={() => setItemsSheetOpen(true)}
-              actionLoading={actionLoading}
-              acceptLabel={`Accept order (${mmss})`}
-              acceptDisabled={secondsLeft <= 0}
+            <div
+              className="pointer-events-auto absolute inset-y-0 right-0 bg-stone-950/55 backdrop-blur-[3px] left-0 lg:left-[var(--dashboard-incoming-overlay-left,0px)]"
+              aria-hidden
             />
+            <div className="pointer-events-none absolute inset-y-0 right-0 flex items-end justify-center p-2 left-0 sm:items-start sm:justify-center sm:px-4 sm:pb-4 sm:pt-[4.75rem] lg:left-[var(--dashboard-incoming-overlay-left,0px)]">
+              <div className="pointer-events-auto relative w-full max-w-2xl">
+                <MerchantIncomingAcceptPanel
+                  order={modalOrder}
+                  prepMinutes={prepMinutes}
+                  onPrepMinutesChange={setPrepMinutes}
+                  storeDefaultPrepMinutes={storeDefaultPrepMinutes}
+                  soundMuted={soundMuted}
+                  onMuteToggle={toggleMute}
+                  onClose={() => close({ markDismissed: false })}
+                  onAccept={() => void patchStatus('ACCEPTED', undefined, 'manual')}
+                  onReject={() => setRejectOpen(true)}
+                  onViewAllItems={() => {
+                    setBillSheetOpen(false);
+                    setItemsSheetOpen(true);
+                  }}
+                  onViewBill={() => {
+                    setItemsSheetOpen(false);
+                    setBillSheetOpen(true);
+                  }}
+                  actionLoading={actionLoading}
+                  acceptLabel={`Accept order (${mmss})`}
+                  acceptDisabled={secondsLeft <= 0}
+                  acceptProgressPct={
+                    Math.min(
+                      100,
+                      Math.max(
+                        0,
+                        Math.round(
+                          (1 - secondsLeft / Math.max(1, Math.round(acceptWindowMs / 1000))) * 100
+                        )
+                      )
+                    )
+                  }
+                />
+              </div>
+            </div>
           </div>
         )}
 
       <OrderBillSidesheet
-        open={!!modalOrder && itemsSheetOpen && !rejectOpen}
+        open={!!modalOrder && itemsSheetOpen && !rejectOpen && !billSheetOpen}
         onClose={() => setItemsSheetOpen(false)}
         order={modalOrder}
         pricing={incomingOrderPricing}
@@ -695,75 +818,27 @@ export function MerchantIncomingOrderModal() {
         allItemsOnly
       />
 
-      {modalOrder &&
-        rejectOpen &&
-        portal(
-          <IncomingRejectDialog
-            rejectReason={rejectReason}
-            setRejectReason={setRejectReason}
-            actionLoading={actionLoading}
-            onBack={() => {
-              setRejectOpen(false);
-              setRejectReason('');
-            }}
-            onConfirm={() =>
-              void patchStatus(
-                'CANCELLED',
-                {
-                  rejected_reason: rejectReason.trim() || 'Rejected from incoming order',
-                },
-                'manual'
-              )
-            }
-          />
-        )}
-    </>
-  );
-}
-
-function IncomingRejectDialog({
-  rejectReason,
-  setRejectReason,
-  actionLoading,
-  onBack,
-  onConfirm,
-}: {
-  rejectReason: string;
-  setRejectReason: (v: string) => void;
-  actionLoading: boolean;
-  onBack: () => void;
-  onConfirm: () => void;
-}) {
-  return (
-    <div className="fixed inset-0 z-[115] flex items-end justify-center bg-black/50 p-3 backdrop-blur-sm sm:items-center sm:p-4">
-      <div className="w-full max-w-md rounded-t-2xl bg-white p-4 shadow-xl sm:rounded-2xl">
-      <h3 className="font-semibold text-gray-900">Reject order</h3>
-      <p className="mt-1 text-sm text-gray-600">Optional reason for the customer:</p>
-      <textarea
-        value={rejectReason}
-        onChange={(e) => setRejectReason(e.target.value)}
-        className="mt-2 w-full min-h-[88px] rounded-lg border border-gray-200 p-2 text-sm"
-        placeholder="e.g. Item unavailable"
+      <OrderBillSidesheet
+        open={!!modalOrder && billSheetOpen && !rejectOpen && !itemsSheetOpen}
+        onClose={() => setBillSheetOpen(false)}
+        order={modalOrder}
+        pricing={incomingOrderPricing}
+        lineSum={incomingOrderLineSum}
+        allItemsOnly={false}
       />
-      <div className="mt-3 flex gap-2">
-        <button
-          type="button"
-          className="flex-1 rounded-lg border border-gray-200 py-2.5 text-sm font-medium hover:bg-gray-50"
-          onClick={onBack}
-        >
-          Back
-        </button>
-        <button
-          type="button"
-          disabled={actionLoading}
-          className="flex-1 rounded-lg bg-red-600 py-2.5 text-sm font-semibold text-white hover:bg-red-700 disabled:opacity-50"
-          onClick={onConfirm}
-        >
-          Confirm reject
-        </button>
-      </div>
-    </div>
-    </div>
+
+      <RejectOrderSidesheet
+        open={!!modalOrder && rejectOpen}
+        order={modalOrder}
+        loading={actionLoading}
+        onClose={() => {
+          setRejectOpen(false);
+        }}
+        onConfirm={(reason) =>
+          void patchStatus('CANCELLED', { rejected_reason: reason }, 'manual')
+        }
+      />
+    </>
   );
 }
 

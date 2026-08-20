@@ -35,6 +35,13 @@ function isRetryableRequest(err: AxiosError): boolean {
   if (method === "patch" && typeof config.url === "string" && config.url.includes("/me/profile")) {
     return true;
   }
+  // Delivery quote is a read; retry network drops so checkout/home don't stall.
+  if (method === "post" && typeof config.url === "string" && config.url.includes("/distance/store-quote")) {
+    return true;
+  }
+  if (method === "post" && typeof config.url === "string" && config.url.includes("/me/active-location/reconcile")) {
+    return true;
+  }
   return false;
 }
 
@@ -107,7 +114,10 @@ api.interceptors.response.use(
       const url = err.config?.url ?? "?";
       const silent =
         err.config?.headers?.["X-Silent-Error"] === "1" ||
-        (typeof url === "string" && url.includes("/v1/weather/"));
+        (typeof url === "string" && url.includes("/v1/weather/")) ||
+        (status === 404 &&
+          typeof url === "string" &&
+          (/\/v1\/orders\//.test(url) || /\/v1\/eta\/orders\//.test(url)));
       if (!silent) {
         // Include method + url so you can tell *which* call failed instead of
         // just "Network Error" with no context. Weather uses getForLocationSafe

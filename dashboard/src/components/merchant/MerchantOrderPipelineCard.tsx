@@ -105,7 +105,7 @@ export function MerchantOrderPipelineCard({
   const isRto = status === 'RTO';
 
   const pricing = order.pricing;
-  const total = pricing?.total ?? resolveMerchantCtm(order);
+  const total = resolveMerchantCtm(order) || pricing?.total;
   const itemCount = computeOrderItemQuantityCount(order);
   const riderName =
     order.rider_details?.name || order.rider_name || 'Delivery partner';

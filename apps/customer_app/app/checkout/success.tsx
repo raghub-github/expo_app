@@ -9,9 +9,7 @@ import {
   ActivityIndicator,
   Alert,
   Animated as RNAnimated,
-  Platform,
   ScrollView,
-  StatusBar as NativeStatusBar,
   StyleSheet,
   TouchableOpacity,
   useWindowDimensions,
@@ -43,6 +41,7 @@ import { OrderDeliveryDetailsCard } from "@/components/orders/OrderDeliveryDetai
 import { GatiMitraColors } from "@/constants/gatimitra";
 import { buildOrderDeliveryDetailsView } from "@/lib/order-delivery-details";
 import { parseOrderBillFromSnapshot } from "@/lib/orderBillBreakdown";
+import { applyAndroidStatusBarVisible } from "@/lib/androidEdgeToEdgeChrome";
 import { playCustomerNotificationSound } from "@/lib/playCustomerNotificationSound";
 import { orderService } from "@/services/order.service";
 import { useScreenChromeStore } from "@/store/screenChromeStore";
@@ -420,12 +419,7 @@ export default function OrderSuccessScreen() {
         statusBarStyle: "light",
         hideStatusBarSpacer: true,
       });
-      NativeStatusBar.setHidden(false, "none");
-      if (Platform.OS === "android") {
-        NativeStatusBar.setTranslucent(true);
-        NativeStatusBar.setBackgroundColor(BRAND_GREEN, true);
-        NativeStatusBar.setBarStyle("light-content", true);
-      }
+      applyAndroidStatusBarVisible("light-content");
       return () => useScreenChromeStore.getState().resetStatusBarBackground();
     }, [])
   );

@@ -16,6 +16,8 @@ type UseMerchantScrollAnimationOpts = {
   onScrollEnd?: (y: number) => void;
   /** Cancel pending programmatic scroll when the user takes over. */
   onBeginDrag?: () => void;
+  /** Discovery pins chrome; classic / grid-first fade it in on scroll. */
+  pinned?: boolean;
 };
 
 export function useMerchantScrollAnimation({
@@ -23,6 +25,7 @@ export function useMerchantScrollAnimation({
   userMenuScrollStarted,
   onScrollEnd,
   onBeginDrag,
+  pinned = false,
 }: UseMerchantScrollAnimationOpts) {
   const scrollY = useSharedValue(0);
 
@@ -62,7 +65,7 @@ export function useMerchantScrollAnimation({
   });
 
   const stickySearchStyle = useAnimatedStyle(() => {
-    if (headerSearchExpandedSv.value) {
+    if (pinned || headerSearchExpandedSv.value) {
       return { opacity: 1, transform: [{ translateY: 0 }] };
     }
     const opacity = interpolate(
@@ -81,7 +84,7 @@ export function useMerchantScrollAnimation({
   });
 
   const stickySearchBgStyle = useAnimatedStyle(() => {
-    if (headerSearchExpandedSv.value) {
+    if (pinned || headerSearchExpandedSv.value) {
       return { opacity: 1 };
     }
     const opacity = interpolate(

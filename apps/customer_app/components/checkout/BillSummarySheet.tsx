@@ -18,6 +18,7 @@ import { useAnimatedCount } from "@/hooks/useAnimatedCount";
 import { Ionicons } from "@expo/vector-icons";
 import type { BillingLine, CalculateBillResponse } from "@/services/billing.service";
 import { GatiMitraColors } from "@/constants/gatimitra";
+import { MerchantDarkPalette, useMerchantUiDark } from "@/features/merchant-detail/merchantUiTheme";
 import {
   CheckoutGratitudeSections,
   type CheckoutGratitudeSectionsProps,
@@ -39,10 +40,11 @@ const SCALLOP_COUNT = 34;
 const SCALLOP_BUMPS = Array.from({ length: SCALLOP_COUNT }, (_, i) => i);
 
 function SavingsScallopWave() {
+  const dark = useMerchantUiDark();
   return (
     <View style={styles.scallopRow}>
       {SCALLOP_BUMPS.map((i) => (
-        <View key={i} style={styles.scallopBump} />
+        <View key={i} style={[styles.scallopBump, dark && styles.scallopBumpDark]} />
       ))}
     </View>
   );
@@ -57,6 +59,7 @@ function BillSavingsBanner({
   subscriptionWaived: number;
   planName: string;
 }) {
+  const dark = useMerchantUiDark();
   const total = formatCheckoutSavingsRupees(totalSaved);
   const subWaivedNum = Math.round(subscriptionWaived * 100) / 100;
   const subWaived = formatCheckoutSavingsRupees(subscriptionWaived);
@@ -64,8 +67,8 @@ function BillSavingsBanner({
   return (
     <View style={styles.savingsBannerOuter}>
       <SavingsScallopWave />
-      <View style={styles.savingsBanner}>
-        <CheckoutText style={styles.savingsText}>
+      <View style={[styles.savingsBanner, dark && styles.savingsBannerDark]}>
+        <CheckoutText style={[styles.savingsText, dark && styles.savingsTextDark]}>
           🥳 You saved ₹{total}
           {subWaivedNum > 0.005 ? (
             <>
@@ -96,9 +99,10 @@ function AnimatedBillValue({
   prefix?: string;
   style?: object;
 }) {
+  const dark = useMerchantUiDark();
   const animated = useAnimatedCount(value);
   return (
-    <CheckoutText style={[styles.lineValue, style]}>
+    <CheckoutText style={[styles.lineValue, dark && styles.textDark, style]}>
       {prefix}
       {fmt(animated)}
     </CheckoutText>
@@ -107,8 +111,9 @@ function AnimatedBillValue({
 
 /** Same tween, styled as a strike-through (list-price) amount. */
 function AnimatedAsStrike({ value }: { value: number }) {
+  const dark = useMerchantUiDark();
   const animated = useAnimatedCount(value);
-  return <CheckoutText style={styles.strikeValue}>{fmt(animated)}</CheckoutText>;
+  return <CheckoutText style={[styles.strikeValue, dark && styles.strikeDark]}>{fmt(animated)}</CheckoutText>;
 }
 
 function BillInfoModal({
@@ -122,15 +127,16 @@ function BillInfoModal({
   body: string;
   onClose: () => void;
 }) {
+  const dark = useMerchantUiDark();
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
       <View style={styles.infoBackdrop}>
         <Pressable style={StyleSheet.absoluteFill} onPress={onClose} />
-        <View style={styles.infoCard}>
-          <CheckoutText style={styles.infoTitle}>{title}</CheckoutText>
-          <CheckoutText style={styles.infoBody}>{body}</CheckoutText>
+        <View style={[styles.infoCard, dark && styles.cardDark]}>
+          <CheckoutText style={[styles.infoTitle, dark && styles.textDark]}>{title}</CheckoutText>
+          <CheckoutText style={[styles.infoBody, dark && styles.mutedDark]}>{body}</CheckoutText>
           <Pressable onPress={onClose} style={styles.infoOkBtn} hitSlop={8}>
-            <CheckoutText style={styles.infoOkText}>OKAY</CheckoutText>
+            <CheckoutText style={[styles.infoOkText, dark && styles.okDark]}>OKAY</CheckoutText>
           </Pressable>
         </View>
       </View>
@@ -159,14 +165,15 @@ function BillLineRow({
   labelAccent?: boolean;
   dashedUnderline?: boolean;
 }) {
+  const dark = useMerchantUiDark();
   const labelText = (
-    <CheckoutText style={[dashedUnderline ? styles.dashedLabelText : styles.plainLabelText, labelAccent && styles.discountLabel]}>
+    <CheckoutText style={[dashedUnderline ? styles.dashedLabelText : styles.plainLabelText, dark && styles.textDark, labelAccent && (dark ? styles.discountLabelDark : styles.discountLabel)]}>
       {label}
     </CheckoutText>
   );
 
   const labelBlock = dashedUnderline ? (
-    <View style={styles.dashedLabelWrap}>{labelText}</View>
+    <View style={[styles.dashedLabelWrap, dark && styles.dashedLabelWrapDark]}>{labelText}</View>
   ) : (
     labelText
   );
@@ -181,9 +188,9 @@ function BillLineRow({
         ) : (
           labelBlock
         )}
-        {subtext ? <CheckoutText style={styles.lineSubtext}>{subtext}</CheckoutText> : null}
+        {subtext ? <CheckoutText style={[styles.lineSubtext, dark && styles.mutedDark]}>{subtext}</CheckoutText> : null}
       </View>
-      {valueNode ?? <CheckoutText style={[styles.lineValue, valueStyle]}>{value}</CheckoutText>}
+      {valueNode ?? <CheckoutText style={[styles.lineValue, dark && styles.textDark, valueStyle]}>{value}</CheckoutText>}
     </View>
   );
 }
@@ -195,12 +202,13 @@ function DeliveryFeeValue({
   originalInr: number;
   currentInr: number;
 }) {
+  const dark = useMerchantUiDark();
   const animatedOriginal = useAnimatedCount(originalInr);
   const waived = originalInr > 0.005 && currentInr <= 0.005;
   if (waived) {
     return (
       <View style={styles.deliveryValueCluster}>
-        <CheckoutText style={styles.strikeValue}>{fmt(animatedOriginal)}</CheckoutText>
+        <CheckoutText style={[styles.strikeValue, dark && styles.strikeDark]}>{fmt(animatedOriginal)}</CheckoutText>
         <CheckoutText style={styles.waivedValue}>{fmt(0)}</CheckoutText>
       </View>
     );
@@ -229,28 +237,29 @@ function DeliveryFeeBreakdownModal({
   subscriptionWaivedInr: number;
   deliverySubtext?: string | null;
 }) {
+  const dark = useMerchantUiDark();
   const kmLabel = formatDeliveryDistanceKmLabel(distanceKm);
 
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
       <View style={styles.infoBackdrop}>
         <Pressable style={StyleSheet.absoluteFill} onPress={onClose} />
-        <View style={styles.breakdownCard}>
+        <View style={[styles.breakdownCard, dark && styles.cardDark]}>
           <View style={styles.breakdownLine}>
             <View style={styles.breakdownLineLeft}>
-              <CheckoutText style={styles.breakdownTitle}>Base fee for {kmLabel}</CheckoutText>
-              {deliverySubtext ? <CheckoutText style={styles.breakdownSub}>{deliverySubtext}</CheckoutText> : null}
+              <CheckoutText style={[styles.breakdownTitle, dark && styles.textDark]}>Base fee for {kmLabel}</CheckoutText>
+              {deliverySubtext ? <CheckoutText style={[styles.breakdownSub, dark && styles.mutedDark]}>{deliverySubtext}</CheckoutText> : null}
             </View>
-            <CheckoutText style={styles.breakdownAmount}>{fmt(baseFeeInr)}</CheckoutText>
+            <CheckoutText style={[styles.breakdownAmount, dark && styles.textDark]}>{fmt(baseFeeInr)}</CheckoutText>
           </View>
 
           {smallOrderInr > 0.005 ? (
             <>
-              <View style={styles.breakdownDivider} />
+              <View style={[styles.breakdownDivider, dark && styles.dividerDark]} />
               <View style={styles.breakdownLine}>
-                <CheckoutText style={styles.breakdownTitle}>Small order fee</CheckoutText>
+                <CheckoutText style={[styles.breakdownTitle, dark && styles.textDark]}>Small order fee</CheckoutText>
                 <View style={styles.deliveryValueCluster}>
-                  <CheckoutText style={styles.strikeValue}>{fmt(smallOrderInr)}</CheckoutText>
+                  <CheckoutText style={[styles.strikeValue, dark && styles.strikeDark]}>{fmt(smallOrderInr)}</CheckoutText>
                   <CheckoutText style={styles.waivedValue}>{fmt(0)}</CheckoutText>
                 </View>
               </View>
@@ -259,7 +268,7 @@ function DeliveryFeeBreakdownModal({
 
           {subscriptionWaivedInr > 0.005 ? (
             <>
-              <View style={styles.breakdownDivider} />
+              <View style={[styles.breakdownDivider, dark && styles.dividerDark]} />
               <View style={styles.breakdownLine}>
                 <CheckoutText style={[styles.breakdownTitle, styles.brandText]}>
                   Free delivery with {planName}
@@ -271,14 +280,14 @@ function DeliveryFeeBreakdownModal({
             </>
           ) : null}
 
-          <View style={styles.breakdownDivider} />
+          <View style={[styles.breakdownDivider, dark && styles.dividerDark]} />
           <View style={styles.breakdownLine}>
-            <CheckoutText style={styles.breakdownNetLabel}>Delivery partner fee</CheckoutText>
-            <CheckoutText style={styles.breakdownNetAmount}>{fmt(currentDeliveryInr)}</CheckoutText>
+            <CheckoutText style={[styles.breakdownNetLabel, dark && styles.textDark]}>Delivery partner fee</CheckoutText>
+            <CheckoutText style={[styles.breakdownNetAmount, dark && styles.textDark]}>{fmt(currentDeliveryInr)}</CheckoutText>
           </View>
 
           <Pressable onPress={onClose} style={styles.infoOkBtn} hitSlop={8}>
-            <CheckoutText style={styles.infoOkText}>OKAY</CheckoutText>
+            <CheckoutText style={[styles.infoOkText, dark && styles.okDark]}>OKAY</CheckoutText>
           </Pressable>
         </View>
       </View>
@@ -365,6 +374,7 @@ export function BillSummarySheet({
   onDonateEveryOrderPress,
   donationScope = "every_order",
 }: BillSummarySheetProps) {
+  const dark = useMerchantUiDark();
   const [deliveryBreakdownOpen, setDeliveryBreakdownOpen] = useState(false);
   const [infoModal, setInfoModal] = useState<null | "packaging" | "platform">(null);
 
@@ -526,7 +536,7 @@ export function BillSummarySheet({
       >
         <View style={styles.root}>
           <Pressable style={styles.dim} onPress={onClose} />
-          <View style={[styles.card, { maxHeight, paddingBottom: Math.max(bottomInset, 12) + 8 }]}>
+          <View style={[styles.card, dark && styles.cardDark, { maxHeight, paddingBottom: Math.max(bottomInset, 12) + 8 }]}>
             <View style={styles.closeWrap}>
               <Pressable style={styles.closeRing} onPress={onClose} hitSlop={14} accessibilityLabel="Close">
                 <Ionicons name="close" size={22} color="#FFFFFF" />
@@ -539,7 +549,7 @@ export function BillSummarySheet({
               contentContainerStyle={styles.scrollContent}
               bounces
             >
-              <CheckoutText style={styles.sheetTitle}>Bill Summary</CheckoutText>
+              <CheckoutText style={[styles.sheetTitle, dark && styles.textDark]}>Bill Summary</CheckoutText>
 
               {serverBill ? (
                 <>
@@ -645,7 +655,7 @@ export function BillSummarySheet({
                     />
                   ) : null}
 
-                  <View style={styles.sectionDivider} />
+                  <View style={[styles.sectionDivider, dark && styles.dividerDark]} />
                   <BillLineRow
                     label="Grand Total"
                     valueNode={
@@ -657,7 +667,7 @@ export function BillSummarySheet({
                     <BillLineRow
                       key={`disc-${d.ruleId ?? idx}-${d.label}`}
                       label={d.label}
-                      valueNode={<AnimatedBillValue value={d.amount} prefix="- " style={styles.discountValue} />}
+                      valueNode={<AnimatedBillValue value={d.amount} prefix="- " style={[styles.discountValue, dark && styles.discountValueDark]} />}
                       labelAccent
                       rowStyle={styles.discountRow}
                     />
@@ -667,7 +677,7 @@ export function BillSummarySheet({
                     <BillLineRow
                       label="Other offers"
                       valueNode={
-                        <AnimatedBillValue value={discountRowsGap} prefix="- " style={styles.discountValue} />
+                        <AnimatedBillValue value={discountRowsGap} prefix="- " style={[styles.discountValue, dark && styles.discountValueDark]} />
                       }
                       labelAccent
                       rowStyle={styles.discountRow}
@@ -693,7 +703,7 @@ export function BillSummarySheet({
                     <BillLineRow
                       label={missedOfferUnlockLabel}
                       valueNode={
-                        <AnimatedBillValue value={missedOfferDiscount} prefix="- " style={styles.discountValue} />
+                        <AnimatedBillValue value={missedOfferDiscount} prefix="- " style={[styles.discountValue, dark && styles.discountValueDark]} />
                       }
                       labelAccent
                       rowStyle={styles.discountRow}
@@ -716,12 +726,19 @@ export function BillSummarySheet({
 
                   <View style={styles.toPayRow}>
                     <View style={styles.toPayLabelCol}>
-                      <CheckoutText style={styles.toPayLabel}>To pay</CheckoutText>
+                      <CheckoutText style={[styles.toPayLabel, dark && styles.textDark]}>To pay</CheckoutText>
                       {fullyPaidByGatiCash ? (
                         <CheckoutText style={styles.toPayGatiCashHint}>100% GatiCash used</CheckoutText>
                       ) : null}
                     </View>
-                    <AnimatedBillValue value={toPayDisplay} style={styles.toPayValue} />
+                    {walletDeduction > 0.005 && toPayDisplay + walletDeduction > toPayDisplay + 0.005 ? (
+                      <View style={styles.deliveryValueCluster}>
+                        <AnimatedAsStrike value={Math.round((toPayDisplay + walletDeduction) * 100) / 100} />
+                        <AnimatedBillValue value={toPayDisplay} style={[styles.toPayValue, dark && styles.textDark]} />
+                      </View>
+                    ) : (
+                      <AnimatedBillValue value={toPayDisplay} style={[styles.toPayValue, dark && styles.textDark]} />
+                    )}
                   </View>
 
                   {showSavingsBanner ? (
@@ -950,4 +967,16 @@ const styles = StyleSheet.create({
   breakdownDivider: { height: StyleSheet.hairlineWidth, backgroundColor: "#E5E7EB", marginVertical: 12 },
   breakdownNetLabel: { fontSize: 15, fontWeight: "800", color: "#111827" },
   breakdownNetAmount: { fontSize: 16, fontWeight: "800", color: "#111827" },
+  cardDark: { backgroundColor: MerchantDarkPalette.card },
+  textDark: { color: MerchantDarkPalette.text },
+  mutedDark: { color: MerchantDarkPalette.textMuted },
+  dividerDark: { backgroundColor: MerchantDarkPalette.border },
+  strikeDark: { color: MerchantDarkPalette.textMuted },
+  dashedLabelWrapDark: { borderColor: MerchantDarkPalette.textDim },
+  okDark: { color: MerchantDarkPalette.accent },
+  discountLabelDark: { color: MerchantDarkPalette.accent, fontWeight: "600" },
+  discountValueDark: { color: MerchantDarkPalette.accent, fontWeight: "700" },
+  savingsBannerDark: { backgroundColor: "rgba(45, 212, 191, 0.16)" },
+  savingsTextDark: { color: MerchantDarkPalette.accent },
+  scallopBumpDark: { backgroundColor: "rgba(45, 212, 191, 0.16)" },
 });

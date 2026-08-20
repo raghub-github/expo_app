@@ -1582,14 +1582,18 @@ export async function runStoreScheduleTickForStore(
   log: { info: (o: object, msg?: string) => void; error: (o: object, msg?: string) => void }
 ): Promise<void> {
   if (!Number.isInteger(storeId) || storeId < 1) return;
-  const sql = getSql();
   try {
-    await ensureAvailabilityRow(sql, storeId);
+    await withSqlRetry(async () => {
+      const sql = getSql();
+      await ensureAvailabilityRow(sql, storeId);
+    });
   } catch (e) {
     log.error({ storeId, err: e }, "store_schedule_tick_for_store_ensure_failed");
     return;
   }
   try {
+    await withSqlRetry(async () => {
+    const sql = getSql();
     const now = new Date();
     const storeRows = await sql`
       SELECT
@@ -1673,6 +1677,7 @@ export async function runStoreScheduleTickForStore(
     } catch (e) {
       log.error({ storeId, err: e }, "store_schedule_tick_for_store_live_columns_write_failed");
     }
+    });
   } catch (err) {
     log.error({ storeId, err }, "store_schedule_tick_for_store_failed");
   }

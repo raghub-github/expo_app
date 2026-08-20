@@ -40,6 +40,69 @@ export function isSafeMerchantPushHref(url: string): boolean {
   return false;
 }
 
+/** Numeric food-order id from a merchant push payload (never GMF… / core text ids). */
+export function extractMerchantFoodOrderIdFromPush(data: Record<string, unknown>): string | null {
+  const candidates = [
+    data.foodOrderId,
+    data.food_order_id,
+    data.foodId,
+    data.food_id,
+  ];
+  for (const c of candidates) {
+    const s = String(c ?? "").trim();
+    if (/^\d+$/.test(s)) return s;
+  }
+  const hrefs = [data.url, data.deepLink, data.deep_link, data.screen];
+  for (const h of hrefs) {
+    if (typeof h !== "string") continue;
+    const m = h.match(/\/order(?:s)?\/(\d+)/);
+    if (m?.[1]) return m[1];
+  }
+  const orderId = String(data.orderId ?? data.order_id ?? "").trim();
+  if (/^\d+$/.test(orderId)) return orderId;
+  return null;
+}
+
+export function isMerchantOrderRelatedPush(data: Record<string, unknown>): boolean {
+  const t = String(data.type ?? data.event ?? data.gmType ?? data.template_code ?? "").toLowerCase();
+  const code = String(data.template_code ?? data.gmType ?? "").toUpperCase();
+  if (t.includes("merchant_new_order") || t === "new_order") return true;
+  if (t.includes("merchant_order") || t.includes("order_lifecycle")) return true;
+  if (t.includes("merchant_rider") || t.includes("rider_pickup") || t.includes("rider_wait")) {
+    return true;
+  }
+  if (code.startsWith("MERCHANT_") && code.includes("ORDER")) return true;
+  if (code === "ADMIN_RIDER_WAITING" || code === "MERCHANT_RIDER_WAIT_ESCALATION") return true;
+  if (data.stage != null && String(data.stage).trim() !== "") return true;
+  return false;
+}
+
+/** Live-board tab when a push has no numeric food order id. */
+export function merchantOrdersTabHrefFromPush(data: Record<string, unknown>): string {
+  const s = String(data.stage ?? data.toStatus ?? "")
+    .trim()
+    .toUpperCase()
+    .replace(/[\s-]+/g, "_");
+  if (s === "RTO") return "/(tabs)/orders?tab=rto";
+  if (s === "SCHEDULED" || s === "PREORDER" || s === "PRE_ORDER") {
+    return "/(tabs)/orders?tab=scheduled";
+  }
+  if (s === "DELIVERED" || s === "COMPLETED" || s === "CANCELLED" || s === "REJECTED") {
+    return "/(tabs)/orders?tab=completed";
+  }
+  if (s === "READY" || s === "READY_FOR_PICKUP") return "/(tabs)/orders?tab=ready";
+  if (
+    s === "OUT_FOR_DELIVERY" ||
+    s === "PICKED_UP" ||
+    s === "IN_TRANSIT" ||
+    s === "DISPATCHED"
+  ) {
+    return "/(tabs)/orders?tab=picked_up";
+  }
+  if (s === "CREATED" || s === "NEW" || s === "PLACED") return "/(tabs)/orders";
+  return "/(tabs)/orders?tab=preparing";
+}
+
 /** Flow hub routes (Earnings, Growth, Offers, Reviews). */
 export function isHubPath(path: string | undefined | null): boolean {
   const p = normalizePath(path);

@@ -36,6 +36,8 @@ export type OrdersFoodRow = {
   food_items_total_value?: number | string | null;
   /** Frozen merchant CTM from accept (orders_core.total_ctm). */
   total_ctm?: number | string | null;
+  /** Frozen cart precision discount (orders_core.merchant_precision_discount). */
+  merchant_precision_discount?: number | string | null;
   /** Customer paid grand total — internal only, not merchant display. */
   customer_paid_total?: number | string | null;
   preparation_time_minutes?: number | null;

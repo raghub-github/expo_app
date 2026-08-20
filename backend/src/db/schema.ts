@@ -1891,7 +1891,9 @@ export const orderItemAddonCommissionSnapshots = pgTable(
   })
 );
 
-/** Immutable Merchant CTM line pricing — SSOT for merchant-facing order screens. */
+/** Immutable Merchant CTM line pricing — SSOT for merchant-facing order screens.
+ *  v1: gross_value = customer catalog; net = catalog − BOOST; settlement reverse-scales.
+ *  v2: gross/base_ctm = merchant net; net/discounted_ctm = after Boost; customer_item_price = gross-up. */
 export const merchantCtmPricingSnapshot = pgTable(
   "merchant_ctm_pricing_snapshot",
   {
@@ -1910,6 +1912,28 @@ export const merchantCtmPricingSnapshot = pgTable(
       .notNull()
       .default("0"),
     netCtmValue: numeric("net_ctm_value", { precision: 12, scale: 2 }).notNull(),
+    calculationVersion: integer("calculation_version").notNull().default(1),
+    baseCtmValue: numeric("base_ctm_value", { precision: 12, scale: 2 }),
+    discountedCtmValue: numeric("discounted_ctm_value", { precision: 12, scale: 2 }),
+    commissionPercent: numeric("commission_percent", { precision: 6, scale: 2 }),
+    commissionAmount: numeric("commission_amount", { precision: 12, scale: 2 }),
+    customerItemPrice: numeric("customer_item_price", { precision: 12, scale: 2 }),
+    merchantOfferId: bigint("merchant_offer_id", { mode: "number" }),
+    merchantOfferSnapshot: jsonb("merchant_offer_snapshot").notNull().default({}),
+    platformOfferId: bigint("platform_offer_id", { mode: "number" }),
+    platformDiscountTotal: numeric("platform_discount_total", { precision: 12, scale: 2 })
+      .notNull()
+      .default("0"),
+    merchantFundedDiscount: numeric("merchant_funded_discount", { precision: 12, scale: 2 })
+      .notNull()
+      .default("0"),
+    companyFundedDiscount: numeric("company_funded_discount", { precision: 12, scale: 2 })
+      .notNull()
+      .default("0"),
+    merchantSettlementCtm: numeric("merchant_settlement_ctm", { precision: 12, scale: 2 }),
+    paidQuantity: numeric("paid_quantity", { precision: 12, scale: 3 }),
+    freeQuantity: numeric("free_quantity", { precision: 12, scale: 3 }),
+    fulfilledQuantity: numeric("fulfilled_quantity", { precision: 12, scale: 3 }),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   },
   (table) => ({
@@ -3948,6 +3972,8 @@ export const offerOrderApplications = pgTable(
     discountAmount:  numeric("discount_amount",  { precision: 10, scale: 2 }).notNull().default("0"),
     platformShare:   numeric("platform_share",   { precision: 10, scale: 2 }).notNull().default("0"),
     merchantShare:   numeric("merchant_share",   { precision: 10, scale: 2 }).notNull().default("0"),
+    platformContribution: numeric("platform_contribution", { precision: 10, scale: 2 }),
+    merchantContribution: numeric("merchant_contribution", { precision: 10, scale: 2 }),
     fundingMode:     text("funding_mode").notNull().default("MERCHANT_ONLY"),
     snapshotJson:    jsonb("snapshot_json").notNull().default({}),
     createdAt:       timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),

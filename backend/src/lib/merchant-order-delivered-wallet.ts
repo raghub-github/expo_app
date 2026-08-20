@@ -20,6 +20,7 @@ async function resolveMerchantGrossForWallet(
   // Merchant CTM snapshot (net of merchant-funded offers) is the source of truth for
   // what the merchant is actually owed. order_settlement_breakdown.merchant_gross is
   // written from that snapshot at placement time (writeMerchantCtmPricingSnapshots).
+  // v2 merchant_gross is already discounted CTM — never reverse-scale by commission again.
   const ctmRows = await db`
     SELECT merchant_gross
     FROM order_settlement_breakdown

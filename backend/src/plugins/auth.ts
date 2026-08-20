@@ -8,6 +8,11 @@ import { isTransientDbError, hasTransientDbCause } from "../lib/db/is-transient-
 import { DbSlotTimeoutError } from "../lib/db/db-slot.js";
 import { customers } from "../db/schema.js";
 import { eq } from "drizzle-orm";
+import {
+  DEVICE_SESSION_STALE_MS,
+  readDeviceSessionCache,
+  writeDeviceSessionCache,
+} from "../lib/device-session-cache.js";
 
 export type AuthContext = {
   sub: string;
@@ -54,29 +59,6 @@ export class AuthHttpError extends Error {
 
 function throwAuthError(statusCode: number, errorCode: string, message: string): never {
   throw new AuthHttpError(statusCode, errorCode, message);
-}
-
-type MerchantDeviceSessionCacheEntry = {
-  valid: boolean;
-  checkedAt: number;
-};
-
-const merchantDeviceSessionCache = new Map<string, MerchantDeviceSessionCacheEntry>();
-const MERCHANT_DEVICE_SESSION_CACHE_MS = 45_000;
-const MERCHANT_DEVICE_SESSION_STALE_MS = 5 * 60_000;
-
-function readMerchantDeviceSessionCache(
-  sub: string,
-  deviceId: string,
-  maxAgeMs = MERCHANT_DEVICE_SESSION_CACHE_MS
-): boolean | null {
-  const cached = merchantDeviceSessionCache.get(`${sub}:${deviceId}`);
-  if (!cached || Date.now() - cached.checkedAt > maxAgeMs) return null;
-  return cached.valid;
-}
-
-function writeMerchantDeviceSessionCache(sub: string, deviceId: string, valid: boolean): void {
-  merchantDeviceSessionCache.set(`${sub}:${deviceId}`, { valid, checkedAt: Date.now() });
 }
 
 function readCustomerSessionCache(
@@ -215,7 +197,7 @@ const authPlugin: FastifyPluginAsync<AuthPluginOpts> = async (app, opts) => {
       if (role === "merchant" || role === "rider") {
         const deviceId = typeof (payload as any).device_id === "string" ? (payload as any).device_id : undefined;
         if (deviceId) {
-          const cachedValid = readMerchantDeviceSessionCache(sub, deviceId);
+          const cachedValid = readDeviceSessionCache(sub, deviceId);
           if (cachedValid === false) {
             throwAuthError(401, "session_revoked", "Signed out from this device.");
           } else if (cachedValid !== true) {
@@ -229,10 +211,10 @@ const authPlugin: FastifyPluginAsync<AuthPluginOpts> = async (app, opts) => {
               LIMIT 1
             `;
                 if (!rows[0]) {
-                  writeMerchantDeviceSessionCache(sub, deviceId, false);
+                  writeDeviceSessionCache(sub, deviceId, false);
                   throwAuthError(401, "session_revoked", "Signed out from this device.");
                 }
-                writeMerchantDeviceSessionCache(sub, deviceId, true);
+                writeDeviceSessionCache(sub, deviceId, true);
               });
               void withSqlRetry(async () => {
                 const sql = getSql();
@@ -245,10 +227,10 @@ const authPlugin: FastifyPluginAsync<AuthPluginOpts> = async (app, opts) => {
             } catch (sessionErr) {
               if (sessionErr instanceof AuthHttpError) throw sessionErr;
               if (!isDbUnavailable(sessionErr)) throw sessionErr;
-              const staleValid = readMerchantDeviceSessionCache(
+              const staleValid = readDeviceSessionCache(
                 sub,
                 deviceId,
-                MERCHANT_DEVICE_SESSION_STALE_MS
+                DEVICE_SESSION_STALE_MS
               );
               if (staleValid === false) {
                 throwAuthError(401, "session_revoked", "Signed out from this device.");

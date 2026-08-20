@@ -42,6 +42,19 @@ export function buildMenuSections(menu: MenuItem[]): MenuSection[] {
   }));
 }
 
+/** Categories with 2+ dishes first; single-item categories stay below. Relative order is kept. */
+export function sortMenuSectionsMultiItemFirst(sections: MenuSection[]): MenuSection[] {
+  if (sections.length < 2) return sections;
+  const multi: MenuSection[] = [];
+  const rest: MenuSection[] = [];
+  for (const sec of sections) {
+    if (!sec.isSmart && sec.data.length > 1) multi.push(sec);
+    else rest.push(sec);
+  }
+  if (multi.length === 0 || rest.length === 0) return sections;
+  return [...multi, ...rest];
+}
+
 /**
  * One flat section that preserves the incoming order. Used when an explicit sort is active:
  * re-grouping a price-sorted list by category scatters it back into per-category runs, which

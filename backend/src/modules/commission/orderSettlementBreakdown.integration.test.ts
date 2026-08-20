@@ -29,6 +29,11 @@ describe("order_settlement_breakdown CTM-sourced columns", { skip: !run }, () =>
         "combo_offer_discount",
         "free_delivery_offer_discount",
         "settled",
+        "calculation_version",
+        "company_funded_discount",
+        "platform_merchant_share",
+        "platform_company_share",
+        "platform_discount_total",
       ] as const;
       const rows = await sql<{ column_name: string }[]>`
         SELECT column_name

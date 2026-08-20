@@ -9,6 +9,7 @@ import { LinearGradient } from "expo-linear-gradient";
 import Animated, { FadeInDown } from "react-native-reanimated";
 import type { CouponAvailablePrompt } from "@/hooks/useCouponAvailablePrompt";
 import { GatiMitraColors } from "@/constants/gatimitra";
+import { MerchantDarkPalette, useMerchantUiDark } from "@/features/merchant-detail/merchantUiTheme";
 
 const SUNBURST_RAYS = 14;
 const BRAND = GatiMitraColors.emerald;
@@ -63,6 +64,7 @@ export function CouponAvailableBottomSheet({
   onClose,
   onApply,
 }: CouponAvailableBottomSheetProps) {
+  const dark = useMerchantUiDark();
   if (!prompt) return null;
 
   const savingsLabel =
@@ -92,8 +94,11 @@ export function CouponAvailableBottomSheet({
             <Ionicons name="close" size={22} color="#FFFFFF" />
           </TouchableOpacity>
 
-          <View style={styles.sheet}>
-            <LinearGradient colors={["#D6F5E8", "#EEFBF3", "#FFFFFF"]} style={styles.sheetGradient}>
+          <View style={[styles.sheet, dark && styles.sheetDark]}>
+            <LinearGradient
+              colors={dark ? ["#134E4A", "#1A2A2E", MerchantDarkPalette.card] : ["#D6F5E8", "#EEFBF3", "#FFFFFF"]}
+              style={styles.sheetGradient}
+            >
               <Animated.View
                 entering={FadeInDown.duration(280)}
                 style={[styles.content, { paddingBottom: Math.max(bottomInset, 16) }]}
@@ -101,9 +106,9 @@ export function CouponAvailableBottomSheet({
                 <SunburstRays />
                 <ScallopedBadge />
 
-                <CheckoutText style={styles.exclusive}>✦ EXCLUSIVELY FOR YOU ✦</CheckoutText>
+                <CheckoutText style={[styles.exclusive, dark && styles.textDark]}>✦ EXCLUSIVELY FOR YOU ✦</CheckoutText>
 
-                <CheckoutText style={styles.headline}>
+                <CheckoutText style={[styles.headline, dark && styles.textDark]}>
                   {savingsLabel != null ? (
                     <>
                       Save <CheckoutText style={styles.headlineAccent}>₹{savingsLabel}</CheckoutText> on this order
@@ -115,15 +120,15 @@ export function CouponAvailableBottomSheet({
                   )}
                 </CheckoutText>
 
-                <CheckoutText style={styles.couponLine}>{prompt.promoLine}</CheckoutText>
+                <CheckoutText style={[styles.couponLine, dark && styles.mutedDark]}>{prompt.promoLine}</CheckoutText>
 
                 {prompt.description ? (
-                  <CheckoutText style={styles.summaryLine} numberOfLines={2}>
+                  <CheckoutText style={[styles.summaryLine, dark && styles.mutedDark]} numberOfLines={2}>
                     {prompt.description}
                   </CheckoutText>
                 ) : null}
 
-                <CheckoutText style={styles.hint}>Tap on &apos;APPLY&apos; to avail this</CheckoutText>
+                <CheckoutText style={[styles.hint, dark && styles.mutedDark]}>Tap on &apos;APPLY&apos; to avail this</CheckoutText>
 
                 <TouchableOpacity
                   style={styles.applyBtnWrap}
@@ -293,4 +298,7 @@ const styles = StyleSheet.create({
     fontWeight: "800",
     letterSpacing: 0.8,
   },
+  sheetDark: { backgroundColor: MerchantDarkPalette.card },
+  textDark: { color: MerchantDarkPalette.text },
+  mutedDark: { color: MerchantDarkPalette.textMuted },
 });

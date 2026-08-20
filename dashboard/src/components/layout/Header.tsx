@@ -23,6 +23,7 @@ import {
   IndianRupee,
   SlidersHorizontal,
   Bell,
+  Loader2,
 } from "lucide-react";
 import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
 import { useLogout } from "@/hooks/queries/useAuthQuery";
@@ -87,6 +88,12 @@ import {
   PARCEL_SEARCH_TYPES,
   normalizeParcelSearchType,
 } from "@/lib/orders/parcel-search";
+import {
+  beginOrderListSearch,
+  endOrderListSearch,
+  ORDER_LIST_SEARCH_REPEAT_EVENT,
+  useOrderListSearchPending,
+} from "@/lib/orders/order-list-search-ui";
 import { resolveOrderTypeFromPublicId } from "@/lib/orders/resolve-order-type-from-public-id";
 
 const ORDER_HUB_ACCENT = "#121212";
@@ -333,6 +340,7 @@ function OrderSearchBar() {
   const [showDropdown, setShowDropdown] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const isSearching = useOrderListSearchPending();
 
   useEffect(() => {
     const urlValue = searchParams.get("search") ?? "";
@@ -388,6 +396,9 @@ function OrderSearchBar() {
   const handleSearch = useCallback(() => {
     const params = new URLSearchParams(searchParams.toString());
     const value = normalizeOrderSearchInput(searchValue, searchType);
+    const currentSearch = searchParams.get("search") ?? "";
+    const currentType = searchParams.get("searchType") ?? "";
+    beginOrderListSearch(value);
     if (value) {
       params.set("search", value);
       params.set("searchType", searchType);
@@ -397,12 +408,33 @@ function OrderSearchBar() {
       params.delete("searchType");
       params.delete("page");
     }
+    const unchanged =
+      currentSearch === value &&
+      (value ? currentType === searchType || (!currentType && searchType === "Order Id") : !currentType);
+    if (unchanged) {
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(new CustomEvent(ORDER_LIST_SEARCH_REPEAT_EVENT));
+      }
+      return;
+    }
     const qs = params.toString();
     router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
   }, [pathname, router, searchParams, searchType, searchValue]);
 
+  useEffect(() => {
+    if (!isSearching) return;
+    const t = window.setTimeout(() => endOrderListSearch(), 12_000);
+    return () => window.clearTimeout(t);
+  }, [isSearching]);
+
   return (
-    <div className="flex h-10 min-w-0 flex-1 items-stretch rounded-lg border border-gray-300 bg-white">
+    <form
+      className="flex h-10 min-w-0 flex-1 items-stretch rounded-lg border border-gray-300 bg-white"
+      onSubmit={(e) => {
+        e.preventDefault();
+        handleSearch();
+      }}
+    >
       <div ref={dropdownRef} className="relative shrink-0">
         <button
           type="button"
@@ -457,22 +489,29 @@ function OrderSearchBar() {
         className={`min-w-[12rem] flex-[2] border-r border-gray-300 bg-white px-3 text-sm text-gray-900 placeholder:text-gray-400 focus:outline-none ${
           MOBILE_SEARCH_TYPES.has(searchType) ? "" : "uppercase"
         }`}
-        onKeyDown={(e) => {
-          if (e.key === "Enter") handleSearch();
-        }}
+        enterKeyHint="search"
       />
 
       <button
-        type="button"
-        onClick={handleSearch}
-        className="flex h-full shrink-0 items-center justify-center gap-1.5 rounded-r-lg px-3 cursor-pointer"
+        type="submit"
+        disabled={isSearching}
+        className="flex h-full shrink-0 items-center justify-center gap-1.5 rounded-r-lg px-3 cursor-pointer disabled:cursor-wait"
         style={{ backgroundColor: ORDER_HUB_ACCENT }}
-        aria-label="Search orders"
+        aria-label={isSearching ? "Searching orders" : "Search orders"}
       >
-        <Search className="h-4 w-4 text-white" aria-hidden />
-        <span className="text-xs font-semibold tracking-wide text-white">Search</span>
+        {isSearching ? (
+          <>
+            <Loader2 className="h-4 w-4 animate-spin text-white" aria-hidden />
+            <span className="text-xs font-semibold tracking-wide text-white">Searching</span>
+          </>
+        ) : (
+          <>
+            <Search className="h-4 w-4 text-white" aria-hidden />
+            <span className="text-xs font-semibold tracking-wide text-white">Search</span>
+          </>
+        )}
       </button>
-    </div>
+    </form>
   );
 }
 

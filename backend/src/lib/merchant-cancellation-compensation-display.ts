@@ -93,8 +93,7 @@ export function buildEligibleCompensationMessage(args: {
   const brand = args.cancelledByBrand.trim() || GATIMITRA_BRAND;
 
   if (brand === "__AUTO__" || /^auto cancel/i.test(reason)) {
-    const stripped = reason.replace(/^auto cancelled?:?\s*/i, "").trim();
-    const prefix = stripped ? `Auto Canceled: ${stripped}` : "Auto Canceled";
+    const prefix = "Auto Cancelled by System";
     if (args.compensationPct <= 0.009) {
       return `${prefix}. As per policy, you will not receive compensation for this cancellation.`;
     }
@@ -141,18 +140,28 @@ export function buildCancellationInfoLedgerDescription(args: {
 
   const meta = args.compensationMeta ?? {};
   const eligible = String(meta.eligible_message ?? "").trim();
+  const brand = String(meta.cancelled_by_brand ?? GATIMITRA_BRAND).trim() || GATIMITRA_BRAND;
+  const reason = String(meta.reason_detail ?? meta.rejected_reason ?? "").trim();
+  const auto = brand === "__AUTO__" || /^auto cancel/i.test(reason);
+
   if (eligible) {
-    return `Order ${orderId} — ${eligible}`;
+    const body = auto
+      ? eligible
+          .replace(/Cancelled by GatiMitra(?: Team)?:\s*Order cancelled/gi, "Auto Cancelled by System")
+          .replace(/Cancelled by GatiMitra(?: Team)?/gi, "Auto Cancelled by System")
+          .replace(/\bAuto Canceled\b/gi, "Auto Cancelled by System")
+      : eligible;
+    return `Order ${orderId} — ${body}`;
   }
 
   const policyTitle = String(meta.applied_policy_title ?? "").trim();
   const policyDesc = String(meta.applied_policy_description ?? "").trim();
   const pct = Number(meta.compensation_pct ?? 0);
-  const reason = String(meta.reason_detail ?? meta.rejected_reason ?? "").trim();
-  const brand = String(meta.cancelled_by_brand ?? GATIMITRA_BRAND).trim() || GATIMITRA_BRAND;
-  const reasonPart = reason
-    ? `Cancelled by ${brand}: ${reason}`
-    : `Cancelled by ${brand}`;
+  const reasonPart = auto
+    ? "Auto Cancelled by System"
+    : reason
+      ? `Cancelled by ${brand}: ${reason}`
+      : `Cancelled by ${brand}`;
 
   if (Number.isFinite(pct) && pct <= 0.009) {
     const why = policyTitle

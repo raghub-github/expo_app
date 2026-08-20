@@ -31,6 +31,8 @@ import {
 import { refreshCustomerWallet } from "@/lib/refreshCustomerWallet";
 import { writeWalletBalanceCache } from "@/lib/walletBalanceCache";
 import { WALLET_BALANCE_QUERY_KEY } from "@/hooks/useWalletBalance";
+import { useWalletDark } from "@/hooks/useWalletDark";
+import { DiscoveryColors } from "@/features/discovery-home/discoveryTheme";
 
 const PAGE_BG = "#F4F5F7";
 const TEXT = "#111827";
@@ -65,21 +67,40 @@ function formatTxDate(iso: string): string {
   }
 }
 
-function txIcon(type: WalletTransaction["type"]): {
+function txIcon(
+  type: WalletTransaction["type"],
+  dark: boolean
+): {
   name: keyof typeof Ionicons.glyphMap;
   color: string;
   bg: string;
 } {
   if (type === "credit" || type === "bonus" || type === "cashback") {
-    return { name: "cash-outline", color: "#15803D", bg: "#DCFCE7" };
+    return {
+      name: "cash-outline",
+      color: dark ? "#4ADE80" : "#15803D",
+      bg: dark ? "rgba(34, 197, 94, 0.18)" : "#DCFCE7",
+    };
   }
   if (type === "refund") {
-    return { name: "refresh-circle-outline", color: "#2563EB", bg: "#EFF6FF" };
+    return {
+      name: "refresh-circle-outline",
+      color: dark ? "#60A5FA" : "#2563EB",
+      bg: dark ? "rgba(37, 99, 235, 0.22)" : "#EFF6FF",
+    };
   }
   if (type === "expired") {
-    return { name: "wallet-outline", color: "#9CA3AF", bg: "#F3F4F6" };
+    return {
+      name: "wallet-outline",
+      color: dark ? "#9CA3AF" : "#9CA3AF",
+      bg: dark ? "#242424" : "#F3F4F6",
+    };
   }
-  return { name: "bag-handle-outline", color: "#92400E", bg: "#FEF3C7" };
+  return {
+    name: "bag-handle-outline",
+    color: dark ? "#FBBF24" : "#92400E",
+    bg: dark ? "rgba(245, 158, 11, 0.18)" : "#FEF3C7",
+  };
 }
 
 function unlockedOfferTxLines(tx: WalletTransaction): { title: string; offerName: string | null } {
@@ -95,29 +116,35 @@ function unlockedOfferTxLines(tx: WalletTransaction): { title: string; offerName
   return { title: "Unlocked offer Credit", offerName: tx.title.trim() || tx.description?.trim() || null };
 }
 
-function TransactionRow({ tx }: { tx: WalletTransaction }) {
-  const icon = txIcon(tx.type);
+function TransactionRow({ tx, dark }: { tx: WalletTransaction; dark: boolean }) {
+  const icon = txIcon(tx.type, dark);
   const isCredit = tx.amount >= 0;
   const amountStr = `${isCredit ? "+" : "−"} ₹${Math.abs(tx.amount).toFixed(2)}`;
   const { title, offerName } = unlockedOfferTxLines(tx);
 
   return (
-    <View style={styles.txCard}>
+    <View style={[styles.txCard, dark && styles.txCardDark]}>
       <View style={[styles.txIconWrap, { backgroundColor: icon.bg }]}>
         <Ionicons name={icon.name} size={20} color={icon.color} />
       </View>
       <View style={styles.txBody}>
-        <AppText style={styles.txTitle} numberOfLines={2}>
+        <AppText style={[styles.txTitle, dark && styles.txTitleDark]} numberOfLines={2}>
           {title}
         </AppText>
         {offerName ? (
-          <AppText style={styles.txSubtitle} numberOfLines={2}>
+          <AppText style={[styles.txSubtitle, dark && styles.txSubtitleDark]} numberOfLines={2}>
             {offerName}
           </AppText>
         ) : null}
-        <AppText style={styles.txDate}>{formatTxDate(tx.created_at)}</AppText>
+        <AppText style={[styles.txDate, dark && styles.txDateDark]}>{formatTxDate(tx.created_at)}</AppText>
       </View>
-      <AppText style={[styles.txAmount, isCredit ? styles.txAmountCredit : styles.txAmountDebit]}>
+      <AppText
+        style={[
+          styles.txAmount,
+          isCredit ? styles.txAmountCredit : styles.txAmountDebit,
+          dark && (isCredit ? styles.txAmountCreditDark : styles.txAmountDebitDark),
+        ]}
+      >
         {amountStr}
       </AppText>
     </View>
@@ -128,6 +155,8 @@ export default function WalletScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const queryClient = useQueryClient();
+  const dark = useWalletDark();
+  const accent = dark ? DiscoveryColors.accent : ACCENT;
   const params = useLocalSearchParams<{
     topupAmount?: string | string[];
     balanceAfter?: string | string[];
@@ -214,9 +243,13 @@ export default function WalletScreen() {
   return (
     <>
       <AndroidBackHandler />
-      <StatusBar style="dark" backgroundColor="#FFFFFF" />
-      <View style={styles.screen}>
+      <StatusBar
+        style={dark ? "light" : "dark"}
+        backgroundColor={dark ? DiscoveryColors.bg : "#FFFFFF"}
+      />
+      <View style={[styles.screen, dark && styles.screenDark]}>
         <GatiCashWalletHeader
+          dark={dark}
           onBack={() => safeRouterBack(router, PROFILE_TAB_FALLBACK)}
           onSettings={() => router.push("/wallet/settings")}
         />
@@ -226,29 +259,39 @@ export default function WalletScreen() {
           contentContainerStyle={{ paddingBottom: insets.bottom + 28 }}
           showsVerticalScrollIndicator={false}
           refreshControl={
-            <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={ACCENT} />
+            <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={accent} />
           }
         >
-          {/* White hero — reference top section */}
-          <View style={styles.heroWhite}>
-            <GatiCashWalletHeroIcon />
+          <View style={[styles.heroWhite, dark && styles.heroDark]}>
+            <GatiCashWalletHeroIcon dark={dark} />
 
-            <AppText style={styles.balanceLabel}>YOUR BALANCE</AppText>
+            <AppText style={[styles.balanceLabel, dark && styles.balanceLabelDark]}>
+              YOUR BALANCE
+            </AppText>
             {balanceQ.isLoading ? (
-              <ActivityIndicator color={ACCENT} style={{ marginTop: 10 }} />
+              <ActivityIndicator color={accent} style={{ marginTop: 10 }} />
             ) : (
-              <AppText style={styles.balanceAmount}>{balanceDisplay}</AppText>
+              <AppText style={[styles.balanceAmount, dark && styles.balanceAmountDark]}>
+                {balanceDisplay}
+              </AppText>
             )}
-            {lockedNote ? <AppText style={styles.lockedNote}>{lockedNote}</AppText> : null}
+            {lockedNote ? (
+              <AppText style={[styles.lockedNote, dark && styles.lockedNoteDark]}>{lockedNote}</AppText>
+            ) : null}
 
-            <TouchableOpacity style={styles.addMoneyBtn} activeOpacity={0.88} onPress={handleAddMoney}>
-              <AppText style={styles.addMoneyText}>Add money</AppText>
+            <TouchableOpacity
+              style={[styles.addMoneyBtn, dark && styles.addMoneyBtnDark]}
+              activeOpacity={0.88}
+              onPress={handleAddMoney}
+            >
+              <AppText style={[styles.addMoneyText, dark && styles.addMoneyTextDark]}>Add money</AppText>
             </TouchableOpacity>
           </View>
 
-          {/* Grey transaction section — reference bottom */}
-          <View style={styles.historyGrey}>
-            <AppText style={styles.sectionTitle}>TRANSACTION HISTORY</AppText>
+          <View style={[styles.historyGrey, dark && styles.historyDark]}>
+            <AppText style={[styles.sectionTitle, dark && styles.sectionTitleDark]}>
+              TRANSACTION HISTORY
+            </AppText>
 
             <ScrollView
               horizontal
@@ -262,10 +305,20 @@ export default function WalletScreen() {
                   <TouchableOpacity
                     key={f.id}
                     onPress={() => setFilter(f.id)}
-                    style={[styles.filterChip, active && styles.filterChipActive]}
+                    style={[
+                      styles.filterChip,
+                      dark && styles.filterChipDark,
+                      active && (dark ? styles.filterChipActiveDark : styles.filterChipActive),
+                    ]}
                     activeOpacity={0.85}
                   >
-                    <AppText style={[styles.filterChipText, active && styles.filterChipTextActive]}>
+                    <AppText
+                      style={[
+                        styles.filterChipText,
+                        dark && styles.filterChipTextDark,
+                        active && (dark ? styles.filterChipTextActiveDark : styles.filterChipTextActive),
+                      ]}
+                    >
                       {f.label}
                     </AppText>
                   </TouchableOpacity>
@@ -275,19 +328,21 @@ export default function WalletScreen() {
 
             <View style={styles.txList}>
               {loading ? (
-                <ActivityIndicator color={ACCENT} style={{ marginTop: 28 }} />
+                <ActivityIndicator color={accent} style={{ marginTop: 28 }} />
               ) : transactions.length === 0 ? (
                 <View style={styles.emptyTx}>
-                  <View style={styles.emptyIconWrap}>
-                    <Ionicons name="receipt-outline" size={32} color="#CBD5E1" />
+                  <View style={[styles.emptyIconWrap, dark && styles.emptyIconWrapDark]}>
+                    <Ionicons name="receipt-outline" size={32} color={dark ? "#4B5563" : "#CBD5E1"} />
                   </View>
-                  <AppText style={styles.emptyTxTitle}>No transactions yet</AppText>
-                  <AppText style={styles.emptyTxText}>
+                  <AppText style={[styles.emptyTxTitle, dark && styles.emptyTxTitleDark]}>
+                    No transactions yet
+                  </AppText>
+                  <AppText style={[styles.emptyTxText, dark && styles.emptyTxTextDark]}>
                     Refunds, cashback, and wallet credits will show up here.
                   </AppText>
                 </View>
               ) : (
-                transactions.map((tx) => <TransactionRow key={tx.id} tx={tx} />)
+                transactions.map((tx) => <TransactionRow key={tx.id} tx={tx} dark={dark} />)
               )}
             </View>
           </View>
@@ -474,4 +529,38 @@ const styles = StyleSheet.create({
     marginTop: 6,
     lineHeight: 19,
   },
+  screenDark: { backgroundColor: DiscoveryColors.bg },
+  heroDark: { backgroundColor: DiscoveryColors.bg },
+  historyDark: { backgroundColor: DiscoveryColors.bg },
+  balanceLabelDark: { color: DiscoveryColors.textMuted },
+  balanceAmountDark: { color: DiscoveryColors.text },
+  lockedNoteDark: { color: DiscoveryColors.textMuted },
+  addMoneyBtnDark: { backgroundColor: DiscoveryColors.accent },
+  addMoneyTextDark: { color: "#042F2E" },
+  sectionTitleDark: { color: DiscoveryColors.textMuted },
+  filterChipDark: {
+    backgroundColor: DiscoveryColors.card,
+    borderColor: DiscoveryColors.border,
+  },
+  filterChipActiveDark: {
+    backgroundColor: "rgba(45, 212, 191, 0.16)",
+    borderColor: DiscoveryColors.accent,
+  },
+  filterChipTextDark: { color: DiscoveryColors.text },
+  filterChipTextActiveDark: { color: DiscoveryColors.accent },
+  txCardDark: {
+    backgroundColor: DiscoveryColors.card,
+    shadowOpacity: 0,
+    elevation: 0,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: DiscoveryColors.border,
+  },
+  txTitleDark: { color: DiscoveryColors.text },
+  txSubtitleDark: { color: DiscoveryColors.textMuted },
+  txDateDark: { color: DiscoveryColors.textDim },
+  txAmountCreditDark: { color: "#4ADE80" },
+  txAmountDebitDark: { color: "#F87171" },
+  emptyIconWrapDark: { backgroundColor: DiscoveryColors.card },
+  emptyTxTitleDark: { color: DiscoveryColors.text },
+  emptyTxTextDark: { color: DiscoveryColors.textMuted },
 });

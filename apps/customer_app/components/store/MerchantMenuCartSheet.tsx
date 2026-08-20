@@ -7,6 +7,7 @@ import { LinearGradient } from "expo-linear-gradient";
 import { StoreTheme } from "@/constants/storeTheme";
 import type { CartItem } from "@/store/cartStore";
 import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
+import { MerchantDarkPalette, useMerchantUiDark } from "@/features/merchant-detail/merchantUiTheme";
 
 export const STORE_MERCHANT_SHEET_H_MARGIN = 12;
 export const STORE_MERCHANT_SHEET_BOTTOM_GAP = 8;
@@ -254,6 +255,7 @@ export function MerchantMenuCartSheet({
   bottomInset = 0,
   reserveOfferStrip = false,
 }: MerchantMenuCartSheetProps) {
+  const dark = useMerchantUiDark();
   const thumbs = useMemo(() => {
     const seen = new Set<string>();
     const result: ThumbItem[] = [];
@@ -285,10 +287,14 @@ export function MerchantMenuCartSheet({
   const safeBottom = Math.max(0, bottomInset) + SHEET_BOTTOM_PAD;
 
   return (
-    <View style={[styles.bgSheet, { paddingBottom: safeBottom }]}>
+    <View style={[styles.bgSheet, dark && styles.bgSheetDark, { paddingBottom: safeBottom }]}>
       {showOfferStrip ? (
         <LinearGradient
-          colors={["#E8F4FF", "#F7FBFF", "#FFFFFF"]}
+          colors={
+            dark
+              ? [MerchantDarkPalette.elevated, MerchantDarkPalette.surface, MerchantDarkPalette.surface]
+              : ["#E8F4FF", "#F7FBFF", "#FFFFFF"]
+          }
           start={{ x: 0, y: 0 }}
           end={{ x: 0, y: 1 }}
           style={styles.offerStrip}
@@ -297,15 +303,15 @@ export function MerchantMenuCartSheet({
           <View style={styles.offerTextCol}>
             {offerCopy ? (
               <>
-                <AppText style={styles.offerTitle} numberOfLines={2}>
+                <AppText style={[styles.offerTitle, dark && styles.offerTitleDark]} numberOfLines={2}>
                   {offerCopy.title}
                 </AppText>
-                <AppText style={styles.offerSubtitle} numberOfLines={2}>
+                <AppText style={[styles.offerSubtitle, dark && styles.offerSubtitleDark]} numberOfLines={2}>
                   {offerCopy.subtitle}
                 </AppText>
               </>
             ) : (
-              <AppText style={styles.offerSubtitle} numberOfLines={1}>
+              <AppText style={[styles.offerSubtitle, dark && styles.offerSubtitleDark]} numberOfLines={1}>
                 {OFFER_BANNER_SUBTITLE}
               </AppText>
             )}
@@ -373,6 +379,10 @@ const styles = StyleSheet.create({
       android: { elevation: 18 },
     }),
   },
+  bgSheetDark: {
+    backgroundColor: MerchantDarkPalette.surface,
+    borderColor: MerchantDarkPalette.border,
+  },
   offerStrip: {
     height: OFFER_ROW_HEIGHT,
     flexDirection: "row",
@@ -399,12 +409,18 @@ const styles = StyleSheet.create({
     color: "#256FEF",
     lineHeight: 17,
   },
+  offerTitleDark: {
+    color: MerchantDarkPalette.offer,
+  },
   offerSubtitle: {
     marginTop: 1,
     fontSize: 11,
     fontWeight: "400",
     color: "#696969",
     lineHeight: 14,
+  },
+  offerSubtitleDark: {
+    color: MerchantDarkPalette.textMuted,
   },
   continuePill: {
     height: CONTINUE_PILL_HEIGHT,

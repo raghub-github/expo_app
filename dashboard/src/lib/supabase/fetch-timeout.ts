@@ -2,8 +2,9 @@
  * Bounded fetch for Supabase auth calls so slow networks fail fast instead of
  * hanging until the reverse proxy returns 502.
  *
- * Aborts are converted to a plain timeout error so orphaned AbortError objects
- * never become unhandledRejection → console "Error [AbortError]".
+ * Timeouts MUST NOT throw. Next.js 16 attributes a thrown Error from this
+ * fetch to the RSC that started it (e.g. FoodOrdersPage) and opens the overlay.
+ * Return HTTP 408 so supabase-js treats it as a failed request instead.
  */
 export const AUTH_FETCH_TIMEOUT_MS = 8_000;
 
@@ -23,6 +24,14 @@ function isAbortLike(err: unknown): boolean {
   if (name === "aborterror" || msg.includes("aborted")) return true;
   if (e.code === 20 || e.code === "ABORT_ERR" || e.code === "ABORT") return true;
   return false;
+}
+
+function timeoutResponse(message: string): Response {
+  return new Response(JSON.stringify({ message, code: "TIMEOUT" }), {
+    status: 408,
+    statusText: "Request Timeout",
+    headers: { "Content-Type": "application/json" },
+  });
 }
 
 export function fetchWithTimeout(
@@ -50,10 +59,8 @@ export function fetchWithTimeout(
     signal: timeoutController.signal,
   })
     .catch((err: unknown) => {
-      // Never reject with DOM/Node AbortError — instrumentation + Next overlay
-      // treat those as crashes. Normalize to a plain timeout/network error.
       if (isAbortLike(err) || timeoutController.signal.aborted) {
-        throw new AuthFetchTimeoutError(
+        return timeoutResponse(
           external?.aborted ? "Auth fetch aborted" : "Auth fetch timeout"
         );
       }

@@ -1,18 +1,21 @@
 import { create } from "zustand";
 import { useMerchantLoadingMessageStore } from "@/lib/merchantMenuLoadingMessages";
+import { peekCachedFoodHomeLayoutKey } from "@/lib/foodHomeLayoutCache";
 
 type MerchantNavTransitionState = {
   active: boolean;
   merchantId: string | null;
   /** Message index chosen once per navigation — shared by shutter + page overlay. */
   loadingMessageIndex: number;
+  /** Discovery inner-page skeleton (charcoal) vs classic light. */
+  dark: boolean;
   /** Monotonic token: every committed merchant entry gets a new visit. */
   visitId: number;
   /** Last visit consumed by the destination page. Prevents stale index reuse. */
   consumedVisitId: number;
   /** Wall-clock when show() ran — page waits for slide-in before hide. */
   shownAt: number;
-  show: (merchantId: string) => void;
+  show: (merchantId: string, opts?: { dark?: boolean }) => void;
   hide: () => void;
   consumeLoadingMessageIndex: (merchantId: string) => number;
 };
@@ -22,15 +25,18 @@ export const useMerchantNavTransitionStore = create<MerchantNavTransitionState>(
   active: false,
   merchantId: null,
   loadingMessageIndex: 0,
+  dark: false,
   visitId: 0,
   consumedVisitId: 0,
   shownAt: 0,
-  show: (merchantId) => {
+  show: (merchantId, opts) => {
     const loadingMessageIndex = useMerchantLoadingMessageStore.getState().pickStartIndex(merchantId);
+    const dark = opts?.dark ?? peekCachedFoodHomeLayoutKey() === "discovery";
     set({
       active: true,
       merchantId,
       loadingMessageIndex,
+      dark,
       visitId: get().visitId + 1,
       shownAt: Date.now(),
     });

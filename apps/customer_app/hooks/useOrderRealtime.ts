@@ -156,6 +156,13 @@ function applyAcceptedRider(
   return true;
 }
 
+function httpStatusOf(err: unknown): number | undefined {
+  if (!err || typeof err !== "object") return undefined;
+  const e = err as { status?: number; response?: { status?: number } };
+  const n = e.status ?? e.response?.status;
+  return typeof n === "number" ? n : undefined;
+}
+
 function clearTrackingForOrders(
   queryClient: ReturnType<typeof useQueryClient>,
   orderIds: string[],
@@ -396,8 +403,11 @@ export function useOrderRealtime() {
               }
               lastEtaReasonRef.current[orderId] = liveReason;
             }
-          } catch {
-            // keep current state
+          } catch (err) {
+            if (httpStatusOf(err) === 404) {
+              removeActiveOrder(orderId);
+              clearTrackingForOrders(queryClient, [orderId], lastAcceptedMsRef.current);
+            }
           }
         })
       );

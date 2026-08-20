@@ -192,7 +192,14 @@ import {
   fetchCustomizationsForMenuItem,
   fetchAddonsForCustomization,
   fetchVariantsForMenuItem,
+  type Offer,
 } from '@/lib/database'
+import { normalizeOfferFromApi } from '@/app/mx/offers/offer-utils'
+import {
+  buildMenuItemOfferDisplayMap,
+  getMenuItemOffer,
+  type MenuItemOfferDisplay,
+} from '@/lib/menu-item-offer-display'
 import { MenuItemsGridSkeleton, MenuPageSkeleton } from '@/components/PageSkeleton'
 import { R2Image } from '@/components/R2Image'
 import { CatalogItemPhotoModal } from '@/components/menu/CatalogItemPhotoModal'
@@ -246,6 +253,45 @@ function formatCategoryLabel(categories: MenuCategory[], categoryId: number | nu
     return parent ? `${parent.category_name} (${cat.category_name})` : cat.category_name;
   }
   return cat.category_name;
+}
+
+function MenuCardPrice({
+  sellingPrice,
+  basePrice,
+  discountPercentage,
+  offer,
+  stacked = false,
+}: {
+  sellingPrice: number;
+  basePrice?: number | null;
+  discountPercentage?: number | null;
+  offer?: MenuItemOfferDisplay;
+  stacked?: boolean;
+}) {
+  const wrap = stacked ? 'flex flex-col items-center leading-tight gap-0' : 'flex items-center gap-1 flex-wrap justify-center';
+  if (
+    offer?.kind === 'boost' &&
+    offer.offerPrice != null &&
+    offer.strikePrice != null &&
+    offer.offerPrice < offer.strikePrice - 0.001
+  ) {
+    return (
+      <div className={wrap}>
+        <span className="text-[10px] font-medium text-gray-400 line-through">₹{offer.strikePrice}</span>
+        <span className="text-sm font-bold text-orange-600">₹{offer.offerPrice}</span>
+      </div>
+    );
+  }
+  const catalogDiscount = Number(discountPercentage) > 0 && basePrice != null && Number(basePrice) > Number(sellingPrice);
+  if (catalogDiscount) {
+    return (
+      <div className={wrap}>
+        <span className="text-[10px] font-medium text-gray-400 line-through">₹{basePrice}</span>
+        <span className="text-sm font-bold text-orange-600">₹{sellingPrice}</span>
+      </div>
+    );
+  }
+  return <span className="text-sm font-bold text-orange-600">₹{sellingPrice}</span>;
 }
 
 const CUSTOMIZATION_VARIANT_LIMIT = 10;
@@ -1198,7 +1244,7 @@ function ItemForm(props: ItemFormProps) {
             {/* Pricing: merchant sees Selling price only (frozen on edit). */}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
               <div className={isEdit || readOnly ? 'sm:col-span-2' : ''}>
-                <label className="text-xs font-medium text-gray-600">Selling price (₹) *</label>
+                <label className="text-xs font-medium text-gray-600">Base CTM (₹) *</label>
                 <input
                   type="number"
                   min="0"
@@ -1223,7 +1269,11 @@ function ItemForm(props: ItemFormProps) {
                   }}
                   required
                 />
-                {isSellingPriceInvalid && <span className="text-xs text-red-500">&gt; 0</span>}
+                {!(isEdit || readOnly) && (
+                  <p className="text-[10px] text-gray-500 mt-0.5">
+                    What you receive per item. Customer price is commission-inclusive and calculated by GatiMitra.
+                  </p>
+                )}
                 {(isEdit || readOnly) && (
                   <p className="text-[10px] text-gray-500 mt-0.5">
                     Locked — price changes are managed by GatiMitra.
@@ -1751,6 +1801,7 @@ function MenuContent() {
     [store]
   );
   const [menuItems, setMenuItems] = useState<MenuItem[]>([]);
+  const [storeOffers, setStoreOffers] = useState<Offer[]>([]);
   const [combos, setCombos] = useState<MenuCombo[]>([]);
   const [comboDetailsById, setComboDetailsById] = useState<Record<number, { components: Array<{ menu_item_id: number }> }>>({});
   const [isLoading, setIsLoading] = useState(true);
@@ -2210,6 +2261,33 @@ function MenuContent() {
       .then((data) => setCategories(data))
       .catch(() => setCategories([]))
       .finally(() => setCategoryLoading(false));
+  }, [storeId]);
+
+  // Live Boost / BOGO from Offers — paint badges + strike prices on cards
+  useEffect(() => {
+    if (!storeId) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await fetch(`/api/merchant/offers?storeId=${encodeURIComponent(storeId)}`, {
+          credentials: 'include',
+          cache: 'no-store',
+        });
+        if (!res.ok) {
+          if (!cancelled) setStoreOffers([]);
+          return;
+        }
+        const data = await res.json().catch(() => ({}));
+        const raw = Array.isArray(data?.offers) ? data.offers : [];
+        if (cancelled) return;
+        setStoreOffers(raw.map((row: Record<string, unknown>) => normalizeOfferFromApi(row)));
+      } catch {
+        if (!cancelled) setStoreOffers([]);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, [storeId]);
 
   // Fetch cuisines for the store and merge with default list
@@ -4004,6 +4082,11 @@ function MenuContent() {
       )
     : filteredItems;
 
+  const itemOfferById = useMemo(
+    () => buildMenuItemOfferDisplayMap(storeOffers, menuItems, new Date(nowTick)),
+    [storeOffers, menuItems, nowTick]
+  );
+
   const custScopeItems = useMemo(
     () => searchedItems.filter(itemHasCustomizationContent),
     [searchedItems]
@@ -4591,8 +4674,7 @@ function MenuContent() {
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
             {searchedItems.map((item) => {
               const category = categories.find(cat => cat.id === item.category_id);
-              const discount = Number(item.discount_percentage);
-              const hasDiscount = discount > 0;
+              const itemOffer = getMenuItemOffer(itemOfferById, item);
               
               const isLockedByPlan = isMenuItemLockedByPlan(item);
               return (
@@ -4621,6 +4703,7 @@ function MenuContent() {
                       isLockedByPlan ? 'opacity-60 saturate-[0.35] grayscale' : ''
                     }`}
                   >
+                    <div className="flex w-14 flex-shrink-0 flex-col items-center gap-1">
                     <button
                       type="button"
                       onClick={() => handleOpenItemPhoto(item)}
@@ -4654,6 +4737,16 @@ function MenuContent() {
                           fallbackSrc={ITEM_PLACEHOLDER_SVG}
                         />
                       )}
+                      {itemOffer ? (
+                        <span
+                          title={itemOffer.label}
+                          className={`absolute top-0 left-0 right-0 px-0.5 py-px text-center text-[8px] font-extrabold uppercase tracking-wide text-white ${
+                            itemOffer.kind === 'bogo' ? 'bg-emerald-600/95' : 'bg-pink-600/95'
+                          }`}
+                        >
+                          {itemOffer.badge}
+                        </span>
+                      ) : null}
                       {!isLockedByPlan && itemPhotoInReview(item) ? (
                         <span className="absolute bottom-0 left-0 right-0 bg-amber-500/90 px-0.5 py-px text-center text-[8px] font-bold text-white">
                           Review
@@ -4665,6 +4758,14 @@ function MenuContent() {
                         </span>
                       ) : null}
                     </button>
+                    <MenuCardPrice
+                      sellingPrice={Number(item.selling_price)}
+                      basePrice={item.base_price}
+                      discountPercentage={item.discount_percentage}
+                      offer={itemOffer}
+                      stacked
+                    />
+                    </div>
                     <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
                       <div className="flex items-start justify-between gap-1 mb-0.5">
                         <div className="flex-1 min-w-0">
@@ -4718,19 +4819,6 @@ function MenuContent() {
                           </div>
                         </label>
                       </div>
-                      <div className="flex items-center gap-1 mb-1">
-                        {hasDiscount ? (
-                          <>
-                            <span className="text-sm font-bold text-orange-600">₹{item.selling_price}</span>
-                            <span className="text-xs font-medium text-gray-500 line-through">₹{item.base_price}</span>
-                            <span className="px-1 py-0.5 rounded bg-green-100 text-green-700 text-[10px] font-bold">
-                              {discount}% OFF
-                            </span>
-                          </>
-                        ) : (
-                          <span className="text-sm font-bold text-orange-600">₹{item.selling_price}</span>
-                        )}
-                      </div>
                       {item.item_description && (
                         <p className="text-[11px] text-gray-600 line-clamp-2 mb-1.5 flex-grow leading-tight">
                           {item.item_description}
@@ -4739,6 +4827,18 @@ function MenuContent() {
 
                       {/* Indicators for item properties */}
                       <div className="flex flex-wrap gap-1 mb-1.5">
+                        {itemOffer ? (
+                          <span
+                            title={itemOffer.label}
+                            className={`px-1.5 py-0.5 text-[10px] font-bold rounded ${
+                              itemOffer.kind === 'bogo'
+                                ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                                : 'bg-pink-50 text-pink-700 border border-pink-200'
+                            }`}
+                          >
+                            {itemOffer.kind === 'bogo' ? itemOffer.label : itemOffer.badge}
+                          </span>
+                        ) : null}
                         {/* Pending approval badge — item not visible to customers yet */}
                         {String(item.approval_status ?? '').toUpperCase() === 'PENDING' && (
                           <span className="px-1.5 py-0.5 bg-yellow-50 text-yellow-700 text-[10px] font-semibold rounded border border-yellow-200 flex items-center gap-0.5">
@@ -5002,6 +5102,7 @@ function MenuContent() {
                     <div className="divide-y divide-gray-100">
                       {group.items.map((item) => {
                         const isLockedByPlan = isMenuItemLockedByPlan(item);
+                        const itemOffer = getMenuItemOffer(itemOfferById, item);
                         return (
                           <div
                             key={item.item_id}
@@ -5018,6 +5119,18 @@ function MenuContent() {
                                 >
                                   {item.item_name}
                                 </div>
+                                {itemOffer ? (
+                                  <span
+                                    title={itemOffer.label}
+                                    className={`inline-flex shrink-0 rounded px-1.5 py-0.5 text-[9px] font-bold uppercase ${
+                                      itemOffer.kind === 'bogo'
+                                        ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                                        : 'bg-pink-50 text-pink-700 border border-pink-200'
+                                    }`}
+                                  >
+                                    {itemOffer.badge}
+                                  </span>
+                                ) : null}
                                 {isLockedByPlan ? (
                                   <span className="inline-flex shrink-0 items-center gap-0.5 rounded border border-red-200 bg-red-50 px-1.5 py-0.5 text-[9px] font-bold uppercase text-red-700">
                                     <Lock size={9} aria-hidden />
@@ -5034,7 +5147,12 @@ function MenuContent() {
                               )}
                             </div>
                             <div className="flex items-center gap-3 shrink-0">
-                              <div className="text-sm font-bold text-gray-900">₹{item.selling_price}</div>
+                              <MenuCardPrice
+                                sellingPrice={Number(item.selling_price)}
+                                basePrice={item.base_price}
+                                discountPercentage={item.discount_percentage}
+                                offer={itemOffer}
+                              />
                               <label className={`inline-flex items-center ${isLockedByPlan ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'}`}>
                                 <input
                                   type="checkbox"

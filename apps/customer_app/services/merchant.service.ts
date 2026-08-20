@@ -67,6 +67,8 @@ export type MerchantSummary = {
   completedOrderCount?: number;
   /** Store-level restaurant packaging charge (₹); 0 = none. */
   packagingChargeAmount?: number | null;
+  /** True when merchant_stores.is_pure_veg — used for the Pure Veg toggle. */
+  isPureVeg?: boolean;
 };
 
 export type MenuItem = {
@@ -100,6 +102,7 @@ export type MenuItem = {
    * Falls back to `id` when absent. Assigned by the list builder, not the API.
    */
   listRowKey?: string;
+  canonicalPricing?: Record<string, unknown>;
 };
 
 export type MenuItemFullConfig = {
@@ -302,6 +305,18 @@ function normalizeMerchantListItem(item: MerchantSummary & Record<string, unknow
       const n = Number(raw ?? 0);
       return Number.isFinite(n) ? n : 0;
     })(),
+    packagingChargeAmount: (() => {
+      const raw =
+        item.packagingChargeAmount ??
+        (item as Record<string, unknown>).packaging_charge_amount;
+      if (raw == null || raw === "") return item.packagingChargeAmount;
+      const n = Number(raw);
+      return Number.isFinite(n) ? n : item.packagingChargeAmount;
+    })(),
+    isPureVeg:
+      item.isPureVeg === true ||
+      (item as Record<string, unknown>).is_pure_veg === true ||
+      (item as Record<string, unknown>).isPureVeg === true,
     avgPreparationTimeMinutes: (() => {
       const raw =
         item.avgPreparationTimeMinutes ??
@@ -331,15 +346,6 @@ function normalizeMerchantListItem(item: MerchantSummary & Record<string, unknow
       if (raw == null || raw === "") return null;
       const n = Number(raw);
       return Number.isFinite(n) && n > 0 ? n : null;
-    })(),
-    packagingChargeAmount: (() => {
-      const raw =
-        item.packagingChargeAmount ??
-        (item as Record<string, unknown>).packagingChargeAmount ??
-        (item as Record<string, unknown>).packaging_charge_amount;
-      if (raw == null || raw === "") return 0;
-      const n = Number(raw);
-      return Number.isFinite(n) && n > 0 ? n : 0;
     })(),
     liveStatus: (() => {
       const raw =

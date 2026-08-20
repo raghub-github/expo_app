@@ -22,7 +22,7 @@ import {
 import {
   getCurrentDashboard,
   getCurrentDashboardSubRoutes,
-  getMerchantSubRoutesForPath,
+  getStoreScopedMerchantRoutes,
   adminPortalMerchantRoutes,
   notificationDashboardRoutes,
   type DashboardSubRoute,
@@ -63,12 +63,17 @@ import { OnboardingFailedSummarySidebar } from "@/components/area-manager/Onboar
 import { useStore } from "@/hooks/useStore";
 import { useMerchantsSearch } from "@/context/MerchantsSearchContext";
 import { useCurrentRoute } from "@/context/CurrentRouteContext";
-import {
-  isDashboardNavAlreadyAtTarget,
-} from "@/lib/navigation/dashboard-nav-transition";
+import { isDashboardNavAlreadyAtTarget } from "@/lib/navigation/dashboard-nav-transition";
+import { prefetchDashboardSection } from "@/lib/dashboard-prefetch";
+import { getQueryClient } from "@/lib/react-query";
 import { EXPIRED_RESUBMITTED_DOCS_LABEL } from "@/lib/merchants/expired-resubmitted-docs-label";
 import { MERCHANT_RESUBMITTED_DOCS_REFRESH_EVENT } from "@/lib/merchants/merchant-resubmitted-docs-refresh";
 import { MERCHANT_MENU_REVIEW_QUEUE_REFRESH_EVENT } from "@/lib/merchant/menu-review-queue";
+import {
+  readLastMerchantStoreId,
+  storeIdFromPathname,
+  writeLastMerchantStoreId,
+} from "@/lib/merchants/effective-store-id";
 interface RightSidebarProps {
   isOpen: boolean;
   onToggle: () => void;
@@ -115,7 +120,11 @@ export function RightSidebar({
       // Intent only — never preventDefault; <Link> owns navigation.
       const target = rawHref.split("?")[0].split("#")[0];
       if (isDashboardNavAlreadyAtTarget(cleanPathname, target)) return;
-      currentRoute?.startNavigation(target);
+      // Defer overlay state until after this click finishes. setState in capture
+      // re-renders the rail and drops the first navigation (needs a second click).
+      window.setTimeout(() => {
+        currentRoute?.startNavigation(target);
+      }, 0);
     },
     [cleanPathname, currentRoute]
   );
@@ -142,9 +151,12 @@ export function RightSidebar({
     }
     const dashboard = getCurrentDashboard(cleanPathname);
     if (dashboard?.href === "/dashboard/merchants") {
-      const storeMatch = cleanPathname.match(/^\/dashboard\/merchants\/stores\/(\d+)/);
-      if (storeMatch) {
-        return filterStoreRoutes(getMerchantSubRoutesForPath(cleanPathname));
+      const pathId = storeIdFromPathname(cleanPathname);
+      const onStoreArea = /\/dashboard\/merchants\/stores/.test(cleanPathname);
+      const recoveredId =
+        pathId ?? (onStoreArea ? readLastMerchantStoreId() : null);
+      if (recoveredId) {
+        return filterStoreRoutes(getStoreScopedMerchantRoutes(recoveredId));
       }
       if (effectiveMerchantPortal === "merchant" || !hasAdminMerchantAccess) {
         // No store open: do not show Dashboard / Subscription / Settings / Wallet.
@@ -311,10 +323,11 @@ export function RightSidebar({
   const isTicketDetailPage = isTicketsAppDetailPath(cleanPathname);
 
   // Store ID when on a merchant store page (for Store Information Card in sidebar)
-  const storeIdFromPath = useMemo(() => {
-    const match = cleanPathname.match(/^\/dashboard\/merchants\/stores\/(\d+)/);
-    return match ? match[1] : null;
-  }, [cleanPathname]);
+  const storeIdFromPath = useMemo(() => storeIdFromPathname(cleanPathname), [cleanPathname]);
+
+  useEffect(() => {
+    writeLastMerchantStoreId(storeIdFromPath);
+  }, [storeIdFromPath]);
 
   /** Unmount store card immediately on navigation — do not rely on query/context clearing (avoids stale flash). */
   const showRightSidebarStoreCard = useMemo(() => {
@@ -901,6 +914,11 @@ export function RightSidebar({
                     <Link
                       key={route.href}
                       href={appendMerchantPortal(appendRiderSearch(route.href))}
+                      prefetch
+                      onMouseEnter={() => {
+                        const href = appendMerchantPortal(appendRiderSearch(route.href));
+                        prefetchDashboardSection(getQueryClient(), href);
+                      }}
                       className={`group relative cursor-pointer rounded-[10px] transition-colors duration-200 ${
                         isOpen
                           ? `grid min-h-10 w-full min-w-0 ${

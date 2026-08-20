@@ -1860,11 +1860,11 @@ export default function AddEditItemScreen() {
 
         {/* ── Item price (selling only; frozen on edit — GatiMitra manages price changes) ── */}
         <View style={styles.section}>
-          <Text style={styles.sectionHeading}>Selling price (₹)</Text>
+          <Text style={styles.sectionHeading}>Base CTM (₹)</Text>
           <Text style={styles.sectionSubheading}>
             {isEdit
-              ? "Menu price shown to customers. Price changes are managed by GatiMitra — this field is locked."
-              : "Enter the menu price customers will see. This is saved as your item selling price."}
+              ? "Amount you receive per item before commission. Customer price is calculated by GatiMitra — this field is locked."
+              : "Enter your item CTM (what you receive). GatiMitra adds commission to produce the customer price."}
           </Text>
           {isEdit ? (
             <View style={[styles.inputWithIcon, styles.priceFrozenRow]}>

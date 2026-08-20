@@ -46,7 +46,11 @@ type OrderLike = {
 
 function formatLabel(raw: string | null | undefined): string {
   if (!raw?.trim()) return "—";
-  return raw.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+  return raw
+    .replace(/[_-]+/g, " ")
+    .trim()
+    .toLowerCase()
+    .replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
 function DetailRow({ label, value }: { label: string; value: React.ReactNode }) {

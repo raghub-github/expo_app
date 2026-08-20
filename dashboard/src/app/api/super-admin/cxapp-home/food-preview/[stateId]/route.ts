@@ -65,6 +65,11 @@ export async function GET(_request: NextRequest, ctx: RouteCtx) {
       gridFirstUnder250FilterLabel: layoutConfig.gridFirstUnder250.filterLabel,
       gridFirstUnder250TabImageUrl: layoutConfig.gridFirstUnder250.tabImageUrl,
       gridFirstUnder250HeroImageUrl: layoutConfig.gridFirstUnder250.heroImageUrl,
+      discoveryDealsAtMaxPrice: layoutConfig.discoveryCta.dealsAtMaxPrice,
+      discoveryDealsAtImageUrl: layoutConfig.discoveryCta.dealsAtImageUrl,
+      discoveryCrazyDealsImageUrl: layoutConfig.discoveryCta.crazyDealsImageUrl,
+      discoveryFreePackagingImageUrl: layoutConfig.discoveryCta.freePackagingImageUrl,
+      discoveryCtaTiles: layoutConfig.discoveryCta.tiles,
     };
 
     return NextResponse.json(payload, {

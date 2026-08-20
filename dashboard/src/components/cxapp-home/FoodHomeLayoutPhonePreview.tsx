@@ -2,6 +2,13 @@
 
 import { useEffect, useState } from "react";
 import type { FoodHomeLayoutKey } from "@/lib/cxapp-home/food-home-layout";
+import {
+  DEFAULT_DISCOVERY_CTA_LABELS,
+  parseDiscoveryCtaTiles,
+  resolveDiscoveryDealsAtLabel,
+  resolveDiscoveryDealsAtMaxPrice,
+  type DiscoveryCtaTile,
+} from "@/lib/cxapp-home/food-home-layout";
 import type {
   FoodHomePreviewMerchant,
   FoodHomePreviewPayload,
@@ -19,24 +26,40 @@ type Props = {
   under250Enabled?: boolean;
   under250FilterLabel?: string;
   under250TabImageUrl?: string | null;
+  discoveryDealsAtMaxPrice?: number | null;
+  discoveryDealsAtImageUrl?: string | null;
+  discoveryCrazyDealsImageUrl?: string | null;
+  discoveryFreePackagingImageUrl?: string | null;
+  discoveryDealsAtLabel?: string | null;
+  discoveryCrazyDealsLabel?: string | null;
+  discoveryFreePackagingLabel?: string | null;
+  discoveryCtaTiles?: DiscoveryCtaTile[] | null;
 };
 
-function PhoneChrome({ children, skyTop }: { children: React.ReactNode; skyTop?: boolean }) {
+function PhoneChrome({
+  children,
+  skyTop,
+  dark,
+}: {
+  children: React.ReactNode;
+  skyTop?: boolean;
+  dark?: boolean;
+}) {
   return (
     <div className="mx-auto w-full max-w-[248px] pb-1">
       <div className="rounded-[26px] border-[5px] border-slate-900 bg-slate-900 p-1 shadow-lg">
-        <div className="overflow-hidden rounded-[20px] bg-[#F5F7FA]">
+        <div className={cn("overflow-hidden rounded-[20px]", dark ? "bg-[#121212]" : "bg-[#F5F7FA]")}>
           <div
             className={cn(
               "flex items-center justify-between px-3 pb-1 pt-1.5",
-              skyTop ? "bg-[#7DD3FC]" : "bg-white"
+              skyTop ? "bg-[#7DD3FC]" : dark ? "bg-[#121212]" : "bg-white"
             )}
           >
-            <span className="text-[9px] font-semibold text-slate-800">9:41</span>
+            <span className={cn("text-[9px] font-semibold", dark ? "text-white" : "text-slate-800")}>9:41</span>
             <div className="h-3.5 w-14 rounded-full bg-slate-900/90" />
             <div className="flex gap-0.5">
-              <span className="h-1.5 w-1.5 rounded-sm bg-slate-700" />
-              <span className="h-1.5 w-1.5 rounded-sm bg-slate-700" />
+              <span className={cn("h-1.5 w-1.5 rounded-sm", dark ? "bg-white/70" : "bg-slate-700")} />
+              <span className={cn("h-1.5 w-1.5 rounded-sm", dark ? "bg-white/70" : "bg-slate-700")} />
             </div>
           </div>
           <div className="max-h-[min(480px,calc(100dvh-14rem))] overflow-y-auto overscroll-contain [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
@@ -49,10 +72,11 @@ function PhoneChrome({ children, skyTop }: { children: React.ReactNode; skyTop?:
 }
 
 function Thumb({ src, alt, className }: { src: string | null; alt: string; className?: string }) {
-  if (!src) {
+  const resolved = src ? resolveAttachmentProxyUrl(src) || src : "";
+  if (!resolved) {
     return <div className={cn("bg-slate-200", className)} />;
   }
-  return <img src={src} alt={alt} className={cn("object-cover", className)} loading="eager" decoding="async" fetchPriority="high" />;
+  return <img src={resolved} alt={alt} className={cn("object-cover", className)} loading="eager" decoding="async" fetchPriority="high" />;
 }
 
 function merchantMetaLine(m: FoodHomePreviewMerchant): string | null {
@@ -561,6 +585,14 @@ function PreviewBody({
   under250Enabled,
   under250FilterLabel,
   under250TabImageUrl,
+  discoveryDealsAtMaxPrice,
+  discoveryDealsAtImageUrl,
+  discoveryCrazyDealsImageUrl,
+  discoveryFreePackagingImageUrl,
+  discoveryDealsAtLabel,
+  discoveryCrazyDealsLabel,
+  discoveryFreePackagingLabel,
+  discoveryCtaTiles,
 }: {
   data: FoodHomePreviewPayload;
   layoutKey: FoodHomeLayoutKey;
@@ -570,6 +602,14 @@ function PreviewBody({
   under250Enabled: boolean;
   under250FilterLabel: string;
   under250TabImageUrl?: string | null;
+  discoveryDealsAtMaxPrice?: number | null;
+  discoveryDealsAtImageUrl?: string | null;
+  discoveryCrazyDealsImageUrl?: string | null;
+  discoveryFreePackagingImageUrl?: string | null;
+  discoveryDealsAtLabel?: string | null;
+  discoveryCrazyDealsLabel?: string | null;
+  discoveryFreePackagingLabel?: string | null;
+  discoveryCtaTiles?: DiscoveryCtaTile[] | null;
 }) {
   if (layoutKey === "grid_first") {
     return (
@@ -610,20 +650,147 @@ function PreviewBody({
     );
   }
 
+  if (layoutKey === "discovery") {
+    const cats = data.categories.slice(0, 10);
+    const restaurants = data.restaurants.slice(0, 2);
+    const dealsPrice = resolveDiscoveryDealsAtMaxPrice(
+      discoveryDealsAtMaxPrice ?? data.discoveryDealsAtMaxPrice,
+      data.gridFirstUnder250MaxPrice ?? 250
+    );
+    const wash = ["from-teal-950 to-teal-700", "from-orange-950 to-orange-600", "from-amber-950 to-amber-500"] as const;
+    const sourceTiles = parseDiscoveryCtaTiles(discoveryCtaTiles ?? data.discoveryCtaTiles, [
+      {
+        id: "meals",
+        action: "meals",
+        label: resolveDiscoveryDealsAtLabel(discoveryDealsAtLabel, dealsPrice),
+        imageUrl: discoveryDealsAtImageUrl ?? data.discoveryDealsAtImageUrl,
+        heroImageUrl: null,
+        maxPrice: dealsPrice,
+        sortOrder: 0,
+      },
+      {
+        id: "deals",
+        action: "deals",
+        label: discoveryCrazyDealsLabel?.trim() || DEFAULT_DISCOVERY_CTA_LABELS.crazyDeals,
+        imageUrl: discoveryCrazyDealsImageUrl ?? data.discoveryCrazyDealsImageUrl,
+        heroImageUrl: null,
+        maxPrice: null,
+        sortOrder: 1,
+      },
+      {
+        id: "packaging",
+        action: "packaging",
+        label: discoveryFreePackagingLabel?.trim() || DEFAULT_DISCOVERY_CTA_LABELS.freePackaging,
+        imageUrl: discoveryFreePackagingImageUrl ?? data.discoveryFreePackagingImageUrl,
+        heroImageUrl: null,
+        maxPrice: null,
+        sortOrder: 2,
+      },
+    ]);
+    const ctaTiles = sourceTiles.map((tile, i) => ({
+      id: tile.id,
+      label:
+        tile.label?.trim() ||
+        (tile.action === "meals"
+          ? resolveDiscoveryDealsAtLabel(null, dealsPrice)
+          : tile.action === "deals"
+            ? DEFAULT_DISCOVERY_CTA_LABELS.crazyDeals
+            : DEFAULT_DISCOVERY_CTA_LABELS.freePackaging),
+      wash: wash[i % wash.length],
+      imageUrl: tile.imageUrl,
+    }));
+    const catCols: (typeof cats)[] = [];
+    for (let i = 0; i < cats.length; i += 2) catCols.push(cats.slice(i, i + 2));
+    return (
+      <div className="bg-[#121212] pb-4 text-white">
+        <div className="flex items-center gap-1.5 px-2.5 pb-2 pt-1">
+          <span className="flex h-5 w-5 items-center justify-center rounded-full bg-[#242424] text-[8px]">←</span>
+          <div className="min-w-0 flex-1">
+            <p className="truncate text-[9px] font-extrabold">Food Delivery</p>
+            <p className="truncate text-[6px] text-white/70">{data.areaLabel} ▾</p>
+          </div>
+          <span className="flex h-5 items-center gap-0.5 rounded-full bg-[#242424] px-1.5 text-[6px] font-bold">
+            0 <span className="text-[7px]">🪙</span>
+          </span>
+        </div>
+        <div className="flex items-center gap-1.5 px-2.5">
+          <div className="flex h-6 flex-1 items-center gap-1 rounded-full bg-[#2A2A2A] px-2">
+            <span className="text-[8px] text-white/50">🔍</span>
+            <span className="truncate text-[6px] text-white/45">Search for delivery outlets near you...</span>
+          </div>
+          <div className="flex w-6 flex-col items-center">
+            <span className="text-[5px] font-extrabold">VEG</span>
+            <span className="h-2.5 w-5 rounded-full bg-zinc-600" />
+          </div>
+        </div>
+        {ctaTiles.length > 0 ? (
+        <div className="mt-1.5 flex items-start gap-1 overflow-hidden px-2.5">
+          {ctaTiles.map((tile) => (
+            <div
+              key={tile.id}
+              className="flex h-[22px] w-[52px] shrink-0 items-center gap-0.5 overflow-hidden rounded-md border border-white/10 bg-[#1E1E1E] px-0.5"
+            >
+              {tile.imageUrl ? (
+                <Thumb src={tile.imageUrl} alt="" className="h-4 w-4 shrink-0 rounded bg-zinc-800 object-cover" />
+              ) : (
+                <div className={cn("h-4 w-4 shrink-0 rounded bg-gradient-to-b", tile.wash)} />
+              )}
+              <span className="min-w-0 truncate text-[4.5px] font-extrabold leading-tight">{tile.label}</span>
+            </div>
+          ))}
+        </div>
+        ) : null}
+        <div className="mt-2 flex gap-1 overflow-hidden px-2.5">
+          {catCols.map((pair, colIdx) => (
+            <div key={pair[0]?.id ?? colIdx} className="flex w-8 shrink-0 flex-col gap-1">
+              {pair.map((cat) => (
+                <div key={cat.id} className="flex flex-col items-center">
+                  <Thumb src={cat.imageUrl} alt={cat.name} className="h-6 w-6 rounded-full bg-[#1E1E1E]" />
+                  <span className="mt-0.5 max-w-full truncate text-center text-[4.5px]">{cat.name}</span>
+                </div>
+              ))}
+            </div>
+          ))}
+        </div>
+        <div className="mt-2 flex items-center gap-1 px-2.5">
+          <p className="shrink-0 text-[8px] font-extrabold">Explore all restaurants</p>
+          <span className="h-px flex-1 bg-gradient-to-r from-teal-400 to-transparent" />
+        </div>
+        <div className="mt-1.5 flex gap-1 overflow-hidden px-2.5">
+          <span className="shrink-0 rounded-full bg-[#2C2C2C] px-1.5 py-0.5 text-[6px]">Filters</span>
+          <span className="shrink-0 rounded-full bg-[#2C2C2C] px-1.5 py-0.5 text-[6px]">Sort</span>
+          <span className="shrink-0 rounded-full bg-[#2C2C2C] px-1.5 py-0.5 text-[6px]">Open Now</span>
+          <span className="shrink-0 rounded-full bg-[#2C2C2C] px-1.5 py-0.5 text-[6px]">Top Brands</span>
+          <span className="shrink-0 rounded-full bg-[#2C2C2C] px-1.5 py-0.5 text-[6px]">Offers</span>
+        </div>
+        <div className="mt-2 space-y-1.5 px-2.5">
+          {restaurants.length === 0 ? (
+            <p className="text-[7px] text-white/50">No restaurants in this preview sample.</p>
+          ) : (
+            restaurants.map((m) => (
+              <div key={m.id} className="flex overflow-hidden rounded-xl bg-[#1E1E1E]">
+                <Thumb src={m.imageUrl} alt={m.name} className="h-12 w-12 shrink-0 bg-zinc-800" />
+                <div className="min-w-0 flex-1 px-1.5 py-1">
+                  <p className="truncate text-[7px] font-extrabold">{m.name}</p>
+                  <p className="text-[6px] text-white/55">
+                    {m.distanceKm != null ? `${m.distanceKm.toFixed(1)}km` : ""}
+                    {m.cuisine ? `, ${m.cuisine}` : ""}
+                  </p>
+                  <p className="mt-0.5 text-[6px]">{m.deliveryTime ? `Delivers in ${m.deliveryTime}` : ""}</p>
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+    );
+  }
+
   return (
     <>
       <PreviewHeader areaLabel={data.areaLabel} />
-      {layoutKey === "discovery" ? (
-        <>
-          <PromoCarousel data={data} />
-          <CategoryChips data={data} />
-        </>
-      ) : (
-        <>
-          <PromoCarousel data={data} />
-          <CategoryRail data={data} />
-        </>
-      )}
+      <PromoCarousel data={data} />
+      <CategoryRail data={data} />
       <FilterBar data={data} layoutKey={layoutKey} />
       <LovedSection data={data} layoutKey={layoutKey} />
       <RestaurantList data={data} />
@@ -641,6 +808,14 @@ export function FoodHomeLayoutPhonePreview({
   under250Enabled: under250EnabledProp,
   under250FilterLabel: under250FilterLabelProp,
   under250TabImageUrl: under250TabImageUrlProp,
+  discoveryDealsAtMaxPrice: discoveryDealsAtMaxPriceProp,
+  discoveryDealsAtImageUrl: discoveryDealsAtImageUrlProp,
+  discoveryCrazyDealsImageUrl: discoveryCrazyDealsImageUrlProp,
+  discoveryFreePackagingImageUrl: discoveryFreePackagingImageUrlProp,
+  discoveryDealsAtLabel: discoveryDealsAtLabelProp,
+  discoveryCrazyDealsLabel: discoveryCrazyDealsLabelProp,
+  discoveryFreePackagingLabel: discoveryFreePackagingLabelProp,
+  discoveryCtaTiles: discoveryCtaTilesProp,
 }: Props) {
   const cacheKey = stateId ? `cxapp-food-preview-v1:${stateId}` : "";
   const [data, setData] = useState<FoodHomePreviewPayload | null>(() => {
@@ -713,6 +888,18 @@ export function FoodHomeLayoutPhonePreview({
     under250FilterLabelProp ?? data?.gridFirstUnder250FilterLabel ?? "Meals under ₹250";
   const under250TabImageUrl =
     under250TabImageUrlProp ?? data?.gridFirstUnder250TabImageUrl ?? null;
+  const discoveryDealsAtMaxPrice =
+    discoveryDealsAtMaxPriceProp ?? data?.discoveryDealsAtMaxPrice ?? null;
+  const discoveryDealsAtImageUrl =
+    discoveryDealsAtImageUrlProp ?? data?.discoveryDealsAtImageUrl ?? null;
+  const discoveryCrazyDealsImageUrl =
+    discoveryCrazyDealsImageUrlProp ?? data?.discoveryCrazyDealsImageUrl ?? null;
+  const discoveryFreePackagingImageUrl =
+    discoveryFreePackagingImageUrlProp ?? data?.discoveryFreePackagingImageUrl ?? null;
+  const discoveryDealsAtLabel = discoveryDealsAtLabelProp ?? null;
+  const discoveryCrazyDealsLabel = discoveryCrazyDealsLabelProp ?? null;
+  const discoveryFreePackagingLabel = discoveryFreePackagingLabelProp ?? null;
+  const discoveryCtaTiles = discoveryCtaTilesProp ?? data?.discoveryCtaTiles ?? null;
 
   return (
     <div className="mb-2 rounded-xl border border-slate-200 bg-gradient-to-b from-slate-50 to-white p-3">
@@ -727,7 +914,7 @@ export function FoodHomeLayoutPhonePreview({
       {error && !data ? (
         <p className="py-8 text-center text-xs text-red-600">{error}</p>
       ) : data ? (
-        <PhoneChrome skyTop={layoutKey === "grid_first"}>
+        <PhoneChrome skyTop={layoutKey === "grid_first"} dark={layoutKey === "discovery"}>
           <PreviewBody
             data={data}
             layoutKey={layoutKey}
@@ -737,10 +924,18 @@ export function FoodHomeLayoutPhonePreview({
             under250Enabled={under250Enabled}
             under250FilterLabel={under250FilterLabel}
             under250TabImageUrl={under250TabImageUrl}
+            discoveryDealsAtMaxPrice={discoveryDealsAtMaxPrice}
+            discoveryDealsAtImageUrl={discoveryDealsAtImageUrl}
+            discoveryCrazyDealsImageUrl={discoveryCrazyDealsImageUrl}
+            discoveryFreePackagingImageUrl={discoveryFreePackagingImageUrl}
+            discoveryDealsAtLabel={discoveryDealsAtLabel}
+            discoveryCrazyDealsLabel={discoveryCrazyDealsLabel}
+            discoveryFreePackagingLabel={discoveryFreePackagingLabel}
+            discoveryCtaTiles={discoveryCtaTiles}
           />
         </PhoneChrome>
       ) : loading ? (
-        <PhoneChrome skyTop={layoutKey === "grid_first"}>
+        <PhoneChrome skyTop={layoutKey === "grid_first"} dark={layoutKey === "discovery"}>
           <div className="space-y-2 px-2.5 py-3">
             <div className="h-8 animate-pulse rounded-lg bg-slate-200/80" />
             <div className="h-24 animate-pulse rounded-xl bg-slate-200/70" />

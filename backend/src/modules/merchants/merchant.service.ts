@@ -1,5 +1,5 @@
 import { getSupabase } from "../../lib/supabase.js";
-import { getDb, getSql } from "../../db/client.js";
+import { getDb, getSql, withSqlRetry } from "../../db/client.js";
 import { sql } from "drizzle-orm";
 import {
   formatStoreStatusLabel,
@@ -41,7 +41,13 @@ import {
 import { getScheduleTimesForStores } from "./merchant-store-schedule-times.js";
 import { buildPartnerStoreStatusSnapshot } from "../merchant-partner/partner-store-status-snapshot.js";
 import { resolveStoreCommission } from "../commission/commission.resolver.js";
-import { customerPriceFromBase } from "../commission/pricing.js";
+import { markupRupeesPaise } from "../commission/pricing.js";
+import {
+  isStoreFundedItemOfferType,
+  resolveItemPricing,
+  serializeCanonicalPricing,
+} from "../pricing/canonicalItemPricing.js";
+import { loadMerchantOffersForPricing } from "../pricing/loadMerchantOffersForPricing.js";
 import { previewEtaRange } from "../eta/eta.preview.js";
 import {
   fetchAddonsForCustomizationIds,
@@ -62,6 +68,42 @@ function withEtaStamp<T extends { distance_km?: number | null; avg_preparation_t
     prepMinutes: row.avg_preparation_time_minutes ?? null,
   });
   return { ...row, eta_min_minutes: range.etaMinMinutes, eta_max_minutes: range.etaMaxMinutes };
+}
+
+async function applyCanonicalCustomerMenuPrices<
+  T extends {
+    id?: number;
+    item_id?: string | null;
+    selling_price: string;
+    base_price?: string | null;
+  },
+>(storePk: number, items: T[]): Promise<T[]> {
+  if (items.length === 0) return items;
+  const commission = await resolveStoreCommission(storePk);
+  const offers = await loadMerchantOffersForPricing(storePk);
+  for (const it of items) {
+    const netRupees = parseFloat(it.selling_price);
+    if (!Number.isFinite(netRupees) || netRupees <= 0) continue;
+    const priced = resolveItemPricing({
+      baseCtmUnit: netRupees,
+      quantity: 1,
+      commissionPercent: commission.percent,
+      offers,
+      menuItemId: Number(it.id) || 0,
+      extraAliases: it.item_id ? [String(it.item_id)] : [],
+    });
+    it.selling_price = priced.customerItemPriceUnit.toFixed(2);
+    const row = it as T & { canonical_pricing?: Record<string, unknown>; customer_strike_price?: string };
+    row.canonical_pricing = serializeCanonicalPricing(priced);
+    if (isStoreFundedItemOfferType(priced.merchantOfferType)) {
+      row.customer_strike_price = priced.customerStrikeUnit.toFixed(2);
+    }
+    const baseNet = parseFloat(String(it.base_price ?? ""));
+    if (Number.isFinite(baseNet) && baseNet > 0) {
+      it.base_price = markupRupeesPaise(baseNet, commission.percent).toFixed(2) as T["base_price"] & string;
+    }
+  }
+  return items;
 }
 
 const DEFAULT_LIMIT = 20;
@@ -1059,34 +1101,9 @@ export async function getMenuByStoreId(
       m.category_name ?? (m.category_id != null ? categoryMap.get(m.category_id) ?? null : null),
   }));
 
-  // The merchant's stored `selling_price` is treated as their NET intended
-  // menu price (what they want to receive per item). We mark it up at read
-  // time so the customer always sees `selling_price × 100/(100 − commission)`
-  // — that way the menu list, cart, checkout, and bill are all the same
-  // number, and a rate change propagates instantly without touching the menu.
-  //
-  // Important: this is the ONLY place where commission is added on the
-  // customer-facing read path. Don't bake markup at write time too — that
-  // double-applies for items saved through forms that already pre-compute.
   const commission = await resolveStoreCommission(store.id);
-  for (const it of itemsWithCategory) {
-    const netRupees = parseFloat(it.selling_price);
-    if (Number.isFinite(netRupees) && netRupees > 0) {
-      const { customerPaise } = customerPriceFromBase(
-        Math.round(netRupees * 100),
-        commission.percent,
-      );
-      it.selling_price = (customerPaise / 100).toFixed(2);
-    }
-    const baseNet = parseFloat(String(it.base_price ?? ""));
-    if (Number.isFinite(baseNet) && baseNet > 0) {
-      const { customerPaise } = customerPriceFromBase(
-        Math.round(baseNet * 100),
-        commission.percent,
-      );
-      it.base_price = (customerPaise / 100).toFixed(2);
-    }
-  }
+  await applyCanonicalCustomerMenuPrices(store.id, itemsWithCategory);
+  void commission;
 
   return { store, items: itemsWithCategory };
 }
@@ -1101,8 +1118,9 @@ export async function getMenuVersion(
   const storePk = Number(store.id);
   if (!Number.isFinite(storePk) || storePk <= 0) return null;
 
-  const pg = getSql();
-  const [row] = await pg`
+  const pgRow = await withSqlRetry(async () => {
+    const pg = getSql();
+    const [row] = await pg`
     SELECT GREATEST(
       COALESCE(
         (SELECT MAX(EXTRACT(EPOCH FROM updated_at) * 1000)::bigint
@@ -1135,8 +1153,10 @@ export async function getMenuVersion(
     WHERE id = ${storePk}
     LIMIT 1
   `;
+    return row;
+  });
 
-  const menuVersion = Number(row?.menu_version ?? 0);
+  const menuVersion = Number(pgRow?.menu_version ?? 0);
   const etag = `"gm-menu-${storeId}-${menuVersion}"`;
   return { menuVersion, etag };
 }
@@ -1247,24 +1267,8 @@ export async function getMenuDelta(
   }
 
   const commission = await resolveStoreCommission(store.id);
-  for (const it of activeRows) {
-    const netRupees = parseFloat(String(it.selling_price ?? ""));
-    if (Number.isFinite(netRupees) && netRupees > 0) {
-      const { customerPaise } = customerPriceFromBase(
-        Math.round(netRupees * 100),
-        commission.percent
-      );
-      it.selling_price = (customerPaise / 100).toFixed(2);
-    }
-    const baseNet = parseFloat(String(it.base_price ?? ""));
-    if (Number.isFinite(baseNet) && baseNet > 0) {
-      const { customerPaise } = customerPriceFromBase(
-        Math.round(baseNet * 100),
-        commission.percent
-      );
-      it.base_price = (customerPaise / 100).toFixed(2);
-    }
-  }
+  await applyCanonicalCustomerMenuPrices(store.id, activeRows);
+  void commission;
 
   return {
     menuVersion,
@@ -2121,19 +2125,26 @@ export async function getMenuItemFullConfig(
   // are the merchant's net intent; we add commission on top exactly once
   // here on the read path so cart and bill stay consistent.
   const commission = await resolveStoreCommission(store.id);
-  const markup = (rupees: number): number => {
-    if (!Number.isFinite(rupees) || rupees <= 0) return 0;
-    return (
-      customerPriceFromBase(Math.round(rupees * 100), commission.percent).customerPaise / 100
-    );
-  };
+  const offers = await loadMerchantOffersForPricing(store.id);
+  const aliases = [item.item_id, String(item.id)].filter(Boolean) as string[];
+  const priceItem = (net: number) =>
+    resolveItemPricing({
+      baseCtmUnit: net,
+      quantity: 1,
+      commissionPercent: commission.percent,
+      offers,
+      menuItemId: Number(item.id) || 0,
+      extraAliases: aliases,
+    });
+  const markup = (rupees: number): number => markupRupeesPaise(rupees, commission.percent);
+  const itemPriced = priceItem(parseFloat(item.selling_price));
 
   return {
     item: {
       id: item.item_id,
       name: item.item_name,
       description: item.item_description ?? null,
-      price: markup(parseFloat(item.selling_price)),
+      price: itemPriced.customerItemPriceUnit,
       imageUrl: toAbsoluteClientMediaUrl(visibleImageUrl),
       isVeg: (item.food_type ?? "").toLowerCase().startsWith("veg"),
       hasCustomizations: item.has_customizations === true,
@@ -2152,7 +2163,7 @@ export async function getMenuItemFullConfig(
         v.variant_size_unit != null && String(v.variant_size_unit).trim() !== ""
           ? String(v.variant_size_unit).trim()
           : null,
-      price: markup(parseFloat(v.variant_price)),
+      price: priceItem(parseFloat(v.variant_price)).customerItemPriceUnit,
       isDefault: v.is_default === true,
       displayOrder: v.display_order ?? 0,
     })),

@@ -12,6 +12,7 @@ import {
   parseGridFirstUnder250ImageUrl,
   parseGridFirstUnder250MaxPrice,
   parseGridFirstUnder250Title,
+  parseDiscoveryCtaConfig,
   type FoodHomeLayoutKey,
 } from "@/lib/foodHomeLayout";
 import {
@@ -90,8 +91,8 @@ export function useFoodHomeLayout(
     staleTime: FOOD_HOME_LAYOUT_STALE_MS,
     gcTime: FOOD_HOME_LAYOUT_GC_MS,
     retry: 1,
-    refetchOnMount: false,
-    refetchOnWindowFocus: false,
+    refetchOnMount: "always",
+    refetchOnWindowFocus: true,
     placeholderData: (previousData) => previousData,
     initialData: syncCached ?? bootLayout,
   });
@@ -106,8 +107,6 @@ export function useFoodHomeLayout(
   useFocusEffect(
     useCallback(() => {
       if (!canQuery) return;
-      const updatedAt = queryClient.getQueryState(queryKey)?.dataUpdatedAt ?? 0;
-      if (Date.now() - updatedAt < FOOD_HOME_LAYOUT_STALE_MS) return;
       void queryClient.invalidateQueries({ queryKey });
     }, [canQuery, queryClient, queryKey])
   );
@@ -148,5 +147,14 @@ export function useFoodHomeLayout(
     gridFirstUnder250HeroImageUrl: parseGridFirstUnder250ImageUrl(
       effectiveLayout?.gridFirstUnder250HeroImageUrl
     ),
+    discoveryDealsAtMaxPrice: parseDiscoveryCtaConfig(effectiveLayout).dealsAtMaxPrice,
+    discoveryDealsAtImageUrl: parseDiscoveryCtaConfig(effectiveLayout).dealsAtImageUrl,
+    discoveryDealsAtHeroImageUrl: parseDiscoveryCtaConfig(effectiveLayout).dealsAtHeroImageUrl,
+    discoveryCrazyDealsImageUrl: parseDiscoveryCtaConfig(effectiveLayout).crazyDealsImageUrl,
+    discoveryFreePackagingImageUrl: parseDiscoveryCtaConfig(effectiveLayout).freePackagingImageUrl,
+    discoveryDealsAtLabel: parseDiscoveryCtaConfig(effectiveLayout).dealsAtLabel,
+    discoveryCrazyDealsLabel: parseDiscoveryCtaConfig(effectiveLayout).crazyDealsLabel,
+    discoveryFreePackagingLabel: parseDiscoveryCtaConfig(effectiveLayout).freePackagingLabel,
+    discoveryCtaTiles: parseDiscoveryCtaConfig(effectiveLayout).tiles,
   };
 }

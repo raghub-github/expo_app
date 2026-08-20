@@ -12,7 +12,14 @@ import {
   verifyRazorpaySignature,
   verifyRazorpayWebhookSignature,
   getPaymentDetails,
+  fetchRazorpayAccountMethods,
+  createRazorpayUpiIntent,
 } from "../../services/payment/razorpayService.js";
+import {
+  defaultCheckoutPayMethods,
+  mapRazorpayMethodsPayload,
+  summarizeRazorpayMethodsPayload,
+} from "../../lib/razorpay-payment-methods.js";
 import { getEnv } from "../../config/env.js";
 import {
   markPendingOrderPaymentStarted,
@@ -578,6 +585,158 @@ export async function paymentRoutes(app: FastifyInstance) {
         amount: order.amount,
         currency: order.currency,
       };
+    }
+  );
+
+  const payMethodItemSchema = z.object({
+    id: z.string(),
+    label: z.string(),
+    method: z.enum(["upi", "card", "wallet", "netbanking"]),
+    action: z.enum(["pay", "add"]),
+    logoKey: z.string(),
+    upiApp: z.string().optional(),
+    wallet: z.string().optional(),
+  });
+
+  /**
+   * Enabled Razorpay methods for this account (UPI apps, cards, wallets).
+   * Dummy / missing keys return the same curated India catalog the checkout
+   * sheet uses in local PAYMENT_DUMMY_MODE.
+   */
+  app.get(
+    "/methods",
+    {
+      schema: {
+        response: {
+          200: z.object({
+            dummy: z.boolean(),
+            sections: z.array(
+              z.object({
+                id: z.string(),
+                title: z.string(),
+                items: z.array(payMethodItemSchema),
+              })
+            ),
+          }),
+        },
+      },
+    },
+    async () => {
+      const env = getEnv();
+      const dummyModeActive =
+        env.PAYMENT_DUMMY_MODE ||
+        !env.RAZORPAY_KEY_ID ||
+        !env.RAZORPAY_KEY_SECRET;
+
+      if (dummyModeActive) {
+        return defaultCheckoutPayMethods(true);
+      }
+
+      try {
+        const raw = await fetchRazorpayAccountMethods();
+        const mapped = mapRazorpayMethodsPayload(raw, false);
+        app.log.info(
+          {
+            razorpay: summarizeRazorpayMethodsPayload(raw),
+            sections: mapped.sections.map((s) => ({
+              id: s.id,
+              items: s.items.map((i) => i.id),
+            })),
+          },
+          "razorpay methods mapped for checkout sheet"
+        );
+        return mapped;
+      } catch (err) {
+        app.log.warn({ err }, "Razorpay methods fetch failed");
+        return { dummy: false, sections: [] };
+      }
+    }
+  );
+
+  /**
+   * Mint a UPI Intent URL for an existing Razorpay order so the customer app
+   * can open PhonePe / GPay / Paytm via upi:// (Expo Go cannot use the native SDK).
+   */
+  app.post(
+    "/upi-intent",
+    {
+      schema: {
+        body: z.object({
+          orderId: z.string().min(1).max(80),
+          amountPaise: z.number().int().positive(),
+          contact: z.string().min(10).max(20),
+          email: z.string().email().max(120).optional(),
+          pendingId: z.string().max(100).optional(),
+        }),
+        response: {
+          200: z.object({
+            intentUrl: z.string().nullable(),
+            paymentId: z.string().nullable(),
+          }),
+          400: z.object({ error: z.string(), message: z.string() }),
+        },
+      },
+    },
+    async (req, reply) => {
+      const env = getEnv();
+      const dummyModeActive =
+        env.PAYMENT_DUMMY_MODE ||
+        !env.RAZORPAY_KEY_ID ||
+        !env.RAZORPAY_KEY_SECRET;
+      if (dummyModeActive) {
+        return reply.status(400).send({
+          error: "DUMMY_MODE",
+          message: "UPI intent is not used in dummy payment mode.",
+        });
+      }
+
+      const { orderId, amountPaise, contact, email, pendingId } = req.body as {
+        orderId: string;
+        amountPaise: number;
+        contact: string;
+        email?: string;
+        pendingId?: string;
+      };
+
+      const digits = String(contact).replace(/\D/g, "");
+      const phone = digits.length >= 10 ? digits.slice(-10) : digits;
+      if (phone.length < 10) {
+        return reply.status(400).send({
+          error: "INVALID_CONTACT",
+          message: "A 10-digit mobile number is required to open UPI.",
+        });
+      }
+
+      const forwarded = (req.headers["x-forwarded-for"] as string | undefined)?.split(",")[0]?.trim();
+      const rawIp = (forwarded || req.ip || "").replace(/^::ffff:/, "");
+      const ip = /^\d{1,3}(\.\d{1,3}){3}$/.test(rawIp) ? rawIp : "127.0.0.1";
+      const userAgent =
+        typeof req.headers["user-agent"] === "string" && req.headers["user-agent"].length > 0
+          ? req.headers["user-agent"]
+          : "GatiMitra-Customer/1.0";
+
+      try {
+        const created = await createRazorpayUpiIntent({
+          orderId,
+          amountPaise,
+          contact: phone,
+          email: email && email.includes("@") ? email : "orders@gatimitra.app",
+          ip,
+          userAgent,
+          notes: pendingId ? { pending_id: pendingId } : {},
+        });
+        return { intentUrl: created.intentUrl, paymentId: created.paymentId };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "Could not start UPI payment.";
+        req.log.warn({ err, orderId }, "Razorpay UPI intent create failed");
+        if (/requested url was not found/i.test(message) || /not found on the server/i.test(message)) {
+          return { intentUrl: null, paymentId: null };
+        }
+        return reply.status(400).send({
+          error: "UPI_INTENT_FAILED",
+          message,
+        });
+      }
     }
   );
 

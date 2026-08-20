@@ -2,7 +2,7 @@ import { getSql } from "@/lib/db/client";
 import { resolveAutoMerchantCancellationDebit } from "@/lib/orders/resolve-merchant-cancellation-ledger";
 import { supabaseAdmin } from "@/lib/supabase/server";
 import { resolveMerchantWalletCreditAmount } from "@/lib/merchant-order-ctm";
-import { buildCancellationInfoLedgerDescription } from "@/lib/merchant-cancellation-ledger-description";
+import { buildCancellationInfoLedgerDescription, isAutoCancellationContext } from "@/lib/merchant-cancellation-ledger-description";
 import type { ResolvedMerchantCompensation } from "@/lib/merchant-cancellation-compensation-engine.types";
 import {
   adminCancellationLedgerMetadata,
@@ -509,13 +509,22 @@ function compensationMetaFromResolved(
   }
 ): Record<string, unknown> | undefined {
   if (!resolved?.engineEnabled) return undefined;
-  const brand =
-    String(orderContext?.cancelledByType ?? "").trim().toLowerCase() === "customer"
+  const auto = isAutoCancellationContext({
+    cancelledByType: orderContext?.cancelledByType,
+    cancelledByLabel: orderContext?.cancelledByLabel,
+    reason: orderContext?.rejectedReason,
+  });
+  const brand = auto
+    ? "__AUTO__"
+    : String(orderContext?.cancelledByType ?? "").trim().toLowerCase() === "customer"
       ? "Customer"
       : "GatiMitra";
   const reason = (orderContext?.rejectedReason ?? "").trim();
-  const eligible =
-    reason && resolved.compensationPct <= 0.009
+  const eligible = auto
+    ? resolved.compensationPct <= 0.009
+      ? "Auto Cancelled by System. As per policy, you will not receive compensation for this cancellation."
+      : `Auto Cancelled by System. As per policy, you will get ${resolved.compensationPct}% of net order value as compensation.`
+    : reason && resolved.compensationPct <= 0.009
       ? `Cancelled by ${brand}: ${reason}. As per policy, you will not receive compensation for this cancellation.`
       : reason && resolved.compensationPct > 0
         ? `Cancelled by ${brand}: ${reason}. As per policy, you will get ${resolved.compensationPct}% of net order value as compensation.`
@@ -530,6 +539,8 @@ function compensationMetaFromResolved(
     applied_policy_title: resolved.policyTitle,
     applied_policy_description: resolved.policyDescription,
     cancelled_by_brand: brand,
+    cancelled_by_type: orderContext?.cancelledByType ?? null,
+    cancelled_by_label: orderContext?.cancelledByLabel ?? null,
     reason_detail: reason || null,
     ...(eligible ? { eligible_message: eligible } : {}),
   };

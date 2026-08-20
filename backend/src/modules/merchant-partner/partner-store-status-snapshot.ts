@@ -2,7 +2,7 @@
  * Authoritative store surface status for Partner Site + customer APIs.
  * Same schedule tick + gate logic as merchant app GET /merchant-partner/stores/:id/status.
  */
-import { getSql } from "../../db/client.js";
+import { getSql, withSqlRetry } from "../../db/client.js";
 import {
   computeSurfaceLiveStatus,
   effectiveOperationalFromStoreRow,
@@ -61,8 +61,9 @@ export async function buildPartnerStoreStatusSnapshot(
 
   await runStoreScheduleTickForStore(storeId, log);
 
-  const sql = getSql();
-  const rows = await sql`
+  const { rows, hoursRows } = await withSqlRetry(async () => {
+    const sql = getSql();
+    const storeRows = await sql`
     SELECT ms.id,
            ms.operational_status,
            ms.is_accepting_orders,
@@ -85,6 +86,11 @@ export async function buildPartnerStoreStatusSnapshot(
     WHERE ms.id = ${storeId} AND ms.deleted_at IS NULL
     LIMIT 1
   `;
+    const hours = await sql`
+    SELECT * FROM merchant_store_operating_hours WHERE store_id = ${storeId} LIMIT 1
+  `;
+    return { rows: storeRows, hoursRows: hours };
+  });
   if (rows.length === 0) return null;
 
   const row = rows[0] as {
@@ -108,9 +114,6 @@ export async function buildPartnerStoreStatusSnapshot(
   };
 
   const { dayOfWeek, minutesSinceMidnight } = nowInStoreTz();
-  const hoursRows = await sql`
-    SELECT * FROM merchant_store_operating_hours WHERE store_id = ${storeId} LIMIT 1
-  `;
   const hoursRow = hoursRows[0] as Record<string, unknown> | undefined;
   const withinOperatingHours = hoursRow
     ? isWithinOperatingHours(hoursRow, dayOfWeek, minutesSinceMidnight)

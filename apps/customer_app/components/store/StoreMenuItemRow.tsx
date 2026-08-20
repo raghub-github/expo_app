@@ -24,7 +24,7 @@ import { getBasePrice, getItemDiet, getSellingPrice, isItemSpicy } from "./store
 import { useMenuItemCartQty } from "@/hooks/useMenuItemCartQty";
 import { isMenuItemImagePrefetched } from "@/lib/prefetchMenuItemImages";
 import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
-import { formatOfferRupee, type ItemOfferDisplay } from "@/lib/itemOfferDisplay";
+import { formatOfferRupee, resolveMenuOfferPriceDisplay, type ItemOfferDisplay } from "@/lib/itemOfferDisplay";
 import { MENU_ITEM_ROW_HEIGHT } from "@/features/merchant-detail/constants/layout";
 
 export type StoreMenuItemRowProps = {
@@ -169,16 +169,13 @@ export const StoreMenuItemRow = React.memo(function StoreMenuItemRow({
 
   const sellingPrice = getSellingPrice(item);
   const basePrice = getBasePrice(item);
-  const catalogMrpDiscount = basePrice != null && basePrice > sellingPrice;
-  const offerUnitPrice =
-    itemOffer?.kind !== "bogo" && itemOffer?.offerPrice != null ? itemOffer.offerPrice : null;
+  const { payable: payableAmount, strike: strikeAmount, showStrike: showDiscount } =
+    resolveMenuOfferPriceDisplay({ sellingPrice, basePrice, itemOffer });
   const showOfferPrice =
-    offerUnitPrice != null && offerUnitPrice < sellingPrice - 0.001;
-  const showDiscount = showOfferPrice || catalogMrpDiscount;
-  const strikeAmount = showOfferPrice
-    ? Math.round(itemOffer?.strikePrice ?? sellingPrice)
-    : basePrice!;
-  const payableAmount = showOfferPrice ? offerUnitPrice! : sellingPrice;
+    itemOffer?.kind !== "bogo" &&
+    itemOffer?.offerPrice != null &&
+    itemOffer.offerPrice < sellingPrice - 0.001;
+  const catalogMrpDiscount = basePrice != null && basePrice > sellingPrice;
   const showCouponIneligibleNote = catalogMrpDiscount && !showOfferPrice;
   const showRemoteImage = !!imageUri && !imageFailed;
   const diet = getItemDiet(item);
@@ -249,7 +246,7 @@ export const StoreMenuItemRow = React.memo(function StoreMenuItemRow({
           ) : null}
 
           <View style={styles.priceBlock}>
-            {showDiscount ? (
+            {showDiscount && strikeAmount != null ? (
               <View style={styles.priceOfferRow}>
                 <AppText style={styles.basePriceStrike}>{formatOfferRupee(strikeAmount)}</AppText>
                 <AppText style={styles.discountPrice}>
