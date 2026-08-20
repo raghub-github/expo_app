@@ -14,6 +14,7 @@ import {
   demandZonesToGeoJson,
   type DemandZone,
 } from "@/src/lib/demand-zones";
+import { hotZonesToGeoJson, type HotZoneCell } from "@/src/lib/hot-zones";
 
 const BRAND = colors.primary[500];
 /** Last successful camera center — never jump to a hardcoded city while waiting for GPS. */
@@ -47,6 +48,8 @@ interface RiderMapViewProps {
   style?: object;
   showRadar?: boolean;
   demandZones?: DemandZone[];
+  /** Backend-authoritative H3 hot zones (preferred over the legacy circle demandZones). */
+  hotZones?: HotZoneCell[];
   isOnDuty?: boolean;
 }
 
@@ -66,7 +69,7 @@ const OrderPin: React.FC<{ order: Order; onPress?: () => void }> = ({ order, onP
 );
 
 export const RiderMapView = forwardRef<RiderMapViewHandle, RiderMapViewProps>(function RiderMapView(
-  { riderLocation, orders, onOrderPress, style, showRadar = false, demandZones = [], isOnDuty = false },
+  { riderLocation, orders, onOrderPress, style, showRadar = false, demandZones = [], hotZones = [], isOnDuty = false },
   ref
 ) {
   const cameraRef = useRef<{ setCamera: (opts: object) => void } | null>(null);
@@ -104,6 +107,13 @@ export const RiderMapView = forwardRef<RiderMapViewHandle, RiderMapViewProps>(fu
   const demandGeoJson = useMemo(
     () => (demandZones.length > 0 ? demandZonesToGeoJson(demandZones) : null),
     [demandZones]
+  );
+
+  // Real H3 hot zones (backend). Preferred; when present the legacy circle demandZones
+  // are not drawn (orders.tsx passes only one of the two).
+  const hotGeoJson = useMemo(
+    () => (hotZones.length > 0 ? hotZonesToGeoJson(hotZones) : null),
+    [hotZones]
   );
 
   const recenter = useCallback(() => {
@@ -237,6 +247,57 @@ export const RiderMapView = forwardRef<RiderMapViewHandle, RiderMapViewProps>(fu
                 lineWidth: 2,
                 lineDasharray: [2, 1.5],
                 lineOpacity: 0.95,
+              }}
+            />
+          </Mapbox.ShapeSource>
+        ) : null}
+
+        {hotGeoJson ? (
+          <Mapbox.ShapeSource id="hot-zones" shape={hotGeoJson}>
+            {/* H3 hexagons (NOT circles), coloured/weighted by pressure status. */}
+            <Mapbox.FillLayer
+              id="hot-zones-fill"
+              style={{
+                fillColor: [
+                  "match",
+                  ["get", "status"],
+                  "CRITICAL",
+                  "#DC2626",
+                  "HOT",
+                  "#F97316",
+                  "WARM",
+                  "#F59E0B",
+                  "#9CA3AF",
+                ],
+                fillOpacity: [
+                  "match",
+                  ["get", "status"],
+                  "CRITICAL",
+                  0.38,
+                  "HOT",
+                  0.3,
+                  "WARM",
+                  0.22,
+                  0.12,
+                ],
+              }}
+            />
+            <Mapbox.LineLayer
+              id="hot-zones-outline"
+              style={{
+                lineColor: [
+                  "match",
+                  ["get", "status"],
+                  "CRITICAL",
+                  "#B91C1C",
+                  "HOT",
+                  "#EA580C",
+                  "WARM",
+                  "#D97706",
+                  "#6B7280",
+                ],
+                lineWidth: 1.5,
+                lineOpacity: 0.9,
               }}
             />
           </Mapbox.ShapeSource>
