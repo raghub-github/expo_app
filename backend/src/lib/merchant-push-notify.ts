@@ -90,14 +90,14 @@ async function stampStoreNotifyTitle(sql: Sql, storeId: number, title: string): 
   if (rows[0]) {
     await sql`
       UPDATE merchant_store_settings
-      SET settings_metadata = ${metaJson}::jsonb, updated_at = NOW()
+      SET settings_metadata = ${metaJson}::text::jsonb, updated_at = NOW()
       WHERE store_id = ${storeId}
     `;
     return;
   }
   await sql`
     INSERT INTO merchant_store_settings (store_id, settings_metadata)
-    VALUES (${storeId}, ${metaJson}::jsonb)
+    VALUES (${storeId}, ${metaJson}::text::jsonb)
   `;
 }
 

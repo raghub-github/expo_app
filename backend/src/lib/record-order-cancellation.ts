@@ -66,7 +66,7 @@ async function patchCancellationReasonRow(
           ELSE COALESCE(refund_status, ${refund.refundStatus})
         END,
         refund_amount = COALESCE(${refund.refundAmount}, refund_amount),
-        metadata = COALESCE(metadata, '{}'::jsonb) || ${JSON.stringify(meta)}::jsonb
+        metadata = COALESCE(metadata, '{}'::jsonb) || ${JSON.stringify(meta)}::text::jsonb
       WHERE id = ${reasonId}
     `;
   } catch {
@@ -168,7 +168,7 @@ export async function recordOrderCancellation(
         SET
           cancellation_reason_id = ${existingReasonId},
           cancelled_by_type = ${input.cancelledByType},
-          cancellation_details = COALESCE(cancellation_details, '{}'::jsonb) || ${detailsJson}::jsonb
+          cancellation_details = COALESCE(cancellation_details, '{}'::jsonb) || ${detailsJson}::text::jsonb
         WHERE order_id = ${input.orderCorePk}
       `;
       await sql`
@@ -176,7 +176,7 @@ export async function recordOrderCancellation(
         SET
           cancellation_reason_id = ${existingReasonId},
           cancelled_by_type = ${input.cancelledByType},
-          cancellation_details = COALESCE(cancellation_details, '{}'::jsonb) || ${detailsJson}::jsonb
+          cancellation_details = COALESCE(cancellation_details, '{}'::jsonb) || ${detailsJson}::text::jsonb
         WHERE id = ${input.orderCorePk}
       `;
     } catch {
@@ -234,7 +234,7 @@ export async function recordOrderCancellation(
         ${input.reasonText ?? (displayReason || null)},
         ${refund.refundStatus},
         ${refund.refundAmount},
-        ${JSON.stringify(meta)}::jsonb,
+        ${JSON.stringify(meta)}::text::jsonb,
         ${input.catalogReasonId ?? null},
         ${input.cancelledByType},
         ${input.cancelledByLabel},
@@ -259,7 +259,7 @@ export async function recordOrderCancellation(
         ${reasonCode},
         ${displayReason || input.reasonText || null},
         ${refund.refundStatus},
-        ${JSON.stringify(meta)}::jsonb
+        ${JSON.stringify(meta)}::text::jsonb
       )
       RETURNING id
     `;
@@ -274,7 +274,7 @@ export async function recordOrderCancellation(
           cancellation_reason_id = ${cancellationReasonId},
           cancelled_by_type = ${input.cancelledByType},
           cancellation_details = COALESCE(cancellation_details, '{}'::jsonb)
-            || ${detailsJson}::jsonb,
+            || ${detailsJson}::text::jsonb,
           cancelled_at = COALESCE(cancelled_at, NOW()),
           cancelled_by = ${input.cancelledBy},
           updated_at = NOW()
@@ -298,7 +298,7 @@ export async function recordOrderCancellation(
         cancelled_by_label = ${input.cancelledByLabel},
         cancelled_by_type = ${input.cancelledByType},
         cancellation_details = COALESCE(cancellation_details, '{}'::jsonb)
-          || ${detailsJson}::jsonb,
+          || ${detailsJson}::text::jsonb,
         updated_at = NOW()
       WHERE order_id = ${input.orderCorePk}
     `;

@@ -90,7 +90,7 @@ export async function applyAutoCancelRiderPenalty(input: {
             serviceType: service,
             reason: "auto_cancel_penalty",
             rule: input.rule,
-          })}::jsonb,
+          })}::text::jsonb,
           'system'
         )
       `;

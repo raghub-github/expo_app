@@ -189,13 +189,17 @@ export function extractRazorpayError(err: unknown): { code: string; description:
 /** True when the user dismissed the sheet (not a linker/gateway failure). */
 export function isRazorpayUserCancel(err: unknown): boolean {
   const { code, description } = extractRazorpayError(err);
-  const codeNum = Number(code);
-  if (codeNum === 0) return true;
+  // Razorpay's PAYMENT_CANCELLED constant is 2. Do NOT treat code 0 or an empty code
+  // as cancel — 0 is NETWORK_ERROR and "" is "no code", both real failures we must
+  // surface (the old `Number(code) === 0` swallowed every codeless error as a cancel,
+  // hiding genuine gateway/verify failures and recording them as "cancelled").
+  if (code.trim() === "2") return true;
   const d = description.toLowerCase();
   return (
+    d.includes("cancelled") ||
+    d.includes("canceled") ||
     d.includes("user closed") ||
-    d.includes("user cancelled") ||
-    d.includes("payment cancelled by user") ||
+    d.includes("dismiss") ||
     d.includes("backpressed") ||
     d.includes("back pressed")
   );

@@ -6,6 +6,7 @@
 import React, { useEffect } from "react";
 import { View, StyleSheet } from "react-native";
 import { useCardAnimationsEnabled } from "@/hooks/useCardAnimationsEnabled";
+import { formatMerchantDistanceKm } from "@/lib/merchantDistance";
 import Animated, {
   cancelAnimation,
   Easing,
@@ -20,12 +21,6 @@ import { AppText } from "@/components/AppText";
 const SWAP_MS = 2800;
 const SLIDE_MS = 420;
 const LINE_H = 18;
-
-function formatDistance(km?: number): string | null {
-  if (km == null || !Number.isFinite(km)) return null;
-  if (km < 1) return `${Math.round(km * 1000)} m`;
-  return `${km.toFixed(1)} km`;
-}
 
 export type NearFastDeliveryMetaProps = {
   deliveryTime?: string | null;
@@ -48,7 +43,7 @@ function NearFastDeliveryMetaInner({
   onDark = false,
   freeDelivery = false,
 }: NearFastDeliveryMetaProps) {
-  const distanceStr = formatDistance(distanceKm ?? undefined);
+  const distanceStr = formatMerchantDistanceKm(distanceKm);
   const isNear = distanceKm != null && distanceKm <= nearThresholdKm;
   const hasTime = Boolean(deliveryTime?.trim());
   const hasDistance = Boolean(distanceStr);

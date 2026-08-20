@@ -187,7 +187,7 @@ export async function logPreventRuntimeEvent(args: {
         ${args.action},
         'system',
         ${args.reason ?? null},
-        ${args.snapshot != null ? JSON.stringify(args.snapshot) : null}::jsonb
+        ${args.snapshot != null ? JSON.stringify(args.snapshot) : null}::text::jsonb
       )
     `;
   } catch (err) {

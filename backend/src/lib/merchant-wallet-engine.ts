@@ -1297,7 +1297,7 @@ export async function createWithdrawalRequest(
           ${walletId}, ${amount}, 'HOLD_LOCK', 'AVAILABLE',
           'WITHDRAWAL', ${0}, ${holdKey},
           ${'Withdrawal requested: ₹' + amount.toFixed(2)},
-          ${JSON.stringify({ source, commission: quote.commission_amount, net: quote.net_payout_amount })}::jsonb
+          ${JSON.stringify({ source, commission: quote.commission_amount, net: quote.net_payout_amount })}::text::jsonb
         ) AS ledger_id
       `;
       holdLedgerId = Number((holdResult as any).ledger_id);
@@ -1307,7 +1307,7 @@ export async function createWithdrawalRequest(
           ${walletId}, ${amount}, 'HOLD_LOCK', 'HOLD',
           'WITHDRAWAL', ${0}, ${holdKey + '_credit_hold'},
           ${'Withdrawal requested (processing): ₹' + amount.toFixed(2)},
-          ${JSON.stringify({ hold_debit_ledger_id: holdLedgerId })}::jsonb
+          ${JSON.stringify({ hold_debit_ledger_id: holdLedgerId })}::text::jsonb
         ) AS ledger_id
       `;
 
@@ -1487,7 +1487,7 @@ export async function completeWithdrawal(payoutRequestId: number): Promise<void>
         ${walletId}, ${amount}, 'WITHDRAWAL', 'HOLD',
         'WITHDRAWAL', ${payoutRequestId}, ${debitKey},
         ${"Funds have been successfully transferred to the registered bank account."},
-        ${JSON.stringify({ payout_request_id: payoutRequestId, net_payout_amount: Number(p.net_payout_amount) })}::jsonb
+        ${JSON.stringify({ payout_request_id: payoutRequestId, net_payout_amount: Number(p.net_payout_amount) })}::text::jsonb
       ) AS ledger_id
     `;
 
@@ -1576,7 +1576,7 @@ async function releaseWithdrawalHold(
         ${walletId}, ${amount}, 'HOLD_RELEASE', 'HOLD',
         'WITHDRAWAL', ${payoutRequestId}, ${releaseKey + '_debit_hold'},
         ${'Withdrawal released — hold cleared'},
-        ${JSON.stringify({ reason, payout_request_id: payoutRequestId, terminal_status: terminalStatus })}::jsonb
+        ${JSON.stringify({ reason, payout_request_id: payoutRequestId, terminal_status: terminalStatus })}::text::jsonb
       )
     `;
 
@@ -1585,7 +1585,7 @@ async function releaseWithdrawalHold(
         ${walletId}, ${amount}, 'FAILED_WITHDRAWAL_REVERSAL', 'AVAILABLE',
         'WITHDRAWAL', ${payoutRequestId}, ${releaseKey},
         ${'Withdrawal returned — funds restored to your wallet'},
-        ${JSON.stringify({ payout_request_id: payoutRequestId, reason, terminal_status: terminalStatus })}::jsonb
+        ${JSON.stringify({ payout_request_id: payoutRequestId, reason, terminal_status: terminalStatus })}::text::jsonb
       )
     `;
 
@@ -1641,7 +1641,7 @@ export async function repairOrphanedMerchantPayoutHolds(walletId: number): Promi
           ${walletId}, ${amount}, 'HOLD_RELEASE', 'HOLD',
           'WITHDRAWAL', ${payoutRequestId}, ${debitKey},
           ${'Repair: release hold for terminal payout'},
-          ${JSON.stringify({ payout_request_id: payoutRequestId, repair: true })}::jsonb
+          ${JSON.stringify({ payout_request_id: payoutRequestId, repair: true })}::text::jsonb
         )
       `;
       await sql`
@@ -1649,7 +1649,7 @@ export async function repairOrphanedMerchantPayoutHolds(walletId: number): Promi
           ${walletId}, ${amount}, 'FAILED_WITHDRAWAL_REVERSAL', 'AVAILABLE',
           'WITHDRAWAL', ${payoutRequestId}, ${creditKey},
           ${'Withdrawal returned — funds restored to your wallet'},
-          ${JSON.stringify({ payout_request_id: payoutRequestId, repair: true })}::jsonb
+          ${JSON.stringify({ payout_request_id: payoutRequestId, repair: true })}::text::jsonb
         )
       `;
       released = roundMoney(released + amount);
@@ -1682,7 +1682,7 @@ export async function repairOrphanedMerchantPayoutHolds(walletId: number): Promi
           ${walletId}, ${excess}, 'HOLD_RELEASE', 'HOLD',
           'WITHDRAWAL', ${0}, ${debitKey},
           ${'Repair: release orphaned hold balance'},
-          ${JSON.stringify({ repair: true, excess: true })}::jsonb
+          ${JSON.stringify({ repair: true, excess: true })}::text::jsonb
         )
       `;
       // Only credit AVAILABLE when ledger withdrawable is ~0 (funds never returned).
@@ -1693,7 +1693,7 @@ export async function repairOrphanedMerchantPayoutHolds(walletId: number): Promi
             ${walletId}, ${excess}, 'FAILED_WITHDRAWAL_REVERSAL', 'AVAILABLE',
             'WITHDRAWAL', ${0}, ${creditKey},
             ${'Orphaned hold released — funds restored to your wallet'},
-            ${JSON.stringify({ repair: true, excess: true })}::jsonb
+            ${JSON.stringify({ repair: true, excess: true })}::text::jsonb
           )
         `;
         released = roundMoney(released + excess);

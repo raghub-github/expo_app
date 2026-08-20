@@ -7,6 +7,7 @@ import { StoreTheme } from "@/constants/storeTheme";
 import { MerchantRatingBadge } from "@/components/home/MerchantRatingBadge";
 import { MerchantOfferRow } from "@/components/home/MerchantOfferRow";
 import { MerchantDarkPalette, useMerchantUiDark } from "@/features/merchant-detail/merchantUiTheme";
+import { formatMerchantDistanceKm } from "@/lib/merchantDistance";
 
 export type StoreInfoCardProps = {
   name: string;
@@ -49,7 +50,7 @@ export function StoreInfoCard({
 }: StoreInfoCardProps) {
   const dark = useMerchantUiDark();
   const locationText = [
-    distanceKm != null ? `${distanceKm.toFixed(1)} km` : null,
+    formatMerchantDistanceKm(distanceKm),
     areaLabel,
   ]
     .filter(Boolean)

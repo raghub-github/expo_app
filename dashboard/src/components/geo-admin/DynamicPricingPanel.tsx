@@ -271,6 +271,12 @@ export function DynamicPricingPanel(props: { level: string; refId: string; servi
         (all-day, a start–end window, specific days, or a manual override). Company-funded does not
         change the customer&apos;s price — it&apos;s recorded as a rider incentive.
       </p>
+      <p className="mt-1.5 text-[11px] text-slate-400">
+        This is the <span className="font-semibold text-slate-500">customer-facing</span> surge — the
+        customer share is added to the bill (with GST). For surges paid to the{" "}
+        <span className="font-semibold text-slate-500">rider only</span>, switch to the{" "}
+        <span className="font-semibold text-slate-500">Rider</span> tab → Rider surge rules.
+      </p>
 
       {loading ? (
         <div className="mt-4 flex items-center gap-2 text-sm text-slate-500">

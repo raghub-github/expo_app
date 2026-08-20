@@ -175,13 +175,13 @@ export async function patchMerchantOrderAcceptanceSoundSlot(
   if (existing[0]?.id != null) {
     await sql`
       UPDATE merchant_store_settings
-      SET settings_metadata = ${metaJson}::jsonb, updated_at = NOW()
+      SET settings_metadata = ${metaJson}::text::jsonb, updated_at = NOW()
       WHERE store_id = ${merchantStoreId}
     `;
   } else {
     await sql`
       INSERT INTO merchant_store_settings (store_id, settings_metadata, updated_at)
-      VALUES (${merchantStoreId}, ${metaJson}::jsonb, NOW())
+      VALUES (${merchantStoreId}, ${metaJson}::text::jsonb, NOW())
     `;
   }
 

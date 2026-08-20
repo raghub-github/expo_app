@@ -60,7 +60,7 @@ export async function recordCancellationTimeline(
       ),
       ${actorType},
       ${message},
-      ${JSON.stringify(metadata)}::jsonb,
+      ${JSON.stringify(metadata)}::text::jsonb,
       ${occurredAt.toISOString()}::timestamptz
     WHERE NOT EXISTS (
       SELECT 1

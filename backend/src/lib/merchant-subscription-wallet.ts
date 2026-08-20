@@ -60,7 +60,7 @@ export async function debitMerchantSubscriptionFee(args: {
       ${args.subscriptionId},
       ${key},
       ${args.description},
-      ${JSON.stringify(args.metadata ?? {})}::jsonb
+      ${JSON.stringify(args.metadata ?? {})}::text::jsonb
     ) AS ledger_id
   `;
 

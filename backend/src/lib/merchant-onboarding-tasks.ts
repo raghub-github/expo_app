@@ -151,7 +151,7 @@ export async function ensureOnboardingTaskStarted(
       ${taskKey},
       'INCOMPLETE',
       now() + interval '15 days',
-      ${metaJson}::jsonb
+      ${metaJson}::text::jsonb
     )
     ON CONFLICT (store_id, task_key) DO NOTHING
     RETURNING store_id, task_key, status, completed_at, expires_at,
@@ -185,7 +185,7 @@ export async function completeOnboardingTask(
       now(),
       ${completedBy},
       now() + interval '15 days',
-      ${metaJson}::jsonb
+      ${metaJson}::text::jsonb
     )
     ON CONFLICT (store_id, task_key) DO UPDATE SET
       status = 'COMPLETED',
@@ -210,7 +210,7 @@ export async function patchOnboardingTaskMetadata(
   const metaJson = JSON.stringify(patch);
   const rows = await sql`
     UPDATE merchant_onboarding_tasks
-    SET metadata = COALESCE(metadata, '{}'::jsonb) || ${metaJson}::jsonb,
+    SET metadata = COALESCE(metadata, '{}'::jsonb) || ${metaJson}::text::jsonb,
         updated_at = now()
     WHERE store_id = ${storeId} AND task_key = ${taskKey}
     RETURNING store_id, task_key, status, completed_at, expires_at,

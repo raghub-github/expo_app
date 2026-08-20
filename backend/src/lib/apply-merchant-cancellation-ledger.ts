@@ -227,7 +227,7 @@ async function debitFromBucket(
         customer_compensation: amount,
         actor_system_user_id: args.actorSystemUserId ?? null,
         ...(args.compensationMeta ?? {}),
-      })}::jsonb
+      })}::text::jsonb
     ) AS ledger_id
   `;
   const ledgerId = Number(rows[0]?.ledger_id);
@@ -331,7 +331,7 @@ async function applyCompensationCredit(
         fulfillment_status: "REJECTED",
         order_status: "CANCELLED",
         ...(args.compensationMeta ?? {}),
-      })}::jsonb
+      })}::text::jsonb
     ) AS ledger_id
   `;
   const ledgerId = Number(rows[0]?.ledger_id);
@@ -521,7 +521,7 @@ async function recordCancellationInfoLedger(
             cancelled_by_label: args.cancelledByLabel ?? null,
             cancelled_by_brand: cancelledByBrand,
             ...(args.compensationMeta ?? {}),
-          })}::jsonb
+          })}::text::jsonb
           || jsonb_build_object(
             'withdrawable_after', w.withdrawable_balance,
             'available_snapshot', w.available_balance,

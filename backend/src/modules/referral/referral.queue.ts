@@ -69,7 +69,7 @@ async function syncRelationshipRewardState(opts: {
       metadata = COALESCE(metadata, '{}'::jsonb) || ${JSON.stringify({
         reward_parties: { referrer, referred },
         reward_state: overall,
-      })}::jsonb,
+      })}::text::jsonb,
       status = CASE
         WHEN ${fully} THEN 'reward_credited'::referral_relationship_status
         WHEN status = 'reward_credited' THEN 'milestone_pending'::referral_relationship_status
@@ -146,7 +146,7 @@ export async function enqueueRewardJobs(input: EnqueueRewardJobInput): Promise<s
           ruleCode: input.rule.rule_code,
           alsoCreditReferred: Boolean(input.rule.also_credit_referred),
           merchantStoreId: input.merchantStoreId ?? null,
-        })}::jsonb
+        })}::text::jsonb
       )
       ON CONFLICT (job_key) DO NOTHING
     `.catch((err) => {

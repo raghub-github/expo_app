@@ -459,11 +459,14 @@ async function sendImpl(intent: SendIntent): Promise<SendResult> {
   if (intent.idempotencyKey) {
     const sql = getSql();
     // `sql.json(...)` crashes over the Supabase pooler (pgbouncer strips
-    // prepared-statement param descriptors). Use a JSON string + ::jsonb cast.
+    // prepared-statement param descriptors). Use a JSON string + ::text::jsonb
+    // cast — plain ::jsonb silently double-encodes under prepare: false,
+    // which made this containment check never match (confirmed live: this
+    // idempotency check has never actually deduped anything).
     const idempotencyMatch = JSON.stringify({ idempotency_key: intent.idempotencyKey });
     const rows = (await sql`
       SELECT 1 FROM public.notification_dispatch_logs
-      WHERE metadata @> ${idempotencyMatch}::jsonb
+      WHERE metadata @> ${idempotencyMatch}::text::jsonb
         AND queued_at >= now() - interval '24 hours'
       LIMIT 1
     `) as unknown as Array<unknown>;

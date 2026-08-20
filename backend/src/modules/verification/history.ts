@@ -2,8 +2,12 @@
  * verification_* DB write helpers.
  *
  * Everything goes through this file so:
- *   - jsonb columns are always sent as `${JSON.stringify(v)}::jsonb`
- *     (Supabase pooler safe — same lesson we learned in the notifications module),
+ *   - jsonb columns are always sent as `${JSON.stringify(v)}::text::jsonb`
+ *     (Supabase pooler safe — same lesson we learned in the notifications
+ *     module — AND plain `::jsonb` without the `::text` cast silently
+ *     double-encodes under `prepare: false`, storing a jsonb *string*
+ *     instead of the intended object; confirmed live and fixed throughout
+ *     this file),
  *   - the state-machine invariants stay in one place,
  *   - the archival tables (provider_payloads, files) get written consistently.
  */
@@ -130,7 +134,7 @@ export async function appendEvent(args: AppendEventArgs): Promise<number> {
       ${args.requestId}, ${args.eventKind}, ${args.fromStatus ?? null}, ${args.toStatus},
       ${args.actorType}, ${args.actorId ?? null},
       ${args.payloadRef ?? null}, ${args.webhookRef ?? null},
-      ${details}::jsonb
+      ${details}::text::jsonb
     ) RETURNING id
   `) as unknown as Array<{ id: number }>;
   return Number(rows[0]!.id);
@@ -155,7 +159,7 @@ export async function storePayload(args: {
       request_id, direction, http_status, headers, body, body_sha256
     ) VALUES (
       ${args.requestId}, ${args.direction}, ${args.httpStatus ?? null},
-      ${headers}::jsonb, ${body}::jsonb, ${args.bodySha256 ?? null}
+      ${headers}::text::jsonb, ${body}::text::jsonb, ${args.bodySha256 ?? null}
     ) RETURNING id
   `) as unknown as Array<{ id: number }>;
   return Number(rows[0]!.id);
@@ -560,7 +564,7 @@ async function projectOutcomeToDocuments(
                requires_manual_review = ${verified ? false : true},
                last_verification_id = ${r.verification_id},
                last_provider_reference = ${r.provider_reference},
-               extracted_data_summary = ${JSON.stringify(summary)}::jsonb,
+               extracted_data_summary = ${JSON.stringify(summary)}::text::jsonb,
                extracted_name = CASE
                  WHEN ${isVehicleRc || isBankAccount}::boolean
                    THEN ${holderName || null}
@@ -611,7 +615,7 @@ async function projectOutcomeToDocuments(
                            bankVerificationOnly: true,
                          }
                        : {}),
-                   })}::jsonb
+                   })}::text::jsonb
                  ELSE COALESCE(metadata, '{}'::jsonb) || ${JSON.stringify({
                    digilockerVerified: verified,
                    ...(projectedPan ? { panNumber: projectedPan } : {}),
@@ -645,7 +649,7 @@ async function projectOutcomeToDocuments(
                          bankVerificationOnly: true,
                        }
                      : {}),
-                 })}::jsonb
+                 })}::text::jsonb
                END,
                file_url = CASE
                  WHEN ${rcPlateChanged && verified}::boolean
@@ -711,14 +715,14 @@ async function projectOutcomeToDocuments(
               FALSE,
               ${r.verification_id},
               ${r.provider_reference},
-              ${JSON.stringify(summary)}::jsonb,
+              ${JSON.stringify(summary)}::text::jsonb,
               ${holderName || null},
               ${dobIso}::date,
               ${JSON.stringify({
                 digilockerVerified: true,
                 sideVerification,
                 ...(projectedAadhaar ? { aadhaarNumber: projectedAadhaar } : {}),
-              })}::jsonb
+              })}::text::jsonb
             )
           `;
         } else if (outcome.documentKind === "pan" && projectedPan) {
@@ -739,10 +743,10 @@ async function projectOutcomeToDocuments(
               FALSE,
               ${r.verification_id},
               ${r.provider_reference},
-              ${JSON.stringify(summary)}::jsonb,
+              ${JSON.stringify(summary)}::text::jsonb,
               ${holderName || null},
               ${dobIso}::date,
-              ${JSON.stringify({ panNumber: projectedPan, digilockerVerified: false })}::jsonb
+              ${JSON.stringify({ panNumber: projectedPan, digilockerVerified: false })}::text::jsonb
             )
           `;
         } else if (outcome.documentKind === "driving_licence" && projectedDocNumber) {
@@ -763,7 +767,7 @@ async function projectOutcomeToDocuments(
               FALSE,
               ${r.verification_id},
               ${r.provider_reference},
-              ${JSON.stringify(summary)}::jsonb,
+              ${JSON.stringify(summary)}::text::jsonb,
               ${holderName || null},
               ${dobIso}::date,
               ${JSON.stringify({
@@ -771,7 +775,7 @@ async function projectOutcomeToDocuments(
                 cashfreeVerifiedData: verifiedData,
                 cashfreeProvider: "cashfree",
                 identityDocument: true,
-              })}::jsonb
+              })}::text::jsonb
             )
           `;
         } else if (outcome.documentKind === "vehicle_rc" && projectedDocNumber) {
@@ -792,7 +796,7 @@ async function projectOutcomeToDocuments(
               FALSE,
               ${r.verification_id},
               ${r.provider_reference},
-              ${JSON.stringify(summary)}::jsonb,
+              ${JSON.stringify(summary)}::text::jsonb,
               ${holderName || null},
               ${dobIso}::date,
               ${JSON.stringify({
@@ -801,7 +805,7 @@ async function projectOutcomeToDocuments(
                 cashfreeVerifiedData: verifiedData,
                 cashfreeProvider: "cashfree",
                 vehicleVerificationOnly: true,
-              })}::jsonb
+              })}::text::jsonb
             )
           `;
         } else if (outcome.documentKind === "bank_account" && verified) {
@@ -822,7 +826,7 @@ async function projectOutcomeToDocuments(
               FALSE,
               ${r.verification_id},
               ${r.provider_reference},
-              ${JSON.stringify(summary)}::jsonb,
+              ${JSON.stringify(summary)}::text::jsonb,
               ${holderName || null},
               NULL,
               ${JSON.stringify({
@@ -834,7 +838,7 @@ async function projectOutcomeToDocuments(
                 cashfreeVerifiedData: verifiedData,
                 cashfreeProvider: "cashfree",
                 bankVerificationOnly: true,
-              })}::jsonb
+              })}::text::jsonb
             )
           `;
         }
@@ -981,10 +985,10 @@ async function projectOutcomeToDocuments(
                  pan_rejection_reason = ${verified ? null : outcome.statusReason},
                  pan_verification_method = ${verified ? method : null},
                  pan_holder_name = COALESCE(${registered}, pan_holder_name),
-                 pan_document_metadata = ${JSON.stringify(nextMeta)}::jsonb,
+                 pan_document_metadata = ${JSON.stringify(nextMeta)}::text::jsonb,
                  last_verification_id = ${r.verification_id},
                  last_provider_reference = ${r.provider_reference},
-                 extracted_data_summary = ${JSON.stringify(nextSummary)}::jsonb,
+                 extracted_data_summary = ${JSON.stringify(nextSummary)}::text::jsonb,
                  updated_at = NOW()
            WHERE store_id = ${r.subject_id}
         `;
@@ -1017,10 +1021,10 @@ async function projectOutcomeToDocuments(
                  gst_verified_at = ${verified ? new Date().toISOString() : null},
                  gst_rejection_reason = ${verified ? null : outcome.statusReason},
                  gst_verification_method = ${verified ? method : null},
-                 gst_document_metadata = ${JSON.stringify(nextMeta)}::jsonb,
+                 gst_document_metadata = ${JSON.stringify(nextMeta)}::text::jsonb,
                  last_verification_id = ${r.verification_id},
                  last_provider_reference = ${r.provider_reference},
-                 extracted_data_summary = ${JSON.stringify(nextSummary)}::jsonb,
+                 extracted_data_summary = ${JSON.stringify(nextSummary)}::text::jsonb,
                  updated_at = NOW()
            WHERE store_id = ${r.subject_id}
         `;
@@ -1063,7 +1067,7 @@ async function projectOutcomeToDocuments(
              SET aadhaar_is_verified = ${verified},
                  aadhaar_verified_at = ${verified ? new Date().toISOString() : null},
                  aadhaar_verification_method = ${verified ? method : null},
-                 aadhaar_document_metadata = ${JSON.stringify(nextMeta)}::jsonb,
+                 aadhaar_document_metadata = ${JSON.stringify(nextMeta)}::text::jsonb,
                  aadhaar_document_number = CASE
                    WHEN ${maskedNumber || null}::text IS NOT NULL AND ${maskedNumber || null}::text <> ''
                      THEN ${maskedNumber || null}
@@ -1076,7 +1080,7 @@ async function projectOutcomeToDocuments(
                  END,
                  last_verification_id = ${r.verification_id},
                  last_provider_reference = ${r.provider_reference},
-                 extracted_data_summary = ${JSON.stringify(nextSummary)}::jsonb,
+                 extracted_data_summary = ${JSON.stringify(nextSummary)}::text::jsonb,
                  updated_at = NOW()
            WHERE store_id = ${r.subject_id}
         `;

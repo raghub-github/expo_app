@@ -304,7 +304,7 @@ export async function activateFreeMerchantPlan(args: {
         plan_code_snapshot = ${snap.plan_code_snapshot},
         billing_cycle_snapshot = ${snap.billing_cycle_snapshot},
         plan_list_price_paise = ${snap.plan_list_price_paise},
-        plan_benefits_snapshot = ${benefitsJson}::jsonb,
+        plan_benefits_snapshot = ${benefitsJson}::text::jsonb,
         updated_at = NOW()
       WHERE id = ${existingId}
     `;
@@ -321,7 +321,7 @@ export async function activateFreeMerchantPlan(args: {
       ${store.parent_id}, ${store.id}, ${plan.id}, 'ACTIVE', 'PAID',
       ${now.toISOString()}, ${expiry.toISOString()}, true, false,
       ${snap.plan_name_snapshot}, ${snap.plan_code_snapshot}, ${snap.billing_cycle_snapshot},
-      ${snap.plan_list_price_paise}, ${benefitsJson}::jsonb
+      ${snap.plan_list_price_paise}, ${benefitsJson}::text::jsonb
     )
     RETURNING id
   `;
@@ -397,7 +397,7 @@ export async function verifyMerchantSubscriptionPayment(args: {
         plan_code_snapshot = ${snap.plan_code_snapshot},
         billing_cycle_snapshot = ${snap.billing_cycle_snapshot},
         plan_list_price_paise = ${snap.plan_list_price_paise},
-        plan_benefits_snapshot = ${benefitsJson}::jsonb,
+        plan_benefits_snapshot = ${benefitsJson}::text::jsonb,
         updated_at = NOW()
       WHERE id = ${existingId}
     `;
@@ -414,7 +414,7 @@ export async function verifyMerchantSubscriptionPayment(args: {
         ${now.toISOString()}, ${expiry.toISOString()}, true, false,
         ${now.toISOString()}, ${expiry.toISOString()},
         ${snap.plan_name_snapshot}, ${snap.plan_code_snapshot}, ${snap.billing_cycle_snapshot},
-        ${snap.plan_list_price_paise}, ${benefitsJson}::jsonb
+        ${snap.plan_list_price_paise}, ${benefitsJson}::text::jsonb
       )
       RETURNING id
     `;
@@ -530,7 +530,7 @@ export async function upgradeMerchantSubscription(args: {
       ${now.toISOString()}, ${newExpiry.toISOString()},
       ${now.toISOString()}, ${newExpiry.toISOString()},
       ${snap.plan_name_snapshot}, ${snap.plan_code_snapshot}, ${snap.billing_cycle_snapshot},
-      ${snap.plan_list_price_paise}, ${benefitsJson}::jsonb
+      ${snap.plan_list_price_paise}, ${benefitsJson}::text::jsonb
     )
     RETURNING id
   `;
@@ -718,7 +718,7 @@ export async function payMerchantSubscriptionFromWallet(args: {
         ${now.toISOString()}, ${expiry.toISOString()},
         ${now.toISOString()}, ${expiry.toISOString()},
         ${snap.plan_name_snapshot}, ${snap.plan_code_snapshot}, ${snap.billing_cycle_snapshot},
-        ${snap.plan_list_price_paise}, ${benefitsJson}::jsonb
+        ${snap.plan_list_price_paise}, ${benefitsJson}::text::jsonb
       )
       RETURNING id
     `;
@@ -742,7 +742,7 @@ export async function payMerchantSubscriptionFromWallet(args: {
           plan_code_snapshot = ${snap.plan_code_snapshot},
           billing_cycle_snapshot = ${snap.billing_cycle_snapshot},
           plan_list_price_paise = ${snap.plan_list_price_paise},
-          plan_benefits_snapshot = ${benefitsJson}::jsonb,
+          plan_benefits_snapshot = ${benefitsJson}::text::jsonb,
           updated_at = NOW()
         WHERE id = ${existingId}
       `;
@@ -759,7 +759,7 @@ export async function payMerchantSubscriptionFromWallet(args: {
           ${now.toISOString()}, ${expiry.toISOString()}, true, false,
           ${now.toISOString()}, ${expiry.toISOString()},
           ${snap.plan_name_snapshot}, ${snap.plan_code_snapshot}, ${snap.billing_cycle_snapshot},
-          ${snap.plan_list_price_paise}, ${benefitsJson}::jsonb
+          ${snap.plan_list_price_paise}, ${benefitsJson}::text::jsonb
         )
         RETURNING id
       `;
@@ -1200,7 +1200,7 @@ export async function refundMerchantSubscriptionPayment(args: {
             actor_role: args.actorRole,
             actor_subject_id: args.actorSubjectId,
             reason: args.reason ?? null,
-          })}::jsonb
+          })}::text::jsonb
         ) AS ledger_id
       `;
       refundReference = String(inserted[0]?.ledger_id ?? "");
@@ -1261,7 +1261,7 @@ export async function refundMerchantSubscriptionPayment(args: {
           refunded_at: new Date().toISOString(),
           refunded_by_role: args.actorRole,
           refunded_by_subject_id: args.actorSubjectId,
-        })}::jsonb
+        })}::text::jsonb
     WHERE id = ${args.paymentId}
   `;
 
@@ -1311,7 +1311,7 @@ export async function refundMerchantSubscriptionPayment(args: {
         ${gateway === "RAZORPAY" ? refundReference : null},
         ${gateway === "RAZORPAY" ? String(p.payment_gateway_id ?? "") : null},
         ${status}, ${args.reason ?? `Refunded by ${args.actorRole}`}, ${args.reason ?? null},
-        ${refundGatewayResponse ? JSON.stringify(refundGatewayResponse) : null}::jsonb,
+        ${refundGatewayResponse ? JSON.stringify(refundGatewayResponse) : null}::text::jsonb,
         ${now.toISOString()},
         ${args.actorSubjectId}, ${actor.system_user_id}, ${actor.email}, ${actor.name}, ${args.actorRole},
         ${now.toISOString()},
@@ -1373,7 +1373,7 @@ export async function handleMerchantSubscriptionRefundWebhook(args: {
           razorpay_refund_id: args.razorpayRefundId,
           refund_confirmed_at: new Date().toISOString(),
           via: "razorpay_webhook",
-        })}::jsonb
+        })}::text::jsonb
     WHERE id = ${found.id}
   `;
   // Ensure the subscription is revoked — usually already done by the admin
@@ -1906,7 +1906,7 @@ async function insertSubscriptionPayment(
             plan_code_snapshot = COALESCE(plan_code_snapshot, ${snap?.plan_code_snapshot ?? null}),
             billing_cycle_snapshot = COALESCE(billing_cycle_snapshot, ${snap?.billing_cycle_snapshot ?? null}),
             plan_list_price_paise = COALESCE(plan_list_price_paise, ${snap?.plan_list_price_paise ?? null}),
-            plan_benefits_snapshot = COALESCE(plan_benefits_snapshot, ${benefitsJson}::jsonb),
+            plan_benefits_snapshot = COALESCE(plan_benefits_snapshot, ${benefitsJson}::text::jsonb),
             updated_at = NOW()
           WHERE id = ${existing[0]!.id}
         `;
@@ -1930,14 +1930,14 @@ async function insertSubscriptionPayment(
           razorpay_order_id: p.razorpayOrderId,
           razorpay_payment_id: p.razorpayPaymentId,
           razorpay_signature: p.razorpaySignature,
-        })}::jsonb,
+        })}::text::jsonb,
         'PAID', ${p.now.toISOString()}, ${p.now.toISOString()}, ${p.expiry.toISOString()},
         ${p.notes ?? null},
         ${snap?.plan_name_snapshot ?? null},
         ${snap?.plan_code_snapshot ?? null},
         ${snap?.billing_cycle_snapshot ?? null},
         ${snap?.plan_list_price_paise ?? null},
-        ${benefitsJson}::jsonb
+        ${benefitsJson}::text::jsonb
       )
     `;
   } catch {
@@ -2284,7 +2284,7 @@ async function processMerchantSubscriptionRenewalsOnce(
           plan_code_snapshot = ${snap.plan_code_snapshot},
           billing_cycle_snapshot = ${snap.billing_cycle_snapshot},
           plan_list_price_paise = ${snap.plan_list_price_paise},
-          plan_benefits_snapshot = ${benefitsJson}::jsonb,
+          plan_benefits_snapshot = ${benefitsJson}::text::jsonb,
           updated_at = NOW()
         WHERE id = ${sub.id}
       `;

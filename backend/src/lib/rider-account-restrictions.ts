@@ -45,6 +45,35 @@ function normServiceType(s: string): string {
   return x;
 }
 
+const ALL_DISPATCH_SERVICES = ["food", "parcel", "person_ride"] as const;
+
+/**
+ * Whether a wallet penalty should force the rider fully OFF duty.
+ *
+ * This mirrors the Super-Admin-configured thresholds by keying off the
+ * *threshold-based blocks* that `syncNegativeWalletBlocks` writes
+ * (`ride_wallet_config` → serviceNegativeThreshold / globalBlockThreshold),
+ * NOT off "balance is negative". A penalty that leaves the balance negative but
+ * BELOW the configured block threshold produces no block, so it must NOT stop
+ * duty or flip the toggle off — the rider keeps working and pays it down. Duty
+ * is stopped only when the penalty has blocked EVERY dispatch service (all three
+ * per-service blocks) or triggered the global-emergency block. A partial block
+ * (e.g. only food) leaves the rider ON for the remaining services — that
+ * trimming is handled by the eligible-services computation, not here.
+ */
+export function penaltyFullyStopsDuty(input: {
+  blockedStatus: boolean;
+  hasGlobalEmergencyBlock: boolean;
+  penaltyBlockedServiceTypes: Iterable<string>;
+}): boolean {
+  if (input.blockedStatus) return false; // account-level block owns this case
+  if (input.hasGlobalEmergencyBlock) return true;
+  const blocked = new Set(
+    Array.from(input.penaltyBlockedServiceTypes, (s) => normServiceType(String(s)))
+  );
+  return ALL_DISPATCH_SERVICES.every((s) => blocked.has(s));
+}
+
 export function normalizeBlockedServiceList(
   services: string[] | null | undefined
 ): Array<"food" | "parcel" | "person_ride"> {
@@ -328,12 +357,17 @@ export async function getRiderAccountRestrictions(
   // Positive wallet: penalties absorb from earnings — no pay banner / duty stop for penalty.
   const payablePenaltyDue = totalBalance < 0 ? penaltyDue : 0;
 
-  const penaltyDutyStopped =
-    !blockedStatus &&
-    !accountRestricted &&
-    totalBalance < 0 &&
-    split.penaltyNegative > 0 &&
-    (payablePenaltyDue > 0 || hasServicePenaltyBlocks);
+  // Duty is stopped by a penalty ONLY when it crossed the Super-Admin threshold and
+  // fully blocked dispatch (all services / global emergency) — never merely because
+  // the balance dipped negative below the threshold. A sub-threshold penalty keeps the
+  // rider ON (and just shows a "pay it down" banner via penaltyDue). See
+  // penaltyFullyStopsDuty. This is what stops the toggle flicking OFF on a small penalty
+  // or when an order-time debit briefly makes the balance negative.
+  const penaltyDutyStopped = penaltyFullyStopsDuty({
+    blockedStatus,
+    hasGlobalEmergencyBlock,
+    penaltyBlockedServiceTypes: servicePenaltyBlocks.map((b) => b.serviceType),
+  });
 
   return {
     accountRestricted,

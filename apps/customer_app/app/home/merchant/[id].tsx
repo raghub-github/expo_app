@@ -108,6 +108,7 @@ import {
   buildCategoryChips,
   findFlatIndexForScrollTarget,
 } from "@/features/merchant-detail/lib/buildFlashListData";
+import { perfMark, perfMeasure } from "@/lib/perfTrace";
 import {
   attachListRowKeys,
   buildMenuSections,
@@ -244,6 +245,10 @@ export default function MerchantDetailScreen() {
   );
   const scrollListRef = useRef<MerchantScrollListHandle>(null);
   const menuScrollTimersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
+  // Single pending "goes well with" pairing rebuild. Held in a ref so rapid Adds
+  // COALESCE into one rebuild (each Add previously stacked its own 1.2s timer → N
+  // full-list reconciles) and so it can be cancelled on unmount / route change.
+  const pairingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [filter, setFilter] = useState<StoreFilterId>("all");
   const [menuRefreshing, setMenuRefreshing] = useState(false);
   const [advancedFilters, setAdvancedFilters] = useState<StoreMenuFilterState>(DEFAULT_STORE_MENU_FILTERS);
@@ -342,6 +347,14 @@ export default function MerchantDetailScreen() {
     }
     menuScrollTimersRef.current = [];
     scrollListRef.current?.cancelPendingScroll();
+  }, []);
+
+  // Cancel a pending pairing rebuild if the screen unmounts before it fires,
+  // so setPairingAnchorKey never runs on an unmounted component.
+  useEffect(() => {
+    return () => {
+      if (pairingTimerRef.current) clearTimeout(pairingTimerRef.current);
+    };
   }, []);
 
   const onUserTakeOverMenuScroll = useCallback(() => {
@@ -1243,9 +1256,16 @@ export default function MerchantDetailScreen() {
         (item.menuItemId != null ? itemOfferById.get(String(item.menuItemId)) : undefined) ??
         null;
       // Pairing strip rebuilds the full-mount menu — never on the ADD paint path.
-      // ~1.2s idle delay so stepper + Continue stay instant.
-      setTimeout(() => {
-        setPairingAnchorKey(pairingKey);
+      // ~1.2s idle delay so stepper + Continue stay instant. Coalesce rapid Adds into
+      // ONE rebuild (clear any pending timer) and defer to after interactions so the
+      // rebuild never lands mid-scroll. [PERF] marks bracket the deferred rebuild.
+      if (pairingTimerRef.current) clearTimeout(pairingTimerRef.current);
+      pairingTimerRef.current = setTimeout(() => {
+        pairingTimerRef.current = null;
+        InteractionManager.runAfterInteractions(() => {
+          perfMark("merchant:pairing:rebuild");
+          setPairingAnchorKey(pairingKey);
+        });
       }, 1200);
       setTimeout(() => {
         useCartStore.getState().syncDiscountEligibility({
@@ -1697,8 +1717,12 @@ export default function MerchantDetailScreen() {
     merchant != null && !isStoreClosedForStatus && rushActive;
 
   const { data: flashListData, indexMap: flashIndexMap } = useMemo(
-    () =>
-      buildFlashListData({
+    () => {
+      // [PERF] The pairing rebuild (and any other flashListData recompute) runs here.
+      // Pairs with "merchant:pairing:rebuild" so you can read the deferred-rebuild cost
+      // as `merchant:pairing:rebuild -> merchant:flashListData:built` in the log.
+      perfMark("merchant:flashListData:build");
+      const built = buildFlashListData({
         sections,
         pastOrderItems: pastOrdersForList,
         comboPairs: comboPairsForList,
@@ -1711,7 +1735,11 @@ export default function MerchantDetailScreen() {
         pairingCompanionItems,
         hideInfoCard: isDiscoveryLayout,
         masonry: isDiscoveryLayout,
-      }),
+      });
+      perfMark("merchant:flashListData:built");
+      perfMeasure("merchant:flashListData:build", "merchant:flashListData:built");
+      return built;
+    },
     [
       sections,
       pastOrdersForList,

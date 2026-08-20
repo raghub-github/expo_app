@@ -110,7 +110,7 @@ async function creditWalletForSubscriptionDuesPayment(args: {
           razorpayOrderId: args.razorpayOrderId,
           razorpayPaymentId: args.razorpayPaymentId,
           source: "rider_app",
-        })}::jsonb,
+        })}::text::jsonb,
         'rider'
       )
     `;
@@ -138,7 +138,7 @@ async function creditWalletForSubscriptionDuesPayment(args: {
           razorpayOrderId: args.razorpayOrderId,
           razorpayPaymentId: args.razorpayPaymentId,
           source: "rider_app",
-        })}::jsonb
+        })}::text::jsonb
       )
     `;
   }

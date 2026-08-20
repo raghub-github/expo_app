@@ -290,13 +290,13 @@ export async function upsertRiderVehicleFromRcVerifiedData(args: {
             fitness_expiry = ${fitness}::date,
             puc_expiry = ${puc}::date,
             rc_owner_name = ${ownerName},
-            cashfree_rc_payload = ${cashfreePayloadJson}::jsonb,
+            cashfree_rc_payload = ${cashfreePayloadJson}::text::jsonb,
             rc_document_url = ${nextRcDocumentUrl},
             verified = TRUE,
             verified_at = NOW(),
             vehicle_active_status = 'active',
             is_active = TRUE,
-            limitation_flags = ${limitationFlagsJson}::jsonb,
+            limitation_flags = ${limitationFlagsJson}::text::jsonb,
             updated_at = NOW()
           WHERE id = ${targetId}
             AND rider_id = ${riderId}
@@ -324,13 +324,13 @@ export async function upsertRiderVehicleFromRcVerifiedData(args: {
             fitness_expiry = COALESCE(${fitness}::date, fitness_expiry),
             puc_expiry = COALESCE(${puc}::date, puc_expiry),
             rc_owner_name = COALESCE(${ownerName}, rc_owner_name),
-            cashfree_rc_payload = ${cashfreePayloadJson}::jsonb,
+            cashfree_rc_payload = ${cashfreePayloadJson}::text::jsonb,
             rc_document_url = COALESCE(NULLIF(${nextRcDocumentUrl}, ''), rc_document_url),
             verified = TRUE,
             verified_at = COALESCE(verified_at, NOW()),
             vehicle_active_status = 'active',
             is_active = TRUE,
-            limitation_flags = COALESCE(limitation_flags, '{}'::jsonb) || ${limitationFlagsJson}::jsonb,
+            limitation_flags = COALESCE(limitation_flags, '{}'::jsonb) || ${limitationFlagsJson}::text::jsonb,
             updated_at = NOW()
           WHERE id = ${targetId}
             AND rider_id = ${riderId}
@@ -393,11 +393,11 @@ export async function upsertRiderVehicleFromRcVerifiedData(args: {
         ${fitness}::date,
         ${puc}::date,
         ${ownerName},
-        ${cashfreePayloadJson}::jsonb,
+        ${cashfreePayloadJson}::text::jsonb,
         ${rcDocumentUrl},
         TRUE,
         NOW(),
-        ${limitationFlagsJson}::jsonb,
+        ${limitationFlagsJson}::text::jsonb,
         'active',
         TRUE,
         NOW(),

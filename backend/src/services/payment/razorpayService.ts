@@ -205,6 +205,37 @@ export async function getPaymentDetails(paymentId: string) {
   return await razorpay.payments.fetch(paymentId);
 }
 
+export type RazorpayOrderPayment = {
+  id: string;
+  status: string; // created | authorized | captured | refunded | failed
+  amount: number; // paise
+  order_id?: string;
+};
+
+/**
+ * Fetch all payment attempts Razorpay recorded against an order. Used by the
+ * rider-wallet reconciler to learn the *authoritative* outcome of an order when
+ * the client never confirmed (app died / lost network) and no webhook arrived —
+ * so a captured-but-unverified payment can still be settled, and a genuinely
+ * abandoned one can be marked failed.
+ */
+export async function fetchRazorpayOrderPayments(
+  orderId: string
+): Promise<RazorpayOrderPayment[]> {
+  const razorpay = getRazorpayInstance();
+  // The SDK exposes orders.fetchPayments(orderId) → { items: [...] }.
+  const res = (await razorpay.orders.fetchPayments(orderId)) as unknown as {
+    items?: Array<{ id?: unknown; status?: unknown; amount?: unknown; order_id?: unknown }>;
+  };
+  const items = Array.isArray(res?.items) ? res.items : [];
+  return items.map((p) => ({
+    id: String(p.id ?? ""),
+    status: String(p.status ?? ""),
+    amount: Number(p.amount ?? 0),
+    order_id: p.order_id != null ? String(p.order_id) : undefined,
+  }));
+}
+
 export interface RefundParams {
   paymentId: string;
   /** Amount in paise. Omit for a full refund. */

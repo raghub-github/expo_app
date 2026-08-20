@@ -5,6 +5,7 @@ import {
   verifyRiderPenaltyPayment,
   recordRiderWalletPaymentAttempt,
   getRiderWalletPaymentHistory,
+  reconcileRiderWalletPayments,
 } from "../../lib/rider-penalty-payment.service.js";
 
 function parseRiderIdFromAuth(sub: string): number | null {
@@ -92,13 +93,33 @@ export function registerRiderPenaltyPaymentRoutes(app: FastifyInstance) {
     return reply.send({ success: true });
   });
 
-  // Rider's own wallet-payment history.
+  // Rider's own wallet-payment history. Reconcile any stuck orders first so a
+  // captured-but-unconfirmed payment self-heals before the rider looks at it.
   app.get("/penalty/history", async (req, reply) => {
     const riderId = parseRiderIdFromAuth(req.auth!.sub);
     if (riderId == null) {
       return reply.code(403).send({ success: false, error: "rider_not_found" });
     }
+    try {
+      await reconcileRiderWalletPayments(riderId);
+    } catch {
+      // best-effort — history must render even if reconciliation is unavailable
+    }
     const payments = await getRiderWalletPaymentHistory(riderId);
     return reply.send({ success: true, payments });
+  });
+
+  // Explicit reconcile — the app can call this on foreground/return-from-payment to
+  // confirm any pending/delayed Razorpay payment as success or failed.
+  app.post("/penalty/reconcile", async (req, reply) => {
+    const riderId = parseRiderIdFromAuth(req.auth!.sub);
+    if (riderId == null) {
+      return reply.code(403).send({ success: false, error: "rider_not_found" });
+    }
+    const outcomes = await reconcileRiderWalletPayments(riderId);
+    const settled = outcomes.filter(
+      (o) => o.result === "settled" || o.result === "already_settled"
+    ).length;
+    return reply.send({ success: true, reconciled: outcomes.length, settled, outcomes });
   });
 }

@@ -227,9 +227,9 @@ async function insertAuditLog(
       ip_address, user_agent, audit_metadata
     ) VALUES (
       ${entityType}, ${entityId}, ${action}, ${actionField},
-      ${oldJson}::jsonb, ${newJson}::jsonb,
+      ${oldJson}::text::jsonb, ${newJson}::text::jsonb,
       ${ctx.performedBy}, ${ctx.performedById}, ${ctx.performedByName}, ${ctx.performedByEmail},
-      ${ctx.ipAddress}, ${ctx.userAgent}, ${metaJson}::jsonb
+      ${ctx.ipAddress}, ${ctx.userAgent}, ${metaJson}::text::jsonb
     )
   `;
 }
@@ -2397,12 +2397,12 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
         if (!existingRow) {
           await sql`
             INSERT INTO merchant_store_settings (store_id, settings_metadata)
-            VALUES (${storeId}, ${metaJson}::jsonb)
+            VALUES (${storeId}, ${metaJson}::text::jsonb)
           `;
         } else {
           await sql`
             UPDATE merchant_store_settings
-            SET settings_metadata = ${metaJson}::jsonb,
+            SET settings_metadata = ${metaJson}::text::jsonb,
                 updated_at = NOW()
             WHERE id = ${existingRow.id}
           `;
@@ -7787,7 +7787,7 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
             FALSE,
             ${groupId},
             ${tagsArrayLiteral}::text[],
-            ${metadataJson}::jsonb,
+            ${metadataJson}::text::jsonb,
             ${buyerNpName}
           )
           RETURNING id,

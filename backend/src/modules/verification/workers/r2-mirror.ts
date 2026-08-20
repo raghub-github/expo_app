@@ -89,7 +89,7 @@ export async function runR2MirrorTick(
       // Emit an artifact_mirror event for the request's timeline.
       await sql`
         INSERT INTO public.verification_events (request_id, event_kind, to_status, actor_type, details)
-        SELECT ${row.request_id}, 'artifact_mirror', status, 'system', ${JSON.stringify({ fileId: row.id, r2Key })}::jsonb
+        SELECT ${row.request_id}, 'artifact_mirror', status, 'system', ${JSON.stringify({ fileId: row.id, r2Key })}::text::jsonb
         FROM public.verification_requests WHERE id = ${row.request_id}
       `;
       ok++;

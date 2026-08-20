@@ -202,7 +202,7 @@ async function recordAgentHistory(opts: {
       ${opts.sentByEmail ?? null},
       ${opts.sentByName ?? null},
       ${opts.sentByRole ?? "AGENT"},
-      ${metadata}::jsonb
+      ${metadata}::text::jsonb
     )
     RETURNING id
   `) as unknown as Array<{ id: number }>;
@@ -270,7 +270,7 @@ export const orderCxNotificationAdminRoutes: FastifyPluginAsync = async (app) =>
              error_code, error_message, retry_attempts
       FROM public.notification_dispatch_logs
       WHERE recipient_user_id = ${ctx.customerUserId}
-        AND metadata @> ${JSON.stringify({ order_id: ctx.orderIdText, admin_cx: true })}::jsonb
+        AND metadata @> ${JSON.stringify({ order_id: ctx.orderIdText, admin_cx: true })}::text::jsonb
       ORDER BY queued_at DESC
       LIMIT 50
     `) as unknown as unknown[];

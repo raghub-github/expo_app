@@ -1361,7 +1361,7 @@ export async function merchantMenuRoutes(app: FastifyInstance) {
           };
           await sql`
             UPDATE merchant_menu_item_review_requests
-            SET add_payload = ${JSON.stringify(nextPayload)}::jsonb, updated_at = NOW()
+            SET add_payload = ${JSON.stringify(nextPayload)}::text::jsonb, updated_at = NOW()
             WHERE id = ${reviewId}
           `;
           return reply.code(201).send({ image_url: imageUrl, r2_key: uploadedKey, review_request_id: reviewId });

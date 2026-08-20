@@ -191,7 +191,7 @@ export async function repairCancellationLedgerWithdrawableMetadata(
 
     await sql`
       UPDATE merchant_wallet_ledger
-      SET metadata = ${JSON.stringify(nextMeta)}::jsonb
+      SET metadata = ${JSON.stringify(nextMeta)}::text::jsonb
       WHERE id = ${row.id}
     `;
     repaired += 1;
@@ -304,7 +304,7 @@ export async function repairErroneousZeroCompensationCancellationDebits(
             trigger_source: "repair_erroneous_cancel_debit",
             reversed_ledger_id: row.id,
             reversed_amount: amount,
-          })}::jsonb
+          })}::text::jsonb
         ) AS ledger_id
       `;
       const ledgerId = Number(creditRows[0]?.ledger_id);

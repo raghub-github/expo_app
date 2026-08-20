@@ -15,6 +15,7 @@ import {
   isCustomerVisibleMenuApprovalStatus,
 } from "../../lib/customer-menu-item-visibility.js";
 import { getEnv } from "../../config/env.js";
+import { resolveVegEligibleStoreIds } from "../../lib/veg-store-resolver.js";
 import {
   canonicalStoreToCustomerRouteArgs,
   getRoute,
@@ -551,12 +552,29 @@ export async function listStoresNearby(params: {
   const radius_km = Math.min(MAX_RADIUS_KM, Math.max(1, params.radius_km ?? MAX_RADIUS_KM));
   const veg_mode = Boolean(params.veg_mode);
 
+  /**
+   * Veg filtering is applied once, at the app layer, via `resolveVegEligibleStoreIds`
+   * (declared pure-veg OR all customer-visible items are veg). So we always fetch the
+   * full nearby set from the RPC/fallback (veg_mode:false) and narrow it below — this
+   * keeps a single source of truth and lets genuinely all-veg stores surface even when
+   * the merchant never toggled `is_pure_veg`.
+   */
+  const applyVegFilter = async (list: NearbyStoreRow[]): Promise<NearbyStoreRow[]> => {
+    if (!veg_mode) return list;
+    const ids = list
+      .map((r) => Number(r.id))
+      .filter((id) => Number.isFinite(id) && id > 0);
+    if (ids.length === 0) return [];
+    const eligible = await resolveVegEligibleStoreIds(getSql(), ids);
+    return list.filter((r) => eligible.has(Number(r.id)));
+  };
+
   const { data, error } = await supabase.rpc("get_nearby_merchant_stores", {
     user_lat: params.lat,
     user_lng: params.lng,
     radius_km,
     max_limit: limit,
-    veg_mode,
+    veg_mode: false,
   });
 
   if (error) {
@@ -566,7 +584,7 @@ export async function listStoresNearby(params: {
       error.code === "42703" || message.includes("logo_url") || message.includes("column ms.logo_url");
     if (missingFunction || removedLogoColumn) {
       // Fallback path when DB RPC is missing/outdated (e.g., ms.logo_url removed).
-      let storesQuery = supabase
+      const storesQuery = supabase
         .from("merchant_stores")
         .select(
           "id, store_id, store_name, store_display_name, store_description, full_address, postal_code, banner_url, gallery_images, cuisine_types, city, latitude, longitude, operational_status, avg_preparation_time_minutes, is_active, is_available, is_accepting_orders, status, parent_id, is_pure_veg, has_customer_visible_menu"
@@ -575,7 +593,8 @@ export async function listStoresNearby(params: {
         .eq("has_customer_visible_menu", true)
         .not("latitude", "is", null)
         .not("longitude", "is", null);
-      if (veg_mode) storesQuery = storesQuery.eq("is_pure_veg", true);
+      // Veg filtering is applied uniformly below via applyVegFilter (effective-veg
+      // derivation), so the fallback query no longer pre-filters on is_pure_veg.
       const { data: stores, error: storesError } = await storesQuery;
       if (storesError) throw storesError;
 
@@ -597,34 +616,12 @@ export async function listStoresNearby(params: {
         .sort((a, b) => a.distance_km - b.distance_km)
         .slice(0, limit);
 
-      return { items };
+      return { items: await applyVegFilter(items) };
     }
     throw error;
   }
-  let items = (data ?? []) as NearbyStoreRow[];
-  if (veg_mode) {
-    /**
-     * Enforce veg toggle via merchant_stores.is_pure_veg so UI behavior is stable
-     * even if nearby RPC implementation changes or returns mixed rows.
-     */
-    const internalIds = items
-      .map((r) => Number(r.id))
-      .filter((id) => Number.isFinite(id) && id > 0);
-    if (internalIds.length === 0) return { items: [] };
-    const { data: vegRows, error: vegErr } = await supabase
-      .from("merchant_stores")
-      .select("id, is_pure_veg")
-      .in("id", internalIds)
-      .eq("is_pure_veg", true);
-    if (vegErr) throw vegErr;
-    const vegIds = new Set(
-      ((vegRows ?? []) as Array<{ id: number; is_pure_veg?: boolean | null }>)
-        .filter((r) => r.is_pure_veg === true)
-        .map((r) => Number(r.id))
-    );
-    items = items.filter((r) => vegIds.has(Number(r.id)));
-  }
-  return { items };
+  const items = (data ?? []) as NearbyStoreRow[];
+  return { items: await applyVegFilter(items) };
 }
 
 /**

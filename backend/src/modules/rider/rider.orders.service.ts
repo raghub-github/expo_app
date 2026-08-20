@@ -115,7 +115,10 @@ import { loadFoodPickupVerificationSettings } from "../../lib/food-pickup-verifi
 import { resolveRiderCustomerContactFields } from "../../lib/order-alternate-contact.js";
 
 export const RIDER_ACCEPT_WINDOW_SEC = 60;
-export { RIDER_DISPATCH_LOCATION_MAX_AGE_MINUTES } from "../../lib/order-assignment-engine.js";
+export {
+  riderDispatchLocationMaxAgeSeconds,
+  riderDispatchLocationMaxAgeMinutes,
+} from "../../lib/order-assignment-engine.js";
 
 /** Person ride pickup after OTP — passenger at pickup (not food `reached_store`). */
 export const PERSON_RIDE_AT_USER_STATUS = "reached_user" as const;

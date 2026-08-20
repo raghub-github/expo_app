@@ -72,7 +72,7 @@ export async function recordAcceptanceTimeline(
       ),
       ${actorType},
       ${message},
-      ${JSON.stringify(metadata)}::jsonb,
+      ${JSON.stringify(metadata)}::text::jsonb,
       NOW(),
       ${etaAt}::timestamptz
     WHERE NOT EXISTS (

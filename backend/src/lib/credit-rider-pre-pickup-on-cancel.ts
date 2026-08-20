@@ -129,7 +129,7 @@ export async function maybeCreditRiderPrePickupOnCancel(
           cancelledByType: input.cancelledByType,
           attribute: input.attribute ?? null,
           funding: "company",
-        })}::jsonb,
+        })}::text::jsonb,
         'system'
       )
     `;

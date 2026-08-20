@@ -59,7 +59,7 @@ export async function appendOrderFoodStatusTimeline(
       ${input.actorId ?? null},
       ${input.actorName ?? null},
       ${message},
-      ${meta}::jsonb,
+      ${meta}::text::jsonb,
       ${occurredAt}::timestamptz
     WHERE NOT EXISTS (
       SELECT 1 FROM order_timelines ot

@@ -164,7 +164,7 @@ export async function submitAddReviewRequest(
       ${opts.submitted_by}, ${opts.submitted_by_role ?? "merchant"},
       ${source}::merchant_menu_item_review_source,
       ${opts.client_ip ?? null}, ${opts.device_info ?? null},
-      ${toJsonb(addPayload)}::jsonb, NOW()
+      ${toJsonb(addPayload)}::text::jsonb, NOW()
     )
     RETURNING id
   `;
@@ -178,7 +178,7 @@ export async function submitAddReviewRequest(
       ${opts.submitted_by}, ${opts.submitted_by_role ?? "merchant"},
       ${source}::merchant_menu_item_review_source,
       ${opts.client_ip ?? null}, ${opts.device_info ?? null},
-      ${toJsonb({ request_type: "ADD", reason: opts.reason ?? null })}::jsonb
+      ${toJsonb({ request_type: "ADD", reason: opts.reason ?? null })}::text::jsonb
     )
   `;
 
@@ -194,7 +194,7 @@ export async function updatePendingAddPayload(
   const sql = getSql();
   const result = await sql`
     UPDATE merchant_menu_item_review_requests
-    SET add_payload = ${toJsonb(addPayload)}::jsonb,
+    SET add_payload = ${toJsonb(addPayload)}::text::jsonb,
         updated_at = NOW(),
         submitted_by = ${opts.submitted_by},
         submitted_by_role = ${opts.submitted_by_role ?? "merchant"}
@@ -255,7 +255,7 @@ export async function submitEditReviewRequest(
           } else {
             await trx`
               UPDATE merchant_menu_item_review_changes
-              SET new_value = ${toJsonb(d.new_value)}::jsonb
+              SET new_value = ${toJsonb(d.new_value)}::text::jsonb
               WHERE id = ${ex.id}
             `;
           }
@@ -265,8 +265,8 @@ export async function submitEditReviewRequest(
               review_request_id, field_name, old_value, new_value
             ) VALUES (
               ${reviewRequestId}, ${d.field_name},
-              ${toJsonb(d.old_value)}::jsonb,
-              ${toJsonb(d.new_value)}::jsonb
+              ${toJsonb(d.old_value)}::text::jsonb,
+              ${toJsonb(d.new_value)}::text::jsonb
             )
           `;
         }
@@ -288,7 +288,7 @@ export async function submitEditReviewRequest(
           ${opts.submitted_by}, ${opts.submitted_by_role ?? "merchant"},
           ${source}::merchant_menu_item_review_source,
           ${opts.client_ip ?? null}, ${opts.device_info ?? null},
-          ${toJsonb({ request_type: "EDIT", merged: true, fields: diffs.map((x) => x.field_name), reason: opts.reason ?? null })}::jsonb
+          ${toJsonb({ request_type: "EDIT", merged: true, fields: diffs.map((x) => x.field_name), reason: opts.reason ?? null })}::text::jsonb
         )
       `;
     });
@@ -320,8 +320,8 @@ export async function submitEditReviewRequest(
           review_request_id, field_name, old_value, new_value
         ) VALUES (
           ${id}, ${d.field_name},
-          ${toJsonb(d.old_value)}::jsonb,
-          ${toJsonb(d.new_value)}::jsonb
+          ${toJsonb(d.old_value)}::text::jsonb,
+          ${toJsonb(d.new_value)}::text::jsonb
         )
       `;
     }
@@ -334,7 +334,7 @@ export async function submitEditReviewRequest(
         ${opts.submitted_by}, ${opts.submitted_by_role ?? "merchant"},
         ${source}::merchant_menu_item_review_source,
         ${opts.client_ip ?? null}, ${opts.device_info ?? null},
-        ${toJsonb({ request_type: "EDIT", fields: diffs.map((x) => x.field_name), reason: opts.reason ?? null })}::jsonb
+        ${toJsonb({ request_type: "EDIT", fields: diffs.map((x) => x.field_name), reason: opts.reason ?? null })}::text::jsonb
       )
     `;
     return id;
@@ -392,7 +392,7 @@ export async function submitDeleteReviewRequest(
       ${opts.submitted_by}, ${opts.submitted_by_role ?? "merchant"},
       ${source}::merchant_menu_item_review_source,
       ${opts.client_ip ?? null}, ${opts.device_info ?? null},
-      ${toJsonb({ request_type: "DELETE", reason: opts.reason ?? null })}::jsonb
+      ${toJsonb({ request_type: "DELETE", reason: opts.reason ?? null })}::text::jsonb
     )
   `;
 
@@ -769,7 +769,7 @@ export async function approveReviewRequest(
           ${opts.reviewed_by}, ${opts.reviewed_by_role ?? "agent"},
           ${(r.source ?? "OTHER")}::merchant_menu_item_review_source,
           ${opts.client_ip ?? null}, ${opts.device_info ?? null},
-          ${toJsonb({ menu_item_id: menuItemId, request_type: r.request_type })}::jsonb
+          ${toJsonb({ menu_item_id: menuItemId, request_type: r.request_type })}::text::jsonb
         )
       `;
 
@@ -848,8 +848,8 @@ export async function rejectReviewRequest(
           ${(r.source ?? "OTHER")}::merchant_menu_item_review_source,
           ${r.client_ip ?? opts.client_ip ?? null},
           ${r.device_info ?? opts.device_info ?? null},
-          ${r.add_payload != null ? toJsonb(r.add_payload) : null}::jsonb,
-          ${toJsonb(changes)}::jsonb
+          ${r.add_payload != null ? toJsonb(r.add_payload) : null}::text::jsonb,
+          ${toJsonb(changes)}::text::jsonb
         )
       `;
 
@@ -861,7 +861,7 @@ export async function rejectReviewRequest(
           ${opts.reviewed_by}, ${opts.reviewed_by_role ?? "agent"},
           ${(r.source ?? "OTHER")}::merchant_menu_item_review_source,
           ${opts.client_ip ?? null}, ${opts.device_info ?? null},
-          ${toJsonb({ rejection_reason: opts.rejection_reason ?? null })}::jsonb
+          ${toJsonb({ rejection_reason: opts.rejection_reason ?? null })}::text::jsonb
         )
       `;
 

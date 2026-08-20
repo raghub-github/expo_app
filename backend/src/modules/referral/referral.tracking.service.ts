@@ -342,12 +342,12 @@ export async function applyReferral(input: ApplyReferralInput): Promise<ApplyRef
       ${status === "fraud_blocked" ? "blocked" : "pending"},
       ${input.deviceFingerprint ?? null},
       ${hashPhone(input.referredPhone)},
-      ${JSON.stringify(fraud.flags)}::jsonb,
+      ${JSON.stringify(fraud.flags)}::text::jsonb,
       ${JSON.stringify({
         ip_hash: hashIp(input.ip),
         user_agent: input.userAgent ?? null,
         campaign_code: campaignId,
-      })}::jsonb,
+      })}::text::jsonb,
       ${campaignId},
       ${expiresAt ? expiresAt.toISOString() : null}
     )

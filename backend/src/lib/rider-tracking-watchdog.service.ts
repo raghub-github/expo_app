@@ -146,7 +146,7 @@ async function persistState(sessionId: number, state: WatchGeoState): Promise<vo
   try {
     const sql = getSql();
     await sql.unsafe(
-      `UPDATE tracking_sessions SET geo_state = $1::jsonb, updated_at = now() WHERE id = $2`,
+      `UPDATE tracking_sessions SET geo_state = $1::text::jsonb, updated_at = now() WHERE id = $2`,
       [JSON.stringify(state), sessionId]
     );
   } catch {
