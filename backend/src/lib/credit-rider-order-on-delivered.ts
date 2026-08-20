@@ -361,7 +361,12 @@ export async function creditRiderOrderEarningOnDelivered(
   orderIdText = orderIdText || row.order_id?.trim() || String(coreId);
   displayId = displayId || row.formatted_order_id?.trim() || orderIdText;
 
-  if (deliveryFee == null) {
+  // Callers pass `deliveryFee: 0` as a "resolve it" sentinel (they don't hold the value),
+  // so we must resolve on <= 0, not only on null. The previous `== null` check let a 0
+  // through unresolved: basePool became 0 and the rider was credited ONLY the company-
+  // funded pre-pickup allowance (e.g. ₹11) instead of the frozen delivery earning (e.g.
+  // ₹59) — the "₹59 at completion but ₹26 in ledger" bug.
+  if (deliveryFee == null || deliveryFee <= 0) {
     const orderType = String(row.order_type ?? input.orderType);
     const payoutService: OrderRiderPayoutService =
       orderType === "person_ride" ? "ride" : orderType === "parcel" ? "parcel" : "food";
@@ -369,10 +374,16 @@ export async function creditRiderOrderEarningOnDelivered(
     if (orderType === "person_ride" || orderType === "food") {
       const acceptSnap = readRideRiderPayoutSnapshot(row.billing_snapshot);
       if (acceptSnap != null && acceptSnap.totalEarning > 0) {
-        const snapTip = Number(row.tip_amount);
-        const tipRounded =
-          Number.isFinite(snapTip) && snapTip > 0 ? round2(snapTip) : 0;
-        deliveryFee = round2(Math.max(0, acceptSnap.totalEarning - tipRounded));
+        // The DELIVERY earning excludes the tip (credited separately below). Sum the
+        // explicit components so we never double-subtract a tip that may or may not be
+        // inside `totalEarning` across snapshot versions — the old `totalEarning - tip`
+        // underpaid by the tip whenever totalEarning already excluded it.
+        deliveryFee = round2(
+          Math.max(
+            0,
+            acceptSnap.baseEarning + acceptSnap.waitingEarning + acceptSnap.surgeEarning
+          )
+        );
       }
     }
 
