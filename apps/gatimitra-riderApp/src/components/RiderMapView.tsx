@@ -122,8 +122,17 @@ export const RiderMapView = forwardRef<RiderMapViewHandle, RiderMapViewProps>(fu
 
   useImperativeHandle(ref, () => ({ recenter }), [recenter]);
 
+  // Center on the rider ONCE — when the first fix + map are ready. After that the
+  // camera is fully user-controlled: GPS ticks, hot-zone refreshes, order events and
+  // realtime updates must NOT recenter or re-zoom the map. The previous version ran
+  // this on every riderLocation change, which (together with the controlled Camera
+  // props below) fought the user's manual zoom/pan — the root cause of the zoom-reset
+  // bug. The Locate Me FAB still recenters on demand via the exposed recenter() ref.
+  const didInitialCenterRef = useRef(false);
   useEffect(() => {
+    if (didInitialCenterRef.current) return;
     if (!Mapbox || !riderLocation || !cameraRef.current || !mapReady) return;
+    didInitialCenterRef.current = true;
     recenter();
   }, [riderLocation?.lat, riderLocation?.lng, mapReady, Mapbox, recenter]);
 
@@ -190,14 +199,22 @@ export const RiderMapView = forwardRef<RiderMapViewHandle, RiderMapViewProps>(fu
       >
         <Mapbox.Camera
           ref={cameraRef}
-          zoomLevel={HOME_MAP_ZOOM}
-          // Prefer live fix, else last known camera — never a hardcoded city.
+          // INITIAL-ONLY positioning via defaultSettings (applied once on mount).
+          // Controlled `zoomLevel` / `centerCoordinate` props re-apply on every
+          // re-render — and cameraSeed changes on every GPS tick — so they
+          // continuously overrode the user's manual zoom/pan (the zoom-reset bug).
+          // defaultSettings positions the map once when a fix/last-known center is
+          // available at mount; if the first fix arrives later, the one-time effect
+          // above calls recenter(). After that the camera stays user-controlled.
           {...(cameraSeed
             ? {
-                centerCoordinate: [
-                  formatCoordinate(cameraSeed.lng),
-                  formatCoordinate(cameraSeed.lat),
-                ] as [number, number],
+                defaultSettings: {
+                  centerCoordinate: [
+                    formatCoordinate(cameraSeed.lng),
+                    formatCoordinate(cameraSeed.lat),
+                  ] as [number, number],
+                  zoomLevel: HOME_MAP_ZOOM,
+                },
               }
             : {})}
           animationMode="none"
