@@ -21,6 +21,7 @@ import { useFocusEffect } from "expo-router";
 import { useQueryClient } from "@tanstack/react-query";
 import { useEarningsSummary } from "@/src/hooks/useEarnings";
 import { useDemandZones } from "@/src/hooks/useDemandZones";
+import { useHotZones } from "@/src/hooks/useHotZones";
 import { HighDemandZonesPanel } from "@/src/components/home/HighDemandZonesPanel";
 import { resolveRiderHomeChrome } from "@/src/lib/rider-home-chrome";
 import { useDutyStatus, RIDER_DUTY_STATUS_QUERY_KEY } from "@/src/hooks/useDutyStatus";
@@ -369,6 +370,13 @@ export default function OrdersScreen() {
     enabled: homeChrome.fetchDemandZones,
   });
 
+  // Real backend H3 hot zones for the MAP (replaces the legacy store-cluster circles).
+  const { zones: hotZones } = useHotZones({
+    riderLat: demandFix?.lat,
+    riderLng: demandFix?.lng,
+    enabled: homeChrome.fetchDemandZones,
+  });
+
   useFocusEffect(
     useCallback(() => {
       // Light refresh only — avoid invalidating everything on every Orders focus (tab lag).
@@ -667,7 +675,8 @@ export default function OrdersScreen() {
           orders={mapOrders}
           style={styles.map}
           showRadar={homeChrome.showSearchingRadar && !!riderLocation}
-          demandZones={homeChrome.fetchDemandZones ? demandZones : []}
+          demandZones={[]}
+          hotZones={homeChrome.fetchDemandZones ? hotZones : []}
           isOnDuty={isOnDuty}
         />
 
